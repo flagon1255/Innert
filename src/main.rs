@@ -69,7 +69,7 @@ use crate::game::Game;
 use crate::hot_reload::HotReloadComputePipeline;
 use crate::player::Player;
 use crate::water::Water;
-use crate::worldgen::{Terrain, TerrainSettings, World};
+use crate::worldgen::{RiverCache, Terrain, TerrainSettings, World};
 
 const INITIAL_VOXEL_RESOLUTION: u32 = 24;
 const INITIAL_TERRAIN: TerrainSettings = TerrainSettings {
@@ -239,6 +239,17 @@ struct NearBuild {
     landscape: Arc<Terrain>,
     center: Vector3<f64>,
 }
+
+/// The next piece of the endless landscape, being built in the background
+struct WindowBuild {
+    job: std::thread::JoinHandle<(Terrain, World)>,
+    /// Its corner, in voxels from the corner of the whole landscape
+    origin: [i64; 2],
+}
+
+// The world holds a piece of the endless landscape around the camera. Once the camera gets this
+// far from its middle, in meters, the piece around it is built and moved over to.
+const RECENTER_M: f64 = 40.0;
 
 // The box of fine detail around the camera, in meters. It gets rebuilt once the camera
 // gets this far from where it was last built.
@@ -764,6 +775,11 @@ struct App {
     world: World,
     // What a generated world was built from
     landscape: Option<Arc<Terrain>>,
+    // Rivers traced so far, for building the next piece of the landscape
+    rivers: Arc<RiverCache>,
+    window_build: Option<WindowBuild>,
+    // Flames and crystals in the world, in voxels of it: x, y, z, reach, then color
+    lights: Vec<[f32; 8]>,
     // Voxels per meter in the box of fine detail around the camera, 0 for none
     near_detail: u32,
     near: Option<NearDetail>,
@@ -1046,7 +1062,8 @@ impl App {
         if let Some(v) = setting("voxels_per_meter").and_then(|v| v.parse().ok()) {
             terrain.voxels_per_meter = v;
         }
-        let (world, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION);
+        let rivers = Arc::new(RiverCache::default());
+        let (world, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
         let voxel_set = get_voxel_set(
             memory_allocator.clone(),
             command_buffer_allocator.clone(),
@@ -1136,6 +1153,9 @@ impl App {
             player,
             world,
             landscape,
+            rivers,
+            window_build: None,
+            lights: Vec::new(),
             near_detail: setting("near_detail").and_then(|v| v.parse().ok()).unwrap_or(16),
             near: None,
             near_build: None,
@@ -1203,6 +1223,7 @@ impl App {
 
             rcx: None,
         };
+        app.adopt_features();
         if let Some(n) = visit_waterfall {
             app.waterfall_index = n - 1;
             app.visit_waterfall();
@@ -1237,7 +1258,10 @@ impl App {
 
     /// Builds the world picked in the settings, in place of the current one
     fn generate_world(&mut self) {
-        let (world, landscape) = build_world(self.scene, &self.terrain, self.future_voxel_resolution);
+        // A new landscape has rivers of its own
+        let rivers = Arc::new(RiverCache::default());
+        let (world, landscape) = build_world(self.scene, &self.terrain, self.future_voxel_resolution, [0, 0], &rivers);
+        self.window_build = None;
 
         let max_bytes = self.device.physical_device().properties().max_storage_buffer_range as usize;
         if world.bricks.len() * 4 > max_bytes {
@@ -1269,9 +1293,11 @@ impl App {
         );
         self.world = world;
         self.landscape = landscape;
+        self.rivers = rivers;
         self.near = None;
         self.world_error = None;
         self.sun_map_for = None;
+        self.adopt_features();
 
         if self.scene.is_terrain() != self.loaded_scene.is_terrain() {
             self.camera = self.scene.initial_camera();
