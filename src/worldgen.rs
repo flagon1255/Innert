@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_1_SQRT_2, TAU};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
@@ -42,6 +44,30 @@ pub mod material {
     pub const PALM_WOOD: u8 = 36;
     pub const DEAD_WOOD: u8 = 37;
     pub const BARK_DARK: u8 = 38;
+    // Only on animals, see src\animals.rs
+    pub const FUR_BROWN: u8 = 39;
+    pub const FUR_DARK: u8 = 40;
+    pub const FUR_RED: u8 = 41;
+    pub const FUR_TAN: u8 = 42;
+    pub const FUR_GRAY: u8 = 43;
+    pub const FUR_WHITE: u8 = 44;
+    pub const EYE: u8 = 45;
+    pub const NOSE: u8 = 46;
+    pub const FUR_GINGER: u8 = 47;
+    pub const FUR_CREAM: u8 = 48;
+    // Only on food lying around, see src\game.rs
+    pub const APPLE: u8 = 49;
+    pub const MEAT: u8 = 50;
+    pub const BONE: u8 = 51;
+    // Temples, see Terrain::pyramid() and the like
+    pub const TEMPLE_STONE: u8 = 52;
+    pub const TEMPLE_DARK: u8 = 53;
+    pub const TEMPLE_RED: u8 = 54;
+    pub const TEMPLE_TEAL: u8 = 55;
+    // These glow
+    pub const CRYSTAL: u8 = 56;
+    pub const FLAME: u8 = 57;
+    pub const WAX: u8 = 58;
 }
 
 use material::*;
@@ -77,9 +103,6 @@ pub fn is_passable(material: u8) -> bool {
     )
 }
 
-pub fn is_water(material: u8) -> bool {
-    matches!(material, WATER | FOAM)
-}
 
 // The world is split into 8x8x8 bricks. Bricks that are empty or filled with a
 // single material only take up one grid cell, the rest store every voxel.
@@ -115,6 +138,16 @@ pub struct World {
     /// (x + y * size.x), with the ground's height in quarter voxels in bits 0-15 and how dense
     /// the grass is in bits 16-23 (0 where none grows). None for worlds without grass.
     pub grass: Option<Vec<u32>>,
+    /// Where the water starts out, for the simulation in src\water.rs. Water isn't in the voxels.
+    /// None for worlds without water.
+    pub water: Option<WaterMap>,
+}
+
+/// One value per column of voxels (x + y * size.x), in voxels: the top of the ground, and the
+/// top of the water on it, 0 where it's dry
+pub struct WaterMap {
+    pub ground: Vec<f32>,
+    pub surface: Vec<f32>,
 }
 
 impl World {
@@ -135,6 +168,7 @@ impl World {
             voxels_per_meter,
             sea_level: None,
             grass: None,
+            water: None,
         }
     }
 
@@ -287,19 +321,24 @@ impl TerrainSettings {
     }
 }
 
-/// Generates the landscape, and builds all of it into voxels at the settings' resolution.
-pub fn generate_terrain(settings: &TerrainSettings) -> (Terrain, World) {
-    print!("Generating terrain... ");
-
+/// Generates the piece of the endless landscape whose corner is at `origin`, in voxels from the
+/// corner of the whole landscape, as big as the settings say, and builds it into voxels at their
+/// resolution.
+pub fn generate_terrain(settings: &TerrainSettings, origin: [i64; 2], rivers: &RiverCache) -> (Terrain, World) {
     let start = std::time::Instant::now();
 
-    let mut heights = Heights::new(settings, [0, 0], [settings.size()[0] as usize; 2], settings.voxels_per_meter);
-    let terrain = Terrain::new(settings, &mut heights);
+    let mut heights = Heights::new(settings, origin, [settings.size()[0] as usize; 2], settings.voxels_per_meter);
+    let terrain = Terrain::new(settings, &mut heights, rivers);
     let mut world = terrain.build_from(&heights, 0, settings.size()[2]);
     world.grass = Some(terrain.grass_map(&heights));
+    let mut water = terrain.water_map(&heights);
+    terrain.raise_water_ground(&world, &mut water);
+    world.water = Some(water);
 
     println!(
-        "{} bricks stored, {} MB ({:?})",
+        "Generated terrain around ({}, {}): {} bricks stored, {} MB ({:?})",
+        origin[0],
+        origin[1],
         world.brick_count(),
         world.bricks.len() * 4 / (1024 * 1024),
         start.elapsed()
@@ -370,19 +409,35 @@ impl Rng {
     }
 }
 
+/// How far rivers drop at each waterfall, in meters
+const FALL_HEIGHT: f32 = 3.5;
+
 /// A point along a river's course, in meters.
 struct RiverPoint {
     x: f32,
     y: f32,
     surface: f32,
     half_width: f32,
-    /// White water, where the river drops steeply
-    foam: bool,
+    /// Just before a waterfall, where the bed comes up to hold the pool behind it
+    lip: bool,
 }
 
-/// A piece of a tree, plant or rock, in meters: either a capsule whose radius goes linearly
-/// from `radius_a` at `a` to `radius_b` at `b` (a sphere when they're the same point),
-/// or a flat ellipse like a leaf.
+/// Where a shape goes in relation to the ground
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// Only above the ground, like trees and buildings
+    Above,
+    /// Cuts air out of the ground, like caves
+    Carve,
+    /// Air, above the ground and in it, like the rooms and passages of buildings
+    Clear,
+    /// In the hollows cut out of the ground, like crystals in caves
+    Inside,
+}
+
+/// A piece of a tree, plant, rock or building, in meters: a capsule whose radius goes linearly
+/// from `radius_a` at `a` to `radius_b` at `b` (a sphere when they're the same point), a flat
+/// ellipse like a leaf, or a box.
 struct Shape {
     a: Vec3,
     b: Vec3,
@@ -390,11 +445,14 @@ struct Shape {
     radius_b: f32,
     /// For flat shapes: their axes, and the half-size along each. `a` is the middle.
     flat: Option<([Vec3; 3], Vec3)>,
+    /// For boxes: the half-size along each axis. `a` is the middle.
+    boxed: Option<Vec3>,
     material: u8,
     /// Sprinkled in among `material`, AIR for none
     accent: u8,
     /// Ragged, see-through edges, for clumps of foliage
     ragged: bool,
+    placement: Placement,
     // Bounds
     min: Vec3,
     max: Vec3,
@@ -409,12 +467,45 @@ impl Shape {
             radius_a,
             radius_b,
             flat: None,
+            boxed: None,
             material,
             accent,
             ragged,
+            placement: Placement::Above,
             min: [0, 1, 2].map(|i| a[i].min(b[i]) - r),
             max: [0, 1, 2].map(|i| a[i].max(b[i]) + r),
         }
+    }
+
+    /// A box from `lo` to `hi`
+    fn block(lo: Vec3, hi: Vec3, material: u8, accent: u8) -> Self {
+        let center = [0, 1, 2].map(|i| (lo[i] + hi[i]) * 0.5);
+        let half = [0, 1, 2].map(|i| (hi[i] - lo[i]).abs() * 0.5);
+        let reach = half[0].max(half[1]).max(half[2]);
+        Shape {
+            a: center,
+            b: center,
+            radius_a: reach,
+            radius_b: reach,
+            flat: None,
+            boxed: Some(half),
+            material,
+            accent,
+            ragged: false,
+            placement: Placement::Above,
+            min: [0, 1, 2].map(|i| lo[i].min(hi[i])),
+            max: [0, 1, 2].map(|i| lo[i].max(hi[i])),
+        }
+    }
+
+    /// Empty space from `lo` to `hi`, cut out of buildings and the ground alike
+    fn room(lo: Vec3, hi: Vec3) -> Self {
+        Shape::block(lo, hi, AIR, AIR).placed(Placement::Clear)
+    }
+
+    fn placed(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
     }
 
     fn sphere(center: Vec3, radius: f32, material: u8, accent: u8, ragged: bool) -> Self {
@@ -441,9 +532,11 @@ impl Shape {
             radius_a: reach,
             radius_b: reach,
             flat: Some(([along, side, normal], [length * 0.5, width * 0.5, 0.01])),
+            boxed: None,
             material,
             accent,
             ragged: false,
+            placement: Placement::Above,
             min: center.map(|v| v - reach),
             max: center.map(|v| v + reach),
         }
@@ -453,6 +546,9 @@ impl Shape {
     /// Nothing is thinner than about a voxel (`voxel` meters), so small parts don't fall apart.
     fn depth(&self, p: Vec3, voxel: f32) -> f32 {
         let d = sub(p, self.a);
+        if let Some(half) = &self.boxed {
+            return (0..3).map(|i| d[i].abs() / half[i].max(0.5 * voxel)).fold(0.0, f32::max).powi(2);
+        }
         if let Some((axes, half)) = &self.flat {
             return (0..3).map(|i| (dot(axes[i], d) / half[i].max(0.6 * voxel)).powi(2)).sum();
         }
@@ -493,6 +589,45 @@ impl Object {
     }
 }
 
+/// Where a building stands and which way it faces, for laying it out: `u` goes the way it faces,
+/// `v` across, both in meters from its middle. It faces along x or y, so boxes stay boxes.
+#[derive(Clone, Copy)]
+struct Frame {
+    x: f32,
+    y: f32,
+    f: [f32; 2],
+}
+
+impl Frame {
+    fn point(&self, u: f32, v: f32, z: f32) -> Vec3 {
+        [self.x + self.f[0] * u - self.f[1] * v, self.y + self.f[1] * u + self.f[0] * v, z]
+    }
+
+    fn block(&self, u: [f32; 2], v: [f32; 2], z: [f32; 2], material: u8, accent: u8) -> Shape {
+        Shape::block(self.point(u[0], v[0], z[0]), self.point(u[1], v[1], z[1]), material, accent)
+    }
+
+    fn room(&self, u: [f32; 2], v: [f32; 2], z: [f32; 2]) -> Shape {
+        Shape::room(self.point(u[0], v[0], z[0]), self.point(u[1], v[1], z[1]))
+    }
+
+    /// The same rectangle in the landscape's x and y, lowest corner first
+    fn rect(&self, u: [f32; 2], v: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+        let (a, b) = (self.point(u[0], v[0], 0.0), self.point(u[1], v[1], 0.0));
+        ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])])
+    }
+}
+
+/// A candle standing at `at`, whose flame lights up the room
+fn candle(features: &mut Features, at: Vec3, rng: &mut Rng) {
+    features.props.push(Prop { kind: PropKind::Candle, position: at, heading: rng.next() * TAU });
+    features.lights.push(Light { position: [at[0], at[1], at[2] + 0.3], color: [1.0, 0.6, 0.25], reach: 7.0 });
+}
+
+fn skull(features: &mut Features, at: Vec3, rng: &mut Rng) {
+    features.props.push(Prop { kind: PropKind::Skull, position: at, heading: rng.next() * TAU });
+}
+
 /// How the leaves on the twigs of a tree look.
 #[derive(Clone, Copy)]
 struct Foliage {
@@ -521,7 +656,13 @@ struct Column {
     below: u8,
     // Water fills the column from just above the ground up to here
     water_top: i32,
-    water: u8,
+    // Rock comes in layers, see Terrain::rock(): how far they're shifted up or down here, in
+    // voxels, and how likely moss is to grow on it
+    strata: i32,
+    moss: f32,
+    // Where the column is in the whole landscape
+    x: i64,
+    y: i64,
     blade: i32,
     blade_top: u8,
 }
@@ -529,6 +670,7 @@ struct Column {
 /// The ground under a rectangle of voxel columns, at some resolution.
 struct Heights {
     voxels_per_meter: f32,
+    seed: u32,
     /// Voxel coordinates of the first column
     origin: [i64; 2],
     size: [usize; 2],
@@ -536,7 +678,11 @@ struct Heights {
     ground: Vec<f32>,
     /// Height of river water in meters, NEG_INFINITY where there's none
     river: Vec<f32>,
-    foam: Vec<bool>,
+    /// How far each column is from the nearest river point reaching it, in meters
+    river_distance: Vec<f32>,
+    /// How low that point cuts the column, in meters: the bed of the river, or its bank.
+    /// INFINITY where no river reaches.
+    carved: Vec<f32>,
 }
 
 impl Heights {
@@ -562,11 +708,13 @@ impl Heights {
 
         Heights {
             voxels_per_meter: vpm,
+            seed: settings.seed,
             origin,
             size,
             ground,
             river: vec![f32::NEG_INFINITY; size[0] * size[1]],
-            foam: vec![false; size[0] * size[1]],
+            river_distance: vec![f32::INFINITY; size[0] * size[1]],
+            carved: vec![f32::INFINITY; size[0] * size[1]],
         }
     }
 
@@ -583,6 +731,7 @@ impl Heights {
         self.ground_m((x * v) as i64 - self.origin[0], (y * v) as i64 - self.origin[1])
     }
 
+    /// Cuts a river's channel and banks into the ground. Call settle_beds() once every river is in.
     fn carve(&mut self, path: &[RiverPoint]) {
         let vpm = self.voxels_per_meter;
         // Banks slope back up to the land around
@@ -591,7 +740,8 @@ impl Heights {
 
         for p in path {
             let reach = p.half_width + bank;
-            let depth = 0.6 + p.half_width * 0.25;
+            // Shallow at the lip of a waterfall, so the pool behind it holds its water
+            let depth = if p.lip { 0.1 } else { 0.6 + p.half_width * 0.25 };
             let lo = [(p.x - reach) * vpm, (p.y - reach) * vpm].map(|v| v.floor() as i64);
             let hi = [(p.x + reach) * vpm, (p.y + reach) * vpm].map(|v| v.ceil() as i64);
             let (x0, x1) = ((lo[0] - self.origin[0]).max(0), (hi[0] - self.origin[0]).min(sx - 1));
@@ -602,23 +752,47 @@ impl Heights {
                         (self.origin[0] + cx) as f32 / vpm,
                         (self.origin[1] + cy) as f32 / vpm,
                     );
-                    let d = (xm - p.x).hypot(ym - p.y);
+                    // Each column is shaped by its nearest point alone, so where the river drops
+                    // over a waterfall there's a sheer edge, with the banks of the pool above
+                    // still standing right up to it. Distances wobble differently for each pool,
+                    // so that edge is ragged rather than a straight line.
+                    let pool = (p.surface * 4.0) as i32 as u32;
+                    let d = (xm - p.x).hypot(ym - p.y) + 0.7 * fbm(xm / 1.5, ym / 1.5, 2, self.seed ^ hash(pool));
                     if d > reach {
                         continue;
                     }
                     let i = (cx + cy * sx) as usize;
-                    let limit = if d < p.half_width {
-                        let t = d / p.half_width;
-                        p.surface - depth * (1.0 - t * t)
-                    } else {
-                        p.surface + (d - p.half_width) * 0.9
-                    };
-                    self.ground[i] = self.ground[i].min(limit);
+                    if d >= self.river_distance[i] {
+                        continue;
+                    }
+                    self.river_distance[i] = d;
                     if d < p.half_width {
-                        self.river[i] = self.river[i].max(p.surface);
-                        self.foam[i] |= p.foam;
+                        let t = (d / p.half_width).max(0.0);
+                        self.river[i] = p.surface;
+                        self.carved[i] = p.surface - depth * (1.0 - t * t).max(if p.lip { 1.0 } else { 0.0 });
+                    } else {
+                        // Rocky banks: their steepness wanders, with knobs and hollows in them, but
+                        // they always stand clear of the water so it doesn't spill out
+                        let out = d - p.half_width;
+                        let wander = fbm(xm / 4.0, ym / 4.0, 3, self.seed.wrapping_add(21));
+                        let knobs = fbm(xm / 1.2, ym / 1.2, 2, self.seed.wrapping_add(22));
+                        let rough = (knobs * 0.5 + wander * 0.6) * out.min(1.0);
+                        self.river[i] = f32::NEG_INFINITY;
+                        self.carved[i] = (p.surface + out * 0.9 * (1.0 + 0.5 * wander) + rough).max(p.surface + 0.15);
                     }
                 }
+            }
+        }
+    }
+
+    /// Cuts the beds and banks of all the rivers into the ground. Beds are laid in even where the
+    /// ground was lower, so the lips of waterfalls hold back the pools behind them.
+    fn settle_beds(&mut self) {
+        for i in 0..self.ground.len() {
+            if self.river[i].is_finite() {
+                self.ground[i] = self.carved[i];
+            } else {
+                self.ground[i] = self.ground[i].min(self.carved[i]);
             }
         }
     }
@@ -635,60 +809,126 @@ fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     let ridges = ridged(x / 70.0, y / 70.0, 5, seed.wrapping_add(3));
     let bumps = fbm(x / 5.0, y / 5.0, 3, seed.wrapping_add(5));
 
+    // The land goes on forever, with seas wherever the continents dip low
     let h = 0.36 + continent * 0.3 + hills * 0.06 + mountain_mask * ridges * 0.42;
-    let h_m = h * height_m + bumps * 0.4;
-
-    // Sink the land towards the edges so the world is an island in the sea.
-    // The depth has to match SEABED_DEPTH in shaders\traverse.comp so the sea outside lines up.
-    let width_m = settings.width_m as f32;
-    let edge = x.min(y).min(width_m - x).min(width_m - y);
-    let seabed = sea_level_m(settings) - 6.0;
-    seabed + (h_m - seabed) * smoothstep(0.0, 30.0, edge)
+    h * height_m + bumps * 0.4
 }
 
 fn sea_level_m(settings: &TerrainSettings) -> f32 {
     settings.height_m as f32 * 0.3
 }
 
-/// Everything about a landscape that doesn't depend on its resolution: the shape of the
-/// land, the rivers, and every tree, plant and rock. Any piece of it can be built into
-/// voxels at any resolution, see build().
+/// The landscape goes on forever. Rivers start at springs, at most one in each RIVER_CELL meter
+/// square, and once traced they're kept here, so the same river turns up whichever part of the
+/// landscape gets built. Shared between the parts built so far and the next.
+#[derive(Default)]
+pub struct RiverCache {
+    cells: Mutex<HashMap<(i32, i32), Option<Arc<Vec<RiverPoint>>>>>,
+}
+
+const RIVER_CELL: f32 = 200.0;
+/// The most points a river runs to, half a meter apart
+const RIVER_STEPS: usize = 1200;
+/// How much water a river's spring gives, in cubic meters a second, and how wide it is in meters
+const RIVER_FLOW: f32 = 4.0;
+const RIVER_SPRING_RADIUS: f32 = 2.0;
+
+/// Little things inside buildings, drawn like animals, see src\animals.rs
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropKind {
+    Candle,
+    Skull,
+}
+
+/// In meters, from the corner of the whole landscape
+#[derive(Clone, Copy)]
+pub struct Prop {
+    pub kind: PropKind,
+    pub position: [f32; 3],
+    pub heading: f32,
+}
+
+/// Something glowing that lights up what's around it, like a candle flame. In meters.
+#[derive(Clone, Copy)]
+pub struct Light {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub reach: f32,
+}
+
+/// Where water lies on something other than the ground, like the floor of a room inside a
+/// building, from `lo` to `hi`, in meters. With water up to `water` to start with, if that's higher.
+struct Floor {
+    lo: [f32; 2],
+    hi: [f32; 2],
+    height: f32,
+    water: f32,
+}
+
+/// What buildings and caves add besides voxels
+#[derive(Default)]
+struct Features {
+    props: Vec<Prop>,
+    lights: Vec<Light>,
+    /// Water welling up inside buildings: x, y, cubic meters a second, radius, in meters
+    springs: Vec<[f32; 4]>,
+    floors: Vec<Floor>,
+    /// Where buildings stand, so nothing else grows there: x0, y0, x1, y1 and how high they reach
+    footprints: Vec<[f32; 5]>,
+}
+
+/// Everything about a piece of the landscape that doesn't depend on its resolution: the shape
+/// of the land, the rivers, and every tree, plant, rock, building and cave. Any part of it can be
+/// built into voxels at any resolution, see build().
 pub struct Terrain {
     settings: TerrainSettings,
-    rivers: Vec<Vec<RiverPoint>>,
+    /// The piece of the landscape this covers, in meters
+    lo: [f32; 2],
+    hi: [f32; 2],
+    rivers: Vec<Arc<Vec<RiverPoint>>>,
     objects: Vec<Object>,
     // Indices into `objects` for each OBJECT_CELL-sized square they overlap, to find them by area
     object_cells: Vec<Vec<u32>>,
-    cells_across: usize,
+    cells_across: [usize; 2],
+    features: Features,
 }
 
 const OBJECT_CELL: f32 = 8.0;
 
 impl Terrain {
-    /// `heights` covers the whole world at its resolution, and gets the rivers carved into it.
-    fn new(settings: &TerrainSettings, heights: &mut Heights) -> Self {
+    /// `heights` covers the piece of the landscape to build, and gets the rivers carved into it.
+    fn new(settings: &TerrainSettings, heights: &mut Heights, rivers: &RiverCache) -> Self {
+        let vpm = heights.voxels_per_meter;
+        let lo = [heights.origin[0] as f32 / vpm, heights.origin[1] as f32 / vpm];
+        let hi = [lo[0] + heights.size[0] as f32 / vpm, lo[1] + heights.size[1] as f32 / vpm];
         let mut terrain = Terrain {
             settings: *settings,
+            lo,
+            hi,
             rivers: Vec::new(),
             objects: Vec::new(),
             object_cells: Vec::new(),
-            cells_across: 0,
+            cells_across: [0; 2],
+            features: Features::default(),
         };
 
-        terrain.rivers = terrain.trace_rivers(heights);
+        terrain.rivers = terrain.rivers_in(rivers);
         for path in &terrain.rivers {
             heights.carve(path);
         }
+        heights.settle_beds();
 
-        terrain.objects = terrain.place_objects(heights);
+        let (objects, features) = terrain.place_objects(heights);
+        terrain.objects = objects;
+        terrain.features = features;
 
-        let cells = (settings.width_m as f32 / OBJECT_CELL).ceil() as usize;
-        let mut object_cells = vec![Vec::new(); cells * cells];
-        let cell = |v: f32| ((v / OBJECT_CELL).floor().max(0.0) as usize).min(cells - 1);
+        let cells = [0, 1].map(|i| ((hi[i] - lo[i]) / OBJECT_CELL).ceil() as usize);
+        let mut object_cells = vec![Vec::new(); cells[0] * cells[1]];
+        let cell = |v: f32, axis: usize| (((v - lo[axis]) / OBJECT_CELL).floor().max(0.0) as usize).min(cells[axis] - 1);
         for (i, object) in terrain.objects.iter().enumerate() {
-            for cy in cell(object.min[1])..=cell(object.max[1]) {
-                for cx in cell(object.min[0])..=cell(object.max[0]) {
-                    object_cells[cx + cy * cells].push(i as u32);
+            for cy in cell(object.min[1], 1)..=cell(object.max[1], 1) {
+                for cx in cell(object.min[0], 0)..=cell(object.max[0], 0) {
+                    object_cells[cx + cy * cells[0]].push(i as u32);
                 }
             }
         }
@@ -698,16 +938,125 @@ impl Terrain {
         terrain
     }
 
+    fn inside(&self, x: f32, y: f32) -> bool {
+        x >= self.lo[0] && y >= self.lo[1] && x < self.hi[0] && y < self.hi[1]
+    }
+
+    /// Where rivers pour over waterfalls in this piece: the lip of each in meters, and which way
+    /// the river flows there
+    pub fn waterfalls(&self) -> Vec<([f32; 3], [f32; 2])> {
+        let mut falls = Vec::new();
+        for path in &self.rivers {
+            for pair in path.windows(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                if a.surface - b.surface > 1.0 && self.inside(a.x, a.y) {
+                    let (dx, dy) = (b.x - a.x, b.y - a.y);
+                    let length = dx.hypot(dy).max(1e-6);
+                    falls.push(([a.x, a.y, a.surface], [dx / length, dy / length]));
+                }
+            }
+        }
+        falls
+    }
+
+    /// Where water comes from in this piece: x, y, cubic meters a second and radius, in meters.
+    /// Rivers start where their spring is, or where they flow in from outside it, and some
+    /// buildings have water welling up inside.
+    pub fn springs(&self) -> Vec<[f32; 4]> {
+        let mut springs: Vec<[f32; 4]> = self
+            .rivers
+            .iter()
+            .filter_map(|path| path.iter().find(|p| self.inside(p.x, p.y)))
+            .map(|p| [p.x, p.y, RIVER_FLOW, RIVER_SPRING_RADIUS])
+            .collect();
+        springs.extend_from_slice(&self.features.springs);
+        springs
+    }
+
+    /// Candles, skulls and such, in meters
+    pub fn props(&self) -> &[Prop] {
+        &self.features.props
+    }
+
+    /// Flames and glowing crystals, in meters
+    pub fn lights(&self) -> &[Light] {
+        &self.features.lights
+    }
+
     /// Builds a box of the landscape into voxels. `origin` and `size` are in voxels at
     /// `voxels_per_meter`, counted from the corner of the whole landscape at that resolution.
+    /// It has to be within this piece of it. Without water, which is simulated separately,
+    /// see src\water.rs.
     pub fn build(&self, origin: [i64; 3], size: [u32; 3], voxels_per_meter: u32) -> World {
         let mut heights = Heights::new(&self.settings, [origin[0], origin[1]], [size[0] as usize, size[1] as usize], voxels_per_meter);
         for path in &self.rivers {
             heights.carve(path);
         }
+        heights.settle_beds();
         let mut world = self.build_from(&heights, origin[2], size[2]);
         world.sea_level = None;
         world
+    }
+
+    /// Buildings stand on their own floors, which water can't flow through but can lie on, and
+    /// some have floors inside with water on them. Changes `water` to match `world`, built from
+    /// this piece of landscape.
+    fn raise_water_ground(&self, world: &World, water: &mut WaterMap) {
+        let vpm = world.voxels_per_meter as f32;
+        let [sx, sy] = [world.size[0] as i64, world.size[1] as i64];
+        let columns = |lo: [f32; 2], hi: [f32; 2]| {
+            let x0 = ((lo[0] * vpm).floor() as i64 - world.origin[0]).max(0);
+            let y0 = ((lo[1] * vpm).floor() as i64 - world.origin[1]).max(0);
+            let x1 = ((hi[0] * vpm).ceil() as i64 - world.origin[0]).min(sx);
+            let y1 = ((hi[1] * vpm).ceil() as i64 - world.origin[1]).min(sy);
+            (y0..y1).flat_map(move |y| (x0..x1).map(move |x| (x, y)))
+        };
+        for footprint in &self.features.footprints {
+            let top = (footprint[4] * vpm).ceil() as i64;
+            for (x, y) in columns([footprint[0], footprint[1]], [footprint[2], footprint[3]]) {
+                let i = (x + y * sx) as usize;
+                let ground = water.ground[i] as i64;
+                if let Some(z) = (ground..=top).rev().find(|&z| !is_passable(world.material_at(x, y, z))) {
+                    water.ground[i] = water.ground[i].max((z + 1) as f32);
+                    if water.surface[i] <= water.ground[i] {
+                        water.surface[i] = 0.0;
+                    }
+                }
+            }
+        }
+        for floor in &self.features.floors {
+            for (x, y) in columns(floor.lo, floor.hi) {
+                let i = (x + y * sx) as usize;
+                water.ground[i] = floor.height * vpm;
+                water.surface[i] = if floor.water > floor.height { floor.water * vpm } else { 0.0 };
+            }
+        }
+    }
+
+    /// The ground and the water lying on it for every column, see World::water
+    fn water_map(&self, heights: &Heights) -> WaterMap {
+        let [sx, sy] = heights.size;
+        let mut ground = vec![0.0f32; sx * sy];
+        let mut surface = vec![0.0f32; sx * sy];
+        let threads = thread::available_parallelism().map_or(4, |n| n.get());
+        let rows_per_thread = sy.div_ceil(threads).max(1);
+        thread::scope(|s| {
+            for (chunk_index, (ground, surface)) in ground
+                .chunks_mut(rows_per_thread * sx)
+                .zip(surface.chunks_mut(rows_per_thread * sx))
+                .enumerate()
+            {
+                s.spawn(move || {
+                    for i in 0..ground.len() {
+                        let j = chunk_index * rows_per_thread * sx + i;
+                        let column = self.column(heights, (j % sx) as i64, (j / sx) as i64);
+                        ground[i] = (column.height + 1) as f32;
+                        surface[i] = if column.water_top > column.height { (column.water_top + 1) as f32 } else { 0.0 };
+                    }
+                });
+            }
+        });
+        WaterMap { ground, surface }
     }
 
     fn build_from(&self, heights: &Heights, origin_z: i64, size_z: u32) -> World {
@@ -810,11 +1159,11 @@ impl Terrain {
 
     fn objects_in(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<&Object> {
         let cells = self.cells_across;
-        let cell = |v: f32| ((v / OBJECT_CELL).floor().max(0.0) as usize).min(cells - 1);
+        let cell = |v: f32, axis: usize| (((v - self.lo[axis]) / OBJECT_CELL).floor().max(0.0) as usize).min(cells[axis] - 1);
         let mut indices: Vec<u32> = Vec::new();
-        for cy in cell(lo[1])..=cell(hi[1]) {
-            for cx in cell(lo[0])..=cell(hi[0]) {
-                indices.extend_from_slice(&self.object_cells[cx + cy * cells]);
+        for cy in cell(lo[1], 1)..=cell(hi[1], 1) {
+            for cx in cell(lo[0], 0)..=cell(hi[0], 0) {
+                indices.extend_from_slice(&self.object_cells[cx + cy * cells[0]]);
             }
         }
         indices.sort_unstable();
@@ -842,11 +1191,7 @@ impl Terrain {
         let snow_line = (self.settings.height_m as f32 * 0.7 * vpm) as i32;
         let i = (x.clamp(0, heights.size[0] as i64 - 1) + y.clamp(0, heights.size[1] as i64 - 1) * heights.size[0] as i64) as usize;
         let river = (heights.river[i] * vpm).floor() as i32;
-        let (water_top, water) = if river > h {
-            (river.max(sea_level), if heights.foam[i] { FOAM } else { WATER })
-        } else {
-            (sea_level, WATER)
-        };
+        let water_top = if river > h { river.max(sea_level) } else { sea_level };
 
         let top = if h <= sea_level + v {
             SAND
@@ -864,8 +1209,9 @@ impl Terrain {
             _ => DIRT,
         };
 
-        // Flowers on short stems, growing in patches of one color. The grass itself is
-        // made of triangles in the shader, see traceGrass() in shaders\traverse.comp.
+        // Flowers on short stems, growing in patches of one color, and tufts of grass a few
+        // voxels tall between them. There's also grass made of triangles in the shader, see
+        // traceGrass() in shaders\traverse.comp.
         let max_stem = (0.35 * vpm).round().max(1.0) as u32;
         let (mut blade, mut blade_top) = (0, AIR);
         if top == GRASS {
@@ -874,36 +1220,67 @@ impl Terrain {
             let meadow = (fbm(xm / 14.0, ym / 14.0, 2, self.settings.seed.wrapping_add(7)) - 0.1).max(0.0) * 3.0;
             // About the same number of flowers per square meter at any resolution
             let flower_chance = 0.45 * (0.01 + meadow * 0.2) * (8.0 / vpm).powi(2).min(1.0);
+            let lush = smoothstep(-0.3, 0.4, fbm(xm / 9.0, ym / 9.0, 2, self.settings.seed.wrapping_add(8)));
+            let tuft = hash3(gx as u32, gy as u32, self.settings.seed ^ 0x9a55);
             if unit(r) < flower_chance {
                 blade = 1 + ((r >> 16) % max_stem) as i32;
                 let patch = hash3((xm / 4.0) as u32, (ym / 4.0) as u32, self.settings.seed ^ 0xf10e);
                 blade_top = [FLOWER_RED, FLOWER_YELLOW, FLOWER_PURPLE, FLOWER_WHITE][(patch % 4) as usize];
+            } else if unit(tuft) < 0.25 + 0.35 * lush {
+                // Taller in lush patches, with a lighter tip
+                let tallest = (0.08 + 0.22 * lush) * vpm;
+                blade = ((unit(tuft >> 16) * tallest).round() as i32).max(1);
+                blade_top = GRASS_TIP;
             }
         }
+
+        let (xm, ym) = (gx as f32 / vpm, gy as f32 / vpm);
+        let strata = (fbm(xm / 7.0, ym / 7.0, 2, self.settings.seed.wrapping_add(23)) * 0.8 * vpm) as i32;
+        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * 0.6;
 
         Column {
             height: h,
             top,
             below,
             water_top,
-            water,
+            strata,
+            moss,
+            x: gx,
+            y: gy,
             blade,
             blade_top,
+        }
+    }
+
+    /// Bare rock: layers a few tens of centimeters thick, gently wavy, of a few kinds of stone,
+    /// with moss growing in patches
+    fn rock(&self, column: &Column, z: i32) -> u8 {
+        let thickness = (0.3 * self.settings.voxels_per_meter as f32).max(1.0) as i32;
+        let layer = (z + column.strata).div_euclid(thickness);
+        let h = hash3(column.x as u32, column.y as u32, z as u32 ^ self.settings.seed);
+        if unit(h) < column.moss * 0.5 {
+            return MOSS;
+        }
+        match hash3(layer as u32, self.settings.seed, 0x57a7a) % 6 {
+            0 | 1 | 2 => STONE,
+            3 | 4 => ROCK,
+            _ => CLAY,
         }
     }
 
     fn material(&self, column: &Column, z: i32, dirt_depth: i32) -> u8 {
         if z <= column.height {
             let depth = column.height - z;
-            if depth == 0 {
+            if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
+                self.rock(column, z)
+            } else if depth == 0 {
                 column.top
-            } else if depth <= dirt_depth {
-                column.below
             } else {
-                STONE
+                column.below
             }
         } else if z <= column.water_top {
-            column.water
+            // Water isn't kept in the voxels, see src\water.rs
+            AIR
         } else if z < column.height + column.blade {
             GRASS_BLADE
         } else if z == column.height + column.blade {
@@ -933,7 +1310,7 @@ impl Terrain {
             for lx in 0..8 {
                 let column = self.column(heights, (cx * 8 + lx) as i64, (cy * 8 + ly) as i64);
                 min_height = min_height.min(column.height);
-                max_top = max_top.max(column.height + column.blade).max(column.water_top);
+                max_top = max_top.max(column.height + column.blade);
                 columns[lx + ly * 8] = column;
             }
         }
@@ -942,17 +1319,22 @@ impl Terrain {
         let column_lo = [(heights.origin[0] + cx as i64 * 8) as f32 * voxel - voxel, (heights.origin[1] + cy as i64 * 8) as f32 * voxel - voxel];
         let column_hi = [column_lo[0] + 10.0 * voxel, column_lo[1] + 10.0 * voxel];
         let mut shapes: Vec<(&Shape, u32)> = Vec::new();
+        // The lowest anything cuts into the ground
+        let mut lowest_cut = i32::MAX;
         for object in objects {
             for shape in &object.shapes {
                 if shape.max[0] >= column_lo[0] && shape.min[0] <= column_hi[0] && shape.max[1] >= column_lo[1] && shape.min[1] <= column_hi[1] {
                     shapes.push((shape, object.seed));
                     max_top = max_top.max((shape.max[2] * vpm).ceil() as i32);
+                    if shape.placement != Placement::Above {
+                        lowest_cut = lowest_cut.min((shape.min[2] * vpm).floor() as i32 - 1);
+                    }
                 }
             }
         }
 
         // Below this every voxel in the column is stone
-        let stone_below = min_height - dirt_depth;
+        let stone_below = (min_height - dirt_depth).min(lowest_cut);
 
         let mut materials = [AIR; BRICK_VOXELS];
         let mut nearby: Vec<(&Shape, u32)> = Vec::new();
@@ -975,10 +1357,11 @@ impl Terrain {
                 }
             }
 
-            // Trees, plants and rocks, but only above the ground
+            // Trees, plants, rocks and buildings above the ground, and caves and rooms cut into it
             let (z_lo, z_hi) = ((z0 - 1) as f32 * voxel, (z0 + 9) as f32 * voxel);
             nearby.clear();
             nearby.extend(shapes.iter().filter(|(s, _)| s.max[2] >= z_lo && s.min[2] <= z_hi));
+            let cuts = nearby.iter().any(|(s, _)| s.placement != Placement::Above);
             if !nearby.is_empty() {
                 let x0 = heights.origin[0] + (cx * 8) as i64;
                 let y0 = heights.origin[1] + (cy * 8) as i64;
@@ -986,16 +1369,31 @@ impl Terrain {
                     for ly in 0..8 {
                         for lx in 0..8 {
                             let (x, y, z) = (x0 + lx as i64, y0 + ly as i64, z0 + lz as i32);
-                            if z <= columns[lx + ly * 8].height {
+                            let ground = z <= columns[lx + ly * 8].height;
+                            if ground && !cuts {
                                 continue;
                             }
                             let p = [(x as f32 + 0.5) * voxel, (y as f32 + 0.5) * voxel, (z as f32 + 0.5) * voxel];
+                            let mut carved = false;
                             for &(shape, seed) in &nearby {
-                                if (0..3).any(|i| p[i] < shape.min[i] - voxel || p[i] > shape.max[i] + voxel) {
+                                let applies = match shape.placement {
+                                    Placement::Above => !ground,
+                                    Placement::Clear => true,
+                                    Placement::Carve => ground,
+                                    Placement::Inside => carved,
+                                };
+                                if !applies || (0..3).any(|i| p[i] < shape.min[i] - voxel || p[i] > shape.max[i] + voxel) {
                                     continue;
                                 }
                                 let depth = shape.depth(p, voxel);
                                 if depth > 1.0 {
+                                    continue;
+                                }
+                                let i = lx + ly * 8 + lz * 64;
+                                if shape.placement == Placement::Carve {
+                                    // Things can still be inside the hollow, like crystals
+                                    materials[i] = AIR;
+                                    carved = true;
                                     continue;
                                 }
                                 let h = hash3(x as u32, y as u32, z as u32 ^ seed);
@@ -1004,7 +1402,7 @@ impl Terrain {
                                     continue;
                                 }
                                 let accent = shape.accent != AIR && unit(h >> 16) < 0.15;
-                                materials[lx + ly * 8 + lz * 64] = if accent { shape.accent } else { shape.material };
+                                materials[i] = if accent { shape.accent } else { shape.material };
                                 break;
                             }
                         }
@@ -1019,54 +1417,73 @@ impl Terrain {
         }
     }
 
-    // Rivers start at a few high springs and run downhill until they reach the sea
-    fn trace_rivers(&self, heights: &Heights) -> Vec<Vec<RiverPoint>> {
-        let width_m = self.settings.width_m as f32;
-        let sea_level = sea_level_m(&self.settings);
-
-        // Springs are the highest of a set of random spots, kept apart from each other
-        let mut spots: Vec<(f32, f32, f32)> = (0..96u32)
-            .map(|i| {
-                let r = hash3(i, self.settings.seed, 0x5157);
-                let x = width_m * (0.15 + 0.7 * unit(r));
-                let y = width_m * (0.15 + 0.7 * unit(r >> 16));
-                (heights.ground_at(x, y), x, y)
-            })
-            .collect();
-        spots.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-        let count = ((width_m / 96.0).round() as usize).clamp(1, 8);
-        let mut springs: Vec<(f32, f32)> = Vec::new();
-        for (h, x, y) in spots {
-            if springs.len() == count || h < sea_level + 8.0 {
-                break;
-            }
-            if springs.iter().all(|&(px, py)| (px - x).hypot(py - y) > 60.0) {
-                springs.push((x, y));
+    /// The rivers running through this piece of the landscape, from springs near enough for their
+    /// rivers to reach it
+    fn rivers_in(&self, cache: &RiverCache) -> Vec<Arc<Vec<RiverPoint>>> {
+        let reach = RIVER_STEPS as f32 * 0.5;
+        let cell = |v: f32| (v / RIVER_CELL).floor() as i32;
+        let (lo, hi) = (self.lo, self.hi);
+        let mut rivers = Vec::new();
+        for cy in cell(lo[1] - reach)..=cell(hi[1] + reach) {
+            for cx in cell(lo[0] - reach)..=cell(hi[0] + reach) {
+                let cached = cache.cells.lock().unwrap().get(&(cx, cy)).cloned();
+                let river = match cached {
+                    Some(river) => river,
+                    None => {
+                        let river = self.river_from(cx, cy).map(Arc::new);
+                        cache.cells.lock().unwrap().insert((cx, cy), river.clone());
+                        river
+                    }
+                };
+                // Only those that come near, banks and all
+                if let Some(river) = river
+                    && river.iter().any(|p| {
+                        let margin = p.half_width + 5.0;
+                        p.x > lo[0] - margin && p.y > lo[1] - margin && p.x < hi[0] + margin && p.y < hi[1] + margin
+                    })
+                {
+                    rivers.push(river);
+                }
             }
         }
-
-        springs
-            .iter()
-            .enumerate()
-            .map(|(i, &(x, y))| self.trace_river(heights, x, y, self.settings.seed.wrapping_add(31 * i as u32)))
-            .collect()
+        rivers
     }
 
-    fn trace_river(&self, heights: &Heights, x: f32, y: f32, seed: u32) -> Vec<RiverPoint> {
-        let width_m = self.settings.width_m as f32;
+    /// The river starting in one RIVER_CELL square, if there's a spring there: at the highest of a
+    /// few random spots in it, if that's high enough above the sea
+    fn river_from(&self, cx: i32, cy: i32) -> Option<Vec<RiverPoint>> {
+        let seed = self.settings.seed;
+        let r = hash3(cx as u32, cy as u32, seed ^ 0x5157);
+        if unit(r) > 0.7 {
+            return None;
+        }
+        let (h, x, y) = (0..12u32)
+            .map(|i| {
+                let s = hash3(r, i, 0x591);
+                let x = (cx as f32 + 0.1 + 0.8 * unit(s)) * RIVER_CELL;
+                let y = (cy as f32 + 0.1 + 0.8 * unit(s >> 16)) * RIVER_CELL;
+                (height_at(&self.settings, x, y), x, y)
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))?;
+        (h > sea_level_m(&self.settings) + 10.0).then(|| self.trace_river(x, y, hash(r)))
+    }
+
+    fn trace_river(&self, x: f32, y: f32, seed: u32) -> Vec<RiverPoint> {
         let sea_level = sea_level_m(&self.settings);
         let step = 0.5;
         let probe = 3.0;
-        let height = |x: f32, y: f32| heights.ground_at(x, y);
+        let height = |x: f32, y: f32| height_at(&self.settings, x, y);
 
         let (mut x, mut y) = (x, y);
         let mut dir = [0.0f32; 2];
+        // Where the water would be if it followed the ground down
         let mut surface = height(x, y) - 0.3;
-        let mut foam_left = 0.0;
-        let mut points = Vec::new();
+        // Where it is: flat pools, each one dropping into the next over a waterfall. Each drop cuts
+        // a gorge into the ground below it, which the ground has to fall into before the next one.
+        let mut level = surface;
+        let mut points: Vec<RiverPoint> = Vec::new();
 
-        for i in 0..(3.0 * width_m / step) as usize {
+        for i in 0..RIVER_STEPS {
             // Downhill, wandering a little so the river isn't straight,
             // with momentum so it doesn't zigzag and can cut through small bumps
             let gx = height(x + probe, y) - height(x - probe, y);
@@ -1084,17 +1501,19 @@ impl Terrain {
 
             x += dir[0] * step;
             y += dir[1] * step;
-            if x < 0.0 || y < 0.0 || x >= width_m || y >= width_m {
-                break;
-            }
 
             // Water never flows uphill
-            let previous = surface;
+            let previous = level;
             surface = surface.min(height(x, y) - 0.3);
-            if (previous - surface) / step > 0.3 {
-                foam_left = 3.0;
-            } else {
-                foam_left -= step;
+            if surface < level - 0.05 {
+                level = (surface - FALL_HEIGHT).max(sea_level);
+            }
+            if (previous - level) / step > 0.3 {
+                // A shallow lip at the edge, which holds the pool above it back
+                let n = points.len();
+                for p in &mut points[n.saturating_sub(3)..] {
+                    p.lip = true;
+                }
             }
 
             // Wider the further it has run
@@ -1102,9 +1521,9 @@ impl Terrain {
             points.push(RiverPoint {
                 x,
                 y,
-                surface,
+                surface: level,
                 half_width: 1.0 + 2.0 * progress,
-                foam: foam_left > 0.0,
+                lip: false,
             });
 
             if surface <= sea_level {
@@ -1115,24 +1534,36 @@ impl Terrain {
         points
     }
 
-    fn place_objects(&self, heights: &Heights) -> Vec<Object> {
-        let width_m = self.settings.width_m as f32;
+    /// Trees, plants, rocks, buildings and caves, anywhere in this piece of the landscape. Each is
+    /// placed at a spot that only depends on where it is in the whole landscape, so pieces built
+    /// around different places agree where they overlap.
+    fn place_objects(&self, heights: &Heights) -> (Vec<Object>, Features) {
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
-        let mut objects = Vec::new();
+        let mut features = Features::default();
+        // Buildings go first, as where they overlap other things they win
+        let mut objects = self.buildings(heights, &mut features);
+        objects.extend(self.caves(&mut features));
+        let footprints = std::mem::take(&mut features.footprints);
+        let (lo, hi) = (self.lo, self.hi);
 
-        // Calls `place` for one random spot in every `cell` meter square, with the column there
+        // Calls `place` for one random spot in every `cell` meter square, with the column there,
+        // except where buildings stand
         let mut scatter = |cell: f32, salt: u32, place: &mut dyn FnMut(f32, f32, f32, &Column, u32) -> Option<Object>| {
-            let cells = (width_m / cell).ceil() as u32;
-            for cy in 0..cells {
-                for cx in 0..cells {
-                    let r = hash3(cx, cy, seed ^ salt);
+            let first = [(lo[0] / cell).floor() as i32, (lo[1] / cell).floor() as i32];
+            let last = [(hi[0] / cell).ceil() as i32, (hi[1] / cell).ceil() as i32];
+            for cy in first[1]..last[1] {
+                for cx in first[0]..last[0] {
+                    let r = hash3(cx as u32, cy as u32, seed ^ salt);
                     let x = (cx as f32 + unit(r)) * cell;
                     let y = (cy as f32 + unit(r >> 16)) * cell;
-                    if x >= width_m || y >= width_m {
+                    if x < lo[0] || y < lo[1] || x >= hi[0] || y >= hi[1] {
                         continue;
                     }
-                    let column = self.column(heights, (x * vpm) as i64, (y * vpm) as i64);
+                    if footprints.iter().any(|f| x > f[0] - 1.5 && y > f[1] - 1.5 && x < f[2] + 1.5 && y < f[3] + 1.5) {
+                        continue;
+                    }
+                    let column = self.column(heights, (x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
                     let ground = (column.height + 1) as f32 / vpm;
                     if let Some(object) = place(x, y, ground, &column, hash(r)) {
                         objects.push(object);
@@ -1198,6 +1629,325 @@ impl Terrain {
             (dry && unit(r) < 0.45).then(|| self.boulder(x, y, ground - 1.0 / vpm, hash(r)))
         });
 
+        features.footprints = footprints;
+        (objects, features)
+    }
+
+    /// Temples and ruins on flat, dry ground, at most one in each BUILDING_CELL square, and
+    /// gateways over some of the waterfalls
+    fn buildings(&self, heights: &Heights, features: &mut Features) -> Vec<Object> {
+        const BUILDING_CELL: f32 = 110.0;
+        let seed = self.settings.seed;
+        let vpm = heights.voxels_per_meter;
+        let sea_level = sea_level_m(&self.settings);
+        // The ground at a point in this piece, in meters, and whether a river runs there
+        let ground = |x: f32, y: f32| -> Option<(f32, bool)> {
+            let (gx, gy) = ((x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
+            if gx < 0 || gy < 0 || gx >= heights.size[0] as i64 || gy >= heights.size[1] as i64 {
+                return None;
+            }
+            let i = gx as usize + gy as usize * heights.size[0];
+            Some((heights.ground[i], heights.river[i].is_finite()))
+        };
+        let mut objects = Vec::new();
+
+        let (lo, hi) = (self.lo, self.hi);
+        let first = [(lo[0] / BUILDING_CELL).floor() as i32, (lo[1] / BUILDING_CELL).floor() as i32];
+        let last = [(hi[0] / BUILDING_CELL).ceil() as i32, (hi[1] / BUILDING_CELL).ceil() as i32];
+        for cy in first[1]..last[1] {
+            for cx in first[0]..last[0] {
+                let r = hash3(cx as u32, cy as u32, seed ^ 0x7e3b);
+                if unit(r) > 0.65 {
+                    continue;
+                }
+                // Pyramids, small temples and ruins
+                let kind = (r >> 20) % 10;
+                let (half, flatness) = match kind {
+                    0..=3 => (12.5, 3.5),
+                    4..=6 => (5.0, 2.5),
+                    _ => (8.0, 4.0),
+                };
+                let s = hash(r);
+                let x = (cx as f32 + 0.2 + 0.6 * unit(s)) * BUILDING_CELL;
+                let y = (cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * BUILDING_CELL;
+
+                // The whole site has to be in this piece of the landscape, dry and flat enough
+                let samples: Option<Vec<(f32, bool)>> = (0..25)
+                    .map(|i| ground(x - half + half * 0.5 * (i % 5) as f32, y - half + half * 0.5 * (i / 5) as f32))
+                    .collect();
+                let Some(samples) = samples else {
+                    continue;
+                };
+                let lowest = samples.iter().map(|s| s.0).fold(f32::MAX, f32::min);
+                let highest = samples.iter().map(|s| s.0).fold(f32::MIN, f32::max);
+                if samples.iter().any(|&(_, wet)| wet) || lowest < sea_level + 1.0 || highest - lowest > flatness {
+                    continue;
+                }
+
+                // Facing downhill, so the way in is at ground level
+                let facing = [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+                    .into_iter()
+                    .min_by(|a: &[f32; 2], b: &[f32; 2]| {
+                        let g = |d: &[f32; 2]| ground(x + d[0] * half, y + d[1] * half).map_or(f32::MAX, |g| g.0);
+                        g(a).total_cmp(&g(b))
+                    })
+                    .unwrap();
+                let at = Frame { x, y, f: facing };
+                let mut rng = Rng(hash(s));
+                let (shapes, top) = match kind {
+                    0..=3 => self.pyramid(at, lowest, &mut rng, features),
+                    4..=6 => self.shrine(at, lowest, &mut rng, features),
+                    _ => self.ruins(at, lowest, &mut rng, features),
+                };
+                objects.push(Object::new(shapes, rng.0));
+                features.footprints.push([x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0, top]);
+            }
+        }
+
+        // Gateways standing over waterfalls, for the river to pour through
+        for (lip, flow) in self.waterfalls() {
+            let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, seed ^ 0x9a7e);
+            if unit(r) > 0.5 {
+                continue;
+            }
+            let mut rng = Rng(hash(r));
+            let (shapes, top) = self.gateway(lip, flow, &mut rng, features);
+            objects.push(Object::new(shapes, rng.0));
+            features.footprints.push([lip[0] - 5.0, lip[1] - 5.0, lip[0] + 5.0, lip[1] + 5.0, top]);
+        }
+        objects
+    }
+
+    /// A stepped pyramid with stairs up the front to a temple on top. Inside, a passage under the
+    /// stairs leads to a chamber lit by candles, where water pours from a spout in the back wall
+    /// into a pool, overflows and runs out along the passage. `base` is the lowest ground under it.
+    /// Returns its shapes and how high it reaches.
+    fn pyramid(&self, at: Frame, base: f32, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let half = rng.range(8.0, 11.0);
+        let tiers = 4 + (rng.next() * 3.0) as usize;
+        let tier = 1.75;
+        let inset = (half - 4.0) / tiers as f32;
+        let top = base + tier * tiers as f32;
+        let floor = base + 0.25;
+        let weathering = if rng.next() < 0.4 { MOSS } else { TEMPLE_DARK };
+        let mut s = Vec::new();
+
+        // The chamber, with the spout and an altar in it, the pool and the passage out
+        s.push(at.block([-3.5, -2.9], [-0.45, 0.45], [floor, floor + 2.4], TEMPLE_TEAL, TEMPLE_DARK));
+        s.push(at.block([-3.4, -2.6], [2.0, 3.3], [floor, floor + 0.9], TEMPLE_DARK, AIR));
+        s.push(at.room([-2.9, -0.6], [-1.2, 1.2], [floor - 0.75, floor]));
+        s.push(at.room([-3.5, 3.5], [-3.5, 3.5], [floor, floor + 3.5]));
+        s.push(at.room([3.5, half + 1.5], [-0.8, 0.8], [floor, floor + 2.5]));
+        features.springs.push({
+            let p = at.point(-3.2, 0.0, 0.0);
+            [p[0], p[1], 0.12, 0.35]
+        });
+        for (u, v, height, water) in [
+            ([-3.5, 3.5], [-3.5, 3.5], floor, 0.0),
+            ([3.5, half + 1.5], [-0.8, 0.8], floor, 0.0),
+            ([-2.9, -0.6], [-1.2, 1.2], floor - 0.75, floor),
+            ([-3.5, -2.9], [-0.45, 0.45], floor + 2.4, 0.0),
+        ] {
+            let (lo, hi) = at.rect(u, v);
+            features.floors.push(Floor { lo, hi, height, water });
+        }
+        for (u, v) in [(-2.9, 1.5), (-0.6, 1.5), (-2.9, -1.5), (-0.6, -1.5)] {
+            candle(features, at.point(u, v, floor), rng);
+        }
+        for (u, v) in [(-3.1, 2.3), (-2.9, 2.7), (-3.15, 3.05)] {
+            candle(features, at.point(u, v, floor + 0.9), rng);
+        }
+        skull(features, at.point(-3.0, 2.9, floor + 0.9), rng);
+        for (u, v) in [(-3.1, -2.9), (-2.8, -3.1), (-3.0, -3.0)] {
+            skull(features, at.point(u, v, floor), rng);
+        }
+        skull(features, at.point(-3.15, -3.1, floor + 0.22), rng);
+
+        // The temple on top, with its doorway facing the stairs
+        s.push(at.room([-1.9, 1.1], [-1.7, 1.7], [top, top + 2.3]));
+        s.push(at.room([1.0, 1.6], [-0.6, 0.6], [top, top + 1.9]));
+        s.push(at.block([-1.0, -0.6], [-2.0, 2.0], [top + 3.2, top + 4.4], TEMPLE_TEAL, TEMPLE_RED));
+        s.push(at.block([-2.8, 1.8], [-2.5, 2.5], [top + 2.8, top + 3.2], TEMPLE_DARK, AIR));
+        s.push(at.block([-2.3, 1.4], [-2.1, 2.1], [top, top + 0.6], TEMPLE_DARK, AIR));
+        s.push(at.block([-2.3, 1.4], [-2.1, 2.1], [top, top + 2.8], TEMPLE_RED, TEMPLE_DARK));
+        for v in [-1.1, 1.1] {
+            candle(features, at.point(-1.4, v, top), rng);
+        }
+        skull(features, at.point(-1.5, 0.0, top), rng);
+
+        // A low wall round the top, open at the stairs
+        let t = half - tiers as f32 * inset;
+        s.push(at.block([-t, t], [t - 0.4, t], [top, top + 0.5], TEMPLE_DARK, AIR));
+        s.push(at.block([-t, t], [-t, -t + 0.4], [top, top + 0.5], TEMPLE_DARK, AIR));
+        s.push(at.block([-t, -t + 0.4], [-t, t], [top, top + 0.5], TEMPLE_DARK, AIR));
+        s.push(at.block([t - 0.4, t], [1.6, t], [top, top + 0.5], TEMPLE_DARK, AIR));
+        s.push(at.block([t - 0.4, t], [-t, -1.6], [top, top + 0.5], TEMPLE_DARK, AIR));
+
+        // Stairs up the front between two balustrades
+        let rise = 0.375;
+        let run = rise * inset / tier;
+        let steps = ((top - base) / rise).ceil() as usize;
+        for k in 0..steps {
+            let front = half + 1.0 - k as f32 * run;
+            let z = base + (k + 1) as f32 * rise;
+            if k % 2 == 0 {
+                s.push(at.block([0.0, front + 0.1], [1.5, 2.1], [base - 1.0, z + 0.6], TEMPLE_DARK, AIR));
+                s.push(at.block([0.0, front + 0.1], [-2.1, -1.5], [base - 1.0, z + 0.6], TEMPLE_DARK, AIR));
+            }
+            s.push(at.block([0.0, front], [-1.5, 1.5], [base - 1.0, z], TEMPLE_STONE, weathering));
+        }
+
+        // The tiers, each with a dark band round its top
+        for k in 0..tiers {
+            let h = half - k as f32 * inset;
+            let z = base + (k + 1) as f32 * tier;
+            s.push(at.block([-h - 0.12, h + 0.12], [-h - 0.12, h + 0.12], [z - 0.25, z], TEMPLE_DARK, AIR));
+            s.push(at.block([-h, h], [-h, h], [if k == 0 { base - 1.0 } else { z - tier }, z], TEMPLE_STONE, weathering));
+        }
+        (s, top + 4.4)
+    }
+
+    /// A small temple on a platform, with an altar inside
+    fn shrine(&self, at: Frame, base: f32, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let floor = base + 1.0;
+        let mut s = Vec::new();
+        s.push(at.block([-1.3, -0.8], [-0.6, 0.6], [floor, floor + 0.7], TEMPLE_DARK, AIR));
+        s.push(at.room([-1.4, 1.2], [-1.2, 1.2], [floor, floor + 2.1]));
+        s.push(at.room([1.1, 1.8], [-0.55, 0.55], [floor, floor + 1.8]));
+        s.push(at.block([-2.3, 2.1], [-2.1, 2.1], [floor + 2.5, floor + 2.9], TEMPLE_DARK, AIR));
+        s.push(at.block([-0.9, -0.5], [-1.6, 1.6], [floor + 2.9, floor + 3.8], TEMPLE_TEAL, TEMPLE_RED));
+        s.push(at.block([-1.8, 1.6], [-1.6, 1.6], [floor, floor + 0.4], TEMPLE_DARK, AIR));
+        s.push(at.block([-1.8, 1.6], [-1.6, 1.6], [floor, floor + 2.5], TEMPLE_RED, TEMPLE_DARK));
+        s.push(at.block([3.5, 4.3], [-1.2, 1.2], [base - 1.0, base + 0.35], TEMPLE_STONE, MOSS));
+        s.push(at.block([2.9, 3.6], [-1.2, 1.2], [base - 1.0, base + 0.7], TEMPLE_STONE, MOSS));
+        s.push(at.block([-3.0, 3.0], [-3.0, 3.0], [base - 1.0, floor], TEMPLE_STONE, MOSS));
+        for v in [-0.4, 0.4] {
+            candle(features, at.point(-1.05, v, floor + 0.7), rng);
+        }
+        skull(features, at.point(-1.05, 0.0, floor + 0.7), rng);
+        (s, floor + 3.8)
+    }
+
+    /// Tumbled walls and pillars, overgrown with moss, around an old altar
+    fn ruins(&self, at: Frame, base: f32, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let mut s = Vec::new();
+        let mut top = base;
+        for _ in 0..4 + (rng.next() * 4.0) as usize {
+            let (u, v) = (rng.range(-6.5, 6.5), rng.range(-6.5, 6.5));
+            let length = rng.range(2.0, 5.0);
+            let along = rng.next() < 0.5;
+            // Broken off at different heights along the wall
+            let mut start = -length * 0.5;
+            while start < length * 0.5 {
+                let piece = rng.range(0.6, 1.6).min(length * 0.5 - start);
+                let height = rng.range(0.6, 3.0);
+                let (us, vs) = if along { ([u + start, u + start + piece], [v - 0.25, v + 0.25]) } else { ([u - 0.25, u + 0.25], [v + start, v + start + piece]) };
+                s.push(at.block(us, vs, [base - 0.5, base + height], TEMPLE_STONE, MOSS));
+                top = top.max(base + height);
+                start += piece;
+            }
+        }
+        for _ in 0..4 + (rng.next() * 5.0) as usize {
+            let (u, v) = (rng.range(-6.5, 6.5), rng.range(-6.5, 6.5));
+            if rng.next() < 0.3 {
+                // Toppled over
+                let along = rng.next() < 0.5;
+                let (us, vs) = if along { ([u - 1.5, u + 1.5], [v - 0.35, v + 0.35]) } else { ([u - 0.35, u + 0.35], [v - 1.5, v + 1.5]) };
+                s.push(at.block(us, vs, [base - 0.3, base + 0.4], TEMPLE_STONE, MOSS));
+            } else {
+                let height = rng.range(1.5, 4.0);
+                s.push(at.block([u - 0.45, u + 0.45], [v - 0.45, v + 0.45], [base + height - 0.3, base + height], TEMPLE_DARK, MOSS));
+                s.push(at.block([u - 0.35, u + 0.35], [v - 0.35, v + 0.35], [base - 0.5, base + height], TEMPLE_STONE, MOSS));
+                top = top.max(base + height);
+            }
+        }
+        s.push(at.block([-0.6, 0.6], [-0.9, 0.9], [base - 0.5, base + 0.8], TEMPLE_DARK, MOSS));
+        candle(features, at.point(0.2, -0.5, base + 0.8), rng);
+        skull(features, at.point(-0.1, 0.3, base + 0.8), rng);
+        (s, top)
+    }
+
+    /// Two pillars on the banks either side of a waterfall's lip, joined by a beam over the water,
+    /// with fires burning on top. `lip` is the middle of the lip and `flow` which way the river goes.
+    fn gateway(&self, lip: [f32; 3], flow: [f32; 2], rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let mut s = Vec::new();
+        let across = [-flow[1], flow[0]];
+        let side = |d: f32, z: f32| [lip[0] + across[0] * d, lip[1] + across[1] * d, z];
+        let (low, high) = (lip[2] - 6.0, lip[2] + 4.5);
+        for d in [-4.0, 4.0] {
+            s.push(Shape::capsule(side(d, high + 0.2), side(d, high + 0.2), 0.75, 0.75, TEMPLE_DARK, AIR, false));
+            s.push(Shape::capsule(side(d, high - 1.2), side(d, high - 0.9), 0.62, 0.62, TEMPLE_TEAL, TEMPLE_RED, false));
+            s.push(Shape::capsule(side(d, low), side(d, high), 0.55, 0.5, TEMPLE_STONE, MOSS, false));
+            candle(features, side(d, high + 0.9), rng);
+        }
+        s.push(Shape::capsule(side(-4.6, high - 0.2), side(4.6, high - 0.2), 0.45, 0.45, TEMPLE_DARK, TEMPLE_TEAL, false));
+        for d in [-1.6, 0.0, 1.6] {
+            skull(features, side(d, high + 0.25), rng);
+        }
+        (s, high + 1.0)
+    }
+
+    /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square. Some open
+    /// out onto the hillside, and glowing crystals grow on their floors here and there.
+    fn caves(&self, features: &mut Features) -> Vec<Object> {
+        const CAVE_CELL: f32 = 72.0;
+        // How far from where they start caves can wander
+        const REACH: f32 = 120.0;
+        let seed = self.settings.seed;
+        let sea_level = sea_level_m(&self.settings);
+        let (lo, hi) = (self.lo, self.hi);
+        let mut objects = Vec::new();
+        let first = [((lo[0] - REACH) / CAVE_CELL).floor() as i32, ((lo[1] - REACH) / CAVE_CELL).floor() as i32];
+        let last = [((hi[0] + REACH) / CAVE_CELL).ceil() as i32, ((hi[1] + REACH) / CAVE_CELL).ceil() as i32];
+        for cy in first[1]..last[1] {
+            for cx in first[0]..last[0] {
+                let r = hash3(cx as u32, cy as u32, seed ^ 0xca7e);
+                if unit(r) > 0.5 {
+                    continue;
+                }
+                let mut rng = Rng(hash(r));
+                let mut p = [(cx as f32 + rng.next()) * CAVE_CELL, (cy as f32 + rng.next()) * CAVE_CELL, 0.0];
+                let surface = height_at(&self.settings, p[0], p[1]);
+                if surface < sea_level + 3.0 {
+                    continue;
+                }
+                let mouth = rng.next() < 0.5;
+                p[2] = if mouth { surface - 0.5 } else { surface - rng.range(6.0, 14.0) };
+                let mut yaw = rng.next() * TAU;
+                let mut pitch: f32 = if mouth { -0.35 } else { 0.0 };
+                let mut radius = rng.range(1.2, 1.8);
+                let mut shapes = Vec::new();
+                let mut crystals = Vec::new();
+                for i in 0..30 + (rng.next() * 40.0) as usize {
+                    let next_radius = (radius + rng.range(-0.25, 0.25)).clamp(1.0, 2.4);
+                    let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
+                    let q = add(p, scale(dir, 1.6));
+                    shapes.push(Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve));
+                    if i % 9 == 4 {
+                        let at = [q[0] + rng.range(-0.5, 0.5), q[1] + rng.range(-0.5, 0.5), q[2] - next_radius * 0.8];
+                        for _ in 0..3 {
+                            let offset = [rng.range(-0.35, 0.35), rng.range(-0.35, 0.35), rng.range(0.0, 0.3)];
+                            crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
+                        }
+                        if self.inside(at[0], at[1]) {
+                            features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
+                        }
+                    }
+                    // Wander about, staying well under the ground, and never under the sea
+                    let depth = height_at(&self.settings, q[0], q[1]) - q[2];
+                    yaw += rng.range(-0.35, 0.35);
+                    let want = if depth < 4.0 && i > 4 { -0.3 } else if depth > 16.0 { 0.25 } else { rng.range(-0.15, 0.15) };
+                    pitch = (pitch * 0.7 + want * 0.3).clamp(-0.5, 0.5);
+                    p = q;
+                    radius = next_radius;
+                    if q[2] < sea_level - 2.0 {
+                        break;
+                    }
+                }
+                shapes.extend(crystals);
+                objects.push(Object::new(shapes, rng.0));
+            }
+        }
         objects
     }
 

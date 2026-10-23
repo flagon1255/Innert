@@ -1,0 +1,232 @@
+#version 460
+
+// Water flowing over the landscape. Every column of the main world holds some depth of water on
+// top of its ground, and water flows between neighboring columns through virtual pipes, pushed by
+// the difference in the height of the water (Mei et al. 2007, "Fast Hydraulic Erosion Simulation
+// and Visualization on GPU"). That fills pools until they spill over, sends rivers downhill and
+// over waterfalls, and carries waves. Heights are in voxels of the main world, times in seconds.
+// src\water.rs runs the stages in order, several flux and depth steps per frame.
+
+// Has to match the Stage enum in src\water.rs
+const uint FLUX = 0;
+const uint DEPTH = 1;
+const uint SURFACE = 2;
+const uint BLOCKS = 3;
+
+// Has to match WATER_BLOCK in shaders\traverse.comp
+const int BLOCK = 8;
+
+// How much of last step's flow carries on, which settles waves down over a couple of seconds
+const float DAMPING = 0.996;
+// Water shallower than this is drawn as dry ground
+const float MIN_DEPTH = 0.05;
+// How far out from a ledge, in columns, water pouring off it can still be falling
+const int FALL_REACH = 12;
+// How fast falling water spreads out, in meters a second, so it gets thicker as it falls
+const float FALL_SPREAD = 0.9;
+// Falling water is at least this thick, in meters, however little goes over
+const float FALL_THICKNESS = 0.3;
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    // Water poured in or scooped out this step: xy column, z radius in columns, w depth to add in the
+    // middle, less further out
+    vec4 brush;
+    // Something wading through the water: xy column, zw velocity in columns per second
+    vec4 wake;
+    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter
+    vec4 params;
+    // x: stage, y: how many springs
+    uvec4 info;
+} pc;
+
+// Top of the ground in each column, which never changes
+layout(set = 0, binding = 0, r32f) readonly uniform image2D groundImage;
+layout(set = 0, binding = 1, r32f) uniform image2D depthImage;
+// How much water flows out of each column per second towards -x, +x, -y and +y
+layout(set = 0, binding = 2, rgba32f) uniform image2D fluxImage;
+// For drawing, see traverse.comp: x the top of the water lying on the ground (below the ground for
+// none), y how white it is, and z to w water falling through the air, w < z for none
+layout(set = 0, binding = 3, rgba32f) uniform image2D surfaceImage;
+// The highest top of the water in each block of BLOCK x BLOCK columns, -1 for none
+layout(set = 0, binding = 4, r32f) uniform image2D blockImage;
+// Where water wells up, rivers' springs and inside buildings: xy column, z volume per second,
+// w radius in columns. info.y of them.
+layout(set = 0, binding = 5) readonly buffer Springs {
+    vec4 springs[];
+};
+
+const ivec2 DIRS[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+// The flux component a neighbor in DIRS[i] uses to send water back this way
+const int OPPOSITE[4] = int[4](1, 0, 3, 2);
+
+bool inside(ivec2 c, ivec2 size) {
+    return all(greaterThanEqual(c, ivec2(0))) && all(lessThan(c, size));
+}
+
+float height(ivec2 c) {
+    return imageLoad(groundImage, c).r + imageLoad(depthImage, c).r;
+}
+
+// How hard water is pushed through each pipe, from how much higher it stands than its neighbor's
+void flux(ivec2 c, ivec2 size) {
+    float dt = pc.params.x;
+    float gravity = 9.8 * pc.params.z;
+    float depth = imageLoad(depthImage, c).r;
+    float h = imageLoad(groundImage, c).r + depth;
+    vec4 f = imageLoad(fluxImage, c);
+    for (int i = 0; i < 4; i++) {
+        ivec2 n = c + DIRS[i];
+        f[i] = inside(n, size) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
+    }
+
+    // Whatever wades through pushes the water in front of it along, making a bow wave
+    vec2 offset = vec2(c) + 0.5 - pc.wake.xy;
+    float reach = 0.6 * pc.params.z;
+    float closeness = 1 - length(offset) / reach;
+    if (closeness > 0 && length(pc.wake.zw) > 0) {
+        for (int i = 0; i < 4; i++)
+        f[i] = max(f[i], closeness * depth * max(dot(vec2(DIRS[i]), pc.wake.zw), 0) * 1.5);
+    }
+
+    // Never send away more water than there is
+    float total = f.x + f.y + f.z + f.w;
+    if (total * dt > depth)
+    f *= depth / (total * dt);
+    imageStore(fluxImage, c, f);
+}
+
+// Moves the water along the pipes, and adds and takes away water
+void depth(ivec2 c, ivec2 size) {
+    float dt = pc.params.x;
+    vec4 f = imageLoad(fluxImage, c);
+    float inflow = 0;
+    for (int i = 0; i < 4; i++) {
+        ivec2 n = c + DIRS[i];
+        if (inside(n, size))
+        inflow += imageLoad(fluxImage, n)[OPPOSITE[i]];
+    }
+    float d = imageLoad(depthImage, c).r + dt * (inflow - (f.x + f.y + f.z + f.w));
+
+    vec2 center = vec2(c) + 0.5;
+    for (uint s = 0; s < pc.info.y; s++) {
+        vec4 spring = springs[s];
+        if (distance(center, spring.xy) < spring.w)
+        d += dt * spring.z / (3.14159265 * spring.w * spring.w);
+    }
+    // A smooth mound or dip rather than a cylinder, which would ring with ripples
+    float from_brush = distance(center, pc.brush.xy);
+    if (pc.brush.z > 0 && from_brush < pc.brush.z)
+    d += pc.brush.w * (0.5 + 0.5 * cos(3.14159265 * from_brush / pc.brush.z));
+
+    // The edges of the world are the open sea, which takes in rivers and fills anything below it
+    float sea = pc.params.y;
+    if (sea > 0 && (any(equal(c, ivec2(0))) || any(equal(c, size - 1))))
+    d = sea - imageLoad(groundImage, c).r;
+
+    // Thin films left behind dry up
+    if (d < 0.02)
+    d -= dt * 0.01;
+    imageStore(depthImage, c, vec4(max(d, 0)));
+}
+
+// What traverse.comp draws: the top of the water lying in a column, how white it is, and any water
+// falling through it
+void surface(ivec2 c, ivec2 size) {
+    float ground = imageLoad(groundImage, c).r;
+    float d = imageLoad(depthImage, c).r;
+    float top = d > MIN_DEPTH ? ground + d : -1;
+    vec4 f = imageLoad(fluxImage, c);
+
+    // Fast water churns white: from about two meters a second
+    float speed = (f.x + f.y + f.z + f.w) / max(d, 1) / pc.params.z;
+    float foam = smoothstep(2.0, 5.0, speed);
+
+    // Water pouring off a ledge falls as a thick band: it leaves the ledge as fast as it was flowing,
+    // so it arcs out from it, and it flares out as it falls. Its outer edge leaves the ledge at the
+    // speed of the water, the inner edge slower, and the band starts out as thick as the water going
+    // over, or FALL_THICKNESS. Each column out from the ledge holds the part of the band above it,
+    // and the ribbons pouring off neighboring bits of the ledge merge into one sheet.
+    float level = max(top, ground);
+    float gravity = 9.8 * pc.params.z;
+    float fall_bottom = 1e9;
+    float fall_top = -1;
+    // Falls only ever come off wet ledges, so dry land is skipped. The blocks are last frame's.
+    bool near_water = false;
+    ivec2 block_count = (size + BLOCK - 1) / BLOCK;
+    for (int by = -1; by <= 1; by++) {
+        for (int bx = -1; bx <= 1; bx++) {
+            near_water = near_water || imageLoad(blockImage, clamp(c / BLOCK + ivec2(bx, by), ivec2(0), block_count - 1)).r >= 0;
+        }
+    }
+    for (int i = 0; i < 4 && near_water; i++) {
+        ivec2 across = ivec2(DIRS[i].y, DIRS[i].x);
+        for (int j = -1; j <= 1; j++) {
+            for (int k = 1; k <= FALL_REACH; k++) {
+                ivec2 lip = c - DIRS[i] * k + across * j;
+                if (!inside(lip, size) || !inside(lip + DIRS[i], size))
+                break;
+                // A ledge: ground that drops away towards this column, with water flowing over it
+                float lip_ground = imageLoad(groundImage, lip).r;
+                if (lip_ground < imageLoad(groundImage, lip + DIRS[i]).r + 1.0)
+                continue;
+                float over = imageLoad(fluxImage, lip)[i];
+                if (over < 1.0)
+                break;
+                float lip_depth = max(imageLoad(depthImage, lip).r, FALL_THICKNESS * pc.params.z);
+                float lip_top = lip_ground + lip_depth;
+                float v = max(over / lip_depth, 0.5);
+                // When the outer edge of the band gets out to this column, and when the inner edge
+                // has gone past it
+                float t_outer = max(float(k - 1) - lip_depth, 0) / (v + FALL_SPREAD * pc.params.z);
+                float t_inner = float(k) / (0.5 * v);
+                float upper = lip_top - 0.5 * gravity * t_outer * t_outer;
+                float lower = lip_top - 0.5 * gravity * t_inner * t_inner;
+                if (upper <= level)
+                break;
+                fall_top = max(fall_top, upper);
+                fall_bottom = min(fall_bottom, max(lower, level));
+                foam = 1;
+                // Where it lands it throws up a mound of white water
+                if (lower <= level)
+                fall_top = max(fall_top, level + min(0.15 * (lip_ground - level), 0.5 * pc.params.z));
+                break;
+            }
+        }
+    }
+    imageStore(surfaceImage, c, vec4(top, foam, fall_bottom, fall_top));
+}
+
+void blocks(ivec2 b, ivec2 size) {
+    float highest = -1;
+    for (int y = 0; y < BLOCK; y++) {
+        for (int x = 0; x < BLOCK; x++) {
+            ivec2 c = b * BLOCK + ivec2(x, y);
+            if (inside(c, size)) {
+                vec4 s = imageLoad(surfaceImage, c);
+                highest = max(highest, max(s.x, s.w));
+            }
+        }
+    }
+    imageStore(blockImage, b, vec4(highest));
+}
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(depthImage);
+    uint stage = pc.info.x;
+    if (stage == BLOCKS) {
+        if (all(lessThan(c, (size + BLOCK - 1) / BLOCK)))
+        blocks(c, size);
+        return;
+    }
+    if (!inside(c, size))
+    return;
+    if (stage == FLUX)
+    flux(c, size);
+    else if (stage == DEPTH)
+    depth(c, size);
+    else
+    surface(c, size);
+}

@@ -1,6 +1,6 @@
 use egui_winit_vulkano::{
     Gui, GuiConfig,
-    egui::{self, Color32},
+    egui::{self, Align2, Color32, RichText},
 };
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3, Vector4};
 use std::path::PathBuf;
@@ -12,7 +12,10 @@ use std::{
 };
 use vulkano::{
     Validated, Version, VulkanError, VulkanLibrary,
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
+    buffer::{
+        Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
+        allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo},
+    },
     command_buffer::{
         AutoCommandBufferBuilder, BlitImageInfo, ClearColorImageInfo, CommandBufferUsage,
         CopyBufferInfo, CopyBufferToImageInfo, CopyImageToBufferInfo, PrimaryAutoCommandBuffer,
@@ -51,15 +54,21 @@ use winit::{
 };
 use winit_input_helper::WinitInputHelper;
 
+mod animals;
 mod camera;
+mod game;
 mod hot_reload;
 mod player;
 mod voxelize;
+mod water;
 mod worldgen;
 
+use crate::animals::AnimalInstance;
 use crate::camera::Camera;
+use crate::game::Game;
 use crate::hot_reload::HotReloadComputePipeline;
 use crate::player::Player;
+use crate::water::Water;
 use crate::worldgen::{Terrain, TerrainSettings, World};
 
 const INITIAL_VOXEL_RESOLUTION: u32 = 24;
@@ -76,6 +85,8 @@ const INITIAL_WINDOW_RESOLUTION: PhysicalSize<u32> = PhysicalSize::new(960, 960)
 // While moving, fewer keeps old frames from smearing across the new ones.
 const STILL_HISTORY: u32 = 4096;
 const MOVING_HISTORY: u32 = 12;
+// While animals are about even a still view keeps changing, as their shadows move over the ground
+const ANIMATED_HISTORY: u32 = 32;
 
 // Has to match the FLAG_* constants in shaders\traverse.comp
 const FLAG_SHADOWS: u32 = 1;
@@ -83,6 +94,7 @@ const FLAG_AO: u32 = 2;
 const FLAG_GI: u32 = 4;
 const FLAG_SUNBEAMS: u32 = 8;
 const FLAG_GRASS: u32 = 16;
+const FLAG_WATER: u32 = 32;
 
 // Has to match shaders\traverse.comp
 const SUN_MAP_MODE: u32 = 100;
@@ -188,11 +200,13 @@ fn voxels_to_camera(position: Vector3<f64>, world_size: [u32; 3]) -> Vector3<f64
     (position - size * 0.5) / size.max()
 }
 
-/// The world in voxels, and for generated landscapes what it was built from, to build finer pieces of later
-fn build_world(scene: Scene, terrain: &TerrainSettings, voxel_resolution: u32) -> (World, Option<Arc<Terrain>>) {
+/// The world in voxels, and for generated landscapes what it was built from, to build finer pieces
+/// of later. A landscape is endless, and the world holds the piece of it whose corner is at
+/// `origin`, in voxels from the corner of the whole landscape.
+fn build_world(scene: Scene, terrain: &TerrainSettings, voxel_resolution: u32, origin: [i64; 2], rivers: &RiverCache) -> (World, Option<Arc<Terrain>>) {
     match scene {
         Scene::Terrain => {
-            let (landscape, world) = worldgen::generate_terrain(terrain);
+            let (landscape, world) = worldgen::generate_terrain(terrain, origin, rivers);
             (world, Some(Arc::new(landscape)))
         }
         Scene::Model(model) => {
@@ -705,6 +719,18 @@ fn get_voxel_set(
     DescriptorSet::new(descriptor_set_allocator.clone(), layout.clone(), writes, []).unwrap()
 }
 
+// Hides the cursor and keeps it in the window while playing, so the mouse turns the camera
+fn grab_cursor(window: &Window, grab: bool) {
+    if grab {
+        let _ = window
+            .set_cursor_grab(CursorGrabMode::Confined)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked));
+    } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+    }
+    window.set_cursor_visible(!grab);
+}
+
 fn load_icon(icon: &[u8]) -> Icon {
     let (icon_rgba, icon_width, icon_height) = {
         let image = image::load_from_memory(icon).unwrap().to_rgba8();
@@ -727,6 +753,7 @@ struct App {
     render_pipeline: HotReloadComputePipeline,
     post_pipeline: HotReloadComputePipeline,
     resample_pipeline: HotReloadComputePipeline,
+    water_pipeline: HotReloadComputePipeline,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
     sun_map: Arc<ImageView>,
@@ -777,6 +804,35 @@ struct App {
     last_view: Option<ViewKey>,
     reset_accum: bool,
 
+    // Animals, food and what the player carries
+    game: Game,
+    animals_on: bool,
+    // Every animal's model, see animals::build_models()
+    animal_models: Subbuffer<[u32]>,
+    // Where the animals are this frame gets uploaded from here
+    instance_allocator: SubbufferAllocator,
+    // For things that move on their own, like waterfalls
+    start_time: Instant,
+    // Flowing water, simulated on the GPU
+    water: Water,
+    last_frame: Instant,
+    // Where the player stood last update, for the wake they push through water
+    last_feet: Option<Vector3<f64>>,
+    wake: Option<([f64; 2], [f64; 2])>,
+    // Set by scripts in screenshot runs, see run_script(): the player walks straight ahead
+    scripted_walk: bool,
+    // Which waterfall "Visit a Waterfall" went to last
+    waterfall_index: usize,
+
+    menu_open: bool,
+    // Whether the game has started, so the menu says Resume instead of Play
+    started: bool,
+    show_settings: bool,
+    inventory_open: bool,
+    // Set from the menu, done at the start of the next frame
+    generate_requested: bool,
+    waterfall_requested: bool,
+
     screenshot_requested: bool,
     capture: Option<Capture>,
 
@@ -807,9 +863,13 @@ struct RenderContext {
 }
 
 /// Set by `--screenshot <path> [--frames <n>]`: render n frames, save the last one, print timings and exit.
+/// `--shots 10,50` also saves those frames, next to the last one with the frame number added to the
+/// name, and `--script <name>` plays through one of App::run_script()'s scripts meanwhile.
 struct Capture {
     path: PathBuf,
     frames: u32,
+    shots: Vec<usize>,
+    script: Option<String>,
     frame_times: Vec<Duration>,
     last_frame: Option<Instant>,
 }
@@ -825,6 +885,8 @@ impl Capture {
         Some(Capture {
             path: PathBuf::from(value("--screenshot")?),
             frames: value("--frames").and_then(|n| n.parse().ok()).unwrap_or(64),
+            shots: value("--shots").map_or(Vec::new(), |s| s.split(',').filter_map(|n| n.trim().parse().ok()).collect()),
+            script: value("--script").cloned(),
             frame_times: Vec::new(),
             last_frame: None,
         })
@@ -967,6 +1029,8 @@ impl App {
             HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("post.comp"));
         let resample_pipeline =
             HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("resample.comp"));
+        let water_pipeline =
+            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("water.comp"));
 
         let sun_map = get_history_image_view(
             memory_allocator.clone(),
@@ -1016,10 +1080,42 @@ impl App {
 
         // Start on foot, except for screenshot runs which need the camera to stay put
         let capture = Capture::from_args();
-        let walk = scene.is_terrain() && flag("walk", capture.is_none());
-        let player = walk.then(|| Player::on_dry_ground(camera_to_voxels(camera.position, world.size), &world));
+        let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
+        let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs);
+        water.active &= flag("water", true);
+        let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
-        App {
+        let walk = scene.is_terrain() && flag("walk", capture.is_none());
+        let player = walk.then(|| Player::on_dry_ground(camera_to_voxels(camera.position, world.size), &world, &water_level));
+
+        let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
+        let game = Game::new(&world, &water_level, terrain.seed, start);
+        let animal_models = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            animals::build_models(),
+        )
+        .unwrap();
+        let instance_allocator = SubbufferAllocator::new(
+            memory_allocator.clone(),
+            SubbufferAllocatorCreateInfo {
+                buffer_usage: BufferUsage::STORAGE_BUFFER,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+        );
+        let menu_open = capture.is_none() && flag("menu", true);
+        // `--set waterfall=2` starts looking at the second waterfall
+        let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
+
+        let mut app = App {
             instance,
             device,
             queue,
@@ -1031,6 +1127,7 @@ impl App {
             render_pipeline,
             post_pipeline,
             resample_pipeline,
+            water_pipeline,
 
             sun_map,
             sun_map_for: None,
@@ -1057,23 +1154,43 @@ impl App {
             still_frames: 0,
             last_camera_view: None,
 
-            // Low and ahead to one side of the starting view, so things are backlit
-            sun_azimuth: setting("sun_azimuth").and_then(|v| v.parse().ok()).unwrap_or(170.0),
-            sun_elevation: setting("sun_elevation").and_then(|v| v.parse().ok()).unwrap_or(18.0),
+            // Bright, clear daylight from ahead and to one side of the starting view, with little
+            // haze, so the voxels read crisply. Grass is made of voxels rather than triangles.
+            sun_azimuth: setting("sun_azimuth").and_then(|v| v.parse().ok()).unwrap_or(150.0),
+            sun_elevation: setting("sun_elevation").and_then(|v| v.parse().ok()).unwrap_or(38.0),
             shadows: flag("shadows", true),
             ambient_occlusion: flag("ao", true),
             bounce_light: flag("bounce", true),
             sunbeams: flag("sunbeams", true),
             denoise: flag("denoise", true),
             color_grade: flag("grade", true),
-            bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(0.5),
-            haze: setting("haze").and_then(|v| v.parse().ok()).unwrap_or(0.007),
-            grass: flag("grass", true),
+            bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(0.3),
+            haze: setting("haze").and_then(|v| v.parse().ok()).unwrap_or(0.002),
+            grass: flag("grass", false),
 
             frame: 0,
             accum_count: 0,
             last_view: None,
             reset_accum: true,
+
+            game,
+            animals_on: flag("animals", true),
+            animal_models,
+            instance_allocator,
+            start_time: Instant::now(),
+            water,
+            last_frame: Instant::now(),
+            last_feet: None,
+            wake: None,
+            scripted_walk: false,
+            waterfall_index: 0,
+
+            menu_open,
+            started: !menu_open,
+            show_settings: false,
+            inventory_open: false,
+            generate_requested: false,
+            waterfall_requested: false,
 
             screenshot_requested: false,
             capture,
@@ -1085,7 +1202,178 @@ impl App {
             fps: 0,
 
             rcx: None,
+        };
+        if let Some(n) = visit_waterfall {
+            app.waterfall_index = n - 1;
+            app.visit_waterfall();
         }
+        // For checking how an animal looks: `--set view_animal=bear` looks at the nearest one
+        if let Some(name) = setting("view_animal")
+            && let Some((position, height)) = app.game.find_animal(name, camera_to_voxels(app.camera.position, app.world.size))
+        {
+            let vpm = app.world.voxels_per_meter as f64;
+            let target = position + Vector3::new(0.0, 0.0, height * vpm);
+            let eye = target + Vector3::new(1.0, 1.4, 0.6).normalize() * (4.0 * height + 0.6) * vpm;
+            app.look_from(eye, target);
+        }
+        // For checking how water splashes: `--set pour=4` tips 4 cubic meters out where the camera looks
+        if let Some(cubic_meters) = setting("pour").and_then(|v| v.parse::<f64>().ok()) {
+            let vpm = app.world.voxels_per_meter as f64;
+            let eye = camera_to_voxels(app.camera.position, app.world.size);
+            let look = (app.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
+            if let Some((at, _)) = app.water.raycast(&app.world, eye, look, 200.0 * vpm) {
+                app.water.pour(at.x, at.y, 1.0 * vpm, cubic_meters * vpm.powi(3));
+            }
+        }
+        app
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if let Some(rcx) = &self.rcx {
+            grab_cursor(&rcx.window, focused);
+        }
+    }
+
+    /// Builds the world picked in the settings, in place of the current one
+    fn generate_world(&mut self) {
+        let (world, landscape) = build_world(self.scene, &self.terrain, self.future_voxel_resolution);
+
+        let max_bytes = self.device.physical_device().properties().max_storage_buffer_range as usize;
+        if world.bricks.len() * 4 > max_bytes {
+            self.world_error = Some(format!(
+                "That world needs {} MB of bricks but your GPU allows {} MB. Try fewer voxels per metre or a smaller world.",
+                world.bricks.len() * 4 / (1024 * 1024),
+                max_bytes / (1024 * 1024)
+            ));
+            return;
+        }
+        self.voxel_set = get_voxel_set(
+            self.memory_allocator.clone(),
+            self.command_buffer_allocator.clone(),
+            self.descriptor_set_allocator.clone(),
+            &self.render_pipeline,
+            &self.queue,
+            1,
+            &world,
+        );
+        let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
+        self.water = Water::new(
+            &self.memory_allocator,
+            &self.command_buffer_allocator,
+            &self.descriptor_set_allocator,
+            &self.queue,
+            &self.water_pipeline,
+            &world,
+            &springs,
+        );
+        self.world = world;
+        self.landscape = landscape;
+        self.near = None;
+        self.world_error = None;
+        self.sun_map_for = None;
+
+        if self.scene.is_terrain() != self.loaded_scene.is_terrain() {
+            self.camera = self.scene.initial_camera();
+            self.move_speed = self.scene.initial_move_speed();
+        }
+        let water = &self.water;
+        let water_level = |x: f64, y: f64| water.surface_at(x, y);
+        // Land on the new ground
+        if self.player.is_some() {
+            self.player = Some(Player::on_dry_ground(camera_to_voxels(self.camera.position, self.world.size), &self.world, &water_level));
+        }
+        if self.scene.is_terrain() {
+            let start = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+            self.game.populate(&self.world, &water_level, self.terrain.seed, start);
+        } else {
+            self.game.clear();
+        }
+        self.loaded_scene = self.scene;
+        self.reset_accum = true;
+    }
+
+    /// Flies over to look at one of the waterfalls, a different one each time
+    fn visit_waterfall(&mut self) {
+        let Some(landscape) = &self.landscape else {
+            return;
+        };
+        let falls = landscape.waterfalls();
+        if falls.is_empty() {
+            return;
+        }
+        let (top, flow) = falls[self.waterfall_index % falls.len()];
+        self.waterfall_index += 1;
+        let vpm = self.world.voxels_per_meter as f64;
+        let target = Vector3::new(top[0] as f64, top[1] as f64, top[2] as f64 - 1.5) * vpm;
+        let flow = flow.map(f64::from);
+        let heading = flow[1].atan2(flow[0]);
+        // Downstream of it, somewhere in the open with nothing in the way
+        let mut eye = target + Vector3::new(flow[0] * 9.0, flow[1] * 9.0, 3.0) * vpm;
+        'search: for distance in [9.0, 12.0, 7.0, 15.0] {
+            for turn in [0.0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2] {
+                for height in [2.5, 4.0, 6.0] {
+                    let angle = heading + turn;
+                    let candidate = target + Vector3::new(angle.cos() * distance, angle.sin() * distance, height) * vpm;
+                    if self.clear_view(candidate, target) {
+                        eye = candidate;
+                        break 'search;
+                    }
+                }
+            }
+        }
+        self.look_from(eye, target);
+    }
+
+    /// Fills the bucket from the water the camera looks at
+    fn scoop_water(&mut self, eye: Vector3<f64>, look: Vector3<f64>) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let Some((at, true)) = self.water.raycast(&self.world, eye, look, game::REACH * vpm) else {
+            self.game.say("Click on water to fill the bucket.");
+            return;
+        };
+        let radius = 1.2 * vpm;
+        let available = self.water.volume_near(at.x, at.y, radius) / vpm.powi(3);
+        let taken = self.game.bucket_room().min(available * 0.8);
+        if taken > 0.01 {
+            self.water.pour(at.x, at.y, radius, -taken * vpm.powi(3));
+            self.game.fill_bucket(taken);
+        }
+    }
+
+    /// Tips the bucket out where the camera looks, or in front of the player
+    fn pour_water(&mut self, eye: Vector3<f64>, look: Vector3<f64>) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let at = self
+            .water
+            .raycast(&self.world, eye, look, game::REACH * vpm)
+            .map_or(eye + look * 2.0 * vpm, |(p, _)| p);
+        let water = self.game.empty_bucket();
+        if water > 0.0 {
+            self.water.pour(at.x, at.y, 1.5 * vpm, water * vpm.powi(3));
+        }
+    }
+
+    /// Whether there's nothing at all between two points in voxels, not even leaves or water,
+    /// other than right by the second
+    fn clear_view(&self, from: Vector3<f64>, to: Vector3<f64>) -> bool {
+        let vpm = self.world.voxels_per_meter as f64;
+        let distance = (to - from).norm();
+        let steps = (distance * 2.0) as usize;
+        (0..steps).all(|i| {
+            let p = from + (to - from) * (i as f64 / steps as f64);
+            (p - to).norm() < 1.5 * vpm
+                || self.world.material_at(p.x as i64, p.y as i64, p.z as i64) == worldgen::material::AIR
+                    && p.z >= self.water.surface_at(p.x, p.y)
+        })
+    }
+
+    /// Puts the camera at `eye` looking at `target`, both in voxels, flying so it stays there
+    fn look_from(&mut self, eye: Vector3<f64>, target: Vector3<f64>) {
+        self.camera.position = voxels_to_camera(eye, self.world.size);
+        self.camera.look_at(voxels_to_camera(target, self.world.size));
+        self.player = None;
+        self.reset_accum = true;
     }
 
     fn update(&mut self, event_loop: &ActiveEventLoop) {
@@ -1109,7 +1397,67 @@ impl App {
         // Screenshot runs from the command line ignore input, so they always show the same view
         let interactive = self.capture.is_none();
 
-        if interactive && self.input.key_pressed(KeyCode::KeyF) {
+        if interactive && self.input.key_pressed(KeyCode::Escape) {
+            if self.inventory_open {
+                self.inventory_open = false;
+                self.set_focus(true);
+            } else if self.menu_open && self.started {
+                self.menu_open = false;
+                self.set_focus(true);
+            } else {
+                self.menu_open = true;
+                self.set_focus(false);
+            }
+        }
+        let playing = interactive && !self.menu_open;
+        if playing && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
+            self.inventory_open = !self.inventory_open;
+            self.set_focus(!self.inventory_open);
+        }
+        if playing && self.input.key_pressed(KeyCode::F1) {
+            self.show_settings = !self.show_settings;
+        }
+
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
+        if playing && !self.focused && !self.inventory_open && self.input.mouse_pressed(MouseButton::Left) {
+            self.set_focus(true);
+        } else if playing && self.focused {
+            let bucket = self.game.holding_bucket() && !self.game.has_target();
+            if self.input.mouse_pressed(MouseButton::Left) {
+                if bucket {
+                    self.scoop_water(eye, look);
+                } else {
+                    self.game.primary(eye);
+                }
+            }
+            if self.input.key_pressed(KeyCode::KeyE) {
+                self.game.interact(eye);
+            }
+            if self.input.mouse_pressed(MouseButton::Right) {
+                if self.game.holding_bucket() {
+                    self.pour_water(eye, look);
+                } else {
+                    self.game.eat_selected();
+                }
+            }
+            let digits = [
+                KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5,
+                KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
+            ];
+            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)) {
+                self.game.select(slot);
+            }
+        }
+
+        // The world stands still while the menu is open
+        if !self.menu_open && self.animals_on && self.loaded_scene.is_terrain() {
+            let feet = self.player.as_ref().map(|p| p.position);
+            let water = &self.water;
+            self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, eye, look, delta_time.min(0.1));
+        }
+
+        if playing && self.input.key_pressed(KeyCode::KeyF) {
             self.player = match self.player {
                 Some(_) => None,
                 None => Some(Player::new(camera_to_voxels(self.camera.position, self.world.size), &self.world)),
@@ -1123,25 +1471,40 @@ impl App {
             let forward = Vector2::new(-yaw.sin(), yaw.cos());
             let right = Vector2::new(yaw.cos(), yaw.sin());
             let mut wish = forward * (t(KeyCode::KeyW) - t(KeyCode::KeyS)) + right * (t(KeyCode::KeyD) - t(KeyCode::KeyA));
+            if self.scripted_walk {
+                wish = forward;
+            }
             if wish.norm() > 1.0 {
                 wish.normalize_mut();
             }
             let jump = t(KeyCode::Space) > 0.0;
             let sprint = self.focused && self.input.held_shift();
             // Long hitches, like generating a world, shouldn't fling the player through the floor
-            player.update(&self.world, wish, jump, sprint, delta_time.min(0.05));
+            let water = &self.water;
+            player.update(&self.world, &|x, y| water.surface_at(x, y), wish, jump, sprint, delta_time.min(0.05));
             self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
-        } else if self.focused && interactive {
-            let v = Vector3::new(KeyCode::KeyD, KeyCode::KeyW, KeyCode::KeyQ).map(t)
-                - Vector3::new(KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyE).map(t);
 
-            let sprint = if self.input.held_shift() { 4.0 } else { 1.0 };
-            self.camera.position += (self.camera.rotation_matrix()
-                * v.push(0.0)
-                * delta_time
-                * self.move_speed
-                * sprint)
-                .xyz();
+            // Wading through water pushes it along
+            let feet = player.position;
+            let moved = self.last_feet.map_or(Vector3::zeros(), |last| (feet - last) / delta_time.max(1e-3));
+            self.last_feet = Some(feet);
+            let wading = self.water.depth_at(feet.x, feet.y) > 0.1 * self.world.voxels_per_meter as f64;
+            self.wake = (wading && !self.menu_open).then_some(([feet.x, feet.y], [moved.x, moved.y]));
+        } else {
+            self.last_feet = None;
+            self.wake = None;
+            if self.focused && interactive {
+                let v = Vector3::new(KeyCode::KeyD, KeyCode::KeyW, KeyCode::KeyQ).map(t)
+                    - Vector3::new(KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyE).map(t);
+
+                let sprint = if self.input.held_shift() { 4.0 } else { 1.0 };
+                self.camera.position += (self.camera.rotation_matrix()
+                    * v.push(0.0)
+                    * delta_time
+                    * self.move_speed
+                    * sprint)
+                    .xyz();
+            }
         }
 
         if self.focused && interactive {
@@ -1176,23 +1539,95 @@ impl App {
         self.still_frames = if self.last_camera_view == Some(view) { self.still_frames + 1 } else { 0 };
         self.last_camera_view = Some(view);
 
-        let rcx = self.rcx.as_mut().unwrap();
-
-        if interactive && self.input.mouse_pressed(MouseButton::Left) {
-            self.focused = true;
-            rcx.window
-                .set_cursor_grab(CursorGrabMode::Confined)
-                .unwrap();
-            rcx.window.set_cursor_visible(false);
-        }
         if self.input.key_pressed(KeyCode::F12) {
             self.screenshot_requested = true;
         }
-        if self.input.key_pressed(KeyCode::Escape) {
-            self.focused = false;
-            rcx.window.set_cursor_grab(CursorGrabMode::None).unwrap();
-            rcx.window.set_cursor_visible(true);
+        self.run_script();
+    }
+
+    /// Plays through things that need input, for checking them in screenshot runs: `--script bucket`
+    /// scoops up water and pours it back, `wade` walks through a lake and `hunt` hits a squirrel.
+    /// What happens is printed.
+    fn run_script(&mut self) {
+        let Some(capture) = &self.capture else {
+            return;
+        };
+        let Some(script) = capture.script.clone() else {
+            return;
+        };
+        let frame = capture.frame_times.len();
+        let vpm = self.world.voxels_per_meter as f64;
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
+        let before = self.game.last_message().map(str::to_owned);
+        match (script.as_str(), frame) {
+            ("bucket", 1) => self.stand_in_water(0.6, false),
+            ("wade", 1) => self.stand_in_water(0.5, true),
+            ("bucket", 40) => {
+                let depth = |w: &Water| w.raycast(&self.world, eye, look, game::REACH * vpm).map(|(p, _)| w.depth_at(p.x, p.y) / vpm);
+                println!("frame {frame}: water depth where looking {:?} m, bucket {:.2} m³", depth(&self.water), self.game.bucket());
+                self.scoop_water(eye, look);
+                println!("frame {frame}: scooped, bucket now {:.2} m³", self.game.bucket());
+            }
+            ("bucket", 160) => {
+                self.pour_water(eye, look);
+                println!("frame {frame}: poured, bucket now {:.2} m³", self.game.bucket());
+            }
+            ("wade", 2) => self.scripted_walk = true,
+            ("hunt", 20) => {
+                println!("frame {frame}: aiming at something: {}", self.game.has_target());
+                self.game.primary(eye);
+                println!("frame {frame}: carrying {}", self.game.carried());
+            }
+            ("hunt", 40) => {
+                self.game.interact(eye);
+                println!("frame {frame}: carrying {}", self.game.carried());
+            }
+            _ => {}
         }
+        if let Some(player) = &self.player
+            && script == "wade"
+            && frame % 60 == 0
+        {
+            let p = player.position;
+            println!("frame {frame}: player at water depth {:.2} m, making a wake: {}", self.water.depth_at(p.x, p.y) / vpm, self.wake.is_some());
+        }
+        let after = self.game.last_message().map(str::to_owned);
+        if after != before
+            && let Some(message) = after
+        {
+            println!("frame {frame}: message \"{message}\"");
+        }
+    }
+
+    /// Puts the camera just above some water near where it is, looking down at it, `deep` meters
+    /// deep at least. With `walk`, as a player standing in it.
+    fn stand_in_water(&mut self, deep: f64, walk: bool) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let start = camera_to_voxels(self.camera.position, self.world.size);
+        for ring in 0..200 {
+            let count = (ring * 6).max(1);
+            for i in 0..count {
+                let angle = i as f64 / count as f64 * TAU;
+                let (x, y) = (start.x + angle.cos() * ring as f64 * vpm, start.y + angle.sin() * ring as f64 * vpm);
+                if self.water.depth_at(x, y) < deep * vpm {
+                    continue;
+                }
+                let surface = self.water.surface_at(x, y);
+                let eye = Vector3::new(x, y, surface + 1.7 * vpm);
+                if walk {
+                    self.player = Some(Player::new(eye, &self.world));
+                    self.camera.rotation.x = -0.3;
+                } else {
+                    self.player = None;
+                    self.camera.position = voxels_to_camera(eye, self.world.size);
+                    self.camera.rotation.x = -0.9;
+                }
+                println!("standing in {:.2} m of water, {:.0} m from the start", self.water.depth_at(x, y) / vpm, ring);
+                return;
+            }
+        }
+        println!("no water near the start");
     }
 
     // Swaps in a finished box of fine detail, and starts building a new one once the camera
@@ -1264,12 +1699,21 @@ impl App {
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
+        if self.generate_requested {
+            self.generate_requested = false;
+            self.generate_world();
+        }
+        if self.waterfall_requested {
+            self.waterfall_requested = false;
+            self.visit_waterfall();
+        }
         if self.render_pipeline.maybe_reload() {
             self.reset_accum = true;
             self.sun_map_for = None;
         }
         self.post_pipeline.maybe_reload();
         self.resample_pipeline.maybe_reload();
+        self.water_pipeline.maybe_reload();
         self.update_near_detail();
 
         let rcx = self.rcx.as_mut().unwrap();
@@ -1343,9 +1787,96 @@ impl App {
             rcx.recreate_swapchain = true;
         }
 
+        // What the menu and inventory ask for, done once the GUI is drawn
+        let mut focus_change = None;
+        let mut quit = false;
+
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
 
+            if self.menu_open {
+                // Dim the world behind the menu a little
+                ctx.layer_painter(egui::LayerId::background())
+                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
+                egui::Area::new(egui::Id::new("menu"))
+                    .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(&ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(Color32::from_black_alpha(180))
+                            .corner_radius(18.0)
+                            .inner_margin(36.0)
+                            .show(ui, |ui| {
+                                ui.set_width(340.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(RichText::new("INNERT").size(60.0).strong().color(Color32::WHITE));
+                                    ui.label(RichText::new("a little voxel wilderness").size(15.0).color(Color32::from_gray(200)));
+                                    ui.add_space(26.0);
+
+                                    let button = |ui: &mut egui::Ui, text: &str| {
+                                        ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).size(20.0)))
+                                    };
+                                    if button(ui, if self.started { "Resume" } else { "Play" }).clicked() {
+                                        self.menu_open = false;
+                                        self.started = true;
+                                        focus_change = Some(true);
+                                    }
+                                    ui.add_space(8.0);
+                                    if button(ui, "New World").clicked() {
+                                        self.scene = Scene::Terrain;
+                                        self.generate_requested = true;
+                                        self.menu_open = false;
+                                        self.started = true;
+                                        focus_change = Some(true);
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(70.0);
+                                        ui.add(egui::DragValue::new(&mut self.terrain.seed).prefix("Seed: "));
+                                        if ui.button("Random").clicked() {
+                                            let nanos = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map_or(0, |d| d.subsec_nanos());
+                                            self.terrain.seed = nanos % 100_000;
+                                        }
+                                    });
+                                    ui.add_space(8.0);
+                                    if button(ui, if self.show_settings { "Hide Settings" } else { "Settings" }).clicked() {
+                                        self.show_settings = !self.show_settings;
+                                    }
+                                    ui.add_space(8.0);
+                                    if button(ui, "Quit").clicked() {
+                                        quit = true;
+                                    }
+                                    ui.add_space(22.0);
+                                    ui.label(
+                                        RichText::new(
+                                            "WASD move · Space jump · Shift run · F fly\n\
+                                             Click pick up or hunt · E pick up or pet\n\
+                                             Right click eat · number keys pick food · I inventory\n\
+                                             F1 settings · Esc menu",
+                                        )
+                                        .size(13.0)
+                                        .color(Color32::from_gray(190)),
+                                    );
+                                });
+                            });
+                    });
+            }
+
+            if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
+                self.game.hud(&ctx);
+                if self.inventory_open {
+                    let mut open = true;
+                    self.game.inventory(&ctx, &mut open);
+                    if !open {
+                        self.inventory_open = false;
+                        focus_change = Some(true);
+                    }
+                }
+            }
+
+            if !self.show_settings {
+                return;
+            }
             egui::Window::new("Settings").show(&ctx, |ui| {
                 ui.style_mut().spacing.slider_width = 250.0;
                 ui.horizontal(|ui| {
@@ -1377,7 +1908,7 @@ impl App {
                         ui.checkbox(&mut self.ambient_occlusion, "Ambient Occlusion");
                         ui.checkbox(&mut self.bounce_light, "Bounce Light");
                         ui.add(egui::Slider::new(&mut self.haze, 0.0..=0.06).text("Haze"));
-                        ui.checkbox(&mut self.grass, "Grass Blades");
+                        ui.checkbox(&mut self.grass, "Smooth Grass Blades (not voxels)");
                         ui.checkbox(&mut self.sunbeams, "Sunbeams Through the Haze");
                         ui.checkbox(&mut self.denoise, "Smooth Out Noise While Moving");
                         ui.checkbox(&mut self.color_grade, "Warm Color Grade");
@@ -1450,45 +1981,17 @@ impl App {
                         }
 
                         if ui.add_enabled(can_generate, egui::Button::new("Generate")).clicked() {
-                            let (world, landscape) = build_world(self.scene, &self.terrain, self.future_voxel_resolution);
-
-                            let max_bytes = self.device.physical_device().properties().max_storage_buffer_range as usize;
-                            if world.bricks.len() * 4 > max_bytes {
-                                self.world_error = Some(format!(
-                                    "That world needs {} MB of bricks but your GPU allows {} MB. Try fewer voxels per metre or a smaller world.",
-                                    world.bricks.len() * 4 / (1024 * 1024),
-                                    max_bytes / (1024 * 1024)
-                                ));
-                            } else {
-                                self.voxel_set = get_voxel_set(
-                                    self.memory_allocator.clone(),
-                                    self.command_buffer_allocator.clone(),
-                                    self.descriptor_set_allocator.clone(),
-                                    &self.render_pipeline,
-                                    &self.queue,
-                                    1,
-                                    &world,
-                                );
-                                self.world = world;
-                                self.landscape = landscape;
-                                self.near = None;
-                                self.world_error = None;
-                                self.sun_map_for = None;
-
-                                if self.scene.is_terrain() != self.loaded_scene.is_terrain() {
-                                    self.camera = self.scene.initial_camera();
-                                    self.move_speed = self.scene.initial_move_speed();
-                                }
-                                // Land on the new ground
-                                if self.player.is_some() {
-                                    self.player = Some(Player::on_dry_ground(camera_to_voxels(self.camera.position, self.world.size), &self.world));
-                                }
-                                self.loaded_scene = self.scene;
-                                self.reset_accum = true;
-                            }
+                            self.generate_requested = true;
                         }
                         if let Some(error) = &self.world_error {
                             ui.colored_label(Color32::LIGHT_RED, error);
+                        }
+                        if self.loaded_scene.is_terrain() {
+                            ui.separator();
+                            ui.checkbox(&mut self.animals_on, "Animals and Food");
+                            if ui.button("Visit a Waterfall").clicked() {
+                                self.waterfall_requested = true;
+                            }
                         }
                     });
             });
@@ -1540,6 +2043,14 @@ impl App {
             });
         });
 
+        if let Some(focused) = focus_change {
+            self.focused = focused;
+            grab_cursor(&rcx.window, focused);
+        }
+        if quit {
+            event_loop.exit();
+        }
+
         let render_extent = rcx.images.render_image.extent();
         let resample_extent = rcx.images.resample_image.extent();
         self.camera.extent = [render_extent[0] as f64, render_extent[1] as f64];
@@ -1577,6 +2088,9 @@ impl App {
         if self.grass && self.world.grass.is_some() {
             flags |= FLAG_GRASS;
         }
+        if self.water.active {
+            flags |= FLAG_WATER;
+        }
 
         let mut post_flags = 0;
         // An sRGB swapchain encodes on its own, otherwise the shader has to
@@ -1590,6 +2104,31 @@ impl App {
             post_flags |= POST_DENOISE;
         }
 
+        // The animals and food near the camera, for the shader to trace
+        let instances: Vec<AnimalInstance> = if self.loaded_scene.is_terrain() && self.animals_on {
+            self.game.instances(&self.world, camera_to_voxels(self.camera.position, self.world.size))
+        } else {
+            Vec::new()
+        };
+        let instance_buffer = self
+            .instance_allocator
+            .allocate_slice::<AnimalInstance>(instances.len().max(1) as u64)
+            .unwrap();
+        instance_buffer.write().unwrap()[..instances.len()].copy_from_slice(&instances);
+        let animal_set = DescriptorSet::new(
+            self.descriptor_set_allocator.clone(),
+            self.render_pipeline.layout().set_layouts()[3].clone(),
+            [
+                WriteDescriptorSet::buffer(0, self.animal_models.clone()),
+                WriteDescriptorSet::buffer(1, instance_buffer),
+                WriteDescriptorSet::image_view(2, self.water.ground_view.clone()),
+                WriteDescriptorSet::image_view(3, self.water.surface_view.clone()),
+                WriteDescriptorSet::image_view(4, self.water.blocks_view.clone()),
+            ],
+            [],
+        )
+        .unwrap();
+
         let view = ViewKey {
             pixel_to_ray: pixel_to_ray.cast(),
             sun_direction,
@@ -1600,12 +2139,17 @@ impl App {
         // Last frame can be reprojected onto this one as long as only the camera moved
         let history_limit = match &self.last_view {
             _ if self.reset_accum => 0,
+            Some(last) if *last == view && !instances.is_empty() => ANIMATED_HISTORY,
             Some(last) if *last == view => STILL_HISTORY,
             Some(last) if (last.sun_direction, last.render_mode, last.flags, last.haze) == (view.sun_direction, view.render_mode, view.flags, view.haze) => MOVING_HISTORY,
             _ => 0,
         };
         self.reset_accum = false;
-        self.accum_count = if history_limit == STILL_HISTORY { (self.accum_count + 1).min(STILL_HISTORY) } else { 0 };
+        self.accum_count = if history_limit == STILL_HISTORY || history_limit == ANIMATED_HISTORY {
+            (self.accum_count + 1).min(history_limit)
+        } else {
+            0
+        };
         let previous_world_to_pixel = self
             .last_view
             .as_ref()
@@ -1635,6 +2179,8 @@ impl App {
             ),
             None => ([0.0; 4], [0; 4], self.empty_near_set.clone()),
         };
+        // The last of near_size is free, so it carries how many animals there are
+        let near_size = [near_size[0], near_size[1], near_size[2], instances.len() as u32];
         let push_constants = PushConstants {
             pixel_to_ray: view.pixel_to_ray,
             previous_world_to_pixel: previous_world_to_pixel.cast(),
@@ -1646,7 +2192,7 @@ impl App {
             history_limit,
             near_origin,
             near_size,
-            haze: [view.haze, 0.0, 0.0, 0.0],
+            haze: [view.haze, self.start_time.elapsed().as_secs_f32(), 0.0, 0.0],
         };
         let parity = (self.frame % 2) as usize;
         let render_set = rcx.images.render_sets[parity].clone();
@@ -1664,6 +2210,12 @@ impl App {
             .clear_color_image(ClearColorImageInfo::image(rcx.images.render_image.clone()))
             .unwrap();
 
+        // The water flows on, except while the menu is open
+        let now = Instant::now();
+        let frame_time = if self.menu_open { 0.0 } else { (now - self.last_frame).as_secs_f64() };
+        self.last_frame = now;
+        self.water.record(&mut builder, &self.water_pipeline, frame_time, self.wake);
+
         builder
             .bind_pipeline_compute(self.render_pipeline.clone())
             .unwrap()
@@ -1671,7 +2223,7 @@ impl App {
                 PipelineBindPoint::Compute,
                 self.render_pipeline.layout().clone(),
                 0,
-                vec![render_set, self.voxel_set.clone(), near_set],
+                vec![render_set, self.voxel_set.clone(), near_set, animal_set],
             )
             .unwrap();
 
@@ -1756,17 +2308,23 @@ impl App {
         builder.blit_image(info).unwrap();
 
         let mut capture_done = false;
+        let mut capture_shot = None;
         if let Some(capture) = &mut self.capture {
             let now = Instant::now();
             if let Some(last) = capture.last_frame {
                 capture.frame_times.push(now - last);
             }
             capture.last_frame = Some(now);
-            capture_done = capture.frame_times.len() + 1 >= capture.frames as usize;
+            let frame = capture.frame_times.len() + 1;
+            capture_done = frame >= capture.frames as usize;
+            if capture.shots.contains(&frame) {
+                let stem = capture.path.file_stem().map_or("shot".into(), |s| s.to_string_lossy().into_owned());
+                capture_shot = Some(capture.path.with_file_name(format!("{stem}-{frame}.png")));
+            }
         }
 
         // Screenshots are taken from the resampled image, so they leave out the GUI
-        let screenshot_buffer = (self.screenshot_requested || capture_done).then(|| {
+        let screenshot_buffer = (self.screenshot_requested || capture_done || capture_shot.is_some()).then(|| {
             let buffer = Buffer::new_slice::<u8>(
                 self.memory_allocator.clone(),
                 BufferCreateInfo {
@@ -1845,6 +2403,8 @@ impl App {
                     );
                 }
                 event_loop.exit();
+            } else if let Some(path) = capture_shot {
+                save_screenshot(&buffer, resample_extent, encoded, &path);
             } else {
                 let seconds = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1859,16 +2419,20 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_inner_size(INITIAL_WINDOW_RESOLUTION)
-                        .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
-                        .with_title("Innert"),
-                )
-                .unwrap(),
-        );
+        let mut attributes = Window::default_attributes()
+            .with_inner_size(INITIAL_WINDOW_RESOLUTION)
+            .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
+            .with_title("Innert");
+        // Screenshot runs happen out of sight: off the screen, without taking focus or showing in the taskbar
+        if self.capture.is_some() {
+            attributes = attributes.with_active(false).with_position(winit::dpi::PhysicalPosition::new(-30000, -30000));
+            #[cfg(windows)]
+            {
+                use winit::platform::windows::WindowAttributesExtWindows;
+                attributes = attributes.with_skip_taskbar(true);
+            }
+        }
+        let window = Arc::new(event_loop.create_window(attributes).unwrap());
         let surface = Surface::from_window(self.instance.clone(), window.clone()).unwrap();
 
         let (swapchain, images) = get_swapchain_images(&self.device, &surface, &window);
