@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo run --release",
+            "type": "shell",
+            "command": "cargo run --release",
+            "problemMatcher": ["$rustc"],
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "cargo build (debug)",
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        }
+    ]
+}

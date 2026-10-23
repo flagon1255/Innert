@@ -1,0 +1,1101 @@
+#version 460
+
+// Has to match the order of the RenderMode enum in main.rs
+const uint SHADED = 0;
+const uint COORD = 1;
+const uint STEPS = 2;
+const uint NORMAL = 3;
+const uint UV = 4;
+const uint DEPTH = 5;
+// Not a view: fills in the sun map, one invocation per texel. Has to match SUN_MAP_MODE in main.rs
+const uint SUN_MAP = 100;
+
+// Has to match the FLAG_* constants in main.rs
+const uint FLAG_SHADOWS = 1;
+const uint FLAG_AO = 2;
+const uint FLAG_GI = 4;
+const uint FLAG_SUNBEAMS = 8;
+const uint FLAG_GRASS = 16;
+
+// Has to match the material ids in src\worldgen.rs
+const uint MAT_GRASS = 1;
+const uint MAT_SAND = 4;
+const uint MAT_WATER = 6;
+const uint MAT_FOAM = 21;
+
+// Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
+const float BOUNCE_DISTANCE = 12.0;
+
+// How much sunlight thin leaves let through
+const float TRANSLUCENCY = 0.8;
+
+// Haze: how far along each ray it's gathered (in meters), at how many points, and how quickly
+// it thins out going up (meters for it to get e times thinner)
+const float HAZE_REACH = 160.0;
+const int HAZE_SAMPLES = 12;
+const float HAZE_HEIGHT = 14.0;
+
+// Has to match SUN_MAP_SIZE in main.rs
+const int SUN_MAP_SIZE = 512;
+
+// Triangle grass, see traceGrass(). Sizes in meters.
+const float GRASS_CELL = 0.25;
+const int GRASS_PER_CELL = 16;
+const float GRASS_HEIGHT = 0.55;
+const float GRASS_RANGE = 40.0;
+
+// Meters from the water surface down to the sand outside the world, has to match src\worldgen.rs
+const float SEABED_DEPTH = 6.0;
+
+// Has to match src\worldgen.rs
+const uint BRICK_WORDS = 16 + 128;
+const uint SOLID_BRICK = 0x80000000u;
+const uint EMPTY_BRICK = 0x40000000u;
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    mat4 pixelToRay;
+    // Projects a world position into last frame's image: pixel = xy / z, with z the depth stored for it
+    mat4 previousWorldToPixel;
+    uvec4 world_size; // xyz: size in voxels, w: voxels per meter
+    vec4 sun_direction; // xyz: normalized direction towards the sun, w: sea level in voxels (0 for no sea)
+    uint render_mode;
+    uint flags;
+    uint frame;
+    uint history_limit; // Most frames a pixel keeps averaging, 0 to ignore last frame entirely
+    // Finer voxels in a box around the camera, see trace(). xyz: the box's corner in voxels of the
+    // main world, w: how many fine voxels fit along a main one, 0 for no box
+    vec4 near_origin;
+    uvec4 near_size; // xyz: size of the box in fine voxels
+    vec4 haze; // x: density per meter at sea level
+} pc;
+
+// Levels of detail: the main world, and the box of finer voxels around the camera
+const uint MAIN = 0;
+const uint NEAR = 1;
+
+// Each frame averages its new samples into what the same surfaces looked like last frame.
+// The history images hold last frame's result, the others this frame's.
+// Color images are linear (post.comp tone maps them) and keep the number of frames averaged in alpha.
+// The target image is only written by the debug views, post.comp fills it in for the shaded one.
+layout(set = 0, binding = 0, rgba8) writeonly uniform image2D targetImage;
+layout(set = 0, binding = 1, rgba32f) readonly uniform image2D historyColor;
+layout(set = 0, binding = 2, r32f) readonly uniform image2D historyDepth;
+layout(set = 0, binding = 3, rgba32f) writeonly uniform image2D accumColor;
+layout(set = 0, binding = 4, r32f) writeonly uniform image2D accumDepth;
+// For post.comp's denoiser: the albedo of what each pixel sees, and in alpha which way the
+// face points (0-5), 6 for the sky, 7 for water
+layout(set = 0, binding = 5, rgba32f) writeonly uniform image2D guideImage;
+// Distance from a plane facing the sun to the first thing sunlight hits, see sunMapBasis()
+layout(set = 0, binding = 6, r32f) uniform image2D sunMap;
+// One cell per 8x8x8 brick. EMPTY_BRICK | distance is empty, with the distance
+// (in bricks, along any axis) to the nearest brick that isn't. SOLID_BRICK | material
+// is filled with one material, anything else is 1 + the index of a stored brick.
+layout(set = 1, binding = 0, r32ui) readonly uniform uimage3D brickGrid;
+// BRICK_WORDS per stored brick: 16 words of occupancy bits, then one byte of
+// material per voxel. Voxels are indexed by x + y * 8 + z * 64 within a brick.
+layout(set = 1, binding = 1) readonly buffer Bricks {
+    uint bricks[];
+};
+// Where grass grows, one texel per column of the main world: the ground's height in quarter
+// voxels in bits 0-15, and how dense the grass is in bits 16-23, 0 for none
+layout(set = 1, binding = 2, r32ui) readonly uniform uimage2D grassMap;
+// The same for the finer voxels around the camera
+layout(set = 2, binding = 0, r32ui) readonly uniform uimage3D nearGrid;
+layout(set = 2, binding = 1) readonly buffer NearBricks {
+    uint nearBricks[];
+};
+
+// sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
+const uint PALETTE_SIZE = 39;
+const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
+    vec3(0.00, 0.00, 0.00), // air
+    vec3(0.36, 0.62, 0.20), // grass
+    vec3(0.47, 0.34, 0.22), // dirt
+    vec3(0.56, 0.53, 0.52), // stone
+    vec3(0.88, 0.82, 0.60), // sand
+    vec3(0.95, 0.97, 1.00), // snow
+    vec3(0.10, 0.30, 0.45), // water
+    vec3(0.42, 0.28, 0.17), // wood
+    vec3(0.30, 0.60, 0.12), // leaves
+    vec3(0.90, 0.12, 0.12), // red flower
+    vec3(0.98, 0.82, 0.12), // yellow flower
+    vec3(0.80, 0.78, 0.74), // clay
+    vec3(0.48, 0.70, 0.24), // grass tip
+    vec3(0.10, 0.36, 0.10), // dark leaves
+    vec3(0.95, 0.75, 0.12), // yellow leaves
+    vec3(0.95, 0.42, 0.06), // orange leaves
+    vec3(0.78, 0.08, 0.06), // red leaves
+    vec3(0.58, 0.28, 0.85), // purple flower
+    vec3(0.96, 0.96, 0.92), // white flower
+    vec3(0.68, 0.60, 0.54), // rock
+    vec3(0.32, 0.48, 0.14), // moss
+    vec3(0.90, 0.96, 0.98), // foam
+    vec3(0.36, 0.62, 0.20), // grass blade
+    vec3(0.10, 0.32, 0.20), // pine
+    vec3(0.56, 0.53, 0.48), // gravel
+    vec3(0.15, 0.45, 0.95), // blue flower
+    vec3(0.95, 0.45, 0.70), // pink flower
+    vec3(0.40, 0.75, 0.20), // fern
+    vec3(0.90, 0.88, 0.82), // birch bark
+    vec3(0.98, 0.70, 0.80), // blossom
+    vec3(0.55, 0.75, 0.25), // willow
+    vec3(0.85, 0.12, 0.10), // mushroom cap
+    vec3(0.92, 0.88, 0.78), // mushroom stem
+    vec3(0.55, 0.65, 0.30), // reed
+    vec3(0.40, 0.25, 0.12), // cattail
+    vec3(0.30, 0.68, 0.15), // palm leaf
+    vec3(0.55, 0.42, 0.28), // palm wood
+    vec3(0.45, 0.40, 0.36), // dead wood
+    vec3(0.15, 0.12, 0.10)  // dark bark
+);
+
+// https://www.shadertoy.com/view/WlfXRN
+vec3 inferno(float t) {
+    const vec3 c0 = vec3(0.0002189403691192265, 0.001651004631001012, -0.01948089843709184);
+    const vec3 c1 = vec3(0.1065134194856116, 0.5639564367884091, 3.932712388889277);
+    const vec3 c2 = vec3(11.60249308247187, -3.972853965665698, -15.9423941062914);
+    const vec3 c3 = vec3(-41.70399613139459, 17.43639888205313, 44.35414519872813);
+    const vec3 c4 = vec3(77.162935699427, -33.40235894210092, -81.80730925738993);
+    const vec3 c5 = vec3(-71.31942824499214, 32.62606426397723, 73.20951985803202);
+    const vec3 c6 = vec3(25.13112622477341, -12.24266895238567, -23.07032500287172);
+
+    return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+}
+
+vec3 stepsToInferno(uint steps, uint start, uint end) {
+    float t = float(int(steps - start)) / (end - start);
+    return inferno(clamp(t, 0, 1));
+}
+
+// https://www.reedbeta.com/blog/hash-functions-for-gpu-rendering/
+uint hash(uint x) {
+    uint state = x * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+uint hash(uvec3 v) {
+    return hash(v.x ^ hash(v.y ^ hash(v.z)));
+}
+
+float random(inout uint seed) {
+    seed = hash(seed);
+    return float(seed >> 8) / 16777216.0;
+}
+
+uvec3 levelSize(uint level) {
+    return level == NEAR ? pc.near_size.xyz : pc.world_size.xyz;
+}
+
+uint brickCell(uint level, ivec3 brick) {
+    return level == NEAR ? imageLoad(nearGrid, brick).r : imageLoad(brickGrid, brick).r;
+}
+
+uint brickWord(uint level, uint index) {
+    return level == NEAR ? nearBricks[index] : bricks[index];
+}
+
+// Whether a voxel of a stored brick is solid, `cell` being its brick grid cell
+bool brickVoxel(uint level, uint cell, uvec3 local_coord) {
+    uint i = local_coord.x + local_coord.y * 8 + local_coord.z * 64;
+    return bool(brickWord(level, (cell - 1) * BRICK_WORDS + i / 32) >> (i % 32) & 1u);
+}
+
+bool isSolid(uint level, ivec3 coord) {
+    if (any(lessThan(coord, ivec3(0))) || any(greaterThanEqual(coord, ivec3(levelSize(level)))))
+    return false;
+    uint cell = brickCell(level, coord / 8);
+    if ((cell & EMPTY_BRICK) != 0)
+    return false;
+    if ((cell & SOLID_BRICK) != 0)
+    return true;
+    return brickVoxel(level, cell, uvec3(coord % 8));
+}
+
+uint brickMaterial(uint level, uint cell, uvec3 local_coord) {
+    uint i = local_coord.x + local_coord.y * 8 + local_coord.z * 64;
+    return brickWord(level, (cell - 1) * BRICK_WORDS + 16 + i / 4) >> ((i % 4) * 8) & 0xFFu;
+}
+
+// Only valid for solid voxels
+uint materialAt(uint level, uvec3 coord) {
+    uint cell = brickCell(level, ivec3(coord / 8));
+    if ((cell & SOLID_BRICK) != 0)
+    return cell & 0xFFu;
+    return brickMaterial(level, cell, coord % 8);
+}
+
+bool nearActive() {
+    return pc.near_origin.w > 0;
+}
+
+// Positions in voxels of the main world to voxels of the box around the camera, and back
+vec3 toNear(vec3 p) {
+    return (p - pc.near_origin.xyz) * pc.near_origin.w;
+}
+
+vec3 fromNear(vec3 p) {
+    return p / pc.near_origin.w + pc.near_origin.xyz;
+}
+
+bool insideNear(vec3 p) {
+    vec3 q = toNear(p);
+    return nearActive() && all(greaterThanEqual(q, vec3(0))) && all(lessThan(q, vec3(pc.near_size.xyz)));
+}
+
+vec3 materialAlbedo(uint material, uvec3 coord) {
+    vec3 color = pow(PALETTE[min(material, PALETTE_SIZE - 1)], vec3(2.2));
+    // Brightness varies a little per voxel, more per clump of voxels, and over larger patches
+    // the color drifts warmer or cooler
+    float fine = float(hash(coord) & 0xFFu) / 255.0;
+    float clump = float(hash(coord / 4 + 7919u) & 0xFFu) / 255.0;
+    float region = float(hash(coord / 16 + 104729u) & 0xFFu) / 255.0;
+    color *= mix(vec3(1.06, 1.0, 0.9), vec3(0.94, 1.0, 1.08), region);
+    return color * (0.88 + 0.08 * fine + 0.14 * clump);
+}
+
+const float FLT_MAX = 3.4028235e+38;
+
+struct Hit {
+    uint level;
+    uvec3 coord; // In voxels of that level
+    uint axis; // Axis of the face the ray entered through
+    vec3 normal;
+    float t; // Distance along the (normalized) ray
+};
+
+// Whether a ray stops at this voxel of a stored brick
+bool brickHit(uint level, uint cell, uvec3 local_coord, bool through_water) {
+    if (!brickVoxel(level, cell, local_coord))
+    return false;
+    return !through_water || brickMaterial(level, cell, local_coord) != MAT_WATER;
+}
+
+// Traces a ray through one level, in that level's voxels.
+// With through_water, rays pass through water as if it were air.
+// Rays give up after max_distance, and ignore anything solid closer than ignore_until.
+bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_distance, float ignore_until, out Hit hit, inout uint steps) {
+    hit.level = level;
+    vec3 size = vec3(levelSize(level));
+    vec3 inv_dir = 1. / dir;
+    vec3 sgn_dir = sign(inv_dir);
+    inv_dir = clamp(inv_dir, vec3(-FLT_MAX), vec3(FLT_MAX));
+
+    vec3 t1 = -origin * inv_dir;
+    vec3 t2 = (size - origin) * inv_dir;
+
+    vec3 tmins = min(t1, t2);
+    vec3 tmaxs = max(t1, t2);
+
+    float tmin = 0;
+    float tmax = FLT_MAX;
+    for (int i = 0; i < 3; i++) {
+        tmin = max(tmin, tmins[i]);
+        tmax = min(tmax, tmaxs[i]);
+    }
+
+    if (tmin > tmax || tmin > max_distance) {
+        return false;
+    }
+    // Measured from where the ray enters the grid, like the rest of the t values below
+    max_distance -= tmin;
+    ignore_until -= tmin;
+
+    // The ray enters the grid through the slab it reaches last
+    uint brick_axis;
+    if (tmins.x > tmins.y) {
+        brick_axis = tmins.x > tmins.z ? 0 : 2;
+    } else {
+        brick_axis = tmins.y > tmins.z ? 1 : 2;
+    }
+
+    // From here on t is measured from where the ray enters the grid
+    origin += dir * tmin;
+
+    // Outer traversal over bricks, skipping empty ones in a single step
+    ivec3 brick_count = ivec3(size) / 8;
+    ivec3 brick = clamp(ivec3(floor(origin / 8)), ivec3(0), brick_count - 1);
+    ivec3 brick_step = ivec3(sgn_dir);
+    vec3 brick_t = ((brick + 0.5 * (1 + sgn_dir)) * 8 - origin) * inv_dir;
+    vec3 brick_delta = 8 * inv_dir * sgn_dir;
+    float brick_enter = 0;
+
+    uvec3 ustep = uvec3(ivec3(sgn_dir));
+    vec3 delta = inv_dir * sgn_dir;
+
+    while (true) {
+        steps++;
+
+        uint cell = brickCell(level, brick);
+        uint empty_distance = (cell & EMPTY_BRICK) != 0 ? cell & 0xFFFFu : 0;
+        if (empty_distance > 1) {
+            // Every brick within empty_distance - 1 of this one is empty, so jump
+            // straight to where the ray leaves that cube
+            ivec3 reach = ivec3(empty_distance - 1);
+            vec3 t_lo = (vec3((brick - reach) * 8) - origin) * inv_dir;
+            vec3 t_hi = (vec3((brick + reach + 1) * 8) - origin) * inv_dir;
+            vec3 t_exit = max(t_lo, t_hi);
+
+            uint axis = t_exit.x < t_exit.y ? (t_exit.x < t_exit.z ? 0 : 2) : (t_exit.y < t_exit.z ? 1 : 2);
+            brick_enter = t_exit[axis];
+            brick_axis = axis;
+
+            ivec3 next = clamp(ivec3(floor((origin + dir * brick_enter) / 8)), brick - reach, brick + reach);
+            next[axis] = brick[axis] + brick_step[axis] * int(empty_distance);
+            brick = next;
+            brick_t = ((brick + 0.5 * (1 + sgn_dir)) * 8 - origin) * inv_dir;
+
+            if (any(lessThan(brick, ivec3(0))) || any(greaterThanEqual(brick, brick_count)) || brick_enter > max_distance)
+            return false;
+            continue;
+        }
+        if (empty_distance == 0 && !(through_water && cell == (SOLID_BRICK | MAT_WATER))) {
+            vec3 p = origin + dir * brick_enter;
+            uvec3 coord = uvec3(clamp(ivec3(floor(p)), brick * 8, brick * 8 + 7));
+            uint stepped_axis = brick_axis;
+            float enter = brick_enter;
+
+            bool solid_brick = (cell & SOLID_BRICK) != 0;
+            bool found = (solid_brick || brickHit(level, cell, coord % 8, through_water)) && enter >= ignore_until;
+            if (!found) {
+                // Inner traversal over the voxels of this brick
+                vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
+                while (true) {
+                    steps++;
+
+                    if (t.x < t.y) {
+                        if (t.x < t.z) {
+                            coord.x += ustep.x;
+                            enter = t.x;
+                            t.x += delta.x;
+                            stepped_axis = 0;
+                        } else {
+                            coord.z += ustep.z;
+                            enter = t.z;
+                            t.z += delta.z;
+                            stepped_axis = 2;
+                        }
+                    } else {
+                        if (t.y < t.z) {
+                            coord.y += ustep.y;
+                            enter = t.y;
+                            t.y += delta.y;
+                            stepped_axis = 1;
+                        } else {
+                            coord.z += ustep.z;
+                            enter = t.z;
+                            t.z += delta.z;
+                            stepped_axis = 2;
+                        }
+                    }
+
+                    // Stepping below 0 wraps around, which also leaves the brick
+                    if (any(notEqual(coord / 8, uvec3(brick))))
+                    break;
+                    if ((solid_brick || brickHit(level, cell, coord % 8, through_water)) && enter >= ignore_until) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if (found) {
+                vec3 mask = vec3(0);
+                mask[stepped_axis] = 1;
+
+                hit.coord = coord;
+                hit.axis = stepped_axis;
+                hit.normal = -mask * sgn_dir;
+                hit.t = tmin + enter;
+                return true;
+            }
+        }
+
+        if (brick_t.x < brick_t.y) {
+            if (brick_t.x < brick_t.z) {
+                brick.x += brick_step.x;
+                brick_enter = brick_t.x;
+                brick_t.x += brick_delta.x;
+                brick_axis = 0;
+            } else {
+                brick.z += brick_step.z;
+                brick_enter = brick_t.z;
+                brick_t.z += brick_delta.z;
+                brick_axis = 2;
+            }
+        } else {
+            if (brick_t.y < brick_t.z) {
+                brick.y += brick_step.y;
+                brick_enter = brick_t.y;
+                brick_t.y += brick_delta.y;
+                brick_axis = 1;
+            } else {
+                brick.z += brick_step.z;
+                brick_enter = brick_t.z;
+                brick_t.z += brick_delta.z;
+                brick_axis = 2;
+            }
+        }
+
+        if (any(lessThan(brick, ivec3(0))) || any(greaterThanEqual(brick, brick_count)) || brick_enter > max_distance)
+        return false;
+    }
+}
+
+// Traces a ray in voxels of the main world. Rays starting in the box around the camera go through
+// its finer voxels first, then carry on in the main world from where they leave it.
+bool trace(vec3 origin, vec3 dir, bool through_water, float max_distance, out Hit hit, inout uint steps) {
+    float start = 0;
+    float ignore_until = 0;
+    if (insideNear(origin)) {
+        float s = pc.near_origin.w;
+        if (traverse(NEAR, toNear(origin), dir, through_water, max_distance * s, 0, hit, steps)) {
+            hit.t /= s;
+            return true;
+        }
+        vec3 inv_dir = clamp(1 / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
+        vec3 lo = pc.near_origin.xyz;
+        vec3 hi = lo + vec3(pc.near_size.xyz) / s;
+        vec3 t_exit = max((lo - origin) * inv_dir, (hi - origin) * inv_dir);
+        start = min(t_exit.x, min(t_exit.y, t_exit.z));
+        if (start > max_distance)
+        return false;
+        // The coarser ground at the edge of the box can stick up above the finer ground the ray
+        // just passed over, so don't let it stop the ray right where it comes out
+        ignore_until = 1.5;
+    }
+    if (traverse(MAIN, origin + dir * start, dir, through_water, max_distance - start, ignore_until, hit, steps)) {
+        hit.t += start;
+        return true;
+    }
+    return false;
+}
+
+// A hit's position in voxels of its own level
+vec3 levelPosition(Hit hit, vec3 position) {
+    return hit.level == NEAR ? toNear(position) : position;
+}
+
+// A point inside a hit voxel, in voxels of the main world
+vec3 voxelPoint(Hit hit, vec3 local) {
+    vec3 p = vec3(hit.coord) + local;
+    return hit.level == NEAR ? fromNear(p) : p;
+}
+
+float daylight() {
+    return smoothstep(-0.1, 0.25, pc.sun_direction.z);
+}
+
+vec3 sunColor() {
+    float elevation = pc.sun_direction.z;
+    vec3 color = mix(vec3(1.0, 0.45, 0.2), vec3(1.0, 0.93, 0.85), smoothstep(0.0, 0.4, elevation));
+    return color * 2.4 * smoothstep(-0.02, 0.06, elevation);
+}
+
+vec3 skyColor(vec3 dir) {
+    vec3 zenith = vec3(0.10, 0.32, 0.90);
+    // Warmer horizon around sunrise and sunset
+    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.72, 0.95), smoothstep(0.0, 0.35, pc.sun_direction.z));
+    vec3 sky = mix(horizon, zenith, sqrt(clamp(dir.z, 0, 1)));
+    sky = mix(sky, horizon * 0.4, clamp(-dir.z * 4.0, 0, 1));
+    return sky * mix(0.02, 1.0, daylight());
+}
+
+vec3 sunDisc(vec3 dir) {
+    float d = max(dot(dir, pc.sun_direction.xyz), 0);
+    return sunColor() * (pow(d, 2000.0) * 50.0 + pow(d, 12.0) * 0.15);
+}
+
+// Cheap stand-in for light from the sky and the ground, used when bounce light is off
+vec3 ambientLight(vec3 normal) {
+    vec3 sky = 0.5 * (skyColor(vec3(0, 0, 1)) + skyColor(normalize(vec3(1, 0, 0.2))));
+    vec3 ground = vec3(0.3, 0.27, 0.2) * (sunColor() * 0.15 + sky * 0.3);
+    return mix(ground, sky, normal.z * 0.5 + 0.5);
+}
+
+// Cosine-weighted sunlight on a surface, 0 when it's in shadow
+float sunLight(vec3 surface, vec3 normal) {
+    vec3 sun = pc.sun_direction.xyz;
+    float n_dot_l = dot(normal, sun);
+    if (n_dot_l <= 0 || sun.z < -0.02)
+    return 0;
+    if ((pc.flags & FLAG_SHADOWS) != 0) {
+        Hit hit;
+        uint steps = 0;
+        if (trace(surface, sun, true, FLT_MAX, hit, steps))
+        return 0;
+    }
+    return n_dot_l;
+}
+
+float vertexAO(bool side1, bool side2, bool corner) {
+    if (side1 && side2)
+    return 0;
+    return (3 - float(side1) - float(side2) - float(corner)) / 3;
+}
+
+// Smooth ambient occlusion from the 8 voxels around the hit face,
+// interpolated across the face like per-vertex AO in a voxel mesher
+float cornerAO(Hit hit, vec3 pos) {
+    uint level = hit.level;
+    ivec3 base = ivec3(hit.coord) + ivec3(hit.normal);
+    uint ua = (hit.axis + 1) % 3;
+    uint va = (hit.axis + 2) % 3;
+    ivec3 du = ivec3(0);
+    du[ua] = 1;
+    ivec3 dv = ivec3(0);
+    dv[va] = 1;
+
+    bool u0 = isSolid(level, base - du);
+    bool u1 = isSolid(level, base + du);
+    bool v0 = isSolid(level, base - dv);
+    bool v1 = isSolid(level, base + dv);
+
+    float a00 = vertexAO(u0, v0, isSolid(level, base - du - dv));
+    float a10 = vertexAO(u1, v0, isSolid(level, base + du - dv));
+    float a01 = vertexAO(u0, v1, isSolid(level, base - du + dv));
+    float a11 = vertexAO(u1, v1, isSolid(level, base + du + dv));
+
+    vec3 local_pos = levelPosition(hit, pos) - vec3(hit.coord);
+    vec2 uv = clamp(vec2(local_pos[ua], local_pos[va]), 0, 1);
+    float ao = mix(mix(a00, a10, uv.x), mix(a01, a11, uv.x), uv.y);
+    return mix(0.25, 1.0, ao);
+}
+
+vec3 cosineDirection(vec3 normal, inout uint seed) {
+    float z = random(seed) * 2 - 1;
+    float a = random(seed) * 6.28318530718;
+    float r = sqrt(1 - z * z);
+    vec3 dir = normal + vec3(r * cos(a), r * sin(a), z);
+    float len = length(dir);
+    return len > 1e-4 ? dir / len : normal;
+}
+
+// Single-bounce shading for reflections and bounce light
+vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance) {
+    Hit hit;
+    uint steps = 0;
+    if (!trace(origin, dir, false, max_distance, hit, steps))
+    return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+
+    vec3 surface = origin + dir * hit.t + hit.normal * 1e-3;
+    vec3 albedo = materialAlbedo(materialAt(hit.level, hit.coord), hit.coord);
+    return albedo * (sunColor() * sunLight(surface, hit.normal) + ambientLight(hit.normal));
+}
+
+// How much light survives travelling this many voxels through water
+vec3 waterTransmittance(float distance) {
+    float meters = distance / float(max(pc.world_size.w, 1u));
+    return exp(-meters * vec3(0.45, 0.10, 0.08));
+}
+
+// Light scattered back out by deep water
+vec3 waterScatter() {
+    return vec3(0.02, 0.14, 0.15) * (sunColor() * 0.5 + ambientLight(vec3(0, 0, 1)));
+}
+
+float waterFresnel(vec3 dir, vec3 normal) {
+    return 0.02 + 0.98 * pow(1 - max(dot(-dir, normal), 0), 5);
+}
+
+// The sea outside the world: the same water over a flat sandy bottom
+vec3 shadeOpenSea(vec3 dir, vec3 pos) {
+    vec3 up = vec3(0, 0, 1);
+    vec3 reflection = shadeSecondary(pos + up * 1e-3, reflect(dir, up), true, FLT_MAX);
+
+    vec3 refracted = refract(dir, up, 1 / 1.33);
+    float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
+    vec3 transmittance = waterTransmittance(depth / max(-refracted.z, 0.05));
+    vec3 sand = pow(PALETTE[MAT_SAND], vec3(2.2));
+    vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6) * transmittance;
+    vec3 refraction = seabed * transmittance + waterScatter() * (1 - transmittance);
+
+    return mix(refraction, reflection, waterFresnel(dir, up));
+}
+
+// Clear water: a reflection on top of the refracted view of whatever is under it
+vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal) {
+    float fresnel = waterFresnel(dir, normal);
+    vec3 reflection = shadeSecondary(pos + normal * 1e-3, reflect(dir, normal), true, FLT_MAX);
+    vec3 scatter = waterScatter();
+
+    vec3 below = pos - normal * 1e-3;
+    vec3 refracted = refract(dir, normal, 1 / 1.33);
+    Hit hit;
+    uint steps = 0;
+    vec3 refraction = scatter;
+    if (trace(below, refracted, true, FLT_MAX, hit, steps)) {
+        vec3 surface = below + refracted * hit.t + hit.normal * 1e-3;
+        vec3 albedo = materialAlbedo(materialAt(hit.level, hit.coord), hit.coord);
+        vec3 transmittance = waterTransmittance(hit.t);
+        // Sunlight reaching the bottom crossed about as much water as the view does
+        vec3 lit = albedo * (sunColor() * sunLight(surface, hit.normal) + ambientLight(hit.normal) * 0.6) * transmittance;
+        refraction = lit * transmittance + scatter * (1 - transmittance);
+    }
+
+    return mix(refraction, reflection, fresnel);
+}
+
+// Whether a point (in voxels of the main world) is in water
+bool isWater(vec3 p) {
+    uint level = insideNear(p) ? NEAR : MAIN;
+    ivec3 coord = ivec3(floor(level == NEAR ? toNear(p) : p));
+    if (!isSolid(level, coord))
+    return false;
+    uint material = materialAt(level, uvec3(coord));
+    return material == MAT_WATER || material == MAT_FOAM;
+}
+
+// Materials thin enough to let sunlight through, one bit per material id. Has to match the
+// material ids in src\worldgen.rs: leaves (8, 13-16), pine (23), fern (27), grass blades and tips
+// (22, 12), flowers (9, 10, 17, 18, 25, 26), blossom (29), willow (30), reed (33), palm leaf (35)
+const uint FOLIAGE_LOW = (1u << 8) | (1u << 13) | (1u << 14) | (1u << 15) | (1u << 16) | (1u << 23) | (1u << 27)
+    | (1u << 22) | (1u << 12) | (1u << 9) | (1u << 10) | (1u << 17) | (1u << 18) | (1u << 25) | (1u << 26)
+    | (1u << 29) | (1u << 30);
+const uint FOLIAGE_HIGH = (1u << (33 - 32)) | (1u << (35 - 32));
+
+bool isFoliage(uint material) {
+    return material < 32 ? (FOLIAGE_LOW & (1u << material)) != 0 : (FOLIAGE_HIGH & (1u << (material - 32))) != 0;
+}
+
+// Sunlight shining through a leaf from behind, brightest when looking towards the sun
+vec3 leafTransmission(Hit hit, vec3 dir, vec3 albedo) {
+    vec3 sun = pc.sun_direction.xyz;
+    float behind = -dot(hit.normal, sun);
+    if (behind <= 0 || sun.z < -0.02)
+    return vec3(0);
+    // Only if sunlight reaches the leaf's other side, starting just past it
+    if ((pc.flags & FLAG_SHADOWS) != 0) {
+        Hit blocker;
+        uint steps = 0;
+        if (trace(voxelPoint(hit, 0.5 + sun * 0.9), sun, true, FLT_MAX, blocker, steps))
+        return vec3(0);
+    }
+    float towards_sun = pow(max(dot(dir, sun), 0), 4);
+    // Light coming through is filtered by the leaf twice over, so it comes out more saturated
+    return albedo * albedo * 2.5 * sunColor() * TRANSLUCENCY * (0.3 + 0.7 * behind) * (0.4 + 1.6 * towards_sun);
+}
+
+// The sun map is an orthographic view of the world along the sunlight, from a plane outside it
+void sunMapBasis(out vec3 u, out vec3 v, out vec3 center, out float radius) {
+    vec3 sun = pc.sun_direction.xyz;
+    vec3 helper = abs(sun.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    u = normalize(cross(helper, sun));
+    v = cross(sun, u);
+    center = vec3(pc.world_size.xyz) * 0.5;
+    radius = length(vec3(pc.world_size.xyz)) * 0.5;
+}
+
+// Whether sunlight reaches a point in the air, from the sun map
+float sunMapLight(vec3 p, vec3 u, vec3 v, vec3 center, float radius) {
+    vec3 offset = p - center;
+    vec2 uv = vec2(dot(offset, u), dot(offset, v)) / radius * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0))) || any(greaterThanEqual(uv, vec2(1))))
+    return 1;
+    float along = radius - dot(offset, pc.sun_direction.xyz);
+    float blocked_at = imageLoad(sunMap, ivec2(uv * SUN_MAP_SIZE)).r;
+    return along < blocked_at + 2 * radius / SUN_MAP_SIZE ? 1 : 0;
+}
+
+// Henyey-Greenstein phase function times 4 pi, so it averages 1 over all directions.
+// Haze scatters light mostly onwards, so it glows most looking towards the sun.
+float hazePhase(float cos_angle) {
+    const float g = 0.5;
+    return (1 - g * g) / pow(1 + g * g - 2 * g * cos_angle, 1.5);
+}
+
+// Haze between the camera and what it sees, thicker near the ground. It dims what's behind it and
+// glows with the light it scatters: sunlight, except where the sun map says something casts a
+// shadow into the air, which is what makes sunbeams, plus light from the sky.
+vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint seed) {
+    float density = pc.haze.x;
+    if (density <= 0)
+    return color;
+    float vpm = float(max(pc.world_size.w, 1u));
+    float reach = HAZE_REACH * vpm;
+    if (distance >= 0)
+    reach = min(reach, distance);
+
+    vec3 u, v, center;
+    float radius;
+    sunMapBasis(u, v, center, radius);
+    bool beams = (pc.flags & FLAG_SUNBEAMS) != 0;
+    vec3 sun_light = sunColor() * hazePhase(dot(dir, pc.sun_direction.xyz)) * 0.3;
+    vec3 sky_light = ambientLight(vec3(0, 0, 1)) * 0.8;
+    float sea_level = pc.sun_direction.w;
+
+    float step_length = reach / HAZE_SAMPLES;
+    float offset = random(seed);
+    float transmittance = 1;
+    vec3 scattered = vec3(0);
+    for (int i = 0; i < HAZE_SAMPLES; i++) {
+        vec3 p = origin + dir * (float(i) + offset) * step_length;
+        float height = max(p.z - sea_level, 0) / vpm;
+        float thickness = density * exp(-height / HAZE_HEIGHT) * step_length / vpm;
+        float lit = beams ? sunMapLight(p, u, v, center, radius) : 1;
+        scattered += transmittance * (sun_light * lit + sky_light) * thickness;
+        transmittance *= exp(-thickness);
+    }
+    return color * transmittance + scattered;
+}
+
+// Which way a face points, for the denoiser: 0-5
+float faceId(vec3 normal) {
+    vec3 a = abs(normal);
+    float axis = a.x > 0.5 ? 0 : (a.y > 0.5 ? 1 : 2);
+    return axis * 2 + (dot(normal, vec3(1)) > 0 ? 1 : 0);
+}
+
+struct GrassHit {
+    float t;
+    vec3 normal;
+    float height; // 0 at the root, 1 at the tip
+    uint seed;
+};
+
+// Grass density (0-1) at a column of the main world, and the height of the ground there in voxels
+float grassAt(ivec2 column, out float ground) {
+    ground = 0;
+    if (any(lessThan(column, ivec2(0))) || any(greaterThanEqual(column, ivec2(pc.world_size.xy))))
+    return 0;
+    uint value = imageLoad(grassMap, column).r;
+    ground = float(value & 0xFFFFu) * 0.25;
+    return float((value >> 16) & 0xFFu) / 255;
+}
+
+// Möller–Trumbore, from either side. `along` is how far the hit is towards c.
+bool rayTriangle(vec3 origin, vec3 dir, vec3 a, vec3 b, vec3 c, out float t, out float along) {
+    t = 0;
+    along = 0;
+    vec3 ab = b - a;
+    vec3 ac = c - a;
+    vec3 p = cross(dir, ac);
+    float det = dot(ab, p);
+    if (abs(det) < 1e-8)
+    return false;
+    float inv = 1 / det;
+    vec3 s = origin - a;
+    float u = dot(s, p) * inv;
+    if (u < 0 || u > 1)
+    return false;
+    vec3 q = cross(s, ab);
+    float v = dot(dir, q) * inv;
+    if (v < 0 || u + v > 1)
+    return false;
+    t = dot(ac, q) * inv;
+    along = v;
+    return t > 0;
+}
+
+// Grass made of triangles, one per blade, rooted on grassy ground. Blades are made up from a hash
+// of the patch of ground they grow in, so they take no memory. The ray walks over the patches it
+// passes above, and only tests the blades of the ones where it's low enough to touch them.
+bool traceGrass(vec3 origin, vec3 dir, float max_t, out GrassHit hit) {
+    float vpm = float(max(pc.world_size.w, 1u));
+    float cell = GRASS_CELL * vpm;
+    float tallest = GRASS_HEIGHT * vpm;
+    float range = GRASS_RANGE * vpm;
+
+    vec2 o = origin.xy / cell;
+    vec2 d = dir.xy / cell;
+    ivec2 c = ivec2(floor(o));
+    vec2 sgn = sign(d);
+    vec2 inv = clamp(1 / d, vec2(-FLT_MAX), vec2(FLT_MAX));
+    vec2 next = (vec2(c) + max(sgn, vec2(0)) - o) * inv;
+    vec2 delta = abs(inv);
+
+    hit.t = min(max_t, range);
+    hit.normal = vec3(0, 0, 1);
+    hit.height = 0;
+    hit.seed = 0;
+    bool found = false;
+    float t0 = 0;
+    for (int i = 0; i < 512 && t0 < hit.t; i++) {
+        float t1 = min(min(next.x, next.y), hit.t);
+        float z0 = origin.z + dir.z * t0;
+        float z1 = origin.z + dir.z * t1;
+        float ground;
+        float density = grassAt(ivec2((vec2(c) + 0.5) * cell), ground);
+        if (density > 0 && min(z0, z1) < ground + tallest && max(z0, z1) > ground - cell) {
+            // Thinner further away
+            float fade = 1 - smoothstep(0.5, 1.0, t0 / range);
+            int count = int(float(GRASS_PER_CELL) * density * fade + 0.5);
+            for (int k = 0; k < count; k++) {
+                uint seed = hash(uvec3(uvec2(c), uint(k)));
+                vec2 base = (vec2(c) + 0.15 + 0.7 * vec2(random(seed), random(seed))) * cell;
+                float root;
+                grassAt(ivec2(floor(base)), root);
+                float height = mix(0.4, 1.0, random(seed)) * tallest * mix(0.7, 1.0, density);
+                float width = mix(0.025, 0.045, random(seed)) * vpm;
+                float facing = random(seed) * 6.28318530718;
+                vec2 side = vec2(cos(facing), sin(facing)) * width * 0.5;
+                float lean_angle = random(seed) * 6.28318530718;
+                vec2 lean = vec2(cos(lean_angle), sin(lean_angle)) * random(seed) * 0.08 * vpm;
+
+                vec3 a = vec3(base + side, root - 0.05 * vpm);
+                vec3 b = vec3(base - side, root - 0.05 * vpm);
+                vec3 tip = vec3(base + lean, root + height);
+                float t, along;
+                if (rayTriangle(origin, dir, a, b, tip, t, along) && t < hit.t) {
+                    hit.t = t;
+                    hit.normal = normalize(cross(b - a, tip - a));
+                    hit.height = along;
+                    hit.seed = seed;
+                    found = true;
+                }
+            }
+        }
+
+        // On to the next patch
+        if (next.x < next.y) {
+            t0 = next.x;
+            next.x += delta.x;
+            c.x += int(sgn.x);
+        } else {
+            t0 = next.y;
+            next.y += delta.y;
+            c.y += int(sgn.y);
+        }
+    }
+    return found;
+}
+
+vec3 shadeGrass(vec3 origin, vec3 dir, GrassHit grass, inout vec4 guide) {
+    vec3 pos = origin + dir * grass.t;
+    vec3 normal = dot(grass.normal, dir) > 0 ? -grass.normal : grass.normal;
+    uint seed = grass.seed;
+    float h = clamp(grass.height, 0, 1);
+
+    // Dark at the root, lighter and yellower towards the tip, a little different blade to blade
+    vec3 tip_color = mix(vec3(0.16, 0.45, 0.04), vec3(0.35, 0.50, 0.06), random(seed));
+    vec3 albedo = mix(vec3(0.02, 0.06, 0.01), tip_color, smoothstep(0.0, 0.9, h)) * mix(0.8, 1.15, random(seed));
+    // Less light gets down between the blades
+    float occlusion = mix(0.2, 1.0, h);
+
+    vec3 sun = pc.sun_direction.xyz;
+    float visible = sun.z > -0.02 ? 1 : 0;
+    if (visible > 0 && (pc.flags & FLAG_SHADOWS) != 0) {
+        Hit blocker;
+        uint steps = 0;
+        if (trace(pos + normal * 0.02, sun, true, FLT_MAX, blocker, steps))
+        visible = 0;
+    }
+    // Light falls on both sides of a blade, and shines through it towards the camera
+    float facing = abs(dot(normal, sun)) * mix(0.5, 1.0, h);
+    float through = (pow(max(dot(dir, sun), 0), 3) * 1.5 + 0.25) * TRANSLUCENCY;
+    vec3 light = sunColor() * visible * (facing + through) + ambientLight(normal) * occlusion;
+
+    // The denoiser leaves grass alone, there's no noise in it to smooth out
+    guide = vec4(albedo, 7);
+    return albedo * light;
+}
+
+// Seen from under water, everything fades into the water's color
+vec3 shadeUnderwater(vec3 origin, vec3 dir, inout uint steps, out float distance) {
+    Hit hit;
+    vec3 color;
+    float path;
+    if (trace(origin, dir, true, FLT_MAX, hit, steps)) {
+        vec3 surface = origin + dir * hit.t + hit.normal * 1e-3;
+        vec3 albedo = materialAlbedo(materialAt(hit.level, hit.coord), hit.coord);
+        color = albedo * (sunColor() * sunLight(surface, hit.normal) + ambientLight(hit.normal) * 0.6);
+        path = hit.t;
+        distance = hit.t;
+    } else {
+        color = skyColor(dir);
+        float sea_level = pc.sun_direction.w;
+        path = dir.z > 0 && sea_level > origin.z ? (sea_level - origin.z) / dir.z : 1e6;
+        distance = -1;
+    }
+    vec3 transmittance = waterTransmittance(path);
+    return color * transmittance + waterScatter() * (1 - transmittance);
+}
+
+vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide);
+
+// `distance` is how far along the ray the visible surface is, -1 for the sky.
+// `guide` is what the denoiser needs, see guideImage.
+vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, out vec4 guide) {
+    guide = vec4(1, 1, 1, 7);
+    if (isWater(origin))
+    return shadeUnderwater(origin, dir, steps, distance);
+
+    vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
+    return atmosphere(origin, dir, distance, color, seed);
+}
+
+vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide) {
+    Hit hit;
+    bool solid = trace(origin, dir, false, FLT_MAX, hit, steps);
+
+    GrassHit grass;
+    if ((pc.flags & FLAG_GRASS) != 0 && traceGrass(origin, dir, solid ? hit.t : FLT_MAX, grass)) {
+        distance = grass.t;
+        return shadeGrass(origin, dir, grass, guide);
+    }
+
+    if (!solid) {
+        float sea_level = pc.sun_direction.w;
+        float t = (sea_level - origin.z) / dir.z;
+        if (sea_level > 0 && dir.z < 0 && t > 0) {
+            distance = t;
+            return shadeOpenSea(dir, origin + dir * t);
+        }
+        distance = -1;
+        guide.w = 6;
+        return skyColor(dir) + sunDisc(dir);
+    }
+    distance = hit.t;
+
+    vec3 pos = origin + dir * hit.t;
+    vec3 normal = hit.normal;
+    vec3 surface = pos + normal * 1e-3; // Nudged out of the voxel to start secondary rays
+    uint material = materialAt(hit.level, hit.coord);
+
+    // Seen through the side of the world, the water at its edge continues the open sea
+    bool world_edge = hit.level == MAIN
+        && (any(equal(hit.coord.xy, uvec2(0))) || any(equal(hit.coord.xy, pc.world_size.xy - 1)));
+    float sea_level = pc.sun_direction.w;
+    if (material == MAT_WATER && world_edge && normal.z < 0.5 && sea_level > 0 && dir.z < 0) {
+        float t = (sea_level - origin.z) / dir.z;
+        distance = t;
+        return shadeOpenSea(dir, origin + dir * t);
+    }
+
+    vec3 color;
+    if (material == MAT_WATER) {
+        color = shadeWater(dir, pos, normal);
+    } else {
+        vec3 albedo = materialAlbedo(material, hit.coord);
+        // The ground under the grass is in its shade, out to where the grass thins out
+        if (material == MAT_GRASS && (pc.flags & FLAG_GRASS) != 0) {
+            float range = GRASS_RANGE * float(max(pc.world_size.w, 1u));
+            albedo *= mix(0.35, 1.0, smoothstep(0.5 * range, range, hit.t));
+        }
+        float ao = (pc.flags & FLAG_AO) != 0 ? cornerAO(hit, pos) : 1;
+
+        vec3 indirect;
+        if ((pc.flags & FLAG_GI) != 0) {
+            // One random diffuse bounce per frame, averaging frames smooths out the noise
+            float reach = BOUNCE_DISTANCE * float(max(pc.world_size.w, 1u));
+            indirect = shadeSecondary(surface, cosineDirection(normal, seed), false, reach) * mix(1, ao, 0.5);
+        } else {
+            indirect = ambientLight(normal) * ao;
+        }
+
+        color = albedo * (sunColor() * sunLight(surface, normal) + indirect);
+        if (isFoliage(material))
+        color += leafTransmission(hit, dir, albedo);
+        guide = vec4(albedo, faceId(normal));
+    }
+
+    return color;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+
+    if (pc.render_mode == SUN_MAP) {
+        if (any(greaterThanEqual(pixelCoord, ivec2(SUN_MAP_SIZE))))
+        return;
+        vec3 u, v, center;
+        float radius;
+        sunMapBasis(u, v, center, radius);
+        vec2 uv = (vec2(pixelCoord) + 0.5) / SUN_MAP_SIZE * 2 - 1;
+        vec3 sun = pc.sun_direction.xyz;
+        vec3 start = center + (u * uv.x + v * uv.y + sun) * radius;
+        Hit hit;
+        uint steps = 0;
+        float blocked_at = traverse(MAIN, start, -sun, true, FLT_MAX, 0, hit, steps) ? hit.t : 1e30;
+        imageStore(sunMap, pixelCoord, vec4(blocked_at));
+        return;
+    }
+
+    ivec2 imageSize = imageSize(targetImage);
+
+    if (any(greaterThanEqual(pixelCoord, imageSize)))
+    return;
+
+    vec3 o = pc.pixelToRay[3].xyz;
+    uint steps = 0;
+
+    if (pc.render_mode == SHADED) {
+        uint seed = hash(uvec3(pixelCoord, pc.frame));
+        // Jitter within the pixel, which anti-aliases edges as frames get averaged
+        vec2 jitter = vec2(random(seed), random(seed)) - 0.5;
+        vec3 ray = mat3(pc.pixelToRay) * vec3(pixelCoord + jitter, 1);
+        vec3 d = normalize(ray);
+
+        float distance;
+        vec4 guide;
+        vec3 color = shade(o, d, seed, steps, distance, guide);
+        // Distance along the unnormalized ray, which is what previousWorldToPixel gives as z next frame
+        float depth = distance >= 0 ? distance / length(ray) : -1;
+
+        // Find what this surface looked like last frame
+        vec4 history = vec4(0);
+        bool still = pc.history_limit >= 1024; // The view hasn't changed at all
+        if (still) {
+            history = imageLoad(historyColor, pixelCoord);
+        } else if (pc.history_limit > 0 && depth >= 0) {
+            vec4 p = pc.previousWorldToPixel * vec4(o + d * distance, 1);
+            ivec2 previous = ivec2(floor(p.xy / p.z + 0.5));
+            if (p.z > 0 && all(greaterThanEqual(previous, ivec2(0))) && all(lessThan(previous, imageSize))) {
+                // Only if it's the same surface, not something in front of it that moved out of the way
+                float previous_depth = imageLoad(historyDepth, previous).r;
+                if (abs(previous_depth - p.z) < 0.03 * p.z)
+                history = imageLoad(historyColor, previous);
+            }
+        }
+        float count = min(history.a + 1, max(float(pc.history_limit), 1));
+        color = mix(history.rgb, color, 1 / count);
+        imageStore(accumColor, pixelCoord, vec4(color, count));
+        imageStore(accumDepth, pixelCoord, vec4(depth));
+        imageStore(guideImage, pixelCoord, guide);
+        return;
+    }
+
+    vec3 d = normalize(mat3(pc.pixelToRay) * vec3(pixelCoord, 1));
+
+    Hit hit;
+    bool did_hit = trace(o, d, false, FLT_MAX, hit, steps);
+
+    if (pc.render_mode == STEPS) {
+        uint max_steps = (pc.world_size.x + pc.world_size.y + pc.world_size.z) / 8;
+        imageStore(targetImage, pixelCoord, vec4(stepsToInferno(steps, 0, max_steps), 1));
+        return;
+    }
+
+    if (!did_hit)
+    return;
+
+    vec3 color;
+    switch (pc.render_mode) {
+        case COORD:
+        color = vec3(hit.coord) / vec3(levelSize(hit.level) - 1);
+        break;
+        case NORMAL:
+        vec3 normal = hit.normal;
+        color = max(normal.xyz, 0) - min(normal.yxz + normal.zyx, 0);
+        break;
+        case UV:
+        vec3 local_hit = levelPosition(hit, o + d * hit.t) - vec3(hit.coord);
+        vec2 uv;
+        if (hit.axis == 0) {
+            uv = local_hit.yz;
+        } else if (hit.axis == 1) {
+            uv = local_hit.xz;
+        } else {
+            uv = local_hit.xy;
+        }
+        color = vec3(uv, 0);
+        break;
+        case DEPTH:
+        float max_size = float(max(max(pc.world_size.x, pc.world_size.y), pc.world_size.z));
+        color = vec3(1 / (1 + hit.t / max_size)) + vec3(0.3, 0.0, 0.7) / 256;
+        break;
+    }
+    imageStore(targetImage, pixelCoord, vec4(color, 1));
+}
