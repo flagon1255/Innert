@@ -258,8 +258,10 @@ impl Game {
     pub fn find_animal(&self, name: &str, near: Vector3<f64>) -> Option<(Vector3<f64>, f64)> {
         let animals = self.animals.iter().map(|a| (a.look, a.position));
         let pickups = self.pickups.iter().map(|p| (p.item.look(), p.position));
+        let props = self.props.iter().map(|&(look, position, _)| (look, position));
         animals
             .chain(pickups)
+            .chain(props)
             .filter(|(look, _)| look.name() == name)
             .min_by(|a, b| (a.1 - near).norm().total_cmp(&(b.1 - near).norm()))
             .map(|(look, position)| (position, look.body().0))

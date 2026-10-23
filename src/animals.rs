@@ -620,7 +620,8 @@ impl Animal {
         AnimalInstance {
             position: [self.position.x as f32, self.position.y as f32, self.position.z as f32, radius as f32],
             rotation: [self.heading.cos() as f32, self.heading.sin() as f32, scale as f32, 0.0],
-            info: [model_index(self.look, frame), 0, 0, 0],
+            // It moves
+            info: [model_index(self.look, frame), 1, 0, 0],
         }
     }
 }

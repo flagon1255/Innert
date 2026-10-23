@@ -73,7 +73,7 @@ use crate::worldgen::{RiverCache, Terrain, TerrainSettings, World};
 
 const INITIAL_VOXEL_RESOLUTION: u32 = 24;
 const INITIAL_TERRAIN: TerrainSettings = TerrainSettings {
-    width_m: 256,
+    width_m: 320,
     height_m: 64,
     voxels_per_meter: 8,
     seed: 1,
@@ -243,13 +243,13 @@ struct NearBuild {
 /// The next piece of the endless landscape, being built in the background
 struct WindowBuild {
     job: std::thread::JoinHandle<(Terrain, World)>,
-    /// Its corner, in voxels from the corner of the whole landscape
-    origin: [i64; 2],
 }
 
 // The world holds a piece of the endless landscape around the camera. Once the camera gets this
 // far from its middle, in meters, the piece around it is built and moved over to.
-const RECENTER_M: f64 = 40.0;
+const RECENTER_M: f64 = 30.0;
+/// The most flames and crystals lighting things up at once, nearest the camera first
+const MAX_LIGHTS: usize = 24;
 
 // The box of fine detail around the camera, in meters. It gets rebuilt once the camera
 // gets this far from where it was last built.
@@ -1228,14 +1228,55 @@ impl App {
             app.waterfall_index = n - 1;
             app.visit_waterfall();
         }
-        // For checking how an animal looks: `--set view_animal=bear` looks at the nearest one
+        // For checking how buildings and caves look: `--set view_light=3` looks at the third flame
+        // or crystal nearest the start, from `--set view_distance=2.5` meters away
+        if let Some(n) = setting("view_light").and_then(|v| v.parse::<usize>().ok()) {
+            let vpm = app.world.voxels_per_meter as f64;
+            let distance = setting("view_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or(2.5);
+            let start = camera_to_voxels(app.camera.position, app.world.size);
+            let mut lights: Vec<Vector3<f64>> = app.lights.iter().map(|l| Vector3::new(l[0], l[1], l[2]).cast::<f64>()).collect();
+            lights.sort_by(|a, b| (a - start).norm().total_cmp(&(b - start).norm()));
+            if let Some(&target) = lights.get(n.saturating_sub(1)) {
+                println!("looking at light {n} of {}", lights.len());
+                app.view_from_near(target, distance);
+            }
+        }
+        // For checking how buildings look: `--set view_site=pyramid` looks at the nearest pyramid from
+        // outside, and `pyramid-inside` from inside its chamber
+        if let Some(what) = setting("view_site")
+            && let Some(landscape) = app.landscape.clone()
+        {
+            let (kind, inside) = what.strip_suffix("-inside").map_or((what, false), |k| (k, true));
+            let vpm = app.world.voxels_per_meter as f64;
+            let origin = Vector3::new(app.world.origin[0] as f64, app.world.origin[1] as f64, 0.0);
+            let start = camera_to_voxels(app.camera.position, app.world.size);
+            let to_voxels = |p: [f32; 3]| Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64) * vpm - origin;
+            let site = landscape
+                .sites()
+                .iter()
+                .filter(|s| s.kind == kind)
+                .min_by(|a, b| (to_voxels(a.position) - start).norm().total_cmp(&(to_voxels(b.position) - start).norm()));
+            if let Some(site) = site {
+                let middle = to_voxels(site.position);
+                let facing = Vector3::new(site.facing[0] as f64, site.facing[1] as f64, 0.0);
+                println!("looking at a {kind}, {:.0} m away", (middle - start).norm() / vpm);
+                if inside {
+                    let eye = middle + (facing * 2.8 + Vector3::new(0.0, 0.0, 1.9)) * vpm;
+                    let target = middle + (facing * -3.2 + Vector3::new(0.0, 0.0, 1.0)) * vpm;
+                    app.look_from(eye, target);
+                } else {
+                    app.view_from_near(middle + Vector3::new(0.0, 0.0, 5.0 * vpm), 30.0);
+                }
+            }
+        }
+        // For checking how an animal or a prop looks: `--set view_animal=bear` looks at the nearest one
         if let Some(name) = setting("view_animal")
             && let Some((position, height)) = app.game.find_animal(name, camera_to_voxels(app.camera.position, app.world.size))
         {
             let vpm = app.world.voxels_per_meter as f64;
             let target = position + Vector3::new(0.0, 0.0, height * vpm);
-            let eye = target + Vector3::new(1.0, 1.4, 0.6).normalize() * (4.0 * height + 0.6) * vpm;
-            app.look_from(eye, target);
+            let distance = setting("view_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0 * height + 0.6);
+            app.view_from_near(target, distance);
         }
         // For checking how water splashes: `--set pour=4` tips 4 cubic meters out where the camera looks
         if let Some(cubic_meters) = setting("pour").and_then(|v| v.parse::<f64>().ok()) {
@@ -1254,6 +1295,118 @@ impl App {
         if let Some(rcx) = &self.rcx {
             grab_cursor(&rcx.window, focused);
         }
+    }
+
+    /// Takes the lights and props of the landscape the world was just built from, in its voxels
+    fn adopt_features(&mut self) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        let to_voxels = |p: [f32; 3]| Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64) * vpm - origin;
+        let Some(landscape) = &self.landscape else {
+            self.lights.clear();
+            self.game.set_props(Vec::new());
+            return;
+        };
+        self.lights = landscape
+            .lights()
+            .iter()
+            .map(|l| {
+                let p = to_voxels(l.position);
+                [p.x as f32, p.y as f32, p.z as f32, (l.reach as f64 * vpm) as f32, l.color[0], l.color[1], l.color[2], 0.0]
+            })
+            .collect();
+        self.game.set_props(
+            landscape
+                .props()
+                .iter()
+                .map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64))
+                .collect(),
+        );
+    }
+
+    /// Once the camera has wandered far enough from the middle of the world, builds the piece of
+    /// the landscape around it in the background, and moves everything over to it once it's ready
+    fn update_window(&mut self) {
+        if self.landscape.is_none() {
+            return;
+        }
+        let vpm = self.world.voxels_per_meter as f64;
+        let [sx, sy, _] = self.world.size;
+
+        if self.window_build.as_ref().is_some_and(|build| build.job.is_finished()) {
+            let build = self.window_build.take().unwrap();
+            let (terrain, world) = build.job.join().unwrap();
+            self.move_to(Arc::new(terrain), world);
+            return;
+        }
+
+        let camera = camera_to_voxels(self.camera.position, self.world.size);
+        let middle = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, camera.z);
+        if self.window_build.is_some() || (camera - middle).xy().norm() < RECENTER_M * vpm {
+            return;
+        }
+        // Centered on the camera, lined up with the blocks the water is simulated in
+        let align = 64;
+        let origin = [
+            (self.world.origin[0] + camera.x as i64 - sx as i64 / 2).div_euclid(align) * align,
+            (self.world.origin[1] + camera.y as i64 - sy as i64 / 2).div_euclid(align) * align,
+        ];
+        // The same landscape, whatever's changed in the settings since
+        let settings = TerrainSettings {
+            width_m: self.world.size[0] / self.world.voxels_per_meter,
+            height_m: self.world.size[2] / self.world.voxels_per_meter,
+            voxels_per_meter: self.world.voxels_per_meter,
+            ..self.terrain
+        };
+        let rivers = self.rivers.clone();
+        let job = std::thread::spawn(move || worldgen::generate_terrain(&settings, origin, &rivers));
+        self.window_build = Some(WindowBuild { job });
+    }
+
+    /// Moves over to a new piece of the landscape. Everything in the world moves with it.
+    fn move_to(&mut self, landscape: Arc<Terrain>, world: World) {
+        let shift = Vector3::new(
+            (world.origin[0] - self.world.origin[0]) as f64,
+            (world.origin[1] - self.world.origin[1]) as f64,
+            0.0,
+        );
+        self.voxel_set = get_voxel_set(
+            self.memory_allocator.clone(),
+            self.command_buffer_allocator.clone(),
+            self.descriptor_set_allocator.clone(),
+            &self.render_pipeline,
+            &self.queue,
+            1,
+            &world,
+        );
+        let active = self.water.active;
+        self.water = Water::new(
+            &self.memory_allocator,
+            &self.command_buffer_allocator,
+            &self.descriptor_set_allocator,
+            &self.queue,
+            &self.water_pipeline,
+            &world,
+            &landscape.springs(),
+        );
+        self.water.active &= active;
+
+        let camera = camera_to_voxels(self.camera.position, self.world.size) - shift;
+        self.world = world;
+        self.landscape = Some(landscape);
+        self.camera.position = voxels_to_camera(camera, self.world.size);
+        if let Some(player) = &mut self.player {
+            player.position -= shift;
+        }
+        self.last_feet = None;
+        self.near = None;
+        self.near_build = None;
+        self.sun_map_for = None;
+        self.reset_accum = true;
+        self.adopt_features();
+        let water = &self.water;
+        let near = self.player.as_ref().map_or(camera, |p| p.position);
+        self.game.recenter(&self.world, &|x, y| water.surface_at(x, y), shift, self.terrain.seed, near);
     }
 
     /// Builds the world picked in the settings, in place of the current one
@@ -1392,6 +1545,23 @@ impl App {
                 || self.world.material_at(p.x as i64, p.y as i64, p.z as i64) == worldgen::material::AIR
                     && p.z >= self.water.surface_at(p.x, p.y)
         })
+    }
+
+    /// Looks at `target` from about `distance` meters away, from wherever has a clear view of it
+    fn view_from_near(&mut self, target: Vector3<f64>, distance: f64) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let mut eye = target + Vector3::new(distance, 0.0, 0.5) * vpm;
+        'search: for height in [0.3, 0.8, 1.5, 3.0] {
+            for turn in 0..16 {
+                let angle = turn as f64 / 16.0 * TAU;
+                let candidate = target + Vector3::new(angle.cos() * distance, angle.sin() * distance, height * distance.max(1.0) / 2.5) * vpm;
+                if self.clear_view(candidate, target) {
+                    eye = candidate;
+                    break 'search;
+                }
+            }
+        }
+        self.look_from(eye, target);
     }
 
     /// Puts the camera at `eye` looking at `target`, both in voxels, flying so it stays there
@@ -1685,9 +1855,11 @@ impl App {
                     2,
                     &world,
                 );
+                // Its origin is from the corner of the whole landscape, the world's isn't
+                let window = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
                 self.near = Some(NearDetail {
                     set,
-                    origin: Vector3::from(world.origin).cast::<f64>() / scale as f64,
+                    origin: Vector3::from(world.origin).cast::<f64>() / scale as f64 - window,
                     scale: scale as f64,
                     size: world.size,
                     center: build.center,
@@ -1704,7 +1876,8 @@ impl App {
         });
         if moved && self.near_build.is_none() {
             let size = [NEAR_WIDTH_M * fine_vpm, NEAR_WIDTH_M * fine_vpm, NEAR_HEIGHT_M * fine_vpm];
-            let center = camera * scale as f64;
+            let window = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            let center = (camera + window) * scale as f64;
             // Brick aligned, and within the height of the world
             let corner = |axis: usize| ((center[axis] - size[axis] as f64 * 0.5) / 8.0).round() as i64 * 8;
             let top = self.world.size[2] as i64 * scale as i64 - size[2] as i64;
@@ -1740,6 +1913,7 @@ impl App {
         self.post_pipeline.maybe_reload();
         self.resample_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
+        self.update_window();
         self.update_near_detail();
 
         let rcx = self.rcx.as_mut().unwrap();
@@ -2141,6 +2315,20 @@ impl App {
             .allocate_slice::<AnimalInstance>(instances.len().max(1) as u64)
             .unwrap();
         instance_buffer.write().unwrap()[..instances.len()].copy_from_slice(&instances);
+
+        // The flames and crystals nearest the camera, whose light reaches it
+        let camera_voxels = camera_to_voxels(self.camera.position, self.world.size).cast::<f32>();
+        let mut lights: Vec<(f32, [f32; 8])> = self
+            .lights
+            .iter()
+            .map(|l| ((Vector3::new(l[0], l[1], l[2]) - camera_voxels).norm() - l[3], *l))
+            .filter(|(d, _)| *d < 0.0)
+            .collect();
+        lights.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let lights: Vec<[f32; 8]> = lights.into_iter().take(MAX_LIGHTS).map(|(_, l)| l).collect();
+        let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();
+        light_buffer.write().unwrap()[..lights.len()].copy_from_slice(&lights);
+
         let animal_set = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
             self.render_pipeline.layout().set_layouts()[3].clone(),
@@ -2150,10 +2338,17 @@ impl App {
                 WriteDescriptorSet::image_view(2, self.water.ground_view.clone()),
                 WriteDescriptorSet::image_view(3, self.water.surface_view.clone()),
                 WriteDescriptorSet::image_view(4, self.water.blocks_view.clone()),
+                WriteDescriptorSet::buffer(5, light_buffer),
             ],
             [],
         )
         .unwrap();
+        // Things fade into the sky before the edge of the world, which is never nearer than this
+        let fade = if self.landscape.is_some() {
+            ((self.world.size[0].min(self.world.size[1]) as f64 * 0.5 - RECENTER_M * self.world.voxels_per_meter as f64) as f32).max(0.0)
+        } else {
+            0.0
+        };
 
         let view = ViewKey {
             pixel_to_ray: pixel_to_ray.cast(),
@@ -2218,7 +2413,7 @@ impl App {
             history_limit,
             near_origin,
             near_size,
-            haze: [view.haze, self.start_time.elapsed().as_secs_f32(), 0.0, 0.0],
+            haze: [view.haze, self.start_time.elapsed().as_secs_f32(), lights.len() as f32, fade],
         };
         let parity = (self.frame % 2) as usize;
         let render_set = rcx.images.render_sets[parity].clone();

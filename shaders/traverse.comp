@@ -122,7 +122,7 @@ layout(set = 3, binding = 0) readonly buffer AnimalModels {
 struct Animal {
     vec4 position; // xyz: the middle of its feet in voxels of the main world, w: radius of a sphere around it
     vec4 rotation; // xy: cos and sin of the way it faces, z: size of its voxels in voxels of the main world
-    uvec4 info; // x: model
+    uvec4 info; // x: model, y: 1 if it moves about
 };
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
@@ -1380,7 +1380,7 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     // before its edge
     float fade_end = pc.haze.w;
     if (fade_end > 0 && distance >= 0)
-    color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), smoothstep(0.6 * fade_end, fade_end, distance));
+    color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), smoothstep(0.7 * fade_end, fade_end, distance));
     return color;
 }
 
@@ -1460,7 +1460,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             albedo *= foamFlow(hit);
             g_dynamic = true;
         }
-        if (hit.level == ANIMAL)
+        if (hit.level == ANIMAL && animals[hit.instance].info.y != 0)
         g_dynamic = true;
         // The ground under the grass is in its shade, out to where the grass thins out
         if (material == MAT_GRASS && (pc.flags & FLAG_GRASS) != 0) {

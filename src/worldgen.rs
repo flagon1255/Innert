@@ -725,11 +725,6 @@ impl Heights {
         self.ground[x + y * self.size[0]]
     }
 
-    /// Ground height in meters at a point in meters, from the nearest column
-    fn ground_at(&self, x: f32, y: f32) -> f32 {
-        let v = self.voxels_per_meter;
-        self.ground_m((x * v) as i64 - self.origin[0], (y * v) as i64 - self.origin[1])
-    }
 
     /// Cuts a river's channel and banks into the ground. Call settle_beds() once every river is in.
     fn carve(&mut self, path: &[RiverPoint]) {
@@ -875,6 +870,16 @@ struct Features {
     floors: Vec<Floor>,
     /// Where buildings stand, so nothing else grows there: x0, y0, x1, y1 and how high they reach
     footprints: Vec<[f32; 5]>,
+    sites: Vec<Site>,
+}
+
+/// A building: what kind, where its middle is and which way it faces, with the lowest ground
+/// under it, in meters
+#[derive(Clone, Copy)]
+pub struct Site {
+    pub kind: &'static str,
+    pub position: [f32; 3],
+    pub facing: [f32; 2],
 }
 
 /// Everything about a piece of the landscape that doesn't depend on its resolution: the shape
@@ -981,6 +986,11 @@ impl Terrain {
     /// Flames and glowing crystals, in meters
     pub fn lights(&self) -> &[Light] {
         &self.features.lights
+    }
+
+    /// The buildings in this piece of the landscape
+    pub fn sites(&self) -> &[Site] {
+        &self.features.sites
     }
 
     /// Builds a box of the landscape into voxels. `origin` and `size` are in voxels at
@@ -1636,7 +1646,7 @@ impl Terrain {
     /// Temples and ruins on flat, dry ground, at most one in each BUILDING_CELL square, and
     /// gateways over some of the waterfalls
     fn buildings(&self, heights: &Heights, features: &mut Features) -> Vec<Object> {
-        const BUILDING_CELL: f32 = 110.0;
+        const BUILDING_CELL: f32 = 80.0;
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
         let sea_level = sea_level_m(&self.settings);
@@ -1657,15 +1667,16 @@ impl Terrain {
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
                 let r = hash3(cx as u32, cy as u32, seed ^ 0x7e3b);
-                if unit(r) > 0.65 {
+                if unit(r) > 0.75 {
                     continue;
                 }
-                // Pyramids, small temples and ruins
+                // Pyramids, small temples and ruins. They sink into the ground on the uphill side,
+                // so the ground only has to be fairly flat.
                 let kind = (r >> 20) % 10;
                 let (half, flatness) = match kind {
-                    0..=3 => (12.5, 3.5),
-                    4..=6 => (5.0, 2.5),
-                    _ => (8.0, 4.0),
+                    0..=3 => (12.5, 6.0),
+                    4..=6 => (5.0, 3.5),
+                    _ => (8.0, 6.0),
                 };
                 let s = hash(r);
                 let x = (cx as f32 + 0.2 + 0.6 * unit(s)) * BUILDING_CELL;
@@ -1699,6 +1710,12 @@ impl Terrain {
                     4..=6 => self.shrine(at, lowest, &mut rng, features),
                     _ => self.ruins(at, lowest, &mut rng, features),
                 };
+                let name = ["pyramid", "shrine", "ruins"][match kind {
+                    0..=3 => 0,
+                    4..=6 => 1,
+                    _ => 2,
+                }];
+                features.sites.push(Site { kind: name, position: [x, y, lowest], facing });
                 objects.push(Object::new(shapes, rng.0));
                 features.footprints.push([x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0, top]);
             }
@@ -1712,6 +1729,7 @@ impl Terrain {
             }
             let mut rng = Rng(hash(r));
             let (shapes, top) = self.gateway(lip, flow, &mut rng, features);
+            features.sites.push(Site { kind: "gateway", position: lip, facing: flow });
             objects.push(Object::new(shapes, rng.0));
             features.footprints.push([lip[0] - 5.0, lip[1] - 5.0, lip[0] + 5.0, lip[1] + 5.0, top]);
         }
@@ -1875,7 +1893,8 @@ impl Terrain {
         let side = |d: f32, z: f32| [lip[0] + across[0] * d, lip[1] + across[1] * d, z];
         let (low, high) = (lip[2] - 6.0, lip[2] + 4.5);
         for d in [-4.0, 4.0] {
-            s.push(Shape::capsule(side(d, high + 0.2), side(d, high + 0.2), 0.75, 0.75, TEMPLE_DARK, AIR, false));
+            let top = side(d, high);
+            s.push(Shape::block([top[0] - 0.7, top[1] - 0.7, high - 0.1], [top[0] + 0.7, top[1] + 0.7, high + 0.5], TEMPLE_DARK, AIR));
             s.push(Shape::capsule(side(d, high - 1.2), side(d, high - 0.9), 0.62, 0.62, TEMPLE_TEAL, TEMPLE_RED, false));
             s.push(Shape::capsule(side(d, low), side(d, high), 0.55, 0.5, TEMPLE_STONE, MOSS, false));
             candle(features, side(d, high + 0.9), rng);
