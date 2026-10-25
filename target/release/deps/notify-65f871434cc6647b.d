@@ -1,0 +1,12 @@
+C:\Users\Andrej\Desktop\Innert\target\release\deps\notify-65f871434cc6647b.d: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\windows.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\null.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\poll.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\config.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\error.rs
+
+C:\Users\Andrej\Desktop\Innert\target\release\deps\libnotify-65f871434cc6647b.rlib: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\windows.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\null.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\poll.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\config.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\error.rs
+
+C:\Users\Andrej\Desktop\Innert\target\release\deps\libnotify-65f871434cc6647b.rmeta: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\windows.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\null.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\poll.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\config.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\error.rs
+
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\lib.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\windows.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\null.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\poll.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\config.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notify-8.2.0\src\error.rs:

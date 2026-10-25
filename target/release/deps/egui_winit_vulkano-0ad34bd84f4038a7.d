@@ -1,0 +1,10 @@
+C:\Users\Andrej\Desktop\Innert\target\release\deps\egui_winit_vulkano-0ad34bd84f4038a7.d: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\integration.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\renderer.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\utils.rs
+
+C:\Users\Andrej\Desktop\Innert\target\release\deps\libegui_winit_vulkano-0ad34bd84f4038a7.rlib: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\integration.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\renderer.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\utils.rs
+
+C:\Users\Andrej\Desktop\Innert\target\release\deps\libegui_winit_vulkano-0ad34bd84f4038a7.rmeta: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\integration.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\renderer.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\utils.rs
+
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\lib.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\integration.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\renderer.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui_winit_vulkano-0.28.0\src\utils.rs:

@@ -1,0 +1,11 @@
+C:\Users\Andrej\Desktop\Innert\target\release\deps\xmlparser-edf840838f544d28.d: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\error.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\stream.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\strspan.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\xmlchar.rs
+
+C:\Users\Andrej\Desktop\Innert\target\release\deps\libxmlparser-edf840838f544d28.rlib: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\error.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\stream.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\strspan.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\xmlchar.rs
+
+C:\Users\Andrej\Desktop\Innert\target\release\deps\libxmlparser-edf840838f544d28.rmeta: C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\lib.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\error.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\stream.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\strspan.rs C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\xmlchar.rs
+
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\lib.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\error.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\stream.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\strspan.rs:
+C:\Users\Andrej\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\xmlparser-0.13.6\src\xmlchar.rs:
