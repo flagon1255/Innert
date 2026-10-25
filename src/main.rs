@@ -1,3 +1,7 @@
+// No console window behind the game, except when debugging. Problems are shown in a box, see
+// show_error().
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use egui_winit_vulkano::{
     Gui, GuiConfig,
     egui::{self, Align2, Color32, RichText},
@@ -433,8 +437,13 @@ struct RenderImages {
     bloom_extent: [u32; 2],
     resample_image: Arc<Image>,
     resample_set: Arc<DescriptorSet>,
+    // upscale.comp's, by frame parity, and what it's gathered at the window's resolution, which
+    // read and write by turns
+    upscale_sets: [Arc<DescriptorSet>; 2],
+    histories: [Arc<ImageView>; 2],
 }
 
+/// `histories` are upscale.comp's from before, kept if the window's the same size
 #[allow(clippy::too_many_arguments)]
 fn get_render_images(
     memory_allocator: Arc<StandardMemoryAllocator>,
@@ -442,9 +451,11 @@ fn get_render_images(
     render_pipeline: &ComputePipeline,
     post_pipeline: &ComputePipeline,
     resample_pipeline: &ComputePipeline,
+    upscale_pipeline: &ComputePipeline,
     sun_map: &Arc<ImageView>,
     render_extent: [u32; 2],
     window_extent: [u32; 2],
+    histories: Option<[Arc<ImageView>; 2]>,
 ) -> RenderImages {
     let (render_image, render_image_view) =
         get_render_image(memory_allocator.clone(), render_extent);
@@ -530,6 +541,27 @@ fn get_render_images(
     )
     .unwrap();
 
+    let histories = histories
+        .filter(|h| h[0].image().extent()[..2] == window_extent[..])
+        .unwrap_or_else(|| [0, 1].map(|_| float_image(window_extent, Format::R16G16B16A16_SFLOAT)));
+    let layout = upscale_pipeline.layout().set_layouts()[0].clone();
+    let upscale_sets = [0, 1].map(|parity| {
+        DescriptorSet::new(
+            descriptor_set_allocator.clone(),
+            layout.clone(),
+            [
+                WriteDescriptorSet::image_view(0, render_image_view.clone()),
+                WriteDescriptorSet::image_view(1, depths[parity].clone()),
+                WriteDescriptorSet::image_view(2, guide.clone()),
+                WriteDescriptorSet::image_view(3, histories[1 - parity].clone()),
+                WriteDescriptorSet::image_view(4, histories[parity].clone()),
+                WriteDescriptorSet::image_view(5, resample_image_view.clone()),
+            ],
+            [],
+        )
+        .unwrap()
+    });
+
     RenderImages {
         render_image,
         render_sets,
@@ -540,8 +572,24 @@ fn get_render_images(
         bloom_extent,
         resample_image,
         resample_set,
+        upscale_sets,
+        histories,
     }
 }
+
+#[derive(BufferContents, Clone, Copy)]
+#[repr(C)]
+struct UpscaleConstants {
+    pixel_to_ray: Matrix4<f32>,
+    previous_world_to_pixel: Matrix4<f32>,
+    frame: u32,
+    flags: u32,
+    most: f32,
+    padding: f32,
+}
+
+// Has to match upscale.comp
+const UPSCALE_HISTORY: u32 = 1;
 
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
@@ -827,6 +875,7 @@ struct App {
     render_pipeline: HotReloadComputePipeline,
     post_pipeline: HotReloadComputePipeline,
     resample_pipeline: HotReloadComputePipeline,
+    upscale_pipeline: HotReloadComputePipeline,
     water_pipeline: HotReloadComputePipeline,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
@@ -886,6 +935,8 @@ struct App {
     accum_count: u32,
     last_view: Option<ViewKey>,
     reset_accum: bool,
+    // World to window pixel last frame, for upscale.comp to find where things were, if it ran
+    last_world_to_window: Option<Matrix4<f64>>,
 
     // Animals, food and what the player carries
     game: Game,
@@ -1044,11 +1095,18 @@ struct ViewKey {
 
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
-        let library = VulkanLibrary::new().unwrap();
+        let library = VulkanLibrary::new()
+            .unwrap_or_else(|e| fail(&format!("Vulkan isn't installed on this computer ({e}).\n\n{DRIVER_HINT}")));
 
-        let mut required_extensions = Surface::required_extensions(event_loop).unwrap();
+        let mut required_extensions = Surface::required_extensions(event_loop)
+            .unwrap_or_else(|e| fail(&format!("Can't draw to a window here ({e}).\n\n{DRIVER_HINT}")));
 
-        required_extensions.ext_debug_utils = true;
+        // Without a driver that does Vulkan, it can't even draw to a window
+        if !library.supported_extensions().contains(&required_extensions) {
+            fail(&format!("This computer's graphics driver doesn't support Vulkan, or there isn't one installed.\n\n{DRIVER_HINT}"));
+        }
+        // For debugging tools, where they're there
+        required_extensions.ext_debug_utils = library.supported_extensions().ext_debug_utils;
 
         let instance = Instance::new(
             library,
@@ -1058,16 +1116,24 @@ impl App {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap_or_else(|e| fail(&format!("Couldn't start Vulkan ({e}).\n\n{DRIVER_HINT}")));
 
         let mut device_extensions = DeviceExtensions {
             khr_swapchain: true,
             ..DeviceExtensions::empty()
         };
 
-        let (physical_device, queue_family_index) = instance
+        let devices: Vec<_> = instance
             .enumerate_physical_devices()
-            .unwrap()
+            .unwrap_or_else(|e| fail(&format!("Couldn't find any graphics cards ({e}).\n\n{DRIVER_HINT}")))
+            .collect();
+        let found = devices
+            .iter()
+            .map(|p| format!("{} (Vulkan {})", p.properties().device_name, p.api_version()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (physical_device, queue_family_index) = devices
+            .into_iter()
             .filter(|p| {
                 p.api_version() >= Version::V1_3 || p.supported_extensions().khr_dynamic_rendering
             })
@@ -1090,13 +1156,18 @@ impl App {
                 PhysicalDeviceType::Other => 4,
                 _ => 5,
             })
-            .unwrap();
+            .unwrap_or_else(|| {
+                let found = if found.is_empty() { "none".to_string() } else { found };
+                fail(&format!("None of the graphics cards here can run Innert. Found: {found}.\n\n{DRIVER_HINT}"))
+            });
 
         println!(
             "Using device: {} (type: {:?})",
             physical_device.properties().device_name,
             physical_device.properties().device_type,
         );
+        // Not a graphics card of its own, so slower: it renders fewer pixels to begin with
+        let integrated = physical_device.properties().device_type != PhysicalDeviceType::DiscreteGpu;
 
         if physical_device.api_version() < Version::V1_3 {
             device_extensions.khr_dynamic_rendering = true;
@@ -1117,22 +1188,24 @@ impl App {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap_or_else(|e| fail(&format!("Couldn't start the graphics card ({e}).\n\n{DRIVER_HINT}")));
 
         let queue = queues.next().unwrap();
 
         let (memory_allocator, descriptor_set_allocator, command_buffer_allocator) =
             get_allocators(&device);
 
+        // Read from where they are while working on them, so they reload when changed. Copies are
+        // built in for running elsewhere.
         let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let render_pipeline =
-            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("traverse.comp"));
-        let post_pipeline =
-            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("post.comp"));
-        let resample_pipeline =
-            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("resample.comp"));
-        let water_pipeline =
-            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join("water.comp"));
+        let shader = |name: &str, built_in: &'static str| {
+            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join(name), built_in)
+        };
+        let render_pipeline = shader("traverse.comp", include_str!("../shaders/traverse.comp"));
+        let post_pipeline = shader("post.comp", include_str!("../shaders/post.comp"));
+        let resample_pipeline = shader("resample.comp", include_str!("../shaders/resample.comp"));
+        let upscale_pipeline = shader("upscale.comp", include_str!("../shaders/upscale.comp"));
+        let water_pipeline = shader("water.comp", include_str!("../shaders/water.comp"));
 
         let sun_map = get_history_image_view(
             memory_allocator.clone(),
@@ -1266,6 +1339,7 @@ impl App {
             render_pipeline,
             post_pipeline,
             resample_pipeline,
+            upscale_pipeline,
             water_pipeline,
 
             sun_map,
@@ -1292,8 +1366,8 @@ impl App {
             camera,
             move_speed: scene.initial_move_speed(),
             render_mode: RenderMode::Shaded,
-            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(0.5),
-            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(0.6),
+            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.35 } else { 0.5 }),
+            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.45 } else { 0.6 }),
             still_frames: 0,
             last_camera_view: None,
 
@@ -1317,6 +1391,7 @@ impl App {
             accum_count: 0,
             last_view: None,
             reset_accum: true,
+            last_world_to_window: None,
 
             game,
             animals_on: flag("animals", true),
@@ -2182,6 +2257,11 @@ impl App {
             }
             // Keeps attacking with what's in hand, and `draw` keeps a bow drawn, for screenshots
             ("swing", _) => self.script_controls = combat::Controls { attack: true, holding: true, ..Default::default() },
+            // Turns steadily while swinging, to see how things look on the move
+            ("pan", _) => {
+                self.camera.rotation.z += 0.004;
+                self.script_controls = combat::Controls { attack: true, holding: true, ..Default::default() };
+            }
             // Heavy blows on foot, so a hammer dents the ground
             ("heavy", f) => {
                 if f == 1 && self.player.is_none() {
@@ -2339,6 +2419,7 @@ impl App {
         }
         self.post_pipeline.maybe_reload();
         self.resample_pipeline.maybe_reload();
+        self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
         self.update_window();
         self.update_near_detail();
@@ -2386,16 +2467,23 @@ impl App {
                 ((window_extent[0] as f32 * scale) as u32).max(1),
                 ((window_extent[1] as f32 * scale) as u32).max(1),
             ];
+            let kept = rcx.images.histories.clone();
             rcx.images = get_render_images(
                 self.memory_allocator.clone(),
                 self.descriptor_set_allocator.clone(),
                 &self.render_pipeline,
                 &self.post_pipeline,
                 &self.resample_pipeline,
+                &self.upscale_pipeline,
                 &self.sun_map,
                 render_extent,
                 window_extent,
+                Some(kept.clone()),
             );
+            // New ones have nothing in them yet
+            if !Arc::ptr_eq(&rcx.images.histories[0], &kept[0]) {
+                self.last_world_to_window = None;
+            }
 
             rcx.render_scale_in_use = scale;
             rcx.recreate_images = false;
@@ -2958,16 +3046,43 @@ impl App {
             dispatch_post(&mut builder, &self.post_pipeline, &images.tonemap_set, constants(PostStage::Tonemap, 0), render_extent);
         }
 
+        // Up to the window's resolution: gathered over frames when shaded at or below it, otherwise
+        // just averaged down or stretched
+        let upscale = shaded && render_extent[0] <= resample_extent[0] && render_extent[1] <= resample_extent[1];
+        let (pipeline, set) = if upscale {
+            (self.upscale_pipeline.clone(), rcx.images.upscale_sets[parity].clone())
+        } else {
+            (self.resample_pipeline.clone(), rcx.images.resample_set.clone())
+        };
         builder
-            .bind_pipeline_compute(self.resample_pipeline.clone())
+            .bind_pipeline_compute(pipeline.clone())
             .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                self.resample_pipeline.layout().clone(),
-                0,
-                vec![rcx.images.resample_set.clone()],
-            )
+            .bind_descriptor_sets(PipelineBindPoint::Compute, pipeline.layout().clone(), 0, vec![set])
             .unwrap();
+        if upscale {
+            // world_to_pixel() gives rendered pixels, whose centers are at whole numbers, and so
+            // are the window's
+            let ratio = [0, 1].map(|i| resample_extent[i] as f64 / render_extent[i] as f64);
+            let mut to_window = Matrix4::identity();
+            to_window.m11 = ratio[0];
+            to_window.m13 = 0.5 * ratio[0] - 0.5;
+            to_window.m22 = ratio[1];
+            to_window.m23 = 0.5 * ratio[1] - 0.5;
+            let world_to_window = to_window * world_to_pixel(&pixel_to_ray);
+            let previous = self.last_world_to_window.replace(world_to_window);
+            let constants = UpscaleConstants {
+                pixel_to_ray: push_constants.pixel_to_ray,
+                previous_world_to_pixel: previous.unwrap_or(world_to_window).cast(),
+                frame: push_constants.frame,
+                flags: if previous.is_some() { UPSCALE_HISTORY } else { 0 },
+                // Smoother once the view settles, quicker to catch up while it moves
+                most: if self.still_frames >= 2 { 12.0 } else { 4.0 },
+                padding: 0.0,
+            };
+            builder.push_constants(pipeline.layout().clone(), 0, constants).unwrap();
+        } else {
+            self.last_world_to_window = None;
+        }
 
         unsafe {
             builder
@@ -3132,10 +3247,13 @@ impl ApplicationHandler for App {
             &self.render_pipeline,
             &self.post_pipeline,
             &self.resample_pipeline,
+            &self.upscale_pipeline,
             &self.sun_map,
             render_extent,
             window_extent,
+            None,
         );
+        self.last_world_to_window = None;
 
         let gui = Gui::new(
             event_loop,
@@ -3203,8 +3321,46 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Tells the player something went wrong. On Windows that's in a box, as there's no console to
+/// see it in, except for screenshot runs, which have no one to click it away.
+fn show_error(text: &str) {
+    eprintln!("{text}");
+    #[cfg(windows)]
+    if !std::env::args().any(|a| a == "--screenshot") {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn MessageBoxW(window: *mut std::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+        }
+        const MB_ICONERROR: u32 = 0x10;
+        let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        unsafe {
+            MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Innert").as_ptr(), MB_ICONERROR);
+        }
+    }
+}
+
+/// Stops, saying why
+fn fail(text: &str) -> ! {
+    show_error(text);
+    std::process::exit(1)
+}
+
+/// What most often fixes it when the graphics card can't be used
+const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3, which most made in the last several \
+    years do. Installing the latest driver from NVIDIA, AMD or Intel usually sorts it out.";
+
 fn main() {
-    let event_loop = EventLoop::new().unwrap();
+    std::panic::set_hook(Box::new(|info| {
+        let place = info.location().map_or(String::new(), |l| format!(" ({}:{})", l.file(), l.line()));
+        let what = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}"));
+    }));
+    let event_loop = EventLoop::new().unwrap_or_else(|e| fail(&format!("Couldn't open a window: {e}")));
     let mut app = App::new(&event_loop);
     event_loop.run_app(&mut app).unwrap();
 }

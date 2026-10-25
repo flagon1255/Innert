@@ -19,14 +19,21 @@ use vulkano::{
     shader::{ShaderModule, ShaderModuleCreateInfo},
 };
 
+/// The shader at `path`, or if it isn't there, as on another computer than the one it was built
+/// on, the copy built into the program
 fn compile_to_spirv(
     path: &Path,
+    built_in: &str,
     kind: shaderc::ShaderKind,
     entry_point_name: &str,
 ) -> Result<shaderc::CompilationArtifact, shaderc::Error> {
-    let mut f = File::open(path).unwrap();
     let mut source_text = String::new();
-    f.read_to_string(&mut source_text).unwrap();
+    match File::open(path) {
+        Ok(mut f) => {
+            f.read_to_string(&mut source_text).unwrap();
+        }
+        Err(_) => source_text = built_in.to_owned(),
+    }
 
     let compiler = shaderc::Compiler::new().unwrap();
     let mut options = shaderc::CompileOptions::new().unwrap();
@@ -67,7 +74,9 @@ pub struct HotReloadComputePipeline {
     pipeline: Arc<ComputePipeline>,
     reload: Arc<AtomicBool>,
     path: PathBuf,
-    _watcher: RecommendedWatcher,
+    built_in: &'static str,
+    // Only when the shader's file is there to watch
+    _watcher: Option<RecommendedWatcher>,
 }
 
 impl Deref for HotReloadComputePipeline {
@@ -79,22 +88,25 @@ impl Deref for HotReloadComputePipeline {
 }
 
 impl HotReloadComputePipeline {
-    pub fn new(device: Arc<Device>, path: &Path) -> Self {
+    /// The shader at `path`, reloaded whenever it changes, or `built_in` if there's no such file
+    pub fn new(device: Arc<Device>, path: &Path, built_in: &'static str) -> Self {
         let reload = Arc::<AtomicBool>::default();
         let cloned_reload = reload.clone();
-        let mut watcher =
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res
-                    && event.kind.is_modify()
-                {
-                    cloned_reload.store(true, Ordering::Relaxed);
-                }
-            })
-            .unwrap();
+        let watcher = path.exists().then(|| {
+            let mut watcher =
+                notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = res
+                        && event.kind.is_modify()
+                    {
+                        cloned_reload.store(true, Ordering::Relaxed);
+                    }
+                })
+                .unwrap();
+            watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
+            watcher
+        });
 
-        watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
-
-        let artifact = compile_to_spirv(path, shaderc::ShaderKind::Compute, "main").unwrap();
+        let artifact = compile_to_spirv(path, built_in, shaderc::ShaderKind::Compute, "main").unwrap();
 
         let shader_module = unsafe {
             ShaderModule::new(device, ShaderModuleCreateInfo::new(artifact.as_binary())).unwrap()
@@ -106,6 +118,7 @@ impl HotReloadComputePipeline {
             pipeline,
             reload,
             path: path.to_path_buf(),
+            built_in,
             _watcher: watcher,
         }
     }
@@ -113,7 +126,7 @@ impl HotReloadComputePipeline {
     /// Returns true if the pipeline was replaced.
     pub fn maybe_reload(&mut self) -> bool {
         if self.reload.swap(false, Ordering::Relaxed) {
-            let artifact = match compile_to_spirv(&self.path, shaderc::ShaderKind::Compute, "main")
+            let artifact = match compile_to_spirv(&self.path, self.built_in, shaderc::ShaderKind::Compute, "main")
             {
                 Ok(artifact) => artifact,
                 Err(e) => {
@@ -151,5 +164,27 @@ impl HotReloadComputePipeline {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // As on another computer, where the shaders folder it was built from isn't there
+    #[test]
+    fn built_in_shaders_compile_without_their_files() {
+        let missing = Path::new("no such folder");
+        for (name, source) in [
+            ("traverse.comp", include_str!("../shaders/traverse.comp")),
+            ("post.comp", include_str!("../shaders/post.comp")),
+            ("resample.comp", include_str!("../shaders/resample.comp")),
+            ("upscale.comp", include_str!("../shaders/upscale.comp")),
+            ("water.comp", include_str!("../shaders/water.comp")),
+        ] {
+            if let Err(e) = compile_to_spirv(&missing.join(name), source, shaderc::ShaderKind::Compute, "main") {
+                panic!("{name}: {e}");
+            }
+        }
     }
 }

@@ -1,0 +1,184 @@
+#version 460
+
+// Runs after post.comp: builds the image shown, at the window's resolution, out of the smaller one
+// rendered. Every frame the rendered pixels are looked through a different spot within them (see
+// pixelJitter()), so over a few frames they see finer detail than any one frame has. Each window
+// pixel keeps what it's gathered so far, following its surface from where it was on screen last
+// frame, and takes in the rendered pixels that landed near it this frame. What's changed since,
+// like something moving out of the way, is kept out by holding last frame's color to the range of
+// the colors around it now.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    // Rendered pixel to ray, as in traverse.comp
+    mat4 pixelToRay;
+    // World to window pixel last frame, as (x * z, y * z, z)
+    mat4 previousWorldToPixel;
+    uint frame;
+    uint flags;
+    // How much the most that's been gathered counts for against a new pixel landing right on
+    // a window pixel's center: more is smoother but slower to catch up
+    float most;
+    float pad;
+} pc;
+
+// Has to match the UPSCALE_* constants in main.rs
+const uint UPSCALE_HISTORY = 1; // Last frame's image is there to use
+
+// Tone mapped, from post.comp
+layout(set = 0, binding = 0, rgba8) readonly uniform image2D current;
+// Written by traverse.comp, see there
+layout(set = 0, binding = 1, r32f) readonly uniform image2D depthImage;
+layout(set = 0, binding = 2, rgba32f) readonly uniform image2D guideImage;
+// What each window pixel has gathered, with alpha how much
+layout(set = 0, binding = 3, rgba16f) readonly uniform image2D historyIn;
+layout(set = 0, binding = 4, rgba16f) writeonly uniform image2D historyOut;
+layout(set = 0, binding = 5, rgba8) writeonly uniform image2D outputImage;
+
+const float FLT_MAX = 3.402823466e+38;
+
+float halton(uint i, uint base) {
+    float f = 1;
+    float r = 0;
+    while (i > 0) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// Where within its pixel each ray goes through this frame, -0.5 to 0.5. Has to match traverse.comp.
+vec2 pixelJitter(uint frame) {
+    uint i = frame % 16 + 1;
+    return vec2(halton(i, 2), halton(i, 3)) - 0.5;
+}
+
+vec3 toYCoCg(vec3 c) {
+    return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25)));
+}
+
+vec3 fromYCoCg(vec3 c) {
+    return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+
+// Moves `c` towards `center` until it's within lo to hi
+vec3 clipToBox(vec3 c, vec3 center, vec3 lo, vec3 hi) {
+    vec3 r = c - center;
+    vec3 reach = mix(lo - center, hi - center, step(0, r));
+    vec3 t = clamp(reach / (abs(r) + 1e-6) * sign(r + 1e-7), 0, 1);
+    return center + r * min(min(t.x, t.y), min(t.z, 1));
+}
+
+// Last frame's image at `pos`, in window pixels, smoothly between them (Catmull-Rom)
+vec4 sampleHistory(vec2 pos) {
+    ivec2 size = imageSize(historyIn);
+    vec2 i = floor(pos);
+    vec2 f = pos - i;
+    vec2 w[4] = vec2[4](
+        f * (-0.5 + f * (1 - 0.5 * f)),
+        1 + f * f * (-2.5 + 1.5 * f),
+        f * (0.5 + f * (2 - 1.5 * f)),
+        f * f * (-0.5 + 0.5 * f)
+    );
+    vec4 sum = vec4(0);
+    for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+            ivec2 q = clamp(ivec2(i) + ivec2(x - 1, y - 1), ivec2(0), size - 1);
+            sum += imageLoad(historyIn, q) * (w[x].x * w[y].y);
+        }
+    }
+    return max(sum, vec4(0));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputImage);
+    if (any(greaterThanEqual(p, size)))
+    return;
+
+    ivec2 rendered = imageSize(current);
+    vec2 scale = vec2(rendered) / vec2(size);
+    vec2 jitter = pixelJitter(pc.frame);
+    // This pixel's center among the rendered pixels, whose own centers are at whole numbers, and
+    // the one whose ray went nearest to it
+    vec2 at = (vec2(p) + 0.5) * scale - 0.5;
+    ivec2 nearest = ivec2(floor(at - jitter + 0.5));
+
+    // The rendered pixels around: weighted by how near their rays went to this pixel's center,
+    // and by a wider tent for a smooth fallback, with the spread of their colors, and the depth of
+    // the nearest surface among them to follow back to last frame
+    vec3 sharp = vec3(0);
+    vec3 smooth_sum = vec3(0);
+    float weights = 0;
+    float smooth_weights = 0;
+    vec3 m1 = vec3(0);
+    vec3 m2 = vec3(0);
+    vec3 lo = vec3(FLT_MAX);
+    vec3 hi = vec3(-FLT_MAX);
+    float closest = FLT_MAX;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = clamp(nearest + ivec2(x, y), ivec2(0), rendered - 1);
+            vec3 c = imageLoad(current, q).rgb;
+            vec2 offset = vec2(q) + jitter - at;
+            // In window pixels
+            vec2 d = offset / scale;
+            float w = exp(-2.29 * dot(d, d));
+            float tent = max(1 - abs(offset.x), 0) * max(1 - abs(offset.y), 0);
+            sharp += c * w;
+            weights += w;
+            smooth_sum += c * tent;
+            smooth_weights += tent;
+            vec3 ycocg = toYCoCg(c);
+            m1 += ycocg;
+            m2 += ycocg * ycocg;
+            lo = min(lo, ycocg);
+            hi = max(hi, ycocg);
+            // Not what's held, which moves with the camera rather than staying put in the world
+            float depth = imageLoad(depthImage, q).r;
+            if (depth >= 0 && imageLoad(guideImage, q).w < 7.5)
+            closest = min(closest, depth);
+        }
+    }
+    vec3 smoothed = smooth_sum / max(smooth_weights, 1e-4);
+    vec3 here = weights > 1e-4 ? sharp / weights : smoothed;
+    weights = min(weights, 1);
+
+    // Where this pixel's surface was last frame. What's held moves with the camera, so it was
+    // right here.
+    bool held = imageLoad(guideImage, clamp(nearest, ivec2(0), rendered - 1)).w > 7.5;
+    vec2 previous = vec2(p);
+    bool found = (pc.flags & UPSCALE_HISTORY) != 0;
+    if (!held) {
+        // The sky is far enough away that only turning moves it
+        float depth = closest < FLT_MAX ? closest : 1e6;
+        vec3 world = pc.pixelToRay[3].xyz + mat3(pc.pixelToRay) * vec3(at, 1) * depth;
+        vec4 then = pc.previousWorldToPixel * vec4(world, 1);
+        previous = then.xy / then.z;
+        found = found && then.z > 0 && all(greaterThanEqual(previous, vec2(-0.5))) && all(lessThan(previous, vec2(size) - 0.5));
+    }
+
+    vec3 result;
+    float gathered;
+    if (found) {
+        vec4 history = sampleHistory(previous);
+        // Held to what's around now, within a little more than the usual spread of its colors
+        vec3 mean = m1 / 9;
+        vec3 spread = sqrt(max(m2 / 9 - mean * mean, 0));
+        vec3 box_lo = max(lo, mean - spread * 1.25);
+        vec3 box_hi = min(hi, mean + spread * 1.25);
+        vec3 kept = fromYCoCg(clipToBox(toYCoCg(history.rgb), clamp(mean, box_lo, box_hi), box_lo, box_hi));
+        float before = min(history.a, pc.most);
+        gathered = before + weights;
+        result = (kept * before + here * weights) / max(gathered, 1e-4);
+    } else {
+        // Nothing to go on, so start from a smooth guess, soon outweighed
+        result = smoothed;
+        gathered = min(weights, 0.5);
+    }
+
+    imageStore(historyOut, p, vec4(result, gathered));
+    imageStore(outputImage, p, vec4(result, 1));
+}

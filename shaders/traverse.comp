@@ -30,6 +30,8 @@ const uint MAT_FOAM = 21;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
+// And metal mirrors only what's this near
+const float REFLECTION_DISTANCE = 30.0;
 // Water only reflects what's this close, in meters, and the sky beyond
 const float REFLECTION_REACH = 80.0;
 
@@ -99,10 +101,13 @@ const uint ANIMAL = 2;
 layout(set = 0, binding = 0, rgba8) writeonly uniform image2D targetImage;
 layout(set = 0, binding = 1, rgba32f) readonly uniform image2D historyColor;
 layout(set = 0, binding = 2, r32f) readonly uniform image2D historyDepth;
+// The light each pixel sees averaged over frames, its color divided by guideImage's, with alpha how
+// many frames
 layout(set = 0, binding = 3, rgba32f) writeonly uniform image2D accumColor;
 layout(set = 0, binding = 4, r32f) writeonly uniform image2D accumDepth;
-// For post.comp's denoiser: the albedo of what each pixel sees, and in alpha which way the
-// face points (0-5), 6 for the sky, 7 for water
+// For post.comp and upscale.comp: what accumColor is divided by, the albedo of what each pixel
+// sees as far as it shows through the haze, and in alpha which way the face points (0-5), 6 for
+// the sky, 7 for water and grass, and 8 more than the face for what's held
 layout(set = 0, binding = 5, rgba32f) writeonly uniform image2D guideImage;
 // Distance from a plane facing the sun to the first thing sunlight hits, see sunMapBasis()
 layout(set = 0, binding = 6, r32f) uniform image2D sunMap;
@@ -191,18 +196,18 @@ const uint NO_ENTRY = 0xFFFFFFFFu;
 const uint PALETTE_SIZE = 87;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
-    vec3(0.36, 0.64, 0.20), // grass
+    vec3(0.28, 0.48, 0.17), // grass
     vec3(0.50, 0.35, 0.22), // dirt
     vec3(0.58, 0.56, 0.55), // stone
     vec3(0.86, 0.74, 0.50), // sand
     vec3(0.95, 0.97, 1.00), // snow
     vec3(0.10, 0.30, 0.45), // water
     vec3(0.45, 0.29, 0.17), // wood
-    vec3(0.32, 0.66, 0.16), // leaves
+    vec3(0.27, 0.54, 0.15), // leaves
     vec3(0.92, 0.14, 0.14), // red flower
     vec3(0.98, 0.84, 0.14), // yellow flower
     vec3(0.80, 0.78, 0.74), // clay
-    vec3(0.52, 0.72, 0.26), // grass tip
+    vec3(0.42, 0.56, 0.22), // grass tip
     vec3(0.10, 0.36, 0.10), // dark leaves
     vec3(0.95, 0.75, 0.12), // yellow leaves
     vec3(0.95, 0.42, 0.06), // orange leaves
@@ -1445,7 +1450,11 @@ float hazePhase(float cos_angle) {
 // Haze between the camera and what it sees, thicker near the ground. It dims what's behind it and
 // glows with the light it scatters: sunlight, except where the sun map says something casts a
 // shadow into the air, which is what makes sunbeams, plus light from the sky.
+// How much of what's behind the haze atmosphere() last let through, 0-1
+float g_transmittance = 1;
+
 vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint seed) {
+    g_transmittance = 1;
     float density = pc.haze.x;
     if (density <= 0)
     return color;
@@ -1474,6 +1483,7 @@ vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint se
         scattered += transmittance * (sun_light * lit + sky_light) * thickness;
         transmittance *= exp(-thickness);
     }
+    g_transmittance = transmittance;
     return color * transmittance + scattered;
 }
 
@@ -1605,7 +1615,7 @@ vec3 shadeGrass(vec3 origin, vec3 dir, GrassHit grass, inout vec4 guide) {
     float h = clamp(grass.height, 0, 1);
 
     // Dark at the root, lighter and yellower towards the tip, a little different blade to blade
-    vec3 tip_color = mix(vec3(0.16, 0.45, 0.04), vec3(0.35, 0.50, 0.06), random(seed));
+    vec3 tip_color = mix(vec3(0.11, 0.29, 0.04), vec3(0.25, 0.34, 0.06), random(seed));
     vec3 albedo = mix(vec3(0.02, 0.06, 0.01), tip_color, smoothstep(0.0, 0.9, h)) * mix(0.8, 1.15, random(seed));
     // Less light gets down between the blades
     float occlusion = mix(0.2, 1.0, h);
@@ -1660,11 +1670,19 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
 
     vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
     color = atmosphere(origin, dir, distance, color, seed);
+    float kept = g_transmittance;
     // Only so much of the endless landscape is there at once, so things fade into the sky well
     // before its edge
     float fade_end = pc.haze.w;
-    if (fade_end > 0 && distance >= 0)
-    color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), smoothstep(0.7 * fade_end, fade_end, distance));
+    if (fade_end > 0 && distance >= 0) {
+        float fade = smoothstep(0.7 * fade_end, fade_end, distance);
+        color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), fade);
+        kept *= 1 - fade;
+    }
+    // Only as much of the color as still shows through the haze goes with the voxel's color,
+    // otherwise far off, where the jitter lands on different voxels every frame, the haze would
+    // flicker with them
+    guide.rgb = mix(vec3(1), max(guide.rgb, vec3(0.03)), kept);
     return color;
 }
 
@@ -1805,7 +1823,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
 
         float sun = sunLight(face, normal);
         // Metal is darker than it looks, as most of its shine is reflection: it glints where it
-        // catches the sun, and mirrors a little of the sky
+        // catches the sun, and mirrors what's around it
         vec3 shine = vec3(0);
         if (material >= MAT_STEEL && material <= MAT_BRONZE) {
             vec3 r = reflect(dir, normal);
@@ -1813,8 +1831,9 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
             vec3 tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
             float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
-            vec3 around = ambientLight(r);
-            shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.6) * 0.5 * ao);
+            float reach = REFLECTION_DISTANCE * float(max(pc.world_size.w, 1u));
+            vec3 around = shadeSecondary(face + hit.normal * 0.05, outward(r, hit.normal), false, reach);
+            shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.3) * 0.6 * ao);
             albedo *= 0.6;
         }
         color = albedo * (sunColor() * sun + indirect + localLight(face, normal)) + glow + shine;
@@ -1824,6 +1843,23 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     }
 
     return color;
+}
+
+float halton(uint i, uint base) {
+    float f = 1;
+    float r = 0;
+    while (i > 0) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// Where within its pixel each ray goes through this frame, -0.5 to 0.5. Has to match upscale.comp.
+vec2 pixelJitter(uint frame) {
+    uint i = frame % 16 + 1;
+    return vec2(halton(i, 2), halton(i, 3)) - 0.5;
 }
 
 void main() {
@@ -1855,10 +1891,9 @@ void main() {
 
     if (pc.render_mode == SHADED) {
         uint seed = hash(uvec3(pixelCoord, pc.frame));
-        // Jitter within the pixel, which anti-aliases edges as frames get averaged
-        // Only while the view keeps still: moving, the jitter would make edges wobble, most of
-        // all at lower resolutions
-        vec2 jitter = pc.history_limit > 16 ? vec2(random(seed), random(seed)) - 0.5 : vec2(0);
+        // Every ray goes through the same spot within its pixel, a different one each frame, which
+        // upscale.comp gathers into a sharper image than any one frame
+        vec2 jitter = pixelJitter(pc.frame);
         vec3 ray = mat3(pc.pixelToRay) * vec3(pixelCoord + jitter, 1);
         vec3 d = normalize(ray);
 
@@ -1867,6 +1902,13 @@ void main() {
         vec3 color = shade(o, d, seed, steps, distance, guide);
         // Distance along the unnormalized ray, which is what previousWorldToPixel gives as z next frame
         float depth = distance >= 0 ? distance / length(ray) : -1;
+        // So the upscaler knows to keep what's held where it is on screen
+        if (g_held)
+        guide.w += 8;
+        // It's the light that's averaged over frames, not the voxels' colors: those are taken fresh
+        // each frame, as the jitter sees different voxels at the edges between them. post.comp
+        // puts them back.
+        color /= guide.rgb;
 
         // Find what this surface looked like last frame
         vec4 history = vec4(0);
