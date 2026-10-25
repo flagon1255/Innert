@@ -17,6 +17,10 @@ const uint FLAG_GI = 4;
 const uint FLAG_SUNBEAMS = 8;
 const uint FLAG_GRASS = 16;
 const uint FLAG_WATER = 32;
+// Voxels lit as parts of smooth surfaces, see voxelNormal()
+const uint FLAG_SMOOTH = 64;
+// Leaves and flowers swaying in the wind, see voxelHit()
+const uint FLAG_WIND = 128;
 
 // Has to match the material ids in src\worldgen.rs
 const uint MAT_GRASS = 1;
@@ -26,6 +30,8 @@ const uint MAT_FOAM = 21;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
+// Water only reflects what's this close, in meters, and the sky beyond
+const float REFLECTION_REACH = 80.0;
 
 // How much sunlight thin leaves let through
 const float TRANSLUCENCY = 0.8;
@@ -33,7 +39,7 @@ const float TRANSLUCENCY = 0.8;
 // Haze: how far along each ray it's gathered (in meters), at how many points, and how quickly
 // it thins out going up (meters for it to get e times thinner)
 const float HAZE_REACH = 160.0;
-const int HAZE_SAMPLES = 12;
+const int HAZE_SAMPLES = 8;
 const float HAZE_HEIGHT = 14.0;
 
 // Has to match SUN_MAP_SIZE in main.rs
@@ -52,6 +58,9 @@ const float SEABED_DEPTH = 6.0;
 const uint BRICK_WORDS = 16 + 128;
 const uint SOLID_BRICK = 0x80000000u;
 const uint EMPTY_BRICK = 0x40000000u;
+// Stored bricks with leaves or flowers in them, which sway in the wind, see voxelHit()
+const uint FOLIAGE_BRICK = 0x20000000u;
+const uint BRICK_INDEX = FOLIAGE_BRICK - 1u;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -73,6 +82,8 @@ layout(push_constant) uniform PushConstants {
     // move, z: how many lights there are, w: how far away things fade into the sky, in voxels,
     // as only so much of the endless landscape is there at once (0 for no fading)
     vec4 haze;
+    // xy: where the world's corner is in the whole landscape, in its voxels
+    ivec4 window;
 } pc;
 
 // Levels of detail: the main world, and the box of finer voxels around the camera.
@@ -114,16 +125,29 @@ layout(set = 2, binding = 1) readonly buffer NearBricks {
 };
 
 // Animals, see src\animals.rs. Each model is a box of voxels: two header words per model (where
-// its voxels start, and its size packed x | y << 8 | z << 16), then the voxels' material ids, four
+// its voxels start, and its size packed x | y << 10 | z << 20), then the voxels' material ids, four
 // to a word, indexed by x + (y + z * size.y) * size.x. Models face +x and stand on z = 0.
 layout(set = 3, binding = 0) readonly buffer AnimalModels {
     uint animalModels[];
 };
 struct Animal {
-    vec4 position; // xyz: the middle of its feet in voxels of the main world, w: radius of a sphere around it
-    vec4 rotation; // xy: cos and sin of the way it faces, z: size of its voxels in voxels of the main world
-    uvec4 info; // x: model, y: 1 if it moves about
+    // xyz: where the middle of the bottom of its model is, in voxels of the main world, w: radius
+    // of a sphere around it centered there
+    vec4 position;
+    vec4 rotation; // A quaternion turning its model the way it faces in the world
+    vec4 scale; // x: size of its voxels in voxels of the main world
+    uvec4 info; // x: model, y: STILL, MOVING or HELD, z: TINT_* for what weapons did to it
 };
+const uint STILL = 0;
+const uint MOVING = 1;
+// In the player's hand, moving with the camera. It's drawn in front of whatever it's poking into.
+const uint HELD = 2;
+const uint TINT_NONE = 0;
+const uint TINT_BURNING = 1;
+const uint TINT_FROZEN = 2;
+const uint TINT_POISONED = 3;
+const uint TINT_SHOCKED = 4;
+const uint TINT_CHILLED = 5;
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
 };
@@ -148,14 +172,29 @@ layout(set = 3, binding = 5) readonly buffer Lights {
     Light lights[];
 };
 
+// Light bounced onto each face of each voxel, gathered over many frames and kept, so it's only
+// worked out once and stays steady. A hash table, CACHE_WORDS per entry: a key for the face (0 for
+// none), the red, green and blue light summed over samples in fixed point, how many samples, and
+// the frame it was last used in. Faces are keyed by where they are in the whole landscape, so it
+// stays right when the world moves on to another piece of it.
+layout(set = 3, binding = 6) buffer LightCache {
+    uint cache[];
+};
+const uint CACHE_WORDS = 8;
+const uint CACHE_PROBES = 8;
+const float CACHE_SCALE = 1024.0;
+// Once a face has this many samples it only takes the odd one more, so it can follow changes
+const uint CACHE_SAMPLES = 48;
+const uint NO_ENTRY = 0xFFFFFFFFu;
+
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 59;
+const uint PALETTE_SIZE = 87;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
-    vec3(0.40, 0.72, 0.22), // grass
+    vec3(0.36, 0.64, 0.20), // grass
     vec3(0.50, 0.35, 0.22), // dirt
     vec3(0.58, 0.56, 0.55), // stone
-    vec3(0.92, 0.85, 0.62), // sand
+    vec3(0.86, 0.74, 0.50), // sand
     vec3(0.95, 0.97, 1.00), // snow
     vec3(0.10, 0.30, 0.45), // water
     vec3(0.45, 0.29, 0.17), // wood
@@ -163,7 +202,7 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.92, 0.14, 0.14), // red flower
     vec3(0.98, 0.84, 0.14), // yellow flower
     vec3(0.80, 0.78, 0.74), // clay
-    vec3(0.58, 0.80, 0.28), // grass tip
+    vec3(0.52, 0.72, 0.26), // grass tip
     vec3(0.10, 0.36, 0.10), // dark leaves
     vec3(0.95, 0.75, 0.12), // yellow leaves
     vec3(0.95, 0.42, 0.06), // orange leaves
@@ -173,7 +212,7 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.68, 0.60, 0.54), // rock
     vec3(0.32, 0.48, 0.14), // moss
     vec3(0.90, 0.96, 0.98), // foam
-    vec3(0.42, 0.70, 0.22), // grass blade
+    vec3(0.38, 0.63, 0.20), // grass blade
     vec3(0.10, 0.32, 0.20), // pine
     vec3(0.56, 0.53, 0.48), // gravel
     vec3(0.15, 0.45, 0.95), // blue flower
@@ -209,12 +248,44 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.16, 0.56, 0.54), // teal paint
     vec3(0.50, 0.95, 1.00), // crystal
     vec3(1.00, 0.80, 0.45), // flame
-    vec3(0.95, 0.90, 0.78)  // wax
+    vec3(0.95, 0.90, 0.78), // wax
+    vec3(0.88, 0.66, 0.44), // sandstone
+    vec3(0.62, 0.42, 0.28), // carved sandstone
+    vec3(0.68, 0.68, 0.64), // stone brick
+    vec3(0.42, 0.42, 0.40), // mortar
+    vec3(0.86, 0.80, 0.68), // limestone
+    vec3(0.20, 0.58, 0.14), // jungle grass
+    vec3(0.80, 0.70, 0.40), // dry grass
+    vec3(0.30, 0.56, 0.22), // cactus
+    vec3(0.18, 0.48, 0.10), // vine
+    vec3(0.74, 0.42, 0.26), // clay pot
+    vec3(0.80, 0.82, 0.86), // steel
+    vec3(0.34, 0.36, 0.40), // dark steel
+    vec3(0.98, 0.76, 0.26), // gold
+    vec3(0.70, 0.44, 0.20), // bronze
+    vec3(0.40, 0.23, 0.13), // leather
+    vec3(0.60, 0.10, 0.12), // cloth
+    vec3(0.86, 0.82, 0.70), // linen
+    vec3(0.10, 0.08, 0.13), // obsidian
+    vec3(0.92, 0.90, 0.82), // bowstring
+    vec3(0.72, 0.88, 0.98), // ice
+    vec3(1.00, 0.50, 0.12), // glowing: fire
+    vec3(0.55, 0.85, 1.00), // frost
+    vec3(0.70, 0.80, 1.00), // storm
+    vec3(0.45, 1.00, 0.25), // poison
+    vec3(0.80, 0.45, 1.00), // arcane
+    vec3(0.45, 0.12, 0.75), // void
+    vec3(0.95, 0.08, 0.12), // blood
+    vec3(1.00, 0.92, 0.60)  // holy
 );
 
 // Has to match the material ids in src\worldgen.rs
 const uint MAT_CRYSTAL = 56;
 const uint MAT_FLAME = 57;
+const uint MAT_STEEL = 69;
+const uint MAT_BRONZE = 72;
+const uint MAT_GLOW_FIRE = 79;
+const uint MAT_GLOW_HOLY = 86;
 
 // Light given off by glowing materials
 vec3 emission(uint material) {
@@ -222,6 +293,8 @@ vec3 emission(uint material) {
     return vec3(6.0, 3.2, 1.2);
     if (material == MAT_CRYSTAL)
     return vec3(0.5, 1.6, 2.2);
+    if (material >= MAT_GLOW_FIRE && material <= MAT_GLOW_HOLY)
+    return pow(PALETTE[material], vec3(2.2)) * 3.0;
     return vec3(0);
 }
 
@@ -274,7 +347,7 @@ uint brickWord(uint level, uint index) {
 // Whether a voxel of a stored brick is solid, `cell` being its brick grid cell
 bool brickVoxel(uint level, uint cell, uvec3 local_coord) {
     uint i = local_coord.x + local_coord.y * 8 + local_coord.z * 64;
-    return bool(brickWord(level, (cell - 1) * BRICK_WORDS + i / 32) >> (i % 32) & 1u);
+    return bool(brickWord(level, ((cell & BRICK_INDEX) - 1) * BRICK_WORDS + i / 32) >> (i % 32) & 1u);
 }
 
 bool isSolid(uint level, ivec3 coord) {
@@ -290,7 +363,7 @@ bool isSolid(uint level, ivec3 coord) {
 
 uint brickMaterial(uint level, uint cell, uvec3 local_coord) {
     uint i = local_coord.x + local_coord.y * 8 + local_coord.z * 64;
-    return brickWord(level, (cell - 1) * BRICK_WORDS + 16 + i / 4) >> ((i % 4) * 8) & 0xFFu;
+    return brickWord(level, ((cell & BRICK_INDEX) - 1) * BRICK_WORDS + 16 + i / 4) >> ((i % 4) * 8) & 0xFFu;
 }
 
 // Only valid for solid voxels
@@ -340,6 +413,7 @@ struct Hit {
     vec3 normal;
     vec3 local_normal; // The normal in the animal's own voxels, the same as normal for the world
     float t; // Distance along the (normalized) ray
+    ivec3 shift; // For leaves blown aside by the wind, how far from where they grow, see voxelHit()
 };
 
 // Whether a ray stops at this voxel of a stored brick
@@ -347,6 +421,65 @@ bool brickHit(uint level, uint cell, uvec3 local_coord, bool through_water) {
     if (!brickVoxel(level, cell, local_coord))
     return false;
     return !through_water || brickMaterial(level, cell, local_coord) != MAT_WATER;
+}
+
+// Has to match sways() in src\worldgen.rs
+bool sways(uint material) {
+    return material == 8u || (material >= 13u && material <= 16u) || material == 23u || material == 27u || material == 29u
+        || material == 30u || material == 35u || material == 67u || material == 12u || material == 9u || material == 10u
+        || material == 17u || material == 18u || material == 25u || material == 26u;
+}
+
+// Leaves only sway this many meters from the camera, as further off it's too small to see and
+// costs as much as near by
+const float SWAY_REACH = 30.0;
+// Only for what the camera sees: shadows and bounce light come from the leaves as they grow,
+// as tracing those rays through swaying leaves too costs much more
+bool g_sway = true;
+
+// How far leaves and flowers at `p`, in voxels of the main world, are blown aside right now: a
+// voxel either way along x and y, or not at all. A wind blowing mostly along x rolls across the
+// land in waves and gusts, the same over a patch of voxels, so a whole bit of a tree crown leans
+// over together.
+ivec3 sway(vec3 p) {
+    // In meters across the whole landscape, so it carries on when the world moves on
+    p = (p + vec3(pc.window.xy, 0)) / float(max(pc.world_size.w, 1u));
+    float t = pc.haze.y;
+    float gust = 0.65 + 0.35 * sin(t * 0.21 + p.x * 0.013);
+    float wave = sin(p.x * 0.55 + p.y * 0.25 - t * 1.9 + p.z * 0.4) + 0.45 * sin(p.y * 0.7 - p.x * 0.2 - t * 3.1);
+    vec2 d = vec2(1.0, 0.45) * wave * gust;
+    return ivec3(round(d), 0);
+}
+
+// Whether a ray stops at a voxel of a stored brick, `cell` being the cell of its `brick`. Where
+// leaves sway, a voxel holds the leaves blown into it from beside rather than its own, which may
+// have blown away; `shift` is then where they came from.
+bool voxelHit(uint level, uint cell, ivec3 brick, uvec3 coord, bool through_water, out ivec3 shift) {
+    shift = ivec3(0);
+    uvec3 local = coord % 8;
+    bool here = brickHit(level, cell, local, through_water);
+    if ((cell & FOLIAGE_BRICK) == 0 || (pc.flags & FLAG_WIND) == 0 || !g_sway)
+    return here;
+    vec3 p = level == NEAR ? fromNear(vec3(coord)) : vec3(coord);
+    vec3 to_camera = p - pc.pixelToRay[3].xyz;
+    float reach = SWAY_REACH * float(max(pc.world_size.w, 1u));
+    if (dot(to_camera, to_camera) > reach * reach)
+    return here;
+    ivec3 d = sway(p);
+    if (d == ivec3(0))
+    return here;
+    if (here && !sways(brickMaterial(level, cell, local)))
+    return true;
+    ivec3 from = ivec3(coord) - d;
+    if (any(lessThan(from, ivec3(0))) || any(greaterThanEqual(from, ivec3(levelSize(level)))))
+    return false;
+    uint from_cell = from / 8 == brick ? cell : brickCell(level, from / 8);
+    if ((from_cell & (EMPTY_BRICK | SOLID_BRICK)) != 0)
+    return false;
+    if (!brickVoxel(level, from_cell, uvec3(from % 8)) || !sways(brickMaterial(level, from_cell, uvec3(from % 8))))
+    return false;
+    shift = d;
+    return true;
 }
 
 // Traces a ray through one level, in that level's voxels.
@@ -435,7 +568,8 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
             float enter = brick_enter;
 
             bool solid_brick = (cell & SOLID_BRICK) != 0;
-            bool found = (solid_brick || brickHit(level, cell, coord % 8, through_water)) && enter >= ignore_until;
+            ivec3 shift = ivec3(0);
+            bool found = (solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until;
             if (!found) {
                 // Inner traversal over the voxels of this brick
                 vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
@@ -471,7 +605,7 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
                     // Stepping below 0 wraps around, which also leaves the brick
                     if (any(notEqual(coord / 8, uvec3(brick))))
                     break;
-                    if ((solid_brick || brickHit(level, cell, coord % 8, through_water)) && enter >= ignore_until) {
+                    if ((solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until) {
                         found = true;
                         break;
                     }
@@ -487,6 +621,7 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
                 hit.normal = -mask * sgn_dir;
                 hit.local_normal = hit.normal;
                 hit.t = tmin + enter;
+                hit.shift = shift;
                 return true;
             }
         }
@@ -528,7 +663,7 @@ uint animalCount() {
 
 uvec3 modelSize(uint model) {
     uint packed = animalModels[model * 2 + 1];
-    return uvec3(packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu);
+    return uvec3(packed & 0x3FFu, (packed >> 10) & 0x3FFu, (packed >> 20) & 0x3FFu);
 }
 
 // Material of one of a model's voxels, 0 for air
@@ -537,40 +672,52 @@ uint modelVoxel(uint model, uvec3 size, uvec3 c) {
     return animalModels[animalModels[model * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
 }
 
+vec3 rotate(vec4 q, vec3 v) {
+    vec3 t = 2 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
 // Turns a direction in the world into the way an animal faces, and back
 vec3 toAnimal(Animal a, vec3 v) {
-    vec2 r = a.rotation.xy;
-    return vec3(r.x * v.x + r.y * v.y, -r.y * v.x + r.x * v.y, v.z);
+    return rotate(vec4(-a.rotation.xyz, a.rotation.w), v);
 }
 
 vec3 fromAnimal(Animal a, vec3 v) {
-    vec2 r = a.rotation.xy;
-    return vec3(r.x * v.x - r.y * v.y, r.y * v.x + r.x * v.y, v.z);
+    return rotate(a.rotation, v);
 }
 
 // A point in an animal's voxels, in voxels of the main world
 vec3 animalToWorld(uint index, vec3 p) {
     Animal a = animals[index];
     uvec3 size = modelSize(a.info.x);
-    return a.position.xyz + fromAnimal(a, (p - vec3(vec2(size.xy) * 0.5, 0)) * a.rotation.z);
+    return a.position.xyz + fromAnimal(a, (p - vec3(vec2(size.xy) * 0.5, 0)) * a.scale.x);
 }
+
+// Rays besides those from the camera only check this many animals and props, the nearest to the
+// camera, as checking every one for every shadow and bounce costs too much
+const uint SECONDARY_ANIMALS = 24;
+uint g_animal_limit = 0xFFFFFFFFu;
 
 // The nearest animal a ray hits before max_t, in voxels of the main world. The ray is turned and
 // scaled into each animal's voxels, without normalizing it, so distances along it stay the same.
 bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
     bool found = false;
-    for (uint i = 0; i < animalCount(); i++) {
+    uint count = min(animalCount(), g_animal_limit);
+    // Rays from the camera see what's held in front of anything else
+    bool from_camera = g_animal_limit == 0xFFFFFFFFu;
+    for (uint i = 0; i < count; i++) {
         Animal a = animals[i];
+        float limit = from_camera && a.info.y == HELD ? FLT_MAX : max_t;
         // Only animals whose bounding sphere the ray passes through
         vec3 to = a.position.xyz - origin;
         float along = dot(to, dir);
         float radius = a.position.w;
-        if (along < -radius || along - radius > max_t || dot(to, to) - along * along > radius * radius)
+        if (along < -radius || along - radius > limit || dot(to, to) - along * along > radius * radius)
         continue;
 
         uint model = a.info.x;
         uvec3 size = modelSize(model);
-        float s = a.rotation.z;
+        float s = a.scale.x;
         vec3 o = toAnimal(a, -to) / s + vec3(vec2(size.xy) * 0.5, 0);
         vec3 d = toAnimal(a, dir) / s;
         vec3 inv = clamp(1 / d, vec3(-FLT_MAX), vec3(FLT_MAX));
@@ -580,7 +727,7 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
         vec3 tmaxs = max(t1, t2);
         float t = max(max(tmins.x, tmins.y), max(tmins.z, 0));
         float t_exit = min(min(tmaxs.x, tmaxs.y), tmaxs.z);
-        if (t > t_exit || t > max_t)
+        if (t > t_exit || t > limit)
         continue;
 
         uint axis = tmins.x > tmins.y ? (tmins.x > tmins.z ? 0 : 2) : (tmins.y > tmins.z ? 1 : 2);
@@ -588,7 +735,7 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
         ivec3 c = clamp(ivec3(floor(o + d * t)), ivec3(0), ivec3(size) - 1);
         vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
         vec3 delta = abs(inv);
-        for (int k = 0; k < 256 && t <= max_t; k++) {
+        for (int k = 0; k < 512 && t <= limit; k++) {
             if (modelVoxel(model, size, uvec3(c)) != 0) {
                 vec3 local_normal = vec3(0);
                 local_normal[axis] = -sgn[axis];
@@ -599,6 +746,7 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
                 hit.local_normal = local_normal;
                 hit.normal = fromAnimal(a, local_normal);
                 hit.t = t;
+                hit.shift = ivec3(0);
                 max_t = t;
                 found = true;
                 break;
@@ -680,15 +828,16 @@ float daylight() {
 
 vec3 sunColor() {
     float elevation = pc.sun_direction.z;
-    vec3 color = mix(vec3(1.0, 0.45, 0.2), vec3(1.0, 0.93, 0.85), smoothstep(0.0, 0.4, elevation));
+    // Golden low in the sky, never quite white
+    vec3 color = mix(vec3(1.0, 0.45, 0.2), vec3(1.0, 0.9, 0.78), smoothstep(0.0, 0.65, elevation));
     return color * 2.4 * smoothstep(-0.02, 0.06, elevation);
 }
 
 vec3 skyColor(vec3 dir) {
-    // A clean, saturated blue
-    vec3 zenith = vec3(0.12, 0.38, 0.95);
+    // A deep, saturated blue
+    vec3 zenith = vec3(0.08, 0.3, 0.92);
     // Warmer horizon around sunrise and sunset
-    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.62, 0.80, 1.0), smoothstep(0.0, 0.35, pc.sun_direction.z));
+    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, pc.sun_direction.z));
     vec3 sky = mix(horizon, zenith, sqrt(clamp(dir.z, 0, 1)));
     sky = mix(sky, horizon * 0.4, clamp(-dir.z * 4.0, 0, 1));
     return sky * mix(0.02, 1.0, daylight());
@@ -762,12 +911,39 @@ uint hitMaterial(Hit hit) {
         uint model = animals[hit.instance].info.x;
         return modelVoxel(model, modelSize(model), hit.coord);
     }
-    return materialAt(hit.level, hit.coord);
+    // Leaves blown aside are still the leaves they were where they grow
+    return materialAt(hit.level, uvec3(ivec3(hit.coord) - hit.shift));
 }
 
 vec3 hitAlbedo(Hit hit, uint material) {
-    // Animals each get their own variation
-    return materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : hit.coord);
+    // Animals each get their own variation, and leaves blown aside keep theirs
+    return materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : uvec3(ivec3(hit.coord) - hit.shift));
+}
+
+// What weapons did to an animal shows on it: burning or poisoned, frozen or crackling with
+// lightning. Tints its albedo, and returns the light it gives off.
+vec3 tintAnimal(Hit hit, inout vec3 albedo) {
+    if (hit.level != ANIMAL)
+    return vec3(0);
+    uint tint = animals[hit.instance].info.z;
+    // A few voxels at a time flare up, different ones every few frames
+    float flare = float(hash(hit.coord + uvec3(0, 0, uint(pc.haze.y * 14.0) * 31u)) & 0xFFu) / 255.0;
+    flare = flare * flare * flare;
+    if (tint == TINT_BURNING) {
+        albedo *= 0.45;
+        return vec3(3.0, 1.1, 0.25) * (0.15 + 2.0 * flare);
+    }
+    if (tint == TINT_FROZEN)
+    albedo = mix(albedo, vec3(0.45, 0.72, 0.95), 0.75);
+    if (tint == TINT_CHILLED)
+    albedo = mix(albedo, vec3(0.45, 0.72, 0.95), 0.3);
+    if (tint == TINT_POISONED) {
+        albedo = mix(albedo, vec3(0.12, 0.42, 0.06), 0.45);
+        return vec3(0.3, 1.0, 0.15) * 0.6 * flare;
+    }
+    if (tint == TINT_SHOCKED)
+    return vec3(1.4, 1.8, 3.2) * 2.0 * flare;
+    return vec3(0);
 }
 
 // Whether a voxel next to a hit one is solid, in the same voxels as the hit
@@ -804,6 +980,27 @@ float voxelAO(Hit hit) {
     float a11 = vertexAO(u1, v1, solidBeside(hit, base + du + dv));
 
     return mix(0.2, 1.0, (a00 + a10 + a01 + a11) * 0.25);
+}
+
+// Which way the surface a voxel is part of faces, from which of the voxels around it are empty.
+// Every face of the voxel is lit with it, so each voxel is one flat color and surfaces shade
+// smoothly across them, as in John Lin's engine, rather than every side of every cube being lit
+// on its own. Thin things like leaves and blades of grass lean on the face's own direction.
+vec3 voxelNormal(Hit hit) {
+    ivec3 c = ivec3(hit.coord);
+    vec3 n = vec3(0);
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                ivec3 o = ivec3(x, y, z);
+                if (o != ivec3(0) && !solidBeside(hit, c + o))
+                n += vec3(o) / length(vec3(o));
+            }
+        }
+    }
+    n += hit.local_normal * 0.8;
+    n = length(n) > 1e-3 ? normalize(n) : hit.local_normal;
+    return hit.level == ANIMAL ? fromAnimal(animals[hit.instance], n) : n;
 }
 
 // The middle of the face a ray hit, nudged just out of the voxel, in voxels of the main world.
@@ -846,6 +1043,73 @@ float foamFlow(Hit hit) {
 // Set while shading what a pixel sees directly if it moves, so the pixel doesn't average it over
 // many frames and smear it
 bool g_dynamic = false;
+// Set when what a pixel sees is held in front of the camera, so it's in the same place on screen
+// as last frame rather than in the world
+bool g_held = false;
+
+// The light cache entry for a face of the world, made if `make` and there isn't one yet.
+// NO_ENTRY if there's none, or no room for it.
+uint cacheEntry(Hit hit, bool make) {
+    if (hit.level == ANIMAL)
+    return NO_ENTRY;
+    ivec3 corner = ivec3(pc.window.xy, 0);
+    if (hit.level == NEAR)
+    corner = ivec3(round((pc.near_origin.xyz + vec3(corner)) * pc.near_origin.w));
+    uvec3 at = uvec3(ivec3(hit.coord) + corner);
+    uint face = uint(faceId(hit.local_normal)) + hit.level * 8u;
+    uint h = hash(uvec3(at.x ^ (face << 27), at.y, at.z));
+    uint key = hash(h ^ 0x9e3779b9u) | 1u;
+    uint entries = uint(cache.length()) / CACHE_WORDS;
+    for (uint i = 0; i < CACHE_PROBES; i++) {
+        uint e = ((h + i) % entries) * CACHE_WORDS;
+        uint k = cache[e];
+        if (k == key)
+        return e;
+        if (!make)
+        continue;
+        // Empty, or not seen for a while
+        if (k == 0 || pc.frame - cache[e + 5] > 3000u) {
+            uint was = atomicCompSwap(cache[e], k, key);
+            if (was == k) {
+                cache[e + 1] = 0;
+                cache[e + 2] = 0;
+                cache[e + 3] = 0;
+                cache[e + 4] = 0;
+                cache[e + 5] = pc.frame;
+                return e;
+            }
+            if (was == key)
+            return e;
+        }
+    }
+    return NO_ENTRY;
+}
+
+// The light gathered at a cache entry so far, and how many samples went into it
+vec3 cachedLight(uint e, out uint samples) {
+    samples = cache[e + 4];
+    return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u));
+}
+
+// Adds a sample of bounced light to a cache entry. Once it has plenty, half of what it has is
+// forgotten, so newer light counts for more.
+void cacheAdd(uint e, vec3 light) {
+    uvec3 add = uvec3(clamp(light, vec3(0), vec3(16)) * CACHE_SCALE);
+    atomicAdd(cache[e + 1], add.x);
+    atomicAdd(cache[e + 2], add.y);
+    atomicAdd(cache[e + 3], add.z);
+    uint samples = atomicAdd(cache[e + 4], 1u) + 1;
+    if (samples >= 4 * CACHE_SAMPLES && atomicCompSwap(cache[e + 4], samples, samples / 2) == samples) {
+        cache[e + 1] /= 2;
+        cache[e + 2] /= 2;
+        cache[e + 3] /= 2;
+    }
+}
+
+// `dir` turned out of the face with normal `face`, if it pointed into it
+vec3 outward(vec3 dir, vec3 face) {
+    return dot(dir, face) < 0 ? reflect(dir, face) : dir;
+}
 
 vec3 cosineDirection(vec3 normal, inout uint seed) {
     float z = random(seed) * 2 - 1;
@@ -865,7 +1129,20 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
 
     uint material = hitMaterial(hit);
     vec3 albedo = hitAlbedo(hit, material);
-    return albedo * (sunColor() * sunLight(faceCenter(hit), hit.normal) + ambientLight(hit.normal)) + emission(material);
+    // Glowing things that move, like a spell flying, would leave their light behind in the light
+    // cache. Their light reaches what's around them as one of the lights instead.
+    vec3 glow = hit.level == ANIMAL && animals[hit.instance].info.y != STILL ? vec3(0) : emission(material);
+    // The light already gathered on the face it hit, when there is some, which bounces light on
+    // round corners and into caves
+    vec3 bounced = ambientLight(hit.normal);
+    uint e = (pc.flags & FLAG_GI) != 0 ? cacheEntry(hit, false) : NO_ENTRY;
+    uint samples = 0;
+    if (e != NO_ENTRY) {
+        vec3 cached = cachedLight(e, samples);
+        if (samples >= 4)
+        bounced = cached;
+    }
+    return albedo * (sunColor() * sunLight(faceCenter(hit), hit.normal) + bounced) + glow;
 }
 
 // How much light survives travelling this many voxels through water
@@ -886,7 +1163,7 @@ float waterFresnel(vec3 dir, vec3 normal) {
 // The sea outside the world: the same water over a flat sandy bottom
 vec3 shadeOpenSea(vec3 dir, vec3 pos) {
     vec3 up = vec3(0, 0, 1);
-    vec3 reflection = shadeSecondary(pos + up * 1e-3, reflect(dir, up), true, FLT_MAX);
+    vec3 reflection = shadeSecondary(pos + up * 1e-3, reflect(dir, up), true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)));
 
     vec3 refracted = refract(dir, up, 1 / 1.33);
     float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
@@ -901,7 +1178,7 @@ vec3 shadeOpenSea(vec3 dir, vec3 pos) {
 // Clear water: a reflection on top of the refracted view of whatever is under it
 vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal) {
     float fresnel = waterFresnel(dir, normal);
-    vec3 reflection = shadeSecondary(pos + normal * 1e-3, reflect(dir, normal), true, FLT_MAX);
+    vec3 reflection = shadeSecondary(pos + normal * 1e-3, reflect(dir, normal), true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)));
     vec3 scatter = waterScatter();
 
     vec3 below = pos - normal * 1e-3;
@@ -1050,6 +1327,7 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
                     hit.voxel.normal = normal;
                     hit.voxel.local_normal = normal;
                     hit.voxel.t = hit.t;
+                    hit.voxel.shift = ivec3(0);
                     return true;
                 }
                 if (cnext.x < cnext.y) {
@@ -1108,7 +1386,13 @@ const uint FOLIAGE_LOW = (1u << 8) | (1u << 13) | (1u << 14) | (1u << 15) | (1u 
     | (1u << 29) | (1u << 30);
 const uint FOLIAGE_HIGH = (1u << (33 - 32)) | (1u << (35 - 32));
 
+// Has to match the material ids in src\worldgen.rs: dry grass (65), cactus (66), vines (67)
+const uint MAT_DRY_GRASS = 65;
+const uint MAT_VINE = 67;
+
 bool isFoliage(uint material) {
+    if (material >= 64)
+    return material == MAT_DRY_GRASS || material == MAT_VINE;
     return material < 32 ? (FOLIAGE_LOW & (1u << material)) != 0 : (FOLIAGE_HIGH & (1u << (material - 32))) != 0;
 }
 
@@ -1408,6 +1692,14 @@ vec3 shadeWaterVoxel(vec3 origin, vec3 dir, WaterHit water) {
 vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide) {
     Hit hit;
     bool solid = trace(origin, dir, false, FLT_MAX, hit, steps);
+    g_animal_limit = SECONDARY_ANIMALS;
+    g_sway = false;
+    // Leaves blown aside are lit as they are where they grow, so their light and shade move with
+    // them rather than flickering as they sway in and out of the shade of others
+    if (solid && hit.shift != ivec3(0)) {
+        hit.coord = uvec3(ivec3(hit.coord) - hit.shift);
+        hit.shift = ivec3(0);
+    }
     WaterHit water;
     bool wet = traceWater(origin, dir, solid ? hit.t : FLT_MAX, water);
 
@@ -1456,12 +1748,19 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         color = shadeWater(dir, pos, normal);
     } else {
         vec3 albedo = hitAlbedo(hit, material);
+        vec3 glow = tintAnimal(hit, albedo) + emission(material);
         if (material == MAT_FOAM && hit.level != ANIMAL) {
             albedo *= foamFlow(hit);
             g_dynamic = true;
         }
-        if (hit.level == ANIMAL && animals[hit.instance].info.y != 0)
+        if (hit.level == ANIMAL && animals[hit.instance].info.y != STILL)
         g_dynamic = true;
+        // Leaves move in the wind, so they can't be averaged over many frames
+        if ((pc.flags & FLAG_WIND) != 0 && hit.level != ANIMAL && sways(material))
+        g_dynamic = true;
+        bool held = hit.level == ANIMAL && animals[hit.instance].info.y == HELD;
+        if (held)
+        g_held = true;
         // The ground under the grass is in its shade, out to where the grass thins out
         if (material == MAT_GRASS && (pc.flags & FLAG_GRASS) != 0) {
             float range = GRASS_RANGE * float(max(pc.world_size.w, 1u));
@@ -1469,21 +1768,59 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         }
         float ao = (pc.flags & FLAG_AO) != 0 ? voxelAO(hit) : 1;
         vec3 face = faceCenter(hit);
+        if ((pc.flags & FLAG_SMOOTH) != 0)
+        normal = voxelNormal(hit);
 
         vec3 indirect;
-        if ((pc.flags & FLAG_GI) != 0) {
-            // One random diffuse bounce per face per frame, averaging frames smooths out the noise
+        // What's held moves with the camera, so it'd only show the noise of one bounce a frame:
+        // it gets steady light from the sky and ground instead
+        if ((pc.flags & FLAG_GI) != 0 && !held) {
             float reach = BOUNCE_DISTANCE * float(max(pc.world_size.w, 1u));
-            uint face_seed = faceSeed(hit);
-            indirect = shadeSecondary(face, cosineDirection(normal, face_seed), false, reach) * mix(1, ao, 0.5);
+            uint e = cacheEntry(hit, true);
+            if (e != NO_ENTRY) {
+                // Light bounced onto this face, gathered over many frames. Faces new to the cache
+                // take a sample from every pixel that sees them, so they fill in fast, and after
+                // that only the odd one.
+                cache[e + 5] = pc.frame;
+                uint samples;
+                indirect = cachedLight(e, samples);
+                if (samples < CACHE_SAMPLES || random(seed) < 1.0 / 64.0) {
+                    vec3 light = shadeSecondary(face, outward(cosineDirection(normal, seed), hit.normal), false, reach);
+                    cacheAdd(e, light);
+                    indirect = (indirect * float(samples) + light) / float(samples + 1);
+                }
+            } else {
+                // One random diffuse bounce per face per frame, averaging frames smooths out the noise
+                uint face_seed = faceSeed(hit);
+                indirect = shadeSecondary(face, outward(cosineDirection(normal, face_seed), hit.normal), false, reach);
+            }
+            indirect *= mix(1, ao, 0.5);
+        } else if (held) {
+            // Greyer than the sky, as the world round it would bounce plenty of warmer light
+            vec3 around = ambientLight(normal);
+            indirect = mix(around, vec3(dot(around, vec3(0.333))), 0.5) * 0.8 * ao;
         } else {
             indirect = ambientLight(normal) * ao;
         }
 
-        color = albedo * (sunColor() * sunLight(face, normal) + indirect + localLight(face, normal)) + emission(material);
+        float sun = sunLight(face, normal);
+        // Metal is darker than it looks, as most of its shine is reflection: it glints where it
+        // catches the sun, and mirrors a little of the sky
+        vec3 shine = vec3(0);
+        if (material >= MAT_STEEL && material <= MAT_BRONZE) {
+            vec3 r = reflect(dir, normal);
+            // Light metal reflects much more than dark, and colored metal in its own color
+            float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+            vec3 tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
+            float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
+            vec3 around = ambientLight(r);
+            shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.6) * 0.5 * ao);
+            albedo *= 0.6;
+        }
+        color = albedo * (sunColor() * sun + indirect + localLight(face, normal)) + glow + shine;
         if (isFoliage(material))
         color += leafTransmission(hit, dir, albedo);
-        guide = vec4(albedo, faceId(normal));
+        guide = vec4(albedo, faceId(hit.normal));
     }
 
     return color;
@@ -1519,7 +1856,9 @@ void main() {
     if (pc.render_mode == SHADED) {
         uint seed = hash(uvec3(pixelCoord, pc.frame));
         // Jitter within the pixel, which anti-aliases edges as frames get averaged
-        vec2 jitter = vec2(random(seed), random(seed)) - 0.5;
+        // Only while the view keeps still: moving, the jitter would make edges wobble, most of
+        // all at lower resolutions
+        vec2 jitter = pc.history_limit > 16 ? vec2(random(seed), random(seed)) - 0.5 : vec2(0);
         vec3 ray = mat3(pc.pixelToRay) * vec3(pixelCoord + jitter, 1);
         vec3 d = normalize(ray);
 
@@ -1533,6 +1872,9 @@ void main() {
         vec4 history = vec4(0);
         bool still = pc.history_limit >= 1024; // The view hasn't changed at all
         if (still) {
+            history = imageLoad(historyColor, pixelCoord);
+        } else if (g_held && pc.history_limit > 0) {
+            if (abs(imageLoad(historyDepth, pixelCoord).r - depth) < 0.03 * depth)
             history = imageLoad(historyColor, pixelCoord);
         } else if (pc.history_limit > 0 && depth >= 0) {
             vec4 p = pc.previousWorldToPixel * vec4(o + d * distance, 1);

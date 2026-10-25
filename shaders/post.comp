@@ -18,8 +18,12 @@ const uint POST_DENOISE = 4;
 // Has to match BLOOM_SCALE in main.rs: bloom is computed at 1/4 of the render resolution
 const int BLOOM_SCALE = 4;
 
-const float EXPOSURE = 1.0;
-const float SATURATION = 1.3;
+const float EXPOSURE = 0.78;
+// Colors are made richer before tone mapping, which washes out bright ones, and again after
+const float RICHNESS = 1.1;
+const float SATURATION = 1.2;
+// Above 1 deepens the mid tones and shadows
+const float CONTRAST = 1.15;
 const float BLOOM_THRESHOLD = 0.8;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -139,15 +143,16 @@ void tonemap(ivec2 p) {
     vec3 color = imageLoad(hdrIn, p).rgb;
     color += sampleBloom(p) * pc.bloom;
 
+    color = max(mix(vec3(luminance(color)), color, RICHNESS), 0);
     vec3 mapped = aces(color * EXPOSURE);
     mapped = clamp(mix(vec3(luminance(mapped)), mapped, SATURATION), 0, 1);
 
     if ((pc.flags & POST_GRADE) != 0) {
-        // Cool shadows, warm highlights, slightly lifted blacks for a soft filmic look, darker corners
-        mapped *= mix(vec3(0.95, 1.0, 1.06), vec3(1.06, 1.0, 0.92), smoothstep(0.1, 0.8, luminance(mapped)));
-        mapped = mapped * 0.96 + vec3(0.03, 0.025, 0.02);
+        // Deeper mid tones, cool shadows, warm highlights, and darker corners
+        mapped = pow(mapped, vec3(CONTRAST));
+        mapped *= mix(vec3(0.94, 1.0, 1.08), vec3(1.07, 1.0, 0.9), smoothstep(0.1, 0.8, luminance(mapped)));
         vec2 uv = (vec2(p) + 0.5) / vec2(imageSize(hdrIn)) * 2 - 1;
-        mapped *= 1 - 0.08 * dot(uv, uv);
+        mapped *= 1 - 0.22 * dot(uv, uv);
     }
 
     if ((pc.flags & POST_ENCODE_SRGB) != 0)

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_1_SQRT_2, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -68,6 +68,39 @@ pub mod material {
     pub const CRYSTAL: u8 = 56;
     pub const FLAME: u8 = 57;
     pub const WAX: u8 = 58;
+    // Deserts and their ruins
+    pub const SANDSTONE: u8 = 59;
+    pub const SANDSTONE_DARK: u8 = 60;
+    // Old stone buildings
+    pub const BRICK_STONE: u8 = 61;
+    pub const MORTAR: u8 = 62;
+    pub const LIMESTONE: u8 = 63;
+    // Jungles and deserts
+    pub const JUNGLE_GRASS: u8 = 64;
+    pub const DRY_GRASS: u8 = 65;
+    pub const CACTUS: u8 = 66;
+    pub const VINE: u8 = 67;
+    pub const CLAY_POT: u8 = 68;
+    // Weapons, see src\weapons.rs
+    pub const STEEL: u8 = 69;
+    pub const DARK_STEEL: u8 = 70;
+    pub const GOLD: u8 = 71;
+    pub const BRONZE: u8 = 72;
+    pub const LEATHER: u8 = 73;
+    pub const CLOTH: u8 = 74;
+    pub const LINEN: u8 = 75;
+    pub const OBSIDIAN: u8 = 76;
+    pub const BOWSTRING: u8 = 77;
+    pub const ICE: u8 = 78;
+    // These glow, in the colors of the elements
+    pub const GLOW_FIRE: u8 = 79;
+    pub const GLOW_FROST: u8 = 80;
+    pub const GLOW_STORM: u8 = 81;
+    pub const GLOW_POISON: u8 = 82;
+    pub const GLOW_ARCANE: u8 = 83;
+    pub const GLOW_VOID: u8 = 84;
+    pub const GLOW_BLOOD: u8 = 85;
+    pub const GLOW_HOLY: u8 = 86;
 }
 
 use material::*;
@@ -100,6 +133,8 @@ pub fn is_passable(material: u8) -> bool {
             | REED
             | CATTAIL
             | PALM_LEAF
+            | DRY_GRASS
+            | VINE
     )
 }
 
@@ -117,6 +152,21 @@ pub const SOLID_BRICK: u32 = 1 << 31;
 /// non-empty brick, in bricks along any axis, so rays can skip that far in one go.
 /// Has to match EMPTY_BRICK in shaders\traverse.comp.
 pub const EMPTY_BRICK: u32 = 1 << 30;
+/// Stored bricks with this bit set have leaves or flowers in them, which sway in the wind, see
+/// sways(). Has to match FOLIAGE_BRICK in shaders\traverse.comp.
+pub const FOLIAGE_BRICK: u32 = 1 << 29;
+/// The bits of a stored brick's cell that hold 1 + its index
+const BRICK_INDEX: u32 = FOLIAGE_BRICK - 1;
+
+/// Whether a material sways in the wind: leaves, and the flowers and tips of grass. Has to match
+/// sways() in shaders\traverse.comp.
+pub fn sways(material: u8) -> bool {
+    matches!(
+        material,
+        LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | BLOSSOM | WILLOW | PALM_LEAF | PINE | FERN | VINE | GRASS_TIP
+            | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK
+    )
+}
 
 pub struct World {
     /// Size in voxels, all multiples of 8.
@@ -191,7 +241,149 @@ impl World {
             return cell as u8;
         }
         let i = (x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize;
-        (self.bricks[(cell - 1) as usize * BRICK_WORDS + 16 + i / 4] >> ((i % 4) * 8)) as u8
+        (self.bricks[((cell & BRICK_INDEX) - 1) as usize * BRICK_WORDS + 16 + i / 4] >> ((i % 4) * 8)) as u8
+    }
+
+    /// Blows a hole in the world: everything within `radius` voxels of `center`, in voxels of this
+    /// world, is gone, with a ragged edge, and grass and flowers left hanging over the hole fall in
+    /// with it. Returns the cells of the bricks that changed, and some of what was blown out, for
+    /// debris.
+    pub fn carve(&mut self, center: [f64; 3], radius: f64) -> (Vec<usize>, Vec<u8>) {
+        let [sx, sy, sz] = self.size.map(i64::from);
+        let (bx, by) = (sx / 8, sy / 8);
+        let mut dirty: Vec<(usize, [u8; BRICK_VOXELS])> = Vec::new();
+        let mut found: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut blown = Vec::new();
+
+        // The bricks being changed, unpacked. Empty ones have nothing to blow away.
+        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut std::collections::HashMap<usize, usize>, x: i64, y: i64, z: i64| -> Option<usize> {
+            if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
+                return None;
+            }
+            let cell = (x / 8 + (y / 8 + (z / 8) * by) * bx) as usize;
+            if let Some(&k) = found.get(&cell) {
+                return Some(k);
+            }
+            let value = world.brick_grid[cell];
+            if value & EMPTY_BRICK != 0 {
+                return None;
+            }
+            let mut materials = [AIR; BRICK_VOXELS];
+            if value & SOLID_BRICK != 0 {
+                materials = [value as u8; BRICK_VOXELS];
+            } else {
+                let start = ((value & BRICK_INDEX) - 1) as usize * BRICK_WORDS + 16;
+                for (i, m) in materials.iter_mut().enumerate() {
+                    *m = (world.bricks[start + i / 4] >> ((i % 4) * 8)) as u8;
+                }
+            }
+            dirty.push((cell, materials));
+            found.insert(cell, dirty.len() - 1);
+            Some(dirty.len() - 1)
+        };
+        let local = |x: i64, y: i64, z: i64| (x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize;
+
+        let r = radius.ceil() as i64 + 1;
+        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        for z in cz - r..=cz + r {
+            for y in cy - r..=cy + r {
+                for x in cx - r..=cx + r {
+                    let d = ((x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2)).sqrt();
+                    let ragged = 0.82 + 0.3 * unit(hash3(x as u32, y as u32, z as u32)) as f64;
+                    if d > radius * ragged || self.material_at(x, y, z) == AIR {
+                        continue;
+                    }
+                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
+                        continue;
+                    };
+                    let i = local(x, y, z);
+                    if blown.len() < 64 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % 6 == 0 {
+                        blown.push(dirty[k].1[i]);
+                    }
+                    dirty[k].1[i] = AIR;
+                }
+            }
+        }
+
+        // Grass and flowers with nothing under them any more fall in
+        let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL);
+        for y in cy - r - 1..=cy + r + 1 {
+            for x in cx - r - 1..=cx + r + 1 {
+                for z in cz - r..=cz + r + 12 {
+                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
+                        continue;
+                    };
+                    if !plant(dirty[k].1[local(x, y, z)]) {
+                        continue;
+                    }
+                    let below = match brick(self, &mut dirty, &mut found, x, y, z - 1) {
+                        Some(b) => dirty[b].1[local(x, y, z - 1)],
+                        None => AIR,
+                    };
+                    if below == AIR {
+                        dirty[k].1[local(x, y, z)] = AIR;
+                    }
+                }
+            }
+        }
+
+        // Pack the changed bricks back up, in place where they were stored already
+        let mut changed = Vec::new();
+        for (cell, materials) in dirty {
+            let old = self.brick_grid[cell];
+            let first = materials[0];
+            let value = if materials.iter().all(|&m| m == first) {
+                if first == AIR { EMPTY_BRICK | 1 } else { SOLID_BRICK | first as u32 }
+            } else if old & (SOLID_BRICK | EMPTY_BRICK) == 0 {
+                let index = ((old & BRICK_INDEX) - 1) as usize;
+                let words = &mut self.bricks[index * BRICK_WORDS..(index + 1) * BRICK_WORDS];
+                words.fill(0);
+                for (i, &m) in materials.iter().enumerate() {
+                    if m != AIR {
+                        words[i / 32] |= 1 << (i % 32);
+                    }
+                    words[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
+                }
+                let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
+                (index as u32 + 1) | foliage
+            } else {
+                push_brick(&materials, &mut self.bricks)
+            };
+            if value != old {
+                self.brick_grid[cell] = value;
+            }
+            changed.push(cell);
+        }
+
+        // Water can flow down into the hole
+        if self.water.is_some() {
+            let mut lowered = Vec::new();
+            for y in (cy - r).max(0)..(cy + r + 1).min(sy) {
+                for x in (cx - r).max(0)..(cx + r + 1).min(sx) {
+                    let i = (x + y * sx) as usize;
+                    let old = self.water.as_ref().unwrap().ground[i] as i64;
+                    let top = (0..old.min(sz)).rev().find(|&z| !is_passable(self.material_at(x, y, z))).map_or(0, |z| z + 1);
+                    if top < old {
+                        lowered.push((i, top as f32));
+                    }
+                }
+            }
+            let map = self.water.as_mut().unwrap();
+            for (i, top) in lowered {
+                map.ground[i] = top;
+            }
+        }
+        (changed, blown)
+    }
+
+    /// The words of the stored brick in `cell`, if it's a stored brick
+    pub fn brick_words(&self, cell: usize) -> Option<(usize, &[u32])> {
+        let value = self.brick_grid[cell];
+        if value & (SOLID_BRICK | EMPTY_BRICK) != 0 {
+            return None;
+        }
+        let index = ((value & BRICK_INDEX) - 1) as usize;
+        Some((index, &self.bricks[index * BRICK_WORDS..(index + 1) * BRICK_WORDS]))
     }
 
     /// Converts occupancy bits packed like voxelize::voxelize_mesh() into bricks of one material.
@@ -303,7 +495,8 @@ fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
         }
         brick[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
     }
-    index as u32 + 1
+    let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
+    (index as u32 + 1) | foliage
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +505,8 @@ pub struct TerrainSettings {
     pub height_m: u32,
     pub voxels_per_meter: u32,
     pub seed: u32,
+    /// Little tufts of grass a few voxels tall all over the meadows
+    pub grass_tufts: bool,
 }
 
 impl TerrainSettings {
@@ -422,6 +617,17 @@ struct RiverPoint {
     lip: bool,
 }
 
+/// How the surface of a shape is made up
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pattern {
+    /// All `material`, with `accent` sprinkled in
+    Plain,
+    /// Laid in courses of bricks with mortar between, some bricks weathered to `accent`
+    Bricks,
+    /// Carved with bands round it and zigzags between them
+    Carved,
+}
+
 /// Where a shape goes in relation to the ground
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Placement {
@@ -453,6 +659,7 @@ struct Shape {
     /// Ragged, see-through edges, for clumps of foliage
     ragged: bool,
     placement: Placement,
+    pattern: Pattern,
     // Bounds
     min: Vec3,
     max: Vec3,
@@ -472,6 +679,7 @@ impl Shape {
             accent,
             ragged,
             placement: Placement::Above,
+            pattern: Pattern::Plain,
             min: [0, 1, 2].map(|i| a[i].min(b[i]) - r),
             max: [0, 1, 2].map(|i| a[i].max(b[i]) + r),
         }
@@ -493,8 +701,29 @@ impl Shape {
             accent,
             ragged: false,
             placement: Placement::Above,
+            pattern: Pattern::Plain,
             min: [0, 1, 2].map(|i| lo[i].min(hi[i])),
             max: [0, 1, 2].map(|i| lo[i].max(hi[i])),
+        }
+    }
+
+    /// An upright ellipsoid with these radii
+    fn ellipsoid(center: Vec3, radii: Vec3, material: u8, accent: u8) -> Self {
+        let reach = radii[0].max(radii[1]).max(radii[2]);
+        Shape {
+            a: center,
+            b: center,
+            radius_a: reach,
+            radius_b: reach,
+            flat: Some(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], radii)),
+            boxed: None,
+            material,
+            accent,
+            ragged: false,
+            placement: Placement::Above,
+            pattern: Pattern::Plain,
+            min: [0, 1, 2].map(|i| center[i] - radii[i]),
+            max: [0, 1, 2].map(|i| center[i] + radii[i]),
         }
     }
 
@@ -506,6 +735,94 @@ impl Shape {
     fn placed(mut self, placement: Placement) -> Self {
         self.placement = placement;
         self
+    }
+
+    fn patterned(mut self, pattern: Pattern) -> Self {
+        self.pattern = pattern;
+        self
+    }
+
+    /// A long, thin, upright ellipsoid going `along` (level), `length` long, `width` wide and
+    /// `height` high, like a slice of a crack in the ground
+    fn slab(center: Vec3, along: Vec3, length: f32, width: f32, height: f32) -> Self {
+        let along = normalize([along[0], along[1], 0.0]);
+        let side = [-along[1], along[0], 0.0];
+        let half = [length * 0.5, width * 0.5, height * 0.5];
+        let reach = half[0].max(half[1]).max(half[2]);
+        Shape {
+            a: center,
+            b: center,
+            radius_a: reach,
+            radius_b: reach,
+            flat: Some(([along, side, [0.0, 0.0, 1.0]], half)),
+            boxed: None,
+            material: AIR,
+            accent: AIR,
+            ragged: false,
+            placement: Placement::Carve,
+            pattern: Pattern::Plain,
+            min: [center[0] - half[0].max(half[1]), center[1] - half[0].max(half[1]), center[2] - half[2]],
+            max: [center[0] + half[0].max(half[1]), center[1] + half[0].max(half[1]), center[2] + half[2]],
+        }
+    }
+
+    /// What a voxel inside the shape is made of. `p` is its middle, `h` a hash of where it is.
+    fn material_at(&self, p: Vec3, voxel: f32, h: u32) -> u8 {
+        let sprinkled = |chance: f32| self.accent != AIR && unit(h >> 16) < chance;
+        let dark = if matches!(self.material, SANDSTONE | CLAY_POT) { SANDSTONE_DARK } else { MORTAR };
+        match self.pattern {
+            Pattern::Plain => {
+                if sprinkled(0.15) {
+                    self.accent
+                } else {
+                    self.material
+                }
+            }
+            Pattern::Bricks => {
+                const COURSE: f32 = 0.375;
+                const LENGTH: f32 = 0.75;
+                let course = (p[2] / COURSE).floor();
+                if p[2] - course * COURSE < voxel {
+                    return dark;
+                }
+                // Every other course is offset by half a brick
+                let along = p[0] + p[1] + if (course as i32).rem_euclid(2) == 1 { LENGTH * 0.5 } else { 0.0 };
+                let brick = (along / LENGTH).floor();
+                if along - brick * LENGTH < voxel {
+                    return dark;
+                }
+                // Whole bricks weather, not just the odd voxel
+                let weathered = unit(hash3(course as i32 as u32, brick as i32 as u32, 0xb71c)) < 0.2;
+                if self.accent != AIR && weathered || sprinkled(0.04) {
+                    self.accent
+                } else {
+                    self.material
+                }
+            }
+            Pattern::Carved => {
+                // Bands round it, with zigzags carved in the stone between them
+                const BAND: f32 = 1.2;
+                let rise = (p[2] - self.min[2]).rem_euclid(BAND);
+                if rise < voxel * 1.5 {
+                    return dark;
+                }
+                let around = if self.boxed.is_some() {
+                    p[0] + p[1]
+                } else {
+                    (p[1] - self.a[1]).atan2(p[0] - self.a[0]) * self.radius_a.max(0.3)
+                };
+                let v = rise / BAND;
+                let zig = ((around / 0.5 + 2.0 * v).rem_euclid(1.0) - 0.5).abs();
+                let zag = ((around / 0.5 - 2.0 * v).rem_euclid(1.0) - 0.5).abs();
+                if v > 0.15 && v < 0.85 && zig.min(zag) < 0.1 {
+                    dark
+                } else if sprinkled(0.08) {
+                    self.accent
+                } else {
+                    self.material
+                }
+            }
+        }
     }
 
     fn sphere(center: Vec3, radius: f32, material: u8, accent: u8, ragged: bool) -> Self {
@@ -537,6 +854,7 @@ impl Shape {
             accent,
             ragged: false,
             placement: Placement::Above,
+            pattern: Pattern::Plain,
             min: center.map(|v| v - reach),
             max: center.map(|v| v + reach),
         }
@@ -616,16 +934,46 @@ impl Frame {
         let (a, b) = (self.point(u[0], v[0], 0.0), self.point(u[1], v[1], 0.0));
         ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])])
     }
+
+    /// Which way something facing `angle` radians round from u faces in the world
+    fn heading(&self, angle: f32) -> f32 {
+        self.f[1].atan2(self.f[0]) + angle
+    }
+}
+
+/// A brick wall from (u0, v0) to (u1, v1) of a building at `at`, in pieces broken off at heights
+/// between `low` and `high` above `base`, of `stone`: material and accent. Returns its highest top.
+#[allow(clippy::too_many_arguments)]
+fn broken_wall(s: &mut Vec<Shape>, at: &Frame, rng: &mut Rng, u: [f32; 2], v: [f32; 2], base: f32, low: f32, high: f32, stone: (u8, u8)) -> f32 {
+    let along_u = (u[1] - u[0]).abs() >= (v[1] - v[0]).abs();
+    let (start, end) = if along_u { (u[0], u[1]) } else { (v[0], v[1]) };
+    let mut a = start;
+    let mut top = base;
+    while a < end - 1e-3 {
+        let piece = rng.range(0.9, 1.8).min(end - a);
+        let height = rng.range(low, high);
+        let (us, vs) = if along_u { ([a, a + piece], v) } else { (u, [a, a + piece]) };
+        s.push(at.block(us, vs, [base - 0.5, base + height], stone.0, stone.1).patterned(Pattern::Bricks));
+        top = top.max(base + height);
+        a += piece;
+    }
+    top
 }
 
 /// A candle standing at `at`, whose flame lights up the room
 fn candle(features: &mut Features, at: Vec3, rng: &mut Rng) {
-    features.props.push(Prop { kind: PropKind::Candle, position: at, heading: rng.next() * TAU });
+    features.props.push(Prop { kind: PropKind::Candle, position: at, heading: rng.next() * TAU, luck: 0.0 });
     features.lights.push(Light { position: [at[0], at[1], at[2] + 0.3], color: [1.0, 0.6, 0.25], reach: 7.0 });
 }
 
 fn skull(features: &mut Features, at: Vec3, rng: &mut Rng) {
-    features.props.push(Prop { kind: PropKind::Skull, position: at, heading: rng.next() * TAU });
+    features.props.push(Prop { kind: PropKind::Skull, position: at, heading: rng.next() * TAU, luck: 0.0 });
+}
+
+/// A chest at `at` with its lock facing `heading`, holding a weapon. The deeper in the wilds, the
+/// better what's in it is likely to be: `luck` as for Library::roll_rarity().
+fn chest(features: &mut Features, at: Vec3, heading: f32, luck: f32) {
+    features.props.push(Prop { kind: PropKind::Chest, position: at, heading, luck });
 }
 
 /// How the leaves on the twigs of a tree look.
@@ -638,6 +986,17 @@ struct Foliage {
     leaves_per_twig: usize,
     // Small round clumps of leaves behind the individual ones, so crowns look full from afar
     clumps_per_twig: usize,
+}
+
+/// A deeper shade of leaves, for the shadowy middle of a crown
+fn darker(leaves: u8) -> u8 {
+    match leaves {
+        LEAVES | LEAVES_DARK => LEAVES_DARK,
+        LEAVES_YELLOW => LEAVES_ORANGE,
+        LEAVES_ORANGE | LEAVES_RED => LEAVES_RED,
+        BLOSSOM => FLOWER_PINK,
+        other => other,
+    }
 }
 
 const BARE: Foliage = Foliage {
@@ -660,6 +1019,10 @@ struct Column {
     // voxels, and how likely moss is to grow on it
     strata: i32,
     moss: f32,
+    // Sandstone rather than rock, in the deserts
+    desert: bool,
+    // What the tuft or stem growing here is made of
+    blade_body: u8,
     // Where the column is in the whole landscape
     x: i64,
     y: i64,
@@ -809,6 +1172,55 @@ fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     h * height_m + bumps * 0.4
 }
 
+/// How much a spot is each kind of land, 0-1 each. Where it's none of them is the temperate land
+/// in between. Each stretches for a few hundred meters.
+#[derive(Clone, Copy, Default)]
+pub struct Climate {
+    pub jungle: f32,
+    pub desert: f32,
+    pub snow: f32,
+}
+
+pub fn climate(settings: &TerrainSettings, x: f32, y: f32) -> Climate {
+    let seed = settings.seed;
+    let heat = fbm(x / 900.0, y / 900.0, 3, seed.wrapping_add(31)) * 1.6;
+    let wet = fbm(x / 650.0, y / 650.0, 3, seed.wrapping_add(32)) * 1.6;
+    let hot = smoothstep(0.1, 0.4, heat);
+    Climate {
+        jungle: hot * smoothstep(-0.05, 0.25, wet),
+        desert: hot * smoothstep(0.05, -0.25, wet),
+        snow: smoothstep(-0.2, -0.5, heat),
+    }
+}
+
+/// The nearest spot to `near` that's very much `kind` of land ("jungle", "desert", "snow" or
+/// "temperate") and above the sea, in meters. For trying out each kind of land.
+pub fn find_climate(settings: &TerrainSettings, kind: &str, near: [f32; 2]) -> Option<[f32; 2]> {
+    let sea_level = sea_level_m(settings);
+    for ring in 0..120 {
+        let count = (ring * 6).max(1);
+        for i in 0..count {
+            let angle = i as f32 / count as f32 * TAU;
+            let (x, y) = (near[0] + angle.cos() * ring as f32 * 64.0, near[1] + angle.sin() * ring as f32 * 64.0);
+            let c = climate(settings, x, y);
+            let strength = match kind {
+                "jungle" => c.jungle,
+                "desert" => c.desert,
+                "snow" => c.snow,
+                _ => 1.0 - c.jungle.max(c.desert).max(c.snow),
+            };
+            if strength > 0.95 && height_at(settings, x, y) > sea_level + 3.0 {
+                return Some([x, y]);
+            }
+        }
+    }
+    None
+}
+
+fn is_grassy(material: u8) -> bool {
+    matches!(material, GRASS | JUNGLE_GRASS)
+}
+
 fn sea_level_m(settings: &TerrainSettings) -> f32 {
     settings.height_m as f32 * 0.3
 }
@@ -833,6 +1245,8 @@ const RIVER_SPRING_RADIUS: f32 = 2.0;
 pub enum PropKind {
     Candle,
     Skull,
+    /// With a weapon in it, see src\weapons.rs
+    Chest,
 }
 
 /// In meters, from the corner of the whole landscape
@@ -841,6 +1255,8 @@ pub struct Prop {
     pub kind: PropKind,
     pub position: [f32; 3],
     pub heading: f32,
+    /// For chests, how much rarer what's in it is likely to be, see Library::roll_rarity()
+    pub luck: f32,
 }
 
 /// Something glowing that lights up what's around it, like a candle flame. In meters.
@@ -870,6 +1286,9 @@ struct Features {
     floors: Vec<Floor>,
     /// Where buildings stand, so nothing else grows there: x0, y0, x1, y1 and how high they reach
     footprints: Vec<[f32; 5]>,
+    /// Where the ground water lies on has to be found from the voxels, as something's been cut
+    /// into it: x0, y0, x1, y1 and how high to look down from
+    recuts: Vec<[f32; 5]>,
     sites: Vec<Site>,
 }
 
@@ -1034,6 +1453,23 @@ impl Terrain {
                 }
             }
         }
+        // Ravines and such cut into the ground: water lies on whatever's left, and falls in
+        let is_wood = |m: u8| matches!(m, WOOD | BIRCH_BARK | PALM_WOOD | BARK_DARK | DEAD_WOOD);
+        for cut in &self.features.recuts {
+            let top = (cut[4] * vpm).ceil() as i64;
+            for (x, y) in columns([cut[0], cut[1]], [cut[2], cut[3]]) {
+                let i = (x + y * sx) as usize;
+                if let Some(z) = (0..=top).rev().find(|&z| {
+                    let m = world.material_at(x, y, z);
+                    !is_passable(m) && !is_wood(m)
+                }) {
+                    water.ground[i] = (z + 1) as f32;
+                    if water.surface[i] <= water.ground[i] {
+                        water.surface[i] = 0.0;
+                    }
+                }
+            }
+        }
         for floor in &self.features.floors {
             for (x, y) in columns(floor.lo, floor.hi) {
                 let i = (x + y * sx) as usize;
@@ -1152,7 +1588,7 @@ impl Terrain {
                         let j = chunk_index * rows_per_thread * sx + i;
                         let (x, y) = ((j % sx) as i64, (j / sx) as i64);
                         let column = self.column(heights, x, y);
-                        if column.top != GRASS {
+                        if !is_grassy(column.top) {
                             continue;
                         }
                         let forest = smoothstep(-0.15, 0.25, fbm(x as f32 / vpm / 80.0, y as f32 / vpm / 80.0, 3, seed.wrapping_add(4)));
@@ -1203,14 +1639,24 @@ impl Terrain {
         let river = (heights.river[i] * vpm).floor() as i32;
         let water_top = if river > h { river.max(sea_level) } else { sea_level };
 
+        // Which kind of land this is, with ragged edges where one meets the next
+        let (xm, ym) = (gx as f32 / vpm, gy as f32 / vpm);
+        let c = climate(&self.settings, xm, ym);
+        let edge = (unit(hash3(gx as u32, gy as u32, self.settings.seed ^ 0xb10e)) - 0.5) * 0.3;
+        let (jungle, desert, snowy) = (c.jungle + edge > 0.5, c.desert + edge > 0.5, c.snow + edge > 0.5);
+
         let top = if h <= sea_level + v {
             SAND
         } else if river > h {
             GRAVEL
         } else if slope > 1.4 {
             STONE
-        } else if h >= snow_line + snow_jitter {
+        } else if h >= snow_line + snow_jitter || snowy {
             SNOW
+        } else if desert {
+            SAND
+        } else if jungle {
+            JUNGLE_GRASS
         } else {
             GRASS
         };
@@ -1220,33 +1666,35 @@ impl Terrain {
         };
 
         // Flowers on short stems, growing in patches of one color, and tufts of grass a few
-        // voxels tall between them. There's also grass made of triangles in the shader, see
-        // traceGrass() in shaders\traverse.comp.
+        // voxels tall between them, taller in the jungle and dry in the desert. There's also grass
+        // made of triangles in the shader, see traceGrass() in shaders\traverse.comp.
         let max_stem = (0.35 * vpm).round().max(1.0) as u32;
-        let (mut blade, mut blade_top) = (0, AIR);
-        if top == GRASS {
+        let (mut blade, mut blade_body, mut blade_top) = (0, GRASS_BLADE, AIR);
+        let tuft = hash3(gx as u32, gy as u32, self.settings.seed ^ 0x9a55);
+        if is_grassy(top) {
             let r = hash3(gx as u32, gy as u32, self.settings.seed ^ 0xb1ade);
-            let (xm, ym) = (gx as f32 / vpm, gy as f32 / vpm);
             let meadow = (fbm(xm / 14.0, ym / 14.0, 2, self.settings.seed.wrapping_add(7)) - 0.1).max(0.0) * 3.0;
             // About the same number of flowers per square meter at any resolution
-            let flower_chance = 0.45 * (0.01 + meadow * 0.2) * (8.0 / vpm).powi(2).min(1.0);
+            let flower_chance = 0.45 * (0.01 + meadow * 0.2) * (8.0 / vpm).powi(2).min(1.0) * if jungle { 0.3 } else { 1.0 };
             let lush = smoothstep(-0.3, 0.4, fbm(xm / 9.0, ym / 9.0, 2, self.settings.seed.wrapping_add(8)));
-            let tuft = hash3(gx as u32, gy as u32, self.settings.seed ^ 0x9a55);
+            let (lush, chance) = if jungle { (1.0, 0.75) } else { (lush, 0.25 + 0.35 * lush) };
             if unit(r) < flower_chance {
                 blade = 1 + ((r >> 16) % max_stem) as i32;
                 let patch = hash3((xm / 4.0) as u32, (ym / 4.0) as u32, self.settings.seed ^ 0xf10e);
                 blade_top = [FLOWER_RED, FLOWER_YELLOW, FLOWER_PURPLE, FLOWER_WHITE][(patch % 4) as usize];
-            } else if unit(tuft) < 0.25 + 0.35 * lush {
+            } else if self.settings.grass_tufts && unit(tuft) < chance {
                 // Taller in lush patches, with a lighter tip
-                let tallest = (0.08 + 0.22 * lush) * vpm;
+                let tallest = (0.08 + if jungle { 0.4 } else { 0.22 } * lush) * vpm;
                 blade = ((unit(tuft >> 16) * tallest).round() as i32).max(1);
                 blade_top = GRASS_TIP;
             }
+        } else if top == SAND && desert && self.settings.grass_tufts && unit(tuft) < 0.04 {
+            blade = ((unit(tuft >> 16) * 0.25 * vpm).round() as i32).max(1);
+            (blade_body, blade_top) = (DRY_GRASS, DRY_GRASS);
         }
 
-        let (xm, ym) = (gx as f32 / vpm, gy as f32 / vpm);
         let strata = (fbm(xm / 7.0, ym / 7.0, 2, self.settings.seed.wrapping_add(23)) * 0.8 * vpm) as i32;
-        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * 0.6;
+        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * if desert { 0.0 } else { 0.6 };
 
         Column {
             height: h,
@@ -1255,15 +1703,17 @@ impl Terrain {
             water_top,
             strata,
             moss,
+            desert,
             x: gx,
             y: gy,
             blade,
+            blade_body,
             blade_top,
         }
     }
 
     /// Bare rock: layers a few tens of centimeters thick, gently wavy, of a few kinds of stone,
-    /// with moss growing in patches
+    /// with moss growing in patches. Sandstone in the deserts.
     fn rock(&self, column: &Column, z: i32) -> u8 {
         let thickness = (0.3 * self.settings.voxels_per_meter as f32).max(1.0) as i32;
         let layer = (z + column.strata).div_euclid(thickness);
@@ -1271,7 +1721,11 @@ impl Terrain {
         if unit(h) < column.moss * 0.5 {
             return MOSS;
         }
-        match hash3(layer as u32, self.settings.seed, 0x57a7a) % 6 {
+        let pick = hash3(layer as u32, self.settings.seed, 0x57a7a) % 6;
+        if column.desert {
+            return [SANDSTONE, SANDSTONE, SANDSTONE, SANDSTONE_DARK, SAND, CLAY][pick as usize];
+        }
+        match pick {
             0 | 1 | 2 => STONE,
             3 | 4 => ROCK,
             _ => CLAY,
@@ -1292,7 +1746,7 @@ impl Terrain {
             // Water isn't kept in the voxels, see src\water.rs
             AIR
         } else if z < column.height + column.blade {
-            GRASS_BLADE
+            column.blade_body
         } else if z == column.height + column.blade {
             column.blade_top
         } else {
@@ -1348,6 +1802,8 @@ impl Terrain {
 
         let mut materials = [AIR; BRICK_VOXELS];
         let mut nearby: Vec<(&Shape, u32)> = Vec::new();
+        // Columns whose top of the ground was cut away, so the grass and flowers on it go too
+        let mut bare = [false; 64];
         for z in 0..bz {
             let z0 = origin_z as i32 + (z * 8) as i32;
             if z0 > max_top {
@@ -1411,11 +1867,27 @@ impl Terrain {
                                 if shape.ragged && depth > 0.55 && unit(h) < 0.45 {
                                     continue;
                                 }
-                                let accent = shape.accent != AIR && unit(h >> 16) < 0.15;
-                                materials[i] = if accent { shape.accent } else { shape.material };
+                                materials[i] = shape.material_at(p, voxel, h);
                                 break;
                             }
                         }
+                    }
+                }
+            }
+
+            // Nothing grows in mid-air over a hole cut into the ground
+            for (c, column) in columns.iter().enumerate() {
+                let top = column.height - z0;
+                if (0..8).contains(&top) && materials[c + top as usize * 64] == AIR {
+                    bare[c] = true;
+                }
+                if !bare[c] || column.blade == 0 {
+                    continue;
+                }
+                for lz in (top + 1).max(0)..(top + column.blade + 1).min(8) {
+                    let i = c + lz as usize * 64;
+                    if materials[i] == column.blade_body || materials[i] == column.blade_top {
+                        materials[i] = AIR;
                     }
                 }
             }
@@ -1554,6 +2026,7 @@ impl Terrain {
         // Buildings go first, as where they overlap other things they win
         let mut objects = self.buildings(heights, &mut features);
         objects.extend(self.caves(&mut features));
+        objects.extend(self.ravines(&mut features));
         let footprints = std::mem::take(&mut features.footprints);
         let (lo, hi) = (self.lo, self.hi);
 
@@ -1585,30 +2058,73 @@ impl Terrain {
         let forest = |x: f32, y: f32| smoothstep(-0.15, 0.25, fbm(x / 80.0, y / 80.0, 3, seed.wrapping_add(4)));
         let meadow = |x: f32, y: f32| ((fbm(x / 14.0, y / 14.0, 2, seed.wrapping_add(7)) - 0.1).max(0.0) * 3.0).min(1.0);
         let sea_level = sea_level_m(&self.settings);
+        let settings = self.settings;
+        let climate = |x: f32, y: f32| climate(&settings, x, y);
 
-        // At most one tree per cell, denser where the forest noise is high
+        // At most one tree per cell, denser where the forest noise is high. The jungle is thick
+        // with them, the snow has pine forests, and in the desert only palms grow, by the water.
         scatter(7.5, 0x7a3e, &mut |x, y, ground, column, r| {
-            let density = forest(x, y) * 0.85 + 0.03;
-            (column.top == GRASS && unit(r) < density).then(|| self.tree(x, y, ground, hash(r)))
+            let c = climate(x, y);
+            let density = if c.jungle > 0.5 {
+                0.95
+            } else if column.top == SAND && c.desert > 0.5 {
+                if ground - sea_level < 2.5 { 0.25 } else { 0.0 }
+            } else if column.top == SNOW || c.snow > 0.5 {
+                forest(x, y) * 0.6 + 0.05
+            } else {
+                forest(x, y) * 0.85 + 0.03
+            };
+            let soil = is_grassy(column.top) || column.top == SNOW && c.snow > 0.3 || column.top == SAND && c.desert > 0.5;
+            (soil && unit(r) < density).then(|| self.tree(x, y, ground, hash(r)))
+        });
+
+        // In the jungle, smaller trees in between the big ones
+        scatter(4.5, 0x9b1e, &mut |x, y, ground, column, r| {
+            let c = climate(x, y);
+            (column.top == JUNGLE_GRASS && unit(r) < c.jungle * 0.7).then(|| {
+                let mut rng = Rng(hash(r));
+                let foliage = Foliage { material: LEAVES_DARK, accent: LEAVES, leaf_length: 0.3, leaves_per_twig: 10, clumps_per_twig: 2 };
+                Object::new(self.broadleaf(x, y, ground, 0.8, 2, BARK_DARK, foliage, &mut rng), rng.0)
+            })
+        });
+
+        // Cacti and dry shrubs in the desert
+        scatter(6.0, 0xcac7, &mut |x, y, ground, column, r| {
+            let c = climate(x, y);
+            if column.top != SAND || c.desert < 0.5 || ground - sea_level < 2.0 {
+                return None;
+            }
+            let mut rng = Rng(hash(r));
+            let roll = unit(r);
+            if roll < 0.25 {
+                Some(Object::new(self.cactus(x, y, ground, &mut rng), rng.0))
+            } else if roll < 0.4 {
+                Some(Object::new(self.lupine(x, y, ground, FLOWER_PURPLE, &mut rng), rng.0))
+            } else if roll < 0.5 {
+                Some(Object::new(self.broadleaf(x, y, ground, 0.35, 2, DEAD_WOOD, BARE, &mut rng), rng.0))
+            } else {
+                None
+            }
         });
 
         // Bushes, mostly around the forests
         scatter(4.0, 0xb054, &mut |x, y, ground, column, r| {
             let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.3 + meadow(x, y) * 0.08 + 0.04;
-            (column.top == GRASS && unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), hash(r)))
+            (is_grassy(column.top) && unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), hash(r)))
         });
 
-        // Undergrowth: ferns, big leaves and mushrooms in the forests, flowers in the meadows,
-        // reeds along the shore
+        // Undergrowth: ferns, big leaves and mushrooms in the forests and all over the jungle,
+        // flowers in the meadows, reeds along the shore
         scatter(1.2, 0x9a47, &mut |x, y, ground, column, r| {
-            if column.top != GRASS {
+            if !is_grassy(column.top) {
                 return None;
             }
-            let (forest, meadow) = (forest(x, y), meadow(x, y));
+            let jungle = climate(x, y).jungle;
+            let (forest, meadow) = (forest(x, y).max(jungle * 1.6), meadow(x, y) * (1.0 - jungle));
             let shore = if ground - sea_level < 1.5 { 0.5 } else { 0.0 };
             let weights = [
                 forest * 0.25,
-                forest * 0.08,
+                forest * 0.08 + jungle * 0.15,
                 forest * 0.03,
                 meadow * 0.15,
                 shore,
@@ -1633,10 +2149,18 @@ impl Terrain {
             Some(Object::new(shapes, rng.0))
         });
 
-        // Boulders, half sunk into the ground
+        // Boulders, half sunk into the ground, of sandstone in the desert
         scatter(14.0, 0xb0d3, &mut |x, y, ground, column, r| {
             let dry = ground > sea_level && column.top != GRAVEL;
-            (dry && unit(r) < 0.45).then(|| self.boulder(x, y, ground - 1.0 / vpm, hash(r)))
+            (dry && unit(r) < 0.45).then(|| {
+                let mut boulder = self.boulder(x, y, ground - 1.0 / vpm, hash(r));
+                if column.top == SAND && climate(x, y).desert > 0.5 {
+                    for shape in &mut boulder.shapes {
+                        (shape.material, shape.accent) = (SANDSTONE, SANDSTONE_DARK);
+                    }
+                }
+                boulder
+            })
         });
 
         features.footprints = footprints;
@@ -1646,7 +2170,7 @@ impl Terrain {
     /// Temples and ruins on flat, dry ground, at most one in each BUILDING_CELL square, and
     /// gateways over some of the waterfalls
     fn buildings(&self, heights: &Heights, features: &mut Features) -> Vec<Object> {
-        const BUILDING_CELL: f32 = 80.0;
+        const BUILDING_CELL: f32 = 56.0;
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
         let sea_level = sea_level_m(&self.settings);
@@ -1667,20 +2191,45 @@ impl Terrain {
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
                 let r = hash3(cx as u32, cy as u32, seed ^ 0x7e3b);
-                if unit(r) > 0.75 {
+                if unit(r) > 0.85 {
                     continue;
                 }
-                // Pyramids, small temples and ruins. They sink into the ground on the uphill side,
-                // so the ground only has to be fairly flat.
-                let kind = (r >> 20) % 10;
-                let (half, flatness) = match kind {
-                    0..=3 => (12.5, 6.0),
-                    4..=6 => (5.0, 3.5),
-                    _ => (8.0, 6.0),
-                };
                 let s = hash(r);
                 let x = (cx as f32 + 0.2 + 0.6 * unit(s)) * BUILDING_CELL;
                 let y = (cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * BUILDING_CELL;
+
+                // Each kind of land has buildings of its own: Aztec pyramids and temples deep in
+                // the jungle, overgrown colonnades on its edges, carved sandstone ruins in the
+                // desert, and castles, watchtowers, colonnades and flooded churches elsewhere.
+                // They sink into the ground on the uphill side, so the ground only has to be
+                // fairly flat.
+                let c = climate(&self.settings, x, y);
+                let pick = unit(r >> 8);
+                let kind = if c.jungle > 0.7 {
+                    if pick < 0.55 { "pyramid" } else { "shrine" }
+                } else if c.jungle > 0.3 {
+                    "colonnade"
+                } else if c.desert > 0.6 {
+                    if pick < 0.65 { "desert ruins" } else { "colonnade" }
+                } else if c.snow > 0.6 {
+                    if pick < 0.6 { "castle" } else { "watchtower" }
+                } else if pick < 0.3 {
+                    "castle"
+                } else if pick < 0.55 {
+                    "flooded church"
+                } else if pick < 0.78 {
+                    "colonnade"
+                } else {
+                    "watchtower"
+                };
+                let (half, flatness) = match kind {
+                    "pyramid" => (12.5, 6.0),
+                    "shrine" => (5.0, 3.5),
+                    "flooded church" => (9.5, 4.0),
+                    "colonnade" => (8.5, 4.5),
+                    "watchtower" => (4.5, 3.0),
+                    _ => (8.5, 6.0),
+                };
 
                 // The whole site has to be in this piece of the landscape, dry and flat enough
                 let samples: Option<Vec<(f32, bool)>> = (0..25)
@@ -1706,25 +2255,33 @@ impl Terrain {
                 let at = Frame { x, y, f: facing };
                 let mut rng = Rng(hash(s));
                 let (shapes, top) = match kind {
-                    0..=3 => self.pyramid(at, lowest, &mut rng, features),
-                    4..=6 => self.shrine(at, lowest, &mut rng, features),
-                    _ => self.ruins(at, lowest, &mut rng, features),
+                    "pyramid" => self.pyramid(at, lowest, &mut rng, features),
+                    "shrine" => self.shrine(at, lowest, &mut rng, features),
+                    "desert ruins" => self.desert_ruins(at, lowest, &mut rng, features),
+                    "flooded church" => self.flooded_church(at, lowest, &mut rng, features),
+                    "colonnade" => {
+                        let stone = if c.desert > 0.6 {
+                            (SANDSTONE, SANDSTONE_DARK)
+                        } else if c.jungle > 0.3 {
+                            (TEMPLE_STONE, MOSS)
+                        } else {
+                            (LIMESTONE, MOSS)
+                        };
+                        self.colonnade(at, lowest, stone, &mut rng, features)
+                    }
+                    "watchtower" => self.watchtower(at, lowest, if c.snow > 0.6 { (BRICK_STONE, SNOW) } else { (BRICK_STONE, MOSS) }, &mut rng, features),
+                    _ => self.castle(at, lowest, c.snow > 0.6, &mut rng, features),
                 };
-                let name = ["pyramid", "shrine", "ruins"][match kind {
-                    0..=3 => 0,
-                    4..=6 => 1,
-                    _ => 2,
-                }];
-                features.sites.push(Site { kind: name, position: [x, y, lowest], facing });
+                features.sites.push(Site { kind, position: [x, y, lowest], facing });
                 objects.push(Object::new(shapes, rng.0));
                 features.footprints.push([x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0, top]);
             }
         }
 
-        // Gateways standing over waterfalls, for the river to pour through
+        // Aztec gateways standing over waterfalls in the jungle, for the river to pour through
         for (lip, flow) in self.waterfalls() {
             let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, seed ^ 0x9a7e);
-            if unit(r) > 0.5 {
+            if unit(r) > 0.5 || climate(&self.settings, lip[0], lip[1]).jungle < 0.7 {
                 continue;
             }
             let mut rng = Rng(hash(r));
@@ -1780,6 +2337,8 @@ impl Terrain {
             skull(features, at.point(u, v, floor), rng);
         }
         skull(features, at.point(-3.15, -3.1, floor + 0.22), rng);
+        // Pyramids hold the best treasure, deep in the jungle
+        chest(features, at.point(1.5, -3.1, floor), at.heading(FRAC_PI_2), 2.0);
 
         // The temple on top, with its doorway facing the stairs
         s.push(at.room([-1.9, 1.1], [-1.7, 1.7], [top, top + 2.3]));
@@ -1792,6 +2351,7 @@ impl Terrain {
             candle(features, at.point(-1.4, v, top), rng);
         }
         skull(features, at.point(-1.5, 0.0, top), rng);
+        chest(features, at.point(-0.3, 1.25, top), at.heading(-FRAC_PI_2), 1.4);
 
         // A low wall round the top, open at the stairs
         let t = half - tiers as f32 * inset;
@@ -1843,46 +2403,274 @@ impl Terrain {
             candle(features, at.point(-1.05, v, floor + 0.7), rng);
         }
         skull(features, at.point(-1.05, 0.0, floor + 0.7), rng);
+        chest(features, at.point(0.2, 0.85, floor), at.heading(-FRAC_PI_2), 1.2);
         (s, floor + 3.8)
     }
 
-    /// Tumbled walls and pillars, overgrown with moss, around an old altar
-    fn ruins(&self, at: Frame, base: f32, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+    /// The ruins of a small stone castle: a roofless hall with a doorway and windows, a tall
+    /// tower with battlements and a smaller broken one, all of brick, overgrown with moss and
+    /// vines, or snowed on. Candles burn inside.
+    fn castle(&self, at: Frame, base: f32, snowy: bool, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let weather = if snowy { SNOW } else { MOSS };
         let mut s = Vec::new();
-        let mut top = base;
+        let hall = rng.range(3.5, 5.0);
+        let tower = rng.range(7.0, 9.5);
+        let small = rng.range(4.5, 6.0);
+
+        // Vines hanging down the outside of the walls
+        if !snowy {
+            for _ in 0..8 {
+                let along = rng.range(-1.5, 4.5);
+                let (u, v) = if rng.next() < 0.5 { (along, if rng.next() < 0.5 { 3.35 } else { -3.35 }) } else { (5.35, rng.range(-2.5, 2.5)) };
+                let length = rng.range(1.0, hall * 0.7);
+                s.push(Shape::capsule(at.point(u, v, base + hall * 0.6), at.point(u, v, base + hall * 0.6 - length), 0.07, 0.05, VINE, LEAVES, false));
+            }
+        }
+
+        // The hall's doorway, windows and inside, and the towers' insides and doors
+        s.push(at.room([4.3, 5.2], [-0.65, 0.65], [base, base + 2.4]));
+        for u in [-0.3, 2.6] {
+            for v in [-3.1, 3.1] {
+                s.push(at.room([u - 0.35, u + 0.35], [v - 0.45, v + 0.45], [base + 1.6, base + 2.8]));
+            }
+        }
+        s.push(at.room([-1.4, 4.4], [-2.4, 2.4], [base, base + 9.0]));
+        s.push(at.room([-3.9, -2.1], [2.1, 3.9], [base, base + tower - 0.6]));
+        s.push(at.room([-2.2, -1.3], [2.5, 3.3], [base, base + 2.2]));
+        s.push(at.room([-4.6, -3.4], [2.7, 3.3], [base + tower - 2.6, base + tower - 1.6]));
+        s.push(at.room([-3.6, -2.4], [-4.0, -3.0], [base, base + small]));
+
+        // The hall's walls, each broken off at different heights
+        let stone = (BRICK_STONE, weather);
+        broken_wall(&mut s, &at, rng, [-2.0, 5.0], [2.4, 3.0], base, hall * 0.5, hall, stone);
+        broken_wall(&mut s, &at, rng, [-2.0, 5.0], [-3.0, -2.4], base, hall * 0.4, hall, stone);
+        broken_wall(&mut s, &at, rng, [4.4, 5.0], [-2.4, 2.4], base, hall * 0.8, hall, stone);
+        broken_wall(&mut s, &at, rng, [-2.0, -1.4], [-2.4, 2.4], base, hall * 0.6, hall, stone);
+
+        // The tall tower, with battlements round the top
+        for (u, v) in [(-4.5, 1.5), (-1.95, 1.5), (-4.5, 3.95), (-1.95, 3.95)] {
+            s.push(at.block([u, u + 0.55], [v, v + 0.55], [base + tower, base + tower + 0.7], BRICK_STONE, weather).patterned(Pattern::Bricks));
+        }
+        s.push(at.block([-4.5, -1.4], [1.5, 4.5], [base - 0.5, base + tower], BRICK_STONE, weather).patterned(Pattern::Bricks));
+        // The small tower, its top fallen in
+        broken_wall(&mut s, &at, rng, [-4.2, -1.8], [-4.6, -2.4], base, small * 0.6, small, stone);
+
+        // Steps up to the door, and rubble lying about
+        s.push(at.block([5.0, 5.8], [-1.0, 1.0], [base - 0.5, base + 0.15], BRICK_STONE, weather).patterned(Pattern::Bricks));
+        for _ in 0..8 {
+            let (u, v) = (rng.range(-6.0, 7.0), rng.range(-5.5, 5.5));
+            let size = rng.range(0.3, 0.7);
+            s.push(at.block([u, u + size], [v, v + size * rng.range(0.8, 1.6)], [base - 0.2, base + size * 0.7], BRICK_STONE, weather));
+        }
+
+        for (u, v) in [(3.6, -1.8), (3.6, 1.8)] {
+            candle(features, at.point(u, v, base), rng);
+        }
+        candle(features, at.point(-3.6, 3.0, base + tower - 2.6), rng);
+        skull(features, at.point(-0.8, -1.9, base), rng);
+        chest(features, at.point(0.6, 2.05, base), at.heading(-FRAC_PI_2), 1.3);
+        (s, base + tower + 1.0)
+    }
+
+    /// A church long fallen into ruin: roofless walls with tall arched windows, a great doorway
+    /// and a round window in the end, its sunken floor flooded with clear water, a little welling
+    /// up and spilling out of the door, and a tree growing up in the middle
+    fn flooded_church(&self, at: Frame, base: f32, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let height = rng.range(7.0, 9.0);
+        let floor = base - 0.6;
+        let mut s = Vec::new();
+
+        // The tree goes first, so the empty inside doesn't swallow it
+        let (leaves, accent) = if rng.next() < 0.7 { (LEAVES_ORANGE, LEAVES_RED) } else { (LEAVES, LEAVES_YELLOW) };
+        let foliage = Foliage { material: leaves, accent, leaf_length: 0.22, leaves_per_twig: 12, clumps_per_twig: 3 };
+        let trunk = at.point(0.5, 0.0, 0.0);
+        s.extend(self.broadleaf(trunk[0], trunk[1], floor, 1.1, 2, WOOD, foliage, rng));
+
+        // The doorway with its round arch, tall arched windows down both sides, a round window
+        // at the far end, and the inside
+        s.push(at.room([6.2, 7.8], [-1.3, 1.3], [base - 0.05, base + 3.6]));
+        s.push(Shape::capsule(at.point(6.2, 0.0, base + 3.6), at.point(7.8, 0.0, base + 3.6), 1.3, 1.3, AIR, AIR, false).placed(Placement::Clear));
+        for u in [-4.5, -1.5, 1.5, 4.5] {
+            for v in [-4.1, 4.1] {
+                s.push(at.room([u - 0.55, u + 0.55], [v - 0.6, v + 0.6], [base + 2.2, base + 5.0]));
+                s.push(Shape::capsule(at.point(u, v - 0.6, base + 5.0), at.point(u, v + 0.6, base + 5.0), 0.55, 0.55, AIR, AIR, false).placed(Placement::Clear));
+            }
+        }
+        s.push(Shape::sphere(at.point(-7.0, 0.0, base + 5.8), 1.2, AIR, AIR, false).placed(Placement::Clear));
+        s.push(at.room([-6.2, 6.2], [-3.7, 3.7], [floor, base + height + 1.0]));
+
+        // The stone floor under the water, and the walls, broken off at different heights
+        s.push(at.block([-6.2, 6.2], [-3.7, 3.7], [floor - 1.0, floor], LIMESTONE, MOSS).patterned(Pattern::Bricks));
+        let stone = (LIMESTONE, MOSS);
+        broken_wall(&mut s, &at, rng, [-7.6, 7.6], [3.7, 4.5], base, height * 0.55, height, stone);
+        broken_wall(&mut s, &at, rng, [-7.6, 7.6], [-4.5, -3.7], base, height * 0.55, height, stone);
+        broken_wall(&mut s, &at, rng, [-7.6, -6.2], [-3.7, 3.7], base, height * 0.8, height * 1.15, stone);
+        broken_wall(&mut s, &at, rng, [6.2, 7.6], [-3.7, 3.7], base, height * 0.7, height * 1.1, stone);
+        // Buttresses down the sides
+        for u in [-6.0, -3.0, 0.0, 3.0, 6.0] {
+            for v in [[4.5, 5.4], [-5.4, -4.5]] {
+                s.push(at.block([u - 0.45, u + 0.45], v, [base - 0.5, base + height * 0.6], LIMESTONE, MOSS).patterned(Pattern::Bricks));
+            }
+        }
+
+        // The water: still inside, held in by the doorstep, and topped up so it spills out
+        let (lo, hi) = at.rect([-6.2, 6.2], [-3.7, 3.7]);
+        features.floors.push(Floor { lo, hi, height: floor, water: base - 0.15 });
+        let (lo, hi) = at.rect([6.2, 7.8], [-1.3, 1.3]);
+        features.floors.push(Floor { lo, hi, height: base - 0.05, water: 0.0 });
+        let spring = at.point(-3.0, 0.0, 0.0);
+        features.springs.push([spring[0], spring[1], 0.03, 0.5]);
+        // Sunk under the water at the far end
+        chest(features, at.point(-5.6, 0.0, floor), at.heading(0.0), 1.6);
+        (s, base + height * 1.15 + 1.0)
+    }
+
+    /// Ruins in the desert: carved sandstone pillars, some topped with onion domes, an arch, low
+    /// walls half buried in the sand, clay urns and paving
+    fn desert_ruins(&self, at: Frame, base: f32, rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let mut s = Vec::new();
+        // Under the arch
+        chest(features, at.point(0.0, 0.0, base + 0.1), at.heading(0.0), 1.2);
         for _ in 0..4 + (rng.next() * 4.0) as usize {
-            let (u, v) = (rng.range(-6.5, 6.5), rng.range(-6.5, 6.5));
-            let length = rng.range(2.0, 5.0);
-            let along = rng.next() < 0.5;
-            // Broken off at different heights along the wall
-            let mut start = -length * 0.5;
-            while start < length * 0.5 {
-                let piece = rng.range(0.6, 1.6).min(length * 0.5 - start);
-                let height = rng.range(0.6, 3.0);
-                let (us, vs) = if along { ([u + start, u + start + piece], [v - 0.25, v + 0.25]) } else { ([u - 0.25, u + 0.25], [v + start, v + start + piece]) };
-                s.push(at.block(us, vs, [base - 0.5, base + height], TEMPLE_STONE, MOSS));
-                top = top.max(base + height);
-                start += piece;
-            }
+            let (u, v) = (rng.range(-6.5, 6.5), rng.range(-5.5, 5.5));
+            let r = rng.range(0.3, 0.5);
+            let body = at.point(u, v, base + r * 1.1);
+            let mouth = at.point(u, v, base + r * 2.3);
+            s.push(Shape::capsule(mouth, mouth, r * 0.55, r * 0.55, CLAY_POT, SANDSTONE_DARK, false));
+            s.push(Shape::capsule(body, mouth, r * 0.45, r * 0.4, CLAY_POT, SANDSTONE_DARK, false));
+            s.push(Shape::ellipsoid(body, [r, r, r * 1.2], CLAY_POT, SANDSTONE_DARK).patterned(Pattern::Carved));
         }
-        for _ in 0..4 + (rng.next() * 5.0) as usize {
-            let (u, v) = (rng.range(-6.5, 6.5), rng.range(-6.5, 6.5));
-            if rng.next() < 0.3 {
-                // Toppled over
-                let along = rng.next() < 0.5;
-                let (us, vs) = if along { ([u - 1.5, u + 1.5], [v - 0.35, v + 0.35]) } else { ([u - 0.35, u + 0.35], [v - 1.5, v + 1.5]) };
-                s.push(at.block(us, vs, [base - 0.3, base + 0.4], TEMPLE_STONE, MOSS));
+
+        let mut top = base + 2.0;
+        for _ in 0..2 + (rng.next() * 2.0) as usize {
+            let (u, v) = (rng.range(-6.0, 6.0), rng.range(-5.0, 5.0));
+            let (r, h) = (rng.range(0.75, 1.0), rng.range(3.0, 6.0));
+            let foot = at.point(u, v, base - 0.5);
+            let head = at.point(u, v, base + h);
+            if rng.next() < 0.5 {
+                // An onion dome on top
+                let dome = at.point(u, v, base + h + r * 0.7);
+                s.push(Shape::capsule(dome, at.point(u, v, base + h + r * 2.2), r * 0.55, 0.04, SANDSTONE, SANDSTONE_DARK, false).patterned(Pattern::Carved));
+                s.push(Shape::sphere(dome, r * 0.8, SANDSTONE, SANDSTONE_DARK, false).patterned(Pattern::Carved));
+                top = top.max(base + h + r * 2.2);
+            }
+            s.push(Shape::capsule(head, at.point(u, v, base + h - 0.3), r + 0.2, r + 0.2, SANDSTONE_DARK, AIR, false));
+            s.push(Shape::capsule(foot, head, r, r, SANDSTONE, SAND, false).patterned(Pattern::Carved));
+            top = top.max(base + h);
+        }
+
+        // The arch, with fins standing up round its top
+        let (span, rise) = (2.4, base + 3.2);
+        for d in [-1.4, 0.0, 1.4] {
+            s.push(at.block([-0.25, 0.25], [d - 0.35, d + 0.35], [rise + span - 0.2, rise + span + 1.0], SANDSTONE, SANDSTONE_DARK).patterned(Pattern::Carved));
+        }
+        for k in 0..10 {
+            let (a, b) = (k as f32 / 10.0 * std::f32::consts::PI, (k + 1) as f32 / 10.0 * std::f32::consts::PI);
+            let point = |t: f32| at.point(0.0, span * t.cos(), rise + span * t.sin());
+            s.push(Shape::capsule(point(a), point(b), 0.5, 0.5, SANDSTONE, SANDSTONE_DARK, false).patterned(Pattern::Carved));
+        }
+        for v in [-span, span] {
+            s.push(at.block([-0.55, 0.55], [v - 0.55, v + 0.55], [base - 0.5, rise], SANDSTONE, SANDSTONE_DARK).patterned(Pattern::Carved));
+        }
+
+        // Low walls, half buried in the sand, and paving
+        let stone = (SANDSTONE, SAND);
+        for _ in 0..2 + (rng.next() * 2.0) as usize {
+            let (u, v) = (rng.range(-6.0, 6.0), rng.range(-5.0, 5.0));
+            let length = rng.range(2.0, 4.5);
+            if rng.next() < 0.5 {
+                broken_wall(&mut s, &at, rng, [u, u + length], [v, v + 0.5], base, 0.5, 2.0, stone);
             } else {
-                let height = rng.range(1.5, 4.0);
-                s.push(at.block([u - 0.45, u + 0.45], [v - 0.45, v + 0.45], [base + height - 0.3, base + height], TEMPLE_DARK, MOSS));
-                s.push(at.block([u - 0.35, u + 0.35], [v - 0.35, v + 0.35], [base - 0.5, base + height], TEMPLE_STONE, MOSS));
-                top = top.max(base + height);
+                broken_wall(&mut s, &at, rng, [u, u + 0.5], [v, v + length], base, 0.5, 2.0, stone);
             }
         }
-        s.push(at.block([-0.6, 0.6], [-0.9, 0.9], [base - 0.5, base + 0.8], TEMPLE_DARK, MOSS));
-        candle(features, at.point(0.2, -0.5, base + 0.8), rng);
-        skull(features, at.point(-0.1, 0.3, base + 0.8), rng);
-        (s, top)
+        s.push(at.block([-7.0, 7.0], [-6.0, 6.0], [base - 0.6, base + 0.1], SANDSTONE, SAND).patterned(Pattern::Bricks));
+        (s, top + 1.0)
+    }
+
+    /// The colonnade of a temple long gone: a raised floor with steps all round, two rows of
+    /// carved columns, many broken off, a lintel still bridging one pair, and fallen drums lying
+    /// about. Of `stone`, weathered with its accent. A chest waits at the far end.
+    fn colonnade(&self, at: Frame, base: f32, stone: (u8, u8), rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let mut s = Vec::new();
+        let length = rng.range(9.0, 13.0);
+        let count = (length / 2.2) as usize;
+        let spacing = length / count as f32;
+        let tall = rng.range(4.0, 5.5);
+        let floor = base + 0.6;
+        // The pair still holding up a lintel stays whole
+        let lintel = 1 + (rng.next() * (count - 1) as f32) as usize;
+        for k in 0..=count {
+            let u = -length * 0.5 + k as f32 * spacing;
+            for v in [-2.4f32, 2.4] {
+                let broken = k != lintel && rng.next() < 0.5;
+                let height = if broken { rng.range(0.4, tall * 0.8) } else { tall };
+                if broken {
+                    // Its fallen drums, lying where they rolled
+                    for _ in 0..1 + (rng.next() * 2.0) as usize {
+                        let (du, dv) = (rng.range(-1.6, 1.6), v.signum() * rng.range(0.8, 2.2));
+                        let angle = rng.next() * TAU;
+                        let a = at.point(u + du, v + dv, floor + 0.3);
+                        let b = [a[0] + angle.cos() * 0.8, a[1] + angle.sin() * 0.8, a[2]];
+                        s.push(Shape::capsule(a, b, 0.3, 0.3, stone.0, stone.1, false).patterned(Pattern::Carved));
+                    }
+                } else {
+                    s.push(at.block([u - 0.46, u + 0.46], [v - 0.46, v + 0.46], [floor + height - 0.3, floor + height], stone.0, stone.1));
+                }
+                s.push(at.block([u - 0.44, u + 0.44], [v - 0.44, v + 0.44], [floor, floor + 0.3], stone.0, stone.1));
+                s.push(Shape::capsule(at.point(u, v, floor), at.point(u, v, floor + height), 0.34, 0.3, stone.0, stone.1, false).patterned(Pattern::Carved));
+            }
+            if k == lintel {
+                s.push(at.block([u - 0.5, u + 0.5], [-2.9, 2.9], [floor + tall, floor + tall + 0.55], stone.0, stone.1).patterned(Pattern::Carved));
+            }
+        }
+        // The raised floor, and a step all round it
+        let end = length * 0.5;
+        s.push(at.block([-end - 1.2, end + 1.2], [-3.6, 3.6], [base - 1.0, floor], stone.0, stone.1).patterned(Pattern::Bricks));
+        s.push(at.block([-end - 1.8, end + 1.8], [-4.2, 4.2], [base - 1.0, base + 0.3], stone.0, stone.1).patterned(Pattern::Bricks));
+        chest(features, at.point(-end + 0.2, 0.0, floor), at.heading(0.0), 1.1);
+        (s, floor + tall + 1.0)
+    }
+
+    /// A round watchtower crumbling away: thick walls broken off unevenly at the top, a doorway,
+    /// narrow windows on the way up, rubble round its foot, and a candle still burning inside by a
+    /// chest. Of `stone`, weathered with its accent.
+    fn watchtower(&self, at: Frame, base: f32, stone: (u8, u8), rng: &mut Rng, features: &mut Features) -> (Vec<Shape>, f32) {
+        let mut s = Vec::new();
+        let r = rng.range(2.3, 3.0);
+        let wall = 0.65;
+        let height = rng.range(9.0, 13.0);
+
+        // Openings first, so the walls don't fill them: the doorway, windows, bites out of the
+        // top, and the hollow inside
+        s.push(at.room([r - wall - 0.4, r + 0.4], [-0.55, 0.55], [base, base + 2.3]));
+        for k in 0..4 {
+            let a = k as f32 * TAU / 4.0 + 0.8;
+            let (u, v) = (a.cos() * r, a.sin() * r);
+            let z = base + 3.5 + k as f32 * 1.8;
+            s.push(at.room([u - 0.3, u + 0.3], [v - 0.3, v + 0.3], [z, z + 1.0]));
+        }
+        for _ in 0..5 {
+            let a = rng.next() * TAU;
+            let z = base + height * rng.range(0.65, 1.0) + 1.2;
+            s.push(Shape::sphere(at.point(a.cos() * r, a.sin() * r, z), rng.range(1.2, 2.2), AIR, AIR, false).placed(Placement::Clear));
+        }
+        s.push(Shape::capsule(at.point(0.0, 0.0, base), at.point(0.0, 0.0, base + height + 3.0), r - wall, r - wall, AIR, AIR, false).placed(Placement::Clear));
+
+        // Rubble that's fallen from the top
+        for _ in 0..10 {
+            let a = rng.next() * TAU;
+            let d = r + rng.range(0.4, 3.0);
+            let size = rng.range(0.3, 0.7);
+            let (u, v) = (a.cos() * d, a.sin() * d);
+            s.push(at.block([u, u + size], [v, v + size * rng.range(0.8, 1.5)], [base - 0.2, base + size * 0.7], stone.0, stone.1).patterned(Pattern::Bricks));
+        }
+        s.push(Shape::capsule(at.point(0.0, 0.0, base - 1.0), at.point(0.0, 0.0, base + height), r, r, stone.0, stone.1, false).patterned(Pattern::Bricks));
+
+        let inside = r - wall - 0.35;
+        candle(features, at.point(-inside + 0.3, inside * 0.5, base), rng);
+        chest(features, at.point(-inside + 0.25, -0.3, base), at.heading(0.0), 1.3);
+        (s, base + height + r)
     }
 
     /// Two pillars on the banks either side of a waterfall's lip, joined by a beam over the water,
@@ -1904,6 +2692,79 @@ impl Terrain {
             skull(features, side(d, high + 0.25), rng);
         }
         (s, high + 1.0)
+    }
+
+    /// Ravines: long, deep, narrow cracks in the ground, wandering along with ledges down their
+    /// sides, at most one in each RAVINE_CELL square. Most are open to the sky; the rest are
+    /// crevices hidden under the ground, with crystals glowing at the bottom.
+    fn ravines(&self, features: &mut Features) -> Vec<Object> {
+        const RAVINE_CELL: f32 = 100.0;
+        const STEP: f32 = 2.0;
+        // How far from where they start ravines can reach
+        const REACH: f32 = 100.0;
+        let seed = self.settings.seed;
+        let sea_level = sea_level_m(&self.settings);
+        let (lo, hi) = (self.lo, self.hi);
+        let mut objects = Vec::new();
+        let first = [((lo[0] - REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - REACH) / RAVINE_CELL).floor() as i32];
+        let last = [((hi[0] + REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + REACH) / RAVINE_CELL).ceil() as i32];
+        for cy in first[1]..last[1] {
+            for cx in first[0]..last[0] {
+                let r = hash3(cx as u32, cy as u32, seed ^ 0x7a71);
+                if unit(r) > 0.7 {
+                    continue;
+                }
+                let mut rng = Rng(hash(r));
+                let (mut x, mut y) = ((cx as f32 + rng.next()) * RAVINE_CELL, (cy as f32 + rng.next()) * RAVINE_CELL);
+                if height_at(&self.settings, x, y) < sea_level + 4.0 {
+                    continue;
+                }
+                let open = rng.next() < 0.5;
+                let mut heading = rng.next() * TAU;
+                let width = rng.range(2.0, 4.5);
+                let depth = rng.range(10.0, 22.0);
+                let steps = 15 + (rng.next() * 30.0) as usize;
+                let mut shapes = Vec::new();
+                let mut crystals = Vec::new();
+                for i in 0..steps {
+                    // Narrow at both ends
+                    let taper = (std::f32::consts::PI * (i as f32 + 0.5) / steps as f32).sin().sqrt();
+                    heading += rng.range(-0.25, 0.25);
+                    let along = [heading.cos(), heading.sin(), 0.0];
+                    x += along[0] * STEP;
+                    y += along[1] * STEP;
+                    let ground = height_at(&self.settings, x, y);
+                    if ground < sea_level + 1.0 {
+                        break;
+                    }
+                    let top = if open { ground + 2.0 } else { ground - rng.range(4.0, 7.0) };
+                    let bottom = top - depth * taper - 2.0;
+                    if i == steps / 2 && self.inside(x, y) {
+                        let kind = if open { "ravine" } else { "crevice" };
+                        features.sites.push(Site { kind, position: [x, y, if open { ground } else { bottom + 1.5 }], facing: [along[0], along[1]] });
+                    }
+                    let middle = (top + bottom) * 0.5;
+                    let w = width * taper + 0.6;
+                    // A wide upper part and a narrower deeper one, leaving ledges down the sides
+                    shapes.push(Shape::slab([x, y, middle + (top - bottom) * 0.15], along, STEP * 2.0, w, (top - bottom) * 0.75));
+                    shapes.push(Shape::slab([x, y, middle - (top - bottom) * 0.1], along, STEP * 2.0, w * 0.55, top - bottom));
+                    features.recuts.push([x - w - STEP, y - w - STEP, x + w + STEP, y + w + STEP, ground + 3.0]);
+                    if !open && i % 6 == 3 {
+                        let at = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), bottom + 0.6];
+                        for _ in 0..3 {
+                            let offset = [rng.range(-0.3, 0.3), rng.range(-0.3, 0.3), rng.range(0.0, 0.4)];
+                            crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
+                        }
+                        if self.inside(at[0], at[1]) {
+                            features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
+                        }
+                    }
+                }
+                shapes.extend(crystals);
+                objects.push(Object::new(shapes, rng.0));
+            }
+        }
+        objects
     }
 
     /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square. Some open
@@ -1982,6 +2843,24 @@ impl Terrain {
         let pines = smoothstep(0.25, 0.45, altitude + pine_region * 0.3);
         let grove = fbm(x / 50.0, y / 50.0, 2, seed.wrapping_add(9)) * 0.5 + 0.5;
 
+        let c = climate(&self.settings, x, y);
+        if c.jungle > 0.5 {
+            return Object::new(self.jungle_tree(x, y, base, &mut rng), rng.0);
+        }
+        if c.desert > 0.5 {
+            return Object::new(self.palm(x, y, base, &mut rng), rng.0);
+        }
+        if c.snow > 0.5 {
+            // Pines with snow on their branches
+            let mut shapes = if rng.next() < 0.5 { self.spruce(x, y, base, &mut rng) } else { self.fir(x, y, base, &mut rng) };
+            for shape in &mut shapes {
+                if shape.material == PINE {
+                    shape.accent = SNOW;
+                }
+            }
+            return Object::new(shapes, rng.0);
+        }
+
         let pick = rng.next();
         let shapes = if altitude > 0.55 && pick < 0.12 {
             self.broadleaf(x, y, base, 1.0, 2, DEAD_WOOD, BARE, &mut rng)
@@ -1995,9 +2874,9 @@ impl Terrain {
             let foliage = Foliage {
                 material: leaves,
                 accent,
-                leaf_length: 0.2,
-                leaves_per_twig: 14,
-                clumps_per_twig: 3,
+                leaf_length: 0.3,
+                leaves_per_twig: 42,
+                clumps_per_twig: 1,
             };
             if choice < 0.3 {
                 self.broadleaf(x, y, base, 1.0, 2, WOOD, foliage, &mut rng)
@@ -2007,7 +2886,7 @@ impl Terrain {
                 let blossom = Foliage {
                     material: BLOSSOM,
                     accent: FLOWER_WHITE,
-                    leaf_length: 0.14,
+                    leaf_length: 0.22,
                     ..foliage
                 };
                 self.broadleaf(x, y, base, 0.8, 2, BARK_DARK, blossom, &mut rng)
@@ -2023,6 +2902,68 @@ impl Terrain {
             }
         };
         Object::new(shapes, rng.0)
+    }
+
+    /// A jungle giant: a tall trunk on buttress roots, a wide crown of dark leaves, and vines
+    /// hanging down from it
+    fn jungle_tree(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
+        let height = rng.range(9.0, 15.0);
+        let radius = rng.range(0.35, 0.55);
+        let spread = rng.range(3.5, 5.5);
+        let top = [x + rng.range(-0.8, 0.8), y + rng.range(-0.8, 0.8), base + height];
+        let mut shapes = vec![Shape::wood([x, y, base - 0.5], top, radius, radius * 0.7, BARK_DARK)];
+        for i in 0..4 {
+            let angle = i as f32 / 4.0 * TAU + rng.range(-0.4, 0.4);
+            let foot = [x + angle.cos() * 1.7, y + angle.sin() * 1.7, base - 0.3];
+            shapes.push(Shape::wood([x, y, base + 1.8], foot, radius * 0.7, 0.12, BARK_DARK));
+        }
+        let mut clumps = Vec::new();
+        let foliage = Foliage {
+            material: LEAVES_DARK,
+            accent: LEAVES,
+            leaf_length: 0.45,
+            leaves_per_twig: 54,
+            clumps_per_twig: 1,
+        };
+        for i in 0..9 {
+            let angle = i as f32 / 9.0 * TAU + rng.range(-0.3, 0.3);
+            let d = if i == 0 { 0.0 } else { spread * rng.range(0.5, 1.0) };
+            let at = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] + rng.range(-0.6, 0.8) - d * 0.15];
+            if i > 0 {
+                shapes.push(Shape::wood([top[0], top[1], top[2] - 1.5], [at[0], at[1], at[2] - 0.5], 0.2, 0.1, BARK_DARK));
+            }
+            let out = normalize([angle.cos() * d.min(1.0), angle.sin() * d.min(1.0), 0.6]);
+            self.leaf_cluster(&mut clumps, at, out, rng.range(1.6, 2.4), BARK_DARK, foliage, rng);
+        }
+        for _ in 0..12 {
+            let angle = rng.next() * TAU;
+            let d = spread * rng.range(0.4, 1.1);
+            let start = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] - 0.8];
+            let end = [start[0] + rng.range(-0.2, 0.2), start[1] + rng.range(-0.2, 0.2), start[2] - rng.range(2.5, height * 0.6)];
+            shapes.push(Shape::capsule(start, end, 0.07, 0.05, VINE, LEAVES, false));
+        }
+        shapes.extend(clumps);
+        shapes
+    }
+
+    /// A cactus with a few arms bending up, sometimes in flower
+    fn cactus(&self, x: f32, y: f32, ground: f32, rng: &mut Rng) -> Vec<Shape> {
+        let height = rng.range(1.6, 3.6);
+        let r = rng.range(0.18, 0.28);
+        let mut shapes = Vec::new();
+        if rng.next() < 0.3 {
+            shapes.push(Shape::sphere([x, y, ground + height + r * 0.6], r * 0.6, FLOWER_PINK, FLOWER_YELLOW, false));
+        }
+        for _ in 0..(rng.next() * 3.0) as usize {
+            let angle = rng.next() * TAU;
+            let elbow_height = ground + height * rng.range(0.35, 0.65);
+            let out = rng.range(0.5, 0.8);
+            let elbow = [x + angle.cos() * out, y + angle.sin() * out, elbow_height];
+            shapes.push(Shape::capsule([x, y, elbow_height], elbow, r * 0.75, r * 0.7, CACTUS, AIR, false));
+            shapes.push(Shape::capsule(elbow, [elbow[0], elbow[1], elbow_height + rng.range(0.5, 1.2)], r * 0.7, r * 0.6, CACTUS, AIR, false));
+        }
+        shapes.push(Shape::capsule([x, y, ground - 0.3], [x, y, ground + height], r, r * 0.9, CACTUS, AIR, false));
+        shapes
     }
 
     // Leaf colors come in regions, so forests turn in patches like in autumn
@@ -2087,7 +3028,7 @@ impl Terrain {
         wood.push(Shape::wood(start, end, radius, radius * 0.65, bark));
 
         if depth == 0 {
-            self.twig_leaves(leaves, end, length, foliage, rng);
+            self.twig_leaves(leaves, end, dir, length, bark, foliage, rng);
             return;
         }
 
@@ -2101,22 +3042,50 @@ impl Terrain {
         }
     }
 
-    // A couple of small clumps around the end of a twig, and leaves sticking out all around them
-    fn twig_leaves(&self, out: &mut Vec<Shape>, end: Vec3, length: f32, foliage: Foliage, rng: &mut Rng) {
+    // Twiglets fanning out from the end of a twig going `dir`, with leaves along them in pairs
+    fn twig_leaves(&self, out: &mut Vec<Shape>, end: Vec3, dir: Vec3, length: f32, bark: u8, foliage: Foliage, rng: &mut Rng) {
+        let spread = length * rng.range(1.2, 1.6);
+        self.leaf_cluster(out, end, dir, spread, bark, foliage, rng);
+    }
+
+    /// Leaves you can tell apart, with sky showing between them: twiglets fanning out from `at`
+    /// about `reach` meters, leaning `dir`, each with leaves along it in pairs and one at its tip,
+    /// every leaf one shade or another. A small dark clump in the middle keeps the crown from
+    /// looking see-through from afar.
+    #[allow(clippy::too_many_arguments)]
+    fn leaf_cluster(&self, out: &mut Vec<Shape>, at: Vec3, dir: Vec3, reach: f32, bark: u8, foliage: Foliage, rng: &mut Rng) {
         if foliage.material == AIR {
             return;
         }
-        let spread = length * rng.range(1.4, 1.8);
-        for _ in 0..foliage.clumps_per_twig {
-            let center = add(end, scale(rng.direction(0.3), spread * 0.35));
-            out.push(Shape::sphere(center, spread * rng.range(0.45, 0.65), foliage.material, foliage.accent, true));
+        for _ in 0..foliage.clumps_per_twig.min(1) {
+            out.push(Shape::sphere(add(at, scale(rng.direction(0.3), reach * 0.15)), reach * rng.range(0.38, 0.48), darker(foliage.material), foliage.material, true));
         }
-        for _ in 0..foliage.leaves_per_twig {
-            let mut dir = rng.direction(0.2);
-            dir[2] += 0.2;
-            let center = add(end, scale(dir, spread * rng.range(0.35, 0.75)));
-            let length = foliage.leaf_length * rng.range(0.8, 1.25);
-            out.push(Shape::leaf(center, add(dir, [0.0, 0.0, -0.4]), [0.0, 0.0, 1.0], length, length * 0.55, foliage.material, foliage.accent));
+        let twiglets = 3 + foliage.leaves_per_twig / 6 + (rng.next() * 2.0) as usize;
+        for _ in 0..twiglets {
+            let mut d = add(rng.direction(0.0), scale(dir, 0.7));
+            d[2] += 0.2;
+            let d = normalize(d);
+            let tip = add(at, scale(d, reach * rng.range(0.55, 1.0)));
+            out.push(Shape::wood(at, tip, 0.025, 0.015, bark));
+            let mut side = cross(d, [0.0, 0.0, 1.0]);
+            if dot(side, side) < 1e-4 {
+                side = [1.0, 0.0, 0.0];
+            }
+            let side = normalize(side);
+            // Leaves all along it, however long it is
+            let pairs = ((reach / (foliage.leaf_length * 1.2)) as usize).clamp(2, 6) + (rng.next() * 1.5) as usize;
+            for k in 0..=pairs {
+                let t = (k as f32 + 1.0) / (pairs as f32 + 1.0);
+                let stem = lerp3(at, tip, t);
+                // A pair along the twiglet, then one off its tip
+                let sides: &[f32] = if k == pairs { &[0.0] } else { &[-1.0, 1.0] };
+                for &s in sides {
+                    let leaf_dir = normalize(add(add(scale(side, s), scale(d, if s == 0.0 { 1.0 } else { 0.6 })), [0.0, 0.0, -0.25]));
+                    let length = foliage.leaf_length * rng.range(0.85, 1.2);
+                    let shade = if rng.next() < 0.68 { foliage.material } else { foliage.accent };
+                    out.push(Shape::leaf(add(stem, scale(leaf_dir, length * 0.55)), leaf_dir, [0.0, 0.0, 1.0], length, length * 0.45, shade, shade));
+                }
+            }
         }
     }
 
@@ -2132,8 +3101,8 @@ impl Terrain {
         let foliage = Foliage {
             material: if autumn > 0.1 { LEAVES_YELLOW } else { LEAVES },
             accent: LEAVES_YELLOW,
-            leaf_length: 0.12,
-            leaves_per_twig: 8,
+            leaf_length: 0.2,
+            leaves_per_twig: 24,
             clumps_per_twig: 1,
         };
         let branches = 6 + (rng.next() * 3.99) as usize;
@@ -2221,10 +3190,25 @@ impl Terrain {
     fn poplar(&self, x: f32, y: f32, base: f32, leaves: u8, accent: u8, rng: &mut Rng) -> Vec<Shape> {
         let height = rng.range(7.0, 10.0);
         let radius = rng.range(0.9, 1.4);
-        vec![
-            Shape::wood([x, y, base - 0.6], [x, y, base + height * 0.8], 0.24, 0.12, WOOD),
-            Shape::capsule([x, y, base + 2.0 + radius], [x, y, base + height - radius * 0.5], radius, radius * 0.6, leaves, accent, true),
-        ]
+        let foliage = Foliage {
+            material: leaves,
+            accent,
+            leaf_length: 0.26,
+            leaves_per_twig: 48,
+            clumps_per_twig: 1,
+        };
+        // A narrow tower of leaf clusters up the trunk, smaller towards the top
+        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height * 0.8], 0.24, 0.12, WOOD)];
+        let mut leaves = Vec::new();
+        let tiers = 5;
+        for k in 0..tiers {
+            let t = k as f32 / (tiers - 1) as f32;
+            let z = base + 2.0 + radius + (height - radius * 1.5 - 2.0) * t;
+            let r = radius * (1.0 - 0.45 * t);
+            self.leaf_cluster(&mut leaves, [x, y, z], [0.0, 0.0, 0.3], r, WOOD, foliage, rng);
+        }
+        shapes.append(&mut leaves);
+        shapes
     }
 
     // A curving trunk with a crown of long arching fronds

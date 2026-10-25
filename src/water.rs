@@ -10,16 +10,17 @@ use nalgebra::Vector3;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferToImageInfo,
-        CopyImageToBufferInfo, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
-        allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, BufferImageCopy, ClearColorImageInfo, CommandBufferUsage, CopyBufferToImageInfo,
+        CopyImageInfo, CopyImageToBufferInfo, ImageCopy, PrimaryAutoCommandBuffer,
+        PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator},
     device::Queue,
     format::Format,
-    image::{Image, ImageCreateInfo, ImageUsage, view::ImageView},
+    image::{Image, ImageCreateInfo, ImageSubresourceLayers, ImageUsage, view::ImageView},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
+    sync::GpuFuture,
 };
 
 use crate::worldgen::{World, is_passable};
@@ -39,6 +40,9 @@ const BLOCK: u32 = 8;
 const STEP: f64 = 1.0 / 120.0;
 /// At most this many steps a frame, so a slow frame doesn't make the next one slower still
 const MAX_STEPS: u32 = 6;
+/// The water flows in an area this many columns across around the camera. Further away it keeps
+/// still until the camera comes near, and rivers flowing in from there keep flowing in.
+const ACTIVE_COLUMNS: u32 = 1024;
 /// Frames between copies of the water back to the CPU
 const READBACK_FRAMES: u32 = 30;
 /// Water shallower than this, in meters, doesn't count as water for walking about in
@@ -64,6 +68,7 @@ pub struct Water {
     pub surface_view: Arc<ImageView>,
     pub blocks_view: Arc<ImageView>,
     depth_image: Arc<Image>,
+    flux_image: Arc<Image>,
     /// Whether there's any water to simulate
     pub active: bool,
 
@@ -79,6 +84,8 @@ pub struct Water {
     brush: Option<[f32; 4]>,
     /// Simulated time owed to catch up with real time
     time_debt: f64,
+    /// Whether the surface of all the water has been worked out, not just near the camera
+    drawn_once: bool,
 }
 
 fn storage_image(memory_allocator: &Arc<StandardMemoryAllocator>, extent: [u32; 2], format: Format) -> (Arc<Image>, Arc<ImageView>) {
@@ -101,6 +108,67 @@ fn storage_image(memory_allocator: &Arc<StandardMemoryAllocator>, extent: [u32; 
 }
 
 impl Water {
+    /// The ground in the columns from `lo` to `hi` changed, like when a hole was blown in it:
+    /// takes the new ground from `world`'s water map, here and on the GPU
+    pub fn sync_ground(
+        &mut self,
+        world: &World,
+        lo: [i64; 2],
+        hi: [i64; 2],
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+        command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
+        queue: &Arc<Queue>,
+    ) {
+        let Some(map) = &world.water else {
+            return;
+        };
+        if map.ground.len() != self.ground.len() {
+            return;
+        }
+        let [sx, sy] = self.size.map(i64::from);
+        let (x0, y0) = (lo[0].clamp(0, sx), lo[1].clamp(0, sy));
+        let (x1, y1) = (hi[0].clamp(0, sx), hi[1].clamp(0, sy));
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let mut rect = Vec::with_capacity(((x1 - x0) * (y1 - y0)) as usize);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (x + y * sx) as usize;
+                self.ground[i] = map.ground[i];
+                rect.push(map.ground[i]);
+            }
+        }
+        let staging = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            rect,
+        )
+        .unwrap();
+        let image = self.ground_view.image().clone();
+        let region = BufferImageCopy {
+            image_subresource: image.subresource_layers(),
+            image_offset: [x0 as u32, y0 as u32, 0],
+            image_extent: [(x1 - x0) as u32, (y1 - y0) as u32, 1],
+            ..Default::default()
+        };
+        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+        builder
+            .copy_buffer_to_image(CopyBufferToImageInfo {
+                regions: vec![region].into(),
+                ..CopyBufferToImageInfo::buffer_image(staging, image)
+            })
+            .unwrap();
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+    }
+
     /// `springs` are where water wells up, see worldgen::Terrain::springs(): x, y, cubic meters a
     /// second and radius, in meters from the corner of the whole landscape
     pub fn new(
@@ -154,7 +222,7 @@ impl Water {
             .unwrap()
             .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(upload(&depth), depth_image.clone()))
             .unwrap()
-            .clear_color_image(ClearColorImageInfo::image(flux_image))
+            .clear_color_image(ClearColorImageInfo::image(flux_image.clone()))
             .unwrap()
             .clear_color_image(ClearColorImageInfo {
                 clear_value: [-1.0, 0.0, 0.0, 0.0].into(),
@@ -235,6 +303,7 @@ impl Water {
             surface_view,
             blocks_view,
             depth_image,
+            flux_image,
             active: map.is_some(),
             ground,
             depth,
@@ -243,7 +312,60 @@ impl Water {
             frames_since_readback: 0,
             brush: None,
             time_debt: 0.0,
+            drawn_once: false,
         }
+    }
+
+    /// Takes over the water where this world overlaps `old`, whose corner is `shift` columns
+    /// before this one's, so it carries on flowing as it was. Only the newly built part starts
+    /// out fresh.
+    pub fn carry_over(&mut self, old: &Water, shift: [i64; 2], command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>) {
+        if !self.active || !old.active || old.size != self.size {
+            return;
+        }
+        let size = [self.size[0] as i64, self.size[1] as i64];
+        // The overlap, in columns of the old world
+        let lo = [shift[0].max(0), shift[1].max(0)];
+        let hi = [(size[0] + shift[0]).min(size[0]), (size[1] + shift[1]).min(size[1])];
+        if hi[0] <= lo[0] || hi[1] <= lo[1] {
+            return;
+        }
+        let extent = [(hi[0] - lo[0]) as u32, (hi[1] - lo[1]) as u32, 1];
+        let copy = |src: &Arc<Image>, dst: &Arc<Image>| {
+            let layers = ImageSubresourceLayers::from_parameters(src.format(), 1);
+            CopyImageInfo {
+                regions: [ImageCopy {
+                    src_subresource: layers.clone(),
+                    src_offset: [lo[0] as u32, lo[1] as u32, 0],
+                    dst_subresource: layers,
+                    dst_offset: [(lo[0] - shift[0]) as u32, (lo[1] - shift[1]) as u32, 0],
+                    extent,
+                    ..Default::default()
+                }]
+                .into(),
+                ..CopyImageInfo::images(src.clone(), dst.clone())
+            }
+        };
+        let mut builder = AutoCommandBufferBuilder::primary(
+            command_buffer_allocator.clone(),
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+        builder
+            .copy_image(copy(&old.depth_image, &self.depth_image))
+            .unwrap()
+            .copy_image(copy(&old.flux_image, &self.flux_image))
+            .unwrap();
+        let _ = builder.build().unwrap().execute(queue.clone()).unwrap();
+
+        for y in lo[1]..hi[1] {
+            let (from, to) = ((y * size[0]) as usize, ((y - shift[1]) * size[0]) as usize);
+            let (x0, x1) = (lo[0] as usize, hi[0] as usize);
+            let (n0, n1) = ((lo[0] - shift[0]) as usize, (hi[0] - shift[0]) as usize);
+            self.depth[to + n0..to + n1].copy_from_slice(&old.depth[from + x0..from + x1]);
+        }
+        self.time_debt = old.time_debt;
     }
 
     fn index(&self, x: f64, y: f64) -> Option<usize> {
@@ -317,13 +439,15 @@ impl Water {
         })
     }
 
-    /// Runs the simulation for a frame `frame_time` seconds long. `wake` is something wading
-    /// through the water: where it is and how fast it's going, in voxels and voxels per second.
+    /// Runs the simulation for a frame `frame_time` seconds long, in the area around `camera`, a
+    /// column. `wake` is something wading through the water: where it is and how fast it's going,
+    /// in voxels and voxels per second.
     pub fn record(
         &mut self,
         builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         pipeline: &Arc<ComputePipeline>,
         frame_time: f64,
+        camera: [f64; 2],
         wake: Option<([f64; 2], [f64; 2])>,
     ) {
         if !self.active {
@@ -333,12 +457,22 @@ impl Water {
         let steps = (self.time_debt / STEP) as u32;
         self.time_debt -= steps as f64 * STEP;
 
+        // Only the water near the camera flows. The first time round, all of it gets its surface
+        // worked out to draw.
+        let area = self.size.map(|n| n.min(ACTIVE_COLUMNS));
+        let corner = [0, 1].map(|i| {
+            let c = (camera[i] as i64 - area[i] as i64 / 2).clamp(0, (self.size[i] - area[i]) as i64);
+            (c as u32 / BLOCK) * BLOCK
+        });
+        let (surface_corner, surface_area) = if self.drawn_once { (corner, area) } else { ([0, 0], self.size) };
+        self.drawn_once = true;
+
         let wake = wake.map_or([0.0; 4], |(p, v)| [p[0] as f32, p[1] as f32, v[0] as f32, v[1] as f32]);
-        let constants = |stage: Stage, brush: [f32; 4]| Constants {
+        let constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2]| Constants {
             brush,
             wake,
             params: [STEP as f32, self.sea_level, self.voxels_per_meter as f32, 0.0],
-            info: [stage as u32, self.spring_count, 0, 0],
+            info: [stage as u32, self.spring_count, corner[0], corner[1]],
         };
 
         builder
@@ -346,7 +480,7 @@ impl Water {
             .unwrap()
             .bind_descriptor_sets(PipelineBindPoint::Compute, pipeline.layout().clone(), 0, vec![self.set.clone()])
             .unwrap();
-        let columns = [self.size[0].div_ceil(8), self.size[1].div_ceil(8), 1];
+        let groups = |area: [u32; 2]| [area[0].div_ceil(8), area[1].div_ceil(8), 1];
         let dispatch = |builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>, c: Constants, groups: [u32; 3]| {
             builder.push_constants(pipeline.layout().clone(), 0, c).unwrap();
             unsafe {
@@ -355,12 +489,12 @@ impl Water {
         };
         for step in 0..steps {
             let brush = if step == 0 { self.brush.take().unwrap_or([0.0; 4]) } else { [0.0; 4] };
-            dispatch(builder, constants(Stage::Flux, [0.0; 4]), columns);
-            dispatch(builder, constants(Stage::Depth, brush), columns);
+            dispatch(builder, constants(Stage::Flux, [0.0; 4], corner), groups(area));
+            dispatch(builder, constants(Stage::Depth, brush, corner), groups(area));
         }
-        dispatch(builder, constants(Stage::Surface, [0.0; 4]), columns);
-        let blocks = self.size.map(|n| n.div_ceil(BLOCK).div_ceil(8));
-        dispatch(builder, constants(Stage::Blocks, [0.0; 4]), [blocks[0], blocks[1], 1]);
+        dispatch(builder, constants(Stage::Surface, [0.0; 4], surface_corner), groups(surface_area));
+        let blocks = surface_area.map(|n| n.div_ceil(BLOCK).div_ceil(8));
+        dispatch(builder, constants(Stage::Blocks, [0.0; 4], surface_corner), [blocks[0], blocks[1], 1]);
 
         // Bring the depths back to the CPU now and then, picking them up once the GPU is done
         if self.readback_pending

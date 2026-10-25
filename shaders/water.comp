@@ -20,8 +20,12 @@ const int BLOCK = 8;
 const float DAMPING = 0.996;
 // Water shallower than this is drawn as dry ground
 const float MIN_DEPTH = 0.05;
-// How far out from a ledge, in columns, water pouring off it can still be falling
-const int FALL_REACH = 12;
+// How far out from a ledge, in meters, water pouring off it can still be falling
+const float FALL_REACH = 1.5;
+// How far the ground has to drop for water to fall rather than run down a slope, in meters
+const float LEDGE = 0.25;
+// The least flow over a ledge, in square meters a second per meter of ledge, that makes a fall
+const float LEAST_FALL = 0.015;
 // How fast falling water spreads out, in meters a second, so it gets thicker as it falls
 const float FALL_SPREAD = 0.9;
 // Falling water is at least this thick, in meters, however little goes over
@@ -37,7 +41,8 @@ layout(push_constant) uniform PushConstants {
     vec4 wake;
     // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter
     vec4 params;
-    // x: stage, y: how many springs
+    // x: stage, y: how many springs, zw: the corner of the area around the camera that's kept
+    // flowing, in columns. Water further away keeps still until the camera comes near.
     uvec4 info;
 } pc;
 
@@ -81,13 +86,18 @@ void flux(ivec2 c, ivec2 size) {
         f[i] = inside(n, size) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
     }
 
-    // Whatever wades through pushes the water in front of it along, making a bow wave
+    // Whatever wades through pushes the water in front of it along, making a little bow wave,
+    // only so hard however fast it goes
     vec2 offset = vec2(c) + 0.5 - pc.wake.xy;
-    float reach = 0.6 * pc.params.z;
+    float reach = 0.45 * pc.params.z;
     float closeness = 1 - length(offset) / reach;
-    if (closeness > 0 && length(pc.wake.zw) > 0) {
+    vec2 push = pc.wake.zw;
+    float fastest = 1.2 * pc.params.z;
+    if (length(push) > fastest)
+    push *= fastest / length(push);
+    if (closeness > 0 && length(push) > 0) {
         for (int i = 0; i < 4; i++)
-        f[i] = max(f[i], closeness * depth * max(dot(vec2(DIRS[i]), pc.wake.zw), 0) * 1.5);
+        f[i] = max(f[i], closeness * depth * max(dot(vec2(DIRS[i]), push), 0) * 0.5);
     }
 
     // Never send away more water than there is
@@ -160,23 +170,25 @@ void surface(ivec2 c, ivec2 size) {
             near_water = near_water || imageLoad(blockImage, clamp(c / BLOCK + ivec2(bx, by), ivec2(0), block_count - 1)).r >= 0;
         }
     }
+    float vpm = pc.params.z;
+    int reach = int(FALL_REACH * vpm);
     for (int i = 0; i < 4 && near_water; i++) {
         ivec2 across = ivec2(DIRS[i].y, DIRS[i].x);
         for (int j = -1; j <= 1; j++) {
-            for (int k = 1; k <= FALL_REACH; k++) {
+            for (int k = 1; k <= reach; k++) {
                 ivec2 lip = c - DIRS[i] * k + across * j;
                 if (!inside(lip, size) || !inside(lip + DIRS[i], size))
                 break;
                 // A ledge: ground that drops away towards this column, with water flowing over it
                 float lip_ground = imageLoad(groundImage, lip).r;
-                if (lip_ground < imageLoad(groundImage, lip + DIRS[i]).r + 1.0)
+                if (lip_ground < imageLoad(groundImage, lip + DIRS[i]).r + LEDGE * vpm)
                 continue;
                 float over = imageLoad(fluxImage, lip)[i];
-                if (over < 1.0)
+                if (over < LEAST_FALL * vpm * vpm)
                 break;
-                float lip_depth = max(imageLoad(depthImage, lip).r, FALL_THICKNESS * pc.params.z);
+                float lip_depth = max(imageLoad(depthImage, lip).r, FALL_THICKNESS * vpm);
                 float lip_top = lip_ground + lip_depth;
-                float v = max(over / lip_depth, 0.5);
+                float v = max(over / lip_depth, 0.06 * vpm);
                 // When the outer edge of the band gets out to this column, and when the inner edge
                 // has gone past it
                 float t_outer = max(float(k - 1) - lip_depth, 0) / (v + FALL_SPREAD * pc.params.z);
@@ -213,12 +225,14 @@ void blocks(ivec2 b, ivec2 size) {
 }
 
 void main() {
-    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 corner = ivec2(pc.info.zw);
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy) + corner;
     ivec2 size = imageSize(depthImage);
     uint stage = pc.info.x;
     if (stage == BLOCKS) {
-        if (all(lessThan(c, (size + BLOCK - 1) / BLOCK)))
-        blocks(c, size);
+        ivec2 b = ivec2(gl_GlobalInvocationID.xy) + corner / BLOCK;
+        if (all(lessThan(b, (size + BLOCK - 1) / BLOCK)))
+        blocks(b, size);
         return;
     }
     if (!inside(c, size))
