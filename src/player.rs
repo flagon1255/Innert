@@ -1,6 +1,9 @@
 use nalgebra::{Vector2, Vector3};
 
-use crate::worldgen::{World, is_passable, is_water};
+use crate::worldgen::{World, is_passable};
+
+/// The top of the water at a point in voxels, NEG_INFINITY where it's dry, see water::Water::surface_at
+pub type WaterLevel<'a> = &'a dyn Fn(f64, f64) -> f64;
 
 // Sizes and speeds in meters, scaled by the world's voxels per meter
 const WIDTH: f64 = 0.6;
@@ -20,15 +23,12 @@ fn blocks(material: u8) -> bool {
 }
 
 /// Height of the top of the ground in a column, or None if it's under water.
-fn dry_ground(world: &World, x: f64, y: f64) -> Option<f64> {
-    let (x, y) = (x.floor() as i64, y.floor() as i64);
+fn dry_ground(world: &World, water: WaterLevel, x: f64, y: f64) -> Option<f64> {
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
     for z in (0..world.size[2] as i64).rev() {
-        let material = world.material_at(x, y, z);
-        if is_water(material) {
-            return None;
-        }
-        if blocks(material) {
-            return Some(z as f64 + 1.0);
+        if blocks(world.material_at(xi, yi, z)) {
+            let top = z as f64 + 1.0;
+            return (water(x, y) <= top).then_some(top);
         }
     }
     None
@@ -62,7 +62,7 @@ impl Player {
     }
 
     /// Starts on the dry ground nearest to `near`, searching outwards in rings a meter apart.
-    pub fn on_dry_ground(near: Vector3<f64>, world: &World) -> Self {
+    pub fn on_dry_ground(near: Vector3<f64>, world: &World, water: WaterLevel) -> Self {
         let vpm = world.voxels_per_meter as f64;
         for ring in 0..100 {
             let count = (ring * 6).max(1);
@@ -70,12 +70,16 @@ impl Player {
                 let angle = i as f64 / count as f64 * std::f64::consts::TAU;
                 let x = near.x + angle.cos() * ring as f64 * vpm;
                 let y = near.y + angle.sin() * ring as f64 * vpm;
-                if let Some(ground) = dry_ground(world, x, y) {
+                if let Some(ground) = dry_ground(world, water, x, y) {
                     return Player::new(Vector3::new(x, y, ground + EYE_HEIGHT * vpm), world);
                 }
             }
         }
         Player::new(near, world)
+    }
+
+    pub fn on_ground(&self) -> bool {
+        self.on_ground
     }
 
     pub fn eye(&self, world: &World) -> Vector3<f64> {
@@ -84,10 +88,10 @@ impl Player {
     }
 
     /// `wish` is the direction to walk in on the ground, up to length 1.
-    pub fn update(&mut self, world: &World, wish: Vector2<f64>, jump: bool, sprint: bool, dt: f64) {
+    pub fn update(&mut self, world: &World, water: WaterLevel, wish: Vector2<f64>, jump: bool, sprint: bool, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
         let chest = self.position + Vector3::new(0.0, 0.0, CHEST_HEIGHT * vpm);
-        let swimming = is_water(world.material_at(chest.x as i64, chest.y as i64, chest.z as i64));
+        let swimming = chest.z < water(chest.x, chest.y);
 
         let speed = if swimming {
             SWIM_SPEED
