@@ -171,8 +171,12 @@ const int WATER_BLOCK = 8;
 // haze.z of them.
 struct Light {
     vec4 position; // xyz: in voxels of the main world, w: how far its light reaches, in voxels
-    vec4 color;
+    vec4 color; // w: 1 for light that moves, like spells, 0 for flames and crystals that stay put
 };
+// Which of the lights localLight() adds up
+const uint ALL_LIGHTS = 0;
+const uint STILL_LIGHTS = 1;
+const uint MOVING_LIGHTS = 2;
 layout(set = 3, binding = 5) readonly buffer Lights {
     Light lights[];
 };
@@ -182,15 +186,27 @@ layout(set = 3, binding = 5) readonly buffer Lights {
 // none), the red, green and blue light summed over samples in fixed point, how many samples, and
 // the frame it was last used in. Faces are keyed by where they are in the whole landscape, so it
 // stays right when the world moves on to another piece of it.
+// Then the light straight on the face, see cachedDirect(): the frame it was last worked out plus
+// one (0 for never), how much of the sun reaches it, the light from the flames and crystals that
+// stay put (red, green and blue), and for leaves how much sunlight comes through from behind. The
+// last five as floats.
 layout(set = 3, binding = 6) buffer LightCache {
     uint cache[];
 };
-const uint CACHE_WORDS = 8;
+// Has to match LIGHT_CACHE_WORDS in main.rs
+const uint CACHE_WORDS = 12;
 const uint CACHE_PROBES = 8;
 const float CACHE_SCALE = 1024.0;
 // Once a face has this many samples it only takes the odd one more, so it can follow changes
 const uint CACHE_SAMPLES = 48;
 const uint NO_ENTRY = 0xFFFFFFFFu;
+// The light straight on a face is worked out again every this many frames, by one of the pixels
+// that see it, and blended in this much, so it follows things moving a few frames behind
+const uint DIRECT_INTERVAL = 2;
+const float DIRECT_BLEND = 0.25;
+// How far from its middle shadows are traced towards the sun, in radians. Wider than the real sun,
+// so the edges of shadows come out soft over a voxel or two.
+const float SUN_RADIUS = 0.02;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
 const uint PALETTE_SIZE = 87;
@@ -860,28 +876,69 @@ vec3 ambientLight(vec3 normal) {
     return mix(ground, sky, normal.z * 0.5 + 0.5);
 }
 
+// Whether nothing is in the way from a point towards the sun, `towards` being the way to it
+bool sunReaches(vec3 surface, vec3 towards) {
+    Hit hit;
+    uint steps = 0;
+    return !trace(surface, towards, true, FLT_MAX, hit, steps);
+}
+
+// Cosine-weighted sunlight on a surface, given how much of the sun reaches it
+float sunOn(vec3 normal, float reaches) {
+    vec3 sun = pc.sun_direction.xyz;
+    float n_dot_l = dot(normal, sun);
+    if (n_dot_l <= 0 || sun.z < -0.02)
+    return 0;
+    return n_dot_l * reaches;
+}
+
 // Cosine-weighted sunlight on a surface, 0 when it's in shadow
 float sunLight(vec3 surface, vec3 normal) {
     vec3 sun = pc.sun_direction.xyz;
     float n_dot_l = dot(normal, sun);
     if (n_dot_l <= 0 || sun.z < -0.02)
     return 0;
-    if ((pc.flags & FLAG_SHADOWS) != 0) {
-        Hit hit;
-        uint steps = 0;
-        if (trace(surface, sun, true, FLT_MAX, hit, steps))
-        return 0;
-    }
+    if ((pc.flags & FLAG_SHADOWS) != 0 && !sunReaches(surface, sun))
+    return 0;
     return n_dot_l;
 }
 
-// Light on a surface from the flames and crystals near it, with their shadows
-vec3 localLight(vec3 surface, vec3 normal) {
+// The way to a point on the sun's disc, `uv` 0-1 picking which, spread evenly over it
+vec3 sunPoint(vec2 uv) {
+    vec3 sun = pc.sun_direction.xyz;
+    vec3 helper = abs(sun.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 u = normalize(cross(helper, sun));
+    vec3 v = cross(sun, u);
+    float r = SUN_RADIUS * sqrt(uv.x);
+    float a = 6.28318530718 * uv.y;
+    return normalize(sun + (u * cos(a) + v * sin(a)) * r);
+}
+
+// Whether the sun is on the far side of a face, so it could shine through it if it's a leaf
+bool sunBehind(Hit hit) {
+    vec3 sun = pc.sun_direction.xyz;
+    return dot(hit.normal, sun) < 0 && sun.z >= -0.02;
+}
+
+// How much sunlight reaches a leaf's other side, starting just past it, `towards` being the way
+// to the sun
+float leafThrough(Hit hit, vec3 towards) {
+    if ((pc.flags & FLAG_SHADOWS) == 0)
+    return 1;
+    return sunReaches(voxelPoint(hit, 0.5 + towards * 0.9), towards) ? 1 : 0;
+}
+
+// Light on a surface from the flames and crystals near it, with their shadows. `which` is
+// ALL_LIGHTS, or only the STILL_LIGHTS or MOVING_LIGHTS.
+vec3 localLight(vec3 surface, vec3 normal, uint which) {
     vec3 total = vec3(0);
     uint count = uint(pc.haze.z);
     float vpm = float(max(pc.world_size.w, 1u));
     for (uint i = 0; i < count; i++) {
         Light light = lights[i];
+        bool moving = light.color.w > 0.5;
+        if ((which == STILL_LIGHTS && moving) || (which == MOVING_LIGHTS && !moving))
+        continue;
         vec3 to = light.position.xyz - surface;
         float d = length(to);
         if (d > light.position.w || d < 1e-3)
@@ -1081,6 +1138,7 @@ uint cacheEntry(Hit hit, bool make) {
                 cache[e + 3] = 0;
                 cache[e + 4] = 0;
                 cache[e + 5] = pc.frame;
+                cache[e + 6] = 0;
                 return e;
             }
             if (was == key)
@@ -1111,6 +1169,56 @@ void cacheAdd(uint e, vec3 light) {
     }
 }
 
+float halton(uint i, uint base);
+
+// The light straight on a face of the world with a light cache entry, kept there so that the many
+// pixels that see a face up close don't all trace the same shadow rays. `sun` is how much of the
+// sun reaches it, `still` the light from the flames and crystals that stay put, and `through`,
+// for leaves, how much sunlight gets through from behind. A face seen for the first time gets it
+// worked out by every pixel that sees it, so it's never left unlit, and after that by one of them
+// every DIRECT_INTERVAL frames, towards a different point on the sun each time, which blended
+// together soften the edges of shadows.
+void cachedDirect(uint e, Hit hit, vec3 face, vec3 normal, bool leaf, out float sun, out vec3 still, out float through) {
+    sun = 0;
+    still = vec3(0);
+    through = 0;
+    uint last = cache[e + 6];
+    if (last != 0) {
+        sun = uintBitsToFloat(cache[e + 7]);
+        still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
+        through = uintBitsToFloat(cache[e + 11]);
+        // Only the pixel that gets to mark it done works it out again
+        if (pc.frame + 1 - last < DIRECT_INTERVAL || atomicCompSwap(cache[e + 6], last, pc.frame + 1) != last)
+        return;
+    }
+
+    vec3 towards = pc.sun_direction.xyz;
+    if (last != 0) {
+        // Each face goes round the points in its own order, so neighbors don't all step together
+        uint i = pc.frame / DIRECT_INTERVAL % 64 + 1;
+        uint offset = hash(e);
+        towards = sunPoint(fract(vec2(halton(i, 2), halton(i, 3)) + vec2(offset & 0xFFFFu, offset >> 16) / 65536.0));
+    }
+    float reaches = sunOn(normal, 1) > 0 && sunReaches(face, towards) ? 1 : 0;
+    vec3 light = localLight(face, normal, STILL_LIGHTS);
+    float shining = leaf && sunBehind(hit) ? leafThrough(hit, towards) : 0;
+
+    float blend = last == 0 ? 1 : DIRECT_BLEND;
+    sun = mix(sun, reaches, blend);
+    still = mix(still, light, blend);
+    through = mix(through, shining, blend);
+    cache[e + 7] = floatBitsToUint(sun);
+    cache[e + 8] = floatBitsToUint(still.r);
+    cache[e + 9] = floatBitsToUint(still.g);
+    cache[e + 10] = floatBitsToUint(still.b);
+    cache[e + 11] = floatBitsToUint(through);
+    if (last == 0) {
+        // Marked done only once it's there to read
+        memoryBarrierBuffer();
+        cache[e + 6] = pc.frame + 1;
+    }
+}
+
 // `dir` turned out of the face with normal `face`, if it pointed into it
 vec3 outward(vec3 dir, vec3 face) {
     return dot(dir, face) < 0 ? reflect(dir, face) : dir;
@@ -1137,17 +1245,28 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
     // Glowing things that move, like a spell flying, would leave their light behind in the light
     // cache. Their light reaches what's around them as one of the lights instead.
     vec3 glow = hit.level == ANIMAL && animals[hit.instance].info.y != STILL ? vec3(0) : emission(material);
+    bool gi = (pc.flags & FLAG_GI) != 0;
+    bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
+    uint e = gi || shadows ? cacheEntry(hit, false) : NO_ENTRY;
     // The light already gathered on the face it hit, when there is some, which bounces light on
     // round corners and into caves
     vec3 bounced = ambientLight(hit.normal);
-    uint e = (pc.flags & FLAG_GI) != 0 ? cacheEntry(hit, false) : NO_ENTRY;
     uint samples = 0;
-    if (e != NO_ENTRY) {
+    if (gi && e != NO_ENTRY) {
         vec3 cached = cachedLight(e, samples);
         if (samples >= 4)
         bounced = cached;
     }
-    return albedo * (sunColor() * sunLight(faceCenter(hit), hit.normal) + bounced) + glow;
+    // The light straight on it, kept with the face if it's been seen, which has the light of the
+    // flames and crystals around it as well, so their light bounces too
+    vec3 direct;
+    if (shadows && e != NO_ENTRY && cache[e + 6] != 0) {
+        vec3 still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
+        direct = sunColor() * sunOn(hit.normal, uintBitsToFloat(cache[e + 7])) + still;
+    } else {
+        direct = sunColor() * sunLight(faceCenter(hit), hit.normal);
+    }
+    return albedo * (direct + bounced) + glow;
 }
 
 // How much light survives travelling this many voxels through water
@@ -1197,7 +1316,7 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal) {
         vec3 transmittance = waterTransmittance(hit.t);
         vec3 face = faceCenter(hit);
         // Sunlight reaching the bottom crossed about as much water as the view does
-        vec3 lit = (albedo * (sunColor() * sunLight(face, hit.normal) + ambientLight(hit.normal) * 0.6 + localLight(face, hit.normal)) + emission(material)) * transmittance;
+        vec3 lit = (albedo * (sunColor() * sunLight(face, hit.normal) + ambientLight(hit.normal) * 0.6 + localLight(face, hit.normal, ALL_LIGHTS)) + emission(material)) * transmittance;
         refraction = lit * transmittance + scatter * (1 - transmittance);
     }
 
@@ -1401,22 +1520,16 @@ bool isFoliage(uint material) {
     return material < 32 ? (FOLIAGE_LOW & (1u << material)) != 0 : (FOLIAGE_HIGH & (1u << (material - 32))) != 0;
 }
 
-// Sunlight shining through a leaf from behind, brightest when looking towards the sun
-vec3 leafTransmission(Hit hit, vec3 dir, vec3 albedo) {
+// Sunlight shining through a leaf from behind, brightest when looking towards the sun. `through`
+// is how much of it reaches the leaf's other side, see leafThrough().
+vec3 leafTransmission(Hit hit, vec3 dir, vec3 albedo, float through) {
+    if (!sunBehind(hit) || through <= 0)
+    return vec3(0);
     vec3 sun = pc.sun_direction.xyz;
     float behind = -dot(hit.normal, sun);
-    if (behind <= 0 || sun.z < -0.02)
-    return vec3(0);
-    // Only if sunlight reaches the leaf's other side, starting just past it
-    if ((pc.flags & FLAG_SHADOWS) != 0) {
-        Hit blocker;
-        uint steps = 0;
-        if (trace(voxelPoint(hit, 0.5 + sun * 0.9), sun, true, FLT_MAX, blocker, steps))
-        return vec3(0);
-    }
     float towards_sun = pow(max(dot(dir, sun), 0), 4);
     // Light coming through is filtered by the leaf twice over, so it comes out more saturated
-    return albedo * albedo * 2.5 * sunColor() * TRANSLUCENCY * (0.3 + 0.7 * behind) * (0.4 + 1.6 * towards_sun);
+    return albedo * albedo * 2.5 * sunColor() * TRANSLUCENCY * (0.3 + 0.7 * behind) * (0.4 + 1.6 * towards_sun) * through;
 }
 
 // The sun map is an orthographic view of the world along the sunlight, from a plane outside it
@@ -1699,7 +1812,7 @@ vec3 shadeWaterVoxel(vec3 origin, vec3 dir, WaterHit water) {
         // Darker streaks in falling water are where it's less churned up, so they're bluer
         vec3 albedo = pow(mix(vec3(0.55, 0.75, 0.85), PALETTE[MAT_FOAM], clamp(flow - 0.4, 0, 1)), vec3(2.2)) * min(flow, 1);
         vec3 face_center = faceCenter(voxel);
-        vec3 lit = albedo * (sunColor() * sunLight(face_center, voxel.normal) + ambientLight(voxel.normal) + localLight(face_center, voxel.normal));
+        vec3 lit = albedo * (sunColor() * sunLight(face_center, voxel.normal) + ambientLight(voxel.normal) + localLight(face_center, voxel.normal, ALL_LIGHTS));
         // Falling water is churned white right through. Fast water on the surface just has white
         // on top, with the clear water showing through.
         color = mix(color, lit, water.falling ? 1.0 : water.foam * 0.75);
@@ -1789,17 +1902,22 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         if ((pc.flags & FLAG_SMOOTH) != 0)
         normal = voxelNormal(hit);
 
+        bool gi = (pc.flags & FLAG_GI) != 0;
+        bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
+        // Where the light on this face is kept, both what's bounced onto it and what's straight on it
+        uint e = gi || shadows ? cacheEntry(hit, true) : NO_ENTRY;
+        if (e != NO_ENTRY)
+        cache[e + 5] = pc.frame;
+
         vec3 indirect;
         // What's held moves with the camera, so it'd only show the noise of one bounce a frame:
         // it gets steady light from the sky and ground instead
-        if ((pc.flags & FLAG_GI) != 0 && !held) {
+        if (gi && !held) {
             float reach = BOUNCE_DISTANCE * float(max(pc.world_size.w, 1u));
-            uint e = cacheEntry(hit, true);
             if (e != NO_ENTRY) {
                 // Light bounced onto this face, gathered over many frames. Faces new to the cache
                 // take a sample from every pixel that sees them, so they fill in fast, and after
                 // that only the odd one.
-                cache[e + 5] = pc.frame;
                 uint samples;
                 indirect = cachedLight(e, samples);
                 if (samples < CACHE_SAMPLES || random(seed) < 1.0 / 64.0) {
@@ -1821,7 +1939,25 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             indirect = ambientLight(normal) * ao;
         }
 
-        float sun = sunLight(face, normal);
+        // Light straight from the sun and the lights. What moves, and faces with no room in the
+        // light cache, have it worked out every frame.
+        bool leaf = isFoliage(material);
+        float sun;
+        vec3 local;
+        float through = 0;
+        if (shadows && e != NO_ENTRY) {
+            float reaches;
+            vec3 still;
+            cachedDirect(e, hit, face, normal, leaf, reaches, still, through);
+            sun = sunOn(normal, reaches);
+            // Spells and the like move too fast to keep their light
+            local = still + localLight(face, normal, MOVING_LIGHTS);
+        } else {
+            sun = sunLight(face, normal);
+            local = localLight(face, normal, ALL_LIGHTS);
+            if (leaf && sunBehind(hit))
+            through = leafThrough(hit, pc.sun_direction.xyz);
+        }
         // Metal is darker than it looks, as most of its shine is reflection: it glints where it
         // catches the sun, and mirrors what's around it
         vec3 shine = vec3(0);
@@ -1836,9 +1972,9 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.3) * 0.6 * ao);
             albedo *= 0.6;
         }
-        color = albedo * (sunColor() * sun + indirect + localLight(face, normal)) + glow + shine;
-        if (isFoliage(material))
-        color += leafTransmission(hit, dir, albedo);
+        color = albedo * (sunColor() * sun + indirect + local) + glow + shine;
+        if (leaf)
+        color += leafTransmission(hit, dir, albedo, through);
         guide = vec4(albedo, faceId(hit.normal));
     }
 

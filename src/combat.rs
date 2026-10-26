@@ -1581,11 +1581,12 @@ impl Combat {
     }
 
     /// Lights from spells flying, flashes, burning animals and a glowing staff in hand, in the
-    /// form main.rs keeps the world's lights in
+    /// form main.rs keeps the world's lights in. They're marked as moving, so the shader works
+    /// their light out fresh every frame rather than keeping it, see Light in shaders\traverse.comp.
     pub fn lights(&self, weapon: Option<&Weapon>, animals: &[Animal], view: &View) -> Vec<[f32; 8]> {
         let vpm = view.vpm;
         let light = |p: Vector3<f64>, reach: f64, color: [f32; 3], strength: f32| {
-            [p.x as f32, p.y as f32, p.z as f32, (reach * vpm) as f32, color[0] * strength, color[1] * strength, color[2] * strength, 0.0]
+            [p.x as f32, p.y as f32, p.z as f32, (reach * vpm) as f32, color[0] * strength, color[1] * strength, color[2] * strength, 1.0]
         };
         let mut lights = Vec::new();
         for f in &self.flashes {

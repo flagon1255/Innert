@@ -265,8 +265,10 @@ struct WindowBuild {
 const RECENTER_M: f64 = 30.0;
 /// The most flames and crystals lighting things up at once, nearest the camera first
 const MAX_LIGHTS: usize = 24;
-/// Voxel faces the light cache can hold, 32 bytes each
+/// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
 const LIGHT_CACHE_ENTRIES: u64 = 1 << 21;
+/// Has to match CACHE_WORDS in shaders\traverse.comp
+const LIGHT_CACHE_WORDS: u64 = 12;
 
 // The box of fine detail around the camera, in meters. It gets rebuilt once the camera
 // gets this far from where it was last built.
@@ -890,7 +892,8 @@ struct App {
     // Rivers traced so far, for building the next piece of the landscape
     rivers: Arc<RiverCache>,
     window_build: Option<WindowBuild>,
-    // Flames and crystals in the world, in voxels of it: x, y, z, reach, then color
+    // Flames and crystals in the world, in voxels of it: x, y, z, reach, then color, and 0 as they
+    // stay put, see Light in shaders\traverse.comp
     lights: Vec<[f32; 8]>,
     // Voxels per meter in the box of fine detail around the camera, 0 for none
     near_detail: u32,
@@ -1312,7 +1315,7 @@ impl App {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
-            LIGHT_CACHE_ENTRIES * 8,
+            LIGHT_CACHE_ENTRIES * LIGHT_CACHE_WORDS,
         )
         .unwrap();
         let instance_allocator = SubbufferAllocator::new(
