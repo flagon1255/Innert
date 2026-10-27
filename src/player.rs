@@ -82,6 +82,14 @@ impl Player {
         self.on_ground
     }
 
+    /// Thrown by a blow, `velocity` voxels a second more
+    pub fn push(&mut self, velocity: Vector3<f64>) {
+        self.velocity += velocity;
+        if velocity.z > 0.0 {
+            self.on_ground = false;
+        }
+    }
+
     pub fn eye(&self, world: &World) -> Vector3<f64> {
         let vpm = world.voxels_per_meter as f64;
         self.position + Vector3::new(0.0, 0.0, EYE_HEIGHT * vpm + self.eye_offset)

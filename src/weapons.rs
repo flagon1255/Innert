@@ -35,6 +35,8 @@ pub enum Style {
     Slash,
     /// Wide sweeps across
     Chop,
+    /// A scythe's long sweeps, its blade held out across the top so its flat shows
+    Reap,
     /// Brought down from overhead
     Smash,
     /// Quick jabs
@@ -541,6 +543,10 @@ fn material(name: &str) -> Option<u8> {
         "fur_white" => FUR_WHITE,
         "fur_tan" => FUR_TAN,
         "wax" => WAX,
+        "lacquer" => TEMPLE_RED,
+        "jade" => TEMPLE_TEAL,
+        "moss" => MOSS,
+        "rock" => ROCK,
         "glow_fire" => GLOW_FIRE,
         "glow_frost" => GLOW_FROST,
         "glow_storm" => GLOW_STORM,
@@ -780,6 +786,11 @@ impl Weapon {
     pub fn kind(&self) -> Kind {
         self.profile.kind
     }
+
+    /// Which arrowhead a bow's arrows have, see ARROW_HEADS: always the same for the same bow
+    pub fn arrowhead(&self) -> usize {
+        hash(self.seed ^ 0xa770) as usize % ARROW_HEADS
+    }
 }
 
 fn capitalized(word: &str) -> String {
@@ -931,6 +942,8 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
         "axe" => axe_head(&mut p, blade, z_top, false),
         "double_axe" => axe_head(&mut p, blade, z_top, true),
         shape @ ("hammer" | "mace" | "spiked") => hammer_head(&mut p, blade, z_top, shape),
+        "scythe" => scythe_head(&mut p, blade, z_top),
+        "halberd" => halberd_head(&mut p, blade, z_top, infuse),
         _ => {
             // A spearhead sits in a socket on the end of its haft
             if !family.guard {
@@ -976,6 +989,54 @@ fn axe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, double: bool) -> Vector3<
         p.push(cuboid([-0.05, -half_thick * 1.6, z0 + length * 0.35], [-0.02, half_thick * 1.6, z0 + length * 0.65], body));
     }
     v3(width, 0.0, z0 + length * 0.5)
+}
+
+/// A scythe's blade out from the top of a haft ending at `z_top`: long, narrowing and curving down
+/// to its point, its edge underneath, with a spike behind. Returns its point.
+fn scythe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
+    let length = v.length.unwrap_or(0.75);
+    let depth = v.width.unwrap_or(0.1);
+    let body = mat(&v.material, DARK_STEEL);
+    let edge = mat(&v.edge, STEEL);
+    let voxel = 1.0 / SWORD_RES;
+    let half_thick = 0.007;
+    let columns = (length * SWORD_RES).ceil() as usize;
+    let droop = |t: f64| 0.3 * length * t * t;
+    let (mut bodies, mut edges) = (Vec::new(), Vec::new());
+    for c in 0..columns {
+        let t = (c as f64 + 0.5) / columns as f64;
+        let (xa, xb) = (0.015 + c as f64 * length / columns as f64, 0.015 + (c + 1) as f64 * length / columns as f64);
+        let top = z_top - 0.02 - droop(t);
+        let bottom = top - (depth * (1.0 - t).powf(0.7)).max(voxel);
+        bodies.push(cuboid([xa, -half_thick, (bottom + 2.0 * voxel).min(top)], [xb, half_thick, top], body));
+        edges.push(cuboid([xa, -half_thick * 0.55, bottom], [xb, half_thick * 0.55, top], edge));
+    }
+    p.extend(bodies);
+    p.extend(edges);
+    // The collar binding it to the haft, and a spike out the back
+    p.push(cuboid([-0.03, -0.022, z_top - 0.07], [0.03, 0.022, z_top + 0.01], body));
+    p.push(limb([-0.02, 0.0, z_top - 0.03], [-0.1, 0.0, z_top - 0.01], 0.012, 0.003, body));
+    v3(length + 0.015, 0.0, z_top - 0.02 - droop(1.0))
+}
+
+/// A halberd's head on top of a haft ending at `z_top`: an axe blade facing +x, a hooked spike
+/// behind, and a spear point on top. Returns the point.
+fn halberd_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> Vector3<f64> {
+    let body = mat(&v.material, STEEL);
+    p.push(limb([-0.03, 0.0, z_top - 0.03], [-0.16, 0.0, z_top + 0.03], 0.014, 0.003, body));
+    let axe = Visual { length: Some(0.24), width: v.width.or(Some(0.17)), material: v.material.clone(), edge: v.edge.clone(), ..Default::default() };
+    axe_head(p, &axe, z_top, false);
+    let point = Visual {
+        shape: Some("spear".into()),
+        length: v.length.or(Some(0.36)),
+        width: Some(0.055),
+        material: v.material.clone(),
+        edge: v.edge.clone(),
+        fuller: v.fuller.clone(),
+        ..Default::default()
+    };
+    p.push(limb([0.0, 0.0, z_top + 0.04], [0.0, 0.0, z_top + 0.1], 0.02, 0.013, body));
+    sword_blade(p, &point, z_top + 0.09, infuse)
 }
 
 /// A hammer head across the top of a haft ending at `z_top`: a block with faces at ±x, a round
@@ -1034,6 +1095,19 @@ fn blade_profile(shape: &str, t: f64, width: f64) -> (f64, f64) {
         "spear" | "barbed" => (0.0, half * if t < 0.33 { 0.35 + 0.65 * t / 0.33 } else { ((1.0 - t) / 0.67).powf(0.8) }),
         // A broad, curving blade on a pole
         "glaive" => (width * 0.9 * t * t, half * (0.6 + 0.6 * t) * point(0.75)),
+        // Gently curved all along, the same width nearly to its slanted point
+        "katana" => (width * 0.7 * t * t, half * (1.0 - 0.12 * t) * point(0.93)),
+        // A two-handed blade: unsharpened and narrow just above the guard, then lugs to parry with
+        "zweihander" => (
+            0.0,
+            if t < 0.13 {
+                half * 0.5
+            } else if t < 0.16 {
+                half * 1.55
+            } else {
+                half * (1.0 - 0.1 * t) * point(0.88)
+            },
+        ),
         _ => (0.0, half * (1.0 - 0.15 * t) * point(0.82)),
     }
 }
@@ -1471,28 +1545,164 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     (p, top, v3(c[0], c[1], c[2]))
 }
 
-/// The arrow, shot spell and spark models, ELEMENT_LOOKS of each: without an element, then one for
-/// each element, with their anchors. Arrows and spells fly along +x, arrows with their nock at 0.
-/// Then finer arrows to hold on the string, fireballs a meter across, fine sparks, and the right arm
-/// and the left, see arm().
+/// How many kinds of arrowhead there are: broad, a narrow bodkin point, and barbed
+pub const ARROW_HEADS: usize = 3;
+
+// Where each kind of model starts among effect_models(), counted in sets of ELEMENT_LOOKS: one
+// without an element, then one for each element
+/// Arrows in flight, a set for each arrowhead
+pub const SLOT_ARROW: usize = 0;
+/// Spells in flight
+pub const SLOT_BOLT: usize = ARROW_HEADS;
+pub const SLOT_SPARK: usize = SLOT_BOLT + 1;
+/// The arrow on the string, finer, a set for each arrowhead
+pub const SLOT_HELD_ARROW: usize = SLOT_SPARK + 1;
+/// Fireballs, a meter across
+pub const SLOT_FIREBALL: usize = SLOT_HELD_ARROW + ARROW_HEADS;
+/// Tiny sparks for trails and auras
+pub const SLOT_FINE: usize = SLOT_FIREBALL + 1;
+/// After the sets: the right arm, the left arm, then a boulder
+pub const ARMS: usize = (SLOT_FINE + 1) * ELEMENT_LOOKS;
+pub const BOULDER: usize = ARMS + 2;
+
+/// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
+/// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the shaft
+fn arrow(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
+    use Element::*;
+    let voxel = 1.0 / res;
+    let (body, edge) = match element {
+        None => (STEEL, STEEL),
+        Some(Fire) => (DARK_STEEL, GLOW_FIRE),
+        Some(Frost) => (ICE, GLOW_FROST),
+        Some(Storm) => (BRONZE, GLOW_STORM),
+        Some(Poison) => (DARK_STEEL, GLOW_POISON),
+        Some(Arcane) => (CRYSTAL, GLOW_ARCANE),
+        Some(Void) => (OBSIDIAN, GLOW_VOID),
+        Some(Blood) => (DARK_STEEL, GLOW_BLOOD),
+        Some(Holy) => (GOLD, GLOW_HOLY),
+    };
+    let (feathers, shaft) = match element {
+        None => (FUR_WHITE, WOOD),
+        Some(Fire) | Some(Blood) => (CLOTH, if element == Some(Fire) { WOOD } else { BARK_DARK }),
+        Some(Frost) => (FUR_WHITE, BIRCH_BARK),
+        Some(Storm) => (FUR_GRAY, WOOD),
+        Some(Poison) => (MOSS, BARK_DARK),
+        Some(Arcane) => (FLOWER_PURPLE, BIRCH_BARK),
+        Some(Void) => (OBSIDIAN, BARK_DARK),
+        Some(Holy) => (LINEN, BIRCH_BARK),
+    };
+    let start = 0.6;
+    let mut p = Vec::new();
+    let band = |p: &mut Vec<Part>, x: f64, material: u8| p.push(limb([x, 0.0, 0.0], [x + 0.006, 0.0, 0.0], 0.0075, 0.0075, material));
+    // What's round the head goes first, as earlier shapes win
+    match element {
+        Some(Fire) => {
+            // Oiled cloth wrapped round behind the head, burning
+            p.push(limb([start - 0.028, 0.0, 0.01], [start - 0.04, 0.0, 0.03], 0.007, 0.001, FLAME));
+            p.push(ball([start - 0.024, 0.006, 0.006], 0.008, GLOW_FIRE));
+            p.push(ellipsoid([start - 0.024, 0.0, 0.0], [0.022, 0.014, 0.014], CLOTH));
+        }
+        Some(Frost) => {
+            for a in [0.3, 2.4, 4.5] {
+                let (c, s) = (f64::cos(a), f64::sin(a));
+                p.push(limb([start - 0.01, 0.0, 0.0], [start - 0.035, c * 0.016, s * 0.016], 0.004, 0.001, ICE));
+            }
+            band(&mut p, start - 0.05, GLOW_FROST);
+        }
+        Some(Storm) => {
+            // Copper coils that crackle
+            for k in 0..3 {
+                band(&mut p, start - 0.02 - k as f64 * 0.016, if k == 1 { BRONZE } else { GLOW_STORM });
+            }
+        }
+        Some(Poison) => {
+            p.push(ball([start + 0.025, 0.0, -0.012], 0.004, GLOW_POISON));
+            band(&mut p, start - 0.015, GLOW_POISON);
+        }
+        Some(Arcane) => {
+            // Motes circling the shaft
+            for k in 0..6 {
+                let a = k as f64 / 6.0 * TAU;
+                p.push(ball([start - 0.03, a.cos() * 0.014, a.sin() * 0.014], 0.0025, GLOW_ARCANE));
+            }
+        }
+        Some(Void) => band(&mut p, start - 0.012, GLOW_VOID),
+        Some(Blood) => band(&mut p, start - 0.012, GLOW_BLOOD),
+        Some(Holy) => {
+            // A halo round the shaft by the feathers
+            for k in 0..8 {
+                let a = k as f64 / 8.0 * TAU;
+                p.push(ball([0.14, a.cos() * 0.016, a.sin() * 0.016], 0.003, GLOW_HOLY));
+            }
+        }
+        None => {}
+    }
+
+    // The head, row by row from its base to its point, the body inside its edges
+    let (length, width) = match head {
+        0 => (0.085, 0.022),
+        1 => (0.11, 0.0075),
+        _ => (0.09, 0.017),
+    };
+    let rows = ((length * res).ceil() as usize).max(1);
+    let thick = 0.003;
+    let (mut bodies, mut edges) = (Vec::new(), Vec::new());
+    for r in 0..rows {
+        let t = (r as f64 + 0.5) / rows as f64;
+        let (xa, xb) = (start + r as f64 * length / rows as f64, start + (r + 1) as f64 * length / rows as f64);
+        let mut half = match head {
+            0 => width * (1.0 - t).powf(0.75),
+            1 => width * (1.0 - t * 0.85),
+            _ => width * (1.0 - t),
+        };
+        // A blood arrow's edges are serrated
+        if element == Some(Blood) && r % 3 == 0 {
+            half *= 1.3;
+        }
+        let half = half.max(0.5 * voxel);
+        if head == 1 {
+            bodies.push(cuboid([xa, -half, -half], [xb, half, half], body));
+            edges.push(cuboid([xa, -half * 1.2, -half * 1.2], [xb, half * 1.2, half * 1.2], edge));
+        } else {
+            let inner = (half - 1.5 * voxel).max(0.0);
+            if inner > 0.0 {
+                bodies.push(cuboid([xa, -inner, -thick], [xb, inner, thick], body));
+            }
+            edges.push(cuboid([xa, -half, -thick * 0.6], [xb, half, thick * 0.6], edge));
+        }
+    }
+    p.extend(bodies);
+    p.extend(edges);
+    if head == 2 {
+        // Barbs curving back from the base
+        for s in [-1.0, 1.0] {
+            p.push(limb([start + 0.012, s * width * 0.9, 0.0], [start - 0.022, s * width * 1.5, 0.0], 0.0035, 0.0015, body));
+        }
+    }
+    // A socket the head sits in
+    p.push(limb([start - 0.006, 0.0, 0.0], [start + 0.006, 0.0, 0.0], 0.006, 0.005, body));
+
+    // Three feathers by the nock, then the nock and the shaft
+    for a in [0.0, TAU / 3.0, 2.0 * TAU / 3.0] {
+        let (c, s) = (f64::cos(a), f64::sin(a));
+        p.push(limb([0.025, c * 0.007, s * 0.007], [0.115, c * 0.019, s * 0.019], 0.006, 0.0035, feathers));
+    }
+    p.push(limb([0.0, 0.0, 0.0], [0.012, 0.0, 0.0], 0.0065, 0.0065, if element == Some(Holy) { GOLD } else { BARK_DARK }));
+    p.push(limb([0.0, 0.0, 0.0], [start, 0.0, 0.0], 0.0045, 0.0045, shaft));
+    p
+}
+
+/// The arrow, shot spell and spark models, in sets of ELEMENT_LOOKS: without an element, then
+/// one for each element, with their anchors. See the SLOT_ constants for which set is where. Arrows
+/// and spells fly along +x, arrows with their nock at 0. Then the right arm and the left, see
+/// arm(), and a boulder for a golem to throw.
 pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     let looks: Vec<Option<Element>> = std::iter::once(None).chain(Element::ALL.map(Some)).collect();
-    let arrow = |element: Option<Element>| {
-        let head = element.map_or(STEEL, Element::glow);
-        let fletching = element.map_or(FUR_WHITE, Element::glow);
-        let mut p = vec![limb([0.6, 0.0, 0.0], [0.68, 0.0, 0.0], 0.016, 0.002, head)];
-        if element.is_some() {
-            p.push(limb([0.56, 0.0, 0.0], [0.6, 0.0, 0.0], 0.011, 0.011, head));
-        }
-        for a in [0.0, TAU / 3.0, 2.0 * TAU / 3.0] {
-            p.push(limb([0.03, 0.0, 0.0], [0.13, a.cos() * 0.02, a.sin() * 0.02], 0.009, 0.009, fletching));
-        }
-        p.push(limb([0.0, 0.0, 0.0], [0.62, 0.0, 0.0], 0.006, 0.006, WOOD));
-        p
-    };
     let mut models = Vec::new();
-    for &element in &looks {
-        models.push(voxelize(&arrow(element), ARROW_RES));
+    for head in 0..ARROW_HEADS {
+        for &element in &looks {
+            models.push(voxelize(&arrow(element, head, ARROW_RES), ARROW_RES));
+        }
     }
     for &element in &looks {
         let glow = element.map_or(CRYSTAL, Element::glow);
@@ -1504,8 +1714,10 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         models.push(voxelize(&[ball([0.0, 0.0, 0.0], 0.03, glow)], SPARK_RES));
     }
     // The arrow on the string, held up close
-    for &element in &looks {
-        models.push(voxelize(&arrow(element), HELD_ARROW_RES));
+    for head in 0..ARROW_HEADS {
+        for &element in &looks {
+            models.push(voxelize(&arrow(element, head, HELD_ARROW_RES), HELD_ARROW_RES));
+        }
     }
     // Fireballs, a meter across: glowing balls with bites out of them, so they look torn apart
     for (k, &element) in looks.iter().enumerate() {
@@ -1529,6 +1741,17 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     }
     models.push(voxelize(&arm(false), ARM_RES));
     models.push(voxelize(&arm(true), ARM_RES));
+    // A lumpy boulder, half a meter round
+    let mut seed = 0xb01d;
+    let mut p = Vec::new();
+    for k in 0..7 {
+        let d = [random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(0.1);
+        let material = [GRAVEL, ROCK, MOSS][k % 3];
+        p.push(ball(d.map(|v| v / n * 0.3), 0.14 + 0.1 * random(&mut seed), material));
+    }
+    p.push(ball([0.0, 0.0, 0.0], 0.38, ROCK));
+    models.push(voxelize(&p, MODEL_RES));
     models
 }
 

@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use nalgebra::{UnitQuaternion, Vector2, Vector3};
 use vulkano::buffer::BufferContents;
 
+use crate::bosses::{self, Boss};
 use crate::combat::Status;
 use crate::player::WaterLevel;
 use crate::worldgen::{PropKind, World, is_passable, material::*};
@@ -28,10 +29,14 @@ pub enum Look {
     Skull,
     Chest,
     OpenChest,
+    // Bosses, see src\bosses.rs
+    Golem,
+    Drake,
+    Ironhide,
 }
 
 impl Look {
-    pub const ALL: [Look; 11] = [
+    pub const ALL: [Look; 14] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -43,7 +48,14 @@ impl Look {
         Look::Skull,
         Look::Chest,
         Look::OpenChest,
+        Look::Golem,
+        Look::Drake,
+        Look::Ironhide,
     ];
+
+    pub fn is_boss(self) -> bool {
+        matches!(self, Look::Golem | Look::Drake | Look::Ironhide)
+    }
 
     pub fn of_prop(kind: PropKind) -> Look {
         match kind {
@@ -70,6 +82,9 @@ impl Look {
             Look::Meat => 0.22,
             Look::Candle => 0.2,
             Look::Skull => 0.2,
+            Look::Golem => 4.4,
+            Look::Drake => 3.4,
+            Look::Ironhide => 3.4,
         }
     }
 
@@ -85,6 +100,9 @@ impl Look {
             Look::Candle => (0.1, 0.1),
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
+            Look::Golem => (2.0, 1.1),
+            Look::Drake => (1.25, 1.0),
+            Look::Ironhide => (1.6, 1.05),
         }
     }
 
@@ -99,6 +117,9 @@ impl Look {
             Look::Candle => "candle",
             Look::Skull => "skull",
             Look::Chest | Look::OpenChest => "chest",
+            Look::Golem => "Stone Warden",
+            Look::Drake => "Ember Drake",
+            Look::Ironhide => "Ironhide",
         }
     }
 
@@ -113,6 +134,9 @@ impl Look {
             Look::Bear => 140.0,
             Look::Dog => 60.0,
             Look::GrayCat | Look::GingerCat => 30.0,
+            Look::Golem => 2600.0,
+            Look::Drake => 2200.0,
+            Look::Ironhide => 2000.0,
             _ => 20.0,
         }
     }
@@ -123,35 +147,44 @@ impl Look {
         match self {
             Look::Bear => 3,
             Look::Squirrel => 1,
+            Look::Ironhide => 6,
             _ => 0,
         }
     }
 
     // Speeds in meters per second
-    fn walk_speed(self) -> f64 {
+    pub fn walk_speed(self) -> f64 {
         match self {
             Look::Bear => 1.1,
             Look::Dog => 1.6,
             Look::Squirrel => 1.4,
+            Look::Golem => 1.3,
+            Look::Drake | Look::Ironhide => 1.6,
             _ => 0.9,
         }
     }
 
-    fn run_speed(self) -> f64 {
+    pub fn run_speed(self) -> f64 {
         match self {
             Look::Bear => 3.2,
             Look::Dog => 4.5,
             Look::Squirrel => 4.0,
+            Look::Golem => 2.4,
+            Look::Drake => 4.5,
+            // Charging
+            Look::Ironhide => 10.0,
             _ => 3.0,
         }
     }
 
     /// Meters covered by one cycle of its walk
-    fn stride(self) -> f64 {
+    pub fn stride(self) -> f64 {
         match self {
             Look::Bear => 1.5,
             Look::Dog => 0.9,
             Look::Squirrel => 0.35,
+            Look::Golem => 2.4,
+            Look::Drake | Look::Ironhide => 2.6,
             _ => 0.55,
         }
     }
@@ -160,13 +193,22 @@ impl Look {
     fn climb(self) -> f64 {
         match self {
             Look::Dog => 0.4,
+            Look::Golem | Look::Drake | Look::Ironhide => 1.0,
             _ => 0.5,
         }
     }
 }
 
-/// Frame 0 stands still, the rest are a walk cycle
-const FRAMES: usize = 5;
+/// Frame 0 stands still, 1 to 4 are a walk cycle, and the last few are a boss's poses as it
+/// attacks, see POSE_WINDUP and the rest. Other animals just stand still in them.
+const FRAMES: usize = 8;
+const WALK_FRAMES: usize = 4;
+/// Getting ready to attack
+pub const POSE_WINDUP: usize = 5;
+/// Bringing it down
+pub const POSE_STRIKE: usize = 6;
+/// Something each boss does its own way: throwing, spreading its wings or lowering its head to charge
+pub const POSE_SPECIAL: usize = 7;
 
 /// Voxels per meter of everything drawn like an animal, weapons and leaves too: the same as the
 /// world's, so every voxel is the same size
@@ -285,15 +327,183 @@ fn leg(parts: &mut Vec<Part>, hip: Vec3, length: f64, radius: f64, swing: f64, f
     parts.push(limb(hip, foot, radius * 1.15, radius, fur));
 }
 
+/// `v` turned up by `angle` radians about `pivot`, round the y axis, so what's in front rises
+fn rear(v: Vec3, pivot: Vec3, angle: f64) -> Vec3 {
+    let (dx, dz) = (v[0] - pivot[0], v[2] - pivot[2]);
+    let (c, s) = (angle.cos(), angle.sin());
+    [pivot[0] + dx * c - dz * s, v[1], pivot[2] + dx * s + dz * c]
+}
+
+/// The Stone Warden: a hulking golem of rock, moss on its shoulders, crystals growing from its
+/// back and a cold light glowing in its chest. It raises its fists overhead to slam them down, and
+/// hurls boulders.
+fn golem(p: &mut Vec<Part>, swing: f64, pose: usize) {
+    let (rock, dark, glow) = (ROCK, GRAVEL, GLOW_FROST);
+    // Leaning into a blow, the higher up the further
+    let lean = if pose == POSE_STRIKE { 0.4 } else { 0.0 };
+    let up = |v: Vec3| {
+        let k = (v[2] - 1.2).max(0.0) / 2.0;
+        [v[0] + lean * k, v[1], v[2] - lean * 0.4 * k]
+    };
+    p.push(ball(up([0.64, 0.15, 2.86]), 0.065, glow));
+    p.push(ball(up([0.64, -0.15, 2.86]), 0.065, glow));
+    p.push(ellipsoid(up([0.6, 0.0, 2.98]), [0.12, 0.32, 0.06], dark));
+    p.push(ellipsoid(up([0.38, 0.0, 2.84]), [0.32, 0.32, 0.28], rock));
+    // The core, with light cracking out across its chest
+    p.push(ball(up([0.6, 0.0, 2.05]), 0.17, glow));
+    p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, 0.38, 2.45]), 0.045, 0.02, glow));
+    p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, -0.32, 1.7]), 0.045, 0.02, glow));
+    for (y, z, h) in [(0.25, 2.5, 0.55), (-0.22, 2.3, 0.65), (0.05, 2.75, 0.5)] {
+        p.push(limb(up([-0.45, y, z]), up([-0.82, y * 1.3, z + h]), 0.1, 0.02, CRYSTAL));
+    }
+    p.push(ellipsoid(up([0.35, 0.0, 3.1]), [0.26, 0.26, 0.08], MOSS));
+    for s in [-1.0, 1.0] {
+        p.push(ellipsoid(up([0.0, s * 0.95, 2.88]), [0.32, 0.32, 0.1], MOSS));
+    }
+    // A boulder held up behind its head, ready to throw
+    if pose == POSE_SPECIAL {
+        p.push(ball([-0.55, -0.55, 4.05], 0.45, rock));
+    }
+    for s in [-1.0, 1.0] {
+        let shoulder = up([0.05, s * 0.98, 2.45]);
+        let (elbow, fist) = match pose {
+            POSE_WINDUP => ([0.0, s * 0.95, 3.15], [0.2, s * 0.5, 3.85]),
+            POSE_STRIKE => ([0.85, s * 0.85, 1.6], [1.45, s * 0.45, 0.4]),
+            POSE_SPECIAL if s < 0.0 => ([-0.25, -1.05, 3.1], [-0.45, -0.75, 3.7]),
+            POSE_SPECIAL => ([0.5, 1.1, 1.9], [0.95, 0.9, 1.6]),
+            // Swinging as it walks
+            _ => ([0.2 - 0.25 * swing * s, s * 1.18, 1.65], [0.45 - 0.35 * swing * s, s * 1.12, 0.85]),
+        };
+        p.push(ball(fist, 0.36, dark));
+        p.push(limb(elbow, fist, 0.25, 0.3, rock));
+        p.push(limb(shoulder, elbow, 0.27, 0.24, rock));
+        p.push(ball(shoulder, 0.42, dark));
+    }
+    p.push(ellipsoid(up([0.1, 0.0, 2.05]), [0.62, 0.85, 0.75], rock));
+    p.push(ellipsoid([0.0, 0.0, 1.2], [0.45, 0.6, 0.35], dark));
+    for (y, s) in [(0.42, 1.0), (-0.42, -1.0)] {
+        leg(p, [0.0, y, 1.15], 1.15, 0.27, 0.3 * swing * s, rock, dark);
+    }
+}
+
+/// The Ember Drake: a red-scaled dragon with fire glowing through its belly, its wings folded.
+/// It rears its head back, then breathes fire or spits it, and spreads its wings to roar.
+fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize) {
+    let (scales, dark, glow) = (TEMPLE_RED, OBSIDIAN, GLOW_FIRE);
+    let (neck_base, neck_top, head, open): (Vec3, Vec3, Vec3, bool) = match pose {
+        POSE_WINDUP => ([0.8, 0.0, 1.5], [1.15, 0.0, 2.45], [1.35, 0.0, 2.75], false),
+        POSE_STRIKE => ([0.8, 0.0, 1.45], [1.6, 0.0, 1.65], [1.95, 0.0, 1.6], true),
+        POSE_SPECIAL => ([0.8, 0.0, 1.5], [1.35, 0.0, 2.3], [1.65, 0.0, 2.55], true),
+        _ => ([0.8, 0.0, 1.45], [1.45, 0.0, 2.0], [1.75, 0.0, 2.05], false),
+    };
+    let h = Vector3::from(head);
+    let fwd = (h - Vector3::from(neck_top)).normalize();
+    let upward = Vector3::new(-fwd.z, 0.0, fwd.x);
+    let at = |f: f64, u: f64, side: f64| -> Vec3 { (h + fwd * f + upward * u + Vector3::new(0.0, side, 0.0)).into() };
+    for side in [-0.13, 0.13] {
+        p.push(ball(at(0.16, 0.1, side), 0.045, glow));
+        p.push(limb(at(-0.08, 0.12, side), at(-0.45, 0.38, side * 1.6), 0.05, 0.012, BONE));
+    }
+    if open {
+        p.push(ball(at(0.24, -0.06, 0.0), 0.13, glow));
+        p.push(limb(h.into(), at(0.4, 0.04, 0.0), 0.15, 0.08, scales));
+        p.push(limb(at(0.0, -0.14, 0.0), at(0.32, -0.26, 0.0), 0.1, 0.05, scales));
+    } else {
+        p.push(limb(h.into(), at(0.4, 0.0, 0.0), 0.16, 0.09, scales));
+        p.push(limb(at(0.0, -0.09, 0.0), at(0.34, -0.1, 0.0), 0.1, 0.06, scales));
+    }
+    p.push(ball(head, 0.22, scales));
+    p.push(limb(neck_base, neck_top, 0.3, 0.2, scales));
+    for s in [-1.0, 1.0] {
+        if pose == POSE_SPECIAL {
+            // Spread wide
+            let tip = [-0.1, s * 2.3, 2.75];
+            p.push(limb([0.45, s * 0.45, 1.75], tip, 0.07, 0.03, dark));
+            p.push(limb(tip, [-1.1, s * 1.6, 1.6], 0.03, 0.02, dark));
+            p.push(ellipsoid([-0.4, s * 1.35, 2.05], [0.75, 1.0, 0.05], CLOTH));
+        } else {
+            p.push(limb([0.45, s * 0.48, 1.75], [-0.7, s * 0.62, 2.35], 0.07, 0.03, dark));
+            p.push(ellipsoid([-0.3, s * 0.6, 1.85], [0.75, 0.06, 0.38], CLOTH));
+        }
+    }
+    for k in 0..7 {
+        let x = 0.7 - k as f64 * 0.3;
+        p.push(limb([x, 0.0, 1.66], [x - 0.12, 0.0, 1.98 - k as f64 * 0.03], 0.06, 0.01, dark));
+    }
+    p.push(ellipsoid([0.05, 0.0, 0.95], [0.85, 0.38, 0.2], glow));
+    p.push(ellipsoid([0.0, 0.0, 1.25], [1.05, 0.55, 0.5], scales));
+    let sway = 0.25 * (angle + 1.0).sin() * moving;
+    let tail = [[-0.95, 0.0, 1.25], [-1.8, sway, 1.0], [-2.55, sway * 2.0, 0.7], [-3.1, sway * 2.5, 0.55]];
+    p.push(limb(tail[2], tail[3], 0.12, 0.03, dark));
+    p.push(limb(tail[1], tail[2], 0.22, 0.12, scales));
+    p.push(limb(tail[0], tail[1], 0.32, 0.22, scales));
+    for (x, y, s) in [(0.6, 0.38, 1.0), (0.6, -0.38, -1.0), (-0.55, 0.4, -1.0), (-0.55, -0.4, 1.0)] {
+        leg(p, [x, y, 0.95], 0.95, 0.16, 0.4 * swing * s, scales, dark);
+    }
+}
+
+/// Ironhide: a huge old bear in plates of armor, tusked, with red eyes. It rears up on its hind
+/// legs to bring its paws crashing down, and lowers its head to charge.
+fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize) {
+    let (fur, dark, armor) = (FUR_DARK, FUR_BROWN, DARK_STEEL);
+    let raised = if pose == POSE_WINDUP { 0.75 } else { 0.0 };
+    let low = match pose {
+        POSE_SPECIAL => 0.3,
+        POSE_STRIKE => 0.15,
+        _ => 0.0,
+    };
+    let pivot = [-0.75, 0.0, 1.0];
+    let r = |v: Vec3| rear([v[0], v[1], v[2] - low * (v[0] + 0.75).max(0.0) / 2.25], pivot, raised);
+    for s in [-1.0, 1.0] {
+        p.push(ball(r([1.82, s * 0.22, 1.98]), 0.065, GLOW_BLOOD));
+        p.push(limb(r([2.0, s * 0.14, 1.52]), r([2.3, s * 0.2, 1.22]), 0.05, 0.015, BONE));
+        p.push(ball(r([1.3, s * 0.33, 2.27]), 0.12, fur));
+    }
+    p.push(ball(r([2.2, 0.0, 1.7]), 0.07, EYE));
+    if pose == POSE_WINDUP || pose == POSE_SPECIAL {
+        // Roaring
+        p.push(ball(r([2.06, 0.0, 1.5]), 0.11, EYE));
+    }
+    p.push(ellipsoid(r([1.92, 0.0, 1.68]), [0.32, 0.22, 0.2], dark));
+    p.push(ellipsoid(r([1.62, 0.0, 2.14]), [0.32, 0.3, 0.1], armor));
+    p.push(ball(r([1.5, 0.0, 1.85]), 0.48, fur));
+    for k in 0..4 {
+        let x = 0.8 - k as f64 * 0.5;
+        let z = 2.5 - k as f64 * 0.07;
+        p.push(limb(r([x, 0.0, z + 0.08]), r([x - 0.15, 0.0, z + 0.45]), 0.08, 0.012, BONE));
+        p.push(ellipsoid(r([x, 0.0, z]), [0.3, 0.55, 0.12], armor));
+    }
+    p.push(ball(r([0.4, 0.0, 2.05]), 0.62, fur));
+    p.push(limb(r([-0.85, 0.0, 1.55]), r([0.75, 0.0, 1.7]), 0.8, 0.85, fur));
+    // Its front legs reach forward as it rears and slams, its hind legs stay planted
+    let reach = if pose == POSE_WINDUP {
+        0.9
+    } else if pose == POSE_STRIKE {
+        0.7
+    } else {
+        0.0
+    };
+    for (x, y, s) in [(0.75, 0.45, 1.0), (0.75, -0.45, -1.0)] {
+        leg(p, r([x, y, 1.35]), 1.35, 0.28, reach + 0.35 * swing * s, fur, dark);
+    }
+    for (x, y, s) in [(-0.75, 0.45, -1.0), (-0.75, -0.45, 1.0)] {
+        leg(p, [x, y, 1.35], 1.35, 0.3, 0.35 * swing * s, fur, dark);
+    }
+}
+
 /// The shapes making up an animal, in meters: facing +x, with its feet on z = 0.
-/// `phase` is how far through its walk it is, None standing still.
-fn parts(look: Look, phase: Option<f64>) -> Vec<Part> {
+/// `phase` is how far through its walk it is, None standing still. A boss can strike a `pose`,
+/// POSE_WINDUP or the others, 0 for none.
+fn parts(look: Look, phase: Option<f64>, pose: usize) -> Vec<Part> {
     let angle = phase.map_or(0.0, |p| p * TAU);
     let moving = phase.is_some() as u8 as f64;
     // Diagonal pairs of legs swing together
     let swing = angle.sin() * moving;
     let mut p = Vec::new();
     match look {
+        Look::Golem => golem(&mut p, swing, pose),
+        Look::Drake => drake(&mut p, angle, swing, moving, pose),
+        Look::Ironhide => ironhide(&mut p, swing, pose),
         Look::Bear => {
             let (fur, dark) = (FUR_BROWN, FUR_DARK);
             p.push(ball([0.98, 0.12, 1.08], 0.035, EYE));
@@ -480,9 +690,9 @@ pub fn voxelize(parts: &[Part], res: f64) -> (Model, Vector3<f64>) {
     (Model { size, voxels }, anchor)
 }
 
-fn rasterize(look: Look, phase: Option<f64>) -> Model {
+fn rasterize(look: Look, phase: Option<f64>, pose: usize) -> Model {
     let res = look.resolution();
-    let parts: Vec<Part> = parts(look, phase).iter().map(|p| p.thickened(res)).collect();
+    let parts: Vec<Part> = parts(look, phase, pose).iter().map(|p| p.thickened(res)).collect();
     // Wide enough either side of the middle to hold everything, as the shader puts the middle of
     // the model where the animal stands
     let (mut half_x, mut half_y, mut top) = (0.0f64, 0.0f64, 0.0f64);
@@ -498,17 +708,23 @@ fn rasterize(look: Look, phase: Option<f64>) -> Model {
         ((top * res).ceil() as u32).clamp(1, 255),
     ];
     let mut voxels = vec![AIR; (size[0] * size[1] * size[2]) as usize];
-    for z in 0..size[2] {
-        for y in 0..size[1] {
-            for x in 0..size[0] {
-                let p = [
-                    (x as f64 + 0.5 - size[0] as f64 * 0.5) / res,
-                    (y as f64 + 0.5 - size[1] as f64 * 0.5) / res,
-                    (z as f64 + 0.5) / res,
-                ];
-                if let Some(part) = parts.iter().find(|part| part.contains(p)) {
-                    let band = part.stripes != AIR && (x / 2) % 3 == 0;
-                    voxels[(x + (y + z * size[1]) * size[0]) as usize] = if band { part.stripes } else { part.material };
+    // Each shape only looks at the voxels around it, and takes those no earlier shape took
+    let mut taken = vec![false; voxels.len()];
+    let origin = [-(size[0] as f64) * 0.5, -(size[1] as f64) * 0.5, 0.0];
+    for part in &parts {
+        let (a, b) = part.reach();
+        let from = [0, 1, 2].map(|i| ((a[i] * res - origin[i] - 0.5).floor().max(0.0) as u32).min(size[i]));
+        let to = [0, 1, 2].map(|i| ((b[i] * res - origin[i] + 0.5).ceil().max(0.0) as u32).min(size[i]));
+        for z in from[2]..to[2] {
+            for y in from[1]..to[1] {
+                for x in from[0]..to[0] {
+                    let i = (x + (y + z * size[1]) * size[0]) as usize;
+                    let p = [(x as f64 + 0.5 + origin[0]) / res, (y as f64 + 0.5 + origin[1]) / res, (z as f64 + 0.5) / res];
+                    if !taken[i] && part.contains(p) {
+                        taken[i] = true;
+                        let band = part.stripes != AIR && (x / 2) % 3 == 0;
+                        voxels[i] = if band { part.stripes } else { part.material };
+                    }
                 }
             }
         }
@@ -527,9 +743,12 @@ pub const ANIMAL_MODELS: usize = Look::ALL.len() * FRAMES;
 pub fn animal_models() -> Vec<Model> {
     let mut models = Vec::new();
     for look in Look::ALL {
-        models.push(rasterize(look, None));
-        for frame in 1..FRAMES {
-            models.push(rasterize(look, Some((frame - 1) as f64 / (FRAMES - 1) as f64)));
+        models.push(rasterize(look, None, 0));
+        for frame in 0..WALK_FRAMES {
+            models.push(rasterize(look, Some(frame as f64 / WALK_FRAMES as f64), 0));
+        }
+        for pose in [POSE_WINDUP, POSE_STRIKE, POSE_SPECIAL] {
+            models.push(rasterize(look, None, if look.is_boss() { pose } else { 0 }));
         }
     }
     models
@@ -598,7 +817,7 @@ fn facing(heading: f64) -> UnitQuaternion<f64> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Mood {
+pub(crate) enum Mood {
     Idle,
     Walk,
     Run,
@@ -611,16 +830,18 @@ pub struct Animal {
     pub look: Look,
     /// The middle of its feet
     pub position: Vector3<f64>,
-    heading: f64,
-    target_heading: f64,
-    speed: f64,
-    mood: Mood,
+    pub(crate) heading: f64,
+    pub(crate) target_heading: f64,
+    pub(crate) speed: f64,
+    pub(crate) mood: Mood,
     timer: f64,
     /// How far through its walk cycle, 0-1
-    phase: f64,
+    pub(crate) phase: f64,
     pub health: f64,
     /// Burning, poisoned, frozen and such, see src\combat.rs
     pub status: Status,
+    /// What a boss is up to, see src\bosses.rs
+    pub boss: Option<Boss>,
     rng: u32,
 }
 
@@ -685,8 +906,17 @@ impl Animal {
             phase: 0.0,
             health: look.health(),
             status: Status::default(),
+            boss: None,
             rng,
         }
+    }
+
+    /// A boss guarding `home`, in voxels. `key` is where its lair is in the whole landscape, to
+    /// remember it's been beaten.
+    pub fn boss(look: Look, home: Vector3<f64>, key: [i64; 3], seed: u32) -> Self {
+        let mut animal = Animal::new(look, home, hash(seed ^ 0xb055));
+        animal.boss = Some(Boss::new(look, home, key));
+        animal
     }
 
     pub fn heading(&self) -> f64 {
@@ -709,10 +939,14 @@ impl Animal {
         self.damage(PUNCH, from)
     }
 
-    /// Takes `amount` of damage from something at `from`, and runs off. Returns whether it died.
+    /// Takes `amount` of damage from something at `from`, and runs off, or a boss turns on
+    /// whoever did it. Returns whether it died.
     pub fn damage(&mut self, amount: f64, from: Vector3<f64>) -> bool {
         self.health = (self.health - amount).max(0.0);
-        self.flee(from, 4.0);
+        match &mut self.boss {
+            Some(boss) => boss.provoke(),
+            None => self.flee(from, 4.0),
+        }
         self.health <= 0.0
     }
 
@@ -736,8 +970,18 @@ impl Animal {
         let vpm = world.voxels_per_meter as f64;
         let look = self.look;
 
+        if self.boss.is_some() {
+            // Bosses shrug off most of what would knock an animal about
+            let most = 1.2 * vpm;
+            if self.status.push.norm() > most {
+                self.status.push = self.status.push.normalize() * most;
+            }
+            self.status.limit_for_boss();
+            bosses::think(self, world, player, dt);
+        }
+
         self.timer -= dt;
-        if self.timer <= 0.0 {
+        if self.boss.is_none() && self.timer <= 0.0 {
             let r = random(&mut self.rng);
             let (mood, time) = if r < 0.4 {
                 (Mood::Idle, 2.0 + 4.0 * random(&mut self.rng))
@@ -823,8 +1067,11 @@ impl Animal {
                     self.position.z += (z - self.position.z) * (1.0 - (-20.0 * dt).exp());
                 }
                 _ => {
-                    // Something's in the way: turn around and try elsewhere
-                    self.target_heading = self.heading + PI + (random(&mut self.rng) - 0.5) * 1.5;
+                    // Something's in the way: turn around and try elsewhere. A boss charging
+                    // into it is stopped dead, see bosses.rs.
+                    if self.boss.is_none() {
+                        self.target_heading = self.heading + PI + (random(&mut self.rng) - 0.5) * 1.5;
+                    }
                     self.speed = 0.0;
                 }
             }
@@ -833,11 +1080,34 @@ impl Animal {
     }
 
     pub fn instance(&self, world_voxels_per_meter: u32) -> AnimalInstance {
-        let frame = if self.speed > 0.15 { 1 + (self.phase * (FRAMES - 1) as f64) as usize % (FRAMES - 1) } else { 0 };
+        let walking = if self.speed > 0.15 { 1 + (self.phase * WALK_FRAMES as f64) as usize % WALK_FRAMES } else { 0 };
+        let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
         let scale = world_voxels_per_meter as f64 / self.look.resolution();
         let radius = self.look.reach() * world_voxels_per_meter as f64;
         AnimalInstance::new(model_index(self.look, frame), self.position, facing(self.heading), scale, radius, MOVING).tinted(self.status.tint())
     }
+}
+
+/// A boss for the lair at `near`, in voxels with its z on the ground there: on open ground as near
+/// it as there is, at about that height with room above, so not on a roof or in a wall. None if
+/// there's nowhere within 25 meters.
+pub fn spawn_boss(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, key: [i64; 3], seed: u32) -> Option<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    for ring in 0..26 {
+        let count = (ring * 6).max(1);
+        for i in 0..count {
+            let a = i as f64 / count as f64 * TAU;
+            let (x, y) = (near.x + a.cos() * ring as f64 * vpm, near.y + a.sin() * ring as f64 * vpm);
+            if x < 2.0 || y < 2.0 || x >= sx - 2.0 || y >= sy - 2.0 {
+                continue;
+            }
+            if let Some(z) = ground_at(world, water, x, y, near.z, 4.0 * vpm, 4.0 * vpm) {
+                return Some(Animal::boss(look, Vector3::new(x, y, z), key, seed));
+            }
+        }
+    }
+    None
 }
 
 /// Scatters animals over dry land: about half of them close to `near` so there are some to see

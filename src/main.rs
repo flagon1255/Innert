@@ -60,6 +60,7 @@ use winit_input_helper::WinitInputHelper;
 
 mod animals;
 mod audio;
+mod bosses;
 mod camera;
 mod combat;
 mod game;
@@ -91,6 +92,9 @@ const INITIAL_TERRAIN: TerrainSettings = TerrainSettings {
 };
 const VOXELS_PER_METER_OPTIONS: &[u32] = &[1, 2, 4, 8, 16];
 const INITIAL_WINDOW_RESOLUTION: PhysicalSize<u32> = PhysicalSize::new(960, 960);
+
+/// Out of a hundred ruins of the kinds bosses like, how many have one
+const BOSS_CHANCE: i64 = 30;
 
 // How many frames each pixel averages. While still, more stops improving the image noticeably.
 // While moving, fewer keeps old frames from smearing across the new ones.
@@ -245,6 +249,8 @@ struct NearDetail {
     size: [u32; 3],
     /// Where the camera was when it was built, in voxels of the main world
     center: Vector3<f64>,
+    /// How many of App::craters are blown in it: once there are more, it's built again
+    craters: usize,
 }
 
 struct NearBuild {
@@ -252,12 +258,17 @@ struct NearBuild {
     job: std::thread::JoinHandle<(World, Arc<DescriptorSet>)>,
     landscape: Arc<Terrain>,
     center: Vector3<f64>,
+    craters: usize,
 }
 
 /// The next piece of the endless landscape, being built in the background, uploaded to the GPU
 /// along with its water
 struct WindowBuild {
     job: std::thread::JoinHandle<(Terrain, World, GpuWorld, Water)>,
+    /// How many of App::craters and App::stains it was built with, so those since can be put in it
+    /// too
+    craters: usize,
+    stains: usize,
 }
 
 // The world holds a piece of the endless landscape around the camera. Once the camera gets this
@@ -971,8 +982,15 @@ struct App {
     // Holes blown in the landscape: where, in meters from its corner, and how big. They're blown
     // again in each new piece of it the world moves on to.
     craters: Vec<([f64; 3], f64)>,
+    // Stains splashed on the ground the same way: where, how big, of what, and whether it burnt
+    // the plants there
+    stains: Vec<([f64; 3], f64, u8, bool)>,
     // Meters walked since the last footstep
     step_distance: f64,
+    // How fast the player's going over the ground in meters a second, smoothed, and how far
+    // they've walked in all
+    walk_speed: f64,
+    walked: f64,
     // Which waterfall "Visit a Waterfall" went to last
     waterfall_index: usize,
 
@@ -1298,6 +1316,18 @@ impl App {
         if let Some(family) = setting("weapon") {
             game.select_family(family);
         }
+        // `--set boss=golem`, `drake` or `ironhide` puts one a little way ahead, to try fighting it
+        let boss = match setting("boss") {
+            Some("golem") => Some(animals::Look::Golem),
+            Some("drake") => Some(animals::Look::Drake),
+            Some("ironhide") => Some(animals::Look::Ironhide),
+            _ => None,
+        };
+        if let Some(look) = boss {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let distance = setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(20.0);
+            game.summon(&world, &water_level, look, start, ahead, distance);
+        }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
         }
@@ -1412,7 +1442,10 @@ impl App {
             script_controls: combat::Controls::default(),
             audio,
             craters: Vec::new(),
+            stains: Vec::new(),
             step_distance: 0.0,
+            walk_speed: 0.0,
+            walked: 0.0,
             waterfall_index: 0,
 
             menu_open,
@@ -1525,6 +1558,34 @@ impl App {
                 [p.x as f32, p.y as f32, p.z as f32, (l.reach as f64 * vpm) as f32, l.color[0], l.color[1], l.color[2], 0.0]
             })
             .collect();
+        // Bosses guard some of the ruins: golems the castles and watchtowers, drakes the desert
+        // ruins and pyramids, Ironhide the shrines, colonnades and ravines. Each waits a little way
+        // out in front, where there's room to fight.
+        let lairs: Vec<game::Lair> = landscape
+            .sites()
+            .iter()
+            .filter_map(|site| {
+                let look = match site.kind {
+                    "castle" | "watchtower" => animals::Look::Golem,
+                    "desert ruins" | "pyramid" => animals::Look::Drake,
+                    "shrine" | "colonnade" | "ravine" => animals::Look::Ironhide,
+                    _ => return None,
+                };
+                let key = site.position.map(|v| (v * 10.0).round() as i64);
+                let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
+                if pick >= BOSS_CHANCE {
+                    return None;
+                }
+                let [fx, fy] = site.facing;
+                let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+                let out = if site.kind == "ravine" { 0.0 } else { 16.0 };
+                let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
+                Some(game::Lair { look, position: to_voxels(at), key })
+            })
+            .collect();
+        let water = &self.water;
+        self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
+
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
         self.game.set_chests(
@@ -1547,13 +1608,56 @@ impl App {
     /// landscape and back.
     fn blast(&mut self, center: Vector3<f64>, radius: f64) {
         let vpm = self.world.voxels_per_meter as f64;
-        let (changed, blown) = self.world.carve(center.into(), radius * vpm);
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         self.craters.push((((center + origin) / vpm).into(), radius));
+        self.carve(center, radius, true);
+    }
+
+    /// Stains the ground `radius` meters round `center`, in voxels of the world, with `material`,
+    /// burning off what grows there with `burn`. Remembered like the holes.
+    fn stain(&mut self, center: Vector3<f64>, radius: f64, material: u8, burn: bool) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        self.stains.push((((center + origin) / vpm).into(), radius, material, burn));
+        self.paint(center, radius, material, burn);
+    }
+
+    /// Paints the world and the GPU's copy of it, see World::paint()
+    fn paint(&mut self, center: Vector3<f64>, radius: f64, material: u8, burn: bool) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let changed = self.world.paint(center.into(), radius * vpm, material, burn);
         if changed.is_empty() {
             return;
         }
-        self.game.debris(center, &blown, vpm);
+        if let Some(rcx) = &mut self.rcx {
+            rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
+        }
+        if self.world.bricks.len() / worldgen::BRICK_WORDS > self.voxel_set.capacity {
+            self.voxel_set = get_voxel_set(
+                self.memory_allocator.clone(),
+                self.command_buffer_allocator.clone(),
+                self.descriptor_set_allocator.clone(),
+                &self.render_pipeline,
+                &self.queue,
+                1,
+                &self.world,
+            );
+        } else {
+            self.upload_bricks(&changed);
+        }
+    }
+
+    /// Takes the voxels `radius` meters round `center` out of the world, and out of the GPU's copy
+    /// of it, letting water into the hole. With `debris` bits of them fly out.
+    fn carve(&mut self, center: Vector3<f64>, radius: f64, debris: bool) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let (changed, blown) = self.world.carve(center.into(), radius * vpm);
+        if changed.is_empty() {
+            return;
+        }
+        if debris {
+            self.game.debris(center, &blown, vpm);
+        }
 
         // The frames still being drawn read what's about to change, so let them finish
         if let Some(rcx) = &mut self.rcx {
@@ -1681,6 +1785,8 @@ impl App {
             rotation: UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(rotation)),
             tan: [tan * aspect.max(1.0), tan / aspect.min(1.0)],
             vpm: self.world.voxels_per_meter as f64,
+            speed: self.walk_speed,
+            stride: self.walked,
         }
     }
 
@@ -1697,6 +1803,17 @@ impl App {
             let build = self.window_build.take().unwrap();
             let (terrain, world, voxel_set, water) = build.job.join().unwrap();
             self.move_to(Arc::new(terrain), world, voxel_set, water);
+            // The holes blown and stains splashed while it was being built aren't in it yet
+            let vpm = self.world.voxels_per_meter as f64;
+            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            for k in build.craters..self.craters.len() {
+                let (center, radius) = self.craters[k];
+                self.carve(Vector3::from(center) * vpm - origin, radius, false);
+            }
+            for k in build.stains..self.stains.len() {
+                let (center, radius, material, burn) = self.stains[k];
+                self.paint(Vector3::from(center) * vpm - origin, radius, material, burn);
+            }
             return;
         }
 
@@ -1727,15 +1844,24 @@ impl App {
         );
         let (render_pipeline, water_pipeline) = ((*self.render_pipeline).clone(), (*self.water_pipeline).clone());
         let craters = self.craters.clone();
+        let stains = self.stains.clone();
         let job = std::thread::spawn(move || {
             let (terrain, mut world) = worldgen::generate_terrain(&settings, origin, &rivers);
-            // The holes blown in the landscape are still there
+            // The holes blown in the landscape are still there, and the stains splashed on it
             let vpm = world.voxels_per_meter as f64;
-            for (center, radius) in craters {
-                let local = [center[0] * vpm - world.origin[0] as f64, center[1] * vpm - world.origin[1] as f64, center[2] * vpm];
+            let local = |world: &World, center: [f64; 3], radius: f64| {
+                let p = [center[0] * vpm - world.origin[0] as f64, center[1] * vpm - world.origin[1] as f64, center[2] * vpm];
                 let reach = radius * vpm + 2.0;
-                if local[0] > -reach && local[1] > -reach && local[0] < world.size[0] as f64 + reach && local[1] < world.size[1] as f64 + reach {
-                    world.carve(local, radius * vpm);
+                (p[0] > -reach && p[1] > -reach && p[0] < world.size[0] as f64 + reach && p[1] < world.size[1] as f64 + reach).then_some(p)
+            };
+            for (center, radius) in craters {
+                if let Some(p) = local(&world, center, radius) {
+                    world.carve(p, radius * vpm);
+                }
+            }
+            for (center, radius, material, burn) in stains {
+                if let Some(p) = local(&world, center, radius) {
+                    world.paint(p, radius * vpm, material, burn);
                 }
             }
             let voxel_set = get_voxel_set(
@@ -1758,7 +1884,7 @@ impl App {
             );
             (terrain, world, voxel_set, water)
         });
-        self.window_build = Some(WindowBuild { job });
+        self.window_build = Some(WindowBuild { job, craters: self.craters.len(), stains: self.stains.len() });
     }
 
     /// Moves over to a new piece of the landscape. Everything in the world moves with it.
@@ -1806,6 +1932,7 @@ impl App {
         let (world, landscape) = build_world(self.scene, &self.terrain, self.future_voxel_resolution, [0, 0], &rivers);
         self.window_build = None;
         self.craters.clear();
+        self.stains.clear();
 
         let max_bytes = self.device.physical_device().properties().max_storage_buffer_range as usize;
         if world.bricks.len() * 4 > max_bytes {
@@ -2066,9 +2193,24 @@ impl App {
                     sound.play(cue, &view);
                 }
             }
-            // Explosions blowing holes in the world
+            // Explosions blowing holes in the world, and splashing stains on it
             for (center, radius) in self.game.take_craters() {
                 self.blast(center, radius);
+            }
+            for (center, radius, material, burn) in self.game.take_stains() {
+                self.stain(center, radius, material, burn);
+            }
+            // Thrown by blows, and waking up somewhere safe after being beaten
+            let push = self.game.take_knockback();
+            if let Some(player) = &mut self.player {
+                player.push(push);
+            }
+            if let Some(safe) = self.game.take_beaten() {
+                let near = safe.unwrap_or_else(|| camera_to_voxels(self.camera.position, self.world.size));
+                let water_level = |x: f64, y: f64| self.water.surface_at(x, y);
+                let player = Player::on_dry_ground(near, &self.world, &water_level);
+                self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+                self.player = Some(player);
             }
         }
         self.ambience(delta_time);
@@ -2110,6 +2252,12 @@ impl App {
             let wading = self.water.depth_at(feet.x, feet.y) > 0.1 * vpm;
             self.wake = (wading && !self.menu_open).then_some(([feet.x, feet.y], [moved.x, moved.y]));
 
+            // How fast they're going over the ground and how far they've walked, to bob what's in hand
+            let over_ground = if player.on_ground() { (feet - before).xy().norm() / vpm } else { 0.0 };
+            let speed = over_ground / delta_time.min(0.05).max(1e-3);
+            self.walk_speed += (speed - self.walk_speed) * (1.0 - (-10.0 * delta_time).exp());
+            self.walked += over_ground;
+
             // A footstep every stride, sounding like whatever's underfoot
             if player.on_ground() {
                 self.step_distance += (feet - before).xy().norm() / vpm;
@@ -2122,6 +2270,7 @@ impl App {
         } else {
             self.last_feet = None;
             self.wake = None;
+            self.walk_speed = 0.0;
             if self.focused && interactive {
                 let v = Vector3::new(KeyCode::KeyD, KeyCode::KeyW, KeyCode::KeyQ).map(t)
                     - Vector3::new(KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyE).map(t);
@@ -2260,6 +2409,44 @@ impl App {
             }
             // Keeps attacking with what's in hand, and `draw` keeps a bow drawn, for screenshots
             ("swing", _) => self.script_controls = combat::Controls { attack: true, holding: true, ..Default::default() },
+            // Blows holes, hops far enough over that the world's built again around the camera
+            // while it goes on blowing them, then checks none have filled back in
+            ("holes", f) => {
+                if f == 1 {
+                    self.game.select_weapon(weapons::Kind::Magic);
+                    self.camera.rotation.x = -0.9;
+                }
+                if f == 30 {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    self.camera.position = voxels_to_camera(eye + Vector3::new(40.0 * vpm, 0.0, 0.0), self.world.size);
+                }
+                self.script_controls = combat::Controls { attack: f > 5 && f < 140, holding: f > 5 && f < 140, ..Default::default() };
+                if f % 40 == 0 {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+                    let filled = self
+                        .craters
+                        .iter()
+                        .map(|&(center, _)| Vector3::from(center) * vpm - origin)
+                        .filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x < self.world.size[0] as f64 && p.y < self.world.size[1] as f64)
+                        .filter(|p| !worldgen::is_passable(self.world.material_at(p.x as i64, p.y as i64, p.z as i64)))
+                        .count();
+                    println!("frame {frame}: {} holes blown, {filled} filled back in, building: {}", self.craters.len(), self.window_build.is_some());
+                }
+            }
+            // On foot, facing the nearest boss and attacking it with what's in hand
+            ("boss", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                if let Some(target) = self.game.nearest_boss(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
             // Turns steadily while swinging, to see how things look on the move
             ("pan", _) => {
                 self.camera.rotation.z += 0.004;
@@ -2276,6 +2463,14 @@ impl App {
                 }
             }
             ("draw", f) => self.script_controls = combat::Controls { aiming: f > 5, ..Default::default() },
+            // Draws all the way and shoots at the ground a little way ahead, over and over
+            ("volley", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.22;
+                }
+                let phase = f % 70;
+                self.script_controls = combat::Controls { aiming: phase > 5 && phase <= 60, attack: phase == 60, ..Default::default() };
+            }
             ("loot", 20) => {
                 println!("frame {frame}: aiming at something: {}", self.game.has_target());
                 self.game.interact(eye);
@@ -2364,6 +2559,7 @@ impl App {
                     scale: scale as f64,
                     size: world.size,
                     center: build.center,
+                    craters: build.craters,
                 });
                 self.reset_accum = true;
             }
@@ -2375,7 +2571,10 @@ impl App {
             let offset = camera - near.center;
             offset.xy().norm() > far || offset.z.abs() > far * 0.6
         });
-        if moved && self.near_build.is_none() {
+        // A hole's been blown or a stain splashed since it was built
+        let scars = self.craters.len() + self.stains.len();
+        let holed = self.near.as_ref().is_some_and(|near| near.craters < scars);
+        if (moved || holed) && self.near_build.is_none() {
             let size = [NEAR_WIDTH_M * fine_vpm, NEAR_WIDTH_M * fine_vpm, NEAR_HEIGHT_M * fine_vpm];
             let window = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
             let center = (camera + window) * scale as f64;
@@ -2391,9 +2590,28 @@ impl App {
                 self.queue.clone(),
             );
             let render_pipeline = (*self.render_pipeline).clone();
+            let craters = self.craters.clone();
+            let stains = self.stains.clone();
             let job = std::thread::spawn(move || {
                 let start = Instant::now();
-                let world = job_landscape.build(origin, size, fine_vpm);
+                let mut world = job_landscape.build(origin, size, fine_vpm);
+                // With the holes blown in it and the stains splashed on it
+                let vpm = fine_vpm as f64;
+                let local = |center: [f64; 3], radius: f64| {
+                    let p = [center[0] * vpm - origin[0] as f64, center[1] * vpm - origin[1] as f64, center[2] * vpm - origin[2] as f64];
+                    let reach = radius * vpm + 2.0;
+                    (0..3).all(|i| p[i] > -reach && p[i] < size[i] as f64 + reach).then_some(p)
+                };
+                for (center, radius) in craters {
+                    if let Some(p) = local(center, radius) {
+                        world.carve(p, radius * vpm);
+                    }
+                }
+                for (center, radius, material, burn) in stains {
+                    if let Some(p) = local(center, radius) {
+                        world.paint(p, radius * vpm, material, burn);
+                    }
+                }
                 // Uploaded here too, so the frames carry on smoothly meanwhile
                 let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world).set;
                 println!("Built fine detail: {} bricks ({:?})", world.brick_count(), start.elapsed());
@@ -2403,6 +2621,7 @@ impl App {
                 job,
                 landscape,
                 center: camera,
+                craters: scars,
             });
         }
     }
@@ -2781,7 +3000,20 @@ impl App {
         let resample_extent = rcx.images.resample_image.extent();
         self.camera.extent = [render_extent[0] as f64, render_extent[1] as f64];
 
-        let pixel_to_ray = self.camera.pixel_to_ray_matrix();
+        // Shaken by blows and explosions: only what's drawn, not where the player's looking
+        let shake = self.game.shake();
+        let pixel_to_ray = if shake > 0.01 && self.loaded_scene.is_terrain() {
+            let t = self.start_time.elapsed().as_secs_f64();
+            let amount = shake * shake * 0.012;
+            let rotation = self.camera.rotation;
+            self.camera.rotation.x += amount * ((t * 41.0).sin() + 0.5 * (t * 67.0).sin());
+            self.camera.rotation.z += amount * ((t * 37.0 + 1.0).sin() + 0.5 * (t * 59.0).sin());
+            let shaken = self.camera.pixel_to_ray_matrix();
+            self.camera.rotation = rotation;
+            shaken
+        } else {
+            self.camera.pixel_to_ray_matrix()
+        };
 
         // The largest side of the world spans one unit of camera space
         let size = Vector3::from(self.world.size).cast::<f64>();

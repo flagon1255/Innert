@@ -3,13 +3,17 @@
 //! they hit. Positions are in voxels of the main world, the numbers in the weapon data in meters
 //! and seconds.
 
+use std::f64::consts::{PI, TAU};
 use std::rc::Rc;
 
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 
 use crate::animals::{Animal, AnimalInstance, HELD, MODEL_RES, MOVING, Model, STILL, TINT_BURNING, TINT_CHILLED, TINT_FROZEN, TINT_NONE, TINT_POISONED, TINT_SHOCKED};
 use crate::audio::{Cue, Sound};
-use crate::weapons::{ARM_RES, ARROW_RES, BOLT_RES, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES, HELD_ARROW_RES, Kind, Profile, SPARK_RES, Style, Synergy, Weapon, effect_models};
+use crate::weapons::{
+    ARM_RES, ARMS, ARROW_RES, BOLT_RES, BOULDER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES, HELD_ARROW_RES, Kind, Profile, SLOT_ARROW, SLOT_BOLT, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW,
+    SLOT_SPARK, SPARK_RES, Style, Synergy, Weapon, effect_models,
+};
 use crate::worldgen::{World, is_passable};
 
 pub const MAX_MANA: f64 = 100.0;
@@ -61,6 +65,12 @@ pub struct Status {
 }
 
 impl Status {
+    /// A boss is only ever frozen or knocked off its feet for a moment
+    pub fn limit_for_boss(&mut self) {
+        self.frozen = self.frozen.min(0.6);
+        self.staggered = self.staggered.min(0.25);
+    }
+
     /// How fast it can move: 1 as normal, 0 frozen or knocked off its feet
     pub fn pace(&self) -> f64 {
         if self.frozen > 0.0 || self.staggered > 0.0 {
@@ -97,6 +107,9 @@ pub struct View {
     /// Tangents of half the field of view across and up
     pub tan: [f64; 2],
     pub vpm: f64,
+    /// How fast the player's going over the ground in meters a second, and how far they've walked
+    pub speed: f64,
+    pub stride: f64,
 }
 
 impl View {
@@ -133,6 +146,8 @@ pub struct Arena<'a> {
     pub world: &'a World,
     pub animals: &'a mut Vec<Animal>,
     pub view: &'a View,
+    /// Where the player's feet are, None while flying
+    pub player: Option<Vector3<f64>>,
 }
 
 /// A number or a word floating up from where something was hit
@@ -147,8 +162,8 @@ pub struct Popup {
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
     Idle,
-    /// `flip` swings the other way, a backhand after a forehand
-    Swing { t: f64, length: f64, heavy: bool, struck: bool, flip: bool },
+    /// `combo` is which blow of a combo it is: a forehand, then a backhand, then a finisher
+    Swing { t: f64, length: f64, heavy: bool, struck: bool, combo: u8 },
     Draw { t: f64 },
     Loose { t: f64 },
     Cast { t: f64, cast: bool },
@@ -178,6 +193,12 @@ struct Projectile {
     /// Animals it went through already
     hit: Vec<u32>,
     life: f64,
+    /// Which arrowhead, see weapons::ARROW_HEADS
+    head: usize,
+    /// Shot from a bow drawn all the way, so it streaks
+    power: bool,
+    /// Trail sparks owed
+    trail: f64,
 }
 
 /// An arrow stuck where it landed
@@ -185,7 +206,29 @@ struct Stuck {
     position: Vector3<f64>,
     rotation: UnitQuaternion<f64>,
     look: usize,
+    head: usize,
+    element: Option<Element>,
     life: f64,
+    /// Seconds it goes on burning, crackling or such, for an arrow with an element
+    glowing: f64,
+}
+
+/// What a boss throws or spits at the player
+#[derive(Clone, Copy, PartialEq)]
+pub enum HostileKind {
+    Boulder,
+    Fireball,
+}
+
+/// Something a boss threw or spat, flying at the player
+struct Hostile {
+    kind: HostileKind,
+    position: Vector3<f64>,
+    velocity: Vector3<f64>,
+    life: f64,
+    /// How hard it hits, and how far its blast reaches in meters
+    damage: f64,
+    radius: f64,
 }
 
 struct Spark {
@@ -239,13 +282,27 @@ pub struct Combat {
     /// Which weapon is in hand, and how far it's come up into view, 0-1
     held: Option<usize>,
     raise: f64,
-    /// Whether the next swing is a backhand
-    flip: bool,
+    /// Which blow of a combo the next swing is, and how long until the combo's dropped
+    combo: u8,
+    combo_timer: f64,
+    /// Seconds the swing stops dead for as a blow lands, so it feels like it hit something
+    hitstop: f64,
+    /// The weapon jolting back from a blow, 0-1
+    recoil: f64,
+    /// How hard the camera shakes, wearing off
+    pub shake: f64,
+    /// How fast the player is going in meters a second, and how far they've walked, to bob what's
+    /// in hand as they go
+    speed: f64,
+    stride: f64,
+    /// Hits on the player from what bosses threw: how hard, and from where
+    pub player_hits: Vec<(f64, Vector3<f64>)>,
     /// Where the tip of the weapon in hand was last frame, while it leaves a trail
     trail: Option<Vector3<f64>>,
     /// Sparks owed to the weapon's aura
     aura: f64,
     projectiles: Vec<Projectile>,
+    hostiles: Vec<Hostile>,
     sparks: Vec<Spark>,
     stuck: Vec<Stuck>,
     flashes: Vec<Flash>,
@@ -256,6 +313,9 @@ pub struct Combat {
     pub cues: Vec<Cue>,
     /// Holes explosions blow in the world: where, and how big in meters
     pub craters: Vec<(Vector3<f64>, f64)>,
+    /// Stains splashed on the ground: where, how big in meters, of what material, and whether
+    /// they burn off what grows there
+    pub stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     /// Fireballs swelling up where explosions go off
     blasts: Vec<Blast>,
     /// Arrows, spells and sparks, see weapons::effect_models()
@@ -354,22 +414,40 @@ fn animate(rest: &Pose, keys: &[(f64, Pose, bool)], f: f64) -> Pose {
     blend(from.1, rest, smooth((f - from.0) / (1.0 - from.0)))
 }
 
-/// When a swing in `style` starts coming down, and when it lands, as parts of the whole swing
-fn timing(style: Style, heavy: bool) -> (f64, f64) {
+/// The last blow of a combo, which hits hardest
+const FINISHER: u8 = 2;
+/// How much harder
+const FINISHER_POWER: f64 = 1.4;
+
+/// When a swing in `style` starts coming down, and when it lands, as parts of the whole swing.
+/// `combo` is which blow of a combo it is.
+fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
+    if combo == FINISHER && !heavy {
+        return match style {
+            Style::Slash => (0.3, 0.45),
+            Style::Smash => (0.45, 0.6),
+            Style::Stab => (0.35, 0.5),
+            Style::Thrust => (0.3, 0.47),
+            _ => (0.4, 0.52),
+        };
+    }
     match (style, heavy) {
         (Style::Stab | Style::Thrust, false) => (0.25, 0.4),
         (Style::Stab | Style::Thrust, true) => (0.35, 0.5),
         (Style::Smash, false) => (0.4, 0.58),
         (Style::Smash, true) => (0.45, 0.6),
-        (Style::Chop, false) => (0.3, 0.47),
+        (Style::Chop | Style::Reap, false) => (0.3, 0.47),
         (_, true) => (0.4, 0.52),
         _ => (0.3, 0.45),
     }
 }
 
-/// The poses a swing in `style` goes through, for animate()
-fn swing(style: Style, heavy: bool, flip: bool) -> Vec<(f64, Pose, bool)> {
-    let (comes, lands) = timing(style, heavy);
+/// The poses a swing in `style` goes through, for animate(). `combo` is which blow of a combo it
+/// is: the second goes back the other way, the third finishes it off.
+fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
+    let (comes, lands) = timing(style, heavy, combo);
+    let flip = combo == 1;
+    let finisher = combo == FINISHER && !heavy;
     // Wound up only as far as the edge of the screen, so the weapon stays in sight.
     // Raised high and brought straight down: the overhead blow of a heavy sword or axe
     let overhead = || {
@@ -386,6 +464,22 @@ fn swing(style: Style, heavy: bool, flip: bool) -> Vec<(f64, Pose, bool)> {
             (lands + 0.13, pose([-0.1, 0.5, -0.28], [-0.8, 0.55, 0.05], [-0.55, -0.8, 0.0]), false),
         ]
     };
+    if finisher {
+        return match style {
+            // Drawn back to the hip and driven straight in
+            Style::Slash => {
+                let lunge = pose([0.08, 0.72, -0.15], [-0.1, 0.99, 0.1], [-1.0, 0.0, 0.0]);
+                let mut held = lunge.clone();
+                held.hand.y -= 0.04;
+                vec![(comes, pose([0.3, 0.2, -0.3], [0.05, 0.95, 0.3], [-1.0, 0.0, 0.0]), false), (lands, lunge, true), (lands + 0.12, held, false)]
+            }
+            // Raised high and slammed down, as a heavy blow
+            Style::Smash | Style::Stab => swing(style, true, 0),
+            // A wide sweep of the spear
+            Style::Thrust => sweep(comes, lands),
+            _ => overhead(),
+        };
+    }
     match (style, heavy) {
         (Style::Slash, false) if flip => vec![
             // The backhand, from the upper left down to the right
@@ -403,6 +497,18 @@ fn swing(style: Style, heavy: bool, flip: bool) -> Vec<(f64, Pose, bool)> {
             (lands + 0.13, pose([-0.05, 0.5, -0.4], [-0.5, 0.4, -0.75], [-0.2, 0.2, -1.0]), false),
         ],
         (Style::Chop, false) => sweep(comes, lands),
+        // The blade kept pointing across to the left, the pole swept round from the right, then
+        // back the other way, its point leading
+        (Style::Reap, false) if flip => vec![
+            (comes, pose([-0.05, 0.36, -0.12], [-0.6, 0.35, 0.72], [1.0, 0.2, 0.0]), false),
+            (lands, pose([0.16, 0.55, -0.25], [0.0, 0.95, 0.3], [1.0, 0.1, 0.0]), true),
+            (lands + 0.13, pose([0.34, 0.45, -0.3], [0.7, 0.6, 0.2], [0.6, -0.8, 0.0]), false),
+        ],
+        (Style::Reap, false) => vec![
+            (comes, pose([0.3, 0.32, -0.12], [0.6, 0.35, 0.72], [-1.0, 0.2, 0.0]), false),
+            (lands, pose([0.12, 0.55, -0.25], [0.1, 0.95, 0.3], [-1.0, 0.1, 0.0]), true),
+            (lands + 0.13, pose([-0.1, 0.48, -0.3], [-0.7, 0.6, 0.2], [-0.6, -0.8, 0.0]), false),
+        ],
         (Style::Smash, false) if flip => sweep(comes, lands),
         (Style::Smash, _) => {
             // Heaved up over the shoulder and brought down hard, staying down a moment
@@ -462,6 +568,9 @@ const CAST_TIME: f64 = 0.45;
 /// Most sparks flying about at once
 const MOST_SPARKS: usize = 220;
 
+/// Meters walked from one footfall to the next, for bobbing what's in hand
+const STEP_LENGTH: f64 = 0.8;
+
 impl Combat {
     /// `first_model` is where the arrow, spell and spark models will be in the buffer of all models
     pub fn new(seed: u32, first_model: u32) -> Self {
@@ -473,10 +582,18 @@ impl Combat {
             frenzy_bonus: 0.0,
             held: None,
             raise: 0.0,
-            flip: false,
+            combo: 0,
+            combo_timer: 0.0,
+            hitstop: 0.0,
+            recoil: 0.0,
+            shake: 0.0,
+            speed: 0.0,
+            stride: 0.0,
+            player_hits: Vec::new(),
             trail: None,
             aura: 0.0,
             projectiles: Vec::new(),
+            hostiles: Vec::new(),
             sparks: Vec::new(),
             stuck: Vec::new(),
             flashes: Vec::new(),
@@ -485,6 +602,7 @@ impl Combat {
             messages: Vec::new(),
             cues: Vec::new(),
             craters: Vec::new(),
+            stains: Vec::new(),
             blasts: Vec::new(),
             models: effect_models(),
             first_model,
@@ -499,6 +617,9 @@ impl Combat {
     pub fn recenter(&mut self, shift: Vector3<f64>) {
         for p in &mut self.projectiles {
             p.position -= shift;
+        }
+        for h in &mut self.hostiles {
+            h.position -= shift;
         }
         for s in &mut self.sparks {
             s.position -= shift;
@@ -523,6 +644,7 @@ impl Combat {
     /// Clears everything in flight, for a new world
     pub fn clear(&mut self) {
         self.projectiles.clear();
+        self.hostiles.clear();
         self.sparks.clear();
         self.stuck.clear();
         self.flashes.clear();
@@ -548,11 +670,16 @@ impl Combat {
     /// as `controls` say, things flying, and what's been done to the animals wearing off
     pub fn update(&mut self, arena: &mut Arena, weapon: Option<(usize, &Weapon)>, controls: Controls, dt: f64) {
         self.vpm = arena.view.vpm;
+        self.speed = arena.view.speed;
+        self.stride = arena.view.stride;
         self.time += dt;
         self.mana = (self.mana + MANA_REGEN * dt).min(MAX_MANA);
         self.cooldown -= dt;
         self.frenzy -= dt;
         self.mana_warning -= dt;
+        self.hitstop -= dt;
+        self.recoil = (self.recoil - dt * 5.0).max(0.0);
+        self.shake *= (-7.0 * dt).exp();
 
         let index = weapon.map(|(i, _)| i);
         if index != self.held {
@@ -590,11 +717,12 @@ impl Combat {
                     self.sparks(shot.position, 6, 2.0, Element::look(Some(Element::Arcane)), 0.0, 0.3);
                     self.projectiles.push(shot);
                 }
-                None => self.melee(arena, &echo.profile, echo.heavy, echo.power),
+                None => self.melee(arena, &echo.profile, echo.heavy, echo.power, false),
             }
         }
 
         self.fly(arena, dt);
+        self.fly_hostiles(arena, dt);
         self.afflict(arena, dt);
 
         for s in &mut self.sparks {
@@ -604,8 +732,20 @@ impl Combat {
             s.life -= dt;
         }
         self.sparks.retain(|s| s.life > 0.0);
+        // Arrows with an element go on burning, crackling and such for a while where they stuck
+        let vpm = self.vpm;
+        let mut motes = Vec::new();
         for s in &mut self.stuck {
             s.life -= dt;
+            s.glowing -= dt;
+            if s.glowing > 0.0 && s.element.is_some() {
+                motes.push((s.position - s.rotation * Vector3::x() * 0.1 * vpm, s.element));
+            }
+        }
+        for (at, element) in motes {
+            if random(&mut self.rng) < dt * 12.0 {
+                self.mote(at, element, 1.0);
+            }
         }
         self.stuck.retain(|s| s.life > 0.0);
         for f in &mut self.flashes {
@@ -630,33 +770,46 @@ impl Combat {
         let speedup = self.speedup();
         match weapon.kind() {
             Kind::Melee => {
-                if let Action::Swing { t, length, heavy, struck, flip } = self.action {
-                    let (comes, lands) = timing(profile.style, heavy);
+                if let Action::Swing { t, length, heavy, struck, combo } = self.action {
+                    let (comes, lands) = timing(profile.style, heavy, combo);
+                    let finisher = combo == FINISHER && !heavy;
+                    // Stopped dead a moment as a blow lands
+                    let dt = if self.hitstop > 0.0 { 0.0 } else { dt };
                     // Whooshing as it comes, and landing partway through the swing
                     if t < length * comes && t + dt >= length * comes {
                         let (sound, pitch) = match profile.style {
-                            Style::Stab => (Sound::Stab, if heavy { 0.85 } else { 1.1 }),
+                            Style::Stab => (Sound::Stab, if heavy || finisher { 0.85 } else { 1.1 }),
                             Style::Thrust => (Sound::Stab, if heavy { 0.7 } else { 0.85 }),
-                            Style::Smash => (Sound::HeavySwing, if heavy { 0.7 } else { 0.85 }),
-                            Style::Chop => (if heavy { Sound::HeavySwing } else { Sound::Swing }, 0.9),
-                            _ => (if heavy { Sound::HeavySwing } else { Sound::Swing }, if flip { 1.08 } else { 1.0 }),
+                            Style::Smash => (Sound::HeavySwing, if heavy || finisher { 0.7 } else { 0.85 }),
+                            Style::Chop => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, 0.9),
+                            Style::Reap => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, 0.75),
+                            _ => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, if combo == 1 { 1.08 } else { 1.0 }),
                         };
-                        self.cues.push(Cue::here(sound, 0.6).pitched(pitch));
+                        self.cues.push(Cue::here(sound, if finisher { 0.75 } else { 0.6 }).pitched(pitch * if finisher { 0.9 } else { 1.0 }));
                     }
                     let t = t + dt;
                     let land = !struck && t >= length * lands;
-                    self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, flip } };
+                    self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
                     if land {
-                        self.melee(arena, &profile, heavy, 1.0);
+                        self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
                     }
-                } else if (controls.attack || controls.holding || controls.heavy) && self.cooldown <= 0.0 && self.raise >= 1.0 {
-                    let heavy = controls.heavy;
-                    let length = (if heavy { 1.6 } else { 1.0 }) / (profile.stat("attackSpeed") * speedup).max(0.1);
-                    // Light blows go back and forth
-                    let flip = self.flip && !heavy;
-                    self.flip = !flip && !heavy;
-                    self.action = Action::Swing { t: 0.0, length, heavy, struck: false, flip };
-                    self.cooldown = length;
+                } else {
+                    // A combo's dropped if the next blow doesn't follow soon enough
+                    self.combo_timer -= dt;
+                    if self.combo_timer <= 0.0 {
+                        self.combo = 0;
+                    }
+                    if (controls.attack || controls.holding || controls.heavy) && self.cooldown <= 0.0 && self.raise >= 1.0 {
+                        let heavy = controls.heavy;
+                        let combo = if heavy { 0 } else { self.combo };
+                        let finisher = combo == FINISHER && !heavy;
+                        let length = (if heavy { 1.6 } else if finisher { 1.25 } else { 1.0 }) / (profile.stat("attackSpeed") * speedup).max(0.1);
+                        // Light blows go back and forth, then finish with a harder one
+                        self.combo = if heavy { 0 } else { (combo + 1) % (FINISHER + 1) };
+                        self.combo_timer = 0.5;
+                        self.action = Action::Swing { t: 0.0, length, heavy, struck: false, combo };
+                        self.cooldown = length;
+                    }
                 }
             }
             // The right button draws the bow and holds it drawn, the left lets the arrow fly.
@@ -727,12 +880,15 @@ impl Combat {
     }
 
     /// A sword swing landing: hits what's in front within reach. Echoes hit for `power` of a swing.
-    fn melee(&mut self, arena: &mut Arena, profile: &Rc<Profile>, heavy: bool, power: f64) {
+    /// `finisher` is the last blow of a combo.
+    fn melee(&mut self, arena: &mut Arena, profile: &Rc<Profile>, heavy: bool, power: f64, finisher: bool) {
         let view = arena.view;
         let vpm = view.vpm;
-        let reach = (profile.stat("range") + if heavy { 0.3 } else { 0.0 }) * vpm;
-        // Heavy blows come down on less, but cleave through one more
-        let cone = (profile.cone + if heavy { 0.15 } else { 0.0 }).min(0.95);
+        let reach = (profile.stat("range") + if heavy || finisher { 0.3 } else { 0.0 }) * vpm;
+        // Heavy blows come down on less, but cleave through one more. A spear's finishing sweep
+        // takes in a wide arc.
+        let sweep = finisher && profile.style == Style::Thrust;
+        let cone = if sweep { profile.cone - 0.45 } else { (profile.cone + if heavy { 0.15 } else { 0.0 }).min(0.95) };
         let forward = view.forward();
         let mut targets: Vec<(f64, usize)> = arena
             .animals
@@ -748,33 +904,46 @@ impl Combat {
             .collect();
         targets.sort_by(|a, b| a.0.total_cmp(&b.0));
         let base = (profile.stat("physicalDamage") + profile.stat("elementalDamage")) * if heavy { HEAVY } else { 1.0 } * power;
-        targets.truncate(profile.targets + heavy as usize);
+        targets.truncate(profile.targets + heavy as usize + finisher as usize + 2 * sweep as usize);
         let thud = match profile.style {
             Style::Smash => 0.7,
-            Style::Chop => 0.85,
+            Style::Chop | Style::Reap => 0.85,
             Style::Stab => 1.25,
             Style::Thrust => 1.1,
             _ => 1.0,
         };
+        let mut any_crit = false;
         for (k, &(_, i)) in targets.iter().enumerate() {
             let crit = self.roll_crit(profile);
+            any_crit |= crit;
             let damage = base * if crit { profile.stat("critDamage") } else { 1.0 };
             let center = arena.animals[i].center(vpm as u32);
             let at = center + (view.eye - center).normalize() * arena.animals[i].look.body().1 * vpm;
             if k == 0 {
-                self.cues.push(Cue::at(Sound::Hit, at, if heavy { 1.0 } else { 0.8 }).pitched(thud));
+                self.cues.push(Cue::at(Sound::Hit, at, if heavy || finisher { 1.0 } else { 0.8 }).pitched(thud));
             }
-            self.sparks(at, if crit { 14 } else { 8 }, 3.0, Element::look(profile.element), 0.6, 0.45);
+            let strength = 1.0 + 0.5 * (crit as u8 + heavy as u8 + finisher as u8) as f64;
+            self.sparks(at, (6.0 * strength) as usize, 3.0, Element::look(None), 0.8, 0.35);
+            self.element_hit(at, profile.element, strength);
             self.strike(arena, profile, i, Blow { damage, crit, heavy, from: view.eye, depth: 0, element: profile.element });
         }
-        // A heavy hammer blow dents the ground in front, knocking back what's around it
+        // The blade stops dead a moment as it bites, jolts back, and a big one shakes the view
+        if !targets.is_empty() && power >= 1.0 {
+            let big = heavy || finisher || any_crit;
+            self.hitstop = if big { 0.085 } else { 0.045 };
+            self.recoil = 1.0;
+            self.shake = self.shake.max(if big { 0.6 } else { 0.25 });
+        }
+        // A heavy hammer blow dents the ground in front, knocking back what's around it, and a
+        // finishing one a little
         let flat = Vector3::new(forward.x, forward.y, 0.0);
-        if power >= 1.0 && heavy && profile.style == Style::Smash && flat.norm() > 0.2 {
+        if power >= 1.0 && (heavy || finisher) && profile.style == Style::Smash && flat.norm() > 0.2 {
             let ahead = view.eye + flat.normalize() * reach * 0.7;
             let down = Vector3::new(0.0, 0.0, -2.5 * vpm);
             if let Some(t) = solid_along(arena.world, ahead, ahead + down) {
                 let at = ahead + down * t;
-                self.craters.push((at, 0.45));
+                self.craters.push((at, if heavy { 0.45 } else { 0.3 }));
+                self.shake = self.shake.max(0.8);
                 self.sparks(at, 10, 2.0, Element::look(profile.element), 1.0, 0.4);
                 self.cues.push(Cue::at(Sound::Burst, at, 0.7).pitched(0.55));
                 let around: Vec<usize> = (0..arena.animals.len())
@@ -805,10 +974,15 @@ impl Combat {
         let vpm = arena.view.vpm;
         let from = self.held_point(weapon, arena.view, true);
         let target = self.aim(arena);
-        let speed = profile.stat("projectileSpeed") * (0.45 + 0.55 * draw) * vpm;
-        let damage = (profile.stat("physicalDamage") + profile.stat("elementalDamage")) * (0.3 + 0.7 * draw * draw);
-        self.shoot(arena.view, &profile, true, from, (target - from).normalize(), speed, damage);
-        self.cues.push(Cue::here(Sound::Twang, 0.4 + 0.4 * draw as f32));
+        // Drawn all the way, it flies a little harder, streaking
+        let power = draw >= 0.98;
+        let speed = profile.stat("projectileSpeed") * (0.45 + 0.55 * draw) * if power { 1.1 } else { 1.0 } * vpm;
+        let damage = (profile.stat("physicalDamage") + profile.stat("elementalDamage")) * (0.3 + 0.7 * draw * draw) * if power { 1.1 } else { 1.0 };
+        self.shoot(arena.view, &profile, Some((weapon.arrowhead(), power)), from, (target - from).normalize(), speed, damage);
+        self.cues.push(Cue::here(Sound::Twang, 0.4 + 0.4 * draw as f32).pitched(if power { 1.1 } else { 1.0 }));
+        if power {
+            self.shake = self.shake.max(0.2);
+        }
     }
 
     /// Sends a spell flying from the crystal of the staff in hand
@@ -821,7 +995,7 @@ impl Combat {
         let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
         let look = Element::look(profile.element);
         self.flashes.push(Flash { position: from, color: profile.element.map_or([0.5, 0.9, 1.0], Element::light), reach: 5.0, life: 0.2, lifetime: 0.2 });
-        self.shoot(arena.view, &profile, false, from, (target - from).normalize(), speed, damage);
+        self.shoot(arena.view, &profile, None, from, (target - from).normalize(), speed, damage);
         for _ in 0..12 {
             let v = Vector3::new(random(&mut self.rng), random(&mut self.rng), random(&mut self.rng)) * 2.0 - Vector3::repeat(1.0);
             self.fine(from, v * 0.6 * vpm, look, 0.3, 0.0);
@@ -833,19 +1007,24 @@ impl Combat {
     }
 
     /// Arrows or spells leaving `from` towards `direction`: more than one with multishot, and
-    /// maybe again a moment later with echo
+    /// maybe again a moment later with echo. `arrow` is the arrowhead and whether the bow was drawn
+    /// all the way, for arrows, None for spells.
     #[allow(clippy::too_many_arguments)]
-    fn shoot(&mut self, view: &View, profile: &Rc<Profile>, arrow: bool, from: Vector3<f64>, direction: Vector3<f64>, speed: f64, damage: f64) {
+    fn shoot(&mut self, view: &View, profile: &Rc<Profile>, arrow: Option<(usize, bool)>, from: Vector3<f64>, direction: Vector3<f64>, speed: f64, damage: f64) {
         let pierce = if profile.has(Effect::Pierce) { (profile.param(Effect::Pierce, "count", 2.0) * profile.potency(Effect::Pierce).max(1.0)).round() as u32 } else { 0 };
+        let (head, power) = arrow.unwrap_or((0, false));
         let make = |direction: Vector3<f64>, damage: f64| Projectile {
-            arrow,
+            arrow: arrow.is_some(),
             position: from,
             velocity: direction * speed,
             damage,
             profile: profile.clone(),
             pierce,
             hit: Vec::new(),
-            life: if arrow { 4.0 } else { 3.0 },
+            life: if arrow.is_some() { 4.0 } else { 3.0 },
+            head,
+            power,
+            trail: 0.0,
         };
         let mut shots = vec![make(direction, damage)];
         if profile.has(Effect::Multishot) {
@@ -895,6 +1074,21 @@ impl Combat {
             }
             let (start, end) = (p.position, p.position + p.velocity * dt);
 
+            // Spells and arrows with an element leave it trailing behind them, and arrows shot at
+            // full draw a streak
+            if !p.arrow || profile.element.is_some() || p.power {
+                p.trail += dt * 80.0;
+                while p.trail >= 1.0 {
+                    p.trail -= 1.0;
+                    let at = start.lerp(&end, random(&mut self.rng));
+                    if profile.element.is_none() && p.arrow {
+                        self.fine(at, Vector3::zeros(), 0, 0.15, 0.0);
+                    } else {
+                        self.mote(at, profile.element, 1.6);
+                    }
+                }
+            }
+
             let mut gone = false;
             let wall = solid_along(arena.world, start, end).unwrap_or(f64::MAX);
             // Animals it passes through on the way, nearest first
@@ -911,7 +1105,8 @@ impl Combat {
                 let at = start + (end - start) * t;
                 let crit = self.roll_crit(&profile);
                 let damage = p.damage * if crit { profile.stat("critDamage") } else { 1.0 };
-                self.sparks(at, if crit { 14 } else { 8 }, 3.0, Element::look(profile.element), 0.6, 0.45);
+                self.sparks(at, if crit { 10 } else { 6 }, 3.0, Element::look(None), 0.8, 0.35);
+                self.element_hit(at, profile.element, if crit || p.power { 1.5 } else { 1.0 });
                 self.cues.push(Cue::at(Sound::Hit, at, 0.7));
                 p.hit.push(arena.animals[i].id);
                 self.strike(arena, &profile, i, Blow { damage, crit, heavy: false, from: start, depth: 0, element: profile.element });
@@ -933,7 +1128,15 @@ impl Combat {
                     // Stuck in where it landed, its head buried
                     let direction = p.velocity.normalize();
                     let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
-                    self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(profile.element), life: 20.0 });
+                    self.stuck.push(Stuck {
+                        position: at + direction * 0.12 * vpm,
+                        rotation,
+                        look: Element::look(profile.element),
+                        head: p.head,
+                        element: profile.element,
+                        life: 20.0,
+                        glowing: if profile.element.is_some() { 5.0 } else { 0.0 },
+                    });
                     if self.stuck.len() > 40 {
                         self.stuck.remove(0);
                     }
@@ -965,6 +1168,9 @@ impl Combat {
             self.burst(arena, profile, at, MAGIC_BLAST, p.damage * 0.5, 1, false, profile.element.or(Some(Element::Arcane)), None);
         } else {
             self.sparks(at, 4, 1.5, look, 1.0, 0.3);
+            if profile.element.is_some() {
+                self.element_hit(at, profile.element, if p.power { 1.6 } else { 1.1 });
+            }
             self.cues.push(Cue::at(Sound::ArrowHit, at, 0.8));
         }
     }
@@ -977,6 +1183,7 @@ impl Combat {
         let look = Element::look(element);
         let sparks = (16.0 + radius * 12.0) as usize;
         self.sparks(at, sparks, if pull { -4.0 } else { 4.0 + radius * 2.5 }, look, 0.4, 0.6 + radius * 0.1);
+        self.element_hit(at, element, 1.0 + radius * 0.4);
         // Bigger ones boom deeper
         let pitch = if pull { 1.3 } else { (1.25 - radius * 0.12).clamp(0.6, 1.2) as f32 };
         self.cues.push(Cue::at(Sound::Burst, at, if pull { 0.6 } else { (0.5 + radius * 0.25).min(1.2) as f32 }).pitched(pitch));
@@ -985,6 +1192,9 @@ impl Combat {
             // A fireball, and a hole blown in whatever it went off against
             self.blasts.push(Blast { position: at, look, radius, life: 0.4, lifetime: 0.4 });
             self.craters.push((at, radius * 0.75));
+            // Felt more the nearer and bigger it is
+            let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
+            self.shake = self.shake.max(near * (0.3 + radius * 0.25));
         }
         let r = radius * vpm;
         let inside: Vec<(usize, f64)> = arena
@@ -1341,6 +1551,203 @@ impl Combat {
         }
     }
 
+    /// A direction picked at random
+    fn any_direction(&mut self) -> Vector3<f64> {
+        loop {
+            let v = Vector3::new(random(&mut self.rng), random(&mut self.rng), random(&mut self.rng)) * 2.0 - Vector3::repeat(1.0);
+            if v.norm() > 0.1 && v.norm() <= 1.0 {
+                return v.normalize();
+            }
+        }
+    }
+
+    /// One spark of `element` drifting off from `at` as its kind does: embers rising off fire,
+    /// frost settling, poison dripping, lightning crackling off, and so on. `size` scales how long
+    /// it lasts, and above 1 it's a spark the size of a voxel of the world rather than a fine one,
+    /// to be seen from further off.
+    fn mote(&mut self, at: Vector3<f64>, element: Option<Element>, size: f64) {
+        let vpm = self.vpm;
+        let look = Element::look(element);
+        let wander = self.any_direction();
+        let (velocity, life, gravity) = match element {
+            Some(Element::Fire) => (wander * 0.2 + Vector3::new(0.0, 0.0, 0.6), 0.5, -0.05),
+            Some(Element::Frost) => (wander * 0.15, 0.7, 0.04),
+            Some(Element::Storm) => (wander * 1.6, 0.12, 0.0),
+            Some(Element::Poison) => (wander * 0.08, 0.6, 0.35),
+            Some(Element::Arcane) => (wander * 0.35, 0.45, -0.02),
+            Some(Element::Void) => (wander * -0.25, 0.4, 0.0),
+            Some(Element::Blood) => (wander * 0.1, 0.5, 0.8),
+            Some(Element::Holy) => (wander * 0.1 + Vector3::new(0.0, 0.0, 0.45), 0.6, -0.03),
+            None => (wander * 0.2, 0.3, 0.0),
+        };
+        if size > 1.0 {
+            let life = life * size;
+            self.sparks.push(Spark { position: at, velocity: velocity * vpm, look, life, lifetime: life, gravity, fine: false });
+            self.cap_sparks();
+        } else {
+            self.fine(at, velocity * vpm, look, life * size, gravity);
+        }
+    }
+
+    /// What a hit with `element` looks like where it lands at `at`, `strength` 1 for an ordinary
+    /// hit and more for a harder one
+    fn element_hit(&mut self, at: Vector3<f64>, element: Option<Element>, strength: f64) {
+        let vpm = self.vpm;
+        let look = Element::look(element);
+        let n = |k: f64| (k * strength).round().max(1.0) as usize;
+        match element {
+            None => {}
+            // Embers flying up, and a puff of flame
+            Some(Element::Fire) => {
+                self.sparks(at, n(8.0), 2.0, look, -0.25, 0.7);
+                self.blasts.push(Blast { position: at, look, radius: 0.3 * strength, life: 0.25, lifetime: 0.25 });
+            }
+            // Shards of ice falling, and frost spreading out round it
+            Some(Element::Frost) => {
+                self.sparks(at, n(8.0), 3.0, look, 1.6, 0.5);
+                let count = n(14.0);
+                for k in 0..count {
+                    let a = k as f64 / count as f64 * TAU;
+                    self.fine(at, Vector3::new(a.cos(), a.sin(), 0.08) * 1.8 * vpm, look, 0.45, 0.0);
+                }
+            }
+            // Crackling, and on a hard hit lightning striking down from the sky onto it
+            Some(Element::Storm) => {
+                self.sparks(at, n(8.0), 4.5, look, 0.0, 0.2);
+                if strength >= 1.4 {
+                    let top = at + Vector3::new(0.0, 0.0, 10.0 * vpm);
+                    let steps = 20;
+                    for k in 0..=steps {
+                        let f = k as f64 / steps as f64;
+                        let jitter = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.0) * (1.0 - f) * 0.9 * vpm;
+                        self.sparks.push(Spark { position: top.lerp(&at, f) + jitter, velocity: Vector3::zeros(), look, life: 0.18, lifetime: 0.18, gravity: 0.0, fine: false });
+                    }
+                    self.flashes.push(Flash { position: at, color: Element::Storm.light(), reach: 8.0, life: 0.18, lifetime: 0.18 });
+                    self.cues.push(Cue::at(Sound::Crackle, at, 0.9).pitched(0.8));
+                    self.shake = self.shake.max(0.3);
+                }
+            }
+            // Bubbles rising slowly
+            Some(Element::Poison) => {
+                for _ in 0..n(12.0) {
+                    let offset = self.any_direction() * 0.3 * vpm;
+                    let rise = Vector3::new(0.0, 0.0, (0.25 + 0.3 * random(&mut self.rng)) * vpm);
+                    self.fine(at + offset, rise, look, 1.1, -0.02);
+                }
+            }
+            // A ring of runes turning round it
+            Some(Element::Arcane) => {
+                let count = n(14.0);
+                for k in 0..count {
+                    let a = k as f64 / count as f64 * TAU;
+                    let out = Vector3::new(a.cos(), a.sin(), 0.0);
+                    let round = Vector3::new(-a.sin(), a.cos(), 0.15);
+                    self.fine(at + out * 0.45 * vpm, round * 1.4 * vpm, look, 0.6, 0.0);
+                }
+            }
+            // Drawn in on itself
+            Some(Element::Void) => self.sparks(at, n(12.0), -3.0, look, 0.0, 0.45),
+            // Droplets splashing out and falling
+            Some(Element::Blood) => self.sparks(at, n(10.0), 2.2, look, 1.8, 0.6),
+            // A pillar of light rising
+            Some(Element::Holy) => {
+                for _ in 0..n(16.0) {
+                    let a = random(&mut self.rng) * TAU;
+                    let r = random(&mut self.rng).sqrt() * 0.25 * vpm;
+                    let rise = Vector3::new(0.0, 0.0, (2.0 + 2.5 * random(&mut self.rng)) * vpm);
+                    self.fine(at + Vector3::new(a.cos() * r, a.sin() * r, 0.0), rise, look, 0.7, -0.05);
+                }
+                self.flashes.push(Flash { position: at, color: Element::Holy.light(), reach: 4.0, life: 0.25, lifetime: 0.25 });
+            }
+        }
+    }
+
+    /// A boss falling at `at`, `size` meters round: a burst of light and sparks
+    pub fn fell(&mut self, at: Vector3<f64>, size: f64) {
+        let holy = Element::look(Some(Element::Holy));
+        self.sparks(at, 60, 5.0, holy, 0.6, 1.2);
+        self.element_hit(at, Some(Element::Holy), 2.5);
+        self.blasts.push(Blast { position: at, look: holy, radius: size * 1.6, life: 0.7, lifetime: 0.7 });
+        self.flashes.push(Flash { position: at, color: [1.0, 0.9, 0.6], reach: 16.0, life: 0.7, lifetime: 0.7 });
+        self.shake = self.shake.max(1.0);
+    }
+
+    /// Throws `kind` from `from` to land at `to` after `time` seconds: a boulder falls in an arc as
+    /// things do, a fireball flies straight. It hits for `damage`, its blast reaching `radius` meters.
+    pub fn hurl(&mut self, kind: HostileKind, from: Vector3<f64>, to: Vector3<f64>, time: f64, damage: f64, radius: f64) {
+        let gravity = if kind == HostileKind::Boulder { 9.8 * self.vpm } else { 0.0 };
+        let velocity = (to - from) / time + Vector3::new(0.0, 0.0, 0.5 * gravity * time);
+        self.hostiles.push(Hostile { kind, position: from, velocity, life: time + 3.0, damage, radius });
+    }
+
+    /// Flame breathed out from `from` along `direction` for `dt` seconds
+    pub fn breathe(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64) {
+        let vpm = self.vpm;
+        let look = Element::look(Some(Element::Fire));
+        let count = (dt * 110.0 + random(&mut self.rng)) as usize;
+        for _ in 0..count {
+            let spread = self.any_direction() * 0.16;
+            let velocity = (direction + spread).normalize() * (8.0 + 4.0 * random(&mut self.rng)) * vpm;
+            let life = 0.55 + 0.35 * random(&mut self.rng);
+            self.sparks.push(Spark { position: from, velocity, look, life, lifetime: life, gravity: -0.12, fine: false });
+        }
+        self.cap_sparks();
+        if random(&mut self.rng) < dt * 20.0 {
+            self.flashes.push(Flash { position: from + direction * 3.0 * vpm, color: Element::Fire.light(), reach: 7.0, life: 0.12, lifetime: 0.12 });
+        }
+    }
+
+    /// Moves what bosses threw and spat, which goes off where it lands, hurting the player if
+    /// they're near enough
+    fn fly_hostiles(&mut self, arena: &mut Arena, dt: f64) {
+        let vpm = arena.view.vpm;
+        let hostiles = std::mem::take(&mut self.hostiles);
+        for mut h in hostiles {
+            if h.kind == HostileKind::Boulder {
+                h.velocity.z -= 9.8 * vpm * dt;
+            } else if random(&mut self.rng) < dt * 60.0 {
+                self.mote(h.position, Some(Element::Fire), 1.4);
+            }
+            let (start, end) = (h.position, h.position + h.velocity * dt);
+            h.life -= dt;
+            // Straight into the player, or into the ground
+            let body = arena.player.map(|feet| feet + Vector3::new(0.0, 0.0, 1.0 * vpm));
+            let direct = body.and_then(|b| sphere_hit(start, end, b, 0.8 * vpm));
+            let wall = solid_along(arena.world, start, end);
+            let landed = match (direct, wall) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let Some(t) = landed.or((h.life <= 0.0).then_some(1.0)) else {
+                h.position = end;
+                self.hostiles.push(h);
+                continue;
+            };
+            let at = start + (end - start) * t;
+            if let Some(b) = body {
+                let d = (b - at).norm() / vpm;
+                if d < h.radius {
+                    self.player_hits.push((h.damage * (1.0 - 0.5 * d / h.radius), at));
+                }
+            }
+            let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
+            self.shake = self.shake.max(near * 0.9);
+            match h.kind {
+                HostileKind::Boulder => {
+                    self.craters.push((at, 0.8));
+                    self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.5));
+                }
+                HostileKind::Fireball => {
+                    self.craters.push((at, 0.7));
+                    self.element_hit(at, Some(Element::Fire), 2.0);
+                    self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius: 1.3, life: 0.4, lifetime: 0.4 });
+                    self.flashes.push(Flash { position: at, color: Element::Fire.light(), reach: 8.0, life: 0.35, lifetime: 0.35 });
+                    self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.85));
+                }
+            }
+        }
+    }
+
     /// The weapon in hand leaving a trail off its tip as it comes down on something, and sparks of
     /// its element drifting off it
     fn flourish(&mut self, view: &View, weapon: &Weapon, dt: f64) {
@@ -1348,8 +1755,8 @@ impl Combat {
         let profile = &weapon.profile;
         let look = Element::look(profile.element);
         let swinging = match self.action {
-            Action::Swing { t, length, heavy, .. } => {
-                let (comes, lands) = timing(profile.style, heavy);
+            Action::Swing { t, length, heavy, combo, .. } => {
+                let (comes, lands) = timing(profile.style, heavy, combo);
                 (comes..lands + 0.1).contains(&(t / length))
             }
             Action::Cast { t, .. } => profile.style == Style::Flick && t < 0.2,
@@ -1402,10 +1809,12 @@ impl Combat {
                     // Daggers up a little to be seen, spears levelled on ahead
                     Style::Stab => pose([0.2, 0.42, -0.22], [-0.15, 0.75, 0.65], [0.0, 1.0, 0.0]),
                     Style::Thrust => pose([0.28, 0.3, -0.32], [0.0, 0.97, 0.2], [-1.0, 0.0, 0.0]),
+                    // A scythe's pole leant across, its blade out to the left at the top
+                    Style::Reap => pose([0.24, 0.4, -0.4], [-0.25, 0.45, 0.86], [-1.0, 0.0, 0.25]),
                     _ => pose([0.22, 0.46, -0.26], [-0.12, 0.62, 0.78], [0.0, 1.0, 0.0]),
                 };
                 match self.action {
-                    Action::Swing { t, length, heavy, flip, .. } => animate(&rest, &swing(style, heavy, flip), t / length),
+                    Action::Swing { t, length, heavy, combo, .. } => animate(&rest, &swing(style, heavy, combo), t / length),
                     _ => rest,
                 }
             }
@@ -1439,7 +1848,25 @@ impl Combat {
             }
             Kind::Magic => {
                 let rest = pose([0.24, 0.45, -0.28], [-0.08, 0.5, 0.86], [1.0, 0.0, 0.0]);
-                let keys = [(0.12 / CAST_TIME, pose([0.2, 0.62, -0.3], [-0.15, 0.85, 0.5], [1.0, 0.0, 0.0]), false)];
+                // The spell leaves the staff at 0.1 seconds in
+                let release = 0.1 / CAST_TIME;
+                let point = pose([0.2, 0.62, -0.3], [-0.15, 0.85, 0.5], [1.0, 0.0, 0.0]);
+                let keys = match weapon.profile.element {
+                    // Raised up high, then brought down to point
+                    Some(Element::Frost | Element::Holy) => {
+                        vec![(release * 0.55, pose([0.2, 0.5, -0.02], [-0.05, 0.3, 0.95], [1.0, 0.0, 0.0]), false), (release + 0.05, point, true)]
+                    }
+                    // Swept round from the side
+                    Some(Element::Storm | Element::Arcane | Element::Void) => {
+                        vec![(release * 0.55, pose([0.34, 0.42, -0.24], [0.35, 0.45, 0.82], [0.0, 1.0, 0.0]), false), (release + 0.05, point, true)]
+                    }
+                    // Scooped up from low down
+                    Some(Element::Poison) => {
+                        vec![(release * 0.55, pose([0.26, 0.48, -0.42], [0.0, 0.9, -0.25], [1.0, 0.0, 0.0]), false), (release + 0.05, point, true)]
+                    }
+                    // Thrust straight out
+                    _ => vec![(0.12 / CAST_TIME, point, false)],
+                };
                 match self.action {
                     Action::Cast { t, .. } => animate(&rest, &keys, t / CAST_TIME),
                     _ => rest,
@@ -1449,6 +1876,20 @@ impl Combat {
         // Swaying a little, and coming up into view when picked
         p.hand.x += 0.004 * (self.time * 1.1).sin();
         p.hand.z += 0.006 * (self.time * 2.3).sin() - 0.4 * (1.0 - self.raise).powi(2);
+        // Bobbing with each step, side to side and down on each footfall
+        let step = (self.stride / STEP_LENGTH * PI).sin();
+        let walking = (self.speed / 4.0).min(1.0);
+        p.hand.z -= 0.014 * step.abs() * walking;
+        p.hand.x += 0.009 * step * walking;
+        // Lowered and tipped forward while running, unless it's being used
+        if self.action == Action::Idle {
+            let running = smooth((self.speed - 5.5) / 2.5);
+            p.hand.z -= 0.07 * running;
+            p.hand.y -= 0.04 * running;
+            p.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.45 * running) * p.turn;
+        }
+        // Jolting back from a blow
+        p.hand.y -= 0.035 * self.recoil;
         p
     }
 
@@ -1477,8 +1918,12 @@ impl Combat {
         nocks[k].lerp(&nocks[next], draw - k as f64) + Vector3::new(0.0, 0.028, 0.0)
     }
 
-    fn effect_model(&self, kind: usize, look: usize) -> (u32, &(Model, Vector3<f64>)) {
-        let index = kind * ELEMENT_LOOKS + look;
+    /// Model `look` of the set at `slot`, see weapons::SLOT_ARROW and the rest
+    fn effect_model(&self, slot: usize, look: usize) -> (u32, &(Model, Vector3<f64>)) {
+        self.model_at(slot * ELEMENT_LOOKS + look)
+    }
+
+    fn model_at(&self, index: usize) -> (u32, &(Model, Vector3<f64>)) {
         (self.first_model + index as u32, &self.models[index])
     }
 
@@ -1490,8 +1935,8 @@ impl Combat {
         let y = (along - z * along.dot(&z)).normalize();
         let x = y.cross(&z);
         let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[x, y, z])));
-        let index = 6 * ELEMENT_LOOKS + which;
-        place(self.first_model + index as u32, &self.models[index], ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD)
+        let (model, arm) = self.model_at(ARMS + which);
+        place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD)
     }
 
     /// What to draw for the weapon in hand and the arms holding it, `first_model` being where the
@@ -1519,7 +1964,7 @@ impl Combat {
             // of sight.
             if matches!(self.action, Action::Draw { .. }) {
                 let nock = hand + rotation * (self.nock(weapon) - look.grip) * vpm;
-                let (model, arrow) = self.effect_model(3, Element::look(weapon.profile.element));
+                let (model, arrow) = self.effect_model(SLOT_HELD_ARROW + weapon.arrowhead(), Element::look(weapon.profile.element));
                 out.push(place(model, arrow, HELD_ARROW_RES, Vector3::zeros(), nock, rotation, vpm, 1.0, HELD));
             }
         }
@@ -1537,26 +1982,41 @@ impl Combat {
             let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
             let look = Element::look(p.profile.element);
             if p.arrow {
-                let (model, arrow) = self.effect_model(0, look);
+                let (model, arrow) = self.effect_model(SLOT_ARROW + p.head, look);
                 add(p.position, place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING));
             } else {
-                let (model, bolt) = self.effect_model(1, look);
+                let (model, bolt) = self.effect_model(SLOT_BOLT, look);
                 add(p.position, place(model, bolt, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, 1.0, MOVING));
             }
         }
         for s in &self.stuck {
-            let (model, arrow) = self.effect_model(0, s.look);
+            let (model, arrow) = self.effect_model(SLOT_ARROW + s.head, s.look);
             add(s.position, place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL));
         }
+        // What bosses throw, tumbling
+        for h in &self.hostiles {
+            let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 5.0) * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0);
+            let instance = match h.kind {
+                HostileKind::Boulder => {
+                    let (model, boulder) = self.model_at(BOULDER);
+                    place(model, boulder, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 1.0, MOVING)
+                }
+                HostileKind::Fireball => {
+                    let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(Element::Fire)));
+                    place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.35, MOVING)
+                }
+            };
+            add(h.position, instance);
+        }
         for s in self.sparks.iter().filter(|s| !s.fine) {
-            let (model, spark) = self.effect_model(2, s.look);
+            let (model, spark) = self.effect_model(SLOT_SPARK, s.look);
             let size = (s.life / s.lifetime).clamp(0.2, 1.0);
             add(s.position, place(model, spark, SPARK_RES, Vector3::zeros(), s.position, UnitQuaternion::identity(), vpm, size, MOVING));
         }
         // Fireballs, swelling quickly to the size of the explosion and then shrinking away, turning
         // as they go
         for b in &self.blasts {
-            let (model, ball) = self.effect_model(4, b.look);
+            let (model, ball) = self.effect_model(SLOT_FIREBALL, b.look);
             let t = 1.0 - b.life / b.lifetime;
             let grow = if t < 0.25 { t / 0.25 } else { 1.0 - (t - 0.25) / 0.75 };
             let size = b.radius * 0.8 * grow.max(0.05);
@@ -1573,7 +2033,7 @@ impl Combat {
             .iter()
             .filter(|s| s.fine)
             .map(|s| {
-                let (model, spark) = self.effect_model(5, s.look);
+                let (model, spark) = self.effect_model(SLOT_FINE, s.look);
                 let size = (s.life / s.lifetime).clamp(0.3, 1.0);
                 place(model, spark, FINE_SPARK_RES, Vector3::zeros(), s.position, UnitQuaternion::identity(), view.vpm, size, MOVING)
             })
@@ -1599,6 +2059,13 @@ impl Combat {
                 lights.push(light(p.position, 3.0, e.light(), 0.5));
             }
         }
+        for h in self.hostiles.iter().filter(|h| h.kind == HostileKind::Fireball) {
+            lights.push(light(h.position, 7.0, Element::Fire.light(), 1.5));
+        }
+        // Fire arrows burning where they stuck
+        for s in self.stuck.iter().filter(|s| s.glowing > 0.0 && s.element == Some(Element::Fire)) {
+            lights.push(light(s.position, 2.5, Element::Fire.light(), 0.6 * (s.glowing / 5.0).min(1.0) as f32));
+        }
         if let Some(weapon) = weapon
             && weapon.kind() == Kind::Magic
         {
@@ -1620,6 +2087,16 @@ impl Combat {
     }
 
     /// The attack speed bonus from a frenzy, if there is one, and how long it has left
+    /// Seconds the fight's been going on for, to pulse things by
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// Voxels per meter of the world, as of the last update
+    pub fn vpm(&self) -> f64 {
+        self.vpm
+    }
+
     pub fn frenzy(&self) -> Option<(f64, f64)> {
         (self.frenzy > 0.0).then_some((self.frenzy_bonus, self.frenzy))
     }

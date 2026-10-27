@@ -327,7 +327,32 @@ impl World {
             }
         }
 
-        // Pack the changed bricks back up, in place where they were stored already
+        let changed = self.store(dirty);
+
+        // Water can flow down into the hole
+        if self.water.is_some() {
+            let mut lowered = Vec::new();
+            for y in (cy - r).max(0)..(cy + r + 1).min(sy) {
+                for x in (cx - r).max(0)..(cx + r + 1).min(sx) {
+                    let i = (x + y * sx) as usize;
+                    let old = self.water.as_ref().unwrap().ground[i] as i64;
+                    let top = (0..old.min(sz)).rev().find(|&z| !is_passable(self.material_at(x, y, z))).map_or(0, |z| z + 1);
+                    if top < old {
+                        lowered.push((i, top as f32));
+                    }
+                }
+            }
+            let map = self.water.as_mut().unwrap();
+            for (i, top) in lowered {
+                map.ground[i] = top;
+            }
+        }
+        (changed, blown)
+    }
+
+    /// Packs bricks changed by carve() or paint() back up, each in place where it was stored
+    /// already if it was. Returns their cells.
+    fn store(&mut self, dirty: Vec<(usize, [u8; BRICK_VOXELS])>) -> Vec<usize> {
         let mut changed = Vec::new();
         for (cell, materials) in dirty {
             let old = self.brick_grid[cell];
@@ -354,26 +379,78 @@ impl World {
             }
             changed.push(cell);
         }
+        changed
+    }
 
-        // Water can flow down into the hole
-        if self.water.is_some() {
-            let mut lowered = Vec::new();
-            for y in (cy - r).max(0)..(cy + r + 1).min(sy) {
-                for x in (cx - r).max(0)..(cx + r + 1).min(sx) {
-                    let i = (x + y * sx) as usize;
-                    let old = self.water.as_ref().unwrap().ground[i] as i64;
-                    let top = (0..old.min(sz)).rev().find(|&z| !is_passable(self.material_at(x, y, z))).map_or(0, |z| z + 1);
-                    if top < old {
-                        lowered.push((i, top as f32));
+    /// Stains the ground and walls round `center` with `material`, in a ragged splotch `radius`
+    /// voxels round: a scorch mark, frost, a pool of venom or blood. Only what's open to the air
+    /// takes it. With `burn`, grass and flowers there are burnt away. Returns the cells of the
+    /// bricks that changed.
+    pub fn paint(&mut self, center: [f64; 3], radius: f64, material: u8, burn: bool) -> Vec<usize> {
+        let [sx, sy, sz] = self.size.map(i64::from);
+        let (bx, by) = (sx / 8, sy / 8);
+        let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL | FERN);
+        let r = radius.ceil() as i64 + 1;
+        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        let mut edits: Vec<([i64; 3], u8)> = Vec::new();
+        for z in cz - r..=cz + r {
+            for y in cy - r..=cy + r {
+                for x in cx - r..=cx + r {
+                    let d = ((x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2)).sqrt();
+                    // Thinning out in spatters towards the edge
+                    let spatter = 0.55 + 0.6 * unit(hash3(x as u32, y as u32 ^ 0x5ca7, z as u32)) as f64;
+                    if d > radius * spatter {
+                        continue;
+                    }
+                    let here = self.material_at(x, y, z);
+                    if burn && plant(here) {
+                        edits.push(([x, y, z], AIR));
+                        continue;
+                    }
+                    if is_passable(here) || here == WATER || plant(here) {
+                        continue;
+                    }
+                    let open = [[0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1]].iter().any(|o| {
+                        let m = self.material_at(x + o[0], y + o[1], z + o[2]);
+                        is_passable(m) || plant(m)
+                    });
+                    if open {
+                        edits.push(([x, y, z], material));
                     }
                 }
             }
-            let map = self.water.as_mut().unwrap();
-            for (i, top) in lowered {
-                map.ground[i] = top;
-            }
         }
-        (changed, blown)
+        let mut dirty: Vec<(usize, [u8; BRICK_VOXELS])> = Vec::new();
+        let mut found: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for ([x, y, z], m) in edits {
+            if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
+                continue;
+            }
+            let cell = (x / 8 + (y / 8 + (z / 8) * by) * bx) as usize;
+            let k = match found.get(&cell) {
+                Some(&k) => k,
+                None => {
+                    let value = self.brick_grid[cell];
+                    if value & EMPTY_BRICK != 0 {
+                        continue;
+                    }
+                    let mut materials = [AIR; BRICK_VOXELS];
+                    if value & SOLID_BRICK != 0 {
+                        materials = [value as u8; BRICK_VOXELS];
+                    } else {
+                        let start = ((value & BRICK_INDEX) - 1) as usize * BRICK_WORDS + 16;
+                        for (i, v) in materials.iter_mut().enumerate() {
+                            *v = (self.bricks[start + i / 4] >> ((i % 4) * 8)) as u8;
+                        }
+                    }
+                    dirty.push((cell, materials));
+                    found.insert(cell, dirty.len() - 1);
+                    dirty.len() - 1
+                }
+            };
+            dirty[k].1[(x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize] = m;
+        }
+        self.store(dirty)
     }
 
     /// The words of the stored brick in `cell`, if it's a stored brick

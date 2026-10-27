@@ -50,6 +50,16 @@ pub enum Sound {
     Eat,
     Step(Ground),
     Bird,
+    /// A boss roaring
+    Roar,
+    /// A boss getting ready to attack: a deep growl and rumble
+    Rumble,
+    /// A long gout of fire breathed out
+    Breath,
+    /// The player getting hurt
+    Hurt,
+    /// A boss beaten
+    Fanfare,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -302,6 +312,61 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     for look in 0..9u8 {
         clips.push((Sound::Cast(look), cast(look)));
     }
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    clips.push((
+        Sound::Roar,
+        render(1.6, 50, |t, rng| {
+            // A growling buzz, wavering, through a rasp of breath
+            let f = 85.0 + 25.0 * (t / 1.6) * (1.0 - t / 1.6) * 4.0 + 6.0 * (TAU * 7.0 * t).sin();
+            let buzz = lp.step(((f * t).fract() * 2.0 - 1.0) + 0.5 * ((f * 1.5 * t).fract() * 2.0 - 1.0), 700.0);
+            let rasp = lp2.step(noise(rng), 1200.0);
+            (buzz * 1.1 + rasp * 0.9) * swell(t, 1.6).sqrt()
+        }),
+    ));
+    let mut lp = Lowpass(0.0);
+    clips.push((
+        Sound::Rumble,
+        render(0.9, 51, |t, rng| {
+            let growl = ((TAU * (55.0 + 20.0 * t) * t).sin() + 0.4 * (TAU * 110.0 * t).sin()) * 0.5;
+            (growl + lp.step(noise(rng), 150.0) * 2.0) * swell(t, 0.9)
+        }),
+    ));
+    let (mut lp, mut crackle) = (Lowpass(0.0), 0.0f32);
+    clips.push((
+        Sound::Breath,
+        render(1.9, 52, |t, rng| {
+            // A roaring rush of flame, crackling
+            crackle = if random(rng) < 0.004 { 1.0 } else { crackle * 0.9 };
+            let roar = lp.step(noise(rng), 500.0 + 900.0 * swell(t, 1.9));
+            (roar * 2.2 + noise(rng) * crackle * 0.5) * swell(t, 1.9).sqrt()
+        }),
+    ));
+    let mut lp = Lowpass(0.0);
+    clips.push((
+        Sound::Hurt,
+        render(0.28, 53, |t, rng| {
+            // A thump and a grunt
+            let thump = (TAU * (95.0 - 120.0 * t) * t).sin() * (-t * 14.0).exp();
+            let grunt = lp.step(((150.0 * t).fract() * 2.0 - 1.0) + noise(rng) * 0.4, 900.0) * swell(t, 0.28);
+            thump * 0.9 + grunt * 0.6
+        }),
+    ));
+    clips.push((
+        Sound::Fanfare,
+        render(2.2, 54, |t, _| {
+            // Rising notes, then a held chord
+            let notes = [(0.0, 523.25), (0.18, 659.25), (0.36, 783.99), (0.54, 1046.5)];
+            let mut sum = 0.0;
+            for (start, f) in notes {
+                if t >= start {
+                    let age = t - start;
+                    let held = if start >= 0.5 { (-age * 1.2).exp() } else { (-age * 5.0).exp() * 0.7 + (-age * 1.2).exp() * 0.3 };
+                    sum += ((TAU * f * t).sin() + 0.3 * (TAU * f * 2.0 * t).sin()) * held;
+                }
+            }
+            sum * 0.22 * (1.0 - (t / 2.2).powi(4))
+        }),
+    ));
     clips.push((Sound::Stab, whoosh(0.14, 900.0, 4200.0, 30)));
     clips.push((Sound::Stab, whoosh(0.16, 700.0, 3600.0, 31)));
     let mut lp = Lowpass(0.0);
