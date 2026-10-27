@@ -1316,6 +1316,18 @@ impl App {
         if let Some(family) = setting("weapon") {
             game.select_family(family);
         }
+        // `--set special=meteors` puts a weapon with that special attack in hand, charged
+        if let Some(name) = setting("special")
+            && let Ok(special) = serde_json::from_str::<weapons::Special>(&format!("\"{name}\""))
+        {
+            game.find_special(special);
+            println!("special: {}", game.describe_held());
+        }
+        // `--set staff_element=fire` puts a staff of fire in hand, or of another element, or `none`
+        if let Some(name) = setting("staff_element") {
+            let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
+            game.find_weapon("staff", element, 2.0);
+        }
         // `--set boss=golem`, `drake` or `ironhide` puts one a little way ahead, to try fighting it
         let boss = match setting("boss") {
             Some("golem") => Some(animals::Look::Golem),
@@ -2149,6 +2161,7 @@ impl App {
                     holding: self.input.mouse_held(MouseButton::Left),
                     heavy: self.input.mouse_pressed(MouseButton::Right),
                     aiming: self.input.mouse_held(MouseButton::Right),
+                    special: self.input.key_pressed(KeyCode::KeyR) || self.input.mouse_pressed(MouseButton::Middle),
                 };
             } else if self.input.mouse_pressed(MouseButton::Left) {
                 if bucket {
@@ -2372,7 +2385,7 @@ impl App {
             // Fights what's in front with the sword, then the bow, then the staff
             ("fight", f) => {
                 let hold = |attack| combat::Controls { attack, holding: attack, ..Default::default() };
-                let aim = |attack| combat::Controls { attack, holding: attack, heavy: false, aiming: true };
+                let aim = |attack| combat::Controls { attack, holding: attack, aiming: true, ..Default::default() };
                 self.script_controls = match f {
                     10 => {
                         self.game.select_weapon(weapons::Kind::Melee);
@@ -2395,6 +2408,51 @@ impl App {
                 if [5, 75, 145, 200, 300].contains(&f) {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
+            }
+            // Unleashes the special attack of what's in hand, facing the nearest boss if there is one
+            ("special", f) => {
+                if f == 1 {
+                    match self.game.nearest_boss(eye) {
+                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                        None => self.camera.rotation.x = -0.35,
+                    }
+                }
+                self.script_controls = combat::Controls { special: f == 30, ..Default::default() };
+                if f == 29 || f == 120 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // Finds the nearest water and casts into it, to see it splash
+            ("splash", f) => {
+                if f == 1 {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    let mut best: Option<Vector3<f64>> = None;
+                    for ring in 4..40 {
+                        for k in 0..ring * 6 {
+                            let a = k as f64 / (ring * 6) as f64 * TAU;
+                            let (x, y) = (eye.x + a.cos() * ring as f64 * vpm, eye.y + a.sin() * ring as f64 * vpm);
+                            let surface = self.water.surface_at(x, y);
+                            if best.is_none() && surface.is_finite() && self.water.depth_at(x, y) > 0.5 * vpm {
+                                best = Some(Vector3::new(x, y, surface));
+                            }
+                        }
+                    }
+                    match best {
+                        Some(at) => self.camera.look_at(voxels_to_camera(at, self.world.size)),
+                        None => println!("no water near"),
+                    }
+                }
+                let cast = (30..33).contains(&f);
+                self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+            }
+            // One spell cast at the ground a few meters ahead, to watch it go off and what it leaves
+            ("spells", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.6;
+                }
+                // Once it's come up into view
+                let cast = (30..33).contains(&f);
+                self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
             }
             // Casts spells at the ground a little way ahead, blowing holes in it
             ("boom", 1) => {

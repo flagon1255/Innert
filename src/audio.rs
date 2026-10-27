@@ -60,6 +60,8 @@ pub enum Sound {
     Hurt,
     /// A boss beaten
     Fanfare,
+    /// Something hitting water
+    Splash,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -312,6 +314,16 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     for look in 0..9u8 {
         clips.push((Sound::Cast(look), cast(look)));
     }
+    let mut lp = Lowpass(0.0);
+    clips.push((
+        Sound::Splash,
+        render(0.6, 55, |t, rng| {
+            // A slap on the water, a rush of spray, and a bubble or two
+            let slap = lp.step(noise(rng), 1800.0 - 1500.0 * (t / 0.6)) * 2.0 * (-t * 7.0).exp() * (t * 300.0).min(1.0);
+            let bubble = (TAU * (380.0 + 900.0 * t) * t).sin() * 0.25 * (-((t - 0.18) * 30.0).powi(2)).exp();
+            slap + bubble
+        }),
+    ));
     let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
     clips.push((
         Sound::Roar,

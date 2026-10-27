@@ -15,7 +15,7 @@ use crate::bosses::{Deed, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
-use crate::weapons::{Element, Kind, Library, STATS, Weapon};
+use crate::weapons::{Element, Kind, Library, STATS, Special, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
 /// How far away things can be picked up or hit, in meters
@@ -398,6 +398,14 @@ impl Game {
         self.weapons.iter().map(|w| self.describe(w)).collect::<Vec<_>>().join("\n")
     }
 
+    /// The weapon in hand, as describe_weapons() puts it, with its special attack
+    pub fn describe_held(&self) -> String {
+        self.held().map_or("nothing".into(), |(_, w)| {
+            let special = w.profile.special.as_ref().map_or(String::new(), |(s, part)| format!(" Special: {} from {}.", s.name(), part));
+            format!("{}{}", self.describe(w), special)
+        })
+    }
+
     fn describe(&self, weapon: &Weapon) -> String {
         let library = &self.library;
         let family = &library.families[weapon.family];
@@ -622,7 +630,7 @@ impl Game {
             _ => None,
         };
         let weapon = held.map(|i| (i, &self.weapons[i]));
-        self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player }, weapon, controls, dt);
+        self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player, water }, weapon, controls, dt);
         for message in std::mem::take(&mut self.combat.messages) {
             self.say(message);
         }
@@ -642,6 +650,12 @@ impl Game {
                 self.hurt(damage, from, feet, world, "a blast");
             }
         }
+        // What a special attack did for the player
+        let heal = std::mem::take(&mut self.combat.heal);
+        if heal > 0.0 && self.health > 0.0 {
+            self.health = (self.health + heal).min(MAX_HEALTH);
+        }
+        self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, player, dt);
         self.reap(world.voxels_per_meter as f64);
         self.leaves.update(world, water, view.eye, dt);
@@ -1037,6 +1051,40 @@ impl Game {
         }
     }
 
+    /// For trying them out: rolls weapons of family `id` until one has `element`, and puts it in
+    /// hand
+    pub fn find_weapon(&mut self, id: &str, element: Option<Element>, luck: f64) {
+        let Some(family) = self.library.family(id) else {
+            return;
+        };
+        for seed in 0..2000u32 {
+            let weapon = self.library.generate(hash(seed ^ 0xf1d), Some(family), luck);
+            if weapon.profile.element == element {
+                self.weapons.push(weapon);
+                self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+                self.selected = 0;
+                self.models_version += 1;
+                return;
+            }
+        }
+    }
+
+    /// For trying them out: rolls lucky weapons of any family until one has the special attack
+    /// `special`, puts it in hand and charges it
+    pub fn find_special(&mut self, special: Special) {
+        for seed in 0..20000u32 {
+            let weapon = self.library.generate(hash(seed ^ 0x5bec), None, 8.0);
+            if weapon.profile.special.as_ref().is_some_and(|(s, _)| *s == special) {
+                self.weapons.push(weapon);
+                self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+                self.selected = 0;
+                self.models_version += 1;
+                self.combat.charge = 1.0;
+                return;
+            }
+        }
+    }
+
     /// Picks the first weapon of family `id` carried
     pub fn select_family(&mut self, id: &str) {
         let family = self.library.family(id);
@@ -1293,6 +1341,19 @@ impl Game {
             };
             painter.text(at + vec2(0.0, 21.0), Align2::CENTER_TOP, detail, FontId::proportional(12.0), faint);
             below += 42.0;
+            // Its special attack, filling as it charges, glowing once it's ready
+            if let Some((special, _)) = &weapon.profile.special {
+                let charge = self.combat.charge as f32;
+                let ready = charge >= 1.0;
+                let label = if ready { format!("R — {} ready!", special.name()) } else { format!("R — {}", special.name()) };
+                let tint = if ready { color(rarity.color) } else { faint };
+                painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(14.0), shadow);
+                painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(14.0), tint);
+                let back = Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0));
+                painter.rect_filled(back, 2.5, Color32::from_white_alpha(30));
+                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * charge, 5.0)), 2.5, color(rarity.color));
+                below += 32.0;
+            }
         }
 
         // Messages under that, newest first, fading out
@@ -1354,6 +1415,7 @@ impl Game {
                 ui.label("With a sword, greatsword, katana, axe, scythe, hammer, dagger, spear or halberd: click to swing, three in a row for a combo, right click for a heavy blow.");
                 ui.label("With a bow: hold right click to draw, then click to shoot. With a staff, scepter or wand: click to cast, using mana.");
                 ui.label("E picks up, opens chests and pets. Number keys or the mouse wheel pick what's in hand.");
+                ui.label("Weapons with a legendary or mythic part have a special attack: R or the middle button, once it's charged.");
                 ui.label("Chests lie in pyramids, shrines, castles, flooded churches and desert ruins.");
             });
         if let Some(slot) = eat {
@@ -1381,6 +1443,11 @@ impl Game {
         }
         if let Some(element) = weapon.profile.element {
             ui.label(RichText::new(format!("Element: {}", element.name())).color(color(element.color())));
+        }
+        if let Some((special, part)) = &weapon.profile.special {
+            let rarity = &library.rarities[weapon.grade];
+            ui.label(RichText::new(format!("Special (R): {}", special.name())).color(color(rarity.color)).strong());
+            ui.label(RichText::new(format!("{} From its {}.", special.description(), part)).weak());
         }
         ui.add_space(4.0);
         egui::Grid::new(("stats", weapon.seed, weapon.family)).num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {

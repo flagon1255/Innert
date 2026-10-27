@@ -373,6 +373,9 @@ pub struct Component {
     visual_profile: Visual,
     #[serde(default)]
     naming: Naming,
+    /// The special attack a legendary or mythic part gives the weapon
+    #[serde(default)]
+    special: Option<Special>,
     /// Index of its rarity
     #[serde(skip)]
     pub tier: usize,
@@ -645,6 +648,74 @@ pub struct Profile {
     pub stats: Stats,
     pub effects: Vec<ActiveEffect>,
     pub synergies: Vec<ActiveSynergy>,
+    /// Its special attack, if one of its parts gives it one, and which part
+    pub special: Option<(Special, String)>,
+}
+
+/// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Special {
+    /// Fireballs falling from the sky round where it's aimed
+    Meteors,
+    /// An ice storm freezing everything in it
+    Blizzard,
+    /// Lightning striking every enemy round about
+    Tempest,
+    /// A black hole drawing everything in, then collapsing
+    Singularity,
+    /// The ground splitting open in a line of blasts ahead
+    Fissure,
+    /// Spinning round, hitting everything near, twice
+    Whirlwind,
+    /// Dashing forward through them, slashing at everything near
+    Flurry,
+    /// A burst of holy light throwing everything back, and healing
+    Nova,
+    /// Arrows raining down round where it's aimed
+    Rain,
+    /// Draining the life of every enemy near
+    Bloodmoon,
+    /// A great cloud of venom
+    Plague,
+    /// Seeking stars, a barrage of them
+    Starfall,
+}
+
+impl Special {
+    pub fn name(self) -> &'static str {
+        match self {
+            Special::Meteors => "Meteor Shower",
+            Special::Blizzard => "Blizzard",
+            Special::Tempest => "Tempest",
+            Special::Singularity => "Singularity",
+            Special::Fissure => "Worldsplitter",
+            Special::Whirlwind => "Whirlwind",
+            Special::Flurry => "Flurry",
+            Special::Nova => "Holy Nova",
+            Special::Rain => "Rain of Arrows",
+            Special::Bloodmoon => "Blood Moon",
+            Special::Plague => "Plague",
+            Special::Starfall => "Starfall",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Special::Meteors => "Fireballs rain down round where you aim.",
+            Special::Blizzard => "An ice storm where you aim freezes everything in it.",
+            Special::Tempest => "Lightning strikes every enemy within 25 meters.",
+            Special::Singularity => "A black hole where you aim drags everything in, then collapses.",
+            Special::Fissure => "The ground splits open ahead of you in a line of blasts.",
+            Special::Whirlwind => "Spin twice, hitting everything round you.",
+            Special::Flurry => "Dash forward, slashing at everything near five times.",
+            Special::Nova => "A burst of holy light throws everything back and heals you.",
+            Special::Rain => "Arrows rain down round where you aim.",
+            Special::Bloodmoon => "Drain the life of every enemy within 14 meters to heal yourself.",
+            Special::Plague => "A great cloud of venom where you aim, lingering.",
+            Special::Starfall => "A barrage of stars seeks out the enemies round you.",
+        }
+    }
 }
 
 impl Profile {
@@ -780,7 +851,9 @@ impl Weapon {
         let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
         let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
         let grade = by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1);
-        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies }, tags, grade)
+        // The rarest part with a special attack gives it its own
+        let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
+        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special }, tags, grade)
     }
 
     pub fn kind(&self) -> Kind {
@@ -1561,9 +1634,23 @@ pub const SLOT_HELD_ARROW: usize = SLOT_SPARK + 1;
 pub const SLOT_FIREBALL: usize = SLOT_HELD_ARROW + ARROW_HEADS;
 /// Tiny sparks for trails and auras
 pub const SLOT_FINE: usize = SLOT_FIREBALL + 1;
-/// After the sets: the right arm, the left arm, then a boulder
-pub const ARMS: usize = (SLOT_FINE + 1) * ELEMENT_LOOKS;
+/// Drops of something splashed, which don't glow: see DROP_WATER and the rest for which is which
+pub const SLOT_DROP: usize = SLOT_FINE + 1;
+pub const DROP_WATER: usize = 0;
+pub const DROP_BLOOD: usize = 1;
+pub const DROP_VENOM: usize = 2;
+pub const DROP_MUD: usize = 3;
+pub const DROP_ICE: usize = 4;
+pub const DROP_ASH: usize = 5;
+pub const DROP_GOLD: usize = 6;
+pub const DROP_VOID: usize = 7;
+pub const DROP_EMBER: usize = 8;
+/// After the sets: the right arm, the left arm, a boulder, then spikes of ice bursting up
+pub const ARMS: usize = (SLOT_DROP + 1) * ELEMENT_LOOKS;
 pub const BOULDER: usize = ARMS + 2;
+pub const ICE_BURST: usize = BOULDER + 1;
+/// A pillar of light, standing on 0
+pub const PILLAR: usize = ICE_BURST + 1;
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
 /// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the shaft
@@ -1739,6 +1826,10 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         let glow = element.map_or(GLOW_HOLY, Element::glow);
         models.push(voxelize(&[ball([0.0, 0.0, 0.0], 0.008, glow)], FINE_SPARK_RES));
     }
+    // Drops, in the order of DROP_WATER and the rest: a voxel each
+    for material in [FOAM, CLOTH, GLOW_POISON, DIRT, ICE, BARK_DARK, GOLD, OBSIDIAN, GLOW_FIRE] {
+        models.push(voxelize(&[ball([0.0, 0.0, 0.0], 0.03, material)], MODEL_RES));
+    }
     models.push(voxelize(&arm(false), ARM_RES));
     models.push(voxelize(&arm(true), ARM_RES));
     // A lumpy boulder, half a meter round
@@ -1751,6 +1842,21 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         p.push(ball(d.map(|v| v / n * 0.3), 0.14 + 0.1 * random(&mut seed), material));
     }
     p.push(ball([0.0, 0.0, 0.0], 0.38, ROCK));
+    models.push(voxelize(&p, MODEL_RES));
+    // Spikes of ice bursting up and out from a glowing heart, a meter across, its middle at 0
+    let mut seed = 0x1ce5;
+    let mut p = vec![ball([0.0, 0.0, 0.0], 0.18, GLOW_FROST)];
+    for k in 0..11 {
+        let a = k as f64 / 11.0 * TAU + random(&mut seed) * 0.4;
+        let up = 0.25 + 0.75 * random(&mut seed);
+        let out = (1.0 - up * up).sqrt();
+        let length = 0.55 + 0.45 * random(&mut seed);
+        let tip = [a.cos() * out * length, a.sin() * out * length, up * length];
+        p.push(limb([0.0, 0.0, 0.0], tip, 0.11, 0.015, if k % 3 == 0 { CRYSTAL } else { ICE }));
+    }
+    models.push(voxelize(&p, MODEL_RES));
+    // A pillar of light six meters high, brightest in its heart, flaring at its foot
+    let p = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, 6.0], 0.3, 0.2, GLOW_HOLY), ellipsoid([0.0, 0.0, 0.1], [0.7, 0.7, 0.12], GLOW_HOLY)];
     models.push(voxelize(&p, MODEL_RES));
     models
 }
