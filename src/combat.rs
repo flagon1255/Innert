@@ -13,9 +13,9 @@ use crate::audio::{Cue, Sound};
 use crate::player::WaterLevel;
 use crate::weapons::{
     ARM_RES, ARMS, ARROW_RES, BOLT_RES, BOULDER, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES, HELD_ARROW_RES,
-    ICE_BURST, Kind, PILLAR, Profile, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK, SPARK_RES, Style, Synergy, Weapon, effect_models,
+    ICE_BURST, Kind, PILLAR, Profile, RING, RING_RES, ROOTS, THORN, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK, SPARK_RES, Style, Synergy, Weapon, effect_models,
 };
-use crate::worldgen::material::{BARK_DARK, CLOTH, MOSS, OBSIDIAN, SNOW};
+use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, MOSS, OBSIDIAN, SNOW};
 use crate::worldgen::{World, is_passable};
 
 pub const MAX_MANA: f64 = 100.0;
@@ -331,12 +331,13 @@ struct Swell {
     lifetime: f64,
 }
 
-/// An arrow stuck where it landed
+/// An arrow stuck where it landed, or a thorn a boss shot
 struct Stuck {
     position: Vector3<f64>,
     rotation: UnitQuaternion<f64>,
     look: usize,
-    head: usize,
+    /// Which arrowhead, or None for a thorn
+    head: Option<usize>,
     element: Option<Element>,
     life: f64,
     /// Seconds it goes on burning, crackling or such, for an arrow with an element
@@ -346,9 +347,35 @@ struct Stuck {
 /// What a boss throws or spits at the player
 #[derive(Clone, Copy, PartialEq)]
 pub enum HostileKind {
-    Boulder,
-    Fireball,
+    /// A boulder torn up: rock, or ice or molten rock for a boss of that element
+    Boulder(Option<Element>),
+    /// A ball of the boss's element spat out. Venom is lobbed so it falls, the rest fly straight.
+    Spell(Element),
+    /// A thorn shot off a tree, hurting only what it hits
+    Thorn,
 }
+
+impl HostileKind {
+    /// How hard it falls, next to things falling as they do
+    fn gravity(self) -> f64 {
+        match self {
+            HostileKind::Boulder(_) | HostileKind::Spell(Element::Poison) => 1.0,
+            HostileKind::Thorn => 0.25,
+            HostileKind::Spell(_) => 0.0,
+        }
+    }
+
+    fn element(self) -> Option<Element> {
+        match self {
+            HostileKind::Boulder(e) => e,
+            HostileKind::Spell(e) => Some(e),
+            HostileKind::Thorn => None,
+        }
+    }
+}
+
+/// How big a thorn is next to an arrow
+const THORN_SIZE: f64 = 1.5;
 
 /// Something a boss threw or spat, flying at the player
 struct Hostile {
@@ -359,6 +386,9 @@ struct Hostile {
     /// How hard it hits, and how far its blast reaches in meters
     damage: f64,
     radius: f64,
+    /// Where it was aimed to come down, and how many seconds it was to take getting there
+    target: Vector3<f64>,
+    flight: f64,
 }
 
 struct Spark {
@@ -426,8 +456,8 @@ pub struct Combat {
     /// in hand as they go
     speed: f64,
     stride: f64,
-    /// Hits on the player from what bosses threw: how hard, and from where
-    pub player_hits: Vec<(f64, Vector3<f64>)>,
+    /// Hits on the player from what bosses threw: how hard, from where, and of what element
+    pub player_hits: Vec<(f64, Vector3<f64>, Option<Element>)>,
     /// Where the tip of the weapon in hand was last frame, while it leaves a trail
     trail: Option<Vector3<f64>>,
     /// Sparks owed to the weapon's aura
@@ -437,6 +467,8 @@ pub struct Combat {
     lingering: Vec<Lingering>,
     strikes: Vec<Strike>,
     swells: Vec<Swell>,
+    /// Rings on the ground this frame showing where things are coming down, and how big round
+    marks: Vec<(Vector3<f64>, f64)>,
     pending: Vec<Pending>,
     /// How charged the special attack is, 0-1
     pub charge: f64,
@@ -737,6 +769,7 @@ impl Combat {
             lingering: Vec::new(),
             strikes: Vec::new(),
             swells: Vec::new(),
+            marks: Vec::new(),
             pending: Vec::new(),
             charge: 0.0,
             heal: 0.0,
@@ -767,6 +800,7 @@ impl Combat {
         }
         for h in &mut self.hostiles {
             h.position -= shift;
+            h.target -= shift;
         }
         for l in &mut self.lingering {
             l.position -= shift;
@@ -835,6 +869,7 @@ impl Combat {
     /// Advances the fight by `dt` seconds: the weapon in hand, `weapon` with its index, attacking
     /// as `controls` say, things flying, and what's been done to the animals wearing off
     pub fn update(&mut self, arena: &mut Arena, weapon: Option<(usize, &Weapon)>, controls: Controls, dt: f64) {
+        self.marks.clear();
         self.vpm = arena.view.vpm;
         self.speed = arena.view.speed;
         self.stride = arena.view.stride;
@@ -1658,7 +1693,7 @@ impl Combat {
                         position: at + direction * 0.12 * vpm,
                         rotation,
                         look: Element::look(profile.element),
-                        head: p.head,
+                        head: Some(p.head),
                         element: profile.element,
                         life: 20.0,
                         glowing: if profile.element.is_some() { 5.0 } else { 0.0 },
@@ -2439,29 +2474,164 @@ impl Combat {
         self.shake = self.shake.max(1.0);
     }
 
-    /// Throws `kind` from `from` to land at `to` after `time` seconds: a boulder falls in an arc as
-    /// things do, a fireball flies straight. It hits for `damage`, its blast reaching `radius` meters.
+    /// Throws `kind` from `from` to land at `to` after `time` seconds: boulders and venom fall in
+    /// an arc as things do, fire and the like fly straight. It hits for `damage`, its blast
+    /// reaching `radius` meters.
     pub fn hurl(&mut self, kind: HostileKind, from: Vector3<f64>, to: Vector3<f64>, time: f64, damage: f64, radius: f64) {
-        let gravity = if kind == HostileKind::Boulder { 9.8 * self.vpm } else { 0.0 };
+        let gravity = kind.gravity() * 9.8 * self.vpm;
         let velocity = (to - from) / time + Vector3::new(0.0, 0.0, 0.5 * gravity * time);
-        self.hostiles.push(Hostile { kind, position: from, velocity, life: time + 3.0, damage, radius });
+        self.hostiles.push(Hostile { kind, position: from, velocity, life: time + 3.0, damage, radius, target: to, flight: time });
     }
 
-    /// Flame breathed out from `from` along `direction` for `dt` seconds
-    pub fn breathe(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64) {
+    /// For this frame, a red ring on the ground `radius` meters round `at` showing where something's
+    /// about to come down, and a second ring closing in on it, `closing` going from 1 down to 0 as
+    /// it comes
+    pub fn mark(&mut self, at: Vector3<f64>, radius: f64, closing: f64) {
+        // Just over the grass, so it shows
+        let at = at + Vector3::new(0.0, 0.0, 0.2 * self.vpm);
+        self.marks.push((at, radius));
+        if closing > 0.05 {
+            self.marks.push((at, radius * closing.min(1.0)));
+        }
+    }
+
+    /// `element` breathed out from `from` along `direction` for `dt` seconds: flame rising, frost
+    /// and venom sinking as they spread
+    pub fn breathe(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64, element: Element) {
         let vpm = self.vpm;
-        let look = Element::look(Some(Element::Fire));
+        let look = Element::look(Some(element));
+        let (gravity, spread) = match element {
+            Element::Fire => (-0.12, 0.16),
+            Element::Poison => (0.08, 0.22),
+            _ => (0.04, 0.14),
+        };
         let count = (dt * 110.0 + random(&mut self.rng)) as usize;
         for _ in 0..count {
-            let spread = self.any_direction() * 0.16;
+            let spread = self.any_direction() * spread;
             let velocity = (direction + spread).normalize() * (8.0 + 4.0 * random(&mut self.rng)) * vpm;
             let life = 0.55 + 0.35 * random(&mut self.rng);
-            self.sparks.push(Spark { position: from, velocity, look, life, lifetime: life, gravity: -0.12, slot: SLOT_SPARK });
+            self.sparks.push(Spark { position: from, velocity, look, life, lifetime: life, gravity, slot: SLOT_SPARK });
+        }
+        // Venom dripping and frost settling where it goes
+        if element != Element::Fire && random(&mut self.rng) < dt * 30.0 {
+            let v = (direction + self.any_direction() * 0.2) * (6.0 + 3.0 * random(&mut self.rng)) * vpm;
+            self.drop(from, v, if element == Element::Poison { DROP_VENOM } else { DROP_ICE }, 1.2);
         }
         self.cap_sparks();
         if random(&mut self.rng) < dt * 20.0 {
-            self.flashes.push(Flash { position: from + direction * 3.0 * vpm, color: Element::Fire.light(), reach: 7.0, life: 0.12, lifetime: 0.12 });
+            self.flashes.push(Flash { position: from + direction * 3.0 * vpm, color: element.light(), reach: 7.0, life: 0.12, lifetime: 0.12 });
         }
+    }
+
+    /// What a boss threw going off at `at`, and what it leaves on the ground
+    fn land(&mut self, kind: HostileKind, at: Vector3<f64>) {
+        let vpm = self.vpm;
+        let look = Element::look(kind.element());
+        match kind {
+            HostileKind::Boulder(None) => {
+                self.craters.push((at, 0.8));
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.5));
+                // Earth thrown up
+                for _ in 0..18 {
+                    let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.3);
+                    self.drop(at, v * 3.5 * vpm, DROP_MUD, 1.3);
+                }
+            }
+            // Shattering into spikes and shards, frost spreading out round it
+            HostileKind::Boulder(Some(Element::Frost)) => {
+                self.craters.push((at, 0.5));
+                self.swells.push(Swell { model: ICE_BURST, position: at, radius: 1.8, life: 1.2, lifetime: 1.2 });
+                self.element_hit(at, Some(Element::Frost), 2.0);
+                for _ in 0..22 {
+                    let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.2);
+                    self.drop(at, v * 4.0 * vpm, DROP_ICE, 1.2);
+                }
+                self.stains.push((at, 3.0, SNOW, false));
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.75));
+            }
+            // Bursting into flame, molten rock splashing out, the ground scorched
+            HostileKind::Boulder(Some(_)) => {
+                self.craters.push((at, 0.9));
+                self.blasts.push(Blast { position: at, look, radius: 1.8, life: 0.5, lifetime: 0.5 });
+                self.flashes.push(Flash { position: at, color: Element::Fire.light(), reach: 9.0, life: 0.4, lifetime: 0.4 });
+                for k in 0..24 {
+                    let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.3);
+                    self.drop(at, v * 4.0 * vpm, if k % 2 == 0 { DROP_EMBER } else { DROP_ASH }, 1.4);
+                }
+                self.stains.push((at, 2.6, BARK_DARK, true));
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.45));
+            }
+            HostileKind::Spell(Element::Fire) => {
+                self.craters.push((at, 0.7));
+                self.element_hit(at, Some(Element::Fire), 2.0);
+                self.blasts.push(Blast { position: at, look, radius: 1.3, life: 0.4, lifetime: 0.4 });
+                self.flashes.push(Flash { position: at, color: Element::Fire.light(), reach: 8.0, life: 0.35, lifetime: 0.35 });
+                self.stains.push((at, 1.8, BARK_DARK, true));
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.85));
+            }
+            // A splash of venom and a pool of it
+            HostileKind::Spell(Element::Poison) => {
+                self.craters.push((at, 0.3));
+                for _ in 0..30 {
+                    let v = self.any_direction() * 0.8 + Vector3::new(0.0, 0.0, 0.9 + random(&mut self.rng));
+                    self.drop(at, v * 3.0 * vpm, DROP_VENOM, 1.4);
+                }
+                self.element_hit(at, Some(Element::Poison), 1.8);
+                self.stains.push((at, 2.2, MOSS, false));
+                self.cues.push(Cue::at(Sound::Splash, at, 1.0).pitched(0.7));
+            }
+            HostileKind::Spell(Element::Frost) => {
+                self.craters.push((at, 0.35));
+                self.swells.push(Swell { model: ICE_BURST, position: at, radius: 1.2, life: 0.9, lifetime: 0.9 });
+                self.element_hit(at, Some(Element::Frost), 1.6);
+                self.stains.push((at, 2.2, SNOW, false));
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(1.0));
+            }
+            HostileKind::Spell(e) => {
+                self.craters.push((at, 0.5));
+                self.element_hit(at, Some(e), 2.0);
+                self.blasts.push(Blast { position: at, look, radius: 1.1, life: 0.35, lifetime: 0.35 });
+                self.flashes.push(Flash { position: at, color: e.light(), reach: 7.0, life: 0.3, lifetime: 0.3 });
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.9));
+            }
+            // A few splinters, and the thorn left standing in the ground
+            HostileKind::Thorn => {
+                self.sparks(at, 4, 1.5, look, 0.6, 0.4);
+                self.cues.push(Cue::at(Sound::Stab, at, 0.6).pitched(0.8));
+            }
+        }
+        self.cap_sparks();
+    }
+
+    /// The ground stirring at `at`, `radius` meters round, for `dt` seconds before roots burst
+    /// up out of it: earth jumping, and a ring of it showing where to get out of
+    pub fn stir(&mut self, at: Vector3<f64>, radius: f64, dt: f64) {
+        let vpm = self.vpm;
+        let mut owed = dt * 40.0;
+        while owed > 0.0 {
+            if random(&mut self.rng) < owed {
+                let a = random(&mut self.rng) * TAU;
+                let r = if random(&mut self.rng) < 0.6 { radius } else { random(&mut self.rng).sqrt() * radius };
+                let from = at + Vector3::new(a.cos() * r, a.sin() * r, 0.1) * vpm;
+                let up = 2.0 + 1.5 * random(&mut self.rng);
+                self.drop(from, Vector3::new(0.0, 0.0, up) * vpm, DROP_MUD, 0.6);
+            }
+            owed -= 1.0;
+        }
+    }
+
+    /// Roots bursting up out of the ground at `at`, `radius` meters round
+    pub fn erupt(&mut self, at: Vector3<f64>, radius: f64) {
+        let vpm = self.vpm;
+        self.craters.push((at, 0.6));
+        self.swells.push(Swell { model: ROOTS, position: at - Vector3::new(0.0, 0.0, 0.3 * vpm), radius: radius * 1.2, life: 1.4, lifetime: 1.4 });
+        for _ in 0..26 {
+            let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.4);
+            self.drop(at, v * 4.0 * vpm, DROP_MUD, 1.3);
+        }
+        self.stains.push((at, radius * 1.2, DIRT, false));
+        self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.4));
+        self.cap_sparks();
     }
 
     /// Moves what bosses threw and spat, which goes off where it lands, hurting the player if
@@ -2470,51 +2640,68 @@ impl Combat {
         let vpm = arena.view.vpm;
         let hostiles = std::mem::take(&mut self.hostiles);
         for mut h in hostiles {
-            if h.kind == HostileKind::Boulder {
-                h.velocity.z -= 9.8 * vpm * dt;
-            } else if random(&mut self.rng) < dt * 60.0 {
-                self.mote(h.position, Some(Element::Fire), 1.4);
+            h.velocity.z -= h.kind.gravity() * 9.8 * vpm * dt;
+            // Fire and the like trailing off it, and frost off a ball of ice; dust off a rock and
+            // a streak behind a thorn
+            match h.kind.element() {
+                Some(e) if random(&mut self.rng) < dt * 60.0 => self.mote(h.position, Some(e), 1.4),
+                None if random(&mut self.rng) < dt * 40.0 => {
+                    let back = -h.velocity * 0.05;
+                    self.drop(h.position, back, if h.kind == HostileKind::Thorn { DROP_ASH } else { DROP_MUD }, 0.4);
+                }
+                _ => {}
+            }
+            // Where what falls is coming down, on the ground under where it was aimed
+            if h.kind.gravity() > 0.5 {
+                let (x, y) = (h.target.x.floor() as i64, h.target.y.floor() as i64);
+                let top = h.target.z.floor() as i64 + vpm as i64;
+                let ground = (top - 4 * vpm as i64..=top).rev().find(|&z| !is_passable(arena.world.material_at(x, y, z))).map_or(h.target.z, |z| z as f64 + 1.0);
+                let left = (h.life - 3.0) / h.flight;
+                self.mark(Vector3::new(h.target.x, h.target.y, ground), h.radius, left);
             }
             let (start, end) = (h.position, h.position + h.velocity * dt);
             h.life -= dt;
-            // Straight into the player, or into the ground
+            // Straight into the player, or into the ground or water
             let body = arena.player.map(|feet| feet + Vector3::new(0.0, 0.0, 1.0 * vpm));
             let direct = body.and_then(|b| sphere_hit(start, end, b, 0.8 * vpm));
             let wall = solid_along(arena.world, start, end);
-            let landed = match (direct, wall) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
+            let (high, low) = ((arena.water)(start.x, start.y), (arena.water)(end.x, end.y));
+            let water = (start.z > high && end.z <= low && low.is_finite()).then(|| ((start.z - low) / (start.z - end.z)).clamp(0.0, 1.0));
+            let landed = [direct, wall, water].into_iter().flatten().reduce(f64::min);
             let Some(t) = landed.or((h.life <= 0.0).then_some(1.0)) else {
                 h.position = end;
                 self.hostiles.push(h);
                 continue;
             };
             let at = start + (end - start) * t;
+            // A thorn only hurts if it hits; the rest go off, hurting what's near
+            let hit = direct.is_some_and(|d| d <= t);
             if let Some(b) = body {
                 let d = (b - at).norm() / vpm;
-                if d < h.radius {
-                    self.player_hits.push((h.damage * (1.0 - 0.5 * d / h.radius), at));
+                if h.kind == HostileKind::Thorn {
+                    if hit {
+                        self.player_hits.push((h.damage, at, None));
+                    }
+                } else if d < h.radius {
+                    self.player_hits.push((h.damage * (1.0 - 0.5 * d / h.radius), at, h.kind.element()));
                 }
             }
-            let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
-            self.shake = self.shake.max(near * 0.9);
-            match h.kind {
-                HostileKind::Boulder => {
-                    self.craters.push((at, 0.8));
-                    self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.5));
-                    // Earth thrown up
-                    for _ in 0..18 {
-                        let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.3);
-                        self.drop(at, v * 3.5 * vpm, DROP_MUD, 1.3);
-                    }
-                }
-                HostileKind::Fireball => {
-                    self.craters.push((at, 0.7));
-                    self.element_hit(at, Some(Element::Fire), 2.0);
-                    self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius: 1.3, life: 0.4, lifetime: 0.4 });
-                    self.flashes.push(Flash { position: at, color: Element::Fire.light(), reach: 8.0, life: 0.35, lifetime: 0.35 });
-                    self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.85));
+            if h.kind != HostileKind::Thorn {
+                let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
+                self.shake = self.shake.max(near * 0.5);
+            }
+            if water.is_some_and(|w| w <= t) && !hit {
+                self.splash(at, if h.kind == HostileKind::Thorn { 0.5 } else { 1.4 });
+                continue;
+            }
+            self.land(h.kind, at);
+            if h.kind == HostileKind::Thorn && !hit && wall.is_some_and(|w| w <= t) {
+                // Left standing in the ground
+                let direction = h.velocity.normalize();
+                let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
+                self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(None), head: None, element: None, life: 12.0, glowing: 0.0 });
+                if self.stuck.len() > 40 {
+                    self.stuck.remove(0);
                 }
             }
         }
@@ -2768,23 +2955,48 @@ impl Combat {
             }
         }
         for s in &self.stuck {
-            let (model, arrow) = self.effect_model(SLOT_ARROW + s.head, s.look);
-            add(s.position, place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL));
+            let instance = match s.head {
+                Some(head) => {
+                    let (model, arrow) = self.effect_model(SLOT_ARROW + head, s.look);
+                    place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL)
+                }
+                None => {
+                    let (model, thorn) = self.model_at(THORN);
+                    place(model, thorn, MODEL_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, THORN_SIZE, STILL)
+                }
+            };
+            add(s.position, instance);
         }
         // What bosses throw, tumbling
         for h in &self.hostiles {
             let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 5.0) * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0);
             let instance = match h.kind {
-                HostileKind::Boulder => {
+                HostileKind::Boulder(None) => {
                     let (model, boulder) = self.model_at(BOULDER);
                     place(model, boulder, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 1.0, MOVING)
                 }
-                HostileKind::Fireball => {
-                    let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(Element::Fire)));
+                // Ice or molten rock, the size of a boulder
+                HostileKind::Boulder(Some(e)) => {
+                    let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(e)));
+                    place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.5, MOVING)
+                }
+                HostileKind::Spell(e) => {
+                    let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(e)));
                     place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.35, MOVING)
+                }
+                // Point first along the way it's going
+                HostileKind::Thorn => {
+                    let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &h.velocity.normalize()).unwrap_or_else(UnitQuaternion::identity);
+                    let (model, thorn) = self.model_at(THORN);
+                    place(model, thorn, MODEL_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), h.position, rotation, vpm, THORN_SIZE, MOVING)
                 }
             };
             add(h.position, instance);
+        }
+        // Where things are coming down
+        for &(at, radius) in &self.marks {
+            let (model, ring) = self.model_at(RING);
+            add(at, place(model, ring, RING_RES, Vector3::zeros(), at, UnitQuaternion::identity(), vpm, radius, MOVING));
         }
         // Spikes of ice shooting up and pillars of light coming down, then dying away
         for i in &self.swells {
@@ -2846,8 +3058,12 @@ impl Combat {
                 lights.push(light(p.position, 3.0, e.light(), 0.5));
             }
         }
-        for h in self.hostiles.iter().filter(|h| h.kind == HostileKind::Fireball) {
-            lights.push(light(h.position, 7.0, Element::Fire.light(), 1.5));
+        for h in &self.hostiles {
+            match h.kind.element() {
+                Some(Element::Fire) => lights.push(light(h.position, 7.0, Element::Fire.light(), 1.5)),
+                Some(e) => lights.push(light(h.position, 5.0, e.light(), 0.8)),
+                None => {}
+            }
         }
         // Fire left burning, and holy light gathering
         for l in self.lingering.iter().filter(|l| l.element == Element::Fire) {

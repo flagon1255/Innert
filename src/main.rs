@@ -1328,13 +1328,12 @@ impl App {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
             game.find_weapon("staff", element, 2.0);
         }
-        // `--set boss=golem`, `drake` or `ironhide` puts one a little way ahead, to try fighting it
-        let boss = match setting("boss") {
-            Some("golem") => Some(animals::Look::Golem),
-            Some("drake") => Some(animals::Look::Drake),
-            Some("ironhide") => Some(animals::Look::Ironhide),
-            _ => None,
-        };
+        // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
+        // try fighting it
+        let boss = setting("boss").and_then(|name| {
+            let named = |l: &animals::Look| format!("{l:?}").eq_ignore_ascii_case(name) || l.name().replace(' ', "").eq_ignore_ascii_case(name);
+            animals::Look::ALL.into_iter().find(|l| l.is_boss() && named(l))
+        });
         if let Some(look) = boss {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             let distance = setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(20.0);
@@ -1577,20 +1576,24 @@ impl App {
             .sites()
             .iter()
             .filter_map(|site| {
-                let look = match site.kind {
-                    "castle" | "watchtower" => animals::Look::Golem,
-                    "desert ruins" | "pyramid" => animals::Look::Drake,
-                    "shrine" | "colonnade" | "ravine" => animals::Look::Ironhide,
-                    _ => return None,
-                };
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
                 if pick >= BOSS_CHANCE {
                     return None;
                 }
+                let look = match site.kind {
+                    // Each turns into a kind of its own for the land round it, see Look::for_ground
+                    "castle" if pick % 2 == 1 => animals::Look::Ironhide,
+                    "castle" | "desert ruins" => animals::Look::Golem,
+                    "watchtower" | "pyramid" | "flooded church" => animals::Look::Drake,
+                    "colonnade" => animals::Look::Ironhide,
+                    "ravine" | "crevice" => animals::Look::Spider,
+                    "shrine" => animals::Look::Treant,
+                    _ => return None,
+                };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if site.kind == "ravine" { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "ravine" | "crevice") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
@@ -2249,6 +2252,8 @@ impl App {
             if wish.norm() > 1.0 {
                 wish.normalize_mut();
             }
+            // Slowed by frost
+            wish *= self.game.pace();
             let jump = t(KeyCode::Space) > 0.0;
             let sprint = self.focused && self.input.held_shift();
             // Long hitches, like generating a world, shouldn't fling the player through the floor
@@ -2497,8 +2502,11 @@ impl App {
                 if f == 1 && self.player.is_none() {
                     self.player = Some(Player::new(eye, &self.world));
                 }
+                // `--set boss_look_down=8` looks that many meters under it, to see what it does
+                // round the player's feet
+                let down = settings_from_args().into_iter().find(|(k, _)| k == "boss_look_down").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
                 if let Some(target) = self.game.nearest_boss(eye) {
-                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                    self.camera.look_at(voxels_to_camera(target - Vector3::new(0.0, 0.0, down * vpm), self.world.size));
                 }
                 self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
                 if f % 60 == 0 {

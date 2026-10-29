@@ -1651,6 +1651,12 @@ pub const BOULDER: usize = ARMS + 2;
 pub const ICE_BURST: usize = BOULDER + 1;
 /// A pillar of light, standing on 0
 pub const PILLAR: usize = ICE_BURST + 1;
+/// Roots bursting up out of the ground, standing on 0
+pub const ROOTS: usize = PILLAR + 1;
+/// A thorn as long as an arrow, along +x with its point where an arrow's is
+pub const THORN: usize = ROOTS + 1;
+/// A glowing red ring a meter round, flat round 0, to show where something's coming down
+pub const RING: usize = THORN + 1;
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
 /// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the shaft
@@ -1858,6 +1864,29 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     // A pillar of light six meters high, brightest in its heart, flaring at its foot
     let p = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, 6.0], 0.3, 0.2, GLOW_HOLY), ellipsoid([0.0, 0.0, 0.1], [0.7, 0.7, 0.12], GLOW_HOLY)];
     models.push(voxelize(&p, MODEL_RES));
+    // Roots bursting up out of a mound of earth, a meter across, crooked and mossy
+    let mut seed = 0x2007;
+    let mut p = vec![ellipsoid([0.0, 0.0, 0.0], [0.45, 0.45, 0.15], DIRT)];
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.5;
+        let lean = 0.25 + 0.3 * random(&mut seed);
+        let length = 0.7 + 0.5 * random(&mut seed);
+        let base = [a.cos() * 0.2, a.sin() * 0.2, 0.0];
+        let knee = [base[0] + a.cos() * lean * 0.5, base[1] + a.sin() * lean * 0.5, length * 0.55];
+        let tip = [knee[0] + a.cos() * lean * 0.6 - a.sin() * 0.15, knee[1] + a.sin() * lean * 0.6 + a.cos() * 0.15, length];
+        let bark = if k % 2 == 0 { BARK_DARK } else { WOOD };
+        p.push(limb(base, knee, 0.1, 0.07, bark));
+        p.push(limb(knee, tip, 0.07, 0.015, if k % 3 == 0 { MOSS } else { bark }));
+    }
+    models.push(voxelize(&p, MODEL_RES));
+    // A thorn, thick and dark at its foot, sharpening to a pale point, barbs along it
+    let mut p = vec![limb([0.0, 0.0, 0.0], [0.5, 0.0, 0.0], 0.08, 0.035, BARK_DARK), limb([0.5, 0.0, 0.0], [0.68, 0.0, 0.0], 0.035, 0.008, BONE)];
+    for (x, side) in [(0.15, 1.0), (0.3, -1.0), (0.42, 1.0)] {
+        p.push(limb([x, 0.0, side * 0.04], [x + 0.08, 0.0, side * 0.1], 0.025, 0.006, BARK_DARK));
+    }
+    models.push(voxelize(&p, MODEL_RES));
+    let p: Vec<Part> = (0..96).map(|k| k as f64 / 96.0 * TAU).map(|a| ball([a.cos(), a.sin(), 0.0], 0.035, GLOW_BLOOD)).collect();
+    models.push(voxelize(&p, RING_RES));
     models
 }
 
@@ -1867,6 +1896,8 @@ pub const ARROW_RES: f64 = MODEL_RES;
 pub const BOLT_RES: f64 = MODEL_RES;
 pub const SPARK_RES: f64 = MODEL_RES;
 pub const HELD_ARROW_RES: f64 = 160.0;
+/// Finer, so the ring stays thin however big it's drawn
+pub const RING_RES: f64 = 48.0;
 pub const FINE_SPARK_RES: f64 = 128.0;
 pub const ARM_RES: f64 = 128.0;
 

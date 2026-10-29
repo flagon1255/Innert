@@ -11,6 +11,7 @@ use vulkano::buffer::BufferContents;
 
 use crate::bosses::{self, Boss};
 use crate::combat::Status;
+use crate::weapons::Element;
 use crate::player::WaterLevel;
 use crate::worldgen::{PropKind, World, is_passable, material::*};
 
@@ -29,14 +30,43 @@ pub enum Look {
     Skull,
     Chest,
     OpenChest,
-    // Bosses, see src\bosses.rs
+    // Bosses, see src\bosses.rs. Golems, drakes and the great bear come in kinds for the cold, the
+    // desert or the jungle.
     Golem,
     Drake,
     Ironhide,
+    FrostGolem,
+    MagmaGolem,
+    FrostWyrm,
+    VenomDrake,
+    Frostfang,
+    Spider,
+    Treant,
+}
+
+/// The build of a boss, which decides how it moves and fights
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Build {
+    Golem,
+    Drake,
+    Bear,
+    Spider,
+    Treant,
+}
+
+/// The materials a boss is made of: its body, darker parts, things on it, what glows, and one
+/// more, like horns or crystals
+#[derive(Clone, Copy)]
+struct Skin {
+    body: u8,
+    dark: u8,
+    accent: u8,
+    glow: u8,
+    extra: u8,
 }
 
 impl Look {
-    pub const ALL: [Look; 14] = [
+    pub const ALL: [Look; 21] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -51,10 +81,71 @@ impl Look {
         Look::Golem,
         Look::Drake,
         Look::Ironhide,
+        Look::FrostGolem,
+        Look::MagmaGolem,
+        Look::FrostWyrm,
+        Look::VenomDrake,
+        Look::Frostfang,
+        Look::Spider,
+        Look::Treant,
     ];
 
     pub fn is_boss(self) -> bool {
-        matches!(self, Look::Golem | Look::Drake | Look::Ironhide)
+        self.build().is_some()
+    }
+
+    pub fn build(self) -> Option<Build> {
+        Some(match self {
+            Look::Golem | Look::FrostGolem | Look::MagmaGolem => Build::Golem,
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake => Build::Drake,
+            Look::Ironhide | Look::Frostfang => Build::Bear,
+            Look::Spider => Build::Spider,
+            Look::Treant => Build::Treant,
+            _ => return None,
+        })
+    }
+
+    /// What its attacks are made of: what a drake breathes, what a golem's blows leave behind
+    pub fn element(self) -> Option<Element> {
+        match self {
+            Look::FrostGolem | Look::FrostWyrm | Look::Frostfang => Some(Element::Frost),
+            Look::MagmaGolem | Look::Drake => Some(Element::Fire),
+            Look::VenomDrake | Look::Spider => Some(Element::Poison),
+            Look::Treant => Some(Element::Poison),
+            _ => None,
+        }
+    }
+
+    /// The kind of `self`, a boss, that lives where the ground's `ground`: the cold, the desert or
+    /// the jungle have their own
+    pub fn for_ground(self, ground: u8) -> Look {
+        let cold = matches!(ground, SNOW | ICE);
+        let desert = matches!(ground, SAND | SANDSTONE | SANDSTONE_DARK | DRY_GRASS);
+        let jungle = matches!(ground, JUNGLE_GRASS | VINE);
+        match self {
+            Look::Golem if cold => Look::FrostGolem,
+            Look::Golem if desert => Look::MagmaGolem,
+            Look::Drake if cold => Look::FrostWyrm,
+            Look::Drake if jungle => Look::VenomDrake,
+            Look::Ironhide if cold => Look::Frostfang,
+            _ => self,
+        }
+    }
+
+    fn skin(self) -> Skin {
+        let make = |body, dark, accent, glow, extra| Skin { body, dark, accent, glow, extra };
+        match self {
+            Look::FrostGolem => make(ICE, STONE, SNOW, GLOW_FROST, CRYSTAL),
+            Look::MagmaGolem => make(OBSIDIAN, BARK_DARK, GLOW_FIRE, GLOW_FIRE, GLOW_FIRE),
+            Look::Drake => make(TEMPLE_RED, OBSIDIAN, CLOTH, GLOW_FIRE, BONE),
+            Look::FrostWyrm => make(ICE, STEEL, LINEN, GLOW_FROST, CRYSTAL),
+            Look::VenomDrake => make(PINE, OBSIDIAN, MOSS, GLOW_POISON, BONE),
+            Look::Ironhide => make(FUR_DARK, FUR_BROWN, DARK_STEEL, GLOW_BLOOD, BONE),
+            Look::Frostfang => make(FUR_WHITE, FUR_GRAY, STEEL, GLOW_FROST, ICE),
+            Look::Spider => make(FUR_DARK, BARK_DARK, GLOW_POISON, GLOW_BLOOD, BONE),
+            Look::Treant => make(BARK_DARK, WOOD, MOSS, GLOW_POISON, LEAVES),
+            _ => make(ROCK, GRAVEL, MOSS, GLOW_FROST, CRYSTAL),
+        }
     }
 
     pub fn of_prop(kind: PropKind) -> Look {
@@ -82,9 +173,11 @@ impl Look {
             Look::Meat => 0.22,
             Look::Candle => 0.2,
             Look::Skull => 0.2,
-            Look::Golem => 4.4,
-            Look::Drake => 3.4,
-            Look::Ironhide => 3.4,
+            Look::Golem | Look::FrostGolem | Look::MagmaGolem => 4.4,
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake => 3.4,
+            Look::Ironhide | Look::Frostfang => 3.4,
+            Look::Spider => 3.1,
+            Look::Treant => 5.5,
         }
     }
 
@@ -100,9 +193,11 @@ impl Look {
             Look::Candle => (0.1, 0.1),
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
-            Look::Golem => (2.0, 1.1),
-            Look::Drake => (1.25, 1.0),
-            Look::Ironhide => (1.6, 1.05),
+            Look::Golem | Look::FrostGolem | Look::MagmaGolem => (2.0, 1.1),
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake => (1.25, 1.0),
+            Look::Ironhide | Look::Frostfang => (1.6, 1.05),
+            Look::Spider => (0.9, 0.95),
+            Look::Treant => (2.4, 1.2),
         }
     }
 
@@ -120,6 +215,13 @@ impl Look {
             Look::Golem => "Stone Warden",
             Look::Drake => "Ember Drake",
             Look::Ironhide => "Ironhide",
+            Look::FrostGolem => "Frost Colossus",
+            Look::MagmaGolem => "Magma Golem",
+            Look::FrostWyrm => "Frost Wyrm",
+            Look::VenomDrake => "Venom Drake",
+            Look::Frostfang => "Frostfang",
+            Look::Spider => "Broodmother",
+            Look::Treant => "Ancient Treant",
         }
     }
 
@@ -135,8 +237,14 @@ impl Look {
             Look::Dog => 60.0,
             Look::GrayCat | Look::GingerCat => 30.0,
             Look::Golem => 2600.0,
-            Look::Drake => 2200.0,
+            Look::FrostGolem => 2800.0,
+            Look::MagmaGolem => 3000.0,
+            Look::Drake | Look::VenomDrake => 2200.0,
+            Look::FrostWyrm => 2400.0,
             Look::Ironhide => 2000.0,
+            Look::Frostfang => 2200.0,
+            Look::Spider => 1800.0,
+            Look::Treant => 3200.0,
             _ => 20.0,
         }
     }
@@ -147,45 +255,57 @@ impl Look {
         match self {
             Look::Bear => 3,
             Look::Squirrel => 1,
-            Look::Ironhide => 6,
+            Look::Ironhide | Look::Frostfang => 6,
             _ => 0,
         }
     }
 
     // Speeds in meters per second
     pub fn walk_speed(self) -> f64 {
-        match self {
-            Look::Bear => 1.1,
-            Look::Dog => 1.6,
-            Look::Squirrel => 1.4,
-            Look::Golem => 1.3,
-            Look::Drake | Look::Ironhide => 1.6,
-            _ => 0.9,
+        match self.build() {
+            Some(Build::Golem) => 1.3,
+            Some(Build::Drake | Build::Bear) => 1.6,
+            Some(Build::Spider) => 2.4,
+            Some(Build::Treant) => 0.9,
+            None => match self {
+                Look::Bear => 1.1,
+                Look::Dog => 1.6,
+                Look::Squirrel => 1.4,
+                _ => 0.9,
+            },
         }
     }
 
     pub fn run_speed(self) -> f64 {
-        match self {
-            Look::Bear => 3.2,
-            Look::Dog => 4.5,
-            Look::Squirrel => 4.0,
-            Look::Golem => 2.4,
-            Look::Drake => 4.5,
+        match self.build() {
+            Some(Build::Golem) => 2.4,
+            Some(Build::Drake) => 4.5,
             // Charging
-            Look::Ironhide => 10.0,
-            _ => 3.0,
+            Some(Build::Bear) => 10.0,
+            Some(Build::Spider) => 6.0,
+            Some(Build::Treant) => 1.6,
+            None => match self {
+                Look::Bear => 3.2,
+                Look::Dog => 4.5,
+                Look::Squirrel => 4.0,
+                _ => 3.0,
+            },
         }
     }
 
     /// Meters covered by one cycle of its walk
     pub fn stride(self) -> f64 {
-        match self {
-            Look::Bear => 1.5,
-            Look::Dog => 0.9,
-            Look::Squirrel => 0.35,
-            Look::Golem => 2.4,
-            Look::Drake | Look::Ironhide => 2.6,
-            _ => 0.55,
+        match self.build() {
+            Some(Build::Golem) => 2.4,
+            Some(Build::Drake | Build::Bear) => 2.6,
+            Some(Build::Spider) => 1.8,
+            Some(Build::Treant) => 2.8,
+            None => match self {
+                Look::Bear => 1.5,
+                Look::Dog => 0.9,
+                Look::Squirrel => 0.35,
+                _ => 0.55,
+            },
         }
     }
 
@@ -193,7 +313,7 @@ impl Look {
     fn climb(self) -> f64 {
         match self {
             Look::Dog => 0.4,
-            Look::Golem | Look::Drake | Look::Ironhide => 1.0,
+            _ if self.is_boss() => 1.0,
             _ => 0.5,
         }
     }
@@ -337,8 +457,8 @@ fn rear(v: Vec3, pivot: Vec3, angle: f64) -> Vec3 {
 /// The Stone Warden: a hulking golem of rock, moss on its shoulders, crystals growing from its
 /// back and a cold light glowing in its chest. It raises its fists overhead to slam them down, and
 /// hurls boulders.
-fn golem(p: &mut Vec<Part>, swing: f64, pose: usize) {
-    let (rock, dark, glow) = (ROCK, GRAVEL, GLOW_FROST);
+fn golem(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
+    let (rock, dark, glow) = (skin.body, skin.dark, skin.glow);
     // Leaning into a blow, the higher up the further
     let lean = if pose == POSE_STRIKE { 0.4 } else { 0.0 };
     let up = |v: Vec3| {
@@ -354,11 +474,11 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: usize) {
     p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, 0.38, 2.45]), 0.045, 0.02, glow));
     p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, -0.32, 1.7]), 0.045, 0.02, glow));
     for (y, z, h) in [(0.25, 2.5, 0.55), (-0.22, 2.3, 0.65), (0.05, 2.75, 0.5)] {
-        p.push(limb(up([-0.45, y, z]), up([-0.82, y * 1.3, z + h]), 0.1, 0.02, CRYSTAL));
+        p.push(limb(up([-0.45, y, z]), up([-0.82, y * 1.3, z + h]), 0.1, 0.02, skin.extra));
     }
-    p.push(ellipsoid(up([0.35, 0.0, 3.1]), [0.26, 0.26, 0.08], MOSS));
+    p.push(ellipsoid(up([0.35, 0.0, 3.1]), [0.26, 0.26, 0.08], skin.accent));
     for s in [-1.0, 1.0] {
-        p.push(ellipsoid(up([0.0, s * 0.95, 2.88]), [0.32, 0.32, 0.1], MOSS));
+        p.push(ellipsoid(up([0.0, s * 0.95, 2.88]), [0.32, 0.32, 0.1], skin.accent));
     }
     // A boulder held up behind its head, ready to throw
     if pose == POSE_SPECIAL {
@@ -388,8 +508,8 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: usize) {
 
 /// The Ember Drake: a red-scaled dragon with fire glowing through its belly, its wings folded.
 /// It rears its head back, then breathes fire or spits it, and spreads its wings to roar.
-fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize) {
-    let (scales, dark, glow) = (TEMPLE_RED, OBSIDIAN, GLOW_FIRE);
+fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize, skin: Skin) {
+    let (scales, dark, glow) = (skin.body, skin.dark, skin.glow);
     let (neck_base, neck_top, head, open): (Vec3, Vec3, Vec3, bool) = match pose {
         POSE_WINDUP => ([0.8, 0.0, 1.5], [1.15, 0.0, 2.45], [1.35, 0.0, 2.75], false),
         POSE_STRIKE => ([0.8, 0.0, 1.45], [1.6, 0.0, 1.65], [1.95, 0.0, 1.6], true),
@@ -402,7 +522,7 @@ fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize) {
     let at = |f: f64, u: f64, side: f64| -> Vec3 { (h + fwd * f + upward * u + Vector3::new(0.0, side, 0.0)).into() };
     for side in [-0.13, 0.13] {
         p.push(ball(at(0.16, 0.1, side), 0.045, glow));
-        p.push(limb(at(-0.08, 0.12, side), at(-0.45, 0.38, side * 1.6), 0.05, 0.012, BONE));
+        p.push(limb(at(-0.08, 0.12, side), at(-0.45, 0.38, side * 1.6), 0.05, 0.012, skin.extra));
     }
     if open {
         p.push(ball(at(0.24, -0.06, 0.0), 0.13, glow));
@@ -420,10 +540,10 @@ fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize) {
             let tip = [-0.1, s * 2.3, 2.75];
             p.push(limb([0.45, s * 0.45, 1.75], tip, 0.07, 0.03, dark));
             p.push(limb(tip, [-1.1, s * 1.6, 1.6], 0.03, 0.02, dark));
-            p.push(ellipsoid([-0.4, s * 1.35, 2.05], [0.75, 1.0, 0.05], CLOTH));
+            p.push(ellipsoid([-0.4, s * 1.35, 2.05], [0.75, 1.0, 0.05], skin.accent));
         } else {
             p.push(limb([0.45, s * 0.48, 1.75], [-0.7, s * 0.62, 2.35], 0.07, 0.03, dark));
-            p.push(ellipsoid([-0.3, s * 0.6, 1.85], [0.75, 0.06, 0.38], CLOTH));
+            p.push(ellipsoid([-0.3, s * 0.6, 1.85], [0.75, 0.06, 0.38], skin.accent));
         }
     }
     for k in 0..7 {
@@ -444,8 +564,8 @@ fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize) {
 
 /// Ironhide: a huge old bear in plates of armor, tusked, with red eyes. It rears up on its hind
 /// legs to bring its paws crashing down, and lowers its head to charge.
-fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize) {
-    let (fur, dark, armor) = (FUR_DARK, FUR_BROWN, DARK_STEEL);
+fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
+    let (fur, dark, armor) = (skin.body, skin.dark, skin.accent);
     let raised = if pose == POSE_WINDUP { 0.75 } else { 0.0 };
     let low = match pose {
         POSE_SPECIAL => 0.3,
@@ -455,8 +575,8 @@ fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize) {
     let pivot = [-0.75, 0.0, 1.0];
     let r = |v: Vec3| rear([v[0], v[1], v[2] - low * (v[0] + 0.75).max(0.0) / 2.25], pivot, raised);
     for s in [-1.0, 1.0] {
-        p.push(ball(r([1.82, s * 0.22, 1.98]), 0.065, GLOW_BLOOD));
-        p.push(limb(r([2.0, s * 0.14, 1.52]), r([2.3, s * 0.2, 1.22]), 0.05, 0.015, BONE));
+        p.push(ball(r([1.82, s * 0.22, 1.98]), 0.065, skin.glow));
+        p.push(limb(r([2.0, s * 0.14, 1.52]), r([2.3, s * 0.2, 1.22]), 0.05, 0.015, skin.extra));
         p.push(ball(r([1.3, s * 0.33, 2.27]), 0.12, fur));
     }
     p.push(ball(r([2.2, 0.0, 1.7]), 0.07, EYE));
@@ -470,7 +590,7 @@ fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize) {
     for k in 0..4 {
         let x = 0.8 - k as f64 * 0.5;
         let z = 2.5 - k as f64 * 0.07;
-        p.push(limb(r([x, 0.0, z + 0.08]), r([x - 0.15, 0.0, z + 0.45]), 0.08, 0.012, BONE));
+        p.push(limb(r([x, 0.0, z + 0.08]), r([x - 0.15, 0.0, z + 0.45]), 0.08, 0.012, skin.extra));
         p.push(ellipsoid(r([x, 0.0, z]), [0.3, 0.55, 0.12], armor));
     }
     p.push(ball(r([0.4, 0.0, 2.05]), 0.62, fur));
@@ -491,6 +611,87 @@ fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize) {
     }
 }
 
+/// The Broodmother: a giant spider, dark and hairy, venom glowing in the markings on its back and
+/// a cluster of red eyes. It rears up to bite, and crouches to leap.
+fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: usize, skin: Skin) {
+    // Reared up on its back legs, lunging low, or crouched to spring
+    let (raise, drop) = match pose {
+        POSE_WINDUP => (0.5, 0.0),
+        POSE_STRIKE => (-0.15, 0.25),
+        POSE_SPECIAL => (0.0, 0.45),
+        _ => (0.0, 0.0),
+    };
+    let lift = |v: Vec3| {
+        let up = raise * (v[0] + 0.6).max(0.0) * 0.8 - drop;
+        [v[0], v[1], v[2] + up]
+    };
+    // Eight eyes, and fangs
+    for (y, z, r) in [(0.1, 1.42, 0.06), (-0.1, 1.42, 0.06), (0.2, 1.36, 0.045), (-0.2, 1.36, 0.045), (0.06, 1.52, 0.04), (-0.06, 1.52, 0.04), (0.16, 1.5, 0.03), (-0.16, 1.5, 0.03)] {
+        p.push(ball(lift([1.18, y, z]), r, skin.glow));
+    }
+    for y in [-0.09, 0.09] {
+        p.push(limb(lift([1.22, y, 1.2]), lift([1.38, y * 0.6, 0.92]), 0.05, 0.012, skin.extra));
+    }
+    p.push(ellipsoid(lift([0.85, 0.0, 1.32]), [0.4, 0.38, 0.32], skin.body));
+    // The abdomen, with glowing markings down its back
+    for k in 0..3 {
+        let x = -0.55 - k as f64 * 0.38;
+        p.push(ellipsoid(lift([x, 0.0, 1.9 - k as f64 * 0.05]), [0.14, 0.32, 0.06], skin.accent));
+    }
+    p.push(ellipsoid(lift([-0.85, 0.0, 1.45]), [0.9, 0.75, 0.62], skin.body));
+    // Eight legs, in two sets of four lifting by turns, each bent up at the knee
+    for side in [-1.0, 1.0] {
+        for k in 0..4 {
+            let along = 0.95 - k as f64 * 0.45;
+            let step = (angle + k as f64 * PI * 0.5 + if side > 0.0 { PI } else { 0.0 }).sin() * moving;
+            let hip = lift([along * 0.6 + 0.3, side * 0.3, 1.3]);
+            let reach = 1.6 + 0.2 * (1.0 - (k as f64 - 1.5).abs() / 1.5);
+            let foot_x = along * 1.4 + 0.15 * step + if pose == POSE_WINDUP && k == 0 { 0.6 } else { 0.0 };
+            let foot_z = (0.15 * step.max(0.0)) + if pose == POSE_WINDUP && k == 0 { 1.4 } else { 0.0 };
+            let foot = [foot_x, side * reach, foot_z];
+            let knee = [(hip[0] + foot[0]) * 0.5, side * (reach * 0.65), hip[2] + 0.55 - drop * 0.5];
+            p.push(limb(hip, knee, 0.1, 0.08, skin.dark));
+            p.push(limb(knee, foot, 0.08, 0.03, skin.dark));
+        }
+    }
+}
+
+/// The Ancient Treant: an old tree walking on its roots, moss on its bark, a crown of leaves and
+/// eyes glowing deep in its trunk. It swings its branches round, and calls roots up from below.
+fn treant(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
+    let (bark, wood, moss, glow, leaves) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    p.push(ball([0.48, 0.17, 3.0], 0.08, glow));
+    p.push(ball([0.48, -0.17, 3.0], 0.08, glow));
+    p.push(ellipsoid([0.5, 0.0, 2.84], [0.06, 0.2, 0.05], BARK_DARK));
+    // The crown
+    for (c, r) in [([0.0, 0.0, 4.4], 0.95), ([0.5, 0.6, 4.1], 0.6), ([-0.4, -0.6, 4.2], 0.65), ([0.3, -0.5, 4.6], 0.55), ([-0.3, 0.5, 4.7], 0.55)] {
+        p.push(ball(c, r, if r > 0.9 { LEAVES_DARK } else { leaves }));
+    }
+    // Moss on its trunk
+    p.push(ellipsoid([0.38, 0.0, 2.2], [0.12, 0.38, 0.5], moss));
+    p.push(limb([0.0, 0.0, 1.0], [0.0, 0.0, 3.7], 0.58, 0.45, bark));
+    // Branches for arms, raised wide to sweep, swept down, or swaying as it walks
+    for side in [-1.0, 1.0] {
+        let shoulder = [0.0, side * 0.45, 3.2];
+        let (elbow, hand) = match pose {
+            POSE_WINDUP => ([0.1, side * 1.3, 3.9], [0.4, side * 2.0, 4.4]),
+            POSE_STRIKE => ([0.9, side * 1.0, 2.2], [1.8, side * 0.4, 0.9]),
+            POSE_SPECIAL => ([0.3, side * 1.1, 2.6], [0.2, side * 1.4, 1.2]),
+            _ => ([0.2 - 0.2 * swing * side, side * 1.15, 2.6], [0.45 - 0.3 * swing * side, side * 1.35, 1.6]),
+        };
+        p.push(ball(hand, 0.32, leaves));
+        p.push(limb(hand, [hand[0] + 0.3, hand[1] + side * 0.2, hand[2] - 0.35], 0.08, 0.02, wood));
+        p.push(limb(elbow, hand, 0.17, 0.09, wood));
+        p.push(limb(shoulder, elbow, 0.24, 0.17, bark));
+    }
+    // Roots for legs, spreading out from its foot
+    for k in 0..5 {
+        let a = k as f64 / 5.0 * TAU + 0.3;
+        let lift = 0.35 * (swing * if k % 2 == 0 { 1.0 } else { -1.0 }).max(0.0);
+        p.push(limb([a.cos() * 0.35, a.sin() * 0.35, 1.0], [a.cos() * 1.2, a.sin() * 1.2, lift], 0.3, 0.08, bark));
+    }
+}
+
 /// The shapes making up an animal, in meters: facing +x, with its feet on z = 0.
 /// `phase` is how far through its walk it is, None standing still. A boss can strike a `pose`,
 /// POSE_WINDUP or the others, 0 for none.
@@ -501,9 +702,13 @@ fn parts(look: Look, phase: Option<f64>, pose: usize) -> Vec<Part> {
     let swing = angle.sin() * moving;
     let mut p = Vec::new();
     match look {
-        Look::Golem => golem(&mut p, swing, pose),
-        Look::Drake => drake(&mut p, angle, swing, moving, pose),
-        Look::Ironhide => ironhide(&mut p, swing, pose),
+        _ if look.is_boss() => match look.build() {
+            Some(Build::Golem) => golem(&mut p, swing, pose, look.skin()),
+            Some(Build::Drake) => drake(&mut p, angle, swing, moving, pose, look.skin()),
+            Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
+            Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
+            _ => treant(&mut p, swing, pose, look.skin()),
+        },
         Look::Bear => {
             let (fur, dark) = (FUR_BROWN, FUR_DARK);
             p.push(ball([0.98, 0.12, 1.08], 0.035, EYE));
@@ -642,6 +847,8 @@ fn parts(look: Look, phase: Option<f64>, pose: usize) -> Vec<Part> {
             lid(&mut p, [-0.22, -0.35, 0.28], [0.22, 0.35, 0.36]);
             lid(&mut p, [-0.17, -0.35, 0.36], [0.17, 0.35, 0.4]);
         }
+        // Bosses, all built above
+        _ => {}
     }
     p
 }
