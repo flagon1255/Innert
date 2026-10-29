@@ -15,7 +15,7 @@ use crate::bosses::{Deed, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
-use crate::weapons::{Element, Kind, Library, STATS, Special, Weapon};
+use crate::weapons::{DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, STATS, Special, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
 /// How far away things can be picked up or hit, in meters
@@ -105,8 +105,39 @@ const ROOTS_WARNING: f64 = 1.0;
 const ROOTS_RADIUS: f64 = 2.2;
 /// Thorns in a treant's volley
 const THORNS: usize = 5;
-/// How fast the player moves while chilled by frost, next to usual
+/// How fast the player moves while chilled by frost, and stuck in web, next to usual
 const CHILLED_PACE: f64 = 0.55;
+const SNARED_PACE: f64 = 0.4;
+/// How far round in meters web leaves the ground sticky, for how many seconds, and how many
+/// patches of it there can be at once
+const WEB_RADIUS: f64 = 2.8;
+const WEB_SECONDS: f64 = 6.0;
+const WEBS: usize = 3;
+/// Roots in each line of a treant's root wave, how far apart in meters, and how far round each is
+const WAVE_ROOTS: usize = 9;
+const WAVE_SPACING: f64 = 2.6;
+const WAVE_RADIUS: f64 = 1.3;
+/// Things coming down in a drake's storm drop from this many meters up
+const STORM_HEIGHT: f64 = 18.0;
+
+/// Roots about to burst up out of the ground at `at`, in voxels, `left` seconds from now, hurting
+/// the player within `radius` meters for `damage` and throwing them along `drag`
+struct Root {
+    at: Vector3<f64>,
+    left: f64,
+    radius: f64,
+    damage: f64,
+    drag: Vector3<f64>,
+    element: Option<Element>,
+}
+
+/// The ground under `at`, in voxels, looking down a few meters, or `at` if there's none
+fn ground_under(world: &World, at: Vector3<f64>) -> Vector3<f64> {
+    let vpm = world.voxels_per_meter as f64;
+    let (x, y) = (at.x.floor() as i64, at.y.floor() as i64);
+    let top = at.z.floor() as i64 + vpm as i64;
+    (top - 8 * vpm as i64..=top).rev().find(|&z| !is_passable(world.material_at(x, y, z))).map_or(at, |z| Vector3::new(at.x, at.y, z as f64 + 1.0))
+}
 
 /// What the crosshair is on
 #[derive(Clone, Copy)]
@@ -139,8 +170,12 @@ pub struct Game {
     burning: f64,
     poisoned: f64,
     chilled: f64,
-    /// Where roots are about to burst up under the player, and in how many seconds
-    roots: Vec<(Vector3<f64>, f64)>,
+    /// Seconds the player goes on being stuck in web
+    snared: f64,
+    /// Roots about to burst up
+    roots: Vec<Root>,
+    /// Ground left sticky with web, and for how many more seconds
+    webs: Vec<(Vector3<f64>, f64)>,
     /// So the sound of being hurt doesn't go off every frame
     hurt_sound: f64,
     breath_sound: f64,
@@ -267,7 +302,9 @@ impl Game {
             burning: 0.0,
             poisoned: 0.0,
             chilled: 0.0,
+            snared: 0.0,
             roots: Vec::new(),
+            webs: Vec::new(),
             hurt_sound: 0.0,
             breath_sound: 0.0,
             knockback: Vector3::zeros(),
@@ -559,7 +596,10 @@ impl Game {
                 boss.recenter(shift);
             }
         }
-        for (at, _) in &mut self.roots {
+        for root in &mut self.roots {
+            root.at -= shift;
+        }
+        for (at, _) in &mut self.webs {
             *at -= shift;
         }
         for pickup in &mut self.pickups {
@@ -685,6 +725,7 @@ impl Game {
             self.carry_out(look, deed, world, player, view);
         }
         self.grow_roots(world, player, view, dt);
+        self.spin_webs(player, dt);
         for (damage, from, element) in std::mem::take(&mut self.combat.player_hits) {
             if let Some(feet) = player {
                 self.hurt(damage, from, feet, world, "a blast");
@@ -748,18 +789,32 @@ impl Game {
                     Move::Charge => Cue::at(Sound::Roar, at, 0.7).pitched(voice * 1.3),
                     Move::Leap => Cue::at(Sound::Roar, at, 0.6).pitched(voice * 1.6),
                     Move::Breath => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.6),
-                    // Something gathering in its throat, in the voice of its element
+                    // A spider hissing, or something gathering in a drake's throat in the voice of
+                    // its element
+                    Move::Spit | Move::Web if look.build() == Some(Build::Spider) => Cue::at(Sound::Hiss, at, 0.6).pitched(if m == Move::Web { 0.9 } else { 1.1 }),
                     Move::Spit => Cue::at(Sound::Cast(Element::look(Some(element.unwrap_or(Element::Fire))) as u8), at, 0.8).pitched(0.45),
                     // Wood creaking as it bends back, like a bow
-                    Move::Volley => Cue::at(Sound::Draw, at, 1.0).pitched(0.45),
-                    // Deep down, under the ground
+                    Move::Volley => Cue::at(Sound::Creak, at, 0.8).pitched(1.0),
+                    // Deep down, under the ground, and old wood groaning
                     Move::Roots => Cue::at(Sound::Rumble, at, 1.0).pitched(voice * 0.7),
+                    Move::RootWave => Cue::at(Sound::Creak, at, 0.8).pitched(0.7),
+                    Move::Quake => Cue::at(Sound::Rumble, at, 1.0).pitched(voice * 0.5),
+                    // Its wings beating as it rises up to call the storm
+                    Move::Storm => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element.unwrap_or(Element::Fire))) as u8), at, 0.8).pitched(0.3));
+                        Cue::at(Sound::Flap, at, 0.8).pitched(0.85)
+                    }
+                    Move::Maul => Cue::at(Sound::Roar, at, 0.5).pitched(voice * 1.8),
                     _ => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.2),
                 };
                 self.cues.push(cue);
             }
             Deed::Roar { at, angry } => {
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if angry { 1.1 } else { 1.0 }));
+                // A drake spreads its wings as it roars
+                if look.build() == Some(Build::Drake) {
+                    self.cues.push(Cue::at(Sound::Flap, at, 0.8).pitched(0.8));
+                }
                 self.shake = self.shake.max(0.6 * felt(at));
                 self.say(if angry { format!("The {} is enraged!", look.name()) } else { format!("The {} turns on you!", look.name()) });
             }
@@ -821,11 +876,79 @@ impl Game {
             // The ground stirring under the player, then roots bursting up out of it
             Deed::Roots { at } => {
                 // On the ground under the player, if they're jumping
-                let (x, y) = (at.x.floor() as i64, at.y.floor() as i64);
-                let top = at.z.floor() as i64;
-                let at = (top - 8 * vpm as i64..=top).rev().find(|&z| !is_passable(world.material_at(x, y, z))).map_or(at, |z| Vector3::new(at.x, at.y, z as f64 + 1.0));
-                self.roots.push((at, ROOTS_WARNING));
+                let at = ground_under(world, at);
+                self.roots.push(Root { at, left: ROOTS_WARNING, radius: ROOTS_RADIUS, damage: 24.0, drag: Vector3::zeros(), element: None });
                 self.cues.push(Cue::at(Sound::Rumble, at, 0.8).pitched(0.7));
+            }
+            // Lines of roots, each bursting up a little after the one before, dragging the player
+            // back towards it
+            Deed::RootWave { from, to, lanes } => {
+                let off = to - from;
+                let ahead = Vector3::new(off.x, off.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                for lane in 0..lanes {
+                    let turn = (lane as f64 - (lanes - 1) as f64 * 0.5) * 0.35;
+                    let (c, s) = (turn.cos(), turn.sin());
+                    let along = Vector3::new(ahead.x * c - ahead.y * s, ahead.x * s + ahead.y * c, 0.0);
+                    for k in 0..WAVE_ROOTS {
+                        let at = ground_under(world, from + along * (3.0 + WAVE_SPACING * k as f64) * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm));
+                        self.roots.push(Root { at, left: 0.8 + 0.15 * k as f64, radius: WAVE_RADIUS, damage: 16.0, drag: -along, element });
+                    }
+                }
+                self.cues.push(Cue::at(Sound::Rumble, from, 1.0).pitched(0.5));
+            }
+            // The ground pounded, and a shockwave running out from it that has to be jumped
+            Deed::Quake { at, from, to, dt: seconds } => {
+                let (debris, stain) = match element {
+                    Some(Element::Frost) => (DROP_ICE, Some((SNOW, false))),
+                    Some(Element::Fire) => (DROP_EMBER, Some((BARK_DARK, true))),
+                    _ => (DROP_MUD, None),
+                };
+                if from <= 0.0 {
+                    self.combat.craters.push((at, 1.4));
+                    if let Some((material, burn)) = stain {
+                        self.combat.stains.push((at, 3.5, material, burn));
+                    }
+                    self.cues.push(Cue::at(Sound::Quake, at, 1.0).pitched(0.9));
+                    self.shake = self.shake.max(0.9 * felt(at));
+                }
+                // Its front, a band of churned-up ground, rings either side of it
+                self.combat.mark(at, to, ((to - 0.8) / to).max(0.0));
+                self.combat.stir(at, to, seconds * to * 3.0, debris);
+                self.shake = self.shake.max(0.25 * felt(at));
+                if let Some(feet) = player {
+                    let off = feet - at;
+                    let d = off.xy().norm() / vpm;
+                    // Up in the air, it passes under
+                    let airborne = (1..=(0.3 * vpm) as i64).all(|k| is_passable(world.material_at(feet.x.floor() as i64, feet.y.floor() as i64, feet.z.floor() as i64 - k)));
+                    if (from..to).contains(&d) && off.z.abs() < 3.0 * vpm && !airborne {
+                        self.hurt(22.0, at, feet, world, look.name());
+                        self.knockback += Vector3::new(0.0, 0.0, 5.0 * vpm);
+                        self.afflict(element);
+                    }
+                }
+            }
+            // Its element coming down out of the sky: the first right on the player, the rest
+            // round them
+            Deed::Storm { to, k } => {
+                let e = element.unwrap_or(Element::Fire);
+                let mut to = to;
+                if k > 0 {
+                    let a = random(&mut self.rng) * TAU;
+                    let r = (1.5 + 2.5 * random(&mut self.rng)) * vpm;
+                    to += Vector3::new(a.cos() * r, a.sin() * r, 0.0);
+                }
+                let to = ground_under(world, to);
+                let a = random(&mut self.rng) * TAU;
+                let from = to + Vector3::new(a.cos() * 3.0, a.sin() * 3.0, STORM_HEIGHT) * vpm;
+                let damage = if e == Element::Frost { 13.0 } else { 16.0 };
+                self.combat.hurl(HostileKind::Spell(e), from, to, 1.0, damage, 2.0);
+                self.cues.push(Cue::at(Sound::Whistle, to, 0.6).pitched(0.85 + 0.1 * random(&mut self.rng) as f32));
+            }
+            Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
+            Deed::Web { from, to } => {
+                let time = ((to - from).norm() / vpm / 16.0).clamp(0.6, 1.3);
+                self.combat.hurl(HostileKind::Web, from, to, time, 6.0, WEB_RADIUS);
+                self.cues.push(Cue::at(Sound::Web, from, 0.7).pitched(1.1));
             }
             // A spray of thorns, spread so it's hard to get out of the way of them all
             Deed::Volley { from, to } => {
@@ -870,42 +993,74 @@ impl Game {
         }
     }
 
-    /// How fast the player can move next to usual, slowed while chilled
+    /// How fast the player can move next to usual, slowed while chilled or stuck in web
     pub fn pace(&self) -> f64 {
-        if self.chilled > 0.0 { CHILLED_PACE } else { 1.0 }
+        let chilled = if self.chilled > 0.0 { CHILLED_PACE } else { 1.0 };
+        if self.snared > 0.0 { chilled.min(SNARED_PACE) } else { chilled }
     }
 
     /// The ground stirring where roots are coming up, and them bursting up, throwing the player
-    /// up if they're still on it
+    /// up if they're still on it, or dragging them along
     fn grow_roots(&mut self, world: &World, player: Option<Vector3<f64>>, view: &View, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
-        for (at, mut left) in std::mem::take(&mut self.roots) {
-            left -= dt;
+        for mut root in std::mem::take(&mut self.roots) {
+            root.left -= dt;
+            let at = root.at;
             let near = (1.0 - (at - view.eye).norm() / vpm / 30.0).max(0.0);
-            if left > 0.0 {
+            if root.left > 0.0 {
                 // Stirring harder and shaking more as it comes, a ring closing in on where
-                let closing = left / ROOTS_WARNING;
-                self.combat.stir(at, ROOTS_RADIUS, dt * (2.0 - closing));
-                self.combat.mark(at, ROOTS_RADIUS, closing);
+                let closing = (root.left / ROOTS_WARNING).min(1.0);
+                self.combat.stir(at, root.radius, dt * (2.0 - closing), DROP_MUD);
+                self.combat.mark(at, root.radius, closing);
                 self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
-                self.roots.push((at, left));
+                self.roots.push(root);
                 continue;
             }
-            self.combat.erupt(at, ROOTS_RADIUS);
+            self.combat.erupt(at, root.radius);
             self.shake = self.shake.max(0.5 * near);
             if let Some(feet) = player {
                 let off = feet - at;
-                if off.xy().norm() < ROOTS_RADIUS * vpm && off.z.abs() < 2.0 * vpm {
-                    self.hurt(24.0, at, feet, world, "roots");
-                    self.knockback += Vector3::new(0.0, 0.0, 9.0 * vpm);
+                if off.xy().norm() < root.radius * vpm && off.z.abs() < 2.0 * vpm {
+                    self.hurt(root.damage, at, feet, world, "roots");
+                    let up = if root.drag == Vector3::zeros() { 9.0 } else { 5.0 };
+                    self.knockback += (root.drag * 9.0 + Vector3::new(0.0, 0.0, up)) * vpm;
+                    self.afflict(root.element);
                 }
             }
         }
     }
 
+    /// Ground left sticky by web, holding up whoever's in it
+    fn spin_webs(&mut self, player: Option<Vector3<f64>>, dt: f64) {
+        let vpm = self.combat.vpm();
+        for at in std::mem::take(&mut self.combat.webs) {
+            self.webs.push((at, WEB_SECONDS));
+            if self.webs.len() > WEBS {
+                self.webs.remove(0);
+            }
+        }
+        self.snared = (self.snared - dt).max(0.0);
+        for (at, left) in &mut self.webs {
+            *left -= dt;
+            self.combat.mark(*at, WEB_RADIUS, 0.0);
+            self.combat.stir(*at, WEB_RADIUS, dt * 0.5, DROP_WATER);
+            if let Some(feet) = player {
+                let off = feet - *at;
+                if off.xy().norm() < WEB_RADIUS * vpm && off.z.abs() < 2.0 * vpm {
+                    self.snared = self.snared.max(0.3);
+                }
+            }
+        }
+        self.webs.retain(|(_, left)| *left > 0.0);
+    }
+
     /// The player at `feet` takes `damage` from something at `from`, `by` what, thrown back from it
     fn hurt(&mut self, damage: f64, from: Vector3<f64>, feet: Vector3<f64>, world: &World, by: &str) {
         if self.health <= 0.0 || damage <= 0.0 {
+            return;
+        }
+        // Turned aside by a riposte
+        if self.combat.parry(from, feet) {
             return;
         }
         let vpm = world.voxels_per_meter as f64;
@@ -935,9 +1090,11 @@ impl Game {
             }
             self.combat.clear();
             self.roots.clear();
+            self.webs.clear();
             self.burning = 0.0;
             self.poisoned = 0.0;
             self.chilled = 0.0;
+            self.snared = 0.0;
         }
     }
 
@@ -953,7 +1110,9 @@ impl Game {
             self.burning = 0.0;
             self.poisoned = 0.0;
             self.chilled = 0.0;
+            self.snared = 0.0;
             self.roots.clear();
+            self.webs.clear();
             return;
         };
         for (poison, rate, by) in [(false, 5.0, "flames"), (true, 3.5, "venom")] {
@@ -1028,6 +1187,7 @@ impl Game {
         self.burning = 0.0;
         self.poisoned = 0.0;
         self.chilled = 0.0;
+        self.snared = 0.0;
         self.hunger = self.hunger.max(40.0);
         self.hurt_flash = 1.0;
         Some(self.safe)
@@ -1457,6 +1617,8 @@ impl Game {
             ("Burning", Color32::from_rgb(245, 130, 40))
         } else if self.chilled > 0.0 {
             ("Chilled", Color32::from_rgb(120, 200, 245))
+        } else if self.snared > 0.0 {
+            ("Webbed", Color32::from_rgb(220, 220, 205))
         } else {
             ("Health", Color32::from_rgb(225, 55, 60))
         };

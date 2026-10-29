@@ -162,7 +162,7 @@ impl Look {
     }
 
     /// Radius of a sphere around the whole model wherever it's turned, in meters
-    fn reach(self) -> f64 {
+    pub fn reach(self) -> f64 {
         match self {
             Look::Chest | Look::OpenChest => 0.95,
             Look::Bear => 1.6,
@@ -319,16 +319,60 @@ impl Look {
     }
 }
 
-/// Frame 0 stands still, 1 to 4 are a walk cycle, and the last few are a boss's poses as it
-/// attacks, see POSE_WINDUP and the rest. Other animals just stand still in them.
-const FRAMES: usize = 8;
-const WALK_FRAMES: usize = 4;
+/// Frame 0 stands still, 1 to WALK_FRAMES are a walk cycle, then come a boss's poses as it
+/// attacks, see POSE_WINDUP and the rest, and frames halfway between them to ease from one to the
+/// next, see tween(). Only bosses have the poses.
+const WALK_FRAMES: usize = 8;
 /// Getting ready to attack
-pub const POSE_WINDUP: usize = 5;
+pub const POSE_WINDUP: usize = WALK_FRAMES + 1;
 /// Bringing it down
-pub const POSE_STRIKE: usize = 6;
+pub const POSE_STRIKE: usize = WALK_FRAMES + 2;
 /// Something each boss does its own way: throwing, spreading its wings or lowering its head to charge
-pub const POSE_SPECIAL: usize = 7;
+pub const POSE_SPECIAL: usize = WALK_FRAMES + 3;
+/// The pairs of poses with a frame halfway between them, 0 being standing
+const TWEENS: [(usize, usize); 5] = [(0, POSE_WINDUP), (0, POSE_SPECIAL), (POSE_WINDUP, POSE_STRIKE), (POSE_SPECIAL, POSE_STRIKE), (POSE_STRIKE, 0)];
+const FRAMES: usize = POSE_SPECIAL + 1 + TWEENS.len();
+
+/// The frame halfway between poses `a` and `b`, either way round, 0 being standing, if there's one
+pub fn tween(a: usize, b: usize) -> Option<usize> {
+    TWEENS.iter().position(|&pair| pair == (a, b) || pair == (b, a)).map(|k| POSE_SPECIAL + 1 + k)
+}
+
+/// How far a boss is into each of its poses, 0 to 1, so it can be drawn partway between them
+#[derive(Clone, Copy)]
+struct Pose {
+    windup: f64,
+    strike: f64,
+    special: f64,
+}
+
+impl Pose {
+    const REST: Pose = Pose { windup: 0.0, strike: 0.0, special: 0.0 };
+
+    /// The pose drawn in `frame`, see POSE_WINDUP and tween()
+    fn of(frame: usize) -> Pose {
+        match frame {
+            POSE_WINDUP => Pose { windup: 1.0, ..Pose::REST },
+            POSE_STRIKE => Pose { strike: 1.0, ..Pose::REST },
+            POSE_SPECIAL => Pose { special: 1.0, ..Pose::REST },
+            _ if frame > POSE_SPECIAL => {
+                let (a, b) = (Pose::of(TWEENS[frame - POSE_SPECIAL - 1].0), Pose::of(TWEENS[frame - POSE_SPECIAL - 1].1));
+                Pose { windup: (a.windup + b.windup) * 0.5, strike: (a.strike + b.strike) * 0.5, special: (a.special + b.special) * 0.5 }
+            }
+            _ => Pose::REST,
+        }
+    }
+
+    /// What's `rest` standing, `windup`, `strike` and `special` in each pose, in this one
+    fn mix(self, rest: f64, windup: f64, strike: f64, special: f64) -> f64 {
+        rest + self.windup * (windup - rest) + self.strike * (strike - rest) + self.special * (special - rest)
+    }
+
+    /// Where something that's at `rest` standing and at the others in each pose is in this one
+    fn at(self, rest: Vec3, windup: Vec3, strike: Vec3, special: Vec3) -> Vec3 {
+        [0, 1, 2].map(|i| self.mix(rest[i], windup[i], strike[i], special[i]))
+    }
+}
 
 /// Voxels per meter of everything drawn like an animal, weapons and leaves too: the same as the
 /// world's, so every voxel is the same size
@@ -457,10 +501,10 @@ fn rear(v: Vec3, pivot: Vec3, angle: f64) -> Vec3 {
 /// The Stone Warden: a hulking golem of rock, moss on its shoulders, crystals growing from its
 /// back and a cold light glowing in its chest. It raises its fists overhead to slam them down, and
 /// hurls boulders.
-fn golem(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
+fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     let (rock, dark, glow) = (skin.body, skin.dark, skin.glow);
     // Leaning into a blow, the higher up the further
-    let lean = if pose == POSE_STRIKE { 0.4 } else { 0.0 };
+    let lean = pose.mix(0.0, 0.0, 0.4, 0.0);
     let up = |v: Vec3| {
         let k = (v[2] - 1.2).max(0.0) / 2.0;
         [v[0] + lean * k, v[1], v[2] - lean * 0.4 * k]
@@ -481,19 +525,15 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
         p.push(ellipsoid(up([0.0, s * 0.95, 2.88]), [0.32, 0.32, 0.1], skin.accent));
     }
     // A boulder held up behind its head, ready to throw
-    if pose == POSE_SPECIAL {
+    if pose.special > 0.75 {
         p.push(ball([-0.55, -0.55, 4.05], 0.45, rock));
     }
     for s in [-1.0, 1.0] {
         let shoulder = up([0.05, s * 0.98, 2.45]);
-        let (elbow, fist) = match pose {
-            POSE_WINDUP => ([0.0, s * 0.95, 3.15], [0.2, s * 0.5, 3.85]),
-            POSE_STRIKE => ([0.85, s * 0.85, 1.6], [1.45, s * 0.45, 0.4]),
-            POSE_SPECIAL if s < 0.0 => ([-0.25, -1.05, 3.1], [-0.45, -0.75, 3.7]),
-            POSE_SPECIAL => ([0.5, 1.1, 1.9], [0.95, 0.9, 1.6]),
-            // Swinging as it walks
-            _ => ([0.2 - 0.25 * swing * s, s * 1.18, 1.65], [0.45 - 0.35 * swing * s, s * 1.12, 0.85]),
-        };
+        // Swinging as it walks, raised overhead, brought down, or one lifting the boulder
+        let special = if s < 0.0 { ([-0.25, -1.05, 3.1], [-0.45, -0.75, 3.7]) } else { ([0.5, 1.1, 1.9], [0.95, 0.9, 1.6]) };
+        let elbow = pose.at([0.2 - 0.25 * swing * s, s * 1.18, 1.65], [0.0, s * 0.95, 3.15], [0.85, s * 0.85, 1.6], special.0);
+        let fist = pose.at([0.45 - 0.35 * swing * s, s * 1.12, 0.85], [0.2, s * 0.5, 3.85], [1.45, s * 0.45, 0.4], special.1);
         p.push(ball(fist, 0.36, dark));
         p.push(limb(elbow, fist, 0.25, 0.3, rock));
         p.push(limb(shoulder, elbow, 0.27, 0.24, rock));
@@ -508,14 +548,13 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
 
 /// The Ember Drake: a red-scaled dragon with fire glowing through its belly, its wings folded.
 /// It rears its head back, then breathes fire or spits it, and spreads its wings to roar.
-fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize, skin: Skin) {
+fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
     let (scales, dark, glow) = (skin.body, skin.dark, skin.glow);
-    let (neck_base, neck_top, head, open): (Vec3, Vec3, Vec3, bool) = match pose {
-        POSE_WINDUP => ([0.8, 0.0, 1.5], [1.15, 0.0, 2.45], [1.35, 0.0, 2.75], false),
-        POSE_STRIKE => ([0.8, 0.0, 1.45], [1.6, 0.0, 1.65], [1.95, 0.0, 1.6], true),
-        POSE_SPECIAL => ([0.8, 0.0, 1.5], [1.35, 0.0, 2.3], [1.65, 0.0, 2.55], true),
-        _ => ([0.8, 0.0, 1.45], [1.45, 0.0, 2.0], [1.75, 0.0, 2.05], false),
-    };
+    // Its head reared back, thrust out low, or raised to roar
+    let neck_base = pose.at([0.8, 0.0, 1.45], [0.8, 0.0, 1.5], [0.8, 0.0, 1.45], [0.8, 0.0, 1.5]);
+    let neck_top = pose.at([1.45, 0.0, 2.0], [1.15, 0.0, 2.45], [1.6, 0.0, 1.65], [1.35, 0.0, 2.3]);
+    let head = pose.at([1.75, 0.0, 2.05], [1.35, 0.0, 2.75], [1.95, 0.0, 1.6], [1.65, 0.0, 2.55]);
+    let open = pose.strike + pose.special > 0.4;
     let h = Vector3::from(head);
     let fwd = (h - Vector3::from(neck_top)).normalize();
     let upward = Vector3::new(-fwd.z, 0.0, fwd.x);
@@ -534,17 +573,16 @@ fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize, sk
     }
     p.push(ball(head, 0.22, scales));
     p.push(limb(neck_base, neck_top, 0.3, 0.2, scales));
+    // Its wings folded, or spread wide, partway between as it opens them
+    let spread = pose.special;
+    let open_by = |folded: Vec3, wide: Vec3| -> Vec3 { [0, 1, 2].map(|i| folded[i] + (wide[i] - folded[i]) * spread) };
     for s in [-1.0, 1.0] {
-        if pose == POSE_SPECIAL {
-            // Spread wide
-            let tip = [-0.1, s * 2.3, 2.75];
-            p.push(limb([0.45, s * 0.45, 1.75], tip, 0.07, 0.03, dark));
-            p.push(limb(tip, [-1.1, s * 1.6, 1.6], 0.03, 0.02, dark));
-            p.push(ellipsoid([-0.4, s * 1.35, 2.05], [0.75, 1.0, 0.05], skin.accent));
-        } else {
-            p.push(limb([0.45, s * 0.48, 1.75], [-0.7, s * 0.62, 2.35], 0.07, 0.03, dark));
-            p.push(ellipsoid([-0.3, s * 0.6, 1.85], [0.75, 0.06, 0.38], skin.accent));
+        let tip = open_by([-0.7, s * 0.62, 2.35], [-0.1, s * 2.3, 2.75]);
+        p.push(limb(open_by([0.45, s * 0.48, 1.75], [0.45, s * 0.45, 1.75]), tip, 0.07, 0.03, dark));
+        if spread > 0.0 {
+            p.push(limb(tip, open_by([-0.7, s * 0.62, 2.35], [-1.1, s * 1.6, 1.6]), 0.03, 0.02, dark));
         }
+        p.push(ellipsoid(open_by([-0.3, s * 0.6, 1.85], [-0.4, s * 1.35, 2.05]), open_by([0.75, 0.06, 0.38], [0.75, 1.0, 0.05]), skin.accent));
     }
     for k in 0..7 {
         let x = 0.7 - k as f64 * 0.3;
@@ -564,14 +602,11 @@ fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: usize, sk
 
 /// Ironhide: a huge old bear in plates of armor, tusked, with red eyes. It rears up on its hind
 /// legs to bring its paws crashing down, and lowers its head to charge.
-fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
+fn ironhide(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     let (fur, dark, armor) = (skin.body, skin.dark, skin.accent);
-    let raised = if pose == POSE_WINDUP { 0.75 } else { 0.0 };
-    let low = match pose {
-        POSE_SPECIAL => 0.3,
-        POSE_STRIKE => 0.15,
-        _ => 0.0,
-    };
+    // Reared up, or its head lowered
+    let raised = pose.mix(0.0, 0.75, 0.0, 0.0);
+    let low = pose.mix(0.0, 0.0, 0.15, 0.3);
     let pivot = [-0.75, 0.0, 1.0];
     let r = |v: Vec3| rear([v[0], v[1], v[2] - low * (v[0] + 0.75).max(0.0) / 2.25], pivot, raised);
     for s in [-1.0, 1.0] {
@@ -580,7 +615,7 @@ fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
         p.push(ball(r([1.3, s * 0.33, 2.27]), 0.12, fur));
     }
     p.push(ball(r([2.2, 0.0, 1.7]), 0.07, EYE));
-    if pose == POSE_WINDUP || pose == POSE_SPECIAL {
+    if pose.windup + pose.special > 0.4 {
         // Roaring
         p.push(ball(r([2.06, 0.0, 1.5]), 0.11, EYE));
     }
@@ -596,13 +631,7 @@ fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
     p.push(ball(r([0.4, 0.0, 2.05]), 0.62, fur));
     p.push(limb(r([-0.85, 0.0, 1.55]), r([0.75, 0.0, 1.7]), 0.8, 0.85, fur));
     // Its front legs reach forward as it rears and slams, its hind legs stay planted
-    let reach = if pose == POSE_WINDUP {
-        0.9
-    } else if pose == POSE_STRIKE {
-        0.7
-    } else {
-        0.0
-    };
+    let reach = pose.mix(0.0, 0.9, 0.7, 0.0);
     for (x, y, s) in [(0.75, 0.45, 1.0), (0.75, -0.45, -1.0)] {
         leg(p, r([x, y, 1.35]), 1.35, 0.28, reach + 0.35 * swing * s, fur, dark);
     }
@@ -613,14 +642,10 @@ fn ironhide(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
 
 /// The Broodmother: a giant spider, dark and hairy, venom glowing in the markings on its back and
 /// a cluster of red eyes. It rears up to bite, and crouches to leap.
-fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: usize, skin: Skin) {
+fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
     // Reared up on its back legs, lunging low, or crouched to spring
-    let (raise, drop) = match pose {
-        POSE_WINDUP => (0.5, 0.0),
-        POSE_STRIKE => (-0.15, 0.25),
-        POSE_SPECIAL => (0.0, 0.45),
-        _ => (0.0, 0.0),
-    };
+    let raise = pose.mix(0.0, 0.5, -0.15, 0.0);
+    let drop = pose.mix(0.0, 0.0, 0.25, 0.45);
     let lift = |v: Vec3| {
         let up = raise * (v[0] + 0.6).max(0.0) * 0.8 - drop;
         [v[0], v[1], v[2] + up]
@@ -646,8 +671,10 @@ fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: usize, skin: Skin) {
             let step = (angle + k as f64 * PI * 0.5 + if side > 0.0 { PI } else { 0.0 }).sin() * moving;
             let hip = lift([along * 0.6 + 0.3, side * 0.3, 1.3]);
             let reach = 1.6 + 0.2 * (1.0 - (k as f64 - 1.5).abs() / 1.5);
-            let foot_x = along * 1.4 + 0.15 * step + if pose == POSE_WINDUP && k == 0 { 0.6 } else { 0.0 };
-            let foot_z = (0.15 * step.max(0.0)) + if pose == POSE_WINDUP && k == 0 { 1.4 } else { 0.0 };
+            // Its front legs raised as it rears
+            let front = if k == 0 { pose.windup } else { 0.0 };
+            let foot_x = along * 1.4 + 0.15 * step + 0.6 * front;
+            let foot_z = 0.15 * step.max(0.0) + 1.4 * front;
             let foot = [foot_x, side * reach, foot_z];
             let knee = [(hip[0] + foot[0]) * 0.5, side * (reach * 0.65), hip[2] + 0.55 - drop * 0.5];
             p.push(limb(hip, knee, 0.1, 0.08, skin.dark));
@@ -658,7 +685,7 @@ fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: usize, skin: Skin) {
 
 /// The Ancient Treant: an old tree walking on its roots, moss on its bark, a crown of leaves and
 /// eyes glowing deep in its trunk. It swings its branches round, and calls roots up from below.
-fn treant(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
+fn treant(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     let (bark, wood, moss, glow, leaves) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
     p.push(ball([0.48, 0.17, 3.0], 0.08, glow));
     p.push(ball([0.48, -0.17, 3.0], 0.08, glow));
@@ -673,12 +700,8 @@ fn treant(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
     // Branches for arms, raised wide to sweep, swept down, or swaying as it walks
     for side in [-1.0, 1.0] {
         let shoulder = [0.0, side * 0.45, 3.2];
-        let (elbow, hand) = match pose {
-            POSE_WINDUP => ([0.1, side * 1.3, 3.9], [0.4, side * 2.0, 4.4]),
-            POSE_STRIKE => ([0.9, side * 1.0, 2.2], [1.8, side * 0.4, 0.9]),
-            POSE_SPECIAL => ([0.3, side * 1.1, 2.6], [0.2, side * 1.4, 1.2]),
-            _ => ([0.2 - 0.2 * swing * side, side * 1.15, 2.6], [0.45 - 0.3 * swing * side, side * 1.35, 1.6]),
-        };
+        let elbow = pose.at([0.2 - 0.2 * swing * side, side * 1.15, 2.6], [0.1, side * 1.3, 3.9], [0.9, side * 1.0, 2.2], [0.3, side * 1.1, 2.6]);
+        let hand = pose.at([0.45 - 0.3 * swing * side, side * 1.35, 1.6], [0.4, side * 2.0, 4.4], [1.8, side * 0.4, 0.9], [0.2, side * 1.4, 1.2]);
         p.push(ball(hand, 0.32, leaves));
         p.push(limb(hand, [hand[0] + 0.3, hand[1] + side * 0.2, hand[2] - 0.35], 0.08, 0.02, wood));
         p.push(limb(elbow, hand, 0.17, 0.09, wood));
@@ -693,9 +716,8 @@ fn treant(p: &mut Vec<Part>, swing: f64, pose: usize, skin: Skin) {
 }
 
 /// The shapes making up an animal, in meters: facing +x, with its feet on z = 0.
-/// `phase` is how far through its walk it is, None standing still. A boss can strike a `pose`,
-/// POSE_WINDUP or the others, 0 for none.
-fn parts(look: Look, phase: Option<f64>, pose: usize) -> Vec<Part> {
+/// `phase` is how far through its walk it is, None standing still. A boss can strike a `pose`.
+fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
     let angle = phase.map_or(0.0, |p| p * TAU);
     let moving = phase.is_some() as u8 as f64;
     // Diagonal pairs of legs swing together
@@ -897,7 +919,7 @@ pub fn voxelize(parts: &[Part], res: f64) -> (Model, Vector3<f64>) {
     (Model { size, voxels }, anchor)
 }
 
-fn rasterize(look: Look, phase: Option<f64>, pose: usize) -> Model {
+fn rasterize(look: Look, phase: Option<f64>, pose: Pose) -> Model {
     let res = look.resolution();
     let parts: Vec<Part> = parts(look, phase, pose).iter().map(|p| p.thickened(res)).collect();
     // Wide enough either side of the middle to hold everything, as the shader puts the middle of
@@ -950,12 +972,13 @@ pub const ANIMAL_MODELS: usize = Look::ALL.len() * FRAMES;
 pub fn animal_models() -> Vec<Model> {
     let mut models = Vec::new();
     for look in Look::ALL {
-        models.push(rasterize(look, None, 0));
+        models.push(rasterize(look, None, Pose::REST));
         for frame in 0..WALK_FRAMES {
-            models.push(rasterize(look, Some(frame as f64 / WALK_FRAMES as f64), 0));
+            models.push(rasterize(look, Some(frame as f64 / WALK_FRAMES as f64), Pose::REST));
         }
-        for pose in [POSE_WINDUP, POSE_STRIKE, POSE_SPECIAL] {
-            models.push(rasterize(look, None, if look.is_boss() { pose } else { 0 }));
+        // Only bosses strike poses, so the rest leave them empty
+        for frame in POSE_WINDUP..FRAMES {
+            models.push(if look.is_boss() { rasterize(look, None, Pose::of(frame)) } else { Model { size: [1, 1, 1], voxels: vec![AIR] } });
         }
     }
     models

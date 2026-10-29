@@ -2422,8 +2422,10 @@ impl App {
                         None => self.camera.rotation.x = -0.35,
                     }
                 }
-                self.script_controls = combat::Controls { special: f == 30, ..Default::default() };
-                if f == 29 || f == 120 {
+                // `--set special_frame=150` lets it go later, as when a boss is about to strike
+                let when = settings_from_args().into_iter().find(|(k, _)| k == "special_frame").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(30);
+                self.script_controls = combat::Controls { special: f == when, ..Default::default() };
+                if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
             }

@@ -62,6 +62,22 @@ pub enum Sound {
     Fanfare,
     /// Something hitting water
     Splash,
+    /// The ground shaking: a deep boom and a long rumble after it
+    Quake,
+    /// Something falling from high up, whistling down just before it lands
+    Whistle,
+    /// A heavy paw raking past
+    Claw,
+    /// Web shot out, wet and sticky
+    Web,
+    /// Old wood groaning as it bends
+    Creak,
+    /// Ice or stone cracking
+    Crack,
+    /// One beat of a great leathery wing
+    Flap,
+    /// A spider or a snake hissing
+    Hiss,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -128,6 +144,21 @@ impl Lowpass {
         let a = 1.0 - (-TAU * cutoff / RATE as f32).exp();
         self.0 += (x - self.0) * a;
         self.0
+    }
+}
+
+/// A two-pole filter that rings at `frequency` Hz when struck, dying away over about `ring`
+/// seconds, for the body of wood, stone and ice. Struck once with 1, it rings at about 1.
+struct Resonator(f32, f32);
+
+impl Resonator {
+    fn step(&mut self, x: f32, frequency: f32, ring: f32) -> f32 {
+        let w = TAU * frequency / RATE as f32;
+        let r = (-1.0 / (ring * RATE as f32)).exp();
+        let y = x * w.sin() + 2.0 * r * w.cos() * self.0 - r * r * self.1;
+        self.1 = self.0;
+        self.0 = y;
+        y
     }
 }
 
@@ -274,6 +305,171 @@ fn birdsong(seed: u32) -> Vec<f32> {
         let frequency = base + slide * within + if note % 2 == 1 { 300.0 } else { 0.0 };
         phase += TAU * frequency / RATE as f32;
         phase.sin() * (PI * within).sin().powi(2) * 0.5
+    })
+}
+
+/// The ground shaking: a thud, a deep boom sinking to `low` Hz, a long rolling rumble under it,
+/// and stones rattling as the ground breaks
+fn quake(low: f32, seed: u32) -> Vec<f32> {
+    let length = 1.2;
+    let (mut lp, mut lp2, mut lp3, mut lp4) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let (mut phase, mut rattle) = (0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        phase += TAU * (low + 50.0 * (-t * 7.0).exp()) / RATE as f32;
+        let boom = (phase.sin() + 0.35 * (phase * 2.0).sin()) * (-t * 3.5).exp();
+        let thud = lp.step(noise(rng), 600.0) * (-t * 25.0).exp() * 1.5;
+        // Rolling on, louder and softer
+        let roll = 0.75 + 0.25 * (TAU * (low / 8.0) * t).sin() * (TAU * 1.7 * t).sin();
+        let rumble = lp3.step(lp2.step(noise(rng), 110.0), 110.0) * 7.5 * roll * (-t * 2.2).exp();
+        rattle = if random(rng) < 0.003 * (-t * 4.0).exp() { 1.0 } else { rattle * 0.95 };
+        let x = noise(rng) * rattle;
+        let stones = (x - lp4.step(x, 1200.0)) * 0.35;
+        (boom * 0.8 + thud + rumble + stones) * (t * 150.0).min(1.0) * (1.0 - (t / length).powi(3))
+    })
+}
+
+/// Something falling from high up: a whistle sliding down from `high` Hz, tumbling, louder as it
+/// comes, over the rush of air around it, and cut short as it lands
+fn whistle(high: f32, seed: u32) -> Vec<f32> {
+    let length = 0.8;
+    let mut rng = hash(seed);
+    let tumble = 9.0 + 8.0 * random(&mut rng);
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    render(length, seed, |t, rng| {
+        let u = t / length;
+        let f = high * (0.33f32).powf(u);
+        phase += TAU * f / RATE as f32;
+        let tone = (phase.sin() + 0.12 * (phase * 2.0).sin()) * 0.35 * (1.0 + 0.15 * (TAU * tumble * t).sin());
+        let x = noise(rng);
+        let air = (lp.step(x, f * 1.4) - lp2.step(x, f * 0.6)) * 0.9;
+        (tone + air) * u.powf(1.5) * ((1.0 - u) * 25.0).min(1.0)
+    })
+}
+
+/// A heavy paw raking past: a short low rush of air, torn ragged by three claws `gap` seconds
+/// apart, and a meaty thud as it lands
+fn claw(gap: f32, seed: u32) -> Vec<f32> {
+    let length = 0.25;
+    let (mut a, mut b, mut c, mut d) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let (mut rasp, mut phase) = (0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        // Quick to come, slower to go
+        let k = (t * 30.0).min(1.0) * (-t * 10.0).exp() * (1.0 - t / length);
+        let cutoff = 1800.0 - 1300.0 * t / length;
+        let x = noise(rng);
+        let rush = (a.step(x, cutoff) - b.step(x, cutoff * 0.2)) * 2.4 * k;
+        // A rough random flutter, roughest as each claw goes by
+        if random(rng) < 0.05 {
+            rasp = random(rng);
+        }
+        let claws: f32 = (0..3).map(|i| t - 0.04 - gap * i as f32).filter(|at| *at > 0.0).map(|at| (-at * 70.0).exp()).sum();
+        let tear = (c.step(x, 4000.0) - d.step(x, 1000.0)) * rasp * claws * 1.4;
+        phase += TAU * (110.0 - 50.0 * t / length) / RATE as f32;
+        let thud = phase.sin() * (-((t - 0.06) * 40.0).powi(2)).exp() * 0.6;
+        rush * (0.6 + 0.4 * rasp) + tear + thud
+    })
+}
+
+/// Web shot out: a wet slap, a tone flicking down from `high` Hz through a spray of air, then
+/// sticky little pops as it pulls tight
+fn web(high: f32, seed: u32) -> Vec<f32> {
+    let length = 0.3;
+    let (mut lp, mut lp2, mut lp3) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let (mut pop, mut pop_phase, mut pop_frequency) = (0.0f32, 0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        let f = 250.0 + high * (-t * 30.0).exp();
+        phase += TAU * f / RATE as f32;
+        let thwip = phase.sin() * (t * 400.0).min(1.0) * (-t * 22.0).exp() * 0.5;
+        let x = noise(rng);
+        let spray = (lp.step(x, 700.0 + 6000.0 * (-t * 12.0).exp()) - lp2.step(x, 300.0)) * (t * 300.0).min(1.0) * (-t * 16.0).exp();
+        let slap = lp3.step(x, 400.0) * (t * 300.0).min(1.0) * (-t * 30.0).exp();
+        if random(rng) < 0.002 * swell(t - 0.04, 0.26) {
+            pop = 1.0;
+            pop_frequency = 900.0 + 1300.0 * random(rng);
+        }
+        pop *= 0.996;
+        // Each pop sliding up as it goes
+        pop_phase += TAU * pop_frequency * (3.0 - 2.0 * pop) / RATE as f32;
+        thwip + spray + slap + pop_phase.sin() * pop * 0.35
+    })
+}
+
+/// Old wood groaning as it bends: the grain catching and slipping, slowly then faster, each slip
+/// ringing through the wood around `body` Hz
+fn creak(body: f32, seed: u32) -> Vec<f32> {
+    let length = 0.9;
+    let (mut low, mut mid, mut high) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let mut lp = Lowpass(0.0);
+    let mut wait = 0.0f32;
+    render(length, seed, |t, rng| {
+        let rate = 16.0 + 70.0 * swell(t, length) + 8.0 * (TAU * 3.0 * t).sin();
+        wait -= 1.0 / RATE as f32;
+        let slip = if wait <= 0.0 {
+            wait = (0.75 + 0.5 * random(rng)) / rate;
+            0.5 + 0.5 * random(rng)
+        } else {
+            0.0
+        };
+        let wood = low.step(slip, body, 0.025) + mid.step(slip, body * 2.3, 0.015) * 0.7 + high.step(slip, body * 5.1, 0.006) * 0.4;
+        let rub = lp.step(noise(rng), 900.0) * 0.4;
+        (wood * 0.5 + rub) * swell(t, length).sqrt()
+    })
+}
+
+/// Ice or stone giving way: a sharp snap, smaller cracks running on after it, a short ring
+/// around `ring` Hz and a dull thud
+fn crack(ring: f32, seed: u32) -> Vec<f32> {
+    let length = 0.3;
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    let (mut bright, mut brighter, mut body) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let (mut splinter, mut strike) = (0.0f32, 1.0f32);
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let snap = (x - lp.step(x, 2000.0)) * (-t * 150.0).exp() * 0.8;
+        if random(rng) < 0.003 * (-t * 12.0).exp() {
+            splinter = 0.6 + 0.4 * random(rng);
+            strike = splinter * 0.2;
+        }
+        splinter *= 0.9;
+        let y = noise(rng) * splinter;
+        let splinters = (y - lp2.step(y, 2500.0)) * 0.6;
+        let rings = bright.step(strike, ring, 0.06) * 0.4 + brighter.step(strike, ring * 1.63, 0.04) * 0.25;
+        let thud = body.step(strike, 150.0, 0.04) * 0.45;
+        strike = 0.0;
+        (snap + splinters + rings + thud) * (1.0 - t / length)
+    })
+}
+
+/// One beat of a great leathery wing: air pushed down in a low whump around `low` Hz, the skin
+/// fluttering as it pulls taut at the bottom of the stroke
+fn flap(low: f32, seed: u32) -> Vec<f32> {
+    let length = 0.35;
+    let (mut lp, mut lp2, mut lp3, mut lp4) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    render(length, seed, |t, rng| {
+        let push = (t / 0.12).min(1.0).powi(2) * (-(t - 0.12).max(0.0) * 14.0).exp() * (1.0 - t / length);
+        let x = noise(rng);
+        let air = (lp.step(x, 200.0 + 500.0 * push) - lp2.step(x, 60.0)) * 3.0 * push;
+        let bottom = (-((t - 0.12) * 25.0).powi(2)).exp();
+        let whump = (TAU * low * t).sin() * bottom * 0.8;
+        let flutter = (0.5 + 0.5 * (TAU * 38.0 * t).sin()).powi(4);
+        let skin = (lp3.step(x, 2500.0) - lp4.step(x, 600.0)) * flutter * (-((t - 0.13) * 33.0).powi(2)).exp();
+        air + whump + skin
+    })
+}
+
+/// A hiss through fangs: bright noise, quick to start and slow to fade, after a little spit,
+/// shaking `rattle` times a second, or smooth for 0
+fn hiss(rattle: f32, seed: u32) -> Vec<f32> {
+    let length = 0.6;
+    let (mut lp, mut lp2, mut lp3) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let sibilant = lp.step(x, 9000.0) - lp2.step(x, 3200.0);
+        let throat = lp3.step(x, 2000.0) * (0.25 + 1.2 * (-t * 40.0).exp());
+        let shake = 1.0 + 0.35 * (TAU * rattle * t).sin();
+        (sibilant + throat) * shake * (t / 0.02).min(1.0) * (1.0 - (t / length).powi(2))
     })
 }
 
@@ -451,6 +647,22 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     ));
     let mut lp = Lowpass(0.0);
     clips.push((Sound::Eat, render(0.4, 13, |t, rng| lp.step(noise(rng), 2500.0) * (-(t % 0.13) * 30.0).exp() * 1.4)));
+    clips.push((Sound::Quake, quake(34.0, 70)));
+    clips.push((Sound::Quake, quake(29.0, 71)));
+    clips.push((Sound::Whistle, whistle(2400.0, 72)));
+    clips.push((Sound::Whistle, whistle(2100.0, 73)));
+    clips.push((Sound::Claw, claw(0.022, 74)));
+    clips.push((Sound::Claw, claw(0.028, 75)));
+    clips.push((Sound::Web, web(2200.0, 76)));
+    clips.push((Sound::Web, web(1700.0, 77)));
+    clips.push((Sound::Creak, creak(170.0, 78)));
+    clips.push((Sound::Creak, creak(135.0, 79)));
+    clips.push((Sound::Crack, crack(2800.0, 80)));
+    clips.push((Sound::Crack, crack(2300.0, 81)));
+    clips.push((Sound::Flap, flap(70.0, 82)));
+    clips.push((Sound::Flap, flap(58.0, 83)));
+    clips.push((Sound::Hiss, hiss(28.0, 84)));
+    clips.push((Sound::Hiss, hiss(0.0, 85)));
     for v in 0..VARIANTS as u32 {
         for ground in [Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water] {
             clips.push((Sound::Step(ground), step(ground, 100 + v * 17 + ground as u32)));

@@ -680,11 +680,29 @@ pub enum Special {
     Plague,
     /// Seeking stars, a barrage of them
     Starfall,
+    /// Leaping high and bringing the weapon down where it lands
+    Skyfall,
+    /// Standing guard, turning the next blow aside and answering it
+    Riposte,
+    /// A fan of arrows pinning what they hit
+    Volley,
+    /// Lightning leaping from one enemy to the next
+    Stormchain,
+    /// A wave rolling out ahead, sweeping everything along
+    Riptide,
+    /// Flame poured out of the weapon
+    Breath,
 }
 
 impl Special {
     pub fn name(self) -> &'static str {
         match self {
+            Special::Skyfall => "Skyfall",
+            Special::Riposte => "Riposte",
+            Special::Volley => "Pinning Volley",
+            Special::Stormchain => "Stormchain",
+            Special::Riptide => "Riptide",
+            Special::Breath => "Dragon's Breath",
             Special::Meteors => "Meteor Shower",
             Special::Blizzard => "Blizzard",
             Special::Tempest => "Tempest",
@@ -702,6 +720,12 @@ impl Special {
 
     pub fn description(self) -> &'static str {
         match self {
+            Special::Skyfall => "Leap high and bring your weapon down where you land.",
+            Special::Riposte => "Raise your guard; the next blow is turned aside and answered threefold.",
+            Special::Volley => "Loose a fan of arrows that pins whatever they hit.",
+            Special::Stormchain => "Lightning leaps from you through the pack, stronger with every jump.",
+            Special::Riptide => "A wave rolls out ahead, sweeping everything along before it crashes down.",
+            Special::Breath => "Brace and pour a roaring gout of flame from your weapon.",
             Special::Meteors => "Fireballs rain down round where you aim.",
             Special::Blizzard => "An ice storm where you aim freezes everything in it.",
             Special::Tempest => "Lightning strikes every enemy within 25 meters.",
@@ -1657,6 +1681,8 @@ pub const ROOTS: usize = PILLAR + 1;
 pub const THORN: usize = ROOTS + 1;
 /// A glowing red ring a meter round, flat round 0, to show where something's coming down
 pub const RING: usize = THORN + 1;
+/// A ball of web, strands trailing off it, its middle at 0
+pub const WEB: usize = RING + 1;
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
 /// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the shaft
@@ -1887,6 +1913,15 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     models.push(voxelize(&p, MODEL_RES));
     let p: Vec<Part> = (0..96).map(|k| k as f64 / 96.0 * TAU).map(|a| ball([a.cos(), a.sin(), 0.0], 0.035, GLOW_BLOOD)).collect();
     models.push(voxelize(&p, RING_RES));
+    // A ball of web, venom glowing through it, strands trailing off every way
+    let mut seed = 0x3eb;
+    let mut p = vec![ball([0.0, 0.0, 0.0], 0.12, GLOW_POISON), ball([0.0, 0.0, 0.0], 0.25, FOAM)];
+    for _ in 0..9 {
+        let d = [random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(0.1);
+        p.push(limb([0.0, 0.0, 0.0], d.map(|v| v / n * 0.5), 0.05, 0.015, FOAM));
+    }
+    models.push(voxelize(&p, MODEL_RES));
     models
 }
 
