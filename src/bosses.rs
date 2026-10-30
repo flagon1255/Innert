@@ -16,6 +16,10 @@ const NOTICE: f64 = 24.0;
 const GIVE_UP: f64 = 50.0;
 /// The furthest from home it'll follow them
 const LEASH: f64 = 60.0;
+/// The same for the walking dead
+const MONSTER_NOTICE: f64 = 16.0;
+const MONSTER_GIVE_UP: f64 = 28.0;
+const MONSTER_LEASH: f64 = 35.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Move {
@@ -47,9 +51,11 @@ pub enum Move {
     Web,
     /// A line of roots bursting up one after another, dragging the player in
     RootWave,
+    /// Calling up monsters of its kind to help it: a howl, the dead rising, spiderlings
+    Summon,
 }
 
-const MOVES: usize = 14;
+const MOVES: usize = 15;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -103,6 +109,8 @@ pub enum Deed {
     RootWave { from: Vector3<f64>, to: Vector3<f64>, lanes: usize },
     /// The `k`th swipe of a maul starting, here
     Swipe(Vector3<f64>, usize),
+    /// `count` monsters of `look` called up round `at`
+    Summon { at: Vector3<f64>, look: Look, count: usize },
 }
 
 pub struct Boss {
@@ -133,13 +141,27 @@ pub struct Boss {
 }
 
 /// Seconds a boss takes easing from one pose to the next
-const EASE: f64 = 0.1;
+const EASE: f64 = 0.14;
 
 /// How long each move takes to get ready for, to do, and to get over, in seconds, and then how
 /// long until it can be made again
 fn windup(look: Look, m: Move) -> f64 {
+    // Monsters are quick about it, but not so quick it can't be seen coming
+    if look.is_monster() {
+        return match (look, m) {
+            (_, Move::Roar) => 0.0,
+            (Look::Wolf, _) => 0.5,
+            (Look::Spiderling, Move::Leap) => 0.45,
+            (Look::Spiderling, _) => 0.4,
+            (Look::Zombie, _) => 0.75,
+            (Look::Skeleton, _) => 0.8,
+            _ => 0.85,
+        };
+    }
     match (look.build(), m) {
         (_, Move::Roar) => 0.0,
+        (_, Move::Summon) => 1.2,
+        (Some(Build::Wolf), Move::Slam) => 0.55,
         (Some(Build::Drake), Move::Slam) => 0.6,
         (Some(Build::Bear), Move::Slam) => 0.8,
         (Some(Build::Spider), Move::Slam) => 0.7,
@@ -156,15 +178,17 @@ fn windup(look: Look, m: Move) -> f64 {
     }
 }
 
-fn duration(m: Move) -> f64 {
+fn duration(look: Look, m: Move) -> f64 {
     match m {
+        Move::Slam if look.is_monster() => 0.35,
         Move::Slam => 0.55,
         Move::Throw => 0.45,
         Move::Breath => 1.8,
         Move::Spit => 0.4,
         Move::Charge => 2.4,
         Move::Roar => 1.4,
-        Move::Leap => LEAP_TIME,
+        Move::Leap => leap(look).0,
+        Move::Summon => 1.0,
         Move::Roots => 0.6,
         Move::Volley => 0.5,
         Move::Quake => QUAKE_REACH / QUAKE_PACE,
@@ -175,8 +199,12 @@ fn duration(m: Move) -> f64 {
     }
 }
 
-fn recovery(m: Move) -> f64 {
+fn recovery(look: Look, m: Move) -> f64 {
     match m {
+        Move::Slam if matches!(look, Look::Skeleton | Look::ArmoredSkeleton) => 1.0,
+        Move::Slam if matches!(look, Look::Zombie | Look::ArmoredZombie) => 0.9,
+        Move::Slam | Move::Leap if look.is_monster() => 0.5,
+        Move::Summon => 0.8,
         Move::Slam => 0.9,
         Move::Throw => 0.7,
         Move::Breath => 1.0,
@@ -193,8 +221,16 @@ fn recovery(m: Move) -> f64 {
     }
 }
 
-fn cooldown(m: Move) -> f64 {
+fn cooldown(look: Look, m: Move) -> f64 {
     match m {
+        Move::Slam if matches!(look, Look::Wolf) => 1.6,
+        Move::Slam if look == Look::Spiderling => 1.4,
+        Move::Slam if look.is_monster() => 2.4,
+        Move::Leap if look == Look::Wolf => 6.0,
+        Move::Leap if look.is_monster() => 5.0,
+        Move::Summon if look.build() == Some(Build::Spider) => 14.0,
+        Move::Summon if look.build() == Some(Build::Wolf) => 20.0,
+        Move::Summon => 24.0,
         Move::Slam => 2.6,
         Move::Throw => 4.5,
         Move::Breath => 6.5,
@@ -211,9 +247,51 @@ fn cooldown(m: Move) -> f64 {
     }
 }
 
-/// Seconds a leap's in the air, and how far round in meters it hurts where it comes down
-const LEAP_TIME: f64 = 0.8;
-const LEAP_RADIUS: f64 = 3.0;
+/// A leap: seconds in the air, how high it goes and how far round it hurts where it comes down in
+/// meters, and how hard
+fn leap(look: Look) -> (f64, f64, f64, f64) {
+    match look {
+        Look::Wolf => (0.6, 1.4, 1.8, 12.0),
+        Look::Spiderling => (0.5, 1.0, 1.2, 8.0),
+        Look::Direwolf | Look::WinterAlpha => (0.7, 3.0, 3.0, 24.0),
+        _ => (0.8, 4.0, 3.0, 26.0),
+    }
+}
+
+/// How near it comes before stopping to strike, in meters, and how far short of the player a
+/// leap of its comes down
+fn closeness(look: Look) -> (f64, f64) {
+    match look {
+        Look::Wolf => (1.3, 0.8),
+        Look::Skeleton | Look::ArmoredSkeleton => (1.6, 0.5),
+        Look::Zombie | Look::ArmoredZombie => (1.4, 0.5),
+        Look::Spiderling => (0.9, 0.5),
+        _ if look.build() == Some(Build::Drake) => (6.0, look.body().1 + 1.0),
+        _ => (3.0, look.body().1 + 1.0),
+    }
+}
+
+/// A blow at what's in front: how far ahead it lands and how far round it reaches in meters, how
+/// hard it hits, and how big a hole it blows
+fn slam(look: Look) -> (f64, f64, f64, f64) {
+    match look {
+        Look::Wolf => (1.0, 1.3, 8.0, 0.0),
+        Look::Spiderling => (0.6, 1.0, 5.0, 0.0),
+        Look::Skeleton => (1.4, 1.6, 20.0, 0.0),
+        Look::ArmoredSkeleton => (1.4, 1.7, 23.0, 0.0),
+        Look::Zombie => (1.1, 1.5, 14.0, 0.0),
+        Look::ArmoredZombie => (1.1, 1.6, 17.0, 0.0),
+        Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
+        _ => match look.build() {
+            Some(Build::Golem) => (2.0, 3.4, 32.0, 1.1),
+            Some(Build::Bear) => (2.2, 2.8, 26.0, 0.7),
+            Some(Build::Spider) => (1.8, 2.4, 20.0, 0.3),
+            Some(Build::Treant) => (2.4, 3.6, 30.0, 0.8),
+            Some(Build::Wolf) => (2.2, 3.0, 24.0, 0.4),
+            _ => (2.0, 2.6, 22.0, 0.5),
+        },
+    }
+}
 /// Radians a second it can turn while breathing, slow enough to run out of the way of
 const BREATH_TURN: f64 = 0.7;
 /// How far a quake's shockwave runs out in meters, and how fast
@@ -273,8 +351,8 @@ impl Boss {
     pub fn pose(&self) -> Option<usize> {
         let (now, before, since) = self.posed;
         if since < EASE {
-            if let Some(halfway) = animals::tween(before.unwrap_or(0), now.unwrap_or(0)) {
-                return Some(halfway);
+            if let Some(between) = animals::tween(before.unwrap_or(0), now.unwrap_or(0), since / EASE) {
+                return Some(between);
             }
         }
         now
@@ -285,6 +363,9 @@ impl Boss {
         match (self.phase, self.look.build()) {
             (Phase::Act(Move::Roar, _), Some(Build::Drake)) => Some(POSE_SPECIAL),
             (Phase::Act(Move::Roar, _), _) => Some(POSE_WINDUP),
+            // A wolf crouches to spring; howling, the dead raising their arms, calling the rest up
+            (Phase::WindUp(Move::Leap, _), Some(Build::Wolf)) => Some(POSE_WINDUP),
+            (Phase::WindUp(Move::Summon, _) | Phase::Act(Move::Summon, _), _) => Some(POSE_SPECIAL),
             (Phase::WindUp(Move::Throw | Move::Charge | Move::Leap | Move::Roots | Move::Storm | Move::Maul, _), _) => Some(POSE_SPECIAL),
             (Phase::WindUp(Move::Slam | Move::Breath | Move::Spit | Move::Volley | Move::Quake | Move::Web | Move::RootWave, _), _) => Some(POSE_WINDUP),
             (Phase::Act(Move::Roots | Move::Storm, _), _) => Some(POSE_SPECIAL),
@@ -299,13 +380,21 @@ impl Boss {
     fn choose(&self, distance: f64) -> Option<Move> {
         let ready = |m: Move| self.cooldowns[m as usize] <= 0.0;
         let within = |m: Move, near: f64, far: f64| (near..far).contains(&distance) && ready(m);
+        let monster = self.look.is_monster();
         let moves: &[(Move, f64, f64)] = match self.look.build() {
+            // Monsters bite or swing at what's in reach, and some pounce
+            Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
+            Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
+            _ if matches!(self.look, Look::Skeleton | Look::ArmoredSkeleton) => &[(Move::Slam, 0.0, 2.8)],
+            Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
             // Ranges meeting, so there's nowhere to stand it won't do something
             Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
             Some(Build::Drake) => &[(Move::Slam, 0.0, 4.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 10.0, 30.0), (Move::Spit, 4.0, 35.0)],
             Some(Build::Bear) => &[(Move::Slam, 0.0, 4.0), (Move::Maul, 2.5, 8.0), (Move::Charge, 4.0, 32.0)],
-            Some(Build::Spider) => &[(Move::Slam, 0.0, 3.5), (Move::Web, 6.0, 20.0), (Move::Leap, 7.0, 22.0), (Move::Spit, 3.5, 25.0)],
+            Some(Build::Spider) => &[(Move::Slam, 0.0, 3.5), (Move::Summon, 0.0, 30.0), (Move::Web, 6.0, 20.0), (Move::Leap, 7.0, 22.0), (Move::Spit, 3.5, 25.0)],
             Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],
+            Some(Build::Wolf) => &[(Move::Slam, 0.0, 3.2), (Move::Summon, 0.0, 30.0), (Move::Maul, 2.5, 8.0), (Move::Leap, 7.0, 22.0)],
+            Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
             None => &[],
         };
         moves.iter().find(|&&(m, near, far)| within(m, near, far)).map(|&(m, _, _)| m)
@@ -318,13 +407,16 @@ fn on_body(a: &Animal, point: [f64; 3], vpm: f64) -> Vector3<f64> {
     a.position + Vector3::new(c * point[0] - s * point[1], s * point[0] + c * point[1], point[2]) * vpm
 }
 
-/// Where fire, frost or venom comes out of it
+/// Where fire, frost or venom comes out of it: its mouth, or the hand the dead cast with
 fn mouth(a: &Animal, vpm: f64) -> Vector3<f64> {
-    match a.look.build() {
-        Some(Build::Spider) => on_body(a, [1.35, 0.0, 1.1], vpm),
-        Some(Build::Treant) => on_body(a, [0.6, 0.0, 3.0], vpm),
-        _ => on_body(a, [2.3, 0.0, 1.55], vpm),
-    }
+    let point = match a.look.build() {
+        Some(Build::Spider) => [1.35, 0.0, 1.1],
+        Some(Build::Treant) => [0.6, 0.0, 3.0],
+        Some(Build::Wolf) => [0.95, 0.0, 0.8],
+        Some(Build::Undead) => [0.42, 0.26, 1.35],
+        _ => [2.3, 0.0, 1.55],
+    };
+    on_body(a, point.map(|v| v * a.look.scale()), vpm)
 }
 
 fn heading_to(from: Vector3<f64>, to: Vector3<f64>) -> f64 {
@@ -351,18 +443,28 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let distance = player.map_or(f64::MAX, |p| (p - a.position).xy().norm() / vpm);
     let from_home = (a.position - boss.home).xy().norm() / vpm;
 
-    // Turning on the player when they come near, and giving up if they get away
-    if player.is_some() && distance < NOTICE {
+    // Turning on the player when they come near, not through the floor of a dungeon, and giving
+    // up if they get away. Monsters don't go as far.
+    let monster = look.is_monster();
+    let (notice, give_up, leash) = match look {
+        Look::Wolf => (22.0, 34.0, 50.0),
+        Look::Spiderling => (14.0, 24.0, 32.0),
+        _ if monster => (MONSTER_NOTICE, MONSTER_GIVE_UP, MONSTER_LEASH),
+        _ => (NOTICE, GIVE_UP, LEASH),
+    };
+    let level = player.is_some_and(|p| (p.z - a.position.z).abs() < 5.0 * vpm);
+    if level && distance < notice {
         boss.engaged = true;
     }
-    if boss.engaged && (player.is_none() || distance > GIVE_UP || from_home > LEASH) {
+    if boss.engaged && (player.is_none() || distance > give_up || from_home > leash) {
         boss.calm();
     }
     let busy = matches!(boss.phase, Phase::WindUp(..) | Phase::Act(..));
     if boss.engaged && boss.phase == Phase::Roam {
-        boss.phase = Phase::Act(Move::Roar, 0.0);
+        // A monster gives a snarl or a rattle and comes straight on
+        boss.phase = if monster { Phase::Chase } else { Phase::Act(Move::Roar, 0.0) };
         boss.deeds.push(Deed::Roar { at: a.position, angry: false });
-    } else if boss.engaged && !boss.enraged && vitality < 0.5 && !busy {
+    } else if boss.engaged && !boss.enraged && !monster && vitality < 0.5 && !busy {
         boss.enraged = true;
         boss.phase = Phase::Act(Move::Roar, 0.0);
         boss.deeds.push(Deed::Roar { at: a.position, angry: true });
@@ -371,7 +473,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let quick: f64 = if boss.enraged { 0.75 } else { 1.0 };
 
     // The heavy ones shake the ground as they walk
-    let heavy = matches!(look.build(), Some(Build::Golem | Build::Bear | Build::Treant));
+    let heavy = matches!(look.build(), Some(Build::Golem | Build::Bear | Build::Treant)) || look == Look::GraveKnight;
     if heavy && a.speed > 0.3 && (a.phase * 2.0).floor() != (boss.last_step * 2.0).floor() {
         boss.deeds.push(Deed::Stomp(a.position));
     }
@@ -402,10 +504,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     Phase::WindUp(m, 0.0)
                 }
                 None => {
-                    let close = match look.build() {
-                        Some(Build::Drake) => 6.0,
-                        _ => 3.0,
-                    };
+                    // Monsters come right up to the player
+                    let close = closeness(look).0;
                     a.mood = if distance < close {
                         Mood::Idle
                     } else if matches!(look.build(), Some(Build::Bear | Build::Treant)) {
@@ -433,17 +533,18 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 Phase::WindUp(m, t)
             } else {
                 // Now it does it
-                boss.cooldowns[m as usize] = cooldown(m) * quick;
+                boss.cooldowns[m as usize] = cooldown(look, m) * quick;
                 match m {
                     Move::Slam => {
-                        let (reach, radius, damage, crater) = match look.build() {
-                            Some(Build::Golem) => (2.0, 3.4, 32.0, 1.1),
-                            Some(Build::Bear) => (2.2, 2.8, 26.0, 0.7),
-                            Some(Build::Spider) => (1.8, 2.4, 20.0, 0.3),
-                            Some(Build::Treant) => (2.4, 3.6, 30.0, 0.8),
-                            _ => (2.0, 2.6, 22.0, 0.5),
-                        };
+                        let (reach, radius, damage, crater) = slam(look);
                         boss.deeds.push(Deed::Slam { at: a.position + forward * reach * vpm, radius, damage, crater });
+                    }
+                    // The dead rising, a pack answering a howl, spiderlings swarming out
+                    Move::Summon => {
+                        if let Some(brood) = look.brood() {
+                            let count = if brood == Look::Spiderling { 3 } else { 2 };
+                            boss.deeds.push(Deed::Summon { at: a.position, look: brood, count });
+                        }
                     }
                     Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05], vpm), to: boss.aim }),
                     Move::Spit => boss.deeds.push(Deed::Spit { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
@@ -453,9 +554,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         a.heading = a.target_heading;
                     }
                     Move::Leap => {
-                        // Coming down just short of the player, not on top of them
+                        // Coming down just short of the player, not on top of them; a monster
+                        // right in front of them
                         let off = boss.aim - a.position;
-                        let short = Vector3::new(off.x, off.y, 0.0).try_normalize(1e-6).unwrap_or(forward) * (look.body().1 + 1.0) * vpm;
+                        let short = Vector3::new(off.x, off.y, 0.0).try_normalize(1e-6).unwrap_or(forward) * closeness(look).1 * vpm;
                         // On the ground there with room over it, not in the air or in a wall; where
                         // the player stands if there's nowhere like that
                         let to = boss.aim - short;
@@ -492,7 +594,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         Phase::Act(m, t) => {
             let t = t + dt;
             a.mood = Mood::Idle;
-            let mut over = t >= duration(m);
+            let mut over = t >= duration(look, m);
             match m {
                 Move::Breath => {
                     // Sweeping slowly round after the player as it breathes, along the way it's
@@ -527,14 +629,14 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 // Through the air in an arc, coming down hard where the player was
                 Move::Leap => {
                     let (from, to) = boss.leap;
-                    let f = (t / LEAP_TIME).min(1.0);
-                    let height = 4.0 * vpm * (PI * f).sin();
-                    a.position = from.lerp(&to, f) + Vector3::new(0.0, 0.0, height);
+                    let (time, high, radius, damage) = leap(look);
+                    let f = (t / time).min(1.0);
+                    a.position = from.lerp(&to, f) + Vector3::new(0.0, 0.0, high * vpm * (PI * f).sin());
                     a.speed = 0.0;
-                    boss.deeds.push(Deed::Mark { at: to, radius: LEAP_RADIUS, closing: 1.0 - f });
+                    boss.deeds.push(Deed::Mark { at: to, radius, closing: 1.0 - f });
                     if over {
                         a.position = to;
-                        boss.deeds.push(Deed::Slam { at: to, radius: LEAP_RADIUS, damage: 26.0, crater: 0.6 });
+                        boss.deeds.push(Deed::Slam { at: to, radius, damage, crater: if monster { 0.0 } else { 0.6 } });
                         boss.deeds.push(Deed::Stomp(to));
                     }
                 }
@@ -582,7 +684,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 }
                 _ => {}
             }
-            if over { Phase::Recover(recovery(m) * quick) } else { Phase::Act(m, t) }
+            if over { Phase::Recover(recovery(look, m) * quick) } else { Phase::Act(m, t) }
         }
         Phase::Recover(t) => {
             a.mood = Mood::Idle;

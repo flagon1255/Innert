@@ -275,7 +275,7 @@ struct WindowBuild {
 // far from its middle, in meters, the piece around it is built and moved over to.
 const RECENTER_M: f64 = 30.0;
 /// The most flames and crystals lighting things up at once, nearest the camera first
-const MAX_LIGHTS: usize = 24;
+const MAX_LIGHTS: usize = 16;
 /// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
 const LIGHT_CACHE_ENTRIES: u64 = 1 << 21;
 /// Has to match CACHE_WORDS in shaders\traverse.comp
@@ -1249,8 +1249,13 @@ impl App {
             terrain.grass_tufts = v == "true" || v == "1";
         }
         let rivers = Arc::new(RiverCache::default());
+        // For trying out a dungeon: `--set dungeon=1` starts at the way into the nearest one
+        let dungeon = setting("dungeon").and_then(|_| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.nearest_dungeon([112.0, 112.0]))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
-        let start_in = setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0]));
+        let start_in = dungeon.map(|d| [d[0], d[1]]).or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
             [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2).div_euclid(64) * 64)
@@ -1280,7 +1285,24 @@ impl App {
         let input = WinitInputHelper::new();
 
         let mut camera = scene.initial_camera();
-        if start_in.is_some() {
+        if let Some(door) = dungeon {
+            // On the landing in front of the door looking towards the halls below, or with
+            // `--set dungeon=hall` or `boss` in the hall nearest it or the boss's
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let mut eye = at(door) + Vector3::new(0.0, 0.0, 1.7 * vpm);
+            let halls: Vec<(&str, Vector3<f64>)> = landscape.as_ref().map_or(Vec::new(), |l| l.sites().iter().filter(|s| s.kind.starts_with("dungeon")).map(|s| (s.kind, at(s.position))).collect());
+            let nearest = |kind: &str, from: Vector3<f64>| halls.iter().filter(|(k, _)| *k == kind).map(|&(_, p)| p).min_by(|a, b| (a - from).norm().total_cmp(&(b - from).norm()));
+            let hall = nearest("dungeon hall", eye);
+            match setting("dungeon") {
+                Some("hall") => eye = hall.map_or(eye, |h| h + Vector3::new(-3.0 * vpm, 0.0, 1.7 * vpm)),
+                Some("boss") => eye = nearest("dungeon", eye).map_or(eye, |h| h + Vector3::new(-7.0 * vpm, 0.0, 1.7 * vpm)),
+                _ => {}
+            }
+            camera.position = voxels_to_camera(eye, world.size);
+            let towards = hall.filter(|h| (h - eye).xy().norm() > vpm).map_or(Vector3::x(), |h| Vector3::new(h.x - eye.x, h.y - eye.y, 0.0).normalize());
+            camera.look_direction(towards + Vector3::new(0.0, 0.0, -0.2));
+        } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
             let ground = (0..sz).rev().find(|&z| !worldgen::is_passable(world.material_at(sx / 2, sy / 2, z))).unwrap_or(0);
@@ -1304,7 +1326,9 @@ impl App {
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
-        let player = walk.then(|| Player::on_dry_ground(camera_to_voxels(camera.position, world.size), &world, &water_level));
+        // In a dungeon, right where the camera is rather than up on the ground over it
+        let eye = camera_to_voxels(camera.position, world.size);
+        let player = walk.then(|| if dungeon.is_some() { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -1332,7 +1356,7 @@ impl App {
         // try fighting it
         let boss = setting("boss").and_then(|name| {
             let named = |l: &animals::Look| format!("{l:?}").eq_ignore_ascii_case(name) || l.name().replace(' ', "").eq_ignore_ascii_case(name);
-            animals::Look::ALL.into_iter().find(|l| l.is_boss() && named(l))
+            animals::Look::ALL.into_iter().find(|l| l.build().is_some() && named(l))
         });
         if let Some(look) = boss {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
@@ -1410,8 +1434,9 @@ impl App {
             camera,
             move_speed: scene.initial_move_speed(),
             render_mode: RenderMode::Shaded,
-            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.35 } else { 0.5 }),
-            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.45 } else { 0.6 }),
+            // The same moving or still, so stopping doesn't cost more rays and rebuild every image
+            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.33 } else { 0.45 }),
+            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.33 } else { 0.45 }),
             still_frames: 0,
             last_camera_view: None,
 
@@ -1578,13 +1603,17 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick >= BOSS_CHANCE {
+                // Every dungeon's deepest hall has its Grave Knight; only some ruins have a boss
+                if pick >= BOSS_CHANCE && site.kind != "dungeon" {
                     return None;
                 }
                 let look = match site.kind {
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
-                    "castle" if pick % 2 == 1 => animals::Look::Ironhide,
+                    "dungeon" => animals::Look::GraveKnight,
+                    "castle" if pick % 3 == 1 => animals::Look::Ironhide,
+                    "castle" if pick % 3 == 2 => animals::Look::GraveKnight,
                     "castle" | "desert ruins" => animals::Look::Golem,
+                    "watchtower" | "colonnade" if pick % 2 == 1 => animals::Look::Direwolf,
                     "watchtower" | "pyramid" | "flooded church" => animals::Look::Drake,
                     "colonnade" => animals::Look::Ironhide,
                     "ravine" | "crevice" => animals::Look::Spider,
@@ -1593,13 +1622,21 @@ impl App {
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "crevice") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "ravine" | "crevice" | "dungeon") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
             .collect();
+        // Monsters haunt the other halls of dungeons
+        let dens: Vec<game::Den> = landscape
+            .sites()
+            .iter()
+            .filter(|site| site.kind == "dungeon hall")
+            .map(|site| game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64) })
+            .collect();
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
+        self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());

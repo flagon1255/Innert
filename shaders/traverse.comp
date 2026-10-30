@@ -153,6 +153,7 @@ const uint TINT_FROZEN = 2;
 const uint TINT_POISONED = 3;
 const uint TINT_SHOCKED = 4;
 const uint TINT_CHILLED = 5;
+const uint TINT_HIT = 6;
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
 };
@@ -947,6 +948,12 @@ vec3 localLight(vec3 surface, vec3 normal, uint which) {
         float n_dot_l = dot(normal, dir);
         if (n_dot_l <= 0)
         continue;
+        float meters = d / vpm;
+        float fade = 1 - smoothstep(0.5, 1.0, d / light.position.w);
+        vec3 lit = light.color.rgb * n_dot_l * fade / (0.3 + meters * meters);
+        // Too faint to show: not worth a ray to see if it's in shadow
+        if (max(lit.r, max(lit.g, lit.b)) < 0.02)
+        continue;
         if ((pc.flags & FLAG_SHADOWS) != 0) {
             Hit blocker;
             uint steps = 0;
@@ -954,9 +961,7 @@ vec3 localLight(vec3 surface, vec3 normal, uint which) {
             if (trace(surface, dir, true, d - 0.35 * vpm, blocker, steps))
             continue;
         }
-        float meters = d / vpm;
-        float fade = 1 - smoothstep(0.5, 1.0, d / light.position.w);
-        total += light.color.rgb * n_dot_l * fade / (0.3 + meters * meters);
+        total += lit;
     }
     return total;
 }
@@ -988,6 +993,11 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     if (hit.level != ANIMAL)
     return vec3(0);
     uint tint = animals[hit.instance].info.z;
+    // Struck: flashing white for a moment
+    if (tint == TINT_HIT) {
+        albedo = mix(albedo, vec3(1.0), 0.75);
+        return vec3(2.0);
+    }
     // A few voxels at a time flare up, different ones every few frames
     float flare = float(hash(hit.coord + uvec3(0, 0, uint(pc.haze.y * 14.0) * 31u)) & 0xFFu) / 255.0;
     flare = flare * flare * flare;
@@ -1822,7 +1832,9 @@ vec3 shadeWaterVoxel(vec3 origin, vec3 dir, WaterHit water) {
 
 vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide) {
     Hit hit;
-    bool solid = trace(origin, dir, false, FLT_MAX, hit, steps);
+    // Past where everything's faded into the sky there's no need to look any further
+    float far = pc.haze.w > 0 ? pc.haze.w : FLT_MAX;
+    bool solid = trace(origin, dir, false, far, hit, steps);
     g_animal_limit = SECONDARY_ANIMALS;
     g_sway = false;
     // Leaves blown aside are lit as they are where they grow, so their light and shade move with
@@ -1832,7 +1844,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         hit.shift = ivec3(0);
     }
     WaterHit water;
-    bool wet = traceWater(origin, dir, solid ? hit.t : FLT_MAX, water);
+    bool wet = traceWater(origin, dir, solid ? hit.t : far, water);
 
     GrassHit grass;
     if ((pc.flags & FLAG_GRASS) != 0 && traceGrass(origin, dir, wet ? water.t : (solid ? hit.t : FLT_MAX), grass)) {

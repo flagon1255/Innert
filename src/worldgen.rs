@@ -1016,6 +1016,11 @@ impl Frame {
     fn heading(&self, angle: f32) -> f32 {
         self.f[1].atan2(self.f[0]) + angle
     }
+
+    /// Which way going `d` along u and v goes in the world
+    fn dir(&self, d: [f32; 2]) -> [f32; 2] {
+        [self.f[0] * d[0] - self.f[1] * d[1], self.f[1] * d[0] + self.f[0] * d[1]]
+    }
 }
 
 /// A brick wall from (u0, v0) to (u1, v1) of a building at `at`, in pieces broken off at heights
@@ -1051,6 +1056,258 @@ fn skull(features: &mut Features, at: Vec3, rng: &mut Rng) {
 /// better what's in it is likely to be: `luck` as for Library::roll_rarity().
 fn chest(features: &mut Features, at: Vec3, heading: f32, luck: f32) {
     features.props.push(Prop { kind: PropKind::Chest, position: at, heading, luck });
+}
+
+/// Ravines start at most one in each RAVINE_CELL square, and reach at most RAVINE_REACH from there
+const RAVINE_CELL: f32 = 100.0;
+const RAVINE_REACH: f32 = 100.0;
+
+/// Dungeons: at most one in each DUNGEON_CELL square, nothing of it further than DUNGEON_REACH
+/// along either axis from its doorway, all in meters
+const DUNGEON_CELL: f32 = 300.0;
+const DUNGEON_REACH: f32 = 56.0;
+/// How thick the brick round the halls and passages of dungeons is
+const DUNGEON_WALL: f32 = 0.6;
+/// At least how much ground there is over the brick roofs of halls
+const DUNGEON_COVER: f32 = 1.5;
+/// Steps in dungeons: how high each is, and how deep. Floors are all at whole steps.
+const STAIR_RISE: f32 = 0.25;
+const STAIR_RUN: f32 = 0.4;
+/// Half how wide the passages of dungeons are, and how high
+const PASSAGE_HALF: f32 = 1.3;
+const PASSAGE_HEIGHT: f32 = 3.25;
+/// How high the crypt over the stairs down into a dungeon is inside, above its doorway
+const CRYPT_HEIGHT: f32 = 3.5;
+/// How deep the steps down from the landing in front of the crypt are
+const LANDING_STEP: f32 = 0.45;
+
+/// To the nearest whole step
+fn snap(z: f32) -> f32 {
+    (z / STAIR_RISE).round() * STAIR_RISE
+}
+
+/// Down to a whole step
+fn snap_down(z: f32) -> f32 {
+    (z / STAIR_RISE).floor() * STAIR_RISE
+}
+
+/// Whether two rectangles, x0, y0, x1, y1, come within `margin` of each other
+fn overlaps(a: [f32; 4], b: [f32; 4], margin: f32) -> bool {
+    a[0] < b[2] + margin && b[0] < a[2] + margin && a[1] < b[3] + margin && b[1] < a[3] + margin
+}
+
+fn grown(r: [f32; 4], by: f32) -> [f32; 4] {
+    [r[0] - by, r[1] - by, r[2] + by, r[3] + by]
+}
+
+/// The rectangle `half` either way of `middle`
+fn around(middle: [f32; 2], half: [f32; 2]) -> [f32; 4] {
+    [middle[0] - half[0], middle[1] - half[1], middle[0] + half[0], middle[1] + half[1]]
+}
+
+/// A box of brick over rectangle `r` in the frame `at`, in the ground or out of it
+fn stone_block(at: &Frame, r: [f32; 4], z: [f32; 2], stone: (u8, u8)) -> Shape {
+    at.block([r[0], r[2]], [r[1], r[3]], z, stone.0, stone.1).placed(Placement::Clear).patterned(Pattern::Bricks)
+}
+
+/// Empty space over rectangle `r` in the frame `at`, cut out of the ground and anything else
+fn hollow(at: &Frame, r: [f32; 4], z: [f32; 2]) -> Shape {
+    at.room([r[0], r[2]], [r[1], r[3]], z)
+}
+
+/// A round, carved pillar at `q` in the frame `at`, from `floor` up to `ceiling`, with a square
+/// foot and head, or broken off with chunks of it lying round its foot
+#[allow(clippy::too_many_arguments)]
+fn pillar(s: &mut Vec<Shape>, at: &Frame, q: [f32; 2], floor: f32, ceiling: f32, r: f32, stone: (u8, u8), broken: bool, rng: &mut Rng) {
+    let top = if broken { floor + rng.range(0.6, (ceiling - floor) * 0.45) } else { ceiling };
+    s.push(stone_block(at, around(q, [r + 0.18; 2]), [floor - 0.1, floor + 0.3], stone));
+    if broken {
+        for _ in 0..3 {
+            let (a, d, size) = (rng.next() * TAU, rng.range(r + 0.4, r + 1.3), rng.range(0.2, 0.4));
+            let c = [q[0] + a.cos() * d, q[1] + a.sin() * d];
+            s.push(stone_block(at, around(c, [size, size * rng.range(0.7, 1.3)]), [floor - 0.05, floor + size * 0.9], stone));
+        }
+    } else {
+        s.push(stone_block(at, around(q, [r + 0.22; 2]), [ceiling - 0.4, ceiling + 0.1], stone));
+    }
+    s.push(
+        Shape::capsule(at.point(q[0], q[1], floor), at.point(q[0], q[1], top), r, r * 0.9, stone.0, stone.1, false)
+            .placed(Placement::Clear)
+            .patterned(Pattern::Carved),
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HallKind {
+    /// On the way down to the boss
+    Main,
+    /// Off to one side, with a chest in it
+    Side,
+    /// The deepest and biggest, where the boss waits
+    Boss,
+}
+
+/// A hall of a dungeon, in the dungeon's frame and in meters: the middle of its floor, half its
+/// size along u and v, the height of its floor and how high it is inside
+#[derive(Clone, Copy)]
+struct Hall {
+    middle: [f32; 2],
+    half: [f32; 2],
+    floor: f32,
+    height: f32,
+    /// Which way from its middle its way in is, along u or v
+    door: [f32; 2],
+    kind: HallKind,
+    /// The hall its way in comes from, None for the one at the foot of the stairs down
+    parent: Option<usize>,
+}
+
+impl Hall {
+    /// Its floor from wall to wall, u0, v0, u1, v1
+    fn rect(&self) -> [f32; 4] {
+        around(self.middle, self.half)
+    }
+
+    /// Half its size along `d`, one of the axes
+    fn reach(&self, d: [f32; 2]) -> f32 {
+        d[0].abs() * self.half[0] + d[1].abs() * self.half[1]
+    }
+}
+
+/// A straight passage of a dungeon, in its frame and in meters, `PASSAGE_HALF` either side of the
+/// line from `start` going `dir` (along u or v) for `length`. Its floor goes from `from` at the
+/// start down to `to` at the end, by stairs halfway along.
+#[derive(Clone, Copy)]
+struct Passage {
+    start: [f32; 2],
+    dir: [f32; 2],
+    length: f32,
+    from: f32,
+    to: f32,
+    /// How far along from the start it's under the crypt over the stairs down, 0 for none
+    crypt: f32,
+}
+
+impl Passage {
+    /// The point `s` along it and `side` across, in its dungeon's frame
+    fn at(&self, s: f32, side: f32) -> [f32; 2] {
+        let across = [-self.dir[1], self.dir[0]];
+        [self.start[0] + self.dir[0] * s + across[0] * side, self.start[1] + self.dir[1] * s + across[1] * side]
+    }
+
+    /// The part of it from `s[0]` to `s[1]` along, `half` either side of its line, u0, v0, u1, v1
+    fn rect(&self, s: [f32; 2], half: f32) -> [f32; 4] {
+        let (a, b) = (self.at(s[0], -half), self.at(s[1], half));
+        [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])]
+    }
+
+    /// How many steps down it has, and how far along the first of them is
+    fn stairs(&self) -> (usize, f32) {
+        let drops = ((self.from - self.to) / STAIR_RISE).round().max(0.0) as usize;
+        (drops, (self.length - drops.saturating_sub(1) as f32 * STAIR_RUN) * 0.5)
+    }
+
+    /// How far along its `k`th step down is, from 1
+    fn edge(&self, k: usize) -> f32 {
+        self.stairs().1 + (k as f32 - 1.0) * STAIR_RUN
+    }
+
+    /// The height of its floor `s` along
+    fn floor_at(&self, s: f32) -> f32 {
+        let (drops, first) = self.stairs();
+        if drops == 0 || s < first {
+            self.from
+        } else if s >= self.edge(drops) {
+            self.to
+        } else {
+            self.from - (((s - first) / STAIR_RUN).floor() + 1.0) * STAIR_RISE
+        }
+    }
+
+    /// Moves `s` to the middle of the step it's on, if it's on the stairs, so things stand flat
+    fn on_step(&self, s: f32) -> f32 {
+        let (drops, first) = self.stairs();
+        if drops > 1 && s >= first && s < self.edge(drops) {
+            first + ((s - first) / STAIR_RUN).floor() * STAIR_RUN + STAIR_RUN * 0.5
+        } else {
+            s
+        }
+    }
+
+    /// The parts it's built in, each under a ceiling of its own: where along it each starts and
+    /// ends, and its lowest and highest floor. Flat at either end, and flights of four steps.
+    fn parts(&self) -> Vec<([f32; 2], f32, f32)> {
+        let (drops, _) = self.stairs();
+        if drops == 0 {
+            return vec![([0.0, self.length], self.from, self.from)];
+        }
+        let floor = |k: usize| self.from - k as f32 * STAIR_RISE;
+        let mut parts = vec![([0.0, self.edge(1)], self.from, self.from)];
+        let mut k = 1;
+        while k < drops {
+            let last = (k + 3).min(drops - 1);
+            parts.push(([self.edge(k), self.edge(last + 1)], floor(last), floor(k)));
+            k = last + 1;
+        }
+        parts.push(([self.edge(drops), self.length], self.to, self.to));
+        parts
+    }
+}
+
+/// Halls under the ground, joined by passages, and a crypt over the stairs down into them. Laid
+/// out in `at`, facing the way the stairs go down, with the doorway of the crypt at its middle.
+struct Dungeon {
+    at: Frame,
+    /// The floor of the crypt's doorway, and the top of the stairs
+    top: f32,
+    /// How many steps go down from the landing in front of it to the ground round it
+    steps: usize,
+    /// What the walls are made of, and the floors
+    stone: (u8, u8),
+    paving: (u8, u8),
+    snowy: bool,
+    vines: bool,
+    /// Its halls, and the passages into them: `passages[i]` leads into `halls[i]`, the stairs
+    /// down from the crypt into the first
+    halls: Vec<Hall>,
+    passages: Vec<Passage>,
+    seed: u32,
+}
+
+impl Dungeon {
+    /// The landing in front of the crypt and the steps down from it on three sides, u0, v0, u1, v1
+    /// in its frame
+    fn landing(&self, step: usize) -> [f32; 4] {
+        let (front, side) = (DUNGEON_WALL + 2.6 + LANDING_STEP * step as f32, PASSAGE_HALF + DUNGEON_WALL + 1.2 + LANDING_STEP * step as f32);
+        [-front, -side, -DUNGEON_WALL, side]
+    }
+
+    /// The crypt over the stairs down, with the landing and steps in front of it and the rubble
+    /// round it, u0, v0, u1, v1 in its frame
+    fn entrance_rect(&self) -> [f32; 4] {
+        let r = self.landing(self.steps);
+        [r[0] - 3.5, r[1] - 2.5, self.passages[0].crypt + 3.5, r[3] + 2.5]
+    }
+
+    /// Where it all is in the landscape, x0, y0, x1, y1 in meters: the entrance, and the passages
+    /// and halls with the brick round them
+    fn world_rects(&self) -> Vec<[f32; 4]> {
+        let mut rects = vec![self.entrance_rect()];
+        rects.extend(self.passages.iter().map(|p| p.rect([0.0, p.length], PASSAGE_HALF + DUNGEON_WALL)));
+        rects.extend(self.halls.iter().map(|h| grown(h.rect(), DUNGEON_WALL)));
+        rects
+            .into_iter()
+            .map(|r| {
+                let (lo, hi) = self.at.rect([r[0], r[2]], [r[1], r[3]]);
+                [lo[0], lo[1], hi[0], hi[1]]
+            })
+            .collect()
+    }
+
+    /// On the landing in front of the crypt's doorway, in meters
+    fn entrance(&self) -> [f32; 3] {
+        self.at.point(-DUNGEON_WALL - 1.5, 0.0, self.top)
+    }
 }
 
 /// How the leaves on the twigs of a tree look.
@@ -1366,6 +1623,9 @@ struct Features {
     /// Where the ground water lies on has to be found from the voxels, as something's been cut
     /// into it: x0, y0, x1, y1 and how high to look down from
     recuts: Vec<[f32; 5]>,
+    /// Where the ground is built over or cut away, so the grass drawn in the shader doesn't grow
+    /// there: x0, y0, x1, y1
+    holes: Vec<[f32; 4]>,
     sites: Vec<Site>,
 }
 
@@ -1419,7 +1679,7 @@ impl Terrain {
         }
         heights.settle_beds();
 
-        let (objects, features) = terrain.place_objects(heights);
+        let (objects, features) = terrain.place_objects(heights, rivers);
         terrain.objects = objects;
         terrain.features = features;
 
@@ -1484,9 +1744,42 @@ impl Terrain {
         &self.features.lights
     }
 
-    /// The buildings in this piece of the landscape
+    /// The buildings in this piece of the landscape, and the halls of dungeons: "dungeon hall" at
+    /// the middle of each hall's floor, and "dungeon" at the middle of the floor of the deepest,
+    /// the boss's, each facing its way in
     pub fn sites(&self) -> &[Site] {
         &self.features.sites
+    }
+
+    /// Where the way into the nearest dungeon to `near` is, anywhere within about 3 km: the
+    /// landing in front of the doorway of its crypt, in meters. For trying them out. Takes a
+    /// tenth of a second or so, tracing the rivers round each dungeon it looks at.
+    #[allow(dead_code)]
+    pub fn nearest_dungeon(&self, near: [f32; 2]) -> Option<[f32; 3]> {
+        let cache = RiverCache::default();
+        let home = near.map(|v| (v / DUNGEON_CELL).floor() as i32);
+        let mut best: Option<(f32, [f32; 3])> = None;
+        for ring in 0..10i32 {
+            for cy in home[1] - ring..=home[1] + ring {
+                for cx in home[0] - ring..=home[0] + ring {
+                    if (cx - home[0]).abs().max((cy - home[1]).abs()) != ring {
+                        continue;
+                    }
+                    if let Some(d) = self.dungeon_in(cx, cy, &cache) {
+                        let e = d.entrance();
+                        let distance = (e[0] - near[0]).hypot(e[1] - near[1]);
+                        if best.is_none_or(|(b, _)| distance < b) {
+                            best = Some((distance, e));
+                        }
+                    }
+                }
+            }
+            // Any further out are at least this far away
+            if best.is_some_and(|(b, _)| b <= ring as f32 * DUNGEON_CELL) {
+                break;
+            }
+        }
+        best.map(|(_, e)| e)
     }
 
     /// Builds a box of the landscape into voxels. `origin` and `size` are in voxels at
@@ -1654,6 +1947,17 @@ impl Terrain {
         let vpm = heights.voxels_per_meter;
         let seed = self.settings.seed;
         let mut map = vec![0u32; sx * sy];
+        // None where the ground's built over or cut away, in columns of this rectangle
+        let holes: Vec<[i64; 4]> = self
+            .features
+            .holes
+            .iter()
+            .map(|h| {
+                let column = |m: f32, axis: usize| (m * vpm).floor() as i64 - heights.origin[axis];
+                [column(h[0], 0), column(h[1], 1), column(h[2], 0), column(h[3], 1)]
+            })
+            .collect();
+        let holes = &holes;
 
         // Rows split across threads
         let threads = thread::available_parallelism().map_or(4, |n| n.get());
@@ -1664,6 +1968,9 @@ impl Terrain {
                     for (i, value) in chunk.iter_mut().enumerate() {
                         let j = chunk_index * rows_per_thread * sx + i;
                         let (x, y) = ((j % sx) as i64, (j / sx) as i64);
+                        if holes.iter().any(|h| x >= h[0] && y >= h[1] && x < h[2] && y < h[3]) {
+                            continue;
+                        }
                         let column = self.column(heights, x, y);
                         if !is_grassy(column.top) {
                             continue;
@@ -1979,9 +2286,13 @@ impl Terrain {
     /// The rivers running through this piece of the landscape, from springs near enough for their
     /// rivers to reach it
     fn rivers_in(&self, cache: &RiverCache) -> Vec<Arc<Vec<RiverPoint>>> {
+        self.rivers_near(cache, self.lo, self.hi)
+    }
+
+    /// The rivers coming near the rectangle from `lo` to `hi`, in meters, wherever it is
+    fn rivers_near(&self, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<Arc<Vec<RiverPoint>>> {
         let reach = RIVER_STEPS as f32 * 0.5;
         let cell = |v: f32| (v / RIVER_CELL).floor() as i32;
-        let (lo, hi) = (self.lo, self.hi);
         let mut rivers = Vec::new();
         for cy in cell(lo[1] - reach)..=cell(hi[1] + reach) {
             for cx in cell(lo[0] - reach)..=cell(hi[0] + reach) {
@@ -2093,15 +2404,21 @@ impl Terrain {
         points
     }
 
-    /// Trees, plants, rocks, buildings and caves, anywhere in this piece of the landscape. Each is
+    /// Trees, plants, rocks, buildings, dungeons and caves, anywhere in this piece of the landscape. Each is
     /// placed at a spot that only depends on where it is in the whole landscape, so pieces built
     /// around different places agree where they overlap.
-    fn place_objects(&self, heights: &Heights) -> (Vec<Object>, Features) {
+    fn place_objects(&self, heights: &Heights, rivers: &RiverCache) -> (Vec<Object>, Features) {
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
         let mut features = Features::default();
-        // Buildings go first, as where they overlap other things they win
-        let mut objects = self.buildings(heights, &mut features);
+        // Buildings go first, as where they overlap other things they win. None stands over a
+        // dungeon, whose halls go before the caves so no cave breaks into them.
+        let dungeons = self.dungeons(rivers);
+        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).collect();
+        let mut objects = self.buildings(heights, &mut features, &keep_out);
+        for dungeon in &dungeons {
+            objects.push(self.dungeon(dungeon, &mut features));
+        }
         objects.extend(self.caves(&mut features));
         objects.extend(self.ravines(&mut features));
         let footprints = std::mem::take(&mut features.footprints);
@@ -2245,8 +2562,8 @@ impl Terrain {
     }
 
     /// Temples and ruins on flat, dry ground, at most one in each BUILDING_CELL square, and
-    /// gateways over some of the waterfalls
-    fn buildings(&self, heights: &Heights, features: &mut Features) -> Vec<Object> {
+    /// gateways over some of the waterfalls. None where `keep_out` says, x0, y0, x1, y1 in meters.
+    fn buildings(&self, heights: &Heights, features: &mut Features, keep_out: &[[f32; 4]]) -> Vec<Object> {
         const BUILDING_CELL: f32 = 56.0;
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
@@ -2307,6 +2624,9 @@ impl Terrain {
                     "watchtower" => (4.5, 3.0),
                     _ => (8.5, 6.0),
                 };
+                if keep_out.iter().any(|k| overlaps(*k, [x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0], 0.0)) {
+                    continue;
+                }
 
                 // The whole site has to be in this piece of the landscape, dry and flat enough
                 let samples: Option<Vec<(f32, bool)>> = (0..25)
@@ -2775,73 +3095,75 @@ impl Terrain {
     /// sides, at most one in each RAVINE_CELL square. Most are open to the sky; the rest are
     /// crevices hidden under the ground, with crystals glowing at the bottom.
     fn ravines(&self, features: &mut Features) -> Vec<Object> {
-        const RAVINE_CELL: f32 = 100.0;
-        const STEP: f32 = 2.0;
-        // How far from where they start ravines can reach
-        const REACH: f32 = 100.0;
-        let seed = self.settings.seed;
-        let sea_level = sea_level_m(&self.settings);
         let (lo, hi) = (self.lo, self.hi);
         let mut objects = Vec::new();
-        let first = [((lo[0] - REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - REACH) / RAVINE_CELL).floor() as i32];
-        let last = [((hi[0] + REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + REACH) / RAVINE_CELL).ceil() as i32];
+        let first = [((lo[0] - RAVINE_REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - RAVINE_REACH) / RAVINE_CELL).floor() as i32];
+        let last = [((hi[0] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32];
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
-                let r = hash3(cx as u32, cy as u32, seed ^ 0x7a71);
-                if unit(r) > 0.7 {
-                    continue;
-                }
-                let mut rng = Rng(hash(r));
-                let (mut x, mut y) = ((cx as f32 + rng.next()) * RAVINE_CELL, (cy as f32 + rng.next()) * RAVINE_CELL);
-                if height_at(&self.settings, x, y) < sea_level + 4.0 {
-                    continue;
-                }
-                let open = rng.next() < 0.5;
-                let mut heading = rng.next() * TAU;
-                let width = rng.range(2.0, 4.5);
-                let depth = rng.range(10.0, 22.0);
-                let steps = 15 + (rng.next() * 30.0) as usize;
-                let mut shapes = Vec::new();
-                let mut crystals = Vec::new();
-                for i in 0..steps {
-                    // Narrow at both ends
-                    let taper = (std::f32::consts::PI * (i as f32 + 0.5) / steps as f32).sin().sqrt();
-                    heading += rng.range(-0.25, 0.25);
-                    let along = [heading.cos(), heading.sin(), 0.0];
-                    x += along[0] * STEP;
-                    y += along[1] * STEP;
-                    let ground = height_at(&self.settings, x, y);
-                    if ground < sea_level + 1.0 {
-                        break;
-                    }
-                    let top = if open { ground + 2.0 } else { ground - rng.range(4.0, 7.0) };
-                    let bottom = top - depth * taper - 2.0;
-                    if i == steps / 2 && self.inside(x, y) {
-                        let kind = if open { "ravine" } else { "crevice" };
-                        features.sites.push(Site { kind, position: [x, y, if open { ground } else { bottom + 1.5 }], facing: [along[0], along[1]] });
-                    }
-                    let middle = (top + bottom) * 0.5;
-                    let w = width * taper + 0.6;
-                    // A wide upper part and a narrower deeper one, leaving ledges down the sides
-                    shapes.push(Shape::slab([x, y, middle + (top - bottom) * 0.15], along, STEP * 2.0, w, (top - bottom) * 0.75));
-                    shapes.push(Shape::slab([x, y, middle - (top - bottom) * 0.1], along, STEP * 2.0, w * 0.55, top - bottom));
-                    features.recuts.push([x - w - STEP, y - w - STEP, x + w + STEP, y + w + STEP, ground + 3.0]);
-                    if !open && i % 6 == 3 {
-                        let at = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), bottom + 0.6];
-                        for _ in 0..3 {
-                            let offset = [rng.range(-0.3, 0.3), rng.range(-0.3, 0.3), rng.range(0.0, 0.4)];
-                            crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
-                        }
-                        if self.inside(at[0], at[1]) {
-                            features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
-                        }
-                    }
-                }
-                shapes.extend(crystals);
-                objects.push(Object::new(shapes, rng.0));
+                objects.extend(self.ravine(cx, cy, features));
             }
         }
         objects
+    }
+
+    /// The ravine starting in one RAVINE_CELL square, if there's one
+    fn ravine(&self, cx: i32, cy: i32, features: &mut Features) -> Option<Object> {
+        const STEP: f32 = 2.0;
+        let seed = self.settings.seed;
+        let sea_level = sea_level_m(&self.settings);
+        let r = hash3(cx as u32, cy as u32, seed ^ 0x7a71);
+        if unit(r) > 0.7 {
+            return None;
+        }
+        let mut rng = Rng(hash(r));
+        let (mut x, mut y) = ((cx as f32 + rng.next()) * RAVINE_CELL, (cy as f32 + rng.next()) * RAVINE_CELL);
+        if height_at(&self.settings, x, y) < sea_level + 4.0 {
+            return None;
+        }
+        let open = rng.next() < 0.5;
+        let mut heading = rng.next() * TAU;
+        let width = rng.range(2.0, 4.5);
+        let depth = rng.range(10.0, 22.0);
+        let steps = 15 + (rng.next() * 30.0) as usize;
+        let mut shapes = Vec::new();
+        let mut crystals = Vec::new();
+        for i in 0..steps {
+            // Narrow at both ends
+            let taper = (std::f32::consts::PI * (i as f32 + 0.5) / steps as f32).sin().sqrt();
+            heading += rng.range(-0.25, 0.25);
+            let along = [heading.cos(), heading.sin(), 0.0];
+            x += along[0] * STEP;
+            y += along[1] * STEP;
+            let ground = height_at(&self.settings, x, y);
+            if ground < sea_level + 1.0 {
+                break;
+            }
+            let top = if open { ground + 2.0 } else { ground - rng.range(4.0, 7.0) };
+            let bottom = top - depth * taper - 2.0;
+            if i == steps / 2 && self.inside(x, y) {
+                let kind = if open { "ravine" } else { "crevice" };
+                features.sites.push(Site { kind, position: [x, y, if open { ground } else { bottom + 1.5 }], facing: [along[0], along[1]] });
+            }
+            let middle = (top + bottom) * 0.5;
+            let w = width * taper + 0.6;
+            // A wide upper part and a narrower deeper one, leaving ledges down the sides
+            shapes.push(Shape::slab([x, y, middle + (top - bottom) * 0.15], along, STEP * 2.0, w, (top - bottom) * 0.75));
+            shapes.push(Shape::slab([x, y, middle - (top - bottom) * 0.1], along, STEP * 2.0, w * 0.55, top - bottom));
+            features.recuts.push([x - w - STEP, y - w - STEP, x + w + STEP, y + w + STEP, ground + 3.0]);
+            if !open && i % 6 == 3 {
+                let at = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), bottom + 0.6];
+                for _ in 0..3 {
+                    let offset = [rng.range(-0.3, 0.3), rng.range(-0.3, 0.3), rng.range(0.0, 0.4)];
+                    crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
+                }
+                if self.inside(at[0], at[1]) {
+                    features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
+                }
+            }
+        }
+        shapes.extend(crystals);
+        Some(Object::new(shapes, rng.0))
     }
 
     /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square. Some open
@@ -2906,6 +3228,707 @@ impl Terrain {
             }
         }
         objects
+    }
+
+    /// The dungeons reaching into this piece of the landscape
+    fn dungeons(&self, cache: &RiverCache) -> Vec<Dungeon> {
+        let (lo, hi) = (self.lo, self.hi);
+        let reach = DUNGEON_REACH + 2.0;
+        let first = [((lo[0] - reach) / DUNGEON_CELL).floor() as i32, ((lo[1] - reach) / DUNGEON_CELL).floor() as i32];
+        let last = [((hi[0] + reach) / DUNGEON_CELL).floor() as i32, ((hi[1] + reach) / DUNGEON_CELL).floor() as i32];
+        let mut dungeons = Vec::new();
+        for cy in first[1]..=last[1] {
+            for cx in first[0]..=last[0] {
+                if let Some(d) = self.dungeon_in(cx, cy, cache)
+                    && d.world_rects().iter().any(|r| overlaps(*r, [lo[0], lo[1], hi[0], hi[1]], 0.0))
+                {
+                    dungeons.push(d);
+                }
+            }
+        }
+        dungeons
+    }
+
+    /// The dungeon in one DUNGEON_CELL square, if there's room for one at any of a few spots in
+    /// it. They're well away from its edges, so dungeons never meet.
+    fn dungeon_in(&self, cx: i32, cy: i32, cache: &RiverCache) -> Option<Dungeon> {
+        let r = hash3(cx as u32, cy as u32, self.settings.seed ^ 0xd07e);
+        if unit(r) > 0.9 {
+            return None;
+        }
+        (0..20u32).find_map(|attempt| {
+            let s = hash3(r, attempt, 0x5eed);
+            let x = snap((cx as f32 + 0.2 + 0.6 * unit(s)) * DUNGEON_CELL);
+            let y = snap((cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * DUNGEON_CELL);
+            self.plan_dungeon(x, y, hash(s), cache)
+        })
+    }
+
+    /// Lays out a dungeon with the doorway of its crypt at `x`, `y`, if it fits: on fairly flat,
+    /// dry ground, with no rivers or ravines near any of it. Halls lead one to the next, each a
+    /// little deeper, down to the boss's, with a hall or two off to the sides.
+    fn plan_dungeon(&self, x: f32, y: f32, seed: u32, cache: &RiverCache) -> Option<Dungeon> {
+        let settings = &self.settings;
+        let ground = |x: f32, y: f32| height_at(settings, x, y);
+        // The doorway faces downhill, and the stairs go down into the hill
+        let downhill = [[1.0f32, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+            .into_iter()
+            .min_by(|a, b| ground(x + a[0] * 8.0, y + a[1] * 8.0).total_cmp(&ground(x + b[0] * 8.0, y + b[1] * 8.0)))
+            .unwrap();
+        let at = Frame { x, y, f: [-downhill[0], -downhill[1]] };
+        // The landing in front of it is as high as the ground gets there, with as many steps
+        // down from it as it takes to reach the ground in front and to the sides
+        let (mut lowest, mut highest) = (f32::MAX, f32::MIN);
+        for i in 0..45 {
+            let p = at.point(-10.0 + 2.5 * (i % 5) as f32, -10.0 + 2.5 * (i / 5) as f32, 0.0);
+            let g = ground(p[0], p[1]);
+            (lowest, highest) = (lowest.min(g), highest.max(g));
+        }
+        if lowest < sea_level_m(settings) + 2.0 || highest - lowest > 3.0 {
+            return None;
+        }
+        let top = (highest / STAIR_RISE).ceil() * STAIR_RISE;
+        let steps = (((top - lowest) / STAIR_RISE).ceil() as usize).max(2);
+        // Of the stone of the land round it
+        let c = climate(settings, x, y);
+        let (stone, paving) = if c.desert > 0.5 {
+            ((SANDSTONE, SANDSTONE_DARK), (SANDSTONE_DARK, SANDSTONE))
+        } else if c.jungle > 0.5 {
+            ((TEMPLE_STONE, MOSS), (TEMPLE_DARK, TEMPLE_STONE))
+        } else if c.snow > 0.5 {
+            ((BRICK_STONE, LIMESTONE), (LIMESTONE, BRICK_STONE))
+        } else {
+            ((BRICK_STONE, MOSS), (LIMESTONE, BRICK_STONE))
+        };
+        let mut rng = Rng(seed);
+        let mut d = Dungeon {
+            at,
+            top,
+            steps,
+            stone,
+            paving,
+            snowy: c.snow > 0.5,
+            vines: c.desert <= 0.5 && c.snow <= 0.5,
+            halls: Vec::new(),
+            passages: Vec::new(),
+            seed: hash(seed ^ 0xd0e6),
+        };
+        let boss_depth = rng.range(11.5, 13.5);
+        let mains = 2 + (rng.next() * 3.0) as usize;
+        let sides = 1 + (rng.next() * 2.0) as usize;
+
+        // The first hall, at the foot of the stairs down, which are under the roof of the crypt
+        // for as long as there isn't ground enough over them
+        let half = [snap(rng.range(4.5, 6.0)), snap(rng.range(4.0, 6.0))];
+        let height = snap(rng.range(4.5, 5.5));
+        let (mut stairs, first) = self.fit_hall(&at, [0.0, 0.0], [1.0, 0.0], top, 0.0, 1.2, half, height, 0.0, top - 7.0, HallKind::Main, None)?;
+        let parts = stairs.parts();
+        let mut crypt = parts[0].0[1];
+        for &(s, _, high) in &parts {
+            if high + PASSAGE_HEIGHT + DUNGEON_WALL > self.lowest_ground(&at, stairs.rect(s, PASSAGE_HALF + DUNGEON_WALL)) - 0.2 {
+                crypt = crypt.max(s[1]);
+            }
+        }
+        if crypt > 11.0 {
+            return None;
+        }
+        stairs.crypt = crypt;
+        d.passages.push(stairs);
+        d.halls.push(first);
+        // What's taken so far, with the brick round it, and which hall each is
+        let mut taken = vec![
+            (d.entrance_rect(), None),
+            (stairs.rect([0.0, stairs.length], PASSAGE_HALF + DUNGEON_WALL), None),
+            (grown(first.rect(), DUNGEON_WALL), Some(0)),
+        ];
+
+        // On down, further into the hill or off to one side, never back towards the entrance
+        for i in 1..mains {
+            let side = if rng.next() < 0.5 { [0.0, 1.0] } else { [0.0, -1.0] };
+            let dirs = if rng.next() < 0.6 { [[1.0, 0.0], side, [-side[0], -side[1]]] } else { [side, [1.0, 0.0], [-side[0], -side[1]]] };
+            let half = [snap(rng.range(4.0, 6.0)), snap(rng.range(4.0, 6.0))];
+            let height = snap(rng.range(4.5, 5.5));
+            let want = top - 7.0 - (boss_depth - 7.0) * i as f32 / mains as f32;
+            let parent = d.halls.len() - 1;
+            if !self.grow(&mut d, &mut taken, parent, &dirs, half, height, want, HallKind::Main, &mut rng) {
+                break;
+            }
+        }
+        // The boss's hall, deepest of all, off the last hall that has room for it
+        let mains = d.halls.len();
+        let boss = [snap(rng.range(9.0, 10.0)), snap(rng.range(9.0, 10.0))];
+        let mut found = false;
+        for parent in (0..mains).rev() {
+            let side = if rng.next() < 0.5 { [0.0, 1.0] } else { [0.0, -1.0] };
+            let dirs = [[1.0, 0.0], side, [-side[0], -side[1]]];
+            if self.grow(&mut d, &mut taken, parent, &dirs, boss, 8.0, top - boss_depth, HallKind::Boss, &mut rng) {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+        // Halls off to the side of those on the way, at much the same depth
+        for _ in 0..sides {
+            let start = (rng.next() * mains as f32) as usize;
+            for k in 0..mains {
+                let parent = (start + k) % mains;
+                let turn = (rng.next() * 4.0) as usize;
+                let all = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+                let dirs: Vec<[f32; 2]> = (0..4).map(|j| all[(turn + j) % 4]).collect();
+                let half = [snap(rng.range(4.0, 5.5)), snap(rng.range(4.0, 5.5))];
+                let want = d.halls[parent].floor - snap(rng.range(0.0, 1.0));
+                if self.grow(&mut d, &mut taken, parent, &dirs, half, 4.5, want, HallKind::Side, &mut rng) {
+                    break;
+                }
+            }
+        }
+        if d.halls.len() < 4 {
+            return None;
+        }
+
+        // Well clear of rivers and their banks, and of ravines and crevices
+        let rects = d.world_rects();
+        let lo = [0, 1].map(|i| rects.iter().map(|r| r[i]).fold(f32::MAX, f32::min));
+        let hi = [0, 1].map(|i| rects.iter().map(|r| r[i + 2]).fold(f32::MIN, f32::max));
+        for river in self.rivers_near(cache, [lo[0] - 10.0, lo[1] - 10.0], [hi[0] + 10.0, hi[1] + 10.0]) {
+            let near = river.iter().any(|p| {
+                rects.iter().any(|r| {
+                    let (dx, dy) = ((r[0] - p.x).max(p.x - r[2]).max(0.0), (r[1] - p.y).max(p.y - r[3]).max(0.0));
+                    dx.hypot(dy) < p.half_width + 6.0
+                })
+            });
+            if near {
+                return None;
+            }
+        }
+        let first = [0, 1].map(|i| ((lo[i] - RAVINE_REACH - 2.0) / RAVINE_CELL).floor() as i32);
+        let last = [0, 1].map(|i| ((hi[i] + RAVINE_REACH + 2.0) / RAVINE_CELL).ceil() as i32);
+        let mut scratch = Features::default();
+        for cy in first[1]..last[1] {
+            for cx in first[0]..last[0] {
+                if let Some(ravine) = self.ravine(cx, cy, &mut scratch)
+                    && ravine.shapes.iter().any(|s| rects.iter().any(|r| overlaps(*r, [s.min[0], s.min[1], s.max[0], s.max[1]], 2.0)))
+                {
+                    return None;
+                }
+            }
+        }
+        Some(d)
+    }
+
+    /// The lowest the ground gets over rectangle `r`, u0, v0, u1, v1 in frame `at`, sampled every
+    /// couple of meters
+    fn lowest_ground(&self, at: &Frame, r: [f32; 4]) -> f32 {
+        let n = [0, 1].map(|i| ((r[i + 2] - r[i]) / 2.5).ceil().max(1.0) as usize + 1);
+        let mut lowest = f32::MAX;
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                let u = r[0] + (r[2] - r[0]) * i as f32 / (n[0] - 1) as f32;
+                let v = r[1] + (r[3] - r[1]) * j as f32 / (n[1] - 1) as f32;
+                let p = at.point(u, v, 0.0);
+                lowest = lowest.min(height_at(&self.settings, p[0], p[1]));
+            }
+        }
+        lowest
+    }
+
+    /// Fits a hall `half` the size along u and v and `height` high, in frame `at`, at the end of a
+    /// passage from `start` going `dir` from a floor at `from`, at least `gap` long, with flat floor
+    /// at least `flat` long at either end of its stairs. The hall's middle is `offset` across from
+    /// the passage's line. Its floor is at most at `want`, and deep enough for DUNGEON_COVER of
+    /// ground over it, so the passage gets longer if it has further to go down. None if there's
+    /// sea over it or the passage would be too long.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_hall(
+        &self,
+        at: &Frame,
+        start: [f32; 2],
+        dir: [f32; 2],
+        from: f32,
+        gap: f32,
+        flat: f32,
+        half: [f32; 2],
+        height: f32,
+        offset: f32,
+        want: f32,
+        kind: HallKind,
+        parent: Option<usize>,
+    ) -> Option<(Passage, Hall)> {
+        let sea_level = sea_level_m(&self.settings);
+        let across = [-dir[1], dir[0]];
+        let along = dir[0].abs() * half[0] + dir[1].abs() * half[1];
+        let mut length = gap;
+        let mut floor = snap_down(want.min(from));
+        for _ in 0..8 {
+            let reach = length + along;
+            let middle = [start[0] + dir[0] * reach + across[0] * offset, start[1] + dir[1] * reach + across[1] * offset];
+            let lowest = self.lowest_ground(at, grown(around(middle, half), DUNGEON_WALL + 0.5));
+            if lowest < sea_level + 1.5 {
+                return None;
+            }
+            floor = floor.min(snap_down(lowest - DUNGEON_COVER - DUNGEON_WALL - height));
+            let drops = ((from - floor) / STAIR_RISE).round();
+            let needed = (drops - 1.0).max(0.0) * STAIR_RUN + 2.0 * flat;
+            if needed <= length + 1e-3 {
+                if floor < 2.0 {
+                    return None;
+                }
+                let passage = Passage { start, dir, length, from, to: floor, crypt: 0.0 };
+                let hall = Hall { middle, half, floor, height, door: [-dir[0], -dir[1]], kind, parent };
+                return Some((passage, hall));
+            }
+            length = (needed / STAIR_RISE).ceil() * STAIR_RISE;
+            if length > 20.0 {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Adds a hall `half` the size along u and v and `height` high to dungeon `d`, with a passage
+    /// to it from hall `parent`, trying each way of `dirs` in turn till it fits clear of what's
+    /// `taken`: rectangles in its frame, brick and all, and which hall each is. Its floor is at
+    /// most at `want`. Returns whether it fitted.
+    #[allow(clippy::too_many_arguments)]
+    fn grow(
+        &self,
+        d: &mut Dungeon,
+        taken: &mut Vec<([f32; 4], Option<usize>)>,
+        parent: usize,
+        dirs: &[[f32; 2]],
+        half: [f32; 2],
+        height: f32,
+        want: f32,
+        kind: HallKind,
+        rng: &mut Rng,
+    ) -> bool {
+        let sea_level = sea_level_m(&self.settings);
+        let within = |r: [f32; 4]| r.iter().all(|v| v.abs() <= DUNGEON_REACH);
+        let jitter = |room: f32, rng: &mut Rng| if room > 0.0 { snap(rng.range(-room, room)) } else { 0.0 };
+        for &dir in dirs {
+            let p = d.halls[parent];
+            if dir == p.door {
+                continue;
+            }
+            // Where across the parent's wall the passage leaves it, and how far across from the
+            // passage's line the new hall's middle is. The boss's doorway is near the middle.
+            let across = [-dir[1], dir[0]];
+            let out = jitter(p.reach(across) - PASSAGE_HALF - 1.0, rng);
+            let room = if kind == HallKind::Boss { 2.0 } else { across[0].abs() * half[0] + across[1].abs() * half[1] - PASSAGE_HALF - 1.0 };
+            let offset = jitter(room, rng);
+            let along = p.reach(dir);
+            let start = [p.middle[0] + dir[0] * along + across[0] * out, p.middle[1] + dir[1] * along + across[1] * out];
+            let gap = snap(rng.range(4.0, 7.0));
+            let Some((passage, hall)) = self.fit_hall(&d.at, start, dir, p.floor, gap, 1.0, half, height, offset, want, kind, Some(parent)) else {
+                continue;
+            };
+            let hall_rect = grown(hall.rect(), DUNGEON_WALL);
+            let passage_rect = passage.rect([0.0, passage.length], PASSAGE_HALF + DUNGEON_WALL);
+            if !within(hall_rect) || !within(passage_rect) {
+                continue;
+            }
+            if taken.iter().any(|(t, _)| overlaps(*t, hall_rect, 1.0)) || taken.iter().any(|(t, hall)| *hall != Some(parent) && overlaps(*t, passage_rect, 0.3)) {
+                continue;
+            }
+            // With ground enough over the passage too, and no sea
+            let covered = passage.parts().iter().all(|&(s, _, high)| {
+                let lowest = self.lowest_ground(&d.at, passage.rect(s, PASSAGE_HALF + DUNGEON_WALL));
+                lowest > sea_level + 1.5 && high + PASSAGE_HEIGHT + DUNGEON_WALL + 1.0 <= lowest
+            });
+            if !covered {
+                continue;
+            }
+            taken.push((hall_rect, Some(d.halls.len())));
+            taken.push((passage_rect, None));
+            d.halls.push(hall);
+            d.passages.push(passage);
+            return true;
+        }
+        false
+    }
+
+    /// The shapes of dungeon `d`, with its candles, skulls and chests, its halls as sites, and
+    /// where its entrance stands in `features`
+    fn dungeon(&self, d: &Dungeon, features: &mut Features) -> Object {
+        let at = d.at;
+        let mut rng = Rng(d.seed);
+        // What stands in the halls and passages goes first, then the space inside them, then the
+        // paving and the brick round it all, so each wins over what comes after
+        let (mut solids, mut rooms, mut floors, mut walls) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        self.dungeon_entrance(d, &mut solids, &mut rooms, &mut walls, features, &mut rng);
+
+        for (i, p) in d.passages.iter().enumerate() {
+            let entrance = i == 0;
+            let (drops, first) = p.stairs();
+            for k in 1..drops {
+                let s = [first + (k - 1) as f32 * STAIR_RUN, first + k as f32 * STAIR_RUN];
+                solids.push(stone_block(&at, p.rect(s, PASSAGE_HALF), [p.to - DUNGEON_WALL, p.from - k as f32 * STAIR_RISE], d.paving));
+            }
+            let parts = p.parts();
+            let last = parts.len() - 1;
+            for (n, &(s, low, high)) in parts.iter().enumerate() {
+                let ceiling = if s[0] < p.crypt - 1e-3 { d.top + CRYPT_HEIGHT } else { high + PASSAGE_HEIGHT };
+                // Through the walls of the halls at either end
+                let inside = [if n == 0 && !entrance { -0.05 } else { s[0] }, if n == last { s[1] + 0.05 } else { s[1] }];
+                rooms.push(hollow(&at, p.rect(inside, PASSAGE_HALF), [low, ceiling]));
+                floors.push(stone_block(&at, p.rect(s, PASSAGE_HALF), [low - DUNGEON_WALL, low], d.paving));
+                // A little past either end, to line the wall where the ceiling steps down. That's
+                // the front wall of the crypt at the top of the stairs down.
+                let outside = [(s[0] - DUNGEON_WALL).max(if entrance { -DUNGEON_WALL } else { 0.0 }), (s[1] + DUNGEON_WALL).min(p.length)];
+                walls.push(stone_block(&at, p.rect(outside, PASSAGE_HALF + DUNGEON_WALL), [low - DUNGEON_WALL, ceiling + DUNGEON_WALL], d.stone));
+            }
+            // Candles every few meters along alternate walls, and a skull or so
+            let mut spots = if entrance { vec![(0.6, 1.0), (0.6, -1.0)] } else { Vec::new() };
+            let mut s = if entrance { 4.0 } else { 1.2 };
+            let mut side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+            while s < p.length - 0.8 {
+                spots.push((s, side));
+                side = -side;
+                s += 3.6;
+            }
+            for (s, side) in spots {
+                let s = p.on_step(s);
+                let q = p.at(s, side * (PASSAGE_HALF - 0.2));
+                self.dungeon_prop(features, PropKind::Candle, at.point(q[0], q[1], p.floor_at(s)));
+            }
+            if rng.next() < 0.7 {
+                let s = p.on_step(rng.range(1.0, p.length - 1.0));
+                let side = (if rng.next() < 0.5 { 1.0 } else { -1.0 }) * (PASSAGE_HALF - 0.35);
+                let q = p.at(s, side);
+                self.dungeon_prop(features, PropKind::Skull, at.point(q[0], q[1], p.floor_at(s)));
+            }
+        }
+
+        for (i, h) in d.halls.iter().enumerate() {
+            let (r, f) = (h.rect(), h.floor);
+            rooms.push(hollow(&at, r, [f, f + h.height]));
+            floors.push(stone_block(&at, grown(r, DUNGEON_WALL), [f - DUNGEON_WALL, f], d.paving));
+            walls.push(stone_block(&at, grown(r, DUNGEON_WALL), [f - DUNGEON_WALL, f + h.height + DUNGEON_WALL], d.stone));
+            // Its doorways: where the passage in reaches it, and where those out of it leave
+            let mut doors = vec![d.passages[i].at(d.passages[i].length, 0.0)];
+            doors.extend((0..d.halls.len()).filter(|&j| d.halls[j].parent == Some(i)).map(|j| d.passages[j].at(0.0, 0.0)));
+            self.furnish(d, h, &doors, &mut solids, features, &mut rng);
+            let middle = at.point(h.middle[0], h.middle[1], f);
+            if self.inside(middle[0], middle[1]) {
+                let kind = if h.kind == HallKind::Boss { "dungeon" } else { "dungeon hall" };
+                features.sites.push(Site { kind, position: middle, facing: at.dir(h.door) });
+            }
+        }
+
+        // Nothing grows on the entrance, and no grass on the landing or the crypt
+        let e = d.entrance_rect();
+        let (lo, hi) = at.rect([e[0], e[2]], [e[1], e[3]]);
+        features.footprints.push([lo[0], lo[1], hi[0], hi[1], d.top + 7.6]);
+        let plinth = d.landing(d.steps);
+        let (lo, hi) = at.rect([plinth[0], d.passages[0].crypt + DUNGEON_WALL], [plinth[1], plinth[3]]);
+        features.holes.push([lo[0], lo[1], hi[0], hi[1]]);
+
+        let mut shapes = solids;
+        shapes.extend(rooms);
+        shapes.extend(floors);
+        shapes.extend(walls);
+        Object::new(shapes, d.seed)
+    }
+
+    /// The way into dungeon `d`: a crypt of brick over the top of the stairs down, its roof broken
+    /// in, its doorway between two tall pillars under a broken arch, skulls on its roof, a landing
+    /// in front with steps down to the ground, and rubble lying about
+    #[allow(clippy::too_many_arguments)]
+    fn dungeon_entrance(&self, d: &Dungeon, solids: &mut Vec<Shape>, rooms: &mut Vec<Shape>, walls: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+        let at = d.at;
+        let top = d.top;
+        let crypt = d.passages[0].crypt;
+        let outer = PASSAGE_HALF + DUNGEON_WALL;
+        let roof = top + CRYPT_HEIGHT + DUNGEON_WALL;
+
+        // The doorway through the front wall, and the landing, with steps down to the ground on
+        // three sides that sink into it where it's higher, and nothing in the way above it
+        rooms.push(hollow(&at, [-DUNGEON_WALL - 0.05, -PASSAGE_HALF, 0.05, PASSAGE_HALF], [top, top + 3.0]));
+        for k in 0..=d.steps {
+            let z = top - k as f32 * STAIR_RISE;
+            solids.push(stone_block(&at, d.landing(k), [z - 1.0, z], d.paving));
+        }
+        rooms.push(hollow(&at, d.landing(0), [top, top + 4.5]));
+
+        // The pillars either side of the doorway, one of which may have fallen, taking its side of
+        // the arch with it
+        let (pu, pv) = (-DUNGEON_WALL - 0.75, outer + 0.6);
+        let tall = roof + 0.7;
+        let fallen = if rng.next() < 0.45 { if rng.next() < 0.5 { 1.0 } else { -1.0 } } else { 0.0 };
+        for side in [-1.0f32, 1.0] {
+            let q = [pu, side * pv];
+            let height = if side == fallen { top + rng.range(1.4, 3.2) } else { tall };
+            solids.push(stone_block(&at, around(q, [0.65, 0.65]), [top - 0.3, top + 0.35], d.stone));
+            if side == fallen {
+                self.dungeon_prop(features, PropKind::Skull, at.point(q[0], q[1], height + 0.4));
+            } else {
+                solids.push(stone_block(&at, around(q, [0.65, 0.65]), [tall - 0.35, tall + 0.1], d.stone));
+            }
+            solids.push(
+                Shape::capsule(at.point(q[0], q[1], top), at.point(q[0], q[1], height), 0.45, 0.42, d.stone.0, d.stone.1, false)
+                    .placed(Placement::Clear)
+                    .patterned(Pattern::Carved),
+            );
+        }
+        let gap = if fallen == 0.0 && rng.next() < 0.6 { Some(2 + (rng.next() * 5.0) as usize) } else { None };
+        for k in 0..10 {
+            // Round from the pillar on the +v side to the other
+            let lost = fallen > 0.0 && k < 6 || fallen < 0.0 && k >= 4 || gap.is_some_and(|g| k == g || k == g + 1);
+            if lost {
+                continue;
+            }
+            let (a, b) = (k as f32 / 10.0 * std::f32::consts::PI, (k + 1) as f32 / 10.0 * std::f32::consts::PI);
+            let point = |t: f32| at.point(pu, pv * t.cos(), tall + pv * t.sin());
+            solids.push(Shape::capsule(point(a), point(b), 0.35, 0.35, d.stone.0, d.stone.1, false).placed(Placement::Clear).patterned(Pattern::Carved));
+        }
+
+        // Skulls on the roof over the doorway and by the door, and a hole fallen in the roof
+        for v in [-0.9, 0.0, 0.9] {
+            if rng.next() < 0.8 {
+                self.dungeon_prop(features, PropKind::Skull, at.point(-DUNGEON_WALL * 0.5, v, roof));
+            }
+        }
+        for side in [-1.0, 1.0] {
+            let (u, v) = (-DUNGEON_WALL - rng.range(1.6, 2.4), side * rng.range(PASSAGE_HALF + 0.3, outer + 1.0));
+            self.dungeon_prop(features, PropKind::Skull, at.point(u, v, top));
+        }
+        let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+        let bite = at.point(crypt - rng.range(0.5, 2.0), side * (outer - 0.2), roof + 0.4);
+        rooms.push(Shape::sphere(bite, rng.range(0.9, 1.3), AIR, AIR, false).placed(Placement::Clear));
+        if d.snowy {
+            walls.push(at.block([-DUNGEON_WALL, crypt + DUNGEON_WALL], [-outer, outer], [roof, roof + 0.15], SNOW, AIR).placed(Placement::Clear));
+        }
+        if d.vines {
+            for _ in 0..5 {
+                let length = rng.range(0.8, 2.6);
+                let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+                let (u, v) = if rng.next() < 0.4 {
+                    (-DUNGEON_WALL - 0.07, side * rng.range(PASSAGE_HALF + 0.1, outer - 0.1))
+                } else {
+                    (rng.range(0.0, crypt), side * (outer + 0.07))
+                };
+                solids.push(Shape::capsule(at.point(u, v, roof - 0.1), at.point(u, v, roof - 0.1 - length), 0.07, 0.05, VINE, LEAVES, false));
+            }
+        }
+
+        // Rubble that's fallen off it, but not in the way in
+        let (plinth, area) = (d.landing(d.steps), d.entrance_rect());
+        for _ in 0..8 {
+            let (u, v) = (rng.range(area[0] + 0.5, area[2] - 0.5), rng.range(area[1] + 0.5, area[3] - 0.5));
+            let (size, stretch) = (rng.range(0.3, 0.7), rng.range(0.7, 1.5));
+            let on_it = u > plinth[0] - 0.2 && u < crypt + DUNGEON_WALL + 0.4 && v.abs() < plinth[3] + 0.2;
+            if on_it || u < 0.0 && v.abs() < 2.5 {
+                continue;
+            }
+            let p = at.point(u, v, 0.0);
+            let ground = height_at(&self.settings, p[0], p[1]);
+            solids.push(stone_block(&at, around([u, v], [size, size * stretch]), [ground - 0.3, ground + size * 0.7], d.stone));
+        }
+    }
+
+    /// What's in hall `h` of dungeon `d`, kept clear of its doorways at `doors`: pillars, candles
+    /// along the walls, skulls, rubble and maybe a stone coffin. A side hall has a chest at its far
+    /// end. The boss's has rows of pillars, and a dais at the far end with an altar, braziers and
+    /// the best chest of all, and heaps of bones in its corners.
+    #[allow(clippy::too_many_arguments)]
+    fn furnish(&self, d: &Dungeon, h: &Hall, doors: &[[f32; 2]], s: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+        let at = d.at;
+        let (m, f) = (h.middle, h.floor);
+        let ceiling = f + h.height;
+        let by_door = |q: [f32; 2]| doors.iter().any(|p| (q[0] - p[0]).hypot(q[1] - p[1]) < 2.4);
+        let point = |q: [f32; 2], z: f32| at.point(q[0], q[1], z);
+        let flip = |rng: &mut Rng| if rng.next() < 0.5 { 1.0 } else { -1.0 };
+        // Laid out `a` towards the far end from the doorway in, and `b` across
+        let n = [-h.door[0], -h.door[1]];
+        let t = [-n[1], n[0]];
+        let (deep, wide) = (h.reach(n), h.reach(t));
+        let q = |a: f32, b: f32| [m[0] + n[0] * a + t[0] * b, m[1] + n[1] * a + t[1] * b];
+        let rect = |a: [f32; 2], b: [f32; 2]| {
+            let (p, r) = (q(a[0], b[0]), q(a[1], b[1]));
+            [p[0].min(r[0]), p[1].min(r[1]), p[0].max(r[0]), p[1].max(r[1])]
+        };
+        // Which way the chests' locks face: back towards the doorway in
+        let heading = at.heading(h.door[1].atan2(h.door[0]));
+
+        if h.kind == HallKind::Boss {
+            for b in [-1.0, 1.0] {
+                for k in 0..4 {
+                    let a = -deep + 3.0 + (2.0 * deep - 7.5) * k as f32 / 3.0;
+                    let broken = rng.next() < 0.15;
+                    pillar(s, &at, q(a, b * (wide - 2.0)), f, ceiling, 0.55, d.stone, broken, rng);
+                }
+            }
+            s.push(stone_block(&at, rect([deep - 3.5, deep], [-4.0, 4.0]), [f - 0.1, f + STAIR_RISE], d.paving));
+            s.push(stone_block(&at, rect([deep - 2.2, deep], [-2.6, 2.6]), [f - 0.1, f + 2.0 * STAIR_RISE], d.paving));
+            s.push(stone_block(&at, rect([deep - 1.1, deep - 0.2], [-1.2, 1.2]), [f, f + 1.3], d.stone).patterned(Pattern::Carved));
+            let spot = point(q(deep - 1.65, 0.0), f + 2.0 * STAIR_RISE);
+            if self.inside(spot[0], spot[1]) {
+                chest(features, spot, heading, 2.6);
+            }
+            for b in [-0.8, 0.8] {
+                self.dungeon_prop(features, PropKind::Candle, point(q(deep - 0.65, b), f + 1.3));
+            }
+            self.dungeon_prop(features, PropKind::Skull, point(q(deep - 0.65, 0.0), f + 1.3));
+            for b in [-3.3, 3.3] {
+                let c = q(deep - 2.9, b);
+                s.push(stone_block(&at, around(c, [0.35, 0.35]), [f, f + 1.1], d.stone));
+                s.push(stone_block(&at, around(c, [0.5, 0.5]), [f + 1.1, f + 1.25], d.stone));
+                s.push(Shape::sphere(point(c, f + 1.4), 0.25, FLAME, AIR, false).placed(Placement::Clear));
+                let flame = point(c, f + 1.9);
+                if self.inside(flame[0], flame[1]) {
+                    features.lights.push(Light { position: flame, color: [1.0, 0.5, 0.2], reach: 11.0 });
+                }
+            }
+            // Candles down both sides between the pillars and the walls, and either side of the doorway
+            for b in [-1.0, 1.0] {
+                for frac in [-0.8, -0.4, 0.0, 0.4, 0.8] {
+                    let c = q(frac * deep, b * (wide - 0.3));
+                    if !by_door(c) && rng.next() < 0.85 {
+                        self.dungeon_prop(features, PropKind::Candle, point(c, f));
+                    }
+                }
+            }
+            for b in [-0.75, -0.4, 0.4, 0.75] {
+                let c = q(-deep + 0.3, b * wide);
+                if !by_door(c) {
+                    self.dungeon_prop(features, PropKind::Candle, point(c, f));
+                }
+            }
+            for b in [-0.75, 0.75] {
+                self.dungeon_prop(features, PropKind::Candle, point(q(deep - 0.3, b * wide), f));
+            }
+            // Skulls all over, though not in the middle where the boss waits, and heaps of bones
+            for _ in 0..10 + (rng.next() * 5.0) as usize {
+                let c = q(rng.range(-deep + 1.0, deep - 4.0), rng.range(-wide + 1.0, wide - 1.0));
+                if (c[0] - m[0]).hypot(c[1] - m[1]) > 4.5 && !by_door(c) {
+                    self.dungeon_prop(features, PropKind::Skull, point(c, f));
+                }
+            }
+            for (sa, sb) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                let c = q(sa * (deep - 1.3), sb * (wide - 1.3));
+                if rng.next() < 0.3 || by_door(c) {
+                    continue;
+                }
+                s.push(Shape::ellipsoid(point(c, f), [0.8, 0.8, 0.35], BONE, AIR).placed(Placement::Clear));
+                for _ in 0..2 {
+                    let p = [c[0] + rng.range(-0.3, 0.3), c[1] + rng.range(-0.3, 0.3)];
+                    self.dungeon_prop(features, PropKind::Skull, point(p, f + 0.25));
+                }
+            }
+            for _ in 0..4 {
+                let c = q(rng.range(-deep + 1.0, deep - 4.0), flip(rng) * (wide - rng.range(0.6, 1.2)));
+                let (size, stretch) = (rng.range(0.25, 0.5), rng.range(0.7, 1.4));
+                if !by_door(c) {
+                    s.push(stone_block(&at, around(c, [size, size * stretch]), [f - 0.05, f + size * 0.8], d.stone));
+                }
+            }
+            return;
+        }
+
+        // Pillars holding up the roof of the bigger halls, some fallen, and square ones in the
+        // corners of the rest. They're well out from the middle, where the monsters gather.
+        if h.half[0] >= 5.0 && h.half[1] >= 5.0 && rng.next() < 0.7 {
+            for (sa, sb) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let broken = rng.next() < 0.3;
+                pillar(s, &at, q(sa * (deep - 1.8), sb * (wide - 1.8)), f, ceiling, 0.4, d.stone, broken, rng);
+            }
+        } else {
+            for (sa, sb) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                s.push(stone_block(&at, around(q(sa * (deep - 0.35), sb * (wide - 0.35)), [0.35, 0.35]), [f - 0.1, ceiling], d.stone));
+            }
+        }
+
+        // The walls, which way out each faces in a and b, the one with the doorway in last.
+        // Whatever stands against the middle of one keeps candles off it.
+        let walls: [(f32, f32); 4] = [(1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (-1.0, 0.0)];
+        let mut taken: Vec<(f32, f32)> = Vec::new();
+        // A side hall's chest, at the far end facing the way in, between two candles
+        if h.kind == HallKind::Side {
+            let spot = point(q(deep - 0.6, 0.0), f);
+            if self.inside(spot[0], spot[1]) {
+                chest(features, spot, heading, 1.7);
+            }
+            for b in [-1.0, 1.0] {
+                self.dungeon_prop(features, PropKind::Candle, point(q(deep - 0.35, b), f));
+            }
+            self.dungeon_prop(features, PropKind::Skull, point(q(deep - 0.5, 1.6 * flip(rng)), f));
+            taken.push(walls[0]);
+        }
+        // A stone coffin against a wall without a doorway, far enough out to leave the middle
+        // clear, with a lid of paving, candles at either end and a skull on top
+        if rng.next() < 0.5 {
+            let turn = (rng.next() * 3.0) as usize;
+            for k in 0..3 {
+                let (wa, wb) = walls[(turn + k) % 3];
+                let out = if wa != 0.0 { deep } else { wide };
+                if out < 5.25 || taken.contains(&(wa, wb)) {
+                    continue;
+                }
+                let (ca, cb) = (wa * (out - 0.75), wb * (out - 0.75));
+                // Long along the wall
+                let (la, lb) = (wb.abs(), wa.abs());
+                let ends = [q(ca + la * 1.2, cb + lb * 1.2), q(ca - la * 1.2, cb - lb * 1.2)];
+                if by_door(q(ca, cb)) || ends.iter().any(|&e| by_door(e)) {
+                    continue;
+                }
+                let (ha, hb) = (wa.abs() * 0.5 + la * 1.1, wb.abs() * 0.5 + lb * 1.1);
+                let body = rect([ca - ha, ca + ha], [cb - hb, cb + hb]);
+                s.push(stone_block(&at, body, [f - 0.1, f + 0.8], d.stone));
+                s.push(stone_block(&at, grown(body, 0.06), [f + 0.8, f + 0.95], d.paving));
+                for e in [1.0, -1.0] {
+                    self.dungeon_prop(features, PropKind::Candle, point(q(ca + la * 0.85 * e, cb + lb * 0.85 * e), f + 0.95));
+                }
+                self.dungeon_prop(features, PropKind::Skull, point(q(ca, cb), f + 0.95));
+                taken.push((wa, wb));
+                break;
+            }
+        }
+        // Candles along the walls
+        for (wa, wb) in walls {
+            for frac in [-0.6, 0.0, 0.6] {
+                let c = if wa != 0.0 { q(wa * (deep - 0.3), frac * wide) } else { q(frac * deep, wb * (wide - 0.3)) };
+                if by_door(c) || frac == 0.0 && taken.contains(&(wa, wb)) || rng.next() > 0.75 {
+                    continue;
+                }
+                self.dungeon_prop(features, PropKind::Candle, point(c, f));
+            }
+        }
+        // Skulls by the walls, and rubble in the corners
+        for _ in 0..2 + (rng.next() * 4.0) as usize {
+            let (inset, along) = (rng.range(0.35, 1.2), rng.range(-0.8, 0.8));
+            let c = match (rng.next() * 4.0) as usize {
+                0 => q(deep - inset, along * wide),
+                1 => q(-deep + inset, along * wide),
+                2 => q(along * deep, wide - inset),
+                _ => q(along * deep, -wide + inset),
+            };
+            if !by_door(c) {
+                self.dungeon_prop(features, PropKind::Skull, point(c, f));
+            }
+        }
+        for _ in 0..2 + (rng.next() * 3.0) as usize {
+            let c = q(flip(rng) * (deep - rng.range(0.9, 1.8)), flip(rng) * (wide - rng.range(0.9, 1.8)));
+            let (size, stretch) = (rng.range(0.2, 0.45), rng.range(0.7, 1.4));
+            if !by_door(c) {
+                s.push(stone_block(&at, around(c, [size, size * stretch]), [f - 0.05, f + size * 0.8], d.stone));
+            }
+        }
+    }
+
+    /// A candle or skull of a dungeon at `p`, if that's in this piece of the landscape, turned the
+    /// way the spot it's on says, so it's the same whichever piece it's in
+    fn dungeon_prop(&self, features: &mut Features, kind: PropKind, p: Vec3) {
+        if !self.inside(p[0], p[1]) {
+            return;
+        }
+        let mut rng = Rng(hash3((p[0] * 16.0) as i32 as u32, (p[1] * 16.0) as i32 as u32, (p[2] * 16.0) as i32 as u32 ^ 0x5c11));
+        if kind == PropKind::Candle {
+            candle(features, p, &mut rng);
+        } else {
+            skull(features, p, &mut rng);
+        }
     }
 
     // Which kind of tree grows where: pines up high, palms and willows by the water, and groves of

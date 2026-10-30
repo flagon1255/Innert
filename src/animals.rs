@@ -42,9 +42,22 @@ pub enum Look {
     Frostfang,
     Spider,
     Treant,
+    Direwolf,
+    WinterAlpha,
+    GraveKnight,
+    StormDrake,
+    Rimeweaver,
+    // Monsters: smaller, and many of them, going for the player on sight. Wolves roam the land,
+    // the rest haunt dungeons.
+    Wolf,
+    Skeleton,
+    ArmoredSkeleton,
+    Zombie,
+    ArmoredZombie,
+    Spiderling,
 }
 
-/// The build of a boss, which decides how it moves and fights
+/// The build of a boss or monster, which decides how it moves and fights
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Build {
     Golem,
@@ -52,6 +65,9 @@ pub enum Build {
     Bear,
     Spider,
     Treant,
+    Wolf,
+    /// Walking dead, bones or rotting flesh, maybe in armor
+    Undead,
 }
 
 /// The materials a boss is made of: its body, darker parts, things on it, what glows, and one
@@ -66,7 +82,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 21] = [
+    pub const ALL: [Look; 32] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -88,30 +104,82 @@ impl Look {
         Look::Frostfang,
         Look::Spider,
         Look::Treant,
+        Look::Direwolf,
+        Look::WinterAlpha,
+        Look::GraveKnight,
+        Look::StormDrake,
+        Look::Rimeweaver,
+        Look::Wolf,
+        Look::Skeleton,
+        Look::ArmoredSkeleton,
+        Look::Zombie,
+        Look::ArmoredZombie,
+        Look::Spiderling,
     ];
 
+    /// A boss, guarding a lair, rather than a monster or an animal
     pub fn is_boss(self) -> bool {
-        self.build().is_some()
+        self.build().is_some() && !self.is_monster()
     }
 
+    /// A monster: it fights like a boss, but it's smaller and there are many of them about
+    pub fn is_monster(self) -> bool {
+        matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling)
+    }
+
+    /// How a boss or monster moves and fights, None for an animal or a thing
     pub fn build(self) -> Option<Build> {
         Some(match self {
             Look::Golem | Look::FrostGolem | Look::MagmaGolem => Build::Golem,
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake => Build::Drake,
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake => Build::Drake,
             Look::Ironhide | Look::Frostfang => Build::Bear,
-            Look::Spider => Build::Spider,
+            Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
+            Look::Direwolf | Look::WinterAlpha | Look::Wolf => Build::Wolf,
+            Look::GraveKnight | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => Build::Undead,
             _ => return None,
         })
+    }
+
+    /// How much bigger its model is than its build's, which is made at the size of the monster
+    /// where there is one
+    pub fn scale(self) -> f64 {
+        match self {
+            Look::Direwolf | Look::WinterAlpha => 2.1,
+            Look::GraveKnight => 2.3,
+            Look::Spiderling => 0.5,
+            _ => 1.0,
+        }
+    }
+
+    /// The monster a boss calls up to help it, if it does
+    pub fn brood(self) -> Option<Look> {
+        match self {
+            Look::Direwolf | Look::WinterAlpha => Some(Look::Wolf),
+            Look::GraveKnight => Some(Look::Skeleton),
+            Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
+            _ => None,
+        }
+    }
+
+    /// Bones rather than rotting flesh, for the walking dead
+    fn bony(self) -> bool {
+        matches!(self, Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight)
+    }
+
+    /// Wearing armor, for the walking dead
+    fn armored(self) -> bool {
+        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight)
     }
 
     /// What its attacks are made of: what a drake breathes, what a golem's blows leave behind
     pub fn element(self) -> Option<Element> {
         match self {
-            Look::FrostGolem | Look::FrostWyrm | Look::Frostfang => Some(Element::Frost),
+            Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
             Look::MagmaGolem | Look::Drake => Some(Element::Fire),
-            Look::VenomDrake | Look::Spider => Some(Element::Poison),
-            Look::Treant => Some(Element::Poison),
+            Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie => Some(Element::Poison),
+            Look::GraveKnight => Some(Element::Void),
+            Look::StormDrake => Some(Element::Storm),
             _ => None,
         }
     }
@@ -122,12 +190,16 @@ impl Look {
         let cold = matches!(ground, SNOW | ICE);
         let desert = matches!(ground, SAND | SANDSTONE | SANDSTONE_DARK | DRY_GRASS);
         let jungle = matches!(ground, JUNGLE_GRASS | VINE);
+        let stony = matches!(ground, STONE | ROCK | GRAVEL);
         match self {
             Look::Golem if cold => Look::FrostGolem,
             Look::Golem if desert => Look::MagmaGolem,
             Look::Drake if cold => Look::FrostWyrm,
             Look::Drake if jungle => Look::VenomDrake,
+            Look::Drake if stony => Look::StormDrake,
             Look::Ironhide if cold => Look::Frostfang,
+            Look::Direwolf if cold => Look::WinterAlpha,
+            Look::Spider if cold => Look::Rimeweaver,
             _ => self,
         }
     }
@@ -143,7 +215,21 @@ impl Look {
             Look::Ironhide => make(FUR_DARK, FUR_BROWN, DARK_STEEL, GLOW_BLOOD, BONE),
             Look::Frostfang => make(FUR_WHITE, FUR_GRAY, STEEL, GLOW_FROST, ICE),
             Look::Spider => make(FUR_DARK, BARK_DARK, GLOW_POISON, GLOW_BLOOD, BONE),
+            // Dark enough to stand out against the snow it lives on
+            Look::Rimeweaver => make(STEEL, OBSIDIAN, GLOW_FROST, GLOW_FROST, ICE),
+            Look::Spiderling => make(FUR_BROWN, BARK_DARK, GLOW_POISON, GLOW_BLOOD, BONE),
             Look::Treant => make(BARK_DARK, WOOD, MOSS, GLOW_POISON, LEAVES),
+            Look::StormDrake => make(STEEL, DARK_STEEL, LINEN, GLOW_STORM, BONE),
+            Look::Direwolf => make(FUR_DARK, FUR_GRAY, FUR_GRAY, GLOW_BLOOD, BONE),
+            Look::WinterAlpha => make(FUR_GRAY, FUR_DARK, FUR_WHITE, GLOW_FROST, ICE),
+            Look::Wolf => make(FUR_GRAY, FUR_DARK, FUR_CREAM, GLOW_FIRE, BONE),
+            // The walking dead: their bones or skin, rags, armor, the light in their eyes, and
+            // their blade. A knight's bones in black armor, void burning in its eyes.
+            Look::GraveKnight => make(BONE, BARK_DARK, DARK_STEEL, GLOW_VOID, DARK_STEEL),
+            Look::Skeleton => make(BONE, BARK_DARK, CLOTH, GLOW_FROST, STEEL),
+            Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
+            Look::Zombie => make(MOSS, PINE, LINEN, GLOW_POISON, BONE),
+            Look::ArmoredZombie => make(MOSS, PINE, DARK_STEEL, GLOW_POISON, BONE),
             _ => make(ROCK, GRAVEL, MOSS, GLOW_FROST, CRYSTAL),
         }
     }
@@ -174,10 +260,13 @@ impl Look {
             Look::Candle => 0.2,
             Look::Skull => 0.2,
             Look::Golem | Look::FrostGolem | Look::MagmaGolem => 4.4,
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake => 3.4,
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake => 3.4,
             Look::Ironhide | Look::Frostfang => 3.4,
-            Look::Spider => 3.1,
+            Look::Spider | Look::Rimeweaver | Look::Spiderling => 3.1 * self.scale(),
             Look::Treant => 5.5,
+            Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
+            // A blade raised overhead
+            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight => 2.5 * self.scale(),
         }
     }
 
@@ -194,10 +283,12 @@ impl Look {
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
             Look::Golem | Look::FrostGolem | Look::MagmaGolem => (2.0, 1.1),
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake => (1.25, 1.0),
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake => (1.25, 1.0),
             Look::Ironhide | Look::Frostfang => (1.6, 1.05),
-            Look::Spider => (0.9, 0.95),
+            Look::Spider | Look::Rimeweaver | Look::Spiderling => (0.9 * self.scale(), 0.95 * self.scale()),
             Look::Treant => (2.4, 1.2),
+            Look::Wolf | Look::Direwolf | Look::WinterAlpha => (0.55 * self.scale(), 0.42 * self.scale()),
+            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight => (1.0 * self.scale(), 0.36 * self.scale()),
         }
     }
 
@@ -222,6 +313,17 @@ impl Look {
             Look::Frostfang => "Frostfang",
             Look::Spider => "Broodmother",
             Look::Treant => "Ancient Treant",
+            Look::Direwolf => "Alpha Direwolf",
+            Look::WinterAlpha => "Winter Alpha",
+            Look::GraveKnight => "Grave Knight",
+            Look::StormDrake => "Thunder Drake",
+            Look::Rimeweaver => "Rimeweaver",
+            Look::Wolf => "wolf",
+            Look::Skeleton => "skeleton",
+            Look::ArmoredSkeleton => "armoured skeleton",
+            Look::Zombie => "zombie",
+            Look::ArmoredZombie => "armoured zombie",
+            Look::Spiderling => "cave spider",
         }
     }
 
@@ -245,6 +347,17 @@ impl Look {
             Look::Frostfang => 2200.0,
             Look::Spider => 1800.0,
             Look::Treant => 3200.0,
+            Look::Direwolf => 2000.0,
+            Look::WinterAlpha => 2200.0,
+            Look::GraveKnight => 3400.0,
+            Look::StormDrake => 2300.0,
+            Look::Rimeweaver => 2000.0,
+            Look::Wolf => 70.0,
+            Look::Skeleton => 150.0,
+            Look::ArmoredSkeleton => 240.0,
+            Look::Zombie => 170.0,
+            Look::ArmoredZombie => 270.0,
+            Look::Spiderling => 40.0,
             _ => 20.0,
         }
     }
@@ -254,19 +367,29 @@ impl Look {
     pub fn meat(self) -> u32 {
         match self {
             Look::Bear => 3,
-            Look::Squirrel => 1,
-            Look::Ironhide | Look::Frostfang => 6,
+            Look::Squirrel | Look::Wolf => 1,
+            Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => 6,
             _ => 0,
         }
     }
 
     // Speeds in meters per second
     pub fn walk_speed(self) -> f64 {
+        match self {
+            Look::Wolf => return 1.8,
+            Look::Direwolf | Look::WinterAlpha => return 2.2,
+            Look::Zombie | Look::ArmoredZombie => return 0.8,
+            Look::Skeleton | Look::ArmoredSkeleton => return 1.4,
+            Look::Spiderling => return 2.6,
+            _ => {}
+        }
         match self.build() {
             Some(Build::Golem) => 1.3,
             Some(Build::Drake | Build::Bear) => 1.6,
             Some(Build::Spider) => 2.4,
             Some(Build::Treant) => 0.9,
+            Some(Build::Wolf) => 1.8,
+            Some(Build::Undead) => 1.2,
             None => match self {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
@@ -277,6 +400,17 @@ impl Look {
     }
 
     pub fn run_speed(self) -> f64 {
+        match self {
+            Look::Wolf => return 6.5,
+            Look::Direwolf | Look::WinterAlpha => return 8.0,
+            Look::Skeleton => return 3.2,
+            Look::ArmoredSkeleton | Look::GraveKnight => return 2.8,
+            // Shambling, but quicker than they look
+            Look::Zombie => return 2.6,
+            Look::ArmoredZombie => return 2.2,
+            Look::Spiderling => return 7.0,
+            _ => {}
+        }
         match self.build() {
             Some(Build::Golem) => 2.4,
             Some(Build::Drake) => 4.5,
@@ -284,6 +418,8 @@ impl Look {
             Some(Build::Bear) => 10.0,
             Some(Build::Spider) => 6.0,
             Some(Build::Treant) => 1.6,
+            Some(Build::Wolf) => 6.5,
+            Some(Build::Undead) => 3.0,
             None => match self {
                 Look::Bear => 3.2,
                 Look::Dog => 4.5,
@@ -298,8 +434,10 @@ impl Look {
         match self.build() {
             Some(Build::Golem) => 2.4,
             Some(Build::Drake | Build::Bear) => 2.6,
-            Some(Build::Spider) => 1.8,
+            Some(Build::Spider) => 1.8 * self.scale(),
             Some(Build::Treant) => 2.8,
+            Some(Build::Wolf) => 1.4 * self.scale(),
+            Some(Build::Undead) => 1.3 * self.scale(),
             None => match self {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
@@ -322,20 +460,27 @@ impl Look {
 /// Frame 0 stands still, 1 to WALK_FRAMES are a walk cycle, then come a boss's poses as it
 /// attacks, see POSE_WINDUP and the rest, and frames halfway between them to ease from one to the
 /// next, see tween(). Only bosses have the poses.
-const WALK_FRAMES: usize = 8;
+const WALK_FRAMES: usize = 12;
 /// Getting ready to attack
 pub const POSE_WINDUP: usize = WALK_FRAMES + 1;
 /// Bringing it down
 pub const POSE_STRIKE: usize = WALK_FRAMES + 2;
 /// Something each boss does its own way: throwing, spreading its wings or lowering its head to charge
 pub const POSE_SPECIAL: usize = WALK_FRAMES + 3;
-/// The pairs of poses with a frame halfway between them, 0 being standing
+/// The pairs of poses with frames between them, 0 being standing, and how many frames
 const TWEENS: [(usize, usize); 5] = [(0, POSE_WINDUP), (0, POSE_SPECIAL), (POSE_WINDUP, POSE_STRIKE), (POSE_SPECIAL, POSE_STRIKE), (POSE_STRIKE, 0)];
-const FRAMES: usize = POSE_SPECIAL + 1 + TWEENS.len();
+const TWEEN_STEPS: usize = 2;
+const FRAMES: usize = POSE_SPECIAL + 1 + TWEENS.len() * TWEEN_STEPS;
 
-/// The frame halfway between poses `a` and `b`, either way round, 0 being standing, if there's one
-pub fn tween(a: usize, b: usize) -> Option<usize> {
-    TWEENS.iter().position(|&pair| pair == (a, b) || pair == (b, a)).map(|k| POSE_SPECIAL + 1 + k)
+/// The frame `f` of the way from pose `a` to pose `b`, 0 being standing, if there are frames
+/// between them
+pub fn tween(a: usize, b: usize, f: f64) -> Option<usize> {
+    let (k, f) = match TWEENS.iter().position(|&pair| pair == (a, b)) {
+        Some(k) => (k, f),
+        None => (TWEENS.iter().position(|&pair| pair == (b, a))?, 1.0 - f),
+    };
+    let step = ((f * (TWEEN_STEPS + 1) as f64).floor() as usize).clamp(1, TWEEN_STEPS);
+    Some(POSE_SPECIAL + 1 + k * TWEEN_STEPS + step - 1)
 }
 
 /// How far a boss is into each of its poses, 0 to 1, so it can be drawn partway between them
@@ -356,8 +501,13 @@ impl Pose {
             POSE_STRIKE => Pose { strike: 1.0, ..Pose::REST },
             POSE_SPECIAL => Pose { special: 1.0, ..Pose::REST },
             _ if frame > POSE_SPECIAL => {
-                let (a, b) = (Pose::of(TWEENS[frame - POSE_SPECIAL - 1].0), Pose::of(TWEENS[frame - POSE_SPECIAL - 1].1));
-                Pose { windup: (a.windup + b.windup) * 0.5, strike: (a.strike + b.strike) * 0.5, special: (a.special + b.special) * 0.5 }
+                // Partway from one pose of a pair to the other
+                let k = frame - POSE_SPECIAL - 1;
+                let (pair, step) = (TWEENS[k / TWEEN_STEPS], k % TWEEN_STEPS + 1);
+                let t = step as f64 / (TWEEN_STEPS + 1) as f64;
+                let (a, b) = (Pose::of(pair.0), Pose::of(pair.1));
+                let mix = |x: f64, y: f64| x + (y - x) * t;
+                Pose { windup: mix(a.windup, b.windup), strike: mix(a.strike, b.strike), special: mix(a.special, b.special) }
             }
             _ => Pose::REST,
         }
@@ -715,6 +865,104 @@ fn treant(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     }
 }
 
+/// A wolf, lean and grey, eyes glowing. It crouches to spring, lunges with its jaws open, and
+/// throws its head back to howl.
+fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+    let (fur, dark) = (skin.body, skin.dark);
+    let crouch = pose.mix(0.0, 0.14, 0.0, 0.04);
+    let lunge = pose.mix(0.0, -0.08, 0.22, 0.0);
+    let howl = pose.special;
+    let open = pose.strike + pose.special > 0.4;
+    let head = [0.74 + lunge - 0.12 * howl, 0.0, 0.78 - crouch + 0.3 * howl];
+    // Its muzzle points on ahead, or up at the sky
+    let snout = [head[0] + 0.2 - 0.12 * howl, 0.0, head[2] - 0.04 + 0.2 * howl];
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.09, s * 0.07, head[2] + 0.05], 0.025, skin.glow));
+        p.push(limb([head[0] - 0.03, s * 0.07, head[2] + 0.1], [head[0] - 0.05, s * 0.09, head[2] + 0.24], 0.04, 0.01, dark));
+    }
+    p.push(ball(snout, 0.03, EYE));
+    if open {
+        p.push(limb([head[0] + 0.05, 0.0, head[2] - 0.08], [snout[0], 0.0, snout[2] - 0.12], 0.045, 0.025, dark));
+    }
+    p.push(limb(head, snout, 0.075, 0.05, fur));
+    p.push(ball(head, 0.13, fur));
+    p.push(limb([0.42 + lunge * 0.5, 0.0, 0.62 - crouch], head, 0.12, 0.1, fur));
+    p.push(ellipsoid([0.28 + lunge * 0.5, 0.0, 0.55 - crouch], [0.22, 0.17, 0.18], skin.accent));
+    p.push(ellipsoid([0.0 + lunge * 0.3, 0.0, 0.6 - crouch], [0.5, 0.18, 0.19], fur));
+    // Its tail, low as it creeps, up as it howls
+    let sway = 0.08 * (angle + 1.0).sin() * moving;
+    p.push(limb([-0.45, 0.0, 0.62 - crouch], [-0.82, sway, 0.45 - crouch + 0.35 * howl], 0.06, 0.035, dark));
+    for (x, y, s) in [(0.3, 0.12, 1.0), (0.3, -0.12, -1.0), (-0.32, 0.12, -1.0), (-0.32, -0.12, 1.0)] {
+        // Its hind legs stretched out behind as it lunges
+        let reach = if x < 0.0 { -0.4 * pose.strike } else { 0.5 * pose.strike };
+        leg(p, [x + lunge * 0.4, y, 0.52 - crouch], 0.52 - crouch, 0.055, 0.5 * swing * s + reach, fur, dark);
+    }
+}
+
+/// The walking dead, about 1.8 meters tall: bones or rotting flesh in rags, maybe in armor, eyes
+/// burning, a blade in the right hand. It raises the blade overhead and brings it down; zombies
+/// shamble with their arms out.
+fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, armored: bool) {
+    let (flesh, dark, glow) = (skin.body, skin.dark, skin.glow);
+    // Leaning into a blow, and hunched as zombies are
+    let hunch = if bony { 0.0 } else { 0.08 };
+    let lean = pose.mix(hunch, hunch - 0.05, hunch + 0.22, hunch + 0.05);
+    let up = |v: Vec3| [v[0] + lean * (v[2] - 0.9).max(0.0), v[1], v[2]];
+    let limb_r = if bony { 0.045 } else { 0.07 };
+    // Its head: a skull with burning sockets, or a rotting face
+    let head = up([0.02, 0.0, 1.62]);
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.1, s * 0.045, head[2] + 0.02], 0.028, glow));
+    }
+    if armored {
+        // A helm with a slit
+        p.push(ellipsoid([head[0] - 0.01, 0.0, head[2] + 0.04], [0.15, 0.15, 0.15], skin.accent));
+    }
+    p.push(ellipsoid([head[0] + 0.05, 0.0, head[2] - 0.09], [0.08, 0.08, 0.05], if bony { flesh } else { dark }));
+    p.push(ball(head, 0.13, flesh));
+    p.push(limb(up([0.0, 0.0, 1.3]), head, 0.05, 0.05, flesh));
+    // Its chest: ribs, or rags over flesh, maybe a breastplate
+    let chest = up([0.0, 0.0, 1.25]);
+    if armored {
+        p.push(ellipsoid(chest, [0.15, 0.22, 0.22], skin.accent));
+        for s in [-1.0, 1.0] {
+            p.push(ellipsoid(up([0.0, s * 0.24, 1.44]), [0.12, 0.12, 0.08], skin.accent));
+        }
+    }
+    if bony {
+        p.push(ellipsoid(chest, [0.12, 0.17, 0.2], flesh).striped(dark));
+        p.push(limb(up([0.0, 0.0, 0.92]), chest, 0.04, 0.04, flesh));
+    } else {
+        p.push(ellipsoid(up([0.0, 0.0, 1.12]), [0.15, 0.2, 0.28], skin.accent));
+        p.push(ellipsoid(chest, [0.13, 0.2, 0.22], flesh));
+    }
+    p.push(ellipsoid([0.0, 0.0, 0.92], [0.1, 0.15, 0.07], if armored { skin.accent } else { dark }));
+    // The blade arm: hanging, raised overhead behind, or brought down in front
+    let shoulder = up([0.0, -0.22, 1.42]);
+    let zombie_reach = if bony { 0.0 } else { 0.35 };
+    let elbow = pose.at([0.05 + zombie_reach - 0.15 * swing, -0.26, 1.15 + zombie_reach * 0.5], [-0.08, -0.3, 1.65], [0.38, -0.2, 1.3], [0.1, -0.32, 1.55]);
+    let hand = pose.at([0.2 + zombie_reach * 1.4 - 0.25 * swing, -0.25, 0.95 + zombie_reach], [-0.18, -0.24, 2.0], [0.62, -0.1, 1.0], [0.3, -0.28, 1.9]);
+    let blade = pose.at([0.55, 0.0, -0.75], [-0.5, 0.05, 0.85], [0.92, 0.1, -0.35], [0.3, 0.0, 0.95]);
+    let n = (blade[0] * blade[0] + blade[1] * blade[1] + blade[2] * blade[2]).sqrt().max(0.1);
+    let tip = [0, 1, 2].map(|i| hand[i] + blade[i] / n * 0.85);
+    p.push(limb(hand, tip, 0.03, 0.012, skin.extra));
+    p.push(limb([hand[0] - blade[1] / n * 0.1, hand[1] - 0.09, hand[2]], [hand[0] + blade[1] / n * 0.1, hand[1] + 0.09, hand[2]], 0.025, 0.025, DARK_STEEL));
+    p.push(ball(hand, limb_r * 1.1, flesh));
+    p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
+    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, if armored { skin.accent } else { flesh }));
+    // The other arm swinging, reaching out for a zombie, thrown out for balance as it strikes
+    let shoulder = up([0.0, 0.22, 1.42]);
+    let elbow = pose.at([0.05 + zombie_reach + 0.15 * swing, 0.26, 1.15 + zombie_reach * 0.5], [0.2, 0.3, 1.3], [-0.12, 0.3, 1.2], [0.1, 0.32, 1.55]);
+    let hand = pose.at([0.15 + zombie_reach * 1.4 + 0.25 * swing, 0.27, 0.95 + zombie_reach], [0.42, 0.26, 1.35], [-0.25, 0.32, 1.0], [0.3, 0.28, 1.9]);
+    p.push(ball(hand, limb_r * 1.1, flesh));
+    p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
+    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, if armored { skin.accent } else { flesh }));
+    // Its legs, in rags or greaves
+    for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
+        leg(p, [0.0, y, 0.92], 0.88, limb_r * 1.1, 0.45 * swing * s, if armored { skin.accent } else if bony { flesh } else { dark }, dark);
+    }
+}
+
 /// The shapes making up an animal, in meters: facing +x, with its feet on z = 0.
 /// `phase` is how far through its walk it is, None standing still. A boss can strike a `pose`.
 fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
@@ -724,13 +972,21 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
     let swing = angle.sin() * moving;
     let mut p = Vec::new();
     match look {
-        _ if look.is_boss() => match look.build() {
-            Some(Build::Golem) => golem(&mut p, swing, pose, look.skin()),
-            Some(Build::Drake) => drake(&mut p, angle, swing, moving, pose, look.skin()),
-            Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
-            Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
-            _ => treant(&mut p, swing, pose, look.skin()),
-        },
+        // Bosses and monsters, made at the size of their build, then grown or shrunk to their own
+        _ if look.build().is_some() => {
+            match look.build() {
+                Some(Build::Golem) => golem(&mut p, swing, pose, look.skin()),
+                Some(Build::Drake) => drake(&mut p, angle, swing, moving, pose, look.skin()),
+                Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
+                Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
+                Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
+                Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored()),
+                _ => treant(&mut p, swing, pose, look.skin()),
+            }
+            if look.scale() != 1.0 {
+                p = p.iter().map(|part| part.scaled(look.scale())).collect();
+            }
+        }
         Look::Bear => {
             let (fur, dark) = (FUR_BROWN, FUR_DARK);
             p.push(ball([0.98, 0.12, 1.08], 0.035, EYE));
@@ -976,9 +1232,9 @@ pub fn animal_models() -> Vec<Model> {
         for frame in 0..WALK_FRAMES {
             models.push(rasterize(look, Some(frame as f64 / WALK_FRAMES as f64), Pose::REST));
         }
-        // Only bosses strike poses, so the rest leave them empty
+        // Only bosses and monsters strike poses, so the rest leave them empty
         for frame in POSE_WINDUP..FRAMES {
-            models.push(if look.is_boss() { rasterize(look, None, Pose::of(frame)) } else { Model { size: [1, 1, 1], voxels: vec![AIR] } });
+            models.push(if look.build().is_some() { rasterize(look, None, Pose::of(frame)) } else { Model { size: [1, 1, 1], voxels: vec![AIR] } });
         }
     }
     models
@@ -1011,6 +1267,8 @@ pub const TINT_FROZEN: u32 = 2;
 pub const TINT_POISONED: u32 = 3;
 pub const TINT_SHOCKED: u32 = 4;
 pub const TINT_CHILLED: u32 = 5;
+/// Struck a moment ago
+pub const TINT_HIT: u32 = 6;
 
 /// One animal as traverse.comp reads it, see the Animal struct there
 #[derive(BufferContents, Clone, Copy)]
@@ -1067,6 +1325,8 @@ pub struct Animal {
     timer: f64,
     /// How far through its walk cycle, 0-1
     pub(crate) phase: f64,
+    /// Seconds it's been about, for it to breathe and sway as it stands
+    age: f64,
     pub health: f64,
     /// Burning, poisoned, frozen and such, see src\combat.rs
     pub status: Status,
@@ -1134,6 +1394,7 @@ impl Animal {
             mood: Mood::Idle,
             timer: random(&mut rng) * 3.0,
             phase: 0.0,
+            age: random(&mut rng) * 10.0,
             health: look.health(),
             status: Status::default(),
             boss: None,
@@ -1199,14 +1460,17 @@ impl Animal {
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
         let look = self.look;
+        self.age += dt;
 
-        if self.boss.is_some() {
-            // Bosses shrug off most of what would knock an animal about
+        // Bosses shrug off most of what would knock an animal about, monsters don't
+        if look.is_boss() {
             let most = 1.2 * vpm;
             if self.status.push.norm() > most {
                 self.status.push = self.status.push.normalize() * most;
             }
             self.status.limit_for_boss();
+        }
+        if self.boss.is_some() {
             bosses::think(self, world, player, dt);
         }
 
@@ -1312,9 +1576,19 @@ impl Animal {
     pub fn instance(&self, world_voxels_per_meter: u32) -> AnimalInstance {
         let walking = if self.speed > 0.15 { 1 + (self.phase * WALK_FRAMES as f64) as usize % WALK_FRAMES } else { 0 };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
-        let scale = world_voxels_per_meter as f64 / self.look.resolution();
+        let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
+        let mut heading = self.heading;
+        // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
+        // so they're never still as statues between frames
+        if self.look.build().is_some() {
+            let offset = self.id as f64 * 0.7;
+            scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
+            if self.speed < 0.15 {
+                heading += 0.035 * (self.age * 1.3 + offset).sin();
+            }
+        }
         let radius = self.look.reach() * world_voxels_per_meter as f64;
-        AnimalInstance::new(model_index(self.look, frame), self.position, facing(self.heading), scale, radius, MOVING).tinted(self.status.tint())
+        AnimalInstance::new(model_index(self.look, frame), self.position, facing(heading), scale, radius, MOVING).tinted(self.status.tint())
     }
 }
 
@@ -1335,6 +1609,27 @@ pub fn spawn_boss(world: &World, water: WaterLevel, look: Look, near: Vector3<f6
             if let Some(z) = ground_at(world, water, x, y, near.z, 4.0 * vpm, 4.0 * vpm) {
                 return Some(Animal::boss(look, Vector3::new(x, y, z), key, seed));
             }
+        }
+    }
+    None
+}
+
+/// A monster of `look` on the ground near `near`, in voxels, about that high with room above it,
+/// within `within` meters: None if there's nowhere
+pub fn spawn_monster(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, within: f64, seed: u32) -> Option<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    let mut rng = hash(seed ^ 0x5ca7);
+    for _ in 0..24 {
+        let a = random(&mut rng) * TAU;
+        let r = random(&mut rng).sqrt() * within * vpm;
+        let (x, y) = (near.x + a.cos() * r, near.y + a.sin() * r);
+        if x < 2.0 || y < 2.0 || x >= sx - 2.0 || y >= sy - 2.0 {
+            continue;
+        }
+        if let Some(z) = ground_at(world, water, x, y, near.z, 2.0 * vpm, 3.0 * vpm) {
+            let key = [x as i64, y as i64, -2];
+            return Some(Animal::boss(look, Vector3::new(x, y, z), key, hash(rng)));
         }
     }
     None
@@ -1367,5 +1662,28 @@ pub fn spawn(world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) ->
             }
         }
     }
+    // Packs of wolves, out on grass or snow, well away from the player to begin with
+    for _ in 0..WOLF_PACKS {
+        for _ in 0..64 {
+            let (x, y) = (sx * (0.1 + 0.8 * random(&mut rng)), sy * (0.1 + 0.8 * random(&mut rng)));
+            if (Vector2::new(x, y) - near.xy()).norm() < 35.0 * vpm {
+                continue;
+            }
+            let Some(z) = surface_at(world, water, x, y) else {
+                continue;
+            };
+            if matches!(world.material_at(x as i64, y as i64, z as i64 - 1), SAND | SANDSTONE | SANDSTONE_DARK | JUNGLE_GRASS | VINE) {
+                continue;
+            }
+            let den = Vector3::new(x, y, z);
+            for k in 0..3 {
+                animals.extend(spawn_monster(world, water, Look::Wolf, den, 4.0, hash(rng ^ k)));
+            }
+            break;
+        }
+    }
     animals
 }
+
+/// How many packs of wolves roam the world at once
+const WOLF_PACKS: usize = 2;

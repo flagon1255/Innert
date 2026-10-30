@@ -1,7 +1,7 @@
-//! Sound: swings, bowstrings, spells and hits, footsteps on whatever's underfoot, birds, and the
-//! wind and water all around. Every sound is made here when the game starts, from noise and tones
-//! shaped and filtered, so there are no sound files. Sounds out in the world are quieter further
-//! away and come from their side.
+//! Sound: swings, bowstrings, spells and hits, beasts growling and bones rattling, footsteps on
+//! whatever's underfoot, birds, and the wind and water all around. Every sound is made here when
+//! the game starts, from noise and tones shaped and filtered, so there are no sound files. Sounds
+//! out in the world are quieter further away and come from their side.
 
 use std::f32::consts::{PI, TAU};
 
@@ -78,6 +78,22 @@ pub enum Sound {
     Flap,
     /// A spider or a snake hissing
     Hiss,
+    /// A wolf growling, low in its throat
+    Growl,
+    /// A wolf howling, as its pack spots you
+    Howl,
+    /// Jaws snapping shut
+    Bite,
+    /// Bones rattling
+    Rattle,
+    /// Metal ringing on metal: a sword on armor, or a parry
+    Clang,
+    /// Something wet and slimy squashing
+    Squelch,
+    /// Lots of little legs pattering
+    Skitter,
+    /// An attack rushing just past the ear
+    Dodge,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -181,6 +197,65 @@ fn whoosh(length: f32, low: f32, high: f32, seed: u32) -> Vec<f32> {
         let cutoff = low + (high - low) * k;
         let x = noise(rng);
         (a.step(x, cutoff) - b.step(x, cutoff * 0.25)) * k * 2.2
+    })
+}
+
+/// A blade swung through the air: a whoosh, and under it the low hum of the air it pushes aside,
+/// around `hum` Hz at its fastest, so it sounds like it has some weight behind it
+fn swing(length: f32, low: f32, high: f32, hum: f32, seed: u32) -> Vec<f32> {
+    let mut body = Resonator(0.0, 0.0);
+    let push = render(length, seed ^ 0x5bd1e995, |t, rng| {
+        let k = swell(t, length);
+        body.step(noise(rng) * 0.05, hum * (0.7 + 0.3 * k), 0.008) * k * k
+    });
+    let mut air = whoosh(length, low, high, seed);
+    for (a, p) in air.iter_mut().zip(push) {
+        *a += p;
+    }
+    air
+}
+
+/// A blow landing: a hard crack at the very front, a slap of flesh or leather, and a deep thump
+/// dropping from `thump` Hz, with a gritty crunch `crunch` of the way, 0 to 1, all pushed
+/// together a little too hard so it lands with weight
+fn hit(thump: f32, crunch: f32, seed: u32) -> Vec<f32> {
+    let length = 0.28;
+    let mut rng = hash(seed);
+    let bright = 1600.0 + 1400.0 * random(&mut rng);
+    let (mut lp, mut lp2, mut lp3, mut lp4) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let (mut phase, mut grit) = (0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let crack = (x - lp.step(x, 3000.0)) * (-t * 400.0).exp() * 0.9;
+        let slap = (lp2.step(x, bright) - lp3.step(x, 200.0)) * (-t * 30.0).exp() * 2.6;
+        // Dropping quickly in pitch, like a drum
+        phase += TAU * thump * (0.4 + 0.6 * (-t * 35.0).exp()) / RATE as f32;
+        let body = phase.sin() * (-t * 16.0).exp();
+        // Crunching only in the first moment
+        grit = if random(rng) < 0.02 * crunch * (-t * 40.0).exp() { (-t * 30.0).exp() } else { grit * 0.9 };
+        let y = noise(rng) * grit;
+        let crunchy = (y - lp4.step(y, 1500.0)) * 0.8;
+        // Squashed softly at the top: louder all through, but never past it
+        ((crack + slap + body + crunchy) * 1.1).tanh() * 1.3 * ((length - t) * 40.0).min(1.0)
+    })
+}
+
+/// Something bursting: a sharp crack, a deep boom sinking from `low` Hz, a roar of air rushing
+/// out and dying down, and bits pattering down after
+fn burst(low: f32, seed: u32) -> Vec<f32> {
+    let length = 0.9;
+    let (mut lp, mut lp2, mut lp3) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let (mut phase, mut grit) = (0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let crack = (x - lp.step(x, 1200.0)) * (-t * 70.0).exp() * 0.7;
+        phase += TAU * low * (0.55 + 0.45 * (-t * 10.0).exp()) / RATE as f32;
+        let boom = (phase.sin() + 0.3 * (phase * 2.0).sin()) * (-t * 5.0).exp() * 0.6;
+        let roar = lp2.step(x, 500.0 - 300.0 * t) * 1.9 * (-t * 4.5).exp();
+        grit = if random(rng) < 0.003 * (-t * 3.0).exp() * (t * 10.0).min(1.0) { 0.5 + 0.5 * random(rng) } else { grit * 0.92 };
+        let y = noise(rng) * grit;
+        let debris = (y - lp3.step(y, 2000.0)) * 0.4;
+        (crack + boom + roar + debris) * (t * 2000.0).min(1.0) * ((length - t) * 20.0).min(1.0)
     })
 }
 
@@ -473,6 +548,237 @@ fn hiss(rattle: f32, seed: u32) -> Vec<f32> {
     })
 }
 
+/// A wolf growling low in its throat around `low` Hz: the breath catching unevenly, every other
+/// catch weaker, so it comes out rough, and rolling louder and softer as it goes, with the lips
+/// drawn back `bared` of the way, 0 to 1, for a snarl
+fn growl(low: f32, bared: f32, seed: u32) -> Vec<f32> {
+    let length = 0.8;
+    let (mut chest, mut throat, mut mouth) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let (mut lp, mut lp2, mut lp3) = (Lowpass(0.5), Lowpass(0.0), Lowpass(0.0));
+    let (mut phase, mut jitter, mut weak, mut roll) = (0.0f32, 1.0f32, false, 0.5f32);
+    render(length, seed, |t, rng| {
+        phase += low * jitter * (1.0 + 0.08 * swell(t, length) + 0.04 * (TAU * 1.7 * t).sin()) / RATE as f32;
+        let catch = if phase >= 1.0 {
+            phase -= 1.0;
+            jitter = 0.85 + 0.3 * random(rng);
+            weak = !weak;
+            (0.6 + 0.4 * random(rng)) * if weak { 0.45 } else { 1.0 }
+        } else {
+            0.0
+        };
+        // Wandering louder and softer
+        if random(rng) < 40.0 / RATE as f32 {
+            roll = random(rng);
+        }
+        let rolling = 0.25 + 0.75 * lp.step(roll, 20.0);
+        let voice = chest.step(catch, 2.0 * low, 0.02) * 0.6
+            + throat.step(catch, 420.0 + 200.0 * bared, 0.009)
+            + mouth.step(catch, 1100.0 + 700.0 * bared, 0.004) * (0.4 + 0.5 * bared);
+        let x = noise(rng);
+        let breath = (lp2.step(x, 2500.0 + 4000.0 * bared) - lp3.step(x, 400.0)) * (0.3 + 0.5 * bared);
+        (voice * 0.9 + breath) * rolling * (t / 0.06).min(1.0) * (1.0 - (t / length).powi(3))
+    })
+}
+
+/// A wolf howling: sliding up to `high` Hz, held there wavering, then sinking away, brighter at
+/// the top, and coming back softer off the trees a moment later
+fn howl(high: f32, seed: u32) -> Vec<f32> {
+    let length = 1.6;
+    // The voice stops a little before the end, leaving the echo
+    let voice = 1.4;
+    let mut rng = hash(seed);
+    let top = 0.22 + 0.1 * random(&mut rng);
+    let waver = 5.0 + 1.5 * random(&mut rng);
+    let (mut lp, mut lp2, mut echo) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let mut samples = render(length, seed, |t, rng| {
+        let u = (t / voice).min(1.0);
+        let up = (u / top).min(1.0);
+        let up = up * up * (3.0 - 2.0 * up);
+        let down = ((u - 0.6) / 0.4).max(0.0).powi(2);
+        let f = high * (0.6 + 0.4 * up - 0.35 * down) * (1.0 + 0.02 * up * (TAU * waver * t).sin());
+        phase += TAU * f / RATE as f32;
+        let open = up * (1.0 - down);
+        let tone = phase.sin() + 0.3 * open * (phase * 2.0).sin() + 0.1 * open * (phase * 3.0).sin();
+        let x = noise(rng);
+        let breath = (lp.step(x, f * 3.0) - lp2.step(x, f)) * (0.3 + 0.7 * open);
+        (tone * 0.6 + breath * 0.3) * (u / 0.08).min(1.0).powi(2) * (1.0 - ((u - 0.75) / 0.25).max(0.0).powi(2))
+    });
+    // Coming back off the trees, duller, and dying out right at the end
+    let delay = (0.14 * RATE as f32) as usize;
+    let fade = 0.05 * RATE as f32;
+    let n = samples.len();
+    for i in 0..n {
+        if i >= delay {
+            samples[i] += echo.step(samples[i - delay], 1800.0) * 0.25;
+        }
+        samples[i] *= ((n - i) as f32 / fade).min(1.0);
+    }
+    samples
+}
+
+/// Jaws snapping shut: a hard clack of teeth ringing around `clack` Hz over the dull chomp of the
+/// jaw, then a short ragged wet tear as it pulls away
+fn bite(clack: f32, seed: u32) -> Vec<f32> {
+    let length = 0.2;
+    let (mut lp, mut lp2, mut lp3, mut lp4) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let (mut tooth, mut tooth2) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let (mut phase, mut strike, mut rasp) = (0.0f32, 1.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let click = (x - lp.step(x, 2500.0)) * (-t * 400.0).exp() * 0.7;
+        let teeth = tooth.step(strike, clack, 0.012) * 0.45 + tooth2.step(strike, clack * 1.47, 0.007) * 0.25;
+        strike = 0.0;
+        phase += TAU * (90.0 + 160.0 * (-t * 40.0).exp()) / RATE as f32;
+        let chomp = phase.sin() * (-t * 35.0).exp() * 0.6;
+        // Ripping: ragged, louder and softer at random
+        if random(rng) < 0.008 {
+            rasp = random(rng).powi(2);
+        }
+        let at = (t - 0.03).max(0.0);
+        let pull = (at * 200.0).min(1.0) * (-at * 35.0).exp();
+        let tear = (lp2.step(x, 4500.0) - lp3.step(x, 900.0)) * rasp * pull * 2.2;
+        let wet = lp4.step(x, 600.0) * pull * 1.2;
+        (click + teeth + chomp + tear + wet) * (1.0 - t / length)
+    })
+}
+
+/// Bones rattling: a clatter of small dry knocks, thick at first and then in two smaller shakes,
+/// each bone ringing only for a moment, around `bone` Hz or higher
+fn rattle(bone: f32, seed: u32) -> Vec<f32> {
+    let length = 0.5;
+    let mut rng = hash(seed);
+    let shakes = [0.17 + 0.05 * random(&mut rng), 0.3 + 0.05 * random(&mut rng)];
+    // Bigger bones lower and ringing longer
+    let (sizes, rings) = ([1.0, 1.7, 2.6, 3.9], [0.012, 0.008, 0.005, 0.004]);
+    let mut bones = [Resonator(0.0, 0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0)];
+    let (mut pitches, mut struck) = ([bone; 4], [0.0f32; 4]);
+    let mut lp = Lowpass(0.0);
+    let mut click = 0.0f32;
+    render(length, seed, |t, rng| {
+        let busy = (t / 0.01).min(1.0) * (-t * 9.0).exp()
+            + 0.6 * (-((t - shakes[0]) / 0.04).powi(2)).exp()
+            + 0.35 * (-((t - shakes[1]) / 0.04).powi(2)).exp();
+        if random(rng) < 300.0 * busy / RATE as f32 {
+            // A different bone each time, no two quite the same
+            let i = (random(rng) * 4.0) as usize % 4;
+            pitches[i] = bone * sizes[i] * (0.8 + 0.4 * random(rng));
+            struck[i] = 0.4 + 0.6 * random(rng);
+            click = struck[i];
+        }
+        let mut knocks = 0.0;
+        for i in 0..4 {
+            knocks += bones[i].step(struck[i], pitches[i], rings[i]);
+            struck[i] = 0.0;
+        }
+        let x = noise(rng) * click;
+        click *= 0.85;
+        let tick = (x - lp.step(x, 3000.0)) * 0.5;
+        (knocks * 0.55 + tick) * (1.0 - (t / length).powi(4))
+    })
+}
+
+/// Metal struck on metal: a hard bright tick, then a blade ringing around `ring` Hz with
+/// overtones out of tune with it, each beating against a twin a hair off, the highest fading first
+fn clang(ring: f32, seed: u32) -> Vec<f32> {
+    let length = 0.6;
+    let mut rng = hash(seed);
+    // How far above the lowest, how loud and how fast it fades
+    let mut partials = Vec::new();
+    for (m, a, d) in [(1.0f32, 0.4f32, 4.0f32), (2.76, 0.45, 6.0), (5.4, 0.4, 8.0), (8.93, 0.3, 11.0), (13.34, 0.2, 16.0)] {
+        let twin = 1.004 + 0.006 * random(&mut rng);
+        partials.push((m, a * 0.6, d));
+        partials.push((m * twin, a * 0.4, d * 1.2));
+    }
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let tick = (x - lp.step(x, 4000.0)) * (-t * 700.0).exp() * 0.7;
+        let knock = lp2.step(x, 900.0) * (-t * 60.0).exp() * 0.4;
+        let ringing: f32 = partials.iter().map(|(m, a, d)| (TAU * ring * m * t).sin() * a * (-t * d).exp()).sum();
+        (tick + knock + ringing * 1.5) * 0.6 * ((length - t) * 15.0).min(1.0)
+    })
+}
+
+/// Something soft and wet squashing and pulling free: a slap, a low give around `body` Hz, a
+/// gurgling squish sliding down then back up, and a bubble or two popping
+fn squelch(body: f32, seed: u32) -> Vec<f32> {
+    let length = 0.35;
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.5));
+    let mut squish = Resonator(0.0, 0.0);
+    let (mut phase, mut wobble) = (0.0f32, 0.5f32);
+    let (mut pop, mut pop_phase, mut pop_frequency) = (0.0f32, 0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let slap = lp.step(x, 900.0) * (t * 500.0).min(1.0) * (-t * 30.0).exp() * 1.6;
+        phase += TAU * body * (1.0 + 0.8 * (-t * 25.0).exp()) / RATE as f32;
+        let give = phase.sin() * (-t * 14.0).exp() * 0.7;
+        // Sliding down as it squashes and up as it pulls free, gurgling unevenly
+        if random(rng) < 120.0 / RATE as f32 {
+            wobble = random(rng);
+        }
+        let gurgle = 0.7 + 0.6 * lp2.step(wobble, 60.0);
+        let f = (250.0 + 1100.0 * (-t * 16.0).exp() + 900.0 * ((t - 0.17) / 0.18).clamp(0.0, 1.0).powi(2)) * gurgle;
+        let wet = squish.step(x * 0.1, f, 0.005) * swell(t, length).sqrt();
+        if random(rng) < 0.003 * swell(t - 0.05, 0.3) {
+            pop = 1.0;
+            pop_frequency = 500.0 + 900.0 * random(rng);
+        }
+        pop *= 0.995;
+        // Each bubble sliding up as it pops
+        pop_phase += TAU * pop_frequency * (2.5 - 1.5 * pop) / RATE as f32;
+        (slap + give + wet + pop_phase.sin() * pop * 0.4) * 0.8 * ((length - t) * 30.0).min(1.0)
+    })
+}
+
+/// Lots of little legs pattering past: tiny hard taps, each ringing for a moment around `tap` Hz
+/// or higher, coming in quick runs as the legs move in turn, over a faint scratching
+fn skitter(tap: f32, seed: u32) -> Vec<f32> {
+    let length = 0.4;
+    let mut rng = hash(seed);
+    let gait = 10.0 + 6.0 * random(&mut rng);
+    let mut shells = [Resonator(0.0, 0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0)];
+    let mut struck = [0.0f32; 3];
+    let (mut lp, mut lp2, mut lp3) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let mut click = 0.0f32;
+    render(length, seed, |t, rng| {
+        let k = swell(t, length).sqrt();
+        // A few legs coming down at each step
+        let busy = (0.5 + 0.5 * (TAU * gait * t).sin()).powi(3) * k;
+        if random(rng) < 600.0 * busy / RATE as f32 {
+            let leg = (random(rng) * 3.0) as usize % 3;
+            struck[leg] = 0.3 + 0.7 * random(rng);
+            click = struck[leg];
+        }
+        let mut taps = 0.0;
+        for (i, m) in [1.0, 1.45, 2.1].into_iter().enumerate() {
+            taps += shells[i].step(struck[i], tap * m, 0.002);
+            struck[i] = 0.0;
+        }
+        let x = noise(rng);
+        let y = x * click;
+        click *= 0.8;
+        let tick = (y - lp.step(y, 5000.0)) * 0.6;
+        let scratch = (lp2.step(x, 8000.0) - lp3.step(x, 2500.0)) * 0.08 * k;
+        (taps * 0.8 + tick + scratch) * ((length - t) * 40.0).min(1.0)
+    })
+}
+
+/// Something rushing past close by the ear: air rising to a sharp hiss as it comes, up around
+/// `high` Hz, dropping lower as it goes by, and loudest as it passes
+fn dodge(high: f32, seed: u32) -> Vec<f32> {
+    let length = 0.3;
+    let (mut a, mut b) = (Lowpass(0.0), Lowpass(0.0));
+    render(length, seed, |t, rng| {
+        // Nearest a tenth of a second in
+        let s = (t - 0.1) / 0.03;
+        let near = 1.0 / (1.0 + s * s);
+        let cutoff = high * (0.6 - 0.4 * (s * 1.2).tanh());
+        let x = noise(rng);
+        (a.step(x, cutoff) - b.step(x, cutoff * 0.3)) * 2.6 * near * (t * 100.0).min(1.0) * ((length - t) * 30.0).min(1.0)
+    })
+}
+
 /// `seconds` of sound that loops without a seam: the end fades into the start
 fn looped(seconds: f32, seed: u32, f: impl FnMut(f32, &mut u32) -> f32) -> Vec<f32> {
     let fade = (0.5 * RATE as f32) as usize;
@@ -488,18 +794,17 @@ fn looped(seconds: f32, seed: u32, f: impl FnMut(f32, &mut u32) -> f32) -> Vec<f
 
 fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     let mut clips = vec![
-        (Sound::Swing, whoosh(0.28, 400.0, 2600.0, 1)),
-        (Sound::Swing, whoosh(0.26, 500.0, 3000.0, 2)),
-        (Sound::HeavySwing, whoosh(0.42, 250.0, 1500.0, 3)),
+        (Sound::Swing, swing(0.28, 400.0, 2600.0, 230.0, 1)),
+        (Sound::Swing, swing(0.26, 500.0, 3000.0, 260.0, 2)),
+        (Sound::Swing, swing(0.3, 350.0, 2300.0, 200.0, 160)),
+        (Sound::HeavySwing, swing(0.42, 250.0, 1500.0, 120.0, 3)),
+        (Sound::HeavySwing, swing(0.45, 220.0, 1300.0, 105.0, 161)),
     ];
-    let mut lp = Lowpass(0.0);
-    clips.push((
-        Sound::Hit,
-        render(0.25, 4, |t, rng| {
-            let thump = (TAU * (120.0 - 200.0 * t) * t).sin() * (-t * 16.0).exp();
-            thump + lp.step(noise(rng), 1500.0) * (-t * 50.0).exp() * 1.5
-        }),
-    ));
+    clips.push((Sound::Hit, hit(150.0, 0.0, 4)));
+    clips.push((Sound::Hit, hit(128.0, 0.5, 162)));
+    clips.push((Sound::Hit, hit(170.0, 0.2, 163)));
+    clips.push((Sound::Hit, hit(115.0, 0.8, 164)));
+    clips.push((Sound::Hit, hit(140.0, 0.3, 165)));
     let mut string = pluck(98.0, 0.7, 0.996, 5);
     for (s, w) in string.iter_mut().zip(whoosh(0.2, 600.0, 3000.0, 6).iter().chain(std::iter::repeat(&0.0))) {
         *s = *s * 0.6 + w * 0.5;
@@ -604,11 +909,9 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
             scrape + (TAU * 2300.0 * t).sin() * (-t * 9.0).exp() * 0.25
         }),
     ));
-    let mut lp = Lowpass(0.0);
-    clips.push((
-        Sound::Burst,
-        render(0.9, 9, |t, rng| (lp.step(noise(rng), 500.0 - 300.0 * t) * 2.5 + (TAU * 50.0 * t).sin() * 0.6) * (-t * 4.5).exp() * (t * 60.0).min(1.0)),
-    ));
+    clips.push((Sound::Burst, burst(85.0, 9)));
+    clips.push((Sound::Burst, burst(70.0, 166)));
+    clips.push((Sound::Burst, burst(100.0, 167)));
     let mut lp = Lowpass(0.0);
     let mut spark = 0.0f32;
     clips.push((
@@ -663,6 +966,30 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     clips.push((Sound::Flap, flap(58.0, 83)));
     clips.push((Sound::Hiss, hiss(28.0, 84)));
     clips.push((Sound::Hiss, hiss(0.0, 85)));
+    clips.push((Sound::Growl, growl(90.0, 0.0, 86)));
+    clips.push((Sound::Growl, growl(76.0, 0.3, 87)));
+    clips.push((Sound::Growl, growl(105.0, 0.8, 88)));
+    clips.push((Sound::Howl, howl(480.0, 89)));
+    clips.push((Sound::Howl, howl(410.0, 90)));
+    clips.push((Sound::Howl, howl(540.0, 91)));
+    clips.push((Sound::Bite, bite(2600.0, 92)));
+    clips.push((Sound::Bite, bite(2200.0, 93)));
+    clips.push((Sound::Bite, bite(3000.0, 94)));
+    clips.push((Sound::Rattle, rattle(900.0, 95)));
+    clips.push((Sound::Rattle, rattle(1150.0, 96)));
+    clips.push((Sound::Rattle, rattle(780.0, 97)));
+    clips.push((Sound::Clang, clang(720.0, 98)));
+    clips.push((Sound::Clang, clang(910.0, 99)));
+    clips.push((Sound::Clang, clang(560.0, 168)));
+    clips.push((Sound::Squelch, squelch(110.0, 169)));
+    clips.push((Sound::Squelch, squelch(90.0, 170)));
+    clips.push((Sound::Squelch, squelch(135.0, 171)));
+    clips.push((Sound::Skitter, skitter(2800.0, 172)));
+    clips.push((Sound::Skitter, skitter(3400.0, 173)));
+    clips.push((Sound::Skitter, skitter(2300.0, 174)));
+    clips.push((Sound::Dodge, dodge(3200.0, 175)));
+    clips.push((Sound::Dodge, dodge(2600.0, 176)));
+    clips.push((Sound::Dodge, dodge(3800.0, 177)));
     for v in 0..VARIANTS as u32 {
         for ground in [Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water] {
             clips.push((Sound::Step(ground), step(ground, 100 + v * 17 + ground as u32)));

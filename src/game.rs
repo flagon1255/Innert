@@ -23,11 +23,11 @@ pub const REACH: f64 = 4.0;
 /// Hunger drops from full to empty in this many seconds
 const HUNGER_SECONDS: f64 = 600.0;
 /// Animals further than this aren't drawn, and food further than that, in meters
-const ANIMAL_RANGE: f64 = 140.0;
+const ANIMAL_RANGE: f64 = 90.0;
 const FOOD_RANGE: f64 = 60.0;
 const PROP_RANGE: f64 = 30.0;
 /// The most animals, bits of food, props and things flying drawn at once, nearest first
-const MAX_INSTANCES: usize = 200;
+const MAX_INSTANCES: usize = 140;
 /// About this many animals live around the player
 const ANIMALS: usize = 38;
 /// Apples keep growing back near the player up to this many
@@ -88,6 +88,14 @@ pub struct Chest {
     /// stays open, and what's in it is the same every time
     pub key: [i64; 3],
     pub luck: f64,
+}
+
+/// A hall of a dungeon that monsters haunt
+pub struct Den {
+    /// Where on the floor of a dungeon hall, in voxels
+    pub position: Vector3<f64>,
+    /// Where in the whole landscape, to remember it's been cleared
+    pub key: [i64; 3],
 }
 
 /// Where a boss lives: which one, where in voxels, on the ground there, and where in the whole
@@ -179,6 +187,11 @@ pub struct Game {
     /// So the sound of being hurt doesn't go off every frame
     hurt_sound: f64,
     breath_sound: f64,
+    /// So the whoosh of something just missing doesn't go off over and over
+    dodge_sound: f64,
+    /// The boss bar: which boss, how much health it showed last, a trail lagging behind that,
+    /// seconds before the trail starts after it, and a flash on a big hit
+    boss_bar: (&'static str, f64, f64, f64, f64),
     /// How hard blows throw the player, in voxels a second, for main.rs to apply
     knockback: Vector3<f64>,
     /// The camera shaking from what bosses do, wearing off
@@ -191,6 +204,9 @@ pub struct Game {
     /// Bosses' lairs in this piece of the world, and those beaten, by where they are in the landscape
     lairs: Vec<Lair>,
     defeated: HashSet<[i64; 3]>,
+    /// Dungeon halls in this piece of the world, and those cleared of monsters
+    dens: Vec<[i64; 3]>,
+    cleared: HashSet<[i64; 3]>,
     /// Chests beaten bosses left, kept as the world moves on
     boss_chests: Vec<Chest>,
     /// Cubic meters of water in the bucket
@@ -307,6 +323,8 @@ impl Game {
             webs: Vec::new(),
             hurt_sound: 0.0,
             breath_sound: 0.0,
+            dodge_sound: 0.0,
+            boss_bar: ("", 1.0, 1.0, 0.0, 0.0),
             knockback: Vector3::zeros(),
             shake: 0.0,
             beaten: false,
@@ -314,6 +332,8 @@ impl Game {
             safe_timer: 0.0,
             lairs: Vec::new(),
             defeated: HashSet::new(),
+            dens: Vec::new(),
+            cleared: HashSet::new(),
             boss_chests: Vec::new(),
             bucket: 0.0,
             messages: Vec::new(),
@@ -340,7 +360,7 @@ impl Game {
         self.weapons.clear();
         self.slots.retain(|(item, _)| !matches!(item, Item::Weapon(_) | Item::Bucket));
         let mut fresh = Vec::new();
-        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter"];
+        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip"];
         for (k, family) in families.into_iter().enumerate() {
             if let Some(family) = self.library.family(family) {
                 self.weapons.push(self.library.generate(hash(seed ^ (k as u32 + 1) * 0x51ed), Some(family), luck));
@@ -359,6 +379,8 @@ impl Game {
         self.animals = animals::spawn(world, water, seed, near);
         self.lairs.clear();
         self.defeated.clear();
+        self.dens.clear();
+        self.cleared.clear();
         self.boss_chests.clear();
         self.safe = None;
         self.pickups.clear();
@@ -509,8 +531,8 @@ impl Game {
         let nearest = self.animals.iter().filter(|a| !a.look.is_pet()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
         let animal = nearest.map_or("no animals".to_owned(), |a| format!("nearest {} at {:.0}/{:.0} health, tint {}", a.look.name(), a.health, a.look.health(), a.status.tint()));
         let held = self.held().map_or("nothing".to_owned(), |(_, w)| w.name.clone());
-        let bosses = self.animals.iter().filter(|a| a.boss.is_some()).count();
-        let boss = self.animals.iter().filter(|a| a.boss.is_some()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
+        let bosses = self.animals.iter().filter(|a| a.look.is_boss()).count();
+        let boss = self.animals.iter().filter(|a| a.look.is_boss()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
         let animal = match boss {
             Some(b) => format!(
                 "{animal}, boss {} {:.0} m off at {:.0}/{:.0}{}",
@@ -570,6 +592,34 @@ impl Game {
         self.lairs = lairs;
     }
 
+    /// The dungeon halls in the piece of the world just built, in its voxels: monsters haunt each
+    /// that isn't cleared and doesn't have them already. Each hall has its own lot: the dead in
+    /// their bones, rotting, or spiders, some in armor.
+    pub fn set_dens(&mut self, world: &World, water: WaterLevel, dens: Vec<Den>) {
+        for den in &dens {
+            let here = self.animals.iter().any(|a| a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key == den.key));
+            if here || self.cleared.contains(&den.key) {
+                continue;
+            }
+            let mut seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
+            let haunted: &[Look] = match seed % 3 {
+                0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
+                1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],
+                _ => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
+            };
+            for &look in haunted {
+                seed = hash(seed);
+                if let Some(mut monster) = animals::spawn_monster(world, water, look, den.position, 4.0, seed) {
+                    if let Some(state) = &mut monster.boss {
+                        state.key = den.key;
+                    }
+                    self.animals.push(monster);
+                }
+            }
+        }
+        self.dens = dens.iter().map(|d| d.key).collect();
+    }
+
     /// For trying them out: boss `look` turns up `distance` meters along `ahead` from `near`
     pub fn summon(&mut self, world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, ahead: Vector3<f64>, distance: f64) {
         let vpm = world.voxels_per_meter as f64;
@@ -618,12 +668,18 @@ impl Game {
         self.leaves.recenter(shift);
         self.target = None;
 
-        let missing = ANIMALS.saturating_sub(self.animals.len());
-        if missing > 0 {
-            // Away from the player, so they don't pop up right in front of them
+        // Animals and wolves wander in to make up the numbers, away from the player so they don't
+        // pop up right in front of them. Bosses and dungeon monsters have homes of their own.
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none()).count());
+        let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
+        if missing > 0 || wolves < 3 {
             let vpm = world.voxels_per_meter as f64;
-            let fresh = animals::spawn(world, water, seed ^ hash(self.rng), near);
-            self.animals.extend(fresh.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm).take(missing));
+            let fresh: Vec<Animal> = animals::spawn(world, water, seed ^ hash(self.rng), near).into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm).collect();
+            let (packs, animals): (Vec<Animal>, Vec<Animal>) = fresh.into_iter().partition(|a| a.look == Look::Wolf);
+            self.animals.extend(animals.into_iter().take(missing));
+            if wolves < 3 {
+                self.animals.extend(packs.into_iter().take(3));
+            }
         }
         self.rng = hash(self.rng);
     }
@@ -722,7 +778,7 @@ impl Game {
             }
         }
         for (look, deed) in deeds {
-            self.carry_out(look, deed, world, player, view);
+            self.carry_out(look, deed, world, water, player, view);
         }
         self.grow_roots(world, player, view, dt);
         self.spin_webs(player, dt);
@@ -739,6 +795,21 @@ impl Game {
         }
         self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, player, dt);
+        // The boss bar's trail catching up with what it's lost, a moment after each blow
+        if let Some((name, health, _)) = self.foe(view.eye) {
+            let (shown, mut trail, mut hold, mut flash) = if name == self.boss_bar.0 { (self.boss_bar.1, self.boss_bar.2, self.boss_bar.3, self.boss_bar.4) } else { (health, health, 0.0, 0.0) };
+            if health < shown - 0.03 {
+                flash = 1.0;
+            }
+            if health < shown {
+                hold = 0.45;
+            }
+            hold -= dt;
+            if hold <= 0.0 {
+                trail -= 0.6 * dt;
+            }
+            self.boss_bar = (name, health, trail.max(health), hold, (flash - dt / 0.18).max(0.0));
+        }
         self.reap(world.voxels_per_meter as f64);
         self.leaves.update(world, water, view.eye, dt);
 
@@ -769,11 +840,28 @@ impl Game {
         self.messages.retain(|(_, at)| at.elapsed().as_secs_f64() < 4.0);
     }
 
-    /// What a boss did: hurting the player, throwing things, sounds and shaking the ground
-    fn carry_out(&mut self, look: Look, deed: Deed, world: &World, player: Option<Vector3<f64>>, view: &View) {
+    /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
+    fn carry_out(&mut self, look: Look, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
         // How much something at `at` is felt, from 1 right there to nothing 40 meters off
         let felt = |at: Vector3<f64>| (1.0 - (at - view.eye).norm() / vpm / 40.0).max(0.0);
+        // Monsters snarl and rattle rather than roar, and don't shake the ground
+        if look.is_monster() {
+            match deed {
+                Deed::WindUp(_, at) | Deed::Roar { at, .. } => {
+                    let cue = match look {
+                        Look::Wolf => Cue::at(Sound::Growl, at, 0.7),
+                        Look::Skeleton | Look::ArmoredSkeleton => Cue::at(Sound::Rattle, at, 0.7),
+                        Look::Zombie | Look::ArmoredZombie => Cue::at(Sound::Growl, at, 0.6).pitched(0.6),
+                        _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
+                    };
+                    self.cues.push(cue);
+                    return;
+                }
+                Deed::Stomp(_) => return,
+                _ => {}
+            }
+        }
         let voice = match look.build() {
             Some(Build::Golem) => 0.6,
             Some(Build::Drake) => 1.15,
@@ -829,14 +917,25 @@ impl Game {
                         _ => {}
                     }
                 }
-                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.45));
-                self.shake = self.shake.max(0.6 * felt(at));
+                // A monster's bite or blade, or a boss's blow shaking the ground
+                let cue = match look {
+                    Look::Wolf | Look::Spiderling => Cue::at(Sound::Bite, at, 0.8),
+                    Look::ArmoredSkeleton | Look::ArmoredZombie => Cue::at(Sound::Clang, at, 0.5).pitched(0.8),
+                    _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
+                    _ => {
+                        self.shake = self.shake.max(0.6 * felt(at));
+                        Cue::at(Sound::Burst, at, 1.0).pitched(0.45)
+                    }
+                };
+                self.cues.push(cue);
                 if let Some(feet) = player {
                     let off = feet - at;
                     let d = off.xy().norm() / vpm;
                     if d < radius && off.z.abs() < 2.5 * vpm {
                         self.hurt(damage * (1.0 - 0.5 * d / radius), at, feet, world, look.name());
                         self.afflict(element);
+                    } else if damage > 0.0 && d < radius + 1.0 && off.z.abs() < 2.5 * vpm {
+                        self.near_miss(at);
                     }
                 }
             }
@@ -920,10 +1019,15 @@ impl Game {
                     let d = off.xy().norm() / vpm;
                     // Up in the air, it passes under
                     let airborne = (1..=(0.3 * vpm) as i64).all(|k| is_passable(world.material_at(feet.x.floor() as i64, feet.y.floor() as i64, feet.z.floor() as i64 - k)));
-                    if (from..to).contains(&d) && off.z.abs() < 3.0 * vpm && !airborne {
-                        self.hurt(22.0, at, feet, world, look.name());
-                        self.knockback += Vector3::new(0.0, 0.0, 5.0 * vpm);
-                        self.afflict(element);
+                    if (from..to).contains(&d) && off.z.abs() < 3.0 * vpm {
+                        if airborne {
+                            // Jumped clean over it
+                            self.near_miss(feet);
+                        } else {
+                            self.hurt(22.0, at, feet, world, look.name());
+                            self.knockback += Vector3::new(0.0, 0.0, 5.0 * vpm);
+                            self.afflict(element);
+                        }
                     }
                 }
             }
@@ -945,6 +1049,41 @@ impl Game {
                 self.cues.push(Cue::at(Sound::Whistle, to, 0.6).pitched(0.85 + 0.1 * random(&mut self.rng) as f32));
             }
             Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
+            // A pack answering a howl, the dead clawing up out of the ground, spiderlings swarming
+            // out: never more than a few of them about at once
+            Deed::Summon { at, look: brood, count } => {
+                let most = match brood {
+                    Look::Spiderling => 4,
+                    Look::Skeleton => 3,
+                    _ => 2,
+                };
+                let near = self.animals.iter().filter(|a| a.look == brood && a.health > 0.0 && (a.position - at).norm() < 30.0 * vpm).count();
+                let count = count.min(most - near.min(most));
+                for _ in 0..count {
+                    self.rng = hash(self.rng);
+                    if let Some(mut monster) = animals::spawn_monster(world, water, brood, at, 7.0, self.rng) {
+                        if let Some(state) = &mut monster.boss {
+                            state.provoke();
+                        }
+                        self.combat.stir(monster.position, 0.8, 0.4, DROP_MUD);
+                        self.animals.push(monster);
+                    }
+                }
+                let cue = match brood {
+                    Look::Wolf => Cue::at(Sound::Howl, at, 1.0).pitched(voice * 0.9),
+                    Look::Skeleton => Cue::at(Sound::Rattle, at, 1.0).pitched(0.8),
+                    _ => Cue::at(Sound::Skitter, at, 1.0),
+                };
+                self.cues.push(cue);
+                if count > 0 {
+                    let deed = match brood {
+                        Look::Wolf => "howls for its pack",
+                        Look::Skeleton => "raises the dead",
+                        _ => "calls its brood",
+                    };
+                    self.say(format!("The {} {deed}!", look.name()));
+                }
+            }
             Deed::Web { from, to } => {
                 let time = ((to - from).norm() / vpm / 16.0).clamp(0.6, 1.3);
                 self.combat.hurl(HostileKind::Web, from, to, time, 6.0, WEB_RADIUS);
@@ -976,6 +1115,15 @@ impl Game {
                     self.cues.push(Cue::at(Sound::Step(Ground::Stone), at, 0.9).pitched(0.4));
                 }
             }
+        }
+    }
+
+    /// Something at `at` only just missing the player: a whoosh past them, now and then
+    fn near_miss(&mut self, at: Vector3<f64>) {
+        if self.dodge_sound <= 0.0 && self.health > 0.0 {
+            self.dodge_sound = 1.0;
+            self.rng = hash(self.rng);
+            self.cues.push(Cue::at(Sound::Dodge, at, 0.7).pitched(0.9 + 0.2 * random(&mut self.rng) as f32));
         }
     }
 
@@ -1104,6 +1252,10 @@ impl Game {
         self.hurt_flash = (self.hurt_flash - dt * 1.5).max(0.0);
         self.hurt_sound -= dt;
         self.breath_sound -= dt;
+        self.dodge_sound -= dt;
+        for at in std::mem::take(&mut self.combat.near_misses) {
+            self.near_miss(at);
+        }
         self.shake *= (-6.0 * dt).exp();
         self.chilled = (self.chilled - dt).max(0.0);
         let Some(feet) = player else {
@@ -1151,17 +1303,17 @@ impl Game {
     fn foe(&self, near: Vector3<f64>) -> Option<(&'static str, f64, bool)> {
         self.animals
             .iter()
-            .filter(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.engaged))
+            .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
             .map(|a| (a.look.name(), a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged)))
     }
 
-    /// The middle of the body of the boss nearest `near`, if there's one about
+    /// The middle of the body of the boss or monster nearest `near`, if there's one about
     pub fn nearest_boss(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
         let vpm = self.combat.vpm();
         self.animals
             .iter()
-            .filter(|a| a.boss.is_some() && a.health > 0.0)
+            .filter(|a| a.look.build().is_some() && a.health > 0.0)
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
             .map(|a| a.center(vpm as u32))
     }
@@ -1203,7 +1355,16 @@ impl Game {
             }
             let animal = self.animals.remove(k);
             let look = animal.look;
-            if let Some(boss) = &animal.boss {
+            // A monster bursts apart its own way, and the last of a dungeon hall's leaves it clear
+            if look.is_monster() {
+                self.combat.perish(&animal);
+                if let Some(key) = animal.boss.as_ref().map(|b| b.key).filter(|key| self.dens.contains(key)) {
+                    if !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key)) {
+                        self.cleared.insert(key);
+                    }
+                }
+            }
+            if let Some(boss) = animal.boss.as_ref().filter(|_| look.is_boss()) {
                 self.defeated.insert(boss.key);
                 let chest = Chest {
                     position: animal.position,
@@ -1227,7 +1388,9 @@ impl Game {
                     heading: angle,
                 });
             }
-            if !look.is_boss() {
+            if look.is_monster() {
+                self.say(format!("You slew a {}.", look.name()));
+            } else if !look.is_boss() {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
             }
             self.target = None;
@@ -1446,8 +1609,8 @@ impl Game {
         let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
         for animal in &self.animals {
             let d = (animal.position - camera).norm();
-            if d < ANIMAL_RANGE * vpm || animal.boss.is_some() {
-                creatures.push((if animal.boss.is_some() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+            if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
             }
         }
         creatures.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1520,7 +1683,7 @@ impl Game {
         // Health bars over animals that were just hurt
         let vpm = view.vpm;
         for animal in &self.animals {
-            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.boss.is_some() {
+            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() {
                 continue;
             }
             let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
@@ -1629,13 +1792,22 @@ impl Game {
         // The boss being fought, its name over a long bar along the bottom
         if let Some((name, vitality, enraged)) = self.foe(view.eye) {
             let width = (screen.width() * 0.42).clamp(260.0, 620.0);
-            let back = Rect::from_center_size(pos2(center.x, screen.bottom() - 54.0), vec2(width, 12.0));
+            // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
+            let (_, _, trail, _, flash) = self.boss_bar;
+            let flash = flash as f32;
+            let jolt = (self.combat.time() * 90.0).sin() as f32 * 4.0 * flash;
+            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - 54.0), vec2(width, 12.0));
             let title = if enraged { format!("{name}  —  enraged") } else { name.to_string() };
             let at = pos2(center.x, back.top() - 6.0);
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), shadow);
             painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
             painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(190, 40, 35));
+            if flash > 0.0 {
+                painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
+            }
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
+            let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(190), red(40), red(35)));
         }
 
         // Red round the edges when hurt, and pulsing faintly while health's low; pulsing green

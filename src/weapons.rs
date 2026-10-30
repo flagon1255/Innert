@@ -47,6 +47,8 @@ pub enum Style {
     Cast,
     /// A flick of the wrist
     Flick,
+    /// A whip, wound back and snapped forward so it cracks out at the crosshair
+    Lash,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -262,6 +264,9 @@ pub struct Family {
     cone: f64,
     #[serde(default = "swing_targets")]
     targets: usize,
+    /// Stats added on by the weapon's grade, a number for each rarity: how far a whip reaches
+    #[serde(default)]
+    grade_stats: BTreeMap<String, Vec<f64>>,
 }
 
 fn middle() -> f64 {
@@ -650,6 +655,8 @@ pub struct Profile {
     pub synergies: Vec<ActiveSynergy>,
     /// Its special attack, if one of its parts gives it one, and which part
     pub special: Option<(Special, String)>,
+    /// Its overall rarity, as Weapon::grade: what a whip can do grows with it
+    pub grade: usize,
 }
 
 /// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
@@ -875,9 +882,14 @@ impl Weapon {
         let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
         let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
         let grade = by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1);
+        for (name, by_grade) in &fam.grade_stats {
+            if let Some(value) = by_grade.get(grade).or(by_grade.last()) {
+                *stats.entry(name.clone()).or_insert(0.0) += value;
+            }
+        }
         // The rarest part with a special attack gives it its own
         let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
-        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special }, tags, grade)
+        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special, grade }, tags, grade)
     }
 
     pub fn kind(&self) -> Kind {
@@ -956,6 +968,10 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let empty = Visual::default();
     let v = |slot: &str| visual(slot).unwrap_or(&empty);
     match family.kind {
+        Kind::Melee if family.style == Style::Lash => {
+            let (parts, grip, tip) = whip(v("lash"), v("handle"), v("fall"), v("core"), family);
+            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip, nocks: Vec::new() }
+        }
         Kind::Melee => {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
             WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip, nocks: Vec::new() }
@@ -1342,6 +1358,144 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
             p.push(limb([0.0, 0.0, c], [0.0, 0.0, z_grip], r * 0.8, r, pm));
         }
     }
+}
+
+/// How a whip's lash bends as it hangs. Its heading, measured from straight on up the handle
+/// towards +x, turns by LASH_BEND along its length and swings LASH_WAVE either way of that, out
+/// and back once, which makes a loose S. Its tip ends up about 22° off the line of the handle,
+/// and combat.rs's whip poses are worked out for that, so they need changing along with these.
+const LASH_BEND: f64 = 0.9;
+const LASH_WAVE: f64 = 0.9;
+
+/// A whip standing on its pommel: a short handle, then the lash leaving its top in a loose S out
+/// towards +x, as it hangs, tapering to the fall and the cracker at its tip. All of it lies in the
+/// plane y = 0 but for what sticks out of the lash. Returns where it's held and the cracker.
+fn whip(lash: &Visual, handle: &Visual, fall: &Visual, core: &Visual, family: &Family) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let voxel = 1.0 / SWORD_RES;
+    let pommel = handle.pommel_size.unwrap_or(0.026);
+    let grip_length = handle.length.unwrap_or(0.24);
+    let z_grip = pommel * 1.7;
+    let z_top = z_grip + grip_length;
+    let length = lash.length.unwrap_or(1.0);
+    // Thickest where it leaves the handle, and never thinner than a voxel or so, so it can't vanish
+    let thick = lash.thickness.unwrap_or(0.011).max(2.0 * voxel);
+    let thin = 1.1 * voxel;
+    let cord = mat(&lash.material, LEATHER);
+    let braid = mat(&lash.accent, cord);
+    let infuse = core.infuse.as_deref().and_then(material);
+    let fall_material = mat(&fall.material, cord);
+    let ornament = mat(&fall.accent, fall_material);
+
+    // Its line, in short steps from the top of the handle to the tip
+    let root = [0.0, 0.0, z_top + 0.035];
+    let steps = ((length / 0.012).ceil() as usize).max(16);
+    let mut line = vec![root];
+    let (mut x, mut z) = (root[0], root[2]);
+    for k in 0..steps {
+        let u = (k as f64 + 0.5) / steps as f64;
+        let heading = LASH_BEND * u + LASH_WAVE * (TAU * u).sin();
+        x += heading.sin() * length / steps as f64;
+        z += heading.cos() * length / steps as f64;
+        line.push([x, 0.0, z]);
+    }
+    let tip = line[steps];
+    // The last of it is the fall, thin all along. Up to there it tapers.
+    let fall_from = 0.82;
+    let radius = |u: f64| if u < fall_from { thick + (thin * 1.3 - thick) * (u / fall_from).powf(0.8) } else { thin };
+    // Which way the line runs at point `k`, and square to that in the plane it bends in
+    let along = |k: usize| {
+        let (a, b) = (line[k.saturating_sub(1)], line[(k + 1).min(steps)]);
+        let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
+        let n = (dx * dx + dz * dz).sqrt().max(1e-9);
+        ([dx / n, 0.0, dz / n], [dz / n, 0.0, -dx / n])
+    };
+    let at = |q: [f64; 3], d: [f64; 3], s: f64| [q[0] + d[0] * s, q[1] + d[1] * s, q[2] + d[2] * s];
+
+    // What's tied onto the fall goes first, as earlier shapes win, then the cracker
+    let (ahead, across) = along(steps);
+    match fall.shape.as_deref().unwrap_or("cracker") {
+        "knots" => {
+            for k in (steps / 5..steps * 4 / 5).step_by((steps / 6).max(1)) {
+                let u = k as f64 / steps as f64;
+                p.push(ball(line[k], radius(u) * 1.7, ornament));
+            }
+        }
+        "barbs" => {
+            for (n, k) in (steps * 11 / 20..steps * 19 / 20).step_by(4).enumerate() {
+                let (d, s) = along(k);
+                let side = if n % 2 == 0 { s } else { [-s[0], 0.0, -s[2]] };
+                let out = at(at(line[k], side, 0.016), d, -0.008);
+                p.push(limb(line[k], [out[0], if n % 4 < 2 { 0.006 } else { -0.006 }, out[2]], 0.004, 0.0015, ornament));
+            }
+        }
+        "weight" => p.push(ball(at(tip, ahead, -0.012), 0.015, ornament)),
+        "blade" => p.push(limb(tip, at(tip, ahead, 0.075), 0.014, 0.002, ornament).stretched([1.0, 0.35, 1.0])),
+        "glow" => p.push(ball(tip, 0.011, ornament)),
+        "tassel" => p.push(ball(tip, 0.01, ornament)),
+        _ => {}
+    }
+    let splay = if fall.shape.as_deref() == Some("tassel") { (0.085, 0.022) } else { (0.05, 0.011) };
+    for s in [-1.0, 0.0, 1.0] {
+        let end = at(at(tip, ahead, splay.0), across, s * splay.1);
+        p.push(limb(tip, [end[0], s * splay.1 * 0.5, end[2]], thin * 0.9, thin * 0.6, fall_material));
+    }
+
+    // Then what sticks out of the lash itself
+    let shape = lash.shape.as_deref().unwrap_or("braided");
+    match shape {
+        "thorn" => {
+            for (n, k) in (3..steps * 4 / 5).step_by(5).enumerate() {
+                let u = k as f64 / steps as f64;
+                let (d, s) = along(k);
+                let side = if n % 2 == 0 { s } else { [-s[0], 0.0, -s[2]] };
+                let out = at(at(line[k], side, radius(u) * 2.6), d, radius(u));
+                let y = [0.0, 0.7, 0.0, -0.7][n % 4] * radius(u) * 2.0;
+                p.push(limb(line[k], [out[0], y, out[2]], radius(u) * 0.75, 0.002, braid));
+            }
+        }
+        "spine" => {
+            // Vertebrae strung along a glowing cord, spined along their backs
+            for k in (1..steps).step_by(3) {
+                let u = k as f64 / steps as f64;
+                if u < fall_from {
+                    if k % 6 == 1 {
+                        let (_, s) = along(k);
+                        p.push(limb(line[k], at(line[k], s, -radius(u) * 2.6), radius(u) * 0.6, 0.002, cord));
+                    }
+                    p.push(ball(line[k], radius(u) * 1.55, cord));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // The gem of its core, set into the top of the handle, then the cord
+    let mut z_thong = z_top;
+    if let Some(gem) = core.gem.as_deref().and_then(material) {
+        let r = core.size.unwrap_or(0.02).max(0.017);
+        p.push(ball([0.0, 0.0, z_top], r, gem));
+        z_thong = z_top + r * 0.6;
+    }
+    for k in 0..steps {
+        let u = (k as f64 + 0.5) / steps as f64;
+        let (a, b) = (line[k], line[k + 1]);
+        let (ra, rb) = (radius(k as f64 / steps as f64), radius((k + 1) as f64 / steps as f64));
+        // A braid shows as bands of its two strands, the outer one glowing towards the tip if
+        // it's infused
+        let strand = if (k / 2) % 2 == 0 { cord } else { infuse.filter(|_| u > 0.45).unwrap_or(braid) };
+        match shape {
+            _ if u >= fall_from => p.push(limb(a, b, ra, rb, fall_material)),
+            "chain" => p.push(ball(a, ra * 1.15, if k % 2 == 0 { cord } else { braid })),
+            "spine" => p.push(limb(a, b, ra * 0.7, rb * 0.7, infuse.unwrap_or(braid))),
+            "plain" | "thorn" => p.push(limb(a, b, ra, rb, cord)),
+            _ => p.push(limb(a, b, ra, rb, strand)),
+        }
+    }
+    // Bound onto the top of the handle
+    p.push(limb([0.0, 0.0, z_thong - 0.01], root, 0.018, thick, braid));
+    sword_hilt(&mut p, handle, z_grip, grip_length, pommel, grip_length);
+    (p, v3(0.0, 0.0, z_grip + grip_length * family.grip), v3(tip[0], tip[1], tip[2]))
 }
 
 /// A bow standing up, shooting along +x, its string drawn back `draw` of the way. Returns where
@@ -2003,6 +2157,26 @@ mod tests {
             let seen = count as f64 / rolls as f64;
             assert!((seen - rarity.chance).abs() < 0.01 + rarity.chance * 0.1, "{} rolled {seen}, should be {}", rarity.id, rarity.chance);
         }
+    }
+
+    #[test]
+    fn whips_reach_further_the_rarer_they_are() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let family = library.family("whip").expect("there's a whip family");
+        let reach_by_grade = &library.families[family].grade_stats["range"];
+        let mut seen = BTreeSet::new();
+        for seed in 0..4000 {
+            let weapon = library.generate(seed, Some(family), if seed % 2 == 0 { 1.0 } else { 6.0 });
+            let profile = &weapon.profile;
+            assert_eq!(profile.style, Style::Lash);
+            assert_eq!(profile.grade, weapon.grade);
+            let reach = profile.stat("range");
+            assert!((reach - reach_by_grade[weapon.grade]).abs() < 0.5, "a {} whip reaching {reach} m", library.rarities[weapon.grade].id);
+            // The lash hangs well out from the handle
+            assert!((weapon.look.tip - weapon.look.grip).norm() > 0.7);
+            seen.insert(weapon.grade);
+        }
+        assert_eq!(seen.len(), library.rarities.len(), "whips of every rarity");
     }
 
     #[test]
