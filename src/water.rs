@@ -39,10 +39,10 @@ const BLOCK: u32 = 8;
 /// The longest step the simulation takes, in seconds. Longer ones aren't stable in deep water.
 const STEP: f64 = 1.0 / 120.0;
 /// At most this many steps a frame, so a slow frame doesn't make the next one slower still
-const MAX_STEPS: u32 = 3;
+const MAX_STEPS: u32 = 6;
 /// The water flows in an area this many columns across around the camera. Further away it keeps
 /// still until the camera comes near, and rivers flowing in from there keep flowing in.
-const ACTIVE_COLUMNS: u32 = 640;
+const ACTIVE_COLUMNS: u32 = 1024;
 /// Frames between copies of the water back to the CPU
 const READBACK_FRAMES: u32 = 30;
 /// Water shallower than this, in meters, doesn't count as water for walking about in
