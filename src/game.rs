@@ -90,6 +90,18 @@ pub struct Chest {
     pub luck: f64,
 }
 
+/// A splash of the player's own blood over the view: where, in fractions of the screen across and
+/// down, how big next to its height, how long it's been there, and the shape it splashed in
+struct Splat {
+    at: [f32; 2],
+    size: f32,
+    age: f64,
+    seed: u32,
+}
+
+/// Seconds a splash of blood stays on the view
+const SPLAT_SECONDS: f64 = 2.4;
+
 /// A hall of a dungeon that monsters haunt
 pub struct Den {
     /// Where on the floor of a dungeon hall, in voxels
@@ -113,6 +125,9 @@ const ROOTS_WARNING: f64 = 1.0;
 const ROOTS_RADIUS: f64 = 2.2;
 /// Thorns in a treant's volley
 const THORNS: usize = 5;
+/// The fastest bosses and monsters can throw the player, in meters a second, along the ground and
+/// up: a blow knocks them a few steps back, it never flings them across the field
+const THROWN_MOST: f64 = 6.0;
 /// How fast the player moves while chilled by frost, and stuck in web, next to usual
 const CHILLED_PACE: f64 = 0.55;
 const SNARED_PACE: f64 = 0.4;
@@ -174,6 +189,8 @@ pub struct Game {
     since_hurt: f64,
     /// The red of being hurt, fading
     hurt_flash: f64,
+    /// The player's own blood splashed over the view by blows, fading
+    splats: Vec<Splat>,
     /// Seconds the player goes on burning, on being poisoned, and on being slowed by frost
     burning: f64,
     poisoned: f64,
@@ -192,8 +209,11 @@ pub struct Game {
     /// The boss bar: which boss, how much health it showed last, a trail lagging behind that,
     /// seconds before the trail starts after it, and a flash on a big hit
     boss_bar: (&'static str, f64, f64, f64, f64),
-    /// How hard blows throw the player, in voxels a second, for main.rs to apply
+    /// How hard the player's own dashes throw them, in voxels a second, for main.rs to apply
     knockback: Vector3<f64>,
+    /// And how hard bosses' and monsters' blows do, which is held to THROWN_MOST so nothing can
+    /// fling them far
+    thrown: Vector3<f64>,
     /// The camera shaking from what bosses do, wearing off
     shake: f64,
     /// The player was beaten, and should wake up somewhere safe
@@ -315,6 +335,7 @@ impl Game {
             health: MAX_HEALTH,
             since_hurt: 100.0,
             hurt_flash: 0.0,
+            splats: Vec::new(),
             burning: 0.0,
             poisoned: 0.0,
             chilled: 0.0,
@@ -326,6 +347,7 @@ impl Game {
             dodge_sound: 0.0,
             boss_bar: ("", 1.0, 1.0, 0.0, 0.0),
             knockback: Vector3::zeros(),
+            thrown: Vector3::zeros(),
             shake: 0.0,
             beaten: false,
             safe: None,
@@ -664,6 +686,7 @@ impl Game {
             *safe -= shift;
         }
         self.knockback = Vector3::zeros();
+        self.thrown = Vector3::zeros();
         self.combat.recenter(shift);
         self.leaves.recenter(shift);
         self.target = None;
@@ -1025,7 +1048,7 @@ impl Game {
                             self.near_miss(feet);
                         } else {
                             self.hurt(22.0, at, feet, world, look.name());
-                            self.knockback += Vector3::new(0.0, 0.0, 5.0 * vpm);
+                            self.thrown += Vector3::new(0.0, 0.0, 3.0 * vpm);
                             self.afflict(element);
                         }
                     }
@@ -1104,7 +1127,7 @@ impl Game {
             Deed::Ram { damage, direction } => {
                 if let Some(feet) = player {
                     self.hurt(damage, feet - direction * vpm, feet, world, look.name());
-                    self.knockback += (direction * 11.0 + Vector3::new(0.0, 0.0, 6.0)) * vpm;
+                    self.thrown += (direction * 5.0 + Vector3::new(0.0, 0.0, 2.5)) * vpm;
                 }
                 self.cues.push(Cue::here(Sound::Hit, 1.0).pitched(0.5));
             }
@@ -1170,8 +1193,8 @@ impl Game {
                 let off = feet - at;
                 if off.xy().norm() < root.radius * vpm && off.z.abs() < 2.0 * vpm {
                     self.hurt(root.damage, at, feet, world, "roots");
-                    let up = if root.drag == Vector3::zeros() { 9.0 } else { 5.0 };
-                    self.knockback += (root.drag * 9.0 + Vector3::new(0.0, 0.0, up)) * vpm;
+                    let up = if root.drag == Vector3::zeros() { 5.5 } else { 3.0 };
+                    self.thrown += (root.drag * 4.0 + Vector3::new(0.0, 0.0, up)) * vpm;
                     self.afflict(root.element);
                 }
             }
@@ -1223,8 +1246,26 @@ impl Game {
             self.hurt_sound = 0.35;
             self.cues.push(Cue::here(Sound::Hurt, (0.5 + damage / 40.0).min(1.0) as f32));
         }
+        // Blood splashed over the view, more and bigger the harder the blow, round the edges clear
+        // of the middle
+        if damage >= 6.0 {
+            for _ in 0..((damage / 14.0).ceil() as usize).min(4) {
+                self.rng = hash(self.rng);
+                let mut seed = self.rng;
+                let a = random(&mut seed) * TAU;
+                let r = 0.3 + 0.14 * random(&mut seed);
+                let at = [(0.5 + a.cos() * r) as f32, (0.5 + a.sin() * r * 0.85) as f32];
+                let size = ((0.03 + damage / 1000.0).min(0.07) * (0.7 + 0.6 * random(&mut seed))) as f32;
+                self.splats.push(Splat { at, size, age: 0.0, seed });
+            }
+            if self.splats.len() > 10 {
+                let extra = self.splats.len() - 10;
+                self.splats.drain(..extra);
+            }
+        }
+        // Knocked back a step or two, not flung
         let away = Vector3::new(feet.x - from.x, feet.y - from.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros);
-        self.knockback += (away * (damage * 0.25).min(8.0) + Vector3::new(0.0, 0.0, (damage * 0.1).min(4.0))) * vpm;
+        self.thrown += (away * (damage * 0.12).min(3.5) + Vector3::new(0.0, 0.0, (damage * 0.05).min(1.5))) * vpm;
         if self.health <= 0.0 {
             self.health = 0.0;
             self.beaten = true;
@@ -1250,6 +1291,10 @@ impl Game {
     fn look_after_player(&mut self, world: &World, player: Option<Vector3<f64>>, dt: f64) {
         self.since_hurt += dt;
         self.hurt_flash = (self.hurt_flash - dt * 1.5).max(0.0);
+        for s in &mut self.splats {
+            s.age += dt;
+        }
+        self.splats.retain(|s| s.age < SPLAT_SECONDS);
         self.hurt_sound -= dt;
         self.breath_sound -= dt;
         self.dodge_sound -= dt;
@@ -1320,7 +1365,16 @@ impl Game {
 
     /// How the player's being thrown by blows since last time, in voxels a second
     pub fn take_knockback(&mut self) -> Vector3<f64> {
-        std::mem::take(&mut self.knockback)
+        // However many blows land at once, they throw the player only so far
+        let most = THROWN_MOST * self.combat.vpm();
+        let mut thrown = std::mem::take(&mut self.thrown);
+        let flat = thrown.xy().norm();
+        if flat > most {
+            thrown.x *= most / flat;
+            thrown.y *= most / flat;
+        }
+        thrown.z = thrown.z.min(most);
+        std::mem::take(&mut self.knockback) + thrown
     }
 
     /// How hard the camera should shake now, 0 to about 1
@@ -1342,6 +1396,7 @@ impl Game {
         self.snared = 0.0;
         self.hunger = self.hunger.max(40.0);
         self.hurt_flash = 1.0;
+        self.splats.clear();
         Some(self.safe)
     }
 
@@ -1829,6 +1884,29 @@ impl Game {
                 let fade = 1.0 - k as f32 / 10.0;
                 let edge = screen.shrink(k as f32 * 9.0);
                 painter.rect_stroke(edge, 0.0, Stroke::new(9.0f32, Color32::from_rgba_unmultiplied(r, g, b, (red * fade * fade * 150.0) as u8)), StrokeKind::Inside);
+            }
+        }
+
+        // The player's own blood splashed over the view, running down a little and fading
+        let h = screen.height();
+        for s in &self.splats {
+            let fade = (1.0 - s.age / SPLAT_SECONDS).clamp(0.0, 1.0) as f32;
+            let blood = Color32::from_rgba_unmultiplied(105, 4, 6, (fade.sqrt() * 190.0) as u8);
+            let r = s.size * h;
+            let at = pos2(screen.left() + s.at[0] * screen.width(), screen.top() + s.at[1] * h);
+            painter.circle_filled(at, r, blood);
+            // Spattered round it
+            let mut seed = s.seed;
+            for _ in 0..7 {
+                let a = random(&mut seed) as f32 * std::f32::consts::TAU;
+                let d = r * (1.15 + 1.3 * random(&mut seed) as f32);
+                painter.circle_filled(at + vec2(a.cos(), a.sin()) * d, r * (0.1 + 0.22 * random(&mut seed) as f32), blood);
+            }
+            // And running down from it
+            let run = (s.age as f32 * 0.8).min(1.0) * r * 2.2;
+            if run > 1.0 {
+                painter.line_segment([at, at + vec2(0.0, r * 0.6 + run)], Stroke::new(r * 0.32, blood));
+                painter.circle_filled(at + vec2(0.0, r * 0.6 + run), r * 0.2, blood);
             }
         }
 

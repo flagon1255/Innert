@@ -510,6 +510,11 @@ pub struct Combat {
     guard: Option<Guard>,
     /// A riptide's wave crashed down on something big, so the rest of it's gone
     wave_broken: bool,
+    /// A blow struck in hand is landing, right in front of the eye: what flies off it is kept
+    /// small, fine sparks rather than ones the size of the world's voxels, see melee()
+    close: bool,
+    /// Seconds until blood can stain the ground again, so a flurry of blows doesn't paint it all
+    blood_timer: f64,
     /// How charged the special attack is, 0-1
     pub charge: f64,
     /// Health a special attack gives back, and how it throws the player, for game.rs to see to
@@ -557,6 +562,21 @@ fn random(seed: &mut u32) -> f64 {
 fn smooth(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// What flies out of a creature of `look` when it's struck, one of weapons::DROP_BLOOD and the
+/// rest, and what it stains the ground with, if anything: blood, a spider's green ichor, or chips
+/// of bone, stone, ice, embers or wood off the dead, golems and the treant
+fn ichor(look: Look) -> (usize, Option<u8>) {
+    match look {
+        Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight => (DROP_WATER, None),
+        Look::Golem => (DROP_MUD, None),
+        Look::FrostGolem => (DROP_ICE, None),
+        Look::MagmaGolem => (DROP_EMBER, None),
+        Look::Treant => (DROP_ASH, None),
+        Look::Spider | Look::Spiderling | Look::Rimeweaver => (DROP_VENOM, Some(MOSS)),
+        _ => (DROP_BLOOD, Some(CLOTH)),
+    }
 }
 
 /// How far from `a` to `b`, 0-1, the line first comes within `radius` of `center`
@@ -1003,6 +1023,8 @@ impl Combat {
             pending: Vec::new(),
             guard: None,
             wave_broken: false,
+            close: false,
+            blood_timer: 0.0,
             charge: 0.0,
             heal: 0.0,
             dash: Vector3::zeros(),
@@ -1110,6 +1132,7 @@ impl Combat {
         self.speed = arena.view.speed;
         self.stride = arena.view.stride;
         self.time += dt;
+        self.blood_timer -= dt;
         self.mana = (self.mana + MANA_REGEN * dt).min(MAX_MANA);
         self.cooldown -= dt;
         self.frenzy -= dt;
@@ -1854,13 +1877,21 @@ impl Combat {
         random(&mut self.rng) < profile.stat("critChance")
     }
 
-    /// A sword swing landing: hits what's in front within reach. Echoes hit for `power` of a swing.
-    /// `finisher` is the last blow of a combo.
+    /// A blow struck in hand landing, a whip's or any other weapon's. What flies off it goes off
+    /// right in front of the eye, so it's kept small.
     fn melee(&mut self, arena: &mut Arena, profile: &Rc<Profile>, heavy: bool, power: f64, finisher: bool) {
+        self.close = true;
         if profile.style == Style::Lash {
             self.lash(arena, profile, heavy, power, finisher);
-            return;
+        } else {
+            self.blade(arena, profile, heavy, power, finisher);
         }
+        self.close = false;
+    }
+
+    /// A sword swing landing: hits what's in front within reach. Echoes hit for `power` of a swing.
+    /// `finisher` is the last blow of a combo.
+    fn blade(&mut self, arena: &mut Arena, profile: &Rc<Profile>, heavy: bool, power: f64, finisher: bool) {
         let view = arena.view;
         let vpm = view.vpm;
         let reach = (profile.stat("range") + if heavy || finisher { 0.3 } else { 0.0 }) * vpm;
@@ -2740,6 +2771,8 @@ impl Combat {
         }
 
         let died = arena.animals[i].damage(damage, blow.from);
+        // Blood spraying out of it, or what it has for blood, and a hard blow staining the ground
+        self.bleed(arena, i, damage, blow.from, blow.crit || blow.heavy || died);
         // Every blow charges the special attack
         self.charge = (self.charge + damage / SPECIAL_CHARGE).min(1.0);
         arena.animals[i].status.shown = 4.0;
@@ -2925,9 +2958,50 @@ impl Combat {
         }
     }
 
+    /// Animal `i` struck for `damage` by a blow from `from`: its blood, or what it has for blood,
+    /// spraying out of it away from the blow, more the harder it is, and with `hard` a splash of it
+    /// left on the ground under it
+    fn bleed(&mut self, arena: &Arena, i: usize, damage: f64, from: Vector3<f64>, hard: bool) {
+        let vpm = self.vpm;
+        let a = &arena.animals[i];
+        let (kind, stain) = ichor(a.look);
+        let (_, size) = a.look.body();
+        let center = a.center(vpm as u32);
+        // Out of the side the blow came from, and on away from it
+        let toward = (from - center).try_normalize(1e-6).unwrap_or_else(Vector3::z);
+        let at = center + toward * size * 0.7 * vpm;
+        let away = -Vector3::new(toward.x, toward.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+        let count = ((damage / 6.0).sqrt() * 4.0).clamp(3.0, 16.0) as usize;
+        for _ in 0..count {
+            let v = away * (0.4 + random(&mut self.rng)) + self.any_direction() * 0.6 + Vector3::new(0.0, 0.0, 0.7 + 0.6 * random(&mut self.rng));
+            let speed = 1.5 + 2.0 * random(&mut self.rng);
+            self.drop(at, v * speed * vpm, kind, 1.1);
+        }
+        let Some(material) = stain.filter(|_| hard && self.blood_timer <= 0.0) else {
+            return;
+        };
+        let foot = a.position + Vector3::new(0.0, 0.0, 0.3 * vpm);
+        let down = Vector3::new(0.0, 0.0, -4.0 * vpm);
+        if let Some(t) = solid_along(arena.world, foot, foot + down) {
+            let splat = foot + down * t + away * (0.2 + 0.6 * random(&mut self.rng)) * vpm;
+            self.stains.push((splat, (0.3 + 0.15 * size).min(0.8), material, false));
+            self.blood_timer = 0.35;
+        }
+    }
+
     /// Damage over time, and everything wearing off
     fn afflict(&mut self, arena: &mut Arena, dt: f64) {
         let vpm = arena.view.vpm;
+        // Bleeding, drops of blood falling off it now and then
+        for a in arena.animals.iter().filter(|a| a.health > 0.0 && a.status.bleed > 0.0) {
+            if random(&mut self.rng) < dt * 5.0 * a.status.bleed_stacks.max(1) as f64 {
+                let (height, size) = a.look.body();
+                let off = self.any_direction() * size * 0.6;
+                let at = a.position + Vector3::new(off.x, off.y, height * 0.8) * vpm;
+                let v = Vector3::new(off.x, off.y, 0.2) * vpm;
+                self.drop(at, v, ichor(a.look).0, 1.2);
+            }
+        }
         for i in 0..arena.animals.len() {
             if arena.animals[i].health <= 0.0 {
                 continue;
@@ -3018,7 +3092,9 @@ impl Combat {
             } else {
                 (at, direction * speed * vpm * (0.4 + 0.6 * random(&mut self.rng)))
             };
-            self.sparks.push(Spark { position, velocity, look, life, lifetime: life, gravity, slot: SLOT_SPARK });
+            // Off a blow struck in hand, right in front of the eye, they're fine ones
+            let slot = if self.close { SLOT_FINE } else { SLOT_SPARK };
+            self.sparks.push(Spark { position, velocity, look, life, lifetime: life, gravity, slot });
         }
         self.cap_sparks();
     }
@@ -3083,10 +3159,11 @@ impl Combat {
         let n = |k: f64| (k * strength).round().max(1.0) as usize;
         match element {
             None => {}
-            // Embers flying up, and a puff of flame
+            // Embers flying up, and a puff of flame, a little one off a blow struck in hand
             Some(Element::Fire) => {
                 self.sparks(at, n(8.0), 2.0, look, -0.25, 0.7);
-                self.blasts.push(Blast { position: at, look, radius: 0.3 * strength, life: 0.25, lifetime: 0.25 });
+                let puff = if self.close { 0.1 } else { 0.3 };
+                self.blasts.push(Blast { position: at, look, radius: puff * strength, life: 0.25, lifetime: 0.25 });
             }
             // Shards of ice falling, and frost spreading out round it
             Some(Element::Frost) => {
@@ -3817,10 +3894,13 @@ impl Combat {
             let (model, shape) = self.model_at(i.model);
             add(i.position, place(model, shape, MODEL_RES, Vector3::zeros(), i.position, UnitQuaternion::identity(), vpm, i.radius * 0.9 * grow.max(0.05), MOVING));
         }
+        // What goes off right in front of the eye is drawn smaller, so it doesn't fill the view:
+        // full size `reach` meters off, down to `least` of it up close
+        let near = |at: Vector3<f64>, reach: f64, least: f64| ((at - view.eye).norm() / (reach * vpm)).clamp(least, 1.0);
         for s in self.sparks.iter().filter(|s| s.slot != SLOT_FINE) {
             let (model, spark) = self.effect_model(s.slot, s.look);
             // Drops stay whole till they land, sparks dwindle
-            let size = if s.slot == SLOT_DROP { 1.0 } else { (s.life / s.lifetime).clamp(0.2, 1.0) };
+            let size = if s.slot == SLOT_DROP { 1.0 } else { (s.life / s.lifetime).clamp(0.2, 1.0) } * near(s.position, 1.5, 0.3);
             add(s.position, place(model, spark, SPARK_RES, Vector3::zeros(), s.position, UnitQuaternion::identity(), vpm, size, MOVING));
         }
         // Fireballs, swelling quickly to the size of the explosion and then shrinking away, turning
@@ -3830,7 +3910,7 @@ impl Combat {
             let t = 1.0 - b.life / b.lifetime;
             let (model, ball) = self.effect_model(SLOT_FIREBALL, if t < 0.15 { Element::look(Some(Element::Holy)) } else { b.look });
             let grow = if t < 0.2 { 1.0 - (1.0 - t / 0.2).powi(3) } else { 1.0 - ((t - 0.2) / 0.8).powi(2) };
-            let size = b.radius * 0.8 * grow.max(0.05);
+            let size = b.radius * 0.8 * grow.max(0.05) * near(b.position, 4.0, 0.35);
             let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), t * 2.0);
             add(b.position, place(model, ball, MODEL_RES, Vector3::zeros(), b.position, spin, vpm, size, MOVING));
         }

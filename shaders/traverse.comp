@@ -999,11 +999,12 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
         return vec3(2.0);
     }
     // A few voxels at a time flare up, different ones every few frames
-    float flare = float(hash(hit.coord + uvec3(0, 0, uint(pc.haze.y * 14.0) * 31u)) & 0xFFu) / 255.0;
-    flare = flare * flare * flare;
+    float chance = float(hash(hit.coord + uvec3(0, 0, uint(pc.haze.y * 14.0) * 31u)) & 0xFFu) / 255.0;
+    float flare = chance * chance * chance;
+    // Flames licking up here and there over it, not the whole of it glowing
     if (tint == TINT_BURNING) {
-        albedo *= 0.45;
-        return vec3(3.0, 1.1, 0.25) * (0.15 + 2.0 * flare);
+        albedo *= 0.7;
+        return vec3(3.0, 1.1, 0.25) * (0.02 + 2.2 * smoothstep(0.84, 1.0, chance));
     }
     if (tint == TINT_FROZEN)
     albedo = mix(albedo, vec3(0.45, 0.72, 0.95), 0.75);

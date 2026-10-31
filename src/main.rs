@@ -2277,9 +2277,10 @@ impl App {
                 player.push(push);
             }
             if let Some(safe) = self.game.take_beaten() {
+                // Where they last stood safe, even down a dungeon, or else on the ground near there
                 let near = safe.unwrap_or_else(|| camera_to_voxels(self.camera.position, self.world.size));
                 let water_level = |x: f64, y: f64| self.water.surface_at(x, y);
-                let player = Player::on_dry_ground(near, &self.world, &water_level);
+                let player = safe.and_then(|feet| Player::standing(feet, &self.world, &water_level)).unwrap_or_else(|| Player::on_dry_ground(near, &self.world, &water_level));
                 self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
                 self.player = Some(player);
             }
