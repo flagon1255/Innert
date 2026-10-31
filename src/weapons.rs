@@ -950,7 +950,8 @@ pub struct WeaponLook {
     pub grip: Vector3<f64>,
     /// The tip of the blade, or the crystal spells come out of
     pub tip: Vector3<f64>,
-    /// For bows, where the nock of the arrow is in each frame
+    /// For bows, where the nock of the arrow is in each frame; for whips, where the tip of the lash
+    /// is in each, see LASH_CURVES
     pub nocks: Vec<Vector3<f64>>,
 }
 
@@ -968,9 +969,18 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let empty = Visual::default();
     let v = |slot: &str| visual(slot).unwrap_or(&empty);
     match family.kind {
+        // A model for each shape its lash takes, and where its tip is in each
         Kind::Melee if family.style == Style::Lash => {
-            let (parts, grip, tip) = whip(v("lash"), v("handle"), v("fall"), v("core"), family);
-            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip, nocks: Vec::new() }
+            let mut frames = Vec::new();
+            let mut tips = Vec::new();
+            let mut grip = Vector3::zeros();
+            for curve in LASH_CURVES {
+                let (parts, g, tip) = whip(v("lash"), v("handle"), v("fall"), v("core"), family, curve);
+                frames.push(voxelize(&parts, SWORD_RES));
+                tips.push(tip);
+                grip = g;
+            }
+            WeaponLook { frames, res: SWORD_RES, grip, tip: tips[WHIP_REST], nocks: tips }
         }
         Kind::Melee => {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
@@ -1367,10 +1377,39 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
 const LASH_BEND: f64 = 0.9;
 const LASH_WAVE: f64 = 0.9;
 
+/// The shapes a whip's lash takes as it moves, one model each, see WHIP_REST and the rest: how
+/// much it bends along its length, how far it swings either way of that, and where along its
+/// length the swing is. The first is how it hangs.
+pub const LASH_CURVES: [(f64, f64, f64); 8] = [
+    (LASH_BEND, LASH_WAVE, 0.0),
+    // Swaying as it hangs
+    (LASH_BEND + 0.25, LASH_WAVE * 0.8, 0.6),
+    (LASH_BEND - 0.25, LASH_WAVE * 1.1, -0.6),
+    // Trailing back over the shoulder as it's wound up
+    (2.4, 0.5, 0.0),
+    // Coming through, half straightened
+    (0.7, 0.35, 0.8),
+    // Snapped out straight as it cracks
+    (0.06, 0.05, 0.0),
+    // Recoiling, curling back the other way
+    (-0.5, 1.2, 0.5),
+    // Settling
+    (LASH_BEND * 0.6, LASH_WAVE * 1.3, -0.3),
+];
+pub const WHIP_REST: usize = 0;
+pub const WHIP_SWAY: [usize; 3] = [2, 0, 1];
+pub const WHIP_TRAIL: usize = 3;
+pub const WHIP_COMING: usize = 4;
+pub const WHIP_CRACK: usize = 5;
+pub const WHIP_RECOIL: usize = 6;
+pub const WHIP_SETTLE: usize = 7;
+
 /// A whip standing on its pommel: a short handle, then the lash leaving its top in a loose S out
 /// towards +x, as it hangs, tapering to the fall and the cracker at its tip. All of it lies in the
-/// plane y = 0 but for what sticks out of the lash. Returns where it's held and the cracker.
-fn whip(lash: &Visual, handle: &Visual, fall: &Visual, core: &Visual, family: &Family) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+/// plane y = 0 but for what sticks out of the lash. `curve` is the shape the lash takes, see
+/// LASH_CURVES. Returns where it's held and the cracker.
+fn whip(lash: &Visual, handle: &Visual, fall: &Visual, core: &Visual, family: &Family, curve: (f64, f64, f64)) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let (bend, wave, phase) = curve;
     let mut p = Vec::new();
     let voxel = 1.0 / SWORD_RES;
     let pommel = handle.pommel_size.unwrap_or(0.026);
@@ -1394,7 +1433,8 @@ fn whip(lash: &Visual, handle: &Visual, fall: &Visual, core: &Visual, family: &F
     let (mut x, mut z) = (root[0], root[2]);
     for k in 0..steps {
         let u = (k as f64 + 0.5) / steps as f64;
-        let heading = LASH_BEND * u + LASH_WAVE * (TAU * u).sin();
+        // Leaving the handle straight whatever its shape, so the swing comes in along it
+        let heading = bend * u + wave * ((TAU * u + phase).sin() - phase.sin() * (1.0 - u));
         x += heading.sin() * length / steps as f64;
         z += heading.cos() * length / steps as f64;
         line.push([x, 0.0, z]);

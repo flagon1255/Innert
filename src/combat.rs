@@ -13,7 +13,8 @@ use crate::audio::{Cue, Sound};
 use crate::player::WaterLevel;
 use crate::weapons::{
     ARM_RES, ARMS, ARROW_RES, BOLT_RES, BOULDER, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES, HELD_ARROW_RES,
-    ICE_BURST, Kind, PILLAR, Profile, RING, RING_RES, ROOTS, THORN, WEB, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK, SPARK_RES, Style, Synergy, Weapon, effect_models,
+    ICE_BURST, Kind, PILLAR, Profile, RING, RING_RES, ROOTS, THORN, WEB, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK, SPARK_RES, Style, Synergy, WHIP_COMING, WHIP_CRACK,
+    WHIP_RECOIL, WHIP_REST, WHIP_SETTLE, WHIP_SWAY, WHIP_TRAIL, Weapon, effect_models,
 };
 use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, MOSS, OBSIDIAN, SNOW};
 use crate::worldgen::{World, is_passable};
@@ -3624,9 +3625,49 @@ impl Combat {
     }
 
     /// Where a point of the weapon in hand is in the world: the arrow's nock on a bow with
-    /// `nock`, otherwise its tip
+    /// `nock`, otherwise its tip, wherever a whip's lash has it
     fn held_point(&self, weapon: &Weapon, view: &View, nock: bool) -> Vector3<f64> {
-        self.held_at(weapon, view, if nock { self.nock(weapon) } else { weapon.look.tip })
+        let look = &weapon.look;
+        let tip = if weapon.profile.style == Style::Lash && !look.nocks.is_empty() { look.nocks[self.held_frame(weapon).min(look.nocks.len() - 1)] } else { look.tip };
+        self.held_at(weapon, view, if nock { self.nock(weapon) } else { tip })
+    }
+
+    /// Which of the weapon in hand's models to draw: how far a bow's drawn, or the shape a whip's
+    /// lash is in, trailing back as it's wound up, snapping out straight as it cracks, recoiling
+    /// and settling, and swaying as it hangs
+    fn held_frame(&self, weapon: &Weapon) -> usize {
+        let frames = weapon.look.frames.len();
+        if frames <= 1 {
+            return 0;
+        }
+        if weapon.profile.style == Style::Lash {
+            return match self.action {
+                Action::Swing { t, length, heavy, combo, .. } => {
+                    let f = t / length;
+                    let (comes, lands) = timing(Style::Lash, heavy, combo);
+                    if f < comes * 0.85 {
+                        WHIP_TRAIL
+                    } else if f < lands - 0.03 {
+                        WHIP_COMING
+                    } else if f < lands + 0.1 {
+                        WHIP_CRACK
+                    } else if f < lands + 0.25 {
+                        WHIP_RECOIL
+                    } else if f < 0.85 {
+                        WHIP_SETTLE
+                    } else {
+                        WHIP_REST
+                    }
+                }
+                _ => {
+                    let walking = (self.speed / 4.0).min(1.0);
+                    let sway = (self.time * (1.6 + 2.5 * walking)).sin();
+                    WHIP_SWAY[((sway + 1.0) * 1.5).clamp(0.0, 2.0) as usize]
+                }
+            }
+            .min(frames - 1);
+        }
+        ((self.drawn(&weapon.profile) * (frames - 1) as f64).round() as usize).min(frames - 1)
     }
 
     /// Where `point` on the weapon in hand's model is in the world
@@ -3679,11 +3720,7 @@ impl Combat {
             let look = &weapon.look;
             let rotation = view.rotation * p.turn;
             let hand = view.eye + view.rotation * p.hand * vpm;
-            let frame = if look.frames.len() > 1 {
-                ((self.drawn(&weapon.profile) * (look.frames.len() - 1) as f64).round() as usize).min(look.frames.len() - 1)
-            } else {
-                0
-            };
+            let frame = self.held_frame(weapon);
             out.push(place(first_model + frame as u32, &look.frames[frame], look.res, look.grip, hand, rotation, vpm, 1.0, HELD));
             // Where the elbows are, in the camera's frame
             let elbow = |x: f64, y: f64, z: f64| view.eye + view.rotation * Vector3::new(x, y, z) * vpm;

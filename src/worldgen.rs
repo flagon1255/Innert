@@ -145,6 +145,33 @@ const BRICK_VOXELS: usize = 512;
 /// u32 words per stored brick: 16 words of occupancy bits, then 128 words of materials (one byte per voxel).
 /// Has to match BRICK_WORDS in shaders\traverse.comp.
 pub const BRICK_WORDS: usize = 16 + 128;
+
+/// A quick hash for brick cells, numbers well enough spread already: the usual one is slow for
+/// the thousands of lookups blowing a hole takes
+#[derive(Default)]
+struct CellHasher(u64);
+
+impl std::hash::Hasher for CellHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.0 = (n as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+/// Where each brick cell being changed is in a list of them
+type Cells = std::collections::HashMap<usize, usize, std::hash::BuildHasherDefault<CellHasher>>;
+/// Bricks a world keeps room for beyond those it starts with, for holes blown in solid ground:
+/// a solid brick with a hole in it has to be stored
+pub const SPARE_BRICKS: usize = 32768;
 /// Grid cells with this bit set are filled with one material, kept in the low byte.
 /// Has to match SOLID_BRICK in shaders\traverse.comp.
 pub const SOLID_BRICK: u32 = 1 << 31;
@@ -202,7 +229,10 @@ pub struct WaterMap {
 
 impl World {
     /// `brick_grid` uses 0 for empty bricks, which get replaced by their EMPTY_BRICK distance.
-    fn new(size: [u32; 3], origin: [i64; 3], mut brick_grid: Vec<u32>, bricks: Vec<u32>, voxels_per_meter: u32) -> Self {
+    fn new(size: [u32; 3], origin: [i64; 3], mut brick_grid: Vec<u32>, mut bricks: Vec<u32>, voxels_per_meter: u32) -> Self {
+        // Room for the bricks holes blown in solid ground will need, so the first ones don't have
+        // all the others copied somewhere bigger in the middle of a fight
+        bricks.reserve(SPARE_BRICKS * BRICK_WORDS);
         let dims = size.map(|n| n as usize / 8);
         let distances = empty_distances(&brick_grid, dims);
         for (cell, distance) in brick_grid.iter_mut().zip(distances) {
@@ -252,11 +282,11 @@ impl World {
         let [sx, sy, sz] = self.size.map(i64::from);
         let (bx, by) = (sx / 8, sy / 8);
         let mut dirty: Vec<(usize, [u8; BRICK_VOXELS])> = Vec::new();
-        let mut found: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut found = Cells::default();
         let mut blown = Vec::new();
 
         // The bricks being changed, unpacked. Empty ones have nothing to blow away.
-        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut std::collections::HashMap<usize, usize>, x: i64, y: i64, z: i64| -> Option<usize> {
+        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut Cells, x: i64, y: i64, z: i64| -> Option<usize> {
             if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
                 return None;
             }
@@ -285,6 +315,8 @@ impl World {
 
         let r = radius.ceil() as i64 + 1;
         let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        // The columns a hole was blown in, for what's loose above to fall into
+        let mut holed: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
         for z in cz - r..=cz + r {
             for y in cy - r..=cy + r {
                 for x in cx - r..=cx + r {
@@ -301,14 +333,65 @@ impl World {
                         blown.push(dirty[k].1[i]);
                     }
                     dirty[k].1[i] = AIR;
+                    holed.insert((x, y));
                 }
             }
         }
 
-        // Grass and flowers with nothing under them any more fall in
+        // Sand, gravel and snow with nothing under them any more slide down into the hole, each
+        // column of them settling onto whatever's below. Not into bricks that were empty to begin
+        // with: rays skip those, so what fell there wouldn't show.
+        let loose = |m: u8| matches!(m, SAND | GRAVEL | SNOW);
+        let mut columns: Vec<(i64, i64)> = holed.iter().copied().collect();
+        columns.sort_unstable();
+        for (x, y) in columns {
+            {
+                // Where in this column the next loose voxel would come to rest, if anywhere
+                let mut rest: Option<i64> = None;
+                let mut open = 0;
+                let mut z = cz - r - 1;
+                while z < sz && (z <= cz + r || open < 16) {
+                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
+                        // Nothing stored here: nothing to fall, nowhere to fall to
+                        rest = None;
+                        open += 8;
+                        z = (z / 8 + 1) * 8;
+                        continue;
+                    };
+                    let i = local(x, y, z);
+                    let m = dirty[k].1[i];
+                    if m == AIR {
+                        rest = rest.or(Some(z));
+                        open += 1;
+                    } else if loose(m) {
+                        open = 0;
+                        if let Some(to) = rest.filter(|&to| to < z) {
+                            if let Some(j) = brick(self, &mut dirty, &mut found, x, y, to) {
+                                dirty[j].1[local(x, y, to)] = m;
+                                dirty[k].1[i] = AIR;
+                                if blown.len() < 64 && hash3(x as u32, y as u32, z as u32 ^ 0x5a) % 9 == 0 {
+                                    blown.push(m);
+                                }
+                                rest = Some(to + 1);
+                            }
+                        }
+                    } else {
+                        // Held up by this
+                        rest = None;
+                        open = 0;
+                    }
+                    z += 1;
+                }
+            }
+        }
+
+        // Grass and flowers with nothing under them any more fall in: only round where the hole is
         let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL);
-        for y in cy - r - 1..=cy + r + 1 {
-            for x in cx - r - 1..=cx + r + 1 {
+        let mut near: Vec<(i64, i64)> = holed.iter().flat_map(|&(x, y)| [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]).collect();
+        near.sort_unstable();
+        near.dedup();
+        for (x, y) in near {
+            {
                 for z in cz - r..=cz + r + 12 {
                     let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
                         continue;

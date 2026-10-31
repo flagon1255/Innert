@@ -683,9 +683,8 @@ struct GpuWorld {
     capacity: usize,
 }
 
-/// Room for this many more bricks in the main world than it starts with, for holes blown in it:
-/// a solid brick that gets a hole in it has to be stored
-const SPARE_BRICKS: usize = 32768;
+/// Room for this many more bricks in the main world than it starts with, for holes blown in it
+const SPARE_BRICKS: usize = worldgen::SPARE_BRICKS;
 
 // Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail
 fn get_voxel_set(
@@ -982,6 +981,11 @@ struct App {
     // Holes blown in the landscape: where, in meters from its corner, and how big. They're blown
     // again in each new piece of it the world moves on to.
     craters: Vec<([f64; 3], f64)>,
+    /// Brick cells carved or painted and not yet sent to the GPU, and the columns whose ground
+    /// the water needs to know about, see flush_edits(). With `batching` they wait to go together.
+    edited: Vec<usize>,
+    edited_ground: Option<([i64; 2], [i64; 2])>,
+    batching: bool,
     // Stains splashed on the ground the same way: where, how big, of what, and whether it burnt
     // the plants there
     stains: Vec<([f64; 3], f64, u8, bool)>,
@@ -1478,6 +1482,9 @@ impl App {
             script_controls: combat::Controls::default(),
             audio,
             craters: Vec::new(),
+            edited: Vec::new(),
+            edited_ground: None,
+            batching: false,
             stains: Vec::new(),
             step_distance: 0.0,
             walk_speed: 0.0,
@@ -1678,24 +1685,9 @@ impl App {
     fn paint(&mut self, center: Vector3<f64>, radius: f64, material: u8, burn: bool) {
         let vpm = self.world.voxels_per_meter as f64;
         let changed = self.world.paint(center.into(), radius * vpm, material, burn);
-        if changed.is_empty() {
-            return;
-        }
-        if let Some(rcx) = &mut self.rcx {
-            rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-        }
-        if self.world.bricks.len() / worldgen::BRICK_WORDS > self.voxel_set.capacity {
-            self.voxel_set = get_voxel_set(
-                self.memory_allocator.clone(),
-                self.command_buffer_allocator.clone(),
-                self.descriptor_set_allocator.clone(),
-                &self.render_pipeline,
-                &self.queue,
-                1,
-                &self.world,
-            );
-        } else {
-            self.upload_bricks(&changed);
+        self.edited.extend(changed);
+        if !self.batching {
+            self.flush_edits();
         }
     }
 
@@ -1710,7 +1702,29 @@ impl App {
         if debris {
             self.game.debris(center, &blown, vpm);
         }
+        self.edited.extend(changed);
+        let reach = (radius * vpm).ceil() as i64 + 2;
+        let (x, y) = (center.x as i64, center.y as i64);
+        let (lo, hi) = ([x - reach, y - reach], [x + reach + 1, y + reach + 1]);
+        self.edited_ground = Some(match self.edited_ground {
+            Some((a, b)) => ([a[0].min(lo[0]), a[1].min(lo[1])], [b[0].max(hi[0]), b[1].max(hi[1])]),
+            None => (lo, hi),
+        });
+        if !self.batching {
+            self.flush_edits();
+        }
+    }
 
+    /// Sends what's been carved and painted since last time to the GPU, all at once: each time
+    /// waits for the frame being drawn to finish, so a burst of holes and stains costs one wait
+    /// rather than one each
+    fn flush_edits(&mut self) {
+        if self.edited.is_empty() && self.edited_ground.is_none() {
+            return;
+        }
+        let mut cells = std::mem::take(&mut self.edited);
+        cells.sort_unstable();
+        cells.dedup();
         // The frames still being drawn read what's about to change, so let them finish
         if let Some(rcx) = &mut self.rcx {
             rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
@@ -1726,12 +1740,12 @@ impl App {
                 1,
                 &self.world,
             );
-        } else {
-            self.upload_bricks(&changed);
+        } else if !cells.is_empty() {
+            self.upload_bricks(&cells);
         }
-        let reach = (radius * vpm).ceil() as i64 + 2;
-        let (x, y) = (center.x as i64, center.y as i64);
-        self.water.sync_ground(&self.world, [x - reach, y - reach], [x + reach + 1, y + reach + 1], &self.memory_allocator, &self.command_buffer_allocator, &self.queue);
+        if let Some((lo, hi)) = self.edited_ground.take() {
+            self.water.sync_ground(&self.world, lo, hi, &self.memory_allocator, &self.command_buffer_allocator, &self.queue);
+        }
     }
 
     /// Sends the brick grid `cells` of the main world to the GPU, along with their bricks
@@ -2246,13 +2260,17 @@ impl App {
                     sound.play(cue, &view);
                 }
             }
-            // Explosions blowing holes in the world, and splashing stains on it
+            // Explosions blowing holes in the world, and splashing stains on it, sent to the GPU
+            // all together
+            self.batching = true;
             for (center, radius) in self.game.take_craters() {
                 self.blast(center, radius);
             }
             for (center, radius, material, burn) in self.game.take_stains() {
                 self.stain(center, radius, material, burn);
             }
+            self.batching = false;
+            self.flush_edits();
             // Thrown by blows, and waking up somewhere safe after being beaten
             let push = self.game.take_knockback();
             if let Some(player) = &mut self.player {
@@ -2513,6 +2531,20 @@ impl App {
             ("swing", _) => self.script_controls = combat::Controls { attack: true, holding: true, ..Default::default() },
             // Blows holes, hops far enough over that the world's built again around the camera
             // while it goes on blowing them, then checks none have filled back in
+            // Blows a hollow under the ground ahead, to see sand, gravel and snow fall into it
+            ("sand", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.45;
+                }
+                if f == 40 || f == 80 {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    let ahead = eye + Vector3::new(look.x, look.y, 0.0).normalize() * (5.0 + (f / 40) as f64 * 2.5) * vpm;
+                    let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(ahead.x as i64, ahead.y as i64, z))).unwrap_or(0) as f64;
+                    let material = self.world.material_at(ahead.x as i64, ahead.y as i64, ground as i64);
+                    self.blast(Vector3::new(ahead.x, ahead.y, ground - 1.6 * vpm), 1.3);
+                    println!("frame {frame}: hollow under {material} ground");
+                }
+            }
             ("holes", f) => {
                 if f == 1 {
                     self.game.select_weapon(weapons::Kind::Magic);
@@ -3536,6 +3568,15 @@ impl App {
                         times[0],
                         times[times.len() - 1]
                     );
+                    // Hitches, leaving out the first frames while the world settles in
+                    let mut later: Vec<f64> = capture.frame_times.iter().skip(10).map(|t| t.as_secs_f64() * 1000.0).collect();
+                    later.sort_by(f64::total_cmp);
+                    if !later.is_empty() {
+                        let worst = later.len() - 1;
+                        println!("after the first 10 frames: 99th percentile {:.1} ms, slowest {:.1} ms, {} over 25 ms", later[worst * 99 / 100], later[worst], later.iter().filter(|&&t| t > 25.0).count());
+                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
+                        println!("long frames: {}", long.join(", "));
+                    }
                 }
                 event_loop.exit();
             } else if let Some(path) = capture_shot {
