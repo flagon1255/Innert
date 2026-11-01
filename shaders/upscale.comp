@@ -30,7 +30,7 @@ const uint UPSCALE_HISTORY = 1; // Last frame's image is there to use
 layout(set = 0, binding = 0, rgba8) readonly uniform image2D current;
 // Written by traverse.comp, see there
 layout(set = 0, binding = 1, r32f) readonly uniform image2D depthImage;
-layout(set = 0, binding = 2, rgba32f) readonly uniform image2D guideImage;
+layout(set = 0, binding = 2, rgba16f) readonly uniform image2D guideImage;
 // What each window pixel has gathered, with alpha how much
 layout(set = 0, binding = 3, rgba16f) readonly uniform image2D historyIn;
 layout(set = 0, binding = 4, rgba16f) writeonly uniform image2D historyOut;

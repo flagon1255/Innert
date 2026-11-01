@@ -64,6 +64,7 @@ mod bosses;
 mod camera;
 mod combat;
 mod game;
+mod gpu_timing;
 mod hot_reload;
 mod leaves;
 mod player;
@@ -479,7 +480,8 @@ fn get_render_images(
     // Two sets of history images that swap roles every frame, one read while the other is written
     let colors = [0, 1].map(|_| float_image(render_extent, Format::R32G32B32A32_SFLOAT));
     let depths = [0, 1].map(|_| float_image(render_extent, Format::R32_SFLOAT));
-    let guide = float_image(render_extent, Format::R32G32B32A32_SFLOAT);
+    // Half floats are plenty for colors and which way faces point, and quicker to read many times
+    let guide = float_image(render_extent, Format::R16G16B16A16_SFLOAT);
 
     let layout = render_pipeline.layout().set_layouts()[0].clone();
     let render_sets = [0, 1].map(|write| {
@@ -502,12 +504,13 @@ fn get_render_images(
     });
 
     // post.comp's passes each read one image and write another, ping-ponging between these
-    let temps = [0, 1].map(|_| float_image(render_extent, Format::R32G32B32A32_SFLOAT));
+    let temps = [0, 1].map(|_| float_image(render_extent, Format::R16G16B16A16_SFLOAT));
     let bloom_extent = render_extent.map(|n| n.div_ceil(BLOOM_SCALE).max(1));
     let blooms = [0, 1].map(|_| float_image(bloom_extent, Format::R32G32B32A32_SFLOAT));
 
     let layout = post_pipeline.layout().set_layouts()[0].clone();
-    let post_set = |hdr_in: &Arc<ImageView>, hdr_out: &Arc<ImageView>, depth: &Arc<ImageView>, bloom_in: usize| {
+    // `accum` is what the denoiser's first pass reads, the others read `hdr_in`
+    let post_set = |hdr_in: &Arc<ImageView>, hdr_out: &Arc<ImageView>, depth: &Arc<ImageView>, bloom_in: usize, accum: &Arc<ImageView>| {
         DescriptorSet::new(
             descriptor_set_allocator.clone(),
             layout.clone(),
@@ -519,6 +522,7 @@ fn get_render_images(
                 WriteDescriptorSet::image_view(4, blooms[bloom_in].clone()),
                 WriteDescriptorSet::image_view(5, blooms[1 - bloom_in].clone()),
                 WriteDescriptorSet::image_view(6, render_image_view.clone()),
+                WriteDescriptorSet::image_view(7, accum.clone()),
             ],
             [],
         )
@@ -527,18 +531,18 @@ fn get_render_images(
     // The denoiser reads this frame's colors and ends up in temps[0]
     let denoise_sets = [0, 1].map(|parity| {
         [
-            post_set(&colors[parity], &temps[0], &depths[parity], 0),
-            post_set(&temps[0], &temps[1], &depths[parity], 0),
-            post_set(&temps[1], &temps[0], &depths[parity], 0),
+            post_set(&temps[1], &temps[0], &depths[parity], 0, &colors[parity]),
+            post_set(&temps[0], &temps[1], &depths[parity], 0, &colors[parity]),
+            post_set(&temps[1], &temps[0], &depths[parity], 0, &colors[parity]),
         ]
     });
     // Bloom ends up in blooms[0], which tone mapping then reads
-    let bloom_extract_set = post_set(&temps[0], &temps[1], &depths[0], 1);
+    let bloom_extract_set = post_set(&temps[0], &temps[1], &depths[0], 1, &colors[0]);
     let bloom_blur_sets = [
-        post_set(&temps[0], &temps[1], &depths[0], 0),
-        post_set(&temps[0], &temps[1], &depths[0], 1),
+        post_set(&temps[0], &temps[1], &depths[0], 0, &colors[0]),
+        post_set(&temps[0], &temps[1], &depths[0], 1, &colors[0]),
     ];
-    let tonemap_set = post_set(&temps[0], &temps[1], &depths[0], 0);
+    let tonemap_set = post_set(&temps[0], &temps[1], &depths[0], 0, &colors[0]);
 
     let (resample_image, resample_image_view) = get_resample_image(memory_allocator.clone(), window_extent);
 
@@ -1049,6 +1053,9 @@ struct Capture {
     step: Option<f64>,
     frame_times: Vec<Duration>,
     last_frame: Option<Instant>,
+    /// How long the GPU takes over each part of a frame, if `time_gpu`
+    time_gpu: bool,
+    gpu: Option<gpu_timing::GpuTimer>,
 }
 
 impl Capture {
@@ -1067,6 +1074,9 @@ impl Capture {
             step: value("--step").and_then(|n| n.parse().ok()),
             frame_times: Vec::new(),
             last_frame: None,
+            // `--set gpu_times=1` prints how long the GPU took over each part of a frame
+            time_gpu: settings_from_args().iter().any(|(k, v)| k == "gpu_times" && (v == "1" || v == "true")),
+            gpu: None,
         })
     }
 }
@@ -3341,6 +3351,12 @@ impl App {
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
+        // Screenshot runs time each part of the frame on the GPU
+        let device = self.device.clone();
+        let mut timer = self.capture.as_mut().filter(|c| c.time_gpu).map(|c| c.gpu.take().unwrap_or_else(|| gpu_timing::GpuTimer::new(&device)));
+        if let Some(timer) = &mut timer {
+            timer.begin(&mut builder);
+        }
 
         builder
             .clear_color_image(ClearColorImageInfo::image(rcx.images.render_image.clone()))
@@ -3355,6 +3371,9 @@ impl App {
         self.last_frame = now;
         let camera = camera_to_voxels(self.camera.position, self.world.size);
         self.water.record(&mut builder, &self.water_pipeline, frame_time, [camera.x, camera.y], self.wake);
+        if let Some(timer) = &mut timer {
+            timer.mark(&mut builder, "water");
+        }
 
         builder
             .bind_pipeline_compute(self.render_pipeline.clone())
@@ -3397,6 +3416,9 @@ impl App {
                 ])
                 .unwrap();
         }
+        if let Some(timer) = &mut timer {
+            timer.mark(&mut builder, "trace");
+        }
 
         if shaded {
             let images = &rcx.images;
@@ -3417,6 +3439,9 @@ impl App {
                 dispatch_post(&mut builder, &self.post_pipeline, &images.bloom_blur_sets[1], constants(PostStage::BloomBlurY, 0), images.bloom_extent);
             }
             dispatch_post(&mut builder, &self.post_pipeline, &images.tonemap_set, constants(PostStage::Tonemap, 0), render_extent);
+        }
+        if let Some(timer) = &mut timer {
+            timer.mark(&mut builder, "post");
         }
 
         // Up to the window's resolution: gathered over frames when shaded at or below it, otherwise
@@ -3473,6 +3498,9 @@ impl App {
         );
         info.filter = Filter::Nearest;
         builder.blit_image(info).unwrap();
+        if let Some(timer) = &mut timer {
+            timer.mark(&mut builder, "upscale");
+        }
 
         let mut capture_done = false;
         let mut capture_shot = None;
@@ -3540,7 +3568,11 @@ impl App {
                 // Screenshots read the frame back, so it has to be finished first. Screenshot runs
                 // also wait for every frame, so their timings are the GPU's.
                 if screenshot_buffer.is_some() || self.capture.is_some() {
+                    let waiting = Instant::now();
                     frame_end.wait(None).unwrap();
+                    if let Some(timer) = &mut timer {
+                        timer.finish(waiting.elapsed());
+                    }
                 }
                 rcx.previous_frame_end = Some(frame_end.boxed());
             }
@@ -3549,6 +3581,11 @@ impl App {
                 rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
             }
             Err(e) => panic!("failed to flush frame: {e}"),
+        }
+        if let Some(capture) = &mut self.capture
+            && timer.is_some()
+        {
+            capture.gpu = timer;
         }
 
         if let Some(buffer) = screenshot_buffer {
@@ -3579,6 +3616,9 @@ impl App {
                         println!("long frames: {}", long.join(", "));
                     }
                 }
+                if let Some(timer) = &capture.gpu {
+                    println!("{}", timer.report());
+                }
                 event_loop.exit();
             } else if let Some(path) = capture_shot {
                 save_screenshot(&buffer, resample_extent, encoded, &path);
@@ -3596,8 +3636,14 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // `--set window=1920x1080` opens it that size, to see how it runs maximized on a screen like that
+        let size = settings_from_args()
+            .into_iter()
+            .find(|(k, _)| k == "window")
+            .and_then(|(_, v)| v.split_once('x').and_then(|(w, h)| Some(PhysicalSize::new(w.parse().ok()?, h.parse().ok()?))))
+            .unwrap_or(INITIAL_WINDOW_RESOLUTION);
         let mut attributes = Window::default_attributes()
-            .with_inner_size(INITIAL_WINDOW_RESOLUTION)
+            .with_inner_size(size)
             .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
             .with_title("Innert");
         // Screenshot runs happen out of sight: off the screen, without taking focus or showing in the taskbar

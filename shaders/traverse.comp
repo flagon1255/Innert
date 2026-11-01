@@ -108,7 +108,7 @@ layout(set = 0, binding = 4, r32f) writeonly uniform image2D accumDepth;
 // For post.comp and upscale.comp: what accumColor is divided by, the albedo of what each pixel
 // sees as far as it shows through the haze, and in alpha which way the face points (0-5), 6 for
 // the sky, 7 for water and grass, and 8 more than the face for what's held
-layout(set = 0, binding = 5, rgba32f) writeonly uniform image2D guideImage;
+layout(set = 0, binding = 5, rgba16f) writeonly uniform image2D guideImage;
 // Distance from a plane facing the sun to the first thing sunlight hits, see sunMapBasis()
 layout(set = 0, binding = 6, r32f) uniform image2D sunMap;
 // One cell per 8x8x8 brick. EMPTY_BRICK | distance is empty, with the distance
@@ -205,6 +205,14 @@ const uint NO_ENTRY = 0xFFFFFFFFu;
 // that see it, and blended in this much, so it follows things moving a few frames behind
 const uint DIRECT_INTERVAL = 2;
 const float DIRECT_BLEND = 0.25;
+// Past this many meters from the camera a face is about a pixel across or less, and each pixel
+// averages many of them over the frames, so the light on it needs far fewer samples: after the first
+// it only takes one now and then up to FAR_CACHE_SAMPLES, and the light straight on it is worked out
+// again only every FAR_DIRECT_INTERVAL frames
+const float FAR_FACE = 32.0;
+const uint FAR_CACHE_SAMPLES = 12;
+const float FAR_SAMPLE_CHANCE = 0.25;
+const uint FAR_DIRECT_INTERVAL = 16;
 // How far from its middle shadows are traced towards the sun, in radians. Wider than the real sun,
 // so the edges of shadows come out soft over a voxel or two.
 const float SUN_RADIUS = 0.02;
@@ -1189,7 +1197,7 @@ float halton(uint i, uint base);
 // worked out by every pixel that sees it, so it's never left unlit, and after that by one of them
 // every DIRECT_INTERVAL frames, towards a different point on the sun each time, which blended
 // together soften the edges of shadows.
-void cachedDirect(uint e, Hit hit, vec3 face, vec3 normal, bool leaf, out float sun, out vec3 still, out float through) {
+void cachedDirect(uint e, Hit hit, vec3 face, vec3 normal, bool leaf, uint interval, out float sun, out vec3 still, out float through) {
     sun = 0;
     still = vec3(0);
     through = 0;
@@ -1199,14 +1207,14 @@ void cachedDirect(uint e, Hit hit, vec3 face, vec3 normal, bool leaf, out float 
         still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
         through = uintBitsToFloat(cache[e + 11]);
         // Only the pixel that gets to mark it done works it out again
-        if (pc.frame + 1 - last < DIRECT_INTERVAL || atomicCompSwap(cache[e + 6], last, pc.frame + 1) != last)
+        if (pc.frame + 1 - last < interval || atomicCompSwap(cache[e + 6], last, pc.frame + 1) != last)
         return;
     }
 
     vec3 towards = pc.sun_direction.xyz;
     if (last != 0) {
         // Each face goes round the points in its own order, so neighbors don't all step together
-        uint i = pc.frame / DIRECT_INTERVAL % 64 + 1;
+        uint i = pc.frame / interval % 64 + 1;
         uint offset = hash(e);
         towards = sunPoint(fract(vec2(halton(i, 2), halton(i, 3)) + vec2(offset & 0xFFFFu, offset >> 16) / 65536.0));
     }
@@ -1244,6 +1252,10 @@ vec3 cosineDirection(vec3 normal, inout uint seed) {
     return len > 1e-4 ? dir / len : normal;
 }
 
+// Set while lighting a face past FAR_FACE: how much of the sun reaches it. What its bounce light
+// comes off is taken to be about as sunlit, rather than tracing another ray to the sun to see.
+float g_far_sun = -1;
+
 // Single-bounce shading for reflections and bounce light
 vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance) {
     Hit hit;
@@ -1274,6 +1286,8 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
     if (shadows && e != NO_ENTRY && cache[e + 6] != 0) {
         vec3 still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
         direct = sunColor() * sunOn(hit.normal, uintBitsToFloat(cache[e + 7])) + still;
+    } else if (g_far_sun >= 0) {
+        direct = sunColor() * sunOn(hit.normal, g_far_sun);
     } else {
         direct = sunColor() * sunLight(faceCenter(hit), hit.normal);
     }
@@ -1921,6 +1935,30 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         uint e = gi || shadows ? cacheEntry(hit, true) : NO_ENTRY;
         if (e != NO_ENTRY)
         cache[e + 5] = pc.frame;
+        bool far_face = hit.t > FAR_FACE * float(max(pc.world_size.w, 1u));
+
+        // Light straight from the sun and the lights. What moves, and faces with no room in the
+        // light cache, have it worked out every frame.
+        bool leaf = isFoliage(material);
+        float sun;
+        vec3 local;
+        float through = 0;
+        if (shadows && e != NO_ENTRY) {
+            float reaches;
+            vec3 still;
+            cachedDirect(e, hit, face, normal, leaf, far_face ? FAR_DIRECT_INTERVAL : DIRECT_INTERVAL, reaches, still, through);
+            sun = sunOn(normal, reaches);
+            // Spells and the like move too fast to keep their light
+            local = still + localLight(face, normal, MOVING_LIGHTS);
+            // Facing away from the sun says nothing about whether it shines round about
+            if (far_face)
+            g_far_sun = sunOn(normal, 1) > 0 ? reaches : 0.5;
+        } else {
+            sun = sunLight(face, normal);
+            local = localLight(face, normal, ALL_LIGHTS);
+            if (leaf && sunBehind(hit))
+            through = leafThrough(hit, pc.sun_direction.xyz);
+        }
 
         vec3 indirect;
         // What's held moves with the camera, so it'd only show the noise of one bounce a frame:
@@ -1930,10 +1968,12 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             if (e != NO_ENTRY) {
                 // Light bounced onto this face, gathered over many frames. Faces new to the cache
                 // take a sample from every pixel that sees them, so they fill in fast, and after
-                // that only the odd one.
+                // that only the odd one. Far off, after the first, only some of the pixels do.
                 uint samples;
                 indirect = cachedLight(e, samples);
-                if (samples < CACHE_SAMPLES || random(seed) < 1.0 / 64.0) {
+                uint wanted = far_face ? FAR_CACHE_SAMPLES : CACHE_SAMPLES;
+                bool filling = samples < wanted && (!far_face || samples == 0 || random(seed) < FAR_SAMPLE_CHANCE);
+                if (filling || random(seed) < 1.0 / 64.0) {
                     vec3 light = shadeSecondary(face, outward(cosineDirection(normal, seed), hit.normal), false, reach);
                     cacheAdd(e, light);
                     indirect = (indirect * float(samples) + light) / float(samples + 1);
@@ -1951,26 +1991,8 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         } else {
             indirect = ambientLight(normal) * ao;
         }
+        g_far_sun = -1;
 
-        // Light straight from the sun and the lights. What moves, and faces with no room in the
-        // light cache, have it worked out every frame.
-        bool leaf = isFoliage(material);
-        float sun;
-        vec3 local;
-        float through = 0;
-        if (shadows && e != NO_ENTRY) {
-            float reaches;
-            vec3 still;
-            cachedDirect(e, hit, face, normal, leaf, reaches, still, through);
-            sun = sunOn(normal, reaches);
-            // Spells and the like move too fast to keep their light
-            local = still + localLight(face, normal, MOVING_LIGHTS);
-        } else {
-            sun = sunLight(face, normal);
-            local = localLight(face, normal, ALL_LIGHTS);
-            if (leaf && sunBehind(hit))
-            through = leafThrough(hit, pc.sun_direction.xyz);
-        }
         // Metal is darker than it looks, as most of its shine is reflection: it glints where it
         // catches the sun, and mirrors what's around it
         vec3 shine = vec3(0);

@@ -36,15 +36,17 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 // Linear light, the color divided by guideImage's, with alpha being how many frames were averaged
-// into it
-layout(set = 0, binding = 0, rgba32f) readonly uniform image2D hdrIn;
-layout(set = 0, binding = 1, rgba32f) writeonly uniform image2D hdrOut;
+// into it. Half floats between the passes, as they're read many times over.
+layout(set = 0, binding = 0, rgba16f) readonly uniform image2D hdrIn;
+layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D hdrOut;
 // Written by traverse.comp, see there
 layout(set = 0, binding = 2, r32f) readonly uniform image2D depthImage;
-layout(set = 0, binding = 3, rgba32f) readonly uniform image2D guideImage;
+layout(set = 0, binding = 3, rgba16f) readonly uniform image2D guideImage;
 layout(set = 0, binding = 4, rgba32f) readonly uniform image2D bloomIn;
 layout(set = 0, binding = 5, rgba32f) writeonly uniform image2D bloomOut;
 layout(set = 0, binding = 6, rgba8) writeonly uniform image2D targetImage;
+// What traverse.comp averaged over frames, which the first pass of the denoiser reads instead of hdrIn
+layout(set = 0, binding = 7, rgba32f) readonly uniform image2D accumIn;
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -64,11 +66,17 @@ vec3 colorAt(ivec2 p, vec3 light) {
     return light * imageLoad(guideImage, p).rgb;
 }
 
+// The light the denoiser starts from: straight from traverse.comp in the first pass, then from the
+// pass before
+vec4 lightAt(ivec2 p) {
+    return pc.step == 1 ? imageLoad(accumIn, p) : imageLoad(hdrIn, p);
+}
+
 // One pass of an edge-avoiding à-trous filter (Dammertz et al. 2010). It blurs the lighting
 // only, not the voxel colors, and never across edges where the depth or the face direction
 // changes. Pixels that have averaged enough frames already are left alone.
 void denoise(ivec2 p) {
-    vec4 center = imageLoad(hdrIn, p);
+    vec4 center = lightAt(p);
     float depth0 = imageLoad(depthImage, p).r;
     vec4 guide0 = imageLoad(guideImage, p);
     float settled = (pc.flags & POST_DENOISE) != 0 ? smoothstep(4, 24, center.a) : 1;
@@ -94,7 +102,7 @@ void denoise(ivec2 p) {
             float depth = imageLoad(depthImage, q).r;
             if (guide.w != guide0.w || depth < 0)
             continue;
-            vec3 light = imageLoad(hdrIn, q).rgb;
+            vec3 light = lightAt(q).rgb;
             float w = KERNEL[abs(x)] * KERNEL[abs(y)]
                 * exp(-abs(depth - depth0) / (0.02 * depth0 * float(pc.step) + 1e-4))
                 * exp(-abs(luminance(light) - light0) / (light0 + 0.05));
