@@ -2286,13 +2286,11 @@ impl App {
             if let Some(player) = &mut self.player {
                 player.push(push);
             }
-            if let Some(safe) = self.game.take_beaten() {
-                // Where they last stood safe, even down a dungeon, or else on the ground near there
-                let near = safe.unwrap_or_else(|| camera_to_voxels(self.camera.position, self.world.size));
-                let water_level = |x: f64, y: f64| self.water.surface_at(x, y);
-                let player = safe.and_then(|feet| Player::standing(feet, &self.world, &water_level)).unwrap_or_else(|| Player::on_dry_ground(near, &self.world, &water_level));
-                self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
-                self.player = Some(player);
+            // Beaten, the player gets back up where they fell, see Game::take_beaten()
+            if self.game.take_beaten()
+                && let Some(capture) = &self.capture
+            {
+                println!("BEATEN at frame {}", capture.frame_times.len());
             }
         }
         self.ambience(delta_time);
@@ -2332,6 +2330,12 @@ impl App {
             let vpm = self.world.voxels_per_meter as f64;
             let feet = player.position;
             let moved = self.last_feet.map_or(Vector3::zeros(), |last| (feet - last) / delta_time.max(1e-3));
+            // In screenshot runs, any sudden jump of the player's, to catch what throws them
+            if let (Some(capture), Some(last)) = (&self.capture, self.last_feet)
+                && (feet - last).norm() > 1.5 * vpm
+            {
+                println!("JUMP of {:.1} m at frame {}: {}", (feet - last).norm() / vpm, capture.frame_times.len(), self.game.report(feet));
+            }
             self.last_feet = Some(feet);
             let wading = self.water.depth_at(feet.x, feet.y) > 0.1 * vpm;
             self.wake = (wading && !self.menu_open).then_some(([feet.x, feet.y], [moved.x, moved.y]));

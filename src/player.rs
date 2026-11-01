@@ -82,17 +82,6 @@ impl Player {
         Player::new(near, world)
     }
 
-    /// The player standing at `feet`, if there's ground right under them there, room for them and
-    /// no water over their head: for waking up where they last were safe, down a dungeon or not
-    pub fn standing(feet: Vector3<f64>, world: &World, water: WaterLevel) -> Option<Self> {
-        let vpm = world.voxels_per_meter as f64;
-        let player = Player::new(feet + Vector3::new(0.0, 0.0, EYE_HEIGHT * vpm), world);
-        let lifted = player.position.z - feet.z;
-        let under = world.material_at(feet.x.floor() as i64, feet.y.floor() as i64, (player.position.z - 1.0).floor() as i64);
-        let dry = water(feet.x, feet.y) < player.position.z + CHEST_HEIGHT * vpm;
-        (lifted < vpm && !is_passable(under) && dry).then_some(player)
-    }
-
     pub fn on_ground(&self) -> bool {
         self.on_ground
     }

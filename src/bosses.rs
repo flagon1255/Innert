@@ -16,6 +16,9 @@ const NOTICE: f64 = 24.0;
 const GIVE_UP: f64 = 50.0;
 /// The furthest from home it'll follow them
 const LEASH: f64 = 60.0;
+/// Seconds a boss or monster leaves the player be after beating them, so they can get up and
+/// get away
+const SPARE_SECONDS: f64 = 10.0;
 /// The same for the walking dead
 const MONSTER_NOTICE: f64 = 16.0;
 const MONSTER_GIVE_UP: f64 = 28.0;
@@ -130,6 +133,8 @@ pub struct Boss {
     aim: Vector3<f64>,
     /// Whether its charge has hit already
     rammed: bool,
+    /// Seconds it leaves the player be after beating them, unless they come at it first
+    grace: f64,
     /// Where a leap started and where it's coming down
     leap: (Vector3<f64>, Vector3<f64>),
     /// How far through its walk it was at the last footfall
@@ -316,6 +321,7 @@ impl Boss {
             cooldowns: [0.0; MOVES],
             aim: home,
             rammed: false,
+            grace: 0.0,
             leap: (home, home),
             last_step: 0.0,
             posed: (None, None, EASE),
@@ -326,6 +332,13 @@ impl Boss {
     /// Hit by the player: it turns on them
     pub fn provoke(&mut self) {
         self.engaged = true;
+        self.grace = 0.0;
+    }
+
+    /// Having beaten the player, it goes home and leaves them be for a while to get up
+    pub fn spare(&mut self) {
+        self.calm();
+        self.grace = SPARE_SECONDS;
     }
 
     /// The world moved over by `shift` voxels
@@ -453,7 +466,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         _ => (NOTICE, GIVE_UP, LEASH),
     };
     let level = player.is_some_and(|p| (p.z - a.position.z).abs() < 5.0 * vpm);
-    if level && distance < notice {
+    boss.grace -= dt;
+    if level && distance < notice && boss.grace <= 0.0 {
         boss.engaged = true;
     }
     if boss.engaged && (player.is_none() || distance > give_up || from_home > leash) {

@@ -101,6 +101,8 @@ struct Splat {
 
 /// Seconds a splash of blood stays on the view
 const SPLAT_SECONDS: f64 = 2.4;
+/// Seconds the view stays dark after the player's beaten, coming back as they get up
+const DOWN_SECONDS: f64 = 3.0;
 
 /// A hall of a dungeon that monsters haunt
 pub struct Den {
@@ -216,11 +218,10 @@ pub struct Game {
     thrown: Vector3<f64>,
     /// The camera shaking from what bosses do, wearing off
     shake: f64,
-    /// The player was beaten, and should wake up somewhere safe
+    /// The player was beaten, and gets back up where they fell; and seconds since, for the view
+    /// to go dark and come back
     beaten: bool,
-    /// Where the player last stood well away from any fight, and how long until it's looked at again
-    safe: Option<Vector3<f64>>,
-    safe_timer: f64,
+    down: f64,
     /// Bosses' lairs in this piece of the world, and those beaten, by where they are in the landscape
     lairs: Vec<Lair>,
     defeated: HashSet<[i64; 3]>,
@@ -350,8 +351,7 @@ impl Game {
             thrown: Vector3::zeros(),
             shake: 0.0,
             beaten: false,
-            safe: None,
-            safe_timer: 0.0,
+            down: DOWN_SECONDS,
             lairs: Vec::new(),
             defeated: HashSet::new(),
             dens: Vec::new(),
@@ -404,7 +404,6 @@ impl Game {
         self.dens.clear();
         self.cleared.clear();
         self.boss_chests.clear();
-        self.safe = None;
         self.pickups.clear();
         self.target = None;
         self.seed = seed;
@@ -682,9 +681,6 @@ impl Game {
             chest.position -= shift;
         }
         self.boss_chests.retain(|c| inside(&c.position));
-        if let Some(safe) = &mut self.safe {
-            *safe -= shift;
-        }
         self.knockback = Vector3::zeros();
         self.thrown = Vector3::zeros();
         self.combat.recenter(shift);
@@ -1269,11 +1265,13 @@ impl Game {
         if self.health <= 0.0 {
             self.health = 0.0;
             self.beaten = true;
-            self.say(format!("You were beaten by the {by}. You come to somewhere safer."));
-            // The bosses calm down and go home to lick their wounds
+            self.down = 0.0;
+            self.say(format!("You were beaten by the {by}. It leaves you lying there."));
+            // The bosses and monsters go home to lick their wounds, and leave the player be a while
+            // to get up and get away
             for animal in &mut self.animals {
                 if let Some(boss) = &mut animal.boss {
-                    boss.calm();
+                    boss.spare();
                     animal.health = animal.look.health();
                 }
             }
@@ -1291,6 +1289,7 @@ impl Game {
     fn look_after_player(&mut self, world: &World, player: Option<Vector3<f64>>, dt: f64) {
         self.since_hurt += dt;
         self.hurt_flash = (self.hurt_flash - dt * 1.5).max(0.0);
+        self.down = (self.down + dt).min(DOWN_SECONDS);
         for s in &mut self.splats {
             s.age += dt;
         }
@@ -1331,15 +1330,6 @@ impl Game {
         // Starving wears the player down, though not all the way
         if self.hunger <= 0.0 && self.health > 10.0 {
             self.health -= 0.5 * dt;
-        }
-        // Remembering where's safe: well away from any boss that's after them
-        self.safe_timer -= dt;
-        if self.safe_timer <= 0.0 {
-            self.safe_timer = 2.0;
-            let fighting = self.animals.iter().any(|a| a.boss.as_ref().is_some_and(|b| b.engaged));
-            if !fighting && self.health > 30.0 {
-                self.safe = Some(feet);
-            }
         }
     }
 
@@ -1382,11 +1372,11 @@ impl Game {
         self.shake.max(self.combat.shake)
     }
 
-    /// If the player was beaten, where to wake them up, their feet in voxels, or None to find
-    /// somewhere near where they are
-    pub fn take_beaten(&mut self) -> Option<Option<Vector3<f64>>> {
+    /// Whether the player was beaten since last time. They get back up where they fell, their
+    /// health back, while what beat them walks away.
+    pub fn take_beaten(&mut self) -> bool {
         if !self.beaten {
-            return None;
+            return false;
         }
         self.beaten = false;
         self.health = MAX_HEALTH;
@@ -1397,7 +1387,7 @@ impl Game {
         self.hunger = self.hunger.max(40.0);
         self.hurt_flash = 1.0;
         self.splats.clear();
-        Some(self.safe)
+        true
     }
 
     /// Animals that were killed fall, and leave their meat. Bosses leave a chest.
@@ -1885,6 +1875,19 @@ impl Game {
                 let edge = screen.shrink(k as f32 * 9.0);
                 painter.rect_stroke(edge, 0.0, Stroke::new(9.0f32, Color32::from_rgba_unmultiplied(r, g, b, (red * fade * fade * 150.0) as u8)), StrokeKind::Inside);
             }
+        }
+
+        // Beaten: the view going dark, a word on what happened, then coming back as they get up
+        if self.down < DOWN_SECONDS {
+            let t = (self.down / DOWN_SECONDS) as f32;
+            let dark = if t < 0.15 { t / 0.15 } else { (1.0 - (t - 0.15) / 0.85).powf(0.7) };
+            painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(20, 0, 0, (dark * 215.0) as u8));
+            let words = Color32::from_rgba_unmultiplied(200, 40, 35, (dark * 255.0) as u8);
+            let at = pos2(center.x, screen.center().y - 20.0);
+            painter.text(at + vec2(2.0, 2.0), Align2::CENTER_CENTER, "Beaten", FontId::proportional(56.0), Color32::from_black_alpha((dark * 200.0) as u8));
+            painter.text(at, Align2::CENTER_CENTER, "Beaten", FontId::proportional(56.0), words);
+            let below = Color32::from_rgba_unmultiplied(220, 210, 200, (dark * 230.0) as u8);
+            painter.text(at + vec2(0.0, 46.0), Align2::CENTER_CENTER, "You get back up where you fell, as it turns away", FontId::proportional(18.0), below);
         }
 
         // The player's own blood splashed over the view, running down a little and fading
