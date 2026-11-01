@@ -79,8 +79,15 @@ void flux(ivec2 c, ivec2 size) {
     float dt = pc.params.x;
     float gravity = 9.8 * pc.params.z;
     float depth = imageLoad(depthImage, c).r;
-    float h = imageLoad(groundImage, c).r + depth;
     vec4 f = imageLoad(fluxImage, c);
+    // A dry column can't send any water anywhere, as below it'd all be scaled down to nothing, so
+    // most of the land needn't look at its neighbors
+    if (depth <= 0) {
+        if (f != vec4(0))
+        imageStore(fluxImage, c, vec4(0));
+        return;
+    }
+    float h = imageLoad(groundImage, c).r + depth;
     for (int i = 0; i < 4; i++) {
         ivec2 n = c + DIRS[i];
         f[i] = inside(n, size) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
