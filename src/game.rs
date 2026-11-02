@@ -815,7 +815,8 @@ impl Game {
         self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, player, dt);
         // The boss bar's trail catching up with what it's lost, a moment after each blow
-        if let Some((name, health, _)) = self.foe(view.eye) {
+        if let Some((foe, health, _)) = self.foe(view.eye) {
+            let name = foe.name();
             let (shown, mut trail, mut hold, mut flash) = if name == self.boss_bar.0 { (self.boss_bar.1, self.boss_bar.2, self.boss_bar.3, self.boss_bar.4) } else { (health, health, 0.0, 0.0) };
             if health < shown - 0.03 {
                 flash = 1.0;
@@ -1067,6 +1068,36 @@ impl Game {
                 self.combat.hurl(HostileKind::Spell(e), from, to, 1.0, damage, 2.0);
                 self.cues.push(Cue::at(Sound::Whistle, to, 0.6).pitched(0.85 + 0.1 * random(&mut self.rng) as f32));
             }
+            // A raid boss bringing the sky down: molten rock, fire or the void falling all over, the
+            // first right on the player, the rest anywhere round them, each with its ring showing
+            Deed::Cataclysm { to, k } => {
+                let kind = match look {
+                    Look::Colossus => HostileKind::Boulder(Some(Element::Fire)),
+                    _ => HostileKind::Spell(element.unwrap_or(Element::Fire)),
+                };
+                let mut to = to;
+                if k > 0 {
+                    let a = random(&mut self.rng) * TAU;
+                    let r = (2.0 + 9.0 * random(&mut self.rng).sqrt()) * vpm;
+                    to += Vector3::new(a.cos() * r, a.sin() * r, 0.0);
+                }
+                let to = ground_under(world, to + Vector3::new(0.0, 0.0, 2.0 * vpm));
+                let a = random(&mut self.rng) * TAU;
+                let from = to + Vector3::new(a.cos() * 4.0, a.sin() * 4.0, STORM_HEIGHT + 6.0) * vpm;
+                self.combat.hurl(kind, from, to, 1.3, 18.0, 2.4);
+                if k % 3 == 0 {
+                    self.cues.push(Cue::at(Sound::Whistle, to, 0.7).pitched(0.7 + 0.15 * random(&mut self.rng) as f32));
+                }
+                self.shake = self.shake.max(0.25 * felt(to));
+            }
+            // A raid boss going into its next phase: a roar that shakes the ground, and word of it
+            Deed::Phase { at, stage } => {
+                self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * 0.8));
+                self.cues.push(Cue::at(Sound::Quake, at, 0.8).pitched(0.7));
+                self.shake = self.shake.max(0.9 * felt(at));
+                self.combat.craters.push((at, 1.5 * look.size()));
+                self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+            }
             Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
             // A pack answering a howl, the dead clawing up out of the ground, spiderlings swarming
             // out: never more than a few of them about at once
@@ -1074,6 +1105,7 @@ impl Game {
                 let most = match brood {
                     Look::Spiderling => 4,
                     Look::Skeleton => 3,
+                    Look::ArmoredSkeleton => 4,
                     _ => 2,
                 };
                 let near = self.animals.iter().filter(|a| a.look == brood && a.health > 0.0 && (a.position - at).norm() < 30.0 * vpm).count();
@@ -1333,14 +1365,21 @@ impl Game {
         }
     }
 
-    /// The boss fighting the player, if any, nearest first: what it's called, how much health it
-    /// has left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(&'static str, f64, bool)> {
+    /// The boss fighting the player, if any, nearest first: which it is, how much health it has
+    /// left, 0-1, and whether it's enraged
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool)> {
         self.animals
             .iter()
             .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look.name(), a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged)))
+            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged)))
+    }
+
+    /// For trying them out: every boss about down to `fraction` of its health
+    pub fn hurt_bosses(&mut self, fraction: f64) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss()) {
+            animal.health = animal.look.health() * fraction.clamp(0.01, 1.0);
+        }
     }
 
     /// The middle of the body of the boss or monster nearest `near`, if there's one about
@@ -1411,18 +1450,28 @@ impl Game {
             }
             if let Some(boss) = animal.boss.as_ref().filter(|_| look.is_boss()) {
                 self.defeated.insert(boss.key);
-                let chest = Chest {
-                    position: animal.position,
-                    heading: animal.heading(),
-                    key: [boss.key[0], boss.key[1], boss.key[2] + 1_000_000],
-                    luck: 6.0,
-                };
-                self.boss_chests.push(chest.clone());
-                self.chests.push(chest);
+                // A raid boss leaves three chests, far richer
+                let (chests, luck) = if look.is_raid() { (3, 12.0) } else { (1, 6.0) };
+                for k in 0..chests {
+                    let angle = animal.heading() + (k as f64 - 1.0) * 0.9;
+                    let spread = if chests > 1 { 2.0 * vpm } else { 0.0 };
+                    let chest = Chest {
+                        position: animal.position + Vector3::new(angle.cos(), angle.sin(), 0.0) * spread,
+                        heading: animal.heading(),
+                        key: [boss.key[0], boss.key[1], boss.key[2] + 1_000_000 * (k as i64 + 1)],
+                        luck,
+                    };
+                    self.boss_chests.push(chest.clone());
+                    self.chests.push(chest);
+                }
                 self.combat.fell(animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm), look.body().1);
                 self.shake = self.shake.max(1.0);
-                self.cues.push(Cue::here(Sound::Fanfare, 0.8));
-                self.say(format!("You defeated the {}! It left a chest behind.", look.name()));
+                self.cues.push(Cue::here(Sound::Fanfare, if look.is_raid() { 1.0 } else { 0.8 }));
+                if look.is_raid() {
+                    self.say(format!("Raid boss slain! The {} falls, leaving three chests of its hoard.", look.name()));
+                } else {
+                    self.say(format!("You defeated the {}! It left a chest behind.", look.name()));
+                }
             }
             for m in 0..look.meat() {
                 let angle = animal.heading() + m as f64 * 2.1;
@@ -1835,8 +1884,10 @@ impl Game {
         bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255));
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((name, vitality, enraged)) = self.foe(view.eye) {
-            let width = (screen.width() * 0.42).clamp(260.0, 620.0);
+        if let Some((foe, vitality, enraged)) = self.foe(view.eye) {
+            let name = if foe.is_raid() { format!("RAID  ·  {}", foe.name()) } else { foe.name().to_string() };
+            // A raid boss's bar is longer
+            let width = (screen.width() * if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 900.0);
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
             let flash = flash as f32;
@@ -1853,6 +1904,13 @@ impl Game {
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(190), red(40), red(35)));
+            // Where a raid boss goes into its next phases, marked across the bar
+            if foe.is_raid() {
+                for mark in [0.66, 0.33] {
+                    let x = back.left() + width * mark;
+                    painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
+                }
+            }
         }
 
         // Red round the edges when hurt, and pulsing faintly while health's low; pulsing green

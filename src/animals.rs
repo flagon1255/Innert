@@ -47,6 +47,10 @@ pub enum Look {
     GraveKnight,
     StormDrake,
     Rimeweaver,
+    // Raid bosses: huge, in three phases, calling up help and bringing the sky down
+    Colossus,
+    ElderWyrm,
+    CryptTitan,
     // Monsters: smaller, and many of them, going for the player on sight. Wolves roam the land,
     // the rest haunt dungeons.
     Wolf,
@@ -82,7 +86,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 32] = [
+    pub const ALL: [Look; 35] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -109,6 +113,9 @@ impl Look {
         Look::GraveKnight,
         Look::StormDrake,
         Look::Rimeweaver,
+        Look::Colossus,
+        Look::ElderWyrm,
+        Look::CryptTitan,
         Look::Wolf,
         Look::Skeleton,
         Look::ArmoredSkeleton,
@@ -122,6 +129,11 @@ impl Look {
         self.build().is_some() && !self.is_monster()
     }
 
+    /// A raid boss: far bigger and tougher than the rest, fought in three phases
+    pub fn is_raid(self) -> bool {
+        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan)
+    }
+
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
     pub fn is_monster(self) -> bool {
         matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling)
@@ -130,13 +142,13 @@ impl Look {
     /// How a boss or monster moves and fights, None for an animal or a thing
     pub fn build(self) -> Option<Build> {
         Some(match self {
-            Look::Golem | Look::FrostGolem | Look::MagmaGolem => Build::Golem,
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake => Build::Drake,
+            Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => Build::Golem,
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => Build::Drake,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
             Look::Direwolf | Look::WinterAlpha | Look::Wolf => Build::Wolf,
-            Look::GraveKnight | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => Build::Undead,
+            Look::GraveKnight | Look::CryptTitan | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => Build::Undead,
             _ => return None,
         })
     }
@@ -148,6 +160,21 @@ impl Look {
             Look::Direwolf | Look::WinterAlpha => 2.1,
             Look::GraveKnight => 2.3,
             Look::Spiderling => 0.5,
+            // Raid bosses tower over the rest of their kind; the Crypt Titan fits under the roof
+            // of a dungeon's deepest hall, just
+            Look::Colossus => 1.7,
+            Look::ElderWyrm => 1.8,
+            Look::CryptTitan => 2.9,
+            _ => 1.0,
+        }
+    }
+
+    /// How much bigger it is than the boss its build is made at the size of, which the build's
+    /// numbers, like how far it reaches, are for: 1 for a boss, more for a raid boss
+    pub fn size(self) -> f64 {
+        match self {
+            Look::Colossus | Look::ElderWyrm => self.scale(),
+            Look::CryptTitan => self.scale() / Look::GraveKnight.scale(),
             _ => 1.0,
         }
     }
@@ -157,6 +184,7 @@ impl Look {
         match self {
             Look::Direwolf | Look::WinterAlpha => Some(Look::Wolf),
             Look::GraveKnight => Some(Look::Skeleton),
+            Look::CryptTitan => Some(Look::ArmoredSkeleton),
             Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
             _ => None,
         }
@@ -164,19 +192,20 @@ impl Look {
 
     /// Bones rather than rotting flesh, for the walking dead
     fn bony(self) -> bool {
-        matches!(self, Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight)
+        matches!(self, Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight | Look::CryptTitan)
     }
 
     /// Wearing armor, for the walking dead
     fn armored(self) -> bool {
-        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight)
+        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan)
     }
 
     /// What its attacks are made of: what a drake breathes, what a golem's blows leave behind
     pub fn element(self) -> Option<Element> {
         match self {
             Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
-            Look::MagmaGolem | Look::Drake => Some(Element::Fire),
+            Look::MagmaGolem | Look::Drake | Look::ElderWyrm => Some(Element::Fire),
+            Look::CryptTitan => Some(Element::Void),
             Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie => Some(Element::Poison),
             Look::GraveKnight => Some(Element::Void),
             Look::StormDrake => Some(Element::Storm),
@@ -226,6 +255,11 @@ impl Look {
             // The walking dead: their bones or skin, rags, armor, the light in their eyes, and
             // their blade. A knight's bones in black armor, void burning in its eyes.
             Look::GraveKnight => make(BONE, BARK_DARK, DARK_STEEL, GLOW_VOID, DARK_STEEL),
+            // Raid bosses: a colossus of dark stone veined with fire, an old wyrm black as soot with
+            // embers in its scales, and a titan of the dead in gold-chased black armor
+            Look::Colossus => make(STONE, OBSIDIAN, GLOW_FIRE, GLOW_FIRE, CRYSTAL),
+            Look::ElderWyrm => make(OBSIDIAN, BARK_DARK, TEMPLE_RED, GLOW_FIRE, GOLD),
+            Look::CryptTitan => make(BONE, BARK_DARK, OBSIDIAN, GLOW_VOID, GOLD),
             Look::Skeleton => make(BONE, BARK_DARK, CLOTH, GLOW_FROST, STEEL),
             Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
             Look::Zombie => make(MOSS, PINE, LINEN, GLOW_POISON, BONE),
@@ -259,14 +293,14 @@ impl Look {
             Look::Meat => 0.22,
             Look::Candle => 0.2,
             Look::Skull => 0.2,
-            Look::Golem | Look::FrostGolem | Look::MagmaGolem => 4.4,
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake => 3.4,
+            Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => 4.4 * self.size(),
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => 3.4 * self.size(),
             Look::Ironhide | Look::Frostfang => 3.4,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => 3.1 * self.scale(),
             Look::Treant => 5.5,
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
             // A blade raised overhead
-            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight => 2.5 * self.scale(),
+            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => 2.5 * self.scale(),
         }
     }
 
@@ -282,13 +316,13 @@ impl Look {
             Look::Candle => (0.1, 0.1),
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
-            Look::Golem | Look::FrostGolem | Look::MagmaGolem => (2.0, 1.1),
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake => (1.25, 1.0),
+            Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => (2.0 * self.size(), 1.1 * self.size()),
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => (1.25 * self.size(), 1.0 * self.size()),
             Look::Ironhide | Look::Frostfang => (1.6, 1.05),
             Look::Spider | Look::Rimeweaver | Look::Spiderling => (0.9 * self.scale(), 0.95 * self.scale()),
             Look::Treant => (2.4, 1.2),
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => (0.55 * self.scale(), 0.42 * self.scale()),
-            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight => (1.0 * self.scale(), 0.36 * self.scale()),
+            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => (1.0 * self.scale(), 0.36 * self.scale()),
         }
     }
 
@@ -318,6 +352,9 @@ impl Look {
             Look::GraveKnight => "Grave Knight",
             Look::StormDrake => "Thunder Drake",
             Look::Rimeweaver => "Rimeweaver",
+            Look::Colossus => "Earthbreaker Colossus",
+            Look::ElderWyrm => "Elder Cinder Wyrm",
+            Look::CryptTitan => "Crypt Titan",
             Look::Wolf => "wolf",
             Look::Skeleton => "skeleton",
             Look::ArmoredSkeleton => "armoured skeleton",
@@ -352,6 +389,9 @@ impl Look {
             Look::GraveKnight => 3400.0,
             Look::StormDrake => 2300.0,
             Look::Rimeweaver => 2000.0,
+            Look::Colossus => 14000.0,
+            Look::ElderWyrm => 13000.0,
+            Look::CryptTitan => 15000.0,
             Look::Wolf => 70.0,
             Look::Skeleton => 150.0,
             Look::ArmoredSkeleton => 240.0,
@@ -376,6 +416,9 @@ impl Look {
     // Speeds in meters per second
     pub fn walk_speed(self) -> f64 {
         match self {
+            Look::Colossus => return 1.8,
+            Look::ElderWyrm => return 2.2,
+            Look::CryptTitan => return 1.6,
             Look::Wolf => return 1.8,
             Look::Direwolf | Look::WinterAlpha => return 2.2,
             Look::Zombie | Look::ArmoredZombie => return 0.8,
@@ -401,6 +444,9 @@ impl Look {
 
     pub fn run_speed(self) -> f64 {
         match self {
+            Look::Colossus => return 3.2,
+            Look::ElderWyrm => return 5.5,
+            Look::CryptTitan => return 3.4,
             Look::Wolf => return 6.5,
             Look::Direwolf | Look::WinterAlpha => return 8.0,
             Look::Skeleton => return 3.2,
@@ -432,8 +478,8 @@ impl Look {
     /// Meters covered by one cycle of its walk
     pub fn stride(self) -> f64 {
         match self.build() {
-            Some(Build::Golem) => 2.4,
-            Some(Build::Drake | Build::Bear) => 2.6,
+            Some(Build::Golem) => 2.4 * self.size(),
+            Some(Build::Drake | Build::Bear) => 2.6 * self.size(),
             Some(Build::Spider) => 1.8 * self.scale(),
             Some(Build::Treant) => 2.8,
             Some(Build::Wolf) => 1.4 * self.scale(),
@@ -1414,6 +1460,11 @@ impl Animal {
         self.heading
     }
 
+    /// A number picked at random, 0-1, for what it does
+    pub(crate) fn roll(&mut self) -> f64 {
+        random(&mut self.rng)
+    }
+
     /// The middle of its body, to aim at
     pub fn center(&self, world_voxels_per_meter: u32) -> Vector3<f64> {
         self.position + Vector3::new(0.0, 0.0, self.look.body().0 * world_voxels_per_meter as f64)
@@ -1587,8 +1638,15 @@ impl Animal {
                 heading += 0.035 * (self.age * 1.3 + offset).sin();
             }
         }
-        let radius = self.look.reach() * world_voxels_per_meter as f64;
-        AnimalInstance::new(model_index(self.look, frame), self.position, facing(heading), scale, radius, MOVING).tinted(self.status.tint())
+        // Its whole body leaning into a blow and settling after, tipped about its feet, see
+        // Boss::sway()
+        let vpm = world_voxels_per_meter as f64;
+        let [pitch, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
+        let ahead = Vector3::new(self.heading.cos(), self.heading.sin(), 0.0);
+        let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up)) * vpm;
+        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch);
+        let radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
+        AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint())
     }
 }
 

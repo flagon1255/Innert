@@ -56,9 +56,11 @@ pub enum Move {
     RootWave,
     /// Calling up monsters of its kind to help it: a howl, the dead rising, spiderlings
     Summon,
+    /// A raid boss bringing the sky down: its element falling all over, all round the player
+    Cataclysm,
 }
 
-const MOVES: usize = 15;
+const MOVES: usize = 16;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -114,6 +116,11 @@ pub enum Deed {
     Swipe(Vector3<f64>, usize),
     /// `count` monsters of `look` called up round `at`
     Summon { at: Vector3<f64>, look: Look, count: usize },
+    /// The `k`th of a raid boss's element coming down out of the sky somewhere round the player at
+    /// `to`
+    Cataclysm { to: Vector3<f64>, k: usize },
+    /// A raid boss going into its `stage`th phase, 1 or 2, here
+    Phase { at: Vector3<f64>, stage: u8 },
 }
 
 pub struct Boss {
@@ -142,6 +149,15 @@ pub struct Boss {
     /// The pose it's in and the one it was in before, see animals::POSE_WINDUP, None to walk or
     /// stand, and seconds since it changed, to ease from one to the other
     posed: (Option<usize>, Option<usize>, f64),
+    /// For a raid boss, which phase of the fight it's in, 0 to 2, see RAID_PHASES
+    pub stage: u8,
+    /// Blows it has left to follow up the one it's making with, one after another
+    combo: u8,
+    /// Seconds it's holding the blow it's winding up back, longer than it usually would
+    hold: f64,
+    /// How its whole body is moving on top of its pose, eased towards where its move puts it:
+    /// radians tipped forward, and meters moved on and up, see Boss::sway()
+    sway: [f64; 3],
     pub deeds: Vec<Deed>,
 }
 
@@ -180,11 +196,13 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Storm | Move::RootWave) => 1.0,
         (_, Move::Maul) => 0.7,
         (_, Move::Web) => 0.6,
+        (_, Move::Cataclysm) => 1.8,
     }
 }
 
 fn duration(look: Look, m: Move) -> f64 {
     match m {
+        Move::Cataclysm => CATACLYSM_START + CATACLYSM_EVERY * CATACLYSM_FALLS as f64,
         Move::Slam if look.is_monster() => 0.35,
         Move::Slam => 0.55,
         Move::Throw => 0.45,
@@ -196,7 +214,7 @@ fn duration(look: Look, m: Move) -> f64 {
         Move::Summon => 1.0,
         Move::Roots => 0.6,
         Move::Volley => 0.5,
-        Move::Quake => QUAKE_REACH / QUAKE_PACE,
+        Move::Quake => quake_reach(look) / QUAKE_PACE,
         Move::Storm => 1.5,
         Move::Maul => MAUL_SWIPE * 3.0,
         Move::Web => 0.4,
@@ -210,7 +228,10 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Slam if matches!(look, Look::Zombie | Look::ArmoredZombie) => 0.9,
         Move::Slam | Move::Leap if look.is_monster() => 0.5,
         Move::Summon => 0.8,
-        Move::Slam => 0.9,
+        // A long stagger after bringing the sky down: the moment to get in close
+        Move::Cataclysm => 2.2,
+        // Heavy blows leave it open a while, the bigger it is the longer
+        Move::Slam => 0.9 * look.size().sqrt(),
         Move::Throw => 0.7,
         Move::Breath => 1.0,
         Move::Spit => 0.5,
@@ -233,6 +254,8 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Slam if look.is_monster() => 2.4,
         Move::Leap if look == Look::Wolf => 6.0,
         Move::Leap if look.is_monster() => 5.0,
+        Move::Cataclysm => 16.0,
+        Move::Summon if look.is_raid() => 18.0,
         Move::Summon if look.build() == Some(Build::Spider) => 14.0,
         Move::Summon if look.build() == Some(Build::Wolf) => 20.0,
         Move::Summon => 24.0,
@@ -287,6 +310,13 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::Zombie => (1.1, 1.5, 14.0, 0.0),
         Look::ArmoredZombie => (1.1, 1.6, 17.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
+        // A raid boss's blows reach as far further as it's bigger, and hit harder still
+        _ if look.is_raid() => {
+            let base = if look == Look::CryptTitan { Look::GraveKnight } else if look.build() == Some(Build::Golem) { Look::Golem } else { Look::Drake };
+            let (reach, radius, damage, crater) = slam(base);
+            let s = look.size();
+            (reach * s, radius * s, damage * 1.3, crater * s)
+        }
         _ => match look.build() {
             Some(Build::Golem) => (2.0, 3.4, 32.0, 1.1),
             Some(Build::Bear) => (2.2, 2.8, 26.0, 0.7),
@@ -296,6 +326,22 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
             _ => (2.0, 2.6, 22.0, 0.5),
         },
     }
+}
+
+/// How far its quake's shockwave runs out, in meters
+fn quake_reach(look: Look) -> f64 {
+    QUAKE_REACH * look.size().sqrt()
+}
+
+/// What a raid boss can do in each phase, from 0 to 2: more and worse as it goes, see Boss::stage
+fn unlocked(look: Look, m: Move, stage: u8) -> bool {
+    !look.is_raid()
+        || match m {
+            Move::Cataclysm => stage >= 1,
+            Move::Summon => stage >= 1,
+            Move::Storm | Move::Throw => stage >= 2 || look != Look::Colossus,
+            _ => true,
+        }
 }
 /// Radians a second it can turn while breathing, slow enough to run out of the way of
 const BREATH_TURN: f64 = 0.7;
@@ -308,6 +354,14 @@ const MAUL_LUNGE: f64 = 0.4;
 /// Seconds between things coming down in a storm, after it starts
 const STORM_EVERY: f64 = 0.22;
 const STORM_START: f64 = 0.3;
+/// The same for a raid boss's cataclysm, and how many come down
+const CATACLYSM_EVERY: f64 = 0.14;
+const CATACLYSM_START: f64 = 0.4;
+const CATACLYSM_FALLS: usize = 18;
+/// How far through a raid boss's health it goes into its second and third phases
+const RAID_PHASES: [f64; 2] = [0.66, 0.33];
+/// Seconds at most a heavy blow's held back, wound up, so it can't be timed by rhythm alone
+const MOST_HOLD: f64 = 0.55;
 
 impl Boss {
     pub fn new(look: Look, home: Vector3<f64>, key: [i64; 3]) -> Self {
@@ -325,6 +379,10 @@ impl Boss {
             leap: (home, home),
             last_step: 0.0,
             posed: (None, None, EASE),
+            stage: 0,
+            combo: 0,
+            hold: 0.0,
+            sway: [0.0; 3],
             deeds: Vec::new(),
         }
     }
@@ -371,6 +429,41 @@ impl Boss {
         now
     }
 
+    /// How its whole body moves on top of its pose: radians it's tipped forward, and meters it's
+    /// moved on and up, for drawing. It leans back into a heavy blow as it winds up, trembling the
+    /// longer it holds it back, lunges into it, and settles slowly after, so the blow has weight.
+    pub fn sway(&self) -> [f64; 3] {
+        let [pitch, on, up] = self.sway;
+        let tremble = match self.phase {
+            Phase::WindUp(m, t) if t > windup(self.look, m) => 0.012 * (t * 38.0).sin(),
+            Phase::Stunned(t) => 0.03 * (t * 6.0).sin(),
+            _ => 0.0,
+        };
+        [pitch + tremble, on, up]
+    }
+
+    /// Where the way it's going about its move puts its whole body, see sway(), and how quickly it
+    /// gets there
+    fn sway_target(&self) -> ([f64; 3], f64) {
+        let heavy = |m: Move| matches!(m, Move::Slam | Move::Quake | Move::Maul);
+        match self.phase {
+            Phase::WindUp(m, t) if heavy(m) => {
+                let held = ((t - windup(self.look, m)) / MOST_HOLD).clamp(0.0, 1.0);
+                ([-0.13 - 0.05 * held, -0.18, 0.06], 5.0)
+            }
+            Phase::WindUp(Move::Roar, _) | Phase::Act(Move::Roar, _) => ([-0.1, -0.05, 0.1], 6.0),
+            Phase::WindUp(Move::Cataclysm, _) | Phase::Act(Move::Cataclysm, _) => ([-0.16, -0.1, 0.12], 3.0),
+            Phase::WindUp(..) => ([-0.06, -0.06, 0.02], 5.0),
+            // Lunging into the blow, quick
+            Phase::Act(m, _) if heavy(m) => ([0.17, 0.55, -0.06], 22.0),
+            Phase::Act(Move::Charge, _) => ([0.09, 0.0, 0.0], 8.0),
+            Phase::Act(Move::Breath | Move::Spit | Move::Throw | Move::Volley | Move::Web, _) => ([0.06, 0.12, 0.0], 10.0),
+            Phase::Stunned(_) => ([0.12, 0.05, -0.08], 4.0),
+            // Settling back slowly after, heavily
+            _ => ([0.0; 3], 3.0),
+        }
+    }
+
     /// Which pose it's striking as it goes about its move, or None to walk or stand
     fn target_pose(&self) -> Option<usize> {
         match (self.phase, self.look.build()) {
@@ -382,6 +475,8 @@ impl Boss {
             (Phase::WindUp(Move::Throw | Move::Charge | Move::Leap | Move::Roots | Move::Storm | Move::Maul, _), _) => Some(POSE_SPECIAL),
             (Phase::WindUp(Move::Slam | Move::Breath | Move::Spit | Move::Volley | Move::Quake | Move::Web | Move::RootWave, _), _) => Some(POSE_WINDUP),
             (Phase::Act(Move::Roots | Move::Storm, _), _) => Some(POSE_SPECIAL),
+            // Arms raised to the sky as it calls it down
+            (Phase::WindUp(Move::Cataclysm, _) | Phase::Act(Move::Cataclysm, _), _) => Some(POSE_SPECIAL),
             // Rearing back as it lunges, then bringing it down, three times over
             (Phase::Act(Move::Maul, t), _) if t % MAUL_SWIPE < MAUL_LUNGE => Some(POSE_WINDUP),
             (Phase::Act(Move::Slam | Move::Throw | Move::Breath | Move::Spit | Move::Leap | Move::Volley | Move::Quake | Move::Maul | Move::Web | Move::RootWave, _), _) => Some(POSE_STRIKE),
@@ -391,10 +486,16 @@ impl Boss {
 
     /// The move it can make from `distance` meters off, if any's ready
     fn choose(&self, distance: f64) -> Option<Move> {
-        let ready = |m: Move| self.cooldowns[m as usize] <= 0.0;
-        let within = |m: Move, near: f64, far: f64| (near..far).contains(&distance) && ready(m);
+        let ready = |m: Move| self.cooldowns[m as usize] <= 0.0 && unlocked(self.look, m, self.stage);
+        // A raid boss reaches as far further as it's bigger
+        let size = self.look.size();
+        let within = |m: Move, near: f64, far: f64| (near * size..far * size).contains(&distance) && ready(m);
         let monster = self.look.is_monster();
         let moves: &[(Move, f64, f64)] = match self.look.build() {
+            // Raid bosses: what their kind does, and bringing the sky down once they're hurt
+            _ if self.look == Look::Colossus => &[(Move::Slam, 0.0, 4.6), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
+            _ if self.look == Look::ElderWyrm => &[(Move::Slam, 0.0, 4.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 8.0, 30.0), (Move::Spit, 4.0, 35.0)],
+            _ if self.look == Look::CryptTitan => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
             // Monsters bite or swing at what's in reach, and some pounce
             Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
             Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
@@ -478,7 +579,16 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         // A monster gives a snarl or a rattle and comes straight on
         boss.phase = if monster { Phase::Chase } else { Phase::Act(Move::Roar, 0.0) };
         boss.deeds.push(Deed::Roar { at: a.position, angry: false });
-    } else if boss.engaged && !boss.enraged && !monster && vitality < 0.5 && !busy {
+    } else if boss.engaged && look.is_raid() && !busy && (boss.stage as usize) < RAID_PHASES.len() && vitality < RAID_PHASES[boss.stage as usize] {
+        // A raid boss going into its next phase: roaring, calling up help, ready to bring the sky
+        // down, and in the last of them quicker about everything
+        boss.stage += 1;
+        boss.enraged = boss.stage as usize >= RAID_PHASES.len();
+        boss.phase = Phase::Act(Move::Roar, 0.0);
+        boss.deeds.push(Deed::Phase { at: a.position, stage: boss.stage });
+        boss.cooldowns[Move::Cataclysm as usize] = 0.0;
+        boss.cooldowns[Move::Summon as usize] = 0.0;
+    } else if boss.engaged && !boss.enraged && !monster && !look.is_raid() && vitality < 0.5 && !busy {
         boss.enraged = true;
         boss.phase = Phase::Act(Move::Roar, 0.0);
         boss.deeds.push(Deed::Roar { at: a.position, angry: true });
@@ -515,6 +625,15 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     a.mood = Mood::Idle;
                     boss.aim = p;
                     boss.deeds.push(Deed::WindUp(m, a.position));
+                    // A heavy blow's sometimes held back, wound up, a moment longer than the last,
+                    // and sometimes followed by another, or two from a raid boss
+                    let heavy_blow = !monster && matches!(m, Move::Slam | Move::Quake);
+                    boss.hold = if heavy_blow && a.roll() < 0.35 { MOST_HOLD * (0.4 + 0.6 * a.roll()) } else { 0.0 };
+                    boss.combo = match m {
+                        Move::Slam if look.is_raid() => (a.roll() * 3.0) as u8,
+                        Move::Slam if !monster && matches!(look.build(), Some(Build::Golem | Build::Undead | Build::Bear)) => (a.roll() < 0.45) as u8,
+                        _ => 0,
+                    };
                     Phase::WindUp(m, 0.0)
                 }
                 None => {
@@ -540,10 +659,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             }
             // Showing how far its quake will reach
             if m == Move::Quake {
-                boss.deeds.push(Deed::Mark { at: a.position, radius: QUAKE_REACH, closing: 0.0 });
+                boss.deeds.push(Deed::Mark { at: a.position, radius: quake_reach(look), closing: 0.0 });
             }
             let t = t + dt;
-            if t < windup(look, m) * quick.max(0.8) {
+            if t < windup(look, m) * quick.max(0.8) + boss.hold {
                 Phase::WindUp(m, t)
             } else {
                 // Now it does it
@@ -560,7 +679,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                             boss.deeds.push(Deed::Summon { at: a.position, look: brood, count });
                         }
                     }
-                    Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05], vpm), to: boss.aim }),
+                    Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05].map(|v| v * look.size()), vpm), to: boss.aim }),
                     Move::Spit => boss.deeds.push(Deed::Spit { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
                     Move::Charge => {
                         boss.rammed = false;
@@ -600,7 +719,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     }
                     // Angry, it sends three lines fanned out
                     Move::RootWave => boss.deeds.push(Deed::RootWave { from: a.position, to: boss.aim, lanes: if boss.enraged { 3 } else { 1 } }),
-                    Move::Breath | Move::Roar | Move::Storm => {}
+                    Move::Breath | Move::Roar | Move::Storm | Move::Cataclysm => {}
                 }
                 Phase::Act(m, 0.0)
             }
@@ -656,8 +775,15 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 }
                 // The shockwave running out across the ground
                 Move::Quake => {
-                    let to = (t * QUAKE_PACE).min(QUAKE_REACH);
+                    let to = (t * QUAKE_PACE).min(quake_reach(look));
                     boss.deeds.push(Deed::Quake { at: boss.leap.0, from: (t - dt) * QUAKE_PACE, to, dt });
+                }
+                // Its element raining down all round the player, one after another
+                Move::Cataclysm => {
+                    let count = |t: f64| if t < CATACLYSM_START { None } else { Some(((t - CATACLYSM_START) / CATACLYSM_EVERY) as usize) };
+                    if let Some(k) = count(t).filter(|&k| count(t - dt) != Some(k) && k < CATACLYSM_FALLS) {
+                        boss.deeds.push(Deed::Cataclysm { to: player.unwrap_or(boss.aim), k });
+                    }
                 }
                 // Breathing up into the sky, then its element raining down round the player
                 Move::Storm => {
@@ -698,7 +824,20 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 }
                 _ => {}
             }
-            if over { Phase::Recover(recovery(look, m) * quick) } else { Phase::Act(m, t) }
+            match (over, m) {
+                // Following one blow straight up with another, wound up only partway
+                (true, Move::Slam) if boss.combo > 0 => {
+                    boss.combo -= 1;
+                    boss.hold = 0.0;
+                    if let Some(p) = player {
+                        a.target_heading = heading_to(a.position, p);
+                    }
+                    boss.deeds.push(Deed::WindUp(Move::Slam, a.position));
+                    Phase::WindUp(Move::Slam, windup(look, Move::Slam) * 0.45)
+                }
+                (true, _) => Phase::Recover(recovery(look, m) * quick),
+                _ => Phase::Act(m, t),
+            }
         }
         Phase::Recover(t) => {
             a.mood = Mood::Idle;
@@ -712,6 +851,14 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     };
     if !boss.engaged && boss.phase != Phase::Roam && !matches!(boss.phase, Phase::Act(..)) {
         boss.phase = Phase::Roam;
+    }
+    // Its whole body easing towards where its move puts it, as big as it is, a monster's less
+    let (target, rate) = boss.sway_target();
+    let amount = if monster { 0.6 } else { 1.0 };
+    let reach = [amount, amount * look.body().1, amount * look.body().1];
+    let ease = 1.0 - (-rate * dt).exp();
+    for k in 0..3 {
+        boss.sway[k] += (target[k] * reach[k] - boss.sway[k]) * ease;
     }
     a.boss = Some(boss);
 }

@@ -1376,6 +1376,10 @@ impl App {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             let distance = setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(20.0);
             game.summon(&world, &water_level, look, start, ahead, distance);
+            // `--set boss_health=0.6` starts it hurt, to see what it does later in a fight
+            if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_bosses(fraction);
+            }
         }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
@@ -1625,6 +1629,11 @@ impl App {
                     return None;
                 }
                 let look = match site.kind {
+                    // Raid bosses: in a third of the dungeons' deepest halls, and the odd castle and
+                    // pyramid
+                    "dungeon" if pick % 3 == 0 => animals::Look::CryptTitan,
+                    "castle" if pick % 5 == 0 => animals::Look::Colossus,
+                    "pyramid" if pick % 5 == 0 => animals::Look::ElderWyrm,
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
                     "dungeon" => animals::Look::GraveKnight,
                     "castle" if pick % 3 == 1 => animals::Look::Ironhide,
