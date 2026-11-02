@@ -355,7 +355,7 @@ fn get_swapchain_images(
             min_image_count: caps.min_image_count.max(3),
             image_format,
             image_extent: window.inner_size().into(),
-            image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
+            image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
             composite_alpha,
             present_mode: PresentMode::Immediate,
             ..Default::default()
@@ -1007,6 +1007,8 @@ struct App {
     started: bool,
     show_settings: bool,
     inventory_open: bool,
+    // Whether a merchant's stall was open last frame, to take the mouse back once it closes
+    shopping: bool,
     // Set from the menu, done at the start of the next frame
     generate_requested: bool,
     waterfall_requested: bool,
@@ -1056,6 +1058,9 @@ struct Capture {
     /// How long the GPU takes over each part of a frame, if `time_gpu`
     time_gpu: bool,
     gpu: Option<gpu_timing::GpuTimer>,
+    /// Whether shots show what's on screen, the HUD and windows over the game, rather than just
+    /// the game
+    gui: bool,
 }
 
 impl Capture {
@@ -1077,6 +1082,8 @@ impl Capture {
             // `--set gpu_times=1` prints how long the GPU took over each part of a frame
             time_gpu: settings_from_args().iter().any(|(k, v)| k == "gpu_times" && (v == "1" || v == "true")),
             gpu: None,
+            // `--set gui=1` takes shots of the whole screen, HUD and all
+            gui: settings_from_args().iter().any(|(k, v)| k == "gui" && (v == "1" || v == "true")),
         })
     }
 }
@@ -1110,6 +1117,22 @@ fn save_screenshot(buffer: &vulkano::buffer::Subbuffer<[u8]>, extent: [u32; 3], 
     }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
+    }
+    match image::save_buffer(path, &pixels, extent[0], extent[1], image::ColorType::Rgba8) {
+        Ok(()) => println!("Saved screenshot to {}", path.display()),
+        Err(e) => eprintln!("Failed to save screenshot: {e}"),
+    }
+}
+
+/// Saves a copy of the screen as it was shown, in `format`, already encoded for display
+fn save_screen(buffer: &vulkano::buffer::Subbuffer<[u8]>, extent: [u32; 3], format: Format, path: &Path) {
+    let mut pixels = buffer.read().unwrap().to_vec();
+    let bgra = matches!(format, Format::B8G8R8A8_UNORM | Format::B8G8R8A8_SRGB);
+    for p in pixels.chunks_exact_mut(4) {
+        if bgra {
+            p.swap(0, 2);
+        }
+        p[3] = 255;
     }
     match image::save_buffer(path, &pixels, extent[0], extent[1], image::ColorType::Rgba8) {
         Ok(()) => println!("Saved screenshot to {}", path.display()),
@@ -1381,6 +1404,15 @@ impl App {
                 game.hurt_bosses(fraction);
             }
         }
+        // `--set merchant=6` puts a merchant that many meters ahead, and `--set shop=1` trades with
+        // the nearest, to see their stall
+        if let Some(distance) = setting("merchant").and_then(|v| v.parse::<f64>().ok()) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            game.summon_merchant(&world, &water_level, start, ahead, distance);
+        }
+        if flag("shop", false) {
+            game.open_nearest_shop(start);
+        }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
         }
@@ -1508,7 +1540,9 @@ impl App {
             menu_open,
             started: !menu_open,
             show_settings: false,
-            inventory_open: false,
+            // `--set inventory=1` shows the inventory, to see how it looks
+            inventory_open: flag("inventory", false),
+            shopping: false,
             generate_requested: false,
             waterfall_requested: false,
 
@@ -1660,9 +1694,26 @@ impl App {
             .filter(|site| site.kind == "dungeon hall")
             .map(|site| game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64) })
             .collect();
+        // Merchants keep stalls out in front of some of the ruins no boss guards
+        let stalls: Vec<game::Stall> = landscape
+            .sites()
+            .iter()
+            .filter_map(|site| {
+                let key = site.position.map(|v| (v * 10.0).round() as i64);
+                let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
+                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice") {
+                    return None;
+                }
+                let [fx, fy] = site.facing;
+                let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+                let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7] })
+            })
+            .collect();
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
         self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
+        self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -2199,7 +2250,12 @@ impl App {
         let interactive = self.capture.is_none();
 
         if interactive && self.input.key_pressed(KeyCode::Escape) {
-            if self.inventory_open {
+            if self.game.shopping() {
+                self.game.close_shop();
+                if !self.inventory_open {
+                    self.set_focus(true);
+                }
+            } else if self.inventory_open {
                 self.inventory_open = false;
                 self.set_focus(true);
             } else if self.menu_open && self.started {
@@ -2211,7 +2267,7 @@ impl App {
             }
         }
         let playing = interactive && !self.menu_open;
-        if playing && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
+        if playing && !self.game.shopping() && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
             self.inventory_open = !self.inventory_open;
             self.set_focus(!self.inventory_open);
         }
@@ -2223,7 +2279,7 @@ impl App {
         let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
         // Scripts fight by themselves, see run_script()
         let mut controls = std::mem::take(&mut self.script_controls);
-        if playing && !self.focused && !self.inventory_open && self.input.mouse_pressed(MouseButton::Left) {
+        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
         } else if playing && self.focused {
             let bucket = self.game.holding_bucket() && !self.game.has_target();
@@ -2245,6 +2301,10 @@ impl App {
             }
             if self.input.key_pressed(KeyCode::KeyE) {
                 self.game.interact(eye);
+                // Trading with a merchant frees the mouse for their stall
+                if self.game.shopping() {
+                    self.set_focus(false);
+                }
             }
             if self.input.mouse_pressed(MouseButton::Right) && !armed {
                 if self.game.holding_bucket() {
@@ -2608,6 +2668,30 @@ impl App {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
             }
+            // Fights the boss near by, then walks up to the nearest weapon it dropped and looks at
+            // it, to see its card. `--set take=1` picks it up once there.
+            ("spoils", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                let take = settings_from_args().iter().any(|(k, v)| k == "take" && v == "1");
+                let boss = self.game.nearest_boss(eye).filter(|b| (b - eye).norm() < 30.0 * vpm);
+                self.script_controls = combat::Controls::default();
+                self.scripted_walk = false;
+                if let Some(target) = boss {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                    self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                } else if let Some(loot) = self.game.nearest_loot(eye) {
+                    self.camera.look_at(voxels_to_camera(loot, self.world.size));
+                    self.scripted_walk = (loot - eye).xy().norm() > 2.0 * vpm;
+                    if take && !self.scripted_walk && f % 40 == 0 {
+                        self.game.interact(eye);
+                    }
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
+                }
+            }
             // Turns steadily while swinging, to see how things look on the move
             ("pan", _) => {
                 self.camera.rotation.z += 0.004;
@@ -2951,7 +3035,7 @@ impl App {
                                         RichText::new(
                                             "WASD move · Space jump · Shift run · F fly\n\
                                              Click swing or cast · bow: hold right click, click to shoot\n\
-                                             Right click heavy swing, or eat · E pick up, open, pet\n\
+                                             Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Number keys pick what's in hand · I inventory\n\
                                              F1 settings · Esc menu",
                                         )
@@ -2965,7 +3049,13 @@ impl App {
 
             if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
-                if self.inventory_open {
+                // A merchant's stall closed, or walked away from: back to playing
+                let shopping = self.game.shopping() && self.game.shop_window(&ctx);
+                if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
+                    focus_change = Some(true);
+                }
+                self.shopping = shopping;
+                if !shopping && self.inventory_open {
                     let mut open = true;
                     self.game.inventory(&ctx, &mut open);
                     if !open {
@@ -3569,6 +3659,25 @@ impl App {
         let gui_future = rcx
             .gui
             .draw_on_image(render_future, rcx.image_views[image_index as usize].clone());
+        // With `--set gui=1`, shots are of the whole screen once the GUI's drawn over the game
+        let screen = rcx.image_views[image_index as usize].image().clone();
+        let screen_buffer = (capture_shot.is_some() && self.capture.as_ref().is_some_and(|c| c.gui)).then(|| {
+            Buffer::new_slice::<u8>(
+                self.memory_allocator.clone(),
+                BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() },
+                AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
+                screen.extent()[0] as u64 * screen.extent()[1] as u64 * 4,
+            )
+            .unwrap()
+        });
+        let gui_future = match &screen_buffer {
+            Some(buffer) => {
+                let mut copy = AutoCommandBufferBuilder::primary(self.command_buffer_allocator.clone(), self.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+                copy.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(screen.clone(), buffer.clone())).unwrap();
+                gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap().boxed()
+            }
+            None => gui_future,
+        };
 
         let frame_end = gui_future
             .then_swapchain_present(
@@ -3634,7 +3743,10 @@ impl App {
                 }
                 event_loop.exit();
             } else if let Some(path) = capture_shot {
-                save_screenshot(&buffer, resample_extent, encoded, &path);
+                match &screen_buffer {
+                    Some(screen_buffer) => save_screen(screen_buffer, screen.extent(), screen.format(), &path),
+                    None => save_screenshot(&buffer, resample_extent, encoded, &path),
+                }
             } else {
                 let seconds = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

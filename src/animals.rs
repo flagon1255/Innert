@@ -30,6 +30,12 @@ pub enum Look {
     Skull,
     Chest,
     OpenChest,
+    /// A travelling merchant, standing by its wares
+    Merchant,
+    /// Gold dropped, a healing potion and a loaf, lying on the ground
+    Coins,
+    Potion,
+    Bread,
     // Bosses, see src\bosses.rs. Golems, drakes and the great bear come in kinds for the cold, the
     // desert or the jungle.
     Golem,
@@ -86,7 +92,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 35] = [
+    pub const ALL: [Look; 39] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -98,6 +104,10 @@ impl Look {
         Look::Skull,
         Look::Chest,
         Look::OpenChest,
+        Look::Merchant,
+        Look::Coins,
+        Look::Potion,
+        Look::Bread,
         Look::Golem,
         Look::Drake,
         Look::Ironhide,
@@ -285,6 +295,8 @@ impl Look {
     pub fn reach(self) -> f64 {
         match self {
             Look::Chest | Look::OpenChest => 0.95,
+            Look::Merchant => 1.7,
+            Look::Coins | Look::Potion | Look::Bread => 0.25,
             Look::Bear => 1.6,
             Look::Dog => 0.8,
             Look::GrayCat | Look::GingerCat => 0.45,
@@ -316,6 +328,8 @@ impl Look {
             Look::Candle => (0.1, 0.1),
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
+            Look::Merchant => (0.95, 0.45),
+            Look::Coins | Look::Potion | Look::Bread => (0.08, 0.22),
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => (2.0 * self.size(), 1.1 * self.size()),
             Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => (1.25 * self.size(), 1.0 * self.size()),
             Look::Ironhide | Look::Frostfang => (1.6, 1.05),
@@ -337,6 +351,10 @@ impl Look {
             Look::Candle => "candle",
             Look::Skull => "skull",
             Look::Chest | Look::OpenChest => "chest",
+            Look::Merchant => "merchant",
+            Look::Coins => "gold",
+            Look::Potion => "healing potion",
+            Look::Bread => "loaf of bread",
             Look::Golem => "Stone Warden",
             Look::Drake => "Ember Drake",
             Look::Ironhide => "Ironhide",
@@ -366,7 +384,8 @@ impl Look {
 
     /// Pets get petted, the rest can be hunted for meat
     pub fn is_pet(self) -> bool {
-        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat)
+        // Merchants can't be hurt either, only traded with
+        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat | Look::Merchant)
     }
 
     /// How much damage it takes to hunt. A bare-handed hit does PUNCH.
@@ -1138,6 +1157,64 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(ellipsoid([0.055, 0.0, 0.045], [0.06, 0.06, 0.04], BONE));
             p.push(ellipsoid([0.0, 0.0, 0.115], [0.1, 0.085, 0.09], BONE));
         }
+        Look::Merchant => {
+            // A travelling pedlar in a hooded brown robe and green sash, a towering pack of wares
+            // on its back, a lantern held out on a crook. It sways a little as it waits.
+            let robe = BARK_DARK;
+            // Its face in the shadow of the hood, eyes catching the lantern light
+            for y in [-0.05, 0.05] {
+                p.push(ball([0.2, y, 1.6], 0.018, EYE));
+            }
+            p.push(ellipsoid([0.15, 0.0, 1.57], [0.07, 0.1, 0.1], FUR_TAN));
+            p.push(ellipsoid([0.06, 0.0, 1.62], [0.17, 0.17, 0.2], LEATHER));
+            p.push(limb([0.0, 0.0, 1.5], [-0.08, 0.0, 1.8], 0.15, 0.04, LEATHER));
+            // Its sash, and a coin purse at its belt
+            p.push(ellipsoid([0.0, 0.0, 1.0], [0.21, 0.27, 0.06], MOSS));
+            p.push(ball([0.16, 0.18, 0.95], 0.06, GOLD));
+            // The robe, flaring to the ground
+            p.push(limb([0.0, 0.0, 1.42], [0.0, 0.0, 0.05], 0.2, 0.32, robe));
+            // The arm holding out the lantern on its crook, the other at its side
+            p.push(limb([0.05, -0.22, 1.32], [0.32, -0.3, 1.1], 0.06, 0.05, robe));
+            p.push(limb([0.32, -0.3, 1.1], [0.42, -0.3, 1.75], 0.025, 0.02, WOOD));
+            p.push(limb([0.42, -0.3, 1.75], [0.55, -0.3, 1.7], 0.02, 0.02, WOOD));
+            p.push(ball([0.55, -0.3, 1.55], 0.06, GLOW_FIRE));
+            p.push(cuboid([0.5, -0.35, 1.48], [0.6, -0.25, 1.62], BRONZE));
+            p.push(limb([0.05, 0.22, 1.32], [0.1, 0.27, 0.95], 0.06, 0.05, robe));
+            // The pack: a frame stacked with a rolled rug, crates, pots and a bundle of tools
+            let back = -0.32;
+            p.push(cuboid([back - 0.22, -0.26, 0.6], [back + 0.04, 0.26, 1.45], WOOD));
+            p.push(limb([back - 0.1, -0.32, 1.55], [back - 0.1, 0.32, 1.55], 0.1, 0.1, CLOTH));
+            p.push(cuboid([back - 0.2, -0.2, 1.62], [back + 0.02, 0.2, 1.88], WOOD));
+            p.push(ball([back - 0.1, 0.12, 1.98], 0.1, CLAY_POT));
+            p.push(ball([back - 0.12, -0.12, 1.96], 0.08, CLAY_POT));
+            p.push(limb([back - 0.05, 0.3, 0.7], [back - 0.05, 0.36, 1.7], 0.025, 0.02, DARK_STEEL));
+            p.push(limb([back - 0.1, -0.3, 0.7], [back - 0.1, -0.34, 1.6], 0.02, 0.02, WOOD));
+            for z in [0.85, 1.25] {
+                p.push(cuboid([back - 0.24, -0.27, z], [back + 0.06, 0.27, z + 0.04], LEATHER));
+            }
+        }
+        Look::Coins => {
+            // A little heap of gold coins, a few tipped up against it
+            for (x, y, z) in [(0.0, 0.0, 0.02), (0.05, 0.04, 0.05), (-0.05, 0.03, 0.03), (0.03, -0.05, 0.03), (-0.02, -0.02, 0.07), (0.07, -0.02, 0.02)] {
+                p.push(ellipsoid([x, y, z], [0.045, 0.045, 0.012], GOLD));
+            }
+            p.push(ellipsoid([-0.08, -0.05, 0.05], [0.012, 0.045, 0.045], GOLD));
+            p.push(ellipsoid([0.0, 0.0, 0.03], [0.09, 0.09, 0.03], BRONZE));
+        }
+        Look::Potion => {
+            // A round flask of red, glowing draught, stoppered with a cork
+            p.push(limb([0.0, 0.0, 0.17], [0.0, 0.0, 0.2], 0.02, 0.018, WOOD));
+            p.push(limb([0.0, 0.0, 0.11], [0.0, 0.0, 0.18], 0.025, 0.022, CRYSTAL));
+            p.push(ball([0.0, 0.0, 0.07], 0.055, GLOW_BLOOD));
+            p.push(ball([0.0, 0.0, 0.07], 0.07, CRYSTAL));
+        }
+        Look::Bread => {
+            // A crusty loaf, scored across the top
+            for x in [-0.06, 0.0, 0.06] {
+                p.push(limb([x - 0.015, -0.03, 0.1], [x + 0.015, 0.03, 0.1], 0.012, 0.012, LINEN));
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.055], [0.13, 0.07, 0.055], SANDSTONE_DARK));
+        }
         Look::Chest | Look::OpenChest => {
             // A wooden chest bound with iron, its lock at the front. Open, its lid stands up
             // at the back and gold glints inside.
@@ -1525,6 +1602,19 @@ impl Animal {
             bosses::think(self, world, player, dt);
         }
 
+        // A merchant stays by its wares, turning to whoever comes near
+        if look == Look::Merchant {
+            self.speed = 0.0;
+            self.mood = Mood::Idle;
+            if let Some(player) = player {
+                let to = (player - self.position).xy();
+                if to.norm() < 8.0 * vpm {
+                    let turn = (to.y.atan2(to.x) - self.heading + PI).rem_euclid(TAU) - PI;
+                    self.heading += turn.clamp(-2.0 * dt, 2.0 * dt);
+                }
+            }
+            return;
+        }
         self.timer -= dt;
         if self.boss.is_none() && self.timer <= 0.0 {
             let r = random(&mut self.rng);
@@ -1667,6 +1757,25 @@ pub fn spawn_boss(world: &World, water: WaterLevel, look: Look, near: Vector3<f6
             if let Some(z) = ground_at(world, water, x, y, near.z, 4.0 * vpm, 4.0 * vpm) {
                 return Some(Animal::boss(look, Vector3::new(x, y, z), key, seed));
             }
+        }
+    }
+    None
+}
+
+/// A merchant on open ground near `near`, in voxels, within `within` meters, if there's anywhere
+pub fn spawn_merchant(world: &World, water: WaterLevel, near: Vector3<f64>, within: f64, seed: u32) -> Option<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    let mut rng = hash(seed ^ 0x3e7c);
+    for _ in 0..40 {
+        let a = random(&mut rng) * TAU;
+        let r = random(&mut rng).sqrt() * within * vpm;
+        let (x, y) = (near.x + a.cos() * r, near.y + a.sin() * r);
+        if x < 2.0 || y < 2.0 || x >= sx - 2.0 || y >= sy - 2.0 {
+            continue;
+        }
+        if let Some(z) = ground_at(world, water, x, y, near.z, 3.0 * vpm, 4.0 * vpm) {
+            return Some(Animal::new(Look::Merchant, Vector3::new(x, y, z), hash(rng)));
         }
     }
     None

@@ -2,12 +2,12 @@
 //! weapons to find in chests and fight with, and the heads-up display that shows it all. Positions
 //! are in voxels of the main world.
 
-use std::collections::HashSet;
-use std::f64::consts::TAU;
+use std::collections::{HashMap, HashSet};
+use std::f64::consts::{FRAC_PI_2, TAU};
 use std::time::Instant;
 
 use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, pos2, vec2};
-use nalgebra::Vector3;
+use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::animals::{self, ANIMAL_MODELS, Animal, AnimalInstance, Build, Look, Model, pack_models};
 use crate::audio::{Cue, Ground, Sound};
@@ -15,7 +15,7 @@ use crate::bosses::{Deed, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
-use crate::weapons::{DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, STATS, Special, Weapon};
+use crate::weapons::{DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Special, Unit, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
 /// How far away things can be picked up or hit, in meters
@@ -40,16 +40,25 @@ pub enum Item {
     Bucket,
     Apple,
     Meat,
+    Bread,
+    /// Heals when drunk
+    Potion,
+    /// Gold lying on the ground, this much of it. What's carried is Game::gold.
+    Gold(u32),
     /// One of Game::weapons
     Weapon(usize),
 }
 
 impl Item {
-    fn look(self) -> Look {
+    /// What it looks like lying on the ground. Weapons are drawn with their own models.
+    fn look(self) -> Option<Look> {
         match self {
-            Item::Apple => Look::Apple,
-            Item::Meat => Look::Meat,
-            Item::Bucket | Item::Weapon(_) => unreachable!("the bucket and weapons are never left lying around"),
+            Item::Apple => Some(Look::Apple),
+            Item::Meat => Some(Look::Meat),
+            Item::Bread => Some(Look::Bread),
+            Item::Potion => Some(Look::Potion),
+            Item::Gold(_) => Some(Look::Coins),
+            Item::Bucket | Item::Weapon(_) => None,
         }
     }
 
@@ -58,6 +67,9 @@ impl Item {
             Item::Bucket => "Bucket",
             Item::Apple => "Apple",
             Item::Meat => "Raw Meat",
+            Item::Bread => "Bread",
+            Item::Potion => "Healing Potion",
+            Item::Gold(_) => "Gold",
             Item::Weapon(_) => "Weapon",
         }
     }
@@ -65,18 +77,105 @@ impl Item {
     /// How much hunger eating one takes away, out of 100
     fn food(self) -> f64 {
         match self {
-            Item::Bucket | Item::Weapon(_) => 0.0,
             Item::Apple => 12.0,
             Item::Meat => 30.0,
+            Item::Bread => 22.0,
+            _ => 0.0,
         }
+    }
+
+    /// How much health drinking one gives back
+    fn heal(self) -> f64 {
+        match self {
+            Item::Potion => 50.0,
+            _ => 0.0,
+        }
+    }
+
+    /// Eaten or drunk, from the inventory or the quick bar
+    fn consumable(self) -> bool {
+        self.food() > 0.0 || self.heal() > 0.0
     }
 }
 
-/// Food lying around, or hanging in a tree
+/// What a merchant asks for each kind of food, in gold. Selling it back fetches SELL_SHARE of it.
+fn food_price(item: Item) -> u32 {
+    match item {
+        Item::Apple => 4,
+        Item::Meat => 6,
+        Item::Bread => 10,
+        Item::Potion => 35,
+        _ => 0,
+    }
+}
+
+/// How much of what a merchant asks it pays for what the player sells it
+const SELL_SHARE: f64 = 0.35;
+/// Slots on the quick bar; the rest of what's carried is only in the inventory
+pub const HOTBAR: usize = 9;
+/// Gold the player starts with
+const STARTING_GOLD: u32 = 60;
+
+/// Something a merchant has to sell: a weapon of Game::weapons, or food or potions, so many of them
+#[derive(Clone, Copy)]
+enum Ware {
+    Weapon(usize),
+    Food(Item, u32),
+}
+
+/// Something done with what's carried, in the inventory or at a merchant's, once the window's drawn
+enum Deal {
+    Hold(usize),
+    Eat(usize),
+    Drop(usize),
+    Sort,
+    Buy(usize),
+    Sell(usize),
+}
+
+/// The color of gold, in the HUD and on cards
+const GOLD: Color32 = Color32::from_rgb(255, 205, 70);
+
+/// How wide `text` is in the HUD at `size`
+fn galley_width(painter: &egui::Painter, text: &str, size: f32) -> f32 {
+    painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE).size().x
+}
+
+/// What a weapon's worth to a merchant, by its rarity, before what its effects and synergies add
+const WEAPON_PRICES: [f64; 6] = [25.0, 60.0, 150.0, 360.0, 850.0, 2000.0];
+/// Seconds what's dropped flies out through the air before it lands
+const DROP_SECONDS: f64 = 0.75;
+/// How far off a weapon's beam of light shows where it lies, in meters
+const BEAM_RANGE: f64 = 45.0;
+/// How far from a merchant the player can trade, in meters
+const SHOP_REACH: f64 = 6.0;
+
+/// Something lying around to pick up: food, a potion, gold, or a weapon dropped by a boss
 struct Pickup {
     item: Item,
     position: Vector3<f64>,
     heading: f64,
+    /// Where it was thrown from as it was dropped, and seconds left before it lands
+    from: Vector3<f64>,
+    flying: f64,
+    /// Whether the camera can see it, for its beam of light to show
+    seen: bool,
+}
+
+impl Pickup {
+    fn lying(item: Item, position: Vector3<f64>, heading: f64) -> Self {
+        Pickup { item, position, heading, from: position, flying: 0.0, seen: false }
+    }
+
+    /// Where it is now, in voxels: flying in an arc from where it was dropped, then where it landed
+    fn at(&self, vpm: f64) -> Vector3<f64> {
+        if self.flying <= 0.0 {
+            return self.position;
+        }
+        let t = 1.0 - self.flying / DROP_SECONDS;
+        let high = (1.0 + 0.3 * (self.position - self.from).norm() / vpm) * vpm;
+        self.from + (self.position - self.from) * t + Vector3::new(0.0, 0.0, 4.0 * t * (1.0 - t) * high)
+    }
 }
 
 /// A chest in a building, with a weapon in it until it's opened
@@ -109,6 +208,13 @@ pub struct Den {
     /// Where on the floor of a dungeon hall, in voxels
     pub position: Vector3<f64>,
     /// Where in the whole landscape, to remember it's been cleared
+    pub key: [i64; 3],
+}
+
+/// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
+/// they've sold to stay sold
+pub struct Stall {
+    pub position: Vector3<f64>,
     pub key: [i64; 3],
 }
 
@@ -232,6 +338,18 @@ pub struct Game {
     boss_chests: Vec<Chest>,
     /// Cubic meters of water in the bucket
     bucket: f64,
+    /// Gold carried, to spend at merchants
+    gold: u32,
+    /// The merchant being traded with, by where it stands in the whole landscape, and what each
+    /// merchant has left to sell, by the same
+    shop: Option<[i64; 3]>,
+    stocks: HashMap<[i64; 3], Vec<Ware>>,
+    /// The merchants about, by Animal::id, with where each stands in the whole landscape
+    merchants: Vec<(u32, [i64; 3])>,
+    /// Where the player stood last, for what they drop to land at their feet
+    feet: Option<Vector3<f64>>,
+    /// The slot looked at in the inventory, with its card showing
+    inspected: Option<usize>,
     messages: Vec<(String, Instant)>,
     /// Sounds to play
     cues: Vec<Cue>,
@@ -312,11 +430,7 @@ fn apple_at(world: &World, water: WaterLevel, x: f64, y: f64, rng: &mut u32) -> 
             }
             let hanging = random(rng) < 0.35;
             let height = if hanging { leaves as f64 - 0.15 * vpm } else { z as f64 + 1.0 };
-            return Some(Pickup {
-                item: Item::Apple,
-                position: Vector3::new(x, y, height),
-                heading: random(rng) * TAU,
-            });
+            return Some(Pickup::lying(Item::Apple, Vector3::new(x, y, height), random(rng) * TAU));
         }
     }
     None
@@ -358,6 +472,12 @@ impl Game {
             cleared: HashSet::new(),
             boss_chests: Vec::new(),
             bucket: 0.0,
+            gold: STARTING_GOLD,
+            shop: None,
+            stocks: HashMap::new(),
+            merchants: Vec::new(),
+            feet: None,
+            inspected: None,
             messages: Vec::new(),
             cues: Vec::new(),
             target: None,
@@ -409,6 +529,15 @@ impl Game {
         self.seed = seed;
         self.combat.clear();
         self.leaves.clear();
+        // A merchant not far from where the player starts, to trade with from the first
+        self.merchants.clear();
+        self.shop = None;
+        let away = hash(seed ^ 0x3e7) as f64 / u32::MAX as f64 * TAU;
+        let stall = near + Vector3::new(away.cos(), away.sin(), 0.0) * 9.0 * world.voxels_per_meter as f64;
+        if let Some(merchant) = animals::spawn_merchant(world, water, stall, 4.0, seed ^ 0x3e7) {
+            self.merchants.push((merchant.id, [near.x as i64, near.y as i64, -2 - seed as i64]));
+            self.animals.push(merchant);
+        }
         for _ in 0..4000 {
             if self.apple_count() >= APPLES {
                 break;
@@ -566,9 +695,11 @@ impl Game {
             None => animal,
         };
         format!(
-            "holding {held}, {animal}, mana {:.0}, health {:.0}, {} animals ({bosses} bosses, {} lairs), {} leaves falling",
+            "holding {held}, {animal}, mana {:.0}, health {:.0}, gold {}, {} lying about, {} animals ({bosses} bosses, {} lairs), {} leaves falling",
             self.combat.mana,
             self.health,
+            self.gold,
+            self.pickups.iter().filter(|p| !matches!(p.item, Item::Apple)).count(),
             self.animals.len(),
             self.lairs.len(),
             self.leaves.count()
@@ -686,10 +817,12 @@ impl Game {
         self.combat.recenter(shift);
         self.leaves.recenter(shift);
         self.target = None;
+        self.merchants.retain(|(id, _)| self.animals.iter().any(|a| a.id == *id));
+        self.forget_weapons();
 
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
-        // pop up right in front of them. Bosses and dungeon monsters have homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none()).count());
+        // pop up right in front of them. Bosses, dungeon monsters and merchants have homes of their own.
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         if missing > 0 || wolves < 3 {
             let vpm = world.voxels_per_meter as f64;
@@ -707,7 +840,7 @@ impl Game {
     /// middle is in meters
     pub fn find_animal(&self, name: &str, near: Vector3<f64>) -> Option<(Vector3<f64>, f64)> {
         let animals = self.animals.iter().map(|a| (a.look, a.position));
-        let pickups = self.pickups.iter().map(|p| (p.item.look(), p.position));
+        let pickups = self.pickups.iter().filter_map(|p| Some((p.item.look()?, p.position)));
         let props = self.props.iter().map(|&(look, position, _)| (look, position));
         let chests = self.chests.iter().map(|c| (Look::Chest, c.position));
         animals
@@ -830,8 +963,9 @@ impl Game {
             }
             self.boss_bar = (name, health, trail.max(health), hold, (flash - dt / 0.18).max(0.0));
         }
-        self.reap(world.voxels_per_meter as f64);
+        self.reap(world);
         self.leaves.update(world, water, view.eye, dt);
+        self.look_over_loot(world, player, view, dt);
 
         if player.is_some() {
             let before = self.hunger;
@@ -1392,6 +1526,16 @@ impl Game {
             .map(|a| a.center(vpm as u32))
     }
 
+    /// Where the weapon lying nearest `near` is, once it's landed, if there's one about
+    pub fn nearest_loot(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        self.pickups
+            .iter()
+            .filter(|p| matches!(p.item, Item::Weapon(_)) && p.flying <= 0.0)
+            .map(|p| p.position + Vector3::new(0.0, 0.0, 0.2 * vpm))
+            .min_by(|a, b| (a - near).norm().total_cmp(&(b - near).norm()))
+    }
+
     /// How the player's being thrown by blows since last time, in voxels a second
     pub fn take_knockback(&mut self) -> Vector3<f64> {
         // However many blows land at once, they throw the player only so far
@@ -1430,7 +1574,8 @@ impl Game {
     }
 
     /// Animals that were killed fall, and leave their meat. Bosses leave a chest.
-    fn reap(&mut self, vpm: f64) {
+    fn reap(&mut self, world: &World) {
+        let vpm = world.voxels_per_meter as f64;
         let mut k = 0;
         while k < self.animals.len() {
             if self.animals[k].health > 0.0 {
@@ -1439,7 +1584,9 @@ impl Game {
             }
             let animal = self.animals.remove(k);
             let look = animal.look;
-            // A monster bursts apart its own way, and the last of a dungeon hall's leaves it clear
+            let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
+            // A monster bursts apart its own way, and the last of a dungeon hall's leaves it clear.
+            // The dead and spiders' victims had a little gold on them, now and then a weapon.
             if look.is_monster() {
                 self.combat.perish(&animal);
                 if let Some(key) = animal.boss.as_ref().map(|b| b.key).filter(|key| self.dens.contains(key)) {
@@ -1447,40 +1594,50 @@ impl Game {
                         self.cleared.insert(key);
                     }
                 }
+                let mut loot = Vec::new();
+                let undead = !matches!(look, Look::Wolf | Look::Spiderling);
+                if look != Look::Wolf && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
+                    loot.push(Item::Gold(if undead { 3 } else { 2 } + (random(&mut self.rng) * if undead { 10.0 } else { 5.0 }) as u32));
+                }
+                if undead && random(&mut self.rng) < 0.06 {
+                    loot.push(self.roll_weapon(1.5));
+                } else if look != Look::Wolf && random(&mut self.rng) < 0.1 {
+                    loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
+                }
+                self.scatter(world, middle, animal.position, loot, 0.9);
             }
             if let Some(boss) = animal.boss.as_ref().filter(|_| look.is_boss()) {
                 self.defeated.insert(boss.key);
-                // A raid boss leaves three chests, far richer
-                let (chests, luck) = if look.is_raid() { (3, 12.0) } else { (1, 6.0) };
-                for k in 0..chests {
-                    let angle = animal.heading() + (k as f64 - 1.0) * 0.9;
-                    let spread = if chests > 1 { 2.0 * vpm } else { 0.0 };
-                    let chest = Chest {
-                        position: animal.position + Vector3::new(angle.cos(), angle.sin(), 0.0) * spread,
-                        heading: animal.heading(),
-                        key: [boss.key[0], boss.key[1], boss.key[2] + 1_000_000 * (k as i64 + 1)],
-                        luck,
-                    };
-                    self.boss_chests.push(chest.clone());
-                    self.chests.push(chest);
+                // What it hoarded bursts out of it onto the ground round about: weapons, gold and
+                // potions, a raid boss's far more and far better
+                let raid = look.is_raid();
+                // Its best weapon's very likely legendary or better, the rest a mix
+                let (lucks, piles, potions): (&[f64], _, _) = if raid { (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3) } else { (&[6.0, 2.5], 1, 1) };
+                let mut loot: Vec<Item> = lucks.iter().map(|&luck| self.roll_weapon(luck)).collect();
+                for _ in 0..piles {
+                    let gold = if raid { 200.0 + 100.0 * random(&mut self.rng) } else { 80.0 + 80.0 * random(&mut self.rng) };
+                    loot.push(Item::Gold(gold as u32));
                 }
-                self.combat.fell(animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm), look.body().1);
+                loot.extend(std::iter::repeat_n(Item::Potion, potions));
+                let best = loot.iter().filter_map(|&item| match item {
+                    Item::Weapon(w) => Some(self.weapons[w].grade),
+                    _ => None,
+                }).max().unwrap_or(0);
+                self.scatter(world, middle, animal.position, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
+                self.combat.fell(middle, look.body().1);
                 self.shake = self.shake.max(1.0);
-                self.cues.push(Cue::here(Sound::Fanfare, if look.is_raid() { 1.0 } else { 0.8 }));
-                if look.is_raid() {
-                    self.say(format!("Raid boss slain! The {} falls, leaving three chests of its hoard.", look.name()));
+                self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
+                let rarity = self.library.rarities[best].display_name.to_lowercase();
+                if raid {
+                    self.say(format!("Raid boss slain! The {} falls, and its hoard spills out. Some of it's {rarity}!", look.name()));
                 } else {
-                    self.say(format!("You defeated the {}! It left a chest behind.", look.name()));
+                    self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
                 }
             }
             for m in 0..look.meat() {
                 let angle = animal.heading() + m as f64 * 2.1;
                 let spread = 0.25 * m as f64;
-                self.pickups.push(Pickup {
-                    item: Item::Meat,
-                    position: animal.position + Vector3::new(angle.cos(), angle.sin(), 0.0) * spread,
-                    heading: angle,
-                });
+                self.pickups.push(Pickup::lying(Item::Meat, animal.position + Vector3::new(angle.cos(), angle.sin(), 0.0) * spread, angle));
             }
             if look.is_monster() {
                 self.say(format!("You slew a {}.", look.name()));
@@ -1491,13 +1648,149 @@ impl Game {
         }
     }
 
+    /// What was dropped landing, which weapons lying about the camera can see, for their beams of
+    /// light to show, and the merchant being traded with left behind
+    fn look_over_loot(&mut self, world: &World, player: Option<Vector3<f64>>, view: &View, dt: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        self.feet = Some(player.unwrap_or(view.eye));
+        for pickup in &mut self.pickups {
+            if pickup.flying > 0.0 {
+                pickup.flying -= dt;
+                if pickup.flying <= 0.0 {
+                    let cue = match pickup.item {
+                        Item::Weapon(_) => Cue::at(Sound::Clang, pickup.position, 0.35).pitched(1.6),
+                        Item::Gold(_) => Cue::at(Sound::Pickup, pickup.position, 0.35).pitched(1.9),
+                        _ => Cue::at(Sound::Pickup, pickup.position, 0.2).pitched(0.8),
+                    };
+                    self.cues.push(cue);
+                }
+            }
+            // Looking a quarter of a meter at a time for anything in the way
+            if matches!(pickup.item, Item::Weapon(_)) {
+                let to = pickup.at(vpm) + Vector3::new(0.0, 0.0, 0.4 * vpm) - view.eye;
+                let d = to.norm();
+                let steps = (d / (0.25 * vpm)) as usize;
+                pickup.seen = d < BEAM_RANGE * vpm
+                    && (1..steps).all(|s| {
+                        let p = view.eye + to * (s as f64 / steps as f64);
+                        is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+                    });
+            }
+        }
+        if let Some(key) = self.shop {
+            let near = self.merchants.iter().find(|(_, k)| *k == key).and_then(|(id, _)| self.animals.iter().find(|a| a.id == *id));
+            if near.is_none_or(|m| (m.position - view.eye).norm() > SHOP_REACH * vpm) {
+                self.shop = None;
+                self.say("You walk away from the merchant.");
+            }
+        }
+    }
+
+    /// Lets go of the weapons nobody has any more: not carried, lying about or on a stall. Only
+    /// once there are a lot of them, as it moves the weapon in hand along, which raises it again.
+    fn forget_weapons(&mut self) {
+        let mut kept = vec![false; self.weapons.len()];
+        let lying = self.pickups.iter().map(|p| p.item);
+        let stalls = self.stocks.values().flatten().filter_map(|w| match *w {
+            Ware::Weapon(i) => Some(Item::Weapon(i)),
+            Ware::Food(..) => None,
+        });
+        for item in self.slots.iter().map(|s| s.0).chain(lying).chain(stalls) {
+            if let Item::Weapon(i) = item {
+                kept[i] = true;
+            }
+        }
+        if kept.iter().filter(|&&k| !k).count() < 24 {
+            return;
+        }
+        let mut to = vec![0; self.weapons.len()];
+        let mut next = 0;
+        for (i, &keep) in kept.iter().enumerate() {
+            to[i] = next;
+            next += keep as usize;
+        }
+        let mut k = 0;
+        self.weapons.retain(|_| {
+            k += 1;
+            kept[k - 1]
+        });
+        let renumber = |item: &mut Item| {
+            if let Item::Weapon(i) = item {
+                *i = to[*i];
+            }
+        };
+        self.slots.iter_mut().for_each(|s| renumber(&mut s.0));
+        self.pickups.iter_mut().for_each(|p| renumber(&mut p.item));
+        for ware in self.stocks.values_mut().flatten() {
+            if let Ware::Weapon(i) = ware {
+                *i = to[*i];
+            }
+        }
+        self.models_version += 1;
+    }
+
+    /// A new weapon rolled with `luck`, as for Library::roll_rarity(), kept among Game::weapons
+    fn roll_weapon(&mut self, luck: f64) -> Item {
+        self.rng = hash(self.rng ^ 0x1007);
+        let weapon = self.library.generate(self.rng, None, luck);
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        Item::Weapon(self.weapons.len() - 1)
+    }
+
+    /// Throws `items` out from `from`, in voxels, to land on the ground all round `around` about
+    /// `radius` meters off, nearer where there's a wall in the way
+    fn scatter(&mut self, world: &World, from: Vector3<f64>, around: Vector3<f64>, items: Vec<Item>, radius: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        let count = items.len().max(1) as f64;
+        let turn = random(&mut self.rng) * TAU;
+        for (k, item) in items.into_iter().enumerate() {
+            let angle = turn + (k as f64 + 0.5 * random(&mut self.rng)) / count * TAU;
+            let out = Vector3::new(angle.cos(), angle.sin(), 0.0) * radius * (0.55 + 0.6 * random(&mut self.rng)) * vpm;
+            let room = |p: Vector3<f64>| is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, (p.z + 0.5 * vpm).floor() as i64));
+            let spot = [1.0, 0.6, 0.3, 0.0].into_iter().map(|f| around + out * f).find(|&p| room(p)).unwrap_or(around);
+            // Landing on the ground, or caught on top of a bush, not hidden in it
+            let (x, y) = (spot.x.floor() as i64, spot.y.floor() as i64);
+            let top = (spot.z + 1.3 * vpm).floor() as i64;
+            let landed = (top - 8 * vpm as i64..=top).rev().find(|&z| {
+                let m = world.material_at(x, y, z);
+                !is_passable(m) || is_leaves(m)
+            });
+            let landed = landed.map_or(spot, |z| Vector3::new(spot.x, spot.y, z as f64 + 1.0));
+            let heading = random(&mut self.rng) * TAU;
+            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false });
+        }
+    }
+
+    /// What a merchant asks for a weapon: more the rarer it is, and more for each effect, synergy
+    /// and a special attack
+    fn weapon_price(&self, w: usize) -> u32 {
+        let weapon = &self.weapons[w];
+        let profile = &weapon.profile;
+        let extra = 1.0 + 0.12 * profile.effects.len() as f64 + 0.25 * profile.synergies.len() as f64 + if profile.special.is_some() { 0.3 } else { 0.0 };
+        (WEAPON_PRICES[weapon.grade.min(WEAPON_PRICES.len() - 1)] * extra).round() as u32
+    }
+
+    /// What a merchant asks for `item`
+    fn price(&self, item: Item) -> u32 {
+        match item {
+            Item::Weapon(w) => self.weapon_price(w),
+            Item::Gold(n) => n,
+            _ => food_price(item),
+        }
+    }
+
+    /// What a merchant pays for `item`
+    fn sell_price(&self, item: Item) -> u32 {
+        ((self.price(item) as f64 * SELL_SHARE) as u32).max(1)
+    }
+
     /// The nearest animal, bit of food or chest the camera looks at, within reach
     fn find_target(&self, world: &World, eye: Vector3<f64>, look: Vector3<f64>) -> Option<Target> {
         let vpm = world.voxels_per_meter as f64;
         let mut best = REACH * vpm;
         let mut target = None;
-        let mut consider = |position: Vector3<f64>, look_kind: Look, found: Target| {
-            let (height, radius) = look_kind.body();
+        let mut consider = |position: Vector3<f64>, (height, radius): (f64, f64), found: Target| {
             let center = position + Vector3::new(0.0, 0.0, height * vpm);
             let to = center - eye;
             let along = to.dot(&look);
@@ -1508,14 +1801,15 @@ impl Game {
             }
         };
         for (i, animal) in self.animals.iter().enumerate() {
-            consider(animal.position, animal.look, Target::Animal(i));
+            consider(animal.position, animal.look.body(), Target::Animal(i));
         }
+        // A weapon lying flat is easy to miss, so it's looked for a little wider
         for (i, pickup) in self.pickups.iter().enumerate() {
-            consider(pickup.position, pickup.item.look(), Target::Pickup(i));
+            consider(pickup.at(vpm), pickup.item.look().map_or((0.15, 0.55), Look::body), Target::Pickup(i));
         }
         for (i, chest) in self.chests.iter().enumerate() {
             if !self.opened.contains(&chest.key) {
-                consider(chest.position, Look::Chest, Target::Chest(i));
+                consider(chest.position, Look::Chest.body(), Target::Chest(i));
             }
         }
         target
@@ -1550,20 +1844,26 @@ impl Game {
         }
     }
 
-    /// E: picks up food, opens chests, pets dogs and cats
+    /// E: picks up food, gold and weapons, opens chests, trades with merchants, pets dogs and cats
     pub fn interact(&mut self, eye: Vector3<f64>) {
         match self.target {
             Some(Target::Pickup(i)) => {
                 let item = self.pickups.remove(i).item;
-                self.add_item(item, 1);
                 self.target = None;
-                self.cues.push(Cue::here(Sound::Pickup, 0.6));
-                self.say(format!("+1 {}", item.name()));
+                self.take(item);
             }
             Some(Target::Chest(i)) => self.open_chest(i),
             Some(Target::Animal(i)) => {
                 let look = self.animals[i].look;
-                if look.is_pet() {
+                if look == Look::Merchant {
+                    let id = self.animals[i].id;
+                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
+                        self.stock(key);
+                        self.shop = Some(key);
+                        self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(1.3));
+                        self.say("\"Have a look. Good steel, fresh bread, potions that work.\"");
+                    }
+                } else if look.is_pet() {
                     self.animals[i].pet(eye);
                     self.say(match look {
                         Look::Dog => "The dog wags its tail happily.",
@@ -1577,28 +1877,247 @@ impl Game {
         }
     }
 
-    /// Opens chest `i` and takes the weapon in it, rolled from where the chest is
+    /// Picks up `item`: gold goes in the purse, the rest into what's carried
+    fn take(&mut self, item: Item) {
+        match item {
+            Item::Gold(n) => {
+                self.gold += n;
+                self.cues.push(Cue::here(Sound::Pickup, 0.7).pitched(1.8));
+                self.say(format!("+{n} gold"));
+            }
+            Item::Weapon(w) => {
+                self.slots.push((item, 1));
+                self.cues.push(Cue::here(Sound::Equip, 0.7));
+                let weapon = &self.weapons[w];
+                let rarity = &self.library.rarities[weapon.grade];
+                let family = &self.library.families[weapon.family];
+                self.say(format!("You take {}, a {} {}.", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase()));
+            }
+            _ => {
+                self.add_item(item, 1);
+                self.cues.push(Cue::here(Sound::Pickup, 0.6));
+                self.say(format!("+1 {}", item.name()));
+            }
+        }
+    }
+
+    /// Opens chest `i` and takes the weapon in it, rolled from where the chest is, and a little gold
     fn open_chest(&mut self, i: usize) {
         let chest = &self.chests[i];
         let key = chest.key;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
         let weapon = self.library.generate(seed, None, chest.luck);
+        let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
         self.opened.insert(key);
         self.target = None;
         let rarity = &self.library.rarities[weapon.grade];
         let family = &self.library.families[weapon.family];
-        let message = format!("You found {}, a {} {}!", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase());
+        let message = format!("You found {}, a {} {}, and {gold} gold!", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase());
         self.weapons.push(weapon);
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        self.gold += gold;
         self.models_version += 1;
         self.cues.push(Cue::here(Sound::Chest, 0.8));
         self.say(message);
     }
 
-    /// Right click without a weapon: eats one of what's selected in the quick bar
+    /// Whether the player's trading with a merchant
+    pub fn shopping(&self) -> bool {
+        self.shop.is_some()
+    }
+
+    pub fn close_shop(&mut self) {
+        self.shop = None;
+    }
+
+    /// The merchants' spots in the piece of the world just built, in its voxels: one turns up at
+    /// each that hasn't one already
+    pub fn set_stalls(&mut self, world: &World, water: WaterLevel, stalls: Vec<Stall>) {
+        self.merchants.retain(|(id, _)| self.animals.iter().any(|a| a.id == *id));
+        for stall in &stalls {
+            if self.merchants.iter().any(|(_, key)| *key == stall.key) {
+                continue;
+            }
+            let seed = hash(stall.key[0] as u32 ^ hash(stall.key[1] as u32 ^ 0x5a1e));
+            if let Some(merchant) = animals::spawn_merchant(world, water, stall.position, 4.0, seed) {
+                self.merchants.push((merchant.id, stall.key));
+                self.animals.push(merchant);
+            }
+        }
+    }
+
+    /// For trying it out: a merchant `distance` meters along `ahead` from `near`
+    pub fn summon_merchant(&mut self, world: &World, water: WaterLevel, near: Vector3<f64>, ahead: Vector3<f64>, distance: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let at = near + flat * distance * vpm;
+        let key = [at.x as i64, at.y as i64, -3];
+        if let Some(merchant) = animals::spawn_merchant(world, water, at, 1.0, self.rng) {
+            self.merchants.push((merchant.id, key));
+            self.animals.push(merchant);
+        }
+    }
+
+    /// For trying it out: trades with the nearest merchant to `near`
+    pub fn open_nearest_shop(&mut self, near: Vector3<f64>) {
+        let nearest = self.merchants.iter().filter_map(|&(id, key)| Some((self.animals.iter().find(|a| a.id == id)?, key))).min_by(|a, b| (a.0.position - near).norm().total_cmp(&(b.0.position - near).norm()));
+        if let Some((_, key)) = nearest {
+            self.stock(key);
+            self.shop = Some(key);
+        }
+    }
+
+    /// What merchant `key` has to sell, rolled from where it stands the first time it's looked at:
+    /// weapons, a few of them rare, and food and potions
+    fn stock(&mut self, key: [i64; 3]) {
+        if self.stocks.contains_key(&key) {
+            return;
+        }
+        let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
+        let mut wares = Vec::new();
+        for k in 0..5 {
+            seed = hash(seed);
+            self.weapons.push(self.library.generate(seed, None, 1.0 + 0.6 * k as f64));
+            wares.push(Ware::Weapon(self.weapons.len() - 1));
+        }
+        self.models_version += 1;
+        wares.sort_by_key(|w| match *w {
+            Ware::Weapon(i) => self.weapon_price(i),
+            Ware::Food(..) => 0,
+        });
+        wares.extend([Ware::Food(Item::Potion, 4), Ware::Food(Item::Bread, 6), Ware::Food(Item::Meat, 5), Ware::Food(Item::Apple, 10)]);
+        self.stocks.insert(key, wares);
+    }
+
+    /// Buys ware `k` of the merchant being traded with
+    fn buy(&mut self, k: usize) {
+        let Some(key) = self.shop else {
+            return;
+        };
+        let Some(&ware) = self.stocks.get(&key).and_then(|s| s.get(k)) else {
+            return;
+        };
+        let item = match ware {
+            Ware::Weapon(w) => Item::Weapon(w),
+            Ware::Food(item, _) => item,
+        };
+        let cost = self.price(item);
+        if cost > self.gold {
+            self.say(format!("You need {} more gold for that.", cost - self.gold));
+            return;
+        }
+        self.gold -= cost;
+        let stock = self.stocks.get_mut(&key).unwrap();
+        match &mut stock[k] {
+            Ware::Food(_, left) if *left > 1 => *left -= 1,
+            _ => {
+                stock.remove(k);
+            }
+        }
+        match item {
+            Item::Weapon(_) => self.slots.push((item, 1)),
+            _ => self.add_item(item, 1),
+        }
+        self.cues.push(Cue::here(Sound::Pickup, 0.8).pitched(1.5));
+        self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
+    }
+
+    /// Sells one of what's in slot `slot` to the merchant being traded with. A weapon goes on
+    /// their stall, for buying back at their price.
+    fn sell(&mut self, slot: usize) {
+        let Some(key) = self.shop else {
+            return;
+        };
+        let Some(&(item, count)) = self.slots.get(slot) else {
+            return;
+        };
+        if item == Item::Bucket {
+            return;
+        }
+        let paid = self.sell_price(item);
+        self.gold += paid;
+        if count > 1 {
+            self.slots[slot].1 -= 1;
+        } else {
+            self.remove_slot(slot);
+        }
+        if let Item::Weapon(w) = item {
+            self.stocks.entry(key).or_default().insert(0, Ware::Weapon(w));
+        }
+        self.cues.push(Cue::here(Sound::Pickup, 0.8).pitched(1.2));
+        self.say(format!("Sold {} for {paid} gold.", self.item_name(item)));
+    }
+
+    /// Takes slot `slot` out of what's carried, keeping what's in hand in hand
+    fn remove_slot(&mut self, slot: usize) {
+        self.slots.remove(slot);
+        if self.selected > slot {
+            self.selected -= 1;
+        }
+        self.selected = self.selected.min(self.slots.len().saturating_sub(1));
+        self.inspected = self.inspected.filter(|&i| i < self.slots.len());
+    }
+
+    /// Drops all of what's in slot `slot` at the player's feet
+    fn drop_slot(&mut self, slot: usize) {
+        let (Some(&(item, count)), Some(feet)) = (self.slots.get(slot), self.feet) else {
+            return;
+        };
+        if item == Item::Bucket {
+            return;
+        }
+        self.remove_slot(slot);
+        let vpm = self.combat.vpm();
+        for k in 0..count {
+            let angle = random(&mut self.rng) * TAU;
+            let at = feet + Vector3::new(angle.cos(), angle.sin(), 0.0) * (0.5 + 0.2 * k as f64) * vpm;
+            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false });
+        }
+        self.say(format!("You drop {}.", self.item_name(item)));
+    }
+
+    /// Takes slot `slot` in hand. From the pack it swaps places with what was in hand, so what's in
+    /// hand is always on the quick bar.
+    fn hold(&mut self, slot: usize) {
+        if slot >= self.slots.len() {
+            return;
+        }
+        let to = if slot < HOTBAR {
+            slot
+        } else {
+            let to = if self.selected < HOTBAR { self.selected } else { 0 };
+            self.slots.swap(slot, to);
+            to
+        };
+        self.selected = to;
+        self.inspected = Some(to);
+        self.cues.push(Cue::here(Sound::Equip, 0.6));
+    }
+
+    /// Puts what's carried in order: the quick bar as it is, then the rest, the rarest weapons
+    /// first, then food
+    fn sort(&mut self) {
+        if self.slots.len() <= HOTBAR {
+            return;
+        }
+        let held = self.slots.get(self.selected).map(|s| s.0);
+        let mut rest = self.slots.split_off(HOTBAR);
+        rest.sort_by_key(|&(item, _)| match item {
+            Item::Weapon(w) => (0, std::cmp::Reverse(self.weapons[w].grade), self.weapons[w].family),
+            Item::Bucket => (1, std::cmp::Reverse(0), 0),
+            other => (2, std::cmp::Reverse(food_price(other) as usize), 0),
+        });
+        self.slots.append(&mut rest);
+        if let Some(held) = held {
+            self.selected = self.slots.iter().position(|s| s.0 == held).unwrap_or(0);
+        }
+        self.inspected = None;
+    }
+
+    /// Right click without a weapon: eats or drinks one of what's selected in the quick bar
     pub fn eat_selected(&mut self) {
-        if !self.slots.iter().any(|(item, _)| item.food() > 0.0) {
-            self.say("You have nothing to eat. Look for apples under leafy trees.");
+        if !self.slots.iter().any(|(item, _)| item.consumable()) {
+            self.say("You have nothing to eat. Look for apples under leafy trees, or buy some bread.");
             return;
         }
         self.eat(self.selected.min(self.slots.len() - 1));
@@ -1606,15 +2125,16 @@ impl Game {
 
     /// Picks a quick bar slot, if there's something in it
     pub fn select(&mut self, slot: usize) {
-        if slot < self.slots.len() {
+        if slot < self.slots.len().min(HOTBAR) {
             self.selected = slot;
         }
     }
 
-    /// Picks the slot `by` along from the one picked now, going round
+    /// Picks the quick bar slot `by` along from the one picked now, going round
     pub fn scroll(&mut self, by: i32) {
-        if !self.slots.is_empty() {
-            self.selected = (self.selected as i32 + by).rem_euclid(self.slots.len() as i32) as usize;
+        let shown = self.slots.len().min(HOTBAR) as i32;
+        if shown > 0 {
+            self.selected = (self.selected.min(shown as usize - 1) as i32 + by).rem_euclid(shown) as usize;
         }
     }
 
@@ -1652,18 +2172,18 @@ impl Game {
         }
     }
 
-    /// Picks the first weapon of family `id` carried
+    /// Takes the first weapon of family `id` carried in hand
     pub fn select_family(&mut self, id: &str) {
         let family = self.library.family(id);
         if let Some(slot) = self.slots.iter().position(|(item, _)| matches!(item, Item::Weapon(i) if family.is_some() && self.weapons[*i].family == family.unwrap())) {
-            self.selected = slot;
+            self.hold(slot);
         }
     }
 
-    /// Picks the first weapon of `kind` carried
+    /// Takes the first weapon of `kind` carried in hand
     pub fn select_weapon(&mut self, kind: Kind) {
         if let Some(slot) = self.slots.iter().position(|(item, _)| matches!(item, Item::Weapon(i) if self.weapons[*i].kind() == kind)) {
-            self.selected = slot;
+            self.hold(slot);
         }
     }
 
@@ -1671,24 +2191,27 @@ impl Game {
         let Some(&(item, count)) = self.slots.get(slot) else {
             return;
         };
-        if item.food() <= 0.0 {
+        if !item.consumable() {
             return;
         }
-        if self.hunger >= 99.5 && self.health >= MAX_HEALTH {
+        if item.heal() > 0.0 && self.health >= MAX_HEALTH {
+            self.say("You're not hurt.");
+            return;
+        }
+        if item.food() > 0.0 && self.hunger >= 99.5 && self.health >= MAX_HEALTH {
             self.say("You're full.");
             return;
         }
         // Food heals a little too
         self.hunger = (self.hunger + item.food()).min(100.0);
-        self.health = (self.health + item.food() * 0.6).min(MAX_HEALTH);
-        self.cues.push(Cue::here(Sound::Eat, 0.7));
+        self.health = (self.health + item.food() * 0.6 + item.heal()).min(MAX_HEALTH);
+        self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if item.heal() > 0.0 { 1.5 } else { 1.0 }));
         if count > 1 {
             self.slots[slot].1 -= 1;
         } else {
-            self.slots.remove(slot);
-            self.selected = self.selected.min(self.slots.len().saturating_sub(1));
+            self.remove_slot(slot);
         }
-        self.say(format!("You ate the {}.", item.name().to_lowercase()));
+        self.say(if item.heal() > 0.0 { format!("You drink the potion. +{:.0} health", item.heal()) } else { format!("You ate the {}.", item.name().to_lowercase()) });
     }
 
     /// What to draw for the shader: the weapon in hand first, then the nearest animals, food,
@@ -1710,10 +2233,26 @@ impl Game {
         creatures.sort_by(|a, b| a.0.total_cmp(&b.0));
         out.extend(creatures.into_iter().take(MAX_INSTANCES / 2).map(|(_, i)| i));
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
+        let time = self.combat.time();
         for pickup in &self.pickups {
-            let d = (pickup.position - camera).norm();
-            if d < FOOD_RANGE * vpm {
-                near.push((d, animals::still_instance(pickup.item.look(), pickup.position, pickup.heading, world.voxels_per_meter)));
+            let at = pickup.at(vpm);
+            let d = (at - camera).norm();
+            if d >= FOOD_RANGE * vpm {
+                continue;
+            }
+            match (pickup.item, pickup.item.look()) {
+                (_, Some(look)) => near.push((d, animals::still_instance(look, at, pickup.heading, world.voxels_per_meter))),
+                // A weapon lies on its side a hand over the ground, turning slowly and bobbing, its
+                // middle over where it lies, tumbling as it flies out
+                (Item::Weapon(w), None) => {
+                    let look = &self.weapons[w].look;
+                    let tumble = pickup.flying / DROP_SECONDS * 9.0;
+                    let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), pickup.heading + time * 0.7) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), FRAC_PI_2 + tumble);
+                    let hover = (0.22 + 0.05 * (time * 2.2 + pickup.heading).sin()) * vpm;
+                    let middle = (look.grip + look.tip) * 0.5;
+                    near.push((d, placed(self.weapon_model(w), &look.frames[0], look.res, middle, at + Vector3::new(0.0, 0.0, hover), rotation, vpm)));
+                }
+                _ => {}
             }
         }
         // Props are small, so they're only drawn up close
@@ -1747,13 +2286,16 @@ impl Game {
         self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view)
     }
 
+    /// What to do with what the crosshair is on. What's lying about has a card of its own instead.
     fn target_hint(&self) -> Option<String> {
         match self.target? {
-            Target::Pickup(i) => Some(format!("E  pick up {}", self.pickups[i].item.name().to_lowercase())),
+            Target::Pickup(_) => None,
             Target::Chest(_) => Some("E  open the chest".into()),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
-                Some(if look.is_pet() {
+                Some(if look == Look::Merchant {
+                    "E  trade with the merchant".to_owned()
+                } else if look.is_pet() {
                     format!("E  pet the {}", look.name())
                 } else if self.holding_weapon() {
                     format!("Attack the {}", look.name())
@@ -1792,6 +2334,17 @@ impl Game {
             let fill = Rect::from_min_size(bar.min, vec2(width * animal.vitality() as f32, 5.0));
             painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, alpha));
         }
+        // Merchants' names over their heads, so they're easy to find
+        for merchant in self.animals.iter().filter(|a| a.look == Look::Merchant) {
+            let top = merchant.position + Vector3::new(0.0, 0.0, 2.15 * vpm);
+            let distance = (top - view.eye).norm() / vpm;
+            let Some(at) = on_screen(top).filter(|_| distance < 28.0) else {
+                continue;
+            };
+            let alpha = ((28.0 - distance) / 8.0).clamp(0.0, 1.0) as f32;
+            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, "Merchant", FontId::proportional(15.0), Color32::from_black_alpha((160.0 * alpha) as u8));
+            painter.text(at, Align2::CENTER_BOTTOM, "Merchant", FontId::proportional(15.0), GOLD.gamma_multiply(alpha));
+        }
         // Damage numbers floating up
         for popup in &self.combat.popups {
             let Some(at) = on_screen(popup.position) else {
@@ -1802,6 +2355,36 @@ impl Game {
             let font = FontId::proportional(popup.size);
             painter.text(at + vec2(1.5, 1.5), Align2::CENTER_CENTER, &popup.text, font.clone(), Color32::from_black_alpha((160.0 * alpha) as u8));
             painter.text(at, Align2::CENTER_CENTER, &popup.text, font, Color32::from_rgba_unmultiplied(r, g, b, (255.0 * alpha) as u8));
+        }
+
+        // A beam of light up from each weapon lying about in sight, in the color of its rarity,
+        // taller and brighter the rarer it is, fading up and further off
+        for pickup in self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0) {
+            let Item::Weapon(w) = pickup.item else {
+                continue;
+            };
+            let grade = self.weapons[w].grade;
+            let [r, g, b] = self.library.rarities[grade].color;
+            let base = pickup.position + Vector3::new(0.0, 0.0, 0.2 * vpm);
+            let distance = ((base - view.eye).norm() / vpm).max(1.0);
+            let top = base + Vector3::new(0.0, 0.0, (2.2 + 0.9 * grade as f64) * vpm);
+            let (Some(foot), Some(top)) = (on_screen(base), on_screen(top)) else {
+                continue;
+            };
+            let fade = ((1.0 - distance / BEAM_RANGE) * 1.5).clamp(0.0, 1.0) as f32 * (0.55 + 0.09 * grade as f32);
+            let width = ((26.0 / distance.sqrt()) as f32).clamp(2.5, 12.0) * (0.8 + 0.1 * grade as f32);
+            let pulse = 0.85 + 0.15 * (self.combat.time() * 3.0 + w as f64).sin() as f32;
+            let tint = |alpha: f32| Color32::from_rgba_unmultiplied(r, g, b, (alpha * fade * pulse * 255.0).clamp(0.0, 255.0) as u8);
+            painter.circle_filled(foot, width * 2.2, tint(0.18));
+            painter.circle_filled(foot, width * 0.9, tint(0.45));
+            for k in 0..14 {
+                let (a, z) = (k as f32 / 14.0, (k + 1) as f32 / 14.0);
+                let strength = (1.0 - a).powf(1.6);
+                let segment = [foot.lerp(top, a), foot.lerp(top, z)];
+                painter.line_segment(segment, Stroke::new(width * 2.4, tint(0.16 * strength)));
+                painter.line_segment(segment, Stroke::new(width * 0.9, tint(0.55 * strength)));
+                painter.line_segment(segment, Stroke::new(width * 0.3, Color32::from_white_alpha((strength * fade * 200.0) as u8)));
+            }
         }
 
         painter.circle_filled(center, 3.5, shadow);
@@ -1823,12 +2406,30 @@ impl Game {
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &hint, FontId::proportional(17.0), shadow);
             painter.text(at, Align2::CENTER_TOP, &hint, FontId::proportional(17.0), Color32::WHITE);
         }
+        // The card of what the crosshair's on lying about, beside it: everything about it, and how
+        // it compares with what's in hand
+        if let Some(Target::Pickup(i)) = self.target
+            && let Some(pickup) = self.pickups.get(i)
+        {
+            let item = pickup.item;
+            let beside = on_screen(pickup.at(vpm)).map_or(center, |p| p.max(center - vec2(0.0, 220.0)).min(center + vec2(0.0, 120.0)));
+            let at = pos2(center.x + 44.0, beside.y - 60.0).min(pos2(screen.right() - 330.0, screen.bottom() - 460.0)).max(screen.min + vec2(8.0, 8.0));
+            egui::Area::new(egui::Id::new("item card")).fixed_pos(at).interactable(false).order(egui::Order::Foreground).show(ctx, |ui| {
+                self.card_frame(item).show(ui, |ui| {
+                    ui.set_width(290.0);
+                    self.item_card(ui, item, 1);
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(if matches!(item, Item::Weapon(_)) { "E  take it" } else { "E  pick it up" }).strong().color(Color32::WHITE));
+                });
+            });
+        }
 
         // One panel across the top middle: the quick bar on the left, hunger and mana on the right
         let slot = 44.0;
         let gap = 6.0;
         let pad = 10.0;
-        let slots_width = if self.slots.is_empty() { 120.0 } else { self.slots.len() as f32 * (slot + gap) - gap };
+        let shown = self.slots.len().min(HOTBAR);
+        let slots_width = if self.slots.is_empty() { 120.0 } else { shown as f32 * (slot + gap) - gap };
         let bars_width = 170.0;
         let width = pad + slots_width + 20.0 + bars_width + pad;
         let panel = Rect::from_min_size(pos2(center.x - width / 2.0, screen.top() + 14.0), vec2(width, slot + 2.0 * pad));
@@ -1838,7 +2439,7 @@ impl Game {
         if self.slots.is_empty() {
             painter.text(pos2(left + slots_width / 2.0, panel.center().y), Align2::CENTER_CENTER, "Nothing yet", FontId::proportional(14.0), faint);
         }
-        for (i, &(item, count)) in self.slots.iter().enumerate() {
+        for (i, &(item, count)) in self.slots.iter().enumerate().take(HOTBAR) {
             let rect = Rect::from_min_size(pos2(left + i as f32 * (slot + gap), panel.top() + pad), vec2(slot, slot));
             let selected = i == self.selected;
             let fill = match item {
@@ -1882,6 +2483,15 @@ impl Game {
         bar(panel.top() + pad - 4.0, label, self.health / MAX_HEALTH, fill);
         bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger);
         bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255));
+        // Gold under the bars, and how much more there is in the pack under the quick bar
+        let purse = pos2(panel.right() - 12.0, panel.bottom() + 5.0);
+        painter.circle_filled(purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5), 6.0, GOLD);
+        painter.text(purse + vec2(1.0, 1.0), Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), shadow);
+        painter.text(purse, Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), GOLD);
+        if self.slots.len() > HOTBAR {
+            let more = format!("+{} in the pack  ·  I", self.slots.len() - HOTBAR);
+            painter.text(pos2(panel.left() + 12.0, panel.bottom() + 6.0), Align2::LEFT_TOP, more, FontId::proportional(12.0), faint);
+        }
 
         // The boss being fought, its name over a long bar along the bottom
         if let Some((foe, vitality, enraged)) = self.foe(view.eye) {
@@ -2009,11 +2619,11 @@ impl Game {
         }
     }
 
-    /// The inventory: what's carried, food with a button to eat each, weapons with everything
-    /// about them
+    /// The inventory: everything carried as a grid of icons, the quick bar along the top, and the
+    /// card of what's clicked on, with what can be done with it
     pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool) {
-        let mut eat = None;
-        let mut select = None;
+        let mut chosen = None;
+        let mut deed = None;
         egui::Window::new("Inventory")
             .open(open)
             .collapsible(false)
@@ -2021,56 +2631,271 @@ impl Game {
             // Just under the quick bar
             .anchor(Align2::CENTER_TOP, [0.0, 100.0])
             .show(ctx, |ui| {
-                ui.label(format!("Hunger: {:.0} / 100    Mana: {:.0} / {:.0}", self.hunger, self.combat.mana, MAX_MANA));
-                ui.separator();
-                egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.65).show(ui, |ui| {
-                    for (i, &(item, count)) in self.slots.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::hover());
-                            self.draw_icon(ui.painter(), item, rect.center(), 26.0);
-                            match item {
-                                Item::Bucket => {
-                                    ui.label(format!("Bucket: {:.1} of {:.0} m³ of water", self.bucket, BUCKET_CAPACITY));
-                                }
-                                Item::Weapon(w) => {
-                                    let weapon = &self.weapons[w];
-                                    let rarity = &self.library.rarities[weapon.grade];
-                                    ui.label(RichText::new(&weapon.name).color(color(rarity.color)).strong());
-                                    ui.label(RichText::new(format!("{} {}", rarity.display_name, self.library.families[weapon.family].display_name)).weak());
-                                }
-                                _ => {
-                                    ui.label(format!("{} × {}", item.name(), count));
-                                    ui.add_space(12.0);
-                                    if ui.button(format!("Eat (+{:.0})", item.food())).clicked() {
-                                        eat = Some(i);
-                                    }
-                                }
-                            }
-                            if ui.selectable_label(self.selected == i, "In hand").clicked() {
-                                select = Some(i);
-                            }
-                        });
-                        if let Item::Weapon(w) = item {
-                            egui::CollapsingHeader::new("Parts, stats and effects").id_salt(("weapon", w)).show(ui, |ui| self.weapon_details(ui, &self.weapons[w]));
-                        }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong());
+                    ui.separator();
+                    ui.label(format!("Health {:.0}    Hunger {:.0}    Mana {:.0}", self.health, self.hunger, self.combat.mana));
+                    ui.separator();
+                    if ui.button("Sort the pack").on_hover_text("The rarest weapons first, then food. The quick bar stays as it is.").clicked() {
+                        deed = Some(Deal::Sort);
                     }
                 });
                 ui.separator();
-                ui.label("With a sword, greatsword, katana, axe, scythe, hammer, dagger, spear or halberd: click to swing, three in a row for a combo, right click for a heavy blow.");
-                ui.label("With a bow: hold right click to draw, then click to shoot. With a staff, scepter or wand: click to cast, using mana.");
-                ui.label("E picks up, opens chests and pets. Number keys or the mouse wheel pick what's in hand.");
-                ui.label("Weapons with a legendary or mythic part have a special attack: R or the middle button, once it's charged.");
-                ui.label("Chests lie in pyramids, shrines, castles, flooded churches and desert ruins.");
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Quick bar, keys 1 to 9, then the pack").weak().small());
+                        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.6).show(ui, |ui| {
+                            if let Some((slot, twice)) = self.slot_grid(ui, "carried", false) {
+                                chosen = Some(slot);
+                                if twice {
+                                    deed = Some(if self.slots[slot].0.consumable() { Deal::Eat(slot) } else { Deal::Hold(slot) });
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(310.0);
+                        let Some((slot, (item, count))) = self.inspected.and_then(|i| Some((i, *self.slots.get(i)?))) else {
+                            ui.label(RichText::new("Click on something to see all about it. Double click to take it in hand, or eat it.").weak());
+                            return;
+                        };
+                        self.item_card(ui, item, count);
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if !matches!(item, Item::Gold(_)) && ui.add_enabled(slot != self.selected, egui::Button::new("Hold")).clicked() {
+                                deed = Some(Deal::Hold(slot));
+                            }
+                            if item.consumable() && ui.button(if item.heal() > 0.0 { "Drink" } else { "Eat" }).clicked() {
+                                deed = Some(Deal::Eat(slot));
+                            }
+                            if item != Item::Bucket && ui.button("Drop").clicked() {
+                                deed = Some(Deal::Drop(slot));
+                            }
+                        });
+                        if let Item::Weapon(w) = item {
+                            egui::CollapsingHeader::new("What it's made of").id_salt(("parts", w)).show(ui, |ui| self.weapon_parts(ui, &self.weapons[w]));
+                        }
+                    });
+                });
+                ui.separator();
+                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Staff, scepter or wand: click to cast.").weak().small());
+                ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
             });
-        if let Some(slot) = eat {
-            self.eat(slot);
+        if let Some(slot) = chosen {
+            self.inspected = Some(slot);
         }
-        if let Some(slot) = select {
-            self.selected = slot;
+        match deed {
+            Some(Deal::Hold(slot)) => self.hold(slot),
+            Some(Deal::Eat(slot)) => self.eat(slot),
+            Some(Deal::Drop(slot)) => self.drop_slot(slot),
+            Some(Deal::Sort) => self.sort(),
+            _ => {}
         }
     }
 
-    fn weapon_details(&self, ui: &mut egui::Ui, weapon: &Weapon) {
+    /// What's carried as a grid of icons, a row of the quick bar first: which one was clicked,
+    /// and whether twice. When trading, `selling` shows what the merchant pays for each on hover.
+    fn slot_grid(&self, ui: &mut egui::Ui, id: &str, selling: bool) -> Option<(usize, bool)> {
+        let mut clicked = None;
+        let cell = 48.0;
+        egui::Grid::new(id).spacing([5.0, 5.0]).show(ui, |ui| {
+            for (i, &(item, count)) in self.slots.iter().enumerate() {
+                let (rect, response) = ui.allocate_exact_size(vec2(cell, cell), egui::Sense::click());
+                let painter = ui.painter();
+                let tint = match item {
+                    Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
+                    _ => None,
+                };
+                let fill = tint.map_or(Color32::from_white_alpha(if i < HOTBAR { 22 } else { 12 }), |c| c.gamma_multiply(if i < HOTBAR { 0.3 } else { 0.2 }));
+                painter.rect_filled(rect, 7.0, fill);
+                if let Some(c) = tint {
+                    painter.rect_stroke(rect, 7.0, Stroke::new(1.0f32, c.gamma_multiply(0.8)), StrokeKind::Inside);
+                }
+                if response.hovered() {
+                    painter.rect_filled(rect, 7.0, Color32::from_white_alpha(18));
+                }
+                if self.inspected == Some(i) {
+                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, GOLD), StrokeKind::Inside);
+                } else if self.selected == i {
+                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
+                }
+                self.draw_icon(painter, item, rect.center() - vec2(0.0, 1.0), cell * 0.56);
+                if !matches!(item, Item::Bucket | Item::Weapon(_)) {
+                    painter.text(rect.right_bottom() - vec2(4.0, 2.0), Align2::RIGHT_BOTTOM, count.to_string(), FontId::proportional(12.0), Color32::WHITE);
+                }
+                if i < HOTBAR {
+                    painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
+                }
+                let response = response.on_hover_ui(|ui| {
+                    ui.set_width(280.0);
+                    self.item_card(ui, item, count);
+                    if selling && item != Item::Bucket {
+                        ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
+                    }
+                });
+                if response.double_clicked() {
+                    clicked = Some((i, true));
+                } else if response.clicked() {
+                    clicked = Some((i, false));
+                }
+                if (i + 1) % HOTBAR == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+        clicked
+    }
+
+    /// The frame round an item's card: dark, edged in the color of a weapon's rarity
+    fn card_frame(&self, item: Item) -> egui::Frame {
+        let edge = match item {
+            Item::Weapon(w) => color(self.library.rarities[self.weapons[w].grade].color),
+            Item::Gold(_) => GOLD,
+            _ => Color32::from_gray(150),
+        };
+        egui::Frame::new().fill(Color32::from_rgba_unmultiplied(14, 16, 22, 232)).stroke(Stroke::new(1.5f32, edge)).corner_radius(8.0).inner_margin(12.0)
+    }
+
+    /// Everything about `item`, `count` of them: what it is, what it does, and what it's worth. A
+    /// weapon's compared with the one in hand.
+    fn item_card(&self, ui: &mut egui::Ui, item: Item, count: u32) {
+        if let Item::Weapon(w) = item {
+            self.weapon_card(ui, w);
+            return;
+        }
+        let good = Color32::from_rgb(120, 230, 110);
+        match item {
+            Item::Gold(n) => {
+                ui.label(RichText::new(format!("{n} gold")).size(19.0).strong().color(GOLD));
+                ui.label(RichText::new("Coin, to spend at merchants").weak());
+                return;
+            }
+            Item::Bucket => {
+                ui.label(RichText::new("Bucket").size(19.0).strong().color(Color32::WHITE));
+                ui.label(RichText::new("A magic bucket").weak());
+                ui.separator();
+                ui.label(format!("{:.1} of {:.0} m³ of water in it", self.bucket, BUCKET_CAPACITY));
+                ui.label(RichText::new("Click on water to fill it, right click to pour it out.").weak());
+                return;
+            }
+            _ => {}
+        }
+        ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+        ui.label(RichText::new(if item.heal() > 0.0 { "Potion" } else { "Food" }).weak());
+        ui.separator();
+        if item.food() > 0.0 {
+            ui.label(RichText::new(format!("+{:.0} hunger", item.food())).color(good).size(16.0));
+            ui.label(RichText::new(format!("+{:.0} health", item.food() * 0.6)).color(good));
+        }
+        if item.heal() > 0.0 {
+            ui.label(RichText::new(format!("+{:.0} health, at once", item.heal())).color(good).size(16.0));
+        }
+        if count > 1 {
+            ui.label(RichText::new(format!("{count} carried")).weak());
+        }
+        ui.separator();
+        ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
+    }
+
+    /// Everything about weapon `w`: its rarity and kind, the damage it does, its stats beside the
+    /// weapon in hand's if it's another of the same kind, its special, effects and synergies, and
+    /// what it's worth
+    fn weapon_card(&self, ui: &mut egui::Ui, w: usize) {
+        let library = &self.library;
+        let weapon = &self.weapons[w];
+        let rarity = &library.rarities[weapon.grade];
+        let profile = &weapon.profile;
+        let other = self.held().filter(|&(i, held)| i != w && held.kind() == weapon.kind()).map(|(_, held)| held);
+        let (good, bad) = (Color32::from_rgb(120, 230, 110), Color32::from_rgb(240, 95, 85));
+        // How much better or worse it is than the one in hand, nothing if about the same
+        let against = |ui: &mut egui::Ui, by: f64, unit: Unit, higher: bool| {
+            let least = match unit {
+                Unit::Number | Unit::Speed => 0.5,
+                Unit::Rate | Unit::Times | Unit::Percent => 0.005,
+                Unit::Meters => 0.05,
+            };
+            if by.abs() < least {
+                ui.label("");
+                return;
+            }
+            let shown = match unit {
+                Unit::Times => format!("{:.2}", by.abs()),
+                _ => unit.show(by.abs()),
+            };
+            let better = (by > 0.0) == higher;
+            ui.label(RichText::new(format!("{}{shown}", if by > 0.0 { "+" } else { "−" })).color(if better { good } else { bad }).strong());
+        };
+        ui.label(RichText::new(&weapon.name).size(19.0).strong().color(color(rarity.color)));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} {}", rarity.display_name, library.families[weapon.family].display_name)).color(color(rarity.color).gamma_multiply(0.8)));
+            if let Some(element) = profile.element {
+                ui.label(RichText::new(format!("·  {}", element.name())).color(color(element.color())));
+            }
+        });
+        ui.separator();
+        let damage = |p: &Profile| ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum::<f64>();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{:.0}", damage(profile))).size(32.0).strong().color(Color32::WHITE));
+            ui.vertical(|ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new("damage").weak());
+                if let Some(other) = other {
+                    against(ui, damage(profile) - damage(&other.profile), Unit::Number, true);
+                }
+            });
+        });
+        egui::Grid::new(("card", w)).num_columns(3).spacing([14.0, 1.0]).show(ui, |ui| {
+            for (key, label, unit) in STATS {
+                let value = profile.stat(key);
+                if value.abs() < 1e-6 && other.is_none_or(|o| o.profile.stat(key).abs() < 1e-6) {
+                    continue;
+                }
+                if key == "elementalDamage" {
+                    let tint = profile.element.map_or(Color32::GRAY, |e| color(e.color()));
+                    ui.label(RichText::new(format!("{} damage", profile.element.map_or("Elemental", Element::name))).color(tint));
+                    ui.label(RichText::new(unit.show(value)).color(tint));
+                } else {
+                    ui.label(RichText::new(label).weak());
+                    ui.label(unit.show(value));
+                }
+                match other {
+                    Some(other) => against(ui, value - other.profile.stat(key), unit, key != "manaCost"),
+                    None => {
+                        ui.label("");
+                    }
+                }
+                ui.end_row();
+            }
+        });
+        if let Some((special, part)) = &profile.special {
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("R — {}", special.name())).color(color(rarity.color)).strong());
+            ui.label(RichText::new(format!("{} From its {}.", special.description(), part)).weak());
+        }
+        if !profile.effects.is_empty() {
+            ui.add_space(4.0);
+            for e in &profile.effects {
+                let def = &library.effects[e.def];
+                let strength = if e.potency > 1.0 { format!(" ×{:.1}", e.potency) } else { String::new() };
+                ui.label(RichText::new(format!("• {}{}: {}", def.display_name, strength, def.description)).color(Color32::from_rgb(200, 220, 255)));
+            }
+        }
+        for s in &profile.synergies {
+            let def = &library.synergies[s.def];
+            ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Worth {} gold", self.price(Item::Weapon(w)))).color(GOLD));
+            if let Some(other) = other {
+                ui.label(RichText::new(format!("against {}", other.name)).weak().small());
+            }
+        });
+    }
+
+    /// What weapon `weapon` is made of, part by part, and its tags
+    fn weapon_parts(&self, ui: &mut egui::Ui, weapon: &Weapon) {
         let library = &self.library;
         let family = &library.families[weapon.family];
         for (slot, &part) in family.slots.iter().zip(&weapon.parts) {
@@ -2085,46 +2910,81 @@ impl Game {
                 }
             });
         }
-        if let Some(element) = weapon.profile.element {
-            ui.label(RichText::new(format!("Element: {}", element.name())).color(color(element.color())));
-        }
-        if let Some((special, part)) = &weapon.profile.special {
-            let rarity = &library.rarities[weapon.grade];
-            ui.label(RichText::new(format!("Special (R): {}", special.name())).color(color(rarity.color)).strong());
-            ui.label(RichText::new(format!("{} From its {}.", special.description(), part)).weak());
-        }
-        ui.add_space(4.0);
-        egui::Grid::new(("stats", weapon.seed, weapon.family)).num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {
-            for (key, label, unit) in STATS {
-                let value = weapon.profile.stat(key);
-                if value.abs() < 1e-6 {
-                    continue;
-                }
-                let label = if key == "elementalDamage" { format!("{} damage", weapon.profile.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
-                ui.label(RichText::new(label).weak());
-                ui.label(unit.show(value));
-                ui.end_row();
-            }
-        });
-        if !weapon.profile.effects.is_empty() {
-            ui.add_space(4.0);
-            ui.label(RichText::new("Effects").strong());
-            for e in &weapon.profile.effects {
-                let def = &library.effects[e.def];
-                let strength = if e.potency > 1.0 { format!(" ×{:.1}", e.potency) } else { String::new() };
-                ui.label(format!("• {}{}: {}", def.display_name, strength, def.description));
-            }
-        }
-        if !weapon.profile.synergies.is_empty() {
-            ui.add_space(4.0);
-            ui.label(RichText::new("Synergies").strong().color(Color32::from_rgb(255, 200, 90)));
-            for s in &weapon.profile.synergies {
-                let def = &library.synergies[s.def];
-                ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
-            }
-        }
         let tags: Vec<&str> = weapon.tags.iter().map(String::as_str).collect();
         ui.label(RichText::new(format!("Tags: {}", tags.join(", "))).weak().small());
+    }
+
+    /// The merchant's stall: what they sell, and what the player carries to sell them. False once
+    /// it's closed.
+    pub fn shop_window(&mut self, ctx: &egui::Context) -> bool {
+        let Some(key) = self.shop else {
+            return false;
+        };
+        let mut open = true;
+        let mut deed = None;
+        egui::Window::new("Merchant")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_TOP, [0.0, 100.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong().size(16.0));
+                    ui.separator();
+                    ui.label(RichText::new("Hover over anything to see all about it").weak());
+                });
+                ui.separator();
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(360.0);
+                        ui.label(RichText::new("For sale").strong());
+                        egui::ScrollArea::vertical().id_salt("wares").max_height(ctx.screen_rect().height() * 0.55).show(ui, |ui| {
+                            for (k, &ware) in self.stocks.get(&key).into_iter().flatten().enumerate() {
+                                let (item, left) = match ware {
+                                    Ware::Weapon(w) => (Item::Weapon(w), 1),
+                                    Ware::Food(item, left) => (item, left),
+                                };
+                                let cost = self.price(item);
+                                let row = ui.horizontal(|ui| {
+                                    let (rect, _) = ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                                    self.draw_icon(ui.painter(), item, rect.center(), 26.0);
+                                    let name = match item {
+                                        Item::Weapon(w) => RichText::new(&self.weapons[w].name).color(color(self.library.rarities[self.weapons[w].grade].color)).strong(),
+                                        _ => RichText::new(format!("{}  ×{left}", item.name())),
+                                    };
+                                    ui.label(name);
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        let button = egui::Button::new(RichText::new(format!("Buy  {cost}")).color(if cost <= self.gold { GOLD } else { Color32::GRAY }));
+                                        if ui.add_enabled(cost <= self.gold, button).clicked() {
+                                            deed = Some(Deal::Buy(k));
+                                        }
+                                    });
+                                });
+                                row.response.on_hover_ui(|ui| {
+                                    ui.set_width(280.0);
+                                    self.item_card(ui, item, 1);
+                                });
+                            }
+                        });
+                    });
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Yours, click to sell one").strong());
+                        if let Some((slot, _)) = self.slot_grid(ui, "selling", true) {
+                            deed = Some(Deal::Sell(slot));
+                        }
+                    });
+                });
+            });
+        match deed {
+            Some(Deal::Buy(k)) => self.buy(k),
+            Some(Deal::Sell(slot)) => self.sell(slot),
+            _ => {}
+        }
+        if !open {
+            self.shop = None;
+        }
+        self.shop.is_some()
     }
 
     /// A little picture of an item, `size` across
@@ -2150,6 +3010,30 @@ impl Game {
                 painter.line_segment([center - vec2(0.0, r * 0.55), center - vec2(-r * 0.1, r * 0.95)], Stroke::new(r * 0.12, Color32::from_rgb(110, 70, 40)));
                 painter.circle_filled(center + vec2(r * 0.32, -r * 0.8), r * 0.2, Color32::from_rgb(80, 170, 60));
             }
+            Item::Bread => {
+                let crust = Color32::from_rgb(196, 132, 62);
+                painter.rect_filled(Rect::from_center_size(center + vec2(0.0, r * 0.12), vec2(r * 1.8, r * 1.0)), r * 0.48, crust);
+                painter.rect_filled(Rect::from_center_size(center + vec2(0.0, -r * 0.05), vec2(r * 1.5, r * 0.5)), r * 0.25, Color32::from_rgb(222, 166, 92));
+                for k in [-0.45, 0.0, 0.45] {
+                    painter.line_segment([center + vec2(r * (k - 0.15), -r * 0.2), center + vec2(r * (k + 0.15), r * 0.15)], Stroke::new(r * 0.09, Color32::from_rgb(150, 92, 40)));
+                }
+            }
+            Item::Potion => {
+                let glass = Color32::from_rgb(190, 215, 230);
+                painter.circle_filled(center + vec2(0.0, r * 0.3), r * 0.68, Color32::from_rgb(200, 24, 44));
+                painter.circle_stroke(center + vec2(0.0, r * 0.3), r * 0.7, Stroke::new(r * 0.09, glass));
+                painter.circle_filled(center + vec2(-r * 0.25, r * 0.1), r * 0.15, Color32::from_rgb(255, 140, 150));
+                painter.rect_filled(Rect::from_center_size(center - vec2(0.0, r * 0.55), vec2(r * 0.42, r * 0.5)), r * 0.06, glass);
+                painter.rect_filled(Rect::from_center_size(center - vec2(0.0, r * 0.85), vec2(r * 0.5, r * 0.22)), r * 0.05, Color32::from_rgb(140, 95, 55));
+            }
+            Item::Gold(_) => {
+                for (dx, dy) in [(-0.35, 0.35), (0.35, 0.3), (0.0, -0.05)] {
+                    let at = center + vec2(r * dx, r * dy);
+                    painter.circle_filled(at, r * 0.5, Color32::from_rgb(200, 150, 30));
+                    painter.circle_filled(at - vec2(0.0, r * 0.06), r * 0.44, GOLD);
+                    painter.circle_stroke(at - vec2(0.0, r * 0.06), r * 0.28, Stroke::new(r * 0.07, Color32::from_rgb(220, 165, 40)));
+                }
+            }
             Item::Meat => {
                 let bone = Color32::from_rgb(240, 232, 214);
                 painter.line_segment([center + vec2(-r * 0.85, r * 0.55), center + vec2(-r * 0.1, -r * 0.05)], Stroke::new(r * 0.22, bone));
@@ -2163,15 +3047,68 @@ impl Game {
                 let glow = weapon.profile.element.map_or(Color32::from_rgb(150, 220, 255), |e| color(e.color()));
                 let metal = Color32::from_rgb(210, 214, 222);
                 let wood = Color32::from_rgb(150, 100, 60);
+                let haft = Color32::from_rgb(130, 88, 52);
+                let family = self.library.families[weapon.family].id.as_str();
                 match weapon.kind() {
+                    // A long shaft from bottom left to top right, with each one's own head on it
+                    Kind::Melee if matches!(family, "axe" | "hammer" | "spear" | "halberd" | "scythe") => {
+                        let (foot, top) = (center + vec2(-r * 0.8, r * 0.8), center + vec2(r * 0.6, -r * 0.6));
+                        painter.line_segment([foot, top + vec2(r * 0.15, -r * 0.15)], Stroke::new(r * 0.14, haft));
+                        let edge = |points: Vec<Pos2>| painter.add(egui::Shape::convex_polygon(points, metal, Stroke::NONE));
+                        match family {
+                            "axe" => {
+                                edge(vec![top + vec2(-r * 0.15, -r * 0.05), top + vec2(r * 0.3, r * 0.5), top + vec2(r * 0.55, r * 0.05), top + vec2(r * 0.15, -r * 0.35)]);
+                            }
+                            "hammer" => {
+                                let along = vec2(r * 0.7, r * 0.7) * 0.5;
+                                painter.line_segment([top - along, top + along], Stroke::new(r * 0.42, metal));
+                            }
+                            "scythe" => {
+                                let points: Vec<Pos2> = (0..=10).map(|k| {
+                                    let a = k as f32 / 10.0 * 1.9 + 0.6;
+                                    top + vec2(-a.cos() * r * 0.95 + r * 0.15, -a.sin() * r * 0.55 + r * 0.25)
+                                }).collect();
+                                painter.add(egui::Shape::line(points, Stroke::new(r * 0.16, metal)));
+                            }
+                            _ => {
+                                let tip = top + vec2(r * 0.35, -r * 0.35);
+                                edge(vec![top + vec2(-r * 0.12, r * 0.0), tip, top + vec2(r * 0.0, r * 0.12)]);
+                                if family == "halberd" {
+                                    edge(vec![top + vec2(-r * 0.05, r * 0.05), top + vec2(r * 0.35, r * 0.25), top + vec2(r * 0.15, r * 0.45)]);
+                                }
+                            }
+                        }
+                        if weapon.profile.element.is_some() {
+                            painter.circle_filled(top, r * 0.12, glow);
+                        }
+                    }
+                    // A coiled lash on a short handle
+                    Kind::Melee if family == "whip" => {
+                        painter.line_segment([center + vec2(-r * 0.85, r * 0.85), center + vec2(-r * 0.4, r * 0.4)], Stroke::new(r * 0.18, haft));
+                        let points: Vec<Pos2> = (0..=28).map(|k| {
+                            let t = k as f32 / 28.0;
+                            let a = t * 9.0;
+                            let radius = r * (0.25 + 0.45 * t);
+                            center + vec2(r * 0.1, -r * 0.1) + vec2(a.cos(), a.sin()) * radius
+                        }).collect();
+                        painter.add(egui::Shape::line(points, Stroke::new(r * 0.09, if weapon.profile.element.is_some() { glow } else { Color32::from_rgb(110, 70, 45) })));
+                    }
                     Kind::Melee => {
-                        let (hilt, tip) = (center + vec2(-r * 0.7, r * 0.7), center + vec2(r * 0.85, -r * 0.85));
+                        // Daggers short, greatswords long and broad
+                        let (reach, broad) = match family {
+                            "dagger" => (0.45, 0.2),
+                            "greatsword" => (0.95, 0.32),
+                            "katana" => (0.9, 0.16),
+                            _ => (0.85, 0.24),
+                        };
+                        let (hilt, tip) = (center + vec2(-r * 0.7, r * 0.7), center + vec2(r * reach, -r * reach));
                         let guard = center + vec2(-r * 0.35, r * 0.35);
-                        painter.line_segment([guard, tip], Stroke::new(r * 0.24, metal));
+                        painter.line_segment([guard, tip], Stroke::new(r * broad, metal));
                         if weapon.profile.element.is_some() {
                             painter.line_segment([guard, guard.lerp(tip, 0.7)], Stroke::new(r * 0.08, glow));
                         }
-                        painter.line_segment([guard + vec2(-r * 0.3, -r * 0.3), guard + vec2(r * 0.3, r * 0.3)], Stroke::new(r * 0.16, Color32::from_rgb(200, 170, 80)));
+                        let span = if family == "katana" { 0.15 } else { 0.3 };
+                        painter.line_segment([guard + vec2(-r * span, -r * span), guard + vec2(r * span, r * span)], Stroke::new(r * 0.16, Color32::from_rgb(200, 170, 80)));
                         painter.line_segment([hilt, guard], Stroke::new(r * 0.16, Color32::from_rgb(110, 70, 45)));
                     }
                     Kind::Ranged => {
@@ -2198,4 +3135,12 @@ impl Game {
 fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
     chars.next().map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// Weapon model `model`, one of a weapon's frames at `res` voxels a meter, drawn with its point
+/// `point`, in meters in its own frame, at `at` in voxels of the world, turned by `rotation`
+fn placed(model: u32, (m, anchor): &(Model, Vector3<f64>), res: f64, point: Vector3<f64>, at: Vector3<f64>, rotation: UnitQuaternion<f64>, vpm: f64) -> AnimalInstance {
+    let [x, y, z] = m.size.map(|s| s as f64 / res);
+    let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
+    AnimalInstance::new(model, at - rotation * (point - anchor) * vpm, rotation, vpm / res, reach, animals::MOVING)
 }
