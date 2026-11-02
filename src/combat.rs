@@ -534,14 +534,16 @@ impl Lash {
 
     /// Moves it on `dt` seconds, its root moving to `root` and the eye to `eye` over that, and
     /// each point pulled towards where `guide` steers it, if it does: how far from the root, in
-    /// voxels, and how hard, 0-1
-    fn step(&mut self, arena: &Arena, root: Vector3<f64>, eye: Vector3<f64>, guide: Option<&[(Vector3<f64>, f64)]>, dt: f64) {
+    /// voxels, and how hard, 0-1. `frame` is how long the frame really took, which is longer in
+    /// slow motion.
+    fn step(&mut self, arena: &Arena, root: Vector3<f64>, eye: Vector3<f64>, guide: Option<&[(Vector3<f64>, f64)]>, dt: f64, frame: f64) {
         let vpm = arena.view.vpm;
         let h = dt / LASH_STEPS as f64;
         let gravity = Vector3::new(0.0, 0.0, -9.8 * vpm);
         let keep = (-LASH_DRAG * h).exp();
-        // How fast the hand's going, so the pull steers it relative to that
-        let carried = (root - self.root) / dt.max(1e-6);
+        // How fast the hand's really going, so the pull steers it relative to that. The player can
+        // still turn and move in the slow motion of a blow landing.
+        let carried = (root - self.root) / frame.max(dt).max(1e-6);
         let (from_root, from_eye) = (self.root, self.eye);
         for step in 1..=LASH_STEPS {
             let k = step as f64 / LASH_STEPS as f64;
@@ -1079,7 +1081,8 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Smash => (0.45, 0.6),
             Style::Stab => (0.35, 0.5),
             Style::Thrust => (0.3, 0.47),
-            Style::Lash => (0.4, 0.5),
+            // Time for the lash to go round in a loop overhead first
+            Style::Lash => (0.5, 0.6),
             _ => (0.4, 0.52),
         };
     }
@@ -1266,7 +1269,7 @@ const LASH_SNARE: usize = 3;
 const LASH_FAN: usize = 4;
 const LASH_CIRCLE: usize = 5;
 /// When a double crack's second crack lands, as part of the whole swing, and how hard it hits
-const LASH_SECOND: f64 = 0.68;
+const LASH_SECOND: f64 = 0.78;
 const LASH_SECOND_POWER: f64 = 0.8;
 /// How wide a whip's fan reaches, as the cosine of the angle out from straight ahead, and how
 /// hard it hits each thing in it, and in the circle
@@ -1337,23 +1340,24 @@ fn lash_keys(heavy: bool, combo: u8, grade: usize) -> Vec<(f64, Pose, bool)> {
     if finisher {
         // The hand circling over the head, the lash swinging round after it, then cracked out of
         // the loop
+        // The handle leans out the way the hand's going round, rather than straight up its arm
         let mut keys = vec![
-            (0.1, grip([0.36, 0.48, 0.02], [0.55, 0.15, 0.82]), false),
-            (0.18, grip([0.29, 0.56, 0.08], [0.1, 0.6, 0.8]), false),
-            (0.26, grip([0.22, 0.48, 0.1], [-0.5, 0.15, 0.85]), false),
-            (0.34, grip([0.29, 0.41, 0.1], [0.05, -0.5, 0.86]), false),
-            (comes + 0.02, grip([0.36, 0.47, 0.06], [0.6, -0.1, 0.8]), false),
+            (0.1, grip([0.36, 0.48, 0.02], [0.85, 0.15, 0.5]), false),
+            (0.2, grip([0.29, 0.56, 0.08], [0.15, 0.85, 0.5]), false),
+            (0.3, grip([0.22, 0.48, 0.1], [-0.8, 0.25, 0.5]), false),
+            (0.4, grip([0.29, 0.41, 0.1], [0.1, -0.8, 0.55]), false),
+            (comes, grip([0.36, 0.47, 0.06], [0.85, -0.1, 0.5]), false),
             (lands, cracked.clone(), true),
         ];
         if grade >= LASH_DOUBLE {
             // Flicked up and cracked again, forward and down
             keys.extend([
-                (lands + 0.1, grip([0.16, 0.61, -0.07], [-0.06, 0.6, 0.8]), false),
+                (lands + 0.09, grip([0.16, 0.61, -0.07], [-0.06, 0.6, 0.8]), false),
                 (LASH_SECOND, grip([0.13, 0.67, -0.16], [-0.1, 0.96, -0.1]), true),
-                (LASH_SECOND + 0.12, grip([0.14, 0.58, -0.3], [-0.05, 0.7, -0.7]), false),
+                (LASH_SECOND + 0.11, grip([0.14, 0.58, -0.3], [-0.05, 0.7, -0.7]), false),
             ]);
         } else {
-            keys.extend([(lands + 0.12, grip([0.02, 0.57, -0.25], [-0.55, 0.75, -0.3]), false), (lands + 0.28, grip([0.14, 0.5, -0.26], [-0.25, 0.92, -0.25]), false)]);
+            keys.extend([(lands + 0.12, grip([0.02, 0.57, -0.25], [-0.55, 0.75, -0.3]), false), (lands + 0.26, grip([0.14, 0.5, -0.26], [-0.25, 0.92, -0.25]), false)]);
         }
         return keys;
     }
@@ -4133,14 +4137,15 @@ impl Combat {
             self.lash = Some(Lash::hanging(arena, root, segment));
         }
         // In slow motion with the swing as a blow lands
+        let frame = dt.min(0.05);
         let slow = matches!(self.action, Action::Swing { .. }) && self.hitstop > 0.0;
-        let dt = if slow { dt * HITSTOP_PACE } else { dt }.min(0.05);
+        let dt = if slow { frame * HITSTOP_PACE } else { frame };
         if dt <= 0.0 {
             return;
         }
         let guide = self.lash_guide(arena, weapon, root, segment);
         if let Some(lash) = &mut self.lash {
-            lash.step(arena, root, view.eye, guide.as_deref(), dt);
+            lash.step(arena, root, view.eye, guide.as_deref(), dt, frame);
         }
     }
 
@@ -4165,9 +4170,13 @@ impl Combat {
         // How long the throw takes to roll out from the hand to the tip, and each stretch's turn
         let lead = (0.3 * length).min(0.11);
         let turn = lead * 0.45;
-        let target = self.crack_point(arena, weapon.profile.stat("range").max(1.0) * view.vpm);
-        let distance = (target - root).norm();
-        let mut aim = (target - root).try_normalize(1e-9)?;
+        // Where it's thrown, once it is: at the crosshair, as far as what's there
+        let (mut aim, distance) = if t < at - lead {
+            (view.forward(), f64::MAX)
+        } else {
+            let target = self.crack_point(arena, weapon.profile.stat("range").max(1.0) * view.vpm);
+            ((target - root).try_normalize(1e-9)?, (target - root).norm())
+        };
         // A fan sweeps across from one side to the other as it cracks
         if crack.sweep != 0.0 {
             let across = ((at + 0.1 - t) / 0.2).clamp(0.0, 1.0) * 2.0 - 1.0;
@@ -4179,17 +4188,20 @@ impl Combat {
         let wound = |time: f64, u: f64| -> Vector3<f64> {
             match crack.wind {
                 Wind::Back(d) => view.rotation * Vector3::from(d).normalize(),
-                // Round once over the head, coming round to trail out back to the right as it's
-                // thrown, the tip lagging behind
+                // A loop through the hand, going round once over the head like a lasso's, each
+                // stretch along it, coming round so it leaves the hand out back to the right as
+                // it's thrown
                 Wind::Whirl => {
                     let k = ((time - start) / (at - lead - start).max(1e-3)).clamp(0.0, 1.0);
-                    let angle = -1.05 - (1.0 - k) * TAU - u * 0.6;
-                    view.rotation * Vector3::new(angle.cos(), angle.sin(), 0.6).normalize()
+                    let angle = 3.67 - (1.0 - k) * TAU - u * TAU;
+                    view.rotation * Vector3::new(-angle.sin(), angle.cos(), 0.3).normalize()
                 }
             }
         };
-        // Wound back gently, so it still sags and swings rather than standing out stiff
-        let winding = 0.2 * smooth((t - start) / (0.25 * length).max(0.04));
+        // Wound back gently, so it still sags and swings rather than standing out stiff, but
+        // whirled harder, to keep up with the loop
+        let firm = if matches!(crack.wind, Wind::Whirl) { 0.5 } else { 0.2 };
+        let winding = firm * smooth((t - start) / (0.25 * length).max(0.04));
         let letting_go = 1.0 - smooth((t - release) / 0.08);
         let mut out = Vec::with_capacity(LASH_POINTS);
         let mut offset = Vector3::zeros();

@@ -973,7 +973,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
         // Just the handle: the lash is simulated, see LashLook
         Kind::Melee if family.style == Style::Lash => {
             let (parts, grip, root) = whip(v("lash"), v("handle"), v("core"), family);
-            let (set, cracker) = lash_models(v("lash"), v("fall"), v("core"));
+            let (set, cracker) = lash_models(v("lash"), v("fall"));
             let thickness = v("lash").thickness.unwrap_or(0.011);
             let lash = Some(LashLook { root, set, cracker, thickness });
             WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip: root, nocks: Vec::new(), lash }
@@ -1414,16 +1414,14 @@ fn glowing(material: u8) -> Option<usize> {
 }
 
 /// Which set of segment models a whip with these parts has its lash drawn with, and which cracker
-/// is on its tip: by what the lash and the fall are made of, glowing if the lash is elemental or
-/// its core infuses it
-fn lash_models(lash: &Visual, fall: &Visual, core: &Visual) -> (usize, usize) {
+/// is on its tip: by what the lash and the fall are made of, glowing if the lash is elemental
+fn lash_models(lash: &Visual, fall: &Visual) -> (usize, usize) {
     let cord = mat(&lash.material, LEATHER);
     let accent = lash.accent.as_deref().and_then(material);
-    let infused = core.infuse.as_deref().and_then(material).and_then(glowing);
     let set = match lash.shape.as_deref() {
         Some("chain") => LASH_CHAIN,
         Some("thorn") => LASH_VINE,
-        _ => match glowing(cord).or_else(|| accent.and_then(glowing)).or(infused) {
+        _ => match glowing(cord).or_else(|| accent.and_then(glowing)) {
             Some(e) => LASH_GLOW + e,
             None if cord == LINEN => LASH_HEMP,
             None => LASH_LEATHER,
@@ -2266,7 +2264,7 @@ mod tests {
         // Elemental lashes glow, the rest are made of what they're made of
         let library = Library::parse(BUILT_IN).unwrap();
         for c in library.components.iter().filter(|c| c.slot_type == "lash") {
-            let (set, _) = lash_models(&c.visual_profile, &Visual::default(), &Visual::default());
+            let (set, _) = lash_models(&c.visual_profile, &Visual::default());
             assert_eq!(set >= LASH_GLOW, c.element.is_some(), "{}", c.id);
         }
     }
