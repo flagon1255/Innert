@@ -938,9 +938,9 @@ fn weapon_name(library: &Library, family: usize, components: &[&Component], syne
     [prefix, Some(core), suffix].into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
-/// A weapon's model, in frames: one for swords and staves, three for a bow being drawn. Positions
-/// are in meters in the weapon's own frame: its length runs up z from the pommel or foot, for a bow
-/// arrows fly along x.
+/// A weapon's model, in frames: one for swords, staves and whips, three for a bow being drawn.
+/// Positions are in meters in the weapon's own frame: its length runs up z from the pommel or foot,
+/// for a bow arrows fly along x.
 pub struct WeaponLook {
     /// Each frame's model and where its anchor is, see voxelize()
     pub frames: Vec<(Model, Vector3<f64>)>,
@@ -948,11 +948,12 @@ pub struct WeaponLook {
     pub res: f64,
     /// Where the hand holds it
     pub grip: Vector3<f64>,
-    /// The tip of the blade, or the crystal spells come out of
+    /// The tip of the blade, the crystal spells come out of, or where a whip's lash leaves its handle
     pub tip: Vector3<f64>,
-    /// For bows, where the nock of the arrow is in each frame; for whips, where the tip of the lash
-    /// is in each, see LASH_CURVES
+    /// For bows, where the nock of the arrow is in each frame
     pub nocks: Vec<Vector3<f64>>,
+    /// For whips, what the lash is drawn with
+    pub lash: Option<LashLook>,
 }
 
 // Voxels per meter of each kind of weapon. They're only ever held, right in front of the eye, so
@@ -969,22 +970,17 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let empty = Visual::default();
     let v = |slot: &str| visual(slot).unwrap_or(&empty);
     match family.kind {
-        // A model for each shape its lash takes, and where its tip is in each
+        // Just the handle: the lash is simulated, see LashLook
         Kind::Melee if family.style == Style::Lash => {
-            let mut frames = Vec::new();
-            let mut tips = Vec::new();
-            let mut grip = Vector3::zeros();
-            for curve in LASH_CURVES {
-                let (parts, g, tip) = whip(v("lash"), v("handle"), v("fall"), v("core"), family, curve);
-                frames.push(voxelize(&parts, SWORD_RES));
-                tips.push(tip);
-                grip = g;
-            }
-            WeaponLook { frames, res: SWORD_RES, grip, tip: tips[WHIP_REST], nocks: tips }
+            let (parts, grip, root) = whip(v("lash"), v("handle"), v("core"), family);
+            let (set, cracker) = lash_models(v("lash"), v("fall"));
+            let thickness = v("lash").thickness.unwrap_or(0.011);
+            let lash = Some(LashLook { root, set, cracker, thickness });
+            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip: root, nocks: Vec::new(), lash }
         }
         Kind::Melee => {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
-            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip, nocks: Vec::new() }
+            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip, nocks: Vec::new(), lash: None }
         }
         Kind::Ranged => {
             let mut frames = Vec::new();
@@ -996,7 +992,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                 nocks.push(nock);
                 grip = g;
             }
-            WeaponLook { frames, res: BOW_RES, grip, tip: nocks[0], nocks }
+            WeaponLook { frames, res: BOW_RES, grip, tip: nocks[0], nocks, lash: None }
         }
         Kind::Magic => {
             let (mut parts, top, mut tip) = staff(v("shaft"), v("focus"), v("crystal"), v("binding"));
@@ -1010,7 +1006,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                 tip *= s;
                 res = SWORD_RES;
             }
-            WeaponLook { frames: vec![voxelize(&parts, res)], res, grip, tip, nocks: Vec::new() }
+            WeaponLook { frames: vec![voxelize(&parts, res)], res, grip, tip, nocks: Vec::new(), lash: None }
         }
     }
 }
@@ -1370,172 +1366,200 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
     }
 }
 
-/// How a whip's lash bends as it hangs. Its heading, measured from straight on up the handle
-/// towards +x, turns by LASH_BEND along its length and swings LASH_WAVE either way of that, out
-/// and back once, which makes a loose S. Its tip ends up about 22° off the line of the handle,
-/// and combat.rs's whip poses are worked out for that, so they need changing along with these.
-const LASH_BEND: f64 = 0.9;
-const LASH_WAVE: f64 = 0.9;
+/// What a whip's lash is drawn with. The lash isn't part of the whip's model: combat.rs simulates
+/// it as a rope hanging from `root`, and draws each stretch of it with one of the segment models
+/// from effect_models(), see LASH_SEGMENTS, of set `set`, ending in cracker `cracker`.
+pub struct LashLook {
+    /// Where the lash leaves the top of the handle, in the whip's own meters
+    pub root: Vector3<f64>,
+    /// Which set of segment models it's drawn with, LASH_LEATHER and the rest, and which of the
+    /// crackers is on its tip, CRACKER_HAIR and the rest
+    pub set: usize,
+    pub cracker: usize,
+    /// How thick it is where it leaves the handle, in meters
+    pub thickness: f64,
+}
 
-/// The shapes a whip's lash takes as it moves, one model each, see WHIP_REST and the rest: how
-/// much it bends along its length, how far it swings either way of that, and where along its
-/// length the swing is. The first is how it hangs.
-pub const LASH_CURVES: [(f64, f64, f64); 8] = [
-    (LASH_BEND, LASH_WAVE, 0.0),
-    // Swaying as it hangs
-    (LASH_BEND + 0.25, LASH_WAVE * 0.8, 0.6),
-    (LASH_BEND - 0.25, LASH_WAVE * 1.1, -0.6),
-    // Trailing back over the shoulder as it's wound up
-    (2.4, 0.5, 0.0),
-    // Coming through, half straightened
-    (0.7, 0.35, 0.8),
-    // Snapped out straight as it cracks
-    (0.06, 0.05, 0.0),
-    // Recoiling, curling back the other way
-    (-0.5, 1.2, 0.5),
-    // Settling
-    (LASH_BEND * 0.6, LASH_WAVE * 1.3, -0.3),
-];
-pub const WHIP_REST: usize = 0;
-pub const WHIP_SWAY: [usize; 3] = [2, 0, 1];
-pub const WHIP_TRAIL: usize = 3;
-pub const WHIP_COMING: usize = 4;
-pub const WHIP_CRACK: usize = 5;
-pub const WHIP_RECOIL: usize = 6;
-pub const WHIP_SETTLE: usize = 7;
+// The sets of lash segment models among effect_models(), by what a lash is made of: braided
+// leather, hemp, chain or thorny vine, or for elemental lashes a dark cord glowing with one of
+// the elements, in the order of Element::ALL
+pub const LASH_LEATHER: usize = 0;
+pub const LASH_HEMP: usize = 1;
+pub const LASH_CHAIN: usize = 2;
+pub const LASH_VINE: usize = 3;
+pub const LASH_GLOW: usize = 4;
+pub const LASH_SETS: usize = LASH_GLOW + Element::ALL.len();
+/// Each set has a segment model as thick as each of these, as parts of its length, thickest first,
+/// so a stretch of lash can be drawn about as thick as it should be however long it is
+pub const LASH_TAPERS: [f64; 6] = [0.064, 0.048, 0.036, 0.027, 0.02, 0.015];
+// The crackers on a lash's tip, by what its fall is: a pale tuft of horsehair, one of silk, a
+// knotted end, barbs, a lead weight, a blade of bone or of gold, or a tuft glowing with one of the
+// elements, in the order of Element::ALL
+pub const CRACKER_HAIR: usize = 0;
+pub const CRACKER_SILK: usize = 1;
+pub const CRACKER_KNOTS: usize = 2;
+pub const CRACKER_BARBS: usize = 3;
+pub const CRACKER_WEIGHT: usize = 4;
+pub const CRACKER_BONE: usize = 5;
+pub const CRACKER_GOLD: usize = 6;
+pub const CRACKER_GLOW: usize = 7;
+pub const CRACKERS: usize = CRACKER_GLOW + Element::ALL.len();
+/// Voxels per meter of the lash's segment models. Each is a meter long up z from 0, and is drawn
+/// scaled down to the length of the stretch of lash it is.
+pub const LASH_RES: f64 = 64.0;
 
-/// A whip standing on its pommel: a short handle, then the lash leaving its top in a loose S out
-/// towards +x, as it hangs, tapering to the fall and the cracker at its tip. All of it lies in the
-/// plane y = 0 but for what sticks out of the lash. `curve` is the shape the lash takes, see
-/// LASH_CURVES. Returns where it's held and the cracker.
-fn whip(lash: &Visual, handle: &Visual, fall: &Visual, core: &Visual, family: &Family, curve: (f64, f64, f64)) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
-    let (bend, wave, phase) = curve;
+/// Which element `material` is the glow of, as its place in Element::ALL, if it's a glow
+fn glowing(material: u8) -> Option<usize> {
+    Element::ALL.iter().position(|e| e.glow() == material)
+}
+
+/// Which set of segment models a whip with these parts has its lash drawn with, and which cracker
+/// is on its tip: by what the lash and the fall are made of, glowing if the lash is elemental
+fn lash_models(lash: &Visual, fall: &Visual) -> (usize, usize) {
+    let cord = mat(&lash.material, LEATHER);
+    let accent = lash.accent.as_deref().and_then(material);
+    let set = match lash.shape.as_deref() {
+        Some("chain") => LASH_CHAIN,
+        Some("thorn") => LASH_VINE,
+        _ => match glowing(cord).or_else(|| accent.and_then(glowing)) {
+            Some(e) => LASH_GLOW + e,
+            None if cord == LINEN => LASH_HEMP,
+            None => LASH_LEATHER,
+        },
+    };
+    let fall_material = fall.material.as_deref().and_then(material);
+    let ornament = fall.accent.as_deref().and_then(material);
+    let glow = ornament.and_then(glowing).or_else(|| fall_material.and_then(glowing));
+    let cracker = match (fall.shape.as_deref().unwrap_or("cracker"), glow) {
+        ("blade", _) if fall_material == Some(GOLD) || ornament == Some(GOLD) => CRACKER_GOLD,
+        ("blade", _) => CRACKER_BONE,
+        (_, Some(e)) => CRACKER_GLOW + e,
+        ("knots", _) => CRACKER_KNOTS,
+        ("barbs", _) => CRACKER_BARBS,
+        ("weight", _) => CRACKER_WEIGHT,
+        _ if fall_material == Some(LINEN) => CRACKER_SILK,
+        _ => CRACKER_HAIR,
+    };
+    (set, cracker)
+}
+
+/// A stretch of lash a meter long up z from 0, `radius` thick, of set `set`, see LASH_LEATHER and
+/// the rest: a cord banded where the strands of its braid cross, links of chain, or a vine with
+/// thorns
+fn lash_segment(set: usize, radius: f64) -> Vec<Part> {
+    let mut p = Vec::new();
+    if set == LASH_CHAIN {
+        // Links end to end, every other one turned the other way and darker
+        let links = 4;
+        for k in 0..links {
+            let z = (k as f64 + 0.5) / links as f64;
+            let (material, wide) = if k % 2 == 0 { (STEEL, [1.6, 0.9]) } else { (DARK_STEEL, [0.9, 1.6]) };
+            p.push(ellipsoid([0.0, 0.0, z], [radius * wide[0], radius * wide[1], 0.6 / links as f64], material));
+        }
+        return p;
+    }
+    let (cord, band) = match set {
+        LASH_LEATHER => (LEATHER, FUR_TAN),
+        LASH_HEMP => (LINEN, WAX),
+        LASH_VINE => (MOSS, BARK_DARK),
+        glow => (BARK_DARK, Element::ALL[glow - LASH_GLOW].glow()),
+    };
+    if set == LASH_VINE {
+        // Thorns off either side, raking back
+        for (z, side) in [(0.3, 1.0), (0.78, -1.0)] {
+            p.push(limb([0.0, 0.0, z], [side * radius * 2.8, 0.0, z - radius * 1.2], radius * 0.6, radius * 0.15, BARK_DARK));
+        }
+    }
+    // Earlier shapes win, so these show as narrow raised bands round the cord
+    let bands = 4;
+    for k in 0..bands {
+        let z = (k as f64 + 0.4) / bands as f64;
+        p.push(limb([0.0, 0.0, z], [0.0, 0.0, z + 0.18 / bands as f64], radius * 1.1, radius * 1.1, band));
+    }
+    p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], radius, radius, cord));
+    p
+}
+
+/// The last stretch of a lash, a meter long up z from 0: the fall, thinning, and on its end cracker
+/// `kind`, see CRACKER_HAIR and the rest
+fn lash_cracker(kind: usize) -> Vec<Part> {
+    let r = 0.022;
+    let mut p = Vec::new();
+    // Strands splaying out off the end
+    let tuft = |p: &mut Vec<Part>, material: u8, spread: f64| {
+        for (dx, dy) in [(1.0, 0.0), (-0.5, 0.87), (-0.5, -0.87), (0.0, 0.0)] {
+            p.push(limb([0.0, 0.0, 0.64], [dx * spread, dy * spread, 1.0], r * 0.75, r * 0.3, material));
+        }
+    };
+    let fall = match kind {
+        CRACKER_HAIR => {
+            tuft(&mut p, FUR_WHITE, 0.08);
+            LEATHER
+        }
+        CRACKER_SILK => {
+            tuft(&mut p, LINEN, 0.07);
+            LEATHER
+        }
+        CRACKER_KNOTS => {
+            for z in [0.38, 0.62, 0.86] {
+                p.push(ball([0.0, 0.0, z], r * 2.0, BARK_DARK));
+            }
+            tuft(&mut p, LEATHER, 0.04);
+            LEATHER
+        }
+        CRACKER_BARBS => {
+            for (z, side) in [(0.45, 1.0), (0.65, -1.0), (0.85, 1.0)] {
+                p.push(limb([0.0, 0.0, z], [side * 0.06, 0.0, z - 0.07], r * 0.7, r * 0.2, STEEL));
+            }
+            tuft(&mut p, LEATHER, 0.03);
+            LEATHER
+        }
+        CRACKER_WEIGHT => {
+            p.push(ball([0.0, 0.0, 0.92], 0.06, DARK_STEEL));
+            LEATHER
+        }
+        CRACKER_BONE | CRACKER_GOLD => {
+            let edge = if kind == CRACKER_GOLD { GOLD } else { BONE };
+            p.push(limb([0.0, 0.0, 0.64], [0.0, 0.0, 1.06], 0.055, 0.004, edge).stretched([1.0, 0.35, 1.0]));
+            LEATHER
+        }
+        glow => {
+            let g = Element::ALL[glow - CRACKER_GLOW].glow();
+            p.push(ball([0.0, 0.0, 0.96], 0.04, g));
+            tuft(&mut p, g, 0.07);
+            BARK_DARK
+        }
+    };
+    p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 0.68], r, r * 0.8, fall));
+    p
+}
+
+/// A whip's handle standing on its pommel, bound at the top where the lash leaves it. The lash
+/// isn't part of the model: combat.rs simulates it, see LashLook. Returns where it's held and where
+/// the lash leaves it.
+fn whip(lash: &Visual, handle: &Visual, core: &Visual, family: &Family) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
     let mut p = Vec::new();
     let voxel = 1.0 / SWORD_RES;
     let pommel = handle.pommel_size.unwrap_or(0.026);
     let grip_length = handle.length.unwrap_or(0.24);
     let z_grip = pommel * 1.7;
     let z_top = z_grip + grip_length;
-    let length = lash.length.unwrap_or(1.0);
-    // Thickest where it leaves the handle, and never thinner than a voxel or so, so it can't vanish
     let thick = lash.thickness.unwrap_or(0.011).max(2.0 * voxel);
-    let thin = 1.1 * voxel;
     let cord = mat(&lash.material, LEATHER);
     let braid = mat(&lash.accent, cord);
-    let infuse = core.infuse.as_deref().and_then(material);
-    let fall_material = mat(&fall.material, cord);
-    let ornament = mat(&fall.accent, fall_material);
-
-    // Its line, in short steps from the top of the handle to the tip
     let root = [0.0, 0.0, z_top + 0.035];
-    let steps = ((length / 0.012).ceil() as usize).max(16);
-    let mut line = vec![root];
-    let (mut x, mut z) = (root[0], root[2]);
-    for k in 0..steps {
-        let u = (k as f64 + 0.5) / steps as f64;
-        // Leaving the handle straight whatever its shape, so the swing comes in along it
-        let heading = bend * u + wave * ((TAU * u + phase).sin() - phase.sin() * (1.0 - u));
-        x += heading.sin() * length / steps as f64;
-        z += heading.cos() * length / steps as f64;
-        line.push([x, 0.0, z]);
-    }
-    let tip = line[steps];
-    // The last of it is the fall, thin all along. Up to there it tapers.
-    let fall_from = 0.82;
-    let radius = |u: f64| if u < fall_from { thick + (thin * 1.3 - thick) * (u / fall_from).powf(0.8) } else { thin };
-    // Which way the line runs at point `k`, and square to that in the plane it bends in
-    let along = |k: usize| {
-        let (a, b) = (line[k.saturating_sub(1)], line[(k + 1).min(steps)]);
-        let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
-        let n = (dx * dx + dz * dz).sqrt().max(1e-9);
-        ([dx / n, 0.0, dz / n], [dz / n, 0.0, -dx / n])
-    };
-    let at = |q: [f64; 3], d: [f64; 3], s: f64| [q[0] + d[0] * s, q[1] + d[1] * s, q[2] + d[2] * s];
-
-    // What's tied onto the fall goes first, as earlier shapes win, then the cracker
-    let (ahead, across) = along(steps);
-    match fall.shape.as_deref().unwrap_or("cracker") {
-        "knots" => {
-            for k in (steps / 5..steps * 4 / 5).step_by((steps / 6).max(1)) {
-                let u = k as f64 / steps as f64;
-                p.push(ball(line[k], radius(u) * 1.7, ornament));
-            }
-        }
-        "barbs" => {
-            for (n, k) in (steps * 11 / 20..steps * 19 / 20).step_by(4).enumerate() {
-                let (d, s) = along(k);
-                let side = if n % 2 == 0 { s } else { [-s[0], 0.0, -s[2]] };
-                let out = at(at(line[k], side, 0.016), d, -0.008);
-                p.push(limb(line[k], [out[0], if n % 4 < 2 { 0.006 } else { -0.006 }, out[2]], 0.004, 0.0015, ornament));
-            }
-        }
-        "weight" => p.push(ball(at(tip, ahead, -0.012), 0.015, ornament)),
-        "blade" => p.push(limb(tip, at(tip, ahead, 0.075), 0.014, 0.002, ornament).stretched([1.0, 0.35, 1.0])),
-        "glow" => p.push(ball(tip, 0.011, ornament)),
-        "tassel" => p.push(ball(tip, 0.01, ornament)),
-        _ => {}
-    }
-    let splay = if fall.shape.as_deref() == Some("tassel") { (0.085, 0.022) } else { (0.05, 0.011) };
-    for s in [-1.0, 0.0, 1.0] {
-        let end = at(at(tip, ahead, splay.0), across, s * splay.1);
-        p.push(limb(tip, [end[0], s * splay.1 * 0.5, end[2]], thin * 0.9, thin * 0.6, fall_material));
-    }
-
-    // Then what sticks out of the lash itself
-    let shape = lash.shape.as_deref().unwrap_or("braided");
-    match shape {
-        "thorn" => {
-            for (n, k) in (3..steps * 4 / 5).step_by(5).enumerate() {
-                let u = k as f64 / steps as f64;
-                let (d, s) = along(k);
-                let side = if n % 2 == 0 { s } else { [-s[0], 0.0, -s[2]] };
-                let out = at(at(line[k], side, radius(u) * 2.6), d, radius(u));
-                let y = [0.0, 0.7, 0.0, -0.7][n % 4] * radius(u) * 2.0;
-                p.push(limb(line[k], [out[0], y, out[2]], radius(u) * 0.75, 0.002, braid));
-            }
-        }
-        "spine" => {
-            // Vertebrae strung along a glowing cord, spined along their backs
-            for k in (1..steps).step_by(3) {
-                let u = k as f64 / steps as f64;
-                if u < fall_from {
-                    if k % 6 == 1 {
-                        let (_, s) = along(k);
-                        p.push(limb(line[k], at(line[k], s, -radius(u) * 2.6), radius(u) * 0.6, 0.002, cord));
-                    }
-                    p.push(ball(line[k], radius(u) * 1.55, cord));
-                }
-            }
-        }
-        _ => {}
-    }
-
-    // The gem of its core, set into the top of the handle, then the cord
+    // The gem of its core, set into the top of the handle, then the thong binding the lash on, and
+    // the lash's first couple of centimeters coming out of it, which the simulated lash carries on
     let mut z_thong = z_top;
     if let Some(gem) = core.gem.as_deref().and_then(material) {
         let r = core.size.unwrap_or(0.02).max(0.017);
         p.push(ball([0.0, 0.0, z_top], r, gem));
         z_thong = z_top + r * 0.6;
     }
-    for k in 0..steps {
-        let u = (k as f64 + 0.5) / steps as f64;
-        let (a, b) = (line[k], line[k + 1]);
-        let (ra, rb) = (radius(k as f64 / steps as f64), radius((k + 1) as f64 / steps as f64));
-        // A braid shows as bands of its two strands, the outer one glowing towards the tip if
-        // it's infused
-        let strand = if (k / 2) % 2 == 0 { cord } else { infuse.filter(|_| u > 0.45).unwrap_or(braid) };
-        match shape {
-            _ if u >= fall_from => p.push(limb(a, b, ra, rb, fall_material)),
-            "chain" => p.push(ball(a, ra * 1.15, if k % 2 == 0 { cord } else { braid })),
-            "spine" => p.push(limb(a, b, ra * 0.7, rb * 0.7, infuse.unwrap_or(braid))),
-            "plain" | "thorn" => p.push(limb(a, b, ra, rb, cord)),
-            _ => p.push(limb(a, b, ra, rb, strand)),
-        }
-    }
-    // Bound onto the top of the handle
-    p.push(limb([0.0, 0.0, z_thong - 0.01], root, 0.018, thick, braid));
+    p.push(limb([0.0, 0.0, z_thong - 0.01], root, 0.018, thick * 1.3, braid));
+    p.push(limb(root, [0.0, 0.0, root[2] + 0.015], thick * 1.3, thick * 1.2, cord));
     sword_hilt(&mut p, handle, z_grip, grip_length, pommel, grip_length);
-    (p, v3(0.0, 0.0, z_grip + grip_length * family.grip), v3(tip[0], tip[1], tip[2]))
+    (p, v3(0.0, 0.0, z_grip + grip_length * family.grip), v3(root[0], root[1], root[2]))
 }
 
 /// A bow standing up, shooting along +x, its string drawn back `draw` of the way. Returns where
@@ -1877,6 +1901,10 @@ pub const THORN: usize = ROOTS + 1;
 pub const RING: usize = THORN + 1;
 /// A ball of web, strands trailing off it, its middle at 0
 pub const WEB: usize = RING + 1;
+/// Then the stretches of lash a whip's lash is drawn with, see LashLook: a model as thick as each
+/// of LASH_TAPERS for each of the LASH_SETS, then each of the CRACKERS for its tip
+pub const LASH_SEGMENTS: usize = WEB + 1;
+pub const LASH_CRACKERS: usize = LASH_SEGMENTS + LASH_SETS * LASH_TAPERS.len();
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
 /// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the shaft
@@ -2116,6 +2144,15 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         p.push(limb([0.0, 0.0, 0.0], d.map(|v| v / n * 0.5), 0.05, 0.015, FOAM));
     }
     models.push(voxelize(&p, MODEL_RES));
+    // A whip's lash: a stretch of it in each set at each thickness, then the crackers
+    for set in 0..LASH_SETS {
+        for radius in LASH_TAPERS {
+            models.push(voxelize(&lash_segment(set, radius), LASH_RES));
+        }
+    }
+    for kind in 0..CRACKERS {
+        models.push(voxelize(&lash_cracker(kind), LASH_RES));
+    }
     models
 }
 
@@ -2212,11 +2249,24 @@ mod tests {
             assert_eq!(profile.grade, weapon.grade);
             let reach = profile.stat("range");
             assert!((reach - reach_by_grade[weapon.grade]).abs() < 0.5, "a {} whip reaching {reach} m", library.rarities[weapon.grade].id);
-            // The lash hangs well out from the handle
-            assert!((weapon.look.tip - weapon.look.grip).norm() > 0.7);
+            // Its lash leaves the top of the handle, and has models to be drawn with
+            let lash = weapon.look.lash.as_ref().expect("a whip has a lash");
+            assert!(lash.root.z > weapon.look.grip.z + 0.05);
+            assert!(lash.set < LASH_SETS && lash.cracker < CRACKERS);
             seen.insert(weapon.grade);
         }
         assert_eq!(seen.len(), library.rarities.len(), "whips of every rarity");
+    }
+
+    #[test]
+    fn lash_models_are_where_combat_looks_for_them() {
+        assert_eq!(effect_models().len(), LASH_CRACKERS + CRACKERS);
+        // Elemental lashes glow, the rest are made of what they're made of
+        let library = Library::parse(BUILT_IN).unwrap();
+        for c in library.components.iter().filter(|c| c.slot_type == "lash") {
+            let (set, _) = lash_models(&c.visual_profile, &Visual::default());
+            assert_eq!(set >= LASH_GLOW, c.element.is_some(), "{}", c.id);
+        }
     }
 
     #[test]

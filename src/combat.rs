@@ -13,8 +13,8 @@ use crate::audio::{Cue, Sound};
 use crate::player::WaterLevel;
 use crate::weapons::{
     ARM_RES, ARMS, ARROW_RES, BOLT_RES, BOULDER, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES, HELD_ARROW_RES,
-    ICE_BURST, Kind, PILLAR, Profile, RING, RING_RES, ROOTS, THORN, WEB, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK, SPARK_RES, Style, Synergy, WHIP_COMING, WHIP_CRACK,
-    WHIP_RECOIL, WHIP_REST, WHIP_SETTLE, WHIP_SWAY, WHIP_TRAIL, Weapon, effect_models,
+    ICE_BURST, Kind, LASH_CRACKERS, LASH_RES, LASH_SEGMENTS, LASH_TAPERS, PILLAR, Profile, RING, RING_RES, ROOTS, THORN, WEB, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK,
+    SPARK_RES, Style, Synergy, Weapon, effect_models,
 };
 use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, MOSS, OBSIDIAN, SNOW};
 use crate::worldgen::{World, is_passable};
@@ -464,6 +464,155 @@ struct Echo {
     power: f64,
 }
 
+/// How many points a whip's lash is simulated as, from where it leaves the handle to its tip
+const LASH_POINTS: usize = 15;
+/// Steps of the simulation each frame, and passes in each keeping its points the right way apart
+const LASH_STEPS: usize = 4;
+const LASH_PASSES: usize = 10;
+/// How much of its speed the air takes away each second
+const LASH_DRAG: f64 = 1.2;
+/// How hard it's pulled into the shape a swing steers it into at full strength, per second squared
+const LASH_PULL: f64 = 1600.0;
+/// How far the lash's root is from the eye as it cracks, in meters: the lash is as long as the
+/// whip's reach less this, so its tip snaps out about as far as the whip reaches
+const LASH_SHORT: f64 = 0.8;
+/// How thick the lash is at its tip, next to where it leaves the handle
+const LASH_THIN: f64 = 0.5;
+/// How close to the eye the lash can come, in meters, so it goes round the player's head and
+/// never sweeps right across the view up close
+const LASH_HEAD: f64 = 0.4;
+
+/// Whether `p` is in something solid
+fn solid(world: &World, p: Vector3<f64>) -> bool {
+    p.z < 0.0 || !is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+}
+
+/// The direction `t` of the way round from `a` to `b`, both of them unit vectors
+fn swing_toward(a: Vector3<f64>, b: Vector3<f64>, t: f64) -> Vector3<f64> {
+    let angle = a.dot(&b).clamp(-1.0, 1.0).acos();
+    if angle < 1e-6 {
+        return b;
+    }
+    let axis = a.cross(&b).try_normalize(1e-6).or_else(|| a.cross(&Vector3::z()).try_normalize(1e-6)).unwrap_or_else(Vector3::x);
+    UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_unchecked(axis), angle * t) * a
+}
+
+/// A whip's lash, simulated as a rope: LASH_POINTS points, in the world's voxels, from its root at
+/// the top of the handle to its tip, moved on by Verlet integration under gravity and drag, kept a
+/// fixed distance apart, and kept out of the ground and the player's head. Its root goes where
+/// the hand takes the handle, so walking and turning sway it and swings throw it about.
+struct Lash {
+    points: Vec<Vector3<f64>>,
+    /// Where each point was a step ago, which is how fast it's going
+    before: Vec<Vector3<f64>>,
+    /// How far apart its points are kept, in voxels
+    segment: f64,
+    /// Where its root and the eye were after the last frame's steps, to move them smoothly
+    /// through this frame's
+    root: Vector3<f64>,
+    eye: Vector3<f64>,
+}
+
+impl Lash {
+    /// Hanging from `root` down to the ground and lying along it ahead
+    fn hanging(arena: &Arena, root: Vector3<f64>, segment: f64) -> Lash {
+        let view = arena.view;
+        let ahead = Vector3::new(view.forward().x, view.forward().y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+        let down = (ahead * 0.35 - Vector3::z()).normalize();
+        let mut points = vec![root];
+        for _ in 1..LASH_POINTS {
+            let last = *points.last().unwrap();
+            let next = [last + down * segment, last + ahead * segment].into_iter().find(|&p| !solid(arena.world, p)).unwrap_or(last + Vector3::new(0.0, 0.0, segment));
+            points.push(next);
+        }
+        Lash { before: points.clone(), points, segment, root, eye: view.eye }
+    }
+
+    fn tip(&self) -> Vector3<f64> {
+        self.points[LASH_POINTS - 1]
+    }
+
+    /// Moves it on `dt` seconds, its root moving to `root` and the eye to `eye` over that, and
+    /// each point pulled towards where `guide` steers it, if it does: how far from the root, in
+    /// voxels, and how hard, 0-1. `frame` is how long the frame really took, which is longer in
+    /// slow motion.
+    fn step(&mut self, arena: &Arena, root: Vector3<f64>, eye: Vector3<f64>, guide: Option<&[(Vector3<f64>, f64)]>, dt: f64, frame: f64) {
+        let vpm = arena.view.vpm;
+        let h = dt / LASH_STEPS as f64;
+        let gravity = Vector3::new(0.0, 0.0, -9.8 * vpm);
+        let keep = (-LASH_DRAG * h).exp();
+        // How fast the hand's really going, so the pull steers it relative to that. The player can
+        // still turn and move in the slow motion of a blow landing.
+        let carried = (root - self.root) / frame.max(dt).max(1e-6);
+        let (from_root, from_eye) = (self.root, self.eye);
+        for step in 1..=LASH_STEPS {
+            let k = step as f64 / LASH_STEPS as f64;
+            let (r, e) = (from_root.lerp(&root, k), from_eye.lerp(&eye, k));
+            for i in 1..LASH_POINTS {
+                let p = self.points[i];
+                let moved = (p - self.before[i]) * keep;
+                let mut a = gravity;
+                if let Some(&(offset, strength)) = guide.and_then(|g| g.get(i))
+                    && strength > 0.0
+                {
+                    // A critically damped pull, a little under, so it snaps there with a hint of
+                    // overshoot
+                    let pull = LASH_PULL * strength;
+                    a += (r + offset - p) * pull - (moved / h - carried) * (1.2 * pull.sqrt());
+                }
+                self.before[i] = p;
+                self.points[i] = p + moved + a * h * h;
+            }
+            self.points[0] = r;
+            self.before[0] = r;
+            // Each stretch kept the same length, from the root out, the root not giving
+            for _ in 0..LASH_PASSES {
+                for i in 0..LASH_POINTS - 1 {
+                    let d = self.points[i + 1] - self.points[i];
+                    let n = d.norm();
+                    if n < 1e-9 {
+                        continue;
+                    }
+                    let fix = d * ((n - self.segment) / n);
+                    if i == 0 {
+                        self.points[1] -= fix;
+                    } else {
+                        self.points[i] += fix * 0.5;
+                        self.points[i + 1] -= fix * 0.5;
+                    }
+                }
+            }
+            for i in 1..LASH_POINTS {
+                let mut p = self.points[i];
+                // Round the player's head
+                let off = p - e;
+                if off.norm() < LASH_HEAD * vpm {
+                    p = e + off.try_normalize(1e-9).unwrap_or_else(Vector3::z) * LASH_HEAD * vpm;
+                }
+                // Out of the ground, onto it, sliding to a stop along it
+                if solid(arena.world, p) {
+                    let lifted = Vector3::new(p.x, p.y, p.z.floor() + 1.02);
+                    p = if solid(arena.world, lifted) { self.before[i] } else { lifted };
+                    let b = self.before[i];
+                    self.before[i] = Vector3::new(p.x - (p.x - b.x) * 0.7, p.y - (p.y - b.y) * 0.7, p.z);
+                }
+                self.points[i] = p;
+            }
+        }
+        self.root = root;
+        self.eye = eye;
+    }
+
+    /// The world moved over by `shift` voxels
+    fn recenter(&mut self, shift: Vector3<f64>) {
+        for p in self.points.iter_mut().chain(self.before.iter_mut()) {
+            *p -= shift;
+        }
+        self.root -= shift;
+        self.eye -= shift;
+    }
+}
+
 pub struct Combat {
     pub mana: f64,
     action: Action,
@@ -478,10 +627,20 @@ pub struct Combat {
     /// Which blow of a combo the next swing is, and how long until the combo's dropped
     combo: u8,
     combo_timer: f64,
-    /// Seconds the swing stops dead for as a blow lands, so it feels like it hit something
+    /// Seconds the swing goes on in slow motion for as a blow lands, so it feels like it hit
+    /// something, see HITSTOP_PACE
     hitstop: f64,
     /// The weapon jolting back from a blow, 0-1
     recoil: f64,
+    /// The pose the weapon in hand was drawn in this frame, how fast it was moving, in meters and
+    /// radians a second, and the move it was drawn for, so a new move blends in from wherever it
+    /// really was rather than snapping
+    drawn: Option<Pose>,
+    drawn_velocity: (Vector3<f64>, Vector3<f64>),
+    drawn_action: Action,
+    blending: Option<Blending>,
+    /// The lash of the whip in hand, if it's a whip
+    lash: Option<Lash>,
     /// How hard the camera shakes, wearing off
     pub shake: f64,
     /// How fast the player is going in meters a second, and how far they've walked, to bob what's
@@ -628,22 +787,284 @@ fn pose(hand: [f64; 3], along: [f64; 3], edge: [f64; 3]) -> Pose {
 }
 
 fn blend(a: &Pose, b: &Pose, t: f64) -> Pose {
-    Pose { hand: a.hand.lerp(&b.hand, t), turn: a.turn.try_slerp(&b.turn, t, 1e-9).unwrap_or(b.turn) }
+    Pose { hand: a.hand.lerp(&b.hand, t), turn: turn_toward(&a.turn, &b.turn, t) }
+}
+
+/// `a` turned `t` of the shortest way round to `b`, or on past it for `t` over 1
+fn turn_toward(a: &UnitQuaternion<f64>, b: &UnitQuaternion<f64>, t: f64) -> UnitQuaternion<f64> {
+    a * UnitQuaternion::from_scaled_axis((a.inverse() * b).scaled_axis() * t)
+}
+
+/// `a` turned `t` of the way to `b` along the great arc between them as quaternions, or on past
+/// it. Unlike turn_toward() this never jumps to going round the other way when `a` and `b` are
+/// turned more than half a turn apart, which the mixes inside a spline can be, so long as the
+/// keys it's made from have their signs lined up.
+fn arc_toward(a: &UnitQuaternion<f64>, b: &UnitQuaternion<f64>, t: f64) -> UnitQuaternion<f64> {
+    let (qa, qb) = (a.coords, b.coords);
+    let theta = qa.dot(&qb).clamp(-1.0, 1.0).acos();
+    let q = if theta < 1e-6 {
+        qa.lerp(&qb, t)
+    } else {
+        let s = theta.sin();
+        qa * (((1.0 - t) * theta).sin() / s) + qb * ((t * theta).sin() / s)
+    };
+    UnitQuaternion::new_normalize(nalgebra::Quaternion::from(q))
+}
+
+/// A pose `k` of the way from `a` to `b`, the hand pushed out by `push` meters: an in-between key,
+/// so a blade comes round in an arc rather than cutting the corner straight across
+fn through(a: &Pose, b: &Pose, k: f64, push: [f64; 3]) -> Pose {
+    let mut p = blend(a, b, k);
+    p.hand += Vector3::from(push);
+    p
+}
+
+/// A lunge reaching full stretch at `full`: it lands `meters` short of that along the blade, still
+/// driving hard, carries on to full stretch, then is drawn back by `back` meters and held a moment,
+/// rather than already slowing as the blow lands
+fn lunge_keys(lands: f64, full: Pose, meters: f64, back: [f64; 3]) -> [(f64, Pose, bool); 3] {
+    let mut contact = full.clone();
+    contact.hand -= full.turn * Vector3::z() * meters;
+    let mut held = full.clone();
+    held.hand += Vector3::from(back);
+    [(lands, contact, true), (lands + 0.05, full, false), (lands + 0.15, held, false)]
+}
+
+/// Keys closer together than this, as parts of a move, are a cut: the weapon's out of sight there,
+/// gone round behind, so it jumps from one to the next rather than sweeping across the view
+const CUT: f64 = 0.025;
+/// How far a weapon's tip moves for each radian it turns, in meters, for spacing keys by how far
+/// apart they look rather than just how far the hand moves
+const LEVER: f64 = 0.45;
+/// How much faster than the move's own pace it's going as it reaches a key it speeds up into
+const QUICK: f64 = 1.7;
+
+/// Catmull-Rom through four points, by Barry and Goldman's pyramid of mixes, at `s` between the
+/// knots of the middle two. With `mix` turning rotations it gives a rotation spline whose turning
+/// speed carries on smoothly through each key, as the hand's speed does.
+fn catmull_rom<T>(p: [&T; 4], k: [f64; 4], s: f64, mix: impl Fn(&T, &T, f64) -> T) -> T {
+    let r = |i: usize, j: usize| (s - k[i]) / (k[j] - k[i]);
+    let a1 = mix(p[0], p[1], r(0, 1));
+    let a2 = mix(p[1], p[2], r(1, 2));
+    let a3 = mix(p[2], p[3], r(2, 3));
+    let b1 = mix(&a1, &a2, r(0, 2));
+    let b2 = mix(&a2, &a3, r(1, 3));
+    mix(&b1, &b2, r(1, 2))
+}
+
+/// The cubic from `s0` at `t0` to `s1` at `t1`, leaving and arriving with slopes `m0` and `m1`
+fn hermite(t0: f64, t1: f64, s0: f64, s1: f64, m0: f64, m1: f64, t: f64) -> f64 {
+    let h = t1 - t0;
+    let x = ((t - t0) / h).clamp(0.0, 1.0);
+    let (x2, x3) = (x * x, x * x * x);
+    (2.0 * x3 - 3.0 * x2 + 1.0) * s0 + (x3 - 2.0 * x2 + x) * h * m0 + (3.0 * x2 - 2.0 * x3) * s1 + (x3 - x2) * h * m1
 }
 
 /// The pose `f` of the way through a move going from `rest` through `keys` and back: poses, each
-/// with when it's reached, 0-1, and whether it's reached speeding up, as a blow is, instead of
-/// easing in and out
+/// with when it's reached, 0-1, and whether it's reached speeding up, as a blow is.
+///
+/// The hand follows a centripetal Catmull-Rom spline through the keys, and the weapon turns along
+/// the same spline made of turns, so neither stops dead at a key. Keys are spaced along it by how
+/// far apart they look. Time is warped onto it by a monotone cubic, so the move eases out of rest
+/// and back into it, speeds up into a quick key and lingers a little on the one before, all
+/// without its speed ever dropping to nothing partway.
 fn animate(rest: &Pose, keys: &[(f64, Pose, bool)], f: f64) -> Pose {
-    let mut from = (0.0, rest);
+    let f = f.clamp(0.0, 1.0);
+    let mut all: Vec<(f64, &Pose, bool)> = Vec::with_capacity(keys.len() + 2);
+    all.push((0.0, rest, false));
     for (at, pose, quick) in keys {
-        if f < *at {
-            let k = ((f - from.0) / (at - from.0)).clamp(0.0, 1.0);
-            return blend(from.1, pose, if *quick { k * k } else { smooth(k) });
-        }
-        from = (*at, pose);
+        // Keys out of order are taken as coming straight after the one before
+        let at = at.clamp(all.last().unwrap().0, 1.0);
+        all.push((at, pose, *quick));
     }
-    blend(from.1, rest, smooth((f - from.0) / (1.0 - from.0)))
+    all.push((1.0, rest, false));
+    // The piece between cuts that `f` is in: from the key after the last cut before it to the
+    // key before the next cut. In the moment of a cut it's already gone on to the next.
+    let mut start = 0;
+    let mut end = all.len() - 1;
+    for i in 0..all.len() - 1 {
+        if all[i + 1].0 - all[i].0 < CUT {
+            if f > all[i].0 {
+                start = i + 1;
+            } else {
+                end = i;
+                break;
+            }
+        }
+    }
+    let piece = &all[start..=end];
+    if piece.len() == 1 {
+        return piece[0].1.clone();
+    }
+    let n = piece.len();
+    // Each key's turn as the quaternion nearest the one before, so the spline goes the short
+    // way round between them
+    let mut poses: Vec<Pose> = piece.iter().map(|k| k.1.clone()).collect();
+    for i in 1..n {
+        if poses[i].turn.coords.dot(&poses[i - 1].turn.coords) < 0.0 {
+            poses[i].turn = UnitQuaternion::new_unchecked(-poses[i].turn.into_inner());
+        }
+    }
+    // Knots spaced by the square root of how far apart keys look: centripetal, so it neither
+    // overshoots on short hops nor loops round at sharp turns
+    let apart = |a: &Pose, b: &Pose| (a.hand - b.hand).norm() + LEVER * (a.turn.inverse() * b.turn).angle();
+    let mut knots = vec![0.0; n];
+    for i in 1..n {
+        knots[i] = knots[i - 1] + apart(&poses[i - 1], &poses[i]).max(2e-3).sqrt();
+    }
+    // The time warp's slope at each key, in knots a part of the move: easing out of and into rest,
+    // carrying on at pace through a cut, in between the harmonic mean of the slopes either side
+    let pace: Vec<f64> = (0..n - 1).map(|i| (knots[i + 1] - knots[i]) / (piece[i + 1].0 - piece[i].0).max(1e-6)).collect();
+    let mut slope = vec![0.0; n];
+    slope[0] = if start == 0 { 0.0 } else { pace[0] };
+    slope[n - 1] = if end == all.len() - 1 { 0.0 } else { pace[n - 2] };
+    for i in 1..n - 1 {
+        let (h0, h1) = (piece[i].0 - piece[i - 1].0, piece[i + 1].0 - piece[i].0);
+        let (w0, w1) = (2.0 * h1 + h0, h1 + 2.0 * h0);
+        slope[i] = (w0 + w1) / (w0 / pace[i - 1] + w1 / pace[i]);
+    }
+    // Speeding up into a blow: reaching it QUICK times as fast as it went on average on the way
+    // there. The spline itself goes slower or faster through a key depending on how far the keys
+    // either side are, so that's made up for by how fast the time warp goes through it. A wind-up
+    // before it lingers by itself, as the hand turns round there.
+    for i in 1..n {
+        if !piece[i].2 {
+            continue;
+        }
+        if i + 1 == n {
+            slope[i] = slope[i].max(QUICK * pace[i - 1]);
+            continue;
+        }
+        // How far it looks to move for each knot of the spline, going through the key
+        let (d0, d1) = (knots[i] - knots[i - 1], knots[i + 1] - knots[i]);
+        let w = d0 / (d0 + d1);
+        let hand = (poses[i].hand - poses[i - 1].hand) * ((1.0 - w) / d0) + (poses[i + 1].hand - poses[i].hand) * (w / d1);
+        let turn = (poses[i - 1].turn.inverse() * poses[i].turn).scaled_axis() * ((1.0 - w) / d0) + (poses[i].turn.inverse() * poses[i + 1].turn).scaled_axis() * (w / d1);
+        let along = hand.norm() + LEVER * turn.norm();
+        let average = apart(&poses[i - 1], &poses[i]) / (piece[i].0 - piece[i - 1].0).max(1e-6);
+        slope[i] = slope[i].max(QUICK * average / along.max(0.05));
+    }
+    // Kept from overshooting, so it never runs back along the spline (Fritsch and Carlson)
+    for i in 0..n - 1 {
+        let (a, b) = (slope[i] / pace[i], slope[i + 1] / pace[i]);
+        if a * a + b * b > 9.0 {
+            let tau = 3.0 / (a * a + b * b).sqrt();
+            slope[i] = tau * a * pace[i];
+            slope[i + 1] = tau * b * pace[i];
+        }
+    }
+    let i = (0..n - 1).find(|&i| f <= piece[i + 1].0).unwrap_or(n - 2);
+    let s = hermite(piece[i].0, piece[i + 1].0, knots[i], knots[i + 1], slope[i], slope[i + 1], f);
+    // The four keys round it, the ends of the piece mirrored to make up the missing ones: `a`
+    // carried on past by as much again as it came from `b`
+    let mirror = |a: &Pose, b: &Pose| {
+        let (qa, qb) = (a.turn.coords, b.turn.coords);
+        let turn = UnitQuaternion::new_normalize(nalgebra::Quaternion::from(qa * (2.0 * qa.dot(&qb)) - qb));
+        Pose { hand: a.hand * 2.0 - b.hand, turn }
+    };
+    let get = |j: isize| -> (f64, Pose) {
+        if j < 0 {
+            (knots[0] - (knots[1] - knots[0]), mirror(&poses[0], &poses[1]))
+        } else if j as usize >= n {
+            (knots[n - 1] + (knots[n - 1] - knots[n - 2]), mirror(&poses[n - 1], &poses[n - 2]))
+        } else {
+            (knots[j as usize], poses[j as usize].clone())
+        }
+    };
+    let quad = [get(i as isize - 1), get(i as isize), get(i as isize + 1), get(i as isize + 2)];
+    let k = [quad[0].0, quad[1].0, quad[2].0, quad[3].0];
+    let hand = catmull_rom([&quad[0].1.hand, &quad[1].1.hand, &quad[2].1.hand, &quad[3].1.hand], k, s, |a, b, t| a.lerp(b, t));
+    let turn = catmull_rom([&quad[0].1.turn, &quad[1].1.turn, &quad[2].1.turn, &quad[3].1.turn], k, s, arc_toward);
+    Pose { hand, turn }
+}
+
+/// What's left of a jump in pose, dying away smoothly over a moment: one number's worth of
+/// inertialization (Bollo), a quintic that starts at the jump `x0` going at `v0` and comes to rest
+/// at nothing, still, `length` seconds on
+#[derive(Clone, Copy)]
+struct Fade {
+    x0: f64,
+    v0: f64,
+    a0: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    length: f64,
+}
+
+impl Fade {
+    fn new(x0: f64, v0: f64, length: f64) -> Fade {
+        // Moving away from where it's going would only overshoot, so that's let go of, and it's
+        // shortened if it's coming in fast enough to get there sooner
+        let v0 = v0.min(0.0);
+        let length = if v0 < 0.0 { length.min(-5.0 * x0 / v0).max(1e-3) } else { length };
+        let t = length;
+        let a0 = (-8.0 * v0 * t - 20.0 * x0) / (t * t);
+        let a = -(a0 * t * t + 6.0 * v0 * t + 12.0 * x0) / (2.0 * t.powi(5));
+        let b = (3.0 * a0 * t * t + 16.0 * v0 * t + 30.0 * x0) / (2.0 * t.powi(4));
+        let c = -(3.0 * a0 * t * t + 12.0 * v0 * t + 20.0 * x0) / (2.0 * t.powi(3));
+        Fade { x0, v0, a0, a, b, c, length }
+    }
+
+    fn at(&self, t: f64) -> f64 {
+        if t >= self.length {
+            return 0.0;
+        }
+        let t = t.max(0.0);
+        ((((self.a * t + self.b) * t + self.c) * t + self.a0 * 0.5) * t + self.v0) * t + self.x0
+    }
+}
+
+/// How long a new move takes to blend in from wherever the weapon really was, in seconds
+const BLEND: f64 = 0.08;
+/// How fast time goes for a swing while it's stopped by a blow landing: heavy slow motion, not a
+/// dead stop, which would read as a stutter
+const HITSTOP_PACE: f64 = 0.1;
+
+/// The pose drawn last frame blending into a new move's: how far off the hand and the turn were
+/// when it started, which way, and how long ago
+struct Blending {
+    age: f64,
+    hand: (Vector3<f64>, Fade),
+    turn: (Vector3<f64>, Fade),
+}
+
+impl Blending {
+    /// From `drawn`, moving at `velocity` (meters and radians a second), into `target`
+    fn new(drawn: &Pose, velocity: (Vector3<f64>, Vector3<f64>), target: &Pose) -> Blending {
+        let off = drawn.hand - target.hand;
+        let away = off.try_normalize(1e-9).unwrap_or_else(Vector3::x);
+        let turned = (drawn.turn * target.turn.inverse()).scaled_axis();
+        let about = turned.try_normalize(1e-9).unwrap_or_else(Vector3::x);
+        Blending {
+            age: 0.0,
+            hand: (away, Fade::new(off.norm(), velocity.0.dot(&away), BLEND)),
+            turn: (about, Fade::new(turned.norm(), velocity.1.dot(&about), BLEND)),
+        }
+    }
+
+    fn apply(&self, target: &Pose) -> Pose {
+        let (away, hand) = &self.hand;
+        let (about, turn) = &self.turn;
+        Pose { hand: target.hand + away * hand.at(self.age), turn: UnitQuaternion::from_scaled_axis(about * turn.at(self.age)) * target.turn }
+    }
+
+    fn done(&self) -> bool {
+        self.age >= self.hand.1.length.max(self.turn.1.length)
+    }
+}
+
+/// Whether the weapon went from `before` into a new move, rather than carrying on with the same one
+fn new_move(before: Action, now: Action) -> bool {
+    match (before, now) {
+        (Action::Idle, Action::Idle) => false,
+        (Action::Swing { t: a, .. }, Action::Swing { t: b, .. })
+        | (Action::Special { t: a, .. }, Action::Special { t: b, .. })
+        | (Action::Cast { t: a, .. }, Action::Cast { t: b, .. })
+        | (Action::Draw { t: a }, Action::Draw { t: b })
+        | (Action::Loose { t: a }, Action::Loose { t: b }) => b < a,
+        _ => true,
+    }
 }
 
 /// The last blow of a combo, which hits hardest
@@ -660,7 +1081,8 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Smash => (0.45, 0.6),
             Style::Stab => (0.35, 0.5),
             Style::Thrust => (0.3, 0.47),
-            Style::Lash => (0.4, 0.5),
+            // Time for the lash to go round in a loop overhead first
+            Style::Lash => (0.5, 0.6),
             _ => (0.4, 0.52),
         };
     }
@@ -687,92 +1109,139 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
     let (comes, lands) = timing(style, heavy, combo);
     let flip = combo == 1;
     let finisher = combo == FINISHER && !heavy;
+    // When the in-between key of a blow coming round in an arc is reached
+    let midway = comes + 0.55 * (lands - comes);
+    // A blow wound up at `wound`, struck through `strike` as it lands, carrying on to `end` and
+    // slowing to `after`: an arc pushed out by `push` on the way in, so it sweeps rather than
+    // cutting straight across
+    let arc = |wound: Pose, push: [f64; 3], strike: Pose, end: Pose, after: Pose| {
+        vec![(comes, wound.clone(), false), (midway, through(&wound, &strike, 0.5, push), false), (lands, strike, true), (lands + 0.12, end, false), (lands + 0.24, after, false)]
+    };
     // Wound up only as far as the edge of the screen, so the weapon stays in sight.
-    // Raised high and brought straight down: the overhead blow of a heavy sword or axe
+    // Raised high and brought straight down: the overhead blow of a heavy sword or axe, gathered
+    // a moment first, coming over the top and sinking after it lands
     let overhead = || {
+        let raised = pose([0.22, 0.33, 0.0], [0.15, 0.1, 0.98], [0.0, 0.98, -0.12]);
+        let strike = pose([0.1, 0.58, -0.22], [0.04, 0.99, -0.05], [0.0, -0.05, -1.0]);
         vec![
-            (comes, pose([0.22, 0.36, -0.02], [0.15, 0.25, 0.96], [0.0, 0.96, -0.25]), false),
-            (0.62, pose([0.06, 0.55, -0.36], [0.0, 0.95, -0.3], [0.0, -0.3, -0.95]), true),
+            (comes * 0.35, pose([0.31, 0.42, -0.31], [-0.02, 0.55, 0.83], [0.0, 1.0, 0.0]), false),
+            (comes, raised.clone(), false),
+            (midway, through(&raised, &strike, 0.5, [0.0, 0.03, 0.07]), false),
+            (lands, strike, true),
+            (lands + 0.1, pose([0.06, 0.55, -0.36], [0.0, 0.95, -0.3], [0.0, -0.3, -0.95]), false),
+            (lands + 0.22, pose([0.07, 0.5, -0.4], [0.0, 0.85, -0.52], [0.0, -0.52, -0.85]), false),
         ]
     };
     // A sweep from the right across to the left, the edge leading
-    let sweep = |comes: f64, lands: f64| {
-        vec![
-            (comes, pose([0.22, 0.36, -0.16], [0.75, 0.35, 0.55], [-0.3, 1.0, 0.0]), false),
-            (lands, pose([0.16, 0.55, -0.2], [0.3, 0.93, 0.15], [-1.0, 0.3, 0.0]), true),
-            (lands + 0.13, pose([-0.1, 0.5, -0.28], [-0.8, 0.55, 0.05], [-0.55, -0.8, 0.0]), false),
-        ]
+    let sweep = || {
+        arc(
+            pose([0.22, 0.36, -0.16], [0.75, 0.35, 0.55], [-0.3, 1.0, 0.0]),
+            [0.04, 0.07, 0.0],
+            pose([0.16, 0.55, -0.2], [0.3, 0.93, 0.15], [-1.0, 0.3, 0.0]),
+            pose([-0.1, 0.5, -0.28], [-0.8, 0.55, 0.05], [-0.55, -0.8, 0.0]),
+            pose([-0.15, 0.44, -0.33], [-0.9, 0.38, -0.12], [-0.38, -0.92, 0.0]),
+        )
     };
     if finisher {
         return match style {
             // Drawn back to the hip and driven straight in
             Style::Slash => {
                 let lunge = pose([0.08, 0.72, -0.15], [-0.1, 0.99, 0.1], [-1.0, 0.0, 0.0]);
-                let mut held = lunge.clone();
-                held.hand.y -= 0.04;
-                vec![(comes, pose([0.3, 0.2, -0.3], [0.05, 0.95, 0.3], [-1.0, 0.0, 0.0]), false), (lands, lunge, true), (lands + 0.12, held, false)]
+                let mut keys = vec![(comes, pose([0.3, 0.2, -0.3], [0.05, 0.95, 0.3], [-1.0, 0.0, 0.0]), false)];
+                keys.extend(lunge_keys(lands, lunge, 0.13, [0.0, -0.04, 0.0]));
+                keys
             }
             // Raised high and slammed down, as a heavy blow
             Style::Smash | Style::Stab => swing(style, true, 0),
             // A wide sweep of the spear
-            Style::Thrust => sweep(comes, lands),
+            Style::Thrust => sweep(),
             _ => overhead(),
         };
     }
     match (style, heavy) {
-        (Style::Slash, false) if flip => vec![
-            // The backhand, from the upper left down to the right
-            (comes, pose([-0.02, 0.36, -0.06], [-0.45, 0.3, 0.84], [0.83, 0.2, 0.55]), false),
-            (0.55, pose([0.36, 0.52, -0.36], [0.8, 0.5, -0.3], [0.35, -0.1, -0.93]), true),
-        ],
-        (Style::Slash, false) => vec![
-            (comes, pose([0.3, 0.34, -0.08], [0.45, 0.3, 0.84], [-0.83, 0.2, 0.55]), false),
-            (0.55, pose([-0.12, 0.52, -0.38], [-0.8, 0.5, -0.3], [-0.35, -0.1, -0.93]), true),
-        ],
-        (Style::Chop, false) if flip => vec![
-            // Cleaving down at a slant
-            (comes, pose([0.24, 0.36, -0.04], [0.3, 0.25, 0.92], [0.0, 1.0, -0.3]), false),
-            (lands, pose([0.0, 0.6, -0.3], [-0.4, 0.75, -0.5], [-0.2, 0.2, -1.0]), true),
-            (lands + 0.13, pose([-0.05, 0.5, -0.4], [-0.5, 0.4, -0.75], [-0.2, 0.2, -1.0]), false),
-        ],
-        (Style::Chop, false) => sweep(comes, lands),
+        // The backhand, from the upper left down to the right
+        (Style::Slash, false) if flip => arc(
+            pose([-0.02, 0.36, -0.06], [-0.45, 0.3, 0.84], [0.83, 0.2, 0.55]),
+            [0.0, 0.06, 0.03],
+            pose([0.18, 0.56, -0.22], [0.22, 0.95, 0.1], [0.72, -0.1, -0.68]),
+            pose([0.36, 0.52, -0.36], [0.8, 0.5, -0.3], [0.35, -0.1, -0.93]),
+            pose([0.35, 0.48, -0.38], [0.8, 0.42, -0.42], [0.35, -0.2, -0.92]),
+        ),
+        // The forehand, from the upper right down to the left, wound up where it can still be seen
+        (Style::Slash, false) => arc(
+            pose([0.26, 0.36, -0.07], [0.38, 0.28, 0.88], [-0.86, 0.2, 0.45]),
+            [0.0, 0.06, 0.03],
+            pose([0.1, 0.56, -0.22], [-0.2, 0.95, 0.12], [-0.72, -0.05, -0.7]),
+            pose([-0.12, 0.52, -0.38], [-0.8, 0.5, -0.3], [-0.35, -0.1, -0.93]),
+            pose([-0.16, 0.46, -0.42], [-0.86, 0.33, -0.4], [-0.3, -0.2, -0.93]),
+        ),
+        // Cleaving down at a slant
+        (Style::Chop, false) if flip => arc(
+            pose([0.24, 0.36, -0.04], [0.3, 0.25, 0.92], [0.0, 1.0, -0.3]),
+            [0.0, 0.05, 0.06],
+            pose([0.0, 0.6, -0.3], [-0.4, 0.75, -0.5], [-0.2, 0.2, -1.0]),
+            pose([-0.05, 0.5, -0.4], [-0.5, 0.4, -0.75], [-0.2, 0.2, -1.0]),
+            pose([-0.06, 0.46, -0.43], [-0.5, 0.33, -0.8], [-0.2, 0.25, -0.95]),
+        ),
+        (Style::Chop, false) => sweep(),
         // The blade kept pointing across to the left, the pole swept round from the right, then
         // back the other way, its point leading
-        (Style::Reap, false) if flip => vec![
-            (comes, pose([-0.05, 0.36, -0.12], [-0.6, 0.35, 0.72], [1.0, 0.2, 0.0]), false),
-            (lands, pose([0.16, 0.55, -0.25], [0.0, 0.95, 0.3], [1.0, 0.1, 0.0]), true),
-            (lands + 0.13, pose([0.34, 0.45, -0.3], [0.7, 0.6, 0.2], [0.6, -0.8, 0.0]), false),
-        ],
-        (Style::Reap, false) => vec![
-            (comes, pose([0.3, 0.32, -0.12], [0.6, 0.35, 0.72], [-1.0, 0.2, 0.0]), false),
-            (lands, pose([0.12, 0.55, -0.25], [0.1, 0.95, 0.3], [-1.0, 0.1, 0.0]), true),
-            (lands + 0.13, pose([-0.1, 0.48, -0.3], [-0.7, 0.6, 0.2], [-0.6, -0.8, 0.0]), false),
-        ],
-        (Style::Smash, false) if flip => sweep(comes, lands),
+        (Style::Reap, false) if flip => arc(
+            pose([-0.05, 0.36, -0.12], [-0.6, 0.35, 0.72], [1.0, 0.2, 0.0]),
+            [-0.03, 0.06, 0.0],
+            pose([0.16, 0.55, -0.25], [0.0, 0.95, 0.3], [1.0, 0.1, 0.0]),
+            pose([0.34, 0.45, -0.3], [0.7, 0.6, 0.2], [0.6, -0.8, 0.0]),
+            pose([0.38, 0.4, -0.33], [0.82, 0.48, 0.1], [0.5, -0.86, 0.0]),
+        ),
+        (Style::Reap, false) => arc(
+            pose([0.3, 0.32, -0.12], [0.6, 0.35, 0.72], [-1.0, 0.2, 0.0]),
+            [0.03, 0.06, 0.0],
+            pose([0.12, 0.55, -0.25], [0.1, 0.95, 0.3], [-1.0, 0.1, 0.0]),
+            pose([-0.1, 0.48, -0.3], [-0.7, 0.6, 0.2], [-0.6, -0.8, 0.0]),
+            pose([-0.14, 0.43, -0.33], [-0.82, 0.48, 0.1], [-0.5, -0.86, 0.0]),
+        ),
+        (Style::Smash, false) if flip => sweep(),
         (Style::Smash, _) => {
-            // Heaved up over the shoulder and brought down hard, staying down a moment
-            let (raised, struck) = if heavy {
-                (pose([0.2, 0.32, -0.04], [0.1, 0.05, 0.99], [0.0, 1.0, -0.05]), pose([0.06, 0.6, -0.3], [0.0, 0.85, -0.5], [0.0, -0.5, -0.85]))
+            // Gathered, heaved up over the shoulder and brought over the top and down hard,
+            // driving on into what it hits, then easing back up a little and staying down a moment
+            let (raised, struck, bitten, settled) = if heavy {
+                (
+                    pose([0.2, 0.32, -0.04], [0.1, 0.05, 0.99], [0.0, 1.0, -0.05]),
+                    pose([0.06, 0.6, -0.3], [0.0, 0.85, -0.5], [0.0, -0.5, -0.85]),
+                    pose([0.06, 0.61, -0.37], [0.0, 0.78, -0.62], [0.0, -0.62, -0.78]),
+                    pose([0.06, 0.58, -0.35], [0.0, 0.81, -0.58], [0.0, -0.58, -0.81]),
+                )
             } else {
-                (pose([0.22, 0.36, -0.1], [0.12, 0.2, 0.97], [0.0, 1.0, -0.2]), pose([0.1, 0.6, -0.3], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]))
+                (
+                    pose([0.22, 0.36, -0.1], [0.12, 0.2, 0.97], [0.0, 1.0, -0.2]),
+                    pose([0.1, 0.6, -0.3], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]),
+                    pose([0.1, 0.61, -0.37], [0.0, 0.72, -0.7], [0.0, -0.7, -0.72]),
+                    pose([0.1, 0.58, -0.35], [0.0, 0.76, -0.65], [0.0, -0.65, -0.76]),
+                )
             };
-            let mut settled = struck.clone();
-            settled.hand.z -= 0.04;
-            vec![(comes, raised, false), (lands, struck, true), (lands + 0.12, settled, false)]
+            vec![
+                (comes * 0.4, pose([0.31, 0.43, -0.32], [-0.02, 0.58, 0.81], [0.0, 1.0, 0.0]), false),
+                (comes, raised.clone(), false),
+                (midway, through(&raised, &struck, 0.5, [0.0, 0.02, 0.09]), false),
+                (lands, struck, true),
+                (lands + 0.05, bitten, false),
+                (lands + 0.2, settled, false),
+            ]
         }
         (Style::Stab, false) => {
             // Drawn back and driven in, a little to the side every other time
             let lunge = if flip { pose([0.14, 0.7, -0.24], [-0.25, 0.95, 0.2], [0.0, 0.0, 1.0]) } else { pose([0.08, 0.72, -0.16], [-0.1, 0.98, 0.15], [0.0, 0.0, 1.0]) };
-            let mut held = lunge.clone();
-            held.hand.y -= 0.03;
-            vec![(comes, pose([0.22, 0.3, -0.26], [-0.1, 0.9, 0.4], [0.0, 0.0, 1.0]), false), (lands, lunge, true), (lands + 0.1, held, false)]
+            let mut keys = vec![(comes, pose([0.22, 0.3, -0.26], [-0.1, 0.9, 0.4], [0.0, 0.0, 1.0]), false)];
+            keys.extend(lunge_keys(lands, lunge, 0.13, [0.0, -0.03, 0.0]));
+            keys
         }
         (Style::Stab, true) => {
-            // Raised point down and plunged in
+            // Raised point down and plunged in, over the top
+            let raised = pose([0.2, 0.32, 0.02], [-0.05, 0.6, 0.8], [0.0, 1.0, 0.0]);
             let plunge = pose([0.06, 0.62, -0.34], [-0.05, 0.7, -0.7], [0.0, -0.7, -0.7]);
-            let mut held = plunge.clone();
-            held.hand.z -= 0.03;
-            vec![(comes, pose([0.2, 0.32, 0.02], [-0.05, 0.6, 0.8], [0.0, 1.0, 0.0]), false), (lands, plunge, true), (lands + 0.1, held, false)]
+            let mut keys = vec![(comes, raised.clone(), false), (midway, through(&raised, &plunge, 0.5, [0.0, 0.04, 0.06]), false)];
+            keys.extend(lunge_keys(lands, plunge, 0.13, [0.0, 0.0, -0.03]));
+            keys
         }
         (Style::Thrust, _) => {
             // Drawn back along the shaft and lunged on at the crosshair
@@ -781,8 +1250,10 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
             } else {
                 (pose([0.3, 0.12, -0.3], [0.0, 0.97, 0.2], [-1.0, 0.0, 0.0]), pose([0.16, 0.62, -0.22], [-0.12, 0.99, 0.04], [-1.0, 0.0, 0.0]))
             };
-            let held = blend(&lunge, &back, 0.1);
-            vec![(comes, back, false), (lands, lunge, true), (lands + 0.12, held, false)]
+            let towards = (back.hand - lunge.hand) * 0.1;
+            let mut keys = vec![(comes, back, false)];
+            keys.extend(lunge_keys(lands, lunge, 0.15, [towards.x, towards.y, towards.z]));
+            keys
         }
         _ => overhead(),
     }
@@ -798,7 +1269,7 @@ const LASH_SNARE: usize = 3;
 const LASH_FAN: usize = 4;
 const LASH_CIRCLE: usize = 5;
 /// When a double crack's second crack lands, as part of the whole swing, and how hard it hits
-const LASH_SECOND: f64 = 0.68;
+const LASH_SECOND: f64 = 0.78;
 const LASH_SECOND_POWER: f64 = 0.8;
 /// How wide a whip's fan reaches, as the cosine of the angle out from straight ahead, and how
 /// hard it hits each thing in it, and in the circle
@@ -816,76 +1287,149 @@ const LASH_SNARE_STAGGER: f64 = 0.7;
 /// of the speed it's thrown at
 const PUSH_DECAY: f64 = 6.0;
 
-/// The poses a whip's swing goes through, for animate(), by `combo` as for swing(), and by its
-/// `grade` as what it can do grows with it, see LASH_LINE and the rest: wound back over the
-/// shoulder or out to the side, then snapped forward to crack out at the crosshair. The lash is
-/// stiff in the model, so these are worked out for the curve weapons::whip() gives it, its tip
-/// about 22° off the line of the handle towards the model's x.
+/// A whip's handle held in the hand at `hand`, pointing `along`, for lash_keys(). It's round, so
+/// which way round it's turned hardly shows: it's kept turned the same way as near as can be.
+fn grip(hand: [f64; 3], along: [f64; 3]) -> Pose {
+    let a = Vector3::from(along).normalize();
+    let edge = a.cross(&Vector3::x()).try_normalize(0.2).unwrap_or_else(|| a.cross(&Vector3::y()));
+    pose(hand, along, [edge.x, edge.y, edge.z])
+}
+
+/// The poses a whip's handle goes through in a swing, for animate(), by `combo` as for swing(),
+/// and by its `grade` as what it can do grows with it, see LASH_LINE and the rest. The lash itself
+/// is a rope that follows the hand, steered as lash_cracks() says, see Combat::swing_lash().
+///
+/// A light blow flicks it out sideways: wound back out to the side, swept round in front and
+/// snapped across, the hand checking as it cracks, then following through across the body. The
+/// second goes back the other way. A heavy blow dips, raises the whip high so the lash falls back
+/// behind, and brings it over the top to crack forward and down; from epic it's cracked out level,
+/// held a moment as it catches, and yanked back in. A finisher whirls the lash round in a loop
+/// over the head and cracks it out of the loop, and from rare flicks it up and cracks it again.
 fn lash_keys(heavy: bool, combo: u8, grade: usize) -> Vec<(f64, Pose, bool)> {
     let (comes, lands) = timing(Style::Lash, heavy, combo);
     let finisher = combo == FINISHER && !heavy;
-    // Raised over the shoulder, the lash out of sight behind
-    let over = pose([0.27, 0.3, 0.03], [0.1, -0.75, 0.65], [0.0, 0.65, 0.75]);
-    let raised = pose([0.24, 0.24, 0.08], [0.05, -0.88, 0.47], [0.0, 0.47, 0.88]);
-    // Cracked out at the crosshair, then falling after it
-    let cracked = pose([0.16, 0.62, -0.17], [-0.2, 0.93, 0.33], [0.0, 0.33, -0.93]);
-    let fallen = pose([0.15, 0.58, -0.23], [-0.15, 0.97, 0.05], [0.1, 0.1, -0.99]);
-    if heavy && grade >= LASH_SNARE {
-        // Cracked out level, caught, and yanked back in
-        let out = pose([0.13, 0.68, -0.15], [-0.17, 0.95, 0.26], [0.0, 0.26, -0.97]);
-        let mut caught = out.clone();
-        caught.hand.y -= 0.02;
-        let yanked = pose([0.3, 0.36, -0.26], [0.0, 0.45, 0.9], [0.0, 0.9, -0.45]);
-        return vec![(comes, raised, false), (lands, out, true), (lands + 0.04, caught, false), (lands + 0.16, yanked, true)];
-    }
-    if finisher && grade >= LASH_CIRCLE {
-        // Whirled round from the right, across and out of sight to the left, round behind, and
-        // back in from the right to crack out ahead
-        let right = pose([0.55, 0.3, -0.2], [0.95, 0.2, 0.25], [-0.2, 0.98, 0.0]);
-        let across = pose([0.15, 0.6, -0.2], [0.38, 0.9, 0.15], [-0.92, 0.38, 0.0]);
-        let left = pose([-0.5, 0.38, -0.25], [-0.8, 0.55, 0.15], [-0.55, -0.83, 0.0]);
-        return vec![(comes, right.clone(), false), (lands, across, true), (lands + 0.07, left, false), (lands + 0.08, right, false), (LASH_SECOND, cracked, true), (LASH_SECOND + 0.12, fallen, false)];
-    }
-    if heavy || finisher {
-        // Raised high and cracked down hard, then for a double crack flicked up and cracked again
-        let first = pose([0.14, 0.64, -0.16], [-0.18, 0.9, 0.4], [0.0, 0.4, -0.9]);
-        if finisher && grade >= LASH_DOUBLE {
-            let flicked = pose([0.16, 0.56, -0.12], [-0.12, 0.72, 0.68], [0.0, 0.68, -0.72]);
-            let second = pose([0.12, 0.66, -0.2], [-0.16, 0.94, 0.3], [0.05, 0.3, -0.95]);
-            return vec![(comes, raised, false), (lands, first, true), (lands + 0.09, flicked, false), (LASH_SECOND, second, true), (LASH_SECOND + 0.12, fallen, false)];
+    // Cracked out at the crosshair, the hand checked
+    let cracked = grip([0.16, 0.65, -0.15], [-0.1, 0.97, 0.15]);
+    if heavy {
+        let mut keys = vec![
+            // Dipping a moment before it rises
+            (comes * 0.3, grip([0.3, 0.5, -0.26], [-0.05, 0.95, -0.25]), false),
+            (comes * 0.7, grip([0.25, 0.36, 0.04], [0.05, -0.1, 1.0]), false),
+            // Raised high, the lash falling back behind
+            (comes, grip([0.21, 0.3, 0.13], [0.05, -0.7, 0.72]), false),
+            (comes + 0.55 * (lands - comes), grip([0.18, 0.48, 0.07], [-0.02, 0.45, 0.9]), false),
+        ];
+        if grade >= LASH_SNARE {
+            // Cracked out level, caught, and yanked back in
+            keys.extend([
+                (lands, grip([0.14, 0.68, -0.15], [-0.12, 0.97, 0.1]), true),
+                (lands + 0.07, grip([0.14, 0.66, -0.16], [-0.12, 0.97, 0.06]), false),
+                (lands + 0.2, grip([0.3, 0.36, -0.22], [0.0, 0.5, 0.86]), true),
+                (lands + 0.34, grip([0.3, 0.42, -0.24], [-0.05, 0.85, 0.3]), false),
+            ]);
+        } else {
+            // Cracked forward and down, following through low
+            keys.extend([
+                (lands, grip([0.15, 0.67, -0.13], [-0.1, 0.96, -0.15]), true),
+                (lands + 0.12, grip([0.15, 0.6, -0.3], [-0.05, 0.72, -0.68]), false),
+                (lands + 0.28, grip([0.24, 0.5, -0.26], [-0.06, 0.9, -0.4]), false),
+            ]);
         }
-        return vec![(comes, raised, false), (lands, first, true), (lands + 0.14, fallen, false)];
+        return keys;
     }
-    match (grade >= LASH_FAN, combo == 1) {
-        // Swept round from the right across to the left, the lash arcing through a wide fan
-        (true, false) => vec![
-            (comes, pose([0.45, 0.35, -0.08], [0.7, 0.1, 0.7], [-0.1, 0.95, -0.2]), false),
-            (lands, pose([0.16, 0.62, -0.18], [0.3, 0.92, 0.25], [-0.95, 0.3, 0.05]), true),
-            (lands + 0.13, pose([-0.05, 0.55, -0.22], [-0.55, 0.8, 0.15], [-0.8, -0.55, 0.0]), false),
-        ],
-        // Then backhanded, from the left across to the right
-        (true, true) => vec![
-            (comes, pose([0.0, 0.38, -0.05], [-0.6, 0.15, 0.78], [0.15, 0.95, -0.1]), false),
-            (lands, pose([0.2, 0.62, -0.18], [-0.42, 0.88, 0.22], [0.9, 0.42, 0.0]), true),
-            (lands + 0.13, pose([0.36, 0.52, -0.24], [0.45, 0.88, 0.1], [0.88, -0.45, 0.0]), false),
-        ],
-        // Flicked round from out at the side
-        (false, true) => vec![
-            (comes, pose([0.42, 0.36, -0.1], [0.8, -0.35, 0.45], [0.4, 0.9, 0.0]), false),
-            (lands, pose([0.18, 0.62, -0.2], [0.3, 0.94, 0.12], [-0.95, 0.3, 0.0]), true),
-            (lands + 0.12, pose([0.1, 0.6, -0.25], [-0.2, 0.97, -0.05], [-0.97, -0.2, -0.1]), false),
-        ],
-        // Cracked down from over the shoulder
-        (false, false) => vec![(comes, over, false), (lands, cracked, true), (lands + 0.12, fallen, false)],
+    if finisher {
+        // The hand circling over the head, the lash swinging round after it, then cracked out of
+        // the loop
+        // The handle leans out the way the hand's going round, rather than straight up its arm
+        let mut keys = vec![
+            (0.1, grip([0.36, 0.48, 0.02], [0.85, 0.15, 0.5]), false),
+            (0.2, grip([0.29, 0.56, 0.08], [0.15, 0.85, 0.5]), false),
+            (0.3, grip([0.22, 0.48, 0.1], [-0.8, 0.25, 0.5]), false),
+            (0.4, grip([0.29, 0.41, 0.1], [0.1, -0.8, 0.55]), false),
+            (comes, grip([0.36, 0.47, 0.06], [0.85, -0.1, 0.5]), false),
+            (lands, cracked.clone(), true),
+        ];
+        if grade >= LASH_DOUBLE {
+            // Flicked up and cracked again, forward and down
+            keys.extend([
+                (lands + 0.09, grip([0.16, 0.61, -0.07], [-0.06, 0.6, 0.8]), false),
+                (LASH_SECOND, grip([0.13, 0.67, -0.16], [-0.1, 0.96, -0.1]), true),
+                (LASH_SECOND + 0.11, grip([0.14, 0.58, -0.3], [-0.05, 0.7, -0.7]), false),
+            ]);
+        } else {
+            keys.extend([(lands + 0.12, grip([0.02, 0.57, -0.25], [-0.55, 0.75, -0.3]), false), (lands + 0.26, grip([0.14, 0.5, -0.26], [-0.25, 0.92, -0.25]), false)]);
+        }
+        return keys;
     }
+    // A light blow, flicked across from out at one side, the forehand from the right and then the
+    // backhand from the left
+    let side = if combo == 1 { -1.0 } else { 1.0 };
+    // Where the hand is across at each key: the forehand winds out to the right and follows
+    // through to the left, the backhand winds across the body and follows through out right
+    let x = if combo == 1 { [0.16, 0.06, 0.1, 0.22, 0.38, 0.32] } else { [0.36, 0.38, 0.33, 0.17, 0.04, 0.14] };
+    vec![
+        (comes * 0.45, grip([x[0], 0.42, -0.12], [side * 0.6, 0.35, 0.72]), false),
+        // Wound back out to the side, still in sight
+        (comes, grip([x[1], 0.38, -0.07], [side * 0.85, -0.25, 0.46]), false),
+        // Swept round in front
+        (comes + 0.6 * (lands - comes), grip([x[2], 0.56, -0.09], [side * 0.5, 0.82, 0.25]), false),
+        // Snapped across, the hand checking
+        (lands, grip([x[3], 0.64, -0.14], [side * -0.08, 0.97, 0.18]), true),
+        // Following through across the body
+        (lands + 0.1, grip([x[4], 0.56, -0.24], [side * -0.6, 0.72, -0.3]), false),
+        (lands + 0.28, grip([x[5], 0.5, -0.25], [side * -0.25, 0.92, -0.25]), false),
+    ]
+}
+
+/// How a whip's lash is wound back before a crack, as lash_cracks() has it
+#[derive(Clone, Copy)]
+enum Wind {
+    /// Trailing back that way from the hand, in the camera's right, forward and up
+    Back([f64; 3]),
+    /// Whirled round over the head in a loop, coming round to trail back out to the right
+    Whirl,
+}
+
+/// One crack of a whip's lash in a swing, see Combat::swing_lash(): wound back as `wind` from
+/// `from` of the way through the swing, thrown out from the hand so it straightens out, the tip
+/// last, at the crosshair at `at`, held out there `hold` seconds, and let go. With `sweep` its
+/// aim sweeps across, from the right if it's positive, through a fan.
+#[derive(Clone, Copy)]
+struct Crack {
+    from: f64,
+    at: f64,
+    wind: Wind,
+    hold: f64,
+    sweep: f64,
+}
+
+/// How a whip's lash is steered through a swing, crack by crack, to go with lash_keys()
+fn lash_cracks(heavy: bool, combo: u8, grade: usize) -> Vec<Crack> {
+    let (_, lands) = timing(Style::Lash, heavy, combo);
+    let finisher = combo == FINISHER && !heavy;
+    // Held out straight just long enough to be seen, or a moment longer by a snare as it catches
+    let hold = 0.035;
+    if heavy {
+        let hold = if grade >= LASH_SNARE { 0.1 } else { hold };
+        return vec![Crack { from: 0.18, at: lands, wind: Wind::Back([0.1, -0.55, 0.85]), hold, sweep: 0.0 }];
+    }
+    if finisher {
+        let mut cracks = vec![Crack { from: 0.06, at: lands, wind: Wind::Whirl, hold, sweep: 0.0 }];
+        if grade >= LASH_DOUBLE {
+            cracks.push(Crack { from: lands + 0.04, at: LASH_SECOND, wind: Wind::Back([0.0, 0.2, 1.0]), hold, sweep: 0.0 });
+        }
+        return cracks;
+    }
+    let side = if combo == 1 { -1.0 } else { 1.0 };
+    // From legendary a light blow sweeps through a wide fan
+    let sweep = if grade >= LASH_FAN { side } else { 0.0 };
+    // Wound out to the side and up, where it can be seen, rather than straight back
+    vec![Crack { from: 0.06, at: lands, wind: Wind::Back([side * 0.65, 0.4, 0.6]), hold, sweep }]
 }
 
 /// How long a special attack takes with a weapon of `kind` and `style`, and the poses the weapon
 /// goes through, for animate()
 fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
-    // Forehand and backhand slashes, each wound up and landed
-    let forehand = (pose([0.3, 0.34, -0.08], [0.45, 0.3, 0.84], [-0.83, 0.2, 0.55]), pose([-0.12, 0.52, -0.38], [-0.8, 0.5, -0.3], [-0.35, -0.1, -0.93]));
-    let backhand = (pose([-0.02, 0.36, -0.06], [-0.45, 0.3, 0.84], [0.83, 0.2, 0.55]), pose([0.36, 0.52, -0.36], [0.8, 0.5, -0.3], [0.35, -0.1, -0.93]));
     // A bow drawn and loosed, kicking a little each time
     let drawn = pose([-0.1, 0.66, -0.08], [-0.33, 0.02, 0.94], [0.0, 1.0, 0.0]);
     let kicked = |side: f64| {
@@ -905,15 +1449,21 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
             let keys = vec![(0.08, right.clone(), false), (0.22, middle.clone(), true), (0.36, left.clone(), false), (0.37, right, false), (0.52, middle, true), (0.68, left, false), (0.7, low, false)];
             (0.75, keys)
         }
-        // Five quick slashes back and forth
+        // Five quick slashes, whirled round in loops in front rather than hacked back and forth:
+        // cutting down to the left through the middle, round beneath, back up to the right
+        // through the middle and round over the top, each cut landing as unleash() has it
         Special::Flurry => {
             let length = 0.55;
-            let keys = (1..=5)
-                .flat_map(|k| {
-                    let (wound, landed) = if k % 2 == 1 { forehand.clone() } else { backhand.clone() };
-                    [((0.08 * k as f64 - 0.04) / length, wound, false), (0.08 * k as f64 / length, landed, true)]
-                })
-                .collect();
+            let high_right = pose([0.32, 0.42, -0.06], [0.55, 0.45, 0.7], [-0.6, 0.3, 0.3]);
+            let cut_down = pose([0.08, 0.58, -0.18], [-0.25, 0.95, 0.15], [-0.7, 0.0, -0.7]);
+            let low_left = pose([-0.08, 0.48, -0.34], [-0.75, 0.45, -0.45], [0.55, 0.3, 0.5]);
+            let cut_up = pose([0.16, 0.57, -0.28], [0.25, 0.95, -0.1], [0.7, 0.0, 0.7]);
+            let mut keys = vec![(0.04 / length, high_right.clone(), false)];
+            for k in 1..=5 {
+                let (cut, round) = if k % 2 == 1 { (cut_down.clone(), low_left.clone()) } else { (cut_up.clone(), high_right.clone()) };
+                keys.push((0.08 * k as f64 / length, cut, true));
+                keys.push(((0.08 * k as f64 + 0.04) / length, round, false));
+            }
             (length, keys)
         }
         // Raised high overhead as it leaps, then brought straight down
@@ -1006,6 +1556,11 @@ impl Combat {
             combo_timer: 0.0,
             hitstop: 0.0,
             recoil: 0.0,
+            drawn: None,
+            drawn_velocity: (Vector3::zeros(), Vector3::zeros()),
+            drawn_action: Action::Idle,
+            blending: None,
+            lash: None,
             shake: 0.0,
             speed: 0.0,
             stride: 0.0,
@@ -1079,6 +1634,9 @@ impl Combat {
         if let Some(t) = &mut self.trail {
             *t -= shift;
         }
+        if let Some(lash) = &mut self.lash {
+            lash.recenter(shift);
+        }
         for s in &mut self.stuck {
             s.position -= shift;
         }
@@ -1110,6 +1668,7 @@ impl Combat {
         self.echoes.clear();
         self.popups.clear();
         self.craters.clear();
+        self.lash = None;
     }
 
     /// How far the bow in hand is drawn, 0-1
@@ -1147,6 +1706,9 @@ impl Combat {
             self.raise = 0.0;
             self.action = Action::Idle;
             self.trail = None;
+            self.drawn = None;
+            self.blending = None;
+            self.lash = None;
             if let Some((_, weapon)) = weapon {
                 let pitch = match weapon.kind() {
                     Kind::Melee => 1.0,
@@ -1160,6 +1722,8 @@ impl Combat {
 
         if let Some((_, weapon)) = weapon {
             self.wield(arena, weapon, controls, dt);
+            self.settle(weapon, dt);
+            self.swing_lash(arena, weapon, dt);
             self.flourish(arena.view, weapon, dt);
         }
 
@@ -1260,8 +1824,8 @@ impl Combat {
                 if let Action::Swing { t, length, heavy, struck, combo } = self.action {
                     let (comes, lands) = timing(profile.style, heavy, combo);
                     let finisher = combo == FINISHER && !heavy;
-                    // Stopped dead a moment as a blow lands
-                    let dt = if self.hitstop > 0.0 { 0.0 } else { dt };
+                    // In heavy slow motion a moment as a blow lands
+                    let dt = if self.hitstop > 0.0 { dt * HITSTOP_PACE } else { dt };
                     // Whooshing as it comes, and landing partway through the swing
                     if t < length * comes && t + dt >= length * comes {
                         let (sound, pitch) = match profile.style {
@@ -1991,8 +2555,8 @@ impl Combat {
         let snare = heavy && grade >= LASH_SNARE;
         let circle = finisher && grade >= LASH_CIRCLE;
         let fan = !snare && !circle && grade >= LASH_FAN;
-        // The lash in hand ends where its tip was last frame, as it trails, and reaches on from there
-        let tip = self.trail.unwrap_or_else(|| view.eye + view.rotation * Vector3::new(0.12, 1.5, -0.15) * vpm);
+        // Where the tip of the lash is as it cracks
+        let tip = self.lash.as_ref().map_or_else(|| view.eye + view.rotation * Vector3::new(0.12, 1.5, -0.15) * vpm, Lash::tip);
         // How far out from the line it cracks along it still hits, a little near and more further on
         let spread = (1.0 - profile.cone * profile.cone).max(0.0).sqrt() / profile.cone.max(0.1);
         let mut hits: Vec<(f64, usize)> = arena
@@ -2068,13 +2632,18 @@ impl Combat {
             }
         }
 
-        // The crack: sparks off the tip of the lash in hand, a flash where it cracks, and the lash
-        // flicking out there, sweeping a fan, or going right round
+        // The crack, at the tip of the lash: sparks and a flash, then a streak on to where it
+        // landed if that's further than the tip got, sweeping a fan, or going right round
         for _ in 0..if circle { 20 } else { 8 } {
             let v = self.any_direction() * (1.0 + random(&mut self.rng)) * vpm;
             self.fine(tip, v, look, 0.16, 0.3);
         }
-        self.flashes.push(Flash { position: end, color: profile.element.map_or([1.0, 0.92, 0.75], Element::light), reach: 2.5, life: 0.07, lifetime: 0.07 });
+        // Out at the end of the lash it's not right in front of the eye, so they're full size
+        let close = std::mem::replace(&mut self.close, (tip - view.eye).norm() < 1.5 * vpm);
+        self.sparks(tip, 5, 2.5, look, 0.4, 0.2);
+        self.close = close;
+        self.flashes.push(Flash { position: tip, color: profile.element.map_or([1.0, 0.92, 0.75], Element::light), reach: 2.5, life: 0.07, lifetime: 0.07 });
+        let short = |to: Vector3<f64>| (to - tip).norm() > 0.75 * vpm;
         self.cues.push(Cue::at(Sound::Crack, tip, if heavy || finisher { 0.9 } else { 0.7 }).pitched(1.55 + 0.2 * random(&mut self.rng) as f32));
         if circle {
             let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
@@ -2096,8 +2665,10 @@ impl Combat {
                 let life = 0.18 * (0.7 + 0.3 * random(&mut self.rng));
                 self.sparks.push(Spark { position: view.eye + out * reach * 0.95, velocity: up.cross(&out) * 3.0 * vpm, look, life, lifetime: life, gravity: 0.0, slot: SLOT_SPARK });
             }
-            self.lash_line(tip, stretch, look);
-        } else {
+            if short(stretch) {
+                self.lash_line(tip, stretch, look);
+            }
+        } else if short(end) {
             self.lash_line(tip, end, look);
         }
         self.cap_sparks();
@@ -2109,11 +2680,11 @@ impl Combat {
             self.shake = self.shake.max(if big { 0.5 } else { 0.2 });
         }
         // A double crack: flicked up and cracked again as the swing comes round, when lash_keys()
-        // has it land. The swing stands still while it's stopped dead, so that's added on.
+        // has it land. The swing all but stands still while it's in slow motion, so that's added on.
         if finisher && power >= 1.0 && grade >= LASH_DOUBLE {
             let length = if let Action::Swing { length, .. } = self.action { length } else { 0.6 };
             let (_, lands) = timing(Style::Lash, false, FINISHER);
-            let delay = (LASH_SECOND - lands) * length + self.hitstop.max(0.0);
+            let delay = (LASH_SECOND - lands) * length + self.hitstop.max(0.0) * (1.0 - HITSTOP_PACE);
             self.echoes.push(Echo { delay, profile: profile.clone(), shot: None, heavy: false, power: LASH_SECOND_POWER });
         }
         if power >= 1.0 && profile.has(Effect::Echo) && random(&mut self.rng) < profile.param(Effect::Echo, "chance", 0.35) {
@@ -3547,6 +4118,122 @@ impl Combat {
         }
     }
 
+    /// The lash of the whip in hand, a rope hanging from the top of its handle: swaying and
+    /// trailing as the player walks and turns, and through a swing steered as lash_cracks() has it,
+    /// winding back, rolling out from the hand and snapping straight at the crosshair as the blow
+    /// lands, then let go to fall and follow through
+    fn swing_lash(&mut self, arena: &Arena, weapon: &Weapon, dt: f64) {
+        let Some(look) = &weapon.look.lash else {
+            self.lash = None;
+            return;
+        };
+        let view = arena.view;
+        let vpm = view.vpm;
+        let segment = (weapon.profile.stat("range").max(1.0) - LASH_SHORT).max(1.5) * vpm / (LASH_POINTS - 1) as f64;
+        let root = self.held_at(weapon, view, look.root);
+        // Laid out afresh when first held, if it's grown, or if the hand jumped far
+        let fresh = self.lash.as_ref().is_none_or(|l| (l.segment - segment).abs() > 1e-6 || (l.root - root).norm() > 2.5 * vpm);
+        if fresh {
+            self.lash = Some(Lash::hanging(arena, root, segment));
+        }
+        // In slow motion with the swing as a blow lands
+        let frame = dt.min(0.05);
+        let slow = matches!(self.action, Action::Swing { .. }) && self.hitstop > 0.0;
+        let dt = if slow { frame * HITSTOP_PACE } else { frame };
+        if dt <= 0.0 {
+            return;
+        }
+        let guide = self.lash_guide(arena, weapon, root, segment);
+        if let Some(lash) = &mut self.lash {
+            lash.step(arena, root, view.eye, guide.as_deref(), dt, frame);
+        }
+    }
+
+    /// Where the swing in hand steers the whip's lash now, if it does: for each point, how far from
+    /// the root at `root` it's pulled to, in voxels, and how hard, 0-1.
+    ///
+    /// Through a crack, each stretch of the lash is pulled to point back the way it's wound, then
+    /// turned to point at the crosshair, the stretches nearest the hand first and the tip last,
+    /// which rolls a loop out along it that straightens at the tip just as the blow lands, out to
+    /// whatever's there or full stretch. It's held out a moment, then let go.
+    fn lash_guide(&self, arena: &Arena, weapon: &Weapon, root: Vector3<f64>, segment: f64) -> Option<Vec<(Vector3<f64>, f64)>> {
+        let Action::Swing { t, length, heavy, combo, .. } = self.action else {
+            return None;
+        };
+        let view = arena.view;
+        let crack = lash_cracks(heavy, combo, weapon.grade).into_iter().rev().find(|c| t >= c.from * length)?;
+        let at = crack.at * length;
+        let release = at + crack.hold;
+        if t > release + 0.08 {
+            return None;
+        }
+        // How long the throw takes to roll out from the hand to the tip, and each stretch's turn
+        let lead = (0.3 * length).min(0.11);
+        let turn = lead * 0.45;
+        // Where it's thrown, once it is: at the crosshair, as far as what's there
+        let (mut aim, distance) = if t < at - lead {
+            (view.forward(), f64::MAX)
+        } else {
+            let target = self.crack_point(arena, weapon.profile.stat("range").max(1.0) * view.vpm);
+            ((target - root).try_normalize(1e-9)?, (target - root).norm())
+        };
+        // A fan sweeps across from one side to the other as it cracks
+        if crack.sweep != 0.0 {
+            let across = ((at + 0.1 - t) / 0.2).clamp(0.0, 1.0) * 2.0 - 1.0;
+            let up = view.rotation * Vector3::z_axis();
+            aim = UnitQuaternion::from_axis_angle(&up, crack.sweep * across * 0.6) * aim;
+        }
+        // Which way each stretch is wound back at `time`, `u` of the way along the lash
+        let start = crack.from * length;
+        let wound = |time: f64, u: f64| -> Vector3<f64> {
+            match crack.wind {
+                Wind::Back(d) => view.rotation * Vector3::from(d).normalize(),
+                // A loop through the hand, going round once over the head like a lasso's, each
+                // stretch along it, coming round so it leaves the hand out back to the right as
+                // it's thrown
+                Wind::Whirl => {
+                    let k = ((time - start) / (at - lead - start).max(1e-3)).clamp(0.0, 1.0);
+                    let angle = 3.67 - (1.0 - k) * TAU - u * TAU;
+                    view.rotation * Vector3::new(-angle.sin(), angle.cos(), 0.3).normalize()
+                }
+            }
+        };
+        // Wound back gently, so it still sags and swings rather than standing out stiff, but
+        // whirled harder, to keep up with the loop
+        let firm = if matches!(crack.wind, Wind::Whirl) { 0.5 } else { 0.2 };
+        let winding = firm * smooth((t - start) / (0.25 * length).max(0.04));
+        let letting_go = 1.0 - smooth((t - release) / 0.08);
+        let mut out = Vec::with_capacity(LASH_POINTS);
+        let mut offset = Vector3::zeros();
+        out.push((offset, 0.0));
+        for i in 1..LASH_POINTS {
+            let u = i as f64 / (LASH_POINTS - 1) as f64;
+            let from = at - lead + (lead - turn) * u;
+            let k = smooth((t - from) / turn);
+            let dir = if k <= 0.0 { wound(t, u) } else { swing_toward(wound(from, u), aim, k) };
+            offset += dir * segment;
+            // Not on past what it cracks against
+            let ahead = offset.dot(&aim);
+            let pulled = if ahead > distance { offset - aim * (ahead - distance) } else { offset };
+            out.push((pulled, (winding + (1.0 - winding) * k) * letting_go));
+        }
+        Some(out)
+    }
+
+    /// Where a whip reaching `reach` voxels cracks: at the first thing along the crosshair, or out
+    /// at full stretch
+    fn crack_point(&self, arena: &Arena, reach: f64) -> Vector3<f64> {
+        let view = arena.view;
+        let far = view.eye + view.forward() * reach;
+        let mut t = solid_along(arena.world, view.eye, far).unwrap_or(1.0);
+        for a in arena.animals.iter().filter(|a| a.health > 0.0 && !a.look.is_pet()) {
+            if let Some(hit) = sphere_hit(view.eye, far, a.center(view.vpm as u32), a.look.body().1 * view.vpm) {
+                t = t.min(hit);
+            }
+        }
+        view.eye + (far - view.eye) * t
+    }
+
     /// The weapon in hand leaving a trail off its tip as it comes down on something, and sparks of
     /// its element drifting off it
     fn flourish(&mut self, view: &View, weapon: &Weapon, dt: f64) {
@@ -3590,16 +4277,53 @@ impl Combat {
         self.aura += dt * rate;
         while self.aura >= 1.0 {
             self.aura -= 1.0;
-            // From the crystal of a staff, anywhere along a blade
+            // From the crystal of a staff, anywhere along a blade or a whip's lash
             let along = if weapon.kind() == Kind::Magic { 1.0 } else { 0.35 + 0.65 * random(&mut self.rng) };
-            let at = self.held_at(weapon, view, weapon.look.grip.lerp(&weapon.look.tip, along));
+            let at = match &self.lash {
+                Some(lash) => lash.points[((along * (LASH_POINTS - 1) as f64).round() as usize).min(LASH_POINTS - 1)],
+                None => self.held_at(weapon, view, weapon.look.grip.lerp(&weapon.look.tip, along)),
+            };
             let v = Vector3::new(random(&mut self.rng), random(&mut self.rng), random(&mut self.rng)) * 2.0 - Vector3::repeat(1.0);
             self.fine(at, v * speed * vpm, look, life, gravity);
         }
     }
 
-    /// The pose of the weapon in hand now, in the camera's frame
+    /// The pose of the weapon in hand now, in the camera's frame: as it was drawn this frame, see
+    /// settle(), or where its move has it if it hasn't been yet
     fn pose(&self, weapon: &Weapon) -> Pose {
+        self.drawn.clone().unwrap_or_else(|| self.target_pose(weapon))
+    }
+
+    /// Works out the pose to draw the weapon in hand in this frame: where its move has it, blended
+    /// in from wherever it really was when a new move started, keeping how fast it was going
+    fn settle(&mut self, weapon: &Weapon, dt: f64) {
+        let target = self.target_pose(weapon);
+        if let Some(drawn) = &self.drawn
+            && new_move(self.drawn_action, self.action)
+        {
+            self.blending = Some(Blending::new(drawn, self.drawn_velocity, &target));
+        }
+        self.drawn_action = self.action;
+        let now = match &mut self.blending {
+            Some(b) => {
+                b.age += dt;
+                b.apply(&target)
+            }
+            None => target,
+        };
+        if self.blending.as_ref().is_some_and(Blending::done) {
+            self.blending = None;
+        }
+        if let Some(before) = &self.drawn
+            && dt > 1e-6
+        {
+            self.drawn_velocity = ((now.hand - before.hand) / dt, (now.turn * before.turn.inverse()).scaled_axis() / dt);
+        }
+        self.drawn = Some(now);
+    }
+
+    /// Where the weapon in hand's move has it now, in the camera's frame
+    fn target_pose(&self, weapon: &Weapon) -> Pose {
         // Held like in Skyrim: a sword or staff in the right hand down at the side, pointing on
         // ahead, a bow in the left
         let style = weapon.profile.style;
@@ -3612,8 +4336,8 @@ impl Combat {
                     Style::Thrust => pose([0.34, 0.3, -0.33], [0.05, 0.97, 0.2], [-1.0, 0.0, 0.0]),
                     // A scythe's pole leant across, its blade out to the left at the top
                     Style::Reap => pose([0.31, 0.4, -0.4], [-0.2, 0.45, 0.86], [-1.0, 0.0, 0.25]),
-                    // A whip held out low, its lash hanging on ahead and down in a loose S
-                    Style::Lash => pose([0.3, 0.45, -0.2], [-0.08, 0.97, -0.2], [0.5, 0.15, -0.85]),
+                    // A whip held out a little raised, its lash hanging from the end of the handle
+                    Style::Lash => grip([0.3, 0.45, -0.21], [-0.1, 0.9, 0.3]),
                     _ => pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]),
                 };
                 match self.action {
@@ -3696,53 +4420,30 @@ impl Combat {
             p.hand.y -= 0.04 * running;
             p.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.45 * running) * p.turn;
         }
-        // Jolting back from a blow
-        p.hand.y -= 0.035 * self.recoil;
+        // Jolting back from a blow: knocked back at once, then easing forward again, so it never
+        // jumps
+        let k = 1.0 - self.recoil;
+        p.hand.y -= 0.035 * 6.75 * k * (1.0 - k) * (1.0 - k);
         p
     }
 
     /// Where a point of the weapon in hand is in the world: the arrow's nock on a bow with
     /// `nock`, otherwise its tip, wherever a whip's lash has it
     fn held_point(&self, weapon: &Weapon, view: &View, nock: bool) -> Vector3<f64> {
-        let look = &weapon.look;
-        let tip = if weapon.profile.style == Style::Lash && !look.nocks.is_empty() { look.nocks[self.held_frame(weapon).min(look.nocks.len() - 1)] } else { look.tip };
-        self.held_at(weapon, view, if nock { self.nock(weapon) } else { tip })
+        if !nock
+            && weapon.look.lash.is_some()
+            && let Some(lash) = &self.lash
+        {
+            return lash.tip();
+        }
+        self.held_at(weapon, view, if nock { self.nock(weapon) } else { weapon.look.tip })
     }
 
-    /// Which of the weapon in hand's models to draw: how far a bow's drawn, or the shape a whip's
-    /// lash is in, trailing back as it's wound up, snapping out straight as it cracks, recoiling
-    /// and settling, and swaying as it hangs
+    /// Which of the weapon in hand's models to draw: how far a bow's drawn
     fn held_frame(&self, weapon: &Weapon) -> usize {
         let frames = weapon.look.frames.len();
         if frames <= 1 {
             return 0;
-        }
-        if weapon.profile.style == Style::Lash {
-            return match self.action {
-                Action::Swing { t, length, heavy, combo, .. } => {
-                    let f = t / length;
-                    let (comes, lands) = timing(Style::Lash, heavy, combo);
-                    if f < comes * 0.85 {
-                        WHIP_TRAIL
-                    } else if f < lands - 0.03 {
-                        WHIP_COMING
-                    } else if f < lands + 0.1 {
-                        WHIP_CRACK
-                    } else if f < lands + 0.25 {
-                        WHIP_RECOIL
-                    } else if f < 0.85 {
-                        WHIP_SETTLE
-                    } else {
-                        WHIP_REST
-                    }
-                }
-                _ => {
-                    let walking = (self.speed / 4.0).min(1.0);
-                    let sway = (self.time * (1.6 + 2.5 * walking)).sin();
-                    WHIP_SWAY[((sway + 1.0) * 1.5).clamp(0.0, 2.0) as usize]
-                }
-            }
-            .min(frames - 1);
         }
         ((self.drawn(&weapon.profile) * (frames - 1) as f64).round() as usize).min(frames - 1)
     }
@@ -3810,6 +4511,33 @@ impl Combat {
                 let nock = hand + rotation * (self.nock(weapon) - look.grip) * vpm;
                 let (model, arrow) = self.effect_model(SLOT_HELD_ARROW + weapon.arrowhead(), Element::look(weapon.profile.element));
                 out.push(place(model, arrow, HELD_ARROW_RES, Vector3::zeros(), nock, rotation, vpm, 1.0, HELD));
+            }
+            // A whip's lash, a stretch at a time from one of its points to the next, each drawn
+            // with the segment model as near as thick as it should be there for how long it is,
+            // tapering to the cracker at its tip
+            if let (Some(lash), Some(look)) = (&self.lash, &look.lash) {
+                // A little thicker than it really is, so it still shows out at full stretch
+                let thick = look.thickness.max(0.009) * 1.4;
+                for i in 0..LASH_POINTS - 1 {
+                    let (a, b) = (lash.points[i], lash.points[i + 1]);
+                    let length = (b - a).norm();
+                    if length < 1e-6 {
+                        continue;
+                    }
+                    let rotation = UnitQuaternion::rotation_between(&Vector3::z(), &((b - a) / length)).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI));
+                    let meters = length / vpm;
+                    let index = if i == LASH_POINTS - 2 {
+                        LASH_CRACKERS + look.cracker
+                    } else {
+                        let u = (i as f64 + 0.5) / (LASH_POINTS - 1) as f64;
+                        let ratio = thick * (1.0 - (1.0 - LASH_THIN) * u) / meters;
+                        let off = |k: usize| (LASH_TAPERS[k] / ratio).ln().abs();
+                        let taper = (0..LASH_TAPERS.len()).min_by(|&x, &y| off(x).total_cmp(&off(y))).unwrap_or(0);
+                        LASH_SEGMENTS + look.set * LASH_TAPERS.len() + taper
+                    };
+                    let (model, shape) = self.model_at(index);
+                    out.push(place(model, shape, LASH_RES, Vector3::zeros(), a, rotation, vpm, meters, HELD));
+                }
             }
         }
         out
@@ -4006,5 +4734,183 @@ impl Combat {
     /// How far the bow in hand is drawn, 0-1, for the crosshair
     pub fn draw(&self, weapon: &Weapon) -> f64 {
         self.drawn(&weapon.profile)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STYLES: [Style; 7] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash];
+    const SPECIALS: [Special; 18] = [
+        Special::Meteors,
+        Special::Blizzard,
+        Special::Tempest,
+        Special::Singularity,
+        Special::Fissure,
+        Special::Whirlwind,
+        Special::Flurry,
+        Special::Nova,
+        Special::Rain,
+        Special::Bloodmoon,
+        Special::Plague,
+        Special::Starfall,
+        Special::Skyfall,
+        Special::Riposte,
+        Special::Volley,
+        Special::Stormchain,
+        Special::Riptide,
+        Special::Breath,
+    ];
+
+    /// Where the tip of a blade 0.8 m long is, in the pose
+    fn tip(p: &Pose) -> Vector3<f64> {
+        p.hand + p.turn * Vector3::new(0.0, 0.0, 0.8)
+    }
+
+    /// The most the tip's velocity jumps over a move `seconds` long, in meters a second, and where,
+    /// sampled every quarter millisecond, leaving out the moments of cuts, where it's meant to jump
+    /// out of sight. However quickly a smooth move speeds up, from one sample to the next that's a
+    /// small change, and smaller the finer it's sampled; a jump stays as big.
+    fn biggest_jolt(rest: &Pose, keys: &[(f64, Pose, bool)], seconds: f64, animate: fn(&Pose, &[(f64, Pose, bool)], f64) -> Pose) -> (f64, f64) {
+        let steps = (seconds * 4000.0) as usize;
+        let dt = seconds / steps as f64;
+        let mut times: Vec<f64> = keys.iter().map(|k| k.0).collect();
+        times.insert(0, 0.0);
+        times.push(1.0);
+        let cut = |a: f64, b: f64| times.windows(2).any(|w| w[1] - w[0] < CUT && b > w[0] - 0.003 && a < w[1] + 0.003);
+        let tips: Vec<Vector3<f64>> = (0..=steps).map(|k| tip(&animate(rest, keys, k as f64 / steps as f64))).collect();
+        let jolts: Vec<f64> = (2..=steps).map(|k| ((tips[k] - tips[k - 1]) - (tips[k - 1] - tips[k - 2])).norm() / dt).collect();
+        // A jump shows as one millisecond's change standing out from those just before and after
+        // it. Even a very quick turn spreads over several.
+        let (mut most, mut when) = (0.0, 0.0);
+        for k in 3..jolts.len().saturating_sub(3) {
+            let spike = jolts[k] - jolts[k - 3].max(jolts[k + 3]);
+            if spike > most && !cut(k as f64 / steps as f64, (k + 2) as f64 / steps as f64) {
+                (most, when) = (spike, (k + 2) as f64 / steps as f64);
+            }
+        }
+        (most, when)
+    }
+
+    #[test]
+    fn moves_never_jump() {
+        let rest = pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]);
+        let mut moves: Vec<(String, Vec<(f64, Pose, bool)>, f64)> = Vec::new();
+        for style in STYLES {
+            for heavy in [false, true] {
+                for combo in 0..=FINISHER {
+                    let seconds = if heavy { 1.6 } else if combo == FINISHER { 1.25 } else { 1.0 } / 1.9;
+                    moves.push((format!("{style:?} heavy {heavy} combo {combo}"), swing(style, heavy, combo), seconds));
+                    if style == Style::Lash {
+                        for grade in 0..6 {
+                            moves.push((format!("lash grade {grade} heavy {heavy} combo {combo}"), lash_keys(heavy, combo, grade), seconds));
+                        }
+                    }
+                }
+            }
+        }
+        for special in SPECIALS {
+            for (kind, style) in [(Kind::Melee, Style::Slash), (Kind::Melee, Style::Thrust), (Kind::Ranged, Style::Draw), (Kind::Magic, Style::Cast)] {
+                let (seconds, keys) = special_move(special, kind, style);
+                moves.push((format!("{special:?} with {kind:?}"), keys, seconds));
+            }
+        }
+        // Easing in and out of each key on its own, as moves used to, stops dead at every one,
+        // which this would catch
+        let stepped: fn(&Pose, &[(f64, Pose, bool)], f64) -> Pose = |rest, keys, f| {
+            let mut from = (0.0, rest);
+            for (at, pose, quick) in keys {
+                if f < *at {
+                    let k = ((f - from.0) / (at - from.0)).clamp(0.0, 1.0);
+                    return blend(from.1, pose, if *quick { k * k } else { smooth(k) });
+                }
+                from = (*at, pose);
+            }
+            blend(from.1, rest, smooth((f - from.0) / (1.0 - from.0)))
+        };
+        let (old, _) = biggest_jolt(&rest, &swing(Style::Slash, false, 0), 1.0 / 1.9, stepped);
+        assert!(old > 5.0, "the old way only jumps {old:.2} m/s");
+        let mut worst: Vec<(f64, f64, String)> = moves
+            .iter()
+            .map(|(name, keys, seconds)| {
+                let (most, at) = biggest_jolt(&rest, keys, *seconds, animate);
+                (most, at, name.clone())
+            })
+            .collect();
+        worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (most, at, name) in worst.iter().take(8) {
+            println!("{name}: velocity jumps {most:.2} m/s at {at:.3}");
+        }
+        // The old way, stopping dead at each key, jumped by 10-30 m/s at once
+        let (most, at, name) = &worst[0];
+        assert!(*most < 0.5, "{name} velocity jumps {most:.2} m/s at {at:.3}");
+    }
+
+    #[test]
+    fn swings_keep_moving_into_the_blow() {
+        let rest = pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]);
+        // Not a whip: its hand checks as it cracks, which is what snaps the lash out
+        for style in STYLES.into_iter().filter(|&s| s != Style::Lash) {
+            for heavy in [false, true] {
+                for combo in 0..=FINISHER {
+                    let keys = swing(style, heavy, combo);
+                    let (comes, lands) = timing(style, heavy, combo);
+                    // Once the blow's under way after the wind-up, it doesn't slow down again
+                    // before it lands
+                    let speed = |f: f64| (tip(&animate(&rest, &keys, f + 1e-4)) - tip(&animate(&rest, &keys, f))).norm() / 1e-4;
+                    let mut fastest: f64 = 0.0;
+                    for k in 0..=60 {
+                        let f = comes + (lands - comes) * k as f64 / 60.0;
+                        let v = speed(f);
+                        assert!(fastest < 1.0 || v > 0.5 * fastest, "{style:?} heavy {heavy} combo {combo} slows to {v:.2} m/s after {fastest:.2} at {f:.3}");
+                        fastest = fastest.max(v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// How fast the tip goes through a move, to look at: cargo test --release speeds -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn speeds() {
+        let rest = pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]);
+        for (name, keys) in [("smash heavy", swing(Style::Smash, true, 0)), ("flurry", special_move(Special::Flurry, Kind::Melee, Style::Slash).1)] {
+            println!("{name}: keys at {:?}", keys.iter().map(|k| (k.0 * 1000.0).round() / 1000.0).collect::<Vec<_>>());
+            let line: Vec<String> = (0..=50)
+                .map(|k| {
+                    let f = k as f64 / 50.0;
+                    let v = (tip(&animate(&rest, &keys, (f + 1e-4).min(1.0))) - tip(&animate(&rest, &keys, f))).norm() / 1e-4;
+                    format!("{f:.2}:{v:.1}")
+                })
+                .collect();
+            println!("{}", line.join(" "));
+        }
+    }
+
+    #[test]
+    fn moves_start_and_end_at_rest() {
+        let rest = pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]);
+        for style in STYLES {
+            let keys = swing(style, false, 0);
+            for f in [0.0, 1.0] {
+                let p = animate(&rest, &keys, f);
+                assert!((p.hand - rest.hand).norm() < 1e-9 && p.turn.angle_to(&rest.turn) < 1e-6, "{style:?} at {f}");
+            }
+        }
+    }
+
+    #[test]
+    fn blending_starts_where_it_was_and_ends_on_the_move() {
+        let drawn = pose([0.1, 0.5, -0.2], [0.3, 0.9, 0.1], [1.0, 0.0, 0.0]);
+        let target = pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]);
+        let mut b = Blending::new(&drawn, (Vector3::new(-1.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 2.0)), &target);
+        let p = b.apply(&target);
+        assert!((p.hand - drawn.hand).norm() < 1e-9 && p.turn.angle_to(&drawn.turn) < 1e-9);
+        b.age = BLEND;
+        let p = b.apply(&target);
+        assert!((p.hand - target.hand).norm() < 1e-9 && p.turn.angle_to(&target.turn) < 1e-9);
+        assert!(b.done());
     }
 }
