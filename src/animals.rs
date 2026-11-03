@@ -65,6 +65,11 @@ pub enum Look {
     Zombie,
     ArmoredZombie,
     Spiderling,
+    // Bandits: people gone bad, roaming in gangs and keeping camps, with a warlord over the worst
+    // of them
+    Bandit,
+    BanditBrute,
+    Warlord,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -92,7 +97,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 39] = [
+    pub const ALL: [Look; 42] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -132,6 +137,9 @@ impl Look {
         Look::Zombie,
         Look::ArmoredZombie,
         Look::Spiderling,
+        Look::Bandit,
+        Look::BanditBrute,
+        Look::Warlord,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -146,7 +154,12 @@ impl Look {
 
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
     pub fn is_monster(self) -> bool {
-        matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling)
+        matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling | Look::Bandit | Look::BanditBrute)
+    }
+
+    /// A living person, for bandits: upright, a face under a hood or a helm
+    fn living(self) -> bool {
+        matches!(self, Look::Bandit | Look::BanditBrute | Look::Warlord)
     }
 
     /// How a boss or monster moves and fights, None for an animal or a thing
@@ -159,6 +172,8 @@ impl Look {
             Look::Treant => Build::Treant,
             Look::Direwolf | Look::WinterAlpha | Look::Wolf => Build::Wolf,
             Look::GraveKnight | Look::CryptTitan | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => Build::Undead,
+            // Bandits move and fight as the dead in armor do, but alive
+            Look::Bandit | Look::BanditBrute | Look::Warlord => Build::Undead,
             _ => return None,
         })
     }
@@ -169,6 +184,8 @@ impl Look {
         match self {
             Look::Direwolf | Look::WinterAlpha => 2.1,
             Look::GraveKnight => 2.3,
+            Look::Warlord => 1.7,
+            Look::BanditBrute => 1.12,
             Look::Spiderling => 0.5,
             // Raid bosses tower over the rest of their kind; the Crypt Titan fits under the roof
             // of a dungeon's deepest hall, just
@@ -196,6 +213,7 @@ impl Look {
             Look::GraveKnight => Some(Look::Skeleton),
             Look::CryptTitan => Some(Look::ArmoredSkeleton),
             Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
+            Look::Warlord => Some(Look::Bandit),
             _ => None,
         }
     }
@@ -207,7 +225,7 @@ impl Look {
 
     /// Wearing armor, for the walking dead
     fn armored(self) -> bool {
-        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan)
+        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan | Look::BanditBrute | Look::Warlord)
     }
 
     /// What its attacks are made of: what a drake breathes, what a golem's blows leave behind
@@ -274,6 +292,11 @@ impl Look {
             Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
             Look::Zombie => make(MOSS, PINE, LINEN, GLOW_POISON, BONE),
             Look::ArmoredZombie => make(MOSS, PINE, DARK_STEEL, GLOW_POISON, BONE),
+            // Bandits: their skin, their hood or cloak and breeches, their shirt or armor, their
+            // eyes, and their blade. The warlord in bronze with a red cloak.
+            Look::Bandit => make(FUR_TAN, LEATHER, CLOTH, EYE, STEEL),
+            Look::BanditBrute => make(FUR_TAN, LEATHER, DARK_STEEL, EYE, STEEL),
+            Look::Warlord => make(FUR_TAN, TEMPLE_RED, BRONZE, EYE, DARK_STEEL),
             _ => make(ROCK, GRAVEL, MOSS, GLOW_FROST, CRYSTAL),
         }
     }
@@ -313,6 +336,7 @@ impl Look {
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
             // A blade raised overhead
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => 2.5 * self.scale(),
+            Look::Bandit | Look::BanditBrute | Look::Warlord => 2.5 * self.scale(),
         }
     }
 
@@ -337,6 +361,7 @@ impl Look {
             Look::Treant => (2.4, 1.2),
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => (0.55 * self.scale(), 0.42 * self.scale()),
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => (1.0 * self.scale(), 0.36 * self.scale()),
+            Look::Bandit | Look::BanditBrute | Look::Warlord => (1.0 * self.scale(), 0.36 * self.scale()),
         }
     }
 
@@ -379,6 +404,9 @@ impl Look {
             Look::Zombie => "zombie",
             Look::ArmoredZombie => "armoured zombie",
             Look::Spiderling => "cave spider",
+            Look::Bandit => "bandit",
+            Look::BanditBrute => "bandit brute",
+            Look::Warlord => "Bandit Warlord",
         }
     }
 
@@ -417,6 +445,9 @@ impl Look {
             Look::Zombie => 170.0,
             Look::ArmoredZombie => 270.0,
             Look::Spiderling => 40.0,
+            Look::Bandit => 130.0,
+            Look::BanditBrute => 240.0,
+            Look::Warlord => 3000.0,
             _ => 20.0,
         }
     }
@@ -443,6 +474,9 @@ impl Look {
             Look::Zombie | Look::ArmoredZombie => return 0.8,
             Look::Skeleton | Look::ArmoredSkeleton => return 1.4,
             Look::Spiderling => return 2.6,
+            Look::Bandit => return 1.5,
+            Look::BanditBrute => return 1.2,
+            Look::Warlord => return 1.4,
             _ => {}
         }
         match self.build() {
@@ -474,6 +508,10 @@ impl Look {
             Look::Zombie => return 2.6,
             Look::ArmoredZombie => return 2.2,
             Look::Spiderling => return 7.0,
+            // Quicker than the dead, and they come running
+            Look::Bandit => return 4.2,
+            Look::BanditBrute => return 3.0,
+            Look::Warlord => return 3.4,
             _ => {}
         }
         match self.build() {
@@ -966,32 +1004,53 @@ fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin
 
 /// The walking dead, about 1.8 meters tall: bones or rotting flesh in rags, maybe in armor, eyes
 /// burning, a blade in the right hand. It raises the blade overhead and brings it down; zombies
-/// shamble with their arms out.
-fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, armored: bool) {
+/// shamble with their arms out. `living`, it's a bandit: standing straight, a face under a hood or
+/// a helm, a scarf over its mouth, a shirt or armor, and a cloak if it's armored.
+fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, armored: bool, living: bool) {
     let (flesh, dark, glow) = (skin.body, skin.dark, skin.glow);
     // Leaning into a blow, and hunched as zombies are
-    let hunch = if bony { 0.0 } else { 0.08 };
+    let hunch = if bony || living { 0.0 } else { 0.08 };
     let lean = pose.mix(hunch, hunch - 0.05, hunch + 0.22, hunch + 0.05);
     let up = |v: Vec3| [v[0] + lean * (v[2] - 0.9).max(0.0), v[1], v[2]];
     let limb_r = if bony { 0.045 } else { 0.07 };
-    // Its head: a skull with burning sockets, or a rotting face
+    // Its head: a skull with burning sockets, or a rotting face, or a living one
     let head = up([0.02, 0.0, 1.62]);
-    for s in [-1.0, 1.0] {
-        p.push(ball([head[0] + 0.1, s * 0.045, head[2] + 0.02], 0.028, glow));
+    if living {
+        for s in [-1.0, 1.0] {
+            p.push(ball([head[0] + 0.115, s * 0.045, head[2] + 0.03], 0.02, glow));
+        }
+        p.push(ellipsoid([head[0] + 0.07, 0.0, head[2] - 0.06], [0.07, 0.1, 0.05], skin.accent));
+        p.push(ball([head[0] + 0.02, 0.0, head[2]], 0.12, flesh));
+        if armored {
+            // A helm, open at the face, with a crest
+            p.push(ellipsoid([head[0] - 0.04, 0.0, head[2] + 0.05], [0.15, 0.15, 0.15], skin.accent));
+            p.push(limb([head[0] - 0.12, 0.0, head[2] + 0.12], [head[0] + 0.05, 0.0, head[2] + 0.2], 0.03, 0.02, dark));
+        } else {
+            // A hood up over its head, open in front
+            p.push(ellipsoid([head[0] - 0.04, 0.0, head[2] + 0.03], [0.14, 0.15, 0.16], dark));
+        }
+    } else {
+        for s in [-1.0, 1.0] {
+            p.push(ball([head[0] + 0.1, s * 0.045, head[2] + 0.02], 0.028, glow));
+        }
+        if armored {
+            // A helm with a slit
+            p.push(ellipsoid([head[0] - 0.01, 0.0, head[2] + 0.04], [0.15, 0.15, 0.15], skin.accent));
+        }
+        p.push(ellipsoid([head[0] + 0.05, 0.0, head[2] - 0.09], [0.08, 0.08, 0.05], if bony { flesh } else { dark }));
+        p.push(ball(head, 0.13, flesh));
     }
-    if armored {
-        // A helm with a slit
-        p.push(ellipsoid([head[0] - 0.01, 0.0, head[2] + 0.04], [0.15, 0.15, 0.15], skin.accent));
-    }
-    p.push(ellipsoid([head[0] + 0.05, 0.0, head[2] - 0.09], [0.08, 0.08, 0.05], if bony { flesh } else { dark }));
-    p.push(ball(head, 0.13, flesh));
     p.push(limb(up([0.0, 0.0, 1.3]), head, 0.05, 0.05, flesh));
-    // Its chest: ribs, or rags over flesh, maybe a breastplate
+    // Its chest: ribs, or rags over flesh, a shirt, maybe a breastplate
     let chest = up([0.0, 0.0, 1.25]);
     if armored {
         p.push(ellipsoid(chest, [0.15, 0.22, 0.22], skin.accent));
         for s in [-1.0, 1.0] {
             p.push(ellipsoid(up([0.0, s * 0.24, 1.44]), [0.12, 0.12, 0.08], skin.accent));
+        }
+        if living {
+            // A cloak down its back
+            p.push(ellipsoid(up([-0.17, 0.0, 1.0]), [0.05, 0.24, 0.45], dark));
         }
     }
     if bony {
@@ -999,12 +1058,14 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
         p.push(limb(up([0.0, 0.0, 0.92]), chest, 0.04, 0.04, flesh));
     } else {
         p.push(ellipsoid(up([0.0, 0.0, 1.12]), [0.15, 0.2, 0.28], skin.accent));
-        p.push(ellipsoid(chest, [0.13, 0.2, 0.22], flesh));
+        p.push(ellipsoid(chest, [0.13, 0.2, 0.22], if living { skin.accent } else { flesh }));
     }
     p.push(ellipsoid([0.0, 0.0, 0.92], [0.1, 0.15, 0.07], if armored { skin.accent } else { dark }));
+    // Sleeves on the living, armor on the armored
+    let upper = if armored || living { skin.accent } else { flesh };
     // The blade arm: hanging, raised overhead behind, or brought down in front
     let shoulder = up([0.0, -0.22, 1.42]);
-    let zombie_reach = if bony { 0.0 } else { 0.35 };
+    let zombie_reach = if bony || living { 0.0 } else { 0.35 };
     let elbow = pose.at([0.05 + zombie_reach - 0.15 * swing, -0.26, 1.15 + zombie_reach * 0.5], [-0.08, -0.3, 1.65], [0.38, -0.2, 1.3], [0.1, -0.32, 1.55]);
     let hand = pose.at([0.2 + zombie_reach * 1.4 - 0.25 * swing, -0.25, 0.95 + zombie_reach], [-0.18, -0.24, 2.0], [0.62, -0.1, 1.0], [0.3, -0.28, 1.9]);
     let blade = pose.at([0.55, 0.0, -0.75], [-0.5, 0.05, 0.85], [0.92, 0.1, -0.35], [0.3, 0.0, 0.95]);
@@ -1014,14 +1075,14 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
     p.push(limb([hand[0] - blade[1] / n * 0.1, hand[1] - 0.09, hand[2]], [hand[0] + blade[1] / n * 0.1, hand[1] + 0.09, hand[2]], 0.025, 0.025, DARK_STEEL));
     p.push(ball(hand, limb_r * 1.1, flesh));
     p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, if armored { skin.accent } else { flesh }));
+    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
     // The other arm swinging, reaching out for a zombie, thrown out for balance as it strikes
     let shoulder = up([0.0, 0.22, 1.42]);
     let elbow = pose.at([0.05 + zombie_reach + 0.15 * swing, 0.26, 1.15 + zombie_reach * 0.5], [0.2, 0.3, 1.3], [-0.12, 0.3, 1.2], [0.1, 0.32, 1.55]);
     let hand = pose.at([0.15 + zombie_reach * 1.4 + 0.25 * swing, 0.27, 0.95 + zombie_reach], [0.42, 0.26, 1.35], [-0.25, 0.32, 1.0], [0.3, 0.28, 1.9]);
     p.push(ball(hand, limb_r * 1.1, flesh));
     p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, if armored { skin.accent } else { flesh }));
+    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
     // Its legs, in rags or greaves
     for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
         leg(p, [0.0, y, 0.92], 0.88, limb_r * 1.1, 0.45 * swing * s, if armored { skin.accent } else if bony { flesh } else { dark }, dark);
@@ -1045,7 +1106,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
-                Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored()),
+                Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living()),
                 _ => treant(&mut p, swing, pose, look.skin()),
             }
             if look.scale() != 1.0 {
@@ -1849,8 +1910,36 @@ pub fn spawn(world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) ->
             break;
         }
     }
+    animals.extend(spawn_gangs(world, water, &mut rng, near, BANDIT_GANGS));
     animals
 }
 
-/// How many packs of wolves roam the world at once
+/// How many packs of wolves and gangs of bandits roam the world at once
 const WOLF_PACKS: usize = 2;
+pub const BANDIT_GANGS: usize = 2;
+
+/// `count` gangs of bandits, two or three with a brute among them, out on dry land well away from
+/// the player at `near`
+pub fn spawn_gangs(world: &World, water: WaterLevel, rng: &mut u32, near: Vector3<f64>, count: usize) -> Vec<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    let mut gangs = Vec::new();
+    for _ in 0..count {
+        for _ in 0..64 {
+            let (x, y) = (sx * (0.1 + 0.8 * random(rng)), sy * (0.1 + 0.8 * random(rng)));
+            if (Vector2::new(x, y) - near.xy()).norm() < 45.0 * vpm {
+                continue;
+            }
+            let Some(z) = surface_at(world, water, x, y) else {
+                continue;
+            };
+            let camp = Vector3::new(x, y, z);
+            let members: &[Look] = if random(rng) < 0.5 { &[Look::Bandit, Look::Bandit, Look::BanditBrute] } else { &[Look::Bandit, Look::Bandit] };
+            for (k, &look) in members.iter().enumerate() {
+                gangs.extend(spawn_monster(world, water, look, camp, 4.0, hash(*rng ^ k as u32)));
+            }
+            break;
+        }
+    }
+    gangs
+}

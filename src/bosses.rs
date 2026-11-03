@@ -197,6 +197,9 @@ fn windup(look: Look, m: Move) -> f64 {
             (Look::Spiderling, _) => 0.4,
             (Look::Zombie, _) => 0.75,
             (Look::Skeleton, _) => 0.8,
+            (Look::Bandit, Move::Leap) => 0.5,
+            (Look::Bandit, _) => 0.65,
+            (Look::BanditBrute, _) => 1.0,
             _ => 0.85,
         };
     }
@@ -247,6 +250,8 @@ fn recovery(look: Look, m: Move) -> f64 {
     match m {
         Move::Slam if matches!(look, Look::Skeleton | Look::ArmoredSkeleton) => 1.0,
         Move::Slam if matches!(look, Look::Zombie | Look::ArmoredZombie) => 0.9,
+        Move::Slam if look == Look::Bandit => 0.75,
+        Move::Slam if look == Look::BanditBrute => 1.1,
         Move::Slam | Move::Leap if look.is_monster() => 0.5,
         Move::Summon => 0.8,
         // A long stagger after bringing the sky down: the moment to get in close
@@ -302,6 +307,7 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
     match look {
         Look::Wolf => (0.6, 1.4, 1.8, 12.0),
         Look::Spiderling => (0.5, 1.0, 1.2, 8.0),
+        Look::Bandit => (0.55, 1.1, 1.4, 14.0),
         Look::Direwolf | Look::WinterAlpha => (0.7, 3.0, 3.0, 24.0),
         _ => (0.8, 4.0, 3.0, 26.0),
     }
@@ -312,7 +318,7 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
 fn closeness(look: Look) -> (f64, f64) {
     match look {
         Look::Wolf => (1.3, 0.8),
-        Look::Skeleton | Look::ArmoredSkeleton => (1.6, 0.5),
+        Look::Skeleton | Look::ArmoredSkeleton | Look::Bandit | Look::BanditBrute => (1.6, 0.5),
         Look::Zombie | Look::ArmoredZombie => (1.4, 0.5),
         Look::Spiderling => (0.9, 0.5),
         _ if look.build() == Some(Build::Drake) => (6.0, look.body().1 + 1.0),
@@ -330,7 +336,10 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::ArmoredSkeleton => (1.4, 1.7, 23.0, 0.0),
         Look::Zombie => (1.1, 1.5, 14.0, 0.0),
         Look::ArmoredZombie => (1.1, 1.6, 17.0, 0.0),
+        Look::Bandit => (1.4, 1.5, 15.0, 0.0),
+        Look::BanditBrute => (1.5, 1.8, 26.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
+        Look::Warlord => (2.2, 2.9, 30.0, 0.5),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
         _ if look.is_raid() => {
             let base = if look == Look::CryptTitan { Look::GraveKnight } else if look.build() == Some(Build::Golem) { Look::Golem } else { Look::Drake };
@@ -522,7 +531,11 @@ impl Boss {
             // Monsters bite or swing at what's in reach, and some pounce
             Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
             Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
-            _ if matches!(self.look, Look::Skeleton | Look::ArmoredSkeleton) => &[(Move::Slam, 0.0, 2.8)],
+            _ if matches!(self.look, Look::Skeleton | Look::ArmoredSkeleton | Look::BanditBrute) => &[(Move::Slam, 0.0, 2.8)],
+            // A bandit lunges in from a few steps off
+            _ if self.look == Look::Bandit => &[(Move::Slam, 0.0, 2.6), (Move::Leap, 3.5, 8.0)],
+            // The warlord charges, throws firebombs and calls the gang
+            _ if self.look == Look::Warlord => &[(Move::Slam, 0.0, 3.8), (Move::Summon, 0.0, 30.0), (Move::Charge, 4.5, 22.0), (Move::Spit, 4.0, 26.0)],
             Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
             // Ranges meeting, so there's nowhere to stand it won't do something
             Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],

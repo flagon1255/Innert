@@ -3830,6 +3830,11 @@ impl Combat {
                 spray(self, 8, DROP_BLOOD, 2.5, 1.2);
                 self.cues.push(Cue::at(Sound::Squelch, at, 0.9).pitched(0.8));
             }
+            // A bandit going down with a cry
+            Look::Bandit | Look::BanditBrute => {
+                spray(self, 14, DROP_BLOOD, 2.8, 1.1);
+                self.cues.push(Cue::at(Sound::Hurt, at, 0.8).pitched(0.85));
+            }
             _ => {
                 spray(self, 10, DROP_ASH, 3.0, 1.0);
                 spray(self, 8, DROP_VENOM, 3.0, 1.0);
@@ -3838,7 +3843,7 @@ impl Combat {
             }
         }
         // Armor ringing as it falls
-        if matches!(a.look, Look::ArmoredSkeleton | Look::ArmoredZombie) {
+        if matches!(a.look, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::BanditBrute) {
             self.sparks(at, 8, 3.0, Element::look(None), 0.8, 0.4);
             self.cues.push(Cue::at(Sound::Clang, at, 0.6).pitched(0.7));
         }

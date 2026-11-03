@@ -218,8 +218,18 @@ pub struct Den {
     pub position: Vector3<f64>,
     /// Where in the whole landscape, to remember it's been cleared
     pub key: [i64; 3],
-    /// A cavern cave spiders nest in, rather than a hall of a dungeon
-    pub cave: bool,
+    pub kind: DenKind,
+}
+
+/// What a den is, which decides what haunts it
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DenKind {
+    /// A hall of a dungeon, haunted by the dead or spiders
+    Hall,
+    /// A cavern cave spiders nest in
+    Nest,
+    /// A bandits' camp
+    Camp,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -758,7 +768,8 @@ impl Game {
     /// that isn't beaten and doesn't have one already
     pub fn set_lairs(&mut self, world: &World, water: WaterLevel, lairs: Vec<Lair>) {
         for lair in &lairs {
-            let here = self.animals.iter().any(|a| a.boss.as_ref().is_some_and(|b| b.key == lair.key));
+            // Not the monsters of a den at the same spot, like a warlord's bandits
+            let here = self.animals.iter().any(|a| a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.key == lair.key));
             if here || self.defeated.contains(&lair.key) {
                 continue;
             }
@@ -782,7 +793,8 @@ impl Game {
             }
             let mut seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
             let haunted: &[Look] = match seed % 3 {
-                _ if den.cave => &[Look::Spiderling, Look::Spiderling, Look::Spiderling],
+                _ if den.kind == DenKind::Nest => &[Look::Spiderling, Look::Spiderling, Look::Spiderling],
+                _ if den.kind == DenKind::Camp => &[Look::Bandit, Look::Bandit, Look::Bandit, Look::BanditBrute],
                 0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
                 1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],
                 _ => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
@@ -853,13 +865,24 @@ impl Game {
         // pop up right in front of them. Bosses, dungeon monsters and merchants have homes of their own.
         let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
-        if missing > 0 || wolves < 3 {
+        let bandits = self.animals.iter().filter(|a| matches!(a.look, Look::Bandit | Look::BanditBrute)).count();
+        if missing > 0 || wolves < 3 || bandits < 3 {
             let vpm = world.voxels_per_meter as f64;
-            let fresh: Vec<Animal> = animals::spawn(world, water, seed ^ hash(self.rng), near).into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm).collect();
-            let (packs, animals): (Vec<Animal>, Vec<Animal>) = fresh.into_iter().partition(|a| a.look == Look::Wolf);
-            self.animals.extend(animals.into_iter().take(missing));
-            if wolves < 3 {
-                self.animals.extend(packs.into_iter().take(3));
+            let fresh = animals::spawn(world, water, seed ^ hash(self.rng), near).into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm);
+            let mut taken = 0;
+            for animal in fresh {
+                let wanted = match animal.look {
+                    Look::Wolf => wolves < 3,
+                    Look::Bandit | Look::BanditBrute => bandits < 3,
+                    _ if animal.look.build().is_none() => {
+                        taken += 1;
+                        taken <= missing
+                    }
+                    _ => false,
+                };
+                if wanted {
+                    self.animals.push(animal);
+                }
             }
         }
         self.rng = hash(self.rng);
@@ -1038,6 +1061,8 @@ impl Game {
                         Look::Wolf => Cue::at(Sound::Growl, at, 0.7),
                         Look::Skeleton | Look::ArmoredSkeleton => Cue::at(Sound::Rattle, at, 0.7),
                         Look::Zombie | Look::ArmoredZombie => Cue::at(Sound::Growl, at, 0.6).pitched(0.6),
+                        // A bandit's yell
+                        Look::Bandit | Look::BanditBrute => Cue::at(Sound::Roar, at, 0.45).pitched(if look == Look::Bandit { 1.9 } else { 1.5 }),
                         _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
                     };
                     self.cues.push(cue);
@@ -1105,7 +1130,7 @@ impl Game {
                 // A monster's bite or blade, or a boss's blow shaking the ground
                 let cue = match look {
                     Look::Wolf | Look::Spiderling => Cue::at(Sound::Bite, at, 0.8),
-                    Look::ArmoredSkeleton | Look::ArmoredZombie => Cue::at(Sound::Clang, at, 0.5).pitched(0.8),
+                    Look::ArmoredSkeleton | Look::ArmoredZombie | Look::BanditBrute => Cue::at(Sound::Clang, at, 0.5).pitched(0.8),
                     _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
                     _ => {
                         self.shake = self.shake.max(0.6 * felt(at));
@@ -1268,7 +1293,7 @@ impl Game {
             // out: never more than a few of them about at once
             Deed::Summon { at, look: brood, count } => {
                 let most = match brood {
-                    Look::Spiderling => 4,
+                    Look::Spiderling | Look::Bandit => 4,
                     Look::Skeleton => 3,
                     Look::ArmoredSkeleton => 4,
                     _ => 2,
@@ -1288,6 +1313,7 @@ impl Game {
                 let cue = match brood {
                     Look::Wolf => Cue::at(Sound::Howl, at, 1.0).pitched(voice * 0.9),
                     Look::Skeleton => Cue::at(Sound::Rattle, at, 1.0).pitched(0.8),
+                    Look::Bandit => Cue::at(Sound::Roar, at, 0.9).pitched(1.5),
                     _ => Cue::at(Sound::Skitter, at, 1.0),
                 };
                 self.cues.push(cue);
@@ -1295,6 +1321,7 @@ impl Game {
                     let deed = match brood {
                         Look::Wolf => "howls for its pack",
                         Look::Skeleton => "raises the dead",
+                        Look::Bandit => "calls the gang to arms",
                         _ => "calls its brood",
                     };
                     self.say(format!("The {} {deed}!", look.name()));

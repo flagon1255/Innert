@@ -466,6 +466,12 @@ const float SWAY_REACH = 30.0;
 // Only for what the camera sees: shadows and bounce light come from the leaves as they grow,
 // as tracing those rays through swaying leaves too costs much more
 bool g_sway = true;
+// Also only for what the camera sees: leaves within LEAF_CLEAR meters of it aren't there, and
+// fewer of them out to twice that, so a bush it's in doesn't hide everything. They still cast
+// shadows.
+bool g_clear_leaves = true;
+const float LEAF_CLEAR = 1.1;
+bool isFoliage(uint material);
 
 // How far leaves and flowers at `p`, in voxels of the main world, are blown aside right now: a
 // voxel either way along x and y, or not at all. A wind blowing mostly along x rolls across the
@@ -488,9 +494,24 @@ bool voxelHit(uint level, uint cell, ivec3 brick, uvec3 coord, bool through_wate
     shift = ivec3(0);
     uvec3 local = coord % 8;
     bool here = brickHit(level, cell, local, through_water);
-    if ((cell & FOLIAGE_BRICK) == 0 || (pc.flags & FLAG_WIND) == 0 || !g_sway)
+    if ((cell & FOLIAGE_BRICK) == 0)
     return here;
     vec3 p = level == NEAR ? fromNear(vec3(coord)) : vec3(coord);
+    // Leaves right round the camera aren't there for it, so standing in a bush leaves a hollow in
+    // it to see out of. Further out fewer and fewer are left out, so it thins away rather than
+    // ending in a wall of leaves.
+    if (g_clear_leaves && here) {
+        vec3 off = p + 0.5 - pc.pixelToRay[3].xyz;
+        float clear = LEAF_CLEAR * float(max(pc.world_size.w, 1u));
+        float d = dot(off, off);
+        if (d < 4.0 * clear * clear) {
+            float kept = clamp(sqrt(d) / clear - 1.0, 0.0, 1.0);
+            if (float(hash(uvec3(coord)) & 255u) / 255.0 >= kept && isFoliage(brickMaterial(level, cell, local)))
+            return false;
+        }
+    }
+    if ((pc.flags & FLAG_WIND) == 0 || !g_sway)
+    return here;
     vec3 to_camera = p - pc.pixelToRay[3].xyz;
     float reach = SWAY_REACH * float(max(pc.world_size.w, 1u));
     if (dot(to_camera, to_camera) > reach * reach)
@@ -1852,6 +1873,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     bool solid = trace(origin, dir, false, far, hit, steps);
     g_animal_limit = SECONDARY_ANIMALS;
     g_sway = false;
+    g_clear_leaves = false;
     // Leaves blown aside are lit as they are where they grow, so their light and shade move with
     // them rather than flickering as they sway in and out of the shade of others
     if (solid && hit.shift != ivec3(0)) {

@@ -1306,6 +1306,20 @@ impl App {
             [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2).div_euclid(64) * 64)
         });
         let (world, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers);
+        if setting("sites").is_some()
+            && let Some(l) = &landscape
+        {
+            let mut kinds: Vec<&str> = l.sites().iter().map(|s| s.kind).collect();
+            kinds.sort();
+            kinds.dedup();
+            println!("Sites: {}", kinds.iter().map(|k| format!("{k} ×{}", l.sites().iter().filter(|s| s.kind == *k).count())).collect::<Vec<_>>().join(", "));
+        }
+        // `--set camp=1` starts outside the bandits' camp nearest the middle of the world
+        let camp = setting("camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|_| {
+            let middle = [0, 1].map(|i| (origin[i] as f32 + world.size[i] as f32 * 0.5) / world.voxels_per_meter as f32);
+            let off = |s: &&worldgen::Site| (s.position[0] - middle[0]).hypot(s.position[1] - middle[1]);
+            landscape.as_ref()?.sites().iter().filter(|s| s.kind == "bandit camp").min_by(|a, b| off(a).total_cmp(&off(b))).map(|s| (s.position, s.facing))
+        });
         let voxel_set = get_voxel_set(
             memory_allocator.clone(),
             command_buffer_allocator.clone(),
@@ -1355,6 +1369,13 @@ impl App {
             let eye = middle + back + Vector3::new(0.0, 0.0, 1.7 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+        } else if let Some((fire, gate)) = camp {
+            // Out past a way in, looking in at the fire
+            let vpm = world.voxels_per_meter as f64;
+            let middle = Vector3::new(fire[0] as f64 * vpm - origin[0] as f64, fire[1] as f64 * vpm - origin[1] as f64, fire[2] as f64 * vpm);
+            let out = Vector3::new(gate[0] as f64, gate[1] as f64, 0.0) * 16.0 * vpm;
+            camera.position = voxels_to_camera(middle + out + Vector3::new(0.0, 0.0, 2.5 * vpm), world.size);
+            camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
         } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
@@ -1365,6 +1386,28 @@ impl App {
         }
         if let Some(position) = setting("camera").and_then(parse_vector) {
             camera.position = position;
+        }
+        // `--set bush=1` puts the camera inside the nearest bush, to see out of it
+        if setting("bush").is_some() {
+            let eye = camera_to_voxels(camera.position, world.size);
+            let vpm = world.voxels_per_meter as i64;
+            let leafy = |m: u8| matches!(m, worldgen::material::LEAVES | worldgen::material::LEAVES_DARK);
+            let mut best: Option<(i64, Vector3<f64>)> = None;
+            for dy in (-30 * vpm..=30 * vpm).step_by(4) {
+                for dx in (-30 * vpm..=30 * vpm).step_by(4) {
+                    let (x, y) = (eye.x as i64 + dx, eye.y as i64 + dy);
+                    let Some(ground) = (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(x, y, z)) && !leafy(world.material_at(x, y, z))) else {
+                        continue;
+                    };
+                    let z = ground + vpm;
+                    if leafy(world.material_at(x, y, z)) && leafy(world.material_at(x, y, z + vpm / 2)) && best.is_none_or(|(d, _)| dx * dx + dy * dy < d) {
+                        best = Some((dx * dx + dy * dy, Vector3::new(x as f64, y as f64, z as f64)));
+                    }
+                }
+            }
+            if let Some((_, inside)) = best {
+                camera.position = voxels_to_camera(inside, world.size);
+            }
         }
         if let Some(target) = setting("look_at").and_then(parse_vector) {
             camera.look_at(target);
@@ -1678,9 +1721,9 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                // Every dungeon's deepest hall has its Grave Knight, and every great cavern at the
-                // end of a cave its boss; only some ruins have one
-                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern") {
+                // Every dungeon's deepest hall has its Grave Knight, and every great cavern of a
+                // cave its boss; only some ruins have one, and a third of bandits' camps a warlord
+                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp") {
                     return None;
                 }
                 let look = match site.kind {
@@ -1700,25 +1743,35 @@ impl App {
                     // A crevice is shut in under the ground, with no way down to it, so nothing
                     // guards it
                     "ravine" => animals::Look::Spider,
-                    // Spiders in most caves, a golem of the stone itself in some
+                    // In caves spiders, cave bears, and golems of the stone itself
                     "cavern" if pick % 3 == 2 => animals::Look::Golem,
+                    "cavern" if pick % 3 == 1 => animals::Look::Ironhide,
                     "cavern" => animals::Look::Spider,
                     "shrine" => animals::Look::Treant,
+                    "bandit camp" if pick % 3 == 0 => animals::Look::Warlord,
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
             .collect();
-        // Monsters haunt the other halls of dungeons, and cave spiders nest in caverns
+        // Monsters haunt the other halls of dungeons, cave spiders nest in caverns, and bandits
+        // keep camps
         let dens: Vec<game::Den> = landscape
             .sites()
             .iter()
-            .filter(|site| matches!(site.kind, "dungeon hall" | "cave nest"))
-            .map(|site| game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), cave: site.kind == "cave nest" })
+            .filter_map(|site| {
+                let kind = match site.kind {
+                    "dungeon hall" => game::DenKind::Hall,
+                    "cave nest" => game::DenKind::Nest,
+                    "bandit camp" => game::DenKind::Camp,
+                    _ => return None,
+                };
+                Some(game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), kind })
+            })
             .collect();
         // Merchants keep stalls out in front of some of the ruins no boss guards
         let stalls: Vec<game::Stall> = landscape
@@ -1727,7 +1780,7 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
