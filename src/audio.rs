@@ -200,6 +200,28 @@ fn whoosh(length: f32, low: f32, high: f32, seed: u32) -> Vec<f32> {
     })
 }
 
+/// A bow loosing an arrow: the string snapping forward, the limbs stopping dead with a dull thump
+/// around `thump` Hz, the string buzzing a moment around `buzz` Hz as it settles, and the arrow
+/// hissing away
+fn loose(seed: u32, thump: f32, buzz: f32) -> Vec<f32> {
+    let (mut body, mut string) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let (mut high, mut low) = (Lowpass(0.0), Lowpass(0.0));
+    let mut samples = render(0.42, seed, |t, rng| {
+        let snap = noise(rng) * (-t * 450.0).exp();
+        let kick = if t < 0.003 { noise(rng) } else { 0.0 };
+        let thud = body.step(kick + snap * 0.2, thump, 0.05);
+        let settle = string.step(kick * 0.5, buzz * (1.0 + 0.04 * (-t * 20.0).exp()), 0.07);
+        let x = noise(rng);
+        let hiss = (high.step(x, 5500.0) - low.step(x, 1600.0)) * (t * 60.0).min(1.0) * (-t * 10.0).exp();
+        thud * 1.4 + settle * 0.5 + snap * 0.35 + hiss * 0.6
+    });
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
+    for s in &mut samples {
+        *s *= 0.9 / peak;
+    }
+    samples
+}
+
 /// A blade swung through the air: a whoosh, and under it the low hum of the air it pushes aside,
 /// around `hum` Hz at its fastest, so it sounds like it has some weight behind it
 fn swing(length: f32, low: f32, high: f32, hum: f32, seed: u32) -> Vec<f32> {
@@ -257,24 +279,6 @@ fn burst(low: f32, seed: u32) -> Vec<f32> {
         let debris = (y - lp3.step(y, 2000.0)) * 0.4;
         (crack + boom + roar + debris) * (t * 2000.0).min(1.0) * ((length - t) * 20.0).min(1.0)
     })
-}
-
-/// A plucked string, by Karplus-Strong: a burst of noise going round a delay that loses a little
-/// each time
-fn pluck(frequency: f32, length: f32, damping: f32, seed: u32) -> Vec<f32> {
-    let mut rng = hash(seed);
-    let period = (RATE as f32 / frequency) as usize;
-    let mut ring: Vec<f32> = (0..period).map(|_| noise(&mut rng)).collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    for _ in 0..(length * RATE as f32) as usize {
-        let next = (i + 1) % period;
-        let v = (ring[i] + ring[next]) * 0.5 * damping;
-        out.push(ring[i]);
-        ring[i] = v;
-        i = next;
-    }
-    out
 }
 
 /// A spell being cast, in the voice of its element: none, then fire, frost, lightning, poison,
@@ -805,11 +809,9 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     clips.push((Sound::Hit, hit(170.0, 0.2, 163)));
     clips.push((Sound::Hit, hit(115.0, 0.8, 164)));
     clips.push((Sound::Hit, hit(140.0, 0.3, 165)));
-    let mut string = pluck(98.0, 0.7, 0.996, 5);
-    for (s, w) in string.iter_mut().zip(whoosh(0.2, 600.0, 3000.0, 6).iter().chain(std::iter::repeat(&0.0))) {
-        *s = *s * 0.6 + w * 0.5;
+    for (seed, thump, buzz) in [(5, 95.0, 210.0), (6, 110.0, 240.0), (166, 85.0, 190.0)] {
+        clips.push((Sound::Twang, loose(seed, thump, buzz)));
     }
-    clips.push((Sound::Twang, string));
     let mut lp = Lowpass(0.0);
     clips.push((Sound::ArrowHit, render(0.2, 7, |t, rng| lp.step(noise(rng), 900.0) * (-t * 35.0).exp() * 1.8 + (TAU * 180.0 * t).sin() * (-t * 30.0).exp() * 0.5)));
     for look in 0..9u8 {

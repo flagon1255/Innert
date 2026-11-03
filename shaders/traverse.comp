@@ -30,6 +30,9 @@ const uint MAT_FOAM = 21;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
+// How far under the top of the ground, in meters, a bounce ray that goes as far as it can without
+// hitting anything is taken to be in a cave rather than out under the sky
+const float UNDERGROUND = 2.0;
 // And metal mirrors only what's this near
 const float REFLECTION_DISTANCE = 30.0;
 // Water only reflects what's this close, in meters, and the sky beyond
@@ -213,9 +216,9 @@ const float FAR_FACE = 32.0;
 const uint FAR_CACHE_SAMPLES = 12;
 const float FAR_SAMPLE_CHANCE = 0.25;
 const uint FAR_DIRECT_INTERVAL = 16;
-// How far from its middle shadows are traced towards the sun, in radians. Wider than the real sun,
-// so the edges of shadows come out soft over a voxel or two.
-const float SUN_RADIUS = 0.02;
+// How far from its middle shadows are traced towards the sun, in radians. Much wider than the real
+// sun, so the edges of shadows come out soft, a few voxels wide under a tree.
+const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
 const uint PALETTE_SIZE = 87;
@@ -1299,8 +1302,17 @@ float g_far_sun = -1;
 vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance) {
     Hit hit;
     uint steps = 0;
-    if (!trace(origin, dir, false, max_distance, hit, steps))
-    return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+    if (!trace(origin, dir, false, max_distance, hit, steps)) {
+        // Out of reach without hitting anything. Down under the ground, in a cave or a great
+        // cavern, that's more of the dark, not the sky.
+        if (max_distance < FLT_MAX) {
+            vec3 end = origin + dir * max_distance;
+            float ground;
+            if (grassAt(ivec2(floor(end.xy)), ground) >= 0 && end.z < ground - UNDERGROUND * float(max(pc.world_size.w, 1u)))
+            return skyColor(dir) * 0.04;
+        }
+        return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+    }
 
     uint material = hitMaterial(hit);
     vec3 albedo = hitAlbedo(hit, material);

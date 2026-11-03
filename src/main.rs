@@ -1533,8 +1533,9 @@ impl App {
             rivers,
             window_build: None,
             lights: Vec::new(),
-            // Voxels half the size round the camera, so grass, leaves and everything near are finer
-            near_detail: setting("near_detail").and_then(|v| v.parse().ok()).unwrap_or(32),
+            // No finer voxels round the camera, so they're the same size all over. Finer ones have
+            // to be built again every time a spell or a blow leaves a mark near by.
+            near_detail: setting("near_detail").and_then(|v| v.parse().ok()).unwrap_or(0),
             near: None,
             near_build: None,
             empty_near_set,
