@@ -1011,9 +1011,27 @@ uint hitMaterial(Hit hit) {
     return materialAt(hit.level, uvec3(ivec3(hit.coord) - hit.shift));
 }
 
+float grassAt(ivec2 column, out float ground);
+
+// Has to match the material ids in src\worldgen.rs
+const uint MAT_GRASS_TIP = 12;
+const uint MAT_GRASS_BLADE = 22;
+// How tall grass grows at most, in meters, for shading its blades from root to tip
+const float BLADE_HEIGHT = 0.45;
+
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
-    return materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : uvec3(ivec3(hit.coord) - hit.shift));
+    vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : uvec3(ivec3(hit.coord) - hit.shift));
+    // Blades of grass dark down among the roots, lighter and yellower up to their tips
+    if (hit.level != ANIMAL && (material == MAT_GRASS_BLADE || material == MAT_GRASS_TIP)) {
+        vec3 p = voxelPoint(hit, vec3(0.5) - vec3(hit.shift));
+        float ground;
+        grassAt(ivec2(floor(p.xy)), ground);
+        float h = clamp((p.z - ground) / (BLADE_HEIGHT * float(max(pc.world_size.w, 1u))), 0.0, 1.0);
+        albedo *= mix(0.4, 1.3, sqrt(h));
+        albedo = mix(albedo, albedo * vec3(1.2, 1.12, 0.62), h * h);
+    }
+    return albedo;
 }
 
 // What weapons did to an animal shows on it: burning or poisoned, frozen or crackling with

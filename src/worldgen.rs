@@ -2182,14 +2182,14 @@ impl Terrain {
             // About the same number of flowers per square meter at any resolution
             let flower_chance = 0.45 * (0.01 + meadow * 0.2) * (8.0 / vpm).powi(2).min(1.0) * if jungle { 0.3 } else { 1.0 };
             let lush = smoothstep(-0.3, 0.4, fbm(xm / 9.0, ym / 9.0, 2, self.settings.seed.wrapping_add(8)));
-            let (lush, chance) = if jungle { (1.0, 0.75) } else { (lush, 0.25 + 0.35 * lush) };
+            let (lush, chance) = if jungle { (1.0, 0.8) } else { (lush, 0.4 + 0.4 * lush) };
             if unit(r) < flower_chance {
                 blade = 1 + ((r >> 16) % max_stem) as i32;
                 let patch = hash3((xm / 4.0) as u32, (ym / 4.0) as u32, self.settings.seed ^ 0xf10e);
                 blade_top = [FLOWER_RED, FLOWER_YELLOW, FLOWER_PURPLE, FLOWER_WHITE][(patch % 4) as usize];
             } else if self.settings.grass_tufts && unit(tuft) < chance {
                 // Taller in lush patches, with a lighter tip
-                let tallest = (0.08 + if jungle { 0.4 } else { 0.22 } * lush) * vpm;
+                let tallest = (0.1 + if jungle { 0.4 } else { 0.3 } * lush) * vpm;
                 blade = ((unit(tuft >> 16) * tallest).round() as i32).max(1);
                 blade_top = GRASS_TIP;
             }

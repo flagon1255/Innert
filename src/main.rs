@@ -287,7 +287,7 @@ const LIGHT_CACHE_WORDS: u64 = 12;
 const NEAR_WIDTH_M: u32 = 40;
 const NEAR_HEIGHT_M: u32 = 20;
 const NEAR_REBUILD_M: f64 = 8.0;
-const NEAR_DETAIL_OPTIONS: &[u32] = &[0, 16, 32];
+const NEAR_DETAIL_OPTIONS: &[u32] = &[0, 32];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Model {
@@ -1533,8 +1533,8 @@ impl App {
             rivers,
             window_build: None,
             lights: Vec::new(),
-            // No finer voxels round the camera, so they're the same size all over
-            near_detail: setting("near_detail").and_then(|v| v.parse().ok()).unwrap_or(0),
+            // Voxels half the size round the camera, so grass, leaves and everything near are finer
+            near_detail: setting("near_detail").and_then(|v| v.parse().ok()).unwrap_or(32),
             near: None,
             near_build: None,
             empty_near_set,
