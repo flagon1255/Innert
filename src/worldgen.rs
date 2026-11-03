@@ -1149,6 +1149,24 @@ const RAVINE_REACH: f32 = 100.0;
 /// along either axis from its doorway, all in meters
 const DUNGEON_CELL: f32 = 300.0;
 const DUNGEON_REACH: f32 = 56.0;
+
+/// Caves: at most one starting in each CAVE_CELL square, wandering no further than CAVE_REACH
+/// from where it starts, in meters
+const CAVE_CELL: f32 = 60.0;
+const CAVE_REACH: f32 = 175.0;
+
+/// A cave: what's cut out of the ground for it and what grows in the hollow, the crystals
+/// glowing in it, its caverns, and how far it reaches, x0, y0, x1, y1, in meters. Each cavern is
+/// the middle of its floor, the way in from there, and how far out there's room all round: the
+/// great one at the end, if it's a boss's lair, and the rest where cave spiders nest.
+struct Cave {
+    shapes: Vec<Shape>,
+    lights: Vec<Light>,
+    lair: Option<(Vec3, [f32; 2], f32)>,
+    nests: Vec<(Vec3, [f32; 2], f32)>,
+    bounds: [f32; 4],
+    seed: u32,
+}
 /// How thick the brick round the halls and passages of dungeons is
 const DUNGEON_WALL: f32 = 0.6;
 /// At least how much ground there is over the brick roofs of halls
@@ -1863,6 +1881,25 @@ impl Terrain {
             }
         }
         best.map(|(_, e)| e)
+    }
+
+    /// The nearest boss's cavern to `near`, within a kilometer or so: the middle of its floor in
+    /// meters, the way in from there, and how far out there's room all round. For trying them out.
+    #[allow(dead_code)]
+    pub fn nearest_cavern(&self, near: [f32; 2]) -> Option<([f32; 3], [f32; 2], f32)> {
+        let home = near.map(|v| (v / CAVE_CELL).floor() as i32);
+        let mut best: Option<(f32, ([f32; 3], [f32; 2], f32))> = None;
+        for cy in home[1] - 8..=home[1] + 8 {
+            for cx in home[0] - 8..=home[0] + 8 {
+                if let Some(lair) = self.cave_in(cx, cy).and_then(|c| c.lair) {
+                    let distance = (lair.0[0] - near[0]).hypot(lair.0[1] - near[1]);
+                    if best.is_none_or(|(b, _)| distance < b) {
+                        best = Some((distance, lair));
+                    }
+                }
+            }
+        }
+        best.map(|(_, lair)| lair)
     }
 
     /// Builds a box of the landscape into voxels. `origin` and `size` are in voxels at
@@ -3249,68 +3286,201 @@ impl Terrain {
         Some(Object::new(shapes, rng.0))
     }
 
-    /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square. Some open
-    /// out onto the hillside, and glowing crystals grow on their floors here and there.
+    /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square, opening out
+    /// into caverns along the way. Most open onto the hillside, and in those the last cavern is a
+    /// great one where a boss makes its lair: "cavern", at the middle of its floor, facing the
+    /// way in.
     fn caves(&self, features: &mut Features) -> Vec<Object> {
-        const CAVE_CELL: f32 = 72.0;
-        // How far from where they start caves can wander
-        const REACH: f32 = 120.0;
-        let seed = self.settings.seed;
-        let sea_level = sea_level_m(&self.settings);
         let (lo, hi) = (self.lo, self.hi);
         let mut objects = Vec::new();
-        let first = [((lo[0] - REACH) / CAVE_CELL).floor() as i32, ((lo[1] - REACH) / CAVE_CELL).floor() as i32];
-        let last = [((hi[0] + REACH) / CAVE_CELL).ceil() as i32, ((hi[1] + REACH) / CAVE_CELL).ceil() as i32];
+        let first = [((lo[0] - CAVE_REACH) / CAVE_CELL).floor() as i32, ((lo[1] - CAVE_REACH) / CAVE_CELL).floor() as i32];
+        let last = [((hi[0] + CAVE_REACH) / CAVE_CELL).ceil() as i32, ((hi[1] + CAVE_REACH) / CAVE_CELL).ceil() as i32];
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
-                let r = hash3(cx as u32, cy as u32, seed ^ 0xca7e);
-                if unit(r) > 0.5 {
+                let Some(cave) = self.cave_in(cx, cy) else {
+                    continue;
+                };
+                // Far out, it's only what reaches into this piece that matters
+                if !overlaps([lo[0], lo[1], hi[0], hi[1]], cave.bounds, 0.0) {
                     continue;
                 }
-                let mut rng = Rng(hash(r));
-                let mut p = [(cx as f32 + rng.next()) * CAVE_CELL, (cy as f32 + rng.next()) * CAVE_CELL, 0.0];
-                let surface = height_at(&self.settings, p[0], p[1]);
-                if surface < sea_level + 3.0 {
-                    continue;
+                features.lights.extend(cave.lights.into_iter().filter(|l| self.inside(l.position[0], l.position[1])));
+                if let Some((floor, facing, _)) = cave.lair.filter(|(f, ..)| self.inside(f[0], f[1])) {
+                    features.sites.push(Site { kind: "cavern", position: floor, facing });
                 }
-                let mouth = rng.next() < 0.5;
-                p[2] = if mouth { surface - 0.5 } else { surface - rng.range(6.0, 14.0) };
-                let mut yaw = rng.next() * TAU;
-                let mut pitch: f32 = if mouth { -0.35 } else { 0.0 };
-                let mut radius = rng.range(1.2, 1.8);
-                let mut shapes = Vec::new();
-                let mut crystals = Vec::new();
-                for i in 0..30 + (rng.next() * 40.0) as usize {
-                    let next_radius = (radius + rng.range(-0.25, 0.25)).clamp(1.0, 2.4);
-                    let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
-                    let q = add(p, scale(dir, 1.6));
-                    shapes.push(Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve));
-                    if i % 9 == 4 {
-                        let at = [q[0] + rng.range(-0.5, 0.5), q[1] + rng.range(-0.5, 0.5), q[2] - next_radius * 0.8];
-                        for _ in 0..3 {
-                            let offset = [rng.range(-0.35, 0.35), rng.range(-0.35, 0.35), rng.range(0.0, 0.3)];
-                            crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
-                        }
-                        if self.inside(at[0], at[1]) {
-                            features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
-                        }
-                    }
-                    // Wander about, staying well under the ground, and never under the sea
-                    let depth = height_at(&self.settings, q[0], q[1]) - q[2];
-                    yaw += rng.range(-0.35, 0.35);
-                    let want = if depth < 4.0 && i > 4 { -0.3 } else if depth > 16.0 { 0.25 } else { rng.range(-0.15, 0.15) };
-                    pitch = (pitch * 0.7 + want * 0.3).clamp(-0.5, 0.5);
-                    p = q;
-                    radius = next_radius;
-                    if q[2] < sea_level - 2.0 {
-                        break;
-                    }
+                for &(floor, facing, _) in cave.nests.iter().filter(|(f, ..)| self.inside(f[0], f[1])) {
+                    features.sites.push(Site { kind: "cave nest", position: floor, facing });
                 }
-                shapes.extend(crystals);
-                objects.push(Object::new(shapes, rng.0));
+                objects.push(Object::new(cave.shapes, cave.seed));
             }
         }
         objects
+    }
+
+    /// The cave starting in one CAVE_CELL square, if there's one
+    fn cave_in(&self, cx: i32, cy: i32) -> Option<Cave> {
+        let sea_level = sea_level_m(&self.settings);
+        let r = hash3(cx as u32, cy as u32, self.settings.seed ^ 0xca7e);
+        if unit(r) > 0.65 {
+            return None;
+        }
+        let mut rng = Rng(hash(r));
+        let mut p = [(cx as f32 + rng.next()) * CAVE_CELL, (cy as f32 + rng.next()) * CAVE_CELL, 0.0];
+        let surface = height_at(&self.settings, p[0], p[1]);
+        if surface < sea_level + 3.0 {
+            return None;
+        }
+        let mouth = rng.next() < 0.6;
+        p[2] = if mouth { surface - 0.8 } else { surface - rng.range(8.0, 16.0) };
+        let mut yaw = rng.next() * TAU;
+        let mut pitch: f32 = if mouth { -0.4 } else { 0.0 };
+        let mut radius = rng.range(1.8, 2.5);
+        let mut cave = Cave { shapes: Vec::new(), lights: Vec::new(), lair: None, nests: Vec::new(), bounds: [p[0], p[1], p[0], p[1]], seed: 0 };
+        let mut inside = Vec::new();
+        let segments = 35 + (rng.next() * 35.0) as usize;
+        let mut next_cavern = rng.range(10.0, 18.0) as usize;
+        let mut caverns = Vec::new();
+        for i in 0..segments {
+            let next_radius = (radius + rng.range(-0.35, 0.35)).clamp(1.6, 3.3);
+            let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
+            let q = add(p, scale(dir, 2.2));
+            cave.shapes.push(Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve));
+            if i % 8 == 4 {
+                let at = [q[0] + rng.range(-0.6, 0.6), q[1] + rng.range(-0.6, 0.6), q[2] - next_radius * 0.8];
+                for _ in 0..3 {
+                    let offset = [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), rng.range(0.0, 0.3)];
+                    inside.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.32), CRYSTAL, AIR, false).placed(Placement::Inside));
+                }
+                cave.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 8.0 });
+            }
+            // Opening out into a cavern now and then, on the way down, where cave spiders nest
+            if i == next_cavern && i > 4 {
+                let floor = [q[0], q[1], q[2] - next_radius * 0.75];
+                if let Some((at, wide)) = self.cavern(&mut cave, &mut inside, floor, false, &mut rng) {
+                    caverns.push((at, [-dir[0], -dir[1]], wide));
+                }
+                next_cavern += rng.range(14.0, 24.0) as usize;
+            }
+            // Wander about, staying well under the ground, and never under the sea
+            let depth = height_at(&self.settings, q[0], q[1]) - q[2];
+            yaw += rng.range(-0.3, 0.3);
+            let want = if depth < 7.0 && i > 4 { -0.3 } else if depth > 20.0 { 0.25 } else { rng.range(-0.12, 0.12) };
+            pitch = (pitch * 0.7 + want * 0.3).clamp(-0.45, 0.45);
+            p = q;
+            radius = next_radius;
+            if q[2] < sea_level - 2.0 {
+                break;
+            }
+        }
+        // A cave a way into opens at its far end into a great cavern, a boss's lair
+        if mouth {
+            let floor = [p[0], p[1], p[2] - radius * 0.75];
+            let way_in = [-yaw.cos(), -yaw.sin()];
+            if let Some((at, wide)) = self.cavern(&mut cave, &mut inside, floor, true, &mut rng) {
+                cave.lair = Some((at, way_in, wide));
+            } else {
+                cave.lair = caverns.pop();
+            }
+        }
+        // Only where there's a way in
+        cave.nests = if mouth { caverns } else { Vec::new() };
+        cave.shapes.extend(inside);
+        for s in &cave.shapes {
+            cave.bounds = [cave.bounds[0].min(s.min[0]), cave.bounds[1].min(s.min[1]), cave.bounds[2].max(s.max[0]), cave.bounds[3].max(s.max[1])];
+        }
+        cave.seed = rng.0;
+        Some(cave)
+    }
+
+    /// Hollows a cavern out of the ground with its floor round `floor`, in meters: wide and high,
+    /// a great one for a boss's lair, with rocks hanging from its roof and rising from its floor
+    /// round the sides and crystals glowing among them. Smaller if there isn't ground enough over
+    /// it, None if there isn't room at all. Gives the middle of its floor, and how far out there's
+    /// room all round.
+    fn cavern(&self, cave: &mut Cave, inside: &mut Vec<Shape>, floor: Vec3, great: bool, rng: &mut Rng) -> Option<(Vec3, f32)> {
+        // How far out its sides are from the middle, and how high its roof is over that
+        let (mut wide, mut high) = if great { (rng.range(11.0, 14.0), rng.range(6.0, 7.5)) } else { (rng.range(5.0, 8.5), rng.range(3.5, 5.0)) };
+        let stretch = rng.range(0.75, 1.0);
+        let lengthwise = rng.next() < 0.5;
+        let turn = rng.next() * TAU;
+        // The roof stays well under the ground all round
+        let lowest_ground = |wide: f32| {
+            (0..9)
+                .map(|k| {
+                    let a = k as f32 / 8.0 * TAU;
+                    let r = if k == 8 { 0.0 } else { wide };
+                    height_at(&self.settings, floor[0] + a.cos() * r, floor[1] + a.sin() * r)
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        for _ in 0..3 {
+            if floor[2] + high * 1.8 + 3.0 < lowest_ground(wide) {
+                break;
+            }
+            wide *= 0.75;
+            high *= 0.8;
+        }
+        if floor[2] + high * 1.8 + 3.0 >= lowest_ground(wide) || floor[2] < sea_level_m(&self.settings) {
+            return None;
+        }
+        // The middle a little over the floor, so it dips only a little and is fairly flat
+        let middle = [floor[0], floor[1], floor[2] + high * 0.8];
+        let radii = if lengthwise { [wide, wide * stretch, high] } else { [wide * stretch, wide, high] };
+        cave.shapes.push(Shape::ellipsoid(middle, radii, AIR, AIR).placed(Placement::Carve));
+        // Room to fight in is as far out as its narrower side
+        let wide = wide * stretch;
+        // Lobes off its sides, so it isn't a perfect bubble
+        for k in 0..if great { 3 } else { 2 } {
+            let a = turn + k as f32 * 2.1 + rng.range(-0.4, 0.4);
+            let off = wide * rng.range(0.45, 0.65);
+            let center = [middle[0] + a.cos() * off, middle[1] + a.sin() * off, middle[2] - high * rng.range(0.1, 0.3)];
+            let w = wide * rng.range(0.4, 0.55);
+            cave.shapes.push(Shape::ellipsoid(center, [w, w, high * rng.range(0.55, 0.8)], AIR, AIR).placed(Placement::Carve));
+        }
+        // How high the roof and floor are over the middle of the cavern, `r` of the way out to its side
+        let roof = |r: f32| middle[2] + high * (1.0 - r * r).max(0.0).sqrt();
+        let ground = |r: f32| middle[2] - high * (1.0 - r * r).max(0.0).sqrt();
+        // Rocks round the sides, the middle left clear to fight in
+        for _ in 0..if great { 14 } else { 7 } {
+            let a = rng.next() * TAU;
+            let r = rng.range(0.55, 0.85);
+            let (x, y) = (middle[0] + a.cos() * wide * r, middle[1] + a.sin() * wide * r);
+            let thick = rng.range(0.35, 0.8) * if great { 1.4 } else { 1.0 };
+            let (top, bottom) = (roof(r), ground(r).max(floor[2] - 0.6));
+            if rng.next() < 0.5 {
+                let tall = rng.range(0.25, 0.5) * (top - bottom);
+                inside.push(Shape::capsule([x, y, bottom - 0.5], [x, y, bottom + tall], thick, 0.06, LIMESTONE, STONE, false).placed(Placement::Inside));
+            } else {
+                let long = rng.range(0.2, 0.4) * (top - bottom);
+                inside.push(Shape::capsule([x, y, top + 0.5], [x, y, top - long], thick, 0.05, LIMESTONE, STONE, false).placed(Placement::Inside));
+            }
+        }
+        // Crystals glowing on the floor round the sides, and lighting it
+        let colors = [[0.35, 0.85, 1.0], [0.7, 0.45, 1.0], [0.4, 1.0, 0.7]];
+        let tint = colors[(rng.next() * 3.0) as usize % 3];
+        for _ in 0..if great { 4 } else { 2 } {
+            let a = rng.next() * TAU;
+            let r = rng.range(0.5, 0.75);
+            let at = [middle[0] + a.cos() * wide * r, middle[1] + a.sin() * wide * r, ground(r).max(floor[2] - 0.4)];
+            for _ in 0..5 {
+                let offset = [rng.range(-0.6, 0.6), rng.range(-0.6, 0.6), rng.range(0.0, 0.5)];
+                inside.push(Shape::sphere(add(at, offset), rng.range(0.2, 0.45), CRYSTAL, AIR, false).placed(Placement::Inside));
+            }
+            cave.lights.push(Light { position: [at[0], at[1], at[2] + 0.8], color: tint, reach: if great { 14.0 } else { 10.0 } });
+        }
+        // A great cluster of crystals hanging from the middle of the roof, lighting the whole of
+        // it, so what's in there can be seen to fight
+        let top = roof(0.0);
+        let hang = if great { 2.2 } else { 1.2 };
+        inside.push(Shape::capsule([middle[0], middle[1], top + 0.5], [middle[0], middle[1], top - hang], hang * 0.45, 0.15, CRYSTAL, AIR, false).placed(Placement::Inside));
+        for _ in 0..if great { 6 } else { 3 } {
+            let a = rng.next() * TAU;
+            let tip = [middle[0] + a.cos() * hang * 0.6, middle[1] + a.sin() * hang * 0.6, top - hang * rng.range(0.4, 0.8)];
+            inside.push(Shape::capsule([middle[0], middle[1], top + 0.3], tip, hang * 0.22, 0.08, CRYSTAL, AIR, false).placed(Placement::Inside));
+        }
+        let glow = [tint[0] * 0.6 + 0.4, tint[1] * 0.6 + 0.4, tint[2] * 0.6 + 0.4];
+        cave.lights.push(Light { position: [middle[0], middle[1], top - hang - 0.8], color: glow, reach: if great { 28.0 } else { 15.0 } });
+        Some((floor, wide))
     }
 
     /// The dungeons reaching into this piece of the landscape

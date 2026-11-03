@@ -1291,8 +1291,16 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_dungeon([112.0, 112.0]))
         });
+        // `--set cave=1` starts in the great cavern at the end of the nearest cave, where a boss is
+        let cavern = setting("cave").filter(|_| dungeon.is_none()).and_then(|_| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.nearest_cavern([112.0, 112.0]))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
-        let start_in = dungeon.map(|d| [d[0], d[1]]).or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
+        let start_in = dungeon
+            .map(|d| [d[0], d[1]])
+            .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
+            .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
             [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2).div_euclid(64) * 64)
@@ -1339,6 +1347,14 @@ impl App {
             camera.position = voxels_to_camera(eye, world.size);
             let towards = hall.filter(|h| (h - eye).xy().norm() > vpm).map_or(Vector3::x(), |h| Vector3::new(h.x - eye.x, h.y - eye.y, 0.0).normalize());
             camera.look_direction(towards + Vector3::new(0.0, 0.0, -0.2));
+        } else if let Some((floor, way_in, wide)) = cavern {
+            // Inside the great cavern, near the way in, looking across it
+            let vpm = world.voxels_per_meter as f64;
+            let middle = Vector3::new(floor[0] as f64 * vpm - origin[0] as f64, floor[1] as f64 * vpm - origin[1] as f64, floor[2] as f64 * vpm);
+            let back = Vector3::new(way_in[0] as f64, way_in[1] as f64, 0.0) * wide as f64 * 0.8 * vpm;
+            let eye = middle + back + Vector3::new(0.0, 0.0, 1.7 * vpm);
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
         } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
@@ -1363,9 +1379,9 @@ impl App {
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
-        // In a dungeon, right where the camera is rather than up on the ground over it
+        // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
-        let player = walk.then(|| if dungeon.is_some() { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
+        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -1403,6 +1419,10 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+        }
+        // `--set health=10` starts the player that hurt, to see them die
+        if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
+            game.set_health(health);
         }
         // `--set merchant=6` puts a merchant that many meters ahead, and `--set shop=1` trades with
         // the nearest, to see their stall
@@ -1658,8 +1678,9 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                // Every dungeon's deepest hall has its Grave Knight; only some ruins have a boss
-                if pick >= BOSS_CHANCE && site.kind != "dungeon" {
+                // Every dungeon's deepest hall has its Grave Knight, and every great cavern at the
+                // end of a cave its boss; only some ruins have one
+                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern") {
                     return None;
                 }
                 let look = match site.kind {
@@ -1676,23 +1697,28 @@ impl App {
                     "watchtower" | "colonnade" if pick % 2 == 1 => animals::Look::Direwolf,
                     "watchtower" | "pyramid" | "flooded church" => animals::Look::Drake,
                     "colonnade" => animals::Look::Ironhide,
-                    "ravine" | "crevice" => animals::Look::Spider,
+                    // A crevice is shut in under the ground, with no way down to it, so nothing
+                    // guards it
+                    "ravine" => animals::Look::Spider,
+                    // Spiders in most caves, a golem of the stone itself in some
+                    "cavern" if pick % 3 == 2 => animals::Look::Golem,
+                    "cavern" => animals::Look::Spider,
                     "shrine" => animals::Look::Treant,
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "crevice" | "dungeon") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
             .collect();
-        // Monsters haunt the other halls of dungeons
+        // Monsters haunt the other halls of dungeons, and cave spiders nest in caverns
         let dens: Vec<game::Den> = landscape
             .sites()
             .iter()
-            .filter(|site| site.kind == "dungeon hall")
-            .map(|site| game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64) })
+            .filter(|site| matches!(site.kind, "dungeon hall" | "cave nest"))
+            .map(|site| game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), cave: site.kind == "cave nest" })
             .collect();
         // Merchants keep stalls out in front of some of the ruins no boss guards
         let stalls: Vec<game::Stall> = landscape
@@ -1701,7 +1727,7 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
@@ -2281,7 +2307,7 @@ impl App {
         let mut controls = std::mem::take(&mut self.script_controls);
         if playing && !self.focused && !self.inventory_open && !self.game.shopping() && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
-        } else if playing && self.focused {
+        } else if playing && self.focused && !self.game.dead() {
             let bucket = self.game.holding_bucket() && !self.game.has_target();
             let armed = self.game.holding_weapon();
             if armed {
@@ -2355,11 +2381,25 @@ impl App {
             if let Some(player) = &mut self.player {
                 player.push(push);
             }
-            // Beaten, the player gets back up where they fell, see Game::take_beaten()
-            if self.game.take_beaten()
+            // Slain, the player lies there until they rise again, at the last place they stood
+            // safe. Screenshot runs rise by themselves.
+            if self.game.take_died()
                 && let Some(capture) = &self.capture
             {
-                println!("BEATEN at frame {}", capture.frame_times.len());
+                println!("DIED at frame {}: {}", capture.frame_times.len(), self.game.last_message().unwrap_or(""));
+            }
+            let rise = (interactive && self.focused && (self.input.key_pressed(KeyCode::Space) || self.input.mouse_pressed(MouseButton::Left)))
+                || (self.capture.is_some() && self.game.dead_for() > 4.0);
+            if self.game.can_rise() && rise {
+                let spot = self.game.rise();
+                if let Some(feet) = spot {
+                    let player = Player::new(feet + Vector3::new(0.0, 0.0, 1.6 * self.world.voxels_per_meter as f64), &self.world);
+                    self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+                    self.player = Some(player);
+                }
+                if let Some(capture) = &self.capture {
+                    println!("ROSE at frame {} {}", capture.frame_times.len(), if spot.is_some() { "where it was safe" } else { "where they fell" });
+                }
             }
         }
         self.ambience(delta_time);
@@ -2371,7 +2411,9 @@ impl App {
             };
         }
 
-        let t = |k: KeyCode| (self.focused && interactive && self.input.key_held(k)) as u8 as f64;
+        // The dead don't walk
+        let alive = !self.game.dead();
+        let t = |k: KeyCode| (self.focused && interactive && alive && self.input.key_held(k)) as u8 as f64;
         let mut footstep = None;
         if let Some(player) = &mut self.player {
             // Walk where the camera faces, ignoring whether it looks up or down
@@ -2379,7 +2421,7 @@ impl App {
             let forward = Vector2::new(-yaw.sin(), yaw.cos());
             let right = Vector2::new(yaw.cos(), yaw.sin());
             let mut wish = forward * (t(KeyCode::KeyW) - t(KeyCode::KeyS)) + right * (t(KeyCode::KeyD) - t(KeyCode::KeyA));
-            if self.scripted_walk {
+            if self.scripted_walk && alive {
                 wish = forward;
             }
             if wish.norm() > 1.0 {
@@ -2388,12 +2430,14 @@ impl App {
             // Slowed by frost
             wish *= self.game.pace();
             let jump = t(KeyCode::Space) > 0.0;
-            let sprint = self.focused && self.input.held_shift();
+            let sprint = self.focused && alive && self.input.held_shift();
             // Long hitches, like generating a world, shouldn't fling the player through the floor
             let water = &self.water;
             let before = player.position;
             player.update(&self.world, &|x, y| water.surface_at(x, y), wish, jump, sprint, delta_time.min(0.05));
-            self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+            // Fallen dead, the view sinks to the ground
+            let fallen = Vector3::new(0.0, 0.0, 1.0 * self.game.fallen() * self.world.voxels_per_meter as f64);
+            self.camera.position = voxels_to_camera(player.eye(&self.world) - fallen, self.world.size);
 
             // Wading through water pushes it along
             let vpm = self.world.voxels_per_meter as f64;
@@ -2660,8 +2704,11 @@ impl App {
                 // `--set boss_look_down=8` looks that many meters under it, to see what it does
                 // round the player's feet
                 let down = settings_from_args().into_iter().find(|(k, _)| k == "boss_look_down").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                // `--set boss_approach=300` stands there that many frames, then walks up to it
+                let approach = settings_from_args().into_iter().find(|(k, _)| k == "boss_approach").and_then(|(_, v)| v.parse::<usize>().ok());
                 if let Some(target) = self.game.nearest_boss(eye) {
                     self.camera.look_at(voxels_to_camera(target - Vector3::new(0.0, 0.0, down * vpm), self.world.size));
+                    self.scripted_walk = approach.is_some_and(|after| f > after && (target - eye).xy().norm() > 3.0 * vpm);
                 }
                 self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
                 if f % 60 == 0 {
@@ -3251,13 +3298,16 @@ impl App {
         let resample_extent = rcx.images.resample_image.extent();
         self.camera.extent = [render_extent[0] as f64, render_extent[1] as f64];
 
-        // Shaken by blows and explosions: only what's drawn, not where the player's looking
+        // Shaken by blows and explosions, and tipped over on falling dead: only what's drawn, not
+        // where the player's looking
         let shake = self.game.shake();
-        let pixel_to_ray = if shake > 0.01 && self.loaded_scene.is_terrain() {
+        let fallen = self.game.fallen();
+        let pixel_to_ray = if (shake > 0.01 || fallen > 0.0) && self.loaded_scene.is_terrain() {
             let t = self.start_time.elapsed().as_secs_f64();
             let amount = shake * shake * 0.012;
             let rotation = self.camera.rotation;
-            self.camera.rotation.x += amount * ((t * 41.0).sin() + 0.5 * (t * 67.0).sin());
+            self.camera.rotation.x += amount * ((t * 41.0).sin() + 0.5 * (t * 67.0).sin()) - 0.25 * fallen;
+            self.camera.rotation.y += 1.2 * fallen;
             self.camera.rotation.z += amount * ((t * 37.0 + 1.0).sin() + 0.5 * (t * 59.0).sin());
             let shaken = self.camera.pixel_to_ray_matrix();
             self.camera.rotation = rotation;

@@ -158,7 +158,28 @@ pub struct Boss {
     /// How its whole body is moving on top of its pose, eased towards where its move puts it:
     /// radians tipped forward, and meters moved on and up, see Boss::sway()
     sway: [f64; 3],
+    /// Seconds since it last saw the player, while fighting them
+    unseen: f64,
     pub deeds: Vec<Deed>,
+}
+
+/// Seconds a boss goes on after the player once it can't see them, and a monster
+const LOST: f64 = 8.0;
+const MONSTER_LOST: f64 = 6.0;
+
+/// Whether `a` can see the player standing at `feet`, in voxels: nothing solid in the way from the
+/// middle of its body to their eyes or their middle, looking a quarter of a meter at a time
+fn sees(a: &Animal, feet: Vector3<f64>, world: &World) -> bool {
+    let vpm = world.voxels_per_meter as f64;
+    let from = a.center(world.voxels_per_meter);
+    [1.6, 0.9].into_iter().any(|up| {
+        let to = feet + Vector3::new(0.0, 0.0, up * vpm);
+        let steps = ((to - from).norm() / (0.25 * vpm)).ceil() as usize;
+        (1..steps).all(|s| {
+            let p = from + (to - from) * (s as f64 / steps as f64);
+            is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+        })
+    })
 }
 
 /// Seconds a boss takes easing from one pose to the next
@@ -383,6 +404,7 @@ impl Boss {
             combo: 0,
             hold: 0.0,
             sway: [0.0; 3],
+            unseen: 0.0,
             deeds: Vec::new(),
         }
     }
@@ -391,6 +413,7 @@ impl Boss {
     pub fn provoke(&mut self) {
         self.engaged = true;
         self.grace = 0.0;
+        self.unseen = 0.0;
     }
 
     /// Having beaten the player, it goes home and leaves them be for a while to get up
@@ -557,8 +580,9 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let distance = player.map_or(f64::MAX, |p| (p - a.position).xy().norm() / vpm);
     let from_home = (a.position - boss.home).xy().norm() / vpm;
 
-    // Turning on the player when they come near, not through the floor of a dungeon, and giving
-    // up if they get away. Monsters don't go as far.
+    // Turning on the player when it sees them near, not through the floor of a dungeon or the
+    // rock of a cave, and giving up if they get away or it loses sight of them a while. Monsters
+    // don't go as far.
     let monster = look.is_monster();
     let (notice, give_up, leash) = match look {
         Look::Wolf => (22.0, 34.0, 50.0),
@@ -568,10 +592,14 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     };
     let level = player.is_some_and(|p| (p.z - a.position.z).abs() < 5.0 * vpm);
     boss.grace -= dt;
-    if level && distance < notice && boss.grace <= 0.0 {
+    let near = level && distance < notice && boss.grace <= 0.0;
+    let seen = (near || boss.engaged) && player.is_some_and(|p| sees(a, p, world));
+    if near && seen {
         boss.engaged = true;
     }
-    if boss.engaged && (player.is_none() || distance > give_up || from_home > leash) {
+    boss.unseen = if seen || !boss.engaged { 0.0 } else { boss.unseen + dt };
+    let lost = boss.unseen > if monster { MONSTER_LOST } else { LOST };
+    if boss.engaged && (player.is_none() || distance > give_up || from_home > leash || lost) {
         boss.calm();
     }
     let busy = matches!(boss.phase, Phase::WindUp(..) | Phase::Act(..));

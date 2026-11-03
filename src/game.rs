@@ -160,11 +160,18 @@ struct Pickup {
     flying: f64,
     /// Whether the camera can see it, for its beam of light to show
     seen: bool,
+    /// Shown by a beam of light like a weapon is, as the gold the player lost when they died
+    beacon: bool,
 }
 
 impl Pickup {
     fn lying(item: Item, position: Vector3<f64>, heading: f64) -> Self {
-        Pickup { item, position, heading, from: position, flying: 0.0, seen: false }
+        Pickup { item, position, heading, from: position, flying: 0.0, seen: false, beacon: false }
+    }
+
+    /// Whether a beam of light shows where it lies
+    fn shines(&self) -> bool {
+        self.beacon || matches!(self.item, Item::Weapon(_))
     }
 
     /// Where it is now, in voxels: flying in an arc from where it was dropped, then where it landed
@@ -200,8 +207,10 @@ struct Splat {
 
 /// Seconds a splash of blood stays on the view
 const SPLAT_SECONDS: f64 = 2.4;
-/// Seconds the view stays dark after the player's beaten, coming back as they get up
-const DOWN_SECONDS: f64 = 3.0;
+/// Seconds the view takes to come back after the player rises again
+const DOWN_SECONDS: f64 = 2.0;
+/// Seconds the player lies dead before they can rise again
+const RISE_AFTER: f64 = 2.5;
 
 /// A hall of a dungeon that monsters haunt
 pub struct Den {
@@ -209,6 +218,8 @@ pub struct Den {
     pub position: Vector3<f64>,
     /// Where in the whole landscape, to remember it's been cleared
     pub key: [i64; 3],
+    /// A cavern cave spiders nest in, rather than a hall of a dungeon
+    pub cave: bool,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -324,10 +335,18 @@ pub struct Game {
     thrown: Vector3<f64>,
     /// The camera shaking from what bosses do, wearing off
     shake: f64,
-    /// The player was beaten, and gets back up where they fell; and seconds since, for the view
-    /// to go dark and come back
-    beaten: bool,
+    /// The player died: what killed them, and seconds since. They lie there until they rise
+    /// again, at the last place they stood safe.
+    dead: Option<(String, f64)>,
+    /// Whether they died since main.rs last asked, see take_died(), and the gold they lost
+    died: bool,
+    lost: u32,
+    /// Seconds since the player rose again, for the view to come back
     down: f64,
+    /// Where the player last stood safe, their feet in voxels: on the ground, out of the water,
+    /// with nothing after them. And seconds they've stood safe, so a moment's lull doesn't count.
+    rest: Option<Vector3<f64>>,
+    safe_for: f64,
     /// Bosses' lairs in this piece of the world, and those beaten, by where they are in the landscape
     lairs: Vec<Lair>,
     defeated: HashSet<[i64; 3]>,
@@ -464,8 +483,12 @@ impl Game {
             knockback: Vector3::zeros(),
             thrown: Vector3::zeros(),
             shake: 0.0,
-            beaten: false,
+            dead: None,
+            died: false,
+            lost: 0,
             down: DOWN_SECONDS,
+            rest: None,
+            safe_for: 0.0,
             lairs: Vec::new(),
             defeated: HashSet::new(),
             dens: Vec::new(),
@@ -529,6 +552,8 @@ impl Game {
         self.seed = seed;
         self.combat.clear();
         self.leaves.clear();
+        self.rest = None;
+        self.safe_for = 0.0;
         // A merchant not far from where the player starts, to trade with from the first
         self.merchants.clear();
         self.shop = None;
@@ -695,10 +720,12 @@ impl Game {
             None => animal,
         };
         format!(
-            "holding {held}, {animal}, mana {:.0}, health {:.0}, gold {}, {} lying about, {} animals ({bosses} bosses, {} lairs), {} leaves falling",
+            "holding {held}, {animal}, mana {:.0}, health {:.0}, gold {}, [{}] after them, {} rest spot, {} lying about, {} animals ({bosses} bosses, {} lairs), {} leaves falling",
             self.combat.mana,
             self.health,
             self.gold,
+            self.animals.iter().filter(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.engaged)).map(|a| a.look.name()).collect::<Vec<_>>().join(", "),
+            if self.rest.is_some() { "a" } else { "no" },
             self.pickups.iter().filter(|p| !matches!(p.item, Item::Apple)).count(),
             self.animals.len(),
             self.lairs.len(),
@@ -755,6 +782,7 @@ impl Game {
             }
             let mut seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
             let haunted: &[Look] = match seed % 3 {
+                _ if den.cave => &[Look::Spiderling, Look::Spiderling, Look::Spiderling],
                 0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
                 1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],
                 _ => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
@@ -819,6 +847,7 @@ impl Game {
         self.target = None;
         self.merchants.retain(|(id, _)| self.animals.iter().any(|a| a.id == *id));
         self.forget_weapons();
+        self.rest = self.rest.map(|r| r - shift).filter(inside);
 
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
         // pop up right in front of them. Bosses, dungeon monsters and merchants have homes of their own.
@@ -912,10 +941,12 @@ impl Game {
             animal.update(world, water, player, dt);
         }
 
+        // The dead don't fight
         let held = match self.slots.get(self.selected) {
-            Some(&(Item::Weapon(i), _)) => Some(i),
+            Some(&(Item::Weapon(i), _)) if self.dead.is_none() => Some(i),
             _ => None,
         };
+        let controls = if self.dead.is_some() { Controls::default() } else { controls };
         let weapon = held.map(|i| (i, &self.weapons[i]));
         self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player, water }, weapon, controls, dt);
         for message in std::mem::take(&mut self.combat.messages) {
@@ -946,9 +977,9 @@ impl Game {
             self.health = (self.health + heal).min(MAX_HEALTH);
         }
         self.knockback += std::mem::take(&mut self.combat.dash);
-        self.look_after_player(world, player, dt);
+        self.look_after_player(world, water, player, dt);
         // The boss bar's trail catching up with what it's lost, a moment after each blow
-        if let Some((foe, health, _)) = self.foe(view.eye) {
+        if let Some((foe, health, ..)) = self.foe(view.eye) {
             let name = foe.name();
             let (shown, mut trail, mut hold, mut flash) = if name == self.boss_bar.0 { (self.boss_bar.1, self.boss_bar.2, self.boss_bar.3, self.boss_bar.4) } else { (health, health, 0.0, 0.0) };
             if health < shown - 0.03 {
@@ -990,7 +1021,7 @@ impl Game {
             }
         }
 
-        self.target = self.find_target(world, view.eye, view.forward());
+        self.target = if self.dead.is_some() { None } else { self.find_target(world, view.eye, view.forward()) };
         self.messages.retain(|(_, at)| at.elapsed().as_secs_f64() < 4.0);
     }
 
@@ -1429,33 +1460,99 @@ impl Game {
         let away = Vector3::new(feet.x - from.x, feet.y - from.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros);
         self.thrown += (away * (damage * 0.12).min(3.5) + Vector3::new(0.0, 0.0, (damage * 0.05).min(1.5))) * vpm;
         if self.health <= 0.0 {
-            self.health = 0.0;
-            self.beaten = true;
-            self.down = 0.0;
-            self.say(format!("You were beaten by the {by}. It leaves you lying there."));
-            // The bosses and monsters go home to lick their wounds, and leave the player be a while
-            // to get up and get away
-            for animal in &mut self.animals {
-                if let Some(boss) = &mut animal.boss {
-                    boss.spare();
-                    animal.health = animal.look.health();
-                }
-            }
-            self.combat.clear();
-            self.roots.clear();
-            self.webs.clear();
-            self.burning = 0.0;
-            self.poisoned = 0.0;
-            self.chilled = 0.0;
-            self.snared = 0.0;
+            self.die(by, feet, vpm);
         }
     }
 
-    /// Health coming back, burning, starving, and keeping track of where's safe to wake up
-    fn look_after_player(&mut self, world: &World, player: Option<Vector3<f64>>, dt: f64) {
+    /// The player at `feet` is killed by `by`. Half the gold they carry spills where they fell, to
+    /// come back for, and every boss and monster goes home healed.
+    fn die(&mut self, by: &str, feet: Vector3<f64>, vpm: f64) {
+        self.health = 0.0;
+        self.dead = Some((by.to_owned(), 0.0));
+        self.died = true;
+        self.shop = None;
+        let lost = self.gold / 2;
+        self.lost = lost;
+        if lost > 0 {
+            self.gold -= lost;
+            let from = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
+            self.pickups.push(Pickup { item: Item::Gold(lost), position: feet, heading: 0.0, from, flying: DROP_SECONDS, seen: false, beacon: true });
+        }
+        self.say(if lost > 0 { format!("You were slain by the {by}. {lost} gold lies where you fell.") } else { format!("You were slain by the {by}.") });
+        self.shake = self.shake.max(1.2);
+        self.cues.push(Cue::here(Sound::Hurt, 1.0).pitched(0.7));
+        self.cues.push(Cue::here(Sound::Rumble, 0.8).pitched(0.5));
+        for animal in &mut self.animals {
+            if let Some(boss) = &mut animal.boss {
+                boss.spare();
+                boss.stage = 0;
+                animal.health = animal.look.health();
+                // Burning or bleeding from the fight would turn it on them again
+                animal.status = Default::default();
+            }
+        }
+        self.combat.clear();
+        self.roots.clear();
+        self.webs.clear();
+        self.burning = 0.0;
+        self.poisoned = 0.0;
+        self.chilled = 0.0;
+        self.snared = 0.0;
+    }
+
+    pub fn dead(&self) -> bool {
+        self.dead.is_some()
+    }
+
+    /// How far the view has sunk to the ground as the player fell dead, 0 to 1
+    pub fn fallen(&self) -> f64 {
+        self.dead.as_ref().map_or(0.0, |(_, since)| {
+            let t = (since / 0.9).min(1.0);
+            t * t * (3.0 - 2.0 * t)
+        })
+    }
+
+    /// Whether the player's lain dead long enough to rise again
+    pub fn can_rise(&self) -> bool {
+        self.dead.as_ref().is_some_and(|(_, since)| *since >= RISE_AFTER)
+    }
+
+    /// Seconds the player's been dead, 0 if they're alive
+    pub fn dead_for(&self) -> f64 {
+        self.dead.as_ref().map_or(0.0, |(_, since)| *since)
+    }
+
+    /// The player rises again, healed: at the last place they stood safe, their feet in voxels,
+    /// or None for where they fell
+    pub fn rise(&mut self) -> Option<Vector3<f64>> {
+        self.dead = None;
+        self.health = MAX_HEALTH;
+        self.hunger = self.hunger.max(40.0);
+        self.combat.mana = MAX_MANA;
+        self.down = 0.0;
+        self.since_hurt = 100.0;
+        self.splats.clear();
+        self.hurt_flash = 0.0;
+        self.thrown = Vector3::zeros();
+        self.knockback = Vector3::zeros();
+        self.target = None;
+        self.say("You rise again.");
+        self.rest
+    }
+
+    /// Whether the player died since last asked
+    pub fn take_died(&mut self) -> bool {
+        std::mem::take(&mut self.died)
+    }
+
+    /// Health coming back, burning, starving, and keeping track of where's safe to rise again
+    fn look_after_player(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
         self.since_hurt += dt;
         self.hurt_flash = (self.hurt_flash - dt * 1.5).max(0.0);
         self.down = (self.down + dt).min(DOWN_SECONDS);
+        if let Some((_, since)) = &mut self.dead {
+            *since += dt;
+        }
         for s in &mut self.splats {
             s.age += dt;
         }
@@ -1475,8 +1572,28 @@ impl Game {
             self.snared = 0.0;
             self.roots.clear();
             self.webs.clear();
+            self.safe_for = 0.0;
             return;
         };
+        if self.dead.is_some() {
+            return;
+        }
+        // Remembering where's safe to rise again: standing on the ground out of the water, with
+        // nothing after them, for a few seconds
+        let vpm = world.voxels_per_meter as f64;
+        let fighting = self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.engaged));
+        // The ground's within a few voxels under the middle of their feet, as they stand on the
+        // highest of what's under any of them
+        let standing = (1..=(0.4 * vpm) as i64).any(|d| !is_passable(world.material_at(feet.x.floor() as i64, feet.y.floor() as i64, feet.z.floor() as i64 - d)));
+        let dry = water(feet.x, feet.y) < feet.z + 0.3 * vpm;
+        if fighting || !standing || !dry || self.health < 30.0 {
+            self.safe_for = 0.0;
+        } else {
+            self.safe_for += dt;
+            if self.safe_for > 3.0 {
+                self.rest = Some(feet);
+            }
+        }
         for (poison, rate, by) in [(false, 5.0, "flames"), (true, 3.5, "venom")] {
             let left = if poison { &mut self.poisoned } else { &mut self.burning };
             if *left <= 0.0 {
@@ -1501,12 +1618,18 @@ impl Game {
 
     /// The boss fighting the player, if any, nearest first: which it is, how much health it has
     /// left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool)> {
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>)> {
+        let vpm = self.combat.vpm() as u32;
         self.animals
             .iter()
             .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged)))
+            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm)))
+    }
+
+    /// For trying out dying: the player down to `health`
+    pub fn set_health(&mut self, health: f64) {
+        self.health = health.clamp(1.0, MAX_HEALTH);
     }
 
     /// For trying them out: every boss about down to `fraction` of its health
@@ -1555,25 +1678,7 @@ impl Game {
         self.shake.max(self.combat.shake)
     }
 
-    /// Whether the player was beaten since last time. They get back up where they fell, their
-    /// health back, while what beat them walks away.
-    pub fn take_beaten(&mut self) -> bool {
-        if !self.beaten {
-            return false;
-        }
-        self.beaten = false;
-        self.health = MAX_HEALTH;
-        self.burning = 0.0;
-        self.poisoned = 0.0;
-        self.chilled = 0.0;
-        self.snared = 0.0;
-        self.hunger = self.hunger.max(40.0);
-        self.hurt_flash = 1.0;
-        self.splats.clear();
-        true
-    }
-
-    /// Animals that were killed fall, and leave their meat. Bosses leave a chest.
+    /// Animals that were killed fall, and leave their meat. Bosses and monsters leave loot.
     fn reap(&mut self, world: &World) {
         let vpm = world.voxels_per_meter as f64;
         let mut k = 0;
@@ -1666,7 +1771,7 @@ impl Game {
                 }
             }
             // Looking a quarter of a meter at a time for anything in the way
-            if matches!(pickup.item, Item::Weapon(_)) {
+            if pickup.shines() {
                 let to = pickup.at(vpm) + Vector3::new(0.0, 0.0, 0.4 * vpm) - view.eye;
                 let d = to.norm();
                 let steps = (d / (0.25 * vpm)) as usize;
@@ -1758,7 +1863,7 @@ impl Game {
             });
             let landed = landed.map_or(spot, |z| Vector3::new(spot.x, spot.y, z as f64 + 1.0));
             let heading = random(&mut self.rng) * TAU;
-            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false });
+            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false, beacon: false });
         }
     }
 
@@ -2071,7 +2176,7 @@ impl Game {
         for k in 0..count {
             let angle = random(&mut self.rng) * TAU;
             let at = feet + Vector3::new(angle.cos(), angle.sin(), 0.0) * (0.5 + 0.2 * k as f64) * vpm;
-            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false });
+            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false, beacon: false });
         }
         self.say(format!("You drop {}.", self.item_name(item)));
     }
@@ -2219,7 +2324,8 @@ impl Game {
     pub fn instances(&self, world: &World, view: &View) -> Vec<AnimalInstance> {
         let vpm = world.voxels_per_meter as f64;
         let camera = view.eye;
-        let held = self.held().map(|(i, w)| (w, self.weapon_model(i)));
+        // Nothing in hand while lying dead
+        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
         let mut out = self.combat.held_instances(held, view);
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
@@ -2359,12 +2465,12 @@ impl Game {
 
         // A beam of light up from each weapon lying about in sight, in the color of its rarity,
         // taller and brighter the rarer it is, fading up and further off
-        for pickup in self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0) {
-            let Item::Weapon(w) = pickup.item else {
-                continue;
+        for pickup in self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()) {
+            // The gold the player lost when they died shines as bright as an epic weapon
+            let (grade, [r, g, b], w) = match pickup.item {
+                Item::Weapon(w) => (self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
+                _ => (3, [GOLD.r(), GOLD.g(), GOLD.b()], 0),
             };
-            let grade = self.weapons[w].grade;
-            let [r, g, b] = self.library.rarities[grade].color;
             let base = pickup.position + Vector3::new(0.0, 0.0, 0.2 * vpm);
             let distance = ((base - view.eye).norm() / vpm).max(1.0);
             let top = base + Vector3::new(0.0, 0.0, (2.2 + 0.9 * grade as f64) * vpm);
@@ -2494,7 +2600,25 @@ impl Game {
         }
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((foe, vitality, enraged)) = self.foe(view.eye) {
+        if let Some((foe, vitality, enraged, middle)) = self.foe(view.eye) {
+            // Off the edge of the screen or behind, an arrow round the edge points the way to it,
+            // with how far
+            let inner = screen.shrink(50.0);
+            if on_screen(middle).is_none_or(|p| !inner.contains(p)) {
+                let local = view.rotation.inverse() * (middle - view.eye);
+                let way = vec2(local.x as f32, -local.z as f32);
+                let way = if way.length() < 1e-3 { vec2(0.0, 1.0) } else { way.normalized() };
+                let reach = (inner.width() * 0.5 / way.x.abs().max(1e-3)).min(inner.height() * 0.5 / way.y.abs().max(1e-3));
+                let tip = center + way * reach;
+                let side = vec2(-way.y, way.x);
+                let pulse = 0.75 + 0.25 * (self.combat.time() * 5.0).sin() as f32;
+                let red = Color32::from_rgba_unmultiplied(225, 45, 40, (pulse * 240.0) as u8);
+                painter.add(egui::Shape::convex_polygon(vec![tip, tip - way * 22.0 + side * 13.0, tip - way * 22.0 - side * 13.0], red, Stroke::new(1.5f32, Color32::from_black_alpha(160))));
+                let meters = format!("{:.0} m", (middle - view.eye).norm() / vpm);
+                let label = tip - way * 40.0;
+                painter.text(label + vec2(1.0, 1.0), Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), shadow);
+                painter.text(label, Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), Color32::WHITE);
+            }
             let name = if foe.is_raid() { format!("RAID  ·  {}", foe.name()) } else { foe.name().to_string() };
             // A raid boss's bar is longer
             let width = (screen.width() * if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 900.0);
@@ -2545,17 +2669,34 @@ impl Game {
             }
         }
 
-        // Beaten: the view going dark, a word on what happened, then coming back as they get up
-        if self.down < DOWN_SECONDS {
-            let t = (self.down / DOWN_SECONDS) as f32;
-            let dark = if t < 0.15 { t / 0.15 } else { (1.0 - (t - 0.15) / 0.85).powf(0.7) };
-            painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(20, 0, 0, (dark * 215.0) as u8));
-            let words = Color32::from_rgba_unmultiplied(200, 40, 35, (dark * 255.0) as u8);
-            let at = pos2(center.x, screen.center().y - 20.0);
-            painter.text(at + vec2(2.0, 2.0), Align2::CENTER_CENTER, "Beaten", FontId::proportional(56.0), Color32::from_black_alpha((dark * 200.0) as u8));
-            painter.text(at, Align2::CENTER_CENTER, "Beaten", FontId::proportional(56.0), words);
-            let below = Color32::from_rgba_unmultiplied(220, 210, 200, (dark * 230.0) as u8);
-            painter.text(at + vec2(0.0, 46.0), Align2::CENTER_CENTER, "You get back up where you fell, as it turns away", FontId::proportional(18.0), below);
+        // Dead: the view going dark and red, what killed them across the middle, and once they
+        // can, how to rise again. Then coming back once they have.
+        if let Some((by, since)) = &self.dead {
+            let dark = (*since / 1.6).min(1.0) as f32;
+            painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(22, 0, 0, (dark * 210.0) as u8));
+            let band = Rect::from_center_size(screen.center() - vec2(0.0, 10.0), vec2(screen.width(), 170.0));
+            for k in 0..12 {
+                let fade = 1.0 - k as f32 / 12.0;
+                painter.rect_filled(band.shrink2(vec2(0.0, k as f32 * 7.0)), 0.0, Color32::from_black_alpha((dark * fade * 26.0) as u8));
+            }
+            let words = ((*since - 0.5) / 1.3).clamp(0.0, 1.0) as f32;
+            let at = pos2(center.x, screen.center().y - 34.0);
+            let title = FontId::proportional(64.0);
+            painter.text(at + vec2(3.0, 3.0), Align2::CENTER_CENTER, "Slain", title.clone(), Color32::from_black_alpha((words * 220.0) as u8));
+            painter.text(at, Align2::CENTER_CENTER, "Slain", title, Color32::from_rgba_unmultiplied(196, 30, 28, (words * 255.0) as u8));
+            let below = Color32::from_rgba_unmultiplied(225, 212, 200, (words * 230.0) as u8);
+            painter.text(at + vec2(0.0, 50.0), Align2::CENTER_CENTER, format!("by the {by}"), FontId::proportional(20.0), below);
+            if self.lost > 0 {
+                painter.text(at + vec2(0.0, 76.0), Align2::CENTER_CENTER, format!("{} gold lies where you fell", self.lost), FontId::proportional(16.0), GOLD.gamma_multiply(words * 0.9));
+            }
+            if self.can_rise() {
+                let pulse = 0.65 + 0.35 * (self.combat.time() * 3.0).sin() as f32;
+                let prompt = if self.rest.is_some() { "Space  rise again where you last stood safe" } else { "Space  rise again" };
+                painter.text(pos2(center.x, band.bottom() + 40.0), Align2::CENTER_CENTER, prompt, FontId::proportional(18.0), Color32::from_white_alpha((pulse * 220.0) as u8));
+            }
+        } else if self.down < DOWN_SECONDS {
+            let dark = (1.0 - self.down / DOWN_SECONDS).powf(1.5) as f32;
+            painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(22, 0, 0, (dark * 210.0) as u8));
         }
 
         // The player's own blood splashed over the view, running down a little and fading
