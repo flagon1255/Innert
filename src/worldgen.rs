@@ -171,7 +171,7 @@ impl std::hash::Hasher for CellHasher {
 type Cells = std::collections::HashMap<usize, usize, std::hash::BuildHasherDefault<CellHasher>>;
 /// Bricks a world keeps room for beyond those it starts with, for holes blown in solid ground:
 /// a solid brick with a hole in it has to be stored
-pub const SPARE_BRICKS: usize = 32768;
+pub const SPARE_BRICKS: usize = 131072;
 /// Grid cells with this bit set are filled with one material, kept in the low byte.
 /// Has to match SOLID_BRICK in shaders\traverse.comp.
 pub const SOLID_BRICK: u32 = 1 << 31;

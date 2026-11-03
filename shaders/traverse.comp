@@ -138,6 +138,11 @@ layout(set = 2, binding = 1) readonly buffer NearBricks {
 layout(set = 3, binding = 0) readonly buffer AnimalModels {
     uint animalModels[];
 };
+// The weapons' models, in a buffer of their own as new ones turn up: the first word is where they
+// start among all models, then they're packed the same way, from the word after it
+layout(set = 3, binding = 7) readonly buffer WeaponModels {
+    uint weaponModels[];
+};
 struct Animal {
     // xyz: where the middle of the bottom of its model is, in voxels of the main world, w: radius
     // of a sphere around it centered there
@@ -716,14 +721,19 @@ uint animalCount() {
 }
 
 uvec3 modelSize(uint model) {
-    uint packed = animalModels[model * 2 + 1];
+    uint base = weaponModels[0];
+    uint packed = model < base ? animalModels[model * 2 + 1] : weaponModels[1 + (model - base) * 2 + 1];
     return uvec3(packed & 0x3FFu, (packed >> 10) & 0x3FFu, (packed >> 20) & 0x3FFu);
 }
 
 // Material of one of a model's voxels, 0 for air
 uint modelVoxel(uint model, uvec3 size, uvec3 c) {
     uint i = c.x + (c.y + c.z * size.y) * size.x;
+    uint base = weaponModels[0];
+    if (model < base)
     return animalModels[animalModels[model * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
+    uint w = model - base;
+    return weaponModels[1 + weaponModels[1 + w * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
 }
 
 vec3 rotate(vec4 q, vec3 v) {

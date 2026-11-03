@@ -581,17 +581,22 @@ impl Game {
         }
     }
 
-    /// Every model to draw, packed for shaders\traverse.comp: the animals' and everything lying
-    /// around, the arrows, spells and arms, the falling leaves, then each weapon's
+    /// The models to draw that never change, packed for shaders\traverse.comp: the animals' and
+    /// everything lying around, the arrows, spells and arms, and the falling leaves. The weapons'
+    /// come after them, see weapon_model_words().
     pub fn model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self
-            .models
-            .iter()
-            .chain(self.combat.models.iter().map(|(m, _)| m))
-            .chain(self.leaves.models.iter())
-            .chain(self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)))
-            .collect();
+        let models: Vec<&Model> = self.models.iter().chain(self.combat.models.iter().map(|(m, _)| m)).chain(self.leaves.models.iter()).collect();
         pack_models(&models)
+    }
+
+    /// Each weapon's models, packed the same way after the number of the first among all models.
+    /// They're kept apart from the rest, which never change, as sending all of those again each
+    /// time a weapon turns up takes long enough to hold up the game.
+    pub fn weapon_model_words(&self) -> Vec<u32> {
+        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).collect();
+        let mut words = vec![self.weapon_model(0)];
+        words.extend(pack_models(&models));
+        words
     }
 
     pub fn models_version(&self) -> u32 {

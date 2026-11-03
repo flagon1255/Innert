@@ -685,10 +685,40 @@ struct GpuWorld {
     bricks: Subbuffer<[u32]>,
     // How many bricks there's room for
     capacity: usize,
+    // What else the set binds, to bind again when there's more room for bricks, see grow()
+    views: Vec<(u32, Arc<ImageView>)>,
+    set_index: usize,
 }
 
-/// Room for this many more bricks in the main world than it starts with, for holes blown in it
-const SPARE_BRICKS: usize = worldgen::SPARE_BRICKS;
+impl GpuWorld {
+    /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
+    /// there are copied into on the GPU, which is far quicker than sending the world over again
+    fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
+        let capacity = needed + spare_bricks();
+        let bricks = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC, ..Default::default() },
+            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() },
+            (capacity * worldgen::BRICK_WORDS) as u64,
+        )
+        .unwrap();
+        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+        builder.copy_buffer(CopyBufferInfo::buffers(self.bricks.clone(), bricks.clone().slice(0..self.bricks.len()))).unwrap();
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        let mut writes: Vec<WriteDescriptorSet> = self.views.iter().map(|(binding, view)| WriteDescriptorSet::image_view(*binding, view.clone())).collect();
+        writes.push(WriteDescriptorSet::buffer(1, bricks.clone()));
+        let layout = render_pipeline.layout().set_layouts().get(self.set_index).unwrap().clone();
+        self.set = DescriptorSet::new(descriptor_set_allocator.clone(), layout, writes, []).unwrap();
+        self.bricks = bricks;
+        self.capacity = capacity;
+    }
+}
+
+/// Room for this many more bricks in the main world than it starts with, for holes blown in it.
+/// `--set spare_bricks=100` leaves less, to try out making more room.
+fn spare_bricks() -> usize {
+    settings_from_args().iter().find(|(k, _)| k == "spare_bricks").and_then(|(_, v)| v.parse().ok()).unwrap_or(worldgen::SPARE_BRICKS)
+}
 
 // Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail
 fn get_voxel_set(
@@ -752,11 +782,12 @@ fn get_voxel_set(
     )
     .unwrap();
     // The main world has room for more bricks, for holes blown in it, see App::blast()
-    let capacity = brick_words.len() / worldgen::BRICK_WORDS + if set_index == 1 { SPARE_BRICKS } else { 0 };
+    let capacity = brick_words.len() / worldgen::BRICK_WORDS + if set_index == 1 { spare_bricks() } else { 0 };
     let bricks_buffer = Buffer::new_slice::<u32>(
         memory_allocator.clone(),
         BufferCreateInfo {
-            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
+            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
             ..Default::default()
         },
         AllocationCreateInfo {
@@ -790,6 +821,7 @@ fn get_voxel_set(
 
     let image_view =
         ImageView::new(image.clone(), ImageViewCreateInfo::from_image(&image)).unwrap();
+    let mut views = vec![(0, image_view.clone())];
     let mut writes = vec![
         WriteDescriptorSet::image_view(0, image_view),
         WriteDescriptorSet::buffer(1, bricks_buffer.clone()),
@@ -834,6 +866,7 @@ fn get_voxel_set(
             .unwrap();
         let grass_view =
             ImageView::new(grass_image.clone(), ImageViewCreateInfo::from_image(&grass_image)).unwrap();
+        views.push((2, grass_view.clone()));
         writes.push(WriteDescriptorSet::image_view(2, grass_view));
     }
 
@@ -854,6 +887,8 @@ fn get_voxel_set(
         grid: image,
         bricks: bricks_buffer,
         capacity,
+        views,
+        set_index,
     }
 }
 
@@ -958,9 +993,11 @@ struct App {
     // Animals, food and what the player carries
     game: Game,
     animals_on: bool,
-    // Every animal's model, and every weapon's, see Game::model_words()
+    // Every animal's model and the rest that never change, see Game::model_words(), and every
+    // weapon's, see Game::weapon_model_words()
     animal_models: Subbuffer<[u32]>,
-    // Which of Game::models_version() they are
+    weapon_models: Subbuffer<[u32]>,
+    // Which of Game::models_version() the weapons' are
     models_version: u32,
     // Where the animals are this frame gets uploaded from here
     instance_allocator: SubbufferAllocator,
@@ -1481,6 +1518,7 @@ impl App {
         }
         let models_version = game.models_version();
         let animal_models = model_buffer(&memory_allocator, game.model_words());
+        let weapon_models = model_buffer(&memory_allocator, game.weapon_model_words());
         // Screenshot runs are silent
         let audio = if capture.is_none() { audio::Audio::new() } else { None };
         let light_cache = Buffer::new_slice::<u32>(
@@ -1579,6 +1617,7 @@ impl App {
             game,
             animals_on: flag("animals", true),
             animal_models,
+            weapon_models,
             models_version,
             instance_allocator,
             light_cache,
@@ -1872,29 +1911,29 @@ impl App {
         if self.edited.is_empty() && self.edited_ground.is_none() {
             return;
         }
+        let start = Instant::now();
         let mut cells = std::mem::take(&mut self.edited);
         cells.sort_unstable();
         cells.dedup();
+        let grew = self.world.bricks.len() / worldgen::BRICK_WORDS > self.voxel_set.capacity;
         // The frames still being drawn read what's about to change, so let them finish
         if let Some(rcx) = &mut self.rcx {
             rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
         }
-        if self.world.bricks.len() / worldgen::BRICK_WORDS > self.voxel_set.capacity {
-            // Out of room for more bricks: upload the whole world again, with room to spare
-            self.voxel_set = get_voxel_set(
-                self.memory_allocator.clone(),
-                self.command_buffer_allocator.clone(),
-                self.descriptor_set_allocator.clone(),
-                &self.render_pipeline,
-                &self.queue,
-                1,
-                &self.world,
-            );
-        } else if !cells.is_empty() {
+        let needed = self.world.bricks.len() / worldgen::BRICK_WORDS;
+        if needed > self.voxel_set.capacity {
+            // Out of room for more bricks: a bigger buffer, the ones there are copied over on the GPU
+            self.voxel_set.grow(needed, &self.memory_allocator, &self.command_buffer_allocator, &self.descriptor_set_allocator, &self.render_pipeline, &self.queue);
+        }
+        if !cells.is_empty() {
             self.upload_bricks(&cells);
         }
         if let Some((lo, hi)) = self.edited_ground.take() {
             self.water.sync_ground(&self.world, lo, hi, &self.memory_allocator, &self.command_buffer_allocator, &self.queue);
+        }
+        // Screenshot runs say when sending what changed held a frame up
+        if self.capture.is_some() && (grew || start.elapsed().as_secs_f64() > 0.004) {
+            println!("Edits sent in {:.1} ms: {} bricks{}", start.elapsed().as_secs_f64() * 1000.0, cells.len(), if grew { ", after making more room" } else { "" });
         }
     }
 
@@ -3425,8 +3464,12 @@ impl App {
 
         // A weapon was found, so there's a new model to draw
         if self.game.models_version() != self.models_version {
+            let start = Instant::now();
             self.models_version = self.game.models_version();
-            self.animal_models = model_buffer(&self.memory_allocator, self.game.model_words());
+            self.weapon_models = model_buffer(&self.memory_allocator, self.game.weapon_model_words());
+            if self.capture.is_some() {
+                println!("Models sent in {:.1} ms", start.elapsed().as_secs_f64() * 1000.0);
+            }
         }
 
         // The weapon in hand, and the animals, food and things flying near the camera, for the
@@ -3465,6 +3508,7 @@ impl App {
                 WriteDescriptorSet::image_view(4, self.water.blocks_view.clone()),
                 WriteDescriptorSet::buffer(5, light_buffer),
                 WriteDescriptorSet::buffer(6, self.light_cache.clone()),
+                WriteDescriptorSet::buffer(7, self.weapon_models.clone()),
             ],
             [],
         )
