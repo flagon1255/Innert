@@ -3,6 +3,8 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod towns;
+
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
 pub mod material {
     pub const AIR: u8 = 0;
@@ -2534,8 +2536,11 @@ impl Terrain {
         // Buildings go first, as where they overlap other things they win. None stands over a
         // dungeon, whose halls go before the caves so no cave breaks into them.
         let dungeons = self.dungeons(rivers);
-        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).collect();
-        let mut objects = self.buildings(heights, &mut features, &keep_out);
+        // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and no
+        // ruins stand in them
+        let (mut objects, towns) = self.towns(rivers, &mut features);
+        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).collect();
+        objects.extend(self.buildings(heights, &mut features, &keep_out));
         for dungeon in &dungeons {
             objects.push(self.dungeon(dungeon, &mut features));
         }

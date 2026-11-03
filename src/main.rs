@@ -1296,10 +1296,23 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_cavern([112.0, 112.0]))
         });
+        // `--set town=1` starts in the square of the nearest town, `town=far` past the end of one of
+        // its streets, looking down it, `town=stall` in front of a merchant's stall on its square,
+        // `town=cave` in the square of the nearest town down in a cavern and `town=tunnel` outside
+        // the mouth of the tunnel down to it. With `biome=snow` too, the nearest built for the snow.
+        let town_view = setting("town").filter(|_| dungeon.is_none() && cavern.is_none());
+        let underground = matches!(town_view, Some("cave" | "tunnel"));
+        let town = town_view.and_then(|_| {
+            let kind = setting("biome");
+            let near = kind.and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.nearest_town(near, underground, kind))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = dungeon
             .map(|d| [d[0], d[1]])
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
+            .or(town.map(|(square, _)| [square[0], square[1]]))
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
@@ -1355,6 +1368,27 @@ impl App {
             let eye = middle + back + Vector3::new(0.0, 0.0, 1.7 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+        } else if let Some((square, way_in)) = town {
+            // In the square looking across it, or out by the way in looking towards it
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let (square, way_in) = (at(square), at(way_in));
+            let out = Vector3::new(way_in.x - square.x, way_in.y - square.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let stall = landscape.as_ref().and_then(|l| {
+                let sites = l.sites().iter().filter(|s| s.kind == "town stall");
+                sites.map(|s| (at(s.position), Vector3::new(s.facing[0] as f64, s.facing[1] as f64, 0.0))).min_by(|a, b| (a.0 - square).norm().total_cmp(&(b.0 - square).norm()))
+            });
+            let (eye, target) = match (town_view, stall) {
+                (Some("far"), _) => (way_in + up(5.0), square + up(1.5)),
+                (Some("tunnel"), _) => (way_in + out * 7.0 * vpm + up(1.7), way_in + up(1.4)),
+                // Where a customer would stand, the merchant behind the counter
+                (Some("stall"), Some((spot, facing))) => (spot + facing * 3.2 * vpm + up(1.6), spot + up(1.2)),
+                // A little way along a street, looking down it across the square
+                _ => (square + out * 10.0 * vpm + up(1.7), square - out * 8.0 * vpm + up(1.2)),
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
         } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
@@ -1381,7 +1415,7 @@ impl App {
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
-        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
+        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -1432,6 +1466,11 @@ impl App {
         }
         if flag("shop", false) {
             game.open_nearest_shop(start);
+        }
+        // `--set villager=3` puts a villager of each kind that many meters ahead, to see them close
+        if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            game.summon_villagers(&world, &water_level, start, ahead, distance);
         }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
@@ -1720,26 +1759,41 @@ impl App {
             .filter(|site| matches!(site.kind, "dungeon hall" | "cave nest"))
             .map(|site| game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), cave: site.kind == "cave nest" })
             .collect();
-        // Merchants keep stalls out in front of some of the ruins no boss guards
+        // Merchants keep stalls out in front of some of the ruins no boss guards, and behind the
+        // counters of the stalls on the towns' squares
         let stalls: Vec<game::Stall> = landscape
             .sites()
             .iter()
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
+                if site.kind == "town stall" {
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3 });
+                }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "town" | "cave town") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
-                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7] })
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0 })
+            })
+            .collect();
+        // Folk live round the towns' squares, those down in caverns in fewer of them
+        let towns: Vec<game::Town> = landscape
+            .sites()
+            .iter()
+            .filter(|site| matches!(site.kind, "town" | "cave town"))
+            .map(|site| {
+                let (folk, roam) = if site.kind == "town" { (7, 18.0) } else { (5, 12.0) };
+                game::Town { position: to_voxels(site.position), folk, roam }
             })
             .collect();
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
         self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
+        self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -2080,10 +2134,12 @@ impl App {
         self.near_build = None;
         self.sun_map_for = None;
         self.reset_accum = true;
-        self.adopt_features();
         let water = &self.water;
         let near = self.player.as_ref().map_or(camera, |p| p.position);
         self.game.recenter(&self.world, &|x, y| water.surface_at(x, y), shift, self.terrain.seed, near);
+        // Only once what's about has moved with the world, so what turns up in the new piece of it
+        // isn't moved too
+        self.adopt_features();
         println!("Moved over to the new piece of landscape in {:?}", started.elapsed());
     }
 

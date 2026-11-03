@@ -65,6 +65,10 @@ pub enum Look {
     Zombie,
     ArmoredZombie,
     Spiderling,
+    /// Folk living in the towns, strolling round their squares: a man in a tunic and straw hat,
+    /// and a woman in a long dress with a basket on her arm
+    Villager,
+    Townswoman,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -92,7 +96,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 39] = [
+    pub const ALL: [Look; 41] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -132,6 +136,8 @@ impl Look {
         Look::Zombie,
         Look::ArmoredZombie,
         Look::Spiderling,
+        Look::Villager,
+        Look::Townswoman,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -295,7 +301,9 @@ impl Look {
     pub fn reach(self) -> f64 {
         match self {
             Look::Chest | Look::OpenChest => 0.95,
-            Look::Merchant => 1.7,
+            // From their feet up to the top of the pack on its back
+            Look::Merchant => 2.2,
+            Look::Villager | Look::Townswoman => 1.95,
             Look::Coins | Look::Potion | Look::Bread => 0.25,
             Look::Bear => 1.6,
             Look::Dog => 0.8,
@@ -329,6 +337,7 @@ impl Look {
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
             Look::Merchant => (0.95, 0.45),
+            Look::Villager | Look::Townswoman => (0.95, 0.4),
             Look::Coins | Look::Potion | Look::Bread => (0.08, 0.22),
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => (2.0 * self.size(), 1.1 * self.size()),
             Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => (1.25 * self.size(), 1.0 * self.size()),
@@ -352,6 +361,7 @@ impl Look {
             Look::Skull => "skull",
             Look::Chest | Look::OpenChest => "chest",
             Look::Merchant => "merchant",
+            Look::Villager | Look::Townswoman => "villager",
             Look::Coins => "gold",
             Look::Potion => "healing potion",
             Look::Bread => "loaf of bread",
@@ -384,8 +394,13 @@ impl Look {
 
     /// Pets get petted, the rest can be hunted for meat
     pub fn is_pet(self) -> bool {
-        // Merchants can't be hurt either, only traded with
-        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat | Look::Merchant)
+        // Merchants can't be hurt either, only traded with, nor can villagers, only talked to
+        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat | Look::Merchant) || self.is_villager()
+    }
+
+    /// One of the folk living in a town
+    pub fn is_villager(self) -> bool {
+        matches!(self, Look::Villager | Look::Townswoman)
     }
 
     /// How much damage it takes to hunt. A bare-handed hit does PUNCH.
@@ -456,6 +471,8 @@ impl Look {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
                 Look::Squirrel => 1.4,
+                // Strolling, in no hurry
+                Look::Villager | Look::Townswoman => 0.8,
                 _ => 0.9,
             },
         }
@@ -507,6 +524,7 @@ impl Look {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
                 Look::Squirrel => 0.35,
+                Look::Villager | Look::Townswoman => 1.3,
                 _ => 0.55,
             },
         }
@@ -1193,6 +1211,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 p.push(cuboid([back - 0.24, -0.27, z], [back + 0.06, 0.27, z + 0.04], LEATHER));
             }
         }
+        Look::Villager | Look::Townswoman => villager(&mut p, swing, look == Look::Townswoman),
         Look::Coins => {
             // A little heap of gold coins, a few tipped up against it
             for (x, y, z) in [(0.0, 0.0, 0.02), (0.05, 0.04, 0.05), (-0.05, 0.03, 0.03), (0.03, -0.05, 0.03), (-0.02, -0.02, 0.07), (0.07, -0.02, 0.02)] {
@@ -1252,6 +1271,64 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         _ => {}
     }
     p
+}
+
+/// One of the folk of a town, about 1.75 meters tall in plain clothes, arms swinging as they walk:
+/// a man in a green tunic, a belt and a straw hat, or a woman in a long red dress and white apron
+/// with a basket of bread on her arm. Nothing in their hands, so they're plainly no threat.
+fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
+    let skin = if woman { FUR_CREAM } else { FUR_TAN };
+    // A straw hat or a kerchief over the hair, then the head under them. Its face is left plain:
+    // at a few voxels across, eyes only make a band across it.
+    if woman {
+        p.push(ellipsoid([-0.04, 0.0, 1.68], [0.14, 0.15, 0.11], LINEN));
+        p.push(ball([-0.16, 0.0, 1.57], 0.07, FUR_GINGER));
+    } else {
+        p.push(ellipsoid([0.01, 0.0, 1.735], [0.26, 0.26, 0.022], DRY_GRASS));
+        p.push(ellipsoid([-0.005, 0.0, 1.762], [0.135, 0.135, 0.022], LEATHER));
+        p.push(ellipsoid([-0.005, 0.0, 1.785], [0.13, 0.13, 0.065], DRY_GRASS));
+        p.push(ellipsoid([-0.08, 0.0, 1.62], [0.1, 0.12, 0.1], FUR_BROWN));
+    }
+    p.push(ball([0.02, 0.0, 1.6], 0.135, skin));
+    p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.05, 0.05, skin));
+
+    // The arms, swinging the other way to the legs on their side. She holds her basket on her
+    // hip with one.
+    let (body, sleeve) = if woman { (CLOTH, LINEN) } else { (MOSS, LINEN) };
+    for s in [-1.0, 1.0] {
+        let shoulder = [0.0, s * 0.2, 1.4];
+        let (elbow, hand) = if woman && s < 0.0 {
+            p.push(ellipsoid([0.2, -0.32, 1.03], [0.08, 0.05, 0.035], SANDSTONE_DARK));
+            p.push(ball([0.25, -0.27, 1.02], 0.04, APPLE));
+            p.push(limb([0.12, -0.32, 0.99], [0.29, -0.32, 0.99], 0.075, 0.075, DRY_GRASS));
+            ([0.06, -0.27, 1.13], [0.17, -0.25, 1.03])
+        } else {
+            ([-0.13 * swing * s, s * 0.24, 1.13], [0.02 - 0.22 * swing * s, s * 0.25, 0.9])
+        };
+        p.push(ball(hand, 0.048, skin));
+        p.push(limb(elbow, hand, 0.05, 0.045, sleeve));
+        p.push(limb(shoulder, elbow, 0.06, 0.052, sleeve));
+    }
+
+    if woman {
+        // A bodice and apron over a long skirt, flaring out to the ground, her shoes peeping out
+        // under it as she walks
+        p.push(ellipsoid([0.0, 0.0, 1.22], [0.12, 0.18, 0.22], body));
+        p.push(ellipsoid([0.19, 0.0, 0.7], [0.07, 0.19, 0.32], LINEN));
+        p.push(ellipsoid([0.0, 0.0, 1.01], [0.135, 0.19, 0.03], LINEN));
+        p.push(limb([0.0, 0.0, 1.02], [0.03 * swing, 0.0, 0.28], 0.16, 0.27, body));
+        for (y, s) in [(0.09, 1.0), (-0.09, -1.0)] {
+            leg(p, [0.0, y, 0.8], 0.76, 0.06, 0.4 * swing * s, body, BARK_DARK);
+        }
+    } else {
+        // A tunic belted at the waist, trousers and boots
+        p.push(ellipsoid([0.0, 0.0, 0.99], [0.15, 0.215, 0.045], LEATHER));
+        p.push(ellipsoid([0.0, 0.0, 1.2], [0.14, 0.2, 0.26], body));
+        p.push(limb([0.0, 0.0, 1.0], [0.0, 0.0, 0.8], 0.19, 0.22, body));
+        for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
+            leg(p, [0.0, y, 0.9], 0.86, 0.075, 0.45 * swing * s, LEATHER, BARK_DARK);
+        }
+    }
 }
 
 /// A model rasterized into voxels: x + (y + z * size.y) * size.x
@@ -1455,6 +1532,9 @@ pub struct Animal {
     pub status: Status,
     /// What a boss is up to, see src\bosses.rs
     pub boss: Option<Boss>,
+    /// Where in the whole landscape a villager's town square is, in voxels, and how far from it
+    /// in meters it strolls
+    home: Option<(Vector3<f64>, f64)>,
     rng: u32,
 }
 
@@ -1521,8 +1601,15 @@ impl Animal {
             health: look.health(),
             status: Status::default(),
             boss: None,
+            home: None,
             rng,
         }
+    }
+
+    /// For a villager, where in the whole landscape its town's square is, in voxels, and how far
+    /// from it it strolls, in meters
+    pub fn home(&self) -> Option<(Vector3<f64>, f64)> {
+        self.home
     }
 
     /// A boss guarding `home`, in voxels. `key` is where its lair is in the whole landscape, to
@@ -1615,8 +1702,12 @@ impl Animal {
             }
             return;
         }
+        // Villagers stroll about their town, stopping to face whoever comes up to them
+        if look.is_villager() {
+            self.stroll(world, player);
+        }
         self.timer -= dt;
-        if self.boss.is_none() && self.timer <= 0.0 {
+        if self.boss.is_none() && self.timer <= 0.0 && !look.is_villager() {
             let r = random(&mut self.rng);
             let (mood, time) = if r < 0.4 {
                 (Mood::Idle, 2.0 + 4.0 * random(&mut self.rng))
@@ -1714,6 +1805,35 @@ impl Animal {
         }
     }
 
+    /// What a villager does next: stands about or strolls slowly, heading back towards its town's
+    /// square once it's wandered as far as it goes, and stopping to face the player when they come
+    /// up to it
+    fn stroll(&mut self, world: &World, player: Option<Vector3<f64>>) {
+        let vpm = world.voxels_per_meter as f64;
+        if let Some(player) = player {
+            let to = (player - self.position).xy();
+            if to.norm() < 3.5 * vpm {
+                self.mood = Mood::Idle;
+                self.timer = self.timer.max(1.5);
+                self.target_heading = to.y.atan2(to.x);
+                return;
+            }
+        }
+        let Some((home, roam)) = self.home else {
+            return;
+        };
+        let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
+        let back = (home - origin - self.position).xy() / vpm;
+        if self.timer <= 0.0 {
+            let r = random(&mut self.rng);
+            (self.mood, self.timer) = if r < 0.45 { (Mood::Idle, 2.5 + 5.0 * random(&mut self.rng)) } else { (Mood::Walk, 3.0 + 5.0 * random(&mut self.rng)) };
+            let turn = random(&mut self.rng) - 0.5;
+            self.target_heading = if back.norm() > roam * 0.6 { back.y.atan2(back.x) + turn * 1.2 } else { self.heading + turn * 2.5 };
+        } else if self.mood == Mood::Walk && back.norm() > roam {
+            self.target_heading = back.y.atan2(back.x);
+        }
+    }
+
     pub fn instance(&self, world_voxels_per_meter: u32) -> AnimalInstance {
         let walking = if self.speed > 0.15 { 1 + (self.phase * WALK_FRAMES as f64) as usize % WALK_FRAMES } else { 0 };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
@@ -1776,6 +1896,33 @@ pub fn spawn_merchant(world: &World, water: WaterLevel, near: Vector3<f64>, with
         }
         if let Some(z) = ground_at(world, water, x, y, near.z, 3.0 * vpm, 4.0 * vpm) {
             return Some(Animal::new(Look::Merchant, Vector3::new(x, y, z), hash(rng)));
+        }
+    }
+    None
+}
+
+/// A villager of `look` on open ground near `near`, in voxels, within `within` meters, if there's
+/// anywhere: one of the folk of the town whose square is at `home`, in voxels of the whole
+/// landscape, strolling as far as the meters it comes with from there
+pub fn spawn_villager(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, within: f64, home: (Vector3<f64>, f64), seed: u32) -> Option<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    let mut rng = hash(seed ^ 0x7111);
+    for _ in 0..40 {
+        let a = random(&mut rng) * TAU;
+        let r = random(&mut rng).sqrt() * within * vpm;
+        let (x, y) = (near.x + a.cos() * r, near.y + a.sin() * r);
+        if x < 2.0 || y < 2.0 || x >= sx - 2.0 || y >= sy - 2.0 {
+            continue;
+        }
+        // On the ground about as high as the square, with nothing over it, not up on a roof
+        if let Some(z) = ground_at(world, water, x, y, near.z, 3.0 * vpm, 4.0 * vpm)
+            && (z - near.z).abs() < 1.5 * vpm
+            && is_passable(world.material_at(x as i64, y as i64, (z + 2.0 * vpm) as i64))
+        {
+            let mut villager = Animal::new(look, Vector3::new(x, y, z), hash(rng));
+            villager.home = Some(home);
+            return Some(villager);
         }
     }
     None
