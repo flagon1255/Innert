@@ -820,6 +820,10 @@ struct Shape {
     ragged: bool,
     placement: Placement,
     pattern: Pattern,
+    /// How far in meters its surface is pushed in and out, lumpily, so a cave isn't a smooth tube
+    rough: f32,
+    /// How high in meters its bottom is at the lowest, for a cave's floor, flatter than its roof
+    floor: f32,
     // Bounds
     min: Vec3,
     max: Vec3,
@@ -840,6 +844,8 @@ impl Shape {
             ragged,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [0, 1, 2].map(|i| a[i].min(b[i]) - r),
             max: [0, 1, 2].map(|i| a[i].max(b[i]) + r),
         }
@@ -862,6 +868,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [0, 1, 2].map(|i| lo[i].min(hi[i])),
             max: [0, 1, 2].map(|i| lo[i].max(hi[i])),
         }
@@ -882,6 +890,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [0, 1, 2].map(|i| center[i] - radii[i]),
             max: [0, 1, 2].map(|i| center[i] + radii[i]),
         }
@@ -900,6 +910,45 @@ impl Shape {
     fn patterned(mut self, pattern: Pattern) -> Self {
         self.pattern = pattern;
         self
+    }
+
+    /// Its surface pushed in and out by up to `rough` meters, lumpily, and nothing of it below
+    /// `floor` meters high
+    fn roughened(mut self, rough: f32, floor: f32) -> Self {
+        self.rough = rough;
+        self.floor = floor;
+        self.min = self.min.map(|v| v - rough);
+        self.max = self.max.map(|v| v + rough);
+        self.min[2] = self.min[2].max(floor - rough * 0.3);
+        self
+    }
+
+    /// Whether `p` is inside it, its squared depth being `depth`, see depth(). Rough shapes are
+    /// lumpy, their surface pushed in and out by the noise only near it, as working it out costs.
+    fn holds(&self, p: Vec3, depth: f32) -> bool {
+        if self.rough <= 0.0 {
+            return depth <= 1.0;
+        }
+        // The floor bumpy a little, worked out only near it
+        let swell = self.rough * 0.25;
+        if p[2] < self.floor || p[2] < self.floor + swell && p[2] < self.floor + (cave_noise(p) * 0.5 + 0.5) * swell {
+            return false;
+        }
+        let reach = self.radius_a.max(self.radius_b).max(0.1);
+        let d = depth.sqrt();
+        let margin = self.rough / reach;
+        if d < 1.0 - margin {
+            return true;
+        }
+        if d > 1.0 + margin {
+            return false;
+        }
+        // The big lumps first, and the small ones only where they could make a difference
+        let big = cave_lumps(p);
+        if (d - 1.0 - big * margin).abs() > CAVE_KNOBS * margin {
+            return d < 1.0 + big * margin;
+        }
+        d < 1.0 + (big + cave_knobs(p)).clamp(-1.0, 1.0) * margin
     }
 
     /// A long, thin, upright ellipsoid going `along` (level), `length` long, `width` wide and
@@ -921,6 +970,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Carve,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [center[0] - half[0].max(half[1]), center[1] - half[0].max(half[1]), center[2] - half[2]],
             max: [center[0] + half[0].max(half[1]), center[1] + half[0].max(half[1]), center[2] + half[2]],
         }
@@ -1015,6 +1066,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: center.map(|v| v - reach),
             max: center.map(|v| v + reach),
         }
@@ -2357,7 +2410,7 @@ impl Terrain {
                                     continue;
                                 }
                                 let depth = shape.depth(p, voxel);
-                                if depth > 1.0 {
+                                if !shape.holds(p, depth) {
                                     continue;
                                 }
                                 let i = lx + ly * 8 + lz * 64;
@@ -3460,10 +3513,13 @@ impl Terrain {
         let mut caverns = Vec::new();
         let mut lairs = Vec::new();
         for i in 0..segments {
-            let next_radius = (radius + rng.range(-0.35, 0.35)).clamp(1.6, 3.3);
+            let next_radius = (radius + rng.range(-0.35, 0.35)).clamp(1.8, 3.4);
             let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
             let q = add(p, scale(dir, 2.2));
-            cave.shapes.push(Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve));
+            // Lumpy walls and roof over a flatter floor, the round bottom of the tube left filled
+            let floor = p[2].min(q[2]) - radius.min(next_radius) * 0.6;
+            let tunnel = Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve);
+            cave.shapes.push(tunnel.roughened(0.3 * radius.max(next_radius), floor));
             if i % 8 == 4 {
                 let at = [q[0] + rng.range(-0.6, 0.6), q[1] + rng.range(-0.6, 0.6), q[2] - next_radius * 0.8];
                 for _ in 0..3 {
@@ -3547,7 +3603,9 @@ impl Terrain {
         // The middle a little over the floor, so it dips only a little and is fairly flat
         let middle = [floor[0], floor[1], floor[2] + high * 0.8];
         let radii = if lengthwise { [wide, wide * stretch, high] } else { [wide * stretch, wide, high] };
-        cave.shapes.push(Shape::ellipsoid(middle, radii, AIR, AIR).placed(Placement::Carve));
+        // Its walls and roof bulging in and hollowed out, its floor fairly flat
+        let bottom = floor[2] - 0.3;
+        cave.shapes.push(Shape::ellipsoid(middle, radii, AIR, AIR).placed(Placement::Carve).roughened(0.6 + high * 0.35, bottom));
         // Room to fight in is as far out as its narrower side
         let wide = wide * stretch;
         // Lobes off its sides, so it isn't a perfect bubble
@@ -3556,7 +3614,7 @@ impl Terrain {
             let off = wide * rng.range(0.45, 0.65);
             let center = [middle[0] + a.cos() * off, middle[1] + a.sin() * off, middle[2] - high * rng.range(0.1, 0.3)];
             let w = wide * rng.range(0.4, 0.55);
-            cave.shapes.push(Shape::ellipsoid(center, [w, w, high * rng.range(0.55, 0.8)], AIR, AIR).placed(Placement::Carve));
+            cave.shapes.push(Shape::ellipsoid(center, [w, w, high * rng.range(0.55, 0.8)], AIR, AIR).placed(Placement::Carve).roughened(0.4 + w * 0.25, bottom));
         }
         // How high the roof and floor are over the middle of the cavern, `r` of the way out to its side
         let roof = |r: f32| middle[2] + high * (1.0 - r * r).max(0.0).sqrt();
@@ -4867,6 +4925,35 @@ fn hash3(x: u32, y: u32, z: u32) -> u32 {
 /// Maps the low 16 bits to [0, 1].
 fn unit(bits: u32) -> f32 {
     (bits & 0xFFFF) as f32 / 65535.0
+}
+
+/// Value noise in 3D, -1 to 1, smooth over about a unit
+fn noise3(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let (fx, fy, fz) = (x.floor(), y.floor(), z.floor());
+    let (ix, iy, iz) = (fx as i32, fy as i32, fz as i32);
+    let s = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (tx, ty, tz) = (s(x - fx), s(y - fy), s(z - fz));
+    let at = |dx: i32, dy: i32, dz: i32| unit(hash3((ix + dx) as u32, (iy + dy) as u32, (iz + dz) as u32 ^ seed)) * 2.0 - 1.0;
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let plane = |dz: i32| lerp(lerp(at(0, 0, dz), at(1, 0, dz), tx), lerp(at(0, 1, dz), at(1, 1, dz), tx), ty);
+    lerp(plane(0), plane(1), tz)
+}
+
+/// The big bulges and hollows of a cave's walls at `p`, in meters, -0.7 to 0.7
+fn cave_lumps(p: Vec3) -> f32 {
+    noise3(p[0] / 2.2, p[1] / 2.2, p[2] / 1.6, 0xca7e) * 0.7
+}
+
+/// How far the smaller knobs and ledges on them go either way, and what they add at `p`
+const CAVE_KNOBS: f32 = 0.45;
+fn cave_knobs(p: Vec3) -> f32 {
+    noise3(p[0] / 0.7, p[1] / 0.7, p[2] / 0.5, 0x5a1d) * CAVE_KNOBS
+}
+
+/// The lumps of a cave's walls at `p`, -1 to 1: big bulges and hollows, with smaller knobs and
+/// ledges on them
+fn cave_noise(p: Vec3) -> f32 {
+    (cave_lumps(p) + cave_knobs(p)).clamp(-1.0, 1.0)
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
