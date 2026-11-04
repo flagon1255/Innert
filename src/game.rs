@@ -248,11 +248,32 @@ pub enum DenKind {
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
-/// they've sold to stay sold
+/// they've sold to stay sold, and how far from there in meters they may stand
 pub struct Stall {
     pub position: Vector3<f64>,
     pub key: [i64; 3],
+    pub within: f64,
 }
+
+/// A town's square: where its middle is in voxels, on the paving, how many folk live round it
+/// and how far from it in meters they stroll
+pub struct Town {
+    pub position: Vector3<f64>,
+    pub folk: usize,
+    pub roam: f64,
+}
+
+/// What villagers say when spoken to
+const GREETINGS: [&str; 8] = [
+    "\"Good day to you, traveller.\"",
+    "\"The merchant on the square has the best bread for miles.\"",
+    "\"Mind the caves in the hills. There are spiders down there the size of carts.\"",
+    "\"Wolves came down from the hills again last winter.\"",
+    "\"They say the old dungeons are full of gold. And worse.\"",
+    "\"Lovely weather, isn't it?\"",
+    "\"Stay a while. Nobody's in a hurry here.\"",
+    "\"You look like you've been in a fight or two.\"",
+];
 
 /// Where a boss lives: which one, where in voxels, on the ground there, and where in the whole
 /// landscape, to remember it's beaten
@@ -988,8 +1009,9 @@ impl Game {
         self.rest = self.rest.map(|r| r - shift).filter(inside);
 
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
-        // pop up right in front of them. Bosses, dungeon monsters and merchants have homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant).count());
+        // pop up right in front of them. Bosses, dungeon monsters, merchants and villagers have
+        // homes of their own.
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| matches!(a.look, Look::Bandit | Look::BanditBrute)).count();
         if missing > 0 || wolves < 3 || bandits < 3 {
@@ -2164,6 +2186,10 @@ impl Game {
                         self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(1.3));
                         self.say("\"Have a look. Good steel, fresh bread, potions that work.\"");
                     }
+                } else if look.is_villager() {
+                    self.animals[i].pet(eye);
+                    self.rng = hash(self.rng ^ self.animals[i].id);
+                    self.say(GREETINGS[self.rng as usize % GREETINGS.len()]);
                 } else if look.is_pet() {
                     self.animals[i].pet(eye);
                     self.say(match look {
@@ -2254,9 +2280,30 @@ impl Game {
                 continue;
             }
             let seed = hash(stall.key[0] as u32 ^ hash(stall.key[1] as u32 ^ 0x5a1e));
-            if let Some(merchant) = animals::spawn_merchant(world, water, stall.position, 4.0, seed) {
+            if let Some(merchant) = animals::spawn_merchant(world, water, stall.position, stall.within, seed) {
                 self.merchants.push((merchant.id, stall.key));
                 self.animals.push(merchant);
+            }
+        }
+    }
+
+    /// The towns' squares in the piece of the world just built, in its voxels: their folk turn up
+    /// round each that hasn't any about already
+    pub fn set_towns(&mut self, world: &World, water: WaterLevel, towns: Vec<Town>) {
+        let vpm = world.voxels_per_meter as f64;
+        let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
+        for town in &towns {
+            let home = town.position + origin;
+            if self.animals.iter().any(|a| a.home().is_some_and(|(h, _)| (h - home).norm() < vpm)) {
+                continue;
+            }
+            let mut seed = hash(home.x as u32 ^ hash(home.y as u32 ^ 0x70f0));
+            for _ in 0..town.folk {
+                seed = hash(seed);
+                let look = if seed % 2 == 0 { Look::Villager } else { Look::Townswoman };
+                if let Some(villager) = animals::spawn_villager(world, water, look, town.position, town.roam * 0.7, (home, town.roam), seed) {
+                    self.animals.push(villager);
+                }
             }
         }
     }
@@ -2270,6 +2317,21 @@ impl Game {
         if let Some(merchant) = animals::spawn_merchant(world, water, at, 1.0, self.rng) {
             self.merchants.push((merchant.id, key));
             self.animals.push(merchant);
+        }
+    }
+
+    /// For trying them out: a villager of each kind `distance` meters along `ahead` from `near`,
+    /// side by side, strolling round there
+    pub fn summon_villagers(&mut self, world: &World, water: WaterLevel, near: Vector3<f64>, ahead: Vector3<f64>, distance: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let side = Vector3::new(-flat.y, flat.x, 0.0);
+        let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
+        for (look, by) in [(Look::Villager, -0.6), (Look::Townswoman, 0.6)] {
+            let at = near + (flat * distance + side * by) * vpm;
+            if let Some(villager) = animals::spawn_villager(world, water, look, at, 0.1, (at + origin, 6.0), self.rng ^ by.to_bits() as u32) {
+                self.animals.push(villager);
+            }
         }
     }
 
@@ -2641,6 +2703,8 @@ impl Game {
                 let look = self.animals[i].look;
                 Some(if look == Look::Merchant {
                     "E  trade with the merchant".to_owned()
+                } else if look.is_villager() {
+                    "E  talk to the villager".to_owned()
                 } else if look.is_pet() {
                     format!("E  pet the {}", look.name())
                 } else if self.holding_weapon() {
@@ -2680,16 +2744,22 @@ impl Game {
             let fill = Rect::from_min_size(bar.min, vec2(width * animal.vitality() as f32, 5.0));
             painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, alpha));
         }
-        // Merchants' names over their heads, so they're easy to find
-        for merchant in self.animals.iter().filter(|a| a.look == Look::Merchant) {
-            let top = merchant.position + Vector3::new(0.0, 0.0, 2.15 * vpm);
+        // Merchants' names over their heads, so they're easy to find, and smaller ones over the
+        // villagers' when near
+        for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager()) {
+            let (name, color, height, range, size) = if npc.look == Look::Merchant {
+                ("Merchant", GOLD, 2.15, 28.0, 15.0)
+            } else {
+                ("Villager", Color32::from_rgb(230, 228, 214), 1.95, 14.0, 13.0)
+            };
+            let top = npc.position + Vector3::new(0.0, 0.0, height * vpm);
             let distance = (top - view.eye).norm() / vpm;
-            let Some(at) = on_screen(top).filter(|_| distance < 28.0) else {
+            let Some(at) = on_screen(top).filter(|_| distance < range) else {
                 continue;
             };
-            let alpha = ((28.0 - distance) / 8.0).clamp(0.0, 1.0) as f32;
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, "Merchant", FontId::proportional(15.0), Color32::from_black_alpha((160.0 * alpha) as u8));
-            painter.text(at, Align2::CENTER_BOTTOM, "Merchant", FontId::proportional(15.0), GOLD.gamma_multiply(alpha));
+            let alpha = ((range - distance) / 6.0).clamp(0.0, 1.0) as f32;
+            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, name, FontId::proportional(size), Color32::from_black_alpha((160.0 * alpha) as u8));
+            painter.text(at, Align2::CENTER_BOTTOM, name, FontId::proportional(size), color.gamma_multiply(alpha));
         }
         // Damage numbers floating up
         for popup in &self.combat.popups {

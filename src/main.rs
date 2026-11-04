@@ -275,6 +275,11 @@ struct WindowBuild {
 // The world holds a piece of the endless landscape around the camera. Once the camera gets this
 // far from its middle, in meters, the piece around it is built and moved over to.
 const RECENTER_M: f64 = 30.0;
+// About how long building the next piece takes, in seconds. It's built round where the camera's
+// heading will be by then, as far as BUILD_LEAD_M ahead, so it's ready before the camera gets to
+// the edge of the one it's in.
+const BUILD_SECONDS: f64 = 6.5;
+const BUILD_LEAD_M: f64 = 70.0;
 /// The most flames and crystals lighting things up at once, nearest the camera first
 const MAX_LIGHTS: usize = 16;
 /// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
@@ -812,11 +817,21 @@ fn get_voxel_set(
             src_buffer,
             image.clone(),
         ))
-        .unwrap()
-        .copy_buffer(CopyBufferInfo::buffers(
-            bricks_src_buffer,
-            bricks_buffer.clone(),
-        ))
+        .unwrap();
+    // The bricks go over a piece at a time, each waited for, so that while a new piece of the
+    // landscape is sent over in the background the frames being drawn get the GPU in between,
+    // rather than all waiting behind hundreds of megabytes going over at once
+    const UPLOAD_WORDS: u64 = 8 << 20;
+    let words = bricks_src_buffer.len();
+    let mut at = 0;
+    while at + UPLOAD_WORDS < words {
+        let mut piece = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+        piece.copy_buffer(CopyBufferInfo::buffers(bricks_src_buffer.clone().slice(at..at + UPLOAD_WORDS), bricks_buffer.clone().slice(at..at + UPLOAD_WORDS))).unwrap();
+        piece.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        at += UPLOAD_WORDS;
+    }
+    command_buffer_builder
+        .copy_buffer(CopyBufferInfo::buffers(bricks_src_buffer.slice(at..words), bricks_buffer.clone().slice(at..words)))
         .unwrap();
 
     let image_view =
@@ -941,6 +956,10 @@ struct App {
     // Rivers traced so far, for building the next piece of the landscape
     rivers: Arc<RiverCache>,
     window_build: Option<WindowBuild>,
+    // Where the camera was last frame and when, and which way and how fast it's been going, in
+    // voxels a second, to build the next piece of the landscape ahead of it
+    last_camera: Option<(Vector3<f64>, Instant)>,
+    camera_drift: Vector3<f64>,
     // Flames and crystals in the world, in voxels of it: x, y, z, reach, then color, and 0 as they
     // stay put, see Light in shaders\traverse.comp
     lights: Vec<[f32; 8]>,
@@ -1013,8 +1032,10 @@ struct App {
     // Where the player stood last update, for the wake they push through water
     last_feet: Option<Vector3<f64>>,
     wake: Option<([f64; 2], [f64; 2])>,
-    // Set by scripts in screenshot runs, see run_script(): the player walks straight ahead
+    // Set by scripts in screenshot runs, see run_script(): the player walks straight ahead, maybe
+    // running
     scripted_walk: bool,
+    scripted_sprint: bool,
     // and the mouse buttons for the next frame
     script_controls: combat::Controls,
     // How far a shot's kick has turned the camera up, so it's turned back down as the kick dies away
@@ -1335,16 +1356,32 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_cavern([112.0, 112.0]))
         });
+        // `--set town=1` starts in the square of the nearest town, `town=far` past the end of one of
+        // its streets, looking down it, `town=stall` in front of a merchant's stall on its square,
+        // `town=cave` in the square of the nearest town down in a cavern and `town=tunnel` outside
+        // the mouth of the tunnel down to it. With `biome=snow` too, the nearest built for the snow.
+        let town_view = setting("town").filter(|_| dungeon.is_none() && cavern.is_none());
+        let underground = matches!(town_view, Some("cave" | "tunnel"));
+        let town = town_view.and_then(|_| {
+            let kind = setting("biome");
+            let near = kind.and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.nearest_town(near, underground, kind))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = dungeon
             .map(|d| [d[0], d[1]])
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
+            .or(town.map(|(square, _)| [square[0], square[1]]))
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
             [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2).div_euclid(64) * 64)
         });
         let (world, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers);
+        // The first piece of the world is built with every core, the rest in the background while
+        // the game goes on, leaving it some
+        worldgen::leave_cores(2);
         if setting("sites").is_some()
             && let Some(l) = &landscape
         {
@@ -1415,6 +1452,27 @@ impl App {
             let out = Vector3::new(gate[0] as f64, gate[1] as f64, 0.0) * 16.0 * vpm;
             camera.position = voxels_to_camera(middle + out + Vector3::new(0.0, 0.0, 2.5 * vpm), world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+        } else if let Some((square, way_in)) = town {
+            // In the square looking across it, or out by the way in looking towards it
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let (square, way_in) = (at(square), at(way_in));
+            let out = Vector3::new(way_in.x - square.x, way_in.y - square.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let stall = landscape.as_ref().and_then(|l| {
+                let sites = l.sites().iter().filter(|s| s.kind == "town stall");
+                sites.map(|s| (at(s.position), Vector3::new(s.facing[0] as f64, s.facing[1] as f64, 0.0))).min_by(|a, b| (a.0 - square).norm().total_cmp(&(b.0 - square).norm()))
+            });
+            let (eye, target) = match (town_view, stall) {
+                (Some("far"), _) => (way_in + up(5.0), square + up(1.5)),
+                (Some("tunnel"), _) => (way_in + out * 7.0 * vpm + up(1.7), way_in + up(1.4)),
+                // Where a customer would stand, the merchant behind the counter
+                (Some("stall"), Some((spot, facing))) => (spot + facing * 3.2 * vpm + up(1.6), spot + up(1.2)),
+                // A little way along a street, looking down it across the square
+                _ => (square + out * 10.0 * vpm + up(1.7), square - out * 8.0 * vpm + up(1.2)),
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
         } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
@@ -1463,7 +1521,7 @@ impl App {
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
-        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
+        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -1518,6 +1576,11 @@ impl App {
         }
         if flag("shop", false) {
             game.open_nearest_shop(start);
+        }
+        // `--set villager=3` puts a villager of each kind that many meters ahead, to see them close
+        if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            game.summon_villagers(&world, &water_level, start, ahead, distance);
         }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
@@ -1576,6 +1639,8 @@ impl App {
             landscape,
             rivers,
             window_build: None,
+            last_camera: None,
+            camera_drift: Vector3::zeros(),
             lights: Vec::new(),
             // No finer voxels round the camera, so they're the same size all over. Finer ones have
             // to be built again every time a spell or a blow leaves a mark near by.
@@ -1634,6 +1699,7 @@ impl App {
             last_feet: None,
             wake: None,
             scripted_walk: false,
+            scripted_sprint: false,
             script_controls: combat::Controls::default(),
             kicked: 0.0,
             audio,
@@ -1733,6 +1799,16 @@ impl App {
         app
     }
 
+    /// In screenshot runs, says when `what`, started at `start`, held a frame up
+    fn slow(&self, what: &str, start: Instant) {
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        if let Some(capture) = &self.capture
+            && ms > 15.0
+        {
+            println!("Slow at frame {}: {what} took {ms:.0} ms", capture.frame_times.len() + 1);
+        }
+    }
+
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
         if let Some(rcx) = &self.rcx {
@@ -1820,26 +1896,41 @@ impl App {
                 Some(game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), kind })
             })
             .collect();
-        // Merchants keep stalls out in front of some of the ruins no boss guards
+        // Merchants keep stalls out in front of some of the ruins no boss guards, and behind the
+        // counters of the stalls on the towns' squares
         let stalls: Vec<game::Stall> = landscape
             .sites()
             .iter()
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
+                if site.kind == "town stall" {
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3 });
+                }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
-                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7] })
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0 })
+            })
+            .collect();
+        // Folk live round the towns' squares, those down in caverns in fewer of them
+        let towns: Vec<game::Town> = landscape
+            .sites()
+            .iter()
+            .filter(|site| matches!(site.kind, "town" | "cave town"))
+            .map(|site| {
+                let (folk, roam) = if site.kind == "town" { (7, 18.0) } else { (5, 12.0) };
+                game::Town { position: to_voxels(site.position), folk, roam }
             })
             .collect();
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
         self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
+        self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -1891,12 +1982,16 @@ impl App {
     /// of it, letting water into the hole. With `debris` bits of them fly out.
     fn carve(&mut self, center: Vector3<f64>, radius: f64, debris: bool) {
         let vpm = self.world.voxels_per_meter as f64;
+        let start = Instant::now();
         let (changed, blown) = self.world.carve(center.into(), radius * vpm);
+        self.slow("blowing a hole in the world", start);
         if changed.is_empty() {
             return;
         }
         if debris {
+            let start = Instant::now();
             self.game.debris(center, &blown, vpm);
+            self.slow("throwing out what was blown loose", start);
         }
         self.edited.extend(changed);
         let reach = (radius * vpm).ceil() as i64 + 2;
@@ -2079,16 +2174,32 @@ impl App {
             return;
         }
 
+        // Which way and how fast the camera's going over the ground, in voxels a second, smoothed
         let camera = camera_to_voxels(self.camera.position, self.world.size);
+        let now = Instant::now();
+        if let Some((last, at)) = self.last_camera {
+            let dt = (now - at).as_secs_f64();
+            if dt > 1e-4 && dt < 0.5 {
+                let velocity = Vector3::new(camera.x - last.x, camera.y - last.y, 0.0) / dt;
+                self.camera_drift += (velocity - self.camera_drift) * (dt / 1.5).min(1.0);
+            }
+        }
+        self.last_camera = Some((camera, now));
+
         let middle = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, camera.z);
         if self.window_build.is_some() || (camera - middle).xy().norm() < RECENTER_M * vpm {
             return;
         }
-        // Centered on the camera, lined up with the blocks the water is simulated in
+        // Centered on where the camera's heading, lined up with the blocks the water is simulated in
+        let mut lead = self.camera_drift * BUILD_SECONDS;
+        if lead.norm() > BUILD_LEAD_M * vpm {
+            lead *= BUILD_LEAD_M * vpm / lead.norm();
+        }
+        let ahead = camera + lead;
         let align = 64;
         let origin = [
-            (self.world.origin[0] + camera.x as i64 - sx as i64 / 2).div_euclid(align) * align,
-            (self.world.origin[1] + camera.y as i64 - sy as i64 / 2).div_euclid(align) * align,
+            (self.world.origin[0] + ahead.x as i64 - sx as i64 / 2).div_euclid(align) * align,
+            (self.world.origin[1] + ahead.y as i64 - sy as i64 / 2).div_euclid(align) * align,
         ];
         // The same landscape, whatever's changed in the settings since
         let settings = TerrainSettings {
@@ -2167,11 +2278,15 @@ impl App {
         }
         water.carry_over(&self.water, [shift.x as i64, shift.y as i64], &self.command_buffer_allocator, &self.queue);
         self.water = water;
+        let watered = started.elapsed();
 
         let camera = camera_to_voxels(self.camera.position, self.world.size) - shift;
-        self.world = world;
-        self.landscape = Some(landscape);
+        // Letting go of hundreds of megabytes of the old one takes a while, so it's done aside
+        let old = std::mem::replace(&mut self.world, world);
+        let old_landscape = self.landscape.replace(landscape);
+        std::thread::spawn(move || drop((old, old_landscape)));
         self.camera.position = voxels_to_camera(camera, self.world.size);
+        self.last_camera = None;
         if let Some(player) = &mut self.player {
             player.position -= shift;
         }
@@ -2180,11 +2295,23 @@ impl App {
         self.near_build = None;
         self.sun_map_for = None;
         self.reset_accum = true;
-        self.adopt_features();
         let water = &self.water;
         let near = self.player.as_ref().map_or(camera, |p| p.position);
+        let swapped = started.elapsed();
         self.game.recenter(&self.world, &|x, y| water.surface_at(x, y), shift, self.terrain.seed, near);
-        println!("Moved over to the new piece of landscape in {:?}", started.elapsed());
+        let moved = started.elapsed();
+        // Only once what's about has moved with the world, so what turns up in the new piece of it
+        // isn't moved too
+        self.adopt_features();
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        println!(
+            "Moved over to the new piece of landscape in {:?}: water {:.0} ms, world {:.0} ms, what's about {:.0} ms, what's in it {:.0} ms",
+            started.elapsed(),
+            ms(watered),
+            ms(swapped - watered),
+            ms(moved - swapped),
+            ms(started.elapsed() - moved)
+        );
     }
 
     /// Builds the world picked in the settings, in place of the current one
@@ -2461,7 +2588,9 @@ impl App {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
             let water = &self.water;
+            let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
+            self.slow("the fighting, animals and such", start);
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -2478,11 +2607,15 @@ impl App {
             for (center, radius) in self.game.take_craters() {
                 self.blast(center, radius);
             }
+            let start = Instant::now();
             for (center, radius, material, burn) in self.game.take_stains() {
                 self.stain(center, radius, material, burn);
             }
+            self.slow("splashing stains", start);
             self.batching = false;
+            let start = Instant::now();
             self.flush_edits();
+            self.slow("sending what changed to the GPU", start);
             // Thrown by blows, and waking up somewhere safe after being beaten
             let push = self.game.take_knockback();
             if let Some(player) = &mut self.player {
@@ -2537,7 +2670,7 @@ impl App {
             // Slowed by frost
             wish *= self.game.pace();
             let jump = t(KeyCode::Space) > 0.0;
-            let sprint = self.focused && alive && self.input.held_shift();
+            let sprint = alive && (self.focused && self.input.held_shift() || self.scripted_sprint);
             // Long hitches, like generating a world, shouldn't fling the player through the floor
             let water = &self.water;
             let before = player.position;
@@ -2668,6 +2801,21 @@ impl App {
                 println!("frame {frame}: poured, bucket now {:.2} m³", self.game.bucket());
             }
             ("wade", 2) => self.scripted_walk = true,
+            // Runs straight on and on, saying now and then how far the edge of the world is ahead,
+            // to see the next piece of the landscape is ready before the edge is reached
+            ("trek", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                self.scripted_walk = true;
+                self.scripted_sprint = true;
+                if f % 30 == 0 {
+                    let [sx, sy, _] = self.world.size.map(|n| n as f64);
+                    let edge = eye.x.min(eye.y).min(sx - eye.x).min(sy - eye.y) / vpm;
+                    let at = [self.world.origin[0] as f64 / vpm + eye.x / vpm, self.world.origin[1] as f64 / vpm + eye.y / vpm];
+                    println!("frame {frame}: at {:.0}, {:.0}, edge {edge:.0} m off, building: {}", at[0], at[1], self.window_build.is_some());
+                }
+            }
             ("hunt", 20) => {
                 println!("frame {frame}: aiming at something: {}", self.game.has_target());
                 self.game.primary(eye);
@@ -2778,6 +2926,28 @@ impl App {
                     let material = self.world.material_at(ahead.x as i64, ahead.y as i64, ground as i64);
                     self.blast(Vector3::new(ahead.x, ahead.y, ground - 1.6 * vpm), 1.3);
                     println!("frame {frame}: hollow under {material} ground");
+                }
+            }
+            // Blows a hole in the ground ahead every few frames, here and there, for the worst of
+            // a fight's destruction going on in sight
+            ("barrage", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.35;
+                }
+                if f > 20 && f % 8 == 0 {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    let mut seed = f as u32 * 2654435761;
+                    let mut next = || {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        (seed % 1000) as f64 / 1000.0
+                    };
+                    let flat = Vector3::new(look.x, look.y, 0.0).normalize();
+                    let side = Vector3::new(-flat.y, flat.x, 0.0);
+                    let at = eye + flat * (7.0 + 10.0 * next()) * vpm + side * (next() - 0.5) * 14.0 * vpm;
+                    let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                    self.blast(Vector3::new(at.x, at.y, ground), 1.2 + 1.3 * next());
                 }
             }
             ("holes", f) => {
@@ -3061,7 +3231,9 @@ impl App {
         self.resample_pipeline.maybe_reload();
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
+        let start = Instant::now();
         self.update_window();
+        self.slow("moving the world along", start);
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
@@ -3130,6 +3302,7 @@ impl App {
             self.reset_accum = true;
         }
 
+        let acquiring = Instant::now();
         let (image_index, suboptimal, acquire_future) =
             match acquire_next_image(rcx.swapchain.clone(), None).map_err(Validated::unwrap) {
                 Ok(r) => r,
@@ -3139,6 +3312,11 @@ impl App {
                 }
                 Err(e) => panic!("failed to acquire next image: {e}"),
             };
+        if let Some(capture) = &self.capture
+            && acquiring.elapsed().as_secs_f64() > 0.015
+        {
+            println!("Slow at frame {}: waiting for an image to draw on took {:.0} ms", capture.frame_times.len() + 1, acquiring.elapsed().as_secs_f64() * 1000.0);
+        }
 
         if suboptimal {
             rcx.recreate_swapchain = true;
@@ -3874,6 +4052,11 @@ impl App {
                 if screenshot_buffer.is_some() || self.capture.is_some() {
                     let waiting = Instant::now();
                     frame_end.wait(None).unwrap();
+                    if let Some(capture) = &self.capture
+                        && waiting.elapsed().as_secs_f64() > 0.015
+                    {
+                        println!("Slow at frame {}: the GPU took {:.0} ms", capture.frame_times.len() + 1, waiting.elapsed().as_secs_f64() * 1000.0);
+                    }
                     if let Some(timer) = &mut timer {
                         timer.finish(waiting.elapsed());
                     }
@@ -4050,7 +4233,9 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.input.end_step();
+        let start = Instant::now();
         self.update(event_loop);
+        self.slow("updating the game", start);
         let rcx = self.rcx.as_mut().unwrap();
         rcx.window.request_redraw();
     }

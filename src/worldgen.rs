@@ -3,6 +3,8 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod towns;
+
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
 pub mod material {
     pub const AIR: u8 = 0;
@@ -169,6 +171,54 @@ impl std::hash::Hasher for CellHasher {
 
 /// Where each brick cell being changed is in a list of them
 type Cells = std::collections::HashMap<usize, usize, std::hash::BuildHasherDefault<CellHasher>>;
+/// The bricks World::carve() has unpacked, by where they are: in a box of them round the hole by
+/// their place in it, anywhere else by their cell. None for a brick that's empty.
+struct Found {
+    lo: [i64; 3],
+    dims: [i64; 3],
+    slots: Vec<u32>,
+    far: Cells,
+}
+
+impl Found {
+    const UNSEEN: u32 = u32::MAX;
+    const EMPTY: u32 = u32::MAX - 1;
+
+    /// `lo` to `hi` in bricks, `hi` not included
+    fn new(lo: [i64; 3], hi: [i64; 3]) -> Self {
+        let dims = [0, 1, 2].map(|i| (hi[i] - lo[i]).max(1));
+        Found { lo, dims, slots: vec![Self::UNSEEN; (dims[0] * dims[1] * dims[2]) as usize], far: Cells::default() }
+    }
+
+    fn slot(&self, at: [i64; 3]) -> Option<usize> {
+        let p = [0, 1, 2].map(|i| at[i] - self.lo[i]);
+        (0..3).all(|i| p[i] >= 0 && p[i] < self.dims[i]).then(|| (p[0] + (p[1] + p[2] * self.dims[1]) * self.dims[0]) as usize)
+    }
+
+    /// Whether brick `at`, at `cell`, has been seen, and if it has, which it is
+    fn get(&self, at: [i64; 3], cell: usize) -> Option<Option<usize>> {
+        let value = match self.slot(at) {
+            Some(i) => self.slots[i],
+            None => *self.far.get(&cell)? as u32,
+        };
+        match value {
+            Self::UNSEEN => None,
+            Self::EMPTY => Some(None),
+            k => Some(Some(k as usize)),
+        }
+    }
+
+    fn insert(&mut self, at: [i64; 3], cell: usize, k: Option<usize>) {
+        let value = k.map_or(Self::EMPTY, |k| k as u32);
+        match self.slot(at) {
+            Some(i) => self.slots[i] = value,
+            None => {
+                self.far.insert(cell, value as usize);
+            }
+        }
+    }
+}
+
 /// Bricks a world keeps room for beyond those it starts with, for holes blown in solid ground:
 /// a solid brick with a hole in it has to be stored
 pub const SPARE_BRICKS: usize = 131072;
@@ -282,20 +332,29 @@ impl World {
         let [sx, sy, sz] = self.size.map(i64::from);
         let (bx, by) = (sx / 8, sy / 8);
         let mut dirty: Vec<(usize, [u8; BRICK_VOXELS])> = Vec::new();
-        let mut found = Cells::default();
         let mut blown = Vec::new();
 
+        let r = radius.ceil() as i64 + 1;
+        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        // The bricks round the hole, those things fall into it from and those over it, are found
+        // by where they are in a box of them, which is much quicker than looking them up
+        let lo = [cx - r - 2, cy - r - 2, cz - r - 2].map(|v| v.div_euclid(8));
+        let hi = [cx + r + 2, cy + r + 2, cz + r + 48].map(|v| v.div_euclid(8) + 1);
+        let mut found = Found::new(lo, hi);
+
         // The bricks being changed, unpacked. Empty ones have nothing to blow away.
-        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut Cells, x: i64, y: i64, z: i64| -> Option<usize> {
+        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut Found, x: i64, y: i64, z: i64| -> Option<usize> {
             if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
                 return None;
             }
-            let cell = (x / 8 + (y / 8 + (z / 8) * by) * bx) as usize;
-            if let Some(&k) = found.get(&cell) {
-                return Some(k);
+            let at = [x / 8, y / 8, z / 8];
+            let cell = (at[0] + (at[1] + at[2] * by) * bx) as usize;
+            if let Some(k) = found.get(at, cell) {
+                return k;
             }
             let value = world.brick_grid[cell];
             if value & EMPTY_BRICK != 0 {
+                found.insert(at, cell, None);
                 return None;
             }
             let mut materials = [AIR; BRICK_VOXELS];
@@ -308,42 +367,71 @@ impl World {
                 }
             }
             dirty.push((cell, materials));
-            found.insert(cell, dirty.len() - 1);
+            found.insert(at, cell, Some(dirty.len() - 1));
             Some(dirty.len() - 1)
         };
         let local = |x: i64, y: i64, z: i64| (x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize;
-
-        let r = radius.ceil() as i64 + 1;
-        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
-        // The columns a hole was blown in, for what's loose above to fall into
-        let mut holed: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        // The columns a hole was blown in, for what's loose above to fall into, by where they are
+        // in the square round it
+        let side = 2 * r + 1;
+        let mut holed_at = vec![false; (side * side) as usize];
+        let (inner, outer) = ((radius * 0.82).powi(2), (radius * 1.12).powi(2));
         for z in cz - r..=cz + r {
             for y in cy - r..=cy + r {
                 for x in cx - r..=cx + r {
-                    let d = ((x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2)).sqrt();
-                    let ragged = 0.82 + 0.3 * unit(hash3(x as u32, y as u32, z as u32)) as f64;
-                    if d > radius * ragged || self.material_at(x, y, z) == AIR {
+                    let d2 = (x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2);
+                    if d2 > outer {
                         continue;
+                    }
+                    // Ragged at the edge: only there does each voxel get a say
+                    if d2 > inner {
+                        let ragged = 0.82 + 0.3 * unit(hash3(x as u32, y as u32, z as u32)) as f64;
+                        if d2 > (radius * ragged).powi(2) {
+                            continue;
+                        }
                     }
                     let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
                         continue;
                     };
                     let i = local(x, y, z);
+                    if dirty[k].1[i] == AIR {
+                        continue;
+                    }
                     if blown.len() < 64 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % 6 == 0 {
                         blown.push(dirty[k].1[i]);
                     }
                     dirty[k].1[i] = AIR;
-                    holed.insert((x, y));
+                    holed_at[((x - cx + r) + (y - cy + r) * side) as usize] = true;
                 }
             }
         }
+        let holed: Vec<(i64, i64)> = (0..side * side).filter(|&i| holed_at[i as usize]).map(|i| (cx - r + i % side, cy - r + i / side)).collect();
 
         // Sand, gravel and snow with nothing under them any more slide down into the hole, each
         // column of them settling onto whatever's below. Not into bricks that were empty to begin
-        // with: rays skip those, so what fell there wouldn't show.
+        // with: rays skip those, so what fell there wouldn't show. Only if there's some of it in
+        // the bricks the hole was blown in or those over them, as there mostly isn't.
         let loose = |m: u8| matches!(m, SAND | GRAVEL | SNOW);
-        let mut columns: Vec<(i64, i64)> = holed.iter().copied().collect();
-        columns.sort_unstable();
+        let mut any_loose = dirty.iter().any(|(_, materials)| materials.iter().any(|&m| loose(m)));
+        for bz in (cz + r).div_euclid(8)..=(cz + r + 24).div_euclid(8) {
+            for by_ in (cy - r).div_euclid(8)..=(cy + r).div_euclid(8) {
+                for bx_ in (cx - r).div_euclid(8)..=(cx + r).div_euclid(8) {
+                    if any_loose || bx_ < 0 || by_ < 0 || bz < 0 || bx_ >= bx || by_ >= by || bz >= sz / 8 {
+                        continue;
+                    }
+                    let value = self.brick_grid[(bx_ + (by_ + bz * by) * bx) as usize];
+                    any_loose = if value & EMPTY_BRICK != 0 {
+                        false
+                    } else if value & SOLID_BRICK != 0 {
+                        loose(value as u8)
+                    } else {
+                        let start = ((value & BRICK_INDEX) - 1) as usize * BRICK_WORDS + 16;
+                        self.bricks[start..start + BRICK_VOXELS / 4].iter().any(|&w| (0..4).any(|j| loose((w >> (j * 8)) as u8)))
+                    };
+                }
+            }
+        }
+        let columns = if any_loose { holed.clone() } else { Vec::new() };
         for (x, y) in columns {
             {
                 // Where in this column the next loose voxel would come to rest, if anywhere
@@ -388,6 +476,9 @@ impl World {
         // Grass and flowers with nothing under them any more fall in: only round where the hole is
         let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL);
         let mut near: Vec<(i64, i64)> = holed.iter().flat_map(|&(x, y)| [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]).collect();
+        // Grass only grows on the top of the ground, so only where the hole broke through to the
+        // open air above does anything need to fall
+        near.retain(|&(x, y)| self.material_at(x, y, cz + r + 1) == AIR);
         near.sort_unstable();
         near.dedup();
         for (x, y) in near {
@@ -679,24 +770,49 @@ impl TerrainSettings {
 /// Generates the piece of the endless landscape whose corner is at `origin`, in voxels from the
 /// corner of the whole landscape, as big as the settings say, and builds it into voxels at their
 /// resolution.
+/// How many threads building the world spreads over, 0 for one per core
+static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Leaves `spare` cores free while building the world from here on, so the game goes on running
+/// smoothly while the next piece of it is built in the background
+pub fn leave_cores(spare: usize) {
+    let cores = thread::available_parallelism().map_or(4, |n| n.get());
+    THREADS.store(cores.saturating_sub(spare).max(2), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn threads() -> usize {
+    match THREADS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => thread::available_parallelism().map_or(4, |n| n.get()),
+        n => n,
+    }
+}
+
 pub fn generate_terrain(settings: &TerrainSettings, origin: [i64; 2], rivers: &RiverCache) -> (Terrain, World) {
     let start = std::time::Instant::now();
 
     let mut heights = Heights::new(settings, origin, [settings.size()[0] as usize; 2], settings.voxels_per_meter);
+    let shaped = start.elapsed();
     let terrain = Terrain::new(settings, &mut heights, rivers);
+    let placed = start.elapsed();
     let mut world = terrain.build_from(&heights, 0, settings.size()[2]);
-    world.grass = Some(terrain.grass_map(&heights));
-    let mut water = terrain.water_map(&heights);
+    let built = start.elapsed();
+    let (grass, mut water) = terrain.grass_and_water(&heights);
+    world.grass = Some(grass);
     terrain.raise_water_ground(&world, &mut water);
     world.water = Some(water);
 
+    let ms = |d: std::time::Duration| d.as_millis();
     println!(
-        "Generated terrain around ({}, {}): {} bricks stored, {} MB ({:?})",
+        "Generated terrain around ({}, {}): {} bricks stored, {} MB ({:?}: ground {} ms, rivers and what's on the land {} ms, voxels {} ms, grass and water {} ms)",
         origin[0],
         origin[1],
         world.brick_count(),
         world.bricks.len() * 4 / (1024 * 1024),
-        start.elapsed()
+        start.elapsed(),
+        ms(shaped),
+        ms(placed - shaped),
+        ms(built - placed),
+        ms(start.elapsed() - built)
     );
 
     (terrain, world)
@@ -1543,7 +1659,7 @@ impl Heights {
         let mut ground = vec![0.0; size[0] * size[1]];
 
         // Rows split across threads
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
+        let threads = threads();
         let rows_per_thread = size[1].div_ceil(threads).max(1);
         thread::scope(|s| {
             for (chunk_index, chunk) in ground.chunks_mut(rows_per_thread * size[0]).enumerate() {
@@ -2023,31 +2139,6 @@ impl Terrain {
         }
     }
 
-    /// The ground and the water lying on it for every column, see World::water
-    fn water_map(&self, heights: &Heights) -> WaterMap {
-        let [sx, sy] = heights.size;
-        let mut ground = vec![0.0f32; sx * sy];
-        let mut surface = vec![0.0f32; sx * sy];
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
-        let rows_per_thread = sy.div_ceil(threads).max(1);
-        thread::scope(|s| {
-            for (chunk_index, (ground, surface)) in ground
-                .chunks_mut(rows_per_thread * sx)
-                .zip(surface.chunks_mut(rows_per_thread * sx))
-                .enumerate()
-            {
-                s.spawn(move || {
-                    for i in 0..ground.len() {
-                        let j = chunk_index * rows_per_thread * sx + i;
-                        let column = self.column(heights, (j % sx) as i64, (j / sx) as i64);
-                        ground[i] = (column.height + 1) as f32;
-                        surface[i] = if column.water_top > column.height { (column.water_top + 1) as f32 } else { 0.0 };
-                    }
-                });
-            }
-        });
-        WaterMap { ground, surface }
-    }
 
     fn build_from(&self, heights: &Heights, origin_z: i64, size_z: u32) -> World {
         let vpm = heights.voxels_per_meter;
@@ -2074,7 +2165,7 @@ impl Terrain {
         }
 
         // Columns of bricks don't depend on each other, so rows of them are split across threads
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
+        let threads = threads();
         let rows_per_thread = by.div_ceil(threads).max(1);
         let results: Vec<(Vec<(usize, u32)>, Vec<u32>)> = thread::scope(|s| {
             let handles: Vec<_> = (0..threads)
@@ -2115,50 +2206,53 @@ impl Terrain {
         world
     }
 
-    /// See World::grass. Grass grows on grassy ground, a little thinner in the forests.
-    fn grass_map(&self, heights: &Heights) -> Vec<u32> {
+    /// Where grass grows, see World::grass, and the ground and the water lying on it for every
+    /// column, see World::water. Both in one go, as working out a column takes a while. Grass grows
+    /// on grassy ground, a little thinner in the forests.
+    fn grass_and_water(&self, heights: &Heights) -> (Vec<u32>, WaterMap) {
         let [sx, sy] = heights.size;
         let vpm = heights.voxels_per_meter;
         let seed = self.settings.seed;
         let mut map = vec![0u32; sx * sy];
-        // None where the ground's built over or cut away, in columns of this rectangle
-        let holes: Vec<[i64; 4]> = self
-            .features
-            .holes
-            .iter()
-            .map(|h| {
-                let column = |m: f32, axis: usize| (m * vpm).floor() as i64 - heights.origin[axis];
-                [column(h[0], 0), column(h[1], 1), column(h[2], 0), column(h[3], 1)]
-            })
-            .collect();
+        let mut ground = vec![0.0f32; sx * sy];
+        let mut surface = vec![0.0f32; sx * sy];
+        // None where the ground's built over or cut away: every column of every such rectangle
+        // marked once, rather than each column looking through all of them
+        let mut holes = vec![false; sx * sy];
+        for h in &self.features.holes {
+            let column = |m: f32, axis: usize, size: usize| ((m * vpm).floor() as i64 - heights.origin[axis]).clamp(0, size as i64) as usize;
+            let (x0, x1) = (column(h[0], 0, sx), column(h[2], 0, sx));
+            for y in column(h[1], 1, sy)..column(h[3], 1, sy) {
+                holes[y * sx + x0..y * sx + x1].fill(true);
+            }
+        }
         let holes = &holes;
 
         // Rows split across threads
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
-        let rows_per_thread = sy.div_ceil(threads).max(1);
+        let rows_per_thread = sy.div_ceil(threads()).max(1);
+        let rows = rows_per_thread * sx;
         thread::scope(|s| {
-            for (chunk_index, chunk) in map.chunks_mut(rows_per_thread * sx).enumerate() {
+            for (chunk_index, ((chunk, ground), surface)) in map.chunks_mut(rows).zip(ground.chunks_mut(rows)).zip(surface.chunks_mut(rows)).enumerate() {
                 s.spawn(move || {
-                    for (i, value) in chunk.iter_mut().enumerate() {
-                        let j = chunk_index * rows_per_thread * sx + i;
+                    for i in 0..chunk.len() {
+                        let j = chunk_index * rows + i;
                         let (x, y) = ((j % sx) as i64, (j / sx) as i64);
-                        if holes.iter().any(|h| x >= h[0] && y >= h[1] && x < h[2] && y < h[3]) {
-                            continue;
-                        }
                         let column = self.column(heights, x, y);
-                        if !is_grassy(column.top) {
+                        ground[i] = (column.height + 1) as f32;
+                        surface[i] = if column.water_top > column.height { (column.water_top + 1) as f32 } else { 0.0 };
+                        if holes[j] || !is_grassy(column.top) {
                             continue;
                         }
                         let forest = smoothstep(-0.15, 0.25, fbm(x as f32 / vpm / 80.0, y as f32 / vpm / 80.0, 3, seed.wrapping_add(4)));
                         let density = (255.0 * (1.0 - 0.45 * forest)) as u32;
-                        let ground = ((column.height + 1) as u32 * 4).min(0xFFFF);
-                        *value = ground | density << 16;
+                        let top = ((column.height + 1) as u32 * 4).min(0xFFFF);
+                        chunk[i] = top | density << 16;
                     }
                 });
             }
         });
 
-        map
+        (map, WaterMap { ground, surface })
     }
 
     fn objects_in(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<&Object> {
@@ -2588,8 +2682,11 @@ impl Terrain {
         // Buildings go first, as where they overlap other things they win. None stands over a
         // dungeon, whose halls go before the caves so no cave breaks into them.
         let dungeons = self.dungeons(rivers);
-        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).collect();
-        let mut objects = self.buildings(heights, &mut features, &keep_out);
+        // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and no
+        // ruins stand in them
+        let (mut objects, towns) = self.towns(rivers, &mut features);
+        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).collect();
+        objects.extend(self.buildings(heights, &mut features, &keep_out));
         for dungeon in &dungeons {
             objects.push(self.dungeon(dungeon, &mut features));
         }
