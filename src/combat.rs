@@ -4252,15 +4252,15 @@ impl Combat {
             // Flames flickering up, or bubbles and a haze of venom. A wall of fire's flames leap
             // high, tongues of fire swelling and dying away, so it shows over the grass: a few
             // at a time, as each is a single model however big.
-            let mut owed = dt * if l.tall { 9.0 } else { 25.0 * l.radius };
+            let mut owed = dt * if l.tall { 4.0 } else { 25.0 * l.radius };
             while owed > 0.0 {
                 if random(&mut self.rng) < owed {
                     let a = random(&mut self.rng) * TAU;
                     let r = random(&mut self.rng).sqrt() * l.radius * vpm;
                     if l.tall {
                         let at = l.position + Vector3::new(a.cos() * r * 0.6, a.sin() * r * 0.6, (0.3 + 1.1 * random(&mut self.rng)) * vpm);
-                        let radius = 0.3 + 0.25 * random(&mut self.rng);
-                        self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius, life: 0.45, lifetime: 0.45 });
+                        let radius = 0.3 + 0.2 * random(&mut self.rng);
+                        self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius, life: 0.5, lifetime: 0.5 });
                     } else {
                         let at = l.position + Vector3::new(a.cos() * r, a.sin() * r, 0.2 * vpm);
                         self.mote(at, Some(l.element), 2.0);
