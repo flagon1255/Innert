@@ -128,9 +128,19 @@ enum Deal {
     Hold(usize),
     Eat(usize),
     Drop(usize),
+    /// Swapping two slots, one dragged onto the other
+    Move(usize, usize),
     Sort,
     Buy(usize),
     Sell(usize),
+}
+
+/// What was done with a slot in a grid of them: clicked, double or right clicked, or dragged onto
+/// another, see Game::slot_grid()
+enum SlotClick {
+    Once(usize),
+    Twice(usize),
+    Moved(usize, usize),
 }
 
 /// The color of gold, in the HUD and on cards
@@ -2889,20 +2899,21 @@ impl Game {
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Quick bar, keys 1 to 9, then the pack").weak().small());
-                        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.6).show(ui, |ui| {
-                            if let Some((slot, twice)) = self.slot_grid(ui, "carried", false) {
+                        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.6).show(ui, |ui| match self.slot_grid(ui, "carried", false) {
+                            Some(SlotClick::Once(slot)) => chosen = Some(slot),
+                            Some(SlotClick::Twice(slot)) => {
                                 chosen = Some(slot);
-                                if twice {
-                                    deed = Some(if self.slots[slot].0.consumable() { Deal::Eat(slot) } else { Deal::Hold(slot) });
-                                }
+                                deed = Some(if self.slots[slot].0.consumable() { Deal::Eat(slot) } else { Deal::Hold(slot) });
                             }
+                            Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),
+                            None => {}
                         });
                     });
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
                         ui.set_width(310.0);
                         let Some((slot, (item, count))) = self.inspected.and_then(|i| Some((i, *self.slots.get(i)?))) else {
-                            ui.label(RichText::new("Click on something to see all about it. Double click to take it in hand, or eat it.").weak());
+                            ui.label(RichText::new("Click on something to see all about it. Drag it onto the quick bar, here or along the top, to have it to hand, or right click to hold it or eat it.").weak());
                             return;
                         };
                         self.item_card(ui, item, count);
@@ -2927,6 +2938,10 @@ impl Game {
                 ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Staff, scepter or wand: click to cast.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
             });
+        // The quick bar along the top takes what's dragged onto it too
+        if let Some(SlotClick::Moved(a, b)) = self.quick_bar_targets(ctx) {
+            deed = Some(Deal::Move(a, b));
+        }
         if let Some(slot) = chosen {
             self.inspected = Some(slot);
         }
@@ -2934,19 +2949,26 @@ impl Game {
             Some(Deal::Hold(slot)) => self.hold(slot),
             Some(Deal::Eat(slot)) => self.eat(slot),
             Some(Deal::Drop(slot)) => self.drop_slot(slot),
+            Some(Deal::Move(a, b)) => self.move_slot(a, b),
             Some(Deal::Sort) => self.sort(),
             _ => {}
         }
     }
 
-    /// What's carried as a grid of icons, a row of the quick bar first: which one was clicked,
-    /// and whether twice. When trading, `selling` shows what the merchant pays for each on hover.
-    fn slot_grid(&self, ui: &mut egui::Ui, id: &str, selling: bool) -> Option<(usize, bool)> {
+    /// What's carried as a grid of icons, a row of the quick bar first: what was done with them.
+    /// Each can be dragged onto another to swap them, a number key while over one puts it in
+    /// that slot of the quick bar, and a right click is a double click. When trading, `selling`
+    /// shows what the merchant pays for each on hover.
+    fn slot_grid(&self, ui: &mut egui::Ui, id: &str, selling: bool) -> Option<SlotClick> {
         let mut clicked = None;
         let cell = 48.0;
+        let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
         egui::Grid::new(id).spacing([5.0, 5.0]).show(ui, |ui| {
             for (i, &(item, count)) in self.slots.iter().enumerate() {
-                let (rect, response) = ui.allocate_exact_size(vec2(cell, cell), egui::Sense::click());
+                let (rect, response) = ui.allocate_exact_size(vec2(cell, cell), egui::Sense::click_and_drag());
+                if let Some(action) = self.slot_dnd(ui, &response, rect, i) {
+                    clicked = Some(action);
+                }
                 let painter = ui.painter();
                 let tint = match item {
                     Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
@@ -2972,17 +2994,24 @@ impl Game {
                 if i < HOTBAR {
                     painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
                 }
-                let response = response.on_hover_ui(|ui| {
-                    ui.set_width(280.0);
-                    self.item_card(ui, item, count);
-                    if selling && item != Item::Bucket {
-                        ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
-                    }
-                });
-                if response.double_clicked() {
-                    clicked = Some((i, true));
+                // No card while something's being dragged about, it'd only get in the way
+                let response = if dragging {
+                    response
+                } else {
+                    response.on_hover_ui(|ui| {
+                        ui.set_width(280.0);
+                        self.item_card(ui, item, count);
+                        if selling && item != Item::Bucket {
+                            ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
+                        } else {
+                            ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
+                        }
+                    })
+                };
+                if response.double_clicked() || response.secondary_clicked() {
+                    clicked = Some(SlotClick::Twice(i));
                 } else if response.clicked() {
-                    clicked = Some((i, false));
+                    clicked = Some(SlotClick::Once(i));
                 }
                 if (i + 1) % HOTBAR == 0 {
                     ui.end_row();
@@ -2990,6 +3019,87 @@ impl Game {
             }
         });
         clicked
+    }
+
+    /// Dragging slot `i` about, at `rect` with `response`: picked up, carried over others with the
+    /// one under it marked, and dropped on another to swap them. And over it, a number key puts
+    /// it in that slot of the quick bar.
+    fn slot_dnd(&self, ui: &egui::Ui, response: &egui::Response, rect: Rect, i: usize) -> Option<SlotClick> {
+        if i >= self.slots.len() {
+            return None;
+        }
+        if response.drag_started() {
+            response.dnd_set_drag_payload(i);
+        }
+        // What's being carried follows the pointer, a little see-through
+        if response.dragged()
+            && let Some(at) = ui.ctx().pointer_interact_pos()
+        {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dragged item")));
+            painter.rect_filled(Rect::from_center_size(at, vec2(44.0, 44.0)), 7.0, Color32::from_black_alpha(140));
+            self.draw_icon(&painter, self.slots[i].0, at, 26.0);
+        }
+        if response.dnd_hover_payload::<usize>().is_some_and(|from| *from != i) {
+            ui.painter().rect_stroke(rect.expand(2.0), 8.0, Stroke::new(2.5f32, GOLD), StrokeKind::Outside);
+        }
+        if let Some(from) = response.dnd_release_payload::<usize>()
+            && *from != i
+        {
+            return Some(SlotClick::Moved(*from, i));
+        }
+        if response.hovered() {
+            let keys = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9];
+            if let Some(k) = keys.iter().position(|&key| ui.input(|input| input.key_pressed(key))).filter(|&k| k != i) {
+                return Some(SlotClick::Moved(i, k));
+            }
+        }
+        None
+    }
+
+    /// Where the slots of the quick bar are drawn along the top of `screen`, see hud()
+    fn quick_bar_rects(&self, screen: Rect) -> Vec<Rect> {
+        let (slot, gap, pad) = (44.0, 6.0, 10.0);
+        let shown = self.slots.len().min(HOTBAR);
+        let slots_width = if self.slots.is_empty() { 120.0 } else { shown as f32 * (slot + gap) - gap };
+        let width = pad + slots_width + 20.0 + 170.0 + pad;
+        let left = screen.center().x - width / 2.0 + pad;
+        (0..shown).map(|i| Rect::from_min_size(pos2(left + i as f32 * (slot + gap), screen.top() + 14.0 + pad), vec2(slot, slot))).collect()
+    }
+
+    /// While the inventory's open, the quick bar along the top takes what's dragged onto it, and
+    /// what's on it can be dragged off. Returns what was moved where.
+    fn quick_bar_targets(&self, ctx: &egui::Context) -> Option<SlotClick> {
+        let mut moved = None;
+        egui::Area::new(egui::Id::new("quick bar targets")).fixed_pos(ctx.screen_rect().min).order(egui::Order::Foreground).show(ctx, |ui| {
+            for (i, rect) in self.quick_bar_rects(ctx.screen_rect()).into_iter().enumerate() {
+                let response = ui.interact(rect, egui::Id::new(("quick bar slot", i)), egui::Sense::click_and_drag());
+                if let Some(action) = self.slot_dnd(ui, &response, rect, i) {
+                    moved = Some(action);
+                }
+                if response.hovered() && !egui::DragAndDrop::has_any_payload(ctx) {
+                    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5f32, Color32::from_white_alpha(120)), StrokeKind::Inside);
+                }
+            }
+        });
+        moved
+    }
+
+    /// Swaps slots `a` and `b`. What's in hand stays in hand if it's still on the quick bar, and
+    /// anything put in the slot in hand is taken in hand.
+    fn move_slot(&mut self, a: usize, b: usize) {
+        if a >= self.slots.len() || b >= self.slots.len() || a == b {
+            return;
+        }
+        self.slots.swap(a, b);
+        if self.selected == a && b < HOTBAR {
+            self.selected = b;
+        }
+        if self.inspected == Some(a) {
+            self.inspected = Some(b);
+        } else if self.inspected == Some(b) {
+            self.inspected = Some(a);
+        }
+        self.cues.push(Cue::here(Sound::Equip, 0.5));
     }
 
     /// The frame round an item's card: dark, edged in the color of a weapon's rarity
@@ -3215,8 +3325,10 @@ impl Game {
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Yours, click to sell one").strong());
-                        if let Some((slot, _)) = self.slot_grid(ui, "selling", true) {
-                            deed = Some(Deal::Sell(slot));
+                        match self.slot_grid(ui, "selling", true) {
+                            Some(SlotClick::Once(slot) | SlotClick::Twice(slot)) => deed = Some(Deal::Sell(slot)),
+                            Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),
+                            None => {}
                         }
                     });
                 });
@@ -3224,6 +3336,7 @@ impl Game {
         match deed {
             Some(Deal::Buy(k)) => self.buy(k),
             Some(Deal::Sell(slot)) => self.sell(slot),
+            Some(Deal::Move(a, b)) => self.move_slot(a, b),
             _ => {}
         }
         if !open {
