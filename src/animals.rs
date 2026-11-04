@@ -1638,9 +1638,30 @@ fn ground_at(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, 
     (water(x, y) < ground + 0.2 * world.voxels_per_meter as f64).then_some(ground)
 }
 
-/// The highest dry ground in a column, if it isn't under water
+/// The highest dry ground in a column with room to stand on it, if it isn't under water: the
+/// ground itself, not a branch up in a tree or the top of a wall
 fn surface_at(world: &World, water: WaterLevel, x: f64, y: f64) -> Option<f64> {
-    ground_at(world, water, x, y, 0.0, world.size[2] as f64 - 1.0, 1.0)
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
+    let room = (1.5 * world.voxels_per_meter as f64) as i64;
+    let mut clear = 0;
+    for z in (0..world.size[2] as i64).rev() {
+        let m = world.material_at(xi, yi, z);
+        if is_passable(m) {
+            clear += 1;
+            continue;
+        }
+        if clear >= room && is_ground(m) {
+            let ground = z as f64 + 1.0;
+            return (water(x, y) < ground + 0.2 * world.voxels_per_meter as f64).then_some(ground);
+        }
+        clear = 0;
+    }
+    None
+}
+
+/// Whether a material is the ground itself rather than something on it, like a tree or a wall
+fn is_ground(material: u8) -> bool {
+    matches!(material, GRASS | DIRT | SAND | SNOW | STONE | ROCK | GRAVEL | CLAY | MOSS | JUNGLE_GRASS | ICE)
 }
 
 impl Animal {
@@ -1748,6 +1769,14 @@ impl Animal {
         }
         if self.boss.is_some() {
             bosses::think(self, world, player, dt);
+        } else {
+            // With the ground gone from under it, blown away, it falls to what's left
+            let below = (self.position.z - 1.0).floor() as i64;
+            if is_passable(world.material_at(self.position.x as i64, self.position.y as i64, below)) {
+                if let Some(ground) = ground_at(world, water, self.position.x, self.position.y, self.position.z, 0.0, 6.0 * vpm) {
+                    self.position.z = ground.max(self.position.z - 9.0 * vpm * dt);
+                }
+            }
         }
 
         // A merchant stays by its wares, turning to whoever comes near

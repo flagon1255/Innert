@@ -376,6 +376,9 @@ impl World {
         let side = 2 * r + 1;
         let mut holed_at = vec![false; (side * side) as usize];
         let (inner, outer) = ((radius * 0.82).powi(2), (radius * 1.12).powi(2));
+        // What flies out is picked from all through the hole, so from the top of the ground as
+        // much as from deep down: about one in so many of the voxels, about half of it solid
+        let stride = ((2.1 * radius.powi(3) / 60.0) as u32).max(1);
         for z in cz - r..=cz + r {
             for y in cy - r..=cy + r {
                 for x in cx - r..=cx + r {
@@ -397,7 +400,7 @@ impl World {
                     if dirty[k].1[i] == AIR {
                         continue;
                     }
-                    if blown.len() < 64 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % 6 == 0 {
+                    if blown.len() < 80 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % stride == 0 {
                         blown.push(dirty[k].1[i]);
                     }
                     dirty[k].1[i] = AIR;
@@ -1842,8 +1845,10 @@ const RIVER_CELL: f32 = 200.0;
 /// The most points a river runs to, half a meter apart
 const RIVER_STEPS: usize = 1200;
 /// How much water a river's spring gives, in cubic meters a second, and how wide it is in meters
-const RIVER_FLOW: f32 = 4.0;
+const RIVER_FLOW: f32 = 6.0;
 const RIVER_SPRING_RADIUS: f32 = 2.0;
+/// And how much more each waterfall's fed just over its lip
+const WATERFALL_FLOW: f32 = 4.0;
 
 /// Little things inside buildings, drawn like animals, see src\animals.rs
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1993,7 +1998,8 @@ impl Terrain {
 
     /// Where water comes from in this piece: x, y, cubic meters a second and radius, in meters.
     /// Rivers start where their spring is, or where they flow in from outside it, and some
-    /// buildings have water welling up inside.
+    /// buildings have water welling up inside. Each waterfall is fed just over its lip too, so it
+    /// always pours over full, however much the pools above have spread out what came down.
     pub fn springs(&self) -> Vec<[f32; 4]> {
         let mut springs: Vec<[f32; 4]> = self
             .rivers
@@ -2001,6 +2007,7 @@ impl Terrain {
             .filter_map(|path| path.iter().find(|p| self.inside(p.x, p.y)))
             .map(|p| [p.x, p.y, RIVER_FLOW, RIVER_SPRING_RADIUS])
             .collect();
+        springs.extend(self.waterfalls().into_iter().map(|(lip, flow)| [lip[0] - flow[0] * 1.5, lip[1] - flow[1] * 1.5, WATERFALL_FLOW, 1.2]));
         springs.extend_from_slice(&self.features.springs);
         springs
     }
@@ -2691,6 +2698,7 @@ impl Terrain {
             objects.push(self.dungeon(dungeon, &mut features));
         }
         objects.extend(self.caves(&mut features));
+        objects.extend(self.waterfall_caves(&mut features));
         objects.extend(self.ravines(&mut features));
         objects.extend(self.camps(heights, &mut features, &keep_out));
         let footprints = std::mem::take(&mut features.footprints);
@@ -3581,6 +3589,67 @@ impl Terrain {
                 features.footprints.push([area[0], area[1], area[2], area[3], highest + 3.0]);
                 objects.push(Object::new(shapes, rng.0));
             }
+        }
+        objects
+    }
+
+    /// Behind some waterfalls, a cave: in through the falling water, a low way in under the lip of
+    /// the fall, round sideways from under the river, and back into the hill to a little cavern
+    /// glowing with crystals, where someone hid a chest. Kept under the shallow lip, where the
+    /// river's bed is high, so it never breaks into the river and drains it.
+    fn waterfall_caves(&self, features: &mut Features) -> Vec<Object> {
+        let sea_level = sea_level_m(&self.settings);
+        let mut objects = Vec::new();
+        for (lip, flow) in self.waterfalls() {
+            let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, self.settings.seed ^ 0xfa11);
+            if unit(r) > 0.45 {
+                continue;
+            }
+            let mut rng = Rng(hash(r));
+            let pool = (lip[2] - FALL_HEIGHT).max(sea_level);
+            // Its floor a little over the pool the water falls into, so none of it runs in
+            let floor = pool + 0.5;
+            let side = if rng.next() < 0.5 { [-flow[1], flow[0]] } else { [flow[1], -flow[0]] };
+            let at = |along: f32, out: f32, up: f32| [lip[0] + flow[0] * along + side[0] * out, lip[1] + flow[1] * along + side[1] * out, floor + up];
+            // Low under the lip, where there's the least rock between it and the river
+            let radius = 0.95;
+            let path = [at(0.9, 0.0, radius), at(-0.4, 0.0, radius), at(-0.4, 4.0, radius), at(-0.4, 7.5, radius), at(-3.5, 9.5, radius + 0.1)];
+            let mut shapes = Vec::new();
+            for pair in path.windows(2) {
+                let tunnel = Shape::capsule(pair[0], pair[1], radius, radius, AIR, AIR, false).placed(Placement::Carve);
+                shapes.push(tunnel.roughened(0.12, floor - 0.05));
+            }
+            // Just inside, under the lip, looking out through the falling water
+            let inside = at(-0.2, 0.0, 0.0);
+            if self.inside(inside[0], inside[1]) {
+                features.sites.push(Site { kind: "waterfall cave", position: inside, facing: flow });
+            }
+            // The cavern, with room enough over it in the hill, else the cave ends where it is
+            let middle = at(-6.0, 11.0, 1.4);
+            let ground = height_at(&self.settings, middle[0], middle[1]);
+            if middle[2] + 2.0 + 2.0 < ground {
+                let cavern = Shape::ellipsoid(middle, [3.2, 3.2, 1.9], AIR, AIR).placed(Placement::Carve);
+                shapes.push(cavern.roughened(0.35, floor - 0.05));
+                shapes.push(Shape::capsule(path[4], middle, radius, 1.3, AIR, AIR, false).placed(Placement::Carve).roughened(0.12, floor - 0.05));
+                let mut crystals = Vec::new();
+                for k in 0..3 {
+                    let a = rng.next() * TAU + k as f32 * 2.1;
+                    let c = [middle[0] + a.cos() * 2.4, middle[1] + a.sin() * 2.4, floor];
+                    for _ in 0..4 {
+                        let offset = [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), rng.range(0.0, 0.4)];
+                        crystals.push(Shape::sphere(add(c, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
+                    }
+                    if self.inside(c[0], c[1]) {
+                        features.lights.push(Light { position: [c[0], c[1], c[2] + 0.7], color: [0.4, 0.85, 1.0], reach: 8.0 });
+                    }
+                }
+                shapes.extend(crystals);
+                if self.inside(middle[0], middle[1]) {
+                    let heading = (lip[1] - middle[1]).atan2(lip[0] - middle[0]);
+                    chest(features, [middle[0], middle[1], floor], heading, 3.0 + rng.next() * 2.0);
+                }
+            }
+            objects.push(Object::new(shapes, rng.0));
         }
         objects
     }

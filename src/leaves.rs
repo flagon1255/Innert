@@ -43,7 +43,20 @@ struct Leaf {
     velocity: Option<Vector3<f64>>,
     /// Seconds left lying where it landed, None while falling
     landed: Option<f64>,
+    /// For debris: how many voxels across the chunk is, which way it's turned and how fast it
+    /// tumbles, about which way in radians a second, and how often it's bounced
+    size: f64,
+    turn: UnitQuaternion<f64>,
+    spin: Vector3<f64>,
+    bounces: u8,
 }
+
+/// Seconds a chunk thrown out by an explosion lies where it came to rest before it's gone, at the
+/// least, and a bounce: how much of its speed down it keeps going back up, and of its speed along
+/// the ground
+const DEBRIS_LIE: f64 = 6.0;
+const BOUNCE: f64 = 0.35;
+const SKID: f64 = 0.55;
 
 pub struct Leaves {
     leaves: Vec<Leaf>,
@@ -92,18 +105,24 @@ impl Leaves {
         }
     }
 
-    /// Bits of what an explosion at `at` blew out, `materials`, thrown out in all directions
+    /// Chunks of what an explosion at `at` blew out, `materials`, thrown out in all directions,
+    /// tumbling: a few big lumps, more small bits
     pub fn debris(&mut self, at: Vector3<f64>, materials: &[u8], vpm: f64) {
         for &material in materials {
             if material == AIR || material >= MATERIALS {
                 continue;
             }
             let angle = random(&mut self.rng) * TAU;
-            let out = 1.5 + 4.0 * random(&mut self.rng);
-            let up = 3.0 + 5.0 * random(&mut self.rng);
+            let out = 1.5 + 5.0 * random(&mut self.rng);
+            let up = 3.5 + 6.0 * random(&mut self.rng);
             let velocity = Vector3::new(angle.cos() * out, angle.sin() * out, up) * vpm;
             let position = at + Vector3::new(angle.cos(), angle.sin(), 0.5) * 0.3 * vpm;
-            self.leaves.push(Leaf { position, material, phase: 0.0, flutter: 0.0, swing: 0.0, velocity: Some(velocity), landed: None });
+            let size = 1.5 + 4.0 * random(&mut self.rng).powi(2);
+            let axis = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5).try_normalize(1e-6).unwrap_or(Vector3::z());
+            // Little bits spin faster than big lumps
+            let spin = axis * (5.0 + 10.0 * random(&mut self.rng)) / size.sqrt();
+            let turn = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), random(&mut self.rng) * TAU);
+            self.leaves.push(Leaf { position, material, phase: 0.0, flutter: 0.0, swing: 0.0, velocity: Some(velocity), landed: None, size, turn, spin, bounces: 0 });
         }
         let debris = self.leaves.iter().filter(|l| l.velocity.is_some()).count();
         if debris > MOST_DEBRIS {
@@ -155,9 +174,13 @@ impl Leaves {
                 continue;
             }
             let next = match &mut leaf.velocity {
-                // Debris flies, and falls
+                // Debris flies, and falls, tumbling
                 Some(velocity) => {
                     velocity.z -= 9.8 * vpm * dt;
+                    let angle = leaf.spin.norm() * dt;
+                    if angle > 1e-6 {
+                        leaf.turn = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(leaf.spin), angle) * leaf.turn;
+                    }
                     leaf.position + *velocity * dt
                 }
                 // Leaves flutter side to side as they fall, slower as they swing out
@@ -171,9 +194,30 @@ impl Leaves {
             let (x, y, z) = (next.x.floor() as i64, next.y.floor() as i64, next.z.floor() as i64);
             let surface = water(next.x, next.y);
             if z < 0 || !is_passable(world.material_at(x, y, z)) {
-                // Landed on something solid, lying on top of it
+                // A chunk falling fast bounces, skidding on, and spins less; once it's slow it
+                // comes to rest, lying on top of what it hit
+                if let Some(velocity) = &mut leaf.velocity
+                    && velocity.z < -1.5 * vpm
+                    && leaf.bounces < 2
+                {
+                    let solid_above = !is_passable(world.material_at(x, y, leaf.position.z.floor() as i64));
+                    if !solid_above {
+                        velocity.z *= -BOUNCE;
+                        velocity.x *= SKID;
+                        velocity.y *= SKID;
+                        leaf.spin *= 0.5;
+                        leaf.bounces += 1;
+                        leaf.position.z = (z + 1) as f64;
+                        continue;
+                    }
+                    // Hit the side of something: it stops going that way and drops
+                    velocity.x *= -0.2;
+                    velocity.y *= -0.2;
+                    continue;
+                }
                 leaf.position = Vector3::new(leaf.position.x, leaf.position.y, (z + 1) as f64);
-                leaf.landed = Some(LIE * (0.6 + 0.4 * (leaf.phase.sin() * 0.5 + 0.5)));
+                let rest = if leaf.velocity.is_some() { DEBRIS_LIE } else { LIE };
+                leaf.landed = Some(rest * (0.6 + 0.4 * (leaf.phase.sin() * 0.5 + 0.5)) + random(&mut self.rng) * 3.0 * leaf.velocity.is_some() as u8 as f64);
             } else if next.z < surface {
                 leaf.position = Vector3::new(next.x, next.y, surface);
                 leaf.landed = Some(LIE);
@@ -229,7 +273,7 @@ impl Leaves {
                     let flutter = 2.0 + 2.5 * random(&mut self.rng);
                     let swing = 0.15 + 0.35 * random(&mut self.rng);
                     let phase = random(&mut self.rng) * TAU;
-                    self.leaves.push(Leaf { position, material: kind, phase, flutter, swing, velocity: None, landed: None });
+                    self.leaves.push(Leaf { position, material: kind, phase, flutter, swing, velocity: None, landed: None, size: 1.0, turn: UnitQuaternion::identity(), spin: Vector3::zeros(), bounces: 0 });
                     return;
                 }
                 None if !is_passable(material) => return,
@@ -238,15 +282,22 @@ impl Leaves {
         }
     }
 
-    /// What to draw, `first_model` being where the leaf models are in the buffer of all models
+    /// What to draw, `first_model` being where the leaf models are in the buffer of all models:
+    /// what explosions blew out first, as there's less room for them than for the leaves
     pub fn instances(&self, first_model: u32, vpm: f64) -> Vec<AnimalInstance> {
-        self.leaves
-            .iter()
+        let debris = self.leaves.iter().filter(|l| l.velocity.is_some());
+        let leaves = self.leaves.iter().filter(|l| l.velocity.is_none());
+        debris
+            .chain(leaves)
             .map(|leaf| {
                 // Shrinking away at the end
-                let size = leaf.landed.map_or(1.0, |left| left.clamp(0.0, 1.0));
+                let shrink = leaf.landed.map_or(1.0, |left| left.clamp(0.0, 1.0));
                 let kind = if leaf.landed.is_some() { STILL } else { MOVING };
-                AnimalInstance::new(first_model + leaf.material as u32, leaf.position, UnitQuaternion::identity(), vpm / RES * size, vpm / RES * 1.5, kind)
+                let scale = vpm / RES * leaf.size * shrink;
+                // Turned about its middle rather than the middle of its bottom
+                let middle = leaf.turn * Vector3::new(0.0, 0.0, 0.5 / RES * leaf.size * shrink * vpm);
+                let at = leaf.position + Vector3::new(0.0, 0.0, 0.5 / RES * leaf.size * vpm) - middle;
+                AnimalInstance::new(first_model + leaf.material as u32, at, leaf.turn, scale, vpm / RES * 1.5 * leaf.size, kind)
             })
             .collect()
     }

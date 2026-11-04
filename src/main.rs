@@ -1390,6 +1390,13 @@ impl App {
             kinds.dedup();
             println!("Sites: {}", kinds.iter().map(|k| format!("{k} ×{}", l.sites().iter().filter(|s| s.kind == *k).count())).collect::<Vec<_>>().join(", "));
         }
+        // `--set falls_cave=1` starts in the cave behind the waterfall nearest the middle of the
+        // world, if there's one
+        let falls_cave = setting("falls_cave").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|_| {
+            let middle = [0, 1].map(|i| (origin[i] as f32 + world.size[i] as f32 * 0.5) / world.voxels_per_meter as f32);
+            let off = |s: &&worldgen::Site| (s.position[0] - middle[0]).hypot(s.position[1] - middle[1]);
+            landscape.as_ref()?.sites().iter().filter(|s| s.kind == "waterfall cave").min_by(|a, b| off(a).total_cmp(&off(b))).map(|s| (s.position, s.facing))
+        });
         // `--set camp=1` starts outside the bandits' camp nearest the middle of the world
         let camp = setting("camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|_| {
             let middle = [0, 1].map(|i| (origin[i] as f32 + world.size[i] as f32 * 0.5) / world.voxels_per_meter as f32);
@@ -1445,6 +1452,18 @@ impl App {
             let eye = middle + back + Vector3::new(0.0, 0.0, 1.7 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+        } else if let Some((inside, out)) = falls_cave {
+            // Just inside the cave behind a waterfall, looking out through it
+            let vpm = world.voxels_per_meter as f64;
+            let at = Vector3::new(inside[0] as f64 * vpm - origin[0] as f64, inside[1] as f64 * vpm - origin[1] as f64, inside[2] as f64 * vpm + 1.5 * vpm);
+            // `left` or `right` looks along the way in instead
+            let out = match setting("falls_cave") {
+                Some("left") => Vector3::new(-out[1] as f64, out[0] as f64, -0.1),
+                Some("right") => Vector3::new(out[1] as f64, -out[0] as f64, -0.1),
+                _ => Vector3::new(out[0] as f64, out[1] as f64, -0.15),
+            };
+            camera.position = voxels_to_camera(at, world.size);
+            camera.look_at(voxels_to_camera(at + out * 4.0 * vpm, world.size));
         } else if let Some((fire, gate)) = camp {
             // Out past a way in, looking in at the fire
             let vpm = world.voxels_per_meter as f64;
@@ -2945,7 +2964,7 @@ impl App {
                     };
                     let flat = Vector3::new(look.x, look.y, 0.0).normalize();
                     let side = Vector3::new(-flat.y, flat.x, 0.0);
-                    let at = eye + flat * (7.0 + 10.0 * next()) * vpm + side * (next() - 0.5) * 14.0 * vpm;
+                    let at = eye + flat * (5.0 + 7.0 * next()) * vpm + side * (next() - 0.5) * 10.0 * vpm;
                     let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
                     self.blast(Vector3::new(at.x, at.y, ground), 1.2 + 1.3 * next());
                 }
