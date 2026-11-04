@@ -795,7 +795,10 @@ pub fn generate_terrain(settings: &TerrainSettings, origin: [i64; 2], rivers: &R
 
     let mut heights = Heights::new(settings, origin, [settings.size()[0] as usize; 2], settings.voxels_per_meter);
     let shaped = start.elapsed();
-    let terrain = Terrain::new(settings, &mut heights, rivers);
+    let mut terrain = Terrain::new(settings, &heights);
+    terrain.carve_rivers(&mut heights, rivers);
+    let carved = start.elapsed();
+    terrain.place(&heights, rivers);
     let placed = start.elapsed();
     let mut world = terrain.build_from(&heights, 0, settings.size()[2]);
     let built = start.elapsed();
@@ -806,14 +809,16 @@ pub fn generate_terrain(settings: &TerrainSettings, origin: [i64; 2], rivers: &R
 
     let ms = |d: std::time::Duration| d.as_millis();
     println!(
-        "Generated terrain around ({}, {}): {} bricks stored, {} MB ({:?}: ground {} ms, rivers and what's on the land {} ms, voxels {} ms, grass and water {} ms)",
+        "Generated terrain around ({}, {}): {} bricks stored, {} MB ({:?}: ground {} ms, {} rivers {} ms, what's on the land {} ms, voxels {} ms, grass and water {} ms)",
         origin[0],
         origin[1],
         world.brick_count(),
         world.bricks.len() * 4 / (1024 * 1024),
         start.elapsed(),
         ms(shaped),
-        ms(placed - shaped),
+        terrain.rivers.len(),
+        ms(carved - shaped),
+        ms(placed - carved),
         ms(built - placed),
         ms(start.elapsed() - built)
     );
@@ -1649,12 +1654,14 @@ struct Heights {
     ground: Vec<f32>,
     /// Height of river water in meters, NEG_INFINITY where there's none
     river: Vec<f32>,
-    /// How far each column is from the nearest river point reaching it, in meters
-    river_distance: Vec<f32>,
-    /// How low that point cuts the column, in meters: the bed of the river, or its bank.
-    /// INFINITY where no river reaches.
-    carved: Vec<f32>,
 }
+
+/// How far rivers' banks slope back up to the land around, in meters
+const RIVER_BANK: f32 = 2.5;
+/// How much distances from a river wobble, in meters, so the edges of its pools are ragged
+const RIVER_WOBBLE: f32 = 0.7;
+/// How many points along a river are measured from together, in Heights::carve()
+const RIVER_RUN: usize = 8;
 
 impl Heights {
     fn new(settings: &TerrainSettings, origin: [i64; 2], size: [usize; 2], voxels_per_meter: u32) -> Self {
@@ -1684,8 +1691,6 @@ impl Heights {
             size,
             ground,
             river: vec![f32::NEG_INFINITY; size[0] * size[1]],
-            river_distance: vec![f32::INFINITY; size[0] * size[1]],
-            carved: vec![f32::INFINITY; size[0] * size[1]],
         }
     }
 
@@ -1697,70 +1702,131 @@ impl Heights {
     }
 
 
-    /// Cuts a river's channel and banks into the ground. Call settle_beds() once every river is in.
-    fn carve(&mut self, path: &[RiverPoint]) {
+    /// Cuts the rivers' channels and banks into the ground.
+    ///
+    /// Each column is shaped by its nearest river point alone, so where a river drops over a
+    /// waterfall there's a sheer edge, with the banks of the pool above still standing right up to
+    /// it. Distances wobble differently for each pool, so that edge is ragged rather than a
+    /// straight line. Beds are laid in even where the ground was lower, so the lips of waterfalls
+    /// hold back the pools behind them.
+    fn carve(&mut self, paths: &[Arc<Vec<RiverPoint>>]) {
+        if paths.is_empty() {
+            return;
+        }
         let vpm = self.voxels_per_meter;
-        // Banks slope back up to the land around
-        let bank = 2.5;
-        let [sx, sy] = self.size.map(|n| n as i64);
+        let (origin, seed) = (self.origin, self.seed);
+        let [sx, sy] = self.size;
+        let pool_seed = |p: &RiverPoint| seed ^ hash((p.surface * 4.0) as i32 as u32);
 
-        for p in path {
-            let reach = p.half_width + bank;
-            // Shallow at the lip of a waterfall, so the pool behind it holds its water
-            let depth = if p.lip { 0.1 } else { 0.6 + p.half_width * 0.25 };
-            let lo = [(p.x - reach) * vpm, (p.y - reach) * vpm].map(|v| v.floor() as i64);
-            let hi = [(p.x + reach) * vpm, (p.y + reach) * vpm].map(|v| v.ceil() as i64);
-            let (x0, x1) = ((lo[0] - self.origin[0]).max(0), (hi[0] - self.origin[0]).min(sx - 1));
-            let (y0, y1) = ((lo[1] - self.origin[1]).max(0), (hi[1] - self.origin[1]).min(sy - 1));
-            for cy in y0..=y1 {
-                for cx in x0..=x1 {
-                    let (xm, ym) = (
-                        (self.origin[0] + cx) as f32 / vpm,
-                        (self.origin[1] + cy) as f32 / vpm,
-                    );
-                    // Each column is shaped by its nearest point alone, so where the river drops
-                    // over a waterfall there's a sheer edge, with the banks of the pool above
-                    // still standing right up to it. Distances wobble differently for each pool,
-                    // so that edge is ragged rather than a straight line.
-                    let pool = (p.surface * 4.0) as i32 as u32;
-                    let d = (xm - p.x).hypot(ym - p.y) + 0.7 * fbm(xm / 1.5, ym / 1.5, 2, self.seed ^ hash(pool));
-                    if d > reach {
-                        continue;
-                    }
-                    let i = (cx + cy * sx) as usize;
-                    if d >= self.river_distance[i] {
-                        continue;
-                    }
-                    self.river_distance[i] = d;
-                    if d < p.half_width {
-                        let t = (d / p.half_width).max(0.0);
-                        self.river[i] = p.surface;
-                        self.carved[i] = p.surface - depth * (1.0 - t * t).max(if p.lip { 1.0 } else { 0.0 });
-                    } else {
-                        // Rocky banks: their steepness wanders, with knobs and hollows in them, but
-                        // they always stand clear of the water so it doesn't spill out
-                        let out = d - p.half_width;
-                        let wander = fbm(xm / 4.0, ym / 4.0, 3, self.seed.wrapping_add(21));
-                        let knobs = fbm(xm / 1.2, ym / 1.2, 2, self.seed.wrapping_add(22));
-                        let rough = (knobs * 0.5 + wander * 0.6) * out.min(1.0);
-                        self.river[i] = f32::NEG_INFINITY;
-                        self.carved[i] = (p.surface + out * 0.9 * (1.0 + 0.5 * wander) + rough).max(p.surface + 0.15);
-                    }
+        // A few points next to each other in the same pool, so the same wobble, and the columns
+        // they reach
+        struct Run {
+            river: usize,
+            points: std::ops::Range<usize>,
+            seed: u32,
+            lo: [usize; 2],
+            hi: [usize; 2],
+        }
+        let mut runs = Vec::new();
+        for (river, path) in paths.iter().enumerate() {
+            let mut start = 0;
+            while start < path.len() {
+                let seed = pool_seed(&path[start]);
+                let mut end = start + 1;
+                while end < path.len() && end - start < RIVER_RUN && pool_seed(&path[end]) == seed {
+                    end += 1;
                 }
+                let run = &path[start..end];
+                let reach = run.iter().map(|p| p.half_width).fold(0.0, f32::max) + RIVER_BANK + RIVER_WOBBLE;
+                let lo = [0, 1].map(|a| run.iter().map(|p| if a == 0 { p.x } else { p.y }).fold(f32::MAX, f32::min) - reach);
+                let hi = [0, 1].map(|a| run.iter().map(|p| if a == 0 { p.x } else { p.y }).fold(f32::MIN, f32::max) + reach);
+                let lo = [0, 1].map(|a| ((lo[a] * vpm).floor() as i64 - origin[a]).max(0) as usize);
+                let hi = [0, 1].map(|a| ((hi[a] * vpm).ceil() as i64 - origin[a] + 1).clamp(0, self.size[a] as i64) as usize);
+                if lo[0] < hi[0] && lo[1] < hi[1] {
+                    runs.push(Run { river, points: start..end, seed, lo, hi });
+                }
+                start = end;
             }
         }
-    }
 
-    /// Cuts the beds and banks of all the rivers into the ground. Beds are laid in even where the
-    /// ground was lower, so the lips of waterfalls hold back the pools behind them.
-    fn settle_beds(&mut self) {
-        for i in 0..self.ground.len() {
-            if self.river[i].is_finite() {
-                self.ground[i] = self.carved[i];
-            } else {
-                self.ground[i] = self.ground[i].min(self.carved[i]);
+        // First the nearest point to each column, in rows split across threads: how far it is,
+        // and which it is
+        const NONE: (u32, u32) = (u32::MAX, 0);
+        let mut distance = vec![f32::INFINITY; sx * sy];
+        let mut nearest = vec![NONE; sx * sy];
+        let rows = sy.div_ceil(threads()).max(1);
+        thread::scope(|s| {
+            for (band, (distance, nearest)) in distance.chunks_mut(rows * sx).zip(nearest.chunks_mut(rows * sx)).enumerate() {
+                let runs = &runs;
+                s.spawn(move || {
+                    let (first, last) = (band * rows, band * rows + distance.len() / sx);
+                    let mut plain = [0.0f32; RIVER_RUN];
+                    for run in runs.iter().filter(|r| r.lo[1] < last && r.hi[1] > first) {
+                        let points = &paths[run.river][run.points.clone()];
+                        let reach = points.iter().map(|p| p.half_width).fold(0.0, f32::max) + RIVER_BANK;
+                        for cy in run.lo[1].max(first)..run.hi[1].min(last) {
+                            let ym = (origin[1] + cy as i64) as f32 / vpm;
+                            for cx in run.lo[0]..run.hi[0] {
+                                let xm = (origin[0] + cx as i64) as f32 / vpm;
+                                let mut closest = f32::INFINITY;
+                                for (d, p) in plain.iter_mut().zip(points) {
+                                    *d = ((xm - p.x) * (xm - p.x) + (ym - p.y) * (ym - p.y)).sqrt();
+                                    closest = closest.min(*d);
+                                }
+                                // However the distance wobbles, too far to reach, or to be nearer
+                                // than a point already found
+                                let i = cx + (cy - first) * sx;
+                                if closest - RIVER_WOBBLE > reach || closest - RIVER_WOBBLE >= distance[i] {
+                                    continue;
+                                }
+                                let wobble = RIVER_WOBBLE * fbm(xm / 1.5, ym / 1.5, 2, run.seed);
+                                for (k, (&d, p)) in plain.iter().zip(points).enumerate() {
+                                    let d = d + wobble;
+                                    if d <= p.half_width + RIVER_BANK && d < distance[i] {
+                                        distance[i] = d;
+                                        nearest[i] = (run.river as u32, (run.points.start + k) as u32);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
             }
-        }
+        });
+
+        // Then each column shaped by its nearest point
+        thread::scope(|s| {
+            let chunks = self.ground.chunks_mut(rows * sx).zip(self.river.chunks_mut(rows * sx));
+            for (band, (ground, river)) in chunks.enumerate() {
+                let (distance, nearest) = (&distance[band * rows * sx..], &nearest[band * rows * sx..]);
+                s.spawn(move || {
+                    for (i, (g, r)) in ground.iter_mut().zip(river.iter_mut()).enumerate() {
+                        if nearest[i] == NONE {
+                            continue;
+                        }
+                        let (d, p) = (distance[i], &paths[nearest[i].0 as usize][nearest[i].1 as usize]);
+                        if d < p.half_width {
+                            // Shallow at the lip of a waterfall, so the pool behind it holds its water
+                            let depth = if p.lip { 0.1 } else { 0.6 + p.half_width * 0.25 };
+                            let t = (d / p.half_width).max(0.0);
+                            *r = p.surface;
+                            *g = p.surface - depth * (1.0 - t * t).max(if p.lip { 1.0 } else { 0.0 });
+                        } else {
+                            // Rocky banks: their steepness wanders, with knobs and hollows in
+                            // them, but they always stand clear of the water so it doesn't spill out
+                            let j = band * rows * sx + i;
+                            let xm = (origin[0] + (j % sx) as i64) as f32 / vpm;
+                            let ym = (origin[1] + (j / sx) as i64) as f32 / vpm;
+                            let out = d - p.half_width;
+                            let wander = fbm(xm / 4.0, ym / 4.0, 3, seed.wrapping_add(21));
+                            let knobs = fbm(xm / 1.2, ym / 1.2, 2, seed.wrapping_add(22));
+                            let rough = (knobs * 0.5 + wander * 0.6) * out.min(1.0);
+                            *g = g.min((p.surface + out * 0.9 * (1.0 + 0.5 * wander) + rough).max(p.surface + 0.15));
+                        }
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -1841,7 +1907,7 @@ pub struct RiverCache {
     cells: Mutex<HashMap<(i32, i32), Option<Arc<Vec<RiverPoint>>>>>,
 }
 
-const RIVER_CELL: f32 = 200.0;
+const RIVER_CELL: f32 = 140.0;
 /// The most points a river runs to, half a meter apart
 const RIVER_STEPS: usize = 1200;
 /// How much water a river's spring gives, in cubic meters a second, and how wide it is in meters
@@ -1849,6 +1915,22 @@ const RIVER_FLOW: f32 = 6.0;
 const RIVER_SPRING_RADIUS: f32 = 2.0;
 /// And how much more each waterfall's fed just over its lip
 const WATERFALL_FLOW: f32 = 4.0;
+/// How wide a stream gets, half across in meters, and how many of them grow into great wide
+/// rivers, and how much wider those grow, over how many meters
+const STREAM_HALF_WIDTH: f32 = 3.0;
+const GREAT_RIVERS: f32 = 0.4;
+const GREAT_RIVER_WIDENS: [f32; 2] = [2.5, 5.5];
+const GREAT_RIVER_GROWS_M: f32 = 150.0;
+/// A river that's come less than a few meters in this many steps is going round in a hollow. It
+/// spills out over the lowest point this far round it, at most so many times.
+const RIVER_STUCK_STEPS: usize = 40;
+const RIVER_RIM: f32 = 30.0;
+const RIVER_SPILLS: usize = 4;
+
+/// How much more water a river or waterfall `half_width` across needs than a stream, to stay full
+fn river_scale(half_width: f32) -> f32 {
+    (half_width / STREAM_HALF_WIDTH).max(1.0)
+}
 
 /// Little things inside buildings, drawn like animals, see src\animals.rs
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1933,12 +2015,12 @@ pub struct Terrain {
 const OBJECT_CELL: f32 = 8.0;
 
 impl Terrain {
-    /// `heights` covers the piece of the landscape to build, and gets the rivers carved into it.
-    fn new(settings: &TerrainSettings, heights: &mut Heights, rivers: &RiverCache) -> Self {
+    /// The piece of the landscape `heights` covers, with nothing in it yet
+    fn new(settings: &TerrainSettings, heights: &Heights) -> Self {
         let vpm = heights.voxels_per_meter;
         let lo = [heights.origin[0] as f32 / vpm, heights.origin[1] as f32 / vpm];
         let hi = [lo[0] + heights.size[0] as f32 / vpm, lo[1] + heights.size[1] as f32 / vpm];
-        let mut terrain = Terrain {
+        Terrain {
             settings: *settings,
             lo,
             hi,
@@ -1947,41 +2029,43 @@ impl Terrain {
             object_cells: Vec::new(),
             cells_across: [0; 2],
             features: Features::default(),
-        };
-
-        terrain.rivers = terrain.rivers_in(rivers);
-        for path in &terrain.rivers {
-            heights.carve(path);
         }
-        heights.settle_beds();
+    }
 
-        let (objects, features) = terrain.place_objects(heights, rivers);
-        terrain.objects = objects;
-        terrain.features = features;
+    /// Cuts the rivers running through this piece into `heights`
+    fn carve_rivers(&mut self, heights: &mut Heights, rivers: &RiverCache) {
+        self.rivers = self.rivers_in(rivers);
+        heights.carve(&self.rivers);
+    }
+
+    /// Puts everything that's out on the land, or under it, once the rivers are in
+    fn place(&mut self, heights: &Heights, rivers: &RiverCache) {
+        let (lo, hi) = (self.lo, self.hi);
+        let (objects, features) = self.place_objects(heights, rivers);
+        self.objects = objects;
+        self.features = features;
 
         let cells = [0, 1].map(|i| ((hi[i] - lo[i]) / OBJECT_CELL).ceil() as usize);
         let mut object_cells = vec![Vec::new(); cells[0] * cells[1]];
         let cell = |v: f32, axis: usize| (((v - lo[axis]) / OBJECT_CELL).floor().max(0.0) as usize).min(cells[axis] - 1);
-        for (i, object) in terrain.objects.iter().enumerate() {
+        for (i, object) in self.objects.iter().enumerate() {
             for cy in cell(object.min[1], 1)..=cell(object.max[1], 1) {
                 for cx in cell(object.min[0], 0)..=cell(object.max[0], 0) {
                     object_cells[cx + cy * cells[0]].push(i as u32);
                 }
             }
         }
-        terrain.object_cells = object_cells;
-        terrain.cells_across = cells;
-
-        terrain
+        self.object_cells = object_cells;
+        self.cells_across = cells;
     }
 
     fn inside(&self, x: f32, y: f32) -> bool {
         x >= self.lo[0] && y >= self.lo[1] && x < self.hi[0] && y < self.hi[1]
     }
 
-    /// Where rivers pour over waterfalls in this piece: the lip of each in meters, and which way
-    /// the river flows there
-    pub fn waterfalls(&self) -> Vec<([f32; 3], [f32; 2])> {
+    /// Where rivers pour over waterfalls in this piece: the lip of each in meters, which way the
+    /// river flows there, and how wide it is, half across
+    pub fn waterfalls(&self) -> Vec<([f32; 3], [f32; 2], f32)> {
         let mut falls = Vec::new();
         for path in &self.rivers {
             for pair in path.windows(2) {
@@ -1989,11 +2073,47 @@ impl Terrain {
                 if a.surface - b.surface > 1.0 && self.inside(a.x, a.y) {
                     let (dx, dy) = (b.x - a.x, b.y - a.y);
                     let length = dx.hypot(dy).max(1e-6);
-                    falls.push(([a.x, a.y, a.surface], [dx / length, dy / length]));
+                    falls.push(([a.x, a.y, a.surface], [dx / length, dy / length], a.half_width));
                 }
             }
         }
         falls
+    }
+
+    /// Where the widest river within half a kilometer of `near` is at its widest, inland, in
+    /// meters. For trying them out.
+    pub fn widest_river_near(&self, near: [f32; 2], cache: &RiverCache) -> Option<[f32; 2]> {
+        let (inland, reach) = (sea_level_m(&self.settings) + 2.0, 500.0);
+        let mut widest: Option<(f32, [f32; 2])> = None;
+        for river in self.rivers_near(cache, [near[0] - reach, near[1] - reach], [near[0] + reach, near[1] + reach]) {
+            for p in river.iter() {
+                let close = (p.x - near[0]).abs() < reach && (p.y - near[1]).abs() < reach;
+                if close && p.surface > inland && widest.is_none_or(|(w, _)| p.half_width > w) {
+                    widest = Some((p.half_width, [p.x, p.y]));
+                }
+            }
+        }
+        widest.map(|(_, at)| at)
+    }
+
+    /// Where a river in this piece is at its widest, away from waterfalls and the sea: the middle
+    /// of its surface in meters, which way it flows, and how wide it is, half across. For trying
+    /// them out.
+    pub fn widest_river(&self) -> Option<([f32; 3], [f32; 2], f32)> {
+        let inland = sea_level_m(&self.settings) + 2.0;
+        let mut widest: Option<([f32; 3], [f32; 2], f32)> = None;
+        for path in &self.rivers {
+            for i in 8..path.len().saturating_sub(8) {
+                let (a, b) = (&path[i - 8], &path[i + 8]);
+                let p = &path[i];
+                if self.inside(p.x, p.y) && p.surface > inland && a.surface == b.surface && widest.is_none_or(|w| p.half_width > w.2) {
+                    let (dx, dy) = (b.x - a.x, b.y - a.y);
+                    let length = dx.hypot(dy).max(1e-6);
+                    widest = Some(([p.x, p.y, p.surface], [dx / length, dy / length], p.half_width));
+                }
+            }
+        }
+        widest
     }
 
     /// Where water comes from in this piece: x, y, cubic meters a second and radius, in meters.
@@ -2005,9 +2125,12 @@ impl Terrain {
             .rivers
             .iter()
             .filter_map(|path| path.iter().find(|p| self.inside(p.x, p.y)))
-            .map(|p| [p.x, p.y, RIVER_FLOW, RIVER_SPRING_RADIUS])
+            .map(|p| [p.x, p.y, RIVER_FLOW * river_scale(p.half_width), RIVER_SPRING_RADIUS * river_scale(p.half_width)])
             .collect();
-        springs.extend(self.waterfalls().into_iter().map(|(lip, flow)| [lip[0] - flow[0] * 1.5, lip[1] - flow[1] * 1.5, WATERFALL_FLOW, 1.2]));
+        springs.extend(self.waterfalls().into_iter().map(|(lip, flow, wide)| {
+            let more = river_scale(wide);
+            [lip[0] - flow[0] * 1.5, lip[1] - flow[1] * 1.5, WATERFALL_FLOW * more, 1.2 * more]
+        }));
         springs.extend_from_slice(&self.features.springs);
         springs
     }
@@ -2085,10 +2208,7 @@ impl Terrain {
     /// see src\water.rs.
     pub fn build(&self, origin: [i64; 3], size: [u32; 3], voxels_per_meter: u32) -> World {
         let mut heights = Heights::new(&self.settings, [origin[0], origin[1]], [size[0] as usize, size[1] as usize], voxels_per_meter);
-        for path in &self.rivers {
-            heights.carve(path);
-        }
-        heights.settle_beds();
+        heights.carve(&self.rivers);
         let mut world = self.build_from(&heights, origin[2], size[2]);
         world.sea_level = None;
         world
@@ -2610,10 +2730,15 @@ impl Terrain {
                 (height_at(&self.settings, x, y), x, y)
             })
             .max_by(|a, b| a.0.total_cmp(&b.0))?;
-        (h > sea_level_m(&self.settings) + 10.0).then(|| self.trace_river(x, y, hash(r)))
+        // Most stay streams, some grow into great rivers
+        let g = hash3(r, 0xb16, seed);
+        let widens = if unit(g) < GREAT_RIVERS { GREAT_RIVER_WIDENS[0] + (GREAT_RIVER_WIDENS[1] - GREAT_RIVER_WIDENS[0]) * unit(hash(g)) } else { 0.0 };
+        (h > sea_level_m(&self.settings) + 10.0).then(|| self.trace_river(x, y, hash(r), widens))
     }
 
-    fn trace_river(&self, x: f32, y: f32, seed: u32) -> Vec<RiverPoint> {
+    /// The course of a river from its spring at `x`, `y` down to the sea, `widens` meters wider on
+    /// each side once it's run far enough
+    fn trace_river(&self, x: f32, y: f32, seed: u32, widens: f32) -> Vec<RiverPoint> {
         let sea_level = sea_level_m(&self.settings);
         let step = 0.5;
         let probe = 3.0;
@@ -2627,22 +2752,50 @@ impl Terrain {
         // a gorge into the ground below it, which the ground has to fall into before the next one.
         let mut level = surface;
         let mut points: Vec<RiverPoint> = Vec::new();
+        // How many times it's filled a hollow and spilled out of it, and how much further it keeps
+        // straight on through the hollow's rim
+        let (mut spills, mut straight) = (0, 0);
 
         for i in 0..RIVER_STEPS {
-            // Downhill, wandering a little so the river isn't straight,
-            // with momentum so it doesn't zigzag and can cut through small bumps
-            let gx = height(x + probe, y) - height(x - probe, y);
-            let gy = height(x, y + probe) - height(x, y - probe);
-            let wander = fbm(x / 25.0, y / 25.0, 2, seed);
-            let (sin, cos) = wander.sin_cos();
-            let downhill = [-gx * cos + gy * sin, -gx * sin - gy * cos];
-            let length = downhill[0].hypot(downhill[1]);
-            if length > 0.0 {
-                let w = if i == 0 { 1.0 } else { 0.2 };
-                dir = [dir[0] * (1.0 - w) + downhill[0] / length * w, dir[1] * (1.0 - w) + downhill[1] / length * w];
+            // Going round and round in a hollow: it fills up into a pond, and spills over the
+            // lowest point of the hollow's rim, cutting through it. After a few, the river just
+            // ends in its pond.
+            if straight == 0 && i >= RIVER_STUCK_STEPS && i % 10 == 0 {
+                let back = &points[i - RIVER_STUCK_STEPS];
+                if (x - back.x).hypot(y - back.y) < RIVER_STUCK_STEPS as f32 * step * 0.4 {
+                    if spills == RIVER_SPILLS {
+                        break;
+                    }
+                    spills += 1;
+                    let rim = (0..24)
+                        .map(|k| k as f32 * TAU / 24.0)
+                        .min_by(|&a, &b| height(x + RIVER_RIM * a.cos(), y + RIVER_RIM * a.sin()).total_cmp(&height(x + RIVER_RIM * b.cos(), y + RIVER_RIM * b.sin())))
+                        .unwrap_or(0.0);
+                    dir = [rim.cos(), rim.sin()];
+                    straight = (RIVER_RIM / step) as usize;
+                }
             }
-            let length = dir[0].hypot(dir[1]);
-            dir = if length > 0.0 { [dir[0] / length, dir[1] / length] } else { [1.0, 0.0] };
+            if straight > 0 {
+                // Bending gently as it goes, so it isn't a canal
+                straight -= 1;
+                let (sin, cos) = (0.05 * fbm(x / 12.0, y / 12.0, 2, seed ^ 0x5b11)).sin_cos();
+                dir = [dir[0] * cos - dir[1] * sin, dir[0] * sin + dir[1] * cos];
+            } else {
+                // Downhill, wandering a little so the river isn't straight,
+                // with momentum so it doesn't zigzag and can cut through small bumps
+                let gx = height(x + probe, y) - height(x - probe, y);
+                let gy = height(x, y + probe) - height(x, y - probe);
+                let wander = fbm(x / 25.0, y / 25.0, 2, seed);
+                let (sin, cos) = wander.sin_cos();
+                let downhill = [-gx * cos + gy * sin, -gx * sin - gy * cos];
+                let length = downhill[0].hypot(downhill[1]);
+                if length > 0.0 {
+                    let w = if i == 0 { 1.0 } else { 0.2 };
+                    dir = [dir[0] * (1.0 - w) + downhill[0] / length * w, dir[1] * (1.0 - w) + downhill[1] / length * w];
+                }
+                let length = dir[0].hypot(dir[1]);
+                dir = if length > 0.0 { [dir[0] / length, dir[1] / length] } else { [1.0, 0.0] };
+            }
 
             x += dir[0] * step;
             y += dir[1] * step;
@@ -2661,13 +2814,15 @@ impl Terrain {
                 }
             }
 
-            // Wider the further it has run
-            let progress = (i as f32 * step / 60.0).min(1.0);
+            // Wider the further it has run, a great river much wider
+            let run = i as f32 * step;
+            let stream = 1.0 + (STREAM_HALF_WIDTH - 1.0) * (run / 60.0).min(1.0);
+            let great = widens * smoothstep(0.0, 1.0, run / GREAT_RIVER_GROWS_M);
             points.push(RiverPoint {
                 x,
                 y,
                 surface: level,
-                half_width: 1.0 + 2.0 * progress,
+                half_width: stream + great,
                 lip: false,
             });
 
@@ -2941,10 +3096,11 @@ impl Terrain {
             }
         }
 
-        // Aztec gateways standing over waterfalls in the jungle, for the river to pour through
-        for (lip, flow) in self.waterfalls() {
+        // Aztec gateways standing over waterfalls in the jungle, for the river to pour through, if
+        // it isn't too wide to
+        for (lip, flow, wide) in self.waterfalls() {
             let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, seed ^ 0x9a7e);
-            if unit(r) > 0.5 || climate(&self.settings, lip[0], lip[1]).jungle < 0.7 {
+            if unit(r) > 0.5 || wide > STREAM_HALF_WIDTH + 0.5 || climate(&self.settings, lip[0], lip[1]).jungle < 0.7 {
                 continue;
             }
             let mut rng = Rng(hash(r));
@@ -3600,7 +3756,7 @@ impl Terrain {
     fn waterfall_caves(&self, features: &mut Features) -> Vec<Object> {
         let sea_level = sea_level_m(&self.settings);
         let mut objects = Vec::new();
-        for (lip, flow) in self.waterfalls() {
+        for (lip, flow, wide) in self.waterfalls() {
             let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, self.settings.seed ^ 0xfa11);
             if unit(r) > 0.45 {
                 continue;
@@ -3610,7 +3766,12 @@ impl Terrain {
             // Its floor a little over the pool the water falls into, so none of it runs in
             let floor = pool + 0.5;
             let side = if rng.next() < 0.5 { [-flow[1], flow[0]] } else { [flow[1], -flow[0]] };
-            let at = |along: f32, out: f32, up: f32| [lip[0] + flow[0] * along + side[0] * out, lip[1] + flow[1] * along + side[1] * out, floor + up];
+            // Out from under a wider river, the further it is to its bank
+            let wider = (wide - STREAM_HALF_WIDTH).max(0.0);
+            let at = |along: f32, out: f32, up: f32| {
+                let out = if out > 0.0 { out + wider } else { out };
+                [lip[0] + flow[0] * along + side[0] * out, lip[1] + flow[1] * along + side[1] * out, floor + up]
+            };
             // Low under the lip, where there's the least rock between it and the river
             let radius = 0.95;
             let path = [at(0.9, 0.0, radius), at(-0.4, 0.0, radius), at(-0.4, 4.0, radius), at(-0.4, 7.5, radius), at(-3.5, 9.5, radius + 0.1)];
@@ -5182,4 +5343,84 @@ fn ridged(x: f32, y: f32, octaves: u32, seed: u32) -> f32 {
         frequency *= 2.0;
     }
     sum / norm
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wherever the world's built, out on the land, a river runs through most of it: counts the
+    /// squares as big as a world, over a couple of kilometers, that have one
+    #[test]
+    fn rivers_run_through_most_of_the_land() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let (terrain, _) = generate_terrain(&settings, [0, 0], &RiverCache::default());
+        let cache = RiverCache::default();
+        let sea = sea_level_m(&settings);
+        let (side, n) = (224.0, 10);
+        let (mut land, mut with) = (0, 0);
+        for j in 0..n {
+            for i in 0..n {
+                let lo = [(i - n / 2) as f32 * side, (j - n / 2) as f32 * side];
+                let hi = [lo[0] + side, lo[1] + side];
+                let dry = (0..16).filter(|k| height_at(&settings, lo[0] + side * ((k % 4) as f32 + 0.5) / 4.0, lo[1] + side * ((k / 4) as f32 + 0.5) / 4.0) > sea).count();
+                if dry < 8 {
+                    continue;
+                }
+                land += 1;
+                let rivers = terrain.rivers_near(&cache, lo, hi);
+                if rivers.iter().any(|r| r.iter().any(|p| p.x > lo[0] && p.y > lo[1] && p.x < hi[0] && p.y < hi[1])) {
+                    with += 1;
+                }
+            }
+        }
+        let rivers: Vec<_> = cache.cells.lock().unwrap().values().flatten().cloned().collect();
+        let long = rivers.iter().map(|r| r.len() as f32 * 0.5).sum::<f32>() / rivers.len().max(1) as f32;
+        println!("{with} of {land} squares of land have a river; {} rivers, {long:.0} m long on average", rivers.len());
+        assert!(land > 0 && with * 4 >= land * 3);
+    }
+
+    /// A map of two kilometers of the landscape, a pixel to a meter, with its rivers bright blue:
+    /// `cargo test --release river_map -- --ignored`, saved where RIVER_MAP says or in the temp folder
+    #[test]
+    #[ignore]
+    fn river_map() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 1, seed: 1, grass_tufts: false };
+        let side = 2000;
+        let origin = [-(side as i64) / 2, -(side as i64) / 2];
+        let mut heights = Heights::new(&settings, origin, [side, side], 1);
+        let mut terrain = Terrain::new(&settings, &heights);
+        terrain.carve_rivers(&mut heights, &RiverCache::default());
+        let sea = sea_level_m(&settings);
+        let map = image::RgbImage::from_fn(side as u32, side as u32, |x, y| {
+            let i = x as usize + (side - 1 - y as usize) * side;
+            let g = heights.ground[i];
+            let shade = |c: [f32; 3], k: f32| image::Rgb(c.map(|v| (v * k).clamp(0.0, 255.0) as u8));
+            if heights.river[i].is_finite() {
+                image::Rgb([60, 170, 255])
+            } else if g < sea {
+                shade([20.0, 50.0, 110.0], 0.6 + 0.4 * (g / sea))
+            } else {
+                let up = ((g - sea) / (settings.height_m as f32 - sea)).clamp(0.0, 1.0);
+                let land = [90.0 + 150.0 * up, 140.0 + 100.0 * up, 70.0 + 170.0 * up];
+                shade(land, 0.75 + 0.25 * up)
+            }
+        });
+        let path = std::env::var("RIVER_MAP").map_or(std::env::temp_dir().join("river_map.png"), std::path::PathBuf::from);
+        map.save(&path).unwrap();
+        println!("{} rivers, map in {}", terrain.rivers.len(), path.display());
+    }
+
+    /// How long pieces of the world take to build, as big and as detailed as the game builds them:
+    /// `cargo test --release generating -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn generating_takes() {
+        let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
+        let cache = RiverCache::default();
+        let side = 224 * 16;
+        for origin in [[0, 0], [side, 0], [0, side], [-side, -side], [2 * side, side]] {
+            generate_terrain(&settings, origin, &cache);
+        }
+    }
 }

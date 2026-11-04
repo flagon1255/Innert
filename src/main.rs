@@ -1366,11 +1366,17 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_town(near, underground, kind))
         });
+        // `--set river=1` starts over the widest river within half a kilometer
+        let river_at = setting("river").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none()).and_then(|_| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.widest_river_near([112.0, 112.0], &rivers))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = dungeon
             .map(|d| [d[0], d[1]])
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
             .or(town.map(|(square, _)| [square[0], square[1]]))
+            .or(river_at)
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
@@ -1395,6 +1401,8 @@ impl App {
             let off = |s: &&worldgen::Site| (s.position[0] - middle[0]).hypot(s.position[1] - middle[1]);
             landscape.as_ref()?.sites().iter().filter(|s| s.kind == "waterfall cave").min_by(|a, b| off(a).total_cmp(&off(b))).map(|s| (s.position, s.facing))
         });
+        // Over that river, looking down it
+        let river = river_at.and_then(|_| landscape.as_ref()?.widest_river());
         // `--set camp=1` starts outside the bandits' camp nearest the middle of the world
         let camp = setting("camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|_| {
             let middle = [0, 1].map(|i| (origin[i] as f32 + world.size[i] as f32 * 0.5) / world.voxels_per_meter as f32);
@@ -1462,6 +1470,17 @@ impl App {
             };
             camera.position = voxels_to_camera(at, world.size);
             camera.look_at(voxels_to_camera(at + out * 4.0 * vpm, world.size));
+        } else if let Some((at, flow, wide)) = river {
+            let vpm = world.voxels_per_meter as f64;
+            let middle = Vector3::new(at[0] as f64 * vpm - origin[0] as f64, at[1] as f64 * vpm - origin[1] as f64, at[2] as f64 * vpm);
+            let flow = Vector3::new(flow[0] as f64, flow[1] as f64, 0.0);
+            println!("The widest river about is {:.1} m across", wide * 2.0);
+            // `river=high` from high over it, to see where it runs
+            let (up, back) = if setting("river") == Some("high") { (60.0, 40.0) } else { (12.0, 16.0) };
+            let mut eye = middle + (Vector3::new(0.0, 0.0, up) - flow * back) * vpm;
+            eye.z = eye.z.min(world.size[2] as f64 - 2.0 * vpm);
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(middle + flow * 16.0 * vpm, world.size));
         } else if let Some((fire, gate)) = camp {
             // Out past a way in, looking in at the fire
             let vpm = world.voxels_per_meter as f64;
@@ -2401,7 +2420,7 @@ impl App {
         if falls.is_empty() {
             return;
         }
-        let (top, flow) = falls[self.waterfall_index % falls.len()];
+        let (top, flow, _) = falls[self.waterfall_index % falls.len()];
         self.waterfall_index += 1;
         let vpm = self.world.voxels_per_meter as f64;
         let target = Vector3::new(top[0] as f64, top[1] as f64, top[2] as f64 - 1.5) * vpm;
