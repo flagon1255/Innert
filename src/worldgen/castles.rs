@@ -151,7 +151,8 @@ pub struct Royal {
     pub middle: [f32; 3],
     pub gate: [f32; 3],
     pub out: [f32; 2],
-    /// The top of the keep's great tower, to look at
+    /// In the courtyard by the front range, and the top of the keep's great tower, to look up at
+    pub court: [f32; 3],
     pub tower: [f32; 3],
     /// Just inside the door of the great hall, and the top of the stair at its far end
     pub hall: [f32; 3],
@@ -285,12 +286,12 @@ fn pave(s: &mut Vec<Shape>, lo: [f32; 2], hi: [f32; 2], low: f32, high: f32, sto
 
 impl Terrain {
     /// The royal castles reaching into this piece of the landscape, built, and where each castle
-    /// near enough for a ravine reaching in here to run into it is, x0, y0, x1, y1 in meters, so
-    /// nothing else is built there
+    /// near enough for a ravine or a cave reaching in here to run into it is, x0, y0, x1, y1 in
+    /// meters, so nothing else is built there
     pub(super) fn castles(&self, cache: &RiverCache, features: &mut Features) -> (Vec<Object>, Vec<[f32; 4]>) {
         let (lo, hi) = (self.lo, self.hi);
         let piece = [lo[0], lo[1], hi[0], hi[1]];
-        let near = grown(piece, RAVINE_REACH + RAVINE_CELL + 4.0);
+        let near = grown(piece, (RAVINE_REACH + RAVINE_CELL).max(2.0 * CAVE_REACH + CAVE_CELL) + 4.0);
         let first = [0, 1].map(|i| ((near[i] - CASTLE_REACH) / CASTLE_CELL).floor() as i32);
         let last = [0, 1].map(|i| ((near[i + 2] + CASTLE_REACH) / CASTLE_CELL).floor() as i32);
         let (mut objects, mut rects) = (Vec::new(), Vec::new());
@@ -359,10 +360,9 @@ impl Terrain {
             })
             .collect();
         spots.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut caves = HashMap::new();
-        spots.iter().take(8).find_map(|&(_, p, seed)| {
+        spots.iter().take(16).find_map(|&(_, p, seed)| {
             let castle = self.lay_out_castle(p, seed)?;
-            self.clear_for_castle(&castle, cache, &mut caves).then_some(castle)
+            self.clear_for_castle(&castle, cache).then_some(castle)
         })
     }
 
@@ -424,28 +424,31 @@ impl Terrain {
                 g(a).total_cmp(&g(b))
             })
             .unwrap();
-        let keep_depth = rng.range(22.0, 24.0);
-        let keep_half = rng.range(11.0, 12.5);
-        let hall_len = rng.range(24.0, 28.0);
-        let hall_half = rng.range(8.5, 9.6);
-        let court = rng.range(22.0, 26.0);
-        let court_half = hall_half + rng.range(4.0, 5.5);
-        let range_depth = rng.range(7.2, 8.0);
-        let wing = rng.range(9.0, 10.5);
-        let garden = rng.range(8.0, 9.5);
+        // Its walls on the edges of the bricks the world's stored in, half a meter across, so each
+        // face of them only takes the one layer of bricks
+        let grid = |v: f32| (v * 2.0).round() * 0.5;
+        let keep_depth = grid(rng.range(22.0, 24.0));
+        let keep_half = grid(rng.range(11.0, 12.5));
+        let hall_len = grid(rng.range(21.0, 24.0));
+        let hall_half = grid(rng.range(8.5, 9.6));
+        let court = grid(rng.range(19.0, 22.0));
+        let court_half = hall_half + grid(rng.range(4.0, 5.5));
+        let range_depth = grid(rng.range(7.2, 8.0));
+        let wing = grid(rng.range(9.0, 10.5));
+        let garden = grid(rng.range(8.0, 9.5));
         let keep = [-(hall_len + keep_depth), -hall_len];
         let range = court + range_depth;
         let ward_half = court_half + wing + garden;
-        let back = keep[0] - rng.range(9.0, 11.0);
-        let side = ward_half + rng.range(7.5, 9.0);
+        let back = keep[0] - grid(rng.range(7.0, 8.5));
+        let side = ward_half + grid(rng.range(7.5, 9.0));
         // Laid out round the middle of the inner ward, however far out the gate ends up
         let ward_middle = (keep[0] + range) * 0.5;
-        let at = Frame { x: p[0] - f[0] * ward_middle, y: p[1] - f[1] * ward_middle, f };
+        let at = Frame { x: grid(p[0] - f[0] * ward_middle), y: grid(p[1] - f[1] * ward_middle), f };
         let span = |u: [f32; 2], v: [f32; 2], step: f32| span(&settings, &at, u, v, step);
 
         // The inner ward stands on a terrace over the highest ground under it
         let (lowest, highest) = span([keep[0], range], [-ward_half, ward_half], 4.0);
-        let ward = highest + 0.6;
+        let ward = ((highest + 0.6) * 2.0).ceil() * 0.5;
         let sky = settings.height_m as f32 - 1.0;
         let tall = sky - ward;
         if tall < LEAST_HEIGHT || ward - lowest > 14.5 {
@@ -457,7 +460,7 @@ impl Terrain {
             let u = range + (k - 1) as f32 * RUN;
             ward - k as f32 * RISE <= span([u, u + RUN], [-4.0, 4.0], 2.0).1 + 0.15
         })?;
-        let front = range + rng.range(22.0, 26.0).max(steps as f32 * RUN + 14.0);
+        let front = range + grid(rng.range(14.0, 17.0).max(steps as f32 * RUN + 10.5) + 0.25);
         let middle = (front + back) * 0.5;
         // The curtain wall over the highest ground along it, but not lost under the ward
         let mut ring = (f32::MAX, f32::MIN);
@@ -468,8 +471,8 @@ impl Terrain {
         if ring.0 < sea + 1.0 {
             return None;
         }
-        // Low enough for the inner ward to rise well over it from outside
-        let wall_top = (ring.1 + rng.range(6.5, 8.0)).clamp(ward - 1.0, ward + 3.0);
+        // Low enough for the inner ward to rise well over it from outside, down the hill from it
+        let wall_top = grid((ring.1 + rng.range(6.5, 8.0)).clamp(ward - 5.0, ward + 1.0));
         if wall_top - ring.0 > 24.0 {
             return None;
         }
@@ -480,9 +483,9 @@ impl Terrain {
         let gate_floor = span([front - 7.6, front + 1.6], [-2.2, 2.2], 1.5).1 + 0.06;
 
         // How high it all goes, the higher the more room there is under the sky
-        let keep_top = ward + (0.44 * tall).max(14.0);
-        let hall_eaves = (keep_top - 7.2).max(ward + 7.0);
-        let range_top = ward + (0.27 * tall).max(10.0);
+        let keep_top = ward + grid((0.44 * tall).max(14.0));
+        let hall_eaves = (keep_top - 7.0).max(ward + 7.0);
+        let range_top = ward + grid((0.27 * tall).max(10.0));
         let wing_eaves = range_top + 0.6;
         let wing_ridge = wing_eaves - 0.25 + (wing * 0.5 + 0.45) * WING_PITCH;
         // A spire's top and height: no lower than `least`, reaching about `tip` with its finial
@@ -521,7 +524,7 @@ impl Terrain {
         let br = rng.range(3.9, 4.4);
         let (btop, bh) = spire(wing_ridge + 1.2, ward + tall * rng.range(0.6, 0.72), br);
         let fr = rng.range(4.3, 4.8);
-        let (ftop, fh) = spire(wing_ridge + 1.2, ward + tall * rng.range(0.66, 0.8), fr);
+        let (ftop, fh) = spire(wing_ridge + 1.2, ward + tall * rng.range(0.78, 0.88), fr);
         let cr = rng.range(2.3, 2.7);
         let (ctop, ch) = spire(wing_ridge + 0.8, wing_ridge + 2.8 + FINIAL + 3.2 * cr, cr);
         for side in [-1.0, 1.0] {
@@ -609,21 +612,38 @@ impl Terrain {
         })
     }
 
-    /// Whether nothing else is in the way of castle `c`: no river, dungeon or town near it, nor any
-    /// cave breaking out of the ground under it. Caves deep down can pass under, and ravines keep
-    /// clear of castles themselves.
-    fn clear_for_castle(&self, c: &Castle, cache: &RiverCache, caves: &mut HashMap<(i32, i32), Vec<[f32; 4]>>) -> bool {
-        self.castle_blocked(c, cache, caves).is_none()
+    /// Whether `cave` breaks out of the ground anywhere in rectangle `r`, x0, y0, x1, y1 in meters:
+    /// it can pass deep under a castle, but no more, see caves()
+    pub(super) fn breaks_into(&self, cave: &Cave, r: [f32; 4]) -> bool {
+        overlaps(cave.bounds, r, 0.0)
+            && cave.shapes.iter().any(|s| {
+                s.placement == Placement::Carve
+                    && overlaps([s.min[0], s.min[1], s.max[0], s.max[1]], r, 2.0)
+                    && s.max[2] > height_at(&self.settings, (s.min[0] + s.max[0]) * 0.5, (s.min[1] + s.max[1]) * 0.5) - 1.5
+            })
+    }
+
+    /// Whether nothing else is in the way of castle `c`: no river, dungeon or town near it. Ravines
+    /// and caves keep clear of castles themselves.
+    fn clear_for_castle(&self, c: &Castle, cache: &RiverCache) -> bool {
+        self.castle_blocked(c, cache).is_none()
     }
 
     /// What's in the way of castle `c`, if anything
-    fn castle_blocked(&self, c: &Castle, cache: &RiverCache, caves: &mut HashMap<(i32, i32), Vec<[f32; 4]>>) -> Option<&'static str> {
+    fn castle_blocked(&self, c: &Castle, cache: &RiverCache) -> Option<&'static str> {
         let rect = c.bounds;
-        let margin = 10.0;
+        // Rivers can run by close outside the walls, their banks well clear of the towers along
+        // them, but not across the way up to the gate
+        let walls = c.at.rect([c.back - 6.5, c.front + 6.5], [-c.side - 6.5, c.side + 6.5]);
+        let way = c.at.rect([c.front, c.front + 17.0], [-5.0, 5.0]);
+        let keep_clear = [[walls.0[0], walls.0[1], walls.1[0], walls.1[1]], [way.0[0], way.0[1], way.1[0], way.1[1]]];
+        let margin = 6.5;
         for river in self.rivers_near(cache, [rect[0] - margin, rect[1] - margin], [rect[2] + margin, rect[3] + margin]) {
             let near_it = river.iter().any(|p| {
-                let (dx, dy) = ((rect[0] - p.x).max(p.x - rect[2]).max(0.0), (rect[1] - p.y).max(p.y - rect[3]).max(0.0));
-                dx.hypot(dy) < p.half_width + margin
+                keep_clear.iter().any(|r| {
+                    let (dx, dy) = ((r[0] - p.x).max(p.x - r[2]).max(0.0), (r[1] - p.y).max(p.y - r[3]).max(0.0));
+                    dx.hypot(dy) < p.half_width + margin
+                })
             });
             if near_it {
                 return Some("river");
@@ -638,24 +658,6 @@ impl Terrain {
                 // but not the crypt over the way down
                 if self.dungeon_in(cx, cy, cache).is_some_and(|d| d.world_rects().first().is_some_and(|r| overlaps(*r, rect, 6.0))) {
                     return Some("dungeon");
-                }
-            }
-        }
-        let first = [0, 1].map(|i| ((rect[i] - CAVE_REACH) / CAVE_CELL).floor() as i32);
-        let last = [0, 1].map(|i| ((rect[i + 2] + CAVE_REACH) / CAVE_CELL).ceil() as i32);
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                let breaks = caves.entry((cx, cy)).or_insert_with(|| {
-                    self.cave_in(cx, cy).map_or(Vec::new(), |cave| {
-                        cave.shapes
-                            .iter()
-                            .filter(|s| s.placement == Placement::Carve && s.max[2] > height_at(&self.settings, (s.min[0] + s.max[0]) * 0.5, (s.min[1] + s.max[1]) * 0.5) - 1.5)
-                            .map(|s| [s.min[0], s.min[1], s.max[0], s.max[1]])
-                            .collect()
-                    })
-                });
-                if breaks.iter().any(|r| overlaps(*r, rect, 2.0)) {
-                    return Some("cave");
                 }
             }
         }
@@ -706,7 +708,8 @@ impl Castle {
             middle: at.point((self.front + self.back) * 0.5, 0.0, self.ward),
             gate: at.point(self.front + 2.0, 0.0, self.gate_floor),
             out: at.dir([1.0, 0.0]),
-            tower: at.point(self.keep[0] + 3.9, 0.0, self.keep_top + 6.0),
+            court: at.point(self.court - 1.5, 2.5, self.ward),
+            tower: at.point(self.keep[0] + 3.9, 0.0, self.keep_top + 8.0),
             hall: at.point(-3.0, 0.0, self.ward),
             dais: at.point(self.keep[1] + 1.4, 0.0, self.throne),
             throne: at.point(tu1 - 1.2, -1.6, self.throne),
@@ -821,8 +824,8 @@ impl Castle {
             s.push(up(at, c, [tip - 0.6, tip + 1.6], [0.1, 0.02], (GOLD, AIR)));
         }
         s.push(blob(at, [c[0], c[1], base + 0.1], [r + 0.42, r + 0.42, 0.32], self.stones.roof));
-        if r > 2.0 && h > 4.0 {
-            s.push(up(at, c, [base + 0.9, tip - 2.2], [r - 0.85, 0.15], (AIR, AIR)));
+        if r > 1.0 && h > 2.0 {
+            s.push(up(at, c, [base + 0.4, tip - 1.0], [r - 0.3, 0.1], (self.stones.roof.0, AIR)));
         }
         s.push(up(at, c, [base, tip], [r + 0.12, 0.06], self.stones.roof));
         // What of the tower's rounded top would poke out round the foot of the spire
@@ -886,9 +889,9 @@ impl Castle {
             k += 1;
             z += 4.4;
         }
-        // Hollow inside, so only its walls are kept
-        if r > 2.4 && body_top - foot > 2.0 * r + 2.0 {
-            s.push(up(at, c, [foot + r, body_top - r], [r - 0.75, r - 0.75], (AIR, AIR)));
+        // Plain stone inside, so only its walls are kept
+        if r > 1.5 && body_top - foot > 2.0 * r + 1.0 {
+            s.push(up(at, c, [foot + r, body_top - r], [r - 0.3, r - 0.3], (st.wall.0, AIR)));
         }
         s.push(up(at, c, [foot, body_top], [r, r], st.wall).patterned(Pattern::Bricks));
         if !corbelled && t.seen + 1.8 > foot + 0.5 {
@@ -921,8 +924,8 @@ impl Castle {
         for end in [[l0, l0 + 0.4], [l1 - 0.4, l1]] {
             gable_end(s, at, along_u, end, m, half, z1, across, z1 - 0.2, 0.8, st.wall);
         }
-        let (u, v) = rect([l0 + 0.4, l1 - 0.4], [-half + 0.4, half - 0.4]);
-        s.push(bl(at, u, v, [z0 + 0.4, z1 - 0.4], (AIR, AIR)));
+        let (u, v) = rect([l0 + 0.3, l1 - 0.3], [-half + 0.3, half - 0.3]);
+        s.push(bl(at, u, v, [z0 + 0.3, z1 - 0.3], (st.wall.0, AIR)));
         let (u, v) = rect([l0, l1], [-half, half]);
         s.push(bricks(at, u, v, [z0, z1], st.wall));
         let (u, v) = rect([l0, l1], [-half - 0.2, half + 0.2]);
@@ -1266,12 +1269,12 @@ impl Castle {
         }
         // Solid stone inside round the throne room, so only the walls are kept
         let core = (st.wall.0, AIR);
-        s.push(bl(at, [u0 + 0.6, tu0 - 0.6], [-kh + 0.6, kh - 0.6], [w + 0.2, top - 0.6], core));
-        if top - 0.6 > f + 10.3 {
-            s.push(bl(at, [tu0 - 0.6, u1 - 0.6], [-kh + 0.6, kh - 0.6], [f + 10.3, top - 0.6], core));
+        s.push(bl(at, [u0 + 0.3, tu0 - 0.3], [-kh + 0.3, kh - 0.3], [w - 0.1, top - 0.3], core));
+        if top - 0.3 > f + 9.8 {
+            s.push(bl(at, [tu0 - 0.3, u1 - 0.3], [-kh + 0.3, kh - 0.3], [f + 9.8, top - 0.3], core));
         }
         for side in [-1.0, 1.0] {
-            s.push(bl(at, [tu0, tu1], [side * (tv + 0.6), side * (kh - 0.6)], [f, f + 9.5], core));
+            s.push(bl(at, [tu0, tu1], [side * (tv + 0.3), side * (kh - 0.3)], [f - 0.3, f + 9.8], core));
         }
         s.push(bricks(at, [u0, u1], [-kh, kh], [w - 0.4, top], st.wall));
     }
@@ -1329,6 +1332,10 @@ impl Castle {
         for end in [[u1 - 1.4, u1], [u0, u0 + 1.4]] {
             gable_end(s, at, true, end, 0.0, hh, eaves, across, roof_eaves, HALL_PITCH, st.wall);
         }
+        // Plain stone inside its thick side walls, so only their faces are kept
+        for side in [-1.0, 1.0] {
+            s.push(bl(at, [u0 + 0.3, u1 - 0.3], [side * (hh - 1.1), side * (hh - 0.3)], [w - 0.1, eaves - 0.3], (st.wall.0, AIR)));
+        }
         s.push(bricks(at, [u0, u1], [-hh, hh], [w - 0.4, eaves], st.wall));
         s.push(bl(at, [u0, u1 + 0.25], [-hh - 0.25, hh + 0.25], [w - 0.4, w + 0.5], st.trim));
     }
@@ -1368,7 +1375,7 @@ impl Castle {
             gable_end(s, at, true, end, mid, self.wing * 0.5, eaves, across, eaves - 0.25, WING_PITCH, st.wall);
         }
         let (a, b) = (inner.min(outer), inner.max(outer));
-        s.push(bl(at, [u0 + 0.6, u1 - 0.6], [a + 0.6, b - 0.6], [w + 0.2, eaves - 0.6], (st.wall.0, AIR)));
+        s.push(bl(at, [u0 + 0.3, u1 - 0.3], [a + 0.3, b - 0.3], [w - 0.1, eaves - 0.3], (st.wall.0, AIR)));
         s.push(bricks(at, [u0, u1], [a, b], [w - 0.4, eaves], st.wall));
         s.push(bl(at, [u0, u1], [a - 0.25, b + 0.25], [w - 0.4, w + 0.5], st.trim));
     }
@@ -1404,7 +1411,7 @@ impl Castle {
         }
         // Solid round the archway, so its sides are of brick, then solid stone inside
         s.push(bricks(at, [u0, u1], [-4.4, 4.4], [w - 0.4, top - 0.2], st.wall));
-        s.push(bl(at, [u0 + 0.6, u1 - 0.6], [-hv + 0.6, hv - 0.6], [w + 0.2, top - 0.6], (st.wall.0, AIR)));
+        s.push(bl(at, [u0 + 0.3, u1 - 0.3], [-hv + 0.3, hv - 0.3], [w - 0.1, top - 0.3], (st.wall.0, AIR)));
         s.push(bricks(at, [u0, u1], [-hv, hv], [w - 0.4, top], st.wall));
         s.push(bl(at, [u0 - 0.25, u1 + 0.25], [-hv, hv], [w - 0.4, w + 0.5], st.trim));
     }
@@ -1426,8 +1433,8 @@ impl Castle {
         for side in [-1.0, 1.0] {
             self.torch(t, s, features, [u1, side * 3.3], [1.0, 0.0], g + 2.9);
         }
-        if top - 0.6 > g + 7.6 {
-            s.push(bl(at, [u0 + 0.6, u1 - 0.6], [-gv + 0.6, gv - 0.6], [g + 7.6, top - 0.6], (st.wall.0, AIR)));
+        if top - 0.3 > g + 7.4 {
+            s.push(bl(at, [u0 + 0.3, u1 - 0.3], [-gv + 0.3, gv - 0.3], [g + 7.4, top - 0.3], (st.wall.0, AIR)));
         }
         s.push(bricks(at, [u0, u1], [-gv, gv], [low - 0.6, top], st.wall));
     }
@@ -1480,8 +1487,8 @@ impl Castle {
             }
             a += 7.0;
         }
-        let (su, sv) = strip(0.6, 2.4);
-        s.push(bl(at, su, sv, [low, top - 0.6], (st.wall.0, AIR)));
+        let (su, sv) = strip(0.3, 2.7);
+        s.push(bl(at, su, sv, [low, top - 0.3], (st.wall.0, AIR)));
         s.push(bricks(at, u, v, [low - 0.6, top], st.wall));
     }
 
@@ -1591,7 +1598,8 @@ impl Castle {
             s.push(bl(at, [self.keep[1] - 1.0, 0.0], v, [w - 0.35, w], gravel).placed(Placement::Clear));
         }
         s.push(bl(at, [self.keep[1] - 3.0, self.keep[1] - 1.0], [-self.hall_half - 3.1, self.hall_half + 3.1], [w - 0.35, w], gravel).placed(Placement::Clear));
-        s.push(bl(at, [u0, u1], [-hv, hv], [w - 0.35, w], (GRASS, GRASS_TIP)));
+        // Lawns, of a green no wolf or bandit turns up on, see animals::is_ground()
+        s.push(bl(at, [u0, u1], [-hv, hv], [w - 0.35, w], (CACTUS, MOSS)));
         // Parapets round the edges where nothing's built
         let mut parapet = |u: [f32; 2], v: [f32; 2]| {
             let along_u = u[1] - u[0] > v[1] - v[0];
@@ -1612,7 +1620,7 @@ impl Castle {
             parapet([u1 - 0.5, u1], sv(wv, hv));
         }
         let low = self.lowest - 0.6;
-        s.push(bl(at, [u0 + 0.6, u1 - 0.6], [-hv + 0.6, hv - 0.6], [low, w - 0.35], (STONE, AIR)));
+        s.push(bl(at, [u0 + 0.3, u1 - 0.3], [-hv + 0.3, hv - 0.3], [low, w - 0.35], (st.trim.0, AIR)));
         s.push(bricks(at, [u0, u1], [-hv, hv], [low, w - 0.35], st.trim));
     }
 
@@ -1643,59 +1651,6 @@ impl Castle {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn castle_spots_debug() {
-        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
-        let (terrain, _) = generate_terrain(&settings, [0, 0], &RiverCache::default());
-        let sea = sea_level_m(&settings);
-        let sky = settings.height_m as f32 - 1.0;
-        let mut reasons = [0usize; 8];
-        let mut tops = Vec::new();
-        let (mut lows, mut reliefs) = (Vec::new(), Vec::new());
-        for cy in -4..4 {
-            for cx in -4..4 {
-                let r = hash3(cx as u32, cy as u32, settings.seed ^ 0xca51);
-                for attempt in 0..SPOTS {
-                    let s = hash3(r, attempt, 0xca52);
-                    let p = [(cx as f32 + 0.2 + 0.6 * unit(s)) * CASTLE_CELL, (cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * CASTLE_CELL];
-                    let g = |dx: f32, dy: f32| height_at(&settings, p[0] + dx, p[1] + dy);
-                    let (mut lo, mut hi, mut sum) = (f32::MAX, f32::MIN, 0.0);
-                    for i in 0..49 {
-                        let h = g(((i % 7) as f32 - 3.0) * 12.0, ((i / 7) as f32 - 3.0) * 12.0);
-                        (lo, hi, sum) = (lo.min(h), hi.max(h), sum + h);
-                    }
-                    tops.push(hi);
-                    lows.push(lo);
-                    reliefs.push(hi - lo);
-                    let mut around = 0.0;
-                    for k in 0..16 {
-                        let a = k as f32 * TAU / 16.0;
-                        around += g(a.cos() * 115.0, a.sin() * 115.0);
-                    }
-                    let prominence = sum / 49.0 - around / 16.0;
-                    let k = if lo < sea + 1.0 { 0 } else if hi - lo > 14.0 { 1 } else if hi > sky - LEAST_HEIGHT - 0.6 { 2 } else if prominence < 1.5 { 3 } else if terrain.castle_spot(p).is_none() { 4 } else if terrain.lay_out_castle(p, 1).is_none() { 5 } else { 6 };
-                    reasons[k] += 1;
-                    if k == 6 {
-                        let c = terrain.lay_out_castle(p, 1).unwrap();
-                        let cache = RiverCache::default();
-                        let rect = c.bounds;
-                        let river = terrain.rivers_near(&cache, [rect[0] - 10.0, rect[1] - 10.0], [rect[2] + 10.0, rect[3] + 10.0]).iter().any(|r| r.iter().any(|q| q.x > rect[0] - 10.0 && q.x < rect[2] + 10.0 && q.y > rect[1] - 10.0 && q.y < rect[3] + 10.0));
-                        let towns = !terrain.towns_near(grown(rect, 15.0), &cache).is_empty();
-                        let all = terrain.castle_blocked(&c, &cache, &mut HashMap::new());
-                        println!("spot ({:.0}, {:.0}): river {river} towns {towns} blocked {all:?}", p[0], p[1]);
-                    }
-                }
-            }
-        }
-        tops.sort_by(f32::total_cmp);
-        lows.sort_by(f32::total_cmp);
-        reliefs.sort_by(f32::total_cmp);
-        let q = |v: &Vec<f32>| format!("{:.1} {:.1} {:.1} {:.1} {:.1}", v[v.len() / 10], v[v.len() / 4], v[v.len() / 2], v[v.len() * 3 / 4], v[v.len() * 9 / 10]);
-        println!("lows {} reliefs {}", q(&lows), q(&reliefs));
-        println!("wet {} rough {} high {} flat-lying {} walls {} layout {} ok {}", reasons[0], reasons[1], reasons[2], reasons[3], reasons[4], reasons[5], reasons[6]);
-        println!("tops: 10% {:.1} 50% {:.1} 90% {:.1}, sea {sea}, highest allowed {:.1}", tops[tops.len() / 10], tops[tops.len() / 2], tops[tops.len() * 9 / 10], sky - LEAST_HEIGHT - 0.6);
-    }
 
     /// Castles turn up here and there, their towers and the rest under the sky, their ways up
     /// never steeper than a step

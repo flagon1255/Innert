@@ -276,6 +276,28 @@ pub struct Town {
     pub roam: f64,
 }
 
+/// How many weapons a royal armoury has for sale
+const ROYAL_WEAPONS: usize = 6;
+
+/// The weapons a royal armoury sells, rolled from `seed`: legendary and mythic ones only, rolled
+/// very lucky, no two of a family
+fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
+    let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(library.rarities.len().saturating_sub(2));
+    let mut weapons: Vec<Weapon> = Vec::new();
+    for _ in 0..600 {
+        if weapons.len() >= ROYAL_WEAPONS {
+            break;
+        }
+        // As random() does, so a seed of 0 doesn't stay 0
+        seed = hash(seed.wrapping_add(0x9e37_79b9));
+        let weapon = library.generate(seed, None, 9.0);
+        if weapon.grade >= legendary && weapons.iter().all(|w| w.family != weapon.family) {
+            weapons.push(weapon);
+        }
+    }
+    weapons
+}
+
 /// What villagers say when spoken to
 const GREETINGS: [&str; 8] = [
     "\"Good day to you, traveller.\"",
@@ -2336,21 +2358,11 @@ impl Game {
     /// What the princess keeping royal armoury `key` sells: legendary and mythic weapons only,
     /// several of them and no two of a kind, at their price, and a few potions
     fn royal_stock(&mut self, key: [i64; 3]) {
-        let legendary = self.library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(self.library.rarities.len().saturating_sub(2));
-        let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x9e11))));
+        let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x9e11))));
         let mut wares = Vec::new();
-        let mut families = Vec::new();
-        for _ in 0..600 {
-            if wares.len() >= 6 {
-                break;
-            }
-            seed = hash(seed);
-            let weapon = self.library.generate(seed, None, 9.0);
-            if weapon.grade >= legendary && !families.contains(&weapon.family) {
-                families.push(weapon.family);
-                self.weapons.push(weapon);
-                wares.push(Ware::Weapon(self.weapons.len() - 1));
-            }
+        for weapon in royal_weapons(&self.library, seed) {
+            self.weapons.push(weapon);
+            wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         self.models_version += 1;
         wares.sort_by_key(|w| match *w {
@@ -4007,4 +4019,25 @@ fn placed(model: u32, (m, anchor): &(Model, Vector3<f64>), res: f64, point: Vect
     let [x, y, z] = m.size.map(|s| s as f64 / res);
     let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
     AnimalInstance::new(model, at - rotation * (point - anchor) * vpm, rotation, vpm / res, reach, animals::MOVING)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A princess's armoury always has its full stock of weapons, legendary and mythic ones only,
+    /// no two of a family
+    #[test]
+    fn royal_armouries_sell_only_legendary_weapons() {
+        let library = Library::load();
+        let legendary = library.rarities.iter().position(|r| r.id == "legendary").expect("there's a legendary rarity");
+        for seed in 0..40u32 {
+            let weapons = royal_weapons(&library, hash(seed));
+            assert_eq!(weapons.len(), ROYAL_WEAPONS);
+            assert!(weapons.iter().all(|w| w.grade >= legendary));
+            for (i, a) in weapons.iter().enumerate() {
+                assert!(weapons[i + 1..].iter().all(|b| b.family != a.family));
+            }
+        }
+    }
 }

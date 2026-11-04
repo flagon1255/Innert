@@ -1369,10 +1369,11 @@ impl App {
             landscape.and_then(|l| l.nearest_town(near, underground, kind))
         });
         // `--set royal=1` starts out in front of the gate of the nearest royal castle looking up at
-        // it, `royal=hall` inside the door of its great hall and `royal=throne` in its throne room,
-        // facing the princess. With `biome=snow` too, the nearest to the snow.
+        // it, `royal=court` in its courtyard looking up at the keep, `royal=hall` inside the door of
+        // its great hall, `royal=throne` in its throne room facing the princess, and `royal=air`
+        // high over one front corner. With `biome=snow` too, the nearest to the snow.
         let royal_view = setting("royal").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none());
-        let inside_castle = matches!(royal_view, Some("hall" | "throne"));
+        let inside_castle = matches!(royal_view, Some("hall" | "throne" | "court"));
         let royal = royal_view.and_then(|_| {
             let near = setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
@@ -1512,6 +1513,7 @@ impl App {
             let (eye, target) = match royal_view {
                 Some("hall") => (at(r.hall) + up(1.7), at(r.dais) + up(1.6)),
                 Some("throne") => (at(r.throne) + up(1.65), at(r.princess) + up(1.3)),
+                Some("court") => (at(r.court) + up(1.7), at(r.tower)),
                 // From high over one front corner, to see it all
                 Some("air") => {
                     let (out, side) = (Vector3::new(r.out[0] as f64, r.out[1] as f64, 0.0), Vector3::new(-r.out[1] as f64, r.out[0] as f64, 0.0));
@@ -1519,9 +1521,9 @@ impl App {
                 }
                 _ => {
                     // Out along the way up to the gate, a little over the ground there
-                    let out = at(r.gate) + Vector3::new(r.out[0] as f64, r.out[1] as f64, 0.0) * 48.0 * vpm;
+                    let out = at(r.gate) + Vector3::new(r.out[0] as f64, r.out[1] as f64, 0.0) * 30.0 * vpm;
                     let ground = (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(out.x as i64, out.y as i64, z))).unwrap_or(0) as f64;
-                    (Vector3::new(out.x, out.y, ground + 5.0 * vpm), at(r.tower) - up(12.0))
+                    (Vector3::new(out.x, out.y, (ground + 3.0 * vpm).max(at(r.gate).z + 4.0 * vpm)), at(r.middle) + up(9.0))
                 }
             };
             camera.position = voxels_to_camera(eye, world.size);

@@ -730,6 +730,24 @@ fn empty_distances(grid: &[u32], dims: [usize; 3]) -> Vec<u16> {
     distances
 }
 
+/// What all of a brick is made of, if it's wholly inside the first of `shapes` reaching into it
+/// and that's all one material: then none of the rest reach any of its voxels, and every one of
+/// them is that. `lo` is its first voxel, and `above` whether it's all over the ground. Shapes are
+/// convex, so it's wholly inside one if the voxels at its corners are.
+fn uniform_brick(shapes: &[(&Shape, u32)], lo: [i64; 3], voxel: f32, above: bool) -> Option<u8> {
+    let p0 = lo.map(|v| (v as f32 + 0.5) * voxel);
+    let p1 = p0.map(|v| v + 7.0 * voxel);
+    let (shape, _) = shapes.iter().find(|(s, _)| (0..3).all(|i| p1[i] >= s.min[i] - voxel && p0[i] <= s.max[i] + voxel))?;
+    let plain = shape.pattern == Pattern::Plain && shape.accent == AIR && !shape.ragged && shape.rough <= 0.0;
+    let placed = match shape.placement {
+        Placement::Clear => true,
+        Placement::Above => above,
+        _ => false,
+    };
+    let inside = || (0..8).all(|k| shape.depth([0, 1, 2].map(|i| if k >> i & 1 == 0 { p0[i] } else { p1[i] }), voxel) <= 1.0);
+    (plain && placed && inside()).then_some(shape.material)
+}
+
 /// Returns the grid cell for a brick, storing its voxels in `bricks` unless it's uniform.
 fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
     let first = materials[0];
@@ -2558,6 +2576,7 @@ impl Terrain {
                 columns[lx + ly * 8] = column;
             }
         }
+        let highest_ground = columns.iter().map(|c| c.height).max().unwrap_or(i32::MAX);
 
         // The shapes reaching into this column of bricks, along with their object's seed
         let column_lo = [(heights.origin[0] + cx as i64 * 8) as f32 * voxel - voxel, (heights.origin[1] + cy as i64 * 8) as f32 * voxel - voxel];
@@ -2608,7 +2627,12 @@ impl Terrain {
             nearby.clear();
             nearby.extend(shapes.iter().filter(|(s, _)| s.max[2] >= z_lo && s.min[2] <= z_hi));
             let cuts = nearby.iter().any(|(s, _)| s.placement != Placement::Above);
-            if !nearby.is_empty() {
+            // A brick wholly inside solid stone all of one kind, like that inside a castle's walls,
+            // needn't be looked at voxel by voxel
+            let uniform = uniform_brick(&nearby, [heights.origin[0] + (cx * 8) as i64, heights.origin[1] + (cy * 8) as i64, z0 as i64], voxel, z0 > highest_ground);
+            if let Some(m) = uniform {
+                materials.fill(m);
+            } else if !nearby.is_empty() {
                 let x0 = heights.origin[0] + (cx * 8) as i64;
                 let y0 = heights.origin[1] + (cy * 8) as i64;
                 for lz in 0..8 {
@@ -2856,7 +2880,7 @@ impl Terrain {
         for dungeon in &dungeons {
             objects.push(self.dungeon(dungeon, &mut features));
         }
-        objects.extend(self.caves(&mut features));
+        objects.extend(self.caves(&mut features, &royal));
         objects.extend(self.waterfall_caves(&mut features));
         objects.extend(self.ravines(&mut features, &royal));
         objects.extend(self.camps(heights, &mut features, &keep_out));
@@ -3601,7 +3625,7 @@ impl Terrain {
     /// into caverns along the way. Most open onto the hillside, and in those the last cavern is a
     /// great one where a boss makes its lair: "cavern", at the middle of its floor, facing the
     /// way in.
-    fn caves(&self, features: &mut Features) -> Vec<Object> {
+    fn caves(&self, features: &mut Features, royal: &[[f32; 4]]) -> Vec<Object> {
         let (lo, hi) = (self.lo, self.hi);
         let mut objects = Vec::new();
         let first = [((lo[0] - CAVE_REACH) / CAVE_CELL).floor() as i32, ((lo[1] - CAVE_REACH) / CAVE_CELL).floor() as i32];
@@ -3611,8 +3635,9 @@ impl Terrain {
                 let Some(cave) = self.cave_in(cx, cy) else {
                     continue;
                 };
-                // Far out, it's only what reaches into this piece that matters
-                if !overlaps([lo[0], lo[1], hi[0], hi[1]], cave.bounds, 0.0) {
+                // Far out, it's only what reaches into this piece that matters. None breaks out of
+                // the ground inside a royal castle, see castles.rs.
+                if !overlaps([lo[0], lo[1], hi[0], hi[1]], cave.bounds, 0.0) || royal.iter().any(|r| self.breaks_into(&cave, *r)) {
                     continue;
                 }
                 features.lights.extend(cave.lights.into_iter().filter(|l| self.inside(l.position[0], l.position[1])));
