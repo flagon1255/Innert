@@ -248,6 +248,9 @@ pub struct Stall {
     pub position: Vector3<f64>,
     pub key: [i64; 3],
     pub within: f64,
+    /// For the royal armoury in a castle's throne room, which way the princess keeping it faces:
+    /// she sells only legendary and mythic weapons, see royal_stock()
+    pub royal: Option<f64>,
 }
 
 /// A town's square: where its middle is in voxels, on the paving, how many folk live round it
@@ -406,6 +409,8 @@ pub struct Game {
     stocks: HashMap<[i64; 3], Vec<Ware>>,
     /// The merchants about, by Animal::id, with where each stands in the whole landscape
     merchants: Vec<(u32, [i64; 3])>,
+    /// Which of those are royal armouries, kept by a princess
+    royals: HashSet<[i64; 3]>,
     /// Where the player stood last, for what they drop to land at their feet
     feet: Option<Vector3<f64>>,
     /// The slot looked at in the inventory, with its card showing
@@ -540,6 +545,7 @@ impl Game {
             shop: None,
             stocks: HashMap::new(),
             merchants: Vec::new(),
+            royals: HashSet::new(),
             feet: None,
             inspected: None,
             messages: Vec::new(),
@@ -900,7 +906,7 @@ impl Game {
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
         // pop up right in front of them. Bosses, dungeon monsters, merchants and villagers have
         // homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager()).count());
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager() && !a.look.is_royal()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| matches!(a.look, Look::Bandit | Look::BanditBrute)).count();
         if missing > 0 || wolves < 3 || bandits < 3 {
@@ -2026,14 +2032,20 @@ impl Game {
             Some(Target::Chest(i)) => self.open_chest(i),
             Some(Target::Animal(i)) => {
                 let look = self.animals[i].look;
-                if look == Look::Merchant {
+                if look == Look::Merchant || look == Look::Princess {
                     let id = self.animals[i].id;
                     if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
                         self.stock(key);
                         self.shop = Some(key);
                         self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(1.3));
-                        self.say("\"Have a look. Good steel, fresh bread, potions that work.\"");
+                        self.say(if look == Look::Princess {
+                            "\"Welcome to the royal armoury. Only blades fit for a legend, and they're priced like it.\""
+                        } else {
+                            "\"Have a look. Good steel, fresh bread, potions that work.\""
+                        });
                     }
+                } else if look == Look::RoyalGuard {
+                    self.say("\"Her Highness receives travellers in the throne room. Mind your manners.\"");
                 } else if look.is_villager() {
                     self.animals[i].pet(eye);
                     self.rng = hash(self.rng ^ self.animals[i].id);
@@ -2114,11 +2126,61 @@ impl Game {
                 continue;
             }
             let seed = hash(stall.key[0] as u32 ^ hash(stall.key[1] as u32 ^ 0x5a1e));
-            if let Some(merchant) = animals::spawn_merchant(world, water, stall.position, stall.within, seed) {
+            let keeper = match stall.royal {
+                Some(heading) => animals::spawn_royal(world, water, Look::Princess, stall.position, heading, seed),
+                None => animals::spawn_merchant(world, water, stall.position, stall.within, seed),
+            };
+            if let Some(merchant) = keeper {
+                if stall.royal.is_some() {
+                    self.royals.insert(stall.key);
+                }
                 self.merchants.push((merchant.id, stall.key));
                 self.animals.push(merchant);
             }
         }
+    }
+
+    /// The royal guards' posts in the piece of the world just built, in its voxels, with which way
+    /// each faces: a guard turns up at each that hasn't one already
+    pub fn set_guards(&mut self, world: &World, water: WaterLevel, posts: Vec<(Vector3<f64>, f64)>) {
+        let vpm = world.voxels_per_meter as f64;
+        for (at, heading) in posts {
+            if self.animals.iter().any(|a| a.look == Look::RoyalGuard && (a.position - at).xy().norm() < 1.5 * vpm) {
+                continue;
+            }
+            let seed = hash(at.x as u32 ^ hash(at.y as u32 ^ 0x6a2d));
+            if let Some(guard) = animals::spawn_royal(world, water, Look::RoyalGuard, at, heading, seed) {
+                self.animals.push(guard);
+            }
+        }
+    }
+
+    /// What the princess keeping royal armoury `key` sells: legendary and mythic weapons only,
+    /// several of them and no two of a kind, at their price, and a few potions
+    fn royal_stock(&mut self, key: [i64; 3]) {
+        let legendary = self.library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(self.library.rarities.len().saturating_sub(2));
+        let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x9e11))));
+        let mut wares = Vec::new();
+        let mut families = Vec::new();
+        for _ in 0..600 {
+            if wares.len() >= 6 {
+                break;
+            }
+            seed = hash(seed);
+            let weapon = self.library.generate(seed, None, 9.0);
+            if weapon.grade >= legendary && !families.contains(&weapon.family) {
+                families.push(weapon.family);
+                self.weapons.push(weapon);
+                wares.push(Ware::Weapon(self.weapons.len() - 1));
+            }
+        }
+        self.models_version += 1;
+        wares.sort_by_key(|w| match *w {
+            Ware::Weapon(i) => self.weapon_price(i),
+            Ware::Food(..) => 0,
+        });
+        wares.push(Ware::Food(Item::Potion, 5));
+        self.stocks.insert(key, wares);
     }
 
     /// The towns' squares in the piece of the world just built, in its voxels: their folk turn up
@@ -2183,6 +2245,9 @@ impl Game {
     fn stock(&mut self, key: [i64; 3]) {
         if self.stocks.contains_key(&key) {
             return;
+        }
+        if self.royals.contains(&key) {
+            return self.royal_stock(key);
         }
         let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
         let mut wares = Vec::new();
@@ -2507,6 +2572,10 @@ impl Game {
                 let look = self.animals[i].look;
                 Some(if look == Look::Merchant {
                     "E  trade with the merchant".to_owned()
+                } else if look == Look::Princess {
+                    "E  trade with the princess".to_owned()
+                } else if look == Look::RoyalGuard {
+                    "E  talk to the guard".to_owned()
                 } else if look.is_villager() {
                     "E  talk to the villager".to_owned()
                 } else if look.is_pet() {
@@ -2550,9 +2619,13 @@ impl Game {
         }
         // Merchants' names over their heads, so they're easy to find, and smaller ones over the
         // villagers' when near
-        for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager()) {
+        for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager() || a.look.is_royal()) {
             let (name, color, height, range, size) = if npc.look == Look::Merchant {
                 ("Merchant", GOLD, 2.15, 28.0, 15.0)
+            } else if npc.look == Look::Princess {
+                ("Princess", Color32::from_rgb(255, 170, 215), 2.05, 28.0, 15.0)
+            } else if npc.look == Look::RoyalGuard {
+                ("Royal Guard", Color32::from_rgb(200, 210, 230), 2.15, 14.0, 13.0)
             } else {
                 ("Villager", Color32::from_rgb(230, 228, 214), 1.95, 14.0, 13.0)
             };
@@ -3277,7 +3350,7 @@ impl Game {
         };
         let mut open = true;
         let mut deed = None;
-        egui::Window::new("Merchant")
+        egui::Window::new(if self.royals.contains(&key) { "The Royal Armoury" } else { "Merchant" })
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

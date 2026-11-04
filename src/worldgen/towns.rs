@@ -288,6 +288,24 @@ impl Terrain {
         (objects, rects)
     }
 
+    /// Where the towns reaching into rectangle `r` are, each x0, y0, x1, y1 in meters, for castles
+    /// to keep clear of, see castles.rs
+    pub(super) fn towns_near(&self, r: [f32; 4], cache: &RiverCache) -> Vec<[f32; 4]> {
+        let first = [0, 1].map(|i| ((r[i] - TOWN_REACH) / TOWN_CELL).floor() as i32);
+        let last = [0, 1].map(|i| ((r[i + 2] + TOWN_REACH) / TOWN_CELL).floor() as i32);
+        let mut found = Vec::new();
+        for cy in first[1]..=last[1] {
+            for cx in first[0]..=last[0] {
+                if let Some(town) = self.town_in(cx, cy, cache)
+                    && overlaps(town.bounds, r, 0.0)
+                {
+                    found.push(town.bounds);
+                }
+            }
+        }
+        found
+    }
+
     /// The nearest town to `near` within a few kilometers, out on the land or, if `underground`,
     /// down in a cavern, and if `kind` says, built for that kind of land ("jungle", "desert",
     /// "snow" or "temperate"): the middle of its square, and where the way in is, the mouth of the

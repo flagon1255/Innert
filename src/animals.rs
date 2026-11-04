@@ -74,6 +74,10 @@ pub enum Look {
     /// and a woman in a long dress with a basket on her arm
     Villager,
     Townswoman,
+    /// The princess of a royal castle, keeping the royal armoury in its throne room, and the
+    /// guards standing at its gate and by her throne, see src\worldgen\castles.rs
+    Princess,
+    RoyalGuard,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -101,7 +105,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 44] = [
+    pub const ALL: [Look; 46] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -146,6 +150,8 @@ impl Look {
         Look::Warlord,
         Look::Villager,
         Look::Townswoman,
+        Look::Princess,
+        Look::RoyalGuard,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -326,7 +332,9 @@ impl Look {
             Look::Chest | Look::OpenChest => 0.95,
             // From their feet up to the top of the pack on its back
             Look::Merchant => 2.2,
-            Look::Villager | Look::Townswoman => 1.95,
+            Look::Villager | Look::Townswoman | Look::Princess => 1.95,
+            // Up to the tip of the spear
+            Look::RoyalGuard => 2.55,
             Look::Coins | Look::Potion | Look::Bread => 0.25,
             Look::Bear => 1.6,
             Look::Dog => 0.8,
@@ -361,7 +369,8 @@ impl Look {
             Look::Skull => (0.1, 0.12),
             Look::Chest | Look::OpenChest => (0.22, 0.4),
             Look::Merchant => (0.95, 0.45),
-            Look::Villager | Look::Townswoman => (0.95, 0.4),
+            Look::Villager | Look::Townswoman | Look::Princess => (0.95, 0.4),
+            Look::RoyalGuard => (1.0, 0.42),
             Look::Coins | Look::Potion | Look::Bread => (0.08, 0.22),
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => (2.0 * self.size(), 1.1 * self.size()),
             Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => (1.25 * self.size(), 1.0 * self.size()),
@@ -387,6 +396,8 @@ impl Look {
             Look::Chest | Look::OpenChest => "chest",
             Look::Merchant => "merchant",
             Look::Villager | Look::Townswoman => "villager",
+            Look::Princess => "princess",
+            Look::RoyalGuard => "royal guard",
             Look::Coins => "gold",
             Look::Potion => "healing potion",
             Look::Bread => "loaf of bread",
@@ -423,7 +434,12 @@ impl Look {
     /// Pets get petted, the rest can be hunted for meat
     pub fn is_pet(self) -> bool {
         // Merchants can't be hurt either, only traded with, nor can villagers, only talked to
-        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat | Look::Merchant) || self.is_villager()
+        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat | Look::Merchant) || self.is_villager() || self.is_royal()
+    }
+
+    /// The princess of a royal castle or one of her guards, who stay where they are
+    pub fn is_royal(self) -> bool {
+        matches!(self, Look::Princess | Look::RoyalGuard)
     }
 
     /// One of the folk living in a town
@@ -1273,6 +1289,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             }
         }
         Look::Villager | Look::Townswoman => villager(&mut p, swing, look == Look::Townswoman),
+        Look::Princess => princess(&mut p),
+        Look::RoyalGuard => royal_guard(&mut p),
         Look::Coins => {
             // A little heap of gold coins, a few tipped up against it
             for (x, y, z) in [(0.0, 0.0, 0.02), (0.05, 0.04, 0.05), (-0.05, 0.03, 0.03), (0.03, -0.05, 0.03), (-0.02, -0.02, 0.07), (0.07, -0.02, 0.02)] {
@@ -1389,6 +1407,76 @@ fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
         for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
             leg(p, [0.0, y, 0.9], 0.86, 0.075, 0.45 * swing * s, LEATHER, BARK_DARK);
         }
+    }
+}
+
+/// The princess, about 1.7 meters tall: a long gown of deep teal flaring out to the ground over a
+/// white underskirt, gold at her waist and round its hem, white bell sleeves, her hands folded in
+/// front of her, and her red hair in a long braid down her back under a little gold crown with a
+/// red stone in it
+fn princess(p: &mut Vec<Part>) {
+    let (skin, gown, hair) = (FUR_CREAM, TEMPLE_TEAL, FUR_GINGER);
+    // The crown: a gold band round the top of her head with points rising from it
+    p.push(ball([0.115, 0.0, 1.715], 0.022, GLOW_BLOOD));
+    for k in 0..5 {
+        let a = (k as f64 - 2.0) * 0.75;
+        p.push(limb([0.09 * a.cos(), 0.09 * a.sin(), 1.71], [0.085 * a.cos(), 0.085 * a.sin(), 1.79], 0.022, 0.008, GOLD));
+    }
+    p.push(ellipsoid([0.0, 0.0, 1.705], [0.112, 0.112, 0.028], GOLD));
+    // Her hair over the back of her head, and the braid down her back
+    p.push(limb([-0.12, 0.0, 1.55], [-0.17, 0.0, 0.98], 0.045, 0.03, hair));
+    p.push(ellipsoid([-0.035, 0.0, 1.64], [0.12, 0.14, 0.12], hair));
+    p.push(ball([0.02, 0.0, 1.6], 0.125, skin));
+    p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.045, 0.045, skin));
+    // A white collar, and the arms in their sleeves, hands folded at her waist
+    p.push(ellipsoid([0.02, 0.0, 1.43], [0.1, 0.15, 0.03], LINEN));
+    for s in [-1.0, 1.0] {
+        let (shoulder, elbow, hand) = ([0.0, s * 0.19, 1.4], [0.05, s * 0.24, 1.13], [0.18, s * 0.06, 1.04]);
+        p.push(ball(hand, 0.045, skin));
+        p.push(limb(elbow, [0.15, s * 0.1, 1.05], 0.05, 0.075, LINEN));
+        p.push(limb(shoulder, elbow, 0.058, 0.05, LINEN));
+    }
+    // The bodice, a gold girdle, and the gown with its white front and gold hem
+    p.push(ellipsoid([0.0, 0.0, 1.035], [0.13, 0.185, 0.03], GOLD));
+    p.push(ellipsoid([0.0, 0.0, 1.22], [0.12, 0.17, 0.21], gown));
+    p.push(ellipsoid([0.0, 0.0, 0.06], [0.38, 0.38, 0.045], GOLD));
+    p.push(ellipsoid([0.235, 0.0, 0.5], [0.06, 0.13, 0.42], LINEN));
+    p.push(limb([0.0, 0.0, 1.02], [0.02, 0.0, 0.05], 0.16, 0.36, gown));
+}
+
+/// A royal guard, about 1.85 meters tall, standing to attention: a steel helm with a red crest, a
+/// breastplate over a red tabard banded in gold, a tall spear upright in one hand and a shield on
+/// the other arm
+fn royal_guard(p: &mut Vec<Part>) {
+    let skin = FUR_TAN;
+    // The helm, its crest, and the face under its brim
+    p.push(limb([0.02, 0.0, 1.89], [-0.15, 0.0, 1.93], 0.045, 0.03, CLOTH));
+    p.push(ellipsoid([0.0, 0.0, 1.77], [0.145, 0.14, 0.12], STEEL));
+    p.push(ellipsoid([0.01, 0.0, 1.69], [0.165, 0.165, 0.022], STEEL));
+    p.push(ball([0.02, 0.0, 1.62], 0.12, skin));
+    p.push(limb([0.0, 0.0, 1.42], [0.01, 0.0, 1.54], 0.05, 0.05, skin));
+    // The spear, held upright beside it, and the shield on its other arm
+    let spear = [0.17, -0.31];
+    p.push(limb([spear[0], spear[1], 2.27], [spear[0], spear[1], 2.52], 0.04, 0.006, STEEL));
+    p.push(limb([spear[0], spear[1], 2.22], [spear[0], spear[1], 2.27], 0.045, 0.045, GOLD));
+    p.push(limb([spear[0], spear[1], 0.02], [spear[0], spear[1], 2.25], 0.025, 0.025, WOOD));
+    p.push(ellipsoid([0.2, 0.31, 1.08], [0.045, 0.19, 0.27], CLOTH));
+    p.push(ellipsoid([0.19, 0.31, 1.08], [0.04, 0.22, 0.3], GOLD));
+    // The arms, one holding the spear, pauldrons on the shoulders
+    for (s, hand) in [(-1.0, [spear[0] - 0.02, spear[1] + 0.03, 1.12]), (1.0, [0.13, 0.27, 1.1])] {
+        let (shoulder, elbow) = ([0.0, s * 0.21, 1.42], [0.05, s * 0.27, 1.15]);
+        p.push(ball(hand, 0.05, LEATHER));
+        p.push(ball([0.0, s * 0.22, 1.43], 0.085, STEEL));
+        p.push(limb(elbow, hand, 0.052, 0.047, DARK_STEEL));
+        p.push(limb(shoulder, elbow, 0.062, 0.054, DARK_STEEL));
+    }
+    // Breastplate, the tabard under it with its gold band, a belt, and legs in greaves
+    p.push(ellipsoid([0.0, 0.0, 1.27], [0.14, 0.205, 0.2], STEEL));
+    p.push(ellipsoid([0.02, 0.0, 0.96], [0.15, 0.2, 0.035], LEATHER));
+    p.push(ellipsoid([0.035, 0.0, 0.92], [0.13, 0.045, 0.28], GOLD));
+    p.push(ellipsoid([0.02, 0.0, 0.92], [0.15, 0.2, 0.3], CLOTH));
+    for y in [0.1, -0.1] {
+        leg(p, [0.0, y, 0.88], 0.86, 0.075, 0.0, DARK_STEEL, LEATHER);
     }
 }
 
@@ -1792,6 +1880,20 @@ impl Animal {
             }
             return;
         }
+        // The princess stays by her throne, turning to whoever comes into the throne room, and her
+        // guards stand at their posts, turning to whoever comes right up to them and back after
+        if look.is_royal() {
+            self.speed = 0.0;
+            self.mood = Mood::Idle;
+            let near = if look == Look::Princess { 14.0 } else { 4.0 };
+            let to = player.map(|p| (p - self.position).xy()).filter(|to| to.norm() < near * vpm);
+            if to.is_some() || look == Look::RoyalGuard {
+                let want = to.map_or(self.target_heading, |to| to.y.atan2(to.x));
+                let turn = (want - self.heading + PI).rem_euclid(TAU) - PI;
+                self.heading += turn.clamp(-3.0 * dt, 3.0 * dt);
+            }
+            return;
+        }
         // Villagers stroll about their town, stopping to face whoever comes up to them
         if look.is_villager() {
             self.stroll(world, player);
@@ -1989,6 +2091,20 @@ pub fn spawn_merchant(world: &World, water: WaterLevel, near: Vector3<f64>, with
         }
     }
     None
+}
+
+/// The princess or one of her guards, `look`, on the floor at `near`, in voxels, facing `heading`:
+/// None if there's no floor there
+pub fn spawn_royal(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, heading: f64, seed: u32) -> Option<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    if near.x < 2.0 || near.y < 2.0 || near.x >= sx - 2.0 || near.y >= sy - 2.0 {
+        return None;
+    }
+    let z = ground_at(world, water, near.x, near.y, near.z, 2.0 * vpm, 3.0 * vpm)?;
+    let mut royal = Animal::new(look, Vector3::new(near.x, near.y, z), hash(seed ^ 0x9071));
+    (royal.heading, royal.target_heading) = (heading, heading);
+    Some(royal)
 }
 
 /// A villager of `look` on open ground near `near`, in voxels, within `within` meters, if there's

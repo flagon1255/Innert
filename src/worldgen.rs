@@ -3,6 +3,7 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod castles;
 mod towns;
 
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
@@ -2692,14 +2693,17 @@ impl Terrain {
         // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and no
         // ruins stand in them
         let (mut objects, towns) = self.towns(rivers, &mut features);
-        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).collect();
+        // Royal castles keep clear of all those and of caves themselves, see castles.rs
+        let (castles, royal) = self.castles(rivers, &mut features);
+        objects.extend(castles);
+        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).collect();
         objects.extend(self.buildings(heights, &mut features, &keep_out));
         for dungeon in &dungeons {
             objects.push(self.dungeon(dungeon, &mut features));
         }
         objects.extend(self.caves(&mut features));
         objects.extend(self.waterfall_caves(&mut features));
-        objects.extend(self.ravines(&mut features));
+        objects.extend(self.ravines(&mut features, &royal));
         objects.extend(self.camps(heights, &mut features, &keep_out));
         let footprints = std::mem::take(&mut features.footprints);
         let (lo, hi) = (self.lo, self.hi);
@@ -3360,13 +3364,18 @@ impl Terrain {
     /// Ravines: long, deep, narrow cracks in the ground, wandering along with ledges down their
     /// sides, at most one in each RAVINE_CELL square. Most are open to the sky; the rest are
     /// crevices hidden under the ground, with crystals glowing at the bottom.
-    fn ravines(&self, features: &mut Features) -> Vec<Object> {
+    fn ravines(&self, features: &mut Features, royal: &[[f32; 4]]) -> Vec<Object> {
         let (lo, hi) = (self.lo, self.hi);
         let mut objects = Vec::new();
         let first = [((lo[0] - RAVINE_REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - RAVINE_REACH) / RAVINE_CELL).floor() as i32];
         let last = [((hi[0] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32];
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
+                // None breaks into a royal castle, see castles.rs
+                let into = |o: &Object| royal.iter().any(|r| overlaps([o.min[0], o.min[1], o.max[0], o.max[1]], *r, 3.0));
+                if !royal.is_empty() && self.ravine(cx, cy, &mut Features::default()).is_some_and(|o| into(&o)) {
+                    continue;
+                }
                 objects.extend(self.ravine(cx, cy, features));
             }
         }

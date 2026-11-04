@@ -1366,11 +1366,26 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_town(near, underground, kind))
         });
+        // `--set royal=1` starts out in front of the gate of the nearest royal castle looking up at
+        // it, `royal=hall` inside the door of its great hall and `royal=throne` in its throne room,
+        // facing the princess. With `biome=snow` too, the nearest to the snow.
+        let royal_view = setting("royal").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none());
+        let inside_castle = matches!(royal_view, Some("hall" | "throne"));
+        let royal = royal_view.and_then(|_| {
+            let near = setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.nearest_castle(near))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = dungeon
             .map(|d| [d[0], d[1]])
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
             .or(town.map(|(square, _)| [square[0], square[1]]))
+            .or(royal.as_ref().map(|r| {
+                // Out in front of it, there's room in the world for the view of it from there
+                let out = if inside_castle { 0.0 } else { 25.0 };
+                [r.middle[0] + r.out[0] * out, r.middle[1] + r.out[1] * out]
+            }))
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
@@ -1469,6 +1484,27 @@ impl App {
             let out = Vector3::new(gate[0] as f64, gate[1] as f64, 0.0) * 16.0 * vpm;
             camera.position = voxels_to_camera(middle + out + Vector3::new(0.0, 0.0, 2.5 * vpm), world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+        } else if let Some(r) = &royal {
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let (eye, target) = match royal_view {
+                Some("hall") => (at(r.hall) + up(1.7), at(r.dais) + up(1.6)),
+                Some("throne") => (at(r.throne) + up(1.65), at(r.princess) + up(1.3)),
+                // From high over one front corner, to see it all
+                Some("air") => {
+                    let (out, side) = (Vector3::new(r.out[0] as f64, r.out[1] as f64, 0.0), Vector3::new(-r.out[1] as f64, r.out[0] as f64, 0.0));
+                    (at(r.middle) + (out * 70.0 + side * 45.0) * vpm + up(18.0), at(r.middle) + up(6.0))
+                }
+                _ => {
+                    // Out along the way up to the gate, a little over the ground there
+                    let out = at(r.gate) + Vector3::new(r.out[0] as f64, r.out[1] as f64, 0.0) * 48.0 * vpm;
+                    let ground = (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(out.x as i64, out.y as i64, z))).unwrap_or(0) as f64;
+                    (Vector3::new(out.x, out.y, ground + 5.0 * vpm), at(r.tower) - up(12.0))
+                }
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
         } else if let Some((square, way_in)) = town {
             // In the square looking across it, or out by the way in looking towards it
             let vpm = world.voxels_per_meter as f64;
@@ -1538,7 +1574,7 @@ impl App {
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
-        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
+        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -1746,6 +1782,11 @@ impl App {
             rcx: None,
         };
         app.adopt_features();
+        // The merchants on stalls and the princess in her throne room are about by now, and may be
+        // nearer than the one wandering about
+        if setting("shop").is_some_and(|v| v == "true" || v == "1") {
+            app.game.open_nearest_shop(start);
+        }
         if let Some(n) = visit_waterfall {
             app.waterfall_index = n - 1;
             app.visit_waterfall();
@@ -1916,7 +1957,12 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 if site.kind == "town stall" {
-                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3 });
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None });
+                }
+                // The princess keeps the royal armoury in a castle's throne room
+                if site.kind.starts_with("royal") {
+                    let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
+                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
                 if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
@@ -1925,24 +1971,37 @@ impl App {
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
-                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0 })
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None })
             })
             .collect();
-        // Folk live round the towns' squares, those down in caverns in fewer of them
+        // Folk live round the towns' squares, those down in caverns in fewer of them, and some
+        // stroll round the courtyards of royal castles
         let towns: Vec<game::Town> = landscape
             .sites()
             .iter()
-            .filter(|site| matches!(site.kind, "town" | "cave town"))
+            .filter(|site| matches!(site.kind, "town" | "cave town" | "royal court"))
             .map(|site| {
-                let (folk, roam) = if site.kind == "town" { (7, 18.0) } else { (5, 12.0) };
+                let (folk, roam) = match site.kind {
+                    "town" => (7, 18.0),
+                    "royal court" => (4, 9.0),
+                    _ => (5, 12.0),
+                };
                 game::Town { position: to_voxels(site.position), folk, roam }
             })
+            .collect();
+        // Royal guards at the gates of castles and by the princess's throne
+        let guards: Vec<(Vector3<f64>, f64)> = landscape
+            .sites()
+            .iter()
+            .filter(|site| site.kind == "royal guard")
+            .map(|site| (to_voxels(site.position), (site.facing[1] as f64).atan2(site.facing[0] as f64)))
             .collect();
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
         self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
+        self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
