@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::{FRAC_PI_2, TAU};
+use std::rc::Rc;
 use std::time::Instant;
 
 use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, pos2, vec2};
@@ -12,10 +13,10 @@ use nalgebra::{UnitQuaternion, Vector3};
 use crate::animals::{self, ANIMAL_MODELS, Animal, AnimalInstance, Build, Look, Model, pack_models};
 use crate::audio::{Cue, Ground, Sound};
 use crate::bosses::{Deed, Move};
-use crate::combat::{Arena, Combat, Controls, HostileKind, MAX_MANA, View};
+use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
-use crate::weapons::{DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Special, Unit, Weapon};
+use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
 /// How far away things can be picked up or hit, in meters
@@ -47,10 +48,13 @@ pub enum Item {
     Gold(u32),
     /// One of Game::weapons
     Weapon(usize),
+    /// Special ammo, of Library::ammo, and how many: carried as one stack of each kind, used up a
+    /// shot at a time
+    Ammo(usize, u32),
 }
 
 impl Item {
-    /// What it looks like lying on the ground. Weapons are drawn with their own models.
+    /// What it looks like lying on the ground. Weapons and ammo are drawn with their own models.
     fn look(self) -> Option<Look> {
         match self {
             Item::Apple => Some(Look::Apple),
@@ -58,7 +62,7 @@ impl Item {
             Item::Bread => Some(Look::Bread),
             Item::Potion => Some(Look::Potion),
             Item::Gold(_) => Some(Look::Coins),
-            Item::Bucket | Item::Weapon(_) => None,
+            Item::Bucket | Item::Weapon(_) | Item::Ammo(..) => None,
         }
     }
 
@@ -71,6 +75,16 @@ impl Item {
             Item::Potion => "Healing Potion",
             Item::Gold(_) => "Gold",
             Item::Weapon(_) => "Weapon",
+            Item::Ammo(..) => "Ammo",
+        }
+    }
+
+    /// How many there are of it to show on its slot: the rounds in a stack of ammo, or `count`
+    fn shown(self, count: u32) -> Option<u32> {
+        match self {
+            Item::Bucket | Item::Weapon(_) => None,
+            Item::Ammo(_, n) => Some(n),
+            _ => Some(count),
         }
     }
 
@@ -116,7 +130,8 @@ pub const HOTBAR: usize = 9;
 /// Gold the player starts with
 const STARTING_GOLD: u32 = 60;
 
-/// Something a merchant has to sell: a weapon of Game::weapons, or food or potions, so many of them
+/// Something a merchant has to sell: a weapon of Game::weapons, or food, potions or bundles of
+/// ammo, so many of them
 #[derive(Clone, Copy)]
 enum Ware {
     Weapon(usize),
@@ -423,6 +438,11 @@ pub struct Game {
     /// What weapons can be made of, and the ones the player has
     library: Library,
     weapons: Vec<Weapon>,
+    /// The special ammo picked for each kind of shot, by what Shot::ammo() calls it: plain ammo
+    /// if there's none, which never runs out
+    ammo_choice: HashMap<&'static str, usize>,
+    /// What the weapon in hand shoots with that in it, for the weapon and ammo it was worked out for
+    loaded: Option<((usize, usize), Loaded)>,
     combat: Combat,
     leaves: Leaves,
     /// The models of animals and things lying around, see animals::animal_models()
@@ -554,6 +574,8 @@ impl Game {
             apple_timer: 0.0,
             library: Library::load(),
             weapons: Vec::new(),
+            ammo_choice: HashMap::new(),
+            loaded: None,
             combat: Combat::new(seed, ANIMAL_MODELS as u32),
             leaves: Leaves::new(seed),
             models: animals::animal_models(),
@@ -566,13 +588,16 @@ impl Game {
         game
     }
 
-    /// What the player starts with: a sword, a bow and a staff rolled from `seed` with `luck`, as
-    /// for Library::roll_rarity(), and the bucket. Replaces whatever weapons they had.
+    /// What the player starts with: a sword, a bow and a staff, a crossbow and a musket and one of
+    /// every other kind of weapon, rolled from `seed` with `luck`, as for Library::roll_rarity(),
+    /// a few bundles of special ammo, and the bucket. Replaces whatever weapons they had.
     pub fn arm(&mut self, seed: u32, luck: f64) {
         self.weapons.clear();
-        self.slots.retain(|(item, _)| !matches!(item, Item::Weapon(_) | Item::Bucket));
+        self.combat.renumber(|_| None);
+        self.loaded = None;
+        self.slots.retain(|(item, _)| !matches!(item, Item::Weapon(_) | Item::Bucket | Item::Ammo(..)));
         let mut fresh = Vec::new();
-        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip"];
+        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
         for (k, family) in families.into_iter().enumerate() {
             if let Some(family) = self.library.family(family) {
                 self.weapons.push(self.library.generate(hash(seed ^ (k as u32 + 1) * 0x51ed), Some(family), luck));
@@ -580,6 +605,11 @@ impl Game {
             }
         }
         fresh.push((Item::Bucket, 1));
+        for id in ["broadhead_arrows", "incendiary_bolts", "scatter_shot"] {
+            if let Some(k) = self.library.ammo.iter().position(|a| a.id == id) {
+                fresh.push((Item::Ammo(k, self.library.ammo[k].bundle), 1));
+            }
+        }
         fresh.append(&mut self.slots);
         self.slots = fresh;
         self.selected = 0;
@@ -705,7 +735,98 @@ impl Game {
     fn item_name(&self, item: Item) -> String {
         match item {
             Item::Weapon(i) => self.weapons[i].name.clone(),
+            Item::Ammo(k, n) => format!("{n} {}", self.library.ammo[k].display_name),
             _ => item.name().to_owned(),
+        }
+    }
+
+    /// The special ammo the weapon in hand would shoot, if it shoots and some's picked and carried
+    fn chosen_ammo(&self) -> Option<usize> {
+        let shot = self.held()?.1.shot()?;
+        let k = *self.ammo_choice.get(shot.ammo())?;
+        self.slots.iter().any(|&(item, _)| matches!(item, Item::Ammo(a, n) if a == k && n > 0)).then_some(k)
+    }
+
+    /// T: loads the next kind of special ammo carried that the weapon in hand shoots, going round
+    /// to plain ammo, which never runs out
+    pub fn switch_ammo(&mut self) {
+        let Some((_, weapon)) = self.held() else {
+            return;
+        };
+        let Some(shot) = weapon.shot() else {
+            self.say("Only bows, crossbows and guns take ammo.");
+            return;
+        };
+        let mut kinds: Vec<usize> = Vec::new();
+        for &(item, _) in &self.slots {
+            if let Item::Ammo(k, n) = item
+                && n > 0
+                && self.library.ammo[k].shot().ammo() == shot.ammo()
+                && !kinds.contains(&k)
+            {
+                kinds.push(k);
+            }
+        }
+        if kinds.is_empty() {
+            self.say(format!("You have no special {}. Merchants sell them, and bandits carry some.", shot.plural()));
+            return;
+        }
+        let next = match self.chosen_ammo().and_then(|k| kinds.iter().position(|&x| x == k)) {
+            Some(i) if i + 1 < kinds.len() => Some(kinds[i + 1]),
+            Some(_) => None,
+            None => Some(kinds[0]),
+        };
+        match next {
+            Some(k) => {
+                self.ammo_choice.insert(shot.ammo(), k);
+                let count = self.ammo_count(k);
+                self.say(format!("Loaded {} ({count} left).", self.library.ammo[k].display_name));
+            }
+            None => {
+                self.ammo_choice.remove(shot.ammo());
+                self.say(format!("Plain {}: they never run out.", shot.plural()));
+            }
+        }
+        self.cues.push(Cue::here(Sound::Latch, 0.4).pitched(1.4));
+    }
+
+    /// Loads special ammo `k` into whatever shoots it, as the ammo it uses from now on
+    fn load_ammo(&mut self, k: usize) {
+        let def = &self.library.ammo[k];
+        self.ammo_choice.insert(def.shot().ammo(), k);
+        self.say(format!("Loaded {}. T switches ammo with a {} in hand.", def.display_name, match def.shot() {
+            Shot::Arrow => "bow",
+            Shot::Quarrel => "crossbow",
+            _ => "gun",
+        }));
+        self.cues.push(Cue::here(Sound::Latch, 0.4).pitched(1.4));
+    }
+
+    /// How many of special ammo `k` are carried
+    fn ammo_count(&self, k: usize) -> u32 {
+        self.slots.iter().map(|&(item, _)| if let Item::Ammo(a, n) = item && a == k { n } else { 0 }).sum()
+    }
+
+    /// For trying it out: gives the player a bundle of the special ammo called `id` and loads it
+    pub fn give_ammo(&mut self, id: &str) {
+        if let Some(k) = self.library.ammo.iter().position(|a| a.id == id) {
+            self.add_item(Item::Ammo(k, self.library.ammo[k].bundle * 3), 1);
+            self.load_ammo(k);
+        }
+    }
+
+    /// Takes a shot of special ammo `k` out of what's carried, saying so when it runs out
+    fn spend_ammo(&mut self, k: usize) {
+        let Some(slot) = self.slots.iter().position(|&(item, _)| matches!(item, Item::Ammo(a, n) if a == k && n > 0)) else {
+            return;
+        };
+        if let Item::Ammo(_, n) = &mut self.slots[slot].0 {
+            *n -= 1;
+            if *n == 0 {
+                self.remove_slot(slot);
+                let def = &self.library.ammo[k];
+                self.say(format!("Out of {}: back to plain {}.", def.display_name, def.shot().plural()));
+            }
         }
     }
 
@@ -1015,8 +1136,20 @@ impl Game {
             _ => None,
         };
         let controls = if self.dead.is_some() { Controls::default() } else { controls };
+        // The special ammo in what's in hand, worked out again only when either changes
+        let wanted = held.zip(self.chosen_ammo());
+        if self.loaded.as_ref().map(|(key, _)| *key) != wanted {
+            self.loaded = wanted.map(|(w, k)| {
+                let profile = Rc::new(self.library.loaded(&self.weapons[w], k));
+                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head })
+            });
+        }
         let weapon = held.map(|i| (i, &self.weapons[i]));
-        self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player, water }, weapon, controls, dt);
+        let loaded = self.loaded.as_ref().map(|(_, l)| l);
+        self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player, water }, weapon, loaded, controls, dt);
+        for k in std::mem::take(&mut self.combat.spent) {
+            self.spend_ammo(k);
+        }
         for message in std::mem::take(&mut self.combat.messages) {
             self.say(message);
         }
@@ -1750,6 +1883,21 @@ impl Game {
         self.shake.max(self.combat.shake)
     }
 
+    /// How far a shot has kicked the view up, in radians
+    pub fn kick(&self) -> f64 {
+        self.combat.kick
+    }
+
+    /// A bundle of special ammo of any kind picked at random, between half a bundle and a whole one
+    fn roll_ammo(&mut self) -> Option<Item> {
+        if self.library.ammo.is_empty() {
+            return None;
+        }
+        let k = (random(&mut self.rng) * self.library.ammo.len() as f64) as usize % self.library.ammo.len();
+        let bundle = self.library.ammo[k].bundle;
+        Some(Item::Ammo(k, (bundle / 2).max(1) + (random(&mut self.rng) * (bundle / 2 + 1) as f64) as u32))
+    }
+
     /// Animals that were killed fall, and leave their meat. Bosses and monsters leave loot.
     fn reap(&mut self, world: &World) {
         let vpm = world.voxels_per_meter as f64;
@@ -1780,6 +1928,10 @@ impl Game {
                     loot.push(self.roll_weapon(1.5));
                 } else if look != Look::Wolf && random(&mut self.rng) < 0.1 {
                     loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
+                }
+                // Bandits carry ammo for their bows and guns
+                if matches!(look, Look::Bandit | Look::BanditBrute) && random(&mut self.rng) < 0.5 {
+                    loot.extend(self.roll_ammo());
                 }
                 self.scatter(world, middle, animal.position, loot, 0.9);
             }
@@ -1891,6 +2043,8 @@ impl Game {
             k += 1;
             kept[k - 1]
         });
+        self.combat.renumber(|i| kept.get(i).copied().unwrap_or(false).then(|| to[i]));
+        self.loaded = None;
         let renumber = |item: &mut Item| {
             if let Item::Weapon(i) = item {
                 *i = to[*i];
@@ -1953,6 +2107,7 @@ impl Game {
         match item {
             Item::Weapon(w) => self.weapon_price(w),
             Item::Gold(n) => n,
+            Item::Ammo(k, n) => (self.library.ammo[k].price * n as f64).ceil() as u32,
             _ => food_price(item),
         }
     }
@@ -1992,7 +2147,16 @@ impl Game {
         target
     }
 
+    /// Adds `count` of `item` to what's carried, on its stack if there is one: ammo of the same
+    /// kind goes on the one stack however many are in it
     fn add_item(&mut self, item: Item, count: u32) {
+        if let Item::Ammo(k, more) = item {
+            match self.slots.iter_mut().find(|(i, _)| matches!(i, Item::Ammo(a, _) if *a == k)) {
+                Some((Item::Ammo(_, n), _)) => *n += more * count,
+                _ => self.slots.push((Item::Ammo(k, more * count), 1)),
+            }
+            return;
+        }
         match self.slots.iter_mut().find(|(i, _)| *i == item) {
             Some(slot) => slot.1 += count,
             None => self.slots.push((item, count)),
@@ -2080,6 +2244,11 @@ impl Game {
                 let family = &self.library.families[weapon.family];
                 self.say(format!("You take {}, a {} {}.", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase()));
             }
+            Item::Ammo(k, n) => {
+                self.add_item(item, 1);
+                self.cues.push(Cue::here(Sound::Ratchet, 0.6).pitched(0.7));
+                self.say(format!("+{n} {}", self.library.ammo[k].display_name));
+            }
             _ => {
                 self.add_item(item, 1);
                 self.cues.push(Cue::here(Sound::Pickup, 0.6));
@@ -2099,9 +2268,18 @@ impl Game {
         self.target = None;
         let rarity = &self.library.rarities[weapon.grade];
         let family = &self.library.families[weapon.family];
-        let message = format!("You found {}, a {} {}, and {gold} gold!", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase());
+        // Half of them have a bundle of special ammo in too
+        let ammo = (!self.library.ammo.is_empty() && hash(seed ^ 0xa770) % 2 == 0).then(|| {
+            let k = hash(seed ^ 0xa771) as usize % self.library.ammo.len();
+            (k, self.library.ammo[k].bundle)
+        });
+        let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
+        let message = format!("You found {}, a {} {}{extra}, and {gold} gold!", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase());
         self.weapons.push(weapon);
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        if let Some((k, n)) = ammo {
+            self.add_item(Item::Ammo(k, n), 1);
+        }
         self.gold += gold;
         self.models_version += 1;
         self.cues.push(Cue::here(Sound::Chest, 0.8));
@@ -2262,6 +2440,16 @@ impl Game {
             Ware::Food(..) => 0,
         });
         wares.extend([Ware::Food(Item::Potion, 4), Ware::Food(Item::Bread, 6), Ware::Food(Item::Meat, 5), Ware::Food(Item::Apple, 10)]);
+        // A few kinds of special ammo, a bundle at a time
+        let mut kinds: Vec<usize> = Vec::new();
+        for _ in 0..4 {
+            seed = hash(seed);
+            let k = seed as usize % self.library.ammo.len().max(1);
+            if k < self.library.ammo.len() && !kinds.contains(&k) {
+                kinds.push(k);
+                wares.push(Ware::Food(Item::Ammo(k, self.library.ammo[k].bundle), 3));
+            }
+        }
         self.stocks.insert(key, wares);
     }
 
@@ -2358,6 +2546,11 @@ impl Game {
         if slot >= self.slots.len() {
             return;
         }
+        // Ammo isn't held, it's loaded into what shoots it
+        if let Item::Ammo(k, _) = self.slots[slot].0 {
+            self.load_ammo(k);
+            return;
+        }
         let to = if slot < HOTBAR {
             slot
         } else {
@@ -2435,7 +2628,11 @@ impl Game {
     /// For trying them out: rolls lucky weapons of any family until one has the special attack
     /// `special`, puts it in hand and charges it
     pub fn find_special(&mut self, special: Special) {
-        for seed in 0..20000u32 {
+        for seed in 0..200_000u32 {
+            // Looked for in the parts alone, as building each weapon's models takes a while
+            if self.library.special_of(hash(seed ^ 0x5bec), 8.0) != Some(special) {
+                continue;
+            }
             let weapon = self.library.generate(hash(seed ^ 0x5bec), None, 8.0);
             if weapon.profile.special.as_ref().is_some_and(|(s, _)| *s == special) {
                 self.weapons.push(weapon);
@@ -2448,11 +2645,21 @@ impl Game {
         }
     }
 
-    /// Takes the first weapon of family `id` carried in hand
+    /// Takes the first weapon of family `id` carried in hand, or for trying it out, one rolled if
+    /// none is carried
     pub fn select_family(&mut self, id: &str) {
-        let family = self.library.family(id);
-        if let Some(slot) = self.slots.iter().position(|(item, _)| matches!(item, Item::Weapon(i) if family.is_some() && self.weapons[*i].family == family.unwrap())) {
-            self.hold(slot);
+        let Some(family) = self.library.family(id) else {
+            return;
+        };
+        let carried = self.slots.iter().position(|(item, _)| matches!(item, Item::Weapon(i) if self.weapons[*i].family == family));
+        match carried {
+            Some(slot) => self.hold(slot),
+            None => {
+                self.weapons.push(self.library.generate(hash(self.seed ^ 0xfa31), Some(family), 1.0));
+                self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+                self.selected = 0;
+                self.models_version += 1;
+            }
         }
     }
 
@@ -2528,6 +2735,11 @@ impl Game {
                     let hover = (0.22 + 0.05 * (time * 2.2 + pickup.heading).sin()) * vpm;
                     let middle = (look.grip + look.tip) * 0.5;
                     near.push((d, placed(self.weapon_model(w), &look.frames[0], look.res, middle, at + Vector3::new(0.0, 0.0, hover), rotation, vpm)));
+                }
+                // A few arrows or bolts lying side by side, or a little pile of shot
+                (Item::Ammo(k, _), None) => {
+                    let def = &self.library.ammo[k];
+                    near.extend(self.combat.bundle_instances(def.shot(), def.head.unwrap_or(0), def.element, at, pickup.heading).into_iter().map(|i| (d, i)));
                 }
                 _ => {}
             }
@@ -2682,15 +2894,32 @@ impl Game {
 
         painter.circle_filled(center, 3.5, shadow);
         painter.circle_filled(center, 2.0, Color32::WHITE);
-        // How far the bow is drawn, as a ring closing round the crosshair
-        if let Some((_, weapon)) = self.held()
+        // How far the bow is drawn, or a crossbow or gun loaded, as a ring closing round the
+        // crosshair, and what a crossbow or gun has loaded as pips under it
+        if let Some((index, weapon)) = self.held()
             && weapon.kind() == Kind::Ranged
         {
+            let ring = |fraction: f32, tint: Color32| {
+                let points: Vec<Pos2> = (0..=32).map(|k| k as f32 / 32.0 * fraction * std::f32::consts::TAU).map(|a| center + vec2(a.sin(), -a.cos()) * 14.0).collect();
+                painter.add(egui::Shape::line(points, Stroke::new(2.5f32, tint)));
+            };
             let draw = self.combat.draw(weapon) as f32;
             if draw > 0.0 {
-                let points: Vec<Pos2> = (0..=32).map(|k| k as f32 / 32.0 * draw * std::f32::consts::TAU).map(|a| center + vec2(a.sin(), -a.cos()) * 14.0).collect();
-                let tint = if draw >= 1.0 { Color32::from_rgb(255, 220, 120) } else { Color32::WHITE };
-                painter.add(egui::Shape::line(points, Stroke::new(2.5f32, tint)));
+                ring(draw, if draw >= 1.0 { Color32::from_rgb(255, 220, 120) } else { Color32::WHITE });
+            }
+            if weapon.profile.build != WeaponBuild::None {
+                if let Some(done) = self.combat.reloading() {
+                    ring(done as f32, Color32::from_rgb(255, 180, 90));
+                }
+                let (left, full) = self.combat.rounds(index, weapon);
+                for k in 0..full {
+                    let at = center + vec2((k as f32 - (full as f32 - 1.0) * 0.5) * 7.0, 22.0);
+                    if k < left {
+                        painter.circle_filled(at, 2.5, Color32::from_rgb(255, 225, 150));
+                    } else {
+                        painter.circle_stroke(at, 2.5, Stroke::new(1.0f32, faint));
+                    }
+                }
             }
         }
 
@@ -2747,8 +2976,8 @@ impl Game {
                 painter.rect_stroke(rect, 8.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
             }
             self.draw_icon(&painter, item, rect.center() - vec2(0.0, 2.0), slot * 0.58);
-            if !matches!(item, Item::Bucket | Item::Weapon(_)) {
-                painter.text(rect.right_bottom() - vec2(5.0, 2.0), Align2::RIGHT_BOTTOM, count.to_string(), FontId::proportional(13.0), Color32::WHITE);
+            if let Some(n) = item.shown(count) {
+                painter.text(rect.right_bottom() - vec2(5.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(13.0), Color32::WHITE);
             }
             painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), faint);
         }
@@ -2923,6 +3152,21 @@ impl Game {
             };
             painter.text(at + vec2(0.0, 21.0), Align2::CENTER_TOP, detail, FontId::proportional(12.0), faint);
             below += 42.0;
+            // What it's loaded with, how many are left, and how to switch
+            if let Some(shot) = weapon.shot() {
+                let others = self.slots.iter().any(|&(item, _)| matches!(item, Item::Ammo(k, n) if n > 0 && self.library.ammo[k].shot().ammo() == shot.ammo()));
+                let (text, tint) = match self.chosen_ammo() {
+                    Some(k) => {
+                        let def = &self.library.ammo[k];
+                        (format!("{}  ×{}", def.display_name, self.ammo_count(k)), def.element.map_or(Color32::from_rgb(235, 225, 200), |e| color(e.color())))
+                    }
+                    None => (format!("Plain {}  ∞", shot.plural()), faint),
+                };
+                let text = if others { format!("{text}   ·   T") } else { text };
+                painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &text, FontId::proportional(14.0), shadow);
+                painter.text(pos2(center.x, below), Align2::CENTER_TOP, &text, FontId::proportional(14.0), tint);
+                below += 20.0;
+            }
             // Its special attack, filling as it charges, glowing once it's ready
             if let Some((special, _)) = &weapon.profile.special {
                 let charge = self.combat.charge as f32;
@@ -2992,7 +3236,11 @@ impl Game {
                         self.item_card(ui, item, count);
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if !matches!(item, Item::Gold(_)) && ui.add_enabled(slot != self.selected, egui::Button::new("Hold")).clicked() {
+                            if let Item::Ammo(..) = item {
+                                if ui.button("Load").on_hover_text("Shoot these from now on. T switches ammo too.").clicked() {
+                                    deed = Some(Deal::Hold(slot));
+                                }
+                            } else if !matches!(item, Item::Gold(_)) && ui.add_enabled(slot != self.selected, egui::Button::new("Hold")).clicked() {
                                 deed = Some(Deal::Hold(slot));
                             }
                             if item.consumable() && ui.button(if item.heal() > 0.0 { "Drink" } else { "Eat" }).clicked() {
@@ -3008,7 +3256,7 @@ impl Game {
                     });
                 });
                 ui.separator();
-                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Staff, scepter or wand: click to cast.").weak().small());
+                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
             });
         // The quick bar along the top takes what's dragged onto it too
@@ -3061,8 +3309,8 @@ impl Game {
                     painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
                 }
                 self.draw_icon(painter, item, rect.center() - vec2(0.0, 1.0), cell * 0.56);
-                if !matches!(item, Item::Bucket | Item::Weapon(_)) {
-                    painter.text(rect.right_bottom() - vec2(4.0, 2.0), Align2::RIGHT_BOTTOM, count.to_string(), FontId::proportional(12.0), Color32::WHITE);
+                if let Some(n) = item.shown(count) {
+                    painter.text(rect.right_bottom() - vec2(4.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(12.0), Color32::WHITE);
                 }
                 if i < HOTBAR {
                     painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
@@ -3194,6 +3442,43 @@ impl Game {
         }
         let good = Color32::from_rgb(120, 230, 110);
         match item {
+            Item::Ammo(k, n) => {
+                let def = &self.library.ammo[k];
+                let tint = def.element.map_or(Color32::WHITE, |e| color(e.color()));
+                ui.label(RichText::new(&def.display_name).size(19.0).strong().color(tint));
+                let what = match def.shot() {
+                    Shot::Arrow => "Arrows, for bows",
+                    Shot::Quarrel => "Bolts, for crossbows",
+                    _ => "Shot, for guns",
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(what).weak());
+                    if let Some(e) = def.element {
+                        ui.label(RichText::new(format!("·  {}", e.name())).color(color(e.color())));
+                    }
+                });
+                ui.separator();
+                for &d in &def.effect_defs {
+                    let effect = &self.library.effects[d];
+                    ui.label(RichText::new(format!("• {}: {}", effect.display_name, effect.description)).color(Color32::from_rgb(200, 220, 255)));
+                }
+                let (adds, times) = def.stats();
+                for (key, label, unit) in STATS {
+                    if let Some(&v) = adds.get(key) {
+                        let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
+                        ui.label(RichText::new(format!("+{} {}", unit.show(v), label.to_lowercase())).color(good));
+                    }
+                    if let Some(&v) = times.get(key) {
+                        let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
+                        ui.label(RichText::new(format!("{shown} {}", label.to_lowercase())).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
+                    }
+                }
+                ui.label(RichText::new(&def.description).weak().italics());
+                ui.separator();
+                ui.label(RichText::new(format!("{n} carried, used up a shot at a time. Plain {} never run out.", def.shot().plural())).weak());
+                ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
+                return;
+            }
             Item::Gold(n) => {
                 ui.label(RichText::new(format!("{n} gold")).size(19.0).strong().color(GOLD));
                 ui.label(RichText::new("Coin, to spend at merchants").weak());
@@ -3234,12 +3519,13 @@ impl Game {
         let weapon = &self.weapons[w];
         let rarity = &library.rarities[weapon.grade];
         let profile = &weapon.profile;
-        let other = self.held().filter(|&(i, held)| i != w && held.kind() == weapon.kind()).map(|(_, held)| held);
+        // Compared with what's in hand if it's the same kind, and shoots the same kind of thing
+        let other = self.held().filter(|&(i, held)| i != w && held.kind() == weapon.kind() && held.shot() == weapon.shot()).map(|(_, held)| held);
         let (good, bad) = (Color32::from_rgb(120, 230, 110), Color32::from_rgb(240, 95, 85));
         // How much better or worse it is than the one in hand, nothing if about the same
         let against = |ui: &mut egui::Ui, by: f64, unit: Unit, higher: bool| {
             let least = match unit {
-                Unit::Number | Unit::Speed => 0.5,
+                Unit::Number | Unit::Speed | Unit::Degrees => 0.5,
                 Unit::Rate | Unit::Times | Unit::Percent => 0.005,
                 Unit::Meters => 0.05,
             };
@@ -3279,6 +3565,10 @@ impl Game {
                 if value.abs() < 1e-6 && other.is_none_or(|o| o.profile.stat(key).abs() < 1e-6) {
                     continue;
                 }
+                // A single shot needs no saying
+                if key == "magazine" && value <= 1.0 && other.is_none_or(|o| o.profile.stat(key) <= 1.0) {
+                    continue;
+                }
                 if key == "elementalDamage" {
                     let tint = profile.element.map_or(Color32::GRAY, |e| color(e.color()));
                     ui.label(RichText::new(format!("{} damage", profile.element.map_or("Elemental", Element::name))).color(tint));
@@ -3312,6 +3602,28 @@ impl Game {
         for s in &profile.synergies {
             let def = &library.synergies[s.def];
             ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
+        }
+        // How a magic weapon of an unusual kind is used
+        let how = match profile.style {
+            Style::Channel => Some("Hold the button to pour a beam out at the crosshair; its mana cost goes each second."),
+            Style::Summon => Some("Click to conjure a familiar that hangs in the air casting at whatever's near, up to three at once."),
+            Style::Hex => Some("Click to cast a hex that drifts after what's near and eats away at it, slowing it; it passes on when it dies."),
+            Style::Toll => Some("Hold to raise the bell, longer for a harder toll; let go to ring out a shockwave all round."),
+            Style::Glaive => Some("Swung like a polearm; its finishing blow and heavy blows loose a spell too, for mana."),
+            _ => None,
+        };
+        if let Some(how) = how {
+            ui.add_space(4.0);
+            ui.label(RichText::new(how).weak().small());
+        }
+        if let Some(shot) = weapon.shot() {
+            ui.add_space(4.0);
+            let how = match profile.build {
+                WeaponBuild::None => "Hold right click to draw, click to shoot.",
+                WeaponBuild::Repeater => "Click or hold to shoot, its lever working between shots. Empty, it's reloaded by itself; right click reloads early.",
+                _ => "Click to shoot. Empty, it's reloaded by itself, which takes a while; right click reloads early.",
+            };
+            ui.label(RichText::new(format!("{how} Plain {} never run out; T loads special ones you carry.", shot.plural())).weak().small());
         }
         ui.separator();
         ui.horizontal(|ui| {
@@ -3378,7 +3690,7 @@ impl Game {
                                     self.draw_icon(ui.painter(), item, rect.center(), 26.0);
                                     let name = match item {
                                         Item::Weapon(w) => RichText::new(&self.weapons[w].name).color(color(self.library.rarities[self.weapons[w].grade].color)).strong(),
-                                        _ => RichText::new(format!("{}  ×{left}", item.name())),
+                                        _ => RichText::new(format!("{}  ×{left}", self.item_name(item))),
                                     };
                                     ui.label(name);
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3422,6 +3734,29 @@ impl Game {
     fn draw_icon(&self, painter: &egui::Painter, item: Item, center: Pos2, size: f32) {
         let r = size * 0.5;
         match item {
+            // A sheaf of arrows or bolts, or a pouch of shot, tipped with their element
+            Item::Ammo(k, _) => {
+                let def = &self.library.ammo[k];
+                let tip = def.element.map_or(Color32::from_rgb(210, 214, 222), |e| color(e.color()));
+                match def.shot() {
+                    Shot::Ball | Shot::Shell => {
+                        painter.circle_filled(center + vec2(0.0, r * 0.2), r * 0.62, Color32::from_rgb(130, 85, 50));
+                        painter.line_segment([center + vec2(-r * 0.3, -r * 0.35), center + vec2(r * 0.3, -r * 0.35)], Stroke::new(r * 0.12, Color32::from_rgb(90, 60, 35)));
+                        for (dx, dy) in [(-0.25, -0.55), (0.1, -0.62), (0.3, -0.45)] {
+                            painter.circle_filled(center + vec2(r * dx, r * dy), r * 0.17, tip);
+                        }
+                    }
+                    shot => {
+                        let short = if shot == Shot::Quarrel { 0.65 } else { 0.9 };
+                        for dx in [-0.3, 0.0, 0.3] {
+                            let (from, to) = (center + vec2(r * dx - r * 0.5 * short, r * 0.8 * short), center + vec2(r * dx + r * 0.5 * short, -r * 0.8 * short));
+                            painter.line_segment([from, to], Stroke::new(r * 0.08, Color32::from_rgb(150, 100, 60)));
+                            painter.circle_filled(to, r * 0.13, tip);
+                            painter.line_segment([from, from.lerp(to, 0.22)], Stroke::new(r * 0.16, Color32::from_rgb(235, 230, 220)));
+                        }
+                    }
+                }
+            }
             Item::Bucket => {
                 let full = (self.bucket / BUCKET_CAPACITY) as f32;
                 let body = Rect::from_center_size(center + vec2(0.0, r * 0.15), vec2(r * 1.4, r * 1.4));
@@ -3542,6 +3877,54 @@ impl Game {
                         painter.line_segment([guard + vec2(-r * span, -r * span), guard + vec2(r * span, r * span)], Stroke::new(r * 0.16, Color32::from_rgb(200, 170, 80)));
                         painter.line_segment([hilt, guard], Stroke::new(r * 0.16, Color32::from_rgb(110, 70, 45)));
                     }
+                    // A crossbow seen from above, its prod across the front, a bolt in its groove
+                    Kind::Ranged if matches!(weapon.profile.build, WeaponBuild::Lever | WeaponBuild::Crank | WeaponBuild::Repeater) => {
+                        let (butt, front) = (center + vec2(-r * 0.75, r * 0.75), center + vec2(r * 0.45, -r * 0.45));
+                        let across = vec2(r * 0.62, r * 0.62);
+                        let bend = vec2(-r * 0.22, r * 0.22);
+                        let prod: Vec<Pos2> = (0..=12).map(|k| {
+                            let s = k as f32 / 6.0 - 1.0;
+                            front + vec2(across.x * s, -across.y * s) * 1.0 + bend * s * s
+                        }).collect();
+                        let (a, b) = (prod[0], prod[12]);
+                        painter.line_segment([a, front + bend * 0.15 - vec2(r * 0.25, -r * 0.25)], Stroke::new(r * 0.04, Color32::from_rgb(235, 230, 210)));
+                        painter.line_segment([b, front + bend * 0.15 - vec2(r * 0.25, -r * 0.25)], Stroke::new(r * 0.04, Color32::from_rgb(235, 230, 210)));
+                        painter.line_segment([butt, front + vec2(r * 0.1, -r * 0.1)], Stroke::new(r * 0.2, wood));
+                        painter.add(egui::Shape::line(prod, Stroke::new(r * 0.13, if weapon.profile.build == WeaponBuild::Crank { metal } else { haft })));
+                        painter.line_segment([center + vec2(-r * 0.1, r * 0.1), front + vec2(r * 0.2, -r * 0.2)], Stroke::new(r * 0.06, glow));
+                        if weapon.profile.build == WeaponBuild::Repeater {
+                            painter.rect_filled(Rect::from_center_size(center + vec2(-r * 0.05, r * 0.05), vec2(r * 0.4, r * 0.4)), r * 0.05, haft);
+                        }
+                    }
+                    // A gun: a stock or grip and a barrel, flaring for a blunderbuss, thick for a cannon
+                    Kind::Ranged if weapon.profile.build != WeaponBuild::None => {
+                        let build = weapon.profile.build;
+                        let barrel = Color32::from_rgb(120, 125, 135);
+                        let (breech, muzzle) = (center + vec2(-r * 0.25, r * 0.15), center + vec2(r * 0.9, -r * 0.45));
+                        let thick = if build == WeaponBuild::Cannon { 0.34 } else { 0.15 };
+                        match build {
+                            WeaponBuild::Pistol => {
+                                painter.line_segment([breech, center + vec2(-r * 0.7, r * 0.85)], Stroke::new(r * 0.28, wood));
+                                painter.circle_filled(center + vec2(-r * 0.72, r * 0.9), r * 0.17, Color32::from_rgb(200, 160, 70));
+                            }
+                            WeaponBuild::Cannon => {
+                                painter.line_segment([breech, center + vec2(-r * 0.95, r * 0.65)], Stroke::new(r * 0.16, haft));
+                            }
+                            _ => {
+                                painter.add(egui::Shape::convex_polygon(
+                                    vec![breech + vec2(0.0, -r * 0.08), breech + vec2(r * 0.05, r * 0.12), center + vec2(-r * 0.95, r * 0.95), center + vec2(-r * 0.98, r * 0.55)],
+                                    wood,
+                                    Stroke::NONE,
+                                ));
+                                painter.line_segment([breech, breech.lerp(muzzle, 0.75) + vec2(0.0, r * 0.08)], Stroke::new(r * 0.18, wood));
+                            }
+                        }
+                        painter.line_segment([breech, muzzle], Stroke::new(r * thick, barrel));
+                        if build == WeaponBuild::Blunderbuss {
+                            painter.circle_filled(muzzle, r * 0.17, barrel);
+                        }
+                        painter.circle_filled(breech + vec2(-r * 0.05, -r * 0.12), r * 0.08, glow);
+                    }
                     Kind::Ranged => {
                         let points: Vec<Pos2> = (0..=16).map(|k| {
                             let a = (k as f32 / 16.0 - 0.5) * 2.4;
@@ -3551,6 +3934,56 @@ impl Game {
                         painter.add(egui::Shape::line(points, Stroke::new(r * 0.16, wood)));
                         painter.line_segment([top, bottom], Stroke::new(r * 0.05, Color32::from_rgb(235, 230, 210)));
                         painter.line_segment([center + vec2(-r * 0.6, 0.0), center + vec2(r * 0.85, 0.0)], Stroke::new(r * 0.07, glow));
+                    }
+                    // An orb in a ring over a little cradle
+                    Kind::Magic if family == "orb" => {
+                        painter.line_segment([center + vec2(0.0, r * 0.95), center + vec2(0.0, r * 0.45)], Stroke::new(r * 0.2, wood));
+                        painter.circle_filled(center - vec2(0.0, r * 0.15), r * 0.55, glow);
+                        painter.circle_filled(center - vec2(r * 0.18, r * 0.33), r * 0.15, Color32::from_white_alpha(170));
+                        painter.circle_stroke(center - vec2(0.0, r * 0.15), r * 0.66, Stroke::new(r * 0.08, Color32::from_rgb(200, 170, 80)));
+                    }
+                    // A shut book, a gem on its cover, gilt at its corners
+                    Kind::Magic if family == "tome" => {
+                        let book = Rect::from_center_size(center, vec2(r * 1.3, r * 1.7));
+                        painter.rect_filled(book, r * 0.08, Color32::from_rgb(110, 60, 40));
+                        painter.rect_filled(Rect::from_min_size(book.min, vec2(r * 0.18, book.height())), 0.0, Color32::from_rgb(80, 42, 28));
+                        painter.rect_filled(Rect::from_min_size(pos2(book.right() - r * 0.08, book.top() + r * 0.1), vec2(r * 0.12, book.height() - r * 0.2)), 0.0, Color32::from_rgb(240, 228, 200));
+                        for corner in [book.right_top(), book.right_bottom()] {
+                            painter.circle_filled(corner, r * 0.14, Color32::from_rgb(220, 180, 80));
+                        }
+                        painter.circle_filled(center + vec2(r * 0.08, 0.0), r * 0.22, glow);
+                    }
+                    // A carved pole of faces, eyes glowing, horns on top
+                    Kind::Magic if family == "totem" => {
+                        painter.line_segment([center + vec2(0.0, r * 0.95), center - vec2(0.0, r * 0.6)], Stroke::new(r * 0.36, wood));
+                        for (k, y) in [-0.4f32, 0.05, 0.5].into_iter().enumerate() {
+                            painter.rect_filled(Rect::from_center_size(center + vec2(0.0, r * y), vec2(r * 0.5, r * 0.32)), r * 0.08, if k % 2 == 0 { wood } else { Color32::from_rgb(170, 60, 40) });
+                            for dx in [-0.1, 0.1] {
+                                painter.circle_filled(center + vec2(r * dx, r * (y - 0.04)), r * 0.05, glow);
+                            }
+                        }
+                        for s in [-1.0, 1.0] {
+                            painter.line_segment([center - vec2(0.0, r * 0.65), center + vec2(s * r * 0.45, -r * 0.95)], Stroke::new(r * 0.1, Color32::from_rgb(235, 228, 210)));
+                        }
+                    }
+                    // A handbell, its clapper glowing under it
+                    Kind::Magic if family == "bell" => {
+                        painter.line_segment([center - vec2(0.0, r * 0.95), center - vec2(0.0, r * 0.45)], Stroke::new(r * 0.18, wood));
+                        let bell = Color32::from_rgb(205, 150, 70);
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![center + vec2(-r * 0.25, -r * 0.45), center + vec2(r * 0.25, -r * 0.45), center + vec2(r * 0.7, r * 0.5), center + vec2(-r * 0.7, r * 0.5)],
+                            bell,
+                            Stroke::NONE,
+                        ));
+                        painter.circle_filled(center - vec2(0.0, r * 0.45), r * 0.27, bell);
+                        painter.circle_filled(center + vec2(0.0, r * 0.68), r * 0.17, glow);
+                    }
+                    // A staff with a curved blade on its head
+                    Kind::Magic if family == "battlestaff" => {
+                        let (foot, top) = (center + vec2(-r * 0.8, r * 0.8), center + vec2(r * 0.35, -r * 0.35));
+                        painter.line_segment([foot, top], Stroke::new(r * 0.14, wood));
+                        painter.circle_filled(top, r * 0.18, glow);
+                        painter.add(egui::Shape::convex_polygon(vec![top + vec2(r * 0.05, -r * 0.1), top + vec2(r * 0.6, -r * 0.65), top + vec2(r * 0.3, -r * 0.1)], metal, Stroke::NONE));
                     }
                     Kind::Magic => {
                         painter.line_segment([center + vec2(-r * 0.6, r * 0.9), center + vec2(r * 0.4, -r * 0.5)], Stroke::new(r * 0.16, wood));

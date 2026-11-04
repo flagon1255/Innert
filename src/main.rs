@@ -1038,6 +1038,8 @@ struct App {
     scripted_sprint: bool,
     // and the mouse buttons for the next frame
     script_controls: combat::Controls,
+    // How far a shot's kick has turned the camera up, so it's turned back down as the kick dies away
+    kicked: f64,
     // None without anything to play sound on, and in screenshot runs
     audio: Option<audio::Audio>,
     // Holes blown in the landscape: where, in meters from its corner, and how big. They're blown
@@ -1376,6 +1378,11 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_castle(near))
         });
+        // `--set river=1` starts over the widest river within half a kilometer
+        let river_at = setting("river").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none()).and_then(|_| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.widest_river_near([112.0, 112.0], &rivers))
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = dungeon
             .map(|d| [d[0], d[1]])
@@ -1386,6 +1393,7 @@ impl App {
                 let out = if inside_castle { 0.0 } else { 25.0 };
                 [r.middle[0] + r.out[0] * out, r.middle[1] + r.out[1] * out]
             }))
+            .or(river_at)
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
@@ -1410,6 +1418,8 @@ impl App {
             let off = |s: &&worldgen::Site| (s.position[0] - middle[0]).hypot(s.position[1] - middle[1]);
             landscape.as_ref()?.sites().iter().filter(|s| s.kind == "waterfall cave").min_by(|a, b| off(a).total_cmp(&off(b))).map(|s| (s.position, s.facing))
         });
+        // Over that river, looking down it
+        let river = river_at.and_then(|_| landscape.as_ref()?.widest_river());
         // `--set camp=1` starts outside the bandits' camp nearest the middle of the world
         let camp = setting("camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|_| {
             let middle = [0, 1].map(|i| (origin[i] as f32 + world.size[i] as f32 * 0.5) / world.voxels_per_meter as f32);
@@ -1477,6 +1487,17 @@ impl App {
             };
             camera.position = voxels_to_camera(at, world.size);
             camera.look_at(voxels_to_camera(at + out * 4.0 * vpm, world.size));
+        } else if let Some((at, flow, wide)) = river {
+            let vpm = world.voxels_per_meter as f64;
+            let middle = Vector3::new(at[0] as f64 * vpm - origin[0] as f64, at[1] as f64 * vpm - origin[1] as f64, at[2] as f64 * vpm);
+            let flow = Vector3::new(flow[0] as f64, flow[1] as f64, 0.0);
+            println!("The widest river about is {:.1} m across", wide * 2.0);
+            // `river=high` from high over it, to see where it runs
+            let (up, back) = if setting("river") == Some("high") { (60.0, 40.0) } else { (12.0, 16.0) };
+            let mut eye = middle + (Vector3::new(0.0, 0.0, up) - flow * back) * vpm;
+            eye.z = eye.z.min(world.size[2] as f64 - 2.0 * vpm);
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(middle + flow * 16.0 * vpm, world.size));
         } else if let Some((fire, gate)) = camp {
             // Out past a way in, looking in at the fire
             let vpm = world.voxels_per_meter as f64;
@@ -1585,6 +1606,10 @@ impl App {
         }
         if let Some(family) = setting("weapon") {
             game.select_family(family);
+        }
+        // `--set ammo=fire_bolts` gives a few bundles of that special ammo and loads it
+        if let Some(id) = setting("ammo") {
+            game.give_ammo(id);
         }
         // `--set special=meteors` puts a weapon with that special attack in hand, charged
         if let Some(name) = setting("special")
@@ -1750,6 +1775,7 @@ impl App {
             scripted_walk: false,
             scripted_sprint: false,
             script_controls: combat::Controls::default(),
+            kicked: 0.0,
             audio,
             craters: Vec::new(),
             edited: Vec::new(),
@@ -2460,7 +2486,7 @@ impl App {
         if falls.is_empty() {
             return;
         }
-        let (top, flow) = falls[self.waterfall_index % falls.len()];
+        let (top, flow, _) = falls[self.waterfall_index % falls.len()];
         self.waterfall_index += 1;
         let vpm = self.world.voxels_per_meter as f64;
         let target = Vector3::new(top[0] as f64, top[1] as f64, top[2] as f64 - 1.5) * vpm;
@@ -2623,6 +2649,9 @@ impl App {
                     self.game.primary(eye);
                 }
             }
+            if self.input.key_pressed(KeyCode::KeyT) {
+                self.game.switch_ammo();
+            }
             if self.input.key_pressed(KeyCode::KeyE) {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
@@ -2659,6 +2688,10 @@ impl App {
             let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // A shot kicking the view up, springing back down
+            let kick = self.game.kick();
+            self.camera.rotation.x += kick - self.kicked;
+            self.kicked = kick;
             let cues = self.game.take_cues();
             if let Some(sound) = &mut self.audio {
                 for cue in cues {
@@ -3051,7 +3084,11 @@ impl App {
                     self.camera.look_at(voxels_to_camera(target - Vector3::new(0.0, 0.0, down * vpm), self.world.size));
                     self.scripted_walk = approach.is_some_and(|after| f > after && (target - eye).xy().norm() > 3.0 * vpm);
                 }
-                self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                // `--set boss_pulse=50` holds the button that many frames at a time, letting go a
+                // moment between, to ring a bell or such
+                let pulse = settings_from_args().into_iter().find(|(k, _)| k == "boss_pulse").and_then(|(_, v)| v.parse::<usize>().ok());
+                let pressing = f > 30 && pulse.is_none_or(|n| (f - 31) % (n + 12) < n);
+                self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
@@ -3096,6 +3133,25 @@ impl App {
                 }
             }
             ("draw", f) => self.script_controls = combat::Controls { aiming: f > 5, ..Default::default() },
+            // On foot, shooting what's in hand as fast as it'll go at the nearest boss, or the
+            // ground a little way ahead, and switching ammo every 150 frames
+            ("shoot", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                match self.game.nearest_boss(eye).filter(|b| (b - eye).norm() < 40.0 * vpm) {
+                    Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                    None if f == 1 => self.camera.rotation.x = -0.15,
+                    None => {}
+                }
+                self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                if f % 150 == 0 {
+                    self.game.switch_ammo();
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
+                }
+            }
             // Draws all the way and shoots at the ground a little way ahead, over and over
             ("volley", f) => {
                 if f == 1 {
@@ -3431,6 +3487,7 @@ impl App {
                                         RichText::new(
                                             "WASD move · Space jump · Shift run · F fly\n\
                                              Click swing or cast · bow: hold right click, click to shoot\n\
+                                             Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Number keys pick what's in hand · I inventory\n\
                                              F1 settings · Esc menu",
