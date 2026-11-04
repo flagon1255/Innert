@@ -972,9 +972,11 @@ impl Game {
         std::mem::take(&mut self.combat.stains)
     }
 
-    /// Bits of what an explosion at `at` blew out of the world flying out
+    /// Chunks of what an explosion at `at` blew out of the world flying out, and dirt splashed up
+    /// round it
     pub fn debris(&mut self, at: Vector3<f64>, materials: &[u8], vpm: f64) {
         self.leaves.debris(at, materials, vpm);
+        self.combat.stir(at, 1.2, 0.7, DROP_MUD);
     }
 
     pub fn say(&mut self, message: impl Into<String>) {

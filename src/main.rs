@@ -2931,7 +2931,7 @@ impl App {
                     };
                     let flat = Vector3::new(look.x, look.y, 0.0).normalize();
                     let side = Vector3::new(-flat.y, flat.x, 0.0);
-                    let at = eye + flat * (7.0 + 10.0 * next()) * vpm + side * (next() - 0.5) * 14.0 * vpm;
+                    let at = eye + flat * (5.0 + 7.0 * next()) * vpm + side * (next() - 0.5) * 10.0 * vpm;
                     let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
                     self.blast(Vector3::new(at.x, at.y, ground), 1.2 + 1.3 * next());
                 }

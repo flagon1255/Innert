@@ -376,6 +376,9 @@ impl World {
         let side = 2 * r + 1;
         let mut holed_at = vec![false; (side * side) as usize];
         let (inner, outer) = ((radius * 0.82).powi(2), (radius * 1.12).powi(2));
+        // What flies out is picked from all through the hole, so from the top of the ground as
+        // much as from deep down: about one in so many of the voxels, about half of it solid
+        let stride = ((2.1 * radius.powi(3) / 60.0) as u32).max(1);
         for z in cz - r..=cz + r {
             for y in cy - r..=cy + r {
                 for x in cx - r..=cx + r {
@@ -397,7 +400,7 @@ impl World {
                     if dirty[k].1[i] == AIR {
                         continue;
                     }
-                    if blown.len() < 64 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % 6 == 0 {
+                    if blown.len() < 80 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % stride == 0 {
                         blown.push(dirty[k].1[i]);
                     }
                     dirty[k].1[i] = AIR;
