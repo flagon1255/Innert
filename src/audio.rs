@@ -110,6 +110,14 @@ pub enum Sound {
     Cock,
     /// A ball glancing off stone, whining away
     Ricochet,
+    /// An orb's beam pouring out, a humming buzz
+    Beam,
+    /// A bell tolling, deep and long
+    Toll,
+    /// Something conjured: a shimmer rising into a chord
+    Summon,
+    /// A hex cast: a dark whisper over a low drone
+    Hex,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -855,6 +863,22 @@ fn click(ring: f32, knock: f32, length: f32, seed: u32) -> Vec<f32> {
     samples
 }
 
+/// A bell struck: a bright strike, then the hum, prime, tierce and the rest of a bell's partials
+/// above `hum` Hz, each its own length, the low ones ringing on longest, and a slow beat in them
+fn toll(hum: f32, seed: u32) -> Vec<f32> {
+    let length = 2.6;
+    let mut lp = Lowpass(0.0);
+    // A bell's partials next to its hum, how loud, and how long they ring
+    let partials = [(1.0f32, 0.5f32, 1.0f32), (2.0, 0.6, 1.6), (2.4, 0.35, 2.2), (3.0, 0.3, 3.0), (4.0, 0.22, 4.0), (5.3, 0.15, 5.5), (6.7, 0.1, 7.0)];
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let strike = (x - lp.step(x, 3000.0)) * (-t * 300.0).exp() * 0.8;
+        let beat = 1.0 + 0.15 * (TAU * 2.3 * t).sin();
+        let ring: f32 = partials.iter().map(|(m, a, d)| (TAU * hum * m * t).sin() * a * (-t * d).exp()).sum();
+        (strike + ring * beat * 0.7) * ((length - t) * 4.0).min(1.0)
+    })
+}
+
 /// `seconds` of sound that loops without a seam: the end fades into the start
 fn looped(seconds: f32, seed: u32, f: impl FnMut(f32, &mut u32) -> f32) -> Vec<f32> {
     let fade = (0.5 * RATE as f32) as usize;
@@ -1108,6 +1132,47 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
             scrape + thud * 1.1
         }),
     ));
+    let mut lp = Lowpass(0.0);
+    clips.push((
+        Sound::Beam,
+        render(0.36, 190, |t, rng| {
+            // A buzzing hum, two tones a little apart beating, through a crackle of air
+            let buzz = ((TAU * 130.0 * t).sin() + 0.6 * (TAU * 131.5 * 2.0 * t).sin()).tanh();
+            let air = lp.step(noise(rng), 3000.0) * 0.4;
+            (buzz * 0.45 + air) * swell(t, 0.36).sqrt()
+        }),
+    ));
+    clips.push((Sound::Toll, toll(196.0, 191)));
+    clips.push((Sound::Toll, toll(174.6, 192)));
+    clips.push((
+        Sound::Summon,
+        render(0.7, 193, |t, _| {
+            // Notes rising one after another into a shimmering chord
+            let mut sum = 0.0;
+            for (k, f) in [440.0f32, 554.4, 659.3, 880.0].into_iter().enumerate() {
+                let start = k as f32 * 0.07;
+                if t >= start {
+                    let age = t - start;
+                    sum += (TAU * f * (1.0 + 0.004 * (TAU * 6.0 * age).sin()) * t).sin() * (age * 40.0).min(1.0) * (-age * 3.0).exp();
+                }
+            }
+            sum * 0.28 * ((0.7 - t) * 20.0).min(1.0)
+        }),
+    ));
+    let (mut lp, mut lp2, mut voice) = (Lowpass(0.0), Lowpass(0.0), Resonator(0.0, 0.0));
+    let mut hex = render(0.6, 194, |t, rng| {
+        // A breathy whisper through a wavering throat, over a low drone sinking away
+        let x = noise(rng);
+        let breath = (lp.step(x, 4000.0) - lp2.step(x, 900.0)) * swell(t, 0.6);
+        let whisper = voice.step(breath * 0.2, 700.0 + 300.0 * (TAU * 5.0 * t).sin(), 0.01) * 2.0;
+        let drone = (TAU * (90.0 - 30.0 * t) * t).sin() * 0.35 * swell(t, 0.6);
+        breath * 0.5 + whisper + drone
+    });
+    let peak = hex.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
+    for s in &mut hex {
+        *s *= 0.8 / peak;
+    }
+    clips.push((Sound::Hex, hex));
     let mut lp = Lowpass(0.0);
     clips.push((
         Sound::Ricochet,

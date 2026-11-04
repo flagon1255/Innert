@@ -2987,7 +2987,11 @@ impl App {
                     self.camera.look_at(voxels_to_camera(target - Vector3::new(0.0, 0.0, down * vpm), self.world.size));
                     self.scripted_walk = approach.is_some_and(|after| f > after && (target - eye).xy().norm() > 3.0 * vpm);
                 }
-                self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                // `--set boss_pulse=50` holds the button that many frames at a time, letting go a
+                // moment between, to ring a bell or such
+                let pulse = settings_from_args().into_iter().find(|(k, _)| k == "boss_pulse").and_then(|(_, v)| v.parse::<usize>().ok());
+                let pressing = f > 30 && pulse.is_none_or(|n| (f - 31) % (n + 12) < n);
+                self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }

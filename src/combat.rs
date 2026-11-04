@@ -72,6 +72,10 @@ pub struct Status {
     plague: Option<(f64, u32, u32)>,
     /// Blood Reaper carried by its bleeding: how much faster killing it makes attacks, and for how long
     reaper: Option<(f64, f64)>,
+    /// A totem's hex eating away at it, slowing it: seconds left, and what it does a second. It
+    /// passes on to whatever's nearest when it dies.
+    hex: f64,
+    hex_dps: f64,
 }
 
 impl Status {
@@ -196,6 +200,10 @@ enum Action {
     Reload { t: f64, length: f64 },
     /// A crossbow or gun just shot, kicking back, and a repeater's lever spanning it again
     Fire { t: f64, length: f64 },
+    /// An orb pouring out its beam, for `t` seconds so far
+    Channel { t: f64 },
+    /// A bell being raised to ring, harder the longer it's held, `t` seconds so far
+    Charge { t: f64 },
     Cast { t: f64, cast: bool },
     /// A special attack being unleashed, see special_move()
     Special { t: f64, length: f64, special: Special },
@@ -257,6 +265,11 @@ struct Projectile {
     size: f64,
     /// Seconds it pins what it hits to the spot, if it does
     pin: f64,
+    /// How hard it turns towards what's near, in turns a second, for a swarm of seekers
+    seek: f64,
+    /// How far round it bursts where it lands, in meters, whatever its weapon does, for shells
+    /// falling in a barrage
+    blast: f64,
 }
 
 /// How a spell flies and goes off, which its element decides. Holy magic isn't one of these: it
@@ -279,6 +292,8 @@ enum Form {
     Orb,
     /// A thin lance of blood, flying fast
     Lance,
+    /// A totem's hex, drifting slowly after what's near and clinging to it, eating away at it
+    Hex,
 }
 
 impl Form {
@@ -307,8 +322,63 @@ impl Form {
             Form::Missile => (1.1, 0.0, 0.6, 0.6),
             Form::Orb => (0.55, 0.0, 1.0, 1.3),
             Form::Lance => (1.6, 0.0, 0.8, 0.8),
+            Form::Hex => (1.0, 0.0, 0.8, 0.6),
         }
     }
+}
+
+/// Seconds a hex goes on eating away at what it caught, how much of the hit it does each second,
+/// and how much it slows it
+const HEX_SECONDS: f64 = 6.0;
+const HEX_DAMAGE: f64 = 0.4;
+const HEX_SLOW: f64 = 0.35;
+/// Seconds between the hurts of a beam, and how much of an orb's damage it does a second for each
+/// cast a second it has
+const BEAM_TICK: f64 = 0.15;
+const BEAM_POWER: f64 = 0.6;
+/// The most familiars a tome can keep conjured at once, how long each lasts and how often it casts
+const FAMILIARS: usize = 3;
+const FAMILIAR_SECONDS: f64 = 8.0;
+const FAMILIAR_PACE: f64 = 0.75;
+
+/// Something conjured hanging in the air, casting at whatever's nearest: a tome's familiar, or a
+/// phantom of the Phantom Host
+struct Familiar {
+    position: Vector3<f64>,
+    life: f64,
+    /// Seconds until it casts again
+    wait: f64,
+    profile: Rc<Profile>,
+    damage: f64,
+    phantom: bool,
+}
+
+/// Spectral blades circling the player: seconds left, how far round they've gone, and seconds
+/// until they cut again
+struct Orbit {
+    left: f64,
+    angle: f64,
+    tick: f64,
+    profile: Rc<Profile>,
+    damage: f64,
+}
+
+/// A bubble of stilled time: what's in it all but stops
+struct Stasis {
+    position: Vector3<f64>,
+    /// In meters
+    radius: f64,
+    life: f64,
+    tick: f64,
+    profile: Rc<Profile>,
+    damage: f64,
+}
+
+/// A soul siphon's beam, draining what's ahead: seconds left, and how much it does a second
+struct Siphon {
+    left: f64,
+    profile: Rc<Profile>,
+    damage: f64,
 }
 
 /// Fire left burning on the ground, or a cloud of venom hanging over it, hurting what's in it.
@@ -327,6 +397,8 @@ struct Lingering {
     effects: bool,
     /// How hard it goes off as it ends, if it does
     collapse: f64,
+    /// Flames leaping high off it, a wall of them, rather than flickering low over the ground
+    tall: bool,
 }
 
 /// Part of a special attack still to come, `delay` seconds from now
@@ -366,6 +438,12 @@ enum Act {
     Wave { at: Vector3<f64>, dir: Vector3<f64>, step: u32 },
     /// The `k`th gout of flame poured out
     Gout(u32),
+    /// Lightning strung between everything round about, the `k`th time
+    Web(u32),
+    /// The `k`th wave of knives whirling out
+    Knives(u32),
+    /// A shell falling onto here
+    Shell(Vector3<f64>),
 }
 
 /// Standing guard for a riposte: seconds left, and what answers a blow turned aside
@@ -699,6 +777,13 @@ pub struct Combat {
     nocked: Option<(Option<usize>, Option<Element>)>,
     /// Which special ammo, of Library::ammo, was shot since game.rs last looked, one for each shot
     pub spent: Vec<usize>,
+    /// Seconds until a beam hurts again, and until its hum sounds again
+    beam_tick: f64,
+    beam_hum: f64,
+    familiars: Vec<Familiar>,
+    orbit: Option<Orbit>,
+    stases: Vec<Stasis>,
+    siphon: Option<Siphon>,
     /// How fast the player is going in meters a second, and how far they've walked, to bob what's
     /// in hand as they go
     speed: f64,
@@ -1120,6 +1205,8 @@ fn new_move(before: Action, now: Action) -> bool {
         | (Action::Draw { t: a }, Action::Draw { t: b })
         | (Action::Reload { t: a, .. }, Action::Reload { t: b, .. })
         | (Action::Fire { t: a, .. }, Action::Fire { t: b, .. })
+        | (Action::Channel { t: a }, Action::Channel { t: b })
+        | (Action::Charge { t: a }, Action::Charge { t: b })
         | (Action::Loose { t: a }, Action::Loose { t: b }) => b < a,
         _ => true,
     }
@@ -1129,6 +1216,12 @@ fn new_move(before: Action, now: Action) -> bool {
 const FINISHER: u8 = 2;
 /// How much harder
 const FINISHER_POWER: f64 = 1.4;
+
+/// The style a weapon of `style` swings in: a battle staff like a scythe, sweeping with its blade
+/// held out across the top, the rest as they are
+fn moves_like(style: Style) -> Style {
+    if style == Style::Glaive { Style::Reap } else { style }
+}
 
 /// When a swing in `style` starts coming down, and when it lands, as parts of the whole swing.
 /// `combo` is which blow of a combo it is.
@@ -1497,6 +1590,15 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
         p
     };
     let staff = kind == Kind::Magic;
+    // Some go through the moves of others: slamming down to send ice out, whirling as knives fly,
+    // darting in to strike, or thrust out and held as a beam pours or lightning spreads
+    let special = match special {
+        Special::FrostNova => Special::Skyfall,
+        Special::BladeStorm => Special::Whirlwind,
+        Special::BlinkStrike => Special::Flurry,
+        Special::SoulSiphon | Special::ThunderWeb => Special::Stormchain,
+        other => other,
+    };
     // A crossbow or gun levelled at what's ahead, or raised to the sky, and shot, kicking
     if matches!(style, Style::Crank | Style::Powder) {
         let (length, _) = special_move(special, kind, Style::Draw);
@@ -1743,6 +1845,12 @@ impl Combat {
             flare_roll: 0.0,
             nocked: None,
             spent: Vec::new(),
+            beam_tick: 0.0,
+            beam_hum: 0.0,
+            familiars: Vec::new(),
+            orbit: None,
+            stases: Vec::new(),
+            siphon: None,
             speed: 0.0,
             stride: 0.0,
             player_hits: Vec::new(),
@@ -1800,8 +1908,15 @@ impl Combat {
                 Act::Meteor(at) | Act::Arrow(at) | Act::Rupture(at) | Act::Star(at) => *at -= shift,
                 Act::Arc { from, .. } => *from -= shift,
                 Act::Wave { at, .. } => *at -= shift,
-                Act::Bolt(_) | Act::Spin | Act::Slash | Act::Dash(_) | Act::Land { .. } | Act::Volley(_) | Act::Gout(_) => {}
+                Act::Shell(at) => *at -= shift,
+                Act::Bolt(_) | Act::Spin | Act::Slash | Act::Dash(_) | Act::Land { .. } | Act::Volley(_) | Act::Gout(_) | Act::Web(_) | Act::Knives(_) => {}
             }
+        }
+        for f in &mut self.familiars {
+            f.position -= shift;
+        }
+        for s in &mut self.stases {
+            s.position -= shift;
         }
         for s in &mut self.strikes {
             s.position -= shift;
@@ -1850,6 +1965,10 @@ impl Combat {
         self.popups.clear();
         self.craters.clear();
         self.lash = None;
+        self.familiars.clear();
+        self.orbit = None;
+        self.stases.clear();
+        self.siphon = None;
     }
 
     /// How far the bow in hand is drawn, 0-1
@@ -1938,6 +2057,7 @@ impl Combat {
 
         self.charge = (self.charge + dt / SPECIAL_SECONDS).min(1.0);
         self.follow_up(arena, dt);
+        self.conjured(arena, weapon.map(|(_, w)| w), dt);
         self.fly(arena, dt);
         self.fly_hostiles(arena, dt);
         self.linger(arena, dt);
@@ -2012,16 +2132,21 @@ impl Combat {
             self.action = if t + dt >= length { Action::Idle } else { Action::Special { t: t + dt, length, special } };
             return;
         }
-        match weapon.kind() {
+        let style = moves_like(profile.style);
+        // A battle staff's swung like a melee weapon
+        let kind = if profile.style == Style::Glaive { Kind::Melee } else { weapon.kind() };
+        match kind {
+            Kind::Magic if profile.style == Style::Channel => self.channel(arena, weapon, controls, dt),
+            Kind::Magic if profile.style == Style::Toll => self.toll(arena, weapon, controls, dt),
             Kind::Melee => {
                 if let Action::Swing { t, length, heavy, struck, combo } = self.action {
-                    let (comes, lands) = timing(profile.style, heavy, combo);
+                    let (comes, lands) = timing(style, heavy, combo);
                     let finisher = combo == FINISHER && !heavy;
                     // In heavy slow motion a moment as a blow lands
                     let dt = if self.hitstop > 0.0 { dt * HITSTOP_PACE } else { dt };
                     // Whooshing as it comes, and landing partway through the swing
                     if t < length * comes && t + dt >= length * comes {
-                        let (sound, pitch) = match profile.style {
+                        let (sound, pitch) = match style {
                             Style::Stab => (Sound::Stab, if heavy || finisher { 0.85 } else { 1.1 }),
                             Style::Thrust => (Sound::Stab, if heavy { 0.7 } else { 0.85 }),
                             Style::Smash => (Sound::HeavySwing, if heavy || finisher { 0.7 } else { 0.85 }),
@@ -2038,6 +2163,12 @@ impl Combat {
                     self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
                     if land {
                         self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
+                        // A battle staff's finishing blow, or its heavy one, looses a spell too
+                        let cost = profile.stat("manaCost");
+                        if profile.style == Style::Glaive && (finisher || heavy) && self.mana >= cost {
+                            self.mana -= cost;
+                            self.cast(arena, weapon);
+                        }
                     }
                 } else {
                     // A combo's dropped if the next blow doesn't follow soon enough
@@ -2298,6 +2429,284 @@ impl Combat {
         self.cap_sparks();
     }
 
+    /// Pouring the beam of the orb in hand out at the crosshair for as long as the button's held,
+    /// its mana cost going each second
+    fn channel(&mut self, arena: &mut Arena, weapon: &Weapon, controls: Controls, dt: f64) {
+        let profile = weapon.profile.clone();
+        let cost = profile.stat("manaCost") * dt;
+        let held = controls.attack || controls.holding;
+        if !held || self.raise < 1.0 || self.mana < cost {
+            if held && self.mana < cost && self.mana_warning <= 0.0 {
+                self.messages.push("Not enough mana.".into());
+                self.mana_warning = 2.0;
+            }
+            if matches!(self.action, Action::Channel { .. }) {
+                self.action = Action::Idle;
+            }
+            return;
+        }
+        self.mana -= cost;
+        let t = if let Action::Channel { t } = self.action { t + dt } else { 0.0 };
+        self.action = Action::Channel { t };
+        let vpm = arena.view.vpm;
+        let from = self.held_point(weapon, arena.view, false);
+        let target = self.aim(arena);
+        let reach = profile.stat("range").max(4.0) * vpm;
+        let to = from + (target - from).normalize() * (target - from).norm().min(reach);
+        let dps = (profile.stat("spellDamage") + profile.stat("elementalDamage")) * profile.stat("castSpeed").max(0.5) * BEAM_POWER * self.speedup();
+        self.pour(arena, &profile, from, to, dps, dt, 0.0);
+    }
+
+    /// A beam from `from` to `to` this frame: sparks streaming along it as far as the first thing
+    /// in its way, a glow where it lands, and every BEAM_TICK seconds that thing hurt by `dps` a
+    /// second's worth. With `drain`, that much of what it does comes back as health.
+    #[allow(clippy::too_many_arguments)]
+    fn pour(&mut self, arena: &mut Arena, profile: &Rc<Profile>, from: Vector3<f64>, to: Vector3<f64>, dps: f64, dt: f64, drain: f64) {
+        let vpm = arena.view.vpm;
+        let mut end = 1.0;
+        let mut hit = None;
+        for (i, a) in arena.animals.iter().enumerate().filter(|(_, a)| a.health > 0.0 && !a.look.is_pet()) {
+            if let Some(t) = sphere_hit(from, to, a.center(vpm as u32), a.look.body().1 * vpm).filter(|&t| t < end) {
+                end = t;
+                hit = Some(i);
+            }
+        }
+        let end = from + (to - from) * end;
+        let look = Element::look(profile.element);
+        // A stream of sparks, wavering, a fresh lot each frame: fine ones up close, ones the size
+        // of the world's voxels further out, where fine ones would be too small to see
+        let steps = ((end - from).norm() / (0.45 * vpm)).clamp(2.0, 20.0) as usize;
+        let wave = self.time * 23.0;
+        for k in 0..=steps {
+            let f = k as f64 / steps as f64;
+            let wobble = Vector3::new((wave + f * 9.0).sin(), (wave * 1.3 + f * 7.0).cos(), (wave * 0.7 + f * 11.0).sin()) * 0.04 * vpm * (f * (1.0 - f) * 4.0);
+            let at = from.lerp(&end, f) + wobble;
+            if (at - from).norm() < 1.5 * vpm {
+                self.fine(at, Vector3::zeros(), look, 0.05, 0.0);
+            } else {
+                self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.04, lifetime: 0.04, gravity: 0.0, slot: SLOT_SPARK });
+            }
+        }
+        self.cap_sparks();
+        if random(&mut self.rng) < dt * 20.0 {
+            self.mote(end, profile.element, 1.0);
+        }
+        self.flashes.push(Flash { position: end, color: profile.element.map_or([0.6, 0.85, 1.0], Element::light), reach: 3.0, life: dt * 1.5, lifetime: dt * 1.5 });
+        self.beam_hum -= dt;
+        if self.beam_hum <= 0.0 {
+            self.beam_hum = 0.3;
+            self.cues.push(Cue::here(Sound::Beam, 0.35).pitched(if drain > 0.0 { 0.7 } else { 1.0 }));
+        }
+        self.beam_tick -= dt;
+        if self.beam_tick > 0.0 {
+            return;
+        }
+        self.beam_tick += BEAM_TICK;
+        if let Some(i) = hit {
+            let crit = self.roll_crit(profile);
+            let damage = dps * BEAM_TICK * if crit { profile.stat("critDamage") } else { 1.0 };
+            self.element_hit(end, profile.element, 0.6);
+            self.strike(arena, profile, i, Blow { damage, crit, heavy: false, from, depth: 0, element: profile.element });
+            self.heal += damage * drain;
+        }
+    }
+
+    /// Ringing the bell in hand: held, it's raised to ring harder, up to a full toll in a second or
+    /// so; let go, it rings out in a shockwave all round, as wide and hard as it was rung
+    fn toll(&mut self, arena: &mut Arena, weapon: &Weapon, controls: Controls, dt: f64) {
+        let profile = weapon.profile.clone();
+        let full = 1.0 / (profile.stat("castSpeed") * self.speedup()).max(0.2);
+        match self.action {
+            Action::Charge { t } if controls.holding || controls.attack => {
+                let t = t + dt;
+                // Light gathering in to the bell as it's raised
+                if random(&mut self.rng) < dt * 30.0 {
+                    let mouth = self.held_point(weapon, arena.view, false);
+                    let out = self.any_direction() * 0.5 * arena.view.vpm;
+                    self.fine(mouth + out, -out * 3.0, Element::look(profile.element), 0.3, 0.0);
+                }
+                if t < full && t + dt >= full {
+                    self.cues.push(Cue::here(Sound::Pickup, 0.4).pitched(0.7));
+                }
+                self.action = Action::Charge { t };
+            }
+            Action::Charge { t } => {
+                let rung = (t / full).clamp(0.25, 1.0);
+                let cost = profile.stat("manaCost") * rung;
+                if self.mana >= cost {
+                    self.mana -= cost;
+                    self.ring_out(arena, &profile, rung);
+                } else if self.mana_warning <= 0.0 {
+                    self.messages.push("Not enough mana.".into());
+                    self.mana_warning = 2.0;
+                }
+                self.action = Action::Cast { t: 0.0, cast: true };
+                self.cooldown = 0.35;
+            }
+            Action::Cast { t, cast } => self.action = if t + dt >= CAST_TIME { Action::Idle } else { Action::Cast { t: t + dt, cast } },
+            _ => {
+                if controls.attack && self.cooldown <= 0.0 && self.raise >= 1.0 {
+                    self.action = Action::Charge { t: 0.0 };
+                }
+            }
+        }
+    }
+
+    /// A bell's toll, rung `rung` of the way, 0-1: a ring of light and a shockwave sweeping out
+    /// round the player, hurting and throwing back everything it reaches
+    fn ring_out(&mut self, arena: &mut Arena, profile: &Rc<Profile>, rung: f64) {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
+        let middle = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
+        let radius = (3.0 + 4.5 * rung) * profile.stat("area").max(0.5);
+        let look = Element::look(profile.element);
+        for k in 0..36 {
+            let a = k as f64 / 36.0 * TAU;
+            let out = Vector3::new(a.cos(), a.sin(), 0.0);
+            self.sparks.push(Spark { position: middle + out * 0.6 * vpm, velocity: out * radius * 2.2 * vpm, look, life: 0.45, lifetime: 0.45, gravity: 0.0, slot: SLOT_SPARK });
+        }
+        self.cap_sparks();
+        self.flashes.push(Flash { position: middle, color: profile.element.map_or([0.9, 0.85, 0.7], Element::light), reach: radius + 6.0, life: 0.3, lifetime: 0.3 });
+        self.cues.push(Cue::here(Sound::Toll, (0.6 + 0.4 * rung) as f32).pitched((1.2 - 0.35 * rung) as f32));
+        self.shake = self.shake.max(0.25 + 0.4 * rung);
+        let damage = (profile.stat("spellDamage") + profile.stat("elementalDamage")) * rung;
+        let push = profile.stat("knockback").max(3.0) * (0.5 + rung);
+        let near: Vec<(usize, f64)> = (0..arena.animals.len())
+            .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
+            .map(|i| (i, ((arena.animals[i].position - feet).norm() / vpm - arena.animals[i].look.body().1).max(0.0)))
+            .filter(|&(_, d)| d < radius)
+            .collect();
+        for (i, d) in near {
+            let away = arena.animals[i].position - feet;
+            let at = arena.animals[i].center(vpm as u32);
+            self.element_hit(at, profile.element, 0.8 + rung);
+            self.strike(arena, profile, i, Blow { damage: damage * (1.0 - 0.5 * d / radius), crit: false, heavy: rung > 0.8, from: feet, depth: 0, element: profile.element });
+            arena.animals[i].status.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x()) * push * vpm;
+        }
+    }
+
+    /// A tome's familiar conjured a little way ahead, to hang there casting at whatever's near,
+    /// the oldest of them going if there are too many
+    fn conjure(&mut self, profile: &Rc<Profile>, phantom: bool, at: Vector3<f64>) {
+        let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
+        if !phantom && self.familiars.iter().filter(|f| !f.phantom).count() >= FAMILIARS {
+            if let Some(k) = self.familiars.iter().position(|f| !f.phantom) {
+                self.familiars.remove(k);
+            }
+        }
+        self.familiars.push(Familiar { position: at, life: FAMILIAR_SECONDS, wait: 0.3, profile: profile.clone(), damage: if phantom { damage * 0.5 } else { damage }, phantom });
+        self.sparks(at, 14, 2.0, Element::look(if phantom { Some(Element::Holy) } else { profile.element }), -0.1, 0.5);
+        self.cues.push(Cue::at(Sound::Summon, at, 0.6).pitched(if phantom { 0.8 } else { 1.0 }));
+    }
+
+    /// Familiars and phantoms casting at what's nearest, and wearing off; spectral blades going
+    /// round; stilled time holding what's in it; a soul siphon draining
+    fn conjured(&mut self, arena: &mut Arena, weapon: Option<&Weapon>, dt: f64) {
+        let vpm = arena.view.vpm;
+        let feet = arena.player.unwrap_or(arena.view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
+        for mut f in std::mem::take(&mut self.familiars) {
+            f.life -= dt;
+            f.wait -= dt;
+            if f.wait <= 0.0 {
+                f.wait = if f.phantom { 0.5 } else { FAMILIAR_PACE };
+                let near = arena
+                    .animals
+                    .iter()
+                    .filter(|a| a.health > 0.0 && !a.look.is_pet())
+                    .map(|a| a.center(vpm as u32))
+                    .filter(|c| (c - f.position).norm() < 20.0 * vpm)
+                    .min_by(|a, b| (a - f.position).norm().total_cmp(&(b - f.position).norm()));
+                if let Some(to) = near {
+                    let speed = f.profile.stat("projectileSpeed").max(20.0) * vpm;
+                    self.launch(&f.profile, None, Form::Missile, f.position, (to - f.position).normalize() * speed, f.damage, 0.0);
+                    self.fine(f.position, Vector3::zeros(), Element::look(f.profile.element), 0.2, 0.0);
+                }
+            }
+            if f.life > 0.0 {
+                self.familiars.push(f);
+            } else {
+                self.sparks(f.position, 8, 1.5, Element::look(f.profile.element), 0.0, 0.4);
+            }
+        }
+        if let Some(mut o) = self.orbit.take() {
+            o.left -= dt;
+            o.angle += dt * 4.5;
+            o.tick -= dt;
+            if o.tick <= 0.0 {
+                o.tick = 0.25;
+                let near: Vec<usize> = (0..arena.animals.len())
+                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).xy().norm() < (3.2 + arena.animals[i].look.body().1) * vpm)
+                    .collect();
+                for i in near {
+                    let at = arena.animals[i].center(vpm as u32);
+                    self.sparks(at, 4, 2.5, Element::look(Some(Element::Arcane)), 0.4, 0.3);
+                    self.strike(arena, &o.profile, i, Blow { damage: o.damage, crit: false, heavy: false, from: feet, depth: 1, element: o.profile.element });
+                }
+            }
+            if o.left > 0.0 {
+                self.orbit = Some(o);
+            }
+        }
+        for mut s in std::mem::take(&mut self.stases) {
+            s.life -= dt;
+            s.tick -= dt;
+            let r = s.radius * vpm;
+            for a in arena.animals.iter_mut().filter(|a| a.health > 0.0 && !a.look.is_pet()) {
+                if (a.center(vpm as u32) - s.position).norm() < r + a.look.body().1 * vpm {
+                    a.status.slowed = a.status.slowed.max(0.15);
+                    a.status.slow = a.status.slow.max(0.85);
+                    a.status.push *= 0.5;
+                }
+            }
+            // What bosses threw hangs in it too
+            for h in &mut self.hostiles {
+                if (h.position - s.position).norm() < r {
+                    h.velocity *= (-4.0 * dt).exp();
+                    h.life += dt * 0.8;
+                }
+            }
+            // Motes drifting round its skin
+            if random(&mut self.rng) < dt * 70.0 {
+                let d = self.any_direction();
+                let round = d.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                self.sparks.push(Spark { position: s.position + d * r, velocity: round * 1.2 * vpm, look: Element::look(Some(Element::Arcane)), life: 0.5, lifetime: 0.5, gravity: 0.0, slot: SLOT_SPARK });
+                self.cap_sparks();
+            }
+            if s.tick <= 0.0 {
+                s.tick = 0.5;
+                let inside: Vec<usize> = (0..arena.animals.len()).filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].center(vpm as u32) - s.position).norm() < r).collect();
+                for i in inside {
+                    self.strike(arena, &s.profile, i, Blow { damage: s.damage, crit: false, heavy: false, from: s.position, depth: 1, element: Some(Element::Arcane) });
+                }
+            }
+            if s.life > 0.0 {
+                self.stases.push(s);
+            }
+        }
+        if let Some(mut s) = self.siphon.take() {
+            s.left -= dt;
+            if let Some(weapon) = weapon {
+                let from = self.held_point(weapon, arena.view, false);
+                let forward = arena.view.forward();
+                let near = arena
+                    .animals
+                    .iter()
+                    .filter(|a| a.health > 0.0 && !a.look.is_pet())
+                    .map(|a| a.center(vpm as u32))
+                    .filter(|c| (c - from).norm() < 20.0 * vpm && (c - from).normalize().dot(&forward) > 0.5)
+                    .min_by(|a, b| (a - from).norm().total_cmp(&(b - from).norm()));
+                let to = near.map_or(from + forward * 12.0 * vpm, |c| from + (c - from) * 1.05);
+                let profile = s.profile.clone();
+                self.pour(arena, &profile, from, to, s.damage, dt, 0.35);
+                self.heal = self.heal.min(40.0);
+            }
+            if s.left > 0.0 {
+                self.siphon = Some(s);
+            }
+        }
+    }
+
     /// The special attack of the weapon in hand, see weapons::Special
     fn unleash(&mut self, arena: &mut Arena, weapon: &Weapon, special: Special) {
         let view = arena.view;
@@ -2369,14 +2778,14 @@ impl Combat {
                 }
             }
             Special::Singularity => {
-                self.lingering.push(Lingering { position: target, radius: 4.5, life: 2.2, element: Element::Void, profile: profile.clone(), damage: base * 0.2, tick: 0.0, effects: false, collapse: base * 2.2 });
+                self.lingering.push(Lingering { tall: false, position: target, radius: 4.5, life: 2.2, element: Element::Void, profile: profile.clone(), damage: base * 0.2, tick: 0.0, effects: false, collapse: base * 2.2 });
             }
             Special::Blizzard => {
-                self.lingering.push(Lingering { position: target, radius: 5.0, life: 4.0, element: Element::Frost, profile: profile.clone(), damage: base * 0.3, tick: 0.0, effects: true, collapse: 0.0 });
+                self.lingering.push(Lingering { tall: false, position: target, radius: 5.0, life: 4.0, element: Element::Frost, profile: profile.clone(), damage: base * 0.3, tick: 0.0, effects: true, collapse: 0.0 });
                 self.stains.push((target, 5.0, SNOW, false));
             }
             Special::Plague => {
-                self.lingering.push(Lingering { position: target, radius: 5.5, life: 7.0, element: Element::Poison, profile: profile.clone(), damage: base * 0.25, tick: 0.0, effects: true, collapse: 0.0 });
+                self.lingering.push(Lingering { tall: false, position: target, radius: 5.5, life: 7.0, element: Element::Poison, profile: profile.clone(), damage: base * 0.25, tick: 0.0, effects: true, collapse: 0.0 });
                 for _ in 0..50 {
                     let v = self.any_direction() * 0.8 + Vector3::new(0.0, 0.0, 1.0 + random(&mut self.rng));
                     self.drop(target, v * 4.0 * vpm, DROP_VENOM, 1.5);
@@ -2502,6 +2911,137 @@ impl Combat {
                     later(&mut self.pending, k as f64 * 0.05, Act::Star(from), base * 0.6);
                 }
             }
+            // A ring of ice bursting out round the player, freezing everything it reaches
+            Special::FrostNova => {
+                let frost = Element::look(Some(Element::Frost));
+                for k in 0..40 {
+                    let a = k as f64 / 40.0 * TAU;
+                    let out = Vector3::new(a.cos(), a.sin(), 0.05);
+                    self.sparks.push(Spark { position: feet + out * 0.8 * vpm + Vector3::new(0.0, 0.0, 0.4 * vpm), velocity: out * 14.0 * vpm, look: frost, life: 0.6, lifetime: 0.6, gravity: 0.3, slot: SLOT_SPARK });
+                }
+                self.cap_sparks();
+                for k in 0..6 {
+                    let a = k as f64 / 6.0 * TAU + 0.3;
+                    let at = feet + Vector3::new(a.cos(), a.sin(), 0.0) * 4.5 * vpm;
+                    self.swells.push(Swell { model: ICE_BURST, position: at, radius: 1.6, life: 1.2, lifetime: 1.2 });
+                }
+                self.cues.push(Cue::here(Sound::Crack, 1.0).pitched(0.7));
+                let near: Vec<usize> = (0..arena.animals.len())
+                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).norm() < (9.0 + arena.animals[i].look.body().1) * vpm)
+                    .collect();
+                for i in near {
+                    let at = arena.animals[i].center(vpm as u32);
+                    self.element_hit(at, Some(Element::Frost), 1.5);
+                    self.strike(arena, &profile, i, Blow { damage: base * 1.2, crit: false, heavy: true, from: feet, depth: 0, element: Some(Element::Frost) });
+                    let s = &mut arena.animals[i].status;
+                    s.frozen = s.frozen.max(3.0);
+                    s.chill = 0.0;
+                }
+            }
+            // Lightning strung round everything near, again and again
+            Special::ThunderWeb => {
+                for k in 0..4 {
+                    later(&mut self.pending, 0.1 + 0.35 * k as f64, Act::Web(k), base * 0.6);
+                }
+            }
+            // Gone in a flash and there in front of it, three cuts, then back out of it
+            Special::BlinkStrike => {
+                let aimed = arena
+                    .animals
+                    .iter()
+                    .filter(|a| a.health > 0.0 && !a.look.is_pet())
+                    .map(|a| (a.position, a.look.body().1, (a.center(vpm as u32) - target).norm()))
+                    .filter(|&(p, _, d)| d < 5.0 * vpm && (p - feet).norm() < 25.0 * vpm)
+                    .min_by(|a, b| a.2.total_cmp(&b.2));
+                let (towards, distance) = match aimed {
+                    Some((p, body, _)) => ((p - feet).xy().try_normalize(1e-6).map_or(flat, |v| Vector3::new(v.x, v.y, 0.0)), ((p - feet).xy().norm() / vpm - body - 1.2).max(0.0)),
+                    None => (flat, room.min(10.0)),
+                };
+                self.sparks(view.eye, 20, -3.0, Element::look(Some(Element::Void)), 0.0, 0.4);
+                self.flashes.push(Flash { position: view.eye, color: Element::Void.light(), reach: 6.0, life: 0.3, lifetime: 0.3 });
+                self.dash = towards * (distance / 0.31).min(40.0) * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm);
+                self.cues.push(Cue::here(Sound::Dodge, 1.0).pitched(0.7));
+                for k in 0..3 {
+                    later(&mut self.pending, 0.24 + 0.1 * k as f64, Act::Slash, base * 1.3);
+                }
+            }
+            Special::SpectralBlades => {
+                self.orbit = Some(Orbit { left: 8.0, angle: 0.0, tick: 0.0, profile: profile.clone(), damage: base * 0.4 });
+                self.cues.push(Cue::here(Sound::Summon, 0.8).pitched(1.3));
+            }
+            // Three phantoms standing round, ahead and to either side
+            Special::PhantomHost => {
+                self.familiars.retain(|f| !f.phantom);
+                for a in [-1.1f64, 0.0, 1.1] {
+                    let out = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), a) * flat;
+                    let at = feet + out * 2.6 * vpm + Vector3::new(0.0, 0.0, 1.6 * vpm);
+                    self.conjure(&profile, true, at);
+                }
+            }
+            Special::SoulSiphon => self.siphon = Some(Siphon { left: 3.0, profile: profile.clone(), damage: base * 0.9 }),
+            Special::Stasis => {
+                self.stases.push(Stasis { position: target + Vector3::new(0.0, 0.0, 1.0 * vpm), radius: 6.0, life: 6.0, tick: 0.0, profile: profile.clone(), damage: base * 0.15 });
+                self.cues.push(Cue::at(Sound::Toll, target, 1.0).pitched(0.5));
+            }
+            // One great bolt, through everything in a line, pinning it
+            Special::Ballista => {
+                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.15) * vpm;
+                let missile = Missile { shot: Shot::Quarrel, head: 0, power: true, size: 3.0 };
+                self.launch(&profile, Some(missile), Form::Bolt, from, (target - from).normalize() * 120.0 * vpm, base * 3.0, QUARREL_GRAVITY * 0.3);
+                if let Some(bolt) = self.projectiles.last_mut() {
+                    bolt.pierce = 12;
+                    bolt.pin = 2.0;
+                }
+                self.cues.push(Cue::here(Sound::Release, 1.0).pitched(0.55));
+                self.shake = self.shake.max(0.8);
+            }
+            // The weapon's own shots fanning out, then each turning after what's near
+            Special::SeekerSwarm => {
+                let shot = weapon.shot().unwrap_or(Shot::Arrow);
+                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.1) * vpm;
+                let up = view.rotation * Vector3::z();
+                let right = view.rotation * Vector3::x();
+                for k in 0..14 {
+                    let a = (k as f64 / 13.0 - 0.5) * 2.2;
+                    let direction = (forward + right * a.sin() * 0.9 + up * (0.25 + 0.2 * random(&mut self.rng))).normalize();
+                    let size = if shot == Shot::Ball { 1.2 } else { 1.0 };
+                    let speed = if shot == Shot::Arrow { 40.0 } else { 55.0 };
+                    let missile = Missile { shot: if shot == Shot::Shell { Shot::Ball } else { shot }, head: k % 2, power: true, size };
+                    self.launch(&profile, Some(missile), Form::Bolt, from, direction * speed * vpm, base * 0.5, 0.05);
+                    if let Some(p) = self.projectiles.last_mut() {
+                        p.seek = 4.0;
+                        p.life = 3.0;
+                    }
+                }
+                self.cues.push(Cue::here(if shot == Shot::Arrow { Sound::Twang } else { Sound::Release }, 0.9).pitched(1.2));
+            }
+            Special::BladeStorm => {
+                for k in 0..3 {
+                    later(&mut self.pending, 0.08 + 0.15 * k as f64, Act::Knives(k), base * 0.55);
+                }
+            }
+            // Shells marching on ahead, one after another
+            Special::Barrage => {
+                for k in 0..7 {
+                    let ahead = feet + flat * (4.0 + k as f64 * 2.2) * vpm + Vector3::new(0.0, 0.0, 3.0 * vpm);
+                    let down = Vector3::new(0.0, 0.0, -8.0 * vpm);
+                    let at = solid_along(arena.world, ahead, ahead + down).map_or(ahead + down, |t| ahead + down * t);
+                    let side = (random(&mut self.rng) - 0.5) * 1.6 * vpm;
+                    later(&mut self.pending, 0.2 + 0.18 * k as f64, Act::Shell(at + flat.cross(&Vector3::z()) * side), base * 1.4);
+                }
+            }
+            // A line of fire across the way ahead
+            Special::Firewall => {
+                let across = flat.cross(&Vector3::z());
+                for k in 0..5 {
+                    let ahead = feet + flat * 6.0 * vpm + across * (k as f64 - 2.0) * 2.0 * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm);
+                    let down = Vector3::new(0.0, 0.0, -5.0 * vpm);
+                    let at = solid_along(arena.world, ahead, ahead + down).map_or(ahead + down, |t| ahead + down * t);
+                    self.lingering.push(Lingering { tall: true, position: at, radius: 1.1, life: 6.0, element: Element::Fire, profile: profile.clone(), damage: base * 0.3, tick: 0.0, effects: true, collapse: 0.0 });
+                    self.blasts.push(Blast { position: at + Vector3::new(0.0, 0.0, 0.6 * vpm), look: Element::look(Some(Element::Fire)), radius: 1.0, life: 0.5, lifetime: 0.5 });
+                }
+                self.cues.push(Cue::here(Sound::Breath, 0.8).pitched(1.2));
+            }
         }
     }
 
@@ -2525,8 +3065,10 @@ impl Combat {
             trail: 0.0,
             form,
             gravity,
-            size,
+            size: arrow.map_or(size, |m| m.size),
             pin: 0.0,
+            seek: 0.0,
+            blast: 0.0,
         });
     }
 
@@ -2626,6 +3168,63 @@ impl Combat {
                     self.launch(&profile, None, Form::Missile, from, direction * 20.0 * vpm, p.damage, 0.0);
                 }
                 Act::Dash(velocity) => self.dash += velocity,
+                // Everything within 18 meters, gone round in order and strung together
+                Act::Web(k) => {
+                    let mut near: Vec<(f64, usize)> = (0..arena.animals.len())
+                        .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).norm() < 18.0 * vpm)
+                        .map(|i| {
+                            let to = arena.animals[i].position - feet;
+                            (to.y.atan2(to.x), i)
+                        })
+                        .collect();
+                    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    near.truncate(8);
+                    let chest = feet + Vector3::new(0.0, 0.0, 1.2 * vpm);
+                    let points: Vec<Vector3<f64>> = near.iter().map(|&(_, i)| arena.animals[i].center(vpm as u32)).collect();
+                    match points.len() {
+                        0 => {}
+                        1 => self.arc(chest, points[0]),
+                        n => {
+                            for k in 0..n {
+                                if n > 2 || k + 1 < n {
+                                    self.arc(points[k], points[(k + 1) % n]);
+                                }
+                            }
+                        }
+                    }
+                    for &(_, i) in &near {
+                        arena.animals[i].status.shocked = 0.5;
+                        self.strike(arena, &profile, i, Blow { damage: p.damage, crit: false, heavy: false, from: chest, depth: 1, element: Some(Element::Storm) });
+                    }
+                    // Crackling higher each time it's strung
+                    self.cues.push(Cue::here(Sound::Crackle, 0.9).pitched(0.7 + 0.12 * k as f32));
+                }
+                // A ring of knives thrown out, turned a little further round each time, a spiral
+                Act::Knives(k) => {
+                    let from = feet + Vector3::new(0.0, 0.0, 1.1 * vpm);
+                    for j in 0..10 {
+                        let a = (j as f64 + 0.33 * k as f64) / 10.0 * TAU;
+                        let out = Vector3::new(a.cos(), a.sin(), 0.02);
+                        let swirl = Vector3::new(-a.sin(), a.cos(), 0.0) * 0.35;
+                        let knife = Missile { shot: Shot::Quarrel, head: 0, power: true, size: 0.8 };
+                        self.launch(&profile, Some(knife), Form::Bolt, from + out * 0.5 * vpm, (out + swirl).normalize() * 22.0 * vpm, p.damage, 0.05);
+                        if let Some(knife) = self.projectiles.last_mut() {
+                            knife.life = 0.7;
+                            knife.pierce = 3;
+                        }
+                    }
+                    self.cues.push(Cue::here(Sound::Swing, 0.8).pitched(1.3 + 0.1 * k as f32));
+                }
+                // A shell whistling down from high up onto it
+                Act::Shell(at) => {
+                    let from = at + Vector3::new((random(&mut self.rng) - 0.5) * 4.0, (random(&mut self.rng) - 0.5) * 4.0, 26.0) * vpm;
+                    let missile = Missile { shot: Shot::Shell, head: 0, power: false, size: 1.4 };
+                    self.launch(&profile, Some(missile), Form::Bolt, from, (at - from).normalize() * 34.0 * vpm, p.damage, 0.0);
+                    if let Some(shell) = self.projectiles.last_mut() {
+                        shell.blast = 2.4;
+                    }
+                    self.cues.push(Cue::at(Sound::Whistle, at, 0.6));
+                }
                 Act::Land { wait } => {
                     // Not down yet: looking again in a moment
                     let (x, y, z) = (feet.x.floor() as i64, feet.y.floor() as i64, feet.z.floor() as i64);
@@ -2773,7 +3372,7 @@ impl Combat {
                         let down = Vector3::new(0.0, 0.0, -6.0 * vpm);
                         let at = solid_along(arena.world, out, out + down).map_or(out + down, |t| out + down * t);
                         let lingers = if matches!(element, Element::Poison | Element::Frost) { element } else { Element::Fire };
-                        self.lingering.push(Lingering { position: at, radius: 1.5, life: 3.0, element: lingers, profile: profile.clone(), damage: p.damage * 0.1, tick: 0.0, effects: false, collapse: 0.0 });
+                        self.lingering.push(Lingering { tall: false, position: at, radius: 1.5, life: 3.0, element: lingers, profile: profile.clone(), damage: p.damage * 0.1, tick: 0.0, effects: false, collapse: 0.0 });
                     }
                 }
             }
@@ -3133,6 +3732,24 @@ impl Combat {
         let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
         let look = Element::look(profile.element);
         self.flashes.push(Flash { position: from, color: profile.element.map_or([0.5, 0.9, 1.0], Element::light), reach: 5.0, life: 0.2, lifetime: 0.2 });
+        match profile.style {
+            // A familiar conjured a little way ahead, each beside the last
+            Style::Summon => {
+                let n = self.familiars.iter().filter(|f| !f.phantom).count() % FAMILIARS;
+                let (x, z) = [(-0.9, 0.4), (0.9, 0.4), (0.0, 1.0)][n];
+                let at = arena.view.eye + arena.view.rotation * Vector3::new(x, 2.2, z) * vpm;
+                self.conjure(&profile, false, at);
+                return;
+            }
+            // A hex drifting off after what's near
+            Style::Hex => {
+                self.shoot(arena.view, &profile, None, Form::Hex, from, (target - from).normalize(), speed, damage);
+                self.sparks(from, 6, 0.8, Element::look(Some(Element::Void)), -0.1, 0.5);
+                self.cues.push(Cue::here(Sound::Hex, 0.5));
+                return;
+            }
+            _ => {}
+        }
         let form = Form::of(profile.element);
         let ahead = target - from;
         let up = Vector3::new(0.0, 0.0, 1.0);
@@ -3226,6 +3843,8 @@ impl Combat {
             gravity,
             size,
             pin: 0.0,
+            seek: 0.0,
+            blast: 0.0,
         };
         let mut shots = vec![make(direction, damage)];
         if profile.has(Effect::Multishot) {
@@ -3270,8 +3889,15 @@ impl Combat {
                     p.velocity = direction.lerp(&to.normalize(), turn).normalize() * p.velocity.norm();
                 }
             }
-            // Missiles seek out the nearest animal ahead
-            if !p.arrow && p.form == Form::Missile {
+            // Missiles, hexes and a swarm of seekers home in on the nearest animal ahead
+            let seek = if p.seek > 0.0 {
+                p.seek
+            } else if !p.arrow && matches!(p.form, Form::Missile | Form::Hex) {
+                if p.form == Form::Hex { 2.5 } else { 5.0 }
+            } else {
+                0.0
+            };
+            if seek > 0.0 {
                 let direction = p.velocity.normalize();
                 let target = arena
                     .animals
@@ -3281,7 +3907,7 @@ impl Combat {
                     .filter(|to| to.norm() < 25.0 * vpm && to.normalize().dot(&direction) > 0.3)
                     .min_by(|a, b| a.norm().total_cmp(&b.norm()));
                 if let Some(to) = target {
-                    p.velocity = direction.lerp(&to.normalize(), (5.0 * dt).min(1.0)).normalize() * p.velocity.norm();
+                    p.velocity = direction.lerp(&to.normalize(), (seek * dt).min(1.0)).normalize() * p.velocity.norm();
                 }
             }
             // A void orb drags in what it passes
@@ -3305,7 +3931,10 @@ impl Combat {
                 while p.trail >= 1.0 {
                     p.trail -= 1.0;
                     let at = start.lerp(&end, random(&mut self.rng));
-                    if shell {
+                    if !p.arrow && p.form == Form::Hex {
+                        // A hex trails darkness, whatever its totem's element
+                        self.mote(at, Some(Element::Void), 1.6);
+                    } else if shell {
                         let v = self.any_direction() * 0.6 * vpm;
                         self.fine(at, v, Element::look(Some(Element::Fire)), 0.25, -0.1);
                         if random(&mut self.rng) < 0.12 {
@@ -3362,6 +3991,12 @@ impl Combat {
                 self.cues.push(Cue::at(Sound::Hit, at, 0.7));
                 p.hit.push(arena.animals[i].id);
                 self.strike(arena, &profile, i, Blow { damage, crit, heavy: false, from: start, depth: 0, element: profile.element });
+                // A hex clings on, eating away at it
+                if !p.arrow && p.form == Form::Hex {
+                    let s = &mut arena.animals[i].status;
+                    s.hex = HEX_SECONDS;
+                    s.hex_dps = s.hex_dps.max(p.damage * HEX_DAMAGE * profile.stat("statusPotency").max(0.5));
+                }
                 // Pinned where it stands
                 if p.pin > 0.0 {
                     let s = &mut arena.animals[i].status;
@@ -3428,7 +4063,13 @@ impl Combat {
     fn impact(&mut self, arena: &mut Arena, p: &Projectile, at: Vector3<f64>) {
         let profile = &p.profile;
         let look = Element::look(profile.element);
-        if profile.has(Effect::Explosive) {
+        if p.blast > 0.0 {
+            self.burst(arena, profile, at, p.blast, p.damage * 0.8, 1, false, profile.element.or(Some(Element::Fire)), None);
+        } else if !p.arrow && p.form == Form::Hex {
+            // A hex puffs out where it lands, darkly, blowing no hole
+            self.sparks(at, 10, -2.0, Element::look(Some(Element::Void)), 0.0, 0.4);
+            self.cues.push(Cue::at(Sound::Hex, at, 0.4).pitched(0.8));
+        } else if profile.has(Effect::Explosive) {
             let radius = profile.param(Effect::Explosive, "radius", 2.2) * profile.stat("area").max(1.0);
             let damage = p.damage * profile.param(Effect::Explosive, "power", 0.7) * profile.potency(Effect::Explosive).max(1.0);
             self.burst(arena, profile, at, radius, damage, 1, false, profile.element.or(Some(Element::Fire)), None);
@@ -3522,7 +4163,7 @@ impl Combat {
                 }
                 self.stains.push((at, radius * 0.9, BARK_DARK, true));
                 if element.is_some() {
-                    self.lingering.push(Lingering { position: at, radius: radius * 0.6, life: 3.0, element: Element::Fire, profile: profile.clone(), damage: damage * 0.15, tick: 0.0, effects: false, collapse: 0.0 });
+                    self.lingering.push(Lingering { tall: false, position: at, radius: radius * 0.6, life: 3.0, element: Element::Fire, profile: profile.clone(), damage: damage * 0.15, tick: 0.0, effects: false, collapse: 0.0 });
                 }
                 for k in 0..count(14.0) {
                     let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.2);
@@ -3555,7 +4196,7 @@ impl Combat {
                 }
                 self.element_hit(at, element, 1.5);
                 self.stains.push((at, radius, MOSS, false));
-                self.lingering.push(Lingering { position: at, radius: radius * 0.9, life: 4.0, element: Element::Poison, profile: profile.clone(), damage: damage * 0.12, tick: 0.0, effects: false, collapse: 0.0 });
+                self.lingering.push(Lingering { tall: false, position: at, radius: radius * 0.9, life: 4.0, element: Element::Poison, profile: profile.clone(), damage: damage * 0.12, tick: 0.0, effects: false, collapse: 0.0 });
             }
             // Rings of runes turning, and a burst of arcane light
             Some(Element::Arcane) => {
@@ -3608,14 +4249,22 @@ impl Combat {
         for mut l in std::mem::take(&mut self.lingering) {
             l.life -= dt;
             l.tick -= dt;
-            // Flames flickering up, or bubbles and a haze of venom
-            let mut owed = dt * 25.0 * l.radius;
+            // Flames flickering up, or bubbles and a haze of venom. A wall of fire's flames leap
+            // high, tongues of fire swelling and dying away, so it shows over the grass: a few
+            // at a time, as each is a single model however big.
+            let mut owed = dt * if l.tall { 9.0 } else { 25.0 * l.radius };
             while owed > 0.0 {
                 if random(&mut self.rng) < owed {
                     let a = random(&mut self.rng) * TAU;
                     let r = random(&mut self.rng).sqrt() * l.radius * vpm;
-                    let at = l.position + Vector3::new(a.cos() * r, a.sin() * r, 0.2 * vpm);
-                    self.mote(at, Some(l.element), 2.0);
+                    if l.tall {
+                        let at = l.position + Vector3::new(a.cos() * r * 0.6, a.sin() * r * 0.6, (0.3 + 1.1 * random(&mut self.rng)) * vpm);
+                        let radius = 0.3 + 0.25 * random(&mut self.rng);
+                        self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius, life: 0.45, lifetime: 0.45 });
+                    } else {
+                        let at = l.position + Vector3::new(a.cos() * r, a.sin() * r, 0.2 * vpm);
+                        self.mote(at, Some(l.element), 2.0);
+                    }
                 }
                 owed -= 1.0;
             }
@@ -3708,6 +4357,21 @@ impl Combat {
             self.drop(at + Vector3::new(0.0, 0.0, 0.1 * vpm), Vector3::new(a.cos() * 2.2, a.sin() * 2.2, 1.6) * vpm * size.sqrt(), DROP_WATER, 0.6);
         }
         self.cues.push(Cue::at(Sound::Splash, at, (0.5 + 0.4 * size) as f32));
+    }
+
+    /// A thread of lightning from `from` to `to`, a few sparks along it, cheaper than a bolt_line
+    /// for stringing a lot of them at once
+    fn arc(&mut self, from: Vector3<f64>, to: Vector3<f64>) {
+        let vpm = self.vpm;
+        let look = Element::look(Some(Element::Storm));
+        let steps = ((to - from).norm() / (0.45 * vpm)).clamp(3.0, 18.0) as usize;
+        for k in 0..=steps {
+            let jitter = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5) * 0.3 * vpm;
+            let at = from.lerp(&to, k as f64 / steps as f64) + if k == 0 || k == steps { Vector3::zeros() } else { jitter };
+            self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.2, lifetime: 0.2, gravity: 0.0, slot: SLOT_SPARK });
+        }
+        self.cap_sparks();
+        self.flashes.push(Flash { position: to, color: Element::Storm.light(), reach: 4.0, life: 0.12, lifetime: 0.12 });
     }
 
     /// Lightning from `from` to `to`, jagged, there for a moment
@@ -3955,6 +4619,25 @@ impl Combat {
             self.sparks(center, 30, 2.5, Element::look(Some(Element::Poison)), -0.1, 1.0);
             self.say_at(center, "Plague Bloom!", Element::Poison.color(), 20.0);
         }
+        // A hex outlives what it caught, passing on to whatever's nearest
+        let s = &arena.animals[i].status;
+        if s.hex > 0.5 {
+            let (left, dps) = (s.hex, s.hex_dps);
+            let next = (0..arena.animals.len())
+                .filter(|&j| j != i && arena.animals[j].health > 0.0 && !arena.animals[j].look.is_pet())
+                .map(|j| (j, (arena.animals[j].center(vpm as u32) - center).norm()))
+                .filter(|&(_, d)| d < 8.0 * vpm)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((j, _)) = next {
+                let there = arena.animals[j].center(vpm as u32);
+                let o = &mut arena.animals[j].status;
+                o.hex = o.hex.max(left);
+                o.hex_dps = o.hex_dps.max(dps);
+                o.shown = 4.0;
+                self.bolt_line(center, there, Element::look(Some(Element::Void)));
+                self.say_at(there, "Hex passes on!", Element::Void.color(), 18.0);
+            }
+        }
     }
 
     /// Animal `i` struck for `damage` by a blow from `from`: its blood, or what it has for blood,
@@ -4032,6 +4715,16 @@ impl Combat {
                 s.bleed_stacks = 0;
                 s.bleed_dps = 0.0;
             }
+            let hexed = s.hex > 0.0;
+            if hexed {
+                dot += s.hex_dps * dt;
+                s.hex -= dt;
+                s.slowed = s.slowed.max(0.1);
+                s.slow = s.slow.max(HEX_SLOW);
+                color = Element::Void.color();
+            } else {
+                s.hex_dps = 0.0;
+            }
             s.frozen -= dt;
             s.staggered -= dt;
             s.shocked -= dt;
@@ -4066,6 +4759,10 @@ impl Combat {
             }
             if poisoned && random(&mut self.rng) < dt * 6.0 {
                 self.sparks(center, 1, 0.6, Element::look(Some(Element::Poison)), -0.1, 0.8);
+            }
+            // Dark motes drawn in to what's hexed
+            if hexed && random(&mut self.rng) < dt * 8.0 {
+                self.sparks(center, 1, -1.2, Element::look(Some(Element::Void)), 0.0, 0.5);
             }
         }
     }
@@ -4675,7 +5372,7 @@ impl Combat {
         let look = Element::look(profile.element);
         let swinging = match self.action {
             Action::Swing { t, length, heavy, combo, .. } => {
-                let (comes, lands) = timing(profile.style, heavy, combo);
+                let (comes, lands) = timing(moves_like(profile.style), heavy, combo);
                 (comes..lands + 0.1).contains(&(t / length))
             }
             Action::Cast { t, .. } => profile.style == Style::Flick && t < 0.2,
@@ -4759,8 +5456,10 @@ impl Combat {
     fn target_pose(&self, weapon: &Weapon) -> Pose {
         // Held like in Skyrim: a sword or staff in the right hand down at the side, pointing on
         // ahead, a bow in the left
-        let style = weapon.profile.style;
-        let mut p = match weapon.kind() {
+        let style = moves_like(weapon.profile.style);
+        // A battle staff's held and swung like a scythe
+        let kind = if weapon.profile.style == Style::Glaive { Kind::Melee } else { weapon.kind() };
+        let mut p = match kind {
             Kind::Melee => {
                 // Out to the right, clear of the crosshair
                 let rest = match style {
@@ -4794,6 +5493,66 @@ impl Combat {
                         p
                     }
                     Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Ranged, style).1, t / length),
+                    _ => rest,
+                }
+            }
+            // An orb held up on the palm at the right, pushed out at the crosshair as its beam
+            // pours, trembling with it
+            Kind::Magic if style == Style::Channel => {
+                let rest = pose([0.24, 0.52, -0.24], [-0.05, 0.1, 0.99], [1.0, 0.0, 0.0]);
+                match self.action {
+                    Action::Channel { t } => {
+                        let mut p = blend(&rest, &pose([0.15, 0.62, -0.19], [-0.12, 0.42, 0.9], [1.0, 0.0, 0.0]), smooth(t * 6.0));
+                        p.hand.x += 0.003 * (self.time * 37.0).sin();
+                        p.hand.z += 0.003 * (self.time * 43.0).cos();
+                        p
+                    }
+                    Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Magic, style).1, t / length),
+                    _ => rest,
+                }
+            }
+            // A tome held open in the left hand, raised and thrust out as it conjures
+            Kind::Magic if style == Style::Summon => {
+                let rest = pose([-0.24, 0.52, -0.3], [0.1, 0.3, 0.95], [1.0, 0.0, -0.1]);
+                let keys = [(0.15, pose([-0.17, 0.6, -0.2], [0.05, 0.45, 0.89], [1.0, 0.0, -0.05]), true), (0.5, pose([-0.19, 0.58, -0.23], [0.07, 0.4, 0.91], [1.0, 0.0, -0.05]), false)];
+                match self.action {
+                    Action::Cast { t, .. } => animate(&rest, &keys, t / CAST_TIME),
+                    Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Magic, style).1, t / length),
+                    _ => rest,
+                }
+            }
+            // A totem held upright, shaken and pointed as a hex goes
+            Kind::Magic if style == Style::Hex => {
+                // Its carved faces turned to look back at whoever holds it
+                let rest = pose([0.3, 0.46, -0.34], [-0.03, 0.4, 0.92], [-0.2, -0.92, 0.4]);
+                let keys = [
+                    (0.08, pose([0.31, 0.45, -0.3], [0.1, 0.35, 0.93], [-0.2, -0.92, 0.4]), false),
+                    (0.16, pose([0.28, 0.47, -0.32], [-0.12, 0.38, 0.92], [-0.2, -0.92, 0.4]), false),
+                    (0.3, pose([0.2, 0.6, -0.28], [-0.12, 0.8, 0.58], [-0.2, -0.6, 0.8]), true),
+                ];
+                match self.action {
+                    Action::Cast { t, .. } => animate(&rest, &keys, t / CAST_TIME),
+                    Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Magic, style).1, t / length),
+                    _ => rest,
+                }
+            }
+            // A bell hanging from the hand, raised and trembling as it's held, swung down and out
+            // as it rings
+            Kind::Magic if style == Style::Toll => {
+                let rest = pose([0.24, 0.55, -0.1], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]);
+                let raised = pose([0.2, 0.5, 0.02], [0.0, -0.35, 0.94], [1.0, 0.0, 0.0]);
+                match self.action {
+                    Action::Charge { t } => {
+                        let k = smooth(t * 2.5);
+                        let mut p = blend(&rest, &raised, k);
+                        p.hand.x += 0.006 * k * (self.time * 31.0).sin();
+                        p
+                    }
+                    Action::Cast { t, .. } => {
+                        let keys = [(0.18, pose([0.16, 0.58, -0.1], [0.0, 0.75, 0.66], [1.0, 0.0, 0.0]), true), (0.5, pose([0.2, 0.52, -0.14], [0.0, 0.4, 0.92], [1.0, 0.0, 0.0]), false)];
+                        animate(&raised, &keys, t / CAST_TIME)
+                    }
+                    Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Magic, style).1, t / length),
                     _ => rest,
                 }
             }
@@ -4951,6 +5710,8 @@ impl Combat {
             return 0;
         }
         match weapon.profile.build {
+            // A tome's open as it conjures
+            Build::None if weapon.profile.style == Style::Summon => matches!(self.action, Action::Cast { .. } | Action::Special { .. }) as usize,
             Build::None => ((self.drawn(&weapon.profile) * (frames - 1) as f64).round() as usize).min(frames - 1),
             Build::Lever | Build::Crank | Build::Repeater => (self.span(weapon) * CROSSBOW_SPANNED as f64).round() as usize,
             _ => match self.action {
@@ -5062,7 +5823,8 @@ impl Combat {
                 self.shouldered_instances(weapon, first_model, hand, rotation, view, &mut out);
                 return out;
             }
-            let left = weapon.kind() == Kind::Ranged;
+            // A bow or a tome in the left hand
+            let left = weapon.kind() == Kind::Ranged || weapon.profile.style == Style::Summon;
             out.push(self.arm(left as usize, hand, axis, if left { elbow(-0.3, 0.12, -0.7) } else { elbow(0.37, 0.12, -0.7) }, vpm));
             // The arrow on the string while drawing. The hand pulling it back is by the cheek, out
             // of sight.
@@ -5121,7 +5883,7 @@ impl Combat {
                     }
                     Shot::Quarrel => {
                         let (model, quarrel) = self.effect_model(SLOT_QUARREL + p.head.min(QUARREL_HEADS - 1), look);
-                        place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING)
+                        place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), p.position, rotation, vpm, p.size, MOVING)
                     }
                     Shot::Ball => {
                         let (model, ball) = self.effect_model(SLOT_SHOT, look);
@@ -5135,11 +5897,16 @@ impl Combat {
                     }
                 };
                 add(p.position, instance);
-            } else if matches!(p.form, Form::Fireball | Form::Orb) {
-                // A ball of fire or darkness, churning as it goes
+            } else if matches!(p.form, Form::Fireball | Form::Orb | Form::Hex) {
+                // A ball of fire or darkness churning as it goes, or a hex, a knot of it
                 let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 6.0) * rotation;
+                let (look, size) = match p.form {
+                    Form::Hex => (Element::look(Some(Element::Void)), 0.07),
+                    Form::Orb => (look, 0.13),
+                    _ => (look, 0.15),
+                };
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, look);
-                add(p.position, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, if p.form == Form::Orb { 0.13 } else { 0.15 }, MOVING));
+                add(p.position, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, size, MOVING));
             } else if p.form != Form::Lightning {
                 let (model, bolt) = self.effect_model(SLOT_BOLT, look);
                 add(p.position, place(model, bolt, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size, MOVING));
@@ -5191,6 +5958,32 @@ impl Combat {
                 }
             };
             add(h.position, instance);
+        }
+        // Familiars, glowing orbs bobbing where they hang, and phantoms, pillars of light
+        for f in &self.familiars {
+            let bob = Vector3::new(0.0, 0.0, (self.time * 2.5 + f.position.x).sin() * 0.08 * vpm);
+            let fade = (f.life / 0.4).min(1.0) * ((FAMILIAR_SECONDS - f.life) / 0.25).min(1.0);
+            let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0);
+            let look = Element::look(if f.phantom { Some(Element::Holy) } else { f.profile.element.or(Some(Element::Arcane)) });
+            let (model, ball) = self.effect_model(SLOT_FIREBALL, look);
+            add(f.position, place(model, ball, MODEL_RES, Vector3::zeros(), f.position + bob, spin, vpm, (if f.phantom { 0.16 } else { 0.11 }) * fade.max(0.05), MOVING));
+            if f.phantom {
+                let (model, pillar) = self.model_at(PILLAR);
+                let foot = f.position - Vector3::new(0.0, 0.0, 1.6 * vpm);
+                add(foot, place(model, pillar, MODEL_RES, Vector3::zeros(), foot, UnitQuaternion::identity(), vpm, 0.3 * fade.max(0.05), MOVING));
+            }
+        }
+        // Spectral blades going round, edge first
+        if let Some(o) = &self.orbit {
+            let feet = view.eye - Vector3::new(0.0, 0.0, 0.5 * vpm);
+            let look = Element::look(o.profile.element.or(Some(Element::Arcane)));
+            let (model, wisp) = self.effect_model(SLOT_BOLT, look);
+            for k in 0..6 {
+                let a = o.angle + k as f64 / 6.0 * TAU;
+                let at = feet + Vector3::new(a.cos(), a.sin(), 0.0) * 2.2 * vpm;
+                let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), a + PI * 0.5);
+                add(at, place(model, wisp, BOLT_RES, Vector3::zeros(), at, rotation, vpm, 0.9, MOVING));
+            }
         }
         // Where things are coming down
         for &(at, radius) in &self.marks {
@@ -5281,6 +6074,10 @@ impl Combat {
         }
         for s in &self.strikes {
             lights.push(light(s.position + Vector3::new(0.0, 0.0, 1.0 * vpm), 4.0, Element::Holy.light(), 0.6));
+        }
+        for f in &self.familiars {
+            let color = if f.phantom { Element::Holy.light() } else { f.profile.element.map_or([0.7, 0.5, 1.0], Element::light) };
+            lights.push(light(f.position, 3.5, color, 0.6));
         }
         // Fire arrows burning where they stuck
         for s in self.stuck.iter().filter(|s| s.glowing > 0.0 && s.element == Some(Element::Fire)) {
@@ -5378,7 +6175,19 @@ mod tests {
     use super::*;
 
     const STYLES: [Style; 7] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash];
-    const SPECIALS: [Special; 18] = [
+    const SPECIALS: [Special; 30] = [
+        Special::FrostNova,
+        Special::ThunderWeb,
+        Special::BlinkStrike,
+        Special::SpectralBlades,
+        Special::PhantomHost,
+        Special::SoulSiphon,
+        Special::Stasis,
+        Special::Ballista,
+        Special::SeekerSwarm,
+        Special::BladeStorm,
+        Special::Barrage,
+        Special::Firewall,
         Special::Meteors,
         Special::Blizzard,
         Special::Tempest,
@@ -5447,10 +6256,14 @@ mod tests {
             }
         }
         for special in SPECIALS {
-            for (kind, style) in [(Kind::Melee, Style::Slash), (Kind::Melee, Style::Thrust), (Kind::Ranged, Style::Draw), (Kind::Magic, Style::Cast)] {
+            for (kind, style) in [(Kind::Melee, Style::Slash), (Kind::Melee, Style::Thrust), (Kind::Ranged, Style::Draw), (Kind::Ranged, Style::Powder), (Kind::Magic, Style::Cast)] {
                 let (seconds, keys) = special_move(special, kind, style);
-                moves.push((format!("{special:?} with {kind:?}"), keys, seconds));
+                moves.push((format!("{special:?} with {kind:?} {style:?}"), keys, seconds));
             }
+        }
+        // Crossbows spanned and guns loaded
+        for build in [Build::Lever, Build::Crank, Build::Repeater, Build::Musket] {
+            moves.push((format!("loading a {build:?}"), reload_keys(build), 1.0));
         }
         // Easing in and out of each key on its own, as moves used to, stops dead at every one,
         // which this would catch

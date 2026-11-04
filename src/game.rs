@@ -16,7 +16,7 @@ use crate::bosses::{Deed, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
-use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Unit, Weapon};
+use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
 /// How far away things can be picked up or hit, in meters
@@ -2551,7 +2551,11 @@ impl Game {
     /// For trying them out: rolls lucky weapons of any family until one has the special attack
     /// `special`, puts it in hand and charges it
     pub fn find_special(&mut self, special: Special) {
-        for seed in 0..20000u32 {
+        for seed in 0..200_000u32 {
+            // Looked for in the parts alone, as building each weapon's models takes a while
+            if self.library.special_of(hash(seed ^ 0x5bec), 8.0) != Some(special) {
+                continue;
+            }
             let weapon = self.library.generate(hash(seed ^ 0x5bec), None, 8.0);
             if weapon.profile.special.as_ref().is_some_and(|(s, _)| *s == special) {
                 self.weapons.push(weapon);
@@ -3166,7 +3170,7 @@ impl Game {
                     });
                 });
                 ui.separator();
-                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast.").weak().small());
+                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
             });
         if let Some(slot) = chosen {
@@ -3413,6 +3417,19 @@ impl Game {
         for s in &profile.synergies {
             let def = &library.synergies[s.def];
             ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
+        }
+        // How a magic weapon of an unusual kind is used
+        let how = match profile.style {
+            Style::Channel => Some("Hold the button to pour a beam out at the crosshair; its mana cost goes each second."),
+            Style::Summon => Some("Click to conjure a familiar that hangs in the air casting at whatever's near, up to three at once."),
+            Style::Hex => Some("Click to cast a hex that drifts after what's near and eats away at it, slowing it; it passes on when it dies."),
+            Style::Toll => Some("Hold to raise the bell, longer for a harder toll; let go to ring out a shockwave all round."),
+            Style::Glaive => Some("Swung like a polearm; its finishing blow and heavy blows loose a spell too, for mana."),
+            _ => None,
+        };
+        if let Some(how) = how {
+            ui.add_space(4.0);
+            ui.label(RichText::new(how).weak().small());
         }
         if let Some(shot) = weapon.shot() {
             ui.add_space(4.0);
@@ -3729,6 +3746,56 @@ impl Game {
                         painter.add(egui::Shape::line(points, Stroke::new(r * 0.16, wood)));
                         painter.line_segment([top, bottom], Stroke::new(r * 0.05, Color32::from_rgb(235, 230, 210)));
                         painter.line_segment([center + vec2(-r * 0.6, 0.0), center + vec2(r * 0.85, 0.0)], Stroke::new(r * 0.07, glow));
+                    }
+                    // An orb in a ring over a little cradle
+                    Kind::Magic if family == "orb" => {
+                        painter.line_segment([center + vec2(0.0, r * 0.95), center + vec2(0.0, r * 0.45)], Stroke::new(r * 0.2, wood));
+                        painter.circle_filled(center - vec2(0.0, r * 0.15), r * 0.55, glow);
+                        painter.circle_filled(center - vec2(r * 0.18, r * 0.33), r * 0.15, Color32::from_white_alpha(170));
+                        painter.circle_stroke(center - vec2(0.0, r * 0.15), r * 0.66, Stroke::new(r * 0.08, Color32::from_rgb(200, 170, 80)));
+                    }
+                    // A shut book, a gem on its cover, gilt at its corners
+                    Kind::Magic if family == "tome" => {
+                        let book = Rect::from_center_size(center, vec2(r * 1.3, r * 1.7));
+                        painter.rect_filled(book, r * 0.08, Color32::from_rgb(110, 60, 40));
+                        painter.rect_filled(Rect::from_min_size(book.min, vec2(r * 0.18, book.height())), 0.0, Color32::from_rgb(80, 42, 28));
+                        painter.rect_filled(Rect::from_min_size(pos2(book.right() - r * 0.08, book.top() + r * 0.1), vec2(r * 0.12, book.height() - r * 0.2)), 0.0, Color32::from_rgb(240, 228, 200));
+                        for corner in [book.right_top(), book.right_bottom()] {
+                            painter.circle_filled(corner, r * 0.14, Color32::from_rgb(220, 180, 80));
+                        }
+                        painter.circle_filled(center + vec2(r * 0.08, 0.0), r * 0.22, glow);
+                    }
+                    // A carved pole of faces, eyes glowing, horns on top
+                    Kind::Magic if family == "totem" => {
+                        painter.line_segment([center + vec2(0.0, r * 0.95), center - vec2(0.0, r * 0.6)], Stroke::new(r * 0.36, wood));
+                        for (k, y) in [-0.4f32, 0.05, 0.5].into_iter().enumerate() {
+                            painter.rect_filled(Rect::from_center_size(center + vec2(0.0, r * y), vec2(r * 0.5, r * 0.32)), r * 0.08, if k % 2 == 0 { wood } else { Color32::from_rgb(170, 60, 40) });
+                            for dx in [-0.1, 0.1] {
+                                painter.circle_filled(center + vec2(r * dx, r * (y - 0.04)), r * 0.05, glow);
+                            }
+                        }
+                        for s in [-1.0, 1.0] {
+                            painter.line_segment([center - vec2(0.0, r * 0.65), center + vec2(s * r * 0.45, -r * 0.95)], Stroke::new(r * 0.1, Color32::from_rgb(235, 228, 210)));
+                        }
+                    }
+                    // A handbell, its clapper glowing under it
+                    Kind::Magic if family == "bell" => {
+                        painter.line_segment([center - vec2(0.0, r * 0.95), center - vec2(0.0, r * 0.45)], Stroke::new(r * 0.18, wood));
+                        let bell = Color32::from_rgb(205, 150, 70);
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![center + vec2(-r * 0.25, -r * 0.45), center + vec2(r * 0.25, -r * 0.45), center + vec2(r * 0.7, r * 0.5), center + vec2(-r * 0.7, r * 0.5)],
+                            bell,
+                            Stroke::NONE,
+                        ));
+                        painter.circle_filled(center - vec2(0.0, r * 0.45), r * 0.27, bell);
+                        painter.circle_filled(center + vec2(0.0, r * 0.68), r * 0.17, glow);
+                    }
+                    // A staff with a curved blade on its head
+                    Kind::Magic if family == "battlestaff" => {
+                        let (foot, top) = (center + vec2(-r * 0.8, r * 0.8), center + vec2(r * 0.35, -r * 0.35));
+                        painter.line_segment([foot, top], Stroke::new(r * 0.14, wood));
+                        painter.circle_filled(top, r * 0.18, glow);
+                        painter.add(egui::Shape::convex_polygon(vec![top + vec2(r * 0.05, -r * 0.1), top + vec2(r * 0.6, -r * 0.65), top + vec2(r * 0.3, -r * 0.1)], metal, Stroke::NONE));
                     }
                     Kind::Magic => {
                         painter.line_segment([center + vec2(-r * 0.6, r * 0.9), center + vec2(r * 0.4, -r * 0.5)], Stroke::new(r * 0.16, wood));

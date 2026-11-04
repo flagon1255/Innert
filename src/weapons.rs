@@ -54,6 +54,16 @@ pub enum Style {
     Flick,
     /// A whip, wound back and snapped forward so it cracks out at the crosshair
     Lash,
+    /// An orb, pouring a beam out at the crosshair for as long as the button's held
+    Channel,
+    /// A tome, conjuring familiars that hang in the air casting at whatever comes near
+    Summon,
+    /// A totem, casting slow hexes that home in and eat away at what they catch
+    Hex,
+    /// A bell, rung harder the longer the button's held, its toll a shockwave all round
+    Toll,
+    /// A battle staff, swung like a polearm, its finishing blow loosing a spell
+    Glaive,
 }
 
 /// How a crossbow or gun is built, and so how it's loaded, see crossbow() and gun()
@@ -691,6 +701,13 @@ impl Library {
         (family, parts)
     }
 
+    /// The special attack the weapon generate() would make from `seed` would have, worked out from
+    /// its parts alone, without building it: as work_out() picks it, the rarest part's that has one
+    pub fn special_of(&self, seed: u32, luck: f64) -> Option<Special> {
+        let (_, parts) = self.roll(seed, None, luck);
+        parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some()).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
+    }
+
     /// The synergies a weapon with `tags` has
     fn synergies_for(&self, tags: &BTreeSet<String>) -> Vec<ActiveSynergy> {
         self.synergies
@@ -919,6 +936,30 @@ pub enum Special {
     Riptide,
     /// Flame poured out of the weapon
     Breath,
+    /// Ice bursting out in a ring all round, freezing everything in it
+    FrostNova,
+    /// Lightning strung between every enemy round about, a web of it
+    ThunderWeb,
+    /// Vanishing and striking from right in front of what's aimed at
+    BlinkStrike,
+    /// Ghostly blades circling the player, cutting whatever comes close
+    SpectralBlades,
+    /// Phantoms of light standing round, casting at whatever's near
+    PhantomHost,
+    /// A beam draining the life of what's ahead, healing the player
+    SoulSiphon,
+    /// A bubble where time all but stops for what's caught in it
+    Stasis,
+    /// One great bolt, through everything in a line, pinning it
+    Ballista,
+    /// A swarm of shots seeking out everything round about
+    SeekerSwarm,
+    /// Knives whirling out from the player in a spiral
+    BladeStorm,
+    /// Shells falling in a line marching on ahead
+    Barrage,
+    /// A wall of fire across the way ahead
+    Firewall,
 }
 
 impl Special {
@@ -942,6 +983,18 @@ impl Special {
             Special::Bloodmoon => "Blood Moon",
             Special::Plague => "Plague",
             Special::Starfall => "Starfall",
+            Special::FrostNova => "Frost Nova",
+            Special::ThunderWeb => "Thunder Web",
+            Special::BlinkStrike => "Blink Strike",
+            Special::SpectralBlades => "Spectral Blades",
+            Special::PhantomHost => "Phantom Host",
+            Special::SoulSiphon => "Soul Siphon",
+            Special::Stasis => "Stasis Field",
+            Special::Ballista => "Ballista Bolt",
+            Special::SeekerSwarm => "Seeker Swarm",
+            Special::BladeStorm => "Blade Storm",
+            Special::Barrage => "Creeping Barrage",
+            Special::Firewall => "Wall of Flame",
         }
     }
 
@@ -965,6 +1018,18 @@ impl Special {
             Special::Bloodmoon => "Drain the life of every enemy within 14 meters to heal yourself.",
             Special::Plague => "A great cloud of venom where you aim, lingering.",
             Special::Starfall => "A barrage of stars seeks out the enemies round you.",
+            Special::FrostNova => "Ice bursts out all round you, freezing everything within 9 meters.",
+            Special::ThunderWeb => "Lightning strings itself between every enemy within 18 meters, striking each again and again.",
+            Special::BlinkStrike => "Vanish and strike from right in front of what you aim at, three times.",
+            Special::SpectralBlades => "Six ghostly blades circle you for 8 seconds, cutting whatever comes close.",
+            Special::PhantomHost => "Three phantoms of light stand round you, casting at whatever's near.",
+            Special::SoulSiphon => "A beam drains the life of what's ahead for 3 seconds, healing you.",
+            Special::Stasis => "Time all but stops in a bubble where you aim, holding everything in it.",
+            Special::Ballista => "One great bolt goes through everything in a line, pinning it.",
+            Special::SeekerSwarm => "A swarm of shots seeks out every enemy round about.",
+            Special::BladeStorm => "Knives whirl out from you in a spiral, through everything round you.",
+            Special::Barrage => "Shells fall in a line marching on ahead of you.",
+            Special::Firewall => "A wall of fire burns across the way ahead, scorching whatever passes.",
         }
     }
 }
@@ -1262,10 +1327,26 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             }
             WeaponLook { nocks: nocks.clone(), ..plain(frames, BOW_RES, grip, nocks[0]) }
         }
+        Kind::Magic if family.style == Style::Channel => {
+            let (parts, grip, tip) = orb(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.style == Style::Summon => {
+            let (closed, open, grip, tip) = tome(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&closed, SWORD_RES), voxelize(&open, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.style == Style::Hex => {
+            let (parts, grip, tip) = totem(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
+        }
+        Kind::Magic if family.style == Style::Toll => {
+            let (parts, grip, tip) = bell(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
         Kind::Magic => {
             let (mut parts, top, mut tip) = staff(v("shaft"), v("focus"), v("crystal"), v("binding"));
             let mut grip = v3(0.0, 0.0, top * family.grip);
-            // A wand is a staff in miniature
+            // A wand is a staff in miniature, a battle staff shorter, with a blade on top
             let mut res = STAFF_RES;
             if family.haft > 0.0 {
                 let s = family.haft / top;
@@ -1274,9 +1355,197 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                 tip *= s;
                 res = SWORD_RES;
             }
+            if family.style == Style::Glaive {
+                let focus = v("focus");
+                let blade = Visual {
+                    shape: Some("glaive".into()),
+                    length: Some(0.34),
+                    width: Some(0.08),
+                    material: focus.material.clone().filter(|m| material(m).is_some_and(|m| m != WOOD)).or(Some("steel".into())),
+                    edge: Some("steel".into()),
+                    fuller: v("crystal").gem.clone(),
+                    ..Default::default()
+                };
+                let mut blade_parts = Vec::new();
+                tip = sword_blade(&mut blade_parts, &blade, tip.z + 0.06, None);
+                blade_parts.push(limb([0.0, 0.0, tip.z - 0.4], [0.0, 0.0, tip.z - 0.32], 0.02, 0.014, DARK_STEEL));
+                parts.splice(0..0, blade_parts);
+                res = STAFF_RES;
+            }
             plain(vec![voxelize(&parts, res)], res, grip, tip)
         }
     }
+}
+
+/// An orb floating over a short cradle held in the hand, set in a ring, prongs, a cage or an
+/// orrery by its focus, bands of its binding round the cradle. Returns its parts, where it's
+/// held, and the middle of the orb.
+fn orb(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let wood = mat(&shaft.material, WOOD);
+    let setting = mat(&focus.material, GOLD);
+    let accent = mat(&focus.accent, setting);
+    let gem = mat(&crystal.gem, CRYSTAL);
+    let r = 0.035 + crystal.size.unwrap_or(0.05) * 0.3;
+    let c = [0.0, 0.0, 0.13 + r];
+    // The orb first, so its setting doesn't hide it
+    p.push(ball(c, r, gem));
+    match focus.shape.as_deref().unwrap_or("ring") {
+        "prongs" | "crook" | "antlers" => {
+            for k in 0..3 {
+                let a = k as f64 / 3.0 * TAU;
+                let (x, y) = (a.cos(), a.sin());
+                curve(&mut p, &[[x * 0.02, y * 0.02, 0.12], [x * r * 1.05, y * r * 1.05, c[2] - r * 0.3], [x * r * 0.8, y * r * 0.8, c[2] + r * 0.65]], 0.006, 0.003, setting);
+            }
+        }
+        "cage" | "skull" => {
+            for k in 0..4 {
+                let a = (k as f64 + 0.5) / 4.0 * TAU;
+                let points: Vec<[f64; 3]> = (0..=8).map(|j| {
+                    let b = -PI * 0.5 + PI * j as f64 / 8.0;
+                    [a.cos() * b.cos() * r * 1.08, a.sin() * b.cos() * r * 1.08, c[2] + b.sin() * r * 1.08]
+                }).collect();
+                curve(&mut p, &points, 0.0045, 0.0045, if k % 2 == 0 { setting } else { accent });
+            }
+        }
+        "orrery" | "eye" => {
+            ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], r * 1.3, 0.005, setting);
+            ring(&mut p, c, [0.0, 1.0, 0.0], [0.5, 0.0, 0.86], r * 1.15, 0.005, accent);
+            p.push(ball([c[0] + r * 1.3, 0.0, c[2]], 0.009, accent));
+        }
+        "spire" | "crescent" => {
+            let points: Vec<[f64; 3]> = (0..=14).map(|k| {
+                let a = (-40.0 + 260.0 * k as f64 / 14.0).to_radians() - PI * 0.5;
+                [a.cos() * r * 1.25, 0.0, c[2] + a.sin() * r * 1.25]
+            }).collect();
+            curve(&mut p, &points, 0.008, 0.004, setting);
+        }
+        _ => ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.12, 0.006, setting),
+    }
+    // A cup it hovers over, then the cradle, bound
+    let bm = mat(&binding.material, LINEN);
+    for k in 0..3 {
+        p.push(ellipsoid([0.0, 0.0, 0.03 + k as f64 * 0.03], [0.021, 0.021, 0.006], if k % 2 == 0 { bm } else { mat(&binding.accent, bm) }));
+    }
+    p.push(ellipsoid([0.0, 0.0, 0.12], [0.04, 0.04, 0.014], setting));
+    p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 0.12], 0.016, 0.02, wood));
+    (p, v3(0.0, 0.0, 0.05), Vector3::from(c))
+}
+
+/// A tome held by its spine, its front cover to -y, which is towards whoever holds it: shut, then
+/// open, its pages written with glowing runes. Bound in leather or whatever its shaft is made of,
+/// its corners and clasp its focus's, its crystal set in the cover. Returns the two, where it's
+/// held, and where what it conjures comes out of it.
+fn tome(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let cover = match mat(&shaft.material, WOOD) {
+        WOOD => LEATHER,
+        m => m,
+    };
+    let metal = mat(&focus.material, GOLD);
+    let gem = mat(&crystal.gem, CRYSTAL);
+    let ink = if glowing(gem).is_some() { gem } else { mat(&binding.accent, GLOW_ARCANE) };
+    let (w, h) = (0.11, 0.16);
+    // Shut: the cover facing out, its corners capped, a clasp across, the crystal in the middle
+    let mut closed = Vec::new();
+    closed.push(ball([w * 0.5, -0.004, h * 0.5], crystal.size.unwrap_or(0.05).clamp(0.014, 0.03), gem));
+    for (x, z) in [(w - 0.012, 0.012), (w - 0.012, h - 0.012), (0.012, 0.012), (0.012, h - 0.012)] {
+        closed.push(cuboid([x - 0.014, -0.003, z - 0.014], [x + 0.014, 0.038, z + 0.014], metal));
+    }
+    closed.push(cuboid([w - 0.004, -0.003, h * 0.45], [w + 0.01, 0.038, h * 0.55], metal));
+    closed.push(cuboid([0.004, 0.006, 0.006], [w - 0.002, 0.029, h - 0.006], WAX));
+    closed.push(cuboid([-0.008, 0.0, 0.0], [w, 0.035, h], cover));
+    // Open: the pages to -y either side of the spine, runes on them, the crystal over the spine
+    let mut open = Vec::new();
+    open.push(ball([0.0, 0.004, h + 0.012], crystal.size.unwrap_or(0.05).clamp(0.012, 0.025), gem));
+    for side in [-1.0, 1.0] {
+        for row in 0..4 {
+            for k in 0..3 {
+                let x = side * (0.022 + 0.028 * k as f64);
+                open.push(ball([x, -0.0005, h - 0.03 - row as f64 * 0.03], 0.004, ink));
+            }
+        }
+        open.push(cuboid([side * w - 0.008, 0.016, -0.004], [side * w + 0.008, 0.026, h + 0.004], metal));
+    }
+    open.push(cuboid([-0.008, -0.002, 0.0], [0.008, 0.012, h], AIR));
+    open.push(cuboid([-w + 0.004, 0.004, 0.006], [w - 0.004, 0.018, h - 0.006], WAX));
+    open.push(cuboid([-w, 0.018, -0.004], [w, 0.026, h + 0.004], cover));
+    (closed, open, v3(0.0, 0.017, 0.04), v3(0.0, -0.06, h * 0.6))
+}
+
+/// A totem: a thick pole carved into faces one over another, their eyes its crystal, feathers or
+/// whatever its binding is hanging off it, and its focus on top. Returns its parts, where it's
+/// held, and its top, where hexes come out.
+fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let wood = mat(&shaft.material, WOOD);
+    let paint = mat(&shaft.accent, mat(&focus.material, TEMPLE_RED));
+    let gem = mat(&crystal.gem, CRYSTAL);
+    let bm = mat(&binding.material, FUR_WHITE);
+    let top = 0.72;
+    // The faces, their eyes and mouths first so they show, each a little wider than the pole
+    for (k, z) in [0.3, 0.45, 0.6].into_iter().enumerate() {
+        for s in [-1.0, 1.0] {
+            p.push(ball([0.045, s * 0.016, z + 0.012], 0.0075, gem));
+        }
+        p.push(cuboid([0.035, -0.014, z - 0.024], [0.06, 0.014, z - 0.016], AIR));
+        p.push(limb([0.04, 0.0, z + 0.008], [0.062, 0.0, z - 0.004], 0.008, 0.004, wood));
+        p.push(ellipsoid([0.0, 0.0, z], [0.05, 0.045, 0.06], if k % 2 == 0 { wood } else { paint }));
+    }
+    // Feathers hanging off the top face
+    for s in [-1.0, 1.0] {
+        p.push(limb([0.0, s * 0.045, 0.62], [0.01, s * 0.08, 0.5], 0.01, 0.004, bm));
+    }
+    // The focus on top: horns, a skull, or the crystal held up on its own
+    let c = [0.0, 0.0, top + 0.05];
+    p.push(ball(c, crystal.size.unwrap_or(0.05).clamp(0.025, 0.045), gem));
+    match focus.shape.as_deref().unwrap_or("") {
+        "antlers" | "crescent" | "horns" => {
+            for s in [-1.0, 1.0] {
+                curve(&mut p, &[[0.0, s * 0.03, top - 0.02], [0.0, s * 0.1, top + 0.06], [0.02, s * 0.12, top + 0.16]], 0.012, 0.004, mat(&focus.material, BONE));
+            }
+        }
+        "skull" => p.push(ellipsoid([0.0, 0.0, top - 0.01], [0.05, 0.045, 0.045], BONE)),
+        _ => {
+            for s in [-1.0, 1.0] {
+                p.push(limb([0.0, s * 0.03, top - 0.01], [0.0, s * 0.11, top + 0.05], 0.012, 0.003, bm).stretched([1.0, 1.0, 0.5]));
+            }
+        }
+    }
+    p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.026, 0.034, wood));
+    (p, v3(0.0, 0.0, 0.14), Vector3::from(c))
+}
+
+/// A handbell: a handle held upright, the bell hanging under the hand, its mouth down, a glowing
+/// clapper inside it made of its crystal, a band of its binding round its shoulder. Returns its
+/// parts, where it's held, and its mouth.
+fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let wood = mat(&shaft.material, WOOD);
+    let metal = match mat(&focus.material, BRONZE) {
+        WOOD | BIRCH_BARK | BARK_DARK | LEATHER | LINEN | CLOTH => BRONZE,
+        m => m,
+    };
+    let gem = mat(&crystal.gem, CRYSTAL);
+    let band = mat(&binding.material, mat(&binding.accent, GOLD));
+    // Hollow, the clapper hanging inside it, seen from under
+    // A domed crown, a waist widening slowly, then flaring out to a thick lip
+    let mouth = -0.13;
+    let flare = |t: f64| 0.026 + 0.016 * t + 0.032 * t.powi(4);
+    p.push(ball([0.0, 0.0, mouth + 0.018], crystal.size.unwrap_or(0.05).clamp(0.014, 0.022), gem));
+    p.push(limb([0.0, 0.0, mouth - 0.01], [0.0, 0.0, -0.03], flare(1.0) - 0.008, flare(0.2) - 0.008, AIR));
+    p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, mouth + 0.012], 0.003, 0.003, DARK_STEEL));
+    p.push(limb([0.0, 0.0, -0.04], [0.0, 0.0, -0.028], flare(0.15) + 0.004, flare(0.1) + 0.004, band));
+    let steps = 8;
+    for k in 0..steps {
+        let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
+        p.push(limb([0.0, 0.0, -0.012 + (mouth + 0.012) * t0], [0.0, 0.0, -0.012 + (mouth + 0.012) * t1], flare(t0), flare(t1), metal));
+    }
+    p.push(ellipsoid([0.0, 0.0, -0.012], [0.027, 0.027, 0.016], metal));
+    p.push(limb([0.0, 0.0, mouth - 0.003], [0.0, 0.0, mouth + 0.006], flare(1.0) + 0.004, flare(1.0), metal));
+    // The handle over it, and a knob on top
+    p.push(ball([0.0, 0.0, 0.17], 0.02, metal));
+    p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.16], 0.015, 0.018, wood));
+    (p, v3(0.0, 0.0, 0.09), v3(0.0, 0.0, mouth))
 }
 
 fn v3(x: f64, y: f64, z: f64) -> Vector3<f64> {
@@ -3049,6 +3318,35 @@ mod tests {
         // Bursting shot fires a single grenade, even from a blunderbuss
         let bursting = library.ammo.iter().position(|a| a.id == "bursting_shot").unwrap();
         assert!(library.loaded(&blunderbuss, bursting).stat("pellets") < 1.0);
+    }
+
+    #[test]
+    fn new_magic_weapons_and_specials_turn_up() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        // Each kind of magic weapon has its own way of casting, and a model to hold
+        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("bell", Style::Toll, 1), ("battlestaff", Style::Glaive, 1)] {
+            let family = library.family(id).expect("there's such a family");
+            for seed in 0..30 {
+                let weapon = library.generate(seed, Some(family), 4.0);
+                assert_eq!(weapon.profile.style, style);
+                assert_eq!(weapon.look.frames.len(), frames, "{id}");
+                assert!(weapon.look.frames.iter().all(|(m, _)| m.voxels.iter().any(|&v| v != AIR)), "{id} has something to see");
+            }
+        }
+        // Every special attack is on some part, so they turn up in loot and shops
+        let on_parts: BTreeSet<String> = library.components.iter().filter_map(|c| c.special).map(|s| s.name().to_owned()).collect();
+        assert!(on_parts.len() >= 30, "only {} special attacks are on parts", on_parts.len());
+        let mut found = BTreeSet::new();
+        for seed in 0..40_000 {
+            if let Some(special) = library.special_of(seed, 8.0) {
+                found.insert(special.name());
+            }
+        }
+        assert_eq!(found.len(), on_parts.len(), "every special attack rolls in lucky loot");
+        // Worked out from the parts alone, it's what the weapon really has
+        for seed in 0..300 {
+            assert_eq!(library.special_of(seed, 8.0), library.generate(seed, None, 8.0).profile.special.as_ref().map(|(s, _)| *s));
+        }
     }
 
     #[test]
