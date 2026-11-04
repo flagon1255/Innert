@@ -1038,6 +1038,8 @@ struct App {
     scripted_sprint: bool,
     // and the mouse buttons for the next frame
     script_controls: combat::Controls,
+    // How far a shot's kick has turned the camera up, so it's turned back down as the kick dies away
+    kicked: f64,
     // None without anything to play sound on, and in screenshot runs
     audio: Option<audio::Audio>,
     // Holes blown in the landscape: where, in meters from its corner, and how big. They're blown
@@ -1569,6 +1571,10 @@ impl App {
         if let Some(family) = setting("weapon") {
             game.select_family(family);
         }
+        // `--set ammo=fire_bolts` gives a few bundles of that special ammo and loads it
+        if let Some(id) = setting("ammo") {
+            game.give_ammo(id);
+        }
         // `--set special=meteors` puts a weapon with that special attack in hand, charged
         if let Some(name) = setting("special")
             && let Ok(special) = serde_json::from_str::<weapons::Special>(&format!("\"{name}\""))
@@ -1733,6 +1739,7 @@ impl App {
             scripted_walk: false,
             scripted_sprint: false,
             script_controls: combat::Controls::default(),
+            kicked: 0.0,
             audio,
             craters: Vec::new(),
             edited: Vec::new(),
@@ -2583,6 +2590,9 @@ impl App {
                     self.game.primary(eye);
                 }
             }
+            if self.input.key_pressed(KeyCode::KeyT) {
+                self.game.switch_ammo();
+            }
             if self.input.key_pressed(KeyCode::KeyE) {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
@@ -2619,6 +2629,10 @@ impl App {
             let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // A shot kicking the view up, springing back down
+            let kick = self.game.kick();
+            self.camera.rotation.x += kick - self.kicked;
+            self.kicked = kick;
             let cues = self.game.take_cues();
             if let Some(sound) = &mut self.audio {
                 for cue in cues {
@@ -3011,7 +3025,11 @@ impl App {
                     self.camera.look_at(voxels_to_camera(target - Vector3::new(0.0, 0.0, down * vpm), self.world.size));
                     self.scripted_walk = approach.is_some_and(|after| f > after && (target - eye).xy().norm() > 3.0 * vpm);
                 }
-                self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                // `--set boss_pulse=50` holds the button that many frames at a time, letting go a
+                // moment between, to ring a bell or such
+                let pulse = settings_from_args().into_iter().find(|(k, _)| k == "boss_pulse").and_then(|(_, v)| v.parse::<usize>().ok());
+                let pressing = f > 30 && pulse.is_none_or(|n| (f - 31) % (n + 12) < n);
+                self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
@@ -3056,6 +3074,25 @@ impl App {
                 }
             }
             ("draw", f) => self.script_controls = combat::Controls { aiming: f > 5, ..Default::default() },
+            // On foot, shooting what's in hand as fast as it'll go at the nearest boss, or the
+            // ground a little way ahead, and switching ammo every 150 frames
+            ("shoot", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                match self.game.nearest_boss(eye).filter(|b| (b - eye).norm() < 40.0 * vpm) {
+                    Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                    None if f == 1 => self.camera.rotation.x = -0.15,
+                    None => {}
+                }
+                self.script_controls = combat::Controls { attack: f > 30, holding: f > 30, ..Default::default() };
+                if f % 150 == 0 {
+                    self.game.switch_ammo();
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
+                }
+            }
             // Draws all the way and shoots at the ground a little way ahead, over and over
             ("volley", f) => {
                 if f == 1 {
@@ -3391,6 +3428,7 @@ impl App {
                                         RichText::new(
                                             "WASD move · Space jump · Shift run · F fly\n\
                                              Click swing or cast · bow: hold right click, click to shoot\n\
+                                             Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Number keys pick what's in hand · I inventory\n\
                                              F1 settings · Esc menu",
