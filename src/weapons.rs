@@ -44,11 +44,83 @@ pub enum Style {
     /// Lunging forward along its length
     Thrust,
     Draw,
+    /// A crossbow, spanned with a lever or a crank, or a magazine's worth worked by a lever, and
+    /// loosed at a touch
+    Crank,
+    /// A gun, loaded with powder and ball down its muzzle, and fired with a bang
+    Powder,
     Cast,
     /// A flick of the wrist
     Flick,
     /// A whip, wound back and snapped forward so it cracks out at the crosshair
     Lash,
+}
+
+/// How a crossbow or gun is built, and so how it's loaded, see crossbow() and gun()
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Build {
+    /// Not a crossbow or gun
+    #[default]
+    None,
+    /// A light crossbow, spanned with a lever that swings over its top
+    Lever,
+    /// A heavy crossbow, wound back with a windlass at its butt
+    Crank,
+    /// A crossbow with a magazine of bolts on top, a lever spanning it again after each
+    Repeater,
+    /// A gun held in one hand
+    Pistol,
+    /// A long gun, its stock to the shoulder
+    Musket,
+    /// A short gun flaring at its muzzle, firing a spread of shot
+    Blunderbuss,
+    /// An iron tube on a wooden tiller, firing shells that burst
+    Cannon,
+}
+
+impl Build {
+    /// What a weapon built this way shoots, for a ranged one: a bow shoots arrows
+    pub fn shot(self) -> Shot {
+        match self {
+            Build::None => Shot::Arrow,
+            Build::Lever | Build::Crank | Build::Repeater => Shot::Quarrel,
+            Build::Cannon => Shot::Shell,
+            Build::Pistol | Build::Musket | Build::Blunderbuss => Shot::Ball,
+        }
+    }
+}
+
+/// What a bow, crossbow or gun shoots, as it flies and lands
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shot {
+    Arrow,
+    /// A crossbow's bolt
+    Quarrel,
+    /// A gun's lead ball, or a pellet of a spread of shot
+    Ball,
+    /// A hand cannon's iron shell, its fuse burning
+    Shell,
+}
+
+impl Shot {
+    /// The special ammo it takes, as AmmoDef::fits has it: arrows, bolts or shot
+    pub fn ammo(self) -> &'static str {
+        match self {
+            Shot::Arrow => "arrow",
+            Shot::Quarrel => "bolt",
+            Shot::Ball | Shot::Shell => "shot",
+        }
+    }
+
+    /// What its ammo's called, a lot of it
+    pub fn plural(self) -> &'static str {
+        match self {
+            Shot::Arrow => "arrows",
+            Shot::Quarrel => "bolts",
+            Shot::Ball | Shot::Shell => "shot",
+        }
+    }
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -267,10 +339,38 @@ pub struct Family {
     /// Stats added on by the weapon's grade, a number for each rarity: how far a whip reaches
     #[serde(default)]
     grade_stats: BTreeMap<String, Vec<f64>>,
+    /// How a crossbow or gun is built, and so loaded
+    #[serde(default)]
+    pub build: Build,
+    /// For crossbows and guns, in meters: how long the stock is, how long a gun's barrel, how wide
+    /// a crossbow's prod, and how wide a gun's bore is round, which is how big its shot is. Parts
+    /// can make a barrel or a prod longer or shorter than these, see crossbow() and gun().
+    #[serde(default)]
+    length: f64,
+    #[serde(default)]
+    barrel: f64,
+    #[serde(default)]
+    span: f64,
+    #[serde(default)]
+    pub caliber: f64,
+    /// Seconds a repeating crossbow's lever takes to work between shots
+    #[serde(default = "quarter")]
+    cycle: f64,
+    /// Effects every one of the family has, whatever it's made of: an arbalest's bolts punching
+    /// through, a hand cannon's shells bursting
+    #[serde(default)]
+    effects: Vec<String>,
+    /// Indices of those effects
+    #[serde(skip)]
+    effect_defs: Vec<usize>,
 }
 
 fn middle() -> f64 {
     0.5
+}
+
+fn quarter() -> f64 {
+    0.25
 }
 
 fn yes() -> bool {
@@ -393,6 +493,52 @@ fn first_level() -> u32 {
     1
 }
 
+/// Special ammo for bows, crossbows and guns, carried in stacks and used up a shot at a time.
+/// Plain ammo never runs out, so isn't one of these. What it does is added to what the weapon
+/// shooting it does, see Library::loaded().
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AmmoDef {
+    pub id: String,
+    pub display_name: String,
+    /// What shoots it, see Shot::ammo(): "arrow", "bolt" or "shot"
+    pub fits: String,
+    pub description: String,
+    #[serde(default)]
+    base_stats: Stats,
+    #[serde(default)]
+    stat_multipliers: Stats,
+    #[serde(default)]
+    effects: Vec<String>,
+    #[serde(default)]
+    pub element: Option<Element>,
+    /// Which arrowhead or bolt head it has, see ARROW_HEADS and QUARREL_HEADS, if not the weapon's own
+    #[serde(default)]
+    pub head: Option<usize>,
+    /// Gold a merchant asks for each one, and how many come in a bundle
+    pub price: f64,
+    pub bundle: u32,
+    /// Indices of its effects
+    #[serde(skip)]
+    pub effect_defs: Vec<usize>,
+}
+
+impl AmmoDef {
+    /// The kind of thing it is in flight, a ball for shot
+    pub fn shot(&self) -> Shot {
+        match self.fits.as_str() {
+            "arrow" => Shot::Arrow,
+            "bolt" => Shot::Quarrel,
+            _ => Shot::Ball,
+        }
+    }
+
+    /// Its stats as they're shown on its card: what it adds, then what it multiplies
+    pub fn stats(&self) -> (&Stats, &Stats) {
+        (&self.base_stats, &self.stat_multipliers)
+    }
+}
+
 /// Everything weapons can be made of
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -406,6 +552,9 @@ pub struct Library {
     pub effects: Vec<EffectDef>,
     pub synergies: Vec<SynergyDef>,
     pub components: Vec<Component>,
+    /// Special ammo
+    #[serde(default)]
+    pub ammo: Vec<AmmoDef>,
 }
 
 const BUILT_IN: &str = include_str!("../assets/weapons.json");
@@ -469,11 +618,25 @@ impl Library {
                 }
             }
         }
+        let effects = &self.effects;
+        let find = |owner: &str, id: &str| effects.iter().position(|e| e.id == id).ok_or_else(|| format!("{owner} has the unknown effect \"{id}\""));
+        for family in &mut self.families {
+            family.effect_defs = family.effects.iter().map(|id| find(&family.id, id)).collect::<Result<_, _>>()?;
+        }
+        for ammo in &mut self.ammo {
+            ammo.effect_defs = ammo.effects.iter().map(|id| find(&ammo.id, id)).collect::<Result<_, _>>()?;
+            if !["arrow", "bolt", "shot"].contains(&ammo.fits.as_str()) {
+                return Err(format!("{} fits \"{}\", which isn't arrows, bolts or shot", ammo.id, ammo.fits));
+            }
+        }
         for family in &self.families {
             for slot in &family.slots {
                 if !self.components.iter().any(|c| c.slot_type == *slot && c.compatible_families.contains(&family.id)) {
                     return Err(format!("nothing fits the {} slot of {}", slot, family.id));
                 }
+            }
+            if family.build != Build::None && (family.kind != Kind::Ranged || family.length <= 0.0) {
+                return Err(format!("{} is built as a crossbow or gun, so it has to be ranged and have a length", family.id));
             }
         }
         Ok(())
@@ -526,6 +689,50 @@ impl Library {
             parts.push(chosen.or(pool.last()).unwrap().0);
         }
         (family, parts)
+    }
+
+    /// The synergies a weapon with `tags` has
+    fn synergies_for(&self, tags: &BTreeSet<String>) -> Vec<ActiveSynergy> {
+        self.synergies
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.requires.iter().all(|t| tags.contains(t)))
+            .filter_map(|(def, s)| Some(ActiveSynergy { synergy: s.synergy?, def, params: s.params.clone() }))
+            .collect()
+    }
+
+    /// What `weapon`'s shots do loaded with special ammo `ammo`: its own profile, with the ammo's
+    /// stats and effects added as a part's are, its element if it has one, and any synergies all
+    /// that brings about together
+    pub fn loaded(&self, weapon: &Weapon, ammo: usize) -> Profile {
+        let def = &self.ammo[ammo];
+        let mut profile = (*weapon.profile).clone();
+        for (name, value) in &def.base_stats {
+            *profile.stats.entry(name.clone()).or_insert(0.0) += value;
+        }
+        for (name, value) in &def.stat_multipliers {
+            *profile.stats.entry(name.clone()).or_insert(0.0) *= value;
+        }
+        if def.element.is_some() {
+            profile.element = def.element;
+        }
+        let mut tags = weapon.tags.clone();
+        for &d in &def.effect_defs {
+            tags.extend(self.effects[d].synergy_tags.iter().cloned());
+            tags.extend(self.effects[d].element.map(|e| e.tag().to_owned()));
+            let Some(effect) = self.effects[d].effect else {
+                continue;
+            };
+            match profile.effects.iter_mut().find(|e| e.def == d) {
+                Some(e) => e.potency += 0.5,
+                None => profile.effects.push(ActiveEffect { effect, def: d, potency: 1.0, params: self.effects[d].params.clone() }),
+            }
+        }
+        if let Some(e) = def.element {
+            tags.insert(e.tag().into());
+        }
+        profile.synergies = self.synergies_for(&tags);
+        profile
     }
 }
 
@@ -585,12 +792,16 @@ fn random(seed: &mut u32) -> f64 {
 }
 
 /// Stats in the order they're shown, with what they're called and how to show them
-pub const STATS: [(&str, &str, Unit); 14] = [
+pub const STATS: [(&str, &str, Unit); 18] = [
     ("physicalDamage", "Physical damage", Unit::Number),
     ("elementalDamage", "Elemental damage", Unit::Number),
     ("spellDamage", "Spell damage", Unit::Number),
     ("attackSpeed", "Swings per second", Unit::Rate),
     ("drawSpeed", "Draws per second", Unit::Rate),
+    ("reloadSpeed", "Reloads per second", Unit::Rate),
+    ("magazine", "Shots per reload", Unit::Number),
+    ("pellets", "Pellets per shot", Unit::Number),
+    ("spread", "Spread", Unit::Degrees),
     ("castSpeed", "Casts per second", Unit::Rate),
     ("critChance", "Critical chance", Unit::Percent),
     ("critDamage", "Critical damage", Unit::Times),
@@ -610,6 +821,7 @@ pub enum Unit {
     Times,
     Meters,
     Speed,
+    Degrees,
 }
 
 impl Unit {
@@ -621,6 +833,7 @@ impl Unit {
             Unit::Times => format!("×{value:.2}"),
             Unit::Meters => format!("{value:.1} m"),
             Unit::Speed => format!("{value:.0} m/s"),
+            Unit::Degrees => format!("{value:.0}°"),
         }
     }
 }
@@ -657,6 +870,13 @@ pub struct Profile {
     pub special: Option<(Special, String)>,
     /// Its overall rarity, as Weapon::grade: what a whip can do grows with it
     pub grade: usize,
+    /// How a crossbow or gun is built, and so loaded
+    pub build: Build,
+    /// How wide a gun's bore is round, in meters, which is how big its shot, its flash and its
+    /// smoke are
+    pub caliber: f64,
+    /// Seconds a repeating crossbow's lever takes to work between shots
+    pub cycle: f64,
 }
 
 /// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
@@ -778,6 +998,23 @@ impl Profile {
     pub fn synergy_param(&self, synergy: Synergy, name: &str, default: f64) -> f64 {
         self.synergies.iter().find(|s| s.synergy == synergy).and_then(|s| s.params.get(name).copied()).unwrap_or(default)
     }
+
+    /// What it shoots, for a bow, crossbow or gun
+    pub fn shot(&self) -> Option<Shot> {
+        (self.kind == Kind::Ranged).then(|| self.build.shot())
+    }
+
+    /// How many shots a crossbow or gun holds loaded
+    pub fn magazine(&self) -> u32 {
+        self.stat("magazine").round().max(1.0) as u32
+    }
+
+    /// The same, without `effect`
+    pub fn without(&self, effect: Effect) -> Profile {
+        let mut profile = self.clone();
+        profile.effects.retain(|e| e.effect != effect);
+        profile
+    }
 }
 
 /// A weapon as it's kept: which parts it was made from, and the seed. The rest is worked out from
@@ -827,7 +1064,7 @@ impl Weapon {
                 *v = v.min(cap);
             }
         }
-        for name in ["attackSpeed", "drawSpeed", "castSpeed"] {
+        for name in ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"] {
             if let Some(v) = stats.get_mut(name) {
                 *v = v.clamp(0.25, 6.0);
             }
@@ -848,16 +1085,15 @@ impl Weapon {
             *stats.entry(plain.into()).or_insert(0.0) += elemental;
         }
 
+        // The family's own effects first, then its parts'
         let mut effects: Vec<ActiveEffect> = Vec::new();
-        for c in components {
-            for &def in &c.effect_defs {
-                let Some(effect) = library.effects[def].effect else {
-                    continue;
-                };
-                match effects.iter_mut().find(|e| e.def == def) {
-                    Some(e) => e.potency += 0.5,
-                    None => effects.push(ActiveEffect { effect, def, potency: 1.0, params: library.effects[def].params.clone() }),
-                }
+        for &def in fam.effect_defs.iter().chain(components.iter().flat_map(|c| c.effect_defs.iter())) {
+            let Some(effect) = library.effects[def].effect else {
+                continue;
+            };
+            match effects.iter_mut().find(|e| e.def == def) {
+                Some(e) => e.potency += 0.5,
+                None => effects.push(ActiveEffect { effect, def, potency: 1.0, params: library.effects[def].params.clone() }),
             }
         }
 
@@ -868,13 +1104,7 @@ impl Weapon {
         if let Some(e) = element {
             tags.insert(e.tag().into());
         }
-        let synergies: Vec<ActiveSynergy> = library
-            .synergies
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.requires.iter().all(|t| tags.contains(t)))
-            .filter_map(|(def, s)| Some(ActiveSynergy { synergy: s.synergy?, def, params: s.params.clone() }))
-            .collect();
+        let synergies = library.synergies_for(&tags);
 
         // The grade reflects how much the weapon can do, not the average of its parts: rare parts
         // and synergies add up, and one very rare part lifts the whole weapon close to it
@@ -889,11 +1119,17 @@ impl Weapon {
         }
         // The rarest part with a special attack gives it its own
         let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
-        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special, grade }, tags, grade)
+        let (build, caliber, cycle) = (fam.build, fam.caliber, fam.cycle);
+        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special, grade, build, caliber, cycle }, tags, grade)
     }
 
     pub fn kind(&self) -> Kind {
         self.profile.kind
+    }
+
+    /// What it shoots, for a bow, crossbow or gun
+    pub fn shot(&self) -> Option<Shot> {
+        self.profile.shot()
     }
 
     /// Which arrowhead a bow's arrows have, see ARROW_HEADS: always the same for the same bow
@@ -946,14 +1182,35 @@ pub struct WeaponLook {
     pub frames: Vec<(Model, Vector3<f64>)>,
     /// Voxels per meter of the models
     pub res: f64,
-    /// Where the hand holds it
+    /// Where the hand holds it, and which way round it the fist closes: up its length, or along a
+    /// gun's grip
     pub grip: Vector3<f64>,
-    /// The tip of the blade, the crystal spells come out of, or where a whip's lash leaves its handle
+    pub hold: Vector3<f64>,
+    /// The tip of the blade, the crystal spells come out of, where a whip's lash leaves its handle,
+    /// or the muzzle of a gun or the front of a crossbow's groove, where its shots leave it
     pub tip: Vector3<f64>,
-    /// For bows, where the nock of the arrow is in each frame
+    /// For bows, where the nock of the arrow is in each frame, and for crossbows the bolt's
     pub nocks: Vec<Vector3<f64>>,
     /// For whips, what the lash is drawn with
     pub lash: Option<LashLook>,
+    /// For crossbows and guns, the part that moves as it's loaded, see Mover
+    pub mover: Option<Mover>,
+    /// Where the other hand steadies a long crossbow or gun, and which way round it its fist
+    /// closes, while it's not working the mover
+    pub support: Option<(Vector3<f64>, Vector3<f64>)>,
+}
+
+/// A part of a crossbow or gun drawn apart from the rest, as it moves while it's loaded: a lever
+/// or a windlass's cranks turning round `pivot` about `axis`, or a ramrod sliding along `axis`
+/// out of the muzzle at `pivot`. All in the weapon's own meters.
+pub struct Mover {
+    /// Which of the weapon's frames it's drawn with
+    pub frame: usize,
+    pub pivot: Vector3<f64>,
+    pub axis: Vector3<f64>,
+    /// Where the other hand takes hold of it to work it, and which way round it the fist closes
+    pub handle: Vector3<f64>,
+    pub handle_axis: Vector3<f64>,
 }
 
 // Voxels per meter of each kind of weapon. They're only ever held, right in front of the eye, so
@@ -962,26 +1219,37 @@ pub struct WeaponLook {
 const SWORD_RES: f64 = 192.0;
 const BOW_RES: f64 = 160.0;
 const STAFF_RES: f64 = 150.0;
+/// Crossbows are wide, so a little coarser, and guns finer, for their locks
+const CROSSBOW_RES: f64 = 128.0;
+const GUN_RES: f64 = 144.0;
 /// How far a bow's string comes back drawn all the way, in meters
 const DRAW_LENGTH: f64 = 0.24;
+
+// A crossbow's frames: its string forward, halfway back and spanned, then its lever or cranks
+pub const CROSSBOW_SPANNED: usize = 2;
+// A gun's frames: its hammer cocked, then let down, then its ramrod
+pub const GUN_COCKED: usize = 0;
+pub const GUN_FIRED: usize = 1;
 
 fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let visual = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
     let empty = Visual::default();
     let v = |slot: &str| visual(slot).unwrap_or(&empty);
+    let plain = |frames, res, grip, tip| WeaponLook { frames, res, grip, hold: Vector3::z(), tip, nocks: Vec::new(), lash: None, mover: None, support: None };
     match family.kind {
         // Just the handle: the lash is simulated, see LashLook
         Kind::Melee if family.style == Style::Lash => {
             let (parts, grip, root) = whip(v("lash"), v("handle"), v("core"), family);
             let (set, cracker) = lash_models(v("lash"), v("fall"));
             let thickness = v("lash").thickness.unwrap_or(0.011);
-            let lash = Some(LashLook { root, set, cracker, thickness });
-            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip: root, nocks: Vec::new(), lash }
+            WeaponLook { lash: Some(LashLook { root, set, cracker, thickness }), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, root) }
         }
         Kind::Melee => {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
-            WeaponLook { frames: vec![voxelize(&parts, SWORD_RES)], res: SWORD_RES, grip, tip, nocks: Vec::new(), lash: None }
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
+        Kind::Ranged if matches!(family.build, Build::Lever | Build::Crank | Build::Repeater) => crossbow(family, v("prod"), v("stock"), v("lock"), v("core")),
+        Kind::Ranged if family.build != Build::None => gun(family, v("barrel"), v("stock"), v("lock"), v("core")),
         Kind::Ranged => {
             let mut frames = Vec::new();
             let mut nocks = Vec::new();
@@ -992,7 +1260,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                 nocks.push(nock);
                 grip = g;
             }
-            WeaponLook { frames, res: BOW_RES, grip, tip: nocks[0], nocks, lash: None }
+            WeaponLook { nocks: nocks.clone(), ..plain(frames, BOW_RES, grip, nocks[0]) }
         }
         Kind::Magic => {
             let (mut parts, top, mut tip) = staff(v("shaft"), v("focus"), v("crystal"), v("binding"));
@@ -1006,7 +1274,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                 tip *= s;
                 res = SWORD_RES;
             }
-            WeaponLook { frames: vec![voxelize(&parts, res)], res, grip, tip, nocks: Vec::new(), lash: None }
+            plain(vec![voxelize(&parts, res)], res, grip, tip)
         }
     }
 }
@@ -1653,6 +1921,370 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
     (p, v3(0.0, 0.0, mid), v3(nock[0], 0.0, nock[2]))
 }
 
+/// A crossbow lying level, shooting along +x, the top of its tiller at z 0 and its butt at x 0,
+/// its prod across the front bending back towards its tips. Its frames are its string forward,
+/// halfway back and spanned to the latch, then what spans it, drawn apart as it moves: a light
+/// one's lever swinging over its top, a heavy one's windlass cranks, or the lever of a repeater
+/// arching over its magazine. Parts make the prod longer or shorter than the family's span.
+fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core: &Visual) -> WeaponLook {
+    let length = family.length;
+    let half = family.span * prod.length.unwrap_or(1.0) * 0.5;
+    let wood = mat(&stock.material, WOOD);
+    let trim = mat(&stock.accent, DARK_STEEL);
+    let metal = mat(&lock.material, DARK_STEEL);
+    let flourish = mat(&lock.accent, metal);
+    let bow = mat(&prod.material, WOOD);
+    let cord = mat(&prod.edge, BOWSTRING);
+    let tips = prod.tips.as_deref().and_then(material);
+    let shape = prod.shape.as_deref().unwrap_or("simple");
+    let x_prod = length - 0.06;
+    let x_latch = length * 0.42;
+    // How far back the prod bends at `s`, from -1 at one tip to 1 at the other, bending further
+    // spanned, and more the longer it is
+    let bend = |s: f64, draw: f64| {
+        let tip = ((s.abs() - 0.7) / 0.3).max(0.0);
+        let x = match shape {
+            "recurve" => -0.11 * s * s + 0.07 * tip * tip,
+            "composite" => -0.1 * s * s + 0.035 * tip * tip,
+            "steel" => -0.075 * s * s,
+            _ => -0.1 * s * s,
+        };
+        x * (half / 0.31) * (1.0 + 0.8 * draw)
+    };
+    let at = |s: f64, draw: f64| [x_prod + bend(s, draw), s * half, 0.004];
+    let nock_at = |draw: f64| (x_prod + bend(1.0, draw)) * (1.0 - draw) + x_latch * draw;
+    let windlass = [0.07, 0.0, 0.02];
+
+    let body = |draw: f64| {
+        let mut p = Vec::new();
+        let nock = [nock_at(draw), 0.0, 0.006];
+        // The string, and on a heavy one the windlass's cords hooked onto it
+        p.push(limb(at(1.0, draw), nock, 0.0045, 0.0045, cord));
+        p.push(limb(at(-1.0, draw), nock, 0.0045, 0.0045, cord));
+        if family.build == Build::Crank {
+            for s in [-1.0, 1.0] {
+                p.push(ball([nock[0] - 0.008, s * 0.012, 0.008], 0.007, metal));
+                p.push(limb([windlass[0], s * 0.03, windlass[2] + 0.018], [nock[0] - 0.008, s * 0.012, 0.008], 0.003, 0.003, cord));
+            }
+        }
+        if let Some(gem) = core.gem.as_deref().and_then(material) {
+            p.push(ball([length * 0.6, 0.02, -0.02], core.size.unwrap_or(0.02).max(0.013) * 0.8, gem));
+        }
+        // The groove the bolt lies in, cut out of the tiller's top
+        p.push(cuboid([x_latch + 0.012, -0.004, -0.006], [length + 0.01, 0.004, 0.001], AIR));
+        // The nut that catches the string, and the long trigger under the tiller
+        p.push(ball([x_latch, 0.0, 0.002], 0.011, metal));
+        p.push(limb([x_latch + 0.01, 0.0, -0.035], [x_latch - 0.13, 0.0, -0.075], 0.006, 0.005, metal));
+        p.push(ball([x_latch - 0.13, 0.0, -0.075], 0.008, flourish));
+        // The prod, bound on at the front, its tips capped
+        if let Some(tips) = tips {
+            for s in [-1.0, 1.0] {
+                p.push(ball(at(s, draw), 0.012, tips));
+            }
+        }
+        p.push(cuboid([x_prod - 0.028, -0.03, -0.038], [x_prod + 0.028, 0.03, 0.01], trim));
+        let steps = 12;
+        for side in [-1.0, 1.0] {
+            let points: Vec<[f64; 3]> = (0..=steps).map(|k| at(side * k as f64 / steps as f64, draw)).collect();
+            for (k, pair) in points.windows(2).enumerate() {
+                let r = if shape == "steel" { 0.011 } else { 0.015 } * (1.0 - 0.45 * k as f64 / steps as f64);
+                p.push(limb(pair[0], pair[1], r, r, bow).stretched([1.0, 1.0, 1.7]));
+            }
+        }
+        match family.build {
+            // The windlass on its brackets at the butt
+            Build::Crank => {
+                p.push(limb([windlass[0], -0.05, windlass[2]], [windlass[0], 0.05, windlass[2]], 0.008, 0.008, metal));
+                for s in [-1.0, 1.0] {
+                    p.push(ellipsoid([windlass[0], s * 0.03, windlass[2]], [0.022, 0.011, 0.022], wood));
+                    p.push(cuboid([windlass[0] - 0.02, s * 0.037 - 0.004, -0.05], [windlass[0] + 0.02, s * 0.037 + 0.004, windlass[2] + 0.004], metal));
+                }
+            }
+            // The brackets the lever turns on
+            Build::Lever => {
+                for s in [-1.0, 1.0] {
+                    p.push(cuboid([x_latch + 0.075, s * 0.025 - 0.003, -0.025], [x_latch + 0.105, s * 0.025 + 0.003, 0.034], metal));
+                }
+            }
+            // The magazine on top, the last few bolts showing through its slot, and the pins the
+            // lever turns on
+            _ => {
+                let (back, front) = (x_latch - 0.02, x_latch + 0.24);
+                for k in 0..2 {
+                    let z = 0.085 + k as f64 * 0.012;
+                    p.push(limb([front - 0.035, 0.0, z], [front - 0.005, 0.0, z], 0.005, 0.0015, metal));
+                    p.push(limb([back + 0.03, 0.0, z], [front - 0.035, 0.0, z], 0.0045, 0.0045, WOOD));
+                    p.push(cuboid([back + 0.03, -0.008, z - 0.001], [back + 0.06, 0.008, z + 0.001], FUR_WHITE));
+                }
+                p.push(cuboid([back + 0.02, -0.007, 0.07], [front - 0.004, 0.007, 0.13], AIR));
+                for x in [back + 0.01, front - 0.012] {
+                    p.push(cuboid([x - 0.006, -0.021, 0.0], [x + 0.006, 0.021, 0.115], trim));
+                }
+                p.push(cuboid([back, -0.018, 0.0], [front, 0.018, 0.11], wood));
+                p.push(limb([length - 0.005, -0.03, -0.03], [length - 0.005, 0.03, -0.03], 0.007, 0.007, metal));
+            }
+        }
+        // A stirrup out front to stand in while spanning it
+        if family.build != Build::Repeater {
+            ring(&mut p, [length + 0.045, 0.0, -0.016], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 0.04, 0.0065, metal);
+        }
+        // Bands round the tiller, then the tiller, deep at the butt to set against the shoulder
+        for x in [0.26, x_latch + 0.16] {
+            p.push(cuboid([x - 0.006, -0.025, -0.043], [x + 0.006, 0.025, 0.003], trim));
+        }
+        p.push(cuboid([0.2, -0.022, -0.04], [length, 0.022, 0.0], wood));
+        p.push(cuboid([0.0, -0.016, -0.112], [0.012, 0.016, -0.02], trim));
+        p.push(limb([0.03, 0.0, -0.065], [0.26, 0.0, -0.022], 0.048, 0.024, wood).stretched([1.0, 0.5, 1.0]));
+        p
+    };
+    let mut frames: Vec<(Model, Vector3<f64>)> = [0.0, 0.5, 1.0].map(|draw| voxelize(&body(draw), CROSSBOW_RES)).into();
+    let nocks: Vec<Vector3<f64>> = [0.0, 0.5, 1.0].map(|draw| v3(nock_at(draw), 0.0, 0.006)).into();
+
+    // What spans it, at rest
+    let mut m = Vec::new();
+    let mover = match family.build {
+        // A windlass's two cranks, hanging down either side of the butt
+        Build::Crank => {
+            for s in [-1.0, 1.0] {
+                let y = s * 0.06;
+                m.push(limb([windlass[0], y, windlass[2]], [windlass[0], y, windlass[2] - 0.085], 0.007, 0.006, metal));
+                m.push(limb([windlass[0], y, windlass[2] - 0.085], [windlass[0], y + s * 0.045, windlass[2] - 0.085], 0.0095, 0.0095, wood));
+            }
+            Mover { frame: 3, pivot: Vector3::from(windlass), axis: Vector3::y(), handle: v3(windlass[0], 0.085, windlass[2] - 0.085), handle_axis: Vector3::y() }
+        }
+        // A goat's-foot lever lying back along the top, its claws forward of the pins it turns on
+        Build::Lever => {
+            let pivot = [x_latch + 0.09, 0.0, 0.03];
+            let end = pivot[0] - 0.25;
+            for s in [-1.0, 1.0] {
+                let y = s * 0.032;
+                m.push(ball([pivot[0], y, pivot[2]], 0.008, flourish));
+                m.push(limb([pivot[0], y, pivot[2]], [pivot[0] + 0.04, y, pivot[2] + 0.025], 0.006, 0.004, metal));
+                m.push(limb([pivot[0], y, pivot[2]], [end, y, pivot[2] + 0.01], 0.006, 0.005, metal));
+            }
+            m.push(limb([end, -0.04, pivot[2] + 0.01], [end, 0.04, pivot[2] + 0.01], 0.009, 0.009, wood));
+            Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::y(), handle: v3(end, 0.0, pivot[2] + 0.01), handle_axis: Vector3::y() }
+        }
+        // A lever turning on pins at the front, arching up over the magazine to a handle behind it
+        _ => {
+            let pivot = [length - 0.005, 0.0, -0.03];
+            let points = [pivot, [length - 0.02, 0.0, 0.1], [x_latch + 0.08, 0.0, 0.17], [x_latch - 0.07, 0.0, 0.16]];
+            for s in [-1.0, 1.0] {
+                let side: Vec<[f64; 3]> = points.iter().map(|q| [q[0], s * 0.027, q[2]]).collect();
+                curve(&mut m, &side, 0.0065, 0.0055, metal);
+            }
+            let end = points[3];
+            m.push(limb([end[0], -0.04, end[2]], [end[0], 0.04, end[2]], 0.009, 0.009, wood));
+            Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::y(), handle: v3(end[0], 0.0, end[2]), handle_axis: Vector3::y() }
+        }
+    };
+    frames.push(voxelize(&m, CROSSBOW_RES));
+    let support = (family.build != Build::Repeater).then(|| (v3(x_latch + 0.22, 0.0, -0.03), Vector3::x()));
+    WeaponLook {
+        frames,
+        res: CROSSBOW_RES,
+        grip: v3(x_latch - 0.08, 0.0, -0.04),
+        hold: Vector3::x(),
+        tip: v3(length + 0.01, 0.0, 0.008),
+        nocks,
+        lash: None,
+        mover: Some(mover),
+        support,
+    }
+}
+
+/// A gun lying level, its barrel along +x with the middle of its bore at z 0, its butt or grip at
+/// the back, and its lock on its left side, +y, which is the side seen when it's held in the right
+/// hand. Its frames are its hammer cocked and let down, then its ramrod, lying right down its
+/// barrel. Parts make the barrel longer or shorter than the family's.
+fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &Visual) -> WeaponLook {
+    let build = family.build;
+    let caliber = family.caliber;
+    let wood = mat(&stock.material, WOOD);
+    let trim = mat(&stock.accent, BRONZE);
+    let tube = mat(&barrel.material, DARK_STEEL);
+    let bands = mat(&barrel.accent, trim);
+    let metal = mat(&lock.material, STEEL);
+    let flourish = mat(&lock.accent, metal);
+    let shape = barrel.shape.as_deref().unwrap_or("round");
+    // Where the barrel starts, and the muzzle
+    let x_b = match build {
+        Build::Pistol => 0.07,
+        Build::Musket => 0.4,
+        Build::Blunderbuss => 0.34,
+        _ => 0.06,
+    };
+    let x_m = x_b + family.barrel * barrel.length.unwrap_or(1.0);
+    let wall = (caliber * 0.6).max(0.006);
+    let outer = caliber + wall;
+    // How far round the barrel is at `t` of the way along it: tapering, a blunderbuss flaring at
+    // its mouth and a cannon swelling there
+    let radius = |t: f64| match build {
+        Build::Blunderbuss => outer * (1.08 - 0.15 * t + 1.3 * ((t - 0.6) / 0.4).max(0.0).powi(2)),
+        Build::Cannon => outer * (1.1 - 0.12 * t + if t > 0.9 { 0.18 } else { 0.0 }),
+        _ => outer * (1.15 - 0.2 * t),
+    };
+    let mouth = if build == Build::Blunderbuss { caliber * 2.4 } else { caliber };
+    // Two barrels side by side for a double-barrelled one
+    let bores: &[f64] = if shape == "twin" { &[-1.0, 1.0] } else { &[0.0] };
+    let side = |y: f64| y * outer * 0.95;
+    // How far out to the side the lock sits: on the stock, or beside the barrels or the tube
+    let w = match build {
+        Build::Pistol => 0.014,
+        Build::Cannon => outer * 1.08,
+        _ => 0.019,
+    };
+    let w = if shape == "twin" { w.max(outer * 1.95) } else { w };
+    let plate = if build == Build::Pistol { x_b - 0.064 } else { x_b - 0.08 };
+
+    let body = |cocked: bool| {
+        let mut p = Vec::new();
+        // The bore, hollowing out the muzzle
+        for &y in bores {
+            p.push(limb([x_m - 0.03, side(y), 0.0], [x_m + 0.02, side(y), 0.0], mouth, mouth, AIR));
+        }
+        // A sight on top at the muzzle, and bands round the barrel
+        p.push(cuboid([x_m - 0.014, -0.0015, radius(0.97) - 0.002], [x_m - 0.004, 0.0015, radius(0.97) + 0.006], bands));
+        let rings: Vec<f64> = match build {
+            Build::Musket => vec![0.35, 0.62, 0.86],
+            Build::Cannon => vec![0.0, 0.25, 0.5, 0.75, 0.97],
+            Build::Blunderbuss => vec![0.3, 0.98],
+            _ => vec![0.97],
+        };
+        for t in rings {
+            let x = x_b + (x_m - x_b) * t;
+            for &y in bores {
+                p.push(limb([x - 0.007, side(y), 0.0], [x + 0.007, side(y), 0.0], radius(t) * 1.14, radius(t) * 1.14, bands));
+            }
+        }
+        // A dragon's head round the muzzle, its jaws open, its eyes glowing
+        if shape == "dragon" {
+            let r = radius(1.0);
+            for s in [-1.0, 1.0] {
+                p.push(ball([x_m - 0.03, s * r * 0.9, r * 0.9], r * 0.35, bands));
+                p.push(limb([x_m - 0.04, s * r * 0.6, r * 1.1], [x_m - 0.09, s * r * 0.8, r * 1.9], r * 0.3, r * 0.08, tube));
+            }
+            p.push(limb([x_m - 0.05, 0.0, r * 0.7], [x_m + 0.015, 0.0, r * 1.15], r * 0.7, r * 0.45, tube));
+            p.push(limb([x_m - 0.05, 0.0, -r * 0.7], [x_m + 0.01, 0.0, -r * 1.3], r * 0.6, r * 0.35, tube));
+        }
+        // The barrel, or barrels: round, or squared off down its length with a rib on top
+        let steps = 8;
+        for &y in bores {
+            for k in 0..steps {
+                let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
+                let (a, b) = (x_b + (x_m - x_b) * t0, x_b + (x_m - x_b) * t1);
+                if shape == "octagon" {
+                    let r = radius(t0) * 0.88;
+                    p.push(cuboid([a, side(y) - r, -r], [b, side(y) + r, r], tube));
+                }
+                p.push(limb([a, side(y), 0.0], [b, side(y), 0.0], radius(t0), radius(t1), tube));
+            }
+            if build == Build::Cannon {
+                // The knob on its breech
+                p.push(ball([x_b - 0.012, side(y), 0.0], outer * 0.55, tube));
+            }
+        }
+        if shape == "octagon" {
+            p.push(cuboid([x_b + 0.02, -0.002, outer * 0.85], [x_m - 0.02, 0.002, outer * 1.15], bands));
+        }
+
+        // The lock on its plate, its hammer cocked back or let down onto the pan
+        let y = w + 0.005;
+        let pivot = [x_b - 0.055, y, -0.006];
+        let lock_shape = lock.shape.as_deref().unwrap_or("flint");
+        let (jaw, frizzen_top) = if cocked { ([x_b - 0.047, y, 0.033], [x_b - 0.009, y, 0.03]) } else { ([x_b - 0.017, y, 0.018], [x_b + 0.016, y, 0.02]) };
+        let elbow = if cocked { [x_b - 0.072, y, 0.016] } else { [x_b - 0.042, y, 0.022] };
+        match lock_shape {
+            // A serpentine holding a smouldering match, swung down into the pan to fire
+            "match" => {
+                let ember = if cocked { [jaw[0] + 0.006, y, jaw[2] + 0.006] } else { [x_b - 0.011, y, 0.012] };
+                p.push(ball(ember, 0.0055, flourish));
+                p.push(limb(jaw, ember, 0.004, 0.004, LINEN));
+                p.push(limb(jaw, [jaw[0] - 0.05, y + 0.006, jaw[2] - 0.04], 0.0025, 0.0025, LINEN));
+                curve(&mut p, &[[pivot[0], y, pivot[2] - 0.01], elbow, jaw], 0.0045, 0.0035, metal);
+            }
+            // A wheel turning against the stone, and the dog holding it
+            "wheel" => {
+                p.push(ellipsoid([x_b - 0.03, y + 0.002, -0.004], [0.015, 0.004, 0.015], flourish));
+                p.push(ball(jaw, 0.006, OBSIDIAN));
+                curve(&mut p, &[pivot, elbow, jaw], 0.004, 0.004, metal);
+            }
+            // A flint or, on a rune lock, a glowing stone, struck against the frizzen as the
+            // hammer falls, knocking it open
+            shape => {
+                let (stone, plate) = if shape == "rune" { (flourish, flourish) } else { (OBSIDIAN, metal) };
+                p.push(cuboid([jaw[0] - 0.002, y - 0.004, jaw[2] - 0.006], [jaw[0] + 0.008, y + 0.004, jaw[2] + 0.002], stone));
+                p.push(limb([x_b - 0.011, y, 0.004], frizzen_top, 0.004, 0.003, plate));
+                curve(&mut p, &[pivot, elbow, jaw], 0.0045, 0.0035, metal);
+            }
+        }
+        // The pan, and the plate
+        p.push(cuboid([x_b - 0.02, w, -0.001], [x_b - 0.004, w + 0.011, 0.005], metal));
+        p.push(cuboid([plate, w, -0.02], [x_b + 0.015, w + 0.004, 0.009], metal));
+        if let Some(gem) = core.gem.as_deref().and_then(material) {
+            let r = core.size.unwrap_or(0.02).max(0.013) * 0.75;
+            let at = match build {
+                Build::Pistol => [x_b - 0.06, 0.013, -0.06],
+                Build::Cannon => [x_b + 0.05, 0.0, outer * 1.05],
+                _ => [0.15, 0.021, -0.06],
+            };
+            p.push(ball(at, r, gem));
+        }
+
+        // The trigger in its guard, then the stock
+        p.push(limb([x_b - 0.035, 0.0, -0.02], [x_b - 0.043, 0.0, -0.042], 0.0035, 0.003, metal));
+        if build != Build::Cannon {
+            ring(&mut p, [x_b - 0.04, 0.0, -0.036], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.0035, trim);
+        }
+        let fore = family.length;
+        match build {
+            // A grip curving down from the breech, capped
+            Build::Pistol => {
+                p.push(ball([x_b - 0.118, 0.0, -0.106], 0.025, trim));
+                p.push(limb([x_b + 0.005, 0.0, -0.006], [x_b - 0.075, 0.0, -0.016], 0.014, 0.014, wood));
+                p.push(limb([x_b + 0.005, 0.0, -0.012], [x_b - 0.11, 0.0, -0.098], 0.017, 0.022, wood).stretched([1.0, 0.75, 1.0]));
+                p.push(limb([x_b - 0.01, 0.0, -0.01], [fore, 0.0, -0.009], 0.013, 0.011, wood));
+            }
+            // A wooden tiller under the breech, strapped to the barrel, to hold it by
+            Build::Cannon => {
+                p.push(cuboid([x_b + 0.03, -outer * 0.8, -outer - 0.03], [x_b + 0.05, outer * 0.8, 0.0], bands));
+                p.push(cuboid([x_b + 0.12, -0.012, -outer - 0.04], [x_b + 0.15, 0.012, -outer + 0.01], tube));
+                p.push(limb([x_b - fore, 0.0, -outer - 0.012], [x_b + 0.12, 0.0, -outer - 0.012], 0.022, 0.026, wood));
+                p.push(ball([x_b - fore, 0.0, -outer - 0.012], 0.024, trim));
+            }
+            // A full stock, from a butt to set against the shoulder to a fore-end under the barrel
+            _ => {
+                p.push(cuboid([0.0, -0.022, -0.128], [0.012, 0.022, -0.026], trim));
+                p.push(limb([fore - 0.006, 0.0, -outer * 0.85], [fore + 0.006, 0.0, -outer * 0.85], 0.016, 0.016, trim));
+                p.push(limb([x_b - 0.02, 0.0, -outer * 0.85], [fore, 0.0, -outer * 0.8], 0.017, 0.015, wood).stretched([1.0, 1.15, 0.9]));
+                p.push(limb([x_b, 0.0, -0.012], [x_b - 0.12, 0.0, -0.03], 0.019, 0.018, wood).stretched([1.0, 0.85, 1.0]));
+                p.push(limb([x_b - 0.11, 0.0, -0.032], [0.03, 0.0, -0.077], 0.021, 0.052, wood).stretched([1.0, 0.45, 1.0]));
+            }
+        }
+        p
+    };
+    let mut frames = vec![voxelize(&body(true), GUN_RES), voxelize(&body(false), GUN_RES)];
+
+    // The ramrod, as far down the barrel as it goes
+    let bore = v3(x_m, side(bores[0]), 0.0);
+    let rod = if build == Build::Cannon { 0.011 } else { 0.0042 };
+    let rammer = [
+        ball([bore.x, bore.y, 0.0], rod * 1.6, bands),
+        limb([bore.x - (x_m - x_b) + 0.01, bore.y, 0.0], [bore.x, bore.y, 0.0], rod * 1.3, rod, if build == Build::Cannon { WOOD } else { STEEL }),
+    ];
+    frames.push(voxelize(&rammer, GUN_RES));
+    let mover = Mover { frame: 2, pivot: bore, axis: Vector3::x(), handle: bore, handle_axis: Vector3::x() };
+    // Held at the grip of a pistol, the tiller of a cannon or the wrist of a stock, steadied
+    // under the fore-end of a long gun
+    let (grip, hold) = match build {
+        Build::Pistol => (v3(x_b - 0.055, 0.0, -0.055), v3(0.8, 0.0, 0.6)),
+        Build::Cannon => (v3(x_b - family.length * 0.45, 0.0, -outer - 0.012), Vector3::x()),
+        _ => (v3(x_b - 0.075, 0.0, -0.022), v3(0.96, 0.0, 0.28)),
+    };
+    let support = matches!(build, Build::Musket | Build::Blunderbuss).then(|| (v3(x_b + (family.length - x_b) * 0.55, 0.0, -outer - 0.012), Vector3::x()));
+    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(x_m, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support }
+}
+
 /// A staff standing on its foot, the crystal at its top. Returns how long its shaft is, and where
 /// the crystal is.
 fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, f64, Vector3<f64>) {
@@ -1862,6 +2494,27 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
 
 /// How many kinds of arrowhead there are: broad, a narrow bodkin point, and barbed
 pub const ARROW_HEADS: usize = 3;
+/// And of bolt head: a square point, and a broad barbed one
+pub const QUARREL_HEADS: usize = 2;
+/// How long a crossbow's bolt is, from its nock to its point
+pub const QUARREL_HEAD: f64 = 0.37;
+
+/// How long an arrow or a bolt is, and how it's fletched, see arrow()
+struct Fletch {
+    /// Where its head starts
+    start: f64,
+    /// How thick its shaft is round
+    shaft: f64,
+    /// Where its feathers or vanes run from and to along it, and how far out they reach there
+    vanes: (f64, f64),
+    reach: (f64, f64),
+    /// Its head's size next to an arrow's
+    head: f64,
+}
+
+const ARROW_FLETCH: Fletch = Fletch { start: 0.6, shaft: 0.0045, vanes: (0.025, 0.115), reach: (0.007, 0.019), head: 1.0 };
+/// Short and thick, with stiff vanes
+const QUARREL_FLETCH: Fletch = Fletch { start: 0.3, shaft: 0.0058, vanes: (0.012, 0.07), reach: (0.008, 0.018), head: 0.75 };
 
 // Where each kind of model starts among effect_models(), counted in sets of ELEMENT_LOOKS: one
 // without an element, then one for each element
@@ -1887,8 +2540,16 @@ pub const DROP_ASH: usize = 5;
 pub const DROP_GOLD: usize = 6;
 pub const DROP_VOID: usize = 7;
 pub const DROP_EMBER: usize = 8;
+/// Crossbow bolts in flight, a set for each head, see QUARREL_HEADS, then finer ones lying in a
+/// crossbow's groove
+pub const SLOT_QUARREL: usize = SLOT_DROP + 1;
+pub const SLOT_HELD_QUARREL: usize = SLOT_QUARREL + QUARREL_HEADS;
+/// A gun's balls
+pub const SLOT_SHOT: usize = SLOT_HELD_QUARREL + QUARREL_HEADS;
+/// Puffs of smoke, white powder smoke without an element, each element's its own color
+pub const SLOT_SMOKE: usize = SLOT_SHOT + 1;
 /// After the sets: the right arm, the left arm, a boulder, then spikes of ice bursting up
-pub const ARMS: usize = (SLOT_DROP + 1) * ELEMENT_LOOKS;
+pub const ARMS: usize = (SLOT_SMOKE + 1) * ELEMENT_LOOKS;
 pub const BOULDER: usize = ARMS + 2;
 pub const ICE_BURST: usize = BOULDER + 1;
 /// A pillar of light, standing on 0
@@ -1901,14 +2562,19 @@ pub const THORN: usize = ROOTS + 1;
 pub const RING: usize = THORN + 1;
 /// A ball of web, strands trailing off it, its middle at 0
 pub const WEB: usize = RING + 1;
+/// A gun's muzzle flash, bursting out along +x from 0
+pub const MUZZLE: usize = WEB + 1;
+/// A hand cannon's shell, its fuse burning behind it, its middle at 0
+pub const SHELL: usize = MUZZLE + 1;
 /// Then the stretches of lash a whip's lash is drawn with, see LashLook: a model as thick as each
 /// of LASH_TAPERS for each of the LASH_SETS, then each of the CRACKERS for its tip
-pub const LASH_SEGMENTS: usize = WEB + 1;
+pub const LASH_SEGMENTS: usize = SHELL + 1;
 pub const LASH_CRACKERS: usize = LASH_SEGMENTS + LASH_SETS * LASH_TAPERS.len();
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
-/// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the shaft
-fn arrow(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
+/// ARROW_HEADS), and its element showing in the head and what's round it, the fletching and the
+/// shaft. With `fletch` a crossbow's bolt instead, shorter and thicker, see quarrel().
+fn arrow(element: Option<Element>, head: usize, res: f64, fletch: &Fletch) -> Vec<Part> {
     use Element::*;
     let voxel = 1.0 / res;
     let (body, edge) = match element {
@@ -1932,9 +2598,9 @@ fn arrow(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
         Some(Void) => (OBSIDIAN, BARK_DARK),
         Some(Holy) => (LINEN, BIRCH_BARK),
     };
-    let start = 0.6;
+    let start = fletch.start;
     let mut p = Vec::new();
-    let band = |p: &mut Vec<Part>, x: f64, material: u8| p.push(limb([x, 0.0, 0.0], [x + 0.006, 0.0, 0.0], 0.0075, 0.0075, material));
+    let band = |p: &mut Vec<Part>, x: f64, material: u8| p.push(limb([x, 0.0, 0.0], [x + 0.006, 0.0, 0.0], fletch.shaft + 0.003, fletch.shaft + 0.003, material));
     // What's round the head goes first, as earlier shapes win
     match element {
         Some(Fire) => {
@@ -1973,7 +2639,7 @@ fn arrow(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
             // A halo round the shaft by the feathers
             for k in 0..8 {
                 let a = k as f64 / 8.0 * TAU;
-                p.push(ball([0.14, a.cos() * 0.016, a.sin() * 0.016], 0.003, GLOW_HOLY));
+                p.push(ball([fletch.vanes.1 + 0.025, a.cos() * 0.016, a.sin() * 0.016], 0.003, GLOW_HOLY));
             }
         }
         None => {}
@@ -1985,6 +2651,7 @@ fn arrow(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
         1 => (0.11, 0.0075),
         _ => (0.09, 0.017),
     };
+    let (length, width) = (length * fletch.head, width * fletch.head.sqrt());
     let rows = ((length * res).ceil() as usize).max(1);
     let thick = 0.003;
     let (mut bodies, mut edges) = (Vec::new(), Vec::new());
@@ -2021,15 +2688,50 @@ fn arrow(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
         }
     }
     // A socket the head sits in
-    p.push(limb([start - 0.006, 0.0, 0.0], [start + 0.006, 0.0, 0.0], 0.006, 0.005, body));
+    p.push(limb([start - 0.006, 0.0, 0.0], [start + 0.006, 0.0, 0.0], fletch.shaft + 0.0015, fletch.shaft + 0.0005, body));
 
     // Three feathers by the nock, then the nock and the shaft
+    let ((from, to), (near, far)) = (fletch.vanes, fletch.reach);
     for a in [0.0, TAU / 3.0, 2.0 * TAU / 3.0] {
         let (c, s) = (f64::cos(a), f64::sin(a));
-        p.push(limb([0.025, c * 0.007, s * 0.007], [0.115, c * 0.019, s * 0.019], 0.006, 0.0035, feathers));
+        p.push(limb([from, c * near, s * near], [to, c * far, s * far], 0.006, 0.0035, feathers));
     }
-    p.push(limb([0.0, 0.0, 0.0], [0.012, 0.0, 0.0], 0.0065, 0.0065, if element == Some(Holy) { GOLD } else { BARK_DARK }));
-    p.push(limb([0.0, 0.0, 0.0], [start, 0.0, 0.0], 0.0045, 0.0045, shaft));
+    p.push(limb([0.0, 0.0, 0.0], [0.012, 0.0, 0.0], fletch.shaft + 0.002, fletch.shaft + 0.002, if element == Some(Holy) { GOLD } else { BARK_DARK }));
+    p.push(limb([0.0, 0.0, 0.0], [start, 0.0, 0.0], fletch.shaft, fletch.shaft, shaft));
+    p
+}
+
+/// A crossbow's bolt along +x with its nock at 0: with bolt head `head`, a square point or a broad
+/// barbed one, see QUARREL_HEADS, and its element showing as an arrow's does
+fn quarrel(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
+    arrow(element, if head == 0 { 1 } else { 2 }, res, &QUARREL_FLETCH)
+}
+
+/// A puff of smoke, lumpy, its middle at 0: white powder smoke without an element, or smoke the
+/// color of one
+fn smoke(element: Option<Element>, seed: u32) -> Vec<Part> {
+    use Element::*;
+    let (body, lumps) = match element {
+        None => (CLAY, FUR_WHITE),
+        Some(Fire) => (MORTAR, BARK_DARK),
+        Some(Frost) => (FOAM, FUR_WHITE),
+        Some(Storm) => (FUR_GRAY, CLAY),
+        Some(Poison) => (CLAY, MOSS),
+        Some(Arcane) => (FUR_GRAY, CLAY),
+        Some(Void) => (FUR_DARK, MORTAR),
+        Some(Blood) => (CLAY, MEAT),
+        Some(Holy) => (WAX, LINEN),
+    };
+    // Lumps of different sizes off a smaller middle, so it's ragged rather than round
+    let mut seed = seed;
+    let mut p = Vec::new();
+    for k in 0..9 {
+        let d = [random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 1.6 - 0.6];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(0.1);
+        let out = 0.035 + 0.025 * random(&mut seed);
+        p.push(ball(d.map(|v| v / n * out), 0.018 + 0.02 * random(&mut seed), if k % 3 == 0 { body } else { lumps }));
+    }
+    p.push(ball([0.0, 0.0, 0.0], 0.045, body));
     p
 }
 
@@ -2042,7 +2744,7 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     let mut models = Vec::new();
     for head in 0..ARROW_HEADS {
         for &element in &looks {
-            models.push(voxelize(&arrow(element, head, ARROW_RES), ARROW_RES));
+            models.push(voxelize(&arrow(element, head, ARROW_RES, &ARROW_FLETCH), ARROW_RES));
         }
     }
     for &element in &looks {
@@ -2057,7 +2759,7 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     // The arrow on the string, held up close
     for head in 0..ARROW_HEADS {
         for &element in &looks {
-            models.push(voxelize(&arrow(element, head, HELD_ARROW_RES), HELD_ARROW_RES));
+            models.push(voxelize(&arrow(element, head, HELD_ARROW_RES, &ARROW_FLETCH), HELD_ARROW_RES));
         }
     }
     // Fireballs, a meter across: glowing balls with bites out of them, so they look torn apart
@@ -2083,6 +2785,21 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     // Drops, in the order of DROP_WATER and the rest: a voxel each
     for material in [FOAM, CLOTH, GLOW_POISON, DIRT, ICE, BARK_DARK, GOLD, OBSIDIAN, GLOW_FIRE] {
         models.push(voxelize(&[ball([0.0, 0.0, 0.0], 0.03, material)], MODEL_RES));
+    }
+    // Crossbow bolts flying, then lying in the groove, held up close
+    for res in [ARROW_RES, HELD_ARROW_RES] {
+        for head in 0..QUARREL_HEADS {
+            for &element in &looks {
+                models.push(voxelize(&quarrel(element, head, res), res));
+            }
+        }
+    }
+    // Balls of lead, or glowing with an element
+    for &element in &looks {
+        models.push(voxelize(&[ball([0.0, 0.0, 0.0], 0.016, element.map_or(DARK_STEEL, Element::glow))], SHOT_RES));
+    }
+    for (k, &element) in looks.iter().enumerate() {
+        models.push(voxelize(&smoke(element, 0x5e0c + k as u32), SMOKE_RES));
     }
     models.push(voxelize(&arm(false), ARM_RES));
     models.push(voxelize(&arm(true), ARM_RES));
@@ -2144,6 +2861,20 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         p.push(limb([0.0, 0.0, 0.0], d.map(|v| v / n * 0.5), 0.05, 0.015, FOAM));
     }
     models.push(voxelize(&p, MODEL_RES));
+    // A muzzle flash: a white-hot core, flame round it, and tongues of it flaring out to the sides
+    let mut p = vec![limb([0.0, 0.0, 0.0], [0.11, 0.0, 0.0], 0.016, 0.003, GLOW_HOLY)];
+    for k in 0..5 {
+        let a = k as f64 / 5.0 * TAU + 0.3;
+        let out = [0.045, a.cos() * 0.05, a.sin() * 0.05];
+        p.push(limb([0.004, 0.0, 0.0], out, 0.011, 0.002, if k % 2 == 0 { GLOW_FIRE } else { FLAME }));
+    }
+    p.push(limb([0.0, 0.0, 0.0], [0.17, 0.0, 0.0], 0.034, 0.002, GLOW_FIRE));
+    models.push(voxelize(&p, MUZZLE_RES));
+    // A shell: an iron ball bound with a band, its fuse burning out of the back
+    let mut p = vec![ball([-0.05, 0.0, 0.0], 0.008, GLOW_FIRE), limb([-0.03, 0.0, 0.0], [-0.048, 0.0, 0.0], 0.004, 0.004, LINEN)];
+    ring(&mut p, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 0.034, 0.004, BRONZE);
+    p.push(ball([0.0, 0.0, 0.0], 0.034, DARK_STEEL));
+    models.push(voxelize(&p, SHOT_RES));
     // A whip's lash: a stretch of it in each set at each thickness, then the crackers
     for set in 0..LASH_SETS {
         for radius in LASH_TAPERS {
@@ -2166,6 +2897,11 @@ pub const HELD_ARROW_RES: f64 = 160.0;
 pub const RING_RES: f64 = 48.0;
 pub const FINE_SPARK_RES: f64 = 128.0;
 pub const ARM_RES: f64 = 128.0;
+/// Finer for balls and shells, which are small, smoke for being lumpy, and a muzzle flash, which
+/// is right in front of the eye
+pub const SHOT_RES: f64 = 64.0;
+pub const SMOKE_RES: f64 = 48.0;
+pub const MUZZLE_RES: f64 = 96.0;
 
 /// A gloved hand in a fist round z, its forearm in a leather bracer and a sleeve reaching back
 /// along -y. The left hand has its thumb the other way.
@@ -2267,6 +3003,52 @@ mod tests {
             let (set, _) = lash_models(&c.visual_profile, &Visual::default());
             assert_eq!(set >= LASH_GLOW, c.element.is_some(), "{}", c.id);
         }
+    }
+
+    #[test]
+    fn crossbows_and_guns_load_and_shoot_their_own_ammo() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        for id in ["crossbow", "arbalest", "repeater", "pistol", "musket", "blunderbuss", "handcannon"] {
+            let family = library.family(id).expect("there's such a family");
+            for seed in 0..40 {
+                let weapon = library.generate(seed, Some(family), 3.0);
+                let profile = &weapon.profile;
+                assert_ne!(profile.build, Build::None, "{id}");
+                assert!(profile.stat("reloadSpeed") > 0.0 && profile.stat("physicalDamage") > 0.0, "{id}");
+                // Something that loads it, drawn with a frame of its own, and a muzzle out front
+                let look = &weapon.look;
+                let mover = look.mover.as_ref().expect("something loads it");
+                assert!(mover.frame < look.frames.len(), "{id}");
+                assert!(look.tip.x > look.grip.x, "{id} shoots forward of where it's held");
+                if profile.shot() == Some(Shot::Quarrel) {
+                    assert_eq!(look.nocks.len(), CROSSBOW_SPANNED + 1);
+                    assert!(look.nocks[CROSSBOW_SPANNED].x < look.nocks[0].x, "{id}'s string comes back as it's spanned");
+                }
+                // Special ammo that fits it, adding its effects to what it does
+                let shot = weapon.shot().unwrap();
+                let ammo: Vec<usize> = (0..library.ammo.len()).filter(|&k| library.ammo[k].shot().ammo() == shot.ammo()).collect();
+                assert!(ammo.len() >= 5, "{id} has special ammo");
+                for k in ammo {
+                    let loaded = library.loaded(&weapon, k);
+                    for &d in &library.ammo[k].effect_defs {
+                        assert!(loaded.effects.iter().any(|e| e.def == d), "{} adds its effects", library.ammo[k].id);
+                    }
+                    if let Some(e) = library.ammo[k].element {
+                        assert_eq!(loaded.element, Some(e));
+                    }
+                }
+            }
+        }
+        // A repeater holds several, a hand cannon's shells burst, a blunderbuss scatters
+        let repeater = library.generate(1, library.family("repeater"), 1.0);
+        assert!(repeater.profile.magazine() >= 5);
+        let cannon = library.generate(1, library.family("handcannon"), 1.0);
+        assert!(cannon.profile.has(Effect::Explosive) && cannon.shot() == Some(Shot::Shell));
+        let blunderbuss = library.generate(1, library.family("blunderbuss"), 1.0);
+        assert!(blunderbuss.profile.stat("pellets") > 4.0);
+        // Bursting shot fires a single grenade, even from a blunderbuss
+        let bursting = library.ammo.iter().position(|a| a.id == "bursting_shot").unwrap();
+        assert!(library.loaded(&blunderbuss, bursting).stat("pellets") < 1.0);
     }
 
     #[test]

@@ -3,18 +3,19 @@
 //! they hit. Positions are in voxels of the main world, the numbers in the weapon data in meters
 //! and seconds.
 
+use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 use std::rc::Rc;
 
-use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Rotation3, Unit, UnitQuaternion, Vector3};
 
 use crate::animals::{Animal, AnimalInstance, HELD, Look, MODEL_RES, MOVING, Model, STILL, TINT_BURNING, TINT_CHILLED, TINT_FROZEN, TINT_HIT, TINT_NONE, TINT_POISONED, TINT_SHOCKED};
 use crate::audio::{Cue, Sound};
 use crate::player::WaterLevel;
 use crate::weapons::{
-    ARM_RES, ARMS, ARROW_RES, BOLT_RES, BOULDER, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES, HELD_ARROW_RES,
-    ICE_BURST, Kind, LASH_CRACKERS, LASH_RES, LASH_SEGMENTS, LASH_TAPERS, PILLAR, Profile, RING, RING_RES, ROOTS, THORN, WEB, Special, SLOT_ARROW, SLOT_BOLT, SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_SPARK,
-    SPARK_RES, Style, Synergy, Weapon, effect_models,
+    ARM_RES, ARMS, ARROW_HEADS, ARROW_RES, BOLT_RES, BOULDER, Build, QUARREL_HEADS, CROSSBOW_SPANNED, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES,
+    GUN_COCKED, GUN_FIRED, HELD_ARROW_RES, ICE_BURST, Kind, LASH_CRACKERS, LASH_RES, LASH_SEGMENTS, LASH_TAPERS, MUZZLE, MUZZLE_RES, PILLAR, Profile, QUARREL_HEAD, RING, RING_RES, ROOTS, SHELL, SHOT_RES, SLOT_ARROW, SLOT_BOLT,
+    SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_HELD_QUARREL, SLOT_QUARREL, SLOT_SHOT, SLOT_SMOKE, SLOT_SPARK, SMOKE_RES, SPARK_RES, Shot, Special, Style, Synergy, THORN, WEB, Weapon, effect_models,
 };
 use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, MOSS, OBSIDIAN, SNOW};
 use crate::worldgen::{World, is_passable};
@@ -28,6 +29,10 @@ const HEAVY: f64 = 1.8;
 const AIM_RANGE: f64 = 150.0;
 /// Arrows fall this much slower than things do, so they carry
 const ARROW_GRAVITY: f64 = 0.55;
+/// A crossbow's bolts fly flatter, a gun's balls flatter still, and a shell drops
+const QUARREL_GRAVITY: f64 = 0.3;
+const BALL_GRAVITY: f64 = 0.12;
+const SHELL_GRAVITY: f64 = 0.6;
 /// The most lights fights add to the world's at once
 const MAX_LIGHTS: usize = 6;
 
@@ -161,6 +166,16 @@ pub struct Arena<'a> {
     pub water: WaterLevel<'a>,
 }
 
+/// Special ammo loaded in the bow, crossbow or gun in hand, see Library::loaded()
+pub struct Loaded {
+    /// Which of Library::ammo, for game.rs to take one of off its stack each shot
+    pub ammo: usize,
+    /// What the weapon's shots do with it in
+    pub profile: Rc<Profile>,
+    /// Its arrowhead or bolt head, if not the weapon's own
+    pub head: Option<usize>,
+}
+
 /// A number or a word floating up from where something was hit
 pub struct Popup {
     pub position: Vector3<f64>,
@@ -177,6 +192,10 @@ enum Action {
     Swing { t: f64, length: f64, heavy: bool, struck: bool, combo: u8 },
     Draw { t: f64 },
     Loose { t: f64 },
+    /// A crossbow being spanned, or a gun loaded with powder and ball, `length` seconds in all
+    Reload { t: f64, length: f64 },
+    /// A crossbow or gun just shot, kicking back, and a repeater's lever spanning it again
+    Fire { t: f64, length: f64 },
     Cast { t: f64, cast: bool },
     /// A special attack being unleashed, see special_move()
     Special { t: f64, length: f64, special: Special },
@@ -195,8 +214,27 @@ struct Blow {
     element: Option<Element>,
 }
 
+/// An arrow, a crossbow's bolt or a gun's shot as it's shot: what it is, its head, whether it was
+/// shot at full power so it streaks, and how big it's drawn next to as it's made
+#[derive(Clone, Copy)]
+struct Missile {
+    shot: Shot,
+    head: usize,
+    power: bool,
+    size: f64,
+}
+
+impl Missile {
+    fn arrow(head: usize, power: bool) -> Missile {
+        Missile { shot: Shot::Arrow, head, power, size: 1.0 }
+    }
+}
+
 struct Projectile {
+    /// Shot from a bow, crossbow or gun, rather than cast
     arrow: bool,
+    /// What it is, if it's shot
+    shot: Shot,
     position: Vector3<f64>,
     velocity: Vector3<f64>,
     damage: f64,
@@ -367,6 +405,8 @@ struct Stuck {
     look: usize,
     /// Which arrowhead, or None for a thorn
     head: Option<usize>,
+    /// A crossbow's bolt rather than an arrow
+    quarrel: bool,
     element: Option<Element>,
     life: f64,
     /// Seconds it goes on burning, crackling or such, for an arrow with an element
@@ -643,6 +683,22 @@ pub struct Combat {
     lash: Option<Lash>,
     /// How hard the camera shakes, wearing off
     pub shake: f64,
+    /// How far a shot has thrown the view up, in radians, and how fast it's going, springing back
+    /// down, for main.rs to turn the camera by
+    pub kick: f64,
+    kick_speed: f64,
+    /// Shots loaded in each crossbow and gun, by its place among Game::weapons, so one put away
+    /// loaded is still loaded taken out again. One that isn't here is fully loaded.
+    loads: HashMap<usize, u32>,
+    /// Seconds the muzzle flash of the gun in hand goes on showing, and which way round it's
+    /// turned, so each looks a little different
+    flare: f64,
+    flare_roll: f64,
+    /// The head and element of the special ammo in the bow, crossbow or gun in hand, if there is
+    /// any, for drawing the arrow on its string or the bolt in its groove
+    nocked: Option<(Option<usize>, Option<Element>)>,
+    /// Which special ammo, of Library::ammo, was shot since game.rs last looked, one for each shot
+    pub spent: Vec<usize>,
     /// How fast the player is going in meters a second, and how far they've walked, to bob what's
     /// in hand as they go
     speed: f64,
@@ -1062,6 +1118,8 @@ fn new_move(before: Action, now: Action) -> bool {
         | (Action::Special { t: a, .. }, Action::Special { t: b, .. })
         | (Action::Cast { t: a, .. }, Action::Cast { t: b, .. })
         | (Action::Draw { t: a }, Action::Draw { t: b })
+        | (Action::Reload { t: a, .. }, Action::Reload { t: b, .. })
+        | (Action::Fire { t: a, .. }, Action::Fire { t: b, .. })
         | (Action::Loose { t: a }, Action::Loose { t: b }) => b < a,
         _ => true,
     }
@@ -1439,6 +1497,16 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
         p
     };
     let staff = kind == Kind::Magic;
+    // A crossbow or gun levelled at what's ahead, or raised to the sky, and shot, kicking
+    if matches!(style, Style::Crank | Style::Powder) {
+        let (length, _) = special_move(special, kind, Style::Draw);
+        let ahead = matches!(special, Special::Volley | Special::Stormchain | Special::Breath | Special::Riptide | Special::Fissure);
+        let raised = if ahead { pose([0.14, 0.4, -0.18], [0.04, -0.12, 0.99], [-0.1, 1.0, 0.08]) } else { pose([0.16, 0.38, -0.1], [0.05, -0.7, 0.71], [-0.08, 0.71, 0.7]) };
+        let mut fired = raised.clone();
+        fired.hand.y -= 0.05;
+        fired.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3) * fired.turn;
+        return (length, vec![(0.25, raised.clone(), false), (0.3, fired, true), (0.55, raised, false)]);
+    }
     match special {
         // Swept right round, twice, out of sight behind and back in from the right
         Special::Whirlwind => {
@@ -1541,6 +1609,112 @@ const MOST_SPARKS: usize = 140;
 /// Meters walked from one footfall to the next, for bobbing what's in hand
 const STEP_LENGTH: f64 = 0.8;
 
+/// How stiff the spring is that brings the view back down after a shot kicks it up, per second
+const KICK_SPRING: f64 = 16.0;
+/// Seconds a gun's flash shows at its muzzle
+const FLARE: f64 = 0.06;
+/// How much of a gun's damage a spread of shot does all told, if every pellet hits
+const PELLETS_SHARE: f64 = 1.25;
+/// Degrees a spread of shot spreads if nothing says how far
+const PELLET_SPREAD: f64 = 4.5;
+
+/// How hard a crossbow or gun built `build` kicks as it goes off, 1 for a musket
+fn kick_of(build: Build) -> f64 {
+    match build {
+        Build::Pistol => 0.75,
+        Build::Musket => 1.0,
+        Build::Blunderbuss => 1.25,
+        Build::Cannon => 1.5,
+        Build::Repeater => 0.15,
+        _ => 0.35,
+    }
+}
+
+/// How long a crossbow or gun takes to settle again after a shot, in seconds: a repeater's lever
+/// spanning it again, as long as its cycle
+fn fire_length(profile: &Profile) -> f64 {
+    match profile.build {
+        Build::Repeater => profile.cycle,
+        Build::Lever | Build::Crank => 0.3,
+        Build::Cannon => 0.6,
+        _ => 0.45,
+    }
+}
+
+/// The poses a crossbow or gun goes through being loaded, for animate(): a gun tipped up
+/// muzzle first for the powder and the ramrod, then brought down level and cocked; a light
+/// crossbow dipped while its lever swings over; a heavy one stood on its nose while it's wound
+/// back; a repeater rolled over to drop bolts into its magazine
+fn reload_keys(build: Build) -> Vec<(f64, Pose, bool)> {
+    match build {
+        Build::Lever => {
+            let dipped = pose([0.15, 0.42, -0.3], [-0.05, 0.25, 0.97], [-0.1, 0.95, -0.25]);
+            let mut braced = dipped.clone();
+            braced.hand.y -= 0.03;
+            vec![(0.12, dipped.clone(), false), (0.5, braced, false), (0.85, dipped, false)]
+        }
+        Build::Crank => {
+            let down = pose([0.12, 0.62, -0.3], [0.0, 0.35, 0.94], [-0.25, 0.9, -0.35]);
+            let mut low = down.clone();
+            low.hand.z -= 0.02;
+            vec![(0.1, down.clone(), false), (0.5, low, false), (0.88, down, false)]
+        }
+        Build::Repeater => {
+            let rolled = pose([0.12, 0.4, -0.26], [-0.55, 0.0, 0.84], [-0.05, 1.0, 0.0]);
+            let mut shaken = rolled.clone();
+            shaken.hand.z -= 0.025;
+            vec![(0.15, rolled.clone(), false), (0.35, shaken.clone(), false), (0.55, rolled.clone(), false), (0.7, shaken, false), (0.85, rolled, false)]
+        }
+        _ => {
+            // Muzzle up for the powder, jolting down a little as the ramrod goes home twice
+            let tipped = pose([0.1, 0.38, -0.36], [0.2, -0.55, 0.81], [-0.12, 0.81, 0.57]);
+            let mut rammed = tipped.clone();
+            rammed.hand.z -= 0.025;
+            let level = pose([0.16, 0.36, -0.24], [0.04, -0.15, 0.99], [-0.1, 1.0, 0.12]);
+            vec![
+                (0.1, tipped.clone(), false),
+                (0.3, tipped.clone(), false),
+                (0.45, rammed.clone(), true),
+                (0.52, tipped.clone(), false),
+                (0.63, rammed, true),
+                (0.76, tipped, false),
+                (0.9, level, false),
+            ]
+        }
+    }
+}
+
+/// Where a gun's ramrod is `f` of the way through loading it, in meters out of the barrel, if
+/// it's out: pulled out, rammed down twice, and put away
+fn ramrod(f: f64) -> Option<f64> {
+    let keys = [(0.3, 0.6), (0.34, 0.45), (0.45, 0.04), (0.53, 0.32), (0.63, 0.04), (0.72, 0.6)];
+    if f < keys[0].0 || f > keys[keys.len() - 1].0 {
+        return None;
+    }
+    let i = keys.windows(2).position(|w| f <= w[1].0).unwrap_or(keys.len() - 2);
+    let ((t0, a), (t1, b)) = (keys[i], keys[i + 1]);
+    Some(a + (b - a) * smooth((f - t0) / (t1 - t0)))
+}
+
+/// How far a crossbow's string is spanned back, 0-1, and its lever or cranks turned, in radians,
+/// `f` of the way through spanning it
+fn spanning(build: Build, f: f64) -> (f64, f64) {
+    match build {
+        // The lever swung up and over onto the string, then pulled back, the string with it
+        Build::Lever => {
+            let over = smooth(f / 0.45) * (1.0 - smooth((f - 0.45) / 0.45));
+            (smooth((f - 0.45) / 0.45), 2.5 * over)
+        }
+        // Wound back turn after turn
+        Build::Crank => {
+            let wound = ((f - 0.08) / 0.8).clamp(0.0, 1.0);
+            (wound, wound * 5.0 * TAU)
+        }
+        // A repeater's magazine is filled, then its lever worked once to span it
+        _ => (smooth((f - 0.82) / 0.12), -0.45 * (PI * ((f - 0.8) / 0.18).clamp(0.0, 1.0)).sin()),
+    }
+}
+
 impl Combat {
     /// `first_model` is where the arrow, spell and spark models will be in the buffer of all models
     pub fn new(seed: u32, first_model: u32) -> Self {
@@ -1562,6 +1736,13 @@ impl Combat {
             blending: None,
             lash: None,
             shake: 0.0,
+            kick: 0.0,
+            kick_speed: 0.0,
+            loads: HashMap::new(),
+            flare: 0.0,
+            flare_roll: 0.0,
+            nocked: None,
+            spent: Vec::new(),
             speed: 0.0,
             stride: 0.0,
             player_hits: Vec::new(),
@@ -1683,9 +1864,10 @@ impl Combat {
         if self.frenzy > 0.0 { 1.0 + self.frenzy_bonus } else { 1.0 }
     }
 
-    /// Advances the fight by `dt` seconds: the weapon in hand, `weapon` with its index, attacking
-    /// as `controls` say, things flying, and what's been done to the animals wearing off
-    pub fn update(&mut self, arena: &mut Arena, weapon: Option<(usize, &Weapon)>, controls: Controls, dt: f64) {
+    /// Advances the fight by `dt` seconds: the weapon in hand, `weapon` with its index and the
+    /// special ammo `loaded` in it if any, attacking as `controls` say, things flying, and what's
+    /// been done to the animals wearing off
+    pub fn update(&mut self, arena: &mut Arena, weapon: Option<(usize, &Weapon)>, loaded: Option<&Loaded>, controls: Controls, dt: f64) {
         self.marks.clear();
         self.vpm = arena.view.vpm;
         self.speed = arena.view.speed;
@@ -1699,6 +1881,14 @@ impl Combat {
         self.hitstop -= dt;
         self.recoil = (self.recoil - dt * 5.0).max(0.0);
         self.shake *= (-7.0 * dt).exp();
+        self.flare -= dt;
+        self.nocked = loaded.map(|l| (l.head, l.profile.element));
+        // The view springing back down after a shot kicked it up: a critically damped spring,
+        // stepped exactly so it's the same however long the frames are
+        let (x, v, w) = (self.kick, self.kick_speed, KICK_SPRING);
+        let decay = (-w * dt).exp();
+        self.kick = (x + (v + w * x) * dt) * decay;
+        self.kick_speed = (v - w * (v + w * x) * dt) * decay;
 
         let index = weapon.map(|(i, _)| i);
         if index != self.held {
@@ -1712,6 +1902,7 @@ impl Combat {
             if let Some((_, weapon)) = weapon {
                 let pitch = match weapon.kind() {
                     Kind::Melee => 1.0,
+                    Kind::Ranged if weapon.profile.build != Build::None => 0.55,
                     Kind::Ranged => 0.7,
                     Kind::Magic => 1.3,
                 };
@@ -1720,8 +1911,8 @@ impl Combat {
         }
         self.raise = (self.raise + dt / 0.3).min(1.0);
 
-        if let Some((_, weapon)) = weapon {
-            self.wield(arena, weapon, controls, dt);
+        if let Some((index, weapon)) = weapon {
+            self.wield(arena, index, weapon, loaded, controls, dt);
             self.settle(weapon, dt);
             self.swing_lash(arena, weapon, dt);
             self.flourish(arena.view, weapon, dt);
@@ -1754,7 +1945,8 @@ impl Combat {
 
         for s in &mut self.sparks {
             s.velocity.z -= 9.8 * arena.view.vpm * s.gravity * dt;
-            s.velocity *= (-1.5 * dt).exp();
+            // Smoke hangs in the air, soon slowed to a drift
+            s.velocity *= (-if s.slot == SLOT_SMOKE { 4.0 } else { 1.5 } * dt).exp();
             s.position += s.velocity * dt;
             s.life -= dt;
             // Drops stop where they land, on the ground or in water
@@ -1798,8 +1990,9 @@ impl Combat {
         self.popups.retain(|p| p.age < 1.2);
     }
 
-    /// Attacking with the weapon in hand
-    fn wield(&mut self, arena: &mut Arena, weapon: &Weapon, controls: Controls, dt: f64) {
+    /// Attacking with the weapon in hand, weapon `index` among Game::weapons, loaded with special
+    /// ammo `loaded` if it shoots and there is any
+    fn wield(&mut self, arena: &mut Arena, index: usize, weapon: &Weapon, loaded: Option<&Loaded>, controls: Controls, dt: f64) {
         let profile = weapon.profile.clone();
         let speedup = self.speedup();
         if controls.special && self.raise >= 1.0 {
@@ -1865,13 +2058,14 @@ impl Combat {
                     }
                 }
             }
+            Kind::Ranged if profile.build != Build::None => self.shoulder(arena, index, weapon, loaded, controls, dt),
             // The right button draws the bow and holds it drawn, the left lets the arrow fly.
             // Letting go of the right lowers it again.
             Kind::Ranged => match self.action {
                 Action::Draw { t } => {
                     let draw = self.drawn(&profile);
                     if controls.attack && draw >= 0.15 {
-                        self.loose(arena, weapon, draw);
+                        self.loose(arena, weapon, loaded, draw);
                         self.action = Action::Loose { t: 0.0 };
                         self.cooldown = 0.25;
                     } else if controls.aiming {
@@ -1911,6 +2105,197 @@ impl Combat {
                 }
             }
         }
+    }
+
+    /// Shots loaded in crossbow or gun `index`, `profile`'s
+    fn rounds_in(&self, index: usize, profile: &Profile) -> u32 {
+        let full = profile.magazine();
+        self.loads.get(&index).copied().unwrap_or(full).min(full)
+    }
+
+    /// Shooting the crossbow or gun in hand, weapon `index`: the left button shoots straight away
+    /// if it's loaded, and once it's empty it's loaded again by itself, which takes a while. The
+    /// right button loads it early. A repeater keeps shooting while the button's held, working its
+    /// lever between shots.
+    fn shoulder(&mut self, arena: &mut Arena, index: usize, weapon: &Weapon, loaded: Option<&Loaded>, controls: Controls, dt: f64) {
+        let profile = weapon.profile.clone();
+        let full = profile.magazine();
+        let left = self.rounds_in(index, &profile);
+        let speedup = self.speedup();
+        let trigger = controls.attack || (profile.build == Build::Repeater && controls.holding);
+        match self.action {
+            Action::Reload { t, length } => {
+                let now = t + dt;
+                self.reload_sounds(profile.build, t / length, now / length);
+                if now >= length {
+                    self.loads.insert(index, full);
+                    self.action = Action::Idle;
+                } else if trigger && left > 0 {
+                    // Loading early, stopped to shoot what's in it
+                    self.fire(arena, index, weapon, loaded);
+                } else {
+                    self.action = Action::Reload { t: now, length };
+                }
+            }
+            Action::Fire { t, length } => {
+                let now = t + dt;
+                // A repeater's lever drawn back, catching the string, and pushed home again
+                if profile.build == Build::Repeater && left > 0 {
+                    for (at, sound, pitch) in [(0.25, Sound::Ratchet, 0.8), (0.7, Sound::Latch, 1.3)] {
+                        if t < at * length && now >= at * length {
+                            self.cues.push(Cue::here(sound, 0.4).pitched(pitch));
+                        }
+                    }
+                }
+                self.action = if now >= length { Action::Idle } else { Action::Fire { t: now, length } };
+            }
+            _ if self.raise < 1.0 => {}
+            _ => {
+                if trigger && left > 0 && self.cooldown <= 0.0 {
+                    self.fire(arena, index, weapon, loaded);
+                } else if left == 0 || (controls.heavy && left < full) {
+                    let length = 1.0 / (profile.stat("reloadSpeed") * speedup).max(0.1);
+                    self.action = Action::Reload { t: 0.0, length };
+                }
+            }
+        }
+    }
+
+    /// The sounds of a crossbow or gun built `build` being loaded, from `from` to `to` of the way
+    /// through: a lever creaking over, a windlass's ratchet clicking turn after turn, bolts dropped
+    /// into a magazine, or powder poured, the ball rammed home and the hammer cocked, then the
+    /// string catching on its latch
+    fn reload_sounds(&mut self, build: Build, from: f64, to: f64) {
+        let mut at = |f: f64, sound: Sound, volume: f32, pitch: f32| {
+            if from < f && to >= f {
+                self.cues.push(Cue::here(sound, volume).pitched(pitch));
+            }
+        };
+        match build {
+            Build::Lever => {
+                at(0.05, Sound::Draw, 0.35, 1.3);
+                at(0.45, Sound::Draw, 0.45, 0.9);
+                at(0.9, Sound::Latch, 0.6, 1.0);
+            }
+            Build::Crank => {
+                for k in 0..40 {
+                    at(0.08 + 0.8 * k as f64 / 40.0, Sound::Ratchet, 0.35, 0.95 + 0.1 * (k % 2) as f32);
+                }
+                at(0.9, Sound::Latch, 0.7, 0.8);
+            }
+            Build::Repeater => {
+                for k in 0..5 {
+                    at(0.2 + 0.12 * k as f64, Sound::Ratchet, 0.4, 0.6);
+                }
+                at(0.9, Sound::Latch, 0.55, 1.15);
+            }
+            _ => {
+                at(0.12, Sound::Powder, 0.6, 1.0);
+                at(0.3, Sound::Ram, 0.3, 1.3);
+                at(0.45, Sound::Ram, 0.6, 1.0);
+                at(0.63, Sound::Ram, 0.6, 0.9);
+                at(0.92, Sound::Cock, 0.6, 1.0);
+            }
+        }
+    }
+
+    /// Shoots the crossbow or gun in hand, weapon `index`, loaded with special ammo `loaded` if
+    /// there is any: a bolt loosed with a thwack, or a ball, a spread of shot or a shell fired with
+    /// a bang, a flash and a cloud of smoke
+    fn fire(&mut self, arena: &mut Arena, index: usize, weapon: &Weapon, loaded: Option<&Loaded>) {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let base = weapon.profile.clone();
+        let profile = loaded.map_or_else(|| base.clone(), |l| l.profile.clone());
+        let left = self.rounds_in(index, &base);
+        self.loads.insert(index, left.saturating_sub(1));
+        self.action = Action::Fire { t: 0.0, length: fire_length(&base) / self.speedup() };
+        self.cooldown = 0.08;
+        if let Some(l) = loaded {
+            self.spent.push(l.ammo);
+        }
+
+        let muzzle = self.held_point(weapon, view, false);
+        let target = self.aim(arena);
+        let shot = base.build.shot();
+        let speed = profile.stat("projectileSpeed") * vpm;
+        let damage = profile.stat("physicalDamage") + profile.stat("elementalDamage");
+        let pellets = profile.stat("pellets").round().max(1.0) as usize;
+        let head = loaded.and_then(|l| l.head).unwrap_or(0);
+        let ahead = (target - muzzle).normalize();
+        // Balls drawn as big as the bore, pellets smaller
+        let size = if shot == Shot::Ball { base.caliber / 0.009 * if pellets > 1 { 0.55 } else { 1.0 } } else { 1.0 };
+        let missile = Missile { shot, head, power: pellets == 1 && shot == Shot::Ball, size };
+        let before = self.projectiles.len();
+        if pellets > 1 {
+            // A spread of shot, each pellet off a little way at random. Only one of them bursts,
+            // so a spread of bursting shot doesn't blow the ground away.
+            let spread = if profile.stat("spread") > 0.0 { profile.stat("spread") } else { PELLET_SPREAD }.to_radians();
+            let quiet = Rc::new(profile.without(Effect::Explosive));
+            let right = view.rotation * Vector3::x();
+            let up = view.rotation * Vector3::z();
+            for k in 0..pellets {
+                let a = random(&mut self.rng) * TAU;
+                let r = random(&mut self.rng).sqrt() * spread;
+                let direction = (ahead + (right * a.cos() + up * a.sin()) * r.tan()).normalize();
+                let speed = speed * (0.9 + 0.2 * random(&mut self.rng));
+                let profile = if k == 0 { &profile } else { &quiet };
+                self.shoot(view, profile, Some(missile), Form::Bolt, muzzle, direction, speed, damage * PELLETS_SHARE / pellets as f64);
+            }
+        } else {
+            self.shoot(view, &profile, Some(missile), Form::Bolt, muzzle, ahead, speed, damage);
+        }
+        // A blunderbuss's shot only carries so far
+        let range = profile.stat("range");
+        if range > 0.0 {
+            for p in &mut self.projectiles[before..] {
+                p.life = p.life.min(range * vpm / p.velocity.norm().max(1.0));
+            }
+        }
+
+        let kick = kick_of(base.build);
+        self.kick_speed += 3.4 * kick * if shot == Shot::Quarrel { 0.3 } else { 1.0 };
+        if shot == Shot::Quarrel {
+            self.cues.push(Cue::here(Sound::Release, 0.8).pitched(match base.build {
+                Build::Crank => 0.8,
+                Build::Repeater => 1.25,
+                _ => 1.0,
+            }));
+            if profile.element.is_some() {
+                self.sparks(muzzle, 4, 1.0, Element::look(profile.element), 0.0, 0.3);
+            }
+            return;
+        }
+        // A bang, the bigger the gun the deeper, a flash lighting everything round, the flame at
+        // the muzzle, sparks and a cloud of smoke rolling out ahead and hanging there
+        let bore = base.caliber / 0.009;
+        let pitch = match base.build {
+            Build::Pistol => 1.2,
+            Build::Blunderbuss => 0.85,
+            Build::Cannon => 0.62,
+            _ => 1.0,
+        };
+        self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(pitch));
+        self.shake = self.shake.max(0.18 * kick);
+        self.flare = FLARE;
+        self.flare_roll = random(&mut self.rng) * TAU;
+        self.flashes.push(Flash { position: muzzle, color: [1.0, 0.72, 0.38], reach: 7.0 + 3.0 * bore.min(3.0), life: 0.09, lifetime: 0.09 });
+        let look = Element::look(profile.element);
+        let puffs = (6.0 + 2.0 * bore.min(4.0)) as usize;
+        for k in 0..puffs {
+            let out = (ahead * (0.6 + 2.6 * random(&mut self.rng)) + self.any_direction() * 0.7) * (1.0 + 0.3 * bore.min(3.0));
+            let life = 1.1 + 0.9 * random(&mut self.rng);
+            let at = muzzle + ahead * (0.04 * k as f64) * vpm;
+            self.sparks.push(Spark { position: at, velocity: out * vpm, look, life, lifetime: life, gravity: -0.03, slot: SLOT_SMOKE });
+        }
+        for _ in 0..6 {
+            let v = (ahead * 4.0 + self.any_direction() * 1.5) * vpm;
+            self.fine(muzzle, v, Element::look(Some(Element::Fire)), 0.12, 0.3);
+        }
+        // A puff from the pan as the priming goes off
+        let pan = self.held_at(weapon, view, weapon.look.grip + Vector3::new(0.06, 0.03, 0.03));
+        self.sparks.push(Spark { position: pan, velocity: Vector3::new(0.0, 0.0, 0.3) * vpm, look, life: 0.8, lifetime: 0.8, gravity: -0.03, slot: SLOT_SMOKE });
+        self.cap_sparks();
     }
 
     /// The special attack of the weapon in hand, see weapons::Special
@@ -2122,11 +2507,12 @@ impl Combat {
 
     /// A projectile set off as it is, without multishot or echo
     #[allow(clippy::too_many_arguments)]
-    fn launch(&mut self, profile: &Rc<Profile>, arrow: Option<(usize, bool)>, form: Form, from: Vector3<f64>, velocity: Vector3<f64>, damage: f64, gravity: f64) {
-        let (head, power) = arrow.unwrap_or((0, false));
+    fn launch(&mut self, profile: &Rc<Profile>, arrow: Option<Missile>, form: Form, from: Vector3<f64>, velocity: Vector3<f64>, damage: f64, gravity: f64) {
+        let (head, power) = arrow.map_or((0, false), |m| (m.head, m.power));
         let (_, _, size, _) = form.flight();
         self.projectiles.push(Projectile {
             arrow: arrow.is_some(),
+            shot: arrow.map_or(Shot::Arrow, |m| m.shot),
             position: from,
             velocity,
             damage,
@@ -2171,7 +2557,7 @@ impl Combat {
                 Act::Arrow(at) => {
                     let from = at + Vector3::new((random(&mut self.rng) - 0.5) * 3.0, (random(&mut self.rng) - 0.5) * 3.0, 30.0) * vpm;
                     let head = (random(&mut self.rng) * 3.0) as usize % 3;
-                    self.launch(&profile, Some((head, true)), Form::Bolt, from, (at - from).normalize() * 45.0 * vpm, p.damage, ARROW_GRAVITY);
+                    self.launch(&profile, Some(Missile::arrow(head, true)), Form::Bolt, from, (at - from).normalize() * 45.0 * vpm, p.damage, ARROW_GRAVITY);
                 }
                 Act::Bolt(id) => {
                     if let Some(i) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) {
@@ -2290,7 +2676,7 @@ impl Combat {
                     let from = view.eye + view.rotation * Vector3::new(-0.1, 0.6, -0.1) * vpm;
                     let head = (random(&mut self.rng) * 3.0) as usize % 3;
                     let speed = profile.stat("projectileSpeed") * 1.1 * vpm;
-                    self.launch(&profile, Some((head, true)), Form::Bolt, from, direction * speed, p.damage, ARROW_GRAVITY * 0.5);
+                    self.launch(&profile, Some(Missile::arrow(head, true)), Form::Bolt, from, direction * speed, p.damage, ARROW_GRAVITY * 0.5);
                     if let Some(arrow) = self.projectiles.last_mut() {
                         arrow.pin = 2.5;
                     }
@@ -2715,9 +3101,10 @@ impl Combat {
         self.cap_sparks();
     }
 
-    /// Lets an arrow fly from the bow in hand, drawn `draw` of the way
-    fn loose(&mut self, arena: &mut Arena, weapon: &Weapon, draw: f64) {
-        let profile = weapon.profile.clone();
+    /// Lets an arrow fly from the bow in hand, drawn `draw` of the way, one of special ammo
+    /// `loaded` if there is any
+    fn loose(&mut self, arena: &mut Arena, weapon: &Weapon, loaded: Option<&Loaded>, draw: f64) {
+        let profile = loaded.map_or_else(|| weapon.profile.clone(), |l| l.profile.clone());
         let vpm = arena.view.vpm;
         let from = self.held_point(weapon, arena.view, true);
         let target = self.aim(arena);
@@ -2725,7 +3112,11 @@ impl Combat {
         let power = draw >= 0.98;
         let speed = profile.stat("projectileSpeed") * (0.45 + 0.55 * draw) * if power { 1.1 } else { 1.0 } * vpm;
         let damage = (profile.stat("physicalDamage") + profile.stat("elementalDamage")) * (0.3 + 0.7 * draw * draw) * if power { 1.1 } else { 1.0 };
-        self.shoot(arena.view, &profile, Some((weapon.arrowhead(), power)), Form::Bolt, from, (target - from).normalize(), speed, damage);
+        let head = loaded.and_then(|l| l.head).unwrap_or_else(|| weapon.arrowhead());
+        self.shoot(arena.view, &profile, Some(Missile::arrow(head, power)), Form::Bolt, from, (target - from).normalize(), speed, damage);
+        if let Some(l) = loaded {
+            self.spent.push(l.ammo);
+        }
         self.cues.push(Cue::here(Sound::Twang, 0.4 + 0.4 * draw as f32).pitched(if power { 1.1 } else { 1.0 }));
         if power {
             self.shake = self.shake.max(0.2);
@@ -2795,23 +3186,39 @@ impl Combat {
         }
     }
 
-    /// Arrows or spells leaving `from` towards `direction`: more than one with multishot, and
-    /// maybe again a moment later with echo. `arrow` is the arrowhead and whether the bow was drawn
-    /// all the way, for arrows, None for spells, of `form`.
+    /// Arrows, bolts, shot or spells leaving `from` towards `direction`: more than one with
+    /// multishot, and maybe again a moment later with echo. `arrow` is what a bow, crossbow or gun
+    /// shoots, None for spells, of `form`.
     #[allow(clippy::too_many_arguments)]
-    fn shoot(&mut self, view: &View, profile: &Rc<Profile>, arrow: Option<(usize, bool)>, form: Form, from: Vector3<f64>, direction: Vector3<f64>, speed: f64, damage: f64) {
+    fn shoot(&mut self, view: &View, profile: &Rc<Profile>, arrow: Option<Missile>, form: Form, from: Vector3<f64>, direction: Vector3<f64>, speed: f64, damage: f64) {
         let pierce = if profile.has(Effect::Pierce) { (profile.param(Effect::Pierce, "count", 2.0) * profile.potency(Effect::Pierce).max(1.0)).round() as u32 } else { 0 };
-        let (head, power) = arrow.unwrap_or((0, false));
-        let (pace, gravity, size, _) = if arrow.is_some() { (1.0, ARROW_GRAVITY, 1.0, 1.0) } else { form.flight() };
+        let (head, power) = arrow.map_or((0, false), |m| (m.head, m.power));
+        let shot = arrow.map_or(Shot::Arrow, |m| m.shot);
+        let (pace, gravity, size, _) = match arrow {
+            Some(m) => match m.shot {
+                Shot::Arrow => (1.0, ARROW_GRAVITY, 1.0, 1.0),
+                Shot::Quarrel => (1.0, QUARREL_GRAVITY, 1.0, 1.0),
+                Shot::Ball => (1.0, BALL_GRAVITY, m.size, 1.0),
+                Shot::Shell => (1.0, SHELL_GRAVITY, m.size, 1.0),
+            },
+            None => form.flight(),
+        };
+        let life = match (arrow.map(|m| m.shot), form) {
+            (Some(Shot::Ball), _) => 1.5,
+            (Some(_), _) => 4.0,
+            (None, Form::Orb) => 6.0,
+            (None, _) => 3.0,
+        };
         let make = |direction: Vector3<f64>, damage: f64| Projectile {
             arrow: arrow.is_some(),
+            shot,
             position: from,
             velocity: direction * speed * pace,
             damage,
             profile: profile.clone(),
             pierce,
             hit: Vec::new(),
-            life: if arrow.is_some() { 4.0 } else if form == Form::Orb { 6.0 } else { 3.0 },
+            life,
             head,
             power,
             trail: 0.0,
@@ -2890,13 +3297,21 @@ impl Combat {
             let (start, end) = (p.position, p.position + p.velocity * dt);
 
             // Spells and arrows with an element leave it trailing behind them, and arrows shot at
-            // full draw a streak. A fireball sheds more, venom and blood drip.
-            if (!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power {
+            // full draw and a gun's balls a streak. A fireball sheds more, venom and blood drip,
+            // and a shell's fuse sputters, smoking.
+            let shell = p.arrow && p.shot == Shot::Shell;
+            if (!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power || shell {
                 p.trail += dt * if !p.arrow && p.form == Form::Fireball { 150.0 } else { 80.0 };
                 while p.trail >= 1.0 {
                     p.trail -= 1.0;
                     let at = start.lerp(&end, random(&mut self.rng));
-                    if profile.element.is_none() && p.arrow {
+                    if shell {
+                        let v = self.any_direction() * 0.6 * vpm;
+                        self.fine(at, v, Element::look(Some(Element::Fire)), 0.25, -0.1);
+                        if random(&mut self.rng) < 0.12 {
+                            self.sparks.push(Spark { position: at, velocity: Vector3::new(0.0, 0.0, 0.2) * vpm, look: 0, life: 0.7, lifetime: 0.7, gravity: -0.03, slot: SLOT_SMOKE });
+                        }
+                    } else if profile.element.is_none() && p.arrow {
                         self.fine(at, Vector3::zeros(), 0, 0.15, 0.0);
                     } else {
                         self.mote(at, profile.element, if p.form == Form::Fireball && !p.arrow { 2.0 } else { 1.6 });
@@ -2967,7 +3382,17 @@ impl Combat {
             if wall <= 1.0 {
                 let at = start + (end - start) * wall;
                 self.impact(arena, &p, at);
-                if p.arrow && !profile.has(Effect::Explosive) {
+                // A ball kicks up dirt and whines off
+                if p.arrow && p.shot == Shot::Ball && !profile.has(Effect::Explosive) {
+                    for _ in 0..3 {
+                        let v = (self.any_direction() + Vector3::new(0.0, 0.0, 1.3)) * 2.5 * vpm;
+                        self.drop(at, v, DROP_MUD, 0.8);
+                    }
+                    if random(&mut self.rng) < 0.5 {
+                        self.cues.push(Cue::at(Sound::Ricochet, at, 0.5).pitched(0.85 + 0.3 * random(&mut self.rng) as f32));
+                    }
+                }
+                if p.arrow && matches!(p.shot, Shot::Arrow | Shot::Quarrel) && !profile.has(Effect::Explosive) {
                     // Stuck in where it landed, its head buried
                     let direction = p.velocity.normalize();
                     let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
@@ -2976,6 +3401,7 @@ impl Combat {
                         rotation,
                         look: Element::look(profile.element),
                         head: Some(p.head),
+                        quarrel: p.shot == Shot::Quarrel,
                         element: profile.element,
                         life: 20.0,
                         glowing: if profile.element.is_some() { 5.0 } else { 0.0 },
@@ -3019,7 +3445,9 @@ impl Combat {
             if profile.element.is_some() {
                 self.element_hit(at, profile.element, if p.power { 1.6 } else { 1.1 });
             }
-            self.cues.push(Cue::at(Sound::ArrowHit, at, 0.8));
+            // A ball's a sharper smack than an arrow's thud
+            let pitch = if p.shot == Shot::Ball { 1.6 } else { 1.0 };
+            self.cues.push(Cue::at(Sound::ArrowHit, at, 0.8).pitched(pitch));
         }
     }
 
@@ -4115,7 +4543,7 @@ impl Combat {
                 // Left standing in the ground
                 let direction = h.velocity.normalize();
                 let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
-                self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(None), head: None, element: None, life: 12.0, glowing: 0.0 });
+                self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(None), head: None, quarrel: false, element: None, life: 12.0, glowing: 0.0 });
                 if self.stuck.len() > 40 {
                     self.stuck.remove(0);
                 }
@@ -4352,6 +4780,7 @@ impl Combat {
                     _ => rest,
                 }
             }
+            Kind::Ranged if weapon.profile.build != Build::None => self.shouldered(weapon),
             Kind::Ranged => {
                 // Held low at the left, then raised and drawn back to the cheek
                 let rest = pose([-0.25, 0.48, -0.28], [-0.35, 0.35, 0.87], [0.1, 1.0, 0.0]);
@@ -4432,6 +4861,76 @@ impl Combat {
         p
     }
 
+    /// Where a crossbow or gun in hand is held: low at the right hip, pointing on ahead, thrown
+    /// back with its muzzle up as it goes off, and tipped about to be loaded, see reload_keys()
+    fn shouldered(&self, weapon: &Weapon) -> Pose {
+        let profile = &weapon.profile;
+        let rest = pose([0.18, 0.47, -0.21], [0.04, -0.12, 0.99], [-0.12, 1.0, 0.06]);
+        match self.action {
+            Action::Fire { t, .. } => {
+                // Kicked back at once, then easing back to rest
+                let k = (1.0 - (-t / 0.012).exp()) * (-t / 0.11).exp() * kick_of(profile.build);
+                let mut p = rest;
+                p.hand.y -= 0.06 * k;
+                p.hand.z += 0.02 * k;
+                p.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3 * k) * p.turn;
+                p
+            }
+            Action::Reload { t, length } => animate(&rest, &reload_keys(profile.build), t / length),
+            Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Ranged, profile.style).1, t / length),
+            _ => rest,
+        }
+    }
+
+    /// Shots loaded in the crossbow or gun in hand
+    fn rounds_held(&self, weapon: &Weapon) -> u32 {
+        self.held.map_or(0, |i| self.rounds_in(i, &weapon.profile))
+    }
+
+    /// How far the crossbow in hand is spanned, 0-1: spanned while it's loaded, the string snapping
+    /// forward as it shoots, and drawn back again by the lever or windlass, or a repeater's lever
+    /// between shots
+    fn span(&self, weapon: &Weapon) -> f64 {
+        let profile = &weapon.profile;
+        let loaded = self.rounds_held(weapon) > 0;
+        match self.action {
+            Action::Reload { t, length } => spanning(profile.build, t / length).0,
+            Action::Fire { t, length } if profile.build == Build::Repeater && loaded => smooth((t / length - 0.2) / 0.5),
+            Action::Fire { .. } => 0.0,
+            _ if loaded => 1.0,
+            _ => 0.0,
+        }
+    }
+
+    /// How the part that loads the crossbow or gun in hand is placed now, if it's to be drawn:
+    /// turned so far round its axis, in radians, slid so far along it, in meters, and whether the
+    /// other hand's working it
+    fn mover_state(&self, weapon: &Weapon) -> Option<(f64, f64, bool)> {
+        let build = weapon.profile.build;
+        let loaded = self.rounds_held(weapon) > 0;
+        match (build, self.action) {
+            (Build::Lever | Build::Crank, Action::Reload { t, length }) => Some((spanning(build, t / length).1, 0.0, true)),
+            (Build::Lever | Build::Crank, _) => Some((0.0, 0.0, false)),
+            // Pulled back and pushed home between shots
+            (Build::Repeater, Action::Fire { t, length }) if loaded => Some((-0.45 * (PI * (t / length).clamp(0.0, 1.0)).sin(), 0.0, true)),
+            (Build::Repeater, Action::Reload { t, length }) => Some((spanning(build, t / length).1, 0.0, true)),
+            (Build::Repeater, _) => Some((0.0, 0.0, true)),
+            (_, Action::Reload { t, length }) => ramrod(t / length).map(|out| (0.0, out, true)),
+            _ => None,
+        }
+    }
+
+    /// The head and element of what's nocked on the bow or lying in the crossbow in hand: its
+    /// special ammo's, or its own
+    fn nocked_look(&self, weapon: &Weapon, heads: usize) -> (usize, usize) {
+        let own = if weapon.shot() == Some(Shot::Arrow) { weapon.arrowhead() } else { 0 };
+        let (head, element) = match self.nocked {
+            Some((head, element)) => (head.unwrap_or(own), element),
+            None => (own, weapon.profile.element),
+        };
+        (head.min(heads - 1), Element::look(element))
+    }
+
     /// Where a point of the weapon in hand is in the world: the arrow's nock on a bow with
     /// `nock`, otherwise its tip, wherever a whip's lash has it
     fn held_point(&self, weapon: &Weapon, view: &View, nock: bool) -> Vector3<f64> {
@@ -4444,13 +4943,23 @@ impl Combat {
         self.held_at(weapon, view, if nock { self.nock(weapon) } else { weapon.look.tip })
     }
 
-    /// Which of the weapon in hand's models to draw: how far a bow's drawn
+    /// Which of the weapon in hand's models to draw: how far a bow's drawn or a crossbow spanned,
+    /// or whether a gun's hammer is cocked
     fn held_frame(&self, weapon: &Weapon) -> usize {
         let frames = weapon.look.frames.len();
         if frames <= 1 {
             return 0;
         }
-        ((self.drawn(&weapon.profile) * (frames - 1) as f64).round() as usize).min(frames - 1)
+        match weapon.profile.build {
+            Build::None => ((self.drawn(&weapon.profile) * (frames - 1) as f64).round() as usize).min(frames - 1),
+            Build::Lever | Build::Crank | Build::Repeater => (self.span(weapon) * CROSSBOW_SPANNED as f64).round() as usize,
+            _ => match self.action {
+                Action::Reload { t, length } if t / length > 0.92 => GUN_COCKED,
+                Action::Reload { .. } | Action::Fire { .. } => GUN_FIRED,
+                _ if self.rounds_held(weapon) > 0 => GUN_COCKED,
+                _ => GUN_FIRED,
+            },
+        }
     }
 
     /// Where `point` on the weapon in hand's model is in the world
@@ -4493,6 +5002,45 @@ impl Combat {
         place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD)
     }
 
+    /// What else to draw for the crossbow or gun in hand, its models from `first_model`, held at
+    /// `hand` turned by `rotation`: the lever, cranks or ramrod that load it, the other hand
+    /// working them or steadying it, the bolt lying in a crossbow's groove, and a gun's flash
+    fn shouldered_instances(&self, weapon: &Weapon, first_model: u32, hand: Vector3<f64>, rotation: UnitQuaternion<f64>, view: &View, out: &mut Vec<AnimalInstance>) {
+        let vpm = view.vpm;
+        let look = &weapon.look;
+        let at = |point: Vector3<f64>| hand + rotation * (point - look.grip) * vpm;
+        let mut other = None;
+        if let (Some(m), Some((turn, slide, held))) = (&look.mover, self.mover_state(weapon)) {
+            let r = UnitQuaternion::from_axis_angle(&Unit::new_normalize(m.axis), turn);
+            out.push(place(first_model + m.frame as u32, &look.frames[m.frame], look.res, m.pivot, at(m.pivot + m.axis * slide), rotation * r, vpm, 1.0, HELD));
+            if held {
+                other = Some((at(m.pivot + r * (m.handle - m.pivot) + m.axis * slide), rotation * r * m.handle_axis));
+            }
+        }
+        if let Some((point, axis)) = other.or_else(|| look.support.map(|(point, axis)| (at(point), rotation * axis))) {
+            out.push(self.arm(1, point, axis, view.eye + view.rotation * Vector3::new(-0.12, 0.15, -0.65) * vpm, vpm));
+        }
+        let profile = &weapon.profile;
+        if profile.shot() == Some(Shot::Quarrel) {
+            // The bolt, once it's spanned and loaded
+            let placing = matches!(self.action, Action::Reload { t, length } if t / length > 0.9);
+            if self.span(weapon) >= 0.99 && (self.rounds_held(weapon) > 0 || placing)
+                && let Some(&nock) = look.nocks.get(CROSSBOW_SPANNED)
+            {
+                let (head, element) = self.nocked_look(weapon, QUARREL_HEADS);
+                let (model, quarrel) = self.effect_model(SLOT_HELD_QUARREL + head, element);
+                out.push(place(model, quarrel, HELD_ARROW_RES, Vector3::zeros(), at(nock), rotation, vpm, 1.0, HELD));
+            }
+        } else if self.flare > 0.0 {
+            // Flame bursting out of the muzzle, turned a different way each shot, bigger the
+            // bigger the bore
+            let roll = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.flare_roll);
+            let size = (profile.caliber / 0.009).sqrt() * (0.6 + 0.5 * self.flare / FLARE);
+            let (model, flash) = self.model_at(MUZZLE);
+            out.push(place(model, flash, MUZZLE_RES, Vector3::zeros(), at(look.tip), rotation * roll, vpm, size, HELD));
+        }
+    }
+
     /// What to draw for the weapon in hand and the arms holding it, `first_model` being where the
     /// weapon's models are
     pub fn held_instances(&self, weapon: Option<(&Weapon, u32)>, view: &View) -> Vec<AnimalInstance> {
@@ -4507,14 +5055,21 @@ impl Combat {
             out.push(place(first_model + frame as u32, &look.frames[frame], look.res, look.grip, hand, rotation, vpm, 1.0, HELD));
             // Where the elbows are, in the camera's frame
             let elbow = |x: f64, y: f64, z: f64| view.eye + view.rotation * Vector3::new(x, y, z) * vpm;
-            let axis = rotation * Vector3::z();
+            let axis = rotation * look.hold;
+            let build = weapon.profile.build;
+            if build != Build::None {
+                out.push(self.arm(0, hand, axis, elbow(0.37, 0.12, -0.7), vpm));
+                self.shouldered_instances(weapon, first_model, hand, rotation, view, &mut out);
+                return out;
+            }
             let left = weapon.kind() == Kind::Ranged;
             out.push(self.arm(left as usize, hand, axis, if left { elbow(-0.3, 0.12, -0.7) } else { elbow(0.37, 0.12, -0.7) }, vpm));
             // The arrow on the string while drawing. The hand pulling it back is by the cheek, out
             // of sight.
             if matches!(self.action, Action::Draw { .. }) {
                 let nock = hand + rotation * (self.nock(weapon) - look.grip) * vpm;
-                let (model, arrow) = self.effect_model(SLOT_HELD_ARROW + weapon.arrowhead(), Element::look(weapon.profile.element));
+                let (head, element) = self.nocked_look(weapon, ARROW_HEADS);
+                let (model, arrow) = self.effect_model(SLOT_HELD_ARROW + head, element);
                 out.push(place(model, arrow, HELD_ARROW_RES, Vector3::zeros(), nock, rotation, vpm, 1.0, HELD));
             }
             // A whip's lash, a stretch at a time from one of its points to the next, each drawn
@@ -4559,8 +5114,27 @@ impl Combat {
             let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
             let look = Element::look(p.profile.element);
             if p.arrow {
-                let (model, arrow) = self.effect_model(SLOT_ARROW + p.head, look);
-                add(p.position, place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING));
+                let instance = match p.shot {
+                    Shot::Arrow => {
+                        let (model, arrow) = self.effect_model(SLOT_ARROW + p.head, look);
+                        place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING)
+                    }
+                    Shot::Quarrel => {
+                        let (model, quarrel) = self.effect_model(SLOT_QUARREL + p.head.min(QUARREL_HEADS - 1), look);
+                        place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING)
+                    }
+                    Shot::Ball => {
+                        let (model, ball) = self.effect_model(SLOT_SHOT, look);
+                        place(model, ball, SHOT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size, MOVING)
+                    }
+                    // Tumbling as it goes
+                    Shot::Shell => {
+                        let spin = rotation * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 9.0);
+                        let (model, shell) = self.model_at(SHELL);
+                        place(model, shell, SHOT_RES, Vector3::zeros(), p.position, spin, vpm, p.size, MOVING)
+                    }
+                };
+                add(p.position, instance);
             } else if matches!(p.form, Form::Fireball | Form::Orb) {
                 // A ball of fire or darkness, churning as it goes
                 let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 6.0) * rotation;
@@ -4573,6 +5147,10 @@ impl Combat {
         }
         for s in &self.stuck {
             let instance = match s.head {
+                Some(head) if s.quarrel => {
+                    let (model, quarrel) = self.effect_model(SLOT_QUARREL + head.min(QUARREL_HEADS - 1), s.look);
+                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL)
+                }
                 Some(head) => {
                     let (model, arrow) = self.effect_model(SLOT_ARROW + head, s.look);
                     place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL)
@@ -4632,9 +5210,14 @@ impl Combat {
         let near = |at: Vector3<f64>, reach: f64, least: f64| ((at - view.eye).norm() / (reach * vpm)).clamp(least, 1.0);
         for s in self.sparks.iter().filter(|s| s.slot != SLOT_FINE) {
             let (model, spark) = self.effect_model(s.slot, s.look);
-            // Drops stay whole till they land, sparks dwindle
-            let size = if s.slot == SLOT_DROP { 1.0 } else { (s.life / s.lifetime).clamp(0.2, 1.0) } * near(s.position, 1.5, 0.3);
-            add(s.position, place(model, spark, SPARK_RES, Vector3::zeros(), s.position, UnitQuaternion::identity(), vpm, size, MOVING));
+            // Drops stay whole till they land, sparks dwindle, smoke billows out and thins away
+            let age = 1.0 - s.life / s.lifetime;
+            let (size, res) = match s.slot {
+                SLOT_DROP => (1.0, SPARK_RES),
+                SLOT_SMOKE => ((0.4 + 1.3 * age.sqrt()) * (1.0 - age.powi(3)).max(0.15), SMOKE_RES),
+                _ => ((s.life / s.lifetime).clamp(0.2, 1.0), SPARK_RES),
+            };
+            add(s.position, place(model, spark, res, Vector3::zeros(), s.position, UnitQuaternion::identity(), vpm, size * near(s.position, 1.5, 0.3), MOVING));
         }
         // Fireballs, swelling quickly to the size of the explosion and then shrinking away, turning
         // as they go
@@ -4679,6 +5262,8 @@ impl Combat {
         for p in &self.projectiles {
             if !p.arrow {
                 lights.push(light(p.position, 6.0, p.profile.element.map_or([0.5, 0.9, 1.0], Element::light), 1.2));
+            } else if p.shot == Shot::Shell {
+                lights.push(light(p.position, 3.0, Element::Fire.light(), 0.6));
             } else if let Some(e) = p.profile.element {
                 lights.push(light(p.position, 3.0, e.light(), 0.5));
             }
@@ -4739,6 +5324,52 @@ impl Combat {
     /// How far the bow in hand is drawn, 0-1, for the crosshair
     pub fn draw(&self, weapon: &Weapon) -> f64 {
         self.drawn(&weapon.profile)
+    }
+
+    /// Shots loaded in crossbow or gun `index`, and how many it holds, for the HUD
+    pub fn rounds(&self, index: usize, weapon: &Weapon) -> (u32, u32) {
+        (self.rounds_in(index, &weapon.profile), weapon.profile.magazine())
+    }
+
+    /// How far through loading the crossbow or gun in hand is, 0-1, if it's being loaded
+    pub fn reloading(&self) -> Option<f64> {
+        match self.action {
+            Action::Reload { t, length } => Some((t / length).min(1.0)),
+            _ => None,
+        }
+    }
+
+    /// The weapons were numbered again: what's loaded in each crossbow and gun moves along with
+    /// it to where `to` says it is now, or is forgotten with it
+    pub fn renumber(&mut self, to: impl Fn(usize) -> Option<usize>) {
+        self.loads = self.loads.drain().filter_map(|(i, n)| Some((to(i)?, n))).collect();
+    }
+
+    /// A bundle of special ammo lying on the ground at `at`, in voxels, facing `heading`: a few
+    /// arrows or bolts side by side, or a little pile of shot, of `element`
+    pub fn bundle_instances(&self, shot: Shot, head: usize, element: Option<Element>, at: Vector3<f64>, heading: f64) -> Vec<AnimalInstance> {
+        let vpm = self.vpm;
+        let look = Element::look(element);
+        let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), heading);
+        let side = turn * Vector3::y();
+        let lift = Vector3::new(0.0, 0.0, 0.04 * vpm);
+        match shot {
+            Shot::Arrow | Shot::Quarrel => (0..3)
+                .map(|k| {
+                    let at = at + lift + side * (k as f64 - 1.0) * 0.05 * vpm;
+                    let (slot, point) = if shot == Shot::Arrow { (SLOT_ARROW + head.min(ARROW_HEADS - 1), 0.34) } else { (SLOT_QUARREL + head.min(QUARREL_HEADS - 1), QUARREL_HEAD * 0.5) };
+                    let (model, arrow) = self.effect_model(slot, look);
+                    place(model, arrow, ARROW_RES, Vector3::new(point, 0.0, 0.0), at, turn, vpm, 1.0, MOVING)
+                })
+                .collect(),
+            _ => [(0.0, 0.0, 0.0), (0.03, 0.0, 0.0), (-0.015, 0.026, 0.0), (-0.015, -0.026, 0.0), (0.005, 0.009, 0.026)]
+                .into_iter()
+                .map(|(x, y, z)| {
+                    let (model, ball) = self.effect_model(SLOT_SHOT, look);
+                    place(model, ball, SHOT_RES, Vector3::zeros(), at + lift + turn * Vector3::new(x, y, z) * vpm, turn, vpm, 1.0, MOVING)
+                })
+                .collect(),
+        }
     }
 }
 
