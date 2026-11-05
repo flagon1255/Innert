@@ -87,6 +87,21 @@ pub enum Build {
     Blunderbuss,
     /// An iron tube on a wooden tiller, firing shells that burst
     Cannon,
+    /// A small crossbow held up in the off hand by its pistol grip, spanned by a lever folded
+    /// under its tiller that the other hand pulls down and back
+    Hand,
+    /// Two prods one over the other, loosing a pair of bolts together, both spanned at once by a
+    /// rack and pinion cranked at its side
+    Twin,
+    /// A great crossbow that has to be braced on the leg folded under its front before it'll
+    /// loose, spanned by a capstan wheel at its butt turned round and round
+    Siege,
+    /// A crossbow loosing a barbed harpoon on a line, which reels in what it catches or the one
+    /// holding it to what's too big, wound back onto its reel after
+    Harpoon,
+    /// A broad frame of five grooves in a fan, one heavy prod loosing all their bolts at once,
+    /// spanned by a long lever swung out at its side
+    Fan,
 }
 
 impl Build {
@@ -94,10 +109,15 @@ impl Build {
     pub fn shot(self) -> Shot {
         match self {
             Build::None => Shot::Arrow,
-            Build::Lever | Build::Crank | Build::Repeater => Shot::Quarrel,
             Build::Cannon => Shot::Shell,
             Build::Pistol | Build::Musket | Build::Blunderbuss => Shot::Ball,
+            _ => Shot::Quarrel,
         }
+    }
+
+    /// Whether it's a crossbow, of any build
+    pub fn crossbow(self) -> bool {
+        matches!(self, Build::Lever | Build::Crank | Build::Repeater | Build::Hand | Build::Twin | Build::Siege | Build::Harpoon | Build::Fan)
     }
 }
 
@@ -255,6 +275,10 @@ pub enum Effect {
     Pierce,
     Explosive,
     Homing,
+    /// Rooting what's hit to the spot a moment
+    Snare,
+    /// Projectiles glancing off what they hit to the nearest other
+    Ricochet,
 }
 
 impl Effect {
@@ -275,6 +299,8 @@ impl Effect {
             "pierce" => Effect::Pierce,
             "explosive" => Effect::Explosive,
             "homing" => Effect::Homing,
+            "snare" => Effect::Snare,
+            "ricochet" => Effect::Ricochet,
             _ => return None,
         })
     }
@@ -366,6 +392,10 @@ pub struct Family {
     /// Seconds a repeating crossbow's lever takes to work between shots
     #[serde(default = "quarter")]
     cycle: f64,
+    /// How big a crossbow's bolts are next to a light crossbow's: a siege crossbow's great ones, a
+    /// hand crossbow's darts
+    #[serde(default = "one")]
+    bolt: f64,
     /// Effects every one of the family has, whatever it's made of: an arbalest's bolts punching
     /// through, a hand cannon's shells bursting
     #[serde(default)]
@@ -381,6 +411,10 @@ fn middle() -> f64 {
 
 fn quarter() -> f64 {
     0.25
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 fn yes() -> bool {
@@ -449,6 +483,9 @@ pub struct Visual {
     gem: Option<String>,
     /// For cores: the glow put into the blade's fuller, if it hasn't one of its own
     infuse: Option<String>,
+    /// For a crossbow's latch: the handle on the lever, cranks or wheel that span it, a round
+    /// knob, a spoked grip or a crossbar
+    crank: Option<String>,
 }
 
 /// Words a part gives a weapon's name
@@ -894,6 +931,8 @@ pub struct Profile {
     pub caliber: f64,
     /// Seconds a repeating crossbow's lever takes to work between shots
     pub cycle: f64,
+    /// How big its bolts are, next to a light crossbow's
+    pub bolt: f64,
 }
 
 /// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
@@ -960,6 +999,30 @@ pub enum Special {
     Barrage,
     /// A wall of fire across the way ahead
     Firewall,
+    /// Bolts plunging down onto every enemy round about, three each
+    BoltRain,
+    /// One bolt glancing from enemy to enemy, and off walls
+    Ricochet,
+    /// A bolt bursting apart in flight into a fan of them
+    SplitBolt,
+    /// A weighted net bursting open where it's aimed, rooting everything under it
+    NetBolt,
+    /// A chain flung round everything near where it's aimed, dragging them together
+    Shackle,
+    /// A bolt that blows up in what it hits, the blast leaping on from one to the next
+    ChainBlast,
+    /// Everything in front hooked and dragged in, then a great sweep through them
+    Harvest,
+    /// A roar that staggers everything near and sends the player into a frenzy
+    BattleCry,
+    /// The weapon thrown spinning out ahead, through everything, and back to the hand
+    HurledBlade,
+    /// A beam swept across everything ahead
+    Prism,
+    /// Runes scattered on the ground that go off when anything comes near
+    RuneMines,
+    /// Fire leaping from what's aimed at on to whatever's near it, again and again
+    Wildfire,
 }
 
 impl Special {
@@ -995,6 +1058,18 @@ impl Special {
             Special::BladeStorm => "Blade Storm",
             Special::Barrage => "Creeping Barrage",
             Special::Firewall => "Wall of Flame",
+            Special::BoltRain => "Hail of Quarrels",
+            Special::Ricochet => "Ricochet Bolt",
+            Special::SplitBolt => "Splitting Bolt",
+            Special::NetBolt => "Snare Net",
+            Special::Shackle => "Shackle Chain",
+            Special::ChainBlast => "Chain Detonation",
+            Special::Harvest => "Grim Harvest",
+            Special::BattleCry => "Battle Cry",
+            Special::HurledBlade => "Hurled Blade",
+            Special::Prism => "Prismatic Sweep",
+            Special::RuneMines => "Rune Mines",
+            Special::Wildfire => "Wildfire",
         }
     }
 
@@ -1030,6 +1105,18 @@ impl Special {
             Special::BladeStorm => "Knives whirl out from you in a spiral, through everything round you.",
             Special::Barrage => "Shells fall in a line marching on ahead of you.",
             Special::Firewall => "A wall of fire burns across the way ahead, scorching whatever passes.",
+            Special::BoltRain => "Bolts plunge down on every enemy within 22 meters, three on each, one after another.",
+            Special::Ricochet => "One bolt glances from enemy to enemy, up to eight times, harder with every one, and off walls between.",
+            Special::SplitBolt => "A bolt bursts apart in flight into a fan of seven, each of them splitting again as it strikes.",
+            Special::NetBolt => "A weighted net bursts open where you aim, rooting everything under it for 5 seconds.",
+            Special::Shackle => "A chain flung round up to six enemies near where you aim drags them together into a heap.",
+            Special::ChainBlast => "A bolt that blows up in what it hits, the blast leaping on from one enemy to the next.",
+            Special::Harvest => "Hook everything in front within 10 meters, drag it in to you and cut through it all.",
+            Special::BattleCry => "A roar that staggers everything within 12 meters and sends you into a frenzy: 50% faster attacks for 8 s.",
+            Special::HurledBlade => "Hurl your weapon spinning out ahead through everything in its way; it comes back to your hand.",
+            Special::Prism => "A beam of every color swept across everything ahead, burning, freezing and shocking it.",
+            Special::RuneMines => "Six runes scattered round where you aim, each going off when an enemy comes near, for 20 s.",
+            Special::Wildfire => "What you aim at bursts into flame, and the fire leaps on to whatever's near it, again and again.",
         }
     }
 }
@@ -1172,8 +1259,10 @@ impl Weapon {
         let synergies = library.synergies_for(&tags);
 
         // The grade reflects how much the weapon can do, not the average of its parts: rare parts
-        // and synergies add up, and one very rare part lifts the whole weapon close to it
-        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() + library.synergy_power * synergies.len() as f64;
+        // and synergies add up, and one very rare part lifts the whole weapon close to it. The
+        // parts count as if there were four, so a crossbow's sight doesn't make it rarer.
+        let parts = components.len().max(1) as f64;
+        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies.len() as f64;
         let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
         let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
         let grade = by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1);
@@ -1184,8 +1273,8 @@ impl Weapon {
         }
         // The rarest part with a special attack gives it its own
         let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
-        let (build, caliber, cycle) = (fam.build, fam.caliber, fam.cycle);
-        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special, grade, build, caliber, cycle }, tags, grade)
+        let (build, caliber, cycle, bolt) = (fam.build, fam.caliber, fam.cycle, fam.bolt);
+        (Profile { kind: fam.kind, style: fam.style, cone: fam.cone, targets: fam.targets, element, stats, effects, synergies, special, grade, build, caliber, cycle, bolt }, tags, grade)
     }
 
     pub fn kind(&self) -> Kind {
@@ -1263,6 +1352,13 @@ pub struct WeaponLook {
     /// Where the other hand steadies a long crossbow or gun, and which way round it its fist
     /// closes, while it's not working the mover
     pub support: Option<(Vector3<f64>, Vector3<f64>)>,
+    /// For crossbows, each bolt it holds ready at once: how far its nock is from the first's, and
+    /// how far it's turned off straight ahead, in radians about z. One for most, two stacked for
+    /// a twin-prod and five fanned out for a bolt-thrower.
+    pub rails: Vec<(Vector3<f64>, f64)>,
+    /// For a siege crossbow, the leg under its front that's let down to brace it: turned so far
+    /// round its axis, by how braced it is, see Mover
+    pub leg: Option<(Mover, f64)>,
 }
 
 /// A part of a crossbow or gun drawn apart from the rest, as it moves while it's loaded: a lever
@@ -1300,7 +1396,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let visual = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
     let empty = Visual::default();
     let v = |slot: &str| visual(slot).unwrap_or(&empty);
-    let plain = |frames, res, grip, tip| WeaponLook { frames, res, grip, hold: Vector3::z(), tip, nocks: Vec::new(), lash: None, mover: None, support: None };
+    let plain = |frames, res, grip, tip| WeaponLook { frames, res, grip, hold: Vector3::z(), tip, nocks: Vec::new(), lash: None, mover: None, support: None, rails: Vec::new(), leg: None };
     match family.kind {
         // Just the handle: the lash is simulated, see LashLook
         Kind::Melee if family.style == Style::Lash => {
@@ -1313,7 +1409,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
             plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
-        Kind::Ranged if matches!(family.build, Build::Lever | Build::Crank | Build::Repeater) => crossbow(family, v("prod"), v("stock"), v("lock"), v("core")),
+        Kind::Ranged if family.build.crossbow() => crossbow(family, v("prod"), v("stock"), v("lock"), v("sight"), v("core")),
         Kind::Ranged if family.build != Build::None => gun(family, v("barrel"), v("stock"), v("lock"), v("core")),
         Kind::Ranged => {
             let mut frames = Vec::new();
@@ -2190,12 +2286,121 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
     (p, v3(0.0, 0.0, mid), v3(nock[0], 0.0, nock[2]))
 }
 
+/// How far a twin-prod crossbow's upper prod and groove are over its lower, in meters
+pub const TWIN_RISE: f64 = 0.046;
+
+/// The handle on the end of what spans a crossbow, at `at`, the fist closing round `axis`: a
+/// wooden bar, a metal ball, a little spoked wheel or a crossbar, as its latch's `crank` says
+fn crank_handle(p: &mut Vec<Part>, style: &str, at: [f64; 3], axis: [f64; 3], wood: u8, metal: u8) {
+    let along = |k: f64| [at[0] + axis[0] * k, at[1] + axis[1] * k, at[2] + axis[2] * k];
+    match style {
+        "ball" => {
+            p.push(ball(along(0.035), 0.016, metal));
+            p.push(limb(along(-0.03), along(0.03), 0.007, 0.007, metal));
+        }
+        "spoke" => {
+            // A little wheel round the end, its rim to grip, on a short axle
+            let (u, w) = if axis[1].abs() > 0.5 { ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]) } else { ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]) };
+            ring(p, along(0.03), u, w, 0.03, 0.0055, metal);
+            for k in 0..3 {
+                let a = k as f64 / 3.0 * TAU;
+                let c = along(0.03);
+                p.push(limb(c, [c[0] + (u[0] * a.cos() + w[0] * a.sin()) * 0.03, c[1] + (u[1] * a.cos() + w[1] * a.sin()) * 0.03, c[2] + (u[2] * a.cos() + w[2] * a.sin()) * 0.03], 0.003, 0.003, metal));
+            }
+            p.push(limb(along(-0.03), along(0.035), 0.009, 0.009, wood));
+        }
+        "tee" => {
+            let across = if axis[2].abs() > 0.5 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] };
+            let c = along(0.03);
+            p.push(limb([c[0] - across[0] * 0.035, c[1] - across[1] * 0.035, c[2] - across[2] * 0.035], [c[0] + across[0] * 0.035, c[1] + across[1] * 0.035, c[2] + across[2] * 0.035], 0.008, 0.008, wood));
+            p.push(limb(along(-0.03), c, 0.007, 0.007, metal));
+        }
+        _ => p.push(limb(along(-0.04), along(0.04), 0.009, 0.009, wood)),
+    }
+}
+
+/// A crossbow's sight, from `rear`, over the latch, to `front`, over the prod, both where it's set
+/// on whatever's on top there. A scope or lens sits off to the side the one holding it sees,
+/// `seen`, clear of the bolt.
+fn crossbow_sight(p: &mut Vec<Part>, sight: &Visual, rear: [f64; 3], front: [f64; 3], seen: f64) {
+    let Some(shape) = sight.shape.as_deref() else {
+        return;
+    };
+    let m = mat(&sight.material, DARK_STEEL);
+    let gem = mat(&sight.gem, m);
+    let side = |q: [f64; 3], y: f64| [q[0], q[1] + seen * y, q[2]];
+    // A post at the front, off to the side of the groove, with a bead on top
+    let bead = |p: &mut Vec<Part>, material: u8| {
+        let f = side(front, 0.022);
+        p.push(ball([f[0], f[1], f[2] + 0.024], 0.0055, material));
+        p.push(limb(f, [f[0], f[1], f[2] + 0.02], 0.0035, 0.003, m));
+    };
+    match shape {
+        "peep" => {
+            ring(p, [rear[0], rear[1], rear[2] + 0.034], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.0035, m);
+            p.push(limb(rear, [rear[0], rear[1], rear[2] + 0.022], 0.0045, 0.004, m));
+            bead(p, gem);
+        }
+        "leaf" => {
+            // A folding leaf, notched at the top, and the bead to line it up with
+            p.push(cuboid([rear[0] - 0.003, -0.004, rear[2] + 0.02], [rear[0] + 0.003, 0.004, rear[2] + 0.034], AIR));
+            p.push(cuboid([rear[0] - 0.003, -0.014, rear[2]], [rear[0] + 0.003, 0.014, rear[2] + 0.034], m));
+            for k in 0..3 {
+                p.push(cuboid([rear[0] + 0.003, -0.012, rear[2] + 0.006 + k as f64 * 0.009], [rear[0] + 0.005, 0.012, rear[2] + 0.008 + k as f64 * 0.009], gem));
+            }
+            bead(p, gem);
+        }
+        // A brass tube on two mounts, glass glinting at both ends
+        "scope" => {
+            let (a, b) = (side([rear[0] - 0.02, rear[1], rear[2] + 0.045], 0.028), side([rear[0] + 0.2, rear[1], rear[2] + 0.045], 0.028));
+            p.push(ball([a[0] - 0.001, a[1], a[2]], 0.011, mat(&sight.gem, CRYSTAL)));
+            p.push(ball([b[0] + 0.001, b[1], b[2]], 0.012, mat(&sight.gem, CRYSTAL)));
+            for x in [a[0] + 0.012, b[0] - 0.012] {
+                p.push(limb([x - 0.006, a[1], a[2]], [x + 0.006, a[1], a[2]], 0.0145, 0.0145, mat(&sight.accent, m)));
+            }
+            p.push(limb(a, b, 0.0115, 0.013, m));
+            for x in [a[0] + 0.05, b[0] - 0.05] {
+                p.push(cuboid([x - 0.008, a[1] - 0.006, rear[2]], [x + 0.008, a[1] + 0.006, a[2]], m));
+            }
+        }
+        // A disc of crystal held up in a ring on a stalk
+        "lens" => {
+            let c = side([rear[0], rear[1], rear[2] + 0.05], 0.02);
+            p.push(ellipsoid(c, [0.004, 0.018, 0.018], gem));
+            ring(p, c, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.004, m);
+            p.push(limb(side(rear, 0.02), [c[0], c[1], c[2] - 0.02], 0.004, 0.0035, m));
+        }
+        // A little skull for a bead, its eyes glowing
+        "skull" => {
+            let f = side(front, 0.022);
+            for y in [-1.0, 1.0] {
+                p.push(ball([f[0] + 0.009, f[1] + y * 0.005, f[2] + 0.03], 0.003, gem));
+            }
+            p.push(ellipsoid([f[0], f[1], f[2] + 0.028], [0.011, 0.01, 0.01], BONE));
+            p.push(limb(f, [f[0], f[1], f[2] + 0.02], 0.0035, 0.003, m));
+        }
+        // A ring of runes standing over the front
+        "rune" => {
+            let f = side(front, 0.022);
+            ring(p, [f[0], f[1], f[2] + 0.034], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 0.014, 0.004, gem);
+            p.push(limb(f, [f[0], f[1], f[2] + 0.02], 0.0035, 0.003, m));
+            p.push(limb(rear, [rear[0], rear[1], rear[2] + 0.016], 0.004, 0.0035, m));
+        }
+        _ => bead(p, gem),
+    }
+}
+
 /// A crossbow lying level, shooting along +x, the top of its tiller at z 0 and its butt at x 0,
 /// its prod across the front bending back towards its tips. Its frames are its string forward,
 /// halfway back and spanned to the latch, then what spans it, drawn apart as it moves: a light
-/// one's lever swinging over its top, a heavy one's windlass cranks, or the lever of a repeater
-/// arching over its magazine. Parts make the prod longer or shorter than the family's span.
-fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core: &Visual) -> WeaponLook {
+/// one's lever swinging over its top, a heavy one's windlass cranks, the lever of a repeater
+/// arching over its magazine, a hand crossbow's lever folded under it, a twin-prod's rack and
+/// pinion crank, a siege crossbow's screw jack, a harpoon's reel or a bolt-thrower's side lever.
+/// A siege crossbow's leg is drawn apart too, folded under its front. Parts make the prod longer
+/// or shorter than the family's span, and give the prod, the stock, the latch and the sight their
+/// shapes.
+fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight: &Visual, core: &Visual) -> WeaponLook {
+    let build = family.build;
     let length = family.length;
     let half = family.span * prod.length.unwrap_or(1.0) * 0.5;
     let wood = mat(&stock.material, WOOD);
@@ -2203,11 +2408,31 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
     let metal = mat(&lock.material, DARK_STEEL);
     let flourish = mat(&lock.accent, metal);
     let bow = mat(&prod.material, WOOD);
+    let band = mat(&prod.accent, trim);
     let cord = mat(&prod.edge, BOWSTRING);
     let tips = prod.tips.as_deref().and_then(material);
     let shape = prod.shape.as_deref().unwrap_or("simple");
+    let stock_shape = stock.shape.as_deref().unwrap_or("tiller");
+    let trigger = lock.shape.as_deref().unwrap_or("lever");
+    let handle = lock.crank.as_deref().unwrap_or("knob");
+    // The side the one holding it sees: its left held in the right hand, its right in the left
+    let seen = if build == Build::Hand { -1.0 } else { 1.0 };
     let x_prod = length - 0.06;
-    let x_latch = length * 0.42;
+    let x_latch = length
+        * match build {
+            Build::Hand => 0.4,
+            Build::Siege => 0.36,
+            Build::Fan => 0.4,
+            _ => 0.42,
+        };
+    // How thick its prod is and how far it bends, next to a light crossbow's
+    let (thick, stiff): (f64, f64) = match build {
+        Build::Siege => (1.7, 0.75),
+        Build::Harpoon => (1.35, 0.85),
+        Build::Hand => (0.7, 1.0),
+        Build::Fan => (1.25, 0.9),
+        _ => (1.0, 1.0),
+    };
     // How far back the prod bends at `s`, from -1 at one tip to 1 at the other, bending further
     // spanned, and more the longer it is
     let bend = |s: f64, draw: f64| {
@@ -2216,51 +2441,165 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
             "recurve" => -0.11 * s * s + 0.07 * tip * tip,
             "composite" => -0.1 * s * s + 0.035 * tip * tip,
             "steel" => -0.075 * s * s,
+            "reflex" => -0.12 * s * s + 0.12 * tip * tip,
+            "compound" => -0.05 * s * s,
             _ => -0.1 * s * s,
         };
-        x * (half / 0.31) * (1.0 + 0.8 * draw)
+        x * stiff * (half / 0.31) * (1.0 + 0.8 * draw)
     };
-    let at = |s: f64, draw: f64| [x_prod + bend(s, draw), s * half, 0.004];
+    let at = |s: f64, draw: f64, z: f64| [x_prod + bend(s, draw), s * half, z];
     let nock_at = |draw: f64| (x_prod + bend(1.0, draw)) * (1.0 - draw) + x_latch * draw;
+    // A twin-prod's two prods, one over the other
+    let decks: Vec<f64> = if build == Build::Twin { vec![0.004, 0.004 + TWIN_RISE] } else { vec![0.004] };
+    let rails: Vec<(Vector3<f64>, f64)> = match build {
+        Build::Twin => vec![(Vector3::zeros(), 0.0), (v3(0.0, 0.0, TWIN_RISE), 0.0)],
+        Build::Fan => (-2..=2).map(|k| (v3(0.0, k as f64 * 0.028, 0.0), k as f64 * 0.12)).collect(),
+        _ => vec![(Vector3::zeros(), 0.0)],
+    };
+    // A bolt-thrower's frame widens out from the latch, to hold its grooves
+    let fan_half = |x: f64| 0.032 + (x - x_latch).max(0.0) * 0.3;
+    // Where what spans it is: a heavy one's windlass, a twin's crank, a harpoon's reel
     let windlass = [0.07, 0.0, 0.02];
+    let pinion = [0.2, seen * 0.05, -0.022];
+    let reel = [x_latch + 0.14, 0.0, -0.075];
+    // How high the top of what's over the latch is, where the sight goes
+    let deck = match build {
+        Build::Repeater => 0.13,
+        Build::Twin => TWIN_RISE + 0.012,
+        _ => 0.003,
+    };
 
     let body = |draw: f64| {
         let mut p = Vec::new();
-        let nock = [nock_at(draw), 0.0, 0.006];
-        // The string, and on a heavy one the windlass's cords hooked onto it
-        p.push(limb(at(1.0, draw), nock, 0.0045, 0.0045, cord));
-        p.push(limb(at(-1.0, draw), nock, 0.0045, 0.0045, cord));
-        if family.build == Build::Crank {
-            for s in [-1.0, 1.0] {
-                p.push(ball([nock[0] - 0.008, s * 0.012, 0.008], 0.007, metal));
-                p.push(limb([windlass[0], s * 0.03, windlass[2] + 0.018], [nock[0] - 0.008, s * 0.012, 0.008], 0.003, 0.003, cord));
+        let nock = nock_at(draw);
+        // The strings, a bolt-thrower's to the ends of the yoke that drives its bolts
+        for &z in &decks {
+            if build == Build::Fan {
+                for s in [-1.0, 1.0] {
+                    p.push(limb(at(s, draw, z), [nock, s * 0.075, 0.006], 0.0055, 0.0055, cord));
+                }
+            } else {
+                for s in [-1.0, 1.0] {
+                    p.push(limb(at(s, draw, z), [nock, 0.0, z + 0.002], 0.0045 * thick.sqrt(), 0.0045 * thick.sqrt(), cord));
+                }
             }
+        }
+        if build == Build::Fan {
+            p.push(limb([nock, -0.08, 0.006], [nock, 0.08, 0.006], 0.0065, 0.0065, metal));
+        }
+        // What draws the string back, hooked onto it: a windlass's cords, a twin's rack, a siege
+        // crossbow's screw, a harpoon's line
+        match build {
+            Build::Crank => {
+                for s in [-1.0, 1.0] {
+                    p.push(ball([nock - 0.008, s * 0.012, 0.008], 0.007, metal));
+                    p.push(limb([windlass[0], s * 0.03, windlass[2] + 0.018], [nock - 0.008, s * 0.012, 0.008], 0.003, 0.003, cord));
+                }
+            }
+            Build::Twin if draw > 0.25 => {
+                // A toothed rack along the top from the gearbox to a claw over both strings
+                let z = TWIN_RISE + 0.028;
+                for k in 0..((nock - 0.03 - pinion[0]) / 0.02).max(0.0) as usize {
+                    let x = pinion[0] + 0.02 + k as f64 * 0.02;
+                    p.push(cuboid([x, -0.006, z + 0.006], [x + 0.008, 0.006, z + 0.011], flourish));
+                }
+                p.push(cuboid([pinion[0], -0.006, z - 0.006], [nock - 0.004, 0.006, z + 0.006], metal));
+                p.push(cuboid([nock - 0.012, -0.012, 0.0], [nock - 0.004, 0.012, z + 0.006], metal));
+            }
+            Build::Siege => {
+                // The screw from the jack at the butt to a claw on the string
+                let z = 0.024;
+                for k in 0..((nock - 0.04) / 0.018).max(0.0) as usize {
+                    let x = 0.01 + k as f64 * 0.018;
+                    p.push(limb([x, 0.0, z], [x + 0.006, 0.0, z], 0.011, 0.011, flourish));
+                }
+                p.push(limb([-0.03, 0.0, z], [nock - 0.01, 0.0, z], 0.008, 0.008, metal));
+                p.push(cuboid([nock - 0.02, -0.022, 0.0], [nock - 0.004, 0.022, z + 0.01], metal));
+            }
+            Build::Harpoon => {
+                for s in [-1.0, 1.0] {
+                    p.push(limb([reel[0], s * 0.02, reel[2] + 0.02], [nock - 0.01, s * 0.01, 0.006], 0.0028, 0.0028, LINEN));
+                }
+            }
+            _ => {}
         }
         if let Some(gem) = core.gem.as_deref().and_then(material) {
-            p.push(ball([length * 0.6, 0.02, -0.02], core.size.unwrap_or(0.02).max(0.013) * 0.8, gem));
+            p.push(ball([length * 0.6, seen * 0.02 * if build == Build::Fan { 1.6 } else { 1.0 }, -0.02], core.size.unwrap_or(0.02).max(0.013) * 0.8, gem));
         }
-        // The groove the bolt lies in, cut out of the tiller's top
-        p.push(cuboid([x_latch + 0.012, -0.004, -0.006], [length + 0.01, 0.004, 0.001], AIR));
-        // The nut that catches the string, and the long trigger under the tiller
-        p.push(ball([x_latch, 0.0, 0.002], 0.011, metal));
-        p.push(limb([x_latch + 0.01, 0.0, -0.035], [x_latch - 0.13, 0.0, -0.075], 0.006, 0.005, metal));
-        p.push(ball([x_latch - 0.13, 0.0, -0.075], 0.008, flourish));
-        // The prod, bound on at the front, its tips capped
+        // The grooves the bolts lie in, cut out of the tiller's top, fanned out on a bolt-thrower
+        if build == Build::Fan {
+            for &(offset, yaw) in &rails {
+                let reach = length + 0.04 - x_latch;
+                p.push(limb([x_latch + 0.012, offset.y, -0.002], [x_latch + 0.012 + reach * yaw.cos(), offset.y + reach * yaw.sin(), -0.002], 0.0045, 0.0045, AIR));
+            }
+        } else {
+            for &z in &decks {
+                p.push(cuboid([x_latch + 0.012, -0.004, z - 0.01], [length + 0.01, 0.004, z - 0.003], AIR));
+            }
+        }
+        // The nut that catches the string, a bar across the yoke's for a bolt-thrower
+        if build == Build::Fan {
+            p.push(limb([x_latch, -0.07, 0.002], [x_latch, 0.07, 0.002], 0.008, 0.008, metal));
+        } else {
+            for &z in &decks {
+                p.push(ball([x_latch, 0.0, z - 0.002], 0.011 * thick.sqrt().min(1.2), metal));
+            }
+        }
+        // The trigger: a long lever under the tiller, or a short one in a guard, as a pistol has
+        let grip_x = grip_x_of(x_latch);
+        if build == Build::Hand || trigger == "guard" {
+            let x = if build == Build::Hand { x_latch + 0.005 } else { grip_x };
+            p.push(limb([x, 0.0, -0.03], [x - 0.006, 0.0, -0.052], 0.0035, 0.003, metal));
+            ring(&mut p, [x - 0.008, 0.0, -0.048], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.019, 0.0032, flourish);
+        } else if trigger == "twin" {
+            for dx in [0.0, 0.03] {
+                p.push(limb([x_latch + 0.01 - dx, 0.0, -0.035], [x_latch - 0.1 - dx, 0.0, -0.07], 0.005, 0.004, metal));
+                p.push(ball([x_latch - 0.1 - dx, 0.0, -0.07], 0.007, flourish));
+            }
+        } else if build != Build::Siege {
+            p.push(limb([x_latch + 0.01, 0.0, -0.035], [x_latch - 0.13, 0.0, -0.075], 0.006, 0.005, metal));
+            p.push(ball([x_latch - 0.13, 0.0, -0.075], 0.008, flourish));
+        }
+        let rear = [x_latch - 0.05, 0.0, deck];
+        let front = [x_prod - 0.01, 0.0, if build == Build::Twin { deck } else { 0.012 }];
+        crossbow_sight(&mut p, sight, rear, front, seen);
+        // The prod, bound on at the front, its tips capped, a compound one's with wheels the
+        // string runs round
         if let Some(tips) = tips {
-            for s in [-1.0, 1.0] {
-                p.push(ball(at(s, draw), 0.012, tips));
+            for &z in &decks {
+                for s in [-1.0, 1.0] {
+                    p.push(ball(at(s, draw, z), 0.012 * thick.sqrt(), tips));
+                }
             }
         }
-        p.push(cuboid([x_prod - 0.028, -0.03, -0.038], [x_prod + 0.028, 0.03, 0.01], trim));
+        if shape == "compound" {
+            for &z in &decks {
+                for s in [-1.0, 1.0] {
+                    let c = at(s, draw, z);
+                    p.push(ball(c, 0.006, flourish));
+                    ring(&mut p, [c[0] - 0.006, c[1], c[2]], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.02, 0.0045, metal);
+                }
+            }
+        }
+        let top = decks[decks.len() - 1];
+        let width = if build == Build::Fan { fan_half(x_prod) + 0.01 } else { 0.03 * thick.sqrt() };
+        p.push(cuboid([x_prod - 0.028 * thick.sqrt(), -width, -0.038 * thick.sqrt()], [x_prod + 0.028 * thick.sqrt(), width, top + 0.006], trim));
         let steps = 12;
-        for side in [-1.0, 1.0] {
-            let points: Vec<[f64; 3]> = (0..=steps).map(|k| at(side * k as f64 / steps as f64, draw)).collect();
-            for (k, pair) in points.windows(2).enumerate() {
-                let r = if shape == "steel" { 0.011 } else { 0.015 } * (1.0 - 0.45 * k as f64 / steps as f64);
-                p.push(limb(pair[0], pair[1], r, r, bow).stretched([1.0, 1.0, 1.7]));
+        for &z in &decks {
+            for side in [-1.0, 1.0] {
+                let points: Vec<[f64; 3]> = (0..=steps).map(|k| at(side * k as f64 / steps as f64, draw, z)).collect();
+                for (k, pair) in points.windows(2).enumerate() {
+                    let r = if matches!(shape, "steel" | "compound") { 0.011 } else { 0.015 } * thick * (1.0 - 0.45 * k as f64 / steps as f64);
+                    if shape == "spined" && k % 3 == 1 {
+                        let q = pair[0];
+                        p.push(limb(q, [q[0] + 0.035, q[1] + side * 0.012, q[2]], r * 0.6, 0.002, band));
+                    }
+                    let material = if shape == "laminate" && k % 2 == 1 { band } else { bow };
+                    p.push(limb(pair[0], pair[1], r, r, material).stretched([1.0, 1.0, 1.7]));
+                }
             }
         }
-        match family.build {
+        match build {
             // The windlass on its brackets at the butt
             Build::Crank => {
                 p.push(limb([windlass[0], -0.05, windlass[2]], [windlass[0], 0.05, windlass[2]], 0.008, 0.008, metal));
@@ -2277,7 +2616,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
             }
             // The magazine on top, the last few bolts showing through its slot, and the pins the
             // lever turns on
-            _ => {
+            Build::Repeater => {
                 let (back, front) = (x_latch - 0.02, x_latch + 0.24);
                 for k in 0..2 {
                     let z = 0.085 + k as f64 * 0.012;
@@ -2292,18 +2631,121 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
                 p.push(cuboid([back, -0.018, 0.0], [front, 0.018, 0.11], wood));
                 p.push(limb([length - 0.005, -0.03, -0.03], [length - 0.005, 0.03, -0.03], 0.007, 0.007, metal));
             }
+            // The rail the upper prod's groove runs along, and the gearbox at the side with its
+            // pinion, and the rack's guide over the butt
+            Build::Twin => {
+                p.push(cuboid([x_latch - 0.03, -0.016, 0.0], [x_prod + 0.02, 0.016, TWIN_RISE - 0.003], wood));
+                for x in [x_latch + 0.08, x_prod - 0.08] {
+                    p.push(cuboid([x - 0.006, -0.02, -0.04], [x + 0.006, 0.02, TWIN_RISE], trim));
+                }
+                p.push(ball(pinion, 0.012, flourish));
+                p.push(cuboid([pinion[0] - 0.05, seen * 0.02, -0.05], [pinion[0] + 0.05, seen * 0.042, 0.004], metal));
+                p.push(cuboid([pinion[0] - 0.04, -0.01, TWIN_RISE + 0.015], [pinion[0] + 0.02, 0.01, TWIN_RISE + 0.045], metal));
+                p.push(cuboid([pinion[0] - 0.02, -0.012, -0.01], [pinion[0] + 0.0, 0.012, TWIN_RISE + 0.03], trim));
+            }
+            // The jack's nut at the butt, iron straps round the tiller, the hinge of the leg
+            Build::Siege => {
+                p.push(cuboid([-0.02, -0.036, -0.055], [0.03, 0.036, 0.04], trim));
+                for x in [0.2, x_latch + 0.2, x_prod - 0.12] {
+                    p.push(cuboid([x - 0.008, -0.034, -0.058], [x + 0.008, 0.034, 0.004], trim));
+                }
+                p.push(limb([length - 0.1, -0.03, -0.06], [length - 0.1, 0.03, -0.06], 0.009, 0.009, metal));
+            }
+            // The reel under the tiller, its line wound round it, on its hanger
+            Build::Harpoon => {
+                for k in 0..5 {
+                    let y = -0.03 + k as f64 * 0.015;
+                    p.push(limb([reel[0], y, reel[2]], [reel[0], y + 0.009, reel[2]], 0.03, 0.03, if k % 2 == 0 { LINEN } else { BOWSTRING }));
+                }
+                for s in [-1.0, 1.0] {
+                    p.push(ellipsoid([reel[0], s * 0.042, reel[2]], [0.04, 0.005, 0.04], metal));
+                    p.push(cuboid([reel[0] - 0.012, s * 0.048 - 0.003, reel[2]], [reel[0] + 0.012, s * 0.048 + 0.003, -0.01], metal));
+                }
+                p.push(limb([reel[0], -0.05, reel[2]], [reel[0], 0.05, reel[2]], 0.007, 0.007, flourish));
+            }
+            // The lever's pivot at the side of the frame
+            Build::Fan => {
+                let x = x_prod - 0.12;
+                p.push(limb([x, seen * (fan_half(x) - 0.01), -0.03], [x, seen * (fan_half(x) + 0.02), -0.03], 0.012, 0.012, metal));
+            }
+            _ => {}
         }
         // A stirrup out front to stand in while spanning it
-        if family.build != Build::Repeater {
+        if matches!(build, Build::Lever | Build::Crank | Build::Twin) {
             ring(&mut p, [length + 0.045, 0.0, -0.016], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 0.04, 0.0065, metal);
         }
-        // Bands round the tiller, then the tiller, deep at the butt to set against the shoulder
-        for x in [0.26, x_latch + 0.16] {
-            p.push(cuboid([x - 0.006, -0.025, -0.043], [x + 0.006, 0.025, 0.003], trim));
+        // Then the tiller, and its stock
+        match build {
+            // Short, on a pistol grip under the latch, capped
+            Build::Hand => {
+                if stock_shape == "skeleton" {
+                    p.push(cuboid([0.08, -0.03, -0.024], [length - 0.08, 0.03, -0.01], AIR));
+                }
+                p.push(cuboid([x_latch - 0.025, -0.022, -0.036], [x_latch + 0.005, 0.022, 0.003], trim));
+                p.push(cuboid([0.05, -0.016, -0.03], [length, 0.016, 0.0], wood));
+                p.push(ball([x_latch - 0.095, 0.0, -0.14], 0.021, trim));
+                p.push(limb([x_latch - 0.015, 0.0, -0.022], [x_latch - 0.09, 0.0, -0.13], 0.016, 0.02, wood).stretched([1.0, 0.75, 1.0]));
+                p.push(limb([0.03, 0.0, -0.016], [0.08, 0.0, -0.016], 0.012, 0.016, wood));
+            }
+            // A great beam of a tiller, held by two upright grips, braced, not shouldered
+            Build::Siege => {
+                for x in [0.17, x_latch + 0.3] {
+                    p.push(ball([x - 0.04, 0.0, -0.17], 0.02, trim));
+                    p.push(limb([x, 0.0, -0.05], [x - 0.04, 0.0, -0.165], 0.018, 0.021, wood).stretched([1.0, 0.8, 1.0]));
+                }
+                p.push(cuboid([0.0, -0.03, -0.052], [length, 0.03, 0.0], wood));
+            }
+            _ => {
+                // The tiller, a bolt-thrower's a broad frame widening to the front
+                if build == Build::Fan {
+                    let rows = ((x_prod - x_latch + 0.05) * CROSSBOW_RES).ceil() as usize;
+                    for r in 0..rows {
+                        let x = x_latch - 0.05 + r as f64 / CROSSBOW_RES;
+                        let w = fan_half(x);
+                        p.push(cuboid([x, -w, -0.032], [x + 1.0 / CROSSBOW_RES, w, 0.0], wood));
+                    }
+                    for x in [x_latch + 0.12, x_prod - 0.15] {
+                        p.push(cuboid([x - 0.006, -fan_half(x) - 0.003, -0.036], [x + 0.006, fan_half(x) + 0.003, 0.002], trim));
+                    }
+                } else {
+                    for x in [0.26, x_latch + 0.16] {
+                        p.push(cuboid([x - 0.006, -0.025, -0.043], [x + 0.006, 0.025, 0.003], trim));
+                    }
+                }
+                if stock_shape == "skeleton" {
+                    for x in [x_latch + 0.06, x_latch + 0.25] {
+                        p.push(cuboid([x, -0.03, -0.032], [x + 0.07, 0.03, -0.012], AIR));
+                    }
+                }
+                p.push(cuboid([0.2, -0.022, -0.04], [length, 0.022, 0.0], wood));
+                // The stock: to the shoulder, on a pistol grip, cut through for the thumb, an
+                // open frame, or with a rest for the cheek
+                match stock_shape {
+                    "pistol" => {
+                        p.push(ball([grip_x - 0.075, 0.0, -0.15], 0.021, trim));
+                        p.push(limb([grip_x + 0.01, 0.0, -0.03], [grip_x - 0.07, 0.0, -0.14], 0.016, 0.02, wood).stretched([1.0, 0.75, 1.0]));
+                        p.push(cuboid([0.12, -0.016, -0.06], [0.135, 0.016, -0.02], trim));
+                        p.push(limb([0.13, 0.0, -0.04], [0.26, 0.0, -0.022], 0.022, 0.02, wood).stretched([1.0, 0.6, 1.0]));
+                    }
+                    "skeleton" => {
+                        p.push(cuboid([0.0, -0.016, -0.112], [0.012, 0.016, -0.02], trim));
+                        p.push(limb([0.01, 0.0, -0.03], [0.26, 0.0, -0.02], 0.011, 0.011, wood));
+                        p.push(limb([0.01, 0.0, -0.1], [0.24, 0.0, -0.035], 0.011, 0.011, wood));
+                        p.push(limb([0.13, 0.0, -0.03], [0.13, 0.0, -0.07], 0.008, 0.008, trim));
+                    }
+                    shape => {
+                        if shape == "thumbhole" {
+                            p.push(limb([0.14, -0.05, -0.05], [0.14, 0.05, -0.05], 0.014, 0.014, AIR));
+                        }
+                        if shape == "cheek" {
+                            p.push(ellipsoid([0.11, seen * 0.02, -0.036], [0.07, 0.012, 0.022], trim));
+                        }
+                        p.push(cuboid([0.0, -0.016, -0.112], [0.012, 0.016, -0.02], trim));
+                        p.push(limb([0.03, 0.0, -0.065], [0.26, 0.0, -0.022], 0.048, 0.024, wood).stretched([1.0, 0.5, 1.0]));
+                    }
+                }
+            }
         }
-        p.push(cuboid([0.2, -0.022, -0.04], [length, 0.022, 0.0], wood));
-        p.push(cuboid([0.0, -0.016, -0.112], [0.012, 0.016, -0.02], trim));
-        p.push(limb([0.03, 0.0, -0.065], [0.26, 0.0, -0.022], 0.048, 0.024, wood).stretched([1.0, 0.5, 1.0]));
         p
     };
     let mut frames: Vec<(Model, Vector3<f64>)> = [0.0, 0.5, 1.0].map(|draw| voxelize(&body(draw), CROSSBOW_RES)).into();
@@ -2311,13 +2753,13 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
 
     // What spans it, at rest
     let mut m = Vec::new();
-    let mover = match family.build {
+    let mover = match build {
         // A windlass's two cranks, hanging down either side of the butt
         Build::Crank => {
             for s in [-1.0, 1.0] {
                 let y = s * 0.06;
                 m.push(limb([windlass[0], y, windlass[2]], [windlass[0], y, windlass[2] - 0.085], 0.007, 0.006, metal));
-                m.push(limb([windlass[0], y, windlass[2] - 0.085], [windlass[0], y + s * 0.045, windlass[2] - 0.085], 0.0095, 0.0095, wood));
+                crank_handle(&mut m, handle, [windlass[0], y + s * 0.022, windlass[2] - 0.085], [0.0, s, 0.0], wood, flourish);
             }
             Mover { frame: 3, pivot: Vector3::from(windlass), axis: Vector3::y(), handle: v3(windlass[0], 0.085, windlass[2] - 0.085), handle_axis: Vector3::y() }
         }
@@ -2331,11 +2773,11 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
                 m.push(limb([pivot[0], y, pivot[2]], [pivot[0] + 0.04, y, pivot[2] + 0.025], 0.006, 0.004, metal));
                 m.push(limb([pivot[0], y, pivot[2]], [end, y, pivot[2] + 0.01], 0.006, 0.005, metal));
             }
-            m.push(limb([end, -0.04, pivot[2] + 0.01], [end, 0.04, pivot[2] + 0.01], 0.009, 0.009, wood));
+            crank_handle(&mut m, handle, [end, 0.0, pivot[2] + 0.01], [0.0, 1.0, 0.0], wood, flourish);
             Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::y(), handle: v3(end, 0.0, pivot[2] + 0.01), handle_axis: Vector3::y() }
         }
         // A lever turning on pins at the front, arching up over the magazine to a handle behind it
-        _ => {
+        Build::Repeater => {
             let pivot = [length - 0.005, 0.0, -0.03];
             let points = [pivot, [length - 0.02, 0.0, 0.1], [x_latch + 0.08, 0.0, 0.17], [x_latch - 0.07, 0.0, 0.16]];
             for s in [-1.0, 1.0] {
@@ -2343,23 +2785,102 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, core:
                 curve(&mut m, &side, 0.0065, 0.0055, metal);
             }
             let end = points[3];
-            m.push(limb([end[0], -0.04, end[2]], [end[0], 0.04, end[2]], 0.009, 0.009, wood));
+            crank_handle(&mut m, handle, end, [0.0, 1.0, 0.0], wood, flourish);
             Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::y(), handle: v3(end[0], 0.0, end[2]), handle_axis: Vector3::y() }
+        }
+        // A lever folded up under the tiller from a hinge at the front, its handle just ahead of
+        // the trigger, swung down and back up by the other hand
+        Build::Hand => {
+            let pivot = [length - 0.03, 0.0, -0.034];
+            let end = [x_latch + 0.04, 0.0, -0.045];
+            for s in [-1.0, 1.0] {
+                m.push(limb([pivot[0], s * 0.019, pivot[2]], [end[0], s * 0.019, end[2]], 0.0045, 0.004, metal));
+            }
+            m.push(ball(pivot, 0.007, flourish));
+            crank_handle(&mut m, handle, end, [0.0, 1.0, 0.0], wood, flourish);
+            Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::y(), handle: Vector3::from(end), handle_axis: Vector3::y() }
+        }
+        // The crank on the gearbox's pinion, hanging down
+        Build::Twin => {
+            let end = [pinion[0], pinion[1] + seen * 0.03, pinion[2] - 0.07];
+            m.push(limb([pinion[0], pinion[1] + seen * 0.02, pinion[2]], [end[0], end[1] - seen * 0.01, end[2]], 0.0065, 0.0055, metal));
+            crank_handle(&mut m, handle, end, [0.0, seen, 0.0], wood, flourish);
+            Mover { frame: 3, pivot: Vector3::from(pinion), axis: Vector3::y(), handle: Vector3::from(end), handle_axis: Vector3::y() }
+        }
+        // The jack's crossbar handle at the butt, spun round the screw
+        Build::Siege => {
+            let pivot = [-0.035, 0.0, 0.024];
+            m.push(limb([pivot[0] - 0.01, 0.0, pivot[2]], [pivot[0] + 0.012, 0.0, pivot[2]], 0.016, 0.016, metal));
+            for s in [-1.0, 1.0] {
+                m.push(limb(pivot, [pivot[0], s * 0.075, pivot[2]], 0.007, 0.007, metal));
+                crank_handle(&mut m, if handle == "knob" { "ball" } else { handle }, [pivot[0] - 0.03, s * 0.075, pivot[2]], [-1.0, 0.0, 0.0], wood, flourish);
+            }
+            Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::x(), handle: v3(pivot[0] - 0.03, 0.075, pivot[2]), handle_axis: Vector3::x() }
+        }
+        // The reel's crank, out at the side
+        Build::Harpoon => {
+            let hub = [reel[0], seen * 0.055, reel[2]];
+            let end = [reel[0], seen * 0.07, reel[2] - 0.065];
+            m.push(limb(hub, [end[0], end[1] - seen * 0.012, end[2]], 0.0065, 0.0055, metal));
+            crank_handle(&mut m, handle, end, [0.0, seen, 0.0], wood, flourish);
+            Mover { frame: 3, pivot: Vector3::from(hub), axis: Vector3::y(), handle: Vector3::from(end), handle_axis: Vector3::y() }
+        }
+        // A long lever lying back along the side of the frame from its pivot near the front,
+        // swung out and back again
+        _ => {
+            let x = x_prod - 0.12;
+            let pivot = [x, seen * (fan_half(x) + 0.02), -0.03];
+            let end = [0.16, pivot[1], -0.03];
+            m.push(limb(pivot, end, 0.008, 0.007, metal));
+            m.push(limb(pivot, [pivot[0] + 0.05, pivot[1] - seen * 0.03, -0.03], 0.008, 0.005, metal));
+            crank_handle(&mut m, handle, end, [0.0, 0.0, 1.0], wood, flourish);
+            Mover { frame: 3, pivot: Vector3::from(pivot), axis: Vector3::z(), handle: Vector3::from(end), handle_axis: Vector3::z() }
         }
     };
     frames.push(voxelize(&m, CROSSBOW_RES));
-    let support = (family.build != Build::Repeater).then(|| (v3(x_latch + 0.22, 0.0, -0.03), Vector3::x()));
+    // A siege crossbow's leg, folded back under its front, a forked foot on its end
+    let leg = (build == Build::Siege).then(|| {
+        let pivot = [length - 0.1, 0.0, -0.06];
+        let foot = [length - 0.52, 0.0, -0.075];
+        let mut l = vec![limb(pivot, foot, 0.014, 0.012, metal)];
+        for s in [-1.0, 1.0] {
+            l.push(limb(foot, [foot[0] - 0.05, s * 0.035, foot[2] - 0.004], 0.009, 0.006, flourish));
+        }
+        frames.push(voxelize(&l, CROSSBOW_RES));
+        // Let down a little past straight down, to lean on
+        (Mover { frame: 4, pivot: Vector3::from(pivot), axis: Vector3::y(), handle: Vector3::from(foot), handle_axis: Vector3::y() }, -1.45)
+    });
+    // Held by the stock's wrist, a hand crossbow by its grip and a siege crossbow by the grip at
+    // the back, steadied under the front
+    let (grip, hold) = match build {
+        Build::Hand => (v3(x_latch - 0.055, 0.0, -0.078), v3(0.55, 0.0, 0.83)),
+        Build::Siege => (v3(0.15, 0.0, -0.11), v3(0.33, 0.0, 0.94)),
+        _ if stock_shape == "pistol" => (v3(grip_x_of(x_latch) - 0.03, 0.0, -0.085), v3(0.6, 0.0, 0.8)),
+        _ => (v3(x_latch - 0.08, 0.0, -0.04), Vector3::x()),
+    };
+    let support = match build {
+        Build::Repeater | Build::Hand => None,
+        Build::Siege => Some((v3(x_latch + 0.28, 0.0, -0.11), v3(0.33, 0.0, 0.94))),
+        _ => Some((v3(x_latch + 0.22, 0.0, -0.03), Vector3::x())),
+    };
     WeaponLook {
         frames,
         res: CROSSBOW_RES,
-        grip: v3(x_latch - 0.08, 0.0, -0.04),
-        hold: Vector3::x(),
+        grip,
+        hold: hold.normalize(),
         tip: v3(length + 0.01, 0.0, 0.008),
         nocks,
         lash: None,
         mover: Some(mover),
         support,
+        rails,
+        leg,
     }
+}
+
+/// Where a crossbow's pistol grip is along it, for its latch at `x_latch`
+fn grip_x_of(x_latch: f64) -> f64 {
+    x_latch - 0.06
 }
 
 /// A gun lying level, its barrel along +x with the middle of its bore at z 0, its butt or grip at
@@ -2551,7 +3072,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         _ => (v3(x_b - 0.075, 0.0, -0.022), v3(0.96, 0.0, 0.28)),
     };
     let support = matches!(build, Build::Musket | Build::Blunderbuss).then(|| (v3(x_b + (family.length - x_b) * 0.55, 0.0, -outer - 0.012), Vector3::x()));
-    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(x_m, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support }
+    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(x_m, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support, rails: Vec::new(), leg: None }
 }
 
 /// A staff standing on its foot, the crystal at its top. Returns how long its shaft is, and where
@@ -2763,8 +3284,10 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
 
 /// How many kinds of arrowhead there are: broad, a narrow bodkin point, and barbed
 pub const ARROW_HEADS: usize = 3;
-/// And of bolt head: a square point, and a broad barbed one
-pub const QUARREL_HEADS: usize = 2;
+/// And of bolt head: a square point, a broad barbed one, a crescent, a blunt knob, and a harpoon's
+/// great barbed point with an eye for its line
+pub const QUARREL_HEADS: usize = 5;
+pub const QUARREL_HARPOON: usize = 4;
 /// How long a crossbow's bolt is, from its nock to its point
 pub const QUARREL_HEAD: f64 = 0.37;
 
@@ -2835,9 +3358,13 @@ pub const WEB: usize = RING + 1;
 pub const MUZZLE: usize = WEB + 1;
 /// A hand cannon's shell, its fuse burning behind it, its middle at 0
 pub const SHELL: usize = MUZZLE + 1;
+/// A net of rope a meter across, lead weights round its edge, lying flat round 0, sagging down
+pub const NET: usize = SHELL + 1;
+/// A rune a meter across glowing on the ground, flat round 0
+pub const RUNE: usize = NET + 1;
 /// Then the stretches of lash a whip's lash is drawn with, see LashLook: a model as thick as each
 /// of LASH_TAPERS for each of the LASH_SETS, then each of the CRACKERS for its tip
-pub const LASH_SEGMENTS: usize = SHELL + 1;
+pub const LASH_SEGMENTS: usize = RUNE + 1;
 pub const LASH_CRACKERS: usize = LASH_SEGMENTS + LASH_SETS * LASH_TAPERS.len();
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
@@ -2914,10 +3441,37 @@ fn arrow(element: Option<Element>, head: usize, res: f64, fletch: &Fletch) -> Ve
         None => {}
     }
 
+    // A crescent's two horns reaching forward to cut, or a blunt knob of iron to knock down
+    // rather than cut, instead of a point
+    if head == 3 || head == 4 {
+        let s = fletch.head;
+        if head == 3 {
+            for side in [-1.0, 1.0] {
+                p.push(limb([start + 0.012 * s, side * 0.003, 0.0], [start + 0.055 * s, side * 0.026 * s.sqrt(), 0.0], 0.0042, 0.0016, edge));
+                p.push(limb([start + 0.004, 0.0, 0.0], [start + 0.014 * s, side * 0.006, 0.0], 0.0045, 0.004, body));
+            }
+        } else {
+            p.push(ball([start + 0.02 * s, 0.0, 0.0], 0.016 * s.sqrt(), edge));
+            p.push(limb([start, 0.0, 0.0], [start + 0.018 * s, 0.0, 0.0], 0.007, 0.011 * s.sqrt(), body));
+        }
+        let ((from, to), (near, far)) = (fletch.vanes, fletch.reach);
+        for a in [0.0, TAU / 3.0, 2.0 * TAU / 3.0] {
+            let (c, s) = (f64::cos(a), f64::sin(a));
+            p.push(limb([from, c * near, s * near], [to, c * far, s * far], 0.006, 0.0035, feathers));
+        }
+        p.push(limb([0.0, 0.0, 0.0], [0.012, 0.0, 0.0], fletch.shaft + 0.002, fletch.shaft + 0.002, if element == Some(Holy) { GOLD } else { BARK_DARK }));
+        p.push(limb([0.0, 0.0, 0.0], [start, 0.0, 0.0], fletch.shaft, fletch.shaft, shaft));
+        return p;
+    }
+    // A harpoon's line is tied through an eye near its back
+    if head == 5 {
+        ring(&mut p, [0.05, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.0035, DARK_STEEL);
+    }
     // The head, row by row from its base to its point, the body inside its edges
     let (length, width) = match head {
         0 => (0.085, 0.022),
         1 => (0.11, 0.0075),
+        5 => (0.13, 0.019),
         _ => (0.09, 0.017),
     };
     let (length, width) = (length * fletch.head, width * fletch.head.sqrt());
@@ -2950,10 +3504,14 @@ fn arrow(element: Option<Element>, head: usize, res: f64, fletch: &Fletch) -> Ve
     }
     p.extend(bodies);
     p.extend(edges);
-    if head == 2 {
-        // Barbs curving back from the base
+    if head == 2 || head == 5 {
+        // Barbs curving back from the base, a harpoon's two pairs of them, big
+        let big = if head == 5 { 1.6 } else { 1.0 };
         for s in [-1.0, 1.0] {
-            p.push(limb([start + 0.012, s * width * 0.9, 0.0], [start - 0.022, s * width * 1.5, 0.0], 0.0035, 0.0015, body));
+            p.push(limb([start + 0.012, s * width * 0.9, 0.0], [start - 0.022 * big, s * width * 1.5 * big, 0.0], 0.0035 * big, 0.0015, body));
+            if head == 5 {
+                p.push(limb([start + 0.012, 0.0, s * width * 0.9], [start - 0.03, 0.0, s * width * 2.0], 0.005, 0.0015, body));
+            }
         }
     }
     // A socket the head sits in
@@ -2970,10 +3528,11 @@ fn arrow(element: Option<Element>, head: usize, res: f64, fletch: &Fletch) -> Ve
     p
 }
 
-/// A crossbow's bolt along +x with its nock at 0: with bolt head `head`, a square point or a broad
-/// barbed one, see QUARREL_HEADS, and its element showing as an arrow's does
+/// A crossbow's bolt along +x with its nock at 0: with bolt head `head`, a square point, a broad
+/// barbed one, a crescent, a blunt knob or a harpoon's, see QUARREL_HEADS, and its element showing
+/// as an arrow's does
 fn quarrel(element: Option<Element>, head: usize, res: f64) -> Vec<Part> {
-    arrow(element, if head == 0 { 1 } else { 2 }, res, &QUARREL_FLETCH)
+    arrow(element, [1, 2, 3, 4, 5][head.min(QUARREL_HEADS - 1)], res, &QUARREL_FLETCH)
 }
 
 /// A puff of smoke, lumpy, its middle at 0: white powder smoke without an element, or smoke the
@@ -3144,6 +3703,35 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     ring(&mut p, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 0.034, 0.004, BRONZE);
     p.push(ball([0.0, 0.0, 0.0], 0.034, DARK_STEEL));
     models.push(voxelize(&p, SHOT_RES));
+    // A net: rope strung across and across, sagging in the middle, lead weights round its edge
+    let sag = |x: f64, y: f64| -0.12 * (1.0 - (x * x + y * y) / 0.25).max(0.0);
+    let mut p = Vec::new();
+    for k in 0..10 {
+        let a = k as f64 / 10.0 * TAU;
+        p.push(ball([a.cos() * 0.5, a.sin() * 0.5, 0.0], 0.035, DARK_STEEL));
+    }
+    for k in -4..=4 {
+        let c = k as f64 * 0.11;
+        let reach = (0.25 - c * c).max(0.0).sqrt();
+        for (a, b) in [([c, -reach], [c, reach]), ([-reach, c], [reach, c])] {
+            let points: Vec<[f64; 3]> = (0..=6).map(|j| {
+                let t = j as f64 / 6.0;
+                let (x, y) = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+                [x, y, sag(x, y)]
+            }).collect();
+            curve(&mut p, &points, 0.014, 0.014, LINEN);
+        }
+    }
+    models.push(voxelize(&p, RING_RES));
+    // A rune: a ring, a star inside it, and marks round it, all glowing
+    let mut p: Vec<Part> = (0..64).map(|k| k as f64 / 64.0 * TAU).map(|a| ball([a.cos() * 0.5, a.sin() * 0.5, 0.0], 0.03, GLOW_ARCANE)).collect();
+    for k in 0..5 {
+        let (a, b) = (k as f64 / 5.0 * TAU, (k as f64 + 2.0) / 5.0 * TAU);
+        p.push(limb([a.cos() * 0.42, a.sin() * 0.42, 0.0], [b.cos() * 0.42, b.sin() * 0.42, 0.0], 0.022, 0.022, GLOW_ARCANE));
+        let c = (k as f64 + 0.5) / 5.0 * TAU;
+        p.push(ball([c.cos() * 0.62, c.sin() * 0.62, 0.0], 0.04, GLOW_HOLY));
+    }
+    models.push(voxelize(&p, RING_RES));
     // A whip's lash: a stretch of it in each set at each thickness, then the crackers
     for set in 0..LASH_SETS {
         for radius in LASH_TAPERS {
@@ -3277,7 +3865,7 @@ mod tests {
     #[test]
     fn crossbows_and_guns_load_and_shoot_their_own_ammo() {
         let library = Library::parse(BUILT_IN).unwrap();
-        for id in ["crossbow", "arbalest", "repeater", "pistol", "musket", "blunderbuss", "handcannon"] {
+        for id in ["crossbow", "arbalest", "repeater", "handcrossbow", "twinprod", "siegecrossbow", "harpoon", "boltthrower", "pistol", "musket", "blunderbuss", "handcannon"] {
             let family = library.family(id).expect("there's such a family");
             for seed in 0..40 {
                 let weapon = library.generate(seed, Some(family), 3.0);
@@ -3335,7 +3923,7 @@ mod tests {
         }
         // Every special attack is on some part, so they turn up in loot and shops
         let on_parts: BTreeSet<String> = library.components.iter().filter_map(|c| c.special).map(|s| s.name().to_owned()).collect();
-        assert!(on_parts.len() >= 30, "only {} special attacks are on parts", on_parts.len());
+        assert!(on_parts.len() >= 42, "only {} special attacks are on parts", on_parts.len());
         let mut found = BTreeSet::new();
         for seed in 0..40_000 {
             if let Some(special) = library.special_of(seed, 8.0) {
@@ -3346,6 +3934,55 @@ mod tests {
         // Worked out from the parts alone, it's what the weapon really has
         for seed in 0..300 {
             assert_eq!(library.special_of(seed, 8.0), library.generate(seed, None, 8.0).profile.special.as_ref().map(|(s, _)| *s));
+        }
+    }
+
+    #[test]
+    fn new_crossbows_are_each_built_their_own_way() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        // How each is built, how many bolts it lies ready with, and whether it has a leg to brace on
+        for (id, build, bolts, leg) in [("handcrossbow", Build::Hand, 1, false), ("twinprod", Build::Twin, 2, false), ("siegecrossbow", Build::Siege, 1, true), ("harpoon", Build::Harpoon, 1, false), ("boltthrower", Build::Fan, 5, false)] {
+            let family = library.family(id).expect("there's such a family");
+            let mut sights = BTreeSet::new();
+            for seed in 0..60 {
+                let weapon = library.generate(seed, Some(family), 3.0);
+                let profile = &weapon.profile;
+                assert_eq!(profile.build, build, "{id}");
+                assert!(build.crossbow() && weapon.shot() == Some(Shot::Quarrel), "{id} shoots bolts");
+                let look = &weapon.look;
+                assert_eq!(look.rails.len(), bolts, "{id}");
+                assert_eq!(look.leg.is_some(), leg, "{id}");
+                if let Some((leg, _)) = &look.leg {
+                    assert!(leg.frame < look.frames.len());
+                }
+                // Every frame has something to see, the bolt-thrower's fan spreading out wide
+                assert!(look.frames.iter().all(|(m, _)| m.voxels.iter().any(|&v| v != AIR)), "{id}");
+                if build == Build::Fan {
+                    let yaws: Vec<f64> = look.rails.iter().map(|r| r.1).collect();
+                    assert!(yaws.first() < yaws.last(), "a bolt-thrower's grooves fan out");
+                }
+                // The parts it's made of fit, a sight among them
+                let slot = library.families[family].slots.iter().position(|s| s == "sight").expect("a crossbow has a sight");
+                sights.insert(weapon.parts[slot]);
+            }
+            assert!(sights.len() >= 4, "{id} rolls only {} sights", sights.len());
+        }
+        // A hand crossbow's held by a grip under it, a siege crossbow's bolts are big and a hand
+        // crossbow's small, and a harpoon's line reaches out
+        let hand = library.generate(3, library.family("handcrossbow"), 1.0);
+        assert!(hand.look.grip.z < -0.05);
+        let siege = library.generate(3, library.family("siegecrossbow"), 1.0);
+        assert!(siege.profile.bolt > 1.4 && hand.profile.bolt < 1.0);
+        assert!(siege.profile.has(Effect::Pierce));
+        // Plenty of parts to roll for every slot of a crossbow, and plenty of kinds of bolt
+        for (slot, most) in [("prod", 18), ("stock", 15), ("lock", 16), ("sight", 12)] {
+            let count = library.components.iter().filter(|c| c.slot_type == slot && c.compatible_families.iter().any(|f| f == "harpoon")).count();
+            assert!(count >= most, "only {count} crossbow {slot}s");
+        }
+        assert!(library.ammo.iter().filter(|a| a.fits == "bolt").count() >= 16);
+        // The new effects are there to be had
+        for id in ["snare", "ricochet"] {
+            assert!(library.effects.iter().any(|e| e.id == id && e.effect.is_some()), "{id}");
         }
     }
 

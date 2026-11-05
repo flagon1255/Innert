@@ -8,11 +8,11 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, StrokeKind, pos2, vec2};
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{UnitQuaternion, Vector2, Vector3};
 
 use crate::animals::{self, ANIMAL_MODELS, Animal, AnimalInstance, Build, Look, Model, pack_models};
 use crate::audio::{Cue, Ground, Sound};
-use crate::bosses::{Deed, Move};
+use crate::bosses::{self, Deed, Flock, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
@@ -31,6 +31,8 @@ const PROP_RANGE: f64 = 30.0;
 const MAX_INSTANCES: usize = 140;
 /// About this many animals live around the player
 const ANIMALS: usize = 38;
+/// How fast a crossbowman's bolts fly, in meters a second
+const BOLT_PACE: f64 = 32.0;
 /// Apples keep growing back near the player up to this many
 const APPLES: usize = 48;
 /// How much water the bucket holds, in cubic meters. A magic bucket, to make a splash.
@@ -219,6 +221,9 @@ pub struct Chest {
     /// stays open, and what's in it is the same every time
     pub key: [i64; 3],
     pub luck: f64,
+    /// A bandits' camp's hoard, which turns up once they're all dead: a beam of light shows where
+    /// it is until it's opened, and there's more gold in it
+    pub hoard: bool,
 }
 
 /// A splash of the player's own blood over the view: where, in fractions of the screen across and
@@ -244,6 +249,17 @@ pub struct Den {
     /// Where in the whole landscape, to remember it's been cleared
     pub key: [i64; 3],
     pub kind: DenKind,
+    /// For a bandits' camp, who keeps it and what they leave
+    pub band: Option<Band>,
+}
+
+/// Who keeps a bandits' camp, and how far round its fire in meters, and the chest of their hoard
+/// that turns up there once they're all dead, with where that is, put for the player
+pub struct Band {
+    pub keepers: Vec<Look>,
+    pub within: f64,
+    pub hoard: Chest,
+    pub hint: &'static str,
 }
 
 /// What a den is, which decides what haunts it
@@ -251,10 +267,14 @@ pub struct Den {
 pub enum DenKind {
     /// A hall of a dungeon, haunted by the dead or spiders
     Hall,
-    /// A cavern cave spiders nest in
+    /// A cavern cave spiders nest in, or gloomwings roost in
     Nest,
     /// A bandits' camp
     Camp,
+    /// A ravine gloomwings roost in, along its walls
+    Roost,
+    /// Desert ruins burrowers have dug in round
+    Burrows,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -436,6 +456,12 @@ pub struct Game {
     cleared: HashSet<[i64; 3]>,
     /// Chests beaten bosses left, kept as the world moves on
     boss_chests: Vec<Chest>,
+    /// The hoards of the bandits' camps in this piece of the world, by their dens, and where each
+    /// is put for the player. Each turns up once its camp's cleared, and stays.
+    hoards: HashMap<[i64; 3], (Chest, &'static str)>,
+    /// Where the hoards turned up and not yet opened are, that the camera can see, for their beams
+    /// of light to show
+    beams: Vec<Vector3<f64>>,
     /// Cubic meters of water in the bucket
     bucket: f64,
     /// Gold carried, to spend at merchants
@@ -582,6 +608,8 @@ impl Game {
             dens: Vec::new(),
             cleared: HashSet::new(),
             boss_chests: Vec::new(),
+            hoards: HashMap::new(),
+            beams: Vec::new(),
             bucket: 0.0,
             gold: STARTING_GOLD,
             shop: None,
@@ -646,6 +674,8 @@ impl Game {
         self.dens.clear();
         self.cleared.clear();
         self.boss_chests.clear();
+        self.hoards.clear();
+        self.beams.clear();
         self.pickups.clear();
         self.target = None;
         self.seed = seed;
@@ -914,8 +944,15 @@ impl Game {
             ),
             None => animal,
         };
+        // How far the furthest of a pack fighting the player has got from the middle of it
+        let spread = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0)
+            .filter_map(|a| a.boss.as_ref().filter(|b| b.engaged && b.flock.size > 1).map(|b| (a.position - b.flock.middle).xy().norm() / self.combat.vpm()))
+            .fold(0.0f64, f64::max);
         format!(
-            "holding {held}, {animal}, mana {:.0}, health {:.0}, gold {}, [{}] after them, {} rest spot, {} lying about, {} animals ({bosses} bosses, {} lairs), {} leaves falling",
+            "holding {held}, {animal}, mana {:.0}, health {:.0}, gold {}, [{}] after them, packs within {spread:.1} m, {} rest spot, {} lying about, {} animals ({bosses} bosses, {} lairs), {} leaves falling",
             self.combat.mana,
             self.health,
             self.gold,
@@ -943,9 +980,13 @@ impl Game {
         self.props = props;
     }
 
+    /// The chests in the piece of the world just built, along with those bosses left and the
+    /// hoards of the camps cleared there, see set_dens()
     pub fn set_chests(&mut self, chests: Vec<Chest>) {
         self.chests = chests;
         self.chests.extend(self.boss_chests.iter().cloned());
+        self.chests.extend(self.hoards.iter().filter(|(den, _)| self.cleared.contains(*den)).map(|(_, (chest, _))| chest.clone()));
+        self.beams.clear();
         self.target = None;
     }
 
@@ -969,32 +1010,155 @@ impl Game {
 
     /// The dungeon halls in the piece of the world just built, in its voxels: monsters haunt each
     /// that isn't cleared and doesn't have them already. Each hall has its own lot: the dead in
-    /// their bones, rotting, or spiders, some in armor.
+    /// their bones, rotting, or spiders, some in armor, or gloomwings with the dead. Bandits keep
+    /// camps, as many as each's band says, some of them crossbowmen and shieldbearers, and the
+    /// hoards of those cleared are there to open, see set_chests(). They keep close together, one
+    /// pack to a den.
     pub fn set_dens(&mut self, world: &World, water: WaterLevel, dens: Vec<Den>) {
+        self.hoards = dens.iter().filter_map(|d| d.band.as_ref().map(|b| (d.key, (b.hoard.clone(), b.hint)))).collect();
         for den in &dens {
             let here = self.animals.iter().any(|a| a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key == den.key));
             if here || self.cleared.contains(&den.key) {
                 continue;
             }
-            let mut seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
-            let haunted: &[Look] = match seed % 3 {
-                _ if den.kind == DenKind::Nest => &[Look::Spiderling, Look::Spiderling, Look::Spiderling],
-                _ if den.kind == DenKind::Camp => &[Look::Bandit, Look::Bandit, Look::Bandit, Look::BanditBrute],
-                0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
-                1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],
-                _ => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
-            };
-            for &look in haunted {
-                seed = hash(seed);
-                if let Some(mut monster) = animals::spawn_monster(world, water, look, den.position, 4.0, seed) {
-                    if let Some(state) = &mut monster.boss {
-                        state.key = den.key;
-                    }
-                    self.animals.push(monster);
+            let seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
+            // A camp's band as many as it says, some of its bandits crossbowmen or shieldbearers
+            let band: Vec<Look>;
+            let haunted: &[Look] = match den.kind {
+                DenKind::Nest if seed % 2 == 0 => &[Look::Spiderling, Look::Spiderling, Look::Spiderling],
+                DenKind::Nest | DenKind::Roost => &[Look::Gloomwing; 4],
+                DenKind::Camp => {
+                    let keepers = den.band.as_ref().map_or(vec![Look::Bandit, Look::Bandit, Look::Bandit, Look::BanditBrute], |b| b.keepers.clone());
+                    let mut k = seed;
+                    band = keepers
+                        .into_iter()
+                        .map(|look| {
+                            k = hash(k);
+                            match (look, k % 5) {
+                                (Look::Bandit, 0 | 1) => Look::Crossbowman,
+                                (Look::Bandit, 2) => Look::Shieldbearer,
+                                (look, _) => look,
+                            }
+                        })
+                        .collect();
+                    &band
                 }
+                DenKind::Burrows => &[Look::DuneBurrower; 3],
+                DenKind::Hall => match seed % 4 {
+                    0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
+                    1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],
+                    2 => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
+                    _ => &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Skeleton],
+                },
+            };
+            let spread = match &den.band {
+                Some(b) => b.within,
+                None if den.kind == DenKind::Camp => animals::PACK_SPREAD + 0.7,
+                None => animals::PACK_SPREAD + 0.4,
+            };
+            for mut monster in animals::spawn_pack(world, water, haunted, den.position, spread, hash(seed)) {
+                if let Some(state) = &mut monster.boss {
+                    state.key = den.key;
+                }
+                self.animals.push(monster);
             }
         }
         self.dens = dens.iter().map(|d| d.key).collect();
+    }
+
+    /// For trying them out: a pack of monsters, `looks`, turns up `distance` meters along `ahead`
+    /// from `near`, facing back that way turned `turn` radians further round. With `calm` they
+    /// leave the player be, and with `pose` they're held in that frame, see animals::POSE_WINDUP,
+    /// to look at.
+    #[allow(clippy::too_many_arguments)]
+    pub fn summon_pack(&mut self, world: &World, water: WaterLevel, looks: &[Look], near: Vector3<f64>, ahead: Vector3<f64>, distance: f64, turn: f64, calm: bool, pose: Option<usize>) {
+        let vpm = world.voxels_per_meter as f64;
+        let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let at = near + flat * distance * vpm;
+        let ground = (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.0;
+        let at = Vector3::new(at.x, at.y, ground);
+        for mut monster in animals::spawn_pack(world, water, looks, at, animals::PACK_SPREAD, self.rng) {
+            // Facing back the way they were summoned from, to be seen from the front
+            let back = (-flat.y).atan2(-flat.x);
+            monster.face(back + turn);
+            if let Some(state) = &mut monster.boss {
+                if calm {
+                    state.leave_be();
+                }
+                state.fixed_pose = pose;
+            }
+            self.animals.push(monster);
+        }
+        self.rng = hash(self.rng);
+    }
+
+    /// Where each pack is and what it's up to, for each of its members to keep with the rest, see
+    /// bosses::Flock
+    fn gather_packs(&mut self) {
+        // Few packs are about at once, so a list does: each pack's number, where its members are
+        // all told and how many, the same for those of them that close in to fight, and whether
+        // any of them sees the player
+        struct Gathered {
+            pack: u32,
+            sum: Vector3<f64>,
+            size: u8,
+            front: Vector3<f64>,
+            fighters: u8,
+            alarmed: bool,
+            slots: u8,
+        }
+        let mut packs: Vec<Gathered> = Vec::new();
+        // And where each member is, to keep out of each other's way
+        let mut members: Vec<(u32, u32, Vector3<f64>)> = Vec::new();
+        for a in self.animals.iter().filter(|a| a.health > 0.0) {
+            let Some(boss) = a.boss.as_ref().filter(|b| b.pack != 0) else {
+                continue;
+            };
+            members.push((boss.pack, a.id, a.position));
+            let fighter = !bosses::hangs_back(a.look);
+            let index = match packs.iter().position(|p| p.pack == boss.pack) {
+                Some(index) => index,
+                None => {
+                    packs.push(Gathered { pack: boss.pack, sum: Vector3::zeros(), size: 0, front: Vector3::zeros(), fighters: 0, alarmed: false, slots: 0 });
+                    packs.len() - 1
+                }
+            };
+            let p = &mut packs[index];
+            p.sum += a.position;
+            p.size = p.size.saturating_add(1);
+            if fighter {
+                p.front += a.position;
+                p.fighters = p.fighters.saturating_add(1);
+            }
+            p.alarmed |= boss.sighted();
+        }
+        let room = bosses::ELBOW_ROOM * self.combat.vpm();
+        for a in self.animals.iter_mut().filter(|a| a.health > 0.0) {
+            let Some(boss) = a.boss.as_mut().filter(|b| b.pack != 0) else {
+                continue;
+            };
+            let Some(p) = packs.iter_mut().find(|p| p.pack == boss.pack) else {
+                continue;
+            };
+            let middle = p.sum / p.size as f64;
+            let front = if p.fighters > 0 { p.front / p.fighters as f64 } else { middle };
+            // Crowded off by each of the rest too near it, the nearer the harder, those right on
+            // top of it to one side or the other by which is which
+            let mut crowd = Vector2::zeros();
+            for &(_, id, at) in members.iter().filter(|m| m.0 == boss.pack && m.1 != a.id) {
+                let off = (a.position - at).xy();
+                let d = off.norm();
+                if d < room {
+                    let away = if d > 1e-3 { off / d } else if a.id < id { Vector2::x() } else { -Vector2::x() };
+                    crowd += away * (1.0 - d / room);
+                }
+            }
+            boss.flock = Flock { middle, size: p.size, front, fighters: p.fighters, slot: p.slots, alarmed: p.alarmed, crowd };
+            // Places side by side are for those closing in
+            if !bosses::hangs_back(a.look) {
+                p.slots += 1;
+            }
+        }
     }
 
     /// For trying them out: boss `look` turns up `distance` meters along `ahead` from `near`
@@ -1051,15 +1215,18 @@ impl Game {
         // homes of their own.
         let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager() && !a.look.is_royal()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
-        let bandits = self.animals.iter().filter(|a| matches!(a.look, Look::Bandit | Look::BanditBrute)).count();
-        if missing > 0 || wolves < 3 || bandits < 3 {
+        let bandits = self.animals.iter().filter(|a| a.look.is_bandit()).count();
+        // The packs of the country the player's come into, as the old ones are left behind
+        let wilds = self.animals.iter().filter(|a| a.look.is_wild()).count();
+        if missing > 0 || wolves < 3 || bandits < 3 || wilds < 4 {
             let vpm = world.voxels_per_meter as f64;
             let fresh = animals::spawn(world, water, seed ^ hash(self.rng), near).into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm);
             let mut taken = 0;
             for animal in fresh {
                 let wanted = match animal.look {
                     Look::Wolf => wolves < 3,
-                    Look::Bandit | Look::BanditBrute => bandits < 3,
+                    look if look.is_bandit() => bandits < 3,
+                    look if look.is_wild() => wilds < 4,
                     _ if animal.look.build().is_none() => {
                         taken += 1;
                         taken <= missing
@@ -1148,6 +1315,7 @@ impl Game {
     /// `player` is where the player stands, None while flying. `view` is where the camera is and
     /// which way it looks, and `controls` what the mouse buttons do with a weapon in hand.
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View, controls: Controls, dt: f64) {
+        self.gather_packs();
         for animal in &mut self.animals {
             animal.update(world, water, player, dt);
         }
@@ -1255,21 +1423,60 @@ impl Game {
         let felt = |at: Vector3<f64>| (1.0 - (at - view.eye).norm() / vpm / 40.0).max(0.0);
         // Monsters snarl and rattle rather than roar, and don't shake the ground
         if look.is_monster() {
-            match deed {
-                Deed::WindUp(_, at) | Deed::Roar { at, .. } => {
-                    let cue = match look {
-                        Look::Wolf => Cue::at(Sound::Growl, at, 0.7),
-                        Look::Skeleton | Look::ArmoredSkeleton => Cue::at(Sound::Rattle, at, 0.7),
-                        Look::Zombie | Look::ArmoredZombie => Cue::at(Sound::Growl, at, 0.6).pitched(0.6),
-                        // A bandit's yell
-                        Look::Bandit | Look::BanditBrute => Cue::at(Sound::Roar, at, 0.45).pitched(if look == Look::Bandit { 1.9 } else { 1.5 }),
-                        _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
-                    };
-                    self.cues.push(cue);
-                    return;
-                }
+            let (at, m) = match deed {
+                Deed::WindUp(m, at) => (at, Some(m)),
+                Deed::Roar { at, .. } => (at, None),
                 Deed::Stomp(_) => return,
-                _ => {}
+                _ => (Vector3::zeros(), None),
+            };
+            if matches!(deed, Deed::WindUp(..) | Deed::Roar { .. }) {
+                self.rng = hash(self.rng);
+                let vary = 0.9 + 0.25 * random(&mut self.rng) as f32;
+                let cue = match (look, m) {
+                    (Look::Wolf, _) => Cue::at(Sound::Growl, at, 0.7),
+                    (Look::Skeleton | Look::ArmoredSkeleton, _) => Cue::at(Sound::Rattle, at, 0.7),
+                    (Look::Zombie | Look::ArmoredZombie, _) => Cue::at(Sound::Growl, at, 0.6).pitched(0.6),
+                    // A crossbow spanned and its bolt laid in, ready to loose
+                    (Look::Crossbowman, Some(Move::Shoot)) => {
+                        self.cues.push(Cue::at(Sound::Ratchet, at, 0.6));
+                        Cue::at(Sound::Latch, at, 0.7)
+                    }
+                    // A bandit's yell, and a shieldbearer beating its mace on its shield
+                    (Look::Shieldbearer, None) => {
+                        self.cues.push(Cue::at(Sound::Clang, at, 0.5).pitched(0.7));
+                        Cue::at(Sound::Roar, at, 0.45).pitched(1.35)
+                    }
+                    (Look::Bandit | Look::BanditBrute | Look::Crossbowman | Look::Shieldbearer, _) => {
+                        let pitch = match look {
+                            Look::Bandit => 1.9,
+                            Look::Crossbowman => 2.05,
+                            _ => 1.45,
+                        };
+                        Cue::at(Sound::Roar, at, 0.45).pitched(pitch)
+                    }
+                    // Sand hissing away as it digs in, and its mandibles clicking
+                    (Look::DuneBurrower, Some(Move::Burrow)) => Cue::at(Sound::Skitter, at, 0.7).pitched(0.55),
+                    (Look::DuneBurrower, _) => Cue::at(Sound::Chitter, at, 0.7).pitched(vary),
+                    // Frost gathering as it vanishes, and its wail
+                    (Look::RimeWraith, Some(Move::Blink)) => Cue::at(Sound::Cast(Element::look(Some(Element::Frost)) as u8), at, 0.7).pitched(1.5),
+                    (Look::RimeWraith, _) => Cue::at(Sound::Wail, at, 0.6).pitched(vary),
+                    (Look::MireLurker, Some(Move::Lash)) => Cue::at(Sound::Croak, at, 0.8).pitched(1.3),
+                    (Look::MireLurker, _) => Cue::at(Sound::Croak, at, 0.8).pitched(vary * 0.9),
+                    (Look::Gloomwing, _) => Cue::at(Sound::Screech, at, 0.5).pitched(vary * 1.1),
+                    // A tusker snorting and pawing the ground before it charges
+                    (Look::Tusker, Some(Move::Charge)) => {
+                        self.cues.push(Cue::at(Sound::Step(Ground::Grass), at, 0.8).pitched(0.6));
+                        Cue::at(Sound::Snort, at, 0.9).pitched(0.85)
+                    }
+                    (Look::Tusker, _) => Cue::at(Sound::Snort, at, 0.8).pitched(vary),
+                    _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
+                };
+                self.cues.push(cue);
+                // A lurker bursting up out of the water it lay in
+                if look == Look::MireLurker && m.is_none() && water(at.x, at.y) > at.z {
+                    self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 0.9);
+                }
+                return;
             }
         }
         let voice = match look.build() {
@@ -1330,7 +1537,16 @@ impl Game {
                 // A monster's bite or blade, or a boss's blow shaking the ground
                 let cue = match look {
                     Look::Wolf | Look::Spiderling => Cue::at(Sound::Bite, at, 0.8),
-                    Look::ArmoredSkeleton | Look::ArmoredZombie | Look::BanditBrute => Cue::at(Sound::Clang, at, 0.5).pitched(0.8),
+                    Look::ArmoredSkeleton | Look::ArmoredZombie | Look::BanditBrute | Look::Shieldbearer => Cue::at(Sound::Clang, at, 0.5).pitched(0.8),
+                    Look::Gloomwing => Cue::at(Sound::Bite, at, 0.6).pitched(1.7),
+                    Look::MireLurker => Cue::at(Sound::Bite, at, 0.9).pitched(0.55),
+                    Look::DuneBurrower => {
+                        self.cues.push(Cue::at(Sound::Bite, at, 0.6).pitched(1.3));
+                        Cue::at(Sound::Claw, at, 0.7).pitched(1.5)
+                    }
+                    Look::RimeWraith => Cue::at(Sound::Crack, at, 0.7).pitched(1.6),
+                    Look::Tusker => Cue::at(Sound::Hit, at, 0.9).pitched(0.6),
+                    Look::Crossbowman => Cue::at(Sound::Hit, at, 0.6).pitched(1.1),
                     _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
                     _ => {
                         self.shake = self.shake.max(0.6 * felt(at));
@@ -1344,6 +1560,14 @@ impl Game {
                     if d < radius && off.z.abs() < 2.5 * vpm {
                         self.hurt(damage * (1.0 - 0.5 * d / radius), at, feet, world, look.name());
                         self.afflict(element);
+                        // A tusker tosses what it gores, and a shieldbearer shoves them back with
+                        // its shield
+                        let away = Vector3::new(off.x, off.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros);
+                        match look {
+                            Look::Tusker => self.thrown += (away * 1.5 + Vector3::new(0.0, 0.0, 4.0)) * vpm,
+                            Look::Shieldbearer => self.thrown += (away * 3.5 + Vector3::new(0.0, 0.0, 0.8)) * vpm,
+                            _ => {}
+                        }
                     } else if damage > 0.0 && d < radius + 1.0 && off.z.abs() < 2.5 * vpm {
                         self.near_miss(at);
                     }
@@ -1359,7 +1583,12 @@ impl Game {
                 // Venom's lobbed, slower, falling onto where the player was
                 let pace = if element == Element::Poison { 15.0 } else { 22.0 };
                 let time = ((to - from).norm() / vpm / pace).max(0.2);
-                let (damage, radius) = if element == Element::Poison { (16.0, 2.4) } else { (24.0, 2.6) };
+                // A monster's is smaller, like a wraith's ball of frost
+                let (damage, radius) = match element {
+                    _ if look.is_monster() => (11.0, 1.6),
+                    Element::Poison => (16.0, 2.4),
+                    _ => (24.0, 2.6),
+                };
                 self.combat.hurl(HostileKind::Spell(element), from, to, time, damage, radius);
                 self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element)) as u8), from, 1.0).pitched(0.6));
             }
@@ -1491,7 +1720,7 @@ impl Game {
             Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
             // A pack answering a howl, the dead clawing up out of the ground, spiderlings swarming
             // out: never more than a few of them about at once
-            Deed::Summon { at, look: brood, count } => {
+            Deed::Summon { at, look: brood, count, pack } => {
                 let most = match brood {
                     Look::Spiderling | Look::Bandit => 4,
                     Look::Skeleton => 3,
@@ -1502,9 +1731,11 @@ impl Game {
                 let count = count.min(most - near.min(most));
                 for _ in 0..count {
                     self.rng = hash(self.rng);
-                    if let Some(mut monster) = animals::spawn_monster(world, water, brood, at, 7.0, self.rng) {
+                    // Close round it, to fight alongside it
+                    if let Some(mut monster) = animals::spawn_monster(world, water, brood, at, 3.5, self.rng) {
                         if let Some(state) = &mut monster.boss {
                             state.provoke();
+                            state.pack = pack;
                         }
                         self.combat.stir(monster.position, 0.8, 0.4, DROP_MUD);
                         self.animals.push(monster);
@@ -1551,6 +1782,60 @@ impl Game {
                 }
                 self.cues.push(Cue::here(Sound::Hit, 1.0).pitched(0.5));
             }
+            // A bolt from a crossbow, flying almost flat and hurting only what it hits
+            Deed::Bolt { from, to } => {
+                let time = ((to - from).norm() / vpm / BOLT_PACE).max(0.12);
+                self.combat.hurl(HostileKind::Bolt, from, to, time, 11.0, 0.5);
+                self.cues.push(Cue::at(Sound::Release, from, 0.8).pitched(1.1));
+            }
+            // Sand churned up over a burrower tunnelling along, hissing
+            Deed::Burrow { at } => {
+                self.combat.stir(at, 0.45, 0.14, DROP_MUD);
+                self.rng = hash(self.rng);
+                if random(&mut self.rng) < 0.2 {
+                    self.cues.push(Cue::at(Sound::Skitter, at, 0.35).pitched(0.5));
+                }
+            }
+            // Bursting up out of the sand, throwing whoever's on top of it into the air
+            Deed::Erupt { at } => {
+                self.combat.burst_up(at, DROP_MUD);
+                self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(1.4));
+                self.cues.push(Cue::at(Sound::Chitter, at, 0.8).pitched(0.8));
+                self.shake = self.shake.max(0.3 * felt(at));
+                if let Some(feet) = player {
+                    let off = feet - at;
+                    if off.xy().norm() < 1.5 * vpm && off.z.abs() < 2.0 * vpm {
+                        self.thrown += Vector3::new(0.0, 0.0, 4.5) * vpm;
+                    }
+                }
+            }
+            // A wraith gone in a swirl of frost, and back
+            Deed::Blink { from, to } => {
+                self.combat.blink(from, to);
+                self.cues.push(Cue::at(Sound::Crack, from, 0.6).pitched(1.8));
+                self.cues.push(Cue::at(Sound::Wail, to, 0.4).pitched(1.6));
+            }
+            // A lurker's tongue lashing out: caught, the player's dragged back in to its jaws
+            Deed::Lash { from, to } => {
+                let reach = match player {
+                    Some(feet) => {
+                        let body = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
+                        let caught = (body - to).norm() < 1.4 * vpm;
+                        (if caught { body } else { to }, caught.then_some(feet))
+                    }
+                    None => (to, None),
+                };
+                self.combat.tongue(from, reach.0);
+                self.cues.push(Cue::at(Sound::Squelch, from, 0.8).pitched(1.5));
+                if let Some(feet) = reach.1 {
+                    self.hurt(9.0, from, feet, world, look.name());
+                    let back = Vector3::new(from.x - feet.x, from.y - feet.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros);
+                    self.thrown += (back * 7.0 + Vector3::new(0.0, 0.0, 1.5)) * vpm;
+                    self.cues.push(Cue::at(Sound::Bite, feet, 0.6).pitched(0.7));
+                } else if let Some(feet) = player {
+                    self.near_miss(feet);
+                }
+            }
             Deed::Stomp(at) => {
                 let near = felt(at);
                 if near > 0.0 {
@@ -1587,6 +1872,8 @@ impl Game {
     /// How fast the player can move next to usual, slowed while chilled or stuck in web
     pub fn pace(&self) -> f64 {
         let chilled = if self.chilled > 0.0 { CHILLED_PACE } else { 1.0 };
+        // Braced on a siege crossbow's leg, all but still
+        let chilled = chilled * self.combat.pace();
         if self.snared > 0.0 { chilled.min(SNARED_PACE) } else { chilled }
     }
 
@@ -1923,6 +2210,7 @@ impl Game {
     /// Animals that were killed fall, and leave their meat. Bosses and monsters leave loot.
     fn reap(&mut self, world: &World) {
         let vpm = world.voxels_per_meter as f64;
+        let mut cleared = Vec::new();
         let mut k = 0;
         while k < self.animals.len() {
             if self.animals[k].health > 0.0 {
@@ -1932,27 +2220,30 @@ impl Game {
             let animal = self.animals.remove(k);
             let look = animal.look;
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
-            // A monster bursts apart its own way, and the last of a dungeon hall's leaves it clear.
-            // The dead and spiders' victims had a little gold on them, now and then a weapon.
+            // A monster bursts apart its own way. The dead and spiders' victims had a little gold on
+            // them, now and then a weapon.
             if look.is_monster() {
                 self.combat.perish(&animal);
-                if let Some(key) = animal.boss.as_ref().map(|b| b.key).filter(|key| self.dens.contains(key)) {
-                    if !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key)) {
-                        self.cleared.insert(key);
-                    }
-                }
                 let mut loot = Vec::new();
-                let undead = !matches!(look, Look::Wolf | Look::Spiderling);
-                if look != Look::Wolf && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
+                // People and the dead had a little gold on them; what spiders and burrowers caught
+                // now and then did; wolves, gloomwings, lurkers and tuskers have nothing
+                let undead = !look.is_beast();
+                let nothing = matches!(look, Look::Wolf | Look::Gloomwing | Look::MireLurker | Look::Tusker);
+                if !nothing && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
                     loot.push(Item::Gold(if undead { 3 } else { 2 } + (random(&mut self.rng) * if undead { 10.0 } else { 5.0 }) as u32));
                 }
                 if undead && random(&mut self.rng) < 0.06 {
                     loot.push(self.roll_weapon(1.5));
-                } else if look != Look::Wolf && random(&mut self.rng) < 0.1 {
+                } else if !nothing && random(&mut self.rng) < 0.1 {
                     loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
                 }
-                // Bandits carry ammo for their bows and guns
-                if matches!(look, Look::Bandit | Look::BanditBrute) && random(&mut self.rng) < 0.5 {
+                // Bandits carry ammo for their bows and guns, a crossbowman most of all
+                let ammo = match look {
+                    Look::Crossbowman => 0.8,
+                    _ if look.is_bandit() => 0.5,
+                    _ => 0.0,
+                };
+                if random(&mut self.rng) < ammo {
                     loot.extend(self.roll_ammo());
                 }
                 self.scatter(world, middle, animal.position, loot, 0.9);
@@ -1995,8 +2286,59 @@ impl Game {
             } else if !look.is_boss() {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
             }
+            // The last of a den's keepers dead leaves it clear for good: a dungeon hall, a nest, or a
+            // bandits' camp, its warlord as well
+            if let Some(key) = animal.boss.as_ref().map(|b| b.key).filter(|key| self.dens.contains(key) && !self.cleared.contains(key))
+                && !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key))
+            {
+                self.cleared.insert(key);
+                cleared.push(key);
+            }
             self.target = None;
         }
+        // Where a camp was cleared, the chest of the bandits' hoard turns up, said after the rest of
+        // what fell
+        for key in cleared {
+            self.reveal_hoard(key);
+        }
+    }
+
+    /// The camp whose den is at `key` was just cleared: the chest of its bandits' hoard turns up,
+    /// in a burst of light with a fanfare, and the player's told where it is
+    fn reveal_hoard(&mut self, key: [i64; 3]) {
+        let Some((chest, hint)) = self.hoards.get(&key).cloned() else {
+            return;
+        };
+        // The burst of light a boss falls in, without the ground shaking
+        let (vpm, shake) = (self.combat.vpm(), self.combat.shake);
+        self.combat.fell(chest.position + Vector3::new(0.0, 0.0, 0.3 * vpm), 0.5);
+        self.combat.shake = shake;
+        self.cues.push(Cue::here(Sound::Fanfare, 0.7));
+        self.cues.push(Cue::at(Sound::Chest, chest.position, 0.9).pitched(0.8));
+        if !self.chests.iter().any(|c| c.key == chest.key) {
+            self.chests.push(chest);
+        }
+        self.say(format!("The camp is clear! The bandits' hoard lies {hint}."));
+    }
+
+    /// For trying it out: every bandit keeping the camp nearest `near`, in voxels, falls dead, its
+    /// warlord too, so its hoard turns up. Returns how many fell.
+    pub fn clear_nearest_camp(&mut self, world: &World, near: Vector3<f64>) -> usize {
+        let camp = self.hoards.keys().filter(|key| !self.cleared.contains(*key)).min_by_key(|key| {
+            let keepers = self.animals.iter().filter(|a| a.boss.as_ref().is_some_and(|b| b.key == **key));
+            keepers.map(|a| (a.position - near).norm() as i64).min().unwrap_or(i64::MAX)
+        });
+        let Some(&key) = camp else {
+            return 0;
+        };
+        let mut fell = 0;
+        for animal in self.animals.iter_mut().filter(|a| a.boss.as_ref().is_some_and(|b| b.key == key)) {
+            animal.health = 0.0;
+            fell += 1;
+        }
+        // Straight away, before they heal back up
+        self.reap(world);
+        fell
     }
 
     /// What was dropped landing, which weapons lying about the camera can see, for their beams of
@@ -2026,6 +2368,21 @@ impl Game {
                         let p = view.eye + to * (s as f64 / steps as f64);
                         is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
                     });
+            }
+        }
+        // So do the hoards of the camps cleared, until they're opened
+        self.beams.clear();
+        for chest in self.chests.iter().filter(|c| c.hoard && !self.opened.contains(&c.key)) {
+            let to = chest.position + Vector3::new(0.0, 0.0, 0.5 * vpm) - view.eye;
+            let d = to.norm();
+            let steps = (d / (0.25 * vpm)) as usize;
+            let seen = d < BEAM_RANGE * vpm
+                && (1..steps).all(|s| {
+                    let p = view.eye + to * (s as f64 / steps as f64);
+                    is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+                });
+            if seen {
+                self.beams.push(chest.position);
             }
         }
         if let Some(key) = self.shop {
@@ -2286,6 +2643,9 @@ impl Game {
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
         let weapon = self.library.generate(seed, None, chest.luck);
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
+        // A bandits' hoard has what they've taken in it too
+        let hoard = chest.hoard;
+        let gold = if hoard { gold + 60 + (hash(seed ^ 0x40a2) % 60) as u32 } else { gold };
         self.opened.insert(key);
         self.target = None;
         let rarity = &self.library.rarities[weapon.grade];
@@ -2296,7 +2656,10 @@ impl Game {
             (k, self.library.ammo[k].bundle)
         });
         let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
-        let message = format!("You found {}, a {} {}{extra}, and {gold} gold!", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase());
+        let found = if hoard { "In the bandits' hoard you find" } else { "You found" };
+        let grade = rarity.display_name.to_lowercase();
+        let a = if grade.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+        let message = format!("{found} {}, {a} {grade} {}{extra}, and {gold} gold!", weapon.name, family.display_name.to_lowercase());
         self.weapons.push(weapon);
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
         if let Some((k, n)) = ammo {
@@ -2791,7 +3154,7 @@ impl Game {
     fn target_hint(&self) -> Option<String> {
         match self.target? {
             Target::Pickup(_) => None,
-            Target::Chest(_) => Some("E  open the chest".into()),
+            Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
                 Some(if look == Look::Merchant {
@@ -2876,13 +3239,16 @@ impl Game {
 
         // A beam of light up from each weapon lying about in sight, in the color of its rarity,
         // taller and brighter the rarer it is, fading up and further off
-        for pickup in self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()) {
-            // The gold the player lost when they died shines as bright as an epic weapon
-            let (grade, [r, g, b], w) = match pickup.item {
-                Item::Weapon(w) => (self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
-                _ => (3, [GOLD.r(), GOLD.g(), GOLD.b()], 0),
-            };
-            let base = pickup.position + Vector3::new(0.0, 0.0, 0.2 * vpm);
+        // The gold the player lost when they died shines as bright as an epic weapon, and the hoard
+        // of a camp cleared, up from its lid, as a legendary one
+        let gold = [GOLD.r(), GOLD.g(), GOLD.b()];
+        let lying = self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()).map(|pickup| match pickup.item {
+            Item::Weapon(w) => (pickup.position, self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
+            _ => (pickup.position, 3, gold, 0),
+        });
+        let hoards = self.beams.iter().enumerate().map(|(k, &at)| (at + Vector3::new(0.0, 0.0, 0.25 * vpm), 4, gold, 7 + k));
+        for (position, grade, [r, g, b], w) in lying.chain(hoards) {
+            let base = position + Vector3::new(0.0, 0.0, 0.2 * vpm);
             let distance = ((base - view.eye).norm() / vpm).max(1.0);
             let top = base + Vector3::new(0.0, 0.0, (2.2 + 0.9 * grade as f64) * vpm);
             let (Some(foot), Some(top)) = (on_screen(base), on_screen(top)) else {
@@ -3633,6 +3999,11 @@ impl Game {
             let how = match profile.build {
                 WeaponBuild::None => "Hold right click to draw, click to shoot.",
                 WeaponBuild::Repeater => "Click or hold to shoot, its lever working between shots. Empty, it's reloaded by itself; right click reloads early.",
+                WeaponBuild::Hand => "Held in the off hand. Click to shoot; its lever spans it again quickly.",
+                WeaponBuild::Twin => "Click to loose both prods at once, two bolts meeting at the crosshair.",
+                WeaponBuild::Siege => "Click or hold right click to brace it on its leg first, which all but stops you; braced, it looses a great bolt that pins.",
+                WeaponBuild::Harpoon => "Click to loose a harpoon on a line: it reels in what it catches, or hauls you to what's too big, or to where it bites. Right click lets go of the line.",
+                WeaponBuild::Fan => "Click to loose five bolts at once in a fan, wider the more its spread.",
                 _ => "Click to shoot. Empty, it's reloaded by itself, which takes a while; right click reloads early.",
             };
             ui.label(RichText::new(format!("{how} Plain {} never run out; T loads special ones you carry.", shot.plural())).weak().small());
@@ -3890,8 +4261,35 @@ impl Game {
                         painter.line_segment([hilt, guard], Stroke::new(r * 0.16, Color32::from_rgb(110, 70, 45)));
                     }
                     // A crossbow seen from above, its prod across the front, a bolt in its groove
-                    Kind::Ranged if matches!(weapon.profile.build, WeaponBuild::Lever | WeaponBuild::Crank | WeaponBuild::Repeater) => {
-                        let (butt, front) = (center + vec2(-r * 0.75, r * 0.75), center + vec2(r * 0.45, -r * 0.45));
+                    Kind::Ranged if weapon.profile.build.crossbow() => {
+                        let build = weapon.profile.build;
+                        // A hand crossbow shorter, on a grip; a twin-prod's second prod over the
+                        // first; a bolt-thrower's fan of bolts; a harpoon's coil of line
+                        let short = if build == WeaponBuild::Hand { 0.45 } else { 0.75 };
+                        let (butt, front) = (center + vec2(-r * short, r * short), center + vec2(r * 0.45, -r * 0.45));
+                        match build {
+                            WeaponBuild::Hand => {
+                                painter.line_segment([center + vec2(-r * 0.25, r * 0.25), center + vec2(-r * 0.55, r * 0.05)], Stroke::new(r * 0.16, wood));
+                            }
+                            WeaponBuild::Twin => {
+                                let lift = vec2(-r * 0.12, -r * 0.12);
+                                let prod: Vec<Pos2> = (0..=12).map(|k| front + lift + vec2(r * 0.62 * (k as f32 / 6.0 - 1.0), -r * 0.62 * (k as f32 / 6.0 - 1.0)) + vec2(-r * 0.22, r * 0.22) * (k as f32 / 6.0 - 1.0).powi(2)).collect();
+                                painter.add(egui::Shape::line(prod, Stroke::new(r * 0.1, haft)));
+                            }
+                            WeaponBuild::Fan => {
+                                for k in -2..=2 {
+                                    let a = k as f32 * 0.2;
+                                    painter.line_segment([center, center + vec2((0.7 + a).cos(), -(0.7 + a).sin()) * r * 0.85], Stroke::new(r * 0.05, glow));
+                                }
+                            }
+                            WeaponBuild::Harpoon => {
+                                painter.circle_stroke(center + vec2(r * 0.05, r * 0.25), r * 0.17, Stroke::new(r * 0.07, Color32::from_rgb(215, 200, 160)));
+                            }
+                            WeaponBuild::Siege => {
+                                painter.line_segment([front + vec2(-r * 0.1, r * 0.1), front + vec2(-r * 0.25, r * 0.6)], Stroke::new(r * 0.08, metal));
+                            }
+                            _ => {}
+                        }
                         let across = vec2(r * 0.62, r * 0.62);
                         let bend = vec2(-r * 0.22, r * 0.22);
                         let prod: Vec<Pos2> = (0..=12).map(|k| {
@@ -3902,7 +4300,7 @@ impl Game {
                         painter.line_segment([a, front + bend * 0.15 - vec2(r * 0.25, -r * 0.25)], Stroke::new(r * 0.04, Color32::from_rgb(235, 230, 210)));
                         painter.line_segment([b, front + bend * 0.15 - vec2(r * 0.25, -r * 0.25)], Stroke::new(r * 0.04, Color32::from_rgb(235, 230, 210)));
                         painter.line_segment([butt, front + vec2(r * 0.1, -r * 0.1)], Stroke::new(r * 0.2, wood));
-                        painter.add(egui::Shape::line(prod, Stroke::new(r * 0.13, if weapon.profile.build == WeaponBuild::Crank { metal } else { haft })));
+                        painter.add(egui::Shape::line(prod, Stroke::new(r * if build == WeaponBuild::Siege { 0.2 } else { 0.13 }, if matches!(build, WeaponBuild::Crank | WeaponBuild::Siege) { metal } else { haft })));
                         painter.line_segment([center + vec2(-r * 0.1, r * 0.1), front + vec2(r * 0.2, -r * 0.2)], Stroke::new(r * 0.06, glow));
                         if weapon.profile.build == WeaponBuild::Repeater {
                             painter.rect_filled(Rect::from_center_size(center + vec2(-r * 0.05, r * 0.05), vec2(r * 0.4, r * 0.4)), r * 0.05, haft);

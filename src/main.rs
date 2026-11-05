@@ -1366,9 +1366,24 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.widest_river_near([112.0, 112.0], &rivers))
         });
+        // `--set camp=fort` starts outside the nearest bandits' camp of that kind, or `cabins`,
+        // `ruin`, `hideout`, `raiders`, `awnings` or `yurts`, on the land `biome` says if it does.
+        // Where they're planned is looked over in rough pieces of the landscape, built quickly, for
+        // the first that really is there with nothing in the way.
+        let camp_kind = setting("camp").and_then(worldgen::CampKind::named).filter(|_| dungeon.is_none() && cavern.is_none());
+        let camp_at = camp_kind.and_then(|kind| {
+            let near = setting("biome").and_then(|b| worldgen::find_climate(&terrain, b, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
+            let rough = TerrainSettings { voxels_per_meter: 4, grass_tufts: false, ..terrain };
+            worldgen::camp_spots(&terrain, kind, near, setting("biome")).into_iter().take(6).find_map(|spot| {
+                let origin = [0, 1].map(|i| ((spot[i] * 4.0) as i64 - rough.size()[i] as i64 / 2).div_euclid(64) * 64);
+                let (landscape, _) = worldgen::generate_terrain(&rough, origin, &rivers);
+                let off = |c: &&worldgen::Camp| (c.fire[0] - spot[0]).hypot(c.fire[1] - spot[1]);
+                landscape.bandit_camps().iter().filter(|c| c.kind == kind).min_by(|a, b| off(a).total_cmp(&off(b))).map(|c| [c.fire[0], c.fire[1]])
+            })
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
-        let start_in = dungeon
-            .map(|d| [d[0], d[1]])
+        let start_in = camp_at
+            .or(dungeon.map(|d| [d[0], d[1]]))
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
             .or(town.map(|(square, _)| [square[0], square[1]]))
             .or(royal.as_ref().map(|r| {
@@ -1403,11 +1418,25 @@ impl App {
         });
         // Over that river, looking down it
         let river = river_at.and_then(|_| landscape.as_ref()?.widest_river());
-        // `--set camp=1` starts outside the bandits' camp nearest the middle of the world
+        // `--set camp=1` starts outside the bandits' camp nearest the middle of the world, and
+        // `camp=fort` and so on outside the one of that kind
         let camp = setting("camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|_| {
             let middle = [0, 1].map(|i| (origin[i] as f32 + world.size[i] as f32 * 0.5) / world.voxels_per_meter as f32);
-            let off = |s: &&worldgen::Site| (s.position[0] - middle[0]).hypot(s.position[1] - middle[1]);
-            landscape.as_ref()?.sites().iter().filter(|s| s.kind == "bandit camp").min_by(|a, b| off(a).total_cmp(&off(b))).map(|s| (s.position, s.facing))
+            let off = |c: &&worldgen::Camp| (c.fire[0] - middle[0]).hypot(c.fire[1] - middle[1]);
+            let camps = landscape.as_ref()?.bandit_camps().iter().filter(|c| camp_kind.is_none_or(|k| c.kind == k));
+            let c = camps.min_by(|a, b| off(a).total_cmp(&off(b)))?;
+            println!(
+                "Camp: {} at {:.0}, {:.0}, {} bandits and {} brutes{}, its hoard {} with luck {:.1}",
+                c.kind.name(),
+                c.fire[0],
+                c.fire[1],
+                c.bandits,
+                c.brutes,
+                if c.warlord { " led by a warlord" } else { "" },
+                c.hint,
+                c.luck
+            );
+            Some(*c)
         });
         let voxel_set = get_voxel_set(
             memory_allocator.clone(),
@@ -1481,13 +1510,29 @@ impl App {
             eye.z = eye.z.min(world.size[2] as f64 - 2.0 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(middle + flow * 16.0 * vpm, world.size));
-        } else if let Some((fire, gate)) = camp {
-            // Out past a way in, looking in at the fire
+        } else if let Some(c) = &camp {
+            // Out past the way in, `--set camp_distance=16` meters, looking in at the fire, a little
+            // over the ground there. `--set camp_view=chest` is in front of where the hoard turns
+            // up, looking at it, and `camp_view=air` high over the way in, looking down on it all.
             let vpm = world.voxels_per_meter as f64;
-            let middle = Vector3::new(fire[0] as f64 * vpm - origin[0] as f64, fire[1] as f64 * vpm - origin[1] as f64, fire[2] as f64 * vpm);
-            let out = Vector3::new(gate[0] as f64, gate[1] as f64, 0.0) * 16.0 * vpm;
-            camera.position = voxels_to_camera(middle + out + Vector3::new(0.0, 0.0, 2.5 * vpm), world.size);
-            camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let out = Vector3::new(c.way[0] as f64, c.way[1] as f64, 0.0);
+            let distance = setting("camp_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or(16.0);
+            let (eye, target) = match setting("camp_view") {
+                Some("chest") => {
+                    let facing = Vector3::new(c.heading.cos() as f64, c.heading.sin() as f64, 0.0);
+                    (at(c.chest) + facing * 2.4 * vpm + up(1.3), at(c.chest) + up(0.3))
+                }
+                Some("air") => (at(c.fire) + out * (distance + 4.0) * vpm + up(distance), at(c.fire)),
+                _ => {
+                    let eye = at(c.fire) + out * distance * vpm;
+                    let ground = (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(eye.x as i64, eye.y as i64, z))).unwrap_or(0) as f64;
+                    (Vector3::new(eye.x, eye.y, (eye.z + 2.5 * vpm).max(ground + 1.8 * vpm)), at(c.fire) + up(1.0))
+                }
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
         } else if let Some(r) = &royal {
             let vpm = world.voxels_per_meter as f64;
             let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
@@ -1621,6 +1666,40 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+        }
+        // `--set enemy=crossbowman`, `shieldbearer`, `burrower`, `wraith`, `lurker`, `gloomwing`,
+        // `tusker` or any other monster puts a pack of them a little way ahead, or `gang` a gang of
+        // bandits, to try fighting them. `enemy_count=1` makes it that many, `enemy_distance=8`
+        // that many meters off, `enemy_turn=90` turns them that many degrees from facing the
+        // player, `enemy_calm=1` leaves them standing there not noticing the player, and
+        // `enemy_pose=windup`, `strike` or `special` holds them in that pose, to look at them with
+        // `--script enemy`.
+        if let Some(name) = setting("enemy") {
+            // Its name in full or the end of it, so `burrower` finds the dune burrower
+            let wanted = name.to_lowercase();
+            let named = |l: &animals::Look| [format!("{l:?}").to_lowercase(), l.name().replace(' ', "").to_lowercase()].iter().any(|n| n.ends_with(&wanted));
+            let looks: Vec<animals::Look> = if name == "gang" {
+                animals::gang(0.4).to_vec()
+            } else {
+                match animals::Look::ALL.into_iter().find(|l| l.is_monster() && named(l)) {
+                    Some(look) => vec![look; setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(look.pack_size())],
+                    None => {
+                        println!("No monster called {name}");
+                        Vec::new()
+                    }
+                }
+            };
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let distance = setting("enemy_distance").and_then(|v| v.parse().ok()).unwrap_or(12.0);
+            let pose = match setting("enemy_pose") {
+                Some("windup") => Some(animals::POSE_WINDUP),
+                Some("strike") => Some(animals::POSE_STRIKE),
+                Some("special") => Some(animals::POSE_SPECIAL),
+                _ => None,
+            };
+            let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
+            game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
+            println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
         }
         // `--set health=10` starts the player that hurt, to see them die
         if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
@@ -1792,6 +1871,12 @@ impl App {
             rcx: None,
         };
         app.adopt_features();
+        // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
+        // so its hoard turns up
+        if flag("camp_clear", false) {
+            let fell = app.game.clear_nearest_camp(&app.world, start);
+            println!("Cleared the camp: {fell} of its band fell. {}", app.game.last_message().unwrap_or(""));
+        }
         // The merchants on stalls and the princess in her throne room are about by now, and may be
         // nearer than the one wandering about
         if setting("shop").is_some_and(|v| v == "true" || v == "1") {
@@ -1901,6 +1986,8 @@ impl App {
         // Bosses guard some of the ruins: golems the castles and watchtowers, drakes the desert
         // ruins and pyramids, Ironhide the shrines, colonnades and ravines. Each waits a little way
         // out in front, where there's room to fight.
+        let camps = landscape.bandit_camps();
+        let camp_at = |site: &worldgen::Site| camps.iter().find(|c| c.fire == site.position);
         let lairs: Vec<game::Lair> = landscape
             .sites()
             .iter()
@@ -1908,7 +1995,8 @@ impl App {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
                 // Every dungeon's deepest hall has its Grave Knight, and every great cavern of a
-                // cave its boss; only some ruins have one, and a third of bandits' camps a warlord
+                // cave its boss; only some ruins have one, and some bandits' camps a warlord, more
+                // of the forts than the others, see worldgen\camps.rs
                 if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp") {
                     return None;
                 }
@@ -1934,7 +2022,7 @@ impl App {
                     "cavern" if pick % 3 == 1 => animals::Look::Ironhide,
                     "cavern" => animals::Look::Spider,
                     "shrine" => animals::Look::Treant,
-                    "bandit camp" if pick % 3 == 0 => animals::Look::Warlord,
+                    "bandit camp" if camp_at(site).is_some_and(|c| c.warlord) => animals::Look::Warlord,
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
@@ -1944,20 +2032,35 @@ impl App {
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
             .collect();
-        // Monsters haunt the other halls of dungeons, cave spiders nest in caverns, and bandits
-        // keep camps
+        // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
+        // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
+        // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
+        // front of desert ruins and pyramids
         let dens: Vec<game::Den> = landscape
             .sites()
             .iter()
             .filter_map(|site| {
-                let kind = match site.kind {
-                    "dungeon hall" => game::DenKind::Hall,
-                    "cave nest" => game::DenKind::Nest,
-                    "bandit camp" => game::DenKind::Camp,
+                let (kind, out, band) = match site.kind {
+                    "dungeon hall" => (game::DenKind::Hall, 0.0, None),
+                    "cave nest" => (game::DenKind::Nest, 0.0, None),
+                    "bandit camp" => (
+                        game::DenKind::Camp,
+                        0.0,
+                        camp_at(site).map(|c| game::Band {
+                            keepers: std::iter::repeat_n(animals::Look::Bandit, c.bandits as usize).chain(std::iter::repeat_n(animals::Look::BanditBrute, c.brutes as usize)).collect(),
+                            within: c.spread as f64,
+                            hoard: game::Chest { position: to_voxels(c.chest), heading: c.heading as f64, key: c.chest.map(|v| (v * 10.0).round() as i64), luck: c.luck as f64, hoard: true },
+                            hint: c.hint,
+                        }),
+                    ),
+                    "ravine" => (game::DenKind::Roost, 0.0, None),
+                    "desert ruins" | "pyramid" => (game::DenKind::Burrows, 12.0, None),
                     _ => return None,
                 };
-                Some(game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), kind })
-            })
+                let [fx, fy] = site.facing;
+                let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+                let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
+                Some(game::Den { position: to_voxels(at), key: site.position.map(|v| (v * 10.0).round() as i64), kind, band })            })
             .collect();
         // Merchants keep stalls out in front of some of the ruins no boss guards, and behind the
         // counters of the stalls on the towns' squares
@@ -2024,6 +2127,7 @@ impl App {
                     // Where it is in the whole landscape, to the decimeter
                     key: p.position.map(|v| (v * 10.0).round() as i64),
                     luck: p.luck as f64,
+                    hoard: false,
                 })
                 .collect(),
         );
@@ -2935,14 +3039,16 @@ impl App {
             }
             // Unleashes the special attack of what's in hand, facing the nearest boss if there is one
             ("special", f) => {
-                if f == 1 {
-                    match self.game.nearest_boss(eye) {
-                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
-                        None => self.camera.rotation.x = -0.35,
-                    }
-                }
                 // `--set special_frame=150` lets it go later, as when a boss is about to strike
                 let when = settings_from_args().into_iter().find(|(k, _)| k == "special_frame").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(30);
+                // Kept facing the boss as it comes on, till it's let go
+                if f == 1 || f <= when {
+                    match self.game.nearest_boss(eye) {
+                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                        None if f == 1 => self.camera.rotation.x = -0.35,
+                        None => {}
+                    }
+                }
                 self.script_controls = combat::Controls { special: f == when, ..Default::default() };
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
@@ -3101,6 +3207,16 @@ impl App {
                     println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
                 }
             }
+            // Looks at the nearest monster from where the camera is, to see what it looks like and
+            // does, without fighting it: see `--set enemy`
+            ("enemy", f) => {
+                if let Some(target) = self.game.nearest_boss(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
             // Turns steadily while swinging, to see how things look on the move
             ("pan", _) => {
                 self.camera.rotation.z += 0.004;
@@ -3145,7 +3261,7 @@ impl App {
                 self.script_controls = combat::Controls { aiming: phase > 5 && phase <= 60, attack: phase == 60, ..Default::default() };
             }
             ("loot", 20) => {
-                println!("frame {frame}: aiming at something: {}", self.game.has_target());
+                println!("frame {frame}: last said \"{}\", aiming at something: {}, {}", self.game.last_message().unwrap_or(""), self.game.has_target(), self.game.report(eye));
                 self.game.interact(eye);
                 println!("frame {frame}: carrying {}\n{}", self.game.carried(), self.game.describe_weapons());
             }
