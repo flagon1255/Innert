@@ -6,6 +6,7 @@ use std::thread;
 mod camps;
 mod castles;
 mod towns;
+mod trees;
 
 pub use camps::{Camp, CampKind, camp_spots};
 
@@ -2934,20 +2935,34 @@ impl Terrain {
         let settings = self.settings;
         let climate = |x: f32, y: f32| climate(&settings, x, y);
 
+        // Whether a river runs within a few meters of a spot in this piece
+        let by_river = |x: f32, y: f32| {
+            [[3.5, 0.0], [-3.5, 0.0], [0.0, 3.5], [0.0, -3.5]].iter().any(|d| {
+                let (gx, gy) = (((x + d[0]) * vpm).floor() as i64 - heights.origin[0], ((y + d[1]) * vpm).floor() as i64 - heights.origin[1]);
+                gx >= 0 && gy >= 0 && gx < heights.size[0] as i64 && gy < heights.size[1] as i64 && heights.river[gx as usize + gy as usize * heights.size[0]].is_finite()
+            })
+        };
+
         // At most one tree per cell, denser where the forest noise is high. The jungle is thick
         // with them, the snow has pine forests, and in the desert only palms grow, by the water.
-        scatter(7.5, 0x7a3e, &mut |x, y, ground, column, r| {
+        // Willows lean out over the rivers in the milder lands.
+        scatter(trees::TREE_CELL, trees::TREE_SALT, &mut |x, y, ground, column, r| {
             let c = climate(x, y);
             let density = if c.jungle > 0.5 {
                 0.95
             } else if column.top == SAND && c.desert > 0.5 {
                 if ground - sea_level < 2.5 { 0.25 } else { 0.0 }
             } else if column.top == SNOW || c.snow > 0.5 {
-                forest(x, y) * 0.6 + 0.05
+                forest(x, y) * 0.7 + 0.08
             } else {
                 forest(x, y) * 0.85 + 0.03
             };
             let soil = is_grassy(column.top) || column.top == SNOW && c.snow > 0.3 || column.top == SAND && c.desert > 0.5;
+            let mild = c.jungle.max(c.desert).max(c.snow) < 0.4;
+            if soil && mild && column.top == GRASS && unit(hash(r ^ 0x5117)) < 0.45 && by_river(x, y) {
+                let mut rng = Rng(hash(r ^ 0x3171));
+                return Some(Object::new(self.willow(x, y, ground, &mut rng), rng.0));
+            }
             (soil && unit(r) < density).then(|| self.tree(x, y, ground, hash(r)))
         });
 
@@ -2956,8 +2971,7 @@ impl Terrain {
             let c = climate(x, y);
             (column.top == JUNGLE_GRASS && unit(r) < c.jungle * 0.7).then(|| {
                 let mut rng = Rng(hash(r));
-                let foliage = Foliage { material: LEAVES_DARK, accent: LEAVES, leaf_length: 0.3, leaves_per_twig: 10, clumps_per_twig: 2 };
-                Object::new(self.broadleaf(x, y, ground, 0.8, 2, BARK_DARK, foliage, &mut rng), rng.0)
+                Object::new(self.jungle_sapling(x, y, ground, &mut rng), rng.0)
             })
         });
 
@@ -2982,8 +2996,18 @@ impl Terrain {
 
         // Bushes, mostly around the forests
         scatter(4.0, 0xb054, &mut |x, y, ground, column, r| {
-            let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.3 + meadow(x, y) * 0.08 + 0.04;
+            let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.38 + meadow(x, y) * 0.08 + 0.04;
             (is_grassy(column.top) && unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), hash(r)))
+        });
+
+        // Fallen logs and old stumps in the woods, out of the jungle and the desert
+        scatter(6.0, 0xd0a7, &mut |x, y, ground, column, r| {
+            let c = climate(x, y);
+            let soil = column.top == GRASS || column.top == SNOW && c.snow > 0.3;
+            if !soil || c.jungle > 0.4 || c.desert > 0.4 || ground - sea_level < 1.0 || unit(r) >= forest(x, y) * 0.2 {
+                return None;
+            }
+            self.deadwood(x, y, ground, hash(r))
         });
 
         // Undergrowth: ferns, big leaves and mushrooms in the forests and all over the jungle,
@@ -4610,121 +4634,6 @@ impl Terrain {
         }
     }
 
-    // Which kind of tree grows where: pines up high, palms and willows by the water, and groves of
-    // one kind or another elsewhere
-    fn tree(&self, x: f32, y: f32, base: f32, r: u32) -> Object {
-        let seed = self.settings.seed;
-        let mut rng = Rng(r);
-
-        let sea_level = sea_level_m(&self.settings);
-        let altitude = (base - sea_level) / (self.settings.height_m as f32 - sea_level);
-        let pine_region = fbm(x / 90.0, y / 90.0, 2, seed.wrapping_add(8));
-        let pines = smoothstep(0.25, 0.45, altitude + pine_region * 0.3);
-        let grove = fbm(x / 50.0, y / 50.0, 2, seed.wrapping_add(9)) * 0.5 + 0.5;
-
-        let c = climate(&self.settings, x, y);
-        if c.jungle > 0.5 {
-            return Object::new(self.jungle_tree(x, y, base, &mut rng), rng.0);
-        }
-        if c.desert > 0.5 {
-            return Object::new(self.palm(x, y, base, &mut rng), rng.0);
-        }
-        if c.snow > 0.5 {
-            // Pines with snow on their branches
-            let mut shapes = if rng.next() < 0.5 { self.spruce(x, y, base, &mut rng) } else { self.fir(x, y, base, &mut rng) };
-            for shape in &mut shapes {
-                if shape.material == PINE {
-                    shape.accent = SNOW;
-                }
-            }
-            return Object::new(shapes, rng.0);
-        }
-
-        let pick = rng.next();
-        let shapes = if altitude > 0.55 && pick < 0.12 {
-            self.broadleaf(x, y, base, 1.0, 2, DEAD_WOOD, BARE, &mut rng)
-        } else if pick < pines {
-            if rng.next() < 0.5 { self.spruce(x, y, base, &mut rng) } else { self.fir(x, y, base, &mut rng) }
-        } else if base - sea_level < 2.5 {
-            if rng.next() < 0.6 { self.palm(x, y, base, &mut rng) } else { self.willow(x, y, base, &mut rng) }
-        } else {
-            let choice = grove * 0.7 + rng.next() * 0.3;
-            let (leaves, accent) = self.leaf_colors(x, y, &mut rng);
-            let foliage = Foliage {
-                material: leaves,
-                accent,
-                leaf_length: 0.3,
-                leaves_per_twig: 42,
-                clumps_per_twig: 1,
-            };
-            if choice < 0.3 {
-                self.broadleaf(x, y, base, 1.0, 2, WOOD, foliage, &mut rng)
-            } else if choice < 0.45 {
-                self.birch(x, y, base, &mut rng)
-            } else if choice < 0.55 {
-                let blossom = Foliage {
-                    material: BLOSSOM,
-                    accent: FLOWER_WHITE,
-                    leaf_length: 0.22,
-                    ..foliage
-                };
-                self.broadleaf(x, y, base, 0.8, 2, BARK_DARK, blossom, &mut rng)
-            } else if choice < 0.65 {
-                self.poplar(x, y, base, leaves, accent, &mut rng)
-            } else if choice < 0.75 {
-                self.willow(x, y, base, &mut rng)
-            } else if rng.next() < 0.08 {
-                // The odd giant
-                self.broadleaf(x, y, base, 2.2, 3, WOOD, foliage, &mut rng)
-            } else {
-                self.broadleaf(x, y, base, 1.2, 2, WOOD, foliage, &mut rng)
-            }
-        };
-        Object::new(shapes, rng.0)
-    }
-
-    /// A jungle giant: a tall trunk on buttress roots, a wide crown of dark leaves, and vines
-    /// hanging down from it
-    fn jungle_tree(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(9.0, 15.0);
-        let radius = rng.range(0.35, 0.55);
-        let spread = rng.range(3.5, 5.5);
-        let top = [x + rng.range(-0.8, 0.8), y + rng.range(-0.8, 0.8), base + height];
-        let mut shapes = vec![Shape::wood([x, y, base - 0.5], top, radius, radius * 0.7, BARK_DARK)];
-        for i in 0..4 {
-            let angle = i as f32 / 4.0 * TAU + rng.range(-0.4, 0.4);
-            let foot = [x + angle.cos() * 1.7, y + angle.sin() * 1.7, base - 0.3];
-            shapes.push(Shape::wood([x, y, base + 1.8], foot, radius * 0.7, 0.12, BARK_DARK));
-        }
-        let mut clumps = Vec::new();
-        let foliage = Foliage {
-            material: LEAVES_DARK,
-            accent: LEAVES,
-            leaf_length: 0.45,
-            leaves_per_twig: 54,
-            clumps_per_twig: 1,
-        };
-        for i in 0..9 {
-            let angle = i as f32 / 9.0 * TAU + rng.range(-0.3, 0.3);
-            let d = if i == 0 { 0.0 } else { spread * rng.range(0.5, 1.0) };
-            let at = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] + rng.range(-0.6, 0.8) - d * 0.15];
-            if i > 0 {
-                shapes.push(Shape::wood([top[0], top[1], top[2] - 1.5], [at[0], at[1], at[2] - 0.5], 0.2, 0.1, BARK_DARK));
-            }
-            let out = normalize([angle.cos() * d.min(1.0), angle.sin() * d.min(1.0), 0.6]);
-            self.leaf_cluster(&mut clumps, at, out, rng.range(1.6, 2.4), BARK_DARK, foliage, rng);
-        }
-        for _ in 0..12 {
-            let angle = rng.next() * TAU;
-            let d = spread * rng.range(0.4, 1.1);
-            let start = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] - 0.8];
-            let end = [start[0] + rng.range(-0.2, 0.2), start[1] + rng.range(-0.2, 0.2), start[2] - rng.range(2.5, height * 0.6)];
-            shapes.push(Shape::capsule(start, end, 0.07, 0.05, VINE, LEAVES, false));
-        }
-        shapes.extend(clumps);
-        shapes
-    }
-
     /// A cactus with a few arms bending up, sometimes in flower
     fn cactus(&self, x: f32, y: f32, ground: f32, rng: &mut Rng) -> Vec<Shape> {
         let height = rng.range(1.6, 3.6);
@@ -4743,20 +4652,6 @@ impl Terrain {
         }
         shapes.push(Shape::capsule([x, y, ground - 0.3], [x, y, ground + height], r, r * 0.9, CACTUS, AIR, false));
         shapes
-    }
-
-    // Leaf colors come in regions, so forests turn in patches like in autumn
-    fn leaf_colors(&self, x: f32, y: f32, rng: &mut Rng) -> (u8, u8) {
-        let autumn = fbm(x / 120.0, y / 120.0, 2, self.settings.seed.wrapping_add(6));
-        let pick = (rng.next() * 0.7 + autumn * 0.8 + 0.15).clamp(0.0, 0.999);
-        [
-            (LEAVES, LEAVES_YELLOW),
-            (LEAVES_DARK, LEAVES),
-            (LEAVES, LEAVES_DARK),
-            (LEAVES_YELLOW, LEAVES_ORANGE),
-            (LEAVES_ORANGE, LEAVES_RED),
-            (LEAVES_RED, LEAVES_ORANGE),
-        ][(pick * 6.0) as usize]
     }
 
     // A trunk splitting into limbs that keep forking, with leaves on every twig
@@ -4868,128 +4763,6 @@ impl Terrain {
         }
     }
 
-    // Tall and slender with white bark, short branches and small leaves
-    fn birch(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(6.0, 9.0);
-        let radius = rng.range(0.1, 0.16);
-        let top = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), base + height];
-        let mut wood = vec![Shape::capsule([x, y, base - 0.6], top, radius * 1.2, radius * 0.4, BIRCH_BARK, BARK_DARK, false)];
-        let mut leaves = Vec::new();
-
-        let autumn = fbm(x / 120.0, y / 120.0, 2, self.settings.seed.wrapping_add(6));
-        let foliage = Foliage {
-            material: if autumn > 0.1 { LEAVES_YELLOW } else { LEAVES },
-            accent: LEAVES_YELLOW,
-            leaf_length: 0.2,
-            leaves_per_twig: 24,
-            clumps_per_twig: 1,
-        };
-        let branches = 6 + (rng.next() * 3.99) as usize;
-        for i in 0..branches {
-            let t = 0.35 + 0.6 * (i as f32 + rng.next()) / branches as f32;
-            let angle = rng.range(0.0, TAU);
-            let dir = normalize([angle.cos(), angle.sin(), rng.range(0.6, 1.2)]);
-            let length = rng.range(0.8, 1.6) * (1.2 - t * 0.6);
-            self.branch(&mut wood, &mut leaves, lerp3([x, y, base], top, t), dir, length, radius * 0.35, 1, BIRCH_BARK, foliage, rng);
-        }
-
-        wood.append(&mut leaves);
-        wood
-    }
-
-    // A thick trunk with limbs spreading out, from which long strands of leaves hang down
-    fn willow(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(2.0, 3.0);
-        let radius = rng.range(0.3, 0.45);
-        let top = [x, y, base + height];
-        let mut wood = vec![Shape::wood([x, y, base - 0.6], top, radius * 1.3, radius, WOOD)];
-        let mut leaves = Vec::new();
-
-        let limbs = 4 + (rng.next() * 2.99) as usize;
-        for i in 0..limbs {
-            let angle = (i as f32 + rng.range(-0.3, 0.3)) / limbs as f32 * TAU;
-            let dir = normalize([angle.cos(), angle.sin(), rng.range(0.5, 0.9)]);
-            let end = add(top, scale(dir, rng.range(1.5, 2.5)));
-            wood.push(Shape::wood(top, end, radius * 0.5, radius * 0.25, WOOD));
-            leaves.push(Shape::sphere(end, rng.range(0.6, 0.9), WILLOW, LEAVES, true));
-
-            // Strands hanging down from along the limb, drifting outwards a little
-            for _ in 0..(5 + (rng.next() * 3.99) as usize) {
-                let mut point = add(lerp3(top, end, rng.range(0.5, 1.0)), [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), 0.0]);
-                let length = rng.range(2.0, 3.5);
-                for _ in 0..4 {
-                    let next = add(point, [dir[0] * 0.1, dir[1] * 0.1, -length / 4.0]);
-                    leaves.push(Shape::capsule(point, next, 0.04, 0.04, WILLOW, LEAVES, false));
-                    let middle = lerp3(point, next, 0.5);
-                    for side in [-1.0, 1.0] {
-                        let out = [dir[1] * side, -dir[0] * side, 0.0];
-                        leaves.push(Shape::leaf(add(middle, scale(out, 0.08)), add(out, [0.0, 0.0, -1.5]), dir, 0.3, 0.08, WILLOW, LEAVES));
-                    }
-                    point = next;
-                }
-            }
-        }
-
-        wood.append(&mut leaves);
-        wood
-    }
-
-    // A straight trunk with narrow tiers of needles, like a spruce
-    fn spruce(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(8.0, 13.0);
-        let radius = rng.range(0.18, 0.26);
-        let crown = rng.range(1.4, 2.0);
-        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height], radius * 1.2, radius * 0.3, WOOD)];
-        let tiers = 7 + (rng.next() * 2.99) as usize;
-        for i in 0..tiers {
-            let t = i as f32 / tiers as f32;
-            let r = crown * (1.0 - 0.8 * t) * rng.range(0.85, 1.1);
-            let z = base + height * (0.2 + 0.75 * t);
-            shapes.push(Shape::capsule([x, y, z], [x, y, z + r * 1.6], r, 0.1, PINE, LEAVES_DARK, true));
-        }
-        shapes
-    }
-
-    // Wider and darker than a spruce, with fewer, drooping tiers
-    fn fir(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(7.0, 11.0);
-        let radius = rng.range(0.2, 0.3);
-        let crown = rng.range(2.0, 2.8);
-        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height], radius * 1.2, radius * 0.3, WOOD)];
-        let tiers = 5 + (rng.next() * 2.99) as usize;
-        for i in 0..tiers {
-            let t = i as f32 / tiers as f32;
-            let r = crown * (1.0 - 0.75 * t) * rng.range(0.85, 1.1);
-            let z = base + height * (0.25 + 0.68 * t);
-            shapes.push(Shape::capsule([x, y, z - r * 0.15], [x, y, z + r * 1.2], r, 0.12, LEAVES_DARK, PINE, true));
-        }
-        shapes
-    }
-
-    fn poplar(&self, x: f32, y: f32, base: f32, leaves: u8, accent: u8, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(7.0, 10.0);
-        let radius = rng.range(0.9, 1.4);
-        let foliage = Foliage {
-            material: leaves,
-            accent,
-            leaf_length: 0.26,
-            leaves_per_twig: 48,
-            clumps_per_twig: 1,
-        };
-        // A narrow tower of leaf clusters up the trunk, smaller towards the top
-        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height * 0.8], 0.24, 0.12, WOOD)];
-        let mut leaves = Vec::new();
-        let tiers = 5;
-        for k in 0..tiers {
-            let t = k as f32 / (tiers - 1) as f32;
-            let z = base + 2.0 + radius + (height - radius * 1.5 - 2.0) * t;
-            let r = radius * (1.0 - 0.45 * t);
-            self.leaf_cluster(&mut leaves, [x, y, z], [0.0, 0.0, 0.3], r, WOOD, foliage, rng);
-        }
-        shapes.append(&mut leaves);
-        shapes
-    }
-
     // A curving trunk with a crown of long arching fronds
     fn palm(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
         let height = rng.range(5.0, 8.0);
@@ -5008,6 +4781,26 @@ impl Terrain {
         let top = previous;
         for _ in 0..(2 + (rng.next() * 2.99) as usize) {
             shapes.push(Shape::sphere(add(top, [rng.range(-0.2, 0.2), rng.range(-0.2, 0.2), -0.25]), 0.1, DEAD_WOOD, AIR, false));
+        }
+
+        // A few old fronds gone brown, hanging down against the trunk under the green ones
+        for _ in 0..(1 + (rng.next() * 2.99) as usize) {
+            let angle = rng.range(0.0, TAU);
+            let (sin, cos) = angle.sin_cos();
+            let side = [-sin, cos, 0.0];
+            let length = rng.range(1.8, 2.6);
+            let mut point = add(top, [0.0, 0.0, -0.2]);
+            for k in 1..=3 {
+                let t = k as f32 / 3.0;
+                let next = add(top, [cos * length * (0.25 + 0.15 * t), sin * length * (0.25 + 0.15 * t), -0.2 - length * t * 0.9]);
+                shapes.push(Shape::capsule(point, next, 0.04, 0.03, DEAD_WOOD, AIR, false));
+                let at = lerp3(point, next, 0.5);
+                for s in [-1.0, 1.0] {
+                    let along = [side[0] * s * 0.6 + cos * 0.3, side[1] * s * 0.6 + sin * 0.3, -1.0];
+                    shapes.push(Shape::leaf(add(at, scale(normalize(along), 0.25)), along, [cos, sin, 0.0], 0.5, 0.08, PALM_WOOD, DEAD_WOOD));
+                }
+                point = next;
+            }
         }
 
         let fronds = 7 + (rng.next() * 3.99) as usize;
@@ -5126,32 +4919,6 @@ impl Terrain {
             shapes.push(Shape::capsule(at, top, 0.03, 0.025, MUSHROOM_STEM, AIR, false));
         }
         shapes
-    }
-
-    // Round bushes: dark ones with red berries in the woods, ones covered in flowers in the meadows
-    fn bush(&self, x: f32, y: f32, ground: f32, meadow: f32, r: u32) -> Object {
-        let mut rng = Rng(r);
-        let size = rng.range(0.5, 1.0);
-        let flowering = rng.next() < meadow;
-        let (leaves, accent) = if flowering || rng.next() < 0.4 {
-            (LEAVES_DARK, FLOWER_RED)
-        } else {
-            self.leaf_colors(x, y, &mut rng)
-        };
-        let mut shapes: Vec<Shape> = Vec::new();
-        if flowering {
-            let color = [FLOWER_BLUE, FLOWER_PINK, FLOWER_WHITE][(rng.next() * 2.99) as usize];
-            for _ in 0..(4 + (rng.next() * 3.99) as usize) {
-                let mut dir = rng.direction(0.3);
-                dir[2] = dir[2].abs();
-                shapes.push(Shape::sphere(add([x, y, ground + size * 0.6], scale(dir, size * 0.8)), size * rng.range(0.2, 0.3), color, FLOWER_WHITE, true));
-            }
-        }
-        for _ in 0..(2 + (rng.next() * 2.99) as usize) {
-            let center = [x + rng.range(-0.7, 0.7) * size, y + rng.range(-0.7, 0.7) * size, ground + size * 0.6];
-            shapes.push(Shape::sphere(center, size * rng.range(0.6, 1.0), leaves, if flowering { LEAVES } else { accent }, true));
-        }
-        Object::new(shapes, rng.0)
     }
 }
 
