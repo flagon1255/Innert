@@ -277,6 +277,9 @@ pub enum DenKind {
     Burrows,
     /// A castle fallen to the dead: its gate, courtyard, great hall and throne room
     Fallen,
+    /// A city fallen under the land, overrun by the dead: its gate, streets, canal, square and the
+    /// way into its temple, see src\worldgen\undercity.rs
+    Sunken,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -358,12 +361,31 @@ const SNARED_PACE: f64 = 0.4;
 const WEB_RADIUS: f64 = 2.8;
 const WEB_SECONDS: f64 = 6.0;
 const WEBS: usize = 3;
+/// The cloud of venom a bloater bursts into: how far round it reaches in meters, for how many
+/// seconds, how hard each breath of it hurts, every half second, and how many hang about at once
+const FUMES_RADIUS: f64 = 2.6;
+const FUMES_SECONDS: f64 = 5.0;
+const FUMES_DAMAGE: f64 = 2.0;
+const FUMES: usize = 4;
 /// Roots in each line of a treant's root wave, how far apart in meters, and how far round each is
 const WAVE_ROOTS: usize = 9;
 const WAVE_SPACING: f64 = 2.6;
 const WAVE_RADIUS: f64 = 1.3;
 /// Things coming down in a drake's storm drop from this many meters up
 const STORM_HEIGHT: f64 = 18.0;
+
+/// The floor at `x`, `y`, in voxels, for something to stand on about as high as `z`: the first
+/// solid ground with room to stand over it, looking down from a few meters over that height, so
+/// down in a cave or a fallen city rather than up on the land over it; the top of the ground there
+/// if there's none
+fn floor_near(world: &World, x: f64, y: f64, z: f64) -> f64 {
+    let vpm = world.voxels_per_meter as f64;
+    let (xi, yi) = (x as i64, y as i64);
+    let room = |k: i64| (1..=(1.8 * vpm) as i64).all(|j| is_passable(world.material_at(xi, yi, k + j)));
+    let from = (z + 4.0 * vpm) as i64;
+    let found = (from - (12.0 * vpm) as i64..=from).rev().find(|&k| !is_passable(world.material_at(xi, yi, k)) && room(k));
+    found.or_else(|| (0..world.size[2] as i64).rev().find(|&k| !is_passable(world.material_at(xi, yi, k)))).unwrap_or(0) as f64 + 1.0
+}
 
 /// Roots about to burst up out of the ground at `at`, in voxels, `left` seconds from now, hurting
 /// the player within `radius` meters for `damage` and throwing them along `drag`
@@ -423,6 +445,9 @@ pub struct Game {
     roots: Vec<Root>,
     /// Ground left sticky with web, and for how many more seconds
     webs: Vec<(Vector3<f64>, f64)>,
+    /// Clouds of venom bloaters burst into: where, for how many more seconds, and how long till
+    /// the next breath of it hurts
+    fumes: Vec<(Vector3<f64>, f64, f64)>,
     /// So the sound of being hurt doesn't go off every frame
     hurt_sound: f64,
     breath_sound: f64,
@@ -592,6 +617,7 @@ impl Game {
             snared: 0.0,
             roots: Vec::new(),
             webs: Vec::new(),
+            fumes: Vec::new(),
             hurt_sound: 0.0,
             breath_sound: 0.0,
             dodge_sound: 0.0,
@@ -1046,11 +1072,26 @@ impl Game {
                     &band
                 }
                 DenKind::Burrows => &[Look::DuneBurrower; 3],
-                // More of them than in a dungeon's hall, the dead in armour among them
-                DenKind::Fallen => match seed % 3 {
+                // More of them than in a dungeon's hall, the dead in armour among them, and archers
+                // and ghouls in some
+                DenKind::Fallen => match seed % 5 {
                     0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton, Look::Zombie, Look::Zombie],
                     1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie, Look::Skeleton, Look::ArmoredSkeleton],
+                    2 => &[Look::ArmoredSkeleton, Look::BoneArcher, Look::ArmoredZombie, Look::Zombie, Look::Skeleton],
+                    3 => &[Look::Zombie, Look::Ghoul, Look::ArmoredZombie, Look::Zombie, Look::Bloater],
                     _ => &[Look::ArmoredSkeleton, Look::Skeleton, Look::ArmoredZombie, Look::Zombie, Look::Skeleton, Look::Zombie],
+                },
+                // The dead of a fallen city, each street its own lot of them: shambling zombies with
+                // a bloater among them, ghouls, archers behind the armoured, a brute, a necromancer
+                // with its risen. Five or so to a pack, the worst kept for the square and the temple.
+                DenKind::Sunken => match seed % 7 {
+                    0 => &[Look::Zombie, Look::Zombie, Look::Bloater, Look::ArmoredZombie],
+                    1 => &[Look::Ghoul, Look::Ghoul, Look::Zombie, Look::Zombie],
+                    2 => &[Look::ArmoredSkeleton, Look::BoneArcher, Look::BoneArcher, Look::Skeleton],
+                    3 => &[Look::GraveBrute, Look::Zombie, Look::Zombie, Look::Bloater],
+                    4 => &[Look::Necromancer, Look::Zombie, Look::ArmoredZombie, Look::Zombie],
+                    5 => &[Look::ArmoredZombie, Look::Ghoul, Look::BoneArcher, Look::Zombie, Look::Bloater],
+                    _ => &[Look::GraveBrute, Look::BoneArcher, Look::ArmoredSkeleton, Look::Ghoul],
                 },
                 DenKind::Hall => match seed % 4 {
                     0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
@@ -1083,8 +1124,7 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let at = near + flat * distance * vpm;
-        let ground = (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.0;
-        let at = Vector3::new(at.x, at.y, ground);
+        let at = Vector3::new(at.x, at.y, floor_near(world, at.x, at.y, near.z));
         for mut monster in animals::spawn_pack(world, water, looks, at, animals::PACK_SPREAD, self.rng) {
             // Facing back the way they were summoned from, to be seen from the front
             let back = (-flat.y).atan2(-flat.x);
@@ -1174,7 +1214,7 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let at = near + flat * distance * vpm;
-        let ground = (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.0;
+        let ground = floor_near(world, at.x, at.y, near.z);
         let key = [at.x as i64, at.y as i64, -1];
         if let Some(boss) = animals::spawn_boss(world, water, look, Vector3::new(at.x, at.y, ground), key, self.rng) {
             self.animals.push(boss);
@@ -1201,6 +1241,9 @@ impl Game {
         for (at, _) in &mut self.webs {
             *at -= shift;
         }
+        for (at, ..) in &mut self.fumes {
+            *at -= shift;
+        }
         for pickup in &mut self.pickups {
             pickup.position -= shift;
         }
@@ -1225,7 +1268,7 @@ impl Game {
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| a.look.is_bandit()).count();
         // The packs of the country the player's come into, as the old ones are left behind
-        let wilds = self.animals.iter().filter(|a| a.look.is_wild()).count();
+        let wilds = self.animals.iter().filter(|a| a.roams()).count();
         if missing > 0 || wolves < 3 || bandits < 3 || wilds < 4 {
             let vpm = world.voxels_per_meter as f64;
             let fresh = animals::spawn(world, water, seed ^ hash(self.rng), near).into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm);
@@ -1234,7 +1277,7 @@ impl Game {
                 let wanted = match animal.look {
                     Look::Wolf => wolves < 3,
                     look if look.is_bandit() => bandits < 3,
-                    look if look.is_wild() => wilds < 4,
+                    _ if animal.roams() => wilds < 4,
                     _ if animal.look.build().is_none() => {
                         taken += 1;
                         taken <= missing
@@ -1364,6 +1407,7 @@ impl Game {
         }
         self.grow_roots(world, player, view, dt);
         self.spin_webs(player, dt);
+        self.reek(world, player, dt);
         for (damage, from, element) in std::mem::take(&mut self.combat.player_hits) {
             if let Some(feet) = player {
                 self.hurt(damage, from, feet, world, "a blast");
@@ -1477,6 +1521,20 @@ impl Game {
                         Cue::at(Sound::Snort, at, 0.9).pitched(0.85)
                     }
                     (Look::Tusker, _) => Cue::at(Sound::Snort, at, 0.8).pitched(vary),
+                    // A bloater gurgling as it swells, a ghoul's shriek, a brute's groan, a bow
+                    // creaking as it's drawn, and a necromancer's wail as it calls the dead
+                    (Look::Bloater, Some(Move::Slam)) => {
+                        self.cues.push(Cue::at(Sound::Squelch, at, 0.8).pitched(0.5));
+                        Cue::at(Sound::Growl, at, 0.6).pitched(0.4)
+                    }
+                    (Look::Bloater, _) => Cue::at(Sound::Growl, at, 0.6).pitched(0.45),
+                    (Look::Ghoul, _) => Cue::at(Sound::Screech, at, 0.6).pitched(vary * 0.75),
+                    (Look::GraveBrute, _) => Cue::at(Sound::Growl, at, 0.8).pitched(0.4),
+                    (Look::BoneArcher, Some(Move::Shoot)) => Cue::at(Sound::Creak, at, 0.7).pitched(1.4),
+                    (Look::BoneArcher, _) => Cue::at(Sound::Rattle, at, 0.7).pitched(1.1),
+                    (Look::Necromancer, Some(Move::Summon)) => Cue::at(Sound::Wail, at, 0.8).pitched(0.5),
+                    (Look::Necromancer, Some(Move::Spit)) => Cue::at(Sound::Cast(Element::look(Some(Element::Void)) as u8), at, 0.7).pitched(0.6),
+                    (Look::Necromancer, _) => Cue::at(Sound::Wail, at, 0.6).pitched(0.7),
                     _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
                 };
                 self.cues.push(cue);
@@ -1555,6 +1613,12 @@ impl Game {
                     Look::RimeWraith => Cue::at(Sound::Crack, at, 0.7).pitched(1.6),
                     Look::Tusker => Cue::at(Sound::Hit, at, 0.9).pitched(0.6),
                     Look::Crossbowman => Cue::at(Sound::Hit, at, 0.6).pitched(1.1),
+                    Look::Bloater => Cue::at(Sound::Burst, at, 0.9).pitched(0.7),
+                    Look::Ghoul => Cue::at(Sound::Claw, at, 0.8).pitched(1.2),
+                    Look::GraveBrute => {
+                        self.shake = self.shake.max(0.35 * felt(at));
+                        Cue::at(Sound::Burst, at, 0.8).pitched(0.55)
+                    }
                     _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
                     _ => {
                         self.shake = self.shake.max(0.6 * felt(at));
@@ -1732,7 +1796,7 @@ impl Game {
                 let most = match brood {
                     Look::Spiderling | Look::Bandit => 4,
                     Look::Skeleton => 3,
-                    Look::ArmoredSkeleton => 4,
+                    Look::ArmoredSkeleton | Look::Zombie => 4,
                     _ => 2,
                 };
                 let near = self.animals.iter().filter(|a| a.look == brood && a.health > 0.0 && (a.position - at).norm() < 30.0 * vpm).count();
@@ -1752,6 +1816,7 @@ impl Game {
                 let cue = match brood {
                     Look::Wolf => Cue::at(Sound::Howl, at, 1.0).pitched(voice * 0.9),
                     Look::Skeleton => Cue::at(Sound::Rattle, at, 1.0).pitched(0.8),
+                    Look::Zombie => Cue::at(Sound::Growl, at, 1.0).pitched(0.5),
                     Look::Bandit => Cue::at(Sound::Roar, at, 0.9).pitched(1.5),
                     _ => Cue::at(Sound::Skitter, at, 1.0),
                 };
@@ -1759,7 +1824,7 @@ impl Game {
                 if count > 0 {
                     let deed = match brood {
                         Look::Wolf => "howls for its pack",
-                        Look::Skeleton => "raises the dead",
+                        Look::Skeleton | Look::Zombie => "raises the dead",
                         Look::Bandit => "calls the gang to arms",
                         _ => "calls its brood",
                     };
@@ -1916,6 +1981,29 @@ impl Game {
         }
     }
 
+    /// Clouds of venom left where bloaters burst, poisoning whoever stands in them: a breath of it
+    /// hurts every half second, and the venom goes on a moment after getting out
+    fn reek(&mut self, world: &World, player: Option<Vector3<f64>>, dt: f64) {
+        let vpm = self.combat.vpm();
+        for k in 0..self.fumes.len() {
+            let (at, left, wait) = self.fumes[k];
+            self.combat.reek(at, FUMES_RADIUS * (0.6 + 0.4 * (left / FUMES_SECONDS).min(1.0)), dt);
+            let mut wait = (wait - dt).max(0.0);
+            if let Some(feet) = player {
+                let off = feet - at;
+                if off.xy().norm() < FUMES_RADIUS * vpm && off.z.abs() < 2.5 * vpm {
+                    self.poisoned = self.poisoned.max(1.5);
+                    if wait <= 0.0 {
+                        wait = 0.5;
+                        self.hurt(FUMES_DAMAGE, at, feet, world, "a bloater's venom");
+                    }
+                }
+            }
+            self.fumes[k] = (at, left - dt, wait);
+        }
+        self.fumes.retain(|f| f.1 > 0.0);
+    }
+
     /// Ground left sticky by web, holding up whoever's in it
     fn spin_webs(&mut self, player: Option<Vector3<f64>>, dt: f64) {
         let vpm = self.combat.vpm();
@@ -2016,6 +2104,7 @@ impl Game {
         self.combat.clear();
         self.roots.clear();
         self.webs.clear();
+        self.fumes.clear();
         self.burning = 0.0;
         self.poisoned = 0.0;
         self.chilled = 0.0;
@@ -2094,6 +2183,7 @@ impl Game {
             self.snared = 0.0;
             self.roots.clear();
             self.webs.clear();
+            self.fumes.clear();
             self.safe_for = 0.0;
             return;
         };
@@ -2230,8 +2320,19 @@ impl Game {
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
             // A monster bursts apart its own way. The dead and spiders' victims had a little gold on
             // them, now and then a weapon.
+            // A bloater that burst by itself, rather than being killed, leaves nothing but its venom
+            let burst = animal.health <= animals::BURST * 0.5;
             if look.is_monster() {
                 self.combat.perish(&animal);
+                // A bloater bursts into a cloud of venom, however it died
+                if look == Look::Bloater {
+                    self.fumes.push((animal.position, FUMES_SECONDS, 0.3));
+                    if self.fumes.len() > FUMES {
+                        self.fumes.remove(0);
+                    }
+                }
+            }
+            if look.is_monster() && !burst {
                 let mut loot = Vec::new();
                 // People and the dead had a little gold on them; what spiders and burrowers caught
                 // now and then did; wolves, gloomwings, lurkers and tuskers have nothing
@@ -2248,7 +2349,8 @@ impl Game {
                 // Bandits carry ammo for their bows and guns, a crossbowman most of all
                 let ammo = match look {
                     Look::Crossbowman => 0.8,
-                    _ if look.is_bandit() => 0.5,
+                    // And skeleton archers their arrows
+                    _ if look.is_bandit() || look == Look::BoneArcher => 0.5,
                     _ => 0.0,
                 };
                 if random(&mut self.rng) < ammo {
@@ -2289,7 +2391,9 @@ impl Game {
                 let spread = 0.25 * m as f64;
                 self.pickups.push(Pickup::lying(Item::Meat, animal.position + Vector3::new(angle.cos(), angle.sin(), 0.0) * spread, angle));
             }
-            if look.is_monster() {
+            if burst {
+                self.say("A bloater bursts in a cloud of venom!");
+            } else if look.is_monster() {
                 self.say(format!("You slew a {}.", look.name()));
             } else if !look.is_boss() {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });

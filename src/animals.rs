@@ -89,6 +89,14 @@ pub enum Look {
     MireLurker,
     Gloomwing,
     Tusker,
+    // The dead of the fallen cities under the land, and of fallen castles: a bloated corpse that
+    // bursts into a cloud of venom, a lean ghoul that leaps, a hulking brute swinging a broken
+    // gravestone, skeletons with bows, and the necromancer who raises them all
+    Bloater,
+    Ghoul,
+    GraveBrute,
+    BoneArcher,
+    Necromancer,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -121,6 +129,10 @@ enum Arms {
     Crossbow,
     /// A round shield on one arm and a mace in the other hand
     Shield,
+    /// A bow, drawn back to the cheek to loose an arrow
+    Bow,
+    /// A broken gravestone swung in both hands
+    Slab,
 }
 
 /// The materials a boss is made of: its body, darker parts, things on it, what glows, and one
@@ -135,7 +147,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 53] = [
+    pub const ALL: [Look; 58] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -189,6 +201,11 @@ impl Look {
         Look::MireLurker,
         Look::Gloomwing,
         Look::Tusker,
+        Look::Bloater,
+        Look::Ghoul,
+        Look::GraveBrute,
+        Look::BoneArcher,
+        Look::Necromancer,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -246,6 +263,12 @@ impl Look {
     pub fn is_monster(self) -> bool {
         matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling | Look::Bandit | Look::BanditBrute)
             || matches!(self, Look::Crossbowman | Look::Shieldbearer | Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Gloomwing | Look::Tusker)
+            || self.is_risen()
+    }
+
+    /// One of the dead added for the fallen cities, see Look::Bloater
+    pub fn is_risen(self) -> bool {
+        matches!(self, Look::Bloater | Look::Ghoul | Look::GraveBrute | Look::BoneArcher | Look::Necromancer)
     }
 
     /// A living person, for bandits: upright, a face under a hood or a helm
@@ -258,6 +281,8 @@ impl Look {
         match self {
             Look::Crossbowman => Arms::Crossbow,
             Look::Shieldbearer => Arms::Shield,
+            Look::BoneArcher => Arms::Bow,
+            Look::GraveBrute => Arms::Slab,
             _ => Arms::Blade,
         }
     }
@@ -272,6 +297,7 @@ impl Look {
             Look::Treant => Build::Treant,
             Look::Direwolf | Look::WinterAlpha | Look::Wolf => Build::Wolf,
             Look::GraveKnight | Look::CryptTitan | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => Build::Undead,
+            Look::Bloater | Look::Ghoul | Look::GraveBrute | Look::BoneArcher | Look::Necromancer => Build::Undead,
             // Bandits move and fight as the dead in armor do, but alive
             Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman | Look::Shieldbearer => Build::Undead,
             Look::DuneBurrower => Build::Burrower,
@@ -291,6 +317,9 @@ impl Look {
             Look::GraveKnight => 2.2,
             Look::Warlord => 1.7,
             Look::BanditBrute => 1.12,
+            // Hulking, a head taller than the rest of the dead, and swollen up bigger than a man
+            Look::GraveBrute => 1.32,
+            Look::Bloater => 1.15,
             Look::Shieldbearer => 1.06,
             Look::DuneBurrower => 1.15,
             Look::Spiderling => 0.5,
@@ -318,6 +347,7 @@ impl Look {
         match self {
             Look::Direwolf | Look::WinterAlpha => Some(Look::Wolf),
             Look::GraveKnight => Some(Look::Skeleton),
+            Look::Necromancer => Some(Look::Zombie),
             Look::CryptTitan => Some(Look::ArmoredSkeleton),
             Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
             Look::Warlord => Some(Look::Bandit),
@@ -342,7 +372,7 @@ impl Look {
 
     /// Bones rather than rotting flesh, for the walking dead
     fn bony(self) -> bool {
-        matches!(self, Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight | Look::CryptTitan)
+        matches!(self, Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight | Look::CryptTitan | Look::BoneArcher | Look::Necromancer)
     }
 
     /// Wearing armor, for the walking dead
@@ -356,7 +386,8 @@ impl Look {
             Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
             Look::MagmaGolem | Look::Drake | Look::ElderWyrm => Some(Element::Fire),
             Look::CryptTitan => Some(Element::Void),
-            Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie | Look::DuneBurrower => Some(Element::Poison),
+            Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie | Look::DuneBurrower | Look::Bloater => Some(Element::Poison),
+            Look::Necromancer => Some(Element::Void),
             Look::RimeWraith => Some(Element::Frost),
             Look::GraveKnight => Some(Element::Void),
             Look::StormDrake => Some(Element::Storm),
@@ -416,6 +447,15 @@ impl Look {
             Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
             Look::Zombie => make(MOSS, PINE, LINEN, GLOW_POISON, BONE),
             Look::ArmoredZombie => make(MOSS, PINE, DARK_STEEL, GLOW_POISON, BONE),
+            // A bloater pale and swollen, veined and blotched green, venom glowing through its split
+            // skin; a ghoul grey as ash with red eyes and bone claws; a brute's grey-green hide,
+            // rags, a gravestone of pale stone; an archer's bones in a dark hood, its bow of dark
+            // wood; a necromancer's bones in a black robe trimmed with bronze, void in its eyes
+            Look::Bloater => make(FUR_CREAM, MOSS, BARK_DARK, GLOW_POISON, CACTUS),
+            Look::Ghoul => make(FUR_GRAY, OBSIDIAN, BARK_DARK, GLOW_BLOOD, BONE),
+            Look::GraveBrute => make(MOSS, BARK_DARK, LEATHER, GLOW_POISON, LIMESTONE),
+            Look::BoneArcher => make(BONE, BARK_DARK, TEMPLE_DARK, GLOW_FROST, BARK_DARK),
+            Look::Necromancer => make(BONE, OBSIDIAN, BRONZE, GLOW_VOID, DEAD_WOOD),
             // Bandits: their skin, their hood or cloak and breeches, their shirt or armor, their
             // eyes, and their blade. The warlord in bronze with a red cloak.
             Look::Bandit => make(FUR_TAN, LEATHER, CLOTH, EYE, STEEL),
@@ -482,6 +522,14 @@ impl Look {
             Look::GraveKnight | Look::CryptTitan => 3.45 * self.scale(),
             // A blade raised overhead
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => 2.5 * self.scale(),
+            Look::Bloater => 1.9 * self.scale(),
+            // Its claws thrown high as it leaps
+            Look::Ghoul => 2.3,
+            // The gravestone raised high overhead
+            Look::GraveBrute => 3.1 * self.scale(),
+            Look::BoneArcher => 2.3,
+            // Its staff raised high
+            Look::Necromancer => 2.9,
             Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman => 2.5 * self.scale(),
             // A mace raised high over its shield
             Look::Shieldbearer => 2.6 * self.scale(),
@@ -520,6 +568,11 @@ impl Look {
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => (0.55 * self.scale(), 0.42 * self.scale()),
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => (1.0 * self.scale(), 0.36 * self.scale()),
             Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman | Look::Shieldbearer => (1.0 * self.scale(), 0.36 * self.scale()),
+            Look::Bloater => (0.95 * self.scale(), 0.55 * self.scale()),
+            // Crouched low
+            Look::Ghoul => (0.8, 0.36),
+            Look::GraveBrute => (1.0 * self.scale(), 0.42 * self.scale()),
+            Look::BoneArcher | Look::Necromancer => (1.0, 0.36),
             Look::DuneBurrower => (0.4 * self.scale(), 0.6 * self.scale()),
             Look::RimeWraith => (1.4, 0.42),
             Look::MireLurker => (0.42, 0.62),
@@ -581,6 +634,11 @@ impl Look {
             Look::MireLurker => "mire lurker",
             Look::Gloomwing => "gloomwing",
             Look::Tusker => "tusker",
+            Look::Bloater => "bloater",
+            Look::Ghoul => "ghoul",
+            Look::GraveBrute => "grave brute",
+            Look::BoneArcher => "skeleton archer",
+            Look::Necromancer => "necromancer",
         }
     }
 
@@ -639,6 +697,11 @@ impl Look {
             Look::MireLurker => 230.0,
             Look::Gloomwing => 30.0,
             Look::Tusker => 320.0,
+            Look::Bloater => 140.0,
+            Look::Ghoul => 120.0,
+            Look::GraveBrute => 520.0,
+            Look::BoneArcher => 90.0,
+            Look::Necromancer => 190.0,
             _ => 20.0,
         }
     }
@@ -665,6 +728,11 @@ impl Look {
             Look::Direwolf | Look::WinterAlpha => return 2.2,
             Look::Zombie | Look::ArmoredZombie => return 0.8,
             Look::Skeleton | Look::ArmoredSkeleton => return 1.4,
+            Look::Bloater => return 0.6,
+            Look::Ghoul => return 1.6,
+            Look::GraveBrute => return 0.75,
+            Look::BoneArcher => return 1.3,
+            Look::Necromancer => return 1.1,
             Look::Spiderling => return 2.6,
             Look::Bandit | Look::Crossbowman => return 1.5,
             Look::BanditBrute => return 1.2,
@@ -708,6 +776,12 @@ impl Look {
             // Shambling, but quicker than they look
             Look::Zombie => return 2.6,
             Look::ArmoredZombie => return 2.2,
+            // Waddling, but it gets there; a ghoul's on the player in a moment
+            Look::Bloater => return 1.7,
+            Look::Ghoul => return 4.8,
+            Look::GraveBrute => return 1.9,
+            Look::BoneArcher => return 3.0,
+            Look::Necromancer => return 2.4,
             Look::Spiderling => return 7.0,
             // Quicker than the dead, and they come running
             Look::Bandit => return 4.2,
@@ -1350,7 +1424,7 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
     let hunch = if bony || living { 0.0 } else { 0.08 };
     let lean = if arms == Arms::Crossbow { pose.mix(0.0, 0.03, -0.02, 0.1) } else { pose.mix(hunch, hunch - 0.05, hunch + 0.22, hunch + 0.05) };
     let up = |v: Vec3| [v[0] + lean * (v[2] - 0.9).max(0.0), v[1], v[2]];
-    let limb_r = if bony { 0.045 } else { 0.07 };
+    let limb_r = if bony { 0.045 } else if arms == Arms::Slab { 0.09 } else { 0.07 };
     // Its head: a skull with burning sockets, or a rotting face, or a living one
     let head = up([0.02, 0.0, 1.62]);
     if living {
@@ -1414,7 +1488,34 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
         p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
         p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
     };
-    if arms == Arms::Crossbow {
+    if arms == Arms::Bow {
+        bow(p, up, &arm, pose, skin);
+    } else if arms == Arms::Slab {
+        // A brute's shoulders, hunched and heavy, and rags hanging off them
+        for s in [-1.0, 1.0] {
+            p.push(ball(up([-0.02, s * 0.25, 1.4]), 0.13, flesh));
+        }
+        p.push(ellipsoid(up([-0.05, 0.0, 1.32]), [0.17, 0.27, 0.2], dark));
+        // The gravestone: carried low in front, raised high behind its head, brought down in
+        // front, and lifted as it roars, both hands on its broken end
+        let hand = pose.at([0.32, 0.0, 0.92], [-0.12, 0.0, 1.95], [0.62, 0.0, 1.05], [0.15, 0.0, 2.05]);
+        let dir = pose.at([0.45, 0.0, -0.75], [-0.42, 0.0, 0.8], [0.92, 0.0, -0.35], [0.1, 0.0, 1.0]);
+        let n = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(0.1);
+        let along = |k: f64| [hand[0] + dir[0] / n * k, hand[1] + dir[1] / n * k, hand[2] + dir[2] / n * k];
+        // Broad and flat across, so it's seen broad from in front whichever way it's swung: rows
+        // side by side, its top rounded, a chip out of one corner, moss on it
+        let row = |k: f64, y: f64| [along(k)[0], along(k)[1] + y, along(k)[2]];
+        p.push(ball(row(0.78, 0.15), 0.08, AIR));
+        p.push(ball(row(0.5, -0.05), 0.07, MOSS));
+        p.push(ball(row(0.62, 0.0), 0.15, skin.extra));
+        for y in [-0.15, 0.0, 0.15] {
+            p.push(limb(row(0.05, y), row(0.7 - f64::abs(y) * 0.6, y), 0.13, 0.13, skin.extra));
+        }
+        for s in [-1.0, 1.0] {
+            let grip = [hand[0], hand[1] + s * 0.07, hand[2]];
+            arm(p, up([0.0, s * 0.24, 1.42]), grip, s * 0.12);
+        }
+    } else if arms == Arms::Crossbow {
         // Held low across it, raised to the shoulder to aim, kicking up as it looses, and pointed
         // at the ground as it's spanned again
         let stock = up(pose.at([0.1, -0.12, 1.0], [0.04, -0.13, 1.42], [0.04, -0.13, 1.44], [0.16, -0.08, 1.02]));
@@ -1493,6 +1594,204 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
     for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
         leg(p, [0.0, y, 0.92], 0.88, limb_r * 1.1, 0.45 * swing * s, if armored { skin.accent } else if bony { flesh } else { dark }, dark);
     }
+}
+
+/// A skeleton archer's bow and the arms drawing it, and the hood and quiver it wears: the bow held
+/// low at its side, raised and drawn back to the cheek as it takes aim, the string snapping
+/// straight as it looses, and a hand reaching back over its shoulder for the next arrow
+fn bow(p: &mut Vec<Part>, up: impl Fn(Vec3) -> Vec3, arm: &impl Fn(&mut Vec<Part>, Vec3, Vec3, f64), pose: Pose, skin: Skin) {
+    let wood = skin.extra;
+    // A hood over its skull, open in front
+    p.push(ellipsoid(up([-0.04, 0.0, 1.66]), [0.15, 0.165, 0.16], skin.accent));
+    p.push(ellipsoid(up([-0.08, 0.0, 1.42]), [0.1, 0.22, 0.08], skin.accent));
+    let grip = up(pose.at([0.14, 0.27, 0.98], [0.62, 0.1, 1.43], [0.64, 0.08, 1.45], [0.3, 0.22, 1.12]));
+    let draw = up(pose.at([0.12, -0.25, 0.95], [0.06, -0.03, 1.52], [0.3, -0.1, 1.44], [-0.16, -0.12, 1.66]));
+    // How far it's bent, drawn
+    let bent = pose.windup;
+    let tip = |s: f64| [grip[0] - 0.1 - 0.12 * bent, grip[1], grip[2] + s * (0.62 - 0.05 * bent)];
+    let mid = |s: f64| [grip[0] + 0.0 - 0.02 * bent, grip[1], grip[2] + s * 0.33];
+    for s in [-1.0, 1.0] {
+        p.push(limb(mid(s), tip(s), 0.028, 0.016, wood));
+        p.push(limb(grip, mid(s), 0.032, 0.028, wood));
+    }
+    p.push(ball(grip, 0.04, LEATHER));
+    // The string, drawn back to its hand as it aims, and the arrow on it
+    if bent > 0.3 {
+        for s in [-1.0, 1.0] {
+            p.push(limb(tip(s), draw, 0.008, 0.008, BOWSTRING));
+        }
+        let head = [grip[0] + 0.2, grip[1] - 0.01, grip[2] + 0.02];
+        p.push(limb(head, [head[0] + 0.07, head[1], head[2]], 0.02, 0.006, STEEL));
+        p.push(limb(draw, head, 0.012, 0.012, WOOD));
+        p.push(limb(draw, [draw[0] + 0.1, draw[1], draw[2]], 0.025, 0.02, LINEN));
+    } else {
+        p.push(limb(tip(-1.0), tip(1.0), 0.008, 0.008, BOWSTRING));
+    }
+    // A quiver of arrows on its back
+    for k in 0..3 {
+        p.push(ball(up([-0.2, -0.08 + 0.04 * k as f64, 1.55]), 0.025, LINEN));
+    }
+    p.push(limb(up([-0.17, -0.08, 0.95]), up([-0.2, -0.04, 1.5]), 0.05, 0.055, LEATHER));
+    arm(p, up([0.0, 0.22, 1.42]), grip, 0.1);
+    arm(p, up([0.0, -0.22, 1.42]), draw, -0.1);
+}
+
+/// A bloater: a corpse swollen up round as a barrel, too heavy for its stubby legs, its skin
+/// blotched and split, venom glowing through the splits and in its eyes, the rags it died in
+/// stretched over it. It waddles, rocking side to side, and swells up fit to burst as it comes
+/// close, its arms flung back, then bursts in a cloud of venom.
+fn bloater(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
+    let (flesh, dark, glow) = (skin.body, skin.dark, skin.glow);
+    // Swelling as it gets ready to burst
+    let swell = 1.0 + 0.22 * pose.windup.max(pose.strike).max(pose.special);
+    let rock = 0.05 * swing;
+    let at = |v: Vec3| [v[0], v[1] + rock * (v[2] - 0.2).max(0.0), v[2]];
+    // A small head sunk into its shoulders, eyes glowing, its jaw hanging open
+    let head = at([0.26, 0.0, 1.55]);
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.1, head[1] + s * 0.05, head[2] + 0.02], 0.03, glow));
+    }
+    p.push(ellipsoid([head[0] + 0.08, head[1], head[2] - 0.09], [0.06, 0.07, 0.05], dark));
+    p.push(ball(head, 0.13, flesh));
+    // Glowing boils and splits all over its belly, and blotches
+    let belly = at([0.05, 0.0, 0.95]);
+    let r = [0.42 * swell, 0.48 * swell, 0.5 * swell];
+    for (k, (a, z)) in [(0.3, 0.2), (-0.6, -0.1), (1.2, 0.35), (-1.4, 0.05), (2.2, -0.2), (0.8, -0.3), (-2.5, 0.3), (0.0, -0.05)].iter().enumerate() {
+        let (c, s) = ((*a as f64).cos(), (*a as f64).sin());
+        let q = [belly[0] + c * r[0] * 0.92, belly[1] + s * r[1] * 0.92, belly[2] + z * r[2]];
+        let size = if k % 3 == 0 { 0.09 } else { 0.06 } * swell;
+        p.push(ball(q, size, if k % 2 == 0 { glow } else { skin.extra }));
+    }
+    // Rags round its middle
+    p.push(ellipsoid([belly[0], belly[1], belly[2] - 0.22 * swell], [r[0] * 1.02, r[1] * 1.02, 0.12], skin.accent));
+    p.push(ellipsoid(belly, r, flesh).striped(dark));
+    p.push(ellipsoid(at([0.0, 0.0, 1.32]), [0.24, 0.32, 0.18], flesh));
+    // Thin arms dangling, flung back as it swells
+    for s in [-1.0, 1.0] {
+        let shoulder = at([0.02, s * 0.33, 1.32]);
+        let hand = pose.at([0.22 + 0.1 * swing * s, s * 0.52, 0.85], [-0.3, s * 0.62, 1.15], [-0.35, s * 0.66, 1.2], [-0.3, s * 0.62, 1.15]);
+        let elbow = [(shoulder[0] + hand[0]) * 0.5, (shoulder[1] + hand[1]) * 0.5 + s * 0.06, (shoulder[2] + hand[2]) * 0.5 - 0.08];
+        p.push(ball(hand, 0.06, flesh));
+        p.push(limb(elbow, hand, 0.05, 0.045, flesh));
+        p.push(limb(shoulder, elbow, 0.06, 0.05, flesh));
+    }
+    // Short legs, splayed
+    for (y, s) in [(0.2, 1.0), (-0.2, -1.0)] {
+        leg(p, [0.0, y, 0.5], 0.48, 0.1, 0.35 * swing * s, dark, dark);
+    }
+}
+
+/// A ghoul: the dead gone lean and quick, grey as ash and hairless, crouched low on bent legs
+/// with its back hunched, long arms ending in claws of bone, red light in its eyes. It runs at the
+/// player and leaps on them from a few steps off: crouching lower to spring, lunging with both
+/// claws, and flinging its arms up as it leaps.
+fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+    let (flesh, dark, glow, claw) = (skin.body, skin.dark, skin.glow, skin.extra);
+    // Crouched lower to spring, or reaching forward in the lunge
+    let crouch = pose.mix(0.0, 0.18, 0.04, 0.12);
+    let lunge = pose.mix(0.0, -0.1, 0.3, 0.1);
+    // Bobbing as it runs
+    let bob = 0.04 * (angle * 2.0).sin().abs() * moving;
+    let hips = [lunge * 0.4, 0.0, 0.82 - crouch + bob];
+    let chest = [hips[0] + 0.32 + lunge, 0.0, hips[2] + 0.42 - crouch * 0.5];
+    let head = [chest[0] + 0.2, 0.0, chest[2] + 0.12];
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.1, s * 0.05, head[2] + 0.02], 0.026, glow));
+    }
+    // Its jaw, wide, and teeth
+    p.push(ellipsoid([head[0] + 0.1, 0.0, head[2] - 0.08], [0.07, 0.07, 0.04], dark));
+    p.push(ellipsoid([head[0] + 0.12, 0.0, head[2] - 0.05], [0.05, 0.06, 0.012], claw));
+    p.push(ellipsoid(head, [0.13, 0.11, 0.12], flesh));
+    p.push(limb(chest, head, 0.06, 0.05, flesh));
+    // A hunched back, the spine standing out along it, and ribs
+    for k in 0..4 {
+        let f = k as f64 / 3.0;
+        let q = [hips[0] + (chest[0] - hips[0]) * f - 0.05, 0.0, hips[2] + (chest[2] - hips[2]) * f + 0.13];
+        p.push(ball(q, 0.035, claw));
+    }
+    p.push(ellipsoid(chest, [0.15, 0.2, 0.15], flesh).striped(dark));
+    p.push(limb(hips, chest, 0.12, 0.15, flesh));
+    // Rags round its hips
+    p.push(ellipsoid([hips[0], 0.0, hips[2] - 0.05], [0.14, 0.18, 0.1], skin.accent));
+    // Long arms, swinging low as it runs, drawn back to spring, thrust out together, flung up
+    for s in [-1.0, 1.0] {
+        let shoulder = [chest[0] + 0.02, s * 0.2, chest[2] + 0.05];
+        let hand = pose.at(
+            [chest[0] + 0.25 - 0.3 * swing * s, s * 0.28, 0.25 + 0.1 * (swing * s).max(0.0)],
+            [chest[0] - 0.35, s * 0.36, chest[2] - 0.15],
+            [chest[0] + 0.7, s * 0.16, chest[2] - 0.05],
+            [chest[0] + 0.35, s * 0.34, chest[2] + 0.55],
+        );
+        let elbow = [(shoulder[0] + hand[0]) * 0.5 - 0.05, (shoulder[1] + hand[1]) * 0.5 + s * 0.08, (shoulder[2] + hand[2]) * 0.5 + 0.06];
+        let ahead = [hand[0] - elbow[0], hand[1] - elbow[1], hand[2] - elbow[2]];
+        let n = (ahead[0] * ahead[0] + ahead[1] * ahead[1] + ahead[2] * ahead[2]).sqrt().max(0.1);
+        for k in [-1.0, 0.0, 1.0] {
+            let tip = [hand[0] + ahead[0] / n * 0.18, hand[1] + ahead[1] / n * 0.18 + k * 0.04, hand[2] + ahead[2] / n * 0.18 - 0.03];
+            p.push(limb(hand, tip, 0.016, 0.006, claw));
+        }
+        p.push(ball(hand, 0.045, flesh));
+        p.push(limb(elbow, hand, 0.04, 0.035, flesh));
+        p.push(limb(shoulder, elbow, 0.05, 0.04, flesh));
+    }
+    // Legs bent at the knee, its feet planted wide, tucked up as it leaps
+    let tuck = pose.special;
+    for (y, s) in [(0.13, 1.0), (-0.13, -1.0)] {
+        let step = 0.3 * swing * s;
+        let hip = [hips[0], y, hips[2]];
+        let foot = [hips[0] + step - 0.05, y * 1.4, 0.06 + 0.1 * (swing * s).max(0.0) + tuck * 0.35];
+        let knee = [hips[0] + 0.25 + step * 0.5, y * 1.3, (hip[2] + foot[2]) * 0.5 + 0.02];
+        p.push(ellipsoid([foot[0] + 0.07, foot[1], foot[2] - 0.02], [0.11, 0.05, 0.04], dark));
+        p.push(limb(knee, foot, 0.05, 0.04, flesh));
+        p.push(limb(hip, knee, 0.07, 0.055, flesh));
+    }
+}
+
+/// A necromancer: a tall skeleton in a long black robe trimmed with bronze, its hood up over its
+/// skull and the void burning in its eyes, a staff of dead wood in its hand with an orb of the void
+/// caught in bone at its top. It keeps back from the fight, thrusting the staff out to hurl the
+/// void, and raises both arms high to call the dead up out of the ground.
+fn necromancer(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
+    let (bone, robe, trim, glow, wood) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let lean = pose.mix(0.02, -0.04, 0.12, -0.08);
+    let up = |v: Vec3| [v[0] + lean * (v[2] - 0.8).max(0.0), v[1], v[2]];
+    // The skull in the shadow of its hood, the void in its eyes
+    let head = up([0.03, 0.0, 1.72]);
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.1, s * 0.045, head[2] + 0.02], 0.03, glow));
+    }
+    p.push(ellipsoid([head[0] + 0.06, 0.0, head[2] - 0.08], [0.07, 0.075, 0.045], bone));
+    p.push(ball(head, 0.12, bone));
+    p.push(ellipsoid(up([-0.04, 0.0, 1.76]), [0.16, 0.17, 0.18], robe));
+    p.push(limb(up([-0.1, 0.0, 1.82]), up([-0.22, 0.0, 1.6]), 0.08, 0.03, robe));
+    // A collar of bronze, and the robe falling to the ground, swaying as it walks, bronze at its hem
+    p.push(ellipsoid(up([0.0, 0.0, 1.47]), [0.17, 0.24, 0.05], trim));
+    let hem = [0.03 * swing, 0.0, 0.06];
+    p.push(ellipsoid([hem[0], 0.0, 0.07], [0.33, 0.34, 0.05], trim));
+    p.push(limb(up([0.0, 0.0, 1.45]), hem, 0.19, 0.33, robe));
+    // Its arms in their sleeves: the staff hand, and the other, raised as it calls the dead up
+    let staff_hand = up(pose.at([0.25, -0.3, 1.05], [0.45, -0.22, 1.35], [0.6, -0.16, 1.4], [0.15, -0.36, 1.95]));
+    let other = up(pose.at([0.15 + 0.06 * swing, 0.3, 1.0], [0.3, 0.32, 1.25], [-0.05, 0.3, 1.05], [0.12, 0.38, 2.0]));
+    for (s, hand) in [(-1.0, staff_hand), (1.0, other)] {
+        let shoulder = up([0.0, s * 0.22, 1.42]);
+        let elbow = [(shoulder[0] + hand[0]) * 0.5 - 0.05, (shoulder[1] + hand[1]) * 0.5 + s * 0.07, (shoulder[2] + hand[2]) * 0.5 - 0.06];
+        // Bony fingers out of a wide sleeve
+        p.push(ball(hand, 0.045, bone));
+        p.push(limb(elbow, hand, 0.05, 0.085, robe));
+        p.push(limb(shoulder, elbow, 0.07, 0.06, robe));
+    }
+    // The staff, upright in its hand, thrust out, or raised high; the orb caught at its top
+    let tilt = pose.at([0.05, 0.0, 1.0], [0.45, 0.0, 0.9], [0.75, 0.0, 0.66], [0.0, -0.1, 1.0]);
+    let n = (tilt[0] * tilt[0] + tilt[1] * tilt[1] + tilt[2] * tilt[2]).sqrt().max(0.1);
+    let along = |k: f64| [staff_hand[0] + tilt[0] / n * k, staff_hand[1] + tilt[1] / n * k, staff_hand[2] + tilt[2] / n * k];
+    let orb = along(0.62);
+    p.push(ball(orb, 0.085, glow));
+    for k in 0..3 {
+        let a = k as f64 * TAU / 3.0;
+        let side = [orb[0] + a.cos() * 0.1, orb[1] + a.sin() * 0.1, orb[2]];
+        p.push(limb(along(0.48), side, 0.02, 0.012, bone));
+        p.push(limb(side, [side[0] * 0.6 + orb[0] * 0.4, side[1] * 0.6 + orb[1] * 0.4, orb[2] + 0.12], 0.012, 0.006, bone));
+    }
+    p.push(limb(along(-1.0), along(0.5), 0.025, 0.022, wood));
 }
 
 /// How a knight holds itself in one of its poses, see knight(). Angles are in radians, lengths in
@@ -2091,6 +2390,9 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Undead) if look.is_knight() => {
                     knight(&mut p, angle, moving, pose, look.skin(), look == Look::CryptTitan);
                 }
+                Some(Build::Undead) if look == Look::Bloater => bloater(&mut p, swing, pose, look.skin()),
+                Some(Build::Undead) if look == Look::Ghoul => ghoul(&mut p, angle, swing, moving, pose, look.skin()),
+                Some(Build::Undead) if look == Look::Necromancer => necromancer(&mut p, swing, pose, look.skin()),
                 Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living(), look.arms()),
                 Some(Build::Burrower) => burrower(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wraith) => wraith(&mut p, angle, moving, pose, look.skin()),
@@ -2857,6 +3159,14 @@ impl Animal {
         if boss.buried() { BURIED_THROUGH } else { 1.0 }
     }
 
+    /// One of a pack roaming the country of its own, rather than keeping to a den: a monster of the
+    /// country, or the dead walking the woods. They wander in to make up the numbers, see
+    /// Game::recenter(). Those of dens take their den's place in the landscape as their key.
+    pub fn roams(&self) -> bool {
+        let wandering = self.boss.as_ref().is_some_and(|b| b.key[2] == -2);
+        self.look.is_wild() || wandering && matches!(self.look, Look::Zombie | Look::Ghoul | Look::Bloater | Look::Skeleton | Look::BoneArcher)
+    }
+
     /// How much health it has left, 0-1
     pub fn vitality(&self) -> f64 {
         self.health / self.look.health()
@@ -3269,6 +3579,9 @@ fn spawn_spaced(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>
     crowded
 }
 
+/// The health of a bloater that burst by itself, rather than being killed, see Game::reap()
+pub const BURST: f64 = -1.0e9;
+
 /// How close together the members of a pack turn up, in meters at most
 const SPACING: f64 = 0.9;
 
@@ -3345,6 +3658,9 @@ pub fn spawn(world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) ->
     animals
 }
 
+/// The dead roaming the green country, see spawn_wilds()
+const DEAD_PACKS: [&[Look]; 3] = [&[Look::Zombie, Look::Zombie, Look::Ghoul], &[Look::Zombie, Look::Bloater, Look::Zombie], &[Look::Skeleton, Look::BoneArcher, Look::Zombie]];
+
 /// How many packs of wolves, gangs of bandits and packs of the monsters of each kind of country
 /// roam the world at once
 const WOLF_PACKS: usize = 2;
@@ -3388,8 +3704,8 @@ pub fn spawn_gangs(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
 }
 
 /// `count` packs of the monsters of the country they turn up in, well away from the player at
-/// `near`: burrowers on desert sand, wraiths on the snow, tuskers in the green woods, and lurkers in
-/// the shallows of jungle waters
+/// `near`: burrowers on desert sand, wraiths on the snow, tuskers or the walking dead in the green
+/// woods, and lurkers in the shallows of jungle waters
 pub fn spawn_wilds(world: &World, water: WaterLevel, rng: &mut u32, near: Vector3<f64>, count: usize) -> Vec<Animal> {
     let vpm = world.voxels_per_meter as f64;
     let [sx, sy, _] = world.size.map(f64::from);
@@ -3408,6 +3724,12 @@ pub fn spawn_wilds(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
             let (look, at) = match world.material_at(x as i64, y as i64, z as i64 - 1) {
                 SAND | SANDSTONE | SANDSTONE_DARK => (Look::DuneBurrower, Vector3::new(x, y, z)),
                 SNOW | ICE => (Look::RimeWraith, Vector3::new(x, y, z)),
+                // Out in the green country, tuskers, or the dead walking in packs of their own
+                GRASS | DIRT if random(rng) < 0.4 => {
+                    let dead = DEAD_PACKS[(random(rng) * DEAD_PACKS.len() as f64) as usize % DEAD_PACKS.len()];
+                    packs.extend(spawn_pack(world, water, dead, Vector3::new(x, y, z), PACK_SPREAD, hash(*rng)));
+                    break;
+                }
                 GRASS | DIRT => (Look::Tusker, Vector3::new(x, y, z)),
                 // Lying in wait in the shallows, if there are any near
                 JUNGLE_GRASS if searches > 0 => {
@@ -3435,7 +3757,7 @@ mod tests {
     /// see, small enough for the shader, and inside the reach it's culled by
     #[test]
     fn new_monsters_have_whole_models_in_every_frame() {
-        let looks = [Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::GraveKnight, Look::CryptTitan];
+        let looks = [Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::GraveKnight, Look::CryptTitan, Look::Bloater, Look::Ghoul, Look::GraveBrute, Look::BoneArcher, Look::Necromancer];
         for look in looks {
             assert!(look.build().is_some(), "{look:?} isn't a boss or a monster");
             for frame in (0..FRAMES).filter(|&f| shown(look, f)) {

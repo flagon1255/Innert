@@ -806,6 +806,29 @@ impl Terrain {
         (objects, rects)
     }
 
+    /// Where the castles reaching into rectangle `r` are, each x0, y0, x1, y1 in meters, for fallen
+    /// cities to keep clear of, see undercity.rs
+    pub(super) fn castles_near(&self, r: [f32; 4], cache: &RiverCache) -> Vec<[f32; 4]> {
+        let first = [0, 1].map(|i| ((r[i] - CASTLE_REACH) / CASTLE_CELL).floor() as i32);
+        let last = [0, 1].map(|i| ((r[i + 2] + CASTLE_REACH) / CASTLE_CELL).floor() as i32);
+        let mut found = Vec::new();
+        for cy in first[1]..=last[1] {
+            for cx in first[0]..=last[0] {
+                let (x0, y0) = (cx as f32 * CASTLE_CELL, cy as f32 * CASTLE_CELL);
+                let could = [x0 + 0.2 * CASTLE_CELL - CASTLE_REACH, y0 + 0.2 * CASTLE_CELL - CASTLE_REACH, x0 + 0.8 * CASTLE_CELL + CASTLE_REACH, y0 + 0.8 * CASTLE_CELL + CASTLE_REACH];
+                if !overlaps(could, r, 0.0) {
+                    continue;
+                }
+                if let Some(castle) = self.castle_in(cx, cy, cache)
+                    && overlaps(castle.bounds, r, 0.0)
+                {
+                    found.push(castle.bounds);
+                }
+            }
+        }
+        found
+    }
+
     /// The nearest royal castle to `near` within a few kilometers, for trying them out, of `size`
     /// if that's "small", "medium" or "large"
     #[allow(dead_code)]

@@ -6,8 +6,11 @@ use std::thread;
 mod camps;
 mod castles;
 mod towns;
+mod undercity;
 
 pub use camps::{Camp, CampKind, camp_spots};
+#[allow(unused_imports)]
+pub use undercity::Sunken;
 
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
 pub mod material {
@@ -1097,6 +1100,30 @@ impl Shape {
             return d < 1.0 + big * margin;
         }
         d < 1.0 + (big + cave_knobs(p)).clamp(-1.0, 1.0) * margin
+    }
+
+    /// Whether none of it, roughness and all, comes within `m` meters of `p`: worked out from how
+    /// fast its depth can change, so it's sure but not tight, as for telling quickly that a brick
+    /// deep in the rock is nowhere near it
+    fn clear_of(&self, p: Vec3, m: f32) -> bool {
+        let m = m + self.rough;
+        if (0..3).any(|i| p[i] < self.min[i] - m || p[i] > self.max[i] + m) {
+            return true;
+        }
+        let d = sub(p, self.a);
+        if let Some(half) = &self.boxed {
+            return (0..3).any(|i| d[i].abs() > half[i] + m);
+        }
+        if let Some((axes, half)) = &self.flat {
+            let least = half[0].min(half[1]).min(half[2]).max(1e-3);
+            let out = (0..3).map(|i| (dot(axes[i], d) / half[i].max(1e-3)).powi(2)).sum::<f32>().sqrt();
+            return out > 1.0 + m / least;
+        }
+        let ab = sub(self.b, self.a);
+        let length2 = dot(ab, ab);
+        let t = if length2 > 0.0 { (dot(d, ab) / length2).clamp(0.0, 1.0) } else { 0.0 };
+        let e = sub(d, scale(ab, t));
+        dot(e, e).sqrt() > self.radius_a.max(self.radius_b) + m
     }
 
     /// A long, thin, upright ellipsoid going `along` (level), `length` long, `width` wide and
@@ -2628,6 +2655,19 @@ impl Terrain {
                 cells.push((index, SOLID_BRICK | STONE as u32));
                 continue;
             }
+            // Trees, plants, rocks and buildings above the ground, and caves and rooms cut into it
+            let (z_lo, z_hi) = ((z0 - 1) as f32 * voxel, (z0 + 9) as f32 * voxel);
+            nearby.clear();
+            nearby.extend(shapes.iter().filter(|(s, _)| s.max[2] >= z_lo && s.min[2] <= z_hi));
+            // Deep in the rock and nowhere near anything cut out of it, however deep what's cut out
+            // of the ground nearby goes: plain stone, as nothing can see it, rather than layers of
+            // rock that each take a brick of their own
+            let middle = [(heights.origin[0] + (cx * 8) as i64) as f32 + 4.0, (heights.origin[1] + (cy * 8) as i64) as f32 + 4.0, z0 as f32 + 4.0].map(|v| v * voxel);
+            let deep = z0 + 7 < min_height - dirt_depth;
+            if deep && nearby.iter().all(|(s, _)| s.clear_of(middle, 8.5 * voxel)) {
+                cells.push((index, SOLID_BRICK | STONE as u32));
+                continue;
+            }
 
             for lz in 0..8 {
                 for ly in 0..8 {
@@ -2637,10 +2677,6 @@ impl Terrain {
                 }
             }
 
-            // Trees, plants, rocks and buildings above the ground, and caves and rooms cut into it
-            let (z_lo, z_hi) = ((z0 - 1) as f32 * voxel, (z0 + 9) as f32 * voxel);
-            nearby.clear();
-            nearby.extend(shapes.iter().filter(|(s, _)| s.max[2] >= z_lo && s.min[2] <= z_hi));
             let cuts = nearby.iter().any(|(s, _)| s.placement != Placement::Above);
             // A brick wholly inside solid stone all of one kind, like that inside a castle's walls,
             // needn't be looked at voxel by voxel
@@ -2890,14 +2926,19 @@ impl Terrain {
         // Royal castles keep clear of all those and of caves themselves, see castles.rs
         let (castles, royal) = self.castles(rivers, &mut features);
         objects.extend(castles);
-        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).collect();
+        // Fallen cities deep under the land keep clear of all those themselves, and no cave or
+        // ravine breaks into them, see undercity.rs
+        let (sunken, cities, shafts) = self.undercities(rivers, &mut features);
+        objects.extend(sunken);
+        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).collect();
         objects.extend(self.buildings(heights, &mut features, &keep_out));
         for dungeon in &dungeons {
             objects.push(self.dungeon(dungeon, &mut features));
         }
-        objects.extend(self.caves(&mut features, &royal));
+        let shut: Vec<[f32; 4]> = royal.iter().chain(&cities).copied().collect();
+        objects.extend(self.caves(&mut features, &royal, &cities));
         objects.extend(self.waterfall_caves(&mut features));
-        objects.extend(self.ravines(&mut features, &royal));
+        objects.extend(self.ravines(&mut features, &shut));
         let camps = self.camps(heights, &mut features, &keep_out, &objects);
         objects.extend(camps);
         let footprints = std::mem::take(&mut features.footprints);
@@ -3641,7 +3682,7 @@ impl Terrain {
     /// into caverns along the way. Most open onto the hillside, and in those the last cavern is a
     /// great one where a boss makes its lair: "cavern", at the middle of its floor, facing the
     /// way in.
-    fn caves(&self, features: &mut Features, royal: &[[f32; 4]]) -> Vec<Object> {
+    fn caves(&self, features: &mut Features, royal: &[[f32; 4]], cities: &[[f32; 4]]) -> Vec<Object> {
         let (lo, hi) = (self.lo, self.hi);
         let mut objects = Vec::new();
         let first = [((lo[0] - CAVE_REACH) / CAVE_CELL).floor() as i32, ((lo[1] - CAVE_REACH) / CAVE_CELL).floor() as i32];
@@ -3654,6 +3695,11 @@ impl Terrain {
                 // Far out, it's only what reaches into this piece that matters. None breaks out of
                 // the ground inside a royal castle, see castles.rs.
                 if !overlaps([lo[0], lo[1], hi[0], hi[1]], cave.bounds, 0.0) || royal.iter().any(|r| self.breaks_into(&cave, *r)) {
+                    continue;
+                }
+                // Nor anywhere under a fallen city, see undercity.rs
+                let under = |r: &[f32; 4]| overlaps(cave.bounds, *r, 0.0) && cave.shapes.iter().any(|s| s.placement == Placement::Carve && overlaps([s.min[0], s.min[1], s.max[0], s.max[1]], *r, 2.0));
+                if cities.iter().any(under) {
                     continue;
                 }
                 features.lights.extend(cave.lights.into_iter().filter(|l| self.inside(l.position[0], l.position[1])));
@@ -5339,7 +5385,8 @@ mod tests {
         let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
         let cache = RiverCache::default();
         let side = 224 * 16;
-        for origin in [[0, 0], [side, 0], [0, side], [-side, -side], [2 * side, side]] {
+        // The last round the fallen city nearest the start, see undercity.rs
+        for origin in [[0, 0], [side, 0], [0, side], [-side, -side], [2 * side, side], [2560, 13312]] {
             generate_terrain(&settings, origin, &cache);
         }
     }
