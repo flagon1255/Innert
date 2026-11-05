@@ -275,6 +275,8 @@ pub enum DenKind {
     Roost,
     /// Desert ruins burrowers have dug in round
     Burrows,
+    /// A castle fallen to the dead: its gate, courtyard, great hall and throne room
+    Fallen,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -1044,6 +1046,12 @@ impl Game {
                     &band
                 }
                 DenKind::Burrows => &[Look::DuneBurrower; 3],
+                // More of them than in a dungeon's hall, the dead in armour among them
+                DenKind::Fallen => match seed % 3 {
+                    0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton, Look::Zombie, Look::Zombie],
+                    1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie, Look::Skeleton, Look::ArmoredSkeleton],
+                    _ => &[Look::ArmoredSkeleton, Look::Skeleton, Look::ArmoredZombie, Look::Zombie, Look::Skeleton, Look::Zombie],
+                },
                 DenKind::Hall => match seed % 4 {
                     0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
                     1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],

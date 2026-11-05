@@ -21,6 +21,9 @@ const CASTLE_REACH: f32 = 125.0;
 /// How many squares have a castle where the land suits, and how many spots are tried in each:
 /// smaller castles fit more places, so it's less likely than it would be for large ones alone
 const CASTLE_CHANCE: f32 = 0.65;
+/// How many castles have fallen to the dead: no princess, no guards, their windows dark, and
+/// the dead walking their halls round a Grave Knight on the throne
+const FALLEN_CASTLES: f32 = 0.35;
 const SPOTS: u32 = 96;
 /// The least the tallest spire of the largest castles rises over the inner ward, in meters
 const LEAST_HEIGHT: f32 = 28.0;
@@ -612,6 +615,8 @@ struct Castle {
     /// Where it all is, x0, y0, x1, y1 in meters
     bounds: [f32; 4],
     seed: u32,
+    /// Fallen to the dead, see FALLEN_CASTLES
+    fallen: bool,
 }
 
 /// Where to look at a royal castle from and what's in it, for trying them out, in meters
@@ -814,7 +819,14 @@ impl Terrain {
                     if (cx - home[0]).abs().max((cy - home[1]).abs()) != ring {
                         continue;
                     }
-                    if let Some(castle) = self.castle_in(cx, cy, &cache).filter(|c| size.is_none_or(|s| s == c.size.name())) {
+                    // Or "fallen" for one fallen to the dead, "living" for one the princess keeps
+                    let wanted = |c: &Castle| match size {
+                        None => true,
+                        Some("fallen") => c.fallen,
+                        Some("living") => !c.fallen,
+                        Some(s) => s == c.size.name(),
+                    };
+                    if let Some(castle) = self.castle_in(cx, cy, &cache).filter(wanted) {
                         let m = castle.at.point((castle.front + castle.back) * 0.5, 0.0, 0.0);
                         let distance = (m[0] - near[0]).hypot(m[1] - near[1]);
                         if best.as_ref().is_none_or(|(b, _)| distance < *b) {
@@ -828,7 +840,7 @@ impl Terrain {
             }
         }
         best.map(|(distance, c)| {
-            println!("The nearest {} royal castle is {distance:.0} m away, {} towers, its ward {:.0} by {:.0} m", c.size.name(), c.towers.len(), c.range - c.keep[0], 2.0 * c.ward_half);
+            println!("The nearest {} {} castle is {distance:.0} m away, {} towers, its ward {:.0} by {:.0} m", c.size.name(), if c.fallen { "fallen" } else { "royal" }, c.towers.len(), c.range - c.keep[0], 2.0 * c.ward_half);
             c.royal()
         })
     }
@@ -906,6 +918,7 @@ impl Terrain {
         let sea = sea_level_m(&settings);
         let ground = |x: f32, y: f32| height_at(&settings, x, y);
         let mut rng = Rng(seed);
+        let fallen = unit(hash3(seed, 0xdead, 0x7)) < FALLEN_CASTLES;
         let k = size.reach();
         // The gate on the low side, so the way up to it comes up the hill
         let f = WAYS
@@ -1132,7 +1145,14 @@ impl Terrain {
         Some(Castle {
             at,
             settings,
-            stones: Stones::of(c, &mut rng),
+            // A fallen castle's windows are all dark
+            stones: {
+                let mut stones = Stones::of(c, &mut rng);
+                if fallen {
+                    stones.glass = OBSIDIAN;
+                }
+                stones
+            },
             size,
             sky,
             ward,
@@ -1163,6 +1183,7 @@ impl Terrain {
             bridges,
             bounds: [lo[0], lo[1], hi[0], hi[1]],
             seed: hash(seed ^ 0xca5e),
+            fallen,
         })
     }
 
@@ -1391,6 +1412,19 @@ impl Castle {
             }
         };
         let (tu0, _, tv) = self.throne_room_box();
+        if self.fallen {
+            // The dead at the gate, in the courtyard and the great hall, a Grave Knight in the
+            // throne room, and what the court left behind by the throne
+            site("fallen castle", at.point(self.front + 3.0, 0.0, self.gate_floor), [1.0, 0.0]);
+            site("fallen court", at.point((self.court * 0.5 + 4.5).min(self.court - 1.5), 0.0, self.ward), [1.0, 0.0]);
+            site("fallen hall", at.point(self.keep[1] * 0.5, 0.0, self.ward), [1.0, 0.0]);
+            site("fallen throne", at.point(tu0 + 4.0, 0.0, self.throne), [1.0, 0.0]);
+            let hoard = self.princess();
+            if t.inside(hoard[0], hoard[1]) {
+                chest(features, hoard, at.heading(0.0), 4.5);
+            }
+            return objects;
+        }
         site("royal castle", at.point(self.front + 2.0, 0.0, self.gate_floor), [1.0, 0.0]);
         site("royal court", at.point((self.court * 0.5 + 4.5).min(self.court - 1.5), 0.0, self.ward), [1.0, 0.0]);
         site("royal stall", self.princess(), [1.0, 0.0]);

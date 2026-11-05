@@ -1997,7 +1997,7 @@ impl App {
                 // Every dungeon's deepest hall has its Grave Knight, and every great cavern of a
                 // cave its boss; only some ruins have one, and some bandits' camps a warlord, more
                 // of the forts than the others, see worldgen\camps.rs
-                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp") {
+                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne") {
                     return None;
                 }
                 let look = match site.kind {
@@ -2007,7 +2007,8 @@ impl App {
                     "castle" if pick % 5 == 0 => animals::Look::Colossus,
                     "pyramid" if pick % 5 == 0 => animals::Look::ElderWyrm,
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
-                    "dungeon" => animals::Look::GraveKnight,
+                    // A castle fallen to the dead has one on its throne
+                    "dungeon" | "fallen throne" => animals::Look::GraveKnight,
                     "castle" if pick % 3 == 1 => animals::Look::Ironhide,
                     "castle" if pick % 3 == 2 => animals::Look::GraveKnight,
                     "castle" | "desert ruins" => animals::Look::Golem,
@@ -2027,7 +2028,7 @@ impl App {
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
@@ -2055,6 +2056,7 @@ impl App {
                     ),
                     "ravine" => (game::DenKind::Roost, 0.0, None),
                     "desert ruins" | "pyramid" => (game::DenKind::Burrows, 12.0, None),
+                    "fallen castle" | "fallen court" | "fallen hall" | "fallen throne" => (game::DenKind::Fallen, 0.0, None),
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
@@ -2078,7 +2080,7 @@ impl App {
                     return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
