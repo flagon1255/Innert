@@ -78,6 +78,17 @@ pub enum Look {
     /// guards standing at its gate and by her throne, see src\worldgen\castles.rs
     Princess,
     RoyalGuard,
+    // More monsters, each to its own kind of country: bandits who hang back with crossbows or
+    // hold the line behind a shield, burrowers under the desert sand, wraiths drifting over the
+    // snow, lurkers lying in wait in the jungle's shallows, gloomwings swarming in caves and
+    // ravines, and tuskers charging through the woods
+    Crossbowman,
+    Shieldbearer,
+    DuneBurrower,
+    RimeWraith,
+    MireLurker,
+    Gloomwing,
+    Tusker,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -91,6 +102,25 @@ pub enum Build {
     Wolf,
     /// Walking dead, bones or rotting flesh, maybe in armor
     Undead,
+    /// Low and many-legged, with pincers and a stinging tail, digging through sand
+    Burrower,
+    /// A shroud drifting over the ground with nothing under it
+    Wraith,
+    /// Squat and broad, crawling, with a mouth as wide as its head
+    Lurker,
+    /// Flying on leathery wings
+    Bat,
+    /// A great heavy beast on four legs, with tusks
+    Boar,
+}
+
+/// What a walking dead or a bandit has in its hands
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arms {
+    Blade,
+    Crossbow,
+    /// A round shield on one arm and a mace in the other hand
+    Shield,
 }
 
 /// The materials a boss is made of: its body, darker parts, things on it, what glows, and one
@@ -105,7 +135,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 46] = [
+    pub const ALL: [Look; 53] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -152,11 +182,59 @@ impl Look {
         Look::Townswoman,
         Look::Princess,
         Look::RoyalGuard,
+        Look::Crossbowman,
+        Look::Shieldbearer,
+        Look::DuneBurrower,
+        Look::RimeWraith,
+        Look::MireLurker,
+        Look::Gloomwing,
+        Look::Tusker,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
     pub fn is_boss(self) -> bool {
         self.build().is_some() && !self.is_monster()
+    }
+
+    /// One of a bandit gang, warlords aside
+    pub fn is_bandit(self) -> bool {
+        matches!(self, Look::Bandit | Look::BanditBrute | Look::Crossbowman | Look::Shieldbearer)
+    }
+
+    /// A monster roaming its own kind of country in packs, like wolves do, rather than keeping to
+    /// a den: burrowers in the desert, wraiths on the snow, lurkers in the jungle and tuskers in
+    /// the woods
+    pub fn is_wild(self) -> bool {
+        matches!(self, Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Tusker)
+    }
+
+    /// A beast rather than a person or the dead, with nothing on it worth taking
+    pub fn is_beast(self) -> bool {
+        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker)
+    }
+
+    /// How deep the water it'll wade through can be, in meters: any for what flies over it
+    pub fn wade(self) -> f64 {
+        match self {
+            Look::MireLurker => 1.2,
+            _ if self.flies() => 1000.0,
+            _ => 0.2,
+        }
+    }
+
+    /// Flying, over water as well as land
+    pub fn flies(self) -> bool {
+        self == Look::Gloomwing
+    }
+
+    /// How many of it go about together, when it goes about in a pack of its own kind
+    pub fn pack_size(self) -> usize {
+        match self {
+            Look::Gloomwing => 5,
+            Look::Spiderling => 4,
+            Look::MireLurker | Look::Tusker => 2,
+            _ => 3,
+        }
     }
 
     /// A raid boss: far bigger and tougher than the rest, fought in three phases
@@ -167,11 +245,21 @@ impl Look {
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
     pub fn is_monster(self) -> bool {
         matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling | Look::Bandit | Look::BanditBrute)
+            || matches!(self, Look::Crossbowman | Look::Shieldbearer | Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Gloomwing | Look::Tusker)
     }
 
     /// A living person, for bandits: upright, a face under a hood or a helm
     fn living(self) -> bool {
-        matches!(self, Look::Bandit | Look::BanditBrute | Look::Warlord)
+        matches!(self, Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman | Look::Shieldbearer)
+    }
+
+    /// What it has in its hands, for the walking dead and bandits
+    fn arms(self) -> Arms {
+        match self {
+            Look::Crossbowman => Arms::Crossbow,
+            Look::Shieldbearer => Arms::Shield,
+            _ => Arms::Blade,
+        }
     }
 
     /// How a boss or monster moves and fights, None for an animal or a thing
@@ -185,7 +273,12 @@ impl Look {
             Look::Direwolf | Look::WinterAlpha | Look::Wolf => Build::Wolf,
             Look::GraveKnight | Look::CryptTitan | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => Build::Undead,
             // Bandits move and fight as the dead in armor do, but alive
-            Look::Bandit | Look::BanditBrute | Look::Warlord => Build::Undead,
+            Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman | Look::Shieldbearer => Build::Undead,
+            Look::DuneBurrower => Build::Burrower,
+            Look::RimeWraith => Build::Wraith,
+            Look::MireLurker => Build::Lurker,
+            Look::Gloomwing => Build::Bat,
+            Look::Tusker => Build::Boar,
             _ => return None,
         })
     }
@@ -198,6 +291,8 @@ impl Look {
             Look::GraveKnight => 2.3,
             Look::Warlord => 1.7,
             Look::BanditBrute => 1.12,
+            Look::Shieldbearer => 1.06,
+            Look::DuneBurrower => 1.15,
             Look::Spiderling => 0.5,
             // Raid bosses tower over the rest of their kind; the Crypt Titan fits under the roof
             // of a dungeon's deepest hall, just
@@ -237,7 +332,7 @@ impl Look {
 
     /// Wearing armor, for the walking dead
     fn armored(self) -> bool {
-        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan | Look::BanditBrute | Look::Warlord)
+        matches!(self, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan | Look::BanditBrute | Look::Warlord | Look::Shieldbearer)
     }
 
     /// What its attacks are made of: what a drake breathes, what a golem's blows leave behind
@@ -246,7 +341,8 @@ impl Look {
             Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
             Look::MagmaGolem | Look::Drake | Look::ElderWyrm => Some(Element::Fire),
             Look::CryptTitan => Some(Element::Void),
-            Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie => Some(Element::Poison),
+            Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie | Look::DuneBurrower => Some(Element::Poison),
+            Look::RimeWraith => Some(Element::Frost),
             Look::GraveKnight => Some(Element::Void),
             Look::StormDrake => Some(Element::Storm),
             _ => None,
@@ -309,6 +405,22 @@ impl Look {
             Look::Bandit => make(FUR_TAN, LEATHER, CLOTH, EYE, STEEL),
             Look::BanditBrute => make(FUR_TAN, LEATHER, DARK_STEEL, EYE, STEEL),
             Look::Warlord => make(FUR_TAN, TEMPLE_RED, BRONZE, EYE, DARK_STEEL),
+            // A crossbowman in a green jerkin and a dark hat, and a shieldbearer in blackened iron
+            // over leather, a mace in hand
+            Look::Crossbowman => make(FUR_TAN, BARK_DARK, MOSS, EYE, WOOD),
+            Look::Shieldbearer => make(FUR_TAN, LEATHER, DARK_STEEL, EYE, STEEL),
+            // Plates the color of the sand, banded darker, its stinger glowing with venom and its
+            // pincers tipped black
+            Look::DuneBurrower => make(SANDSTONE, SANDSTONE_DARK, BRONZE, GLOW_POISON, OBSIDIAN),
+            // Dark rags, so it shows against the snow, with frost-blue light in its eyes and ice
+            // for claws and a crown
+            Look::RimeWraith => make(DARK_STEEL, OBSIDIAN, TEMPLE_TEAL, GLOW_FROST, ICE),
+            // Mossy green hide, a pale belly, gold eyes and a red tongue
+            Look::MireLurker => make(MOSS, PINE, FUR_CREAM, GOLD, FUR_RED),
+            // Dark fur, leathery wings on dark finger bones, red eyes and a pale bony snout
+            Look::Gloomwing => make(FUR_DARK, LEATHER, BARK_DARK, GLOW_BLOOD, BONE),
+            // Brown hide, black bristles and hooves, a tan snout, red eyes and bone tusks
+            Look::Tusker => make(FUR_BROWN, FUR_DARK, FUR_TAN, GLOW_FIRE, BONE),
             _ => make(ROCK, GRAVEL, MOSS, GLOW_FROST, CRYSTAL),
         }
     }
@@ -352,7 +464,17 @@ impl Look {
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
             // A blade raised overhead
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => 2.5 * self.scale(),
-            Look::Bandit | Look::BanditBrute | Look::Warlord => 2.5 * self.scale(),
+            Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman => 2.5 * self.scale(),
+            // A mace raised high over its shield
+            Look::Shieldbearer => 2.6 * self.scale(),
+            // Its stinger whipped over its head, or laid out behind as it digs
+            Look::DuneBurrower => 1.9 * self.scale(),
+            // Up to its claws raised high, drifting over the ground
+            Look::RimeWraith => 2.7,
+            Look::MireLurker => 1.5,
+            // Flying, its wings up
+            Look::Gloomwing => 2.4,
+            Look::Tusker => 1.95,
         }
     }
 
@@ -379,7 +501,13 @@ impl Look {
             Look::Treant => (2.4, 1.2),
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => (0.55 * self.scale(), 0.42 * self.scale()),
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => (1.0 * self.scale(), 0.36 * self.scale()),
-            Look::Bandit | Look::BanditBrute | Look::Warlord => (1.0 * self.scale(), 0.36 * self.scale()),
+            Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman | Look::Shieldbearer => (1.0 * self.scale(), 0.36 * self.scale()),
+            Look::DuneBurrower => (0.4 * self.scale(), 0.6 * self.scale()),
+            Look::RimeWraith => (1.4, 0.42),
+            Look::MireLurker => (0.42, 0.62),
+            // Up where it flies
+            Look::Gloomwing => (1.65, 0.34),
+            Look::Tusker => (0.85, 0.74),
         }
     }
 
@@ -428,6 +556,13 @@ impl Look {
             Look::Bandit => "bandit",
             Look::BanditBrute => "bandit brute",
             Look::Warlord => "Bandit Warlord",
+            Look::Crossbowman => "bandit crossbowman",
+            Look::Shieldbearer => "bandit shieldbearer",
+            Look::DuneBurrower => "dune burrower",
+            Look::RimeWraith => "rime wraith",
+            Look::MireLurker => "mire lurker",
+            Look::Gloomwing => "gloomwing",
+            Look::Tusker => "tusker",
         }
     }
 
@@ -479,6 +614,13 @@ impl Look {
             Look::Bandit => 130.0,
             Look::BanditBrute => 240.0,
             Look::Warlord => 3000.0,
+            Look::Crossbowman => 100.0,
+            Look::Shieldbearer => 260.0,
+            Look::DuneBurrower => 170.0,
+            Look::RimeWraith => 120.0,
+            Look::MireLurker => 230.0,
+            Look::Gloomwing => 30.0,
+            Look::Tusker => 320.0,
             _ => 20.0,
         }
     }
@@ -488,7 +630,8 @@ impl Look {
     pub fn meat(self) -> u32 {
         match self {
             Look::Bear => 3,
-            Look::Squirrel | Look::Wolf => 1,
+            Look::Tusker => 2,
+            Look::Squirrel | Look::Wolf | Look::MireLurker => 1,
             Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => 6,
             _ => 0,
         }
@@ -505,8 +648,10 @@ impl Look {
             Look::Zombie | Look::ArmoredZombie => return 0.8,
             Look::Skeleton | Look::ArmoredSkeleton => return 1.4,
             Look::Spiderling => return 2.6,
-            Look::Bandit => return 1.5,
+            Look::Bandit | Look::Crossbowman => return 1.5,
             Look::BanditBrute => return 1.2,
+            // Edging forward behind its shield
+            Look::Shieldbearer => return 1.3,
             Look::Warlord => return 1.4,
             _ => {}
         }
@@ -517,6 +662,11 @@ impl Look {
             Some(Build::Treant) => 0.9,
             Some(Build::Wolf) => 1.8,
             Some(Build::Undead) => 1.2,
+            Some(Build::Burrower) => 1.4,
+            Some(Build::Wraith) => 1.3,
+            Some(Build::Lurker) => 1.0,
+            Some(Build::Bat) => 2.5,
+            Some(Build::Boar) => 1.3,
             None => match self {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
@@ -543,7 +693,9 @@ impl Look {
             Look::Spiderling => return 7.0,
             // Quicker than the dead, and they come running
             Look::Bandit => return 4.2,
+            Look::Crossbowman => return 4.0,
             Look::BanditBrute => return 3.0,
+            Look::Shieldbearer => return 2.6,
             Look::Warlord => return 3.4,
             _ => {}
         }
@@ -556,6 +708,12 @@ impl Look {
             Some(Build::Treant) => 1.6,
             Some(Build::Wolf) => 6.5,
             Some(Build::Undead) => 3.0,
+            Some(Build::Burrower) => 3.8,
+            Some(Build::Wraith) => 3.4,
+            // Lunging along in bursts
+            Some(Build::Lurker) => 4.4,
+            Some(Build::Bat) => 7.5,
+            Some(Build::Boar) => 5.2,
             None => match self {
                 Look::Bear => 3.2,
                 Look::Dog => 4.5,
@@ -574,6 +732,12 @@ impl Look {
             Some(Build::Treant) => 2.8,
             Some(Build::Wolf) => 1.4 * self.scale(),
             Some(Build::Undead) => 1.3 * self.scale(),
+            Some(Build::Burrower) => 0.9 * self.scale(),
+            // A slow drift, rising and falling
+            Some(Build::Wraith) => 2.4,
+            Some(Build::Lurker) => 1.2,
+            Some(Build::Bat) => 1.6,
+            Some(Build::Boar) => 1.9,
             None => match self {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
@@ -589,6 +753,9 @@ impl Look {
         match self {
             Look::Dog => 0.4,
             _ if self.is_boss() => 1.0,
+            // Flying, or drifting over it
+            Look::Gloomwing | Look::RimeWraith => 1.0,
+            Look::Tusker | Look::DuneBurrower => 0.6,
             _ => 0.5,
         }
     }
@@ -1039,12 +1206,15 @@ fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin
 /// The walking dead, about 1.8 meters tall: bones or rotting flesh in rags, maybe in armor, eyes
 /// burning, a blade in the right hand. It raises the blade overhead and brings it down; zombies
 /// shamble with their arms out. `living`, it's a bandit: standing straight, a face under a hood or
-/// a helm, a scarf over its mouth, a shirt or armor, and a cloak if it's armored.
-fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, armored: bool, living: bool) {
+/// a helm, a scarf over its mouth, a shirt or armor, and a cloak if it's armored. `arms` is what it
+/// holds: a blade, a crossbow it raises to its shoulder to aim and points at the ground to span
+/// again, or a round shield it holds up in front and a mace it brings down over the top of it.
+#[allow(clippy::too_many_arguments)]
+fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, armored: bool, living: bool, arms: Arms) {
     let (flesh, dark, glow) = (skin.body, skin.dark, skin.glow);
     // Leaning into a blow, and hunched as zombies are
     let hunch = if bony || living { 0.0 } else { 0.08 };
-    let lean = pose.mix(hunch, hunch - 0.05, hunch + 0.22, hunch + 0.05);
+    let lean = if arms == Arms::Crossbow { pose.mix(0.0, 0.03, -0.02, 0.1) } else { pose.mix(hunch, hunch - 0.05, hunch + 0.22, hunch + 0.05) };
     let up = |v: Vec3| [v[0] + lean * (v[2] - 0.9).max(0.0), v[1], v[2]];
     let limb_r = if bony { 0.045 } else { 0.07 };
     // Its head: a skull with burning sockets, or a rotting face, or a living one
@@ -1055,7 +1225,13 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
         }
         p.push(ellipsoid([head[0] + 0.07, 0.0, head[2] - 0.06], [0.07, 0.1, 0.05], skin.accent));
         p.push(ball([head[0] + 0.02, 0.0, head[2]], 0.12, flesh));
-        if armored {
+        if arms == Arms::Crossbow {
+            // A broad-brimmed hat pulled low, a band round it
+            p.push(ellipsoid([head[0] - 0.01, 0.0, head[2] + 0.115], [0.12, 0.12, 0.03], BRONZE));
+            p.push(ellipsoid([head[0] - 0.01, 0.0, head[2] + 0.15], [0.11, 0.11, 0.07], dark));
+            p.push(ellipsoid([head[0] + 0.0, 0.0, head[2] + 0.09], [0.24, 0.23, 0.022], dark));
+            p.push(ellipsoid([head[0] - 0.05, 0.0, head[2] + 0.0], [0.11, 0.135, 0.11], dark));
+        } else if armored {
             // A helm, open at the face, with a crest
             p.push(ellipsoid([head[0] - 0.04, 0.0, head[2] + 0.05], [0.15, 0.15, 0.15], skin.accent));
             p.push(limb([head[0] - 0.12, 0.0, head[2] + 0.12], [head[0] + 0.05, 0.0, head[2] + 0.2], 0.03, 0.02, dark));
@@ -1097,29 +1273,359 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
     p.push(ellipsoid([0.0, 0.0, 0.92], [0.1, 0.15, 0.07], if armored { skin.accent } else { dark }));
     // Sleeves on the living, armor on the armored
     let upper = if armored || living { skin.accent } else { flesh };
-    // The blade arm: hanging, raised overhead behind, or brought down in front
-    let shoulder = up([0.0, -0.22, 1.42]);
-    let zombie_reach = if bony || living { 0.0 } else { 0.35 };
-    let elbow = pose.at([0.05 + zombie_reach - 0.15 * swing, -0.26, 1.15 + zombie_reach * 0.5], [-0.08, -0.3, 1.65], [0.38, -0.2, 1.3], [0.1, -0.32, 1.55]);
-    let hand = pose.at([0.2 + zombie_reach * 1.4 - 0.25 * swing, -0.25, 0.95 + zombie_reach], [-0.18, -0.24, 2.0], [0.62, -0.1, 1.0], [0.3, -0.28, 1.9]);
-    let blade = pose.at([0.55, 0.0, -0.75], [-0.5, 0.05, 0.85], [0.92, 0.1, -0.35], [0.3, 0.0, 0.95]);
-    let n = (blade[0] * blade[0] + blade[1] * blade[1] + blade[2] * blade[2]).sqrt().max(0.1);
-    let tip = [0, 1, 2].map(|i| hand[i] + blade[i] / n * 0.85);
-    p.push(limb(hand, tip, 0.03, 0.012, skin.extra));
-    p.push(limb([hand[0] - blade[1] / n * 0.1, hand[1] - 0.09, hand[2]], [hand[0] + blade[1] / n * 0.1, hand[1] + 0.09, hand[2]], 0.025, 0.025, DARK_STEEL));
-    p.push(ball(hand, limb_r * 1.1, flesh));
-    p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
-    // The other arm swinging, reaching out for a zombie, thrown out for balance as it strikes
-    let shoulder = up([0.0, 0.22, 1.42]);
-    let elbow = pose.at([0.05 + zombie_reach + 0.15 * swing, 0.26, 1.15 + zombie_reach * 0.5], [0.2, 0.3, 1.3], [-0.12, 0.3, 1.2], [0.1, 0.32, 1.55]);
-    let hand = pose.at([0.15 + zombie_reach * 1.4 + 0.25 * swing, 0.27, 0.95 + zombie_reach], [0.42, 0.26, 1.35], [-0.25, 0.32, 1.0], [0.3, 0.28, 1.9]);
-    p.push(ball(hand, limb_r * 1.1, flesh));
-    p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-    p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+    // An arm from `shoulder` to `hand`, its elbow out to the side and down
+    let arm = |p: &mut Vec<Part>, shoulder: Vec3, hand: Vec3, out: f64| {
+        let elbow = [(shoulder[0] + hand[0]) * 0.5 - 0.06, (shoulder[1] + hand[1]) * 0.5 + out, (shoulder[2] + hand[2]) * 0.5 - 0.12];
+        p.push(ball(hand, limb_r * 1.1, flesh));
+        p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
+        p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+    };
+    if arms == Arms::Crossbow {
+        // Held low across it, raised to the shoulder to aim, kicking up as it looses, and pointed
+        // at the ground as it's spanned again
+        let stock = up(pose.at([0.1, -0.12, 1.0], [0.04, -0.13, 1.42], [0.04, -0.13, 1.44], [0.16, -0.08, 1.02]));
+        let tip = up(pose.at([0.6, -0.02, 1.12], [0.76, -0.04, 1.44], [0.72, -0.04, 1.6], [0.38, -0.06, 0.48]));
+        let along = Vector3::from(tip) - Vector3::from(stock);
+        let dir = along.normalize();
+        let side = Vector3::new(-dir.y, dir.x, 0.0).try_normalize(1e-6).unwrap_or(Vector3::y());
+        let at = |f: f64, s: f64, u: f64| -> Vec3 { (Vector3::from(stock) + dir * f * along.norm() + side * s + Vector3::z() * u).into() };
+        // The prod across its end, the string drawn back to the latch, and a bolt on it unless
+        // it's just been loosed
+        let ends = [at(0.93, 0.27, 0.0), at(0.93, -0.27, 0.0)];
+        let latch = if pose.strike > 0.5 { at(0.9, 0.0, 0.01) } else { at(0.5, 0.0, 0.02) };
+        for end in ends {
+            p.push(limb(at(1.0, 0.0, 0.0), end, 0.026, 0.016, DARK_STEEL));
+            p.push(limb(end, latch, 0.008, 0.008, BOWSTRING));
+        }
+        if pose.strike < 0.5 {
+            p.push(limb(at(0.5, 0.0, 0.035), at(1.06, 0.0, 0.035), 0.014, 0.012, STEEL));
+        }
+        p.push(limb(stock, tip, 0.04, 0.03, skin.extra));
+        // A quiver of bolts on its back
+        for k in 0..3 {
+            p.push(ball(up([-0.2, 0.1 + 0.035 * k as f64, 1.48]), 0.025, LINEN));
+        }
+        p.push(limb(up([-0.17, 0.1, 0.92]), up([-0.2, 0.13, 1.44]), 0.05, 0.055, LEATHER));
+        // One hand at the trigger, the other holding it up under its middle
+        arm(p, up([0.0, -0.22, 1.42]), at(0.12, -0.02, -0.03), -0.06);
+        arm(p, up([0.0, 0.22, 1.42]), at(0.5, 0.0, -0.05), 0.08);
+    } else {
+        if arms == Arms::Shield {
+            // A round shield on its left arm, held up in front, drawn back to brace, shoved out as
+            // it strikes over the top of it, and raised high as it calls out: iron at its rim, a
+            // red band across it and a boss in its middle
+            let c = up(pose.at([0.3, 0.17, 1.1], [0.22, 0.22, 1.14], [0.48, 0.1, 1.08], [0.3, 0.12, 1.32]));
+            p.push(ball([c[0] + 0.04, c[1], c[2]], 0.065, STEEL));
+            p.push(ellipsoid([c[0] + 0.012, c[1], c[2]], [0.03, 0.065, 0.31], TEMPLE_RED));
+            p.push(ellipsoid(c, [0.035, 0.3, 0.36], WOOD));
+            p.push(ellipsoid([c[0] - 0.014, c[1], c[2]], [0.035, 0.33, 0.39], DARK_STEEL));
+            arm(p, up([0.0, 0.22, 1.42]), [c[0] - 0.08, c[1] - 0.04, c[2] - 0.02], 0.1);
+        }
+        // The blade arm: hanging, raised overhead behind, or brought down in front
+        let shoulder = up([0.0, -0.22, 1.42]);
+        let zombie_reach = if bony || living { 0.0 } else { 0.35 };
+        let elbow = pose.at([0.05 + zombie_reach - 0.15 * swing, -0.26, 1.15 + zombie_reach * 0.5], [-0.08, -0.3, 1.65], [0.38, -0.2, 1.3], [0.1, -0.32, 1.55]);
+        let hand = pose.at([0.2 + zombie_reach * 1.4 - 0.25 * swing, -0.25, 0.95 + zombie_reach], [-0.18, -0.24, 2.0], [0.62, -0.1, 1.0], [0.3, -0.28, 1.9]);
+        let blade = pose.at([0.55, 0.0, -0.75], [-0.5, 0.05, 0.85], [0.92, 0.1, -0.35], [0.3, 0.0, 0.95]);
+        let n = (blade[0] * blade[0] + blade[1] * blade[1] + blade[2] * blade[2]).sqrt().max(0.1);
+        if arms == Arms::Shield {
+            // A flanged mace, short in the haft
+            let head = [0, 1, 2].map(|i| hand[i] + blade[i] / n * 0.5);
+            for k in 0..4 {
+                let a = k as f64 * PI * 0.5;
+                p.push(limb(head, [head[0] + 0.07 * a.cos(), head[1] + 0.07 * a.sin(), head[2] + 0.03], 0.03, 0.02, skin.extra));
+            }
+            p.push(ball(head, 0.07, skin.extra));
+            p.push(limb(hand, head, 0.025, 0.025, WOOD));
+        } else {
+            let tip = [0, 1, 2].map(|i| hand[i] + blade[i] / n * 0.85);
+            p.push(limb(hand, tip, 0.03, 0.012, skin.extra));
+            p.push(limb([hand[0] - blade[1] / n * 0.1, hand[1] - 0.09, hand[2]], [hand[0] + blade[1] / n * 0.1, hand[1] + 0.09, hand[2]], 0.025, 0.025, DARK_STEEL));
+        }
+        p.push(ball(hand, limb_r * 1.1, flesh));
+        p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
+        p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+        // The other arm swinging, reaching out for a zombie, thrown out for balance as it strikes
+        if arms == Arms::Blade {
+            let shoulder = up([0.0, 0.22, 1.42]);
+            let elbow = pose.at([0.05 + zombie_reach + 0.15 * swing, 0.26, 1.15 + zombie_reach * 0.5], [0.2, 0.3, 1.3], [-0.12, 0.3, 1.2], [0.1, 0.32, 1.55]);
+            let hand = pose.at([0.15 + zombie_reach * 1.4 + 0.25 * swing, 0.27, 0.95 + zombie_reach], [0.42, 0.26, 1.35], [-0.25, 0.32, 1.0], [0.3, 0.28, 1.9]);
+            p.push(ball(hand, limb_r * 1.1, flesh));
+            p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
+            p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+        }
+    }
     // Its legs, in rags or greaves
     for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
         leg(p, [0.0, y, 0.92], 0.88, limb_r * 1.1, 0.45 * swing * s, if armored { skin.accent } else if bony { flesh } else { dark }, dark);
+    }
+}
+
+/// A dune burrower, about two meters from its pincers to the root of its tail: a low, broad crawler
+/// of sand-colored plates banded darker, a shovel-lipped shield over its head for digging, a row
+/// of spines down its back, two heavy pincers, six legs, and a jointed tail arched up over its
+/// back with a stinger glowing at the tip. It rears its pincers up wide to strike, snapping them
+/// shut as its tail whips over its head to sting, and noses down with its tail laid out behind to
+/// dig itself in.
+fn burrower(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
+    let (shell, dark, band, glow, black) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    // Nosing down into the sand, or rearing a little as it strikes
+    let dip = pose.mix(0.0, -0.12, 0.04, 0.32);
+    let tilt = |v: Vec3| [v[0], v[1], v[2] - dip * (v[0] + 0.3).max(0.0) * 0.5];
+    // Little black eyes on its head shield, and its mandibles under the lip
+    for (x, y) in [(0.66, 0.07), (0.66, -0.07), (0.6, 0.15), (0.6, -0.15)] {
+        p.push(ball(tilt([x, y, 0.43]), 0.026, black));
+    }
+    for s in [-1.0, 1.0] {
+        p.push(limb(tilt([0.76, s * 0.08, 0.22]), tilt([0.87, s * 0.03, 0.17]), 0.03, 0.012, black));
+    }
+    p.push(ellipsoid(tilt([0.77, 0.0, 0.25]), [0.11, 0.25, 0.04], band));
+    p.push(ellipsoid(tilt([0.55, 0.0, 0.33]), [0.25, 0.31, 0.1], dark));
+    // Its pincers: raised and opened wide, snapped shut out in front, or tucked in to dig
+    let open = pose.windup * 0.9 + pose.special * 0.2;
+    for s in [-1.0, 1.0] {
+        let shoulder = tilt([0.58, s * 0.22, 0.3]);
+        let elbow = pose.at([0.84, s * 0.44, 0.33], [0.8, s * 0.52, 0.62], [1.04, s * 0.32, 0.36], [0.82, s * 0.36, 0.2]);
+        let hand = pose.at([1.08, s * 0.32, 0.3], [1.0, s * 0.44, 0.76], [1.34, s * 0.15, 0.33], [1.0, s * 0.26, 0.14]);
+        let forward = (Vector3::from(hand) - Vector3::from(elbow)).normalize();
+        let out = Vector3::new(-forward.y, forward.x, 0.0) * s;
+        let at = |f: f64, o: f64, u: f64| -> Vec3 { (Vector3::from(hand) + forward * f + out * o + Vector3::z() * u).into() };
+        // The fixed finger on the inside and the one that closes on it, tipped black
+        p.push(limb(at(0.18, -0.03, 0.0), at(0.27, -0.06, -0.01), 0.025, 0.01, black));
+        p.push(limb(at(0.17, 0.06 + 0.1 * open, 0.02), at(0.25, 0.02 + 0.1 * open, 0.0), 0.025, 0.01, black));
+        p.push(limb(hand, at(0.18, -0.03, 0.0), 0.06, 0.03, shell));
+        p.push(limb(at(0.0, 0.03, 0.01), at(0.17, 0.06 + 0.1 * open, 0.02), 0.045, 0.028, shell));
+        p.push(ellipsoid(hand, [0.11, 0.08, 0.07], shell));
+        p.push(limb(elbow, hand, 0.055, 0.06, shell));
+        p.push(limb(shoulder, elbow, 0.06, 0.055, dark));
+    }
+    // Its back, in four plates narrowing to the tail, a spine rising from each
+    for k in 0..4 {
+        let x = 0.3 - k as f64 * 0.24;
+        p.push(limb(tilt([x, 0.0, 0.47 - k as f64 * 0.01]), tilt([x - 0.07, 0.0, 0.6 - k as f64 * 0.02]), 0.035, 0.008, dark));
+        p.push(ellipsoid(tilt([x, 0.0, 0.35 - k as f64 * 0.01]), [0.15, 0.3 - k as f64 * 0.035, 0.14], shell).striped(band));
+    }
+    // Six legs, in two sets of three stepping by turns, bent up at the knee
+    for side in [-1.0, 1.0] {
+        for (k, x) in [0.3, 0.05, -0.2].into_iter().enumerate() {
+            let step = (angle + k as f64 * PI * 2.0 / 3.0 + if side > 0.0 { PI } else { 0.0 }).sin() * moving;
+            let hip = tilt([x, side * 0.22, 0.3]);
+            let foot = [x + 0.12 * step + 0.06 * (1.0 - k as f64), side * 0.6, 0.12 * step.max(0.0)];
+            let knee = [(hip[0] + foot[0]) * 0.5, side * 0.46, 0.46];
+            p.push(limb(knee, foot, 0.035, 0.018, dark));
+            p.push(limb(hip, knee, 0.045, 0.035, shell));
+        }
+    }
+    // The tail: arched over its back, drawn back higher to sting, whipped forward over its head,
+    // or laid out flat behind it as it digs, swaying a little as it goes
+    let sway = 0.06 * (angle + 0.6).sin() * moving;
+    let joints: [Vec3; 7] = [
+        pose.at([-0.62, 0.0, 0.45], [-0.62, 0.0, 0.47], [-0.6, 0.0, 0.55], [-0.66, 0.0, 0.38]),
+        pose.at([-0.8, 0.0, 0.62], [-0.86, 0.0, 0.7], [-0.62, 0.0, 0.86], [-0.88, 0.0, 0.42]),
+        pose.at([-0.9, 0.0, 0.88], [-0.98, 0.0, 0.98], [-0.48, 0.0, 1.12], [-1.1, 0.0, 0.44]),
+        pose.at([-0.86, 0.0, 1.12], [-0.92, 0.0, 1.26], [-0.2, 0.0, 1.2], [-1.3, 0.0, 0.45]),
+        pose.at([-0.68, 0.0, 1.27], [-0.72, 0.0, 1.42], [0.1, 0.0, 1.1], [-1.46, 0.0, 0.43]),
+        pose.at([-0.48, 0.0, 1.26], [-0.5, 0.0, 1.4], [0.34, 0.0, 0.9], [-1.58, 0.0, 0.4]),
+        pose.at([-0.34, 0.0, 1.12], [-0.36, 0.0, 1.26], [0.46, 0.0, 0.7], [-1.66, 0.0, 0.33]),
+    ];
+    let joint = |k: usize| -> Vec3 { [joints[k][0], joints[k][1] + sway * k as f64 / 3.0, joints[k][2]] };
+    p.push(limb(joint(5), joint(6), 0.04, 0.008, black));
+    p.push(ball(joint(5), 0.085, glow));
+    for k in 0..5 {
+        let r = 0.095 - k as f64 * 0.01;
+        p.push(limb(joint(k), joint(k + 1), r, r - 0.008, if k % 2 == 0 { shell } else { band }));
+    }
+}
+
+/// A rime wraith, a little over two meters tall: a hooded shroud of dark rags drifting over the
+/// ground with nothing under it, a pale mask in the shadow of its hood with frost burning in its
+/// eyes, a crown of ice shards, a mantle of deep teal and a cold sigil glowing on its breast, and
+/// long thin arms ending in icicle claws. The rags hanging under it stream out behind as it
+/// drifts. It spreads its arms wide to gather the cold, thrusts its claws out together to strike,
+/// and draws in on itself to vanish.
+fn wraith(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
+    let (shroud, shadow, mantle, glow, ice) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    // Rising and falling as it drifts, and hunched forward as it strikes
+    let bob = 0.04 * angle.sin();
+    let hunch = pose.mix(0.0, -0.05, 0.12, 0.06);
+    let at = |v: Vec3| [v[0] + hunch * (v[2] - 1.0).max(0.0), v[1], v[2] + bob];
+    let head = at([0.04, 0.0, 1.93]);
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.13, s * 0.05, head[2] + 0.015], 0.024, glow));
+    }
+    p.push(ellipsoid([head[0] + 0.08, 0.0, head[2] - 0.03], [0.06, 0.09, 0.12], BONE));
+    p.push(ellipsoid([head[0] + 0.03, 0.0, head[2]], [0.1, 0.13, 0.15], shadow));
+    // A crown of ice shards rising back from its hood
+    for (y, z, h) in [(0.0, 2.1, 0.3), (0.09, 2.07, 0.22), (-0.09, 2.07, 0.22), (0.16, 2.0, 0.15), (-0.16, 2.0, 0.15)] {
+        p.push(limb(at([-0.02, y, z]), at([-0.1, y * 1.5, z + h]), 0.035, 0.008, ice));
+    }
+    p.push(ellipsoid([head[0] - 0.03, 0.0, head[2] + 0.02], [0.17, 0.18, 0.2], shroud));
+    p.push(ellipsoid(at([0.16, 0.0, 1.4]), [0.025, 0.05, 0.09], glow));
+    p.push(ellipsoid(at([-0.02, 0.0, 1.68]), [0.17, 0.31, 0.11], mantle));
+    // Its arms: hanging and swaying, raised wide, thrust out together, or drawn in across it
+    for s in [-1.0, 1.0] {
+        let shoulder = at([0.0, s * 0.27, 1.65]);
+        let swing = 0.06 * (angle + s).sin();
+        let elbow = at(pose.at([0.18 + swing, s * 0.36, 1.3], [0.0, s * 0.62, 1.92], [0.48, s * 0.25, 1.56], [0.26, s * 0.16, 1.45]));
+        let hand = at(pose.at([0.36 + swing, s * 0.32, 1.1], [0.1, s * 0.8, 2.24], [0.84, s * 0.12, 1.5], [0.32, -s * 0.06, 1.56]));
+        let forward = (Vector3::from(hand) - Vector3::from(elbow)).normalize();
+        for (k, spread) in [-1.0, 0.0, 1.0].into_iter().enumerate() {
+            let tip = Vector3::from(hand) + forward * (0.22 + 0.04 * (k == 1) as u8 as f64) + Vector3::new(-forward.y, forward.x, 0.0) * spread * 0.05 + Vector3::z() * spread * 0.02;
+            p.push(limb(hand, tip.into(), 0.022, 0.006, ice));
+        }
+        p.push(ball(hand, 0.04, shadow));
+        p.push(limb(elbow, hand, 0.035, 0.03, shadow));
+        p.push(limb(shoulder, elbow, 0.05, 0.04, shroud));
+    }
+    // The shroud, narrowing then flaring as it hangs, and the rags under it streaming back
+    let behind = 0.12 * moving + 0.1 * pose.special;
+    p.push(limb(at([0.0, 0.0, 1.7]), at([-0.06 - behind * 0.5, 0.0, 0.95]), 0.2, 0.29, shroud));
+    for k in 0..7 {
+        let across = k as f64 / 6.0 * 2.0 - 1.0;
+        let wave = (angle + k as f64 * 1.3).sin();
+        let from = at([-0.06 - behind * 0.5, across * 0.22, 0.98]);
+        let to = [-0.2 - behind * 2.0 + 0.05 * wave, across * 0.3 + 0.04 * wave, 0.3 + 0.07 * wave + 0.1 * (k % 2) as f64 + bob];
+        p.push(limb(from, to, 0.075, 0.02, if k % 2 == 0 { shroud } else { shadow }));
+    }
+}
+
+/// A mire lurker, a meter and a half long: a squat, broad-backed thing of the jungle shallows, its
+/// hide green and lumpy and grown over with fronds so it passes for a mossy log, a pale belly, a
+/// flat head as wide as its body with bulging gold eyes on top and a mouth right across it, splayed
+/// legs and a thick tail. It gapes as it gets ready, lunges and snaps its jaws shut, and flings
+/// its mouth wide as it lashes out its tongue.
+fn lurker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+    let (hide, dark, belly, eye, tongue) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let gape = pose.mix(0.0, 0.7, 0.2, 1.0);
+    let rear = pose.mix(0.0, 0.06, -0.03, 0.1);
+    let lunge = pose.strike * 0.16 + pose.special * 0.06;
+    let head = [0.62 + lunge, 0.0, 0.42 + rear];
+    // Eyes bulging up out of the top of its head, so it can lie with only them above the water
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.07, s * 0.19, head[2] + 0.23], 0.045, eye));
+        p.push(ball([head[0] + 0.02, s * 0.19, head[2] + 0.18], 0.085, hide));
+        p.push(ball([head[0] + 0.29, s * 0.07, head[2] + 0.1 + 0.06 * gape], 0.02, dark));
+    }
+    if gape > 0.5 {
+        p.push(limb([head[0] + 0.02, 0.0, head[2] - 0.06], [head[0] + 0.26 + 0.12 * pose.special, 0.0, head[2] - 0.03], 0.055, 0.065, tongue));
+    }
+    p.push(ellipsoid([head[0] + 0.01, 0.0, head[2] - 0.06], [0.24, 0.31, 0.025 + 0.09 * gape], MEAT));
+    p.push(ellipsoid([head[0], 0.0, head[2] + 0.05 + 0.08 * gape], [0.3, 0.37, 0.12], hide));
+    p.push(ellipsoid([head[0] - 0.03, 0.0, head[2] - 0.13 - 0.05 * gape], [0.28, 0.35, 0.08], belly));
+    // Lumps down its back, and fronds growing out of them
+    for (x, y, r) in [(0.2, 0.18, 0.07), (0.05, -0.2, 0.08), (-0.15, 0.12, 0.07), (-0.3, -0.1, 0.06), (0.25, -0.05, 0.06), (-0.05, 0.25, 0.06)] {
+        p.push(ball([x, y, 0.7 - 0.25 * (y * y + x * x * 0.2)], r, dark));
+    }
+    for (k, (x, y)) in [(0.15, 0.1), (-0.05, -0.15), (-0.25, 0.15), (0.0, 0.02)].into_iter().enumerate() {
+        let wave = 0.05 * (angle + k as f64 * 1.7).sin();
+        p.push(limb([x, y, 0.68], [x - 0.3 + wave, y * 1.8, 0.86 + 0.06 * k as f64], 0.035, 0.012, FERN));
+    }
+    p.push(ellipsoid([0.0, 0.0, 0.27], [0.5, 0.4, 0.15], belly));
+    p.push(ellipsoid([-0.05, 0.0, 0.45], [0.55, 0.45, 0.28], hide));
+    // Splayed legs, front and back, crawling by turns
+    for s in [-1.0, 1.0] {
+        let step = swing * s;
+        let (shoulder, elbow, foot) = ([0.32, s * 0.35, 0.34], [0.4 + 0.08 * step, s * 0.62, 0.3], [0.48 + 0.14 * step, s * 0.6, 0.02]);
+        p.push(ellipsoid(foot, [0.09, 0.1, 0.03], dark));
+        p.push(limb(elbow, foot, 0.07, 0.06, hide));
+        p.push(limb(shoulder, elbow, 0.09, 0.07, hide));
+        let (hip, knee, foot) = ([-0.35, s * 0.37, 0.38], [-0.22, s * 0.68, 0.46], [-0.5 - 0.14 * step, s * 0.66, 0.02]);
+        p.push(ellipsoid(foot, [0.11, 0.1, 0.03], dark));
+        p.push(limb(knee, foot, 0.08, 0.06, hide));
+        p.push(limb(hip, knee, 0.11, 0.08, hide));
+    }
+    let sway = 0.12 * (angle + 0.5).sin() * moving;
+    p.push(limb([-0.55, 0.0, 0.38], [-1.0, sway, 0.16], 0.17, 0.05, hide));
+}
+
+/// A gloomwing, its wings well over a meter across: a cave flier of dark fur with a long pale bony
+/// snout full of needle teeth, tall ears and red eyes, leathery wings spread on pale finger bones
+/// beating fast, and hind claws dangling. It flies at about head height, raises its wings high
+/// as it gets ready to dive, sweeps them back as it bites, and spreads them wide to screech.
+fn gloomwing(p: &mut Vec<Part>, angle: f64, pose: Pose, skin: Skin) {
+    let (fur, membrane, bone, eyes) = (skin.body, skin.dark, skin.accent, skin.glow);
+    let h = 1.65;
+    let flap = pose.mix(angle.sin(), 0.95, -0.25, 0.1);
+    let sweep = pose.mix(0.0, 0.1, 0.4, -0.1);
+    let dip = pose.mix(0.0, 0.06, 0.12, -0.08);
+    let head = [0.17, 0.0, h + 0.03 - dip];
+    for s in [-1.0, 1.0] {
+        p.push(ball([head[0] + 0.07, s * 0.045, head[2] + 0.04], 0.02, eyes));
+        p.push(limb([head[0] - 0.02, s * 0.05, head[2] + 0.06], [head[0] - 0.06, s * 0.09, head[2] + 0.19], 0.03, 0.01, membrane));
+    }
+    p.push(limb([head[0] + 0.15, 0.0, head[2] - 0.05], [head[0] + 0.12, 0.0, head[2] - 0.09], 0.012, 0.005, LINEN));
+    p.push(limb([head[0] + 0.04, 0.0, head[2] - 0.01], [head[0] + 0.18, 0.0, head[2] - 0.04], 0.04, 0.02, skin.extra));
+    p.push(ball(head, 0.075, fur));
+    p.push(ellipsoid([0.0, 0.0, h], [0.15, 0.095, 0.085], fur));
+    // Its wings: two bones from the shoulder out to the tip, and the membrane between them and
+    // the fingers running back to its trailing edge, filled in with a fan of strips
+    for s in [-1.0, 1.0] {
+        let shoulder = [0.04, s * 0.07, h + 0.03];
+        let elbow = [-0.02 - sweep * 0.25, s * 0.32, h + 0.05 + 0.22 * flap];
+        let tip = [-0.1 - sweep * 0.55, s * (0.7 - 0.25 * sweep.max(0.0)), h + 0.02 + 0.42 * flap];
+        let edge = [
+            [-0.17 - sweep * 0.2, s * 0.16, h - 0.02 + 0.05 * flap],
+            [-0.24 - sweep * 0.4, s * 0.36, h + 0.0 + 0.16 * flap],
+            [-0.22 - sweep * 0.55, s * 0.55, h + 0.0 + 0.3 * flap],
+        ];
+        p.push(limb(shoulder, elbow, 0.022, 0.018, bone));
+        p.push(limb(elbow, tip, 0.018, 0.01, bone));
+        for e in edge {
+            p.push(limb(elbow, e, 0.012, 0.01, bone));
+        }
+        let mid = |a: Vec3, b: Vec3, f: f64| -> Vec3 { [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * f) };
+        for (a, b) in [(shoulder, edge[0]), (mid(shoulder, elbow, 0.5), edge[0]), (elbow, edge[0]), (elbow, edge[1]), (mid(elbow, tip, 0.5), edge[1]), (mid(elbow, tip, 0.5), edge[2]), (tip, edge[2]), (edge[0], edge[1]), (edge[1], edge[2])] {
+            p.push(limb(a, b, 0.04, 0.03, membrane));
+            p.push(limb(mid(a, b, 0.5), mid(elbow, mid(edge[1], tip, 0.5), 0.5), 0.035, 0.03, membrane));
+        }
+    }
+    // Hind claws dangling, and a little tail
+    for s in [-1.0, 1.0] {
+        p.push(limb([-0.08, s * 0.05, h - 0.05], [-0.15, s * 0.06, h - 0.18 + 0.04 * flap.abs()], 0.02, 0.012, bone));
+    }
+    p.push(limb([-0.14, 0.0, h], [-0.26, 0.0, h - 0.05], 0.025, 0.01, fur));
+}
+
+/// A tusker, two and a half meters long and as high at its humped shoulders as a man's chest: a
+/// great boar-like forest beast with a shaggy dark mane, a ridge of black bristle spikes down its
+/// back, a plate of bone over its brow, small burning eyes, and two great tusks curving up from
+/// its lower jaw. It lowers its head and paws the ground before it charges or gores, then throws
+/// its head up to toss whatever it caught.
+fn tusker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+    let (hide, dark, snout, eye, tusk) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    // Its head turned about its neck: lowered to charge or paw, thrown up to gore
+    let nod = pose.mix(0.0, -0.3, 0.45, -0.38);
+    let neck = [0.55, 0.0, 0.95];
+    let r = |v: Vec3| rear(v, neck, nod);
+    for s in [-1.0, 1.0] {
+        p.push(ball(r([0.99, s * 0.16, 0.86]), 0.03, eye));
+        p.push(limb(r([1.12, s * 0.11, 0.6]), r([1.27, s * 0.21, 0.67]), 0.042, 0.032, tusk));
+        p.push(limb(r([1.27, s * 0.21, 0.67]), r([1.28, s * 0.17, 0.88]), 0.032, 0.008, tusk));
+        p.push(limb(r([0.78, s * 0.14, 1.0]), r([0.68, s * 0.25, 1.12]), 0.05, 0.02, dark));
+    }
+    p.push(ellipsoid(r([1.3, 0.0, 0.62]), [0.035, 0.1, 0.08], NOSE));
+    p.push(ellipsoid(r([0.9, 0.0, 0.96]), [0.16, 0.19, 0.06], tusk));
+    p.push(limb(r([0.98, 0.0, 0.72]), r([1.26, 0.0, 0.62]), 0.15, 0.12, snout));
+    p.push(ellipsoid(r([0.95, 0.0, 0.6]), [0.22, 0.17, 0.08], hide));
+    p.push(ellipsoid(r([0.82, 0.0, 0.82]), [0.3, 0.25, 0.24], hide));
+    // A ridge of bristles down its back, tallest over its shoulders
+    for k in 0..7 {
+        let x = 0.55 - k as f64 * 0.18;
+        let z = 1.3 - (x - 0.25).powi(2) * 0.8;
+        p.push(limb([x, 0.0, z - 0.06], [x - 0.12, 0.0, z + 0.2 - k as f64 * 0.015], 0.05, 0.01, dark));
+    }
+    // A shaggy mane over its shoulders and chest, the hump, and its body
+    p.push(ellipsoid([0.5, 0.0, 0.78], [0.3, 0.36, 0.34], dark));
+    p.push(ellipsoid([0.25, 0.0, 1.0], [0.45, 0.42, 0.33], hide));
+    p.push(ellipsoid([-0.15, 0.0, 0.86], [0.72, 0.4, 0.38], hide));
+    // A short tufted tail, swishing
+    let sway = 0.08 * (angle + 1.0).sin() * moving;
+    p.push(ball([-0.97, sway, 0.72], 0.05, dark));
+    p.push(limb([-0.85, 0.0, 0.95], [-0.97, sway, 0.74], 0.03, 0.02, hide));
+    // A front leg raised to paw the ground as it gets ready
+    for (x, y, s) in [(0.5, 0.22, 1.0), (0.5, -0.22, -1.0), (-0.6, 0.22, -1.0), (-0.6, -0.22, 1.0)] {
+        let paw = if x > 0.0 && s > 0.0 { 0.7 * pose.windup } else { 0.0 };
+        leg(p, [x, y, 0.74], 0.74, if x > 0.0 { 0.1 } else { 0.11 }, 0.45 * swing * s + paw, hide, dark);
     }
 }
 
@@ -1140,7 +1646,12 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
-                Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living()),
+                Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living(), look.arms()),
+                Some(Build::Burrower) => burrower(&mut p, angle, moving, pose, look.skin()),
+                Some(Build::Wraith) => wraith(&mut p, angle, moving, pose, look.skin()),
+                Some(Build::Lurker) => lurker(&mut p, angle, swing, moving, pose, look.skin()),
+                Some(Build::Bat) => gloomwing(&mut p, angle, pose, look.skin()),
+                Some(Build::Boar) => tusker(&mut p, angle, swing, moving, pose, look.skin()),
                 _ => treant(&mut p, swing, pose, look.skin()),
             }
             if look.scale() != 1.0 {
@@ -1690,6 +2201,13 @@ pub struct Animal {
 /// How hard a bare-handed hit is
 pub const PUNCH: f64 = 35.0;
 
+/// How much of a blow a shieldbearer's shield lets through, and how far round its front it
+/// catches them, as the cosine of the angle off straight ahead: about 65 degrees either side
+const SHIELD_THROUGH: f64 = 0.15;
+const SHIELD_ARC: f64 = 0.42;
+/// How much of a blow gets through the sand to a burrower dug in under it
+const BURIED_THROUGH: f64 = 0.3;
+
 /// Something in the world drawn like an animal that doesn't move, like food lying on the ground.
 /// `position` is in voxels of the main world.
 pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_voxels_per_meter: u32) -> AnimalInstance {
@@ -1713,6 +2231,12 @@ fn random(seed: &mut u32) -> f64 {
 /// Height of the ground an animal standing at height `z` could step onto at x, y: up at most
 /// `up` voxels, down at most `down`. None for walls, cliffs, water and outside the world.
 fn ground_at(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, down: f64) -> Option<f64> {
+    ground_wading(world, water, x, y, z, up, down, 0.2)
+}
+
+/// The same for something that wades through water up to `wade` meters deep
+#[allow(clippy::too_many_arguments)]
+fn ground_wading(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, down: f64, wade: f64) -> Option<f64> {
     let (xi, yi) = (x.floor() as i64, y.floor() as i64);
     let top = (z + up).floor() as i64;
     if !is_passable(world.material_at(xi, yi, top)) {
@@ -1723,7 +2247,38 @@ fn ground_at(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, 
         .find(|&zi| !is_passable(world.material_at(xi, yi, zi)))
         .map(|zi| zi as f64 + 1.0)?;
     // Paddling in the shallows is fine
-    (water(x, y) < ground + 0.2 * world.voxels_per_meter as f64).then_some(ground)
+    (water(x, y) < ground + wade * world.voxels_per_meter as f64).then_some(ground)
+}
+
+/// Shallow water near `x`, `y`, within `within` meters, `least` to `most` meters deep: where its
+/// bottom is, in voxels. For what lies in wait in it.
+fn shallows_near(world: &World, water: WaterLevel, x: f64, y: f64, within: f64, least: f64, most: f64) -> Option<Vector3<f64>> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    const STEP: f64 = 2.0;
+    for ring in 0..(within / STEP) as usize {
+        let count = (ring * 6).max(1);
+        for i in 0..count {
+            let a = i as f64 / count as f64 * TAU;
+            let (px, py) = (x + a.cos() * ring as f64 * STEP * vpm, y + a.sin() * ring as f64 * STEP * vpm);
+            if px < 2.0 || py < 2.0 || px >= sx - 2.0 || py >= sy - 2.0 {
+                continue;
+            }
+            let surface = water(px, py);
+            if !surface.is_finite() || surface <= 0.0 {
+                continue;
+            }
+            let top = surface.floor() as i64;
+            let Some(bottom) = (top - (most * vpm) as i64 - 1..=top).rev().find(|&z| !is_passable(world.material_at(px as i64, py as i64, z))) else {
+                continue;
+            };
+            let depth = (surface - (bottom as f64 + 1.0)) / vpm;
+            if (least..most).contains(&depth) {
+                return Some(Vector3::new(px, py, bottom as f64 + 1.0));
+            }
+        }
+    }
+    None
 }
 
 /// The highest dry ground in a column with room to stand on it, if it isn't under water: the
@@ -1794,14 +2349,37 @@ impl Animal {
         self.heading
     }
 
+    /// Turned to face `heading`, radians round from +x
+    pub fn face(&mut self, heading: f64) {
+        (self.heading, self.target_heading) = (heading, heading);
+    }
+
     /// A number picked at random, 0-1, for what it does
     pub(crate) fn roll(&mut self) -> f64 {
         random(&mut self.rng)
     }
 
-    /// The middle of its body, to aim at
+    /// The middle of its body, to aim at: lower as a flier dives, or under the sand as a burrower
+    /// digs in
     pub fn center(&self, world_voxels_per_meter: u32) -> Vector3<f64> {
-        self.position + Vector3::new(0.0, 0.0, self.look.body().0 * world_voxels_per_meter as f64)
+        let lifted = self.boss.as_ref().map_or(0.0, |b| b.sway()[2]);
+        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
+    }
+
+    /// How much of a blow from something at `from` gets through to it, 0-1: a shieldbearer facing
+    /// it catches most of it on its shield, and a burrower dug in under the sand most of it in that
+    pub fn guard(&self, from: Vector3<f64>) -> f64 {
+        let Some(boss) = &self.boss else {
+            return 1.0;
+        };
+        if self.look == Look::Shieldbearer && boss.guarding() {
+            let to = (from - self.position).xy();
+            let facing = Vector2::new(self.heading.cos(), self.heading.sin());
+            if to.norm() > 1e-6 && to.normalize().dot(&facing) > SHIELD_ARC {
+                return SHIELD_THROUGH;
+            }
+        }
+        if boss.buried() { BURIED_THROUGH } else { 1.0 }
     }
 
     /// How much health it has left, 0-1
@@ -1942,7 +2520,7 @@ impl Animal {
         if push.norm() > 1e-3 {
             let (x, y) = (self.position.x + push.x, self.position.y + push.y);
             let reach = look.climb() * vpm * 2.0;
-            if let Some(z) = ground_at(world, water, x, y, self.position.z, reach, reach * 2.0) {
+            if let Some(z) = ground_wading(world, water, x, y, self.position.z, reach, reach * 2.0, look.wade()) {
                 self.position = Vector3::new(x, y, z);
             } else {
                 self.status.push = Vector3::zeros();
@@ -1961,7 +2539,10 @@ impl Animal {
         let turn = (self.target_heading - self.heading + PI).rem_euclid(TAU) - PI;
         self.heading += turn.clamp(-3.0 * dt * pace, 3.0 * dt * pace);
 
+        // A burrower tunnelling along under the sand, or a beast charging, goes faster than it runs
+        let haste = self.boss.as_ref().map_or(1.0, Boss::haste);
         let wish = pace
+            * haste
             * match self.mood {
                 Mood::Idle => 0.0,
                 Mood::Walk => look.walk_speed(),
@@ -1975,8 +2556,12 @@ impl Animal {
             let ahead = Vector2::new(self.heading.cos(), self.heading.sin()) * 0.3 * vpm;
             let (x, y) = (self.position.x + step.x, self.position.y + step.y);
             let climb = look.climb() * vpm;
-            let ground = ground_at(world, water, x, y, self.position.z, climb, climb * 2.0);
-            let clear = ground_at(world, water, x + ahead.x, y + ahead.y, self.position.z, climb, climb * 2.0).is_some();
+            // Over water, what flies looks further down for the bottom of it
+            let down = if look.flies() { 8.0 * vpm } else { climb * 2.0 };
+            let ground = ground_wading(world, water, x, y, self.position.z, climb, down, look.wade());
+            let clear = ground_wading(world, water, x + ahead.x, y + ahead.y, self.position.z, climb, down, look.wade()).is_some();
+            // What flies goes over water, not down to the bottom of it
+            let ground = if look.flies() { ground.map(|z| z.max(water(x, y))) } else { ground };
             match ground {
                 Some(z) if clear => {
                     self.position.x = x;
@@ -2027,7 +2612,17 @@ impl Animal {
     }
 
     pub fn instance(&self, world_voxels_per_meter: u32) -> AnimalInstance {
-        let walking = if self.speed > 0.15 { 1 + (self.phase * WALK_FRAMES as f64) as usize % WALK_FRAMES } else { 0 };
+        // Wings never stop beating, and a wraith's rags never stop stirring, however it's moving
+        let beating = match self.look.build() {
+            Some(Build::Bat) => Some((self.age * 3.4 + self.id as f64 * 0.37).fract()),
+            Some(Build::Wraith) if self.speed <= 0.15 => Some((self.age * 0.45 + self.id as f64 * 0.37).fract()),
+            _ => None,
+        };
+        let walking = match beating {
+            Some(phase) => 1 + (phase * WALK_FRAMES as f64) as usize % WALK_FRAMES,
+            None if self.speed > 0.15 => 1 + (self.phase * WALK_FRAMES as f64) as usize % WALK_FRAMES,
+            None => 0,
+        };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
         let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
         let mut heading = self.heading;
@@ -2137,22 +2732,59 @@ pub fn spawn_villager(world: &World, water: WaterLevel, look: Look, near: Vector
 /// A monster of `look` on the ground near `near`, in voxels, about that high with room above it,
 /// within `within` meters: None if there's nowhere
 pub fn spawn_monster(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, within: f64, seed: u32) -> Option<Animal> {
+    spawn_spaced(world, water, look, near, within, &[], seed)
+}
+
+/// The same, at least SPACING meters from each of `others`, in voxels, if there's room
+fn spawn_spaced(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, within: f64, others: &[Vector3<f64>], seed: u32) -> Option<Animal> {
     let vpm = world.voxels_per_meter as f64;
     let [sx, sy, _] = world.size.map(f64::from);
     let mut rng = hash(seed ^ 0x5ca7);
-    for _ in 0..24 {
+    let mut crowded = None;
+    for attempt in 0..32 {
         let a = random(&mut rng) * TAU;
-        let r = random(&mut rng).sqrt() * within * vpm;
+        // Wider the more tries it's taken, so there's somewhere in the end
+        let r = random(&mut rng).sqrt() * within * vpm * (1.0 + attempt as f64 / 24.0);
         let (x, y) = (near.x + a.cos() * r, near.y + a.sin() * r);
         if x < 2.0 || y < 2.0 || x >= sx - 2.0 || y >= sy - 2.0 {
             continue;
         }
-        if let Some(z) = ground_at(world, water, x, y, near.z, 2.0 * vpm, 3.0 * vpm) {
+        if let Some(z) = ground_wading(world, water, x, y, near.z, 2.0 * vpm, 3.0 * vpm, look.wade()) {
+            let at = Vector3::new(x, y, z);
             let key = [x as i64, y as i64, -2];
-            return Some(Animal::boss(look, Vector3::new(x, y, z), key, hash(rng)));
+            if others.iter().all(|o| (o - at).xy().norm() > SPACING * vpm) {
+                return Some(Animal::boss(look, at, key, hash(rng)));
+            }
+            crowded.get_or_insert(Animal::boss(look, at, key, hash(rng)));
         }
     }
-    None
+    crowded
+}
+
+/// How close together the members of a pack turn up, in meters at most
+const SPACING: f64 = 0.9;
+
+/// A new number for a pack, different from every other
+pub fn new_pack() -> u32 {
+    static NEXT_PACK: AtomicU32 = AtomicU32::new(1);
+    NEXT_PACK.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A pack of monsters, `looks`, close together round `near`, in voxels, within `within` meters of
+/// it, none on top of another: they go about and fight together, see bosses::Flock
+pub fn spawn_pack(world: &World, water: WaterLevel, looks: &[Look], near: Vector3<f64>, within: f64, seed: u32) -> Vec<Animal> {
+    let pack = new_pack();
+    let mut members: Vec<Animal> = Vec::new();
+    for (k, &look) in looks.iter().enumerate() {
+        let others: Vec<Vector3<f64>> = members.iter().map(|m| m.position).collect();
+        if let Some(mut member) = spawn_spaced(world, water, look, near, within, &others, hash(seed ^ (k as u32).wrapping_mul(0x9e37))) {
+            if let Some(boss) = &mut member.boss {
+                boss.pack = pack;
+            }
+            members.push(member);
+        }
+    }
+    members
 }
 
 /// Scatters animals over dry land: about half of them close to `near` so there are some to see
@@ -2196,22 +2828,35 @@ pub fn spawn(world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) ->
                 continue;
             }
             let den = Vector3::new(x, y, z);
-            for k in 0..3 {
-                animals.extend(spawn_monster(world, water, Look::Wolf, den, 4.0, hash(rng ^ k)));
-            }
+            animals.extend(spawn_pack(world, water, &[Look::Wolf; 3], den, PACK_SPREAD, hash(rng)));
             break;
         }
     }
     animals.extend(spawn_gangs(world, water, &mut rng, near, BANDIT_GANGS));
+    animals.extend(spawn_wilds(world, water, &mut rng, near, WILD_PACKS));
     animals
 }
 
-/// How many packs of wolves and gangs of bandits roam the world at once
+/// How many packs of wolves, gangs of bandits and packs of the monsters of each kind of country
+/// roam the world at once
 const WOLF_PACKS: usize = 2;
 pub const BANDIT_GANGS: usize = 2;
+pub const WILD_PACKS: usize = 2;
+/// How far round the middle of a pack its members turn up, in meters
+pub const PACK_SPREAD: f64 = 1.8;
 
-/// `count` gangs of bandits, two or three with a brute among them, out on dry land well away from
-/// the player at `near`
+/// The bandits making up a gang, picked by `roll`, 0-1: some with a brute, some with crossbowmen
+/// hanging back behind a shieldbearer
+pub fn gang(roll: f64) -> &'static [Look] {
+    match (roll * 4.0) as usize {
+        0 => &[Look::Bandit, Look::Bandit, Look::BanditBrute],
+        1 => &[Look::Shieldbearer, Look::Crossbowman, Look::Crossbowman],
+        2 => &[Look::Bandit, Look::Crossbowman, Look::Bandit],
+        _ => &[Look::Shieldbearer, Look::Bandit, Look::Crossbowman],
+    }
+}
+
+/// `count` gangs of bandits, out on dry land well away from the player at `near`, see gang()
 pub fn spawn_gangs(world: &World, water: WaterLevel, rng: &mut u32, near: Vector3<f64>, count: usize) -> Vec<Animal> {
     let vpm = world.voxels_per_meter as f64;
     let [sx, sy, _] = world.size.map(f64::from);
@@ -2226,12 +2871,97 @@ pub fn spawn_gangs(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
                 continue;
             };
             let camp = Vector3::new(x, y, z);
-            let members: &[Look] = if random(rng) < 0.5 { &[Look::Bandit, Look::Bandit, Look::BanditBrute] } else { &[Look::Bandit, Look::Bandit] };
-            for (k, &look) in members.iter().enumerate() {
-                gangs.extend(spawn_monster(world, water, look, camp, 4.0, hash(*rng ^ k as u32)));
-            }
+            let members = gang(random(rng));
+            gangs.extend(spawn_pack(world, water, members, camp, PACK_SPREAD + 0.4, hash(*rng)));
             break;
         }
     }
     gangs
+}
+
+/// `count` packs of the monsters of the country they turn up in, well away from the player at
+/// `near`: burrowers on desert sand, wraiths on the snow, tuskers in the green woods, and lurkers in
+/// the shallows of jungle waters
+pub fn spawn_wilds(world: &World, water: WaterLevel, rng: &mut u32, near: Vector3<f64>, count: usize) -> Vec<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    let mut packs = Vec::new();
+    // Looking for shallows takes a while, so only so many times, not to hold up the game
+    let mut searches = 2;
+    for _ in 0..count {
+        for _ in 0..48 {
+            let (x, y) = (sx * (0.1 + 0.8 * random(rng)), sy * (0.1 + 0.8 * random(rng)));
+            if (Vector2::new(x, y) - near.xy()).norm() < 35.0 * vpm {
+                continue;
+            }
+            let Some(z) = surface_at(world, water, x, y) else {
+                continue;
+            };
+            let (look, at) = match world.material_at(x as i64, y as i64, z as i64 - 1) {
+                SAND | SANDSTONE | SANDSTONE_DARK => (Look::DuneBurrower, Vector3::new(x, y, z)),
+                SNOW | ICE => (Look::RimeWraith, Vector3::new(x, y, z)),
+                GRASS | DIRT => (Look::Tusker, Vector3::new(x, y, z)),
+                // Lying in wait in the shallows, if there are any near
+                JUNGLE_GRASS if searches > 0 => {
+                    searches -= 1;
+                    match shallows_near(world, water, x, y, 26.0, 0.25, 1.0) {
+                        Some(at) => (Look::MireLurker, at),
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            let size = look.pack_size() + (random(rng) < 0.4) as usize;
+            packs.extend(spawn_pack(world, water, &vec![look; size], at, PACK_SPREAD, hash(*rng)));
+            break;
+        }
+    }
+    packs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every frame of every monster added for the different kinds of country: solid enough to
+    /// see, small enough for the shader, and inside the reach it's culled by
+    #[test]
+    fn new_monsters_have_whole_models_in_every_frame() {
+        let looks = [Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker];
+        for look in looks {
+            assert!(look.is_monster() && look.build().is_some(), "{look:?} isn't a monster");
+            for frame in 0..FRAMES {
+                let phase = (1..=WALK_FRAMES).contains(&frame).then(|| (frame - 1) as f64 / WALK_FRAMES as f64);
+                let model = rasterize(look, phase, Pose::of(frame));
+                assert!(model.size.iter().all(|&s| s < 255), "{look:?} frame {frame} is {:?} voxels", model.size);
+                let mut solid = 0;
+                let mut furthest = 0.0f64;
+                for z in 0..model.size[2] {
+                    for y in 0..model.size[1] {
+                        for x in 0..model.size[0] {
+                            if model.voxels[(x + (y + z * model.size[1]) * model.size[0]) as usize] == AIR {
+                                continue;
+                            }
+                            solid += 1;
+                            let at = Vector3::new(x as f64 + 0.5 - model.size[0] as f64 * 0.5, y as f64 + 0.5 - model.size[1] as f64 * 0.5, z as f64 + 0.5) / MODEL_RES;
+                            furthest = furthest.max(at.norm());
+                        }
+                    }
+                }
+                assert!(solid > 100, "{look:?} frame {frame} has only {solid} voxels");
+                assert!(furthest <= look.reach(), "{look:?} frame {frame} reaches {furthest:.2} m, past its {:.2} m", look.reach());
+            }
+        }
+    }
+
+    /// The new monsters each have their own name, so they can be told apart in what's said
+    #[test]
+    fn monsters_have_their_own_names() {
+        let monsters: Vec<Look> = Look::ALL.into_iter().filter(|l| l.is_monster()).collect();
+        for (i, a) in monsters.iter().enumerate() {
+            for b in &monsters[i + 1..] {
+                assert_ne!(a.name(), b.name(), "{a:?} and {b:?} share a name");
+            }
+        }
+    }
 }

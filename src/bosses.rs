@@ -2,9 +2,9 @@
 //! else goes they're animals, hit by weapons the same way. This is what they think and do: what
 //! they do to the player is left to src\game.rs, as Deeds.
 
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use nalgebra::Vector3;
+use nalgebra::{Vector2, Vector3};
 
 use crate::animals::{self, Animal, Build, Look, Mood, POSE_SPECIAL, POSE_STRIKE, POSE_WINDUP};
 use crate::weapons::Element;
@@ -58,9 +58,43 @@ pub enum Move {
     Summon,
     /// A raid boss bringing the sky down: its element falling all over, all round the player
     Cataclysm,
+    /// A crossbow bolt loosed at the player, from well back
+    Shoot,
+    /// Digging in under the sand, to come at the player unseen
+    Burrow,
+    /// Bursting up out of the sand right under the player
+    Erupt,
+    /// Vanishing in a swirl of frost and coming back a few meters off to one side
+    Blink,
+    /// A tongue lashed out at the player, dragging them in to be bitten
+    Lash,
 }
 
-const MOVES: usize = 16;
+const MOVES: usize = 21;
+
+/// Where the rest of a monster's pack is, so it keeps with them: gathered up each frame by
+/// src\game.rs, see Game::gather_packs()
+#[derive(Clone, Copy, Default)]
+pub struct Flock {
+    /// The middle of the pack, in voxels, and how many of it are left, this one too
+    pub middle: Vector3<f64>,
+    pub size: u8,
+    /// The middle of those of the pack that close in to fight, leaving out those that hang back
+    /// to shoot, see hangs_back(): the whole pack's middle if they all do. And how many close in.
+    pub front: Vector3<f64>,
+    pub fighters: u8,
+    /// Its place among those closing in, 0 to fighters - 1, for which side of the player it comes
+    /// round to
+    pub slot: u8,
+    /// One of the pack is after the player and can see them
+    pub alarmed: bool,
+    /// Which way it's crowded off by the rest of the pack, and how hard, 0 to 1 or so for each of
+    /// them right on top of it: so they keep close but don't stand in each other
+    pub crowd: Vector2<f64>,
+}
+
+/// How near the rest of its pack a monster lets them come, in meters, before it's crowded off
+pub const ELBOW_ROOM: f64 = 1.1;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -114,8 +148,18 @@ pub enum Deed {
     RootWave { from: Vector3<f64>, to: Vector3<f64>, lanes: usize },
     /// The `k`th swipe of a maul starting, here
     Swipe(Vector3<f64>, usize),
-    /// `count` monsters of `look` called up round `at`
-    Summon { at: Vector3<f64>, look: Look, count: usize },
+    /// `count` monsters of `look` called up round `at`, to fight in `pack`, see Flock
+    Summon { at: Vector3<f64>, look: Look, count: usize, pack: u32 },
+    /// A crossbow bolt loosed from `from` at `to`
+    Bolt { from: Vector3<f64>, to: Vector3<f64> },
+    /// Sand churned up over something tunnelling along under it at `at`
+    Burrow { at: Vector3<f64> },
+    /// Something bursting up out of the sand at `at`
+    Erupt { at: Vector3<f64> },
+    /// Vanishing at `from` in a swirl of frost, and coming back at `to`
+    Blink { from: Vector3<f64>, to: Vector3<f64> },
+    /// A tongue lashed out from `from` at `to`, dragging back whoever it catches
+    Lash { from: Vector3<f64>, to: Vector3<f64> },
     /// The `k`th of a raid boss's element coming down out of the sky somewhere round the player at
     /// `to`
     Cataclysm { to: Vector3<f64>, k: usize },
@@ -160,6 +204,32 @@ pub struct Boss {
     sway: [f64; 3],
     /// Seconds since it last saw the player, while fighting them
     unseen: f64,
+    /// Whether it saw the player this frame, while fighting them, to alarm the rest of its pack
+    sighted: bool,
+    /// Which pack it goes about with, 0 for none, and where the rest of them are
+    pub pack: u32,
+    pub flock: Flock,
+    /// A burrower dug in under the sand
+    buried: bool,
+    /// A lurker lying in wait, sunk low, for something to come close
+    lurking: bool,
+    /// Seconds it goes on backing off from the player to shoot from further back, and seconds
+    /// until it'll do it again
+    retreat: f64,
+    retreat_wait: f64,
+    /// Hit since it last thought, for a wraith to vanish from under the blow
+    struck: bool,
+    /// Meters it's sunk into the ground or dived down from where it flies, eased towards where its
+    /// move puts it
+    sink: f64,
+    /// Seconds it's been about, for what rises and falls as it flies or drifts
+    clock: f64,
+    /// Seconds until it next churns up the sand over it, tunnelling
+    trail: f64,
+    /// The last move it made, for how it gets over it: a crossbowman spans its crossbow again
+    last: Option<Move>,
+    /// For looking at them: the frame it's held in, see animals::POSE_WINDUP, whatever it's doing
+    pub fixed_pose: Option<usize>,
     pub deeds: Vec<Deed>,
 }
 
@@ -171,7 +241,8 @@ const MONSTER_LOST: f64 = 6.0;
 /// middle of its body to their eyes or their middle, looking a quarter of a meter at a time
 fn sees(a: &Animal, feet: Vector3<f64>, world: &World) -> bool {
     let vpm = world.voxels_per_meter as f64;
-    let from = a.center(world.voxels_per_meter);
+    // From where its middle is standing, not sunk under the sand or the water
+    let from = a.position + Vector3::new(0.0, 0.0, a.look.body().0 * vpm);
     [1.6, 0.9].into_iter().any(|up| {
         let to = feet + Vector3::new(0.0, 0.0, up * vpm);
         let steps = ((to - from).norm() / (0.25 * vpm)).ceil() as usize;
@@ -200,6 +271,20 @@ fn windup(look: Look, m: Move) -> f64 {
             (Look::Bandit, Move::Leap) => 0.5,
             (Look::Bandit, _) => 0.65,
             (Look::BanditBrute, _) => 1.0,
+            // Taking aim long enough to be seen and stepped out of the way of
+            (Look::Crossbowman, Move::Shoot) => 0.95,
+            (Look::Crossbowman, _) => 0.6,
+            (Look::Shieldbearer, _) => 0.9,
+            (Look::DuneBurrower, Move::Erupt) => 0.6,
+            (Look::DuneBurrower, _) => 0.55,
+            (Look::RimeWraith, Move::Blink) => 0.2,
+            (Look::RimeWraith, Move::Spit) => 0.8,
+            (Look::RimeWraith, _) => 0.6,
+            (Look::MireLurker, Move::Lash) => 0.7,
+            (Look::MireLurker, _) => 0.55,
+            (Look::Gloomwing, _) => 0.35,
+            (Look::Tusker, Move::Charge) => 0.9,
+            (Look::Tusker, _) => 0.65,
             _ => 0.85,
         };
     }
@@ -221,11 +306,19 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Maul) => 0.7,
         (_, Move::Web) => 0.6,
         (_, Move::Cataclysm) => 1.8,
+        (_, Move::Shoot | Move::Lash) => 0.8,
+        (_, Move::Burrow | Move::Erupt) => 0.6,
+        (_, Move::Blink) => 0.3,
     }
 }
 
 fn duration(look: Look, m: Move) -> f64 {
     match m {
+        Move::Shoot => 0.25,
+        Move::Burrow => 0.6,
+        Move::Erupt => 0.35,
+        Move::Blink => 0.2,
+        Move::Lash => 0.45,
         Move::Cataclysm => CATACLYSM_START + CATACLYSM_EVERY * CATACLYSM_FALLS as f64,
         Move::Slam if look.is_monster() => 0.35,
         Move::Slam => 0.55,
@@ -248,6 +341,15 @@ fn duration(look: Look, m: Move) -> f64 {
 
 fn recovery(look: Look, m: Move) -> f64 {
     match m {
+        // Spanning the crossbow again
+        Move::Shoot => 0.7,
+        Move::Burrow => 0.2,
+        // Out in the open and slow to get its bearings: the moment to hit it
+        Move::Erupt => 1.0,
+        Move::Blink => 0.3,
+        Move::Lash => 0.6,
+        Move::Slam if look == Look::Shieldbearer => 1.1,
+        Move::Slam if look == Look::Gloomwing => 0.45,
         Move::Slam if matches!(look, Look::Skeleton | Look::ArmoredSkeleton) => 1.0,
         Move::Slam if matches!(look, Look::Zombie | Look::ArmoredZombie) => 0.9,
         Move::Slam if look == Look::Bandit => 0.75,
@@ -275,8 +377,14 @@ fn recovery(look: Look, m: Move) -> f64 {
 
 fn cooldown(look: Look, m: Move) -> f64 {
     match m {
-        Move::Slam if matches!(look, Look::Wolf) => 1.6,
-        Move::Slam if look == Look::Spiderling => 1.4,
+        Move::Shoot => 3.2,
+        Move::Burrow => 6.0,
+        Move::Erupt => 2.0,
+        Move::Blink => 4.5,
+        Move::Lash => 6.0,
+        Move::Charge if look == Look::Tusker => 6.5,
+        Move::Slam if matches!(look, Look::Wolf | Look::MireLurker) => 1.6,
+        Move::Slam if matches!(look, Look::Spiderling | Look::Gloomwing) => 1.4,
         Move::Slam if look.is_monster() => 2.4,
         Move::Leap if look == Look::Wolf => 6.0,
         Move::Leap if look.is_monster() => 5.0,
@@ -308,6 +416,8 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
         Look::Wolf => (0.6, 1.4, 1.8, 12.0),
         Look::Spiderling => (0.5, 1.0, 1.2, 8.0),
         Look::Bandit => (0.55, 1.1, 1.4, 14.0),
+        // A gloomwing swooping down
+        Look::Gloomwing => (0.45, 0.5, 1.1, 7.0),
         Look::Direwolf | Look::WinterAlpha => (0.7, 3.0, 3.0, 24.0),
         _ => (0.8, 4.0, 3.0, 26.0),
     }
@@ -318,9 +428,14 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
 fn closeness(look: Look) -> (f64, f64) {
     match look {
         Look::Wolf => (1.3, 0.8),
-        Look::Skeleton | Look::ArmoredSkeleton | Look::Bandit | Look::BanditBrute => (1.6, 0.5),
+        Look::Skeleton | Look::ArmoredSkeleton | Look::Bandit | Look::BanditBrute | Look::Shieldbearer | Look::Crossbowman => (1.6, 0.5),
         Look::Zombie | Look::ArmoredZombie => (1.4, 0.5),
         Look::Spiderling => (0.9, 0.5),
+        Look::DuneBurrower => (1.3, 0.5),
+        Look::RimeWraith => (1.6, 0.5),
+        Look::MireLurker => (1.5, 0.6),
+        Look::Gloomwing => (0.8, 0.6),
+        Look::Tusker => (1.9, 0.8),
         _ if look.build() == Some(Build::Drake) => (6.0, look.body().1 + 1.0),
         _ => (3.0, look.body().1 + 1.0),
     }
@@ -338,6 +453,15 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::ArmoredZombie => (1.1, 1.6, 17.0, 0.0),
         Look::Bandit => (1.4, 1.5, 15.0, 0.0),
         Look::BanditBrute => (1.5, 1.8, 26.0, 0.0),
+        // A crossbowman's stock, a mace over the top of a shield, pincers and a sting, icy claws,
+        // a bite, a gloomwing's teeth and a tusker's goring
+        Look::Crossbowman => (1.2, 1.3, 9.0, 0.0),
+        Look::Shieldbearer => (1.4, 1.6, 18.0, 0.0),
+        Look::DuneBurrower => (1.2, 1.5, 12.0, 0.0),
+        Look::RimeWraith => (1.2, 1.4, 12.0, 0.0),
+        Look::MireLurker => (1.3, 1.6, 15.0, 0.0),
+        Look::Gloomwing => (0.5, 1.0, 5.0, 0.0),
+        Look::Tusker => (1.6, 1.8, 22.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
         Look::Warlord => (2.2, 2.9, 30.0, 0.5),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
@@ -392,6 +516,10 @@ const CATACLYSM_FALLS: usize = 18;
 const RAID_PHASES: [f64; 2] = [0.66, 0.33];
 /// Seconds at most a heavy blow's held back, wound up, so it can't be timed by rhythm alone
 const MOST_HOLD: f64 = 0.55;
+/// How far round a burrower bursting up out of the sand hurts, in meters
+const ERUPT_RADIUS: f64 = 1.5;
+/// How far a wraith goes when it vanishes, in meters
+const BLINK: f64 = 6.0;
 
 impl Boss {
     pub fn new(look: Look, home: Vector3<f64>, key: [i64; 3]) -> Self {
@@ -414,6 +542,20 @@ impl Boss {
             hold: 0.0,
             sway: [0.0; 3],
             unseen: 0.0,
+            sighted: false,
+            pack: 0,
+            flock: Flock::default(),
+            // Burrowers wait dug in, lurkers sunk low in the shallows
+            buried: look == Look::DuneBurrower,
+            lurking: look == Look::MireLurker,
+            retreat: 0.0,
+            retreat_wait: 0.0,
+            struck: false,
+            sink: 0.0,
+            clock: 0.0,
+            trail: 0.0,
+            last: None,
+            fixed_pose: None,
             deeds: Vec::new(),
         }
     }
@@ -423,6 +565,38 @@ impl Boss {
         self.engaged = true;
         self.grace = 0.0;
         self.unseen = 0.0;
+        self.struck = true;
+        self.lurking = false;
+    }
+
+    /// Whether it's after the player and saw them this frame
+    pub fn sighted(&self) -> bool {
+        self.engaged && self.sighted
+    }
+
+    /// Dug in under the sand
+    pub fn buried(&self) -> bool {
+        self.buried
+    }
+
+    /// Holding up its guard, for a shieldbearer: whenever it isn't attacking or getting over it
+    pub fn guarding(&self) -> bool {
+        matches!(self.phase, Phase::Roam | Phase::Chase)
+    }
+
+    /// How much faster than it walks or runs it's going: a burrower tunnelling along, a tusker
+    /// charging
+    pub fn haste(&self) -> f64 {
+        match self.phase {
+            Phase::Act(Move::Charge, _) if self.look == Look::Tusker => 1.7,
+            _ if self.buried => 1.8,
+            _ => 1.0,
+        }
+    }
+
+    /// For looking at it: leaves the player be for good, so it stays where it is
+    pub fn leave_be(&mut self) {
+        self.grace = f64::MAX;
     }
 
     /// Having beaten the player, it goes home and leaves them be for a while to get up
@@ -444,6 +618,7 @@ impl Boss {
     pub fn calm(&mut self) {
         self.engaged = false;
         self.enraged = false;
+        self.retreat = 0.0;
         if !matches!(self.phase, Phase::Act(Move::Leap, _)) {
             self.phase = Phase::Roam;
         }
@@ -452,6 +627,9 @@ impl Boss {
     /// Which frame to draw it in, see animals::POSE_WINDUP, or None to walk or stand: easing through
     /// the frame halfway from its last pose into a new one
     pub fn pose(&self) -> Option<usize> {
+        if self.fixed_pose.is_some() {
+            return self.fixed_pose;
+        }
         let (now, before, since) = self.posed;
         if since < EASE {
             if let Some(between) = animals::tween(before.unwrap_or(0), now.unwrap_or(0), since / EASE) {
@@ -471,7 +649,30 @@ impl Boss {
             Phase::Stunned(t) => 0.03 * (t * 6.0).sin(),
             _ => 0.0,
         };
-        [pitch + tremble, on, up]
+        // Fliers bob up and down as they beat their wings, a wraith rises and falls as it drifts,
+        // and either way sinks as it dives or digs in
+        let hover = match self.look.build() {
+            Some(Build::Bat) => 0.07 * (self.clock * 6.8).sin() + 0.12 * (self.clock * 0.9 + self.key[0] as f64).sin(),
+            Some(Build::Wraith) => 0.06 * (self.clock * 1.6).sin(),
+            _ => 0.0,
+        };
+        [pitch + tremble, on, up + hover - self.sink]
+    }
+
+    /// How far it's sunk into the ground or dived down from where it flies, in meters: dug right
+    /// in under the sand but for the tip of its tail, lying low in wait with only its eyes up, or
+    /// down to bite
+    fn sink_target(&self) -> (f64, f64) {
+        let diving = matches!(self.phase, Phase::WindUp(Move::Slam | Move::Leap, _) | Phase::Act(Move::Slam | Move::Leap, _));
+        match self.look {
+            // Held in a pose to be looked at, all of it out in the open
+            _ if self.fixed_pose.is_some() => (0.0, 6.0),
+            Look::DuneBurrower if self.buried => (1.1, 2.5),
+            Look::MireLurker if self.lurking => (0.3, 2.0),
+            Look::Gloomwing if diving => (0.85, 7.0),
+            Look::Gloomwing => (0.0, 3.0),
+            _ => (0.0, 6.0),
+        }
     }
 
     /// Where the way it's going about its move puts its whole body, see sway(), and how quickly it
@@ -499,6 +700,21 @@ impl Boss {
     /// Which pose it's striking as it goes about its move, or None to walk or stand
     fn target_pose(&self) -> Option<usize> {
         match (self.phase, self.look.build()) {
+            // Taking aim and loosing, then spanning the crossbow again
+            (Phase::WindUp(Move::Shoot, _), _) => Some(POSE_WINDUP),
+            (Phase::Act(Move::Shoot, _), _) => Some(POSE_STRIKE),
+            (Phase::Recover(_), _) if self.last == Some(Move::Shoot) => Some(POSE_SPECIAL),
+            // Nosing down to dig in, then bursting up out of the sand
+            (Phase::WindUp(Move::Burrow | Move::Erupt, _) | Phase::Act(Move::Burrow, _), _) => Some(POSE_SPECIAL),
+            (Phase::Act(Move::Erupt, _), _) => Some(POSE_STRIKE),
+            // Drawing in on itself to vanish
+            (Phase::WindUp(Move::Blink, _) | Phase::Act(Move::Blink, _), _) => Some(POSE_SPECIAL),
+            // Gaping, then flinging its mouth wide as its tongue lashes out
+            (Phase::WindUp(Move::Lash, _), _) => Some(POSE_WINDUP),
+            (Phase::Act(Move::Lash, _), _) => Some(POSE_SPECIAL),
+            // A tusker paws the ground before it charges
+            (Phase::WindUp(Move::Charge, _), Some(Build::Boar)) => Some(POSE_WINDUP),
+            (Phase::Act(Move::Charge, _), Some(Build::Boar)) => Some(POSE_SPECIAL),
             (Phase::Act(Move::Roar, _), Some(Build::Drake)) => Some(POSE_SPECIAL),
             (Phase::Act(Move::Roar, _), _) => Some(POSE_WINDUP),
             // A wolf crouches to spring; howling, the dead raising their arms, calling the rest up
@@ -536,6 +752,18 @@ impl Boss {
             _ if self.look == Look::Bandit => &[(Move::Slam, 0.0, 2.6), (Move::Leap, 3.5, 8.0)],
             // The warlord charges, throws firebombs and calls the gang
             _ if self.look == Look::Warlord => &[(Move::Slam, 0.0, 3.8), (Move::Summon, 0.0, 30.0), (Move::Charge, 4.5, 22.0), (Move::Spit, 4.0, 26.0)],
+            // A crossbowman shoots from well back, and clubs whatever gets right up to it
+            _ if self.look == Look::Crossbowman => &[(Move::Slam, 0.0, 1.8), (Move::Shoot, 3.0, 28.0)],
+            _ if self.look == Look::Shieldbearer => &[(Move::Slam, 0.0, 2.5)],
+            // A burrower comes up under the player, and digs back in once they've got away from it
+            _ if self.look == Look::DuneBurrower && self.buried => &[(Move::Erupt, 0.0, 2.0)],
+            _ if self.look == Look::DuneBurrower => &[(Move::Slam, 0.0, 2.3), (Move::Burrow, 5.0, 40.0)],
+            // A wraith vanishes from under the player's nose, claws them if it can't, and throws
+            // frost from further off
+            _ if self.look == Look::RimeWraith => &[(Move::Blink, 0.0, 3.0), (Move::Slam, 0.0, 2.1), (Move::Spit, 4.5, 24.0)],
+            _ if self.look == Look::MireLurker => &[(Move::Slam, 0.0, 2.3), (Move::Lash, 3.0, 9.0)],
+            _ if self.look == Look::Gloomwing => &[(Move::Slam, 0.0, 1.4), (Move::Leap, 3.0, 7.5)],
+            _ if self.look == Look::Tusker => &[(Move::Slam, 0.0, 2.5), (Move::Charge, 5.0, 18.0)],
             Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
             // Ranges meeting, so there's nowhere to stand it won't do something
             Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
@@ -545,7 +773,8 @@ impl Boss {
             Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],
             Some(Build::Wolf) => &[(Move::Slam, 0.0, 3.2), (Move::Summon, 0.0, 30.0), (Move::Maul, 2.5, 8.0), (Move::Leap, 7.0, 22.0)],
             Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
-            None => &[],
+            // Only ever monsters, all seen to above
+            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar) | None => &[],
         };
         moves.iter().find(|&&(m, near, far)| within(m, near, far)).map(|&(m, _, _)| m)
     }
@@ -563,10 +792,111 @@ fn mouth(a: &Animal, vpm: f64) -> Vector3<f64> {
         Some(Build::Spider) => [1.35, 0.0, 1.1],
         Some(Build::Treant) => [0.6, 0.0, 3.0],
         Some(Build::Wolf) => [0.95, 0.0, 0.8],
+        // The end of a crossbow raised to the shoulder
+        _ if a.look == Look::Crossbowman => [0.82, -0.04, 1.44],
         Some(Build::Undead) => [0.42, 0.26, 1.35],
+        Some(Build::Burrower) => [0.95, 0.0, 0.32],
+        // Between its claws thrust out together
+        Some(Build::Wraith) => [0.9, 0.0, 1.5],
+        Some(Build::Lurker) => [0.95, 0.0, 0.4],
+        Some(Build::Bat) => [0.35, 0.0, 1.6],
+        Some(Build::Boar) => [1.3, 0.0, 0.62],
         _ => [2.3, 0.0, 1.55],
     };
     on_body(a, point.map(|v| v * a.look.scale()), vpm)
+}
+
+/// The ground under `at`, in voxels, from a little over it to a few meters down, with room to
+/// stand on it: None if there's none there
+fn ground_under(world: &World, at: Vector3<f64>) -> Option<Vector3<f64>> {
+    let vpm = world.voxels_per_meter as f64;
+    let (x, y) = (at.x.floor() as i64, at.y.floor() as i64);
+    if x < 2 || y < 2 || x >= world.size[0] as i64 - 2 || y >= world.size[1] as i64 - 2 {
+        return None;
+    }
+    let top = at.z.floor() as i64 + 2 * vpm as i64;
+    let room = |z: i64| (1..=(1.5 * vpm) as i64).all(|k| is_passable(world.material_at(x, y, z + k)));
+    (top - 6 * vpm as i64..=top).rev().find(|&z| !is_passable(world.material_at(x, y, z)) && room(z)).map(|z| Vector3::new(at.x, at.y, z as f64 + 1.0))
+}
+
+/// How far from the player a monster that shoots likes to keep, in meters: it backs off from them
+/// closer than the first, and comes on if they're further than the second
+fn keep_off(look: Look) -> Option<(f64, f64)> {
+    match look {
+        Look::Crossbowman => Some((7.0, 18.0)),
+        Look::RimeWraith => Some((5.5, 16.0)),
+        _ => None,
+    }
+}
+
+/// Whether it hangs back from the player to shoot, rather than closing in to fight
+pub fn hangs_back(look: Look) -> bool {
+    keep_off(look).is_some()
+}
+
+/// Radians either side of straight at the player the members of a pack fan out as they come at
+/// them, so they close in from round about them together
+const FLANK: f64 = 0.6;
+/// Meters from the middle of its pack a monster can get before it heads back towards the rest
+const STRAY: f64 = 6.0;
+/// How hard a monster's crowded off by another of its pack right on top of it, in meters a second
+/// gained each second
+const CROWDED: f64 = 5.0;
+
+/// Which way monster `a`, chasing the player at `p` `distance` meters off, heads and how fast, to
+/// come within `close` meters of them. In a pack it comes round to its own side of them, so the
+/// pack closes in from round about together; it heads back towards the rest if it's strayed from
+/// them, and holds back if it's got out ahead of them. One that shoots stands off and shoots,
+/// sidestepping while it gets ready again; a shieldbearer walks in behind its shield; and a
+/// gloomwing flits this way and that.
+fn steer(a: &mut Animal, boss: &mut Boss, p: Vector3<f64>, distance: f64, close: f64, vpm: f64) {
+    let look = a.look;
+    if !look.is_monster() {
+        return;
+    }
+    let flock = boss.flock;
+    let straight = heading_to(a.position, p);
+    if let Some((_, far)) = keep_off(look)
+        && distance < far
+    {
+        // Keeping up behind the rest of its pack as they close in, shooting over them
+        if flock.size > 1 && distance > (p - flock.front).xy().norm() / vpm + 8.0 {
+            a.target_heading = straight;
+            a.mood = Mood::Run;
+            return;
+        }
+        let ranged = if look == Look::Crossbowman { Move::Shoot } else { Move::Spit };
+        if boss.cooldowns[ranged as usize] > 0.5 {
+            let side = if ((boss.clock / 2.2) as i64 + a.id as i64) % 2 == 0 { 1.0 } else { -1.0 };
+            a.target_heading = straight + side * FRAC_PI_2;
+            a.mood = Mood::Walk;
+        } else {
+            a.target_heading = straight;
+            a.mood = Mood::Idle;
+        }
+        return;
+    }
+    let mut heading = straight;
+    if flock.size > 1 {
+        let side = flock.slot as f64 - (flock.fighters.max(1) as f64 - 1.0) * 0.5;
+        let fade = ((distance - close - 1.0) / 6.0).clamp(0.0, 1.0);
+        heading += (side * FLANK).clamp(-1.3, 1.3) * fade;
+        // How far it's got from the rest closing in with it, and how much nearer the player it is
+        // than they are
+        let stray = (a.position - flock.front).xy().norm() / vpm;
+        let ahead = (p - flock.front).xy().norm() / vpm - distance;
+        if stray > STRAY && distance > close + 3.0 {
+            heading = heading_to(a.position, flock.front * 0.6 + p * 0.4);
+        } else if ahead > 3.5 && distance > close + 2.5 && a.mood == Mood::Run {
+            a.mood = Mood::Walk;
+        }
+    }
+    match look {
+        Look::Shieldbearer if distance < 5.0 && a.mood == Mood::Run => a.mood = Mood::Walk,
+        Look::Gloomwing if distance > 1.5 => heading += 0.7 * (boss.clock * 2.3 + a.id as f64).sin(),
+        _ => {}
+    }
+    a.target_heading = heading;
 }
 
 fn heading_to(from: Vector3<f64>, to: Vector3<f64>) -> f64 {
@@ -586,6 +916,9 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     for c in &mut boss.cooldowns {
         *c -= dt;
     }
+    boss.clock += dt;
+    boss.retreat_wait -= dt;
+    let struck = std::mem::take(&mut boss.struck);
     // Easing into whatever pose it took up last frame
     let pose = boss.target_pose();
     boss.posed = if pose == boss.posed.0 { (pose, boss.posed.1, boss.posed.2 + dt) } else { (pose, boss.posed.0, 0.0) };
@@ -600,6 +933,14 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let (notice, give_up, leash) = match look {
         Look::Wolf => (22.0, 34.0, 50.0),
         Look::Spiderling => (14.0, 24.0, 32.0),
+        // Keeping watch with a crossbow, they see further
+        Look::Crossbowman => (22.0, 32.0, 40.0),
+        Look::Tusker | Look::RimeWraith => (20.0, 32.0, 45.0),
+        Look::DuneBurrower => (18.0, 30.0, 40.0),
+        // Lying in wait, it doesn't stir till they're almost on top of it
+        Look::MireLurker if boss.lurking => (7.0, 24.0, 30.0),
+        Look::MireLurker => (16.0, 24.0, 30.0),
+        Look::Gloomwing => (14.0, 26.0, 32.0),
         _ if monster => (MONSTER_NOTICE, MONSTER_GIVE_UP, MONSTER_LEASH),
         _ => (NOTICE, GIVE_UP, LEASH),
     };
@@ -610,15 +951,31 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     if near && seen {
         boss.engaged = true;
     }
-    boss.unseen = if seen || !boss.engaged { 0.0 } else { boss.unseen + dt };
+    // The rest of its pack is after the player: it comes along with them, whether or not it can
+    // see them itself, so a pack fights together rather than one at a time
+    let flock = boss.flock;
+    let packed = monster && flock.size > 1;
+    let alarmed = packed && flock.alarmed && level && boss.grace <= 0.0 && distance < give_up && (a.position - flock.middle).xy().norm() < 30.0 * vpm;
+    if alarmed {
+        boss.engaged = true;
+    }
+    boss.sighted = seen;
+    boss.unseen = if seen || alarmed || !boss.engaged { 0.0 } else { boss.unseen + dt };
+    // Stepping out of the way of the rest of its pack, so they keep close without standing in
+    // each other, unless it's in the middle of a leap or a charge
+    if packed && flock.crowd != Vector2::zeros() && !matches!(boss.phase, Phase::Act(Move::Leap | Move::Charge, _)) {
+        a.status.push += Vector3::new(flock.crowd.x, flock.crowd.y, 0.0) * CROWDED * vpm * dt;
+    }
     let lost = boss.unseen > if monster { MONSTER_LOST } else { LOST };
     if boss.engaged && (player.is_none() || distance > give_up || from_home > leash || lost) {
         boss.calm();
     }
     let busy = matches!(boss.phase, Phase::WindUp(..) | Phase::Act(..));
     if boss.engaged && boss.phase == Phase::Roam {
-        // A monster gives a snarl or a rattle and comes straight on
+        // A monster gives a snarl or a rattle and comes straight on, a lurker bursting up out of
+        // where it lay
         boss.phase = if monster { Phase::Chase } else { Phase::Act(Move::Roar, 0.0) };
+        boss.lurking = false;
         boss.deeds.push(Deed::Roar { at: a.position, angry: false });
     } else if boss.engaged && look.is_raid() && !busy && (boss.stage as usize) < RAID_PHASES.len() && vitality < RAID_PHASES[boss.stage as usize] {
         // A raid boss going into its next phase: roaring, calling up help, ready to bring the sky
@@ -646,9 +1003,19 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
 
     boss.phase = match boss.phase {
         Phase::Roam => {
-            // Healing back up, wandering round home
+            // Healing back up, wandering round home, keeping with the rest of its pack. A burrower
+            // digs back in, and a lurker sinks back down to wait.
             a.health = (a.health + look.health() * 0.05 * dt).min(look.health());
-            if from_home > 6.0 {
+            if look == Look::DuneBurrower && !boss.buried {
+                boss.buried = true;
+                boss.deeds.push(Deed::Burrow { at: a.position });
+            }
+            boss.lurking |= look == Look::MireLurker && from_home < 6.0;
+            let strayed = packed && (flock.middle - a.position).xy().norm() > 3.5 * vpm && from_home < 12.0;
+            if strayed {
+                a.mood = Mood::Walk;
+                a.target_heading = heading_to(a.position, flock.middle);
+            } else if from_home > 6.0 {
                 a.mood = Mood::Walk;
                 a.target_heading = heading_to(a.position, boss.home);
             } else {
@@ -659,9 +1026,26 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         Phase::Chase => {
             let p = player.unwrap_or(boss.home);
             a.target_heading = heading_to(a.position, p);
-            // Only once it's facing them more or less
+            // A crossbowman or a wraith the player's got too close to backs off, back towards the
+            // rest of its pack, to shoot from further back; for a while, so it can't be run down
+            // into a corner and left doing nothing
+            if let Some((close_by, _)) = keep_off(look) {
+                if boss.retreat > 0.0 {
+                    boss.retreat -= dt;
+                    if distance > close_by + 3.0 {
+                        boss.retreat = 0.0;
+                    }
+                } else if distance < close_by && distance > 2.0 && boss.retreat_wait <= 0.0 {
+                    boss.retreat = 2.5;
+                    boss.retreat_wait = 5.5;
+                }
+            }
+            // Only once it's facing them more or less, and a wraith struck vanishes from under
+            // the blow if it can
             let facing = ((a.target_heading - a.heading + PI).rem_euclid(TAU) - PI).abs() < 0.6;
-            match boss.choose(distance).filter(|_| facing) {
+            let blink = (look == Look::RimeWraith && struck && boss.cooldowns[Move::Blink as usize] <= 0.0).then_some(Move::Blink);
+            let backing = boss.retreat > 0.0 && distance > 1.8;
+            match blink.or(boss.choose(distance).filter(|_| facing && !backing)) {
                 Some(m) => {
                     a.mood = Mood::Idle;
                     boss.aim = p;
@@ -687,20 +1071,49 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     } else {
                         Mood::Run
                     };
+                    if backing {
+                        let away = (a.position - p).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
+                        let back = if packed { (flock.middle - a.position).xy() / vpm * 0.15 } else { Vector2::zeros() };
+                        let way = away + back;
+                        a.target_heading = way.y.atan2(way.x);
+                        a.mood = Mood::Run;
+                    } else {
+                        steer(a, &mut boss, p, distance, close, vpm);
+                    }
+                    // Tunnelling along, it churns up the sand over it
+                    if boss.buried && a.speed > 0.5 {
+                        boss.trail -= dt;
+                        if boss.trail <= 0.0 {
+                            boss.trail = 0.14;
+                            boss.deeds.push(Deed::Burrow { at: a.position });
+                        }
+                    }
                     Phase::Chase
                 }
             }
         }
         Phase::WindUp(m, t) => {
             a.mood = Mood::Idle;
-            // Following the player with its eyes as it gets ready
-            if let Some(p) = player {
+            // Following the player with its eyes as it gets ready, all but the last moment of
+            // taking aim, so there's time to step aside. Where a burrower's coming up is fixed
+            // from the first, and shows.
+            let settled = matches!(m, Move::Shoot | Move::Lash | Move::Spit) && look.is_monster() && t > windup(look, m) - 0.25;
+            if let Some(p) = player.filter(|_| m != Move::Erupt && !settled) {
                 boss.aim = p;
                 a.target_heading = heading_to(a.position, p);
             }
             // Showing how far its quake will reach
             if m == Move::Quake {
                 boss.deeds.push(Deed::Mark { at: a.position, radius: quake_reach(look), closing: 0.0 });
+            }
+            // The sand stirring where it's about to burst up
+            if m == Move::Erupt {
+                boss.deeds.push(Deed::Mark { at: boss.aim, radius: ERUPT_RADIUS, closing: 1.0 - t / windup(look, m) });
+                boss.trail -= dt;
+                if boss.trail <= 0.0 {
+                    boss.trail = 0.1;
+                    boss.deeds.push(Deed::Burrow { at: boss.aim });
+                }
             }
             let t = t + dt;
             if t < windup(look, m) * quick.max(0.8) + boss.hold {
@@ -713,12 +1126,53 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         let (reach, radius, damage, crater) = slam(look);
                         boss.deeds.push(Deed::Slam { at: a.position + forward * reach * vpm, radius, damage, crater });
                     }
-                    // The dead rising, a pack answering a howl, spiderlings swarming out
+                    // The dead rising, a pack answering a howl, spiderlings swarming out, to fight
+                    // round it
                     Move::Summon => {
                         if let Some(brood) = look.brood() {
                             let count = if brood == Look::Spiderling { 3 } else { 2 };
-                            boss.deeds.push(Deed::Summon { at: a.position, look: brood, count });
+                            if boss.pack == 0 {
+                                boss.pack = animals::new_pack();
+                            }
+                            boss.deeds.push(Deed::Summon { at: a.position, look: brood, count, pack: boss.pack });
                         }
+                    }
+                    Move::Shoot => boss.deeds.push(Deed::Bolt { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.1 * vpm) }),
+                    Move::Lash => boss.deeds.push(Deed::Lash { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    Move::Burrow => {
+                        boss.buried = true;
+                        boss.deeds.push(Deed::Burrow { at: a.position });
+                    }
+                    // Up out of the sand where it showed, right by the player if they're still
+                    // there, on the side it came from, so a pack comes up all round them
+                    Move::Erupt => {
+                        boss.buried = false;
+                        let side = (a.position - boss.aim).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
+                        let near = boss.aim + Vector3::new(side.x, side.y, 0.0) * 1.3 * vpm;
+                        if let Some(at) = ground_under(world, near).or_else(|| ground_under(world, boss.aim)) {
+                            a.position = at;
+                        }
+                        let (_, _, damage, _) = slam(look);
+                        boss.deeds.push(Deed::Erupt { at: a.position });
+                        boss.deeds.push(Deed::Slam { at: boss.aim, radius: ERUPT_RADIUS, damage, crater: 0.0 });
+                    }
+                    // Gone in a swirl of frost, and back a few meters off to one side of the
+                    // player, away from them, facing them
+                    Move::Blink => {
+                        let from = a.center(world.voxels_per_meter);
+                        let away = (a.position - boss.aim).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
+                        let side: f64 = if a.roll() < 0.5 { 1.0 } else { -1.0 };
+                        for turn in [side * 1.1, -side * 1.1, side * 0.3] {
+                            let (c, s) = (turn.cos(), turn.sin());
+                            let way = Vector3::new(away.x * c - away.y * s, away.x * s + away.y * c, 0.0);
+                            if let Some(at) = ground_under(world, a.position + way * BLINK * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm)) {
+                                a.position = at;
+                                break;
+                            }
+                        }
+                        a.heading = heading_to(a.position, boss.aim);
+                        a.target_heading = a.heading;
+                        boss.deeds.push(Deed::Blink { from, to: a.center(world.voxels_per_meter) });
                     }
                     Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05].map(|v| v * look.size()), vpm), to: boss.aim }),
                     Move::Spit => boss.deeds.push(Deed::Spit { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
@@ -787,7 +1241,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     a.mood = Mood::Run;
                     if !boss.rammed && distance < 2.8 {
                         boss.rammed = true;
-                        boss.deeds.push(Deed::Ram { damage: 34.0, direction: forward });
+                        boss.deeds.push(Deed::Ram { damage: if look == Look::Tusker { 20.0 } else { 34.0 }, direction: forward });
                     }
                     // Run into a wall or a tree, it's left dazed: the player's chance
                     if t > 0.35 && a.speed < 1.0 {
@@ -876,7 +1330,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     boss.deeds.push(Deed::WindUp(Move::Slam, a.position));
                     Phase::WindUp(Move::Slam, windup(look, Move::Slam) * 0.45)
                 }
-                (true, _) => Phase::Recover(recovery(look, m) * quick),
+                (true, _) => {
+                    boss.last = Some(m);
+                    Phase::Recover(recovery(look, m) * quick)
+                }
                 _ => Phase::Act(m, t),
             }
         }
@@ -901,5 +1358,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     for k in 0..3 {
         boss.sway[k] += (target[k] * reach[k] - boss.sway[k]) * ease;
     }
+    let (sink, rate) = boss.sink_target();
+    boss.sink += (sink - boss.sink) * (1.0 - (-rate * dt).exp());
     a.boss = Some(boss);
 }

@@ -600,6 +600,8 @@ pub enum HostileKind {
     Thorn,
     /// A ball of web, lobbed, leaving the ground round where it lands sticky
     Web,
+    /// A crossbow bolt loosed by a bandit, flying almost flat, hurting only what it hits
+    Bolt,
 }
 
 impl HostileKind {
@@ -608,6 +610,7 @@ impl HostileKind {
         match self {
             HostileKind::Boulder(_) | HostileKind::Spell(Element::Poison) | HostileKind::Web => 1.0,
             HostileKind::Thorn => 0.25,
+            HostileKind::Bolt => 0.12,
             HostileKind::Spell(_) => 0.0,
         }
     }
@@ -617,8 +620,13 @@ impl HostileKind {
             HostileKind::Boulder(e) => e,
             HostileKind::Spell(e) => Some(e),
             HostileKind::Web => Some(Element::Poison),
-            HostileKind::Thorn => None,
+            HostileKind::Thorn | HostileKind::Bolt => None,
         }
+    }
+
+    /// Whether it only hurts what it hits, sticking in where it lands, rather than going off
+    fn pierces(self) -> bool {
+        matches!(self, HostileKind::Thorn | HostileKind::Bolt)
     }
 }
 
@@ -1004,7 +1012,10 @@ fn ichor(look: Look) -> (usize, Option<u8>) {
         Look::FrostGolem => (DROP_ICE, None),
         Look::MagmaGolem => (DROP_EMBER, None),
         Look::Treant => (DROP_ASH, None),
-        Look::Spider | Look::Spiderling | Look::Rimeweaver => (DROP_VENOM, Some(MOSS)),
+        Look::Spider | Look::Spiderling | Look::Rimeweaver | Look::DuneBurrower => (DROP_VENOM, Some(MOSS)),
+        // Shards of frost off a wraith, and the swamp water a lurker's full of
+        Look::RimeWraith => (DROP_ICE, None),
+        Look::MireLurker => (DROP_WATER, Some(MOSS)),
         _ => (DROP_BLOOD, Some(CLOTH)),
     }
 }
@@ -5617,6 +5628,15 @@ impl Combat {
             self.burst(arena, profile, center, radius, blow.damage * power + flames, blow.depth + 1, false, Some(Element::Void), Some(i));
         }
 
+        // A shieldbearer facing the blow takes most of it on its shield, and a burrower dug in
+        // most of it in the sand over it
+        let guard = arena.animals[i].guard(blow.from);
+        if guard < 1.0 {
+            damage *= guard;
+            if blow.depth == 0 {
+                self.guarded(arena, i, blow.from);
+            }
+        }
         let died = arena.animals[i].damage(damage, blow.from);
         // Blood spraying out of it, or what it has for blood, and a hard blow staining the ground
         self.bleed(arena, i, damage, blow.from, blow.crit || blow.heavy || died);
@@ -6122,6 +6142,22 @@ impl Combat {
         }
     }
 
+    /// A blow from `from` caught on animal `i`'s shield, sparks flying off it and steel ringing,
+    /// or on the sand over a burrower, kicking it up
+    fn guarded(&mut self, arena: &Arena, i: usize, from: Vector3<f64>) {
+        let vpm = self.vpm;
+        let a = &arena.animals[i];
+        if a.look == Look::Shieldbearer {
+            let toward = Vector3::new(from.x - a.position.x, from.y - a.position.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+            let at = a.position + toward * 0.5 * vpm + Vector3::new(0.0, 0.0, 1.1 * vpm);
+            self.sparks(at, 10, 3.0, Element::look(None), 0.8, 0.35);
+            self.cues.push(Cue::at(Sound::Clang, at, 0.8).pitched(0.85 + 0.2 * random(&mut self.rng) as f32));
+            self.popups.push(Popup { position: at + Vector3::new(0.0, 0.0, 0.4 * vpm), text: "Blocked".into(), color: [200, 210, 230], size: 15.0, age: 0.0 });
+        } else {
+            self.stir(a.position, 0.7, 0.3, DROP_MUD);
+        }
+    }
+
     /// A monster killed, bursting apart its own way: a wolf bleeding, the dead falling to bones or
     /// gore, a spider bursting
     pub fn perish(&mut self, a: &Animal) {
@@ -6156,10 +6192,53 @@ impl Combat {
                 spray(self, 8, DROP_BLOOD, 2.5, 1.2);
                 self.cues.push(Cue::at(Sound::Squelch, at, 0.9).pitched(0.8));
             }
-            // A bandit going down with a cry
-            Look::Bandit | Look::BanditBrute => {
+            // A bandit going down with a cry, a crossbowman's crossbow clattering down with them
+            Look::Bandit | Look::BanditBrute | Look::Crossbowman | Look::Shieldbearer => {
                 spray(self, 14, DROP_BLOOD, 2.8, 1.1);
-                self.cues.push(Cue::at(Sound::Hurt, at, 0.8).pitched(0.85));
+                self.cues.push(Cue::at(Sound::Hurt, at, 0.8).pitched(if a.look == Look::Crossbowman { 1.0 } else { 0.85 }));
+                if a.look == Look::Crossbowman {
+                    self.cues.push(Cue::at(Sound::Latch, at, 0.6).pitched(0.8));
+                }
+            }
+            // Its plates cracking open, ichor and sand spilling out, its legs clicking as they curl
+            Look::DuneBurrower => {
+                spray(self, 12, DROP_VENOM, 3.0, 1.1);
+                spray(self, 14, DROP_MUD, 2.6, 1.0);
+                self.cues.push(Cue::at(Sound::Crack, at, 0.8).pitched(0.9));
+                self.cues.push(Cue::at(Sound::Chitter, at, 0.7).pitched(0.7));
+            }
+            // Coming apart into a swirl of frost rising and settling, its light going out with a
+            // last wail
+            Look::RimeWraith => {
+                spray(self, 18, DROP_ICE, 3.2, 1.3);
+                let frost = Element::look(Some(Element::Frost));
+                for _ in 0..24 {
+                    let v = self.any_direction() * 0.6 + Vector3::new(0.0, 0.0, 0.5);
+                    self.fine(at + Vector3::new(0.0, 0.0, 0.4 * vpm), v * vpm, frost, 1.2, -0.05);
+                }
+                self.element_hit(at, Some(Element::Frost), 1.5);
+                self.cues.push(Cue::at(Sound::Wail, at, 0.8).pitched(1.3));
+                self.cues.push(Cue::at(Sound::Crack, at, 0.6).pitched(1.4));
+            }
+            // Bursting wetly, a last croak gurgling out of it
+            Look::MireLurker => {
+                spray(self, 14, DROP_WATER, 3.0, 1.1);
+                spray(self, 10, DROP_VENOM, 2.4, 1.1);
+                self.cues.push(Cue::at(Sound::Squelch, at, 0.9).pitched(0.7));
+                self.cues.push(Cue::at(Sound::Croak, at, 0.7).pitched(0.6));
+            }
+            // A thin shriek as it drops out of the air
+            Look::Gloomwing => {
+                spray(self, 8, DROP_BLOOD, 2.4, 0.9);
+                self.cues.push(Cue::at(Sound::Screech, at, 0.6).pitched(1.5));
+            }
+            // A great beast going down with a squeal and a heavy thud
+            Look::Tusker => {
+                spray(self, 18, DROP_BLOOD, 3.0, 1.2);
+                spray(self, 8, DROP_MUD, 2.0, 0.9);
+                self.cues.push(Cue::at(Sound::Snort, at, 0.9).pitched(1.4));
+                self.cues.push(Cue::at(Sound::Quake, at, 0.4).pitched(1.6));
+                self.shake = self.shake.max(0.3);
             }
             _ => {
                 spray(self, 10, DROP_ASH, 3.0, 1.0);
@@ -6168,8 +6247,8 @@ impl Combat {
                 self.cues.push(Cue::at(Sound::Crack, at, 0.5).pitched(1.8));
             }
         }
-        // Armor ringing as it falls
-        if matches!(a.look, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::BanditBrute) {
+        // Armor ringing as it falls, and a shield
+        if matches!(a.look, Look::ArmoredSkeleton | Look::ArmoredZombie | Look::BanditBrute | Look::Shieldbearer) {
             self.sparks(at, 8, 3.0, Element::look(None), 0.8, 0.4);
             self.cues.push(Cue::at(Sound::Clang, at, 0.6).pitched(0.7));
         }
@@ -6187,6 +6266,52 @@ impl Combat {
         self.blasts.push(Blast { position: at, look: holy, radius: size * 1.6, life: 0.7, lifetime: 0.7 });
         self.flashes.push(Flash { position: at, color: [1.0, 0.9, 0.6], reach: 16.0, life: 0.7, lifetime: 0.7 });
         self.shake = self.shake.max(1.0);
+    }
+
+    /// Something bursting up out of the water at `at`, on its surface, `size` 1 for a spell's splash
+    pub fn splash_up(&mut self, at: Vector3<f64>, size: f64) {
+        self.splash(at, size);
+    }
+
+    /// Something bursting up out of the ground at `at`: a fountain of `kind`, one of
+    /// weapons::DROP_MUD and the rest, thrown up and falling round, and more stirred up after
+    pub fn burst_up(&mut self, at: Vector3<f64>, kind: usize) {
+        let vpm = self.vpm;
+        for _ in 0..34 {
+            let out = self.any_direction();
+            let v = Vector3::new(out.x * 0.8, out.y * 0.8, 1.0 + 0.8 * random(&mut self.rng)) * (2.5 + 2.5 * random(&mut self.rng));
+            self.drop(at + Vector3::new(0.0, 0.0, 0.2 * vpm), v * vpm, kind, 1.3);
+        }
+        self.stir(at, 1.3, 0.5, kind);
+    }
+
+    /// A wraith gone from `from` in a swirl of frost drawn in on itself, and back at `to` in a
+    /// burst of it
+    pub fn blink(&mut self, from: Vector3<f64>, to: Vector3<f64>) {
+        let frost = Element::look(Some(Element::Frost));
+        self.sparks(from, 26, -2.5, frost, 0.0, 0.45);
+        self.sparks(to, 22, 2.2, frost, 0.1, 0.5);
+        self.element_hit(to, Some(Element::Frost), 1.2);
+        self.flashes.push(Flash { position: to, color: Element::Frost.light(), reach: 5.0, life: 0.2, lifetime: 0.2 });
+    }
+
+    /// A lurker's tongue lashing out from `from` to `to` and back, there for a moment: a string of
+    /// wet drops along it
+    pub fn tongue(&mut self, from: Vector3<f64>, to: Vector3<f64>) {
+        let vpm = self.vpm;
+        let steps = ((to - from).norm() / (0.12 * vpm)).clamp(4.0, 80.0) as usize;
+        let back = (from - to).try_normalize(1e-6).unwrap_or_else(Vector3::z);
+        for k in 0..=steps {
+            let f = k as f64 / steps as f64;
+            // Pulled back in along itself, the far end first
+            let velocity = back * (6.0 * f) * vpm;
+            self.sparks.push(Spark { position: from.lerp(&to, f), velocity, look: DROP_BLOOD, life: 0.22, lifetime: 0.22, gravity: 0.1, slot: SLOT_DROP });
+        }
+        for _ in 0..8 {
+            let v = self.any_direction() + Vector3::new(0.0, 0.0, 0.6);
+            self.drop(to, v * 1.8 * vpm, DROP_WATER, 0.6);
+        }
+        self.cap_sparks();
     }
 
     /// Throws `kind` from `from` to land at `to` after `time` seconds: boulders and venom fall in
@@ -6315,6 +6440,14 @@ impl Combat {
                 self.sparks(at, 4, 1.5, look, 0.6, 0.4);
                 self.cues.push(Cue::at(Sound::Stab, at, 0.6).pitched(0.8));
             }
+            // A bolt thudding in, a little dirt kicked up round it
+            HostileKind::Bolt => {
+                for _ in 0..4 {
+                    let v = self.any_direction() * 0.6 + Vector3::new(0.0, 0.0, 1.0);
+                    self.drop(at, v * 1.6 * vpm, DROP_MUD, 0.5);
+                }
+                self.cues.push(Cue::at(Sound::ArrowHit, at, 0.6).pitched(0.9));
+            }
             // Strands of web and venom splattered round, the ground left sticky
             HostileKind::Web => {
                 for k in 0..24 {
@@ -6382,7 +6515,7 @@ impl Combat {
             // a streak behind a thorn
             match h.kind.element() {
                 Some(e) if random(&mut self.rng) < dt * 60.0 => self.mote(h.position, Some(e), 1.4),
-                None if random(&mut self.rng) < dt * 40.0 => {
+                None if h.kind != HostileKind::Bolt && random(&mut self.rng) < dt * 40.0 => {
                     let back = -h.velocity * 0.05;
                     self.drop(h.position, back, if h.kind == HostileKind::Thorn { DROP_ASH } else { DROP_MUD }, 0.4);
                 }
@@ -6412,11 +6545,11 @@ impl Combat {
                 continue;
             };
             let at = start + (end - start) * t;
-            // A thorn only hurts if it hits; the rest go off, hurting what's near
+            // A thorn or a bolt only hurts if it hits; the rest go off, hurting what's near
             let hit = direct.is_some_and(|d| d <= t);
             if let Some(b) = body {
                 let d = (b - at).norm() / vpm;
-                if h.kind == HostileKind::Thorn {
+                if h.kind.pierces() {
                     if hit {
                         self.player_hits.push((h.damage, at, None));
                     } else if d < 1.5 {
@@ -6428,20 +6561,21 @@ impl Combat {
                     self.near_misses.push(at);
                 }
             }
-            if h.kind != HostileKind::Thorn {
+            if !h.kind.pierces() {
                 let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
                 self.shake = self.shake.max(near * 0.5);
             }
             if water.is_some_and(|w| w <= t) && !hit {
-                self.splash(at, if h.kind == HostileKind::Thorn { 0.5 } else { 1.4 });
+                self.splash(at, if h.kind.pierces() { 0.5 } else { 1.4 });
                 continue;
             }
             self.land(h.kind, at);
-            if h.kind == HostileKind::Thorn && !hit && wall.is_some_and(|w| w <= t) {
-                // Left standing in the ground
+            if h.kind.pierces() && !hit && wall.is_some_and(|w| w <= t) {
+                // Left standing in the ground: a thorn, or a bolt
                 let direction = h.velocity.normalize();
                 let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
-                self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(None), head: None, quarrel: false, element: None, life: 12.0, glowing: 0.0 });
+                let (head, quarrel) = if h.kind == HostileKind::Bolt { (Some(0), true) } else { (None, false) };
+                self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(None), head, quarrel, element: None, life: 12.0, glowing: 0.0 });
                 if self.stuck.len() > 40 {
                     self.stuck.remove(0);
                 }
@@ -7236,6 +7370,11 @@ impl Combat {
                     let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &h.velocity.normalize()).unwrap_or_else(UnitQuaternion::identity);
                     let (model, thorn) = self.model_at(THORN);
                     place(model, thorn, MODEL_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), h.position, rotation, vpm, THORN_SIZE, MOVING)
+                }
+                HostileKind::Bolt => {
+                    let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &h.velocity.normalize()).unwrap_or_else(UnitQuaternion::identity);
+                    let (model, quarrel) = self.effect_model(SLOT_QUARREL, Element::look(None));
+                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), h.position, rotation, vpm, 1.0, MOVING)
                 }
             };
             add(h.position, instance);
