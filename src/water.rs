@@ -196,21 +196,37 @@ impl Water {
         let blocks = size.map(|n| n.div_ceil(BLOCK));
         let (blocks_image, blocks_view) = storage_image(memory_allocator, blocks, Format::R32_SFLOAT);
 
-        let upload = |data: &[f32]| {
-            Buffer::from_iter(
-                memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
+        // The ground and how deep the water is go over a few rows at a time, see staging.rs
+        let row = size[0] as usize;
+        for (data, image) in [(&ground, &ground_image), (&depth, &depth_image)] {
+            crate::staging::send(
+                memory_allocator,
+                command_buffer_allocator,
+                queue,
+                data.len(),
+                crate::staging::whole(row),
+                |piece, first| {
+                    for (word, value) in piece.iter_mut().zip(&data[first..]) {
+                        *word = value.to_bits();
+                    }
                 },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
+                |builder, piece, first| {
+                    let (y, rows) = ((first / row) as u32, (piece.len() as usize / row) as u32);
+                    builder
+                        .copy_buffer_to_image(CopyBufferToImageInfo {
+                            regions: [BufferImageCopy {
+                                image_subresource: image.subresource_layers(),
+                                image_offset: [0, y, 0],
+                                image_extent: [size[0], rows, 1],
+                                ..Default::default()
+                            }]
+                            .into(),
+                            ..CopyBufferToImageInfo::buffer_image(piece, image.clone())
+                        })
+                        .unwrap();
                 },
-                data.iter().copied(),
-            )
-            .unwrap()
-        };
+            );
+        }
         let mut builder = AutoCommandBufferBuilder::primary(
             command_buffer_allocator.clone(),
             queue.queue_family_index(),
@@ -218,10 +234,6 @@ impl Water {
         )
         .unwrap();
         builder
-            .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(upload(&ground), ground_image))
-            .unwrap()
-            .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(upload(&depth), depth_image.clone()))
-            .unwrap()
             .clear_color_image(ClearColorImageInfo::image(flux_image.clone()))
             .unwrap()
             .clear_color_image(ClearColorImageInfo {
@@ -234,7 +246,9 @@ impl Water {
                 ..ClearColorImageInfo::image(blocks_image)
             })
             .unwrap();
-        let _ = builder.build().unwrap().execute(queue.clone()).unwrap();
+        // Waited for on a fence: a future dropped unfinished waits for the whole queue to go idle,
+        // holding it the while, so frames being drawn meanwhile couldn't be sent
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
 
         // In columns of this world, counted from its corner
         let vpm = world.voxels_per_meter as f64;
@@ -357,7 +371,7 @@ impl Water {
             .unwrap()
             .copy_image(copy(&old.flux_image, &self.flux_image))
             .unwrap();
-        let _ = builder.build().unwrap().execute(queue.clone()).unwrap();
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
 
         for y in lo[1]..hi[1] {
             let (from, to) = ((y * size[0]) as usize, ((y - shift[1]) * size[0]) as usize);

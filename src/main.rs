@@ -68,6 +68,7 @@ mod gpu_timing;
 mod hot_reload;
 mod leaves;
 mod player;
+mod staging;
 mod voxelize;
 mod water;
 mod weapons;
@@ -751,20 +752,34 @@ fn get_voxel_set(
     )
     .unwrap();
 
-    let src_buffer = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
-            ..Default::default()
+    // Everything goes over a piece at a time through the same bit of host memory, each piece
+    // waited for, see staging.rs: the frames being drawn while a new piece of the landscape is
+    // sent over in the background get the GPU in between, and no new host memory is made for it
+    let [w, h] = [(sx / 8) as usize, (sy / 8) as usize];
+    let grid = &world.brick_grid;
+    staging::send(
+        &memory_allocator,
+        &command_buffer_allocator,
+        queue,
+        grid.len(),
+        staging::whole(w * h),
+        |piece, first| piece.copy_from_slice(&grid[first..first + piece.len()]),
+        |builder, piece, first| {
+            let (z, depth) = ((first / (w * h)) as u32, (piece.len() as usize / (w * h)) as u32);
+            builder
+                .copy_buffer_to_image(CopyBufferToImageInfo {
+                    regions: [BufferImageCopy {
+                        image_subresource: image.subresource_layers(),
+                        image_offset: [0, 0, z],
+                        image_extent: [w as u32, h as u32, depth],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyBufferToImageInfo::buffer_image(piece, image.clone())
+                })
+                .unwrap();
         },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        world.brick_grid.iter().copied(),
-    )
-    .unwrap();
+    );
 
     // An empty world still needs a buffer to bind
     let brick_words: &[u32] = if world.bricks.is_empty() {
@@ -772,20 +787,6 @@ fn get_voxel_set(
     } else {
         &world.bricks
     };
-    let bricks_src_buffer = Buffer::from_iter(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        brick_words.iter().copied(),
-    )
-    .unwrap();
     // The main world has room for more bricks, for holes blown in it, see App::blast()
     let capacity = brick_words.len() / worldgen::BRICK_WORDS + if set_index == 1 { spare_bricks() } else { 0 };
     let bricks_buffer = Buffer::new_slice::<u32>(
@@ -802,37 +803,18 @@ fn get_voxel_set(
         (capacity * worldgen::BRICK_WORDS) as u64,
     )
     .unwrap();
-
-    let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
-        command_buffer_allocator.clone(),
-        queue.queue_family_index(),
-        CommandBufferUsage::OneTimeSubmit,
-    )
-    .unwrap();
-
-    command_buffer_builder
-        .clear_color_image(ClearColorImageInfo::image(image.clone()))
-        .unwrap()
-        .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-            src_buffer,
-            image.clone(),
-        ))
-        .unwrap();
-    // The bricks go over a piece at a time, each waited for, so that while a new piece of the
-    // landscape is sent over in the background the frames being drawn get the GPU in between,
-    // rather than all waiting behind hundreds of megabytes going over at once
-    const UPLOAD_WORDS: u64 = 8 << 20;
-    let words = bricks_src_buffer.len();
-    let mut at = 0;
-    while at + UPLOAD_WORDS < words {
-        let mut piece = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
-        piece.copy_buffer(CopyBufferInfo::buffers(bricks_src_buffer.clone().slice(at..at + UPLOAD_WORDS), bricks_buffer.clone().slice(at..at + UPLOAD_WORDS))).unwrap();
-        piece.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
-        at += UPLOAD_WORDS;
-    }
-    command_buffer_builder
-        .copy_buffer(CopyBufferInfo::buffers(bricks_src_buffer.slice(at..words), bricks_buffer.clone().slice(at..words)))
-        .unwrap();
+    staging::send(
+        &memory_allocator,
+        &command_buffer_allocator,
+        queue,
+        brick_words.len(),
+        staging::PIECE_WORDS,
+        |piece, first| piece.copy_from_slice(&brick_words[first..first + piece.len()]),
+        |builder, piece, first| {
+            let to = bricks_buffer.clone().slice(first as u64..first as u64 + piece.len());
+            builder.copy_buffer(CopyBufferInfo::buffers(piece, to)).unwrap();
+        },
+    );
 
     let image_view =
         ImageView::new(image.clone(), ImageViewCreateInfo::from_image(&image)).unwrap();
@@ -859,37 +841,36 @@ fn get_voxel_set(
             AllocationCreateInfo::default(),
         )
         .unwrap();
-        let grass_src_buffer = Buffer::from_iter(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
+        let row = extent[0] as usize;
+        staging::send(
+            &memory_allocator,
+            &command_buffer_allocator,
+            queue,
+            grass.len(),
+            staging::whole(row),
+            |piece, first| piece.copy_from_slice(&grass[first..first + piece.len()]),
+            |builder, piece, first| {
+                let (y, rows) = ((first / row) as u32, (piece.len() as usize / row) as u32);
+                builder
+                    .copy_buffer_to_image(CopyBufferToImageInfo {
+                        regions: [BufferImageCopy {
+                            image_subresource: grass_image.subresource_layers(),
+                            image_offset: [0, y, 0],
+                            image_extent: [extent[0], rows, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyBufferToImageInfo::buffer_image(piece, grass_image.clone())
+                    })
+                    .unwrap();
             },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            grass.iter().copied(),
-        )
-        .unwrap();
-        command_buffer_builder
-            .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                grass_src_buffer,
-                grass_image.clone(),
-            ))
-            .unwrap();
+        );
         let grass_view =
             ImageView::new(grass_image.clone(), ImageViewCreateInfo::from_image(&grass_image)).unwrap();
         views.push((2, grass_view.clone()));
         writes.push(WriteDescriptorSet::image_view(2, grass_view));
     }
 
-    let _ = command_buffer_builder
-        .build()
-        .unwrap()
-        .execute(queue.clone())
-        .unwrap();
 
     let layout = render_pipeline
         .layout()
@@ -4142,12 +4123,18 @@ impl App {
             None => gui_future,
         };
 
+        let submitting = Instant::now();
         let frame_end = gui_future
             .then_swapchain_present(
                 self.queue.clone(),
                 SwapchainPresentInfo::swapchain_image_index(rcx.swapchain.clone(), image_index),
             )
             .then_signal_fence_and_flush();
+        if let Some(capture) = &self.capture
+            && submitting.elapsed().as_secs_f64() > 0.010
+        {
+            println!("Slow at frame {}: submitting took {:.0} ms", capture.frame_times.len() + 1, submitting.elapsed().as_secs_f64() * 1000.0);
+        }
         match frame_end.map_err(Validated::unwrap) {
             Ok(frame_end) => {
                 // Screenshots read the frame back, so it has to be finished first. Screenshot runs
