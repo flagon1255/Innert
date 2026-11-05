@@ -1695,6 +1695,22 @@ impl App {
             game.find_special(special);
             println!("special: {}", game.describe_held());
         }
+        // `--set gallery=pitted_blade,leafsteel_blade` lays a weapon made with each of those parts on
+        // the ground ahead, in rows of four, to look at them, and `gallery_size=4` makes them all
+        // that size, see weapons::SIZES
+        if let Some(ids) = setting("gallery") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let ids: Vec<&str> = ids.split(',').collect();
+            // `gallery_hold=1` puts the first of them in hand too. The camera's brought down to look
+            // at them from just behind and over them.
+            let middle = game.lay_out(&world, &ids, setting("gallery_size").and_then(|v| v.parse().ok()), start, ahead, flag("gallery_hold", false));
+            let vpm = world.voxels_per_meter as f64;
+            let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+            if !flag("gallery_hold", false) {
+                camera.position = voxels_to_camera(middle - flat * 2.6 * vpm + Vector3::new(0.0, 0.0, 2.9 * vpm), world.size);
+                camera.look_at(voxels_to_camera(middle, world.size));
+            }
+        }
         // `--set staff_element=fire` puts a staff of fire in hand, or of another element, or `none`
         if let Some(name) = setting("staff_element") {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
@@ -3183,9 +3199,15 @@ impl App {
             ("special", f) => {
                 // `--set special_frame=150` lets it go later, as when a boss is about to strike
                 let when = settings_from_args().into_iter().find(|(k, _)| k == "special_frame").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(30);
-                // Kept facing the boss as it comes on, till it's let go
+                // `--set on_foot=1` lets it go standing on the ground, as a player would
+                if f == 1 && self.player.is_none() && settings_from_args().iter().any(|(k, v)| k == "on_foot" && v == "1") {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                // Kept facing the boss as it comes on, till it's let go, or with `--set
+                // special_face=pack` the nearest of a pack `--set enemy` put there
+                let pack = settings_from_args().iter().any(|(k, v)| k == "special_face" && v == "pack");
                 if f == 1 || f <= when {
-                    match self.game.nearest_boss(eye) {
+                    match if pack { self.game.nearest_foe(eye) } else { self.game.nearest_boss(eye) } {
                         Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
                         None if f == 1 => self.camera.rotation.x = -0.35,
                         None => {}

@@ -162,6 +162,14 @@ pub enum Sound {
     Bubble,
     /// A censer's cloud billowing out, a soft breathy rush
     Billow,
+    /// A blade's edge cut loose as a crescent of light: a bright ringing note over a sweeping hiss
+    Shing,
+    /// A mark set on a quarry: two soft bell notes, the second higher
+    Chime,
+    /// A rocket going up: a rising whistle over a sputtering hiss, ending in a crackling pop
+    Rocket,
+    /// A charge: feet pounding and a rush of air building
+    Rush,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -1191,6 +1199,70 @@ fn bubble(seed: u32) -> Vec<f32> {
     })
 }
 
+/// A blade cut loose as light: a ringing note at `pitch` Hz with its overtones, gliding up a
+/// little, over a hiss sweeping from low to high
+fn shing(pitch: f32, seed: u32) -> Vec<f32> {
+    let length = 0.75;
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    render(length, seed, |t, rng| {
+        let f = pitch * (1.0 + 0.06 * (t / length));
+        let ring = ((TAU * f * t).sin() + 0.5 * (TAU * f * 2.76 * t).sin() + 0.25 * (TAU * f * 5.4 * t).sin()) * (-t * 4.5).exp() * (t * 200.0).min(1.0);
+        let x = noise(rng);
+        let sweep = lp.step(x, 600.0 + 5000.0 * (t / 0.35).min(1.0)) - lp2.step(x, 300.0);
+        ring * 0.35 + sweep * 0.9 * swell(t, 0.45)
+    })
+}
+
+/// Two soft bell notes, the second a fifth over the first, ringing on
+fn chime(pitch: f32, seed: u32) -> Vec<f32> {
+    let length = 1.1;
+    render(length, seed, |t, _| {
+        let mut sum = 0.0;
+        for (start, f) in [(0.0, pitch), (0.16, pitch * 1.5)] {
+            if t >= start {
+                let age = t - start;
+                sum += ((TAU * f * age).sin() + 0.4 * (TAU * f * 2.0 * age).sin() + 0.15 * (TAU * f * 3.01 * age).sin()) * (-age * 3.5).exp() * (age * 300.0).min(1.0);
+            }
+        }
+        sum * 0.3
+    })
+}
+
+/// A rocket going up: a whistle rising, a sputter of sparks under it, and a crackling pop at the top
+fn rocket(seed: u32) -> Vec<f32> {
+    let length = 0.9;
+    let (mut lp, mut phase, mut crackle) = (Lowpass(0.0), 0.0f32, 0.0f32);
+    render(length, seed, |t, rng| {
+        let climb = (t / 0.6).min(1.0);
+        phase += TAU * (900.0 + 1700.0 * climb) / RATE as f32;
+        let whistle = phase.sin() * 0.3 * (t * 30.0).min(1.0) * if t < 0.6 { 1.0 } else { 0.0 };
+        let x = noise(rng);
+        let hiss = (x - lp.step(x, 1800.0)) * 0.5 * if t < 0.6 { 1.0 } else { 0.0 };
+        crackle = if t > 0.6 && random(rng) < 0.03 * (-(t - 0.6) * 8.0).exp() { 1.0 } else { crackle * 0.85 };
+        let pop = if t > 0.6 { x * (-(t - 0.6) * 40.0).exp() * 1.4 } else { 0.0 };
+        whistle + hiss + pop + x * crackle * 0.7
+    })
+}
+
+/// A charge: heavy footfalls coming faster and a rush of air building under them
+fn rush(seed: u32) -> Vec<f32> {
+    let length = 0.8;
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    let falls = [0.0f32, 0.2, 0.35, 0.47, 0.57, 0.66];
+    render(length, seed, |t, rng| {
+        let mut thud = 0.0;
+        for &at in &falls {
+            let age = t - at;
+            if age > 0.0 && age < 0.15 {
+                thud += (TAU * (70.0 - 120.0 * age) * age).sin() * (-age * 30.0).exp();
+            }
+        }
+        let x = noise(rng);
+        let air = (lp.step(x, 400.0 + 2000.0 * t / length) - lp2.step(x, 150.0)) * 1.4 * (t / length);
+        thud * 0.8 + air
+    })
+}
+
 fn looped(seconds: f32, seed: u32, f: impl FnMut(f32, &mut u32) -> f32) -> Vec<f32> {
     let fade = (0.5 * RATE as f32) as usize;
     let mut samples = render(seconds + 0.5, seed, f);
@@ -1571,6 +1643,12 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     clips.push((Sound::Bubble, normalized(bubble(314), 0.8)));
     clips.push((Sound::Billow, whoosh(0.7, 140.0, 900.0, 315)));
     clips.push((Sound::Billow, whoosh(0.8, 120.0, 750.0, 316)));
+    clips.push((Sound::Shing, normalized(shing(1320.0, 317), 0.8)));
+    clips.push((Sound::Shing, normalized(shing(1180.0, 318), 0.8)));
+    clips.push((Sound::Chime, normalized(chime(880.0, 319), 0.7)));
+    clips.push((Sound::Rocket, normalized(rocket(320), 0.85)));
+    clips.push((Sound::Rocket, normalized(rocket(321), 0.85)));
+    clips.push((Sound::Rush, normalized(rush(322), 0.85)));
     for v in 0..VARIANTS as u32 {
         for ground in [Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water] {
             clips.push((Sound::Step(ground), step(ground, 100 + v * 17 + ground as u32)));

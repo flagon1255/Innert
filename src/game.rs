@@ -941,8 +941,12 @@ impl Game {
             .collect();
         let effects: Vec<&str> = weapon.profile.effects.iter().map(|e| library.effects[e.def].display_name.as_str()).collect();
         let synergies: Vec<&str> = weapon.profile.synergies.iter().map(|s| library.synergies[s.def].display_name.as_str()).collect();
+        let size = match family.size_word(weapon.size) {
+            "" => String::new(),
+            word => format!(" ({word})"),
+        };
         format!(
-            "{} - {} {}, element {}: {}. Effects: {}. Synergies: {}.",
+            "{} - {} {}{size}, element {}: {}. Effects: {}. Synergies: {}.",
             weapon.name,
             library.rarities[weapon.grade].display_name,
             family.display_name,
@@ -2261,6 +2265,16 @@ impl Game {
             .map(|a| a.center(vpm as u32))
     }
 
+    /// Where the middle of the living monster nearest `near` is, not a boss, if there's one about
+    pub fn nearest_foe(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        self.animals
+            .iter()
+            .filter(|a| a.look.build().is_none() && a.look.is_monster() && a.health > 0.0)
+            .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
+            .map(|a| a.center(vpm as u32))
+    }
+
     /// Where the weapon lying nearest `near` is, once it's landed, if there's one about
     pub fn nearest_loot(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
         let vpm = self.combat.vpm();
@@ -3130,6 +3144,40 @@ impl Game {
                 return;
             }
         }
+    }
+
+    /// For looking at parts: a weapon with each of the parts `ids` lying on the ground in rows of
+    /// four from a couple of meters along `ahead` from `near`, each `size` of weapons::SIZES big if
+    /// that's given
+    pub fn lay_out(&mut self, world: &World, ids: &[&str], size: Option<usize>, near: Vector3<f64>, ahead: Vector3<f64>, hold: bool) -> Vector3<f64> {
+        let vpm = world.voxels_per_meter as f64;
+        let mut middle = Vector3::zeros();
+        let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let side = Vector3::new(flat.y, -flat.x, 0.0);
+        for (k, id) in ids.iter().enumerate() {
+            let Some(weapon) = self.library.with_part(id, size) else {
+                println!("No weapon could be made with {id}");
+                continue;
+            };
+            println!("lay_out {k}: {}", self.describe(&weapon));
+            // The first in hand too, with `hold`
+            if hold && k == 0 {
+                self.weapons.push(self.library.with_part(id, size).unwrap());
+                self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+                self.selected = 0;
+            }
+            let (row, column) = ((k / 4) as f64, (k % 4) as f64);
+            let over = near + (flat * (2.4 + row * 1.25) + side * (column - 1.5) * 1.05) * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm);
+            let ground = (0..(40.0 * vpm) as i64)
+                .map(|d| over - Vector3::new(0.0, 0.0, d as f64))
+                .find(|p| !is_passable(world.material_at(p.x as i64, p.y as i64, p.z as i64)))
+                .map_or(over, |p| p + Vector3::new(0.0, 0.0, 1.0));
+            self.weapons.push(weapon);
+            self.pickups.push(Pickup::lying(Item::Weapon(self.weapons.len() - 1), ground, side.y.atan2(side.x)));
+            middle += ground / ids.len() as f64;
+        }
+        self.models_version += 1;
+        middle
     }
 
     /// Takes the first weapon of family `id` carried in hand, or for trying it out, one rolled if
