@@ -6,7 +6,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use nalgebra::{Vector2, Vector3};
 
-use crate::animals::{self, Animal, Build, Look, Mood, POSE_SPECIAL, POSE_STRIKE, POSE_WINDUP};
+use crate::animals::{self, Animal, Build, Look, Mood, POSE_COIL, POSE_RAISE, POSE_SPECIAL, POSE_SPIKES, POSE_STRIKE, POSE_SWEEP, POSE_WINDUP};
 use crate::weapons::Element;
 use crate::worldgen::{World, is_passable};
 
@@ -68,9 +68,13 @@ pub enum Move {
     Blink,
     /// A tongue lashed out at the player, dragging them in to be bitten
     Lash,
+    /// A knight's greatsword swept round low in a full circle, to be jumped: twice over, angry
+    Sweep,
+    /// A knight's greatsword driven into the ground, bone spikes bursting up all round it
+    Spikes,
 }
 
-const MOVES: usize = 21;
+const MOVES: usize = 23;
 
 /// Where the rest of a monster's pack is, so it keeps with them: gathered up each frame by
 /// src\game.rs, see Game::gather_packs()
@@ -228,6 +232,8 @@ pub struct Boss {
     trail: f64,
     /// The last move it made, for how it gets over it: a crossbowman spans its crossbow again
     last: Option<Move>,
+    /// Which way a knight faced as it started sweeping its greatsword round
+    spun_from: f64,
     /// For looking at them: the frame it's held in, see animals::POSE_WINDUP, whatever it's doing
     pub fixed_pose: Option<usize>,
     pub deeds: Vec<Deed>,
@@ -252,9 +258,6 @@ fn sees(a: &Animal, feet: Vector3<f64>, world: &World) -> bool {
         })
     })
 }
-
-/// Seconds a boss takes easing from one pose to the next
-const EASE: f64 = 0.14;
 
 /// How long each move takes to get ready for, to do, and to get over, in seconds, and then how
 /// long until it can be made again
@@ -288,9 +291,21 @@ fn windup(look: Look, m: Move) -> f64 {
             _ => 0.85,
         };
     }
+    // A knight crouching to sweep, raising its sword to drive it in, gathering itself to leap,
+    // and drawing back to fling the void off its blade
+    if look.is_knight() {
+        match m {
+            Move::Sweep => return 0.95,
+            Move::Spikes => return 1.1,
+            Move::Leap => return 0.8,
+            Move::Spit => return 0.7,
+            _ => {}
+        }
+    }
     match (look.build(), m) {
         (_, Move::Roar) => 0.0,
         (_, Move::Summon) => 1.2,
+        (_, Move::Sweep | Move::Spikes) => 1.0,
         (Some(Build::Wolf), Move::Slam) => 0.55,
         (Some(Build::Drake), Move::Slam) => 0.6,
         (Some(Build::Bear), Move::Slam) => 0.8,
@@ -314,6 +329,9 @@ fn windup(look: Look, m: Move) -> f64 {
 
 fn duration(look: Look, m: Move) -> f64 {
     match m {
+        // Once round, see Boss::spins() for how many times
+        Move::Sweep => SPIN + SPIN_SETTLE,
+        Move::Spikes => 0.6,
         Move::Shoot => 0.25,
         Move::Burrow => 0.6,
         Move::Erupt => 0.35,
@@ -341,6 +359,11 @@ fn duration(look: Look, m: Move) -> f64 {
 
 fn recovery(look: Look, m: Move) -> f64 {
     match m {
+        // Unsteady after spinning, and working its sword back out of the ground: the moments to
+        // get in close
+        Move::Sweep => 1.0,
+        Move::Spikes => 1.1,
+        Move::Leap if look.is_knight() => 0.9,
         // Spanning the crossbow again
         Move::Shoot => 0.7,
         Move::Burrow => 0.2,
@@ -377,6 +400,10 @@ fn recovery(look: Look, m: Move) -> f64 {
 
 fn cooldown(look: Look, m: Move) -> f64 {
     match m {
+        Move::Sweep => 7.5,
+        Move::Spikes => 11.0,
+        Move::Leap if look.is_knight() => 8.0,
+        Move::Spit if look.is_knight() => 3.6,
         Move::Shoot => 3.2,
         Move::Burrow => 6.0,
         Move::Erupt => 2.0,
@@ -419,6 +446,8 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
         // A gloomwing swooping down
         Look::Gloomwing => (0.45, 0.5, 1.1, 7.0),
         Look::Direwolf | Look::WinterAlpha => (0.7, 3.0, 3.0, 24.0),
+        // The Grave Knight's leap, its greatsword raised, to cleave down where the player stood
+        Look::GraveKnight => (0.85, 3.4, 3.2, 30.0),
         _ => (0.8, 4.0, 3.0, 26.0),
     }
 }
@@ -491,8 +520,7 @@ fn quake_reach(look: Look) -> f64 {
 fn unlocked(look: Look, m: Move, stage: u8) -> bool {
     !look.is_raid()
         || match m {
-            Move::Cataclysm => stage >= 1,
-            Move::Summon => stage >= 1,
+            Move::Cataclysm | Move::Summon | Move::Spikes => stage >= 1,
             Move::Storm | Move::Throw => stage >= 2 || look != Look::Colossus,
             _ => true,
         }
@@ -520,6 +548,23 @@ const MOST_HOLD: f64 = 0.55;
 const ERUPT_RADIUS: f64 = 1.5;
 /// How far a wraith goes when it vanishes, in meters
 const BLINK: f64 = 6.0;
+/// Seconds a knight takes to sweep its greatsword once round, and to stop after
+const SPIN: f64 = 0.55;
+const SPIN_SETTLE: f64 = 0.12;
+/// Where a knight's blade points, radians round to the left of where it faces, drawn back to sweep
+/// and swept out, see animals::POSE_COIL and POSE_SWEEP, and seconds it takes to swing from one
+/// to the other in front of it before its whole body turns with it
+const COILED: f64 = -2.7;
+const SWEPT: f64 = 1.55;
+const SWING: f64 = 0.07;
+/// How much further than its blade reaches a sweep or the spikes are shown on the ground, so
+/// standing just outside the ring is safe, in meters
+const RING_SPARE: f64 = 0.4;
+/// How hard a knight's bone spikes hurt
+const SPIKES_DAMAGE: f64 = 28.0;
+/// How far apart the void a knight flings off its blade lands, either side of the player once
+/// it's angry, in meters
+const SLASH_SPREAD: f64 = 3.4;
 
 impl Boss {
     pub fn new(look: Look, home: Vector3<f64>, key: [i64; 3]) -> Self {
@@ -536,7 +581,7 @@ impl Boss {
             grace: 0.0,
             leap: (home, home),
             last_step: 0.0,
-            posed: (None, None, EASE),
+            posed: (None, None, f64::MAX),
             stage: 0,
             combo: 0,
             hold: 0.0,
@@ -555,6 +600,7 @@ impl Boss {
             clock: 0.0,
             trail: 0.0,
             last: None,
+            spun_from: 0.0,
             fixed_pose: None,
             deeds: Vec::new(),
         }
@@ -625,18 +671,18 @@ impl Boss {
     }
 
     /// Which frame to draw it in, see animals::POSE_WINDUP, or None to walk or stand: easing through
-    /// the frame halfway from its last pose into a new one
+    /// the frames between its last pose and a new one, see animals::tween()
     pub fn pose(&self) -> Option<usize> {
         if self.fixed_pose.is_some() {
             return self.fixed_pose;
         }
         let (now, before, since) = self.posed;
-        if since < EASE {
-            if let Some(between) = animals::tween(before.unwrap_or(0), now.unwrap_or(0), since / EASE) {
-                return Some(between);
-            }
-        }
-        now
+        animals::tween(self.look, before.unwrap_or(0), now.unwrap_or(0), since).or(now)
+    }
+
+    /// How many times round a knight sweeps its greatsword: twice, once it's angry
+    fn spins(&self) -> f64 {
+        if self.enraged { 2.0 } else { 1.0 }
     }
 
     /// How its whole body moves on top of its pose: radians it's tipped forward, and meters it's
@@ -680,6 +726,13 @@ impl Boss {
     fn sway_target(&self) -> ([f64; 3], f64) {
         let heavy = |m: Move| matches!(m, Move::Slam | Move::Quake | Move::Maul);
         match self.phase {
+            // A knight crouched to sweep, and low as it spins, staying where it is so it spins on
+            // the spot; and rising up to drive its sword in, then not tipped at all so the spikes
+            // round it stand straight
+            Phase::WindUp(Move::Sweep, _) => ([0.04, -0.08, -0.03], 5.0),
+            Phase::Act(Move::Sweep, _) => ([0.0, 0.0, -0.04], 12.0),
+            Phase::WindUp(Move::Spikes, _) => ([-0.04, -0.06, 0.06], 5.0),
+            Phase::Act(Move::Spikes, _) => ([0.0, 0.0, 0.0], 25.0),
             Phase::WindUp(m, t) if heavy(m) => {
                 let held = ((t - windup(self.look, m)) / MOST_HOLD).clamp(0.0, 1.0);
                 ([-0.13 - 0.05 * held, -0.18, 0.06], 5.0)
@@ -699,6 +752,21 @@ impl Boss {
 
     /// Which pose it's striking as it goes about its move, or None to walk or stand
     fn target_pose(&self) -> Option<usize> {
+        // A knight: its greatsword raised overhead to cleave, whether close or leaping, and
+        // brought down as it lands; crouched with it drawn back low, then swept out, whether it's
+        // sweeping round or flinging the void off it from afar; raised point down, then driven
+        // into the ground
+        if self.look.is_knight() {
+            match self.phase {
+                Phase::WindUp(Move::Leap, _) => return Some(POSE_WINDUP),
+                Phase::Act(Move::Leap, t) => return Some(if t < leap(self.look).0 * 0.6 { POSE_WINDUP } else { POSE_STRIKE }),
+                Phase::WindUp(Move::Sweep | Move::Spit, _) => return Some(POSE_COIL),
+                Phase::Act(Move::Sweep | Move::Spit, _) => return Some(POSE_SWEEP),
+                Phase::WindUp(Move::Spikes, _) => return Some(POSE_RAISE),
+                Phase::Act(Move::Spikes, _) => return Some(POSE_SPIKES),
+                _ => {}
+            }
+        }
         match (self.phase, self.look.build()) {
             // Taking aim and loosing, then spanning the crossbow again
             (Phase::WindUp(Move::Shoot, _), _) => Some(POSE_WINDUP),
@@ -743,7 +811,19 @@ impl Boss {
             // Raid bosses: what their kind does, and bringing the sky down once they're hurt
             _ if self.look == Look::Colossus => &[(Move::Slam, 0.0, 4.6), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
             _ if self.look == Look::ElderWyrm => &[(Move::Slam, 0.0, 4.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 8.0, 30.0), (Move::Spit, 4.0, 35.0)],
-            _ if self.look == Look::CryptTitan => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
+            _ if self.look == Look::CryptTitan => &[
+                (Move::Spikes, 0.0, 3.0),
+                (Move::Sweep, 0.0, 3.0),
+                (Move::Slam, 0.0, 4.6),
+                (Move::Summon, 0.0, 30.0),
+                (Move::Cataclysm, 0.0, 30.0),
+                (Move::Quake, 3.0, 12.0),
+                (Move::Spit, 4.6, 30.0),
+            ],
+            // The Grave Knight: bone spikes for whoever crowds it, its greatsword swept round or
+            // brought down on them; the dead raised to fight for it; and from further off a leap
+            // to cleave down on the player, or the void flung off its blade at them
+            _ if self.look == Look::GraveKnight => &[(Move::Spikes, 0.0, 3.0), (Move::Sweep, 0.0, 3.0), (Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Leap, 7.0, 20.0), (Move::Spit, 4.6, 30.0)],
             // Monsters bite or swing at what's in reach, and some pounce
             Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
             Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
@@ -995,7 +1075,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let quick: f64 = if boss.enraged { 0.75 } else { 1.0 };
 
     // The heavy ones shake the ground as they walk
-    let heavy = matches!(look.build(), Some(Build::Golem | Build::Bear | Build::Treant)) || look == Look::GraveKnight;
+    let heavy = matches!(look.build(), Some(Build::Golem | Build::Bear | Build::Treant)) || look.is_knight();
     if heavy && a.speed > 0.3 && (a.phase * 2.0).floor() != (boss.last_step * 2.0).floor() {
         boss.deeds.push(Deed::Stomp(a.position));
     }
@@ -1049,13 +1129,14 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 Some(m) => {
                     a.mood = Mood::Idle;
                     boss.aim = p;
-                    boss.deeds.push(Deed::WindUp(m, a.position));
-                    // A heavy blow's sometimes held back, wound up, a moment longer than the last,
+                    boss.deeds.push(Deed::WindUp(m, a.position));                    // A heavy blow's sometimes held back, wound up, a moment longer than the last,
                     // and sometimes followed by another, or two from a raid boss
                     let heavy_blow = !monster && matches!(m, Move::Slam | Move::Quake);
                     boss.hold = if heavy_blow && a.roll() < 0.35 { MOST_HOLD * (0.4 + 0.6 * a.roll()) } else { 0.0 };
                     boss.combo = match m {
                         Move::Slam if look.is_raid() => (a.roll() * 3.0) as u8,
+                        // An angry knight nearly always follows up, and sometimes twice
+                        Move::Slam if look.is_knight() && boss.enraged => (a.roll() < 0.75) as u8 + (a.roll() < 0.3) as u8,
                         Move::Slam if !monster && matches!(look.build(), Some(Build::Golem | Build::Undead | Build::Bear)) => (a.roll() < 0.45) as u8,
                         _ => 0,
                     };
@@ -1106,6 +1187,35 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             if m == Move::Quake {
                 boss.deeds.push(Deed::Mark { at: a.position, radius: quake_reach(look), closing: 0.0 });
             }
+            // Where a knight's blow will land, showing on the ground, the ring closing in on it
+            // as it comes: in front of it, all round it, or where it'll leap to
+            if look.is_knight() {
+                let closing = (1.0 - t / (windup(look, m) * quick.max(0.8) + boss.hold)).clamp(0.0, 1.0);
+                let (sweep, spikes, _) = animals::knight_reach(look);
+                let ring = match m {
+                    Move::Slam => {
+                        let (reach, radius, _, _) = slam(look);
+                        Some((a.position + forward * reach * vpm, radius))
+                    }
+                    Move::Sweep => Some((a.position, sweep + RING_SPARE)),
+                    Move::Spikes => Some((a.position, spikes + RING_SPARE)),
+                    Move::Leap => Some((boss.aim, leap(look).2)),
+                    _ => None,
+                };
+                if let Some((at, radius)) = ring {
+                    boss.deeds.push(Deed::Mark { at, radius, closing });
+                }
+                // The ground stirring where the spikes will come up
+                if m == Move::Spikes {
+                    boss.trail -= dt;
+                    if boss.trail <= 0.0 {
+                        boss.trail = 0.12;
+                        let round = a.roll() * TAU;
+                        let r = (0.3 + 0.7 * a.roll()) * spikes * vpm;
+                        boss.deeds.push(Deed::Burrow { at: a.position + Vector3::new(round.cos() * r, round.sin() * r, 0.0) });
+                    }
+                }
+            }
             // The sand stirring where it's about to burst up
             if m == Move::Erupt {
                 boss.deeds.push(Deed::Mark { at: boss.aim, radius: ERUPT_RADIUS, closing: 1.0 - t / windup(look, m) });
@@ -1130,7 +1240,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     // round it
                     Move::Summon => {
                         if let Some(brood) = look.brood() {
-                            let count = if brood == Look::Spiderling { 3 } else { 2 };
+                            let count = if brood == Look::Spiderling || (look.is_knight() && boss.enraged) { 3 } else { 2 };
                             if boss.pack == 0 {
                                 boss.pack = animals::new_pack();
                             }
@@ -1175,7 +1285,38 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         boss.deeds.push(Deed::Blink { from, to: a.center(world.voxels_per_meter) });
                     }
                     Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05].map(|v| v * look.size()), vpm), to: boss.aim }),
+                    // The void flung off a knight's blade as it sweeps it out, three of it fanned
+                    // out across the player once it's angry
+                    Move::Spit if look.is_knight() => {
+                        let from = on_body(a, animals::knight_reach(look).2, vpm);
+                        let to = boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm);
+                        let across = Vector3::new(-(to - from).y, (to - from).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        let fan: &[f64] = if boss.enraged { &[-1.0, 0.0, 1.0] } else { &[0.0] };
+                        for &k in fan {
+                            boss.deeds.push(Deed::Spit { from, to: to + across * k * SLASH_SPREAD * vpm });
+                        }
+                    }
                     Move::Spit => boss.deeds.push(Deed::Spit { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    // Planting its feet to sweep its greatsword round, the sword hissing out low
+                    Move::Sweep => {
+                        boss.spun_from = a.heading;
+                        boss.trail = 0.0;
+                        boss.deeds.push(Deed::Stomp(a.position));
+                        boss.deeds.push(Deed::Swipe(a.position, 0));
+                    }
+                    // Its greatsword driven into the ground, and bone spikes bursting up all round
+                    // it, hurting whoever's still within them
+                    Move::Spikes => {
+                        let (_, spikes, _) = animals::knight_reach(look);
+                        let damage = if look.is_raid() { SPIKES_DAMAGE * 1.3 } else { SPIKES_DAMAGE };
+                        boss.deeds.push(Deed::Slam { at: a.position, radius: spikes, damage, crater: 0.0 });
+                        boss.deeds.push(Deed::Stomp(a.position));
+                        for k in 0..8 {
+                            let round = k as f64 / 8.0 * TAU + a.roll() * 0.6;
+                            let r = (0.4 + 0.55 * a.roll()) * spikes * vpm;
+                            boss.deeds.push(Deed::Burrow { at: a.position + Vector3::new(round.cos() * r, round.sin() * r, 0.0) });
+                        }
+                    }
                     Move::Charge => {
                         boss.rammed = false;
                         a.target_heading = heading_to(a.position, boss.aim);
@@ -1264,9 +1405,45 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     boss.deeds.push(Deed::Mark { at: to, radius, closing: 1.0 - f });
                     if over {
                         a.position = to;
-                        boss.deeds.push(Deed::Slam { at: to, radius, damage, crater: if monster { 0.0 } else { 0.6 } });
+                        // A knight's blade cleaving down leaves no hole, so landing doesn't hold up
+                        // the frame sending the ground's changes over
+                        let crater = if monster || look.is_knight() { 0.0 } else { 0.6 };
+                        boss.deeds.push(Deed::Slam { at: to, radius, damage, crater });
                         boss.deeds.push(Deed::Stomp(to));
                     }
+                }
+                // A knight's greatsword sweeping round low: out of the crouch across in front,
+                // then on round with its whole body, all the way round once, or twice when it's
+                // angry, hitting whoever's within its reach and not jumping as it passes them.
+                // The ground's churned up under its point.
+                Move::Sweep => {
+                    let spins = boss.spins();
+                    let swinging = SPIN * spins;
+                    let arc = TAU * spins - (SWEPT - COILED);
+                    let turned = |t: f64| arc * ((t - SWING) / (swinging - SWING)).clamp(0.0, 1.0);
+                    let from = boss.spun_from;
+                    let blade = |t: f64| from + turned(t) + COILED + (SWEPT - COILED) * (t / SWING).min(1.0);
+                    a.heading = (from + turned(t)).rem_euclid(TAU);
+                    a.target_heading = a.heading;
+                    let (reach, _, _) = animals::knight_reach(look);
+                    if let Some(p) = player {
+                        let bearing = heading_to(a.position, p);
+                        let passes = |t: f64| ((blade(t) - bearing) / TAU).floor();
+                        if t - dt < swinging && passes(t) != passes((t - dt).max(0.0)) {
+                            boss.deeds.push(Deed::Quake { at: a.position, from: 0.5, to: reach + RING_SPARE, dt });
+                        }
+                    }
+                    boss.trail -= dt;
+                    if t < swinging && boss.trail <= 0.0 {
+                        boss.trail = 0.05;
+                        let b = blade(t);
+                        boss.deeds.push(Deed::Burrow { at: a.position + Vector3::new(b.cos(), b.sin(), 0.0) * reach * 0.95 * vpm });
+                    }
+                    // Into each further time round
+                    if t > SWING && ((t - SWING) / SPIN).floor() != ((t - dt - SWING).max(0.0) / SPIN).floor() && t < swinging {
+                        boss.deeds.push(Deed::Swipe(a.position, ((t - SWING) / SPIN) as usize));
+                    }
+                    over = t >= swinging + SPIN_SETTLE;
                 }
                 // The shockwave running out across the ground
                 Move::Quake => {

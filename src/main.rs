@@ -1681,7 +1681,9 @@ impl App {
             let looks: Vec<animals::Look> = if name == "gang" {
                 animals::gang(0.4).to_vec()
             } else {
-                match animals::Look::ALL.into_iter().find(|l| l.is_monster() && named(l)) {
+                // A boss too, `enemy=graveknight`, to look at it held in a pose
+                let monster = animals::Look::ALL.into_iter().find(|l| l.is_monster() && named(l));
+                match monster.or_else(|| animals::Look::ALL.into_iter().find(|l| l.is_boss() && named(l))) {
                     Some(look) => vec![look; setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(look.pack_size())],
                     None => {
                         println!("No monster called {name}");
@@ -1695,6 +1697,11 @@ impl App {
                 Some("windup") => Some(animals::POSE_WINDUP),
                 Some("strike") => Some(animals::POSE_STRIKE),
                 Some("special") => Some(animals::POSE_SPECIAL),
+                // A knight's own
+                Some("coil") => Some(animals::POSE_COIL),
+                Some("sweep") => Some(animals::POSE_SWEEP),
+                Some("raise") => Some(animals::POSE_RAISE),
+                Some("spikes") => Some(animals::POSE_SPIKES),
                 _ => None,
             };
             let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
