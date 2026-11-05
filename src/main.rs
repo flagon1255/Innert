@@ -1385,14 +1385,14 @@ impl App {
             landscape.and_then(|l| l.widest_river_near([112.0, 112.0], &rivers))
         });
         // `--set camp=fort` starts outside the nearest bandits' camp of that kind, or `cabins`,
-        // `ruin`, `hideout`, `raiders`, `awnings` or `yurts`, near the land `biome` says if it does.
+        // `ruin`, `hideout`, `raiders`, `awnings` or `yurts`, on the land `biome` says if it does.
         // Where they're planned is looked over in rough pieces of the landscape, built quickly, for
         // the first that really is there with nothing in the way.
         let camp_kind = setting("camp").and_then(worldgen::CampKind::named).filter(|_| dungeon.is_none() && cavern.is_none());
         let camp_at = camp_kind.and_then(|kind| {
             let near = setting("biome").and_then(|b| worldgen::find_climate(&terrain, b, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
             let rough = TerrainSettings { voxels_per_meter: 4, grass_tufts: false, ..terrain };
-            worldgen::camp_spots(&terrain, kind, near).into_iter().take(6).find_map(|spot| {
+            worldgen::camp_spots(&terrain, kind, near, setting("biome")).into_iter().take(6).find_map(|spot| {
                 let origin = [0, 1].map(|i| ((spot[i] * 4.0) as i64 - rough.size()[i] as i64 / 2).div_euclid(64) * 64);
                 let (landscape, _) = worldgen::generate_terrain(&rough, origin, &rivers);
                 let off = |c: &&worldgen::Camp| (c.fire[0] - spot[0]).hypot(c.fire[1] - spot[1]);

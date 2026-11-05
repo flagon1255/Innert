@@ -323,10 +323,20 @@ impl Terrain {
     }
 }
 
-/// Where the nearest few camps of `kind` to `near` are planned, nearest first, in meters: each
-/// where it would be if nothing were in the way, as the rivers and buildings round it aren't
-/// looked at. For trying them out.
-pub fn camp_spots(settings: &TerrainSettings, kind: CampKind, near: [f32; 2]) -> Vec<[f32; 2]> {
+/// Where the nearest few camps of `kind` to `near` are planned, nearest first, in meters, out on
+/// `land` if it says ("jungle", "desert", "snow" or "temperate"): each where it would be if nothing
+/// were in the way, as the rivers and buildings round it aren't looked at. For trying them out.
+pub fn camp_spots(settings: &TerrainSettings, kind: CampKind, near: [f32; 2], land: Option<&str>) -> Vec<[f32; 2]> {
+    let on_land = |p: &Plan| {
+        let c = climate(settings, p.fire[0], p.fire[1]);
+        match land {
+            Some("jungle") => c.jungle > 0.5,
+            Some("desert") => c.desert > 0.5,
+            Some("snow") => c.snow > 0.5,
+            Some(_) => c.jungle.max(c.desert).max(c.snow) <= 0.5,
+            None => true,
+        }
+    };
     let terrain = Terrain::new(settings, &Heights::new(settings, [0, 0], [8, 8], settings.voxels_per_meter));
     let ground = |x: f32, y: f32| Some((height_at(settings, x, y), false));
     let home = near.map(|v| (v / CAMP_CELL).floor() as i32);
@@ -337,7 +347,7 @@ pub fn camp_spots(settings: &TerrainSettings, kind: CampKind, near: [f32; 2]) ->
                 if (cx - home[0]).abs().max((cy - home[1]).abs()) != ring {
                     continue;
                 }
-                if let Some(p) = terrain.plan_camp(cx, cy, &ground, &|_: [f32; 4]| true).filter(|p| p.kind == kind) {
+                if let Some(p) = terrain.plan_camp(cx, cy, &ground, &|_: [f32; 4]| true).filter(|p| p.kind == kind && on_land(p)) {
                     found.push(((p.fire[0] - near[0]).hypot(p.fire[1] - near[1]), [p.fire[0], p.fire[1]]));
                 }
             }
