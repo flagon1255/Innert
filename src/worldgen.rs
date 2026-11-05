@@ -3,8 +3,11 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod camps;
 mod castles;
 mod towns;
+
+pub use camps::{Camp, CampKind, camp_spots};
 
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
 pub mod material {
@@ -2004,6 +2007,8 @@ struct Features {
     /// there: x0, y0, x1, y1
     holes: Vec<[f32; 4]>,
     sites: Vec<Site>,
+    /// Bandits' camps, see camps.rs
+    camps: Vec<Camp>,
 }
 
 /// A building: what kind, where its middle is and which way it faces, with the lowest ground
@@ -2169,6 +2174,12 @@ impl Terrain {
     /// the boss's, each facing its way in
     pub fn sites(&self) -> &[Site] {
         &self.features.sites
+    }
+
+    /// The bandits' camps in this piece of the landscape: who keeps each, and where the chest of
+    /// their hoard turns up once they're all dead
+    pub fn bandit_camps(&self) -> &[Camp] {
+        &self.features.camps
     }
 
     /// Where the way into the nearest dungeon to `near` is, anywhere within about 3 km: the
@@ -2883,7 +2894,8 @@ impl Terrain {
         objects.extend(self.caves(&mut features, &royal));
         objects.extend(self.waterfall_caves(&mut features));
         objects.extend(self.ravines(&mut features, &royal));
-        objects.extend(self.camps(heights, &mut features, &keep_out));
+        let camps = self.camps(heights, &mut features, &keep_out, &objects);
+        objects.extend(camps);
         let footprints = std::mem::take(&mut features.footprints);
         let (lo, hi) = (self.lo, self.hi);
 
@@ -3648,136 +3660,6 @@ impl Terrain {
                     features.sites.push(Site { kind: "cave nest", position: floor, facing });
                 }
                 objects.push(Object::new(cave.shapes, cave.seed));
-            }
-        }
-        objects
-    }
-
-    /// Bandits' camps out in the open, at most one in each CAMP_CELL square, on flat dry ground
-    /// clear of buildings and dungeons: a ring of sharpened stakes with a way in on two sides,
-    /// tents round a fire, crates of what they've taken, and torches at the ways in. "bandit camp"
-    /// at the fire.
-    fn camps(&self, heights: &Heights, features: &mut Features, keep_out: &[[f32; 4]]) -> Vec<Object> {
-        const CAMP_CELL: f32 = 120.0;
-        // How far out the stakes go round the fire
-        const RING: f32 = 9.0;
-        let vpm = heights.voxels_per_meter;
-        let sea_level = sea_level_m(&self.settings);
-        let ground = |x: f32, y: f32| -> Option<(f32, bool)> {
-            let (gx, gy) = ((x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
-            if gx < 0 || gy < 0 || gx >= heights.size[0] as i64 || gy >= heights.size[1] as i64 {
-                return None;
-            }
-            let i = gx as usize + gy as usize * heights.size[0];
-            Some((heights.ground[i], heights.river[i].is_finite()))
-        };
-        let (lo, hi) = (self.lo, self.hi);
-        let mut objects = Vec::new();
-        let first = [(lo[0] / CAMP_CELL).floor() as i32, (lo[1] / CAMP_CELL).floor() as i32];
-        let last = [(hi[0] / CAMP_CELL).ceil() as i32, (hi[1] / CAMP_CELL).ceil() as i32];
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                let r = hash3(cx as u32, cy as u32, self.settings.seed ^ 0xba4d);
-                if unit(r) > 0.7 {
-                    continue;
-                }
-                // The first of a few spots in the square that's flat and dry, and clear of
-                // buildings and dungeons
-                let spot = (0..6u32).find_map(|attempt| {
-                    let s = hash3(r, attempt, 0xca3b);
-                    let (x, y) = ((cx as f32 + 0.15 + 0.7 * unit(s)) * CAMP_CELL, (cy as f32 + 0.15 + 0.7 * unit(s >> 16)) * CAMP_CELL);
-                    let area = [x - RING - 1.0, y - RING - 1.0, x + RING + 1.0, y + RING + 1.0];
-                    if keep_out.iter().any(|k| overlaps(*k, area, 2.0)) || features.footprints.iter().any(|f| overlaps([f[0], f[1], f[2], f[3]], area, 2.0)) {
-                        return None;
-                    }
-                    let samples: Vec<(f32, bool)> = (0..25).map(|i| ground(x - RING + RING * 0.5 * (i % 5) as f32, y - RING + RING * 0.5 * (i / 5) as f32)).collect::<Option<_>>()?;
-                    let lowest = samples.iter().map(|s| s.0).fold(f32::MAX, f32::min);
-                    let highest = samples.iter().map(|s| s.0).fold(f32::MIN, f32::max);
-                    let dry = !samples.iter().any(|&(_, wet)| wet) && lowest > sea_level + 1.0;
-                    // Everything in it stands on the ground where it is, so it can be on a slope
-                    (dry && highest - lowest < 5.0).then_some((x, y, s, area, lowest, highest))
-                });
-                let Some((x, y, s, area, lowest, highest)) = spot else {
-                    continue;
-                };
-                let mut rng = Rng(hash(s ^ 0xca4e));
-                let at = |x: f32, y: f32| ground(x, y).map_or(lowest, |g| g.0);
-                let mut shapes = Vec::new();
-                let fire = [x, y, at(x, y)];
-                // Two ways in, on opposite sides
-                let gate = rng.next() * TAU;
-                // The fire: logs, stones round it and embers glowing in the middle
-                shapes.push(Shape::sphere([fire[0], fire[1], fire[2] + 0.1], 0.32, GLOW_FIRE, AIR, false));
-                for k in 0..3 {
-                    let a = gate + k as f32 * TAU / 3.0;
-                    let (dx, dy) = (a.cos() * 0.55, a.sin() * 0.55);
-                    shapes.push(Shape::capsule([fire[0] + dx, fire[1] + dy, fire[2] + 0.05], [fire[0] - dx * 0.3, fire[1] - dy * 0.3, fire[2] + 0.45], 0.1, 0.07, BARK_DARK, AIR, false));
-                }
-                for k in 0..9 {
-                    let a = k as f32 / 9.0 * TAU;
-                    shapes.push(Shape::sphere([fire[0] + a.cos() * 0.75, fire[1] + a.sin() * 0.75, fire[2]], rng.range(0.14, 0.2), ROCK, GRAVEL, false));
-                }
-                features.lights.push(Light { position: [fire[0], fire[1], fire[2] + 0.8], color: [1.0, 0.55, 0.22], reach: 13.0 });
-                // Tents of hide round it, their flaps facing the fire
-                let tents = 3 + (rng.next() * 2.0) as usize;
-                for k in 0..tents {
-                    let a = gate + TAU / 4.0 + (k as f32 + rng.range(-0.15, 0.15)) / tents as f32 * TAU;
-                    let (tx, ty) = (x + a.cos() * 5.6, y + a.sin() * 5.6);
-                    let base = at(tx, ty);
-                    // A cone of hide over poles that cross at the top, a dark way in on the side
-                    // facing the fire
-                    let hide = if k % 2 == 0 { LEATHER } else { LINEN };
-                    let tall = rng.range(2.4, 2.9);
-                    let flap = [tx - a.cos() * 1.0, ty - a.sin() * 1.0, base + 0.5];
-                    shapes.push(Shape::ellipsoid(flap, [0.3, 0.3, 0.55], BARK_DARK, AIR));
-                    shapes.push(Shape::capsule([tx, ty, base - 0.3], [tx, ty, base + tall], 1.55, 0.08, hide, FUR_BROWN, false));
-                    for p in 0..3 {
-                        let pa = a + p as f32 * TAU / 3.0 + 0.5;
-                        let foot = [tx + pa.cos() * 1.4, ty + pa.sin() * 1.4, base];
-                        let tip = [tx - pa.cos() * 0.35, ty - pa.sin() * 0.35, base + tall + 0.6];
-                        shapes.push(Shape::capsule(foot, tip, 0.05, 0.04, WOOD, AIR, false));
-                    }
-                }
-                // Crates and barrels of what they've taken
-                for _ in 0..3 {
-                    let a = rng.next() * TAU;
-                    let d = rng.range(2.6, 3.6);
-                    let (bx, by) = (x + a.cos() * d, y + a.sin() * d);
-                    let b = at(bx, by);
-                    if rng.next() < 0.5 {
-                        shapes.push(Shape::block([bx - 0.35, by - 0.35, b - 0.1], [bx + 0.35, by + 0.35, b + 0.6], WOOD, BARK_DARK));
-                    } else {
-                        shapes.push(Shape::capsule([bx, by, b], [bx, by, b + 0.7], 0.3, 0.3, WOOD, BARK_DARK, false));
-                    }
-                }
-                // Sharpened stakes all round, leaning out, but for the two ways in
-                let stakes = (TAU * RING / 0.55) as usize;
-                for k in 0..stakes {
-                    let a = k as f32 / stakes as f32 * TAU;
-                    let off_gate = ((a - gate).rem_euclid(std::f32::consts::PI) - std::f32::consts::FRAC_PI_2).abs();
-                    if off_gate > std::f32::consts::FRAC_PI_2 - 0.17 {
-                        continue;
-                    }
-                    let (sx, sy) = (x + a.cos() * RING, y + a.sin() * RING);
-                    let b = at(sx, sy);
-                    let tall = rng.range(1.9, 2.5);
-                    let top = [sx + a.cos() * 0.35, sy + a.sin() * 0.35, b + tall];
-                    shapes.push(Shape::capsule([sx, sy, b - 0.6], top, 0.15, 0.03, BARK_DARK, WOOD, false));
-                }
-                // Torches either side of each way in
-                for side in [0.0, std::f32::consts::PI] {
-                    for s in [-1.0, 1.0] {
-                        let a = gate + side + s * 0.24;
-                        let (px, py) = (x + a.cos() * (RING + 0.3), y + a.sin() * (RING + 0.3));
-                        let b = at(px, py);
-                        shapes.push(Shape::capsule([px, py, b - 0.3], [px, py, b + 2.0], 0.06, 0.05, WOOD, AIR, false));
-                        shapes.push(Shape::sphere([px, py, b + 2.1], 0.12, GLOW_FIRE, AIR, false));
-                        features.lights.push(Light { position: [px, py, b + 2.4], color: [1.0, 0.6, 0.25], reach: 7.0 });
-                    }
-                }
-                features.sites.push(Site { kind: "bandit camp", position: fire, facing: [gate.cos(), gate.sin()] });
-                features.footprints.push([area[0], area[1], area[2], area[3], highest + 3.0]);
-                objects.push(Object::new(shapes, rng.0));
             }
         }
         objects
