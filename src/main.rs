@@ -1580,9 +1580,12 @@ impl App {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
             let ground = (0..sz).rev().find(|&z| !worldgen::is_passable(world.material_at(sx / 2, sy / 2, z))).unwrap_or(0);
-            let eye = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, ground as f64 + 4.0 * world.voxels_per_meter as f64);
+            // `--set rise=20` meters over the ground instead, and `--set look=-1,0.5,-0.4` looking
+            // that way, for views of the land around from wherever it starts
+            let rise = setting("rise").and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
+            let eye = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, ground as f64 + rise * world.voxels_per_meter as f64);
             camera.position = voxels_to_camera(eye, world.size);
-            camera.look_direction(Vector3::new(1.0, 0.3, -0.25));
+            camera.look_direction(setting("look").and_then(parse_vector).unwrap_or(Vector3::new(1.0, 0.3, -0.25)));
         }
         if let Some(position) = setting("camera").and_then(parse_vector) {
             camera.position = position;
@@ -1931,6 +1934,17 @@ impl App {
                 } else {
                     app.view_from_near(middle + Vector3::new(0.0, 0.0, 5.0 * vpm), 30.0);
                 }
+            }
+        }
+        // For checking how trees look: `--set view_tree=3` looks at the third tree nearest the start,
+        // from `--set view_distance=12` meters away or far enough to see all of it
+        if let Some(n) = setting("view_tree").and_then(|v| v.parse::<usize>().ok()) {
+            let start = camera_to_voxels(app.camera.position, app.world.size);
+            if let Some(&(foot, height, reach)) = app.trees_near(start, 30.0).get(n.saturating_sub(1)) {
+                let vpm = app.world.voxels_per_meter as f64;
+                let distance = setting("view_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or((height * 1.1).max(reach * 2.0) + 3.0);
+                println!("looking at a tree {:.1} m high, {:.0} m away", height, (foot - start).xy().norm() / vpm);
+                app.view_tree(foot, height, reach, distance);
             }
         }
         // For checking how an animal or a prop looks: `--set view_animal=bear` looks at the nearest one
@@ -2664,6 +2678,73 @@ impl App {
             }
         }
         self.look_from(eye, target);
+    }
+
+    /// The trees within `radius` meters of `from`, nearest first: the foot of each one's trunk in
+    /// voxels, and how high and how far out from it it reaches in meters
+    fn trees_near(&self, from: Vector3<f64>, radius: f64) -> Vec<(Vector3<f64>, f64, f64)> {
+        use worldgen::material::*;
+        let vpm = self.world.voxels_per_meter as f64;
+        let step = (vpm / 4.0).max(1.0) as i64;
+        let reach = (radius * vpm) as i64;
+        let trunk = |m: u8| matches!(m, WOOD | BARK_DARK | BIRCH_BARK | PALM_WOOD | DEAD_WOOD);
+        let ground = |m: u8| !worldgen::is_passable(m) && !trunk(m);
+        let mut found: Vec<(Vector3<f64>, f64, f64)> = Vec::new();
+        let (cx, cy) = (from.x as i64, from.y as i64);
+        for y in (cy - reach..=cy + reach).step_by(step as usize) {
+            for x in (cx - reach..=cx + reach).step_by(step as usize) {
+                let Some(floor) = (0..self.world.size[2] as i64).rev().find(|&z| ground(self.world.material_at(x, y, z))) else {
+                    continue;
+                };
+                if !trunk(self.world.material_at(x, y, floor + vpm as i64)) || !trunk(self.world.material_at(x, y, floor + 2 * vpm as i64)) {
+                    continue;
+                }
+                let foot = Vector3::new(x as f64, y as f64, floor as f64);
+                if found.iter().any(|(f, ..)| (f - foot).xy().norm() < 2.5 * vpm) {
+                    continue;
+                }
+                // How high and wide it is, from the leaves and wood round it
+                let (mut top, mut wide) = (floor, 0.0f64);
+                for dy in (-8 * vpm as i64..=8 * vpm as i64).step_by(4) {
+                    for dx in (-8 * vpm as i64..=8 * vpm as i64).step_by(4) {
+                        let t = (floor + 2..floor + 30 * vpm as i64).rev().find(|&z| self.world.material_at(x + dx, y + dy, z) != AIR).unwrap_or(floor);
+                        let m = self.world.material_at(x + dx, y + dy, t);
+                        if t > floor + 2 * vpm as i64 && (worldgen::sways(m) || trunk(m)) {
+                            top = top.max(t);
+                            wide = wide.max(((dx * dx + dy * dy) as f64).sqrt() / vpm);
+                        }
+                    }
+                }
+                found.push((foot, (top - floor) as f64 / vpm, wide));
+            }
+        }
+        found.sort_by(|a, b| (a.0 - from).xy().norm().total_cmp(&(b.0 - from).xy().norm()));
+        found
+    }
+
+    /// Looks at the whole of a tree standing at `foot`, `height` meters high and `reach` meters
+    /// across, from about `distance` meters away, the side with least in the way, the sun behind
+    fn view_tree(&mut self, foot: Vector3<f64>, height: f64, reach: f64, distance: f64) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let target = foot + Vector3::new(0.0, 0.0, height * 0.5 * vpm);
+        let sun = (self.sun_azimuth as f64).to_radians();
+        let mut best = (usize::MAX, target);
+        for turn in 0..12 {
+            // Starting from the side the sun's on, so it's lit
+            let angle = sun + ((turn + 1) / 2) as f64 / 12.0 * TAU * if turn % 2 == 0 { 1.0 } else { -1.0 };
+            let eye = target + Vector3::new(angle.cos() * distance, angle.sin() * distance, distance * 0.15) * vpm;
+            let steps = (distance * 4.0) as usize;
+            let blocked = (0..steps)
+                .filter(|&i| {
+                    let p = eye + (target - eye) * (i as f64 / steps as f64);
+                    (p - target).xy().norm() > (reach + 0.5) * vpm && self.world.material_at(p.x as i64, p.y as i64, p.z as i64) != worldgen::material::AIR
+                })
+                .count();
+            if blocked < best.0 {
+                best = (blocked, eye);
+            }
+        }
+        self.look_from(best.1, target);
     }
 
     /// Puts the camera at `eye` looking at `target`, both in voxels, flying so it stays there
