@@ -929,6 +929,8 @@ enum Pattern {
     Bricks,
     /// Carved with bands round it and zigzags between them
     Carved,
+    /// Old stone, roofs or paving, weathered, stained and gone green, see castles::aged()
+    Aged(castles::Age),
 }
 
 /// Where a shape goes in relation to the ground
@@ -1120,11 +1122,13 @@ impl Shape {
         }
     }
 
-    /// What a voxel inside the shape is made of. `p` is its middle, `h` a hash of where it is.
-    fn material_at(&self, p: Vec3, voxel: f32, h: u32) -> u8 {
+    /// What a voxel inside the shape is made of. `p` is its middle, `h` a hash of where it is,
+    /// `ground` how high the ground under it is, in meters.
+    fn material_at(&self, p: Vec3, voxel: f32, h: u32, ground: f32) -> u8 {
         let sprinkled = |chance: f32| self.accent != AIR && unit(h >> 16) < chance;
         let dark = if matches!(self.material, SANDSTONE | CLAY_POT) { SANDSTONE_DARK } else { MORTAR };
         match self.pattern {
+            Pattern::Aged(age) => castles::aged(self, age, p, voxel, h, ground),
             Pattern::Plain => {
                 if sprinkled(0.15) {
                     self.accent
@@ -2671,7 +2675,7 @@ impl Terrain {
                                 if shape.ragged && depth > 0.55 && unit(h) < 0.45 {
                                     continue;
                                 }
-                                materials[i] = shape.material_at(p, voxel, h);
+                                materials[i] = shape.material_at(p, voxel, h, (columns[lx + ly * 8].height + 1) as f32 * voxel);
                                 break;
                             }
                         }

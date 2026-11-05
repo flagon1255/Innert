@@ -1352,13 +1352,14 @@ impl App {
         // `--set royal=1` starts out in front of the gate of the nearest royal castle looking up at
         // it, `royal=court` in its courtyard looking up at the keep, `royal=hall` inside the door of
         // its great hall, `royal=throne` in its throne room facing the princess, and `royal=air`
-        // high over one front corner. With `biome=snow` too, the nearest to the snow.
+        // high over one front corner. With `biome=snow` too, the nearest to the snow, and with
+        // `castle=small`, `medium` or `large` the nearest of that size.
         let royal_view = setting("royal").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none());
         let inside_castle = matches!(royal_view, Some("hall" | "throne" | "court"));
         let royal = royal_view.and_then(|_| {
             let near = setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])).unwrap_or([112.0, 112.0]);
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
-            landscape.and_then(|l| l.nearest_castle(near))
+            landscape.and_then(|l| l.nearest_castle(near, setting("castle")))
         });
         // `--set river=1` starts over the widest river within half a kilometer
         let river_at = setting("river").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none()).and_then(|_| {
