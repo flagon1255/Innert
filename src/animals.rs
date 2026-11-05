@@ -4,7 +4,7 @@
 //! in reflections like everything else.
 
 use std::f64::consts::{PI, TAU};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use nalgebra::{UnitQuaternion, Vector2, Vector3};
 use vulkano::buffer::BufferContents;
@@ -288,7 +288,7 @@ impl Look {
     pub fn scale(self) -> f64 {
         match self {
             Look::Direwolf | Look::WinterAlpha => 2.1,
-            Look::GraveKnight => 2.3,
+            Look::GraveKnight => 2.2,
             Look::Warlord => 1.7,
             Look::BanditBrute => 1.12,
             Look::Shieldbearer => 1.06,
@@ -298,7 +298,7 @@ impl Look {
             // of a dungeon's deepest hall, just
             Look::Colossus => 1.7,
             Look::ElderWyrm => 1.8,
-            Look::CryptTitan => 2.9,
+            Look::CryptTitan => 2.75,
             _ => 1.0,
         }
     }
@@ -323,6 +323,21 @@ impl Look {
             Look::Warlord => Some(Look::Bandit),
             _ => None,
         }
+    }
+
+    /// The fallen king of the dead and the titan made after it: a tall, gaunt skeleton in a
+    /// broken crown and a tattered cape, with a greatsword, see knight()
+    pub fn is_knight(self) -> bool {
+        matches!(self, Look::GraveKnight | Look::CryptTitan)
+    }
+
+    /// Whether it ever walks, so has frames of walking: things lying about don't, nor do the
+    /// merchant and the royals, who stand where they are
+    fn walks(self) -> bool {
+        !matches!(
+            self,
+            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard
+        )
     }
 
     /// Bones rather than rotting flesh, for the walking dead
@@ -389,8 +404,9 @@ impl Look {
             Look::WinterAlpha => make(FUR_GRAY, FUR_DARK, FUR_WHITE, GLOW_FROST, ICE),
             Look::Wolf => make(FUR_GRAY, FUR_DARK, FUR_CREAM, GLOW_FIRE, BONE),
             // The walking dead: their bones or skin, rags, armor, the light in their eyes, and
-            // their blade. A knight's bones in black armor, void burning in its eyes.
-            Look::GraveKnight => make(BONE, BARK_DARK, DARK_STEEL, GLOW_VOID, DARK_STEEL),
+            // their blade. A fallen king's bones in black armor, void burning in its eyes and its
+            // chest, its crown and trim gone to tarnished bronze; see knight().
+            Look::GraveKnight => make(BONE, BARK_DARK, DARK_STEEL, GLOW_VOID, BRONZE),
             // Raid bosses: a colossus of dark stone veined with fire, an old wyrm black as soot with
             // embers in its scales, and a titan of the dead in gold-chased black armor
             Look::Colossus => make(STONE, OBSIDIAN, GLOW_FIRE, GLOW_FIRE, CRYSTAL),
@@ -462,8 +478,10 @@ impl Look {
             Look::Spider | Look::Rimeweaver | Look::Spiderling => 3.1 * self.scale(),
             Look::Treant => 5.5,
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
+            // A greatsword raised high overhead, or swept out to its side
+            Look::GraveKnight | Look::CryptTitan => 3.45 * self.scale(),
             // A blade raised overhead
-            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => 2.5 * self.scale(),
+            Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie => 2.5 * self.scale(),
             Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman => 2.5 * self.scale(),
             // A mace raised high over its shield
             Look::Shieldbearer => 2.6 * self.scale(),
@@ -762,29 +780,125 @@ impl Look {
 }
 
 /// Frame 0 stands still, 1 to WALK_FRAMES are a walk cycle, then come a boss's poses as it
-/// attacks, see POSE_WINDUP and the rest, and frames halfway between them to ease from one to the
-/// next, see tween(). Only bosses have the poses.
-const WALK_FRAMES: usize = 12;
+/// attacks, see POSE_WINDUP and the rest, and frames partway between them to ease from one to the
+/// next, see tween(). Only bosses and monsters have the poses, and only knights the last four.
+/// Every look has every frame, those it never shows left empty, so a frame's model is found the
+/// same way for all of them, see model_index().
+const WALK_FRAMES: usize = 20;
 /// Getting ready to attack
 pub const POSE_WINDUP: usize = WALK_FRAMES + 1;
 /// Bringing it down
 pub const POSE_STRIKE: usize = WALK_FRAMES + 2;
 /// Something each boss does its own way: throwing, spreading its wings or lowering its head to charge
 pub const POSE_SPECIAL: usize = WALK_FRAMES + 3;
-/// The pairs of poses with frames between them, 0 being standing, and how many frames
-const TWEENS: [(usize, usize); 5] = [(0, POSE_WINDUP), (0, POSE_SPECIAL), (POSE_WINDUP, POSE_STRIKE), (POSE_SPECIAL, POSE_STRIKE), (POSE_STRIKE, 0)];
-const TWEEN_STEPS: usize = 2;
-const FRAMES: usize = POSE_SPECIAL + 1 + TWEENS.len() * TWEEN_STEPS;
+/// A knight crouched low, its greatsword drawn back behind it to sweep it round, see knight()
+pub const POSE_COIL: usize = WALK_FRAMES + 4;
+/// The greatsword swept out flat to its side, low over the ground
+pub const POSE_SWEEP: usize = WALK_FRAMES + 5;
+/// The greatsword raised high in both hands, point down
+pub const POSE_RAISE: usize = WALK_FRAMES + 6;
+/// The greatsword driven down into the ground, bone spikes bursting up all round
+pub const POSE_SPIKES: usize = WALK_FRAMES + 7;
 
-/// The frame `f` of the way from pose `a` to pose `b`, 0 being standing, if there are frames
-/// between them
-pub fn tween(a: usize, b: usize, f: f64) -> Option<usize> {
-    let (k, f) = match TWEENS.iter().position(|&pair| pair == (a, b)) {
-        Some(k) => (k, f),
-        None => (TWEENS.iter().position(|&pair| pair == (b, a))?, 1.0 - f),
-    };
-    let step = ((f * (TWEEN_STEPS + 1) as f64).floor() as usize).clamp(1, TWEEN_STEPS);
-    Some(POSE_SPECIAL + 1 + k * TWEEN_STEPS + step - 1)
+/// Two poses with frames between them to ease from one to the other, 0 being standing: how many
+/// frames, and seconds it takes to go from the first to the second and back. Getting ready and
+/// settling after are slow, so they're seen coming; blows are quick, so they land hard.
+#[derive(Clone, Copy)]
+struct Tween {
+    from: usize,
+    to: usize,
+    steps: usize,
+    there: f64,
+    back: f64,
+    /// Only knights have these
+    knights: bool,
+}
+
+const fn tween_of(from: usize, to: usize, steps: usize, there: f64, back: f64, knights: bool) -> Tween {
+    Tween { from, to, steps, there, back, knights }
+}
+
+/// Every pair of poses a boss goes between, so it never snaps from one to the next
+const TWEENS: [Tween; 12] = [
+    tween_of(0, POSE_WINDUP, 3, 0.28, 0.3, false),
+    tween_of(POSE_WINDUP, POSE_STRIKE, 1, 0.08, 0.2, false),
+    tween_of(POSE_STRIKE, 0, 3, 0.4, 0.15, false),
+    tween_of(0, POSE_SPECIAL, 2, 0.3, 0.35, false),
+    tween_of(POSE_SPECIAL, POSE_STRIKE, 1, 0.08, 0.2, false),
+    tween_of(POSE_WINDUP, POSE_SPECIAL, 2, 0.2, 0.2, false),
+    tween_of(0, POSE_COIL, 2, 0.3, 0.3, true),
+    tween_of(POSE_COIL, POSE_SWEEP, 1, 0.07, 0.2, true),
+    tween_of(POSE_SWEEP, 0, 3, 0.4, 0.2, true),
+    tween_of(0, POSE_RAISE, 2, 0.32, 0.3, true),
+    tween_of(POSE_RAISE, POSE_SPIKES, 1, 0.09, 0.2, true),
+    tween_of(POSE_SPIKES, 0, 2, 0.45, 0.2, true),
+];
+
+const fn tween_frames() -> usize {
+    let mut n = 0;
+    let mut k = 0;
+    while k < TWEENS.len() {
+        n += TWEENS[k].steps;
+        k += 1;
+    }
+    n
+}
+
+/// The first of the frames between poses
+const FIRST_TWEEN: usize = POSE_SPIKES + 1;
+const FRAMES: usize = FIRST_TWEEN + tween_frames();
+
+/// Which frame to draw `look` in `since` seconds after it went from pose `a` to pose `b`, 0 being
+/// standing, easing in and out: None once it's got there, or if it has no frames between them
+pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
+    let mut first = FIRST_TWEEN;
+    for t in TWEENS {
+        let forward = (t.from, t.to) == (a, b);
+        if forward || (t.to, t.from) == (a, b) {
+            if t.knights && !look.is_knight() {
+                return None;
+            }
+            let f = since / if forward { t.there } else { t.back };
+            if f >= 1.0 {
+                return None;
+            }
+            let eased = f * f * (3.0 - 2.0 * f);
+            // How far along from `t.from` to `t.to`
+            let along = if forward { eased } else { 1.0 - eased };
+            let k = (along * (t.steps + 1) as f64).round() as usize;
+            return Some(match k {
+                0 => t.from,
+                k if k > t.steps => t.to,
+                k => first + k - 1,
+            });
+        }
+        first += t.steps;
+    }
+    None
+}
+
+/// Whether `look` is ever drawn in `frame`, so its model's worth making
+fn shown(look: Look, frame: usize) -> bool {
+    match frame {
+        0 => true,
+        _ if frame <= WALK_FRAMES => look.walks(),
+        _ if look.build().is_none() => false,
+        _ if frame < POSE_COIL => true,
+        _ if frame < FIRST_TWEEN => look.is_knight(),
+        _ => !tween_at(frame).0.knights || look.is_knight(),
+    }
+}
+
+/// The pair of poses frame `frame` is between, and how far from the first to the second
+fn tween_at(frame: usize) -> (Tween, f64) {
+    let mut k = frame - FIRST_TWEEN;
+    for t in TWEENS {
+        if k < t.steps {
+            return (t, (k + 1) as f64 / (t.steps + 1) as f64);
+        }
+        k -= t.steps;
+    }
+    unreachable!("frame {frame} is past the last")
 }
 
 /// How far a boss is into each of its poses, 0 to 1, so it can be drawn partway between them
@@ -793,10 +907,15 @@ struct Pose {
     windup: f64,
     strike: f64,
     special: f64,
+    // Only knights strike these, see knight()
+    coil: f64,
+    sweep: f64,
+    raise: f64,
+    spikes: f64,
 }
 
 impl Pose {
-    const REST: Pose = Pose { windup: 0.0, strike: 0.0, special: 0.0 };
+    const REST: Pose = Pose { windup: 0.0, strike: 0.0, special: 0.0, coil: 0.0, sweep: 0.0, raise: 0.0, spikes: 0.0 };
 
     /// The pose drawn in `frame`, see POSE_WINDUP and tween()
     fn of(frame: usize) -> Pose {
@@ -804,17 +923,32 @@ impl Pose {
             POSE_WINDUP => Pose { windup: 1.0, ..Pose::REST },
             POSE_STRIKE => Pose { strike: 1.0, ..Pose::REST },
             POSE_SPECIAL => Pose { special: 1.0, ..Pose::REST },
-            _ if frame > POSE_SPECIAL => {
+            POSE_COIL => Pose { coil: 1.0, ..Pose::REST },
+            POSE_SWEEP => Pose { sweep: 1.0, ..Pose::REST },
+            POSE_RAISE => Pose { raise: 1.0, ..Pose::REST },
+            POSE_SPIKES => Pose { spikes: 1.0, ..Pose::REST },
+            _ if frame >= FIRST_TWEEN => {
                 // Partway from one pose of a pair to the other
-                let k = frame - POSE_SPECIAL - 1;
-                let (pair, step) = (TWEENS[k / TWEEN_STEPS], k % TWEEN_STEPS + 1);
-                let t = step as f64 / (TWEEN_STEPS + 1) as f64;
-                let (a, b) = (Pose::of(pair.0), Pose::of(pair.1));
+                let (pair, t) = tween_at(frame);
+                let (a, b) = (Pose::of(pair.from), Pose::of(pair.to));
                 let mix = |x: f64, y: f64| x + (y - x) * t;
-                Pose { windup: mix(a.windup, b.windup), strike: mix(a.strike, b.strike), special: mix(a.special, b.special) }
+                Pose {
+                    windup: mix(a.windup, b.windup),
+                    strike: mix(a.strike, b.strike),
+                    special: mix(a.special, b.special),
+                    coil: mix(a.coil, b.coil),
+                    sweep: mix(a.sweep, b.sweep),
+                    raise: mix(a.raise, b.raise),
+                    spikes: mix(a.spikes, b.spikes),
+                }
             }
             _ => Pose::REST,
         }
+    }
+
+    /// How much of each pose there is in this one, standing aside, in the order of Stance::KEYS
+    fn weights(self) -> [f64; 7] {
+        [self.windup, self.strike, self.special, self.coil, self.sweep, self.raise, self.spikes]
     }
 
     /// What's `rest` standing, `windup`, `strike` and `special` in each pose, in this one
@@ -1361,6 +1495,314 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
     }
 }
 
+/// How a knight holds itself in one of its poses, see knight(). Angles are in radians, lengths in
+/// meters of its build.
+#[derive(Clone, Copy)]
+struct Stance {
+    /// Leaning forward from the hips, turned left at the waist, and its head tipped back
+    lean: f64,
+    twist: f64,
+    nod: f64,
+    /// How far its hips sink as it bends its knees, how far down onto its left knee it goes, 0 to
+    /// 1, and how wide it plants its feet, 0 to 1
+    crouch: f64,
+    kneel: f64,
+    wide: f64,
+    /// Which way its sword hand is from its shoulder, round to the left from ahead and up from
+    /// level, and how far
+    hand: [f64; 3],
+    /// The same for its left hand when it's off the hilt, and how far it's on the hilt instead
+    off: [f64; 3],
+    grip: f64,
+    /// Which way the blade points from the hand, round and up, and how far its edges are turned
+    /// from leading up and down, 0, as it sweeps, to leading sideways, 1, its flat to the front
+    /// so it's seen broad
+    blade: [f64; 2],
+    flat: f64,
+    /// Its cape streaming out behind it, 0 to 1
+    flare: f64,
+}
+
+impl Stance {
+    const fn new(lean: f64, twist: f64, nod: f64, crouch: f64, kneel: f64, wide: f64, hand: [f64; 3], off: [f64; 3], grip: f64, blade: [f64; 2], flat: f64, flare: f64) -> Stance {
+        Stance { lean, twist, nod, crouch, kneel, wide, hand, off, grip, blade, flat, flare }
+    }
+
+    /// Standing, then each pose in the order of Pose::weights(): the greatsword raised overhead
+    /// behind it, brought down in front, planted as it kneels with its left hand raised to call
+    /// the dead, drawn back low to sweep, swept out flat to the left, raised in both hands point
+    /// down, and driven into the ground
+    const KEYS: [Stance; 8] = [
+        Stance::new(0.04, 0.0, 0.0, 0.02, 0.0, 0.0, [-0.5, -1.0, 0.64], [0.45, -1.25, 0.66], 0.0, [-0.1, -1.2], 1.0, 0.0),
+        Stance::new(-0.12, -0.15, 0.1, 0.05, 0.0, 0.3, [-0.2, 1.68, 0.6], [0.3, 1.5, 0.6], 1.0, [0.0, 2.43], 1.0, 0.2),
+        Stance::new(0.38, 0.1, -0.15, 0.16, 0.0, 0.5, [0.1, -0.25, 0.66], [0.2, -0.3, 0.6], 1.0, [0.0, -0.42], 1.0, 0.35),
+        Stance::new(0.12, 0.2, 0.45, 0.32, 1.0, 0.0, [0.05, -0.75, 0.55], [0.5, 1.35, 0.68], 0.0, [0.0, -1.35], 1.0, 0.1),
+        Stance::new(0.22, -0.75, -0.05, 0.22, 0.0, 1.0, [-1.5, -0.95, 0.62], [-0.6, -0.8, 0.6], 1.0, [-1.95, -0.32], 0.0, 0.3),
+        Stance::new(0.18, 0.65, 0.0, 0.3, 0.0, 1.0, [1.0, -0.95, 0.66], [2.4, -0.4, 0.62], 0.0, [0.9, -0.3], 0.0, 0.7),
+        Stance::new(-0.05, 0.0, 0.15, 0.0, 0.0, 0.4, [0.6, 1.0, 0.62], [-0.4, 1.0, 0.62], 1.0, [0.0, -1.5], 1.0, 0.15),
+        Stance::new(0.45, 0.0, -0.25, 0.3, 0.35, 0.6, [0.55, -0.6, 0.6], [-0.5, -0.6, 0.6], 1.0, [0.0, -1.1], 1.0, 0.4),
+    ];
+
+    fn numbers(&self) -> [f64; 17] {
+        let s = self;
+        [s.lean, s.twist, s.nod, s.crouch, s.kneel, s.wide, s.hand[0], s.hand[1], s.hand[2], s.off[0], s.off[1], s.off[2], s.grip, s.blade[0], s.blade[1], s.flat, s.flare]
+    }
+
+    fn from_numbers(n: [f64; 17]) -> Stance {
+        Stance::new(n[0], n[1], n[2], n[3], n[4], n[5], [n[6], n[7], n[8]], [n[9], n[10], n[11]], n[12], [n[13], n[14]], n[15], n[16])
+    }
+
+    /// Partway into each of its poses as much as `pose` says. The angles are blended, not the
+    /// places, so a blade swung from one pose to the next goes round in an arc.
+    fn of(pose: Pose) -> Stance {
+        let rest = Stance::KEYS[0].numbers();
+        let mut out = rest;
+        for (w, key) in pose.weights().into_iter().zip(&Stance::KEYS[1..]) {
+            if w != 0.0 {
+                let key = key.numbers();
+                for i in 0..out.len() {
+                    out[i] += w * (key[i] - rest[i]);
+                }
+            }
+        }
+        Stance::from_numbers(out)
+    }
+}
+
+/// Where the middle joint goes of a limb from `root` reaching for `target`, `upper` and `lower`
+/// long, bending towards `pole`, and where its end gets to, which is short of `target` if it's
+/// out of reach
+fn bend(root: Vector3<f64>, target: Vector3<f64>, upper: f64, lower: f64, pole: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let to = target - root;
+    let d = to.norm().clamp(1e-4, (upper + lower) * 0.999);
+    let dir = to.try_normalize(1e-9).unwrap_or_else(|| -Vector3::z());
+    let along = (upper * upper - lower * lower + d * d) / (2.0 * d);
+    let out = (upper * upper - along * along).max(0.0).sqrt();
+    let side = (pole - dir * pole.dot(&dir)).try_normalize(1e-9).unwrap_or_else(|| dir.cross(&Vector3::y()).try_normalize(1e-9).unwrap_or_else(Vector3::x));
+    (root + dir * along + side * out, root + dir * d)
+}
+
+/// How long a knight's blade is past its crossguard, in meters of its build
+const KNIGHT_BLADE: f64 = 1.25;
+
+/// The Grave Knight, a fallen king of the dead, about two meters tall at the size of its build
+/// and gaunt: a skeleton with void burning in its eye sockets and in the heart behind its bare
+/// ribs, a crown with one point snapped off set askew on a broken helm, spiked pauldrons, a long
+/// cape hanging from its shoulders in tatters and a tabard over its hips, armored forearms and
+/// shins, and a huge notched greatsword, void glowing down its fuller, which it drags along with
+/// its point by the ground as it walks. Its poses are blended from its Stance in each, see
+/// Stance::KEYS; driving the sword into the ground, bone spikes burst up all round it, nearest
+/// first. A `titan` wears black armor and a black cape, chased with gold. Returns where its sword
+/// hand is and the tip of its blade.
+fn knight(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin, titan: bool) -> (Vector3<f64>, Vector3<f64>) {
+    type V = Vector3<f64>;
+    let (bone, dark, armor, glow, trim) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let cape = if titan { OBSIDIAN } else { TEMPLE_RED };
+    let mut s = Stance::of(pose);
+    // Walking, its arms swing, the sword arm hardly under the weight of it, and its cape streams
+    // out behind
+    let swing = angle.sin() * moving;
+    s.hand[1] += 0.12 * swing;
+    s.off[1] -= 0.35 * swing;
+    s.flare += 0.15 * moving;
+    const HIP: f64 = 1.0;
+    // Its hips sinking as it crouches, and a little at each footfall
+    let hip = V::new(0.0, 0.0, HIP - s.crouch - 0.025 * swing * swing);
+    let (lc, ls, tc, ts) = (s.lean.cos(), s.lean.sin(), s.twist.cos(), s.twist.sin());
+    // A way in its upper body, leaning and turned with it, and where a point of it is
+    let rotate = |d: V| {
+        let (x, z) = (d.x * lc + d.z * ls, -d.x * ls + d.z * lc);
+        V::new(x * tc - d.y * ts, x * ts + d.y * tc, z)
+    };
+    let body = |q: Vec3| hip + rotate(V::new(q[0], q[1], q[2] - HIP));
+    let ahead = |round: f64, up: f64| V::new(up.cos() * round.cos(), up.cos() * round.sin(), up.sin());
+    // Its head, tipped back about its neck
+    let neck = [0.01, 0.0, 1.69];
+    let (nc, ns) = (s.nod.cos(), s.nod.sin());
+    let head = |q: Vec3| -> Vec3 {
+        let (x, z) = (q[0] - neck[0], q[2] - neck[2]);
+        body([neck[0] + x * nc - z * ns, q[1], neck[2] + x * ns + z * nc]).into()
+    };
+
+    // Void burning in its eye sockets, a crown askew with one point snapped off, on a helm
+    // broken open at one side
+    for side in [-1.0, 1.0] {
+        p.push(ball(head([0.105, side * 0.045, 1.8]), 0.022, glow));
+        p.push(ball(head([0.094, side * 0.045, 1.8]), 0.034, dark));
+    }
+    p.push(ball(head([0.118, 0.0, 1.755]), 0.016, dark));
+    p.push(ball(head([0.112, 0.0, 1.875]), 0.02, glow));
+    let askew = |y: f64| 0.25 * y;
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU;
+        let (c, sn) = (a.cos(), a.sin());
+        let foot = [0.005 + 0.105 * c, 0.11 * sn, 1.865 + askew(0.11 * sn)];
+        let (tall, out) = if k == 2 { (0.035, 0.03) } else { (0.095, 0.012) };
+        p.push(limb(head(foot), head([foot[0] + out * c, foot[1] + out * sn, foot[2] + tall]), 0.022, 0.006, trim));
+    }
+    p.push(ellipsoid(head([0.005, 0.0, 1.865]), [0.116, 0.122, 0.022], trim));
+    p.push(ball(head([0.02, 0.0, 1.79]), 0.112, bone));
+    p.push(ellipsoid(head([0.07, 0.0, 1.715]), [0.065, 0.072, 0.035], bone));
+    p.push(ball(head([-0.05, 0.1, 1.9]), 0.055, AIR));
+    p.push(ellipsoid(head([-0.035, 0.0, 1.82]), [0.12, 0.128, 0.115], armor));
+    p.push(limb(body([0.0, 0.0, 1.54]).into(), head([0.01, 0.0, 1.7]), 0.03, 0.028, bone));
+
+    // The void in its heart, seen between its bare ribs, its breastbone and spine
+    p.push(ball(body([0.01, 0.0, 1.33]).into(), 0.06, glow));
+    p.push(limb(body([0.118, 0.0, 1.47]).into(), body([0.126, 0.0, 1.25]).into(), 0.02, 0.016, bone));
+    for k in 0..4 {
+        let z = 1.21 + 0.078 * k as f64;
+        let wider = (k as f64).min(2.0);
+        let (rx, ry) = (0.112 + 0.01 * wider, 0.128 + 0.014 * wider);
+        for side in [-1.0, 1.0] {
+            // From the spine round its side, sloping down to the front
+            let at = |u: f64| -> Vec3 {
+                let f = (PI - u) / (PI - 0.35);
+                body([rx * u.cos() - 0.01, side * ry * u.sin(), z - 0.05 * f]).into()
+            };
+            for j in 0..4 {
+                let (u0, u1) = (PI - (PI - 0.35) * j as f64 / 4.0, PI - (PI - 0.35) * (j + 1) as f64 / 4.0);
+                p.push(limb(at(u0), at(u1), 0.017, 0.017, bone));
+            }
+        }
+    }
+    for k in 0..8 {
+        p.push(ball(body([-0.105, 0.0, 1.04 + 0.065 * k as f64]).into(), 0.034, bone));
+    }
+    p.push(limb(body([-0.1, 0.0, 1.0]).into(), body([-0.11, 0.0, 1.54]).into(), 0.024, 0.028, bone));
+    // Its collarbones, a gorget, and pauldrons spiked and rimmed with trim
+    for side in [-1.0, 1.0] {
+        p.push(limb(body([0.1, 0.0, 1.5]).into(), body([0.0, side * 0.24, 1.55]).into(), 0.02, 0.02, bone));
+    }
+    p.push(ellipsoid(body([0.0, 0.0, 1.56]).into(), [0.09, 0.13, 0.035], armor));
+    for side in [-1.0, 1.0] {
+        p.push(limb(body([-0.02, side * 0.3, 1.64]).into(), body([-0.07, side * 0.43, 1.79]).into(), 0.035, 0.005, armor));
+        p.push(ellipsoid(body([0.0, side * 0.28, 1.6]).into(), [0.15, 0.13, 0.085], armor));
+        p.push(ellipsoid(body([0.0, side * 0.28, 1.585]).into(), [0.165, 0.145, 0.07], trim));
+        p.push(ellipsoid(body([0.0, side * 0.31, 1.5]).into(), [0.12, 0.1, 0.05], armor));
+    }
+    // A clasp either side, holding its cape
+    for side in [-1.0, 1.0] {
+        p.push(ball(body([0.03, side * 0.19, 1.555]).into(), 0.026, trim));
+    }
+
+    // Its arms: bone above the elbow, armored below, the sword in its right hand and its left on
+    // the hilt below it or free
+    let (shoulder_r, shoulder_l) = (V::new(0.0, -0.26, 1.56), V::new(0.0, 0.26, 1.56));
+    let hand = body((shoulder_r + ahead(s.hand[0], s.hand[1]) * s.hand[2]).into());
+    let d = rotate(ahead(s.blade[0], s.blade[1]));
+    let free = body((shoulder_l + ahead(s.off[0], s.off[1]) * s.off[2]).into());
+    let off = free.lerp(&(hand - d * 0.12), s.grip.clamp(0.0, 1.0));
+    for (shoulder, target, side) in [(shoulder_r, hand, -1.0), (shoulder_l, off, 1.0)] {
+        let shoulder = body(shoulder.into());
+        let (elbow, at) = bend(shoulder, target, 0.36, 0.34, rotate(V::new(-0.35, side * 0.85, -0.4)));
+        p.push(ball(at.into(), 0.05, armor));
+        p.push(limb(elbow.into(), at.into(), 0.042, 0.036, armor));
+        p.push(ball(elbow.into(), 0.045, armor));
+        p.push(limb(shoulder.into(), elbow.into(), 0.028, 0.026, bone));
+    }
+
+    // Its belt, and a tabard hanging in strips from it, trimmed at the top
+    p.push(ball(body([0.112, 0.0, 1.05]).into(), 0.025, trim));
+    p.push(ellipsoid(body([0.0, 0.0, 1.05]).into(), [0.11, 0.17, 0.035], armor));
+    p.push(ellipsoid(body([0.106, 0.0, 1.0]).into(), [0.035, 0.12, 0.02], trim));
+    for (y, long) in [(-0.07, 0.4), (0.0, 0.48), (0.07, 0.36)] {
+        let top = body([0.1, y, 1.0]);
+        p.push(limb(top.into(), (top + V::new(0.04, 0.0, -long)).into(), 0.04, 0.046, cape).stretched([0.45, 1.0, 1.0]));
+    }
+    p.push(ellipsoid(body([0.0, 0.0, 1.0]).into(), [0.09, 0.16, 0.07], bone));
+
+    // Its legs, the knees bending as its hips sink, striding along, or down on one knee
+    for side in [-1.0, 1.0] {
+        let step = angle + if side > 0.0 { 0.0 } else { PI };
+        let joint = hip + V::new(0.0, side * 0.11, -0.02);
+        let mut foot = V::new(0.12 * s.wide * side, side * (0.13 + 0.08 * s.wide), 0.06);
+        foot.x += 0.32 * step.sin() * moving;
+        foot.z += 0.07 * step.cos().max(0.0) * moving;
+        foot.x += if side > 0.0 { -0.42 * s.kneel } else { 0.3 * s.kneel };
+        let (knee, foot) = bend(joint, foot, 0.53, 0.5, V::new(1.0, 0.0, 0.25));
+        p.push(ellipsoid([foot.x + 0.05, foot.y, (foot.z - 0.02).max(0.04)], [0.1, 0.05, 0.04], armor));
+        p.push(limb(knee.into(), foot.into(), 0.048, 0.04, armor));
+        p.push(ball(knee.into(), 0.052, armor));
+        p.push(limb(joint.into(), knee.into(), 0.032, 0.03, bone));
+    }
+
+    // Its cape: a mantle over its shoulders, and strips torn to different lengths hanging from
+    // it, blown out behind as it lunges and sweeps
+    p.push(ellipsoid(body([-0.09, 0.0, 1.56]).into(), [0.07, 0.21, 0.045], cape));
+    let (fc, fs) = ((s.twist * 0.6).cos(), (s.twist * 0.6).sin());
+    for (i, hem) in [0.34, 0.47, 0.27, 0.52, 0.31, 0.44, 0.29].into_iter().enumerate() {
+        let y = -0.21 + 0.07 * i as f64;
+        let top = body([-0.13, y, 1.52]);
+        let (bx, by) = (-(0.08 + 0.4 * s.flare), y * 0.35);
+        let low = (hem + 0.3 * s.flare).min(top.z - 0.2);
+        let bottom = V::new(top.x + bx * fc - by * fs, top.y + bx * fs + by * fc, low);
+        p.push(limb(top.into(), bottom.into(), 0.04, 0.05, cape).stretched([0.5, 1.0, 1.0]));
+    }
+
+    // The greatsword: its pommel and grip, a crossguard swept towards the blade, notches hacked
+    // out of its edges, void glowing down its fuller, and the blade, broad at the guard and
+    // narrowing to its point, its edges bright
+    let up = V::z();
+    let edge_up = (up - d * d.dot(&up)).try_normalize(1e-6).unwrap_or_else(V::x);
+    let edge_side = up.cross(&d).try_normalize(1e-6).unwrap_or_else(V::y);
+    let e = (edge_up * (1.0 - s.flat) + edge_side * s.flat).try_normalize(1e-6).unwrap_or(edge_side);
+    let guard = hand + d * 0.06;
+    let tip = guard + d * KNIGHT_BLADE;
+    p.push(ball((hand - d * 0.25).into(), 0.04, trim));
+    p.push(limb((hand - d * 0.24).into(), guard.into(), 0.026, 0.026, LEATHER));
+    for side in [-1.0, 1.0] {
+        p.push(limb(guard.into(), (guard + e * side * 0.17 + d * 0.045).into(), 0.03, 0.018, trim));
+    }
+    for (f, side) in [(0.33, 1.0), (0.47, -1.0), (0.62, 1.0)] {
+        p.push(ball((guard + d * KNIGHT_BLADE * f + e * side * 0.068).into(), 0.028, AIR));
+    }
+    p.push(limb((guard + d * 0.08).into(), (guard + d * KNIGHT_BLADE * 0.8).into(), 0.03, 0.016, glow));
+    for (o, metal) in [(-0.06, STEEL), (-0.02, DARK_STEEL), (0.02, DARK_STEEL), (0.06, STEEL)] {
+        p.push(limb((guard + e * o).into(), tip.into(), 0.022, 0.006, metal));
+    }
+
+    // Bone spikes bursting up all round where its sword went in, the nearest first, the ground
+    // cracked open round the blade with void glowing up through it
+    let g = pose.spikes;
+    if g > 0.15 {
+        p.push(ellipsoid([tip.x, tip.y, 0.015], [0.24 * g, 0.24 * g, 0.015], glow));
+    }
+    let mut seed = 0x5b1e_u32;
+    for (ring, (r, count, high)) in [(0.5, 7, 0.5), (0.85, 11, 0.62), (1.2, 15, 0.52)].into_iter().enumerate() {
+        let grow = ((g - 0.15 * ring as f64) / 0.7).clamp(0.0, 1.0);
+        for k in 0..count {
+            let a = (k as f64 + 0.5 * ring as f64) / count as f64 * TAU + 0.3 * random(&mut seed);
+            let r = r + 0.08 * (random(&mut seed) - 0.5);
+            let high = high * (0.7 + 0.6 * random(&mut seed));
+            let out = 0.12 + 0.1 * random(&mut seed);
+            if grow > 0.05 {
+                let (c, sn) = (a.cos(), a.sin());
+                let foot = [r * c, r * sn, 0.0];
+                p.push(limb(foot, [(r + out * grow) * c, (r + out * grow) * sn, high * grow], 0.055, 0.006, bone));
+                p.push(ellipsoid(foot, [0.07, 0.07, 0.025], DIRT));
+            }
+        }
+    }
+    (hand, tip)
+}
+
+/// How far out a knight's bone spikes burst up, in meters of its build, see knight()
+const KNIGHT_SPIKES: f64 = 1.45;
+
+/// How far round a knight's greatsword reaches as it sweeps it round low, how far round its bone
+/// spikes burst up, in meters, and where on it, +x ahead, its blade is as it's swept out, for
+/// what flies off it
+pub fn knight_reach(look: Look) -> (f64, f64, [f64; 3]) {
+    static SWEPT: std::sync::OnceLock<(f64, [f64; 3])> = std::sync::OnceLock::new();
+    let (reach, blade) = *SWEPT.get_or_init(|| {
+        let (hand, tip) = knight(&mut Vec::new(), 0.0, 0.0, Pose::of(POSE_SWEEP), Look::GraveKnight.skin(), false);
+        (tip.xy().norm(), hand.lerp(&tip, 0.5).into())
+    });
+    let s = look.scale();
+    (reach * s, KNIGHT_SPIKES * s, blade.map(|v| v * s))
+}
+
 /// A dune burrower, about two meters from its pincers to the root of its tail: a low, broad crawler
 /// of sand-colored plates banded darker, a shovel-lipped shield over its head for digging, a row
 /// of spines down its back, two heavy pincers, six legs, and a jointed tail arched up over its
@@ -1646,6 +2088,9 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
+                Some(Build::Undead) if look.is_knight() => {
+                    knight(&mut p, angle, moving, pose, look.skin(), look == Look::CryptTitan);
+                }
                 Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living(), look.arms()),
                 Some(Build::Burrower) => burrower(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wraith) => wraith(&mut p, angle, moving, pose, look.skin()),
@@ -2084,20 +2529,40 @@ fn model_index(look: Look, frame: usize) -> u32 {
 /// How many models animal_models() makes. Other models come after them.
 pub const ANIMAL_MODELS: usize = Look::ALL.len() * FRAMES;
 
-/// Every frame of every animal, and of everything else drawn like one
-pub fn animal_models() -> Vec<Model> {
-    let mut models = Vec::new();
-    for look in Look::ALL {
-        models.push(rasterize(look, None, Pose::REST));
-        for frame in 0..WALK_FRAMES {
-            models.push(rasterize(look, Some(frame as f64 / WALK_FRAMES as f64), Pose::REST));
-        }
-        // Only bosses and monsters strike poses, so the rest leave them empty
-        for frame in POSE_WINDUP..FRAMES {
-            models.push(if look.build().is_some() { rasterize(look, None, Pose::of(frame)) } else { Model { size: [1, 1, 1], voxels: vec![AIR] } });
-        }
+/// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
+fn frame_model(look: Look, frame: usize) -> Model {
+    if !shown(look, frame) {
+        return Model { size: [1, 1, 1], voxels: vec![AIR] };
     }
-    models
+    let phase = (1..=WALK_FRAMES).contains(&frame).then(|| (frame - 1) as f64 / WALK_FRAMES as f64);
+    rasterize(look, phase, Pose::of(frame))
+}
+
+/// Every frame of every animal, and of everything else drawn like one: made on every core at once,
+/// a frame at a time, so the big ones don't hold up the rest
+pub fn animal_models() -> Vec<Model> {
+    let jobs = Look::ALL.len() * FRAMES;
+    let next = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    let mut made: Vec<(usize, Model)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let job = next.fetch_add(1, Ordering::Relaxed);
+                        if job >= jobs {
+                            break out;
+                        }
+                        out.push((job, frame_model(Look::ALL[job / FRAMES], job % FRAMES)));
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().expect("making a model failed")).collect()
+    });
+    made.sort_unstable_by_key(|&(job, _)| job);
+    made.into_iter().map(|(_, model)| model).collect()
 }
 
 /// Models packed for shaders\traverse.comp: two header words per model (where its voxels start, and
@@ -2180,6 +2645,8 @@ pub struct Animal {
     pub position: Vector3<f64>,
     pub(crate) heading: f64,
     pub(crate) target_heading: f64,
+    /// Which way it's drawn facing: easing after `heading`, so it doesn't jerk round
+    drawn_heading: f64,
     pub(crate) speed: f64,
     pub(crate) mood: Mood,
     timer: f64,
@@ -2200,6 +2667,13 @@ pub struct Animal {
 
 /// How hard a bare-handed hit is
 pub const PUNCH: f64 = 35.0;
+
+/// Meters a second it has to be going to be drawn walking, and how fast, as much as it walks, it
+/// finishes its step once it's slowed below that
+const STEPPING: f64 = 0.15;
+const SETTLING: f64 = 0.6;
+/// How quickly what's drawn turns after where it faces: about the time it takes, inverted
+const TURN_EASE: f64 = 12.0;
 
 /// How much of a blow a shieldbearer's shield lets through, and how far round its front it
 /// catches them, as the cosine of the angle off straight ahead: about 65 degrees either side
@@ -2318,6 +2792,7 @@ impl Animal {
             position,
             heading,
             target_heading: heading,
+            drawn_heading: heading,
             speed: 0.0,
             mood: Mood::Idle,
             timer: random(&mut rng) * 3.0,
@@ -2351,7 +2826,7 @@ impl Animal {
 
     /// Turned to face `heading`, radians round from +x
     pub fn face(&mut self, heading: f64) {
-        (self.heading, self.target_heading) = (heading, heading);
+        (self.heading, self.target_heading, self.drawn_heading) = (heading, heading, heading);
     }
 
     /// A number picked at random, 0-1, for what it does
@@ -2421,6 +2896,37 @@ impl Animal {
 
     /// `player` is where the player is, in voxels, so some animals can come over or run off
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
+        self.act(world, water, player, dt);
+        self.step(dt);
+        // What's drawn turns after where it faces, easing into and out of each turn, so snapping
+        // round to face something doesn't jerk it about; quicker the further behind it is, so it
+        // keeps up with a boss spinning round
+        let off = (self.heading - self.drawn_heading + PI).rem_euclid(TAU) - PI;
+        let rate = TURN_EASE * (1.0 + 2.0 * off.abs());
+        self.drawn_heading = (self.drawn_heading + off * (1.0 - (-rate * dt).exp())).rem_euclid(TAU);
+    }
+
+    /// On through its walk cycle as it goes. Slowing to a stop, it finishes the step it's taking,
+    /// so it comes to stand with its feet together, halfway through the cycle or at its end,
+    /// rather than snapping to it; and starting off again, it starts from there.
+    fn step(&mut self, dt: f64) {
+        // Frozen solid or knocked down, it stays as it is
+        if self.status.pace() <= 0.0 {
+            return;
+        }
+        let walking = self.speed > STEPPING;
+        let pace = if walking {
+            self.speed
+        } else if (self.phase * 2.0).fract() != 0.0 {
+            self.speed.max(SETTLING * self.look.walk_speed())
+        } else {
+            return;
+        };
+        let next = self.phase + pace * dt / self.look.stride();
+        self.phase = if !walking && (next * 2.0).floor() > (self.phase * 2.0).floor() { ((next * 2.0).floor() * 0.5).fract() } else { next.fract() };
+    }
+
+    fn act(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
         let look = self.look;
         self.age += dt;
@@ -2578,7 +3084,6 @@ impl Animal {
                     self.speed = 0.0;
                 }
             }
-            self.phase = (self.phase + self.speed * dt / look.stride()).fract();
         }
     }
 
@@ -2618,28 +3123,31 @@ impl Animal {
             Some(Build::Wraith) if self.speed <= 0.15 => Some((self.age * 0.45 + self.id as f64 * 0.37).fract()),
             _ => None,
         };
+        // The frame of its walk nearest where it is in it, and on through it till it's finished
+        // the step it was taking
+        let walk = |phase: f64| 1 + (phase * WALK_FRAMES as f64).round() as usize % WALK_FRAMES;
+        let stepping = self.speed > STEPPING || (self.phase * 2.0).fract() != 0.0;
         let walking = match beating {
-            Some(phase) => 1 + (phase * WALK_FRAMES as f64) as usize % WALK_FRAMES,
-            None if self.speed > 0.15 => 1 + (self.phase * WALK_FRAMES as f64) as usize % WALK_FRAMES,
+            Some(phase) => walk(phase),
+            None if stepping && self.look.walks() => walk(self.phase),
             None => 0,
         };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
         let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
-        let mut heading = self.heading;
+        let mut heading = self.drawn_heading;
         // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
-        // so they're never still as statues between frames
+        // less the faster they go, so they're never still as statues between frames
         if self.look.build().is_some() {
             let offset = self.id as f64 * 0.7;
             scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
-            if self.speed < 0.15 {
-                heading += 0.035 * (self.age * 1.3 + offset).sin();
-            }
+            let still = (1.0 - self.speed / 0.4).clamp(0.0, 1.0);
+            heading += 0.035 * still * (self.age * 1.3 + offset).sin();
         }
         // Its whole body leaning into a blow and settling after, tipped about its feet, see
         // Boss::sway()
         let vpm = world_voxels_per_meter as f64;
         let [pitch, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
-        let ahead = Vector3::new(self.heading.cos(), self.heading.sin(), 0.0);
+        let ahead = Vector3::new(self.drawn_heading.cos(), self.drawn_heading.sin(), 0.0);
         let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up)) * vpm;
         let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch);
         let radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
@@ -2927,12 +3435,11 @@ mod tests {
     /// see, small enough for the shader, and inside the reach it's culled by
     #[test]
     fn new_monsters_have_whole_models_in_every_frame() {
-        let looks = [Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker];
+        let looks = [Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::GraveKnight, Look::CryptTitan];
         for look in looks {
-            assert!(look.is_monster() && look.build().is_some(), "{look:?} isn't a monster");
-            for frame in 0..FRAMES {
-                let phase = (1..=WALK_FRAMES).contains(&frame).then(|| (frame - 1) as f64 / WALK_FRAMES as f64);
-                let model = rasterize(look, phase, Pose::of(frame));
+            assert!(look.build().is_some(), "{look:?} isn't a boss or a monster");
+            for frame in (0..FRAMES).filter(|&f| shown(look, f)) {
+                let model = frame_model(look, frame);
                 assert!(model.size.iter().all(|&s| s < 255), "{look:?} frame {frame} is {:?} voxels", model.size);
                 let mut solid = 0;
                 let mut furthest = 0.0f64;
@@ -2952,6 +3459,48 @@ mod tests {
                 assert!(furthest <= look.reach(), "{look:?} frame {frame} reaches {furthest:.2} m, past its {:.2} m", look.reach());
             }
         }
+    }
+
+    /// Every frame between poses, and every pose a boss can be eased into, has a model for every
+    /// look that can be drawn in it, so a boss is never drawn with nothing
+    #[test]
+    fn tweens_only_go_through_frames_with_models() {
+        let poses = [0, POSE_WINDUP, POSE_STRIKE, POSE_SPECIAL, POSE_COIL, POSE_SWEEP, POSE_RAISE, POSE_SPIKES];
+        for look in Look::ALL.into_iter().filter(|l| l.build().is_some()) {
+            for a in poses.into_iter().filter(|&f| shown(look, f)) {
+                for b in poses.into_iter().filter(|&f| shown(look, f)) {
+                    for k in 0..40 {
+                        if let Some(frame) = tween(look, a, b, k as f64 * 0.012) {
+                            assert!(shown(look, frame), "{look:?} going from {a} to {b} is drawn in frame {frame}, which it has no model for");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// All the models together, which are sent to the graphics card at the start: how big they
+    /// are and how long they take to make. `cargo test --release animal_models -- --nocapture`
+    #[test]
+    fn animal_models_fit_in_memory() {
+        let start = std::time::Instant::now();
+        let models = animal_models();
+        let took = start.elapsed();
+        assert_eq!(models.len(), ANIMAL_MODELS);
+        let bytes = pack_models(&models.iter().collect::<Vec<_>>()).len() * 4;
+        let of = |look: Look| {
+            let k = Look::ALL.iter().position(|&l| l == look).unwrap();
+            models[k * FRAMES..(k + 1) * FRAMES].iter().map(|m| m.voxels.len()).sum::<usize>()
+        };
+        println!(
+            "{} models in {FRAMES} frames each, {:.1} MB packed, made in {:.0} ms; the Grave Knight's {:.1} MB, the Crypt Titan's {:.1} MB",
+            models.len(),
+            bytes as f64 / 1e6,
+            took.as_secs_f64() * 1000.0,
+            of(Look::GraveKnight) as f64 / 1e6,
+            of(Look::CryptTitan) as f64 / 1e6
+        );
+        assert!(bytes < 150_000_000, "the models take {bytes} bytes");
     }
 
     /// The new monsters each have their own name, so they can be told apart in what's said
