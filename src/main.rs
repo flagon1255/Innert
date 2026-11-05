@@ -2997,14 +2997,16 @@ impl App {
             }
             // Unleashes the special attack of what's in hand, facing the nearest boss if there is one
             ("special", f) => {
-                if f == 1 {
-                    match self.game.nearest_boss(eye) {
-                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
-                        None => self.camera.rotation.x = -0.35,
-                    }
-                }
                 // `--set special_frame=150` lets it go later, as when a boss is about to strike
                 let when = settings_from_args().into_iter().find(|(k, _)| k == "special_frame").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(30);
+                // Kept facing the boss as it comes on, till it's let go
+                if f == 1 || f <= when {
+                    match self.game.nearest_boss(eye) {
+                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                        None if f == 1 => self.camera.rotation.x = -0.35,
+                        None => {}
+                    }
+                }
                 self.script_controls = combat::Controls { special: f == when, ..Default::default() };
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));

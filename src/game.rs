@@ -1618,6 +1618,8 @@ impl Game {
     /// How fast the player can move next to usual, slowed while chilled or stuck in web
     pub fn pace(&self) -> f64 {
         let chilled = if self.chilled > 0.0 { CHILLED_PACE } else { 1.0 };
+        // Braced on a siege crossbow's leg, all but still
+        let chilled = chilled * self.combat.pace();
         if self.snared > 0.0 { chilled.min(SNARED_PACE) } else { chilled }
     }
 
@@ -3735,6 +3737,11 @@ impl Game {
             let how = match profile.build {
                 WeaponBuild::None => "Hold right click to draw, click to shoot.",
                 WeaponBuild::Repeater => "Click or hold to shoot, its lever working between shots. Empty, it's reloaded by itself; right click reloads early.",
+                WeaponBuild::Hand => "Held in the off hand. Click to shoot; its lever spans it again quickly.",
+                WeaponBuild::Twin => "Click to loose both prods at once, two bolts meeting at the crosshair.",
+                WeaponBuild::Siege => "Click or hold right click to brace it on its leg first, which all but stops you; braced, it looses a great bolt that pins.",
+                WeaponBuild::Harpoon => "Click to loose a harpoon on a line: it reels in what it catches, or hauls you to what's too big, or to where it bites. Right click lets go of the line.",
+                WeaponBuild::Fan => "Click to loose five bolts at once in a fan, wider the more its spread.",
                 _ => "Click to shoot. Empty, it's reloaded by itself, which takes a while; right click reloads early.",
             };
             ui.label(RichText::new(format!("{how} Plain {} never run out; T loads special ones you carry.", shot.plural())).weak().small());
@@ -3992,8 +3999,35 @@ impl Game {
                         painter.line_segment([hilt, guard], Stroke::new(r * 0.16, Color32::from_rgb(110, 70, 45)));
                     }
                     // A crossbow seen from above, its prod across the front, a bolt in its groove
-                    Kind::Ranged if matches!(weapon.profile.build, WeaponBuild::Lever | WeaponBuild::Crank | WeaponBuild::Repeater) => {
-                        let (butt, front) = (center + vec2(-r * 0.75, r * 0.75), center + vec2(r * 0.45, -r * 0.45));
+                    Kind::Ranged if weapon.profile.build.crossbow() => {
+                        let build = weapon.profile.build;
+                        // A hand crossbow shorter, on a grip; a twin-prod's second prod over the
+                        // first; a bolt-thrower's fan of bolts; a harpoon's coil of line
+                        let short = if build == WeaponBuild::Hand { 0.45 } else { 0.75 };
+                        let (butt, front) = (center + vec2(-r * short, r * short), center + vec2(r * 0.45, -r * 0.45));
+                        match build {
+                            WeaponBuild::Hand => {
+                                painter.line_segment([center + vec2(-r * 0.25, r * 0.25), center + vec2(-r * 0.55, r * 0.05)], Stroke::new(r * 0.16, wood));
+                            }
+                            WeaponBuild::Twin => {
+                                let lift = vec2(-r * 0.12, -r * 0.12);
+                                let prod: Vec<Pos2> = (0..=12).map(|k| front + lift + vec2(r * 0.62 * (k as f32 / 6.0 - 1.0), -r * 0.62 * (k as f32 / 6.0 - 1.0)) + vec2(-r * 0.22, r * 0.22) * (k as f32 / 6.0 - 1.0).powi(2)).collect();
+                                painter.add(egui::Shape::line(prod, Stroke::new(r * 0.1, haft)));
+                            }
+                            WeaponBuild::Fan => {
+                                for k in -2..=2 {
+                                    let a = k as f32 * 0.2;
+                                    painter.line_segment([center, center + vec2((0.7 + a).cos(), -(0.7 + a).sin()) * r * 0.85], Stroke::new(r * 0.05, glow));
+                                }
+                            }
+                            WeaponBuild::Harpoon => {
+                                painter.circle_stroke(center + vec2(r * 0.05, r * 0.25), r * 0.17, Stroke::new(r * 0.07, Color32::from_rgb(215, 200, 160)));
+                            }
+                            WeaponBuild::Siege => {
+                                painter.line_segment([front + vec2(-r * 0.1, r * 0.1), front + vec2(-r * 0.25, r * 0.6)], Stroke::new(r * 0.08, metal));
+                            }
+                            _ => {}
+                        }
                         let across = vec2(r * 0.62, r * 0.62);
                         let bend = vec2(-r * 0.22, r * 0.22);
                         let prod: Vec<Pos2> = (0..=12).map(|k| {
@@ -4004,7 +4038,7 @@ impl Game {
                         painter.line_segment([a, front + bend * 0.15 - vec2(r * 0.25, -r * 0.25)], Stroke::new(r * 0.04, Color32::from_rgb(235, 230, 210)));
                         painter.line_segment([b, front + bend * 0.15 - vec2(r * 0.25, -r * 0.25)], Stroke::new(r * 0.04, Color32::from_rgb(235, 230, 210)));
                         painter.line_segment([butt, front + vec2(r * 0.1, -r * 0.1)], Stroke::new(r * 0.2, wood));
-                        painter.add(egui::Shape::line(prod, Stroke::new(r * 0.13, if weapon.profile.build == WeaponBuild::Crank { metal } else { haft })));
+                        painter.add(egui::Shape::line(prod, Stroke::new(r * if build == WeaponBuild::Siege { 0.2 } else { 0.13 }, if matches!(build, WeaponBuild::Crank | WeaponBuild::Siege) { metal } else { haft })));
                         painter.line_segment([center + vec2(-r * 0.1, r * 0.1), front + vec2(r * 0.2, -r * 0.2)], Stroke::new(r * 0.06, glow));
                         if weapon.profile.build == WeaponBuild::Repeater {
                             painter.rect_filled(Rect::from_center_size(center + vec2(-r * 0.05, r * 0.05), vec2(r * 0.4, r * 0.4)), r * 0.05, haft);
