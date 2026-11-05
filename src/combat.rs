@@ -1155,7 +1155,9 @@ fn smooth(t: f64) -> f64 {
 /// of bone, stone, ice, embers or wood off the dead, golems and the treant
 fn ichor(look: Look) -> (usize, Option<u8>) {
     match look {
-        Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight => (DROP_WATER, None),
+        Look::Skeleton | Look::ArmoredSkeleton | Look::GraveKnight | Look::BoneArcher | Look::Necromancer => (DROP_WATER, None),
+        // A bloater spills venom wherever it's cut
+        Look::Bloater => (DROP_VENOM, Some(MOSS)),
         Look::Golem => (DROP_MUD, None),
         Look::FrostGolem => (DROP_ICE, None),
         Look::MagmaGolem => (DROP_EMBER, None),
@@ -7829,6 +7831,47 @@ impl Combat {
                 self.cues.push(Cue::at(Sound::Rattle, at, 0.9).pitched(1.2));
                 self.cues.push(Cue::at(Sound::Crack, at, 0.6).pitched(1.5));
             }
+            // A skeleton archer's bow clattering down with its bones
+            Look::BoneArcher => {
+                spray(self, 14, DROP_WATER, 3.6, 1.5);
+                self.cues.push(Cue::at(Sound::Rattle, at, 0.9).pitched(1.3));
+                self.cues.push(Cue::at(Sound::Creak, at, 0.5).pitched(1.6));
+            }
+            // The void going out of a necromancer's eyes and its orb in a burst, its bones and robe
+            // crumpling with a last wail
+            Look::Necromancer => {
+                spray(self, 12, DROP_WATER, 3.2, 1.4);
+                spray(self, 8, DROP_ASH, 2.4, 1.2);
+                let void = Element::look(Some(Element::Void));
+                self.sparks(at + Vector3::new(0.0, 0.0, 0.6 * vpm), 28, 3.0, void, 0.4, 0.7);
+                self.element_hit(at, Some(Element::Void), 1.6);
+                self.cues.push(Cue::at(Sound::Wail, at, 0.8).pitched(0.6));
+                self.cues.push(Cue::at(Sound::Rattle, at, 0.7).pitched(0.9));
+            }
+            // A bloater bursting: venom everywhere, see Game::reap() for the cloud it leaves
+            Look::Bloater => {
+                spray(self, 30, DROP_VENOM, 4.2, 1.4);
+                spray(self, 10, DROP_BLOOD, 3.0, 1.1);
+                self.element_hit(at, Some(Element::Poison), 2.2);
+                self.cues.push(Cue::at(Sound::Burst, at, 0.9).pitched(0.8));
+                self.cues.push(Cue::at(Sound::Squelch, at, 1.0).pitched(0.55));
+                self.shake = self.shake.max(0.35);
+            }
+            // A ghoul going down with a shriek
+            Look::Ghoul => {
+                spray(self, 12, DROP_BLOOD, 3.0, 1.1);
+                spray(self, 6, DROP_ASH, 2.4, 1.0);
+                self.cues.push(Cue::at(Sound::Screech, at, 0.8).pitched(0.7));
+            }
+            // A brute toppling like a felled tree, its gravestone thudding down
+            Look::GraveBrute => {
+                spray(self, 16, DROP_VENOM, 3.0, 1.3);
+                spray(self, 10, DROP_BLOOD, 2.6, 1.2);
+                spray(self, 8, DROP_MUD, 2.0, 0.9);
+                self.cues.push(Cue::at(Sound::Squelch, at, 0.9).pitched(0.6));
+                self.cues.push(Cue::at(Sound::Quake, at, 0.5).pitched(1.4));
+                self.shake = self.shake.max(0.35);
+            }
             Look::Zombie | Look::ArmoredZombie => {
                 spray(self, 12, DROP_VENOM, 3.0, 1.2);
                 spray(self, 8, DROP_BLOOD, 2.5, 1.2);
@@ -7897,6 +7940,28 @@ impl Combat {
         self.flashes.push(Flash { position: at, color: [1.0, 1.0, 1.0], reach: 4.0, life: 0.12, lifetime: 0.12 });
         self.cues.push(Cue::at(Sound::Hit, at, 0.8).pitched(0.6));
         self.shake = self.shake.max(0.2);
+        self.cap_sparks();
+    }
+
+    /// For this frame, a cloud of venom hanging over the ground at `at`, `radius` meters round:
+    /// puffs of it billowing up and drifting, as a censer's or a miasma's do, without hurting what's
+    /// in it, see Game::reek() for what it does to the player
+    pub fn reek(&mut self, at: Vector3<f64>, radius: f64, dt: f64) {
+        let vpm = self.vpm;
+        let mut owed = dt * (3.0 + radius);
+        while owed > 0.0 {
+            if random(&mut self.rng) < owed {
+                let a = random(&mut self.rng) * TAU;
+                let r = random(&mut self.rng).sqrt() * radius * vpm;
+                let p = at + Vector3::new(a.cos() * r * 0.7, a.sin() * r * 0.7, (0.3 + 0.9 * random(&mut self.rng)) * vpm);
+                let drift = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.4) * 0.6 * vpm;
+                let life = 1.7 + 0.5 * random(&mut self.rng);
+                let look = Element::look(Some(Element::Poison));
+                self.sparks.push(Spark { position: p, velocity: drift, look, life, lifetime: life, gravity: -0.01, slot: SLOT_CLOUD });
+                self.mote(p, Some(Element::Poison), 1.5);
+            }
+            owed -= 1.0;
+        }
         self.cap_sparks();
     }
 

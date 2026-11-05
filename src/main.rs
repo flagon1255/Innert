@@ -1361,6 +1361,17 @@ impl App {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_castle(near, setting("castle")))
         });
+        // `--set undercity=1` starts at the top of the stair down into the nearest fallen city,
+        // looking down the shaft, `undercity=entrance` out on the land looking at the way down,
+        // `undercity=air` high over it, and `foot`, `gate`, `street`, `plaza`, `canal`, `hall` or
+        // `heart` down in the city: at the foot of the shaft, inside its gate, on its main street,
+        // in its square, down in its canal, in front of its temple or in the temple's hall
+        let sunken_view = setting("undercity").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none() && royal.is_none());
+        let in_city = matches!(sunken_view, Some("foot" | "gate" | "street" | "plaza" | "canal" | "hall" | "heart"));
+        let sunken = sunken_view.and_then(|_| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            landscape.and_then(|l| l.nearest_undercity([112.0, 112.0]))
+        });
         // `--set river=1` starts over the widest river within half a kilometer
         let river_at = setting("river").filter(|_| dungeon.is_none() && cavern.is_none() && town.is_none()).and_then(|_| {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
@@ -1391,6 +1402,8 @@ impl App {
                 let out = if inside_castle { 0.0 } else { 25.0 };
                 [r.middle[0] + r.out[0] * out, r.middle[1] + r.out[1] * out]
             }))
+            // Halfway from the foot of the shaft to the temple, so all of it's in the world
+            .or(sunken.as_ref().map(|s| [(s.foot[0] + s.heart[0]) * 0.5, (s.foot[1] + s.heart[1]) * 0.5]))
             .or(river_at)
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         let origin = start_in.map_or([0, 0], |spot| {
@@ -1555,6 +1568,38 @@ impl App {
             };
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(target, world.size));
+        } else if let Some(s) = &sunken {
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let ahead = Vector3::new(s.forward[0] as f64, s.forward[1] as f64, 0.0);
+            let out = Vector3::new(s.out[0] as f64, s.out[1] as f64, 0.0);
+            let ground = |p: Vector3<f64>| (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(p.x as i64, p.y as i64, z))).unwrap_or(0) as f64 + 1.0;
+            let (eye, target) = match sunken_view {
+                Some("entrance") => {
+                    // Out on the land, a little way off, looking back at the way down
+                    let eye = at(s.entrance) + out * 16.0 * vpm;
+                    (Vector3::new(eye.x, eye.y, ground(eye) + 3.5 * vpm), at(s.entrance) + up(0.5))
+                }
+                Some("air") => {
+                    let eye = at(s.entrance) + out * 24.0 * vpm;
+                    (Vector3::new(eye.x, eye.y, ground(eye) + 26.0 * vpm), at(s.foot) + up(6.0))
+                }
+                Some("foot") => (at(s.foot) + up(1.7) - ahead * 2.5 * vpm, at(s.gate) + up(1.4)),
+                Some("gate") => (at(s.gate) + up(1.8), at(s.plaza) + up(2.0)),
+                Some("street") => (at(s.street) + up(1.8) - ahead * 1.5 * vpm, at(s.plaza) + up(2.2)),
+                Some("plaza") => (at(s.plaza) + up(2.2) - ahead * 3.0 * vpm, at(s.plaza) + ahead * 14.0 * vpm + up(2.2)),
+                Some("canal") => (at(s.canal) + up(1.7), at(s.street) + up(1.0)),
+                Some("hall") => (at(s.hall) + up(1.8) - ahead * 4.0 * vpm, at(s.heart) + up(2.0)),
+                Some("heart") => (at(s.heart) + up(2.2) - ahead * 4.5 * vpm, at(s.heart) + ahead * 6.0 * vpm + up(2.2)),
+                // Over the shaft by the top of the stair, looking down it at its far side
+                _ => {
+                    let eye = at(s.foot) + out * 3.0 * vpm;
+                    (Vector3::new(eye.x, eye.y, at(s.head).z + 2.5 * vpm), at(s.foot) - out * 3.0 * vpm + up(1.0))
+                }
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
         } else if let Some((square, way_in)) = town {
             // In the square looking across it, or out by the way in looking towards it
             let vpm = world.voxels_per_meter as f64;
@@ -1627,7 +1672,7 @@ impl App {
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
-        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
+        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -2018,13 +2063,17 @@ impl App {
                 // Every dungeon's deepest hall has its Grave Knight, and every great cavern of a
                 // cave its boss; only some ruins have one, and some bandits' camps a warlord, more
                 // of the forts than the others, see worldgen\camps.rs
-                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne") {
+                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart") {
                     return None;
                 }
                 let look = match site.kind {
                     // Raid bosses: in a third of the dungeons' deepest halls, and the odd castle and
                     // pyramid
                     "dungeon" if pick % 3 == 0 => animals::Look::CryptTitan,
+                    // The dead lord of a fallen city in its temple: a titan in some, a knight in the
+                    // rest, see worldgen\undercity.rs
+                    "undercity heart" if pick % 4 == 0 => animals::Look::CryptTitan,
+                    "undercity heart" => animals::Look::GraveKnight,
                     "castle" if pick % 5 == 0 => animals::Look::Colossus,
                     "pyramid" if pick % 5 == 0 => animals::Look::ElderWyrm,
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
@@ -2049,7 +2098,7 @@ impl App {
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
@@ -2078,6 +2127,9 @@ impl App {
                     "ravine" => (game::DenKind::Roost, 0.0, None),
                     "desert ruins" | "pyramid" => (game::DenKind::Burrows, 12.0, None),
                     "fallen castle" | "fallen court" | "fallen hall" | "fallen throne" => (game::DenKind::Fallen, 0.0, None),
+                    // The dead walking the streets, the square, the canal and the temple of a city
+                    // fallen under the land
+                    "undercity gate" | "undercity street" | "undercity canal" | "undercity plaza" | "undercity hall" => (game::DenKind::Sunken, 0.0, None),
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
@@ -2101,7 +2153,7 @@ impl App {
                     return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
                     return None;
                 }
                 let [fx, fy] = site.facing;

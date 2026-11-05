@@ -288,6 +288,17 @@ fn windup(look: Look, m: Move) -> f64 {
             (Look::Gloomwing, _) => 0.35,
             (Look::Tusker, Move::Charge) => 0.9,
             (Look::Tusker, _) => 0.65,
+            // Swelling up fit to burst, long enough to get away from
+            (Look::Bloater, _) => 1.1,
+            (Look::Ghoul, Move::Leap) => 0.5,
+            (Look::Ghoul, _) => 0.45,
+            // The gravestone hauled up high, slowly: the moment to get out from under it
+            (Look::GraveBrute, _) => 1.25,
+            (Look::BoneArcher, Move::Shoot) => 1.0,
+            (Look::BoneArcher, _) => 0.6,
+            (Look::Necromancer, Move::Summon) => 1.3,
+            (Look::Necromancer, Move::Spit) => 0.85,
+            (Look::Necromancer, _) => 0.7,
             _ => 0.85,
         };
     }
@@ -375,6 +386,7 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Slam if look == Look::Gloomwing => 0.45,
         Move::Slam if matches!(look, Look::Skeleton | Look::ArmoredSkeleton) => 1.0,
         Move::Slam if matches!(look, Look::Zombie | Look::ArmoredZombie) => 0.9,
+        Move::Slam if look == Look::GraveBrute => 1.4,
         Move::Slam if look == Look::Bandit => 0.75,
         Move::Slam if look == Look::BanditBrute => 1.1,
         Move::Slam | Move::Leap if look.is_monster() => 0.5,
@@ -410,7 +422,10 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Blink => 4.5,
         Move::Lash => 6.0,
         Move::Charge if look == Look::Tusker => 6.5,
-        Move::Slam if matches!(look, Look::Wolf | Look::MireLurker) => 1.6,
+        Move::Slam if matches!(look, Look::Wolf | Look::MireLurker | Look::Ghoul) => 1.6,
+        Move::Slam if look == Look::GraveBrute => 3.0,
+        Move::Leap if look == Look::Ghoul => 4.5,
+        Move::Summon if look == Look::Necromancer => 15.0,
         Move::Slam if matches!(look, Look::Spiderling | Look::Gloomwing) => 1.4,
         Move::Slam if look.is_monster() => 2.4,
         Move::Leap if look == Look::Wolf => 6.0,
@@ -443,6 +458,8 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
         Look::Wolf => (0.6, 1.4, 1.8, 12.0),
         Look::Spiderling => (0.5, 1.0, 1.2, 8.0),
         Look::Bandit => (0.55, 1.1, 1.4, 14.0),
+        // A ghoul pouncing, claws first
+        Look::Ghoul => (0.55, 1.3, 1.4, 13.0),
         // A gloomwing swooping down
         Look::Gloomwing => (0.45, 0.5, 1.1, 7.0),
         Look::Direwolf | Look::WinterAlpha => (0.7, 3.0, 3.0, 24.0),
@@ -459,6 +476,9 @@ fn closeness(look: Look) -> (f64, f64) {
         Look::Wolf => (1.3, 0.8),
         Look::Skeleton | Look::ArmoredSkeleton | Look::Bandit | Look::BanditBrute | Look::Shieldbearer | Look::Crossbowman => (1.6, 0.5),
         Look::Zombie | Look::ArmoredZombie => (1.4, 0.5),
+        Look::Bloater | Look::Ghoul => (1.2, 0.6),
+        Look::GraveBrute => (1.9, 0.6),
+        Look::BoneArcher | Look::Necromancer => (1.6, 0.5),
         Look::Spiderling => (0.9, 0.5),
         Look::DuneBurrower => (1.3, 0.5),
         Look::RimeWraith => (1.6, 0.5),
@@ -491,6 +511,13 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::MireLurker => (1.3, 1.6, 15.0, 0.0),
         Look::Gloomwing => (0.5, 1.0, 5.0, 0.0),
         Look::Tusker => (1.6, 1.8, 22.0, 0.0),
+        // A bloater bursting where it stands, a ghoul's claws, a brute's gravestone, an archer's
+        // bow swung like a club and a necromancer's staff
+        Look::Bloater => (0.0, 2.4, 14.0, 0.0),
+        Look::Ghoul => (1.1, 1.4, 10.0, 0.0),
+        Look::GraveBrute => (1.9, 2.1, 25.0, 0.0),
+        Look::BoneArcher => (1.1, 1.2, 8.0, 0.0),
+        Look::Necromancer => (1.2, 1.3, 9.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
         Look::Warlord => (2.2, 2.9, 30.0, 0.5),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
@@ -844,6 +871,14 @@ impl Boss {
             _ if self.look == Look::MireLurker => &[(Move::Slam, 0.0, 2.3), (Move::Lash, 3.0, 9.0)],
             _ if self.look == Look::Gloomwing => &[(Move::Slam, 0.0, 1.4), (Move::Leap, 3.0, 7.5)],
             _ if self.look == Look::Tusker => &[(Move::Slam, 0.0, 2.5), (Move::Charge, 5.0, 18.0)],
+            // A bloater bursts once it's close; a ghoul claws, or leaps on the player from a few
+            // steps off; a brute brings its gravestone down; an archer shoots from well back;
+            // a necromancer raises the dead and hurls the void from behind them
+            _ if self.look == Look::Bloater => &[(Move::Slam, 0.0, 1.9)],
+            _ if self.look == Look::Ghoul => &[(Move::Slam, 0.0, 1.8), (Move::Leap, 3.5, 10.0)],
+            _ if self.look == Look::GraveBrute => &[(Move::Slam, 0.0, 2.9)],
+            _ if self.look == Look::BoneArcher => &[(Move::Slam, 0.0, 1.6), (Move::Shoot, 3.0, 30.0)],
+            _ if self.look == Look::Necromancer => &[(Move::Slam, 0.0, 1.7), (Move::Summon, 0.0, 22.0), (Move::Spit, 3.5, 22.0)],
             Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
             // Ranges meeting, so there's nowhere to stand it won't do something
             Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
@@ -874,6 +909,9 @@ fn mouth(a: &Animal, vpm: f64) -> Vector3<f64> {
         Some(Build::Wolf) => [0.95, 0.0, 0.8],
         // The end of a crossbow raised to the shoulder
         _ if a.look == Look::Crossbowman => [0.82, -0.04, 1.44],
+        // An arrow on a drawn bow, and a necromancer's orb thrust out on its staff
+        _ if a.look == Look::BoneArcher => [0.8, 0.1, 1.44],
+        _ if a.look == Look::Necromancer => [0.75, -0.2, 1.85],
         Some(Build::Undead) => [0.42, 0.26, 1.35],
         Some(Build::Burrower) => [0.95, 0.0, 0.32],
         // Between its claws thrust out together
@@ -904,6 +942,8 @@ fn ground_under(world: &World, at: Vector3<f64>) -> Option<Vector3<f64>> {
 fn keep_off(look: Look) -> Option<(f64, f64)> {
     match look {
         Look::Crossbowman => Some((7.0, 18.0)),
+        Look::BoneArcher => Some((8.0, 20.0)),
+        Look::Necromancer => Some((7.0, 18.0)),
         Look::RimeWraith => Some((5.5, 16.0)),
         _ => None,
     }
@@ -945,7 +985,7 @@ fn steer(a: &mut Animal, boss: &mut Boss, p: Vector3<f64>, distance: f64, close:
             a.mood = Mood::Run;
             return;
         }
-        let ranged = if look == Look::Crossbowman { Move::Shoot } else { Move::Spit };
+        let ranged = if matches!(look, Look::Crossbowman | Look::BoneArcher) { Move::Shoot } else { Move::Spit };
         if boss.cooldowns[ranged as usize] > 0.5 {
             let side = if ((boss.clock / 2.2) as i64 + a.id as i64) % 2 == 0 { 1.0 } else { -1.0 };
             a.target_heading = straight + side * FRAC_PI_2;
@@ -1014,7 +1054,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         Look::Wolf => (22.0, 34.0, 50.0),
         Look::Spiderling => (14.0, 24.0, 32.0),
         // Keeping watch with a crossbow, they see further
-        Look::Crossbowman => (22.0, 32.0, 40.0),
+        Look::Crossbowman | Look::BoneArcher => (22.0, 32.0, 40.0),
+        Look::Ghoul | Look::Necromancer => (18.0, 30.0, 38.0),
         Look::Tusker | Look::RimeWraith => (20.0, 32.0, 45.0),
         Look::DuneBurrower => (18.0, 30.0, 40.0),
         // Lying in wait, it doesn't stir till they're almost on top of it
@@ -1235,6 +1276,11 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     Move::Slam => {
                         let (reach, radius, damage, crater) = slam(look);
                         boss.deeds.push(Deed::Slam { at: a.position + forward * reach * vpm, radius, damage, crater });
+                        // A bloater's burst is the end of it, see Game::reap() for the cloud it
+                        // leaves
+                        if look == Look::Bloater {
+                            a.health = animals::BURST;
+                        }
                     }
                     // The dead rising, a pack answering a howl, spiderlings swarming out, to fight
                     // round it
