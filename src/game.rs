@@ -219,6 +219,9 @@ pub struct Chest {
     /// stays open, and what's in it is the same every time
     pub key: [i64; 3],
     pub luck: f64,
+    /// A bandits' camp's hoard, which turns up once they're all dead: a beam of light shows where
+    /// it is until it's opened, and there's more gold in it
+    pub hoard: bool,
 }
 
 /// A splash of the player's own blood over the view: where, in fractions of the screen across and
@@ -244,6 +247,17 @@ pub struct Den {
     /// Where in the whole landscape, to remember it's been cleared
     pub key: [i64; 3],
     pub kind: DenKind,
+    /// For a bandits' camp, who keeps it and what they leave
+    pub band: Option<Band>,
+}
+
+/// Who keeps a bandits' camp, and how far round its fire in meters, and the chest of their hoard
+/// that turns up there once they're all dead, with where that is, put for the player
+pub struct Band {
+    pub keepers: Vec<Look>,
+    pub within: f64,
+    pub hoard: Chest,
+    pub hint: &'static str,
 }
 
 /// What a den is, which decides what haunts it
@@ -436,6 +450,12 @@ pub struct Game {
     cleared: HashSet<[i64; 3]>,
     /// Chests beaten bosses left, kept as the world moves on
     boss_chests: Vec<Chest>,
+    /// The hoards of the bandits' camps in this piece of the world, by their dens, and where each
+    /// is put for the player. Each turns up once its camp's cleared, and stays.
+    hoards: HashMap<[i64; 3], (Chest, &'static str)>,
+    /// Where the hoards turned up and not yet opened are, that the camera can see, for their beams
+    /// of light to show
+    beams: Vec<Vector3<f64>>,
     /// Cubic meters of water in the bucket
     bucket: f64,
     /// Gold carried, to spend at merchants
@@ -582,6 +602,8 @@ impl Game {
             dens: Vec::new(),
             cleared: HashSet::new(),
             boss_chests: Vec::new(),
+            hoards: HashMap::new(),
+            beams: Vec::new(),
             bucket: 0.0,
             gold: STARTING_GOLD,
             shop: None,
@@ -646,6 +668,8 @@ impl Game {
         self.dens.clear();
         self.cleared.clear();
         self.boss_chests.clear();
+        self.hoards.clear();
+        self.beams.clear();
         self.pickups.clear();
         self.target = None;
         self.seed = seed;
@@ -943,9 +967,13 @@ impl Game {
         self.props = props;
     }
 
+    /// The chests in the piece of the world just built, along with those bosses left and the
+    /// hoards of the camps cleared there, see set_dens()
     pub fn set_chests(&mut self, chests: Vec<Chest>) {
         self.chests = chests;
         self.chests.extend(self.boss_chests.iter().cloned());
+        self.chests.extend(self.hoards.iter().filter(|(den, _)| self.cleared.contains(*den)).map(|(_, (chest, _))| chest.clone()));
+        self.beams.clear();
         self.target = None;
     }
 
@@ -969,8 +997,10 @@ impl Game {
 
     /// The dungeon halls in the piece of the world just built, in its voxels: monsters haunt each
     /// that isn't cleared and doesn't have them already. Each hall has its own lot: the dead in
-    /// their bones, rotting, or spiders, some in armor.
+    /// their bones, rotting, or spiders, some in armor. Bandits keep camps, as many as each's band
+    /// says, and the hoards of those cleared are there to open, see set_chests().
     pub fn set_dens(&mut self, world: &World, water: WaterLevel, dens: Vec<Den>) {
+        self.hoards = dens.iter().filter_map(|d| d.band.as_ref().map(|b| (d.key, (b.hoard.clone(), b.hint)))).collect();
         for den in &dens {
             let here = self.animals.iter().any(|a| a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key == den.key));
             if here || self.cleared.contains(&den.key) {
@@ -979,14 +1009,15 @@ impl Game {
             let mut seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
             let haunted: &[Look] = match seed % 3 {
                 _ if den.kind == DenKind::Nest => &[Look::Spiderling, Look::Spiderling, Look::Spiderling],
-                _ if den.kind == DenKind::Camp => &[Look::Bandit, Look::Bandit, Look::Bandit, Look::BanditBrute],
+                _ if den.kind == DenKind::Camp => den.band.as_ref().map_or(&[Look::Bandit, Look::Bandit, Look::Bandit, Look::BanditBrute][..], |b| b.keepers.as_slice()),
                 0 => &[Look::Skeleton, Look::Skeleton, Look::ArmoredSkeleton],
                 1 => &[Look::Zombie, Look::Zombie, Look::ArmoredZombie],
                 _ => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
             };
+            let within = den.band.as_ref().map_or(4.0, |b| b.within);
             for &look in haunted {
                 seed = hash(seed);
-                if let Some(mut monster) = animals::spawn_monster(world, water, look, den.position, 4.0, seed) {
+                if let Some(mut monster) = animals::spawn_monster(world, water, look, den.position, within, seed) {
                     if let Some(state) = &mut monster.boss {
                         state.key = den.key;
                     }
@@ -1923,6 +1954,7 @@ impl Game {
     /// Animals that were killed fall, and leave their meat. Bosses and monsters leave loot.
     fn reap(&mut self, world: &World) {
         let vpm = world.voxels_per_meter as f64;
+        let mut cleared = Vec::new();
         let mut k = 0;
         while k < self.animals.len() {
             if self.animals[k].health > 0.0 {
@@ -1932,15 +1964,10 @@ impl Game {
             let animal = self.animals.remove(k);
             let look = animal.look;
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
-            // A monster bursts apart its own way, and the last of a dungeon hall's leaves it clear.
-            // The dead and spiders' victims had a little gold on them, now and then a weapon.
+            // A monster bursts apart its own way. The dead and spiders' victims had a little gold on
+            // them, now and then a weapon.
             if look.is_monster() {
                 self.combat.perish(&animal);
-                if let Some(key) = animal.boss.as_ref().map(|b| b.key).filter(|key| self.dens.contains(key)) {
-                    if !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key)) {
-                        self.cleared.insert(key);
-                    }
-                }
                 let mut loot = Vec::new();
                 let undead = !matches!(look, Look::Wolf | Look::Spiderling);
                 if look != Look::Wolf && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
@@ -1995,8 +2022,59 @@ impl Game {
             } else if !look.is_boss() {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
             }
+            // The last of a den's keepers dead leaves it clear for good: a dungeon hall, a nest, or a
+            // bandits' camp, its warlord as well
+            if let Some(key) = animal.boss.as_ref().map(|b| b.key).filter(|key| self.dens.contains(key) && !self.cleared.contains(key))
+                && !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key))
+            {
+                self.cleared.insert(key);
+                cleared.push(key);
+            }
             self.target = None;
         }
+        // Where a camp was cleared, the chest of the bandits' hoard turns up, said after the rest of
+        // what fell
+        for key in cleared {
+            self.reveal_hoard(key);
+        }
+    }
+
+    /// The camp whose den is at `key` was just cleared: the chest of its bandits' hoard turns up,
+    /// in a burst of light with a fanfare, and the player's told where it is
+    fn reveal_hoard(&mut self, key: [i64; 3]) {
+        let Some((chest, hint)) = self.hoards.get(&key).cloned() else {
+            return;
+        };
+        // The burst of light a boss falls in, without the ground shaking
+        let (vpm, shake) = (self.combat.vpm(), self.combat.shake);
+        self.combat.fell(chest.position + Vector3::new(0.0, 0.0, 0.3 * vpm), 0.5);
+        self.combat.shake = shake;
+        self.cues.push(Cue::here(Sound::Fanfare, 0.7));
+        self.cues.push(Cue::at(Sound::Chest, chest.position, 0.9).pitched(0.8));
+        if !self.chests.iter().any(|c| c.key == chest.key) {
+            self.chests.push(chest);
+        }
+        self.say(format!("The camp is clear! The bandits' hoard lies {hint}."));
+    }
+
+    /// For trying it out: every bandit keeping the camp nearest `near`, in voxels, falls dead, its
+    /// warlord too, so its hoard turns up. Returns how many fell.
+    pub fn clear_nearest_camp(&mut self, world: &World, near: Vector3<f64>) -> usize {
+        let camp = self.hoards.keys().filter(|key| !self.cleared.contains(*key)).min_by_key(|key| {
+            let keepers = self.animals.iter().filter(|a| a.boss.as_ref().is_some_and(|b| b.key == **key));
+            keepers.map(|a| (a.position - near).norm() as i64).min().unwrap_or(i64::MAX)
+        });
+        let Some(&key) = camp else {
+            return 0;
+        };
+        let mut fell = 0;
+        for animal in self.animals.iter_mut().filter(|a| a.boss.as_ref().is_some_and(|b| b.key == key)) {
+            animal.health = 0.0;
+            fell += 1;
+        }
+        // Straight away, before they heal back up
+        self.reap(world);
+        fell
     }
 
     /// What was dropped landing, which weapons lying about the camera can see, for their beams of
@@ -2026,6 +2104,21 @@ impl Game {
                         let p = view.eye + to * (s as f64 / steps as f64);
                         is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
                     });
+            }
+        }
+        // So do the hoards of the camps cleared, until they're opened
+        self.beams.clear();
+        for chest in self.chests.iter().filter(|c| c.hoard && !self.opened.contains(&c.key)) {
+            let to = chest.position + Vector3::new(0.0, 0.0, 0.5 * vpm) - view.eye;
+            let d = to.norm();
+            let steps = (d / (0.25 * vpm)) as usize;
+            let seen = d < BEAM_RANGE * vpm
+                && (1..steps).all(|s| {
+                    let p = view.eye + to * (s as f64 / steps as f64);
+                    is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+                });
+            if seen {
+                self.beams.push(chest.position);
             }
         }
         if let Some(key) = self.shop {
@@ -2286,6 +2379,9 @@ impl Game {
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
         let weapon = self.library.generate(seed, None, chest.luck);
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
+        // A bandits' hoard has what they've taken in it too
+        let hoard = chest.hoard;
+        let gold = if hoard { gold + 60 + (hash(seed ^ 0x40a2) % 60) as u32 } else { gold };
         self.opened.insert(key);
         self.target = None;
         let rarity = &self.library.rarities[weapon.grade];
@@ -2296,7 +2392,10 @@ impl Game {
             (k, self.library.ammo[k].bundle)
         });
         let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
-        let message = format!("You found {}, a {} {}{extra}, and {gold} gold!", weapon.name, rarity.display_name.to_lowercase(), family.display_name.to_lowercase());
+        let found = if hoard { "In the bandits' hoard you find" } else { "You found" };
+        let grade = rarity.display_name.to_lowercase();
+        let a = if grade.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+        let message = format!("{found} {}, {a} {grade} {}{extra}, and {gold} gold!", weapon.name, family.display_name.to_lowercase());
         self.weapons.push(weapon);
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
         if let Some((k, n)) = ammo {
@@ -2791,7 +2890,7 @@ impl Game {
     fn target_hint(&self) -> Option<String> {
         match self.target? {
             Target::Pickup(_) => None,
-            Target::Chest(_) => Some("E  open the chest".into()),
+            Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
                 Some(if look == Look::Merchant {
@@ -2876,13 +2975,16 @@ impl Game {
 
         // A beam of light up from each weapon lying about in sight, in the color of its rarity,
         // taller and brighter the rarer it is, fading up and further off
-        for pickup in self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()) {
-            // The gold the player lost when they died shines as bright as an epic weapon
-            let (grade, [r, g, b], w) = match pickup.item {
-                Item::Weapon(w) => (self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
-                _ => (3, [GOLD.r(), GOLD.g(), GOLD.b()], 0),
-            };
-            let base = pickup.position + Vector3::new(0.0, 0.0, 0.2 * vpm);
+        // The gold the player lost when they died shines as bright as an epic weapon, and the hoard
+        // of a camp cleared, up from its lid, as a legendary one
+        let gold = [GOLD.r(), GOLD.g(), GOLD.b()];
+        let lying = self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()).map(|pickup| match pickup.item {
+            Item::Weapon(w) => (pickup.position, self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
+            _ => (pickup.position, 3, gold, 0),
+        });
+        let hoards = self.beams.iter().enumerate().map(|(k, &at)| (at + Vector3::new(0.0, 0.0, 0.25 * vpm), 4, gold, 7 + k));
+        for (position, grade, [r, g, b], w) in lying.chain(hoards) {
+            let base = position + Vector3::new(0.0, 0.0, 0.2 * vpm);
             let distance = ((base - view.eye).norm() / vpm).max(1.0);
             let top = base + Vector3::new(0.0, 0.0, (2.2 + 0.9 * grade as f64) * vpm);
             let (Some(foot), Some(top)) = (on_screen(base), on_screen(top)) else {
