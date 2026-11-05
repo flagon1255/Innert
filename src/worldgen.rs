@@ -111,6 +111,9 @@ pub mod material {
     pub const GLOW_VOID: u8 = 84;
     pub const GLOW_BLOOD: u8 = 85;
     pub const GLOW_HOLY: u8 = 86;
+    // The sunlit tips of fresh green crowns, and the shadowy depths of red ones
+    pub const LEAVES_LIME: u8 = 87;
+    pub const LEAVES_CRIMSON: u8 = 88;
 }
 
 use material::*;
@@ -134,6 +137,8 @@ pub fn is_passable(material: u8) -> bool {
             | LEAVES_YELLOW
             | LEAVES_ORANGE
             | LEAVES_RED
+            | LEAVES_LIME
+            | LEAVES_CRIMSON
             | PINE
             | FERN
             | BLOSSOM
@@ -248,7 +253,7 @@ const BRICK_INDEX: u32 = FOLIAGE_BRICK - 1;
 pub fn sways(material: u8) -> bool {
     matches!(
         material,
-        LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | BLOSSOM | WILLOW | PALM_LEAF | PINE | FERN | VINE | GRASS_TIP
+        LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | LEAVES_LIME | LEAVES_CRIMSON | BLOSSOM | WILLOW | PALM_LEAF | PINE | FERN | VINE | GRASS_TIP
             | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK
     )
 }
@@ -938,6 +943,9 @@ enum Pattern {
     Carved,
     /// Old stone, roofs or paving, weathered, stained and gone green, see castles::aged()
     Aged(castles::Age),
+    /// A clump of leaves, its outside all leaves standing out at different depths in these
+    /// shades, see trees::leafy()
+    Leafy(trees::Canopy),
 }
 
 /// Where a shape goes in relation to the ground
@@ -1078,6 +1086,9 @@ impl Shape {
     /// Whether `p` is inside it, its squared depth being `depth`, see depth(). Rough shapes are
     /// lumpy, their surface pushed in and out by the noise only near it, as working it out costs.
     fn holds(&self, p: Vec3, depth: f32) -> bool {
+        if let Pattern::Leafy(_) = self.pattern {
+            return trees::leafy_holds(self, p, depth);
+        }
         if self.rough <= 0.0 {
             return depth <= 1.0;
         }
@@ -1160,6 +1171,7 @@ impl Shape {
         let dark = if matches!(self.material, SANDSTONE | CLAY_POT) { SANDSTONE_DARK } else { MORTAR };
         match self.pattern {
             Pattern::Aged(age) => castles::aged(self, age, p, voxel, h, ground),
+            Pattern::Leafy(canopy) => trees::leafy(self, canopy, p, h),
             Pattern::Plain => {
                 if sprinkled(0.15) {
                     self.accent
@@ -1935,6 +1947,8 @@ pub fn find_climate(settings: &TerrainSettings, kind: &str, near: [f32; 2]) -> O
                 "jungle" => c.jungle,
                 "desert" => c.desert,
                 "snow" => c.snow,
+                // Woods where the leaves have turned, see Terrain::canopy()
+                "autumn" => (1.0 - c.jungle.max(c.desert).max(c.snow)) * f32::from(trees::autumn_woods(settings, x, y)),
                 _ => 1.0 - c.jungle.max(c.desert).max(c.snow),
             };
             if strength > 0.95 && height_at(settings, x, y) > sea_level + 3.0 {

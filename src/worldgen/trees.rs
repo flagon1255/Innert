@@ -1,19 +1,202 @@
-//! Trees, and what lies about on the forest floor under them. Crowns are built of rounded masses
-//! of leaves, each solid in the middle, so rays stop at its outside, and lumpy all over that with
-//! smaller puffs of leaves: lighter where the sun catches them on top, darker underneath and deep
-//! inside, and now and then speckled with blossom. Trunks bend a little as they go up, and flare
-//! out into roots at the foot.
+//! Trees, and what lies about on the forest floor under them. Crowns are built of clumps of
+//! leaves, a big one in the middle of each mass of them and smaller ones bulging out all over it,
+//! so their outline against the sky is lumpy, like broccoli. Each clump is solid deep inside, so
+//! rays stop there, and all leaves outside that: leaf-sized bits standing out at different depths,
+//! with clefts between them going into the shade, sunlit tips lighter, the deep inside darker,
+//! and now and then speckled with blossom. Trunks bend a little as they go up, and flare out into
+//! roots at the foot.
 
 use super::*;
 
 /// The leaves of a crown in three shades, deep inside, the body of it and the sunlit tips, and the
-/// odd speckle of blossom or berries among them, AIR for none
-#[derive(Clone, Copy)]
+/// odd speckle of blossom or berries among them, AIR for none, on `bloom` leaves in 256
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Canopy {
     inner: u8,
     body: u8,
     tip: u8,
     speckle: u8,
+    bloom: u8,
+    /// How deep in the shade of the rest of the crown they are, from 0 for none
+    shade: u8,
+}
+
+impl Canopy {
+    const fn new(inner: u8, body: u8, tip: u8) -> Self {
+        Canopy { inner, body, tip, speckle: AIR, bloom: 0, shade: 0 }
+    }
+
+    /// Speckled with `speckle` on `bloom` leaves in 256
+    fn speckled(self, speckle: u8, bloom: f32) -> Self {
+        Canopy { speckle, bloom: bloom.clamp(0.0, 255.0) as u8, ..self }
+    }
+
+    /// The same leaves in the shade of the rest of the crown, fewer of them sunlit
+    fn shaded(self) -> Self {
+        Canopy { shade: 1, ..self }
+    }
+
+    /// The same leaves deep in the middle of the crown, darker still
+    fn deep(self) -> Self {
+        Canopy { shade: 2, bloom: self.bloom / 2, ..self }
+    }
+}
+
+/// Green crowns: deep, fresh and lime
+const GREENS: [Canopy; 3] = [
+    Canopy::new(LEAVES_DARK, LEAVES, FERN),
+    Canopy::new(LEAVES_DARK, LEAVES, LEAVES_LIME),
+    Canopy::new(LEAVES, FERN, LEAVES_LIME),
+];
+/// Crowns turned in autumn: golden, orange, red and crimson
+const AUTUMN: [Canopy; 4] = [
+    Canopy::new(LEAVES_ORANGE, LEAVES_YELLOW, FLOWER_YELLOW),
+    Canopy::new(LEAVES_RED, LEAVES_ORANGE, LEAVES_YELLOW),
+    Canopy::new(LEAVES_CRIMSON, LEAVES_RED, FLOWER_RED),
+    Canopy::new(LEAVES_CRIMSON, LEAVES_RED, LEAVES_ORANGE),
+];
+
+/// Leaves stand out of a clump's surface by up to LEAF_OUT meters, and the clefts between them go
+/// in up to LEAF_IN, below which it's solid
+const LEAF_OUT: f32 = 0.14;
+const LEAF_IN: f32 = 0.22;
+/// How big a leaf is, and a sprig of them, in meters
+const LEAF: f32 = 0.125;
+const SPRIG: f32 = 0.3;
+
+/// How far `p` is outside `shape`, a sphere or a capsule, in meters, below 0 inside, how deep the
+/// leaves go there, and which way is out
+fn outside(shape: &Shape, p: Vec3) -> (f32, f32, Vec3) {
+    let d = sub(p, shape.a);
+    let ab = sub(shape.b, shape.a);
+    let length2 = dot(ab, ab);
+    let t = if length2 > 0.0 { (dot(d, ab) / length2).clamp(0.0, 1.0) } else { 0.0 };
+    let r = shape.radius_a + (shape.radius_b - shape.radius_a) * t;
+    let e = sub(d, scale(ab, t));
+    let length = dot(e, e).sqrt().max(1e-4);
+    (length - r, LEAF_IN.min(r * 0.5), scale(e, 1.0 / length))
+}
+
+/// Which leaf `p` is on, a hash, and which sprig of leaves, from 0 to 1. Their grids are skewed,
+/// so the leaves don't line up in rows.
+fn leaf_at(p: Vec3) -> (u32, f32) {
+    // A voxel is looked at for each of the clumps reaching it in turn, and then for which shade
+    // it is, so the last one is kept
+    thread_local! {
+        static LAST: std::cell::Cell<(Vec3, u32, f32)> = const { std::cell::Cell::new(([f32::NAN; 3], 0, 0.0)) };
+    }
+    LAST.with(|last| {
+        let (q, leaf, sprig) = last.get();
+        if q == p {
+            return (leaf, sprig);
+        }
+        let q = [p[0] + p[1] * 0.37, p[1] + p[2] * 0.37, p[2] + p[0] * 0.37];
+        let cell = |size: f32, salt: u32| {
+            let c = q.map(|v| (v / size).floor() as i32 as u32);
+            hash3(c[0], c[1] ^ salt, c[2])
+        };
+        let found = (cell(LEAF, 0x1eaf), unit(cell(SPRIG, 0x5b71)));
+        last.set((p, found.0, found.1));
+        found
+    })
+}
+
+/// How far out of a clump's surface `leaf` on `sprig` stands, in meters, `deep` being how deep
+/// the leaves go there: some leaves stand out, others are further in, and between some there's a
+/// gap going right down into the shade
+fn leaf_reach(leaf: u32, sprig: f32, deep: f32) -> f32 {
+    let l = unit(leaf);
+    // Not on thin boughs, where they'd go right through
+    if l < 0.2 && deep > 0.14 {
+        return -deep;
+    }
+    ((sprig - 0.45) * 0.16 + (l - 0.6) * 0.3) * (deep / LEAF_IN)
+}
+
+/// Whether a leafy shape holds `p`, `depth` being as Shape::depth() works it out: everything deep
+/// inside it, and the leaves round that
+pub(super) fn leafy_holds(shape: &Shape, p: Vec3, depth: f32) -> bool {
+    // Halfway in it's solid, as the leaves go in at most half its radius, and it's empty further
+    // out than they reach even where it's thinnest
+    if depth < 0.25 {
+        return true;
+    }
+    let reach = 1.0 + LEAF_OUT / shape.radius_a.min(shape.radius_b).max(0.01);
+    if depth > reach * reach {
+        return false;
+    }
+    // For a ball, how far out it is follows from its depth, as most clumps are
+    let (out, deep) = if shape.a == shape.b {
+        (depth.sqrt() * shape.radius_a - shape.radius_a, LEAF_IN.min(shape.radius_a * 0.5))
+    } else {
+        let (out, deep, _) = outside(shape, p);
+        (out, deep)
+    };
+    if out < -deep {
+        return true;
+    }
+    if out > LEAF_OUT {
+        return false;
+    }
+    let (leaf, sprig) = leaf_at(p);
+    out < leaf_reach(leaf, sprig, deep)
+}
+
+/// Which shade of `canopy` the leaves at `p` of a leafy shape are: lighter the further out they
+/// stand and the more they face up, darker in the clefts and underneath, each leaf a shade of its
+/// own, and some of them blossom. `h` is a hash of where it is.
+pub(super) fn leafy(shape: &Shape, canopy: Canopy, p: Vec3, h: u32) -> u8 {
+    let (out, deep, normal) = outside(shape, p);
+    if out < -deep - 0.1 {
+        return canopy.inner;
+    }
+    let (leaf, sprig) = leaf_at(p);
+    if canopy.speckle != AIR && hash(leaf ^ 0xb705) & 0xFF < canopy.bloom as u32 && out > -deep * 0.5 {
+        return canopy.speckle;
+    }
+    let outward = ((out + deep) / (deep + LEAF_OUT)).clamp(0.0, 1.0);
+    let light = normal[2] * 0.7 + outward * 0.9 + (unit(leaf >> 16) - 0.5) * 0.4 + (sprig - 0.5) * 0.3 + (unit(h) - 0.5) * 0.2 - canopy.shade as f32 * 0.3;
+    if light > 0.8 {
+        canopy.tip
+    } else if light > 0.2 {
+        canopy.body
+    } else {
+        canopy.inner
+    }
+}
+
+/// `shape`, a sphere or capsule, made of leaves
+fn leafy_shape(mut shape: Shape, canopy: Canopy) -> Shape {
+    shape.material = canopy.body;
+    shape.accent = AIR;
+    shape.ragged = false;
+    shape.pattern = Pattern::Leafy(canopy);
+    shape.min = shape.min.map(|v| v - LEAF_OUT);
+    shape.max = shape.max.map(|v| v + LEAF_OUT);
+    shape
+}
+
+/// A round clump of leaves `radius` meters round `at`
+fn clump(at: Vec3, radius: f32, canopy: Canopy) -> Shape {
+    leafy_shape(Shape::sphere(at, radius, canopy.body, AIR, false), canopy)
+}
+
+/// The pieces of a tree as it's built. Earlier shapes win where they overlap, so its wood goes
+/// first, then the solid middles of its crown, so most of it is one material and needn't be stored
+/// voxel by voxel, then its leaves.
+#[derive(Default)]
+struct Parts {
+    wood: Vec<Shape>,
+    cores: Vec<Shape>,
+    leaves: Vec<Shape>,
+}
+
+impl Parts {
+    fn shapes(mut self) -> Vec<Shape> {
+        self.wood.append(&mut self.cores);
+        self.wood.append(&mut self.leaves);
+        self.wood
+    }
 }
 
 /// Which kind of broad-leaved tree, see Terrain::leafy()
@@ -23,7 +206,7 @@ enum Form {
     Spreading,
     /// Taller, with limbs reaching up into an egg-shaped crown
     Upright,
-    /// Crooked, dark limbs and a flat, wide crown of blossom
+    /// Crooked, dark limbs and a flat, wide crown, all in flower
     Blossom,
 }
 
@@ -31,6 +214,16 @@ enum Form {
 /// at spots picked with TREE_SALT
 pub(super) const TREE_CELL: f32 = 7.5;
 pub(super) const TREE_SALT: u32 = 0x7a3e;
+
+/// How far the leaves have turned at `x`, `y`: they turn in patches, warmer the higher this is
+pub(super) fn autumn(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
+    fbm(x / 120.0, y / 120.0, 2, settings.seed.wrapping_add(6))
+}
+
+/// Whether `x`, `y` is in thick woods where the leaves have turned, for finding some to look at
+pub(super) fn autumn_woods(settings: &TerrainSettings, x: f32, y: f32) -> bool {
+    autumn(settings, x, y) > 0.35 && fbm(x / 80.0, y / 80.0, 3, settings.seed.wrapping_add(4)) > 0.3
+}
 
 impl Terrain {
     /// Which kind of tree grows where: pines up high and in the snow, palms in the desert, giants
@@ -85,7 +278,9 @@ impl Terrain {
             } else if choice < 0.45 {
                 self.birch(x, y, base, size, &mut rng)
             } else if choice < 0.51 {
-                let canopy = Canopy { inner: FLOWER_PINK, body: BLOSSOM, tip: BLOSSOM, speckle: FLOWER_WHITE };
+                // In flower: blossom all over the leaves, rather than a cloud of pink
+                let flower = [BLOSSOM, FLOWER_PINK, FLOWER_PINK, FLOWER_WHITE][(rng.next() * 3.99) as usize];
+                let canopy = GREENS[(rng.next() * 2.99) as usize].speckled(flower, rng.range(36.0, 56.0));
                 self.leafy(x, y, base, size * 0.85, Form::Blossom, lean, BARK_DARK, canopy, &mut rng)
             } else if choice < 0.61 {
                 let canopy = self.canopy(x, y, &mut rng);
@@ -109,70 +304,47 @@ impl Terrain {
         if steep < 1e-3 { [0.0, 0.0] } else { [slope[0] / steep * lean, slope[1] / steep * lean] }
     }
 
-    /// The shades of a crown. They come in regions, so forests turn in patches as in autumn, and
-    /// now and then a tree is in flower.
+    /// The shades of a crown. Most are green, but where the leaves have turned, in patches, most
+    /// are golden, orange or red, with green ones among them, and now and then one is in flower.
     fn canopy(&self, x: f32, y: f32, rng: &mut Rng) -> Canopy {
-        let autumn = fbm(x / 120.0, y / 120.0, 2, self.settings.seed.wrapping_add(6));
-        let pick = (rng.next() * 0.7 + autumn * 0.8 + 0.15).clamp(0.0, 0.999);
-        let mut canopy = [
-            Canopy { inner: LEAVES_DARK, body: LEAVES, tip: FERN, speckle: AIR },
-            Canopy { inner: LEAVES_DARK, body: LEAVES_DARK, tip: LEAVES, speckle: AIR },
-            Canopy { inner: LEAVES_DARK, body: LEAVES, tip: FERN, speckle: LEAVES_YELLOW },
-            Canopy { inner: LEAVES_ORANGE, body: LEAVES_YELLOW, tip: FLOWER_YELLOW, speckle: AIR },
-            Canopy { inner: LEAVES_RED, body: LEAVES_ORANGE, tip: LEAVES_YELLOW, speckle: AIR },
-            Canopy { inner: LEAVES_RED, body: LEAVES_RED, tip: FLOWER_RED, speckle: LEAVES_ORANGE },
-        ][(pick * 6.0) as usize];
-        if rng.next() < 0.12 {
-            canopy.speckle = if rng.next() < 0.6 { FLOWER_WHITE } else { FLOWER_PINK };
+        let turned = smoothstep(-0.4, 0.4, autumn(&self.settings, x, y)) * 0.85;
+        let canopy = if rng.next() < turned { AUTUMN[(rng.next() * 3.99) as usize] } else { GREENS[(rng.next() * 2.99) as usize] };
+        // Red ones often have pale blossom or berries among them
+        let flowering = if canopy.body == LEAVES_RED { 0.35 } else { 0.12 };
+        if rng.next() < flowering {
+            let speckle = if rng.next() < 0.6 { FLOWER_WHITE } else { FLOWER_PINK };
+            return canopy.speckled(speckle, rng.range(16.0, 36.0));
         }
         canopy
     }
 
-    /// A rounded mass of leaves `radius` meters round `at`: solid and dark in the middle, and lumpy
-    /// all over its outside with smaller puffs of leaves, sunlit on top and shadowy underneath,
-    /// some bulging out of the rest so its outline against the sky is lumpy. The middle goes in
-    /// `core`, before the puffs, so it's all one material and doesn't need storing voxel by voxel.
-    pub(super) fn lobe(&self, core: &mut Vec<Shape>, puffs: &mut Vec<Shape>, at: Vec3, radius: f32, canopy: Canopy, rng: &mut Rng) {
-        self.flat_lobe(core, puffs, at, radius, 1.0, canopy, rng);
-    }
-
-    /// The same, but only `flat` times as high as it's wide
+    /// A mass of leaves about `radius` meters round `at`, `flat` times as high as it's wide: a big
+    /// clump in the middle, in shade, and smaller ones bulging out of it all over its top and
+    /// sides, fewer underneath, so its outline is lumpy and there are clefts going deep into the
+    /// shade between them. Twigs of `bark` reach out into some of them, AIR for none.
     #[allow(clippy::too_many_arguments)]
-    fn flat_lobe(&self, core: &mut Vec<Shape>, puffs: &mut Vec<Shape>, at: Vec3, radius: f32, flat: f32, canopy: Canopy, rng: &mut Rng) {
-        let inside = radius * 0.72;
-        core.push(if flat < 1.0 {
-            Shape::ellipsoid(at, [inside, inside, inside * flat], canopy.inner, AIR)
-        } else {
-            Shape::sphere(at, inside, canopy.inner, AIR, false)
-        });
-        let puff = (radius * 0.4).clamp(0.22, 0.7);
-        let count = (5.0 + 2.0 * (radius / puff).powi(2)) as usize;
+    fn lobe(&self, t: &mut Parts, at: Vec3, radius: f32, flat: f32, canopy: Canopy, bark: u8, rng: &mut Rng) {
+        let middle = radius * 0.6 * flat.max(0.65);
+        if middle > LEAF_IN + 0.2 {
+            t.cores.push(Shape::sphere(at, middle - LEAF_IN - 0.04, canopy.inner, AIR, false));
+        }
+        t.leaves.push(clump(at, middle, canopy.deep()));
+        let count = (4.0 + 7.0 * (radius / 1.5).powi(2)).round() as usize;
         let spin = rng.next() * TAU;
         for k in 0..count {
-            // Spread evenly over it, top to bottom, then jostled about
-            let z = 1.0 - 2.0 * (k as f32 + 0.5) / count as f32;
-            let ring = (1.0 - z * z).sqrt();
+            // Spread evenly over it from the top down, then jostled about
+            let z = 0.95 - 1.45 * (k as f32 + 0.5) / count as f32;
+            let ring = (1.0 - z * z).max(0.0).sqrt();
             let a = spin + k as f32 * 2.399_963;
-            let dir = normalize(add([ring * a.cos(), ring * a.sin(), z], scale(rng.direction(0.0), 0.3)));
-            let size = puff * rng.range(0.7, 1.3);
-            let reach = radius - size * rng.range(0.25, 0.8);
-            // Flatter underneath
-            let squash = (if dir[2] < 0.0 { 0.7 } else { 1.0 }) * flat;
-            let center = add(at, [dir[0] * reach, dir[1] * reach, dir[2] * reach * squash]);
-            let (material, accent) = if dir[2] > 0.4 {
-                (canopy.tip, canopy.body)
-            } else if dir[2] < -0.35 {
-                (canopy.inner, canopy.body)
-            } else if canopy.speckle != AIR && rng.next() < 0.45 {
-                (canopy.body, canopy.speckle)
-            } else {
-                (canopy.body, canopy.tip)
-            };
-            puffs.push(Shape::sphere(center, size, material, accent, true));
-            if dir[2] > -0.3 && rng.next() < 0.6 {
-                let out = normalize(add(dir, scale(rng.direction(0.0), 0.7)));
-                let bump = size * rng.range(0.35, 0.6);
-                puffs.push(Shape::sphere(add(center, scale(out, size * 0.8)), bump, canopy.tip, canopy.body, true));
+            let dir = normalize(add([ring * a.cos(), ring * a.sin(), z], scale(rng.direction(0.0), 0.25)));
+            let size = (radius * rng.range(0.32, 0.48) * (0.5 + 0.5 * flat)).max(0.22);
+            let reach = radius - size * rng.range(0.7, 1.0);
+            let center = add(at, [dir[0] * reach, dir[1] * reach, dir[2] * reach * flat]);
+            // Those underneath, and some others, in the shade of the rest
+            let shade = if dir[2] < -0.2 || rng.next() < 0.2 { canopy.shaded() } else { canopy };
+            t.leaves.push(clump(center, size, shade));
+            if bark != AIR && rng.next() < 0.35 {
+                t.wood.push(Shape::wood(at, center, (radius * 0.04).max(0.04), 0.03, bark));
             }
         }
     }
@@ -221,17 +393,18 @@ impl Terrain {
         end
     }
 
-    /// A broad-leaved tree, `size` times as big as most: a short trunk splitting into limbs, each
-    /// ending in a mass of leaves, and another over the top, so the crown is a cluster of them with
-    /// clefts between
+    /// A broad-leaved tree, `size` times as big as most: a trunk standing clear of the leaves,
+    /// splitting into limbs, each ending in a mass of leaves, with another over the top, so the
+    /// crown is a cluster of them with clefts between
     #[allow(clippy::too_many_arguments)]
     fn leafy(&self, x: f32, y: f32, base: f32, size: f32, form: Form, lean: [f32; 2], bark: u8, canopy: Canopy, rng: &mut Rng) -> Vec<Shape> {
         let (height, spread, rise, lobe) = match form {
-            Form::Spreading => (rng.range(1.6, 2.6), rng.range(1.8, 2.6), rng.range(0.35, 0.8), rng.range(1.3, 1.8)),
-            Form::Upright => (rng.range(2.4, 3.4), rng.range(1.4, 2.0), rng.range(0.9, 1.5), rng.range(1.2, 1.6)),
-            Form::Blossom => (rng.range(1.4, 2.0), rng.range(1.8, 2.4), rng.range(0.25, 0.6), rng.range(1.0, 1.4)),
+            Form::Spreading => (rng.range(2.2, 3.0), rng.range(1.8, 2.6), rng.range(0.35, 0.8), rng.range(1.3, 1.7)),
+            Form::Upright => (rng.range(2.8, 3.8), rng.range(1.3, 1.9), rng.range(0.9, 1.5), rng.range(1.2, 1.5)),
+            Form::Blossom => (rng.range(1.8, 2.4), rng.range(1.8, 2.4), rng.range(0.25, 0.6), rng.range(1.0, 1.3)),
         };
         let (height, spread, lobe) = (height * size, spread * size, lobe * size);
+        let flat = if form == Form::Blossom { 0.75 } else { 1.0 };
         let radius = rng.range(0.22, 0.32) * size;
         let bark = (bark, if bark == WOOD { DEAD_WOOD } else { AIR });
         let tilt = rng.range(0.0, 0.25);
@@ -239,9 +412,8 @@ impl Terrain {
         let foot = [x, y, base];
         let top = [x + (lean[0] + tilt_angle.cos() * tilt) * height, y + (lean[1] + tilt_angle.sin() * tilt) * height, base + height];
 
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
-        self.trunk(&mut wood, foot, top, radius, 0.7, bark, if size > 0.7 { 4 + (rng.next() * 1.99) as usize } else { 0 }, rng);
+        let mut t = Parts::default();
+        self.trunk(&mut t.wood, foot, top, radius, 0.7, bark, if size > 0.7 { 4 + (rng.next() * 1.99) as usize } else { 0 }, rng);
 
         let limbs = 3 + (rng.next() * 2.99) as usize;
         let spin = rng.range(0.0, TAU);
@@ -250,17 +422,15 @@ impl Terrain {
             let angle = spin + (i as f32 + rng.range(-0.25, 0.25)) / limbs as f32 * TAU;
             let dir = normalize([angle.cos(), angle.sin(), rise * rng.range(0.8, 1.2)]);
             let start = lerp3(foot, top, rng.range(0.8, 1.0));
-            let end = self.limb(&mut wood, start, dir, spread * rng.range(0.85, 1.15), radius * 0.6, bark, rng);
+            let end = self.limb(&mut t.wood, start, dir, spread * rng.range(0.85, 1.15), radius * 0.6, bark, rng);
             let r = lobe * rng.range(0.85, 1.15);
-            let at = add(end, [0.0, 0.0, r * 0.3]);
+            let at = add(end, [0.0, 0.0, r * 0.15]);
             highest = highest.max(at[2]);
-            self.lobe(&mut core, &mut puffs, at, r, canopy, rng);
-            // Smaller ones huddled round it, so the crown's a cluster of lumps of all sizes
-            for _ in 0..(1 + (rng.next() * 1.6) as usize) {
-                let side = normalize([-dir[1] + dir[0] * 0.5, dir[0] + dir[1] * 0.5, rng.range(-0.3, 0.5)]);
-                let s = if rng.next() < 0.5 { 1.0 } else { -1.0 };
-                let off = add(at, scale([side[0] * s, side[1] * s, side[2]], r * rng.range(0.7, 1.0)));
-                self.lobe(&mut core, &mut puffs, off, r * rng.range(0.5, 0.75), canopy, rng);
+            self.lobe(&mut t, at, r, flat, canopy, bark.0, rng);
+            // Now and then a smaller one partway along the limb
+            if rng.next() < 0.4 {
+                let mid = add(lerp3(start, end, rng.range(0.45, 0.65)), [0.0, 0.0, r * 0.3]);
+                self.lobe(&mut t, mid, r * rng.range(0.55, 0.7), flat, canopy, bark.0, rng);
             }
         }
         // Over the top, where the limbs come together
@@ -273,47 +443,43 @@ impl Terrain {
         for k in 0..crown {
             let r = lobe * if form == Form::Blossom { 1.0 } else { rng.range(1.05, 1.3) } * (1.0 - 0.2 * k as f32);
             at = add(at, [rng.range(-0.3, 0.3) * size, rng.range(-0.3, 0.3) * size, if k == 0 { (highest - top[2]) * 0.6 + r * 0.4 } else { r * 1.1 }]);
-            wood.push(Shape::wood(top, at, radius * 0.5, radius * 0.25, bark.0));
-            self.lobe(&mut core, &mut puffs, at, r, canopy, rng);
+            t.wood.push(Shape::wood(top, at, radius * 0.5, radius * 0.25, bark.0));
+            self.lobe(&mut t, at, r, flat, canopy, bark.0, rng);
         }
-
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        t.shapes()
     }
 
     /// Now and then in the thick of the woods, a great old tree: a massive, mossy trunk on roots
     /// sprawling out over the ground, limbs as thick as most trees, and a huge crown
     fn ancient(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
         let size = rng.range(1.5, 1.85);
-        let height = rng.range(2.6, 3.4) * size;
+        let height = rng.range(3.0, 3.8) * size;
         let radius = rng.range(0.32, 0.4) * size;
         let bark = (WOOD, MOSS);
         let foot = [x, y, base];
         let top = [x + rng.range(-0.4, 0.4), y + rng.range(-0.4, 0.4), base + height];
-        let canopy = Canopy { inner: LEAVES_DARK, body: LEAVES_DARK, tip: LEAVES, speckle: if rng.next() < 0.5 { FERN } else { AIR } };
+        let mut canopy = Canopy::new(LEAVES_DARK, LEAVES_DARK, LEAVES);
+        if rng.next() < 0.5 {
+            canopy = canopy.speckled(FERN, 40.0);
+        }
 
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
-        self.trunk(&mut wood, foot, top, radius, 0.6, bark, 6, rng);
+        let mut t = Parts::default();
+        self.trunk(&mut t.wood, foot, top, radius, 0.6, bark, 6, rng);
         let limbs = 5 + (rng.next() * 2.99) as usize;
         let spin = rng.range(0.0, TAU);
         for i in 0..limbs {
             let angle = spin + (i as f32 + rng.range(-0.3, 0.3)) / limbs as f32 * TAU;
             let dir = normalize([angle.cos(), angle.sin(), rng.range(0.25, 0.7)]);
             let start = lerp3(foot, top, rng.range(0.65, 1.0));
-            let end = self.limb(&mut wood, start, dir, rng.range(3.0, 4.2) * size * 0.75, radius * 0.5, bark, rng);
+            let end = self.limb(&mut t.wood, start, dir, rng.range(3.0, 4.2) * size * 0.75, radius * 0.5, bark, rng);
             let r = rng.range(1.5, 2.0) * size * 0.75;
-            self.lobe(&mut core, &mut puffs, add(end, [0.0, 0.0, r * 0.25]), r, canopy, rng);
+            self.lobe(&mut t, add(end, [0.0, 0.0, r * 0.15]), r, 1.0, canopy, WOOD, rng);
         }
         let r = 2.2 * size * 0.75;
         let crown = add(top, [0.0, 0.0, r * 0.9]);
-        wood.push(Shape::wood(top, crown, radius * 0.5, radius * 0.3, WOOD));
-        self.lobe(&mut core, &mut puffs, crown, r, canopy, rng);
-
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        t.wood.push(Shape::wood(top, crown, radius * 0.5, radius * 0.3, WOOD));
+        self.lobe(&mut t, crown, r, 1.0, canopy, WOOD, rng);
+        t.shapes()
     }
 
     /// Tall and slender with white bark, and small masses of light leaves close round its top half,
@@ -322,80 +488,82 @@ impl Terrain {
         let height = rng.range(6.0, 8.5) * size;
         let radius = rng.range(0.11, 0.16) * size.max(0.7);
         let top = [x + rng.range(-0.4, 0.4), y + rng.range(-0.4, 0.4), base + height];
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
-        self.trunk(&mut wood, [x, y, base], top, radius * 1.2, 0.35, (BIRCH_BARK, BARK_DARK), if size > 0.7 { 3 } else { 0 }, rng);
+        let mut t = Parts::default();
+        self.trunk(&mut t.wood, [x, y, base], top, radius * 1.2, 0.35, (BIRCH_BARK, BARK_DARK), if size > 0.7 { 3 } else { 0 }, rng);
 
-        let autumn = fbm(x / 120.0, y / 120.0, 2, self.settings.seed.wrapping_add(6));
-        let canopy = if autumn > 0.1 {
-            Canopy { inner: LEAVES_ORANGE, body: LEAVES_YELLOW, tip: FLOWER_YELLOW, speckle: AIR }
-        } else {
-            Canopy { inner: LEAVES, body: FERN, tip: WILLOW, speckle: AIR }
-        };
+        let canopy = if autumn(&self.settings, x, y) > 0.1 { AUTUMN[0] } else { GREENS[2] };
         let branches = 6 + (rng.next() * 2.99) as usize;
         let spin = rng.range(0.0, TAU);
         let small = size.max(0.6);
         for i in 0..branches {
-            let t = 0.4 + 0.5 * (i as f32 + rng.next()) / branches as f32;
+            let along = 0.45 + 0.45 * (i as f32 + rng.next()) / branches as f32;
             let angle = spin + i as f32 * 2.4;
             let dir = normalize([angle.cos(), angle.sin(), rng.range(0.6, 1.2)]);
-            let start = lerp3([x, y, base], top, t);
-            let length = rng.range(0.4, 0.8) * (1.3 - t * 0.6) * size;
+            let start = lerp3([x, y, base], top, along);
+            let length = rng.range(0.5, 0.9) * (1.3 - along * 0.6) * size;
             let end = add(start, scale(dir, length));
-            wood.push(Shape::wood(start, end, radius * 0.4, radius * 0.2, BIRCH_BARK));
-            self.lobe(&mut core, &mut puffs, end, rng.range(0.6, 0.9) * (1.15 - t * 0.4) * small, canopy, rng);
+            t.wood.push(Shape::wood(start, end, radius * 0.4, radius * 0.2, BIRCH_BARK));
+            self.lobe(&mut t, end, rng.range(0.6, 0.85) * (1.15 - along * 0.4) * small, 1.0, canopy, AIR, rng);
         }
-        self.lobe(&mut core, &mut puffs, add(top, [0.0, 0.0, 0.2]), 0.6 * small, canopy, rng);
-
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        self.lobe(&mut t, add(top, [0.0, 0.0, 0.2]), 0.6 * small, 1.0, canopy, AIR, rng);
+        t.shapes()
     }
 
-    /// A narrow column of leaves, one mass on another, smaller towards the top
+    /// A narrow spire of leaves on a trunk: clumps all over a column round it, widest a third of
+    /// the way up and narrowing to a point
     fn poplar(&self, x: f32, y: f32, base: f32, size: f32, canopy: Canopy, rng: &mut Rng) -> Vec<Shape> {
         let height = rng.range(7.0, 10.0) * size;
-        let width = rng.range(0.9, 1.25) * size.max(0.6);
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
+        let width = rng.range(0.9, 1.2) * size.max(0.6);
+        let mut t = Parts::default();
         let top = [x + rng.range(-0.2, 0.2), y + rng.range(-0.2, 0.2), base + height * 0.85];
-        self.trunk(&mut wood, [x, y, base], top, 0.22 * size.max(0.6), 0.4, (WOOD, DEAD_WOOD), if size > 0.7 { 4 } else { 0 }, rng);
-        let mut z = base + 1.6 * size + width;
-        let mut r = width;
-        while z < base + height - r * 0.5 {
-            let t = (z - base) / height;
-            let at = lerp3([x, y, base], top, t.min(1.0));
-            // Each a little to one side of the last, so it's not a stack of balls
-            let a = rng.range(0.0, TAU);
-            let off = r * rng.range(0.15, 0.35);
-            self.lobe(&mut core, &mut puffs, [at[0] + a.cos() * off, at[1] + a.sin() * off, z], r, canopy, rng);
-            z += r * rng.range(0.75, 0.95);
-            r *= 0.9;
+        self.trunk(&mut t.wood, [x, y, base], top, 0.22 * size.max(0.6), 0.4, (WOOD, DEAD_WOOD), if size > 0.7 { 4 } else { 0 }, rng);
+        let bottom = base + 1.7 * size.max(0.6);
+        let at = |z: f32| {
+            let p = lerp3([x, y, base], top, ((z - base) / (height * 0.85)).min(1.0));
+            [p[0], p[1], z]
+        };
+        // How wide it is `along` the way up
+        let profile = |along: f32| width * (0.3 + 0.7 * (std::f32::consts::PI * (0.12 + 0.88 * along).min(1.0)).sin().max(0.0).powf(0.7));
+        // The middle, in shade
+        let (low, high) = (bottom + width * 0.6, base + height - width * 0.5);
+        let core = profile(0.35) * 0.55;
+        t.cores.push(Shape::capsule(at(low), at(high), core - LEAF_IN - 0.04, (core * 0.5 - LEAF_IN).max(0.05), canopy.inner, AIR, false));
+        t.leaves.push(leafy_shape(Shape::capsule(at(low), at(high), core, core * 0.5, canopy.body, AIR, false), canopy.deep()));
+        let count = (height * width * 4.5) as usize;
+        let spin = rng.range(0.0, TAU);
+        for k in 0..count {
+            let along = (k as f32 + rng.next()) / count as f32;
+            let z = bottom + (base + height - bottom) * along;
+            let w = profile(along);
+            let a = spin + k as f32 * 2.399_963;
+            let size = w * rng.range(0.3, 0.42);
+            let reach = (w - size * rng.range(0.7, 1.0)).max(0.0);
+            let center = add(at(z), [a.cos() * reach, a.sin() * reach, 0.0]);
+            let shade = if along < 0.12 || rng.next() < 0.2 { canopy.shaded() } else { canopy };
+            t.leaves.push(clump(center, size.max(0.22), shade));
         }
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        t.leaves.push(clump(at(base + height - 0.2), (profile(1.0) * 0.6).max(0.25), canopy));
+        t.shapes()
     }
 
     /// A thick, short trunk with limbs arching out, each ending in a mass of leaves, from which
     /// long curtains of leaves hang down nearly to the ground
     pub(super) fn willow(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(2.0, 3.0);
+        let height = rng.range(2.4, 3.2);
         let radius = rng.range(0.3, 0.42);
         let top = [x + rng.range(-0.4, 0.4), y + rng.range(-0.4, 0.4), base + height];
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
+        let mut t = Parts::default();
         let mut strands = Vec::new();
-        self.trunk(&mut wood, [x, y, base], top, radius * 1.2, 0.75, (WOOD, DEAD_WOOD), 5, rng);
-        let canopy = Canopy { inner: LEAVES, body: WILLOW, tip: FERN, speckle: AIR };
+        self.trunk(&mut t.wood, [x, y, base], top, radius * 1.2, 0.75, (WOOD, DEAD_WOOD), 5, rng);
+        let canopy = Canopy::new(LEAVES, WILLOW, LEAVES_LIME);
 
         let limbs = 4 + (rng.next() * 2.99) as usize;
         for i in 0..limbs {
             let angle = (i as f32 + rng.range(-0.3, 0.3)) / limbs as f32 * TAU;
             let dir = normalize([angle.cos(), angle.sin(), rng.range(0.5, 0.9)]);
             let end = add(top, scale(dir, rng.range(1.6, 2.4)));
-            wood.push(Shape::wood(top, end, radius * 0.5, radius * 0.25, WOOD));
-            self.lobe(&mut core, &mut puffs, end, rng.range(0.8, 1.1), canopy, rng);
+            t.wood.push(Shape::wood(top, end, radius * 0.5, radius * 0.25, WOOD));
+            self.lobe(&mut t, end, rng.range(0.8, 1.1), 0.85, canopy, AIR, rng);
 
             // Strands hanging down from round the mass at its end, drifting outwards a little,
             // with narrow leaves along them
@@ -417,23 +585,21 @@ impl Terrain {
                 }
             }
         }
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood.append(&mut strands);
-        wood
+        t.leaves.append(&mut strands);
+        t.shapes()
     }
 
     /// A pine: a straight trunk tapering to a spire, with whorls of branches all the way up it,
-    /// each branch a ragged bough of needles, longest at the bottom. Spruces are narrow, their
-    /// boughs drooping, firs broader and darker with level boughs. In the snow, snow lies along
-    /// the top of each bough.
+    /// each branch a bough thick with needles, lighter at their tips, longest at the bottom.
+    /// Spruces are narrow, their boughs drooping, firs broader and darker with level boughs. In the
+    /// snow, snow lies along the top of each bough.
     fn conifer(&self, x: f32, y: f32, base: f32, spruce: bool, snowy: bool, rng: &mut Rng) -> Vec<Shape> {
         let young = rng.next() < 0.15;
         let size = if young { rng.range(0.4, 0.6) } else { rng.range(0.85, 1.15) };
         let (height, crown, droop, needles) = if spruce {
-            (rng.range(8.0, 13.0), rng.range(1.5, 2.0), 0.4, (PINE, LEAVES_DARK))
+            (rng.range(8.0, 13.0), rng.range(1.5, 2.0), 0.4, Canopy::new(PINE, PINE, LEAVES_DARK))
         } else {
-            (rng.range(7.0, 11.0), rng.range(2.0, 2.7), 0.15, (LEAVES_DARK, PINE))
+            (rng.range(7.0, 11.0), rng.range(2.0, 2.7), 0.15, Canopy::new(PINE, LEAVES_DARK, LEAVES))
         };
         let (height, crown) = (height * size, crown * size);
         let radius = rng.range(0.18, 0.26) * size.max(0.6);
@@ -460,7 +626,7 @@ impl Terrain {
                 let length = reach * rng.range(0.85, 1.1);
                 let tip = [root[0] + a.cos() * length, root[1] + a.sin() * length, z - length * droop + 0.1];
                 let thick = (length * 0.3).clamp(0.2, 0.5);
-                boughs.push(Shape::capsule(root, tip, thick, 0.1, needles.0, needles.1, true));
+                boughs.push(leafy_shape(Shape::capsule(root, tip, thick, 0.1, needles.body, AIR, false), needles));
                 if snowy {
                     let up = [0.0, 0.0, thick * 0.55];
                     snow.push(Shape::capsule(add(root, up), add(tip, [0.0, 0.0, 0.08]), thick * 0.75, 0.07, SNOW, AIR, false));
@@ -469,7 +635,7 @@ impl Terrain {
             z += spacing * (1.0 - 0.45 * t) + rng.range(-0.1, 0.1);
         }
         // The spire
-        boughs.push(Shape::capsule(top, add(top, [0.0, 0.0, 0.8 * size]), 0.16, 0.04, needles.0, needles.1, true));
+        boughs.push(leafy_shape(Shape::capsule(top, add(top, [0.0, 0.0, 0.8 * size]), 0.16, 0.04, needles.body, AIR, false), needles));
         if snowy {
             snow.push(Shape::sphere(add(top, [0.0, 0.0, 0.2]), 0.14, SNOW, AIR, false));
         }
@@ -478,16 +644,15 @@ impl Terrain {
         wood
     }
 
-    /// A jungle giant: a tall trunk on buttress roots, a broad, flat-topped crown of dark leaves
+    /// A jungle giant: a tall trunk on buttress roots, a broad, flat-topped crown of glossy leaves
     /// spread wide over everything else, now and then in flower, and vines hanging down from it
     pub(super) fn jungle_tree(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
         let height = rng.range(9.0, 15.0);
         let radius = rng.range(0.35, 0.55);
         let spread = rng.range(3.0, 4.5);
         let top = [x + rng.range(-0.8, 0.8), y + rng.range(-0.8, 0.8), base + height];
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
-        self.trunk(&mut wood, [x, y, base], top, radius * 1.3, 0.6, (BARK_DARK, DEAD_WOOD), 0, rng);
+        let mut t = Parts::default();
+        self.trunk(&mut t.wood, [x, y, base], top, radius * 1.3, 0.6, (BARK_DARK, DEAD_WOOD), 0, rng);
         // Buttress roots, tall fins of wood down the foot of the trunk
         for i in 0..5 {
             let angle = i as f32 / 5.0 * TAU + rng.range(-0.4, 0.4);
@@ -495,15 +660,14 @@ impl Terrain {
             let foot = [x + angle.cos() * out, y + angle.sin() * out, base - 0.3];
             for k in 0..3 {
                 let up = [x, y, base + 0.8 + k as f32 * 0.5];
-                wood.push(Shape::wood(up, lerp3(foot, [x, y, base - 0.3], k as f32 * 0.15), radius * 0.45, 0.1, BARK_DARK));
+                t.wood.push(Shape::wood(up, lerp3(foot, [x, y, base - 0.3], k as f32 * 0.15), radius * 0.45, 0.1, BARK_DARK));
             }
         }
-        let canopy = Canopy {
-            inner: LEAVES_DARK,
-            body: LEAVES_DARK,
-            tip: LEAVES,
-            speckle: [FERN, FERN, FLOWER_RED, FLOWER_PINK, AIR][(rng.next() * 4.99) as usize],
-        };
+        let mut canopy = Canopy::new(LEAVES_DARK, LEAVES, if rng.next() < 0.4 { LEAVES_LIME } else { FERN });
+        let flower = [AIR, AIR, FLOWER_RED, FLOWER_PINK, FLOWER_YELLOW][(rng.next() * 4.99) as usize];
+        if flower != AIR {
+            canopy = canopy.speckled(flower, rng.range(14.0, 30.0));
+        }
         let around = 5 + (rng.next() * 2.99) as usize;
         let spin = rng.range(0.0, TAU);
         for i in 0..=around {
@@ -512,21 +676,19 @@ impl Terrain {
             let r = if i == around { rng.range(1.8, 2.2) } else { rng.range(1.4, 1.8) };
             let at = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] + rng.range(-0.3, 0.5) - d * 0.12];
             if i < around {
-                wood.push(Shape::wood([top[0], top[1], top[2] - 1.5], [at[0], at[1], at[2] - 0.5], 0.22, 0.1, BARK_DARK));
+                t.wood.push(Shape::wood([top[0], top[1], top[2] - 1.5], [at[0], at[1], at[2] - 0.5], 0.22, 0.1, BARK_DARK));
             }
             // Flatter than most, lying along the top of the jungle
-            self.flat_lobe(&mut core, &mut puffs, at, r, 0.6, canopy, rng);
+            self.lobe(&mut t, at, r, 0.6, canopy, AIR, rng);
         }
         for _ in 0..9 {
             let angle = rng.next() * TAU;
             let d = spread * rng.range(0.5, 1.2);
             let start = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] - 0.6];
             let end = [start[0] + rng.range(-0.2, 0.2), start[1] + rng.range(-0.2, 0.2), start[2] - rng.range(2.5, height * 0.6)];
-            wood.push(Shape::capsule(start, end, 0.07, 0.04, VINE, LEAVES_DARK, false));
+            t.wood.push(Shape::capsule(start, end, 0.07, 0.04, VINE, LEAVES_DARK, false));
         }
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        t.shapes()
     }
 
     /// A tree of the dry lands at the edge of the desert: a crooked trunk forking low into a few
@@ -536,10 +698,12 @@ impl Terrain {
         let radius = rng.range(0.16, 0.24) * size;
         let fork = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), base + rng.range(1.2, 2.0) * size];
         let crown = base + rng.range(3.8, 5.0) * size;
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
-        self.trunk(&mut wood, [x, y, base], fork, radius, 0.8, (WOOD, DEAD_WOOD), 3, rng);
-        let canopy = Canopy { inner: LEAVES_DARK, body: LEAVES, tip: WILLOW, speckle: if rng.next() < 0.25 { FLOWER_YELLOW } else { AIR } };
+        let mut t = Parts::default();
+        self.trunk(&mut t.wood, [x, y, base], fork, radius, 0.8, (WOOD, DEAD_WOOD), 3, rng);
+        let mut canopy = Canopy::new(LEAVES_DARK, LEAVES, WILLOW);
+        if rng.next() < 0.25 {
+            canopy = canopy.speckled(FLOWER_YELLOW, 40.0);
+        }
 
         let limbs = 2 + (rng.next() * 1.99) as usize;
         let spin = rng.range(0.0, TAU);
@@ -551,44 +715,41 @@ impl Terrain {
             // Crooked: out one way, then up another
             let bend = angle + rng.range(-0.6, 0.6);
             let elbow = add(lerp3(fork, end, 0.5), [bend.cos() * 0.4, bend.sin() * 0.4, -0.3]);
-            wood.push(Shape::wood(fork, elbow, radius * 0.75, radius * 0.55, WOOD));
-            wood.push(Shape::wood(elbow, end, radius * 0.55, radius * 0.3, WOOD));
+            t.wood.push(Shape::wood(fork, elbow, radius * 0.75, radius * 0.55, WOOD));
+            t.wood.push(Shape::wood(elbow, end, radius * 0.55, radius * 0.3, WOOD));
             ends.push(end);
         }
         // A wide, flat mass of leaves over each limb, and more filling out the parasol between them
         let middle = scale(ends.iter().fold([0.0; 3], |a, &e| add(a, e)), 1.0 / ends.len() as f32);
         for &end in &ends {
-            self.flat_lobe(&mut core, &mut puffs, add(end, [0.0, 0.0, 0.3]), rng.range(1.4, 1.9) * size, 0.45, canopy, rng);
+            self.lobe(&mut t, add(end, [0.0, 0.0, 0.3]), rng.range(1.4, 1.9) * size, 0.45, canopy, WOOD, rng);
         }
-        self.flat_lobe(&mut core, &mut puffs, add(middle, [rng.range(-0.5, 0.5), rng.range(-0.5, 0.5), 0.45]), rng.range(1.3, 1.7) * size, 0.45, canopy, rng);
-
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        self.lobe(&mut t, add(middle, [rng.range(-0.5, 0.5), rng.range(-0.5, 0.5), 0.45]), rng.range(1.3, 1.7) * size, 0.45, canopy, WOOD, rng);
+        t.shapes()
     }
 
     /// A smaller tree of the jungle, growing up in the shade between the giants: a slim, crooked
     /// trunk and a few masses of glossy leaves
     pub(super) fn jungle_sapling(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let canopy = Canopy { inner: LEAVES_DARK, body: LEAVES_DARK, tip: LEAVES, speckle: if rng.next() < 0.3 { FERN } else { AIR } };
+        let mut canopy = Canopy::new(LEAVES_DARK, LEAVES, if rng.next() < 0.5 { LEAVES_LIME } else { FERN });
+        if rng.next() < 0.3 {
+            canopy = canopy.speckled(FERN, 40.0);
+        }
         let height = rng.range(2.5, 4.0);
         let top = [x + rng.range(-0.5, 0.5), y + rng.range(-0.5, 0.5), base + height];
-        let mut wood = Vec::new();
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
-        self.trunk(&mut wood, [x, y, base], top, rng.range(0.1, 0.15), 0.6, (BARK_DARK, AIR), 0, rng);
+        let mut t = Parts::default();
+        self.trunk(&mut t.wood, [x, y, base], top, rng.range(0.1, 0.15), 0.6, (BARK_DARK, AIR), 0, rng);
         let spin = rng.range(0.0, TAU);
         let limbs = 2 + (rng.next() * 1.99) as usize;
         for i in 0..limbs {
             let angle = spin + i as f32 / limbs as f32 * TAU;
             let start = lerp3([x, y, base], top, rng.range(0.6, 0.85));
             let end = add(start, [angle.cos() * rng.range(0.7, 1.1), angle.sin() * rng.range(0.7, 1.1), rng.range(0.4, 0.9)]);
-            wood.push(Shape::wood(start, end, 0.07, 0.04, BARK_DARK));
-            self.flat_lobe(&mut core, &mut puffs, end, rng.range(0.7, 1.0), 0.75, canopy, rng);
+            t.wood.push(Shape::wood(start, end, 0.07, 0.04, BARK_DARK));
+            self.lobe(&mut t, end, rng.range(0.7, 1.0), 0.75, canopy, AIR, rng);
         }
-        self.flat_lobe(&mut core, &mut puffs, add(top, [0.0, 0.0, 0.3]), rng.range(0.9, 1.2), 0.75, canopy, rng);
-        wood.append(&mut core);
-        wood.append(&mut puffs);
-        wood
+        self.lobe(&mut t, add(top, [0.0, 0.0, 0.3]), rng.range(0.9, 1.2), 0.75, canopy, AIR, rng);
+        t.shapes()
     }
 
     /// A bush: a few lumpy masses of leaves huddled together, in the colors of the trees round it,
@@ -597,22 +758,20 @@ impl Terrain {
         let mut rng = Rng(r);
         let size = rng.range(0.45, 0.9);
         let flowering = rng.next() < meadow;
-        let mut canopy = if flowering || rng.next() < 0.35 {
-            Canopy { inner: LEAVES_DARK, body: LEAVES_DARK, tip: LEAVES, speckle: FLOWER_RED }
+        let canopy = if flowering {
+            let flower = [FLOWER_BLUE, FLOWER_PINK, FLOWER_WHITE, FLOWER_YELLOW][(rng.next() * 3.99) as usize];
+            GREENS[(rng.next() * 2.99) as usize].speckled(flower, rng.range(50.0, 80.0))
+        } else if rng.next() < 0.35 {
+            Canopy::new(LEAVES_DARK, LEAVES, FERN).speckled(FLOWER_RED, 22.0)
         } else {
             self.canopy(x, y, &mut rng)
         };
-        if flowering {
-            canopy.speckle = [FLOWER_BLUE, FLOWER_PINK, FLOWER_WHITE][(rng.next() * 2.99) as usize];
-            canopy.tip = canopy.speckle;
-        }
-        let (mut core, mut puffs) = (Vec::new(), Vec::new());
+        let mut t = Parts::default();
         for _ in 0..(2 + (rng.next() * 2.99) as usize) {
             let center = [x + rng.range(-0.7, 0.7) * size, y + rng.range(-0.7, 0.7) * size, ground + size * 0.4];
-            self.lobe(&mut core, &mut puffs, center, size * rng.range(0.6, 1.0), canopy, &mut rng);
+            self.lobe(&mut t, center, size * rng.range(0.6, 1.0), 1.0, canopy, AIR, &mut rng);
         }
-        core.append(&mut puffs);
-        Object::new(core, rng.0)
+        Object::new(t.shapes(), rng.0)
     }
 
     /// Where the tree in the cell `cx`, `cy` of the scatter trees are placed by would stand, if

@@ -11,10 +11,28 @@ use crate::animals::{AnimalInstance, MODEL_RES, MOVING, Model, STILL, cuboid, vo
 use crate::player::WaterLevel;
 use crate::worldgen::{World, is_passable, material::*};
 
-/// Leaves that fall
-const KINDS: [u8; 7] = [LEAVES, LEAVES_DARK, LEAVES_YELLOW, LEAVES_ORANGE, LEAVES_RED, BLOSSOM, WILLOW];
-/// One model of a single voxel for each material, see Leaves::models
-const MATERIALS: u8 = GLOW_HOLY + 1;
+/// Leaves that fall: all the shades of broad-leaved crowns, and the blossom in them. Pines keep
+/// their needles.
+const KINDS: [u8; 14] = [
+    LEAVES,
+    LEAVES_DARK,
+    LEAVES_YELLOW,
+    LEAVES_ORANGE,
+    LEAVES_RED,
+    LEAVES_LIME,
+    LEAVES_CRIMSON,
+    FERN,
+    WILLOW,
+    BLOSSOM,
+    FLOWER_RED,
+    FLOWER_YELLOW,
+    FLOWER_WHITE,
+    FLOWER_PINK,
+];
+/// One model of a single voxel for each material, see Leaves::models: up to the last material
+const MATERIALS: u8 = LEAVES_CRIMSON + 1;
+/// Leaves only fall from this many meters up at the least, so not from ferns and flowers
+const LOWEST: f64 = 1.2;
 /// Voxels per meter of a leaf: a single voxel the size of the world's
 const RES: f64 = MODEL_RES;
 /// Leaves fall within this many meters of the camera
@@ -249,24 +267,36 @@ impl Leaves {
         }
         // Down from well above the camera to the first leaves, then on through them to the air below
         let top = ((camera.z + 40.0 * vpm) as i64).min(world.size[2] as i64 - 1);
-        let mut in_leaves = None;
+        // The shades of leaves on the way down, as a crown's are lighter on top and darker inside
+        let mut shades = [AIR; 4];
+        let mut seen = 0;
         for z in (0..=top).rev() {
             let material = world.material_at(xi, yi, z);
             if KINDS.contains(&material) {
-                in_leaves = Some(material);
+                if !shades[..seen.min(4)].contains(&material) {
+                    shades[seen % 4] = material;
+                    seen += 1;
+                }
                 continue;
             }
-            match in_leaves {
-                Some(kind) => {
+            match seen {
+                0 if !is_passable(material) => return,
+                0 => {}
+                _ => {
                     if !is_passable(material) {
                         // Leaves right on the ground, a bush, or the crown sits on its trunk
                         return;
                     }
+                    let ground = (0..z).rev().find(|&g| !is_passable(world.material_at(xi, yi, g))).unwrap_or(0) as f64 + 1.0;
+                    if (z as f64 - ground) < LOWEST * vpm {
+                        // Ferns and flowers
+                        return;
+                    }
+                    let kind = shades[(random(&mut self.rng) * seen.min(4) as f64) as usize];
                     let mut height = z as f64 + 0.9;
                     // Starting out, leaves are already on their way down, anywhere between the
                     // crown and the ground
                     if anywhere {
-                        let ground = (0..z).rev().find(|&g| !is_passable(world.material_at(xi, yi, g))).unwrap_or(0) as f64 + 1.0;
                         height = ground + (height - ground) * random(&mut self.rng);
                     }
                     let position = Vector3::new(x, y, height);
@@ -276,8 +306,6 @@ impl Leaves {
                     self.leaves.push(Leaf { position, material: kind, phase, flutter, swing, velocity: None, landed: None, size: 1.0, turn: UnitQuaternion::identity(), spin: Vector3::zeros(), bounces: 0 });
                     return;
                 }
-                None if !is_passable(material) => return,
-                None => {}
             }
         }
     }

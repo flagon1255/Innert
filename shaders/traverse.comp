@@ -226,7 +226,7 @@ const uint FAR_DIRECT_INTERVAL = 16;
 const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 87;
+const uint PALETTE_SIZE = 89;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
     vec3(0.28, 0.48, 0.17), // grass
@@ -314,7 +314,9 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.80, 0.45, 1.00), // arcane
     vec3(0.45, 0.12, 0.75), // void
     vec3(0.95, 0.08, 0.12), // blood
-    vec3(1.00, 0.92, 0.60)  // holy
+    vec3(1.00, 0.92, 0.60), // holy
+    vec3(0.62, 0.88, 0.16), // lime leaves
+    vec3(0.46, 0.03, 0.06)  // crimson leaves
 );
 
 // Has to match the material ids in src\worldgen.rs
@@ -465,7 +467,7 @@ bool brickHit(uint level, uint cell, uvec3 local_coord, bool through_water) {
 bool sways(uint material) {
     return material == 8u || (material >= 13u && material <= 16u) || material == 23u || material == 27u || material == 29u
         || material == 30u || material == 35u || material == 67u || material == 12u || material == 9u || material == 10u
-        || material == 17u || material == 18u || material == 25u || material == 26u;
+        || material == 17u || material == 18u || material == 25u || material == 26u || material == 87u || material == 88u;
 }
 
 // Leaves only sway this many meters from the camera, as further off it's too small to see and
@@ -1596,13 +1598,16 @@ const uint FOLIAGE_LOW = (1u << 8) | (1u << 13) | (1u << 14) | (1u << 15) | (1u 
     | (1u << 29) | (1u << 30);
 const uint FOLIAGE_HIGH = (1u << (33 - 32)) | (1u << (35 - 32));
 
-// Has to match the material ids in src\worldgen.rs: dry grass (65), cactus (66), vines (67)
+// Has to match the material ids in src\worldgen.rs: dry grass (65), cactus (66), vines (67), lime
+// and crimson leaves (87, 88)
 const uint MAT_DRY_GRASS = 65;
 const uint MAT_VINE = 67;
+const uint MAT_LEAVES_LIME = 87;
+const uint MAT_LEAVES_CRIMSON = 88;
 
 bool isFoliage(uint material) {
     if (material >= 64)
-    return material == MAT_DRY_GRASS || material == MAT_VINE;
+    return material == MAT_DRY_GRASS || material == MAT_VINE || material == MAT_LEAVES_LIME || material == MAT_LEAVES_CRIMSON;
     return material < 32 ? (FOLIAGE_LOW & (1u << material)) != 0 : (FOLIAGE_HIGH & (1u << (material - 32))) != 0;
 }
 
