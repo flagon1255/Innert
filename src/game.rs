@@ -3996,6 +3996,11 @@ impl Game {
             Style::Hex => Some("Click to cast a hex that drifts after what's near and eats away at it, slowing it; it passes on when it dies."),
             Style::Toll => Some("Hold to raise the bell, longer for a harder toll; let go to ring out a shockwave all round."),
             Style::Glaive => Some("Swung like a polearm; its finishing blow and heavy blows loose a spell too, for mana."),
+            Style::Whirl => Some("Whirled right round, hitting everything about you. Right click brings it down overhead, a shockwave rolling out from where it lands."),
+            Style::Quake => Some("Every blow comes down on the ground and sends a shockwave rolling out; every second one, and heavy blows, hit harder and further."),
+            Style::Lob => Some("Click to lob a bomb onto the crosshair; it bounces and bursts a moment after it lands. Hold right click to see where it'll come down."),
+            Style::Arc => Some("Click to loose lightning at whatever's nearest the crosshair; it leaps on through everything near it."),
+            Style::Censer => Some("Hold to swing the censer: each swing billows out a cloud that settles on the crosshair and hangs there, hurting what's in it."),
             _ => None,
         };
         if let Some(how) = how {
@@ -4207,6 +4212,28 @@ impl Game {
                 let haft = Color32::from_rgb(130, 88, 52);
                 let family = self.library.families[weapon.family].id.as_str();
                 match weapon.kind() {
+                    // A short haft, a chain off it and a spiked ball on the end
+                    Kind::Melee if family == "flail" => {
+                        let (foot, top) = (center + vec2(-r * 0.85, r * 0.85), center + vec2(-r * 0.2, r * 0.2));
+                        painter.line_segment([foot, top], Stroke::new(r * 0.16, haft));
+                        let head = center + vec2(r * 0.45, -r * 0.45);
+                        for k in 1..6 {
+                            painter.circle_stroke(top.lerp(head, k as f32 / 6.0), r * 0.07, Stroke::new(r * 0.05, Color32::from_rgb(120, 125, 135)));
+                        }
+                        for k in 0..8 {
+                            let a = k as f32 / 8.0 * std::f32::consts::TAU;
+                            painter.line_segment([head, head + vec2(a.cos(), a.sin()) * r * 0.45], Stroke::new(r * 0.08, metal));
+                        }
+                        painter.circle_filled(head, r * 0.3, if weapon.profile.element.is_some() { glow } else { Color32::from_rgb(90, 95, 105) });
+                    }
+                    // A long haft and a great block of a head across its top
+                    Kind::Melee if family == "maul" => {
+                        let (foot, top) = (center + vec2(-r * 0.85, r * 0.85), center + vec2(r * 0.35, -r * 0.35));
+                        painter.line_segment([foot, top], Stroke::new(r * 0.14, haft));
+                        let along = vec2(r * 0.55, r * 0.55);
+                        painter.line_segment([top - along, top + along], Stroke::new(r * 0.55, Color32::from_rgb(95, 100, 110)));
+                        painter.line_segment([top - along * 0.6, top + along * 0.6], Stroke::new(r * 0.12, if weapon.profile.element.is_some() { glow } else { metal }));
+                    }
                     // A long shaft from bottom left to top right, with each one's own head on it
                     Kind::Melee if matches!(family, "axe" | "hammer" | "spear" | "halberd" | "scythe") => {
                         let (foot, top) = (center + vec2(-r * 0.8, r * 0.8), center + vec2(r * 0.6, -r * 0.6));
@@ -4267,6 +4294,16 @@ impl Game {
                         let span = if family == "katana" { 0.15 } else { 0.3 };
                         painter.line_segment([guard + vec2(-r * span, -r * span), guard + vec2(r * span, r * span)], Stroke::new(r * 0.16, Color32::from_rgb(200, 170, 80)));
                         painter.line_segment([hilt, guard], Stroke::new(r * 0.16, Color32::from_rgb(110, 70, 45)));
+                    }
+                    // A round bomb, a band round it, its fuse curling up and burning
+                    Kind::Ranged if family == "bombs" => {
+                        let body = center + vec2(-r * 0.1, r * 0.2);
+                        painter.circle_filled(body, r * 0.62, Color32::from_rgb(60, 64, 72));
+                        painter.line_segment([body + vec2(-r * 0.6, 0.0), body + vec2(r * 0.6, 0.0)], Stroke::new(r * 0.1, Color32::from_rgb(200, 150, 70)));
+                        painter.circle_filled(body + vec2(-r * 0.22, -r * 0.25), r * 0.12, glow);
+                        let fuse = [body + vec2(0.0, -r * 0.6), body + vec2(r * 0.25, -r * 0.85), body + vec2(r * 0.5, -r * 0.95)];
+                        painter.add(egui::Shape::line(fuse.to_vec(), Stroke::new(r * 0.08, Color32::from_rgb(220, 205, 170))));
+                        painter.circle_filled(fuse[2], r * 0.14, Color32::from_rgb(255, 190, 60));
                     }
                     // A crossbow seen from above, its prod across the front, a bolt in its groove
                     Kind::Ranged if weapon.profile.build.crossbow() => {
@@ -4395,6 +4432,33 @@ impl Game {
                         ));
                         painter.circle_filled(center - vec2(0.0, r * 0.45), r * 0.27, bell);
                         painter.circle_filled(center + vec2(0.0, r * 0.68), r * 0.17, glow);
+                    }
+                    // A rod forking at its top, lightning between the prongs
+                    Kind::Magic if family == "rod" => {
+                        let (foot, top) = (center + vec2(-r * 0.75, r * 0.85), center + vec2(r * 0.25, -r * 0.35));
+                        painter.line_segment([foot, top], Stroke::new(r * 0.13, wood));
+                        let bronze = Color32::from_rgb(200, 140, 70);
+                        let (a, b) = (top + vec2(-r * 0.05, -r * 0.6), top + vec2(r * 0.55, -r * 0.05));
+                        painter.line_segment([top, a], Stroke::new(r * 0.1, bronze));
+                        painter.line_segment([top, b], Stroke::new(r * 0.1, bronze));
+                        let zig = [a, a.lerp(b, 0.3) + vec2(r * 0.12, r * 0.05), a.lerp(b, 0.6) - vec2(r * 0.05, r * 0.12), b];
+                        painter.add(egui::Shape::line(zig.to_vec(), Stroke::new(r * 0.07, glow)));
+                    }
+                    // A censer hanging on its chains from a little handle, smoke rising off it
+                    Kind::Magic if family == "censer" => {
+                        let bronze = Color32::from_rgb(200, 150, 70);
+                        let handle = center + vec2(0.0, -r * 0.85);
+                        painter.line_segment([handle + vec2(0.0, -r * 0.1), handle + vec2(0.0, r * 0.25)], Stroke::new(r * 0.14, wood));
+                        let bowl = center + vec2(0.0, r * 0.45);
+                        for dx in [-0.3, 0.0, 0.3] {
+                            painter.line_segment([handle + vec2(0.0, r * 0.25), bowl + vec2(r * dx, -r * 0.2)], Stroke::new(r * 0.04, Color32::from_rgb(150, 150, 160)));
+                        }
+                        painter.circle_filled(bowl, r * 0.4, bronze);
+                        for dx in [-0.18, 0.0, 0.18] {
+                            painter.circle_filled(bowl + vec2(r * dx, r * 0.05), r * 0.07, glow);
+                        }
+                        painter.circle_filled(bowl + vec2(r * 0.55, -r * 0.4), r * 0.16, Color32::from_white_alpha(120));
+                        painter.circle_filled(bowl + vec2(r * 0.7, -r * 0.7), r * 0.12, Color32::from_white_alpha(80));
                     }
                     // A staff with a curved blade on its head
                     Kind::Magic if family == "battlestaff" => {

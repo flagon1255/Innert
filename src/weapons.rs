@@ -64,6 +64,17 @@ pub enum Style {
     Toll,
     /// A battle staff, swung like a polearm, its finishing blow loosing a spell
     Glaive,
+    /// A flail, whirled right round so its head sweeps through everything about, and brought down
+    /// overhead for a heavy blow
+    Whirl,
+    /// A maul, every blow brought down on the ground so a shockwave rolls out from it
+    Quake,
+    /// Bombs, lobbed in an arc to burst where they land
+    Lob,
+    /// A lightning rod, lightning leaping from it to what's aimed at and on through the pack
+    Arc,
+    /// A censer, swung on its chains, billowing clouds that hang where they drift
+    Censer,
 }
 
 /// How a crossbow or gun is built, and so how it's loaded, see crossbow() and gun()
@@ -279,6 +290,20 @@ pub enum Effect {
     Snare,
     /// Projectiles glancing off what they hit to the nearest other
     Ricochet,
+    /// Blows spilling over onto what's next to what they hit
+    Cleave,
+    /// Heavy blows and finishers sending a ring rolling out along the ground
+    Shockwave,
+    /// Shots splashing onto what's round what they hit, without blowing holes
+    Splash,
+    /// Hits leaving a pool of the weapon's element on the ground
+    Pool,
+    /// What it kills bursting into a cloud of its element
+    Miasma,
+    /// Hits dragging what's round them in
+    Vortex,
+    /// Blasts scattering bomblets that go off round about
+    Cluster,
 }
 
 impl Effect {
@@ -301,6 +326,13 @@ impl Effect {
             "homing" => Effect::Homing,
             "snare" => Effect::Snare,
             "ricochet" => Effect::Ricochet,
+            "cleave" => Effect::Cleave,
+            "shockwave" => Effect::Shockwave,
+            "splash" => Effect::Splash,
+            "pool" => Effect::Pool,
+            "miasma" => Effect::Miasma,
+            "vortex" => Effect::Vortex,
+            "cluster" => Effect::Cluster,
             _ => return None,
         })
     }
@@ -816,6 +848,8 @@ fn material(name: &str) -> Option<u8> {
         "jade" => TEMPLE_TEAL,
         "moss" => MOSS,
         "rock" => ROCK,
+        "clay" => CLAY,
+        "gravel" => GRAVEL,
         "glow_fire" => GLOW_FIRE,
         "glow_frost" => GLOW_FROST,
         "glow_storm" => GLOW_STORM,
@@ -1023,6 +1057,30 @@ pub enum Special {
     RuneMines,
     /// Fire leaping from what's aimed at on to whatever's near it, again and again
     Wildfire,
+    /// Rings of upheaval rolling out round the player, one after another, each wider
+    Earthquake,
+    /// A comet of ice falling where it's aimed, freezing everything round and flinging shards
+    Comet,
+    /// Bombs lobbed out round where it's aimed, each bursting into bomblets
+    ClusterBomb,
+    /// A storm hanging over where it's aimed, lightning striking what's under it again and again
+    Thunderstorm,
+    /// A bubbling bog where it's aimed, miring and poisoning what's in it
+    Mire,
+    /// A sun over where it's aimed, searing what's under it with rays, then bursting
+    Sunburst,
+    /// A wave of force tearing through everything in front, shattering what's frozen
+    Shatterwave,
+    /// A whirlwind spinning off ahead, dragging in and battering what it passes
+    Cyclone,
+    /// The ground bursting into flame under every enemy round about, one after another
+    Eruption,
+    /// A ball of lightning drifting out ahead, lashing everything near it
+    BallLightning,
+    /// A swarm going from one enemy to the next, stinging everything round it
+    Swarm,
+    /// Boulders tumbling out ahead in a wide front, bowling over what's in their way
+    Avalanche,
 }
 
 impl Special {
@@ -1070,6 +1128,18 @@ impl Special {
             Special::Prism => "Prismatic Sweep",
             Special::RuneMines => "Rune Mines",
             Special::Wildfire => "Wildfire",
+            Special::Earthquake => "Earthquake",
+            Special::Comet => "Frost Comet",
+            Special::ClusterBomb => "Cluster Volley",
+            Special::Thunderstorm => "Thunderstorm",
+            Special::Mire => "Poison Mire",
+            Special::Sunburst => "Sunburst",
+            Special::Shatterwave => "Shatterwave",
+            Special::Cyclone => "Cyclone",
+            Special::Eruption => "Eruption",
+            Special::BallLightning => "Ball Lightning",
+            Special::Swarm => "Locust Swarm",
+            Special::Avalanche => "Avalanche",
         }
     }
 
@@ -1117,6 +1187,18 @@ impl Special {
             Special::Prism => "A beam of every color swept across everything ahead, burning, freezing and shocking it.",
             Special::RuneMines => "Six runes scattered round where you aim, each going off when an enemy comes near, for 20 s.",
             Special::Wildfire => "What you aim at bursts into flame, and the fire leaps on to whatever's near it, again and again.",
+            Special::Earthquake => "Slam the ground: three rings of upheaval roll out round you, each wider, staggering everything they pass.",
+            Special::Comet => "A comet of ice falls where you aim, freezing everything within 6 meters and flinging shards out all round.",
+            Special::ClusterBomb => "Five bombs arc out round where you aim, each bursting into a scatter of bomblets.",
+            Special::Thunderstorm => "A storm gathers where you aim for 6 s, lightning striking whatever's under it again and again.",
+            Special::Mire => "The ground where you aim turns to a bubbling bog for 7 s, miring and poisoning everything in it.",
+            Special::Sunburst => "A sun kindles over where you aim, searing everything under it with rays for 2.5 s, then bursts.",
+            Special::Shatterwave => "A wave of force tears through everything in front, throwing it back; whatever's frozen shatters.",
+            Special::Cyclone => "A whirlwind spins off ahead of you for 4 s, dragging in and battering everything it passes, then flings it out.",
+            Special::Eruption => "The ground bursts into flame under every enemy within 16 meters, one after another, setting them alight.",
+            Special::BallLightning => "A crackling ball of lightning drifts out ahead for 5 s, lashing everything within 6 meters of it.",
+            Special::Swarm => "A swarm pours out and goes from one enemy to the next for 7 s, stinging and poisoning everything round it.",
+            Special::Avalanche => "Boulders tumble out ahead of you in a wide front, bowling over and battering everything in their way.",
         }
     }
 }
@@ -1151,9 +1233,9 @@ impl Profile {
         self.synergies.iter().find(|s| s.synergy == synergy).and_then(|s| s.params.get(name).copied()).unwrap_or(default)
     }
 
-    /// What it shoots, for a bow, crossbow or gun
+    /// What it shoots, for a bow, crossbow or gun. Bombs are thrown, and take no ammo.
     pub fn shot(&self) -> Option<Shot> {
-        (self.kind == Kind::Ranged).then(|| self.build.shot())
+        (self.kind == Kind::Ranged && self.style != Style::Lob).then(|| self.build.shot())
     }
 
     /// How many shots a crossbow or gun holds loaded
@@ -1409,6 +1491,11 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
             plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
+        // A bomb on the palm, a fresh one each throw
+        Kind::Ranged if family.style == Style::Lob => {
+            let (parts, grip, tip) = bomb(v("casing"), v("fuse"), v("filling"), v("core"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
         Kind::Ranged if family.build.crossbow() => crossbow(family, v("prod"), v("stock"), v("lock"), v("sight"), v("core")),
         Kind::Ranged if family.build != Build::None => gun(family, v("barrel"), v("stock"), v("lock"), v("core")),
         Kind::Ranged => {
@@ -1437,6 +1524,14 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
         }
         Kind::Magic if family.style == Style::Toll => {
             let (parts, grip, tip) = bell(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.style == Style::Arc => {
+            let (parts, grip, tip) = rod(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
+        }
+        Kind::Magic if family.style == Style::Censer => {
+            let (parts, grip, tip) = censer(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
         Kind::Magic => {
@@ -1644,6 +1739,353 @@ fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (
     (p, v3(0.0, 0.0, 0.09), v3(0.0, 0.0, mouth))
 }
 
+/// The metal a part made of `m` is drawn in where it has to be metal: bronze for wood, cloth and
+/// the like
+fn metal_or_bronze(m: u8) -> u8 {
+    match m {
+        WOOD | BIRCH_BARK | BARK_DARK | LEATHER | LINEN | CLOTH | FUR_WHITE | FUR_TAN | LEAVES | MOSS => BRONZE,
+        m => m,
+    }
+}
+
+/// `n` directions spread evenly over a sphere
+fn sphere_points(n: usize) -> Vec<[f64; 3]> {
+    (0..n)
+        .map(|k| {
+            let z = 1.0 - 2.0 * (k as f64 + 0.5) / n as f64;
+            let r = (1.0 - z * z).sqrt();
+            let a = k as f64 * 2.399_963;
+            [a.cos() * r, a.sin() * r, z]
+        })
+        .collect()
+}
+
+/// A flail's head on its chain, rising from a cap on the end of the haft at `z_top`: the chain
+/// flung out straight, as it is while it's whirled, its links turned one way then the other, and
+/// on its end a spiked ball, a star of long spikes, two balls on two chains, a caged brazier
+/// glowing inside, or a lump of stone bound with iron. Returns the middle of the head.
+fn flail_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> Vector3<f64> {
+    let chain = v.length.unwrap_or(0.3);
+    let shape = v.shape.as_deref().unwrap_or("flail");
+    let twin = shape == "flail_twin";
+    let r = v.width.unwrap_or(0.14) * 0.5 * if twin { 0.72 } else { 1.0 };
+    let body = mat(&v.material, if shape == "flail_stone" { ROCK } else { DARK_STEEL });
+    let spikes = mat(&v.edge, STEEL);
+    let links = mat(&v.accent, DARK_STEEL);
+    let base = z_top + 0.015;
+    let offsets: &[f64] = if twin { &[-0.06, 0.06] } else { &[0.0] };
+    let mut middle = Vector3::zeros();
+    for &off in offsets {
+        let c = [off, 0.0, base + chain + r];
+        // The head first, so its spikes and bands show over it
+        match shape {
+            "flail_brazier" => {
+                let glow = mat(&v.gem, infuse.unwrap_or(GLOW_FIRE));
+                for k in 0..5 {
+                    let a = k as f64 / 5.0 * TAU;
+                    let points: Vec<[f64; 3]> = (0..=8)
+                        .map(|j| {
+                            let b = -PI * 0.5 + PI * j as f64 / 8.0;
+                            [c[0] + a.cos() * b.cos() * r * 1.06, c[1] + a.sin() * b.cos() * r * 1.06, c[2] + b.sin() * r * 1.06]
+                        })
+                        .collect();
+                    curve(p, &points, 0.006, 0.006, body);
+                }
+                ring(p, [c[0], c[1], c[2] + r * 0.2], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.08, 0.006, spikes);
+                p.push(ball(c, r * 0.84, glow));
+            }
+            "flail_stone" => {
+                for w in [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+                    ring(p, c, [1.0, 0.0, 0.0], w, r * 1.02, 0.007, spikes);
+                }
+                let mut seed = 0x5707;
+                for k in 0..6 {
+                    let d = sphere_points(6)[k];
+                    let s = 0.45 + 0.15 * random(&mut seed);
+                    p.push(ball([c[0] + d[0] * r * 0.5, c[1] + d[1] * r * 0.5, c[2] + d[2] * r * 0.5], r * s, if k % 2 == 0 { GRAVEL } else { body }));
+                }
+                p.push(ellipsoid(c, [r * 1.05, r * 0.92, r], body));
+            }
+            _ => {
+                let star = shape == "flail_star";
+                for (k, d) in sphere_points(if star { 8 } else { 14 }).into_iter().enumerate() {
+                    let long = if star { 2.1 } else if k % 2 == 0 { 1.55 } else { 1.4 };
+                    let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
+                    p.push(limb(at(0.8), at(long), if star { 0.016 } else { 0.012 }, 0.002, spikes));
+                }
+                if star {
+                    for d in sphere_points(12) {
+                        p.push(ball([c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r], 0.009, spikes));
+                    }
+                }
+                p.push(ball(c, r, body));
+            }
+        }
+        // The chain, from the cap out to the head
+        let along = v3(off, 0.0, chain);
+        let d = along.normalize();
+        let across = [d.z, 0.0, -d.x];
+        let n = ((chain / 0.026).round() as usize).max(3);
+        for k in 0..n {
+            let at = v3(0.0, 0.0, base) + along * ((k as f64 + 0.5) / n as f64);
+            let w = if k % 2 == 0 { across } else { [0.0, 1.0, 0.0] };
+            ring(p, [at.x, at.y, at.z], [d.x, d.y, d.z], w, 0.015, 0.0042, links);
+        }
+        middle += v3(c[0], c[1], c[2]);
+    }
+    // A cap on the end of the haft, a ring through it the chain hangs from
+    ring(p, [0.0, 0.0, base], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
+    p.push(limb([0.0, 0.0, z_top - 0.045], [0.0, 0.0, z_top + 0.008], 0.021, 0.017, links));
+    middle / offsets.len() as f64
+}
+
+/// A maul's great head across the end of its haft at `z_top`, its striking faces ±x: a block of
+/// iron bound with bands near each face, an anvil with a horn out the back, or a boulder strapped
+/// on with iron. Runes glow on its flats if it's infused. Returns the middle of its front face.
+fn maul_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> Vector3<f64> {
+    let length = v.length.unwrap_or(0.22);
+    let w = v.width.unwrap_or(0.44) * 0.5;
+    let d = v.thickness.unwrap_or(0.19) * 0.5;
+    let body = mat(&v.material, DARK_STEEL);
+    let bands = mat(&v.edge, STEEL);
+    let rune = infuse.or_else(|| v.fuller.as_deref().and_then(material));
+    let lo = z_top - length * 0.55;
+    let hi = lo + length;
+    let zc = lo + length * 0.5;
+    // A collar where the haft goes in
+    p.push(limb([0.0, 0.0, lo - 0.07], [0.0, 0.0, lo + 0.01], 0.022, 0.03, bands));
+    match v.shape.as_deref().unwrap_or("maul") {
+        "maul_boulder" => {
+            let stone = mat(&v.material, ROCK);
+            // Iron straps over it, and glowing cracks if it's infused, first so they show
+            for y in [-d * 0.45, d * 0.45] {
+                curve(p, &[[-w * 0.98, y, zc], [-w * 0.65, y, hi + 0.01], [0.0, y, hi + 0.035], [w * 0.65, y, hi + 0.01], [w * 0.98, y, zc]], 0.011, 0.011, bands);
+            }
+            if let Some(g) = rune {
+                for s in [-1.0, 1.0] {
+                    curve(p, &[[-w * 0.6, s * d * 1.02, zc - length * 0.2], [-w * 0.1, s * d * 1.08, zc + length * 0.1], [w * 0.35, s * d * 1.04, zc - length * 0.05], [w * 0.7, s * d * 0.98, zc + length * 0.15]], 0.008, 0.005, g);
+                }
+            }
+            let mut seed = 0xb0a1;
+            for k in 0..7 {
+                let a = k as f64 / 7.0 * TAU;
+                let at = [a.cos() * w * 0.6, a.sin() * d * 0.7, zc + (random(&mut seed) - 0.5) * length * 0.6];
+                p.push(ball(at, d * (0.55 + 0.25 * random(&mut seed)), if k % 3 == 0 { GRAVEL } else { stone }));
+            }
+            p.push(ellipsoid([0.0, 0.0, zc], [w, d * 1.1, length * 0.6], stone));
+        }
+        "maul_anvil" => {
+            if let Some(g) = rune {
+                for s in [-1.0, 1.0] {
+                    p.push(cuboid([-w * 0.1, s * (d + 0.002) - 0.004, zc - 0.005], [w * 0.8, s * (d + 0.002) + 0.004, zc + 0.005], g));
+                }
+            }
+            // The flat face out front, plated, a horn tapering off the back, a waist under
+            p.push(cuboid([w - 0.03, -d - 0.008, lo - 0.008], [w + 0.006, d + 0.008, hi + 0.008], bands));
+            p.push(limb([-w * 0.15, 0.0, zc + length * 0.1], [-w - 0.13, 0.0, zc + length * 0.3], length * 0.42, 0.012, body));
+            p.push(cuboid([-w * 0.2, -d, lo], [w, d, hi], body));
+            p.push(cuboid([-w * 0.05, -d * 0.7, lo - 0.045], [w * 0.75, d * 0.7, lo], body));
+        }
+        _ => {
+            if let Some(g) = rune {
+                for s in [-1.0, 1.0] {
+                    let y = s * (d + 0.002);
+                    p.push(cuboid([-w * 0.45, y - 0.004, zc - 0.005], [w * 0.45, y + 0.004, zc + 0.005], g));
+                    for x in [-w * 0.3, 0.0, w * 0.3] {
+                        p.push(cuboid([x - 0.006, y - 0.004, lo + length * 0.2], [x + 0.006, y + 0.004, hi - length * 0.2], g));
+                    }
+                }
+            }
+            for s in [-1.0, 1.0] {
+                // A band round it near each face, then the face itself, a little proud
+                let (a, b) = (s * (w - 0.075), s * (w - 0.045));
+                p.push(cuboid([a.min(b), -d - 0.008, lo - 0.008], [a.max(b), d + 0.008, hi + 0.008], bands));
+                let (a, b) = (s * (w - 0.02), s * (w + 0.008));
+                p.push(cuboid([a.min(b), -d - 0.004, lo - 0.004], [a.max(b), d + 0.004, hi + 0.004], bands));
+            }
+            p.push(cuboid([-w, -d, lo], [w, d, hi], body));
+        }
+    }
+    v3(w, 0.0, zc)
+}
+
+/// A bomb held up on the palm: an iron ball with glowing vents, a clay firepot, a glass flask, a
+/// bundle of charges or an iron cage, what fills it glowing out through it, a fuse curling up out
+/// of its top and burning at its end, and its core's gem set in its side. Returns its parts,
+/// where it's held, and the burning end of its fuse.
+fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let shape = casing.shape.as_deref().unwrap_or("iron");
+    let r = casing.size.unwrap_or(0.062);
+    let shell = mat(&casing.material, match shape {
+        "pot" => CLAY,
+        "bundle" => TEMPLE_RED,
+        "flask" => CRYSTAL,
+        _ => DARK_STEEL,
+    });
+    let trim = mat(&casing.accent, BRONZE);
+    let glow = mat(&filling.material, GLOW_FIRE);
+    let c = [0.0, 0.0, r + 0.005];
+    let neck = match shape {
+        "pot" | "flask" => c[2] + r * 1.1 + 0.03,
+        "bundle" => c[2] + r * 1.3,
+        _ => c[2] + r + 0.014,
+    };
+    // The fuse, its end burning, first so its spark shows
+    let fl = fuse.length.unwrap_or(0.07);
+    let curl = fuse.width.unwrap_or(0.025);
+    let end = [curl, 0.0, neck + fl];
+    p.push(ball(end, 0.01, mat(&fuse.gem, GLOW_FIRE)));
+    curve(&mut p, &[[0.0, 0.0, neck - 0.012], [curl * 0.2, 0.0, neck + fl * 0.45], [curl * 0.7, 0.0, neck + fl * 0.8], end], 0.0045, 0.0038, mat(&fuse.material, LINEN));
+    if let Some(g) = core.gem.as_deref().and_then(material) {
+        p.push(ball([0.0, -r * 0.96, c[2]], core.size.unwrap_or(0.02).clamp(0.01, 0.016), g));
+    }
+    match shape {
+        // A fat clay belly, a neck, glowing pitch at its mouth and a cord tied round it
+        "pot" => {
+            p.push(ball([0.0, 0.0, neck - 0.012], 0.017, glow));
+            ring(&mut p, [0.0, 0.0, neck - 0.006], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.022, 0.006, shell);
+            ring(&mut p, [0.0, 0.0, c[2] + r * 0.3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.97, 0.006, trim);
+            p.push(limb([0.0, 0.0, c[2] + r * 0.6], [0.0, 0.0, neck - 0.006], 0.028, 0.02, shell));
+            p.push(ellipsoid(c, [r, r, r * 1.08], shell));
+        }
+        // What fills it glowing through the glass, a cork in its neck, rims round its shoulder
+        "flask" => {
+            p.push(limb([0.0, 0.0, neck - 0.03], [0.0, 0.0, neck], 0.0135, 0.013, WOOD));
+            ring(&mut p, [0.0, 0.0, c[2] + r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.92, 0.006, trim);
+            p.push(limb([0.0, 0.0, c[2] + r * 0.7], [0.0, 0.0, neck - 0.028], 0.017, 0.014, shell));
+            p.push(ball(c, r, glow));
+        }
+        // Three charges bound together, their ends glowing
+        "bundle" => {
+            let at = |k: usize| {
+                let a = k as f64 / 3.0 * TAU;
+                (a.cos() * r * 0.5, a.sin() * r * 0.5)
+            };
+            for k in 0..3 {
+                let (x, y) = at(k);
+                p.push(ball([x, y, c[2] + r * 1.22], r * 0.3, glow));
+            }
+            for z in [c[2] - r * 0.5, c[2] + r * 0.6] {
+                ring(&mut p, [0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.98, 0.006, trim);
+            }
+            for k in 0..3 {
+                let (x, y) = at(k);
+                p.push(limb([x, y, c[2] - r * 0.98], [x, y, c[2] + r * 1.2], r * 0.46, r * 0.46, shell));
+            }
+        }
+        // An iron cage, the charge inside glowing out between its bars
+        "cage" => {
+            for k in 0..4 {
+                let a = k as f64 / 4.0 * TAU;
+                let points: Vec<[f64; 3]> = (0..=8)
+                    .map(|j| {
+                        let b = -PI * 0.5 + PI * j as f64 / 8.0;
+                        [a.cos() * b.cos() * r * 1.03, a.sin() * b.cos() * r * 1.03, c[2] + b.sin() * r * 1.03]
+                    })
+                    .collect();
+                curve(&mut p, &points, 0.0055, 0.0055, shell);
+            }
+            ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.05, 0.006, trim);
+            p.push(limb([0.0, 0.0, c[2] + r * 0.9], [0.0, 0.0, neck], 0.014, 0.012, shell));
+            p.push(ball(c, r * 0.86, glow));
+        }
+        // An iron ball, vents round it glowing with what's in it, a band and a neck
+        _ => {
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU + 0.3;
+                p.push(ball([a.cos() * r * 0.93, a.sin() * r * 0.93, c[2] + r * 0.25], 0.011, glow));
+            }
+            ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r, 0.006, trim);
+            p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.016, 0.014, trim));
+            p.push(ball(c, r, shell));
+        }
+    }
+    (p, v3(0.0, 0.0, r * 0.55), v3(end[0], end[1], end[2]))
+}
+
+/// A lightning rod: a long shaft, a coil wound round its upper half, a wrap of its binding where
+/// it's held, and at its top a fork of two prongs of its focus, the crystal set where they part
+/// and their tips glowing with it. Returns its parts, where it's held, and the point between the
+/// prongs' tips, where lightning leaves it.
+fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let top = 0.92;
+    let wood = mat(&shaft.material, WOOD);
+    let metal = metal_or_bronze(mat(&focus.material, BRONZE));
+    let coil = metal_or_bronze(mat(&binding.accent, BRONZE));
+    let wrap = mat(&binding.material, LEATHER);
+    let gem = mat(&crystal.gem, CRYSTAL);
+    p.push(ball([0.0, 0.0, top + 0.03], crystal.size.unwrap_or(0.05).clamp(0.02, 0.034), gem));
+    let spread = match focus.shape.as_deref().unwrap_or("") {
+        "antlers" | "crescent" | "horns" | "crook" => 0.085,
+        _ => 0.065,
+    };
+    for s in [-1.0, 1.0] {
+        let tip = [s * spread * 0.7, 0.0, top + 0.25];
+        p.push(ball(tip, 0.011, gem));
+        curve(&mut p, &[[0.0, 0.0, top - 0.01], [s * spread * 0.85, 0.0, top + 0.07], [s * spread, 0.0, top + 0.16], tip], 0.012, 0.005, metal);
+    }
+    p.push(limb([0.0, 0.0, top - 0.06], [0.0, 0.0, top + 0.01], 0.021, 0.025, metal));
+    // The coil, six turns round the upper half
+    let steps = 96;
+    for k in 0..=steps {
+        let t = k as f64 / steps as f64;
+        let a = t * 6.0 * TAU;
+        p.push(ball([a.cos() * 0.019, a.sin() * 0.019, 0.5 + t * (top - 0.58)], 0.0055, coil));
+    }
+    for z in [0.3, 0.44] {
+        p.push(limb([0.0, 0.0, z - 0.008], [0.0, 0.0, z + 0.008], 0.02, 0.02, coil));
+    }
+    p.push(limb([0.0, 0.0, 0.3], [0.0, 0.0, 0.44], 0.0185, 0.0185, wrap));
+    p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.06], 0.012, 0.017, DARK_STEEL));
+    p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.015, 0.017, wood));
+    (p, v3(0.0, 0.0, 0.37), v3(0.0, 0.0, top + 0.22))
+}
+
+/// A censer hanging on three chains from a short handle held upright: a pierced bowl, its crystal
+/// glowing out through the holes, a band of its binding round its rim, a domed lid with a finial.
+/// Returns its parts, where it's held, and the middle of its bowl, where its smoke comes from.
+fn censer(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
+    let mut p = Vec::new();
+    let wood = mat(&shaft.material, WOOD);
+    let metal = metal_or_bronze(mat(&focus.material, BRONZE));
+    let gem = mat(&crystal.gem, CRYSTAL);
+    let band = match mat(&binding.material, GOLD) {
+        WOOD | BIRCH_BARK | BARK_DARK => GOLD,
+        m => m,
+    };
+    let r = 0.06;
+    let c = [0.0, 0.0, -0.4];
+    // The holes first, so what burns inside glows out through them
+    for (row, (up, out)) in [(0.38, 0.92), (-0.12, 0.99)].into_iter().enumerate() {
+        for k in 0..8 {
+            let a = (k as f64 + 0.5 * row as f64) / 8.0 * TAU;
+            p.push(ball([a.cos() * r * out, a.sin() * r * out, c[2] + r * up], 0.0105, gem));
+        }
+    }
+    ring(&mut p, [0.0, 0.0, c[2] + r * 0.12], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.02, 0.007, band);
+    p.push(ball([0.0, 0.0, c[2] + r * 1.05], 0.012, metal));
+    p.push(ellipsoid([0.0, 0.0, c[2] + r * 0.35], [r * 0.92, r * 0.92, r * 0.7], metal));
+    p.push(ellipsoid(c, [r, r, r * 0.8], metal));
+    p.push(limb([0.0, 0.0, c[2] - r * 0.7], [0.0, 0.0, c[2] - r * 1.0], 0.022, 0.03, metal));
+    // Three chains from its rim up to a ring under the handle, beads of metal
+    let top = [0.0, 0.0, -0.035];
+    for k in 0..3 {
+        let a = k as f64 / 3.0 * TAU + 0.5;
+        let from = [a.cos() * r * 0.95, a.sin() * r * 0.95, c[2] + r * 0.15];
+        let n = 26;
+        for j in 0..=n {
+            let t = j as f64 / n as f64;
+            p.push(ball([from[0] * (1.0 - t), from[1] * (1.0 - t), from[2] + (top[2] - from[2]) * t], 0.0042, metal));
+        }
+    }
+    ring(&mut p, top, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.016, 0.005, metal);
+    p.push(ball([0.0, 0.0, 0.175], 0.016, metal));
+    p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, 0.165], 0.012, 0.014, wood));
+    (p, v3(0.0, 0.0, 0.07), Vector3::from(c))
+}
+
 fn v3(x: f64, y: f64, z: f64) -> Vector3<f64> {
     Vector3::new(x, y, z)
 }
@@ -1696,6 +2138,8 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
         shape @ ("hammer" | "mace" | "spiked") => hammer_head(&mut p, blade, z_top, shape),
         "scythe" => scythe_head(&mut p, blade, z_top),
         "halberd" => halberd_head(&mut p, blade, z_top, infuse),
+        shape if shape.starts_with("flail") => flail_head(&mut p, blade, z_top, infuse),
+        shape if shape.starts_with("maul") => maul_head(&mut p, blade, z_top, infuse),
         _ => {
             // A spearhead sits in a socket on the end of its haft
             if !family.guard {
@@ -3340,8 +3784,16 @@ pub const SLOT_HELD_QUARREL: usize = SLOT_QUARREL + QUARREL_HEADS;
 pub const SLOT_SHOT: usize = SLOT_HELD_QUARREL + QUARREL_HEADS;
 /// Puffs of smoke, white powder smoke without an element, each element's its own color
 pub const SLOT_SMOKE: usize = SLOT_SHOT + 1;
+/// Bombs thrown, their vents glowing with each element, or with fire without one
+pub const SLOT_BOMB: usize = SLOT_SMOKE + 1;
+/// Great billows of cloud, well over a meter across, each element's color: what a censer leaves
+/// hanging, a storm's thunderheads, a mire's haze
+pub const SLOT_CLOUD: usize = SLOT_BOMB + 1;
+/// Puddles a meter round lying flat on the ground round 0, of what each element leaves: mud
+/// without one, embers, ice, venom and the rest. Pools are drawn with these, never painted on.
+pub const SLOT_PUDDLE: usize = SLOT_CLOUD + 1;
 /// After the sets: the right arm, the left arm, a boulder, then spikes of ice bursting up
-pub const ARMS: usize = (SLOT_SMOKE + 1) * ELEMENT_LOOKS;
+pub const ARMS: usize = (SLOT_PUDDLE + 1) * ELEMENT_LOOKS;
 pub const BOULDER: usize = ARMS + 2;
 pub const ICE_BURST: usize = BOULDER + 1;
 /// A pillar of light, standing on 0
@@ -3362,9 +3814,13 @@ pub const SHELL: usize = MUZZLE + 1;
 pub const NET: usize = SHELL + 1;
 /// A rune a meter across glowing on the ground, flat round 0
 pub const RUNE: usize = NET + 1;
+/// A whirlwind of dust and leaves twisting up three meters, flaring out, standing on 0
+pub const TWISTER: usize = RUNE + 1;
+/// A ring of earth and rubble heaved up a meter round, flat round 0: a shockwave's front
+pub const WAVE: usize = TWISTER + 1;
 /// Then the stretches of lash a whip's lash is drawn with, see LashLook: a model as thick as each
 /// of LASH_TAPERS for each of the LASH_SETS, then each of the CRACKERS for its tip
-pub const LASH_SEGMENTS: usize = RUNE + 1;
+pub const LASH_SEGMENTS: usize = WAVE + 1;
 pub const LASH_CRACKERS: usize = LASH_SEGMENTS + LASH_SETS * LASH_TAPERS.len();
 
 /// An arrow along +x with its nock at 0, at `res` voxels per meter: with arrowhead `head` (see
@@ -3563,6 +4019,82 @@ fn smoke(element: Option<Element>, seed: u32) -> Vec<Part> {
     p
 }
 
+/// A bomb in flight, its middle at 0: an iron ball, vents round it glowing with `element`, or
+/// with fire, a band round it, and its fuse sputtering out of the top
+fn flying_bomb(element: Option<Element>) -> Vec<Part> {
+    let glow = element.map_or(GLOW_FIRE, Element::glow);
+    let r = 0.06;
+    let mut p = vec![ball([0.012, 0.0, r + 0.05], 0.012, GLOW_FIRE), limb([0.0, 0.0, r], [0.01, 0.0, r + 0.045], 0.006, 0.005, LINEN)];
+    for k in 0..6 {
+        let a = k as f64 / 6.0 * TAU;
+        p.push(ball([a.cos() * r * 0.92, a.sin() * r * 0.92, r * 0.3 * if k % 2 == 0 { 1.0 } else { -1.0 }], 0.013, glow));
+    }
+    ring(&mut p, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r, 0.008, BRONZE);
+    p.push(ball([0.0, 0.0, 0.0], r, DARK_STEEL));
+    p
+}
+
+/// A puddle a meter round lying flat round 0, lumpy at its edge, of what `element` leaves on the
+/// ground: glowing spots of it on what it lies on, charred ground with embers for fire, ice with
+/// frost round it, venom on moss, mud without an element
+fn puddle(element: Option<Element>, seed: u32) -> Vec<Part> {
+    use Element::*;
+    let (bed, spots) = match element {
+        None => (BARK_DARK, DIRT),
+        Some(Fire) => (BARK_DARK, GLOW_FIRE),
+        Some(Frost) => (ICE, FOAM),
+        Some(Storm) => (BARK_DARK, GLOW_STORM),
+        Some(Poison) => (MOSS, GLOW_POISON),
+        Some(Arcane) => (CRYSTAL, GLOW_ARCANE),
+        Some(Void) => (OBSIDIAN, GLOW_VOID),
+        Some(Blood) => (CLOTH, GLOW_BLOOD),
+        Some(Holy) => (GOLD, GLOW_HOLY),
+    };
+    let mut seed = seed;
+    let mut p = Vec::new();
+    // Spots of it a little proud of the bed, first so they show
+    for _ in 0..9 {
+        let a = random(&mut seed) * TAU;
+        let r = random(&mut seed).sqrt() * 0.75;
+        let s = 0.08 + 0.1 * random(&mut seed);
+        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.02], [s, s * (0.6 + 0.4 * random(&mut seed)), 0.035], spots));
+    }
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.5;
+        let r = 0.45 + 0.15 * random(&mut seed);
+        let s = 0.35 + 0.15 * random(&mut seed);
+        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [s, s, 0.03], bed));
+    }
+    p.push(ellipsoid([0.0, 0.0, 0.0], [0.6, 0.6, 0.035], bed));
+    p
+}
+
+/// A whirlwind: strands of dust twisting up three meters, narrow at its foot and flaring out
+/// above, leaves caught up in it, standing on 0
+fn twister() -> Vec<Part> {
+    let mut p = Vec::new();
+    let mut seed = 0x7a15;
+    for _ in 0..12 {
+        let t = 0.2 + 0.75 * random(&mut seed);
+        let a = random(&mut seed) * TAU;
+        let r = 0.2 + 1.05 * t * t;
+        p.push(ball([a.cos() * r, a.sin() * r, t * 3.0], 0.09, if random(&mut seed) < 0.5 { LEAVES } else { BARK_DARK }));
+    }
+    for strand in 0..6 {
+        let a0 = strand as f64 / 6.0 * TAU;
+        let points: Vec<[f64; 3]> = (0..=16)
+            .map(|k| {
+                let t = k as f64 / 16.0;
+                let a = a0 + t * 1.4 * TAU;
+                let r = 0.18 + 1.05 * t * t;
+                [a.cos() * r, a.sin() * r, t * 3.0]
+            })
+            .collect();
+        curve(&mut p, &points, 0.07, 0.17, [FUR_WHITE, FUR_GRAY, CLAY][strand % 3]);
+    }
+    p
+}
+
 /// The arrow, shot spell and spark models, in sets of ELEMENT_LOOKS: without an element, then
 /// one for each element, with their anchors. See the SLOT_ constants for which set is where. Arrows
 /// and spells fly along +x, arrows with their nock at 0. Then the right arm and the left, see
@@ -3628,6 +4160,17 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     }
     for (k, &element) in looks.iter().enumerate() {
         models.push(voxelize(&smoke(element, 0x5e0c + k as u32), SMOKE_RES));
+    }
+    for &element in &looks {
+        models.push(voxelize(&flying_bomb(element), BOMB_RES));
+    }
+    // Billows: a puff of smoke, much bigger, lumpier
+    for (k, &element) in looks.iter().enumerate() {
+        let p: Vec<Part> = smoke(element, 0xc10d + k as u32).iter().map(|p| p.scaled(7.5)).collect();
+        models.push(voxelize(&p, CLOUD_RES));
+    }
+    for (k, &element) in looks.iter().enumerate() {
+        models.push(voxelize(&puddle(element, 0x9dd1 + k as u32), PUDDLE_RES));
     }
     models.push(voxelize(&arm(false), ARM_RES));
     models.push(voxelize(&arm(true), ARM_RES));
@@ -3732,6 +4275,19 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         p.push(ball([c.cos() * 0.62, c.sin() * 0.62, 0.0], 0.04, GLOW_HOLY));
     }
     models.push(voxelize(&p, RING_RES));
+    models.push(voxelize(&twister(), MODEL_RES));
+    // A shockwave's front: lumps of earth and stone heaved up in a ring, dust over them
+    let mut seed = 0x3a7e;
+    let mut p = Vec::new();
+    for k in 0..90 {
+        let a = (k as f64 + random(&mut seed) * 0.6) / 90.0 * TAU;
+        let r = 1.0 + (random(&mut seed) - 0.5) * 0.08;
+        let dust = k % 5 == 0;
+        let size = if dust { 0.05 } else { 0.028 + 0.025 * random(&mut seed) };
+        let z = if dust { 0.06 } else { size * 0.5 };
+        p.push(ball([a.cos() * r, a.sin() * r, z], size, if dust { FUR_WHITE } else { [DIRT, GRAVEL, ROCK, DIRT][k % 4] }));
+    }
+    models.push(voxelize(&p, RING_RES));
     // A whip's lash: a stretch of it in each set at each thickness, then the crackers
     for set in 0..LASH_SETS {
         for radius in LASH_TAPERS {
@@ -3759,6 +4315,10 @@ pub const ARM_RES: f64 = 128.0;
 pub const SHOT_RES: f64 = 64.0;
 pub const SMOKE_RES: f64 = 48.0;
 pub const MUZZLE_RES: f64 = 96.0;
+/// Bombs as fine as shells, and billows coarse, as they're big
+pub const BOMB_RES: f64 = 64.0;
+pub const CLOUD_RES: f64 = 20.0;
+pub const PUDDLE_RES: f64 = 24.0;
 
 /// A gloved hand in a fist round z, its forearm in a leather bracer and a sleeve reaching back
 /// along -y. The left hand has its thumb the other way.
@@ -3923,7 +4483,7 @@ mod tests {
         }
         // Every special attack is on some part, so they turn up in loot and shops
         let on_parts: BTreeSet<String> = library.components.iter().filter_map(|c| c.special).map(|s| s.name().to_owned()).collect();
-        assert!(on_parts.len() >= 42, "only {} special attacks are on parts", on_parts.len());
+        assert!(on_parts.len() >= 54, "only {} special attacks are on parts", on_parts.len());
         let mut found = BTreeSet::new();
         for seed in 0..40_000 {
             if let Some(special) = library.special_of(seed, 8.0) {
@@ -3983,6 +4543,70 @@ mod tests {
         // The new effects are there to be had
         for id in ["snare", "ricochet"] {
             assert!(library.effects.iter().any(|e| e.id == id && e.effect.is_some()), "{id}");
+        }
+    }
+
+    #[test]
+    fn area_weapons_are_each_built_and_used_their_own_way() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        for (id, kind, style) in [("flail", Kind::Melee, Style::Whirl), ("maul", Kind::Melee, Style::Quake), ("bombs", Kind::Ranged, Style::Lob), ("rod", Kind::Magic, Style::Arc), ("censer", Kind::Magic, Style::Censer)] {
+            let family = library.family(id).expect("there's such a family");
+            let mut parts = BTreeSet::new();
+            for seed in 0..40 {
+                let weapon = library.generate(seed, Some(family), 4.0);
+                let profile = &weapon.profile;
+                assert_eq!((profile.kind, profile.style), (kind, style), "{id}");
+                let look = &weapon.look;
+                assert_eq!(look.frames.len(), 1, "{id}");
+                assert!(look.frames[0].0.voxels.iter().any(|&v| v != AIR), "{id} has something to see");
+                // Where what it does comes from, next to where it's held
+                let (grip, tip) = (look.grip, look.tip);
+                match style {
+                    // A flail's head swings far out past its haft, a maul's head is broad across
+                    Style::Whirl => assert!(tip.z > grip.z + 0.45, "{id} {tip:?}"),
+                    Style::Quake => assert!(tip.x > 0.15 && tip.z > grip.z + 0.6, "{id} {tip:?}"),
+                    // A bomb's fuse burns over the hand, and bombs take no ammo
+                    Style::Lob => assert!(tip.z > grip.z && weapon.shot().is_none(), "{id}"),
+                    // A rod's prongs are high over the hand, a censer hangs well under it
+                    Style::Arc => assert!(tip.z > grip.z + 0.6, "{id} {tip:?}"),
+                    _ => assert!(tip.z < grip.z - 0.3, "{id} {tip:?}"),
+                }
+                parts.extend(weapon.parts.iter().copied());
+            }
+            assert!(parts.len() >= 16, "{id} rolls only {} parts", parts.len());
+        }
+        // Plenty of heads for the flail and the maul, and of everything a bomb's made of
+        for (slot, family, most) in [("blade", "flail", 10), ("blade", "maul", 10), ("casing", "bombs", 9), ("fuse", "bombs", 7), ("filling", "bombs", 10)] {
+            let count = library.components.iter().filter(|c| c.slot_type == slot && c.compatible_families.iter().any(|f| f == family)).count();
+            assert!(count >= most, "only {count} {family} {slot}s");
+        }
+        // The new effects have code, and come on parts of the old weapons too, and on ammo
+        for id in ["cleave", "shockwave", "splash", "pool", "miasma", "vortex", "cluster"] {
+            let def = library.effects.iter().position(|e| e.id == id && e.effect.is_some()).unwrap_or_else(|| panic!("there's no {id}"));
+            let old = library.components.iter().filter(|c| c.effect_defs.contains(&def) && c.compatible_families.iter().any(|f| !["flail", "maul", "bombs", "rod", "censer"].contains(&f.as_str()))).count();
+            assert!(old >= 2, "{id} is only on {old} parts of the old weapons");
+        }
+        for id in ["splash", "vortex", "pool", "cluster", "miasma"] {
+            assert!(library.ammo.iter().any(|a| a.effects.iter().any(|e| e == id)), "no ammo with {id}");
+        }
+        // Each new special attack is on a part of one of the weapons it suits
+        for (special, families) in [
+            (Special::Earthquake, &["maul", "hammer"][..]),
+            (Special::Avalanche, &["maul", "hammer"]),
+            (Special::Cyclone, &["flail"]),
+            (Special::Shatterwave, &["axe", "greatsword"]),
+            (Special::Comet, &["staff", "rod"]),
+            (Special::Thunderstorm, &["rod", "censer"]),
+            (Special::Mire, &["bombs", "censer"]),
+            (Special::Sunburst, &["staff", "flail"]),
+            (Special::ClusterBomb, &["bombs", "handcannon", "crossbow"]),
+            (Special::Eruption, &["bombs", "musket"]),
+            (Special::BallLightning, &["rod", "crossbow"]),
+            (Special::Swarm, &["bow", "bombs"]),
+        ] {
+            for family in families {
+                assert!(library.components.iter().any(|c| c.special == Some(special) && c.compatible_families.iter().any(|f| f == family)), "{special:?} isn't on any {family} part");
+            }
         }
     }
 
