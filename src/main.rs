@@ -4239,9 +4239,14 @@ impl ApplicationHandler for App {
             .with_inner_size(size)
             .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
             .with_title("Innert");
-        // Screenshot runs happen out of sight: off the screen, without taking focus or showing in the taskbar
+        // Screenshot runs happen out of sight: never shown at all, so they can't take focus from
+        // whatever's on the screen, like a game in fullscreen, which would minimize it. Windows
+        // can show a window the first time in whatever way it was started instead of the way it
+        // asks, so not taking focus isn't enough on its own.
         if self.capture.is_some() {
-            attributes = attributes.with_active(false).with_position(winit::dpi::PhysicalPosition::new(-30000, -30000));
+            // And with nothing to show, nothing comes along to wake the loop for the next frame
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            attributes = attributes.with_visible(false).with_active(false).with_position(winit::dpi::PhysicalPosition::new(-30000, -30000));
             #[cfg(windows)]
             {
                 use winit::platform::windows::WindowAttributesExtWindows;
@@ -4339,8 +4344,12 @@ impl ApplicationHandler for App {
         let start = Instant::now();
         self.update(event_loop);
         self.slow("updating the game", start);
-        let rcx = self.rcx.as_mut().unwrap();
-        rcx.window.request_redraw();
+        // A window that's never shown is never asked to redraw, so screenshot runs draw straight away
+        if self.capture.is_some() {
+            self.render(event_loop);
+        } else {
+            self.rcx.as_mut().unwrap().window.request_redraw();
+        }
     }
 }
 
