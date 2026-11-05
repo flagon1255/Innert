@@ -1640,6 +1640,40 @@ impl App {
                 game.hurt_bosses(fraction);
             }
         }
+        // `--set enemy=crossbowman`, `shieldbearer`, `burrower`, `wraith`, `lurker`, `gloomwing`,
+        // `tusker` or any other monster puts a pack of them a little way ahead, or `gang` a gang of
+        // bandits, to try fighting them. `enemy_count=1` makes it that many, `enemy_distance=8`
+        // that many meters off, `enemy_turn=90` turns them that many degrees from facing the
+        // player, `enemy_calm=1` leaves them standing there not noticing the player, and
+        // `enemy_pose=windup`, `strike` or `special` holds them in that pose, to look at them with
+        // `--script enemy`.
+        if let Some(name) = setting("enemy") {
+            // Its name in full or the end of it, so `burrower` finds the dune burrower
+            let wanted = name.to_lowercase();
+            let named = |l: &animals::Look| [format!("{l:?}").to_lowercase(), l.name().replace(' ', "").to_lowercase()].iter().any(|n| n.ends_with(&wanted));
+            let looks: Vec<animals::Look> = if name == "gang" {
+                animals::gang(0.4).to_vec()
+            } else {
+                match animals::Look::ALL.into_iter().find(|l| l.is_monster() && named(l)) {
+                    Some(look) => vec![look; setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(look.pack_size())],
+                    None => {
+                        println!("No monster called {name}");
+                        Vec::new()
+                    }
+                }
+            };
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let distance = setting("enemy_distance").and_then(|v| v.parse().ok()).unwrap_or(12.0);
+            let pose = match setting("enemy_pose") {
+                Some("windup") => Some(animals::POSE_WINDUP),
+                Some("strike") => Some(animals::POSE_STRIKE),
+                Some("special") => Some(animals::POSE_SPECIAL),
+                _ => None,
+            };
+            let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
+            game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
+            println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
+        }
         // `--set health=10` starts the player that hurt, to see them die
         if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
             game.set_health(health);
@@ -1962,19 +1996,25 @@ impl App {
                 Some(game::Lair { look, position: to_voxels(at), key })
             })
             .collect();
-        // Monsters haunt the other halls of dungeons, cave spiders nest in caverns, and bandits
-        // keep camps
+        // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
+        // roost there, bandits keep camps, gloomwings roost along open ravines, and burrowers dig
+        // in out in front of desert ruins and pyramids
         let dens: Vec<game::Den> = landscape
             .sites()
             .iter()
             .filter_map(|site| {
-                let kind = match site.kind {
-                    "dungeon hall" => game::DenKind::Hall,
-                    "cave nest" => game::DenKind::Nest,
-                    "bandit camp" => game::DenKind::Camp,
+                let (kind, out) = match site.kind {
+                    "dungeon hall" => (game::DenKind::Hall, 0.0),
+                    "cave nest" => (game::DenKind::Nest, 0.0),
+                    "bandit camp" => (game::DenKind::Camp, 0.0),
+                    "ravine" => (game::DenKind::Roost, 0.0),
+                    "desert ruins" | "pyramid" => (game::DenKind::Burrows, 12.0),
                     _ => return None,
                 };
-                Some(game::Den { position: to_voxels(site.position), key: site.position.map(|v| (v * 10.0).round() as i64), kind })
+                let [fx, fy] = site.facing;
+                let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+                let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
+                Some(game::Den { position: to_voxels(at), key: site.position.map(|v| (v * 10.0).round() as i64), kind })
             })
             .collect();
         // Merchants keep stalls out in front of some of the ruins no boss guards, and behind the
@@ -3117,6 +3157,16 @@ impl App {
                 }
                 if f % 60 == 0 {
                     println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
+                }
+            }
+            // Looks at the nearest monster from where the camera is, to see what it looks like and
+            // does, without fighting it: see `--set enemy`
+            ("enemy", f) => {
+                if let Some(target) = self.game.nearest_boss(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
                 }
             }
             // Turns steadily while swinging, to see how things look on the move

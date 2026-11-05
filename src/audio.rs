@@ -118,6 +118,16 @@ pub enum Sound {
     Summon,
     /// A hex cast: a dark whisper over a low drone
     Hex,
+    /// Hard mandibles clicking fast, a burrower's
+    Chitter,
+    /// A hollow, breathy wail sliding up and sinking away, a wraith's
+    Wail,
+    /// A deep throaty croak, a lurker's
+    Croak,
+    /// A thin shrill screech, a gloomwing's
+    Screech,
+    /// A wet snort and a grunt, a tusker's
+    Snort,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -879,6 +889,129 @@ fn toll(hum: f32, seed: u32) -> Vec<f32> {
     })
 }
 
+/// `samples` made as loud as `peak` at their loudest
+fn normalized(mut samples: Vec<f32>, peak: f32) -> Vec<f32> {
+    let top = samples.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
+    for s in &mut samples {
+        *s *= peak / top;
+    }
+    samples
+}
+
+/// Mandibles clicking: quick runs of hard little clicks, `rate` a second at the thick of them,
+/// each ringing a moment around `ring` Hz, over a dry rasp of plates rubbing
+fn chitter(rate: f32, ring: f32, seed: u32) -> Vec<f32> {
+    let length = 0.45;
+    let (mut shell, mut shell2) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let (mut hp, mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let samples = render(length, seed, |t, rng| {
+        // In two or three bursts, quickest in the middle of each
+        let bursts = (0.5 + 0.5 * (TAU * 6.5 * t).sin()).powi(2) * swell(t, length).sqrt();
+        phase += rate * (0.8 + 0.4 * bursts) / RATE as f32;
+        let struck = if phase >= 1.0 {
+            phase -= 1.0;
+            (0.4 + 0.6 * random(rng)) * bursts
+        } else {
+            0.0
+        };
+        let x = noise(rng);
+        let click = (x * struck - hp.step(x * struck, 4000.0)) * 0.8;
+        let body = shell.step(struck, ring, 0.004) + shell2.step(struck, ring * 1.6, 0.003) * 0.6;
+        let rasp = (lp.step(x, 6000.0) - lp2.step(x, 2000.0)) * 0.12 * bursts;
+        click + body * 0.7 + rasp
+    });
+    normalized(samples, 0.85)
+}
+
+/// A wraith's wail: a hollow voice rising from below `pitch` Hz up to it, wavering, and sinking
+/// away, through a breath of cold air, with a fainter voice a fifth over it beating against it
+fn wail(pitch: f32, seed: u32) -> Vec<f32> {
+    let length = 1.3;
+    let (mut lp, mut lp2, mut throat) = (Lowpass(0.0), Lowpass(0.0), Resonator(0.0, 0.0));
+    let (mut phase, mut phase2) = (0.0f32, 0.0f32);
+    let samples = render(length, seed, |t, rng| {
+        let u = t / length;
+        let rise = (u / 0.35).min(1.0);
+        let f = pitch * (0.7 + 0.3 * rise * rise * (3.0 - 2.0 * rise) - 0.25 * ((u - 0.6) / 0.4).max(0.0).powi(2)) * (1.0 + 0.025 * (TAU * 5.5 * t).sin());
+        phase += TAU * f / RATE as f32;
+        phase2 += TAU * f * 1.5 * 1.004 / RATE as f32;
+        let voice = phase.sin() + 0.25 * (phase * 2.0).sin() + 0.25 * phase2.sin();
+        let x = noise(rng);
+        let breath = lp.step(x, 3000.0) - lp2.step(x, 500.0);
+        let hollow = throat.step(breath * 0.08, f * 2.0, 0.01);
+        (voice * 0.5 + breath * 0.35 + hollow) * swell(t, length).sqrt()
+    });
+    normalized(samples, 0.8)
+}
+
+/// A croak deep in a throat: a rattling run of pulses `low` a second, ringing through the throat
+/// around five times that, swelling and dying, twice
+fn croak(low: f32, seed: u32) -> Vec<f32> {
+    let length = 0.6;
+    let (mut throat, mut mouth, mut lp) = (Resonator(0.0, 0.0), Resonator(0.0, 0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let samples = render(length, seed, |t, rng| {
+        // Two croaks, the second shorter
+        let k = (-((t - 0.13) / 0.08).powi(2)).exp() + 0.7 * (-((t - 0.4) / 0.06).powi(2)).exp();
+        phase += low * (1.0 + 0.1 * (-t * 6.0).exp()) / RATE as f32;
+        let pulse = if phase >= 1.0 {
+            phase -= 1.0;
+            0.6 + 0.4 * random(rng)
+        } else {
+            0.0
+        };
+        let voice = throat.step(pulse * k, low * 5.0, 0.012) + mouth.step(pulse * k, low * 11.0, 0.006) * 0.5;
+        let wet = lp.step(noise(rng), 700.0) * k * 0.4;
+        voice + wet
+    });
+    normalized(samples, 0.85)
+}
+
+/// A shrill screech: quick chirps sliding down from up around `high` Hz, roughened by a buzz
+fn screech(high: f32, seed: u32) -> Vec<f32> {
+    let length = 0.35;
+    let (mut hp, mut lp) = (Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let samples = render(length, seed, |t, rng| {
+        let chirp = (t * 11.0).fract();
+        let f = high * (1.0 - 0.35 * chirp) * (1.0 + 0.03 * (TAU * 90.0 * t).sin());
+        phase += TAU * f / RATE as f32;
+        let tone = phase.sin() + 0.3 * (phase * 2.0).sin();
+        let x = noise(rng);
+        let grit = x - hp.step(x, 3000.0);
+        let air = lp.step(x, 6000.0) * 0.2;
+        (tone * (1.0 - chirp).powi(2) * 0.8 + grit * 0.15 + air) * swell(t, length).sqrt()
+    });
+    normalized(samples, 0.7)
+}
+
+/// A big beast snorting: a rough blast of breath through its nose ringing around `nose` Hz, then
+/// a low grunt rattling in its chest
+fn snort(nose: f32, seed: u32) -> Vec<f32> {
+    let length = 0.6;
+    let (mut lp, mut lp2, mut snout, mut chest) = (Lowpass(0.0), Lowpass(0.0), Resonator(0.0, 0.0), Resonator(0.0, 0.0));
+    let mut phase = 0.0f32;
+    let samples = render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let blast = (-((t - 0.07) / 0.05).powi(2)).exp();
+        let breath = (lp.step(x, 2400.0) - lp2.step(x, 300.0)) * blast;
+        let ring = snout.step(x * blast * 0.05, nose, 0.006) * 1.5;
+        let grunt = ((t - 0.18) / 0.3).clamp(0.0, 1.0);
+        let grunting = (PI * grunt).sin() * (t > 0.18) as u8 as f32;
+        phase += 55.0 * (1.0 + 0.2 * random(rng)) / RATE as f32;
+        let pulse = if phase >= 1.0 {
+            phase -= 1.0;
+            1.0
+        } else {
+            0.0
+        };
+        let rattle = chest.step(pulse * grunting, 210.0, 0.015);
+        breath * 1.2 + ring + rattle * 0.9
+    });
+    normalized(samples, 0.85)
+}
+
 /// `seconds` of sound that loops without a seam: the end fades into the start
 fn looped(seconds: f32, seed: u32, f: impl FnMut(f32, &mut u32) -> f32) -> Vec<f32> {
     let fade = (0.5 * RATE as f32) as usize;
@@ -1185,6 +1318,16 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
             ping + chip
         }),
     ));
+    clips.push((Sound::Chitter, chitter(70.0, 3200.0, 195)));
+    clips.push((Sound::Chitter, chitter(55.0, 2700.0, 196)));
+    clips.push((Sound::Wail, wail(330.0, 197)));
+    clips.push((Sound::Wail, wail(290.0, 198)));
+    clips.push((Sound::Croak, croak(38.0, 199)));
+    clips.push((Sound::Croak, croak(31.0, 200)));
+    clips.push((Sound::Screech, screech(4200.0, 201)));
+    clips.push((Sound::Screech, screech(3600.0, 202)));
+    clips.push((Sound::Snort, snort(480.0, 203)));
+    clips.push((Sound::Snort, snort(400.0, 204)));
     for v in 0..VARIANTS as u32 {
         for ground in [Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water] {
             clips.push((Sound::Step(ground), step(ground, 100 + v * 17 + ground as u32)));
