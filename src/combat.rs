@@ -2304,7 +2304,9 @@ impl Combat {
             self.blending = None;
             self.lash = None;
             self.brace = 0.0;
-            // A harpoon's line is let go of
+            // A weapon thrown is back in the pack, a beam swept stops, and a harpoon's line is let go of
+            self.thrown = None;
+            self.sweep = None;
             self.tether = None;
             for p in &mut self.projectiles {
                 if p.trick == Trick::Harpoon {
