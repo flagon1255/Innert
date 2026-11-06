@@ -371,6 +371,12 @@ pub struct Rarity {
     chance: f64,
     /// How much a part of this rarity adds to the weapon's grade
     power: f64,
+    /// How much harder, and how much quicker, a part of this rarity makes the weapon, for its
+    /// share of it, see Weapon::forging()
+    #[serde(default = "one")]
+    pub damage_scale: f64,
+    #[serde(default = "one")]
+    pub speed_scale: f64,
 }
 
 #[derive(Deserialize)]
@@ -1083,6 +1089,13 @@ pub struct Profile {
     /// How much harder than its parts alone it throws back what it hits, for how big it was made,
     /// see SIZES
     pub heft: f64,
+    /// What its parts' rarities make of its blows, as Weapon::forging() works it out: how much
+    /// harder they hit, how much quicker it is, and how well this one came out of the forge
+    pub quality: f64,
+    pub pace: f64,
+    pub forged: f64,
+    /// The color of its rarity, as assets\weapons.json has it: what its blows trail from epic on
+    pub color: [u8; 3],
     /// How its heavy blow goes, for a melee weapon
     pub heavy: Heavy,
 }
@@ -1409,6 +1422,17 @@ impl Profile {
         self.stat("magazine").round().max(1.0) as u32
     }
 
+    /// How well it came out of the forge, in a word, for its card and the like: Flawed, Plain,
+    /// Fine or Masterwork, see FORGE_SPREAD
+    pub fn make(&self) -> &'static str {
+        match self.forged {
+            f if f < 1.0 - 0.6 * FORGE_SPREAD => "Flawed",
+            f if f < 1.0 + 0.25 * FORGE_SPREAD => "Plain",
+            f if f < 1.0 + 0.7 * FORGE_SPREAD => "Fine",
+            _ => "Masterwork",
+        }
+    }
+
     /// The same, without `effect`
     pub fn without(&self, effect: Effect) -> Profile {
         let mut profile = self.clone();
@@ -1439,7 +1463,7 @@ impl Weapon {
         let fam = &library.families[family];
         let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
         let size = roll_size(seed);
-        let (profile, tags, grade) = Weapon::work_out(library, family, &components, size);
+        let (profile, tags, grade) = Weapon::work_out(library, family, &components, size, seed);
         let name = weapon_name(library, family, &components, &profile.synergies, seed, size);
         let look = build_look(fam, &components);
         let scale = held_scale(fam, size, look.longest());
@@ -1447,9 +1471,32 @@ impl Weapon {
         Weapon { family, parts, seed, name, grade, size, profile: Rc::new(profile), tags, look }
     }
 
-    /// What a weapon made of `components`, `size` of SIZES big, does: its stats, effects and
-    /// synergies, its tags, and its grade
-    fn work_out(library: &Library, family: usize, components: &[&Component], size: usize) -> (Profile, BTreeSet<String>, usize) {
+    /// What the rarity and make of a weapon's parts, and the forge, do to it: how many times
+    /// harder it hits and how many times quicker it is than its numbers alone say, and how well
+    /// this one, from `seed`, came out, within FORGE_SPREAD either way. Each part counts for its
+    /// share, see slot_share(): a blade or a bow's limbs most, a core or a crystal next, a grip or
+    /// a guard least. Its rarity hits harder and quicker by its damageScale and speedScale in
+    /// assets\weapons.json, and a heavy blade or head of iron or stone slows it, a light one of
+    /// bone, crystal or wood quickens it, see heaviness().
+    fn forging(library: &Library, components: &[&Component], seed: u32) -> (f64, f64, f64) {
+        let shares: Vec<f64> = components.iter().map(|c| slot_share(&c.slot_type)).collect();
+        let total: f64 = shares.iter().sum::<f64>().max(1e-6);
+        let mut quality = 0.0;
+        let mut quickness = 0.0;
+        let mut heft = 0.0;
+        for (c, share) in components.iter().zip(&shares) {
+            let rarity = &library.rarities[c.tier];
+            quality += share / total * rarity.damage_scale;
+            quickness += share / total * rarity.speed_scale;
+            heft += share / total * heaviness(c);
+        }
+        let forged = 1.0 + FORGE_SPREAD * (2.0 * random(&mut hash(seed ^ 0xf0_29e5)) - 1.0);
+        (quality, quickness / heft.powf(0.8), forged)
+    }
+
+    /// What a weapon made of `components` from `seed`, `size` of SIZES big, does: its stats,
+    /// effects and synergies, its tags, and its grade
+    fn work_out(library: &Library, family: usize, components: &[&Component], size: usize, seed: u32) -> (Profile, BTreeSet<String>, usize) {
         let fam = &library.families[family];
 
         // Flat stats add up, then the multipliers multiply them
@@ -1464,7 +1511,10 @@ impl Weapon {
                 *stats.entry(name.clone()).or_insert(0.0) *= value;
             }
         }
-        // Bigger reaches further, hits harder and throws what it hits further, but is slower
+        // Rarer parts hit harder and quicker, heavy ones slow it, and no two come out of the
+        // forge quite alike. Bigger reaches further, hits harder and throws what it hits further,
+        // but is slower.
+        let (quality, pace, forged) = Weapon::forging(library, components, seed);
         let sized = &SIZES[size.min(SIZES.len() - 1)];
         let mut scale = |name: &str, by: f64| {
             if let Some(v) = stats.get_mut(name) {
@@ -1472,10 +1522,10 @@ impl Weapon {
             }
         };
         for name in ["physicalDamage", "elementalDamage", "spellDamage"] {
-            scale(name, sized.damage);
+            scale(name, sized.damage * quality * forged);
         }
         for name in ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"] {
-            scale(name, sized.speed);
+            scale(name, sized.speed * pace);
         }
         scale("knockback", sized.knock);
         match fam.kind {
@@ -1568,6 +1618,10 @@ impl Weapon {
             bolt,
             heft: sized.knock,
             heavy: fam.heavy,
+            quality,
+            pace,
+            forged,
+            color: library.rarities[grade].color,
         };
         (profile, tags, grade)
     }
@@ -1585,6 +1639,54 @@ impl Weapon {
     pub fn arrowhead(&self) -> usize {
         hash(self.seed ^ 0xa770) as usize % ARROW_HEADS
     }
+}
+
+/// How far either way a weapon can come out of the forge better or worse than its parts make it
+pub const FORGE_SPREAD: f64 = 0.08;
+
+/// How much of a weapon a part in `slot` is, for how much its rarity and make count for, see
+/// Weapon::forging(): what strikes or shoots most, what powers or channels it next, what it's
+/// held by or fitted with least
+fn slot_share(slot: &str) -> f64 {
+    match slot {
+        "blade" | "limbs" | "prod" | "barrel" | "shaft" | "lash" | "casing" => 3.0,
+        "core" | "crystal" | "focus" | "filling" | "string" => 2.0,
+        _ => 1.0,
+    }
+}
+
+/// How heavy a part is for its make, next to what a part in its slot is usually made of, steel for
+/// a blade, wood for a bow's limbs or a staff, leather or wood for a grip: a head of stone or a
+/// drum of iron slows a weapon, a blade of bone, crystal or wood quickens it. Only what's swung
+/// or drawn counts: what's set into it, a gem or a rune, weighs nothing to speak of.
+fn heaviness(c: &Component) -> f64 {
+    let usual = match c.slot_type.as_str() {
+        "blade" | "prod" | "barrel" | "casing" | "guard" => 1.0,
+        "limbs" | "shaft" | "stock" => 0.9,
+        "hilt" | "handle" | "lash" => 0.86,
+        _ => return 1.0,
+    };
+    let v = &c.visual_profile;
+    let mass = match v.material.as_deref().unwrap_or("steel") {
+        "rock" | "limestone" | "sandstone" | "gravel" | "clay" => 1.3,
+        "gold" => 1.18,
+        "jade" => 1.12,
+        "dark_steel" | "obsidian" => 1.1,
+        "bronze" | "copper" => 1.05,
+        "bone" | "ivory" | "horn" | "crystal" | "ice" => 0.84,
+        "wood" | "ash_wood" | "birch" | "dark_bark" | "dead_wood" | "ebony" | "lacquer" | "wax" => 0.9,
+        "leather" | "cloth" | "linen" | "bowstring" | "moss" | "fur_white" | "fur_tan" => 0.82,
+        m if m.starts_with("glow_") => 0.88,
+        _ => 1.0,
+    };
+    // A head made big for its kind weighs more again, a boulder, an anvil or a double bit, and a
+    // slender one less. Only what's out of the way for its kind: every maul's head is big.
+    let big = match v.shape.as_deref().unwrap_or("") {
+        "maul_boulder" | "maul_anvil" | "maul_drum" | "double_axe" | "zweihander" | "broad" | "cleaver" | "flail_triple" | "flail_stone" => 1.06,
+        "needle" | "tapered" | "leaf" | "sabre" => 0.95,
+        _ => 1.0,
+    };
+    mass * big / usual
 }
 
 fn capitalized(word: &str) -> String {
@@ -5483,7 +5585,7 @@ mod tests {
         let sword = library.family("sword").unwrap();
         let (_, parts) = library.roll(7, Some(sword), 1.0);
         let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
-        let made: Vec<Profile> = (0..SIZES.len()).map(|size| Weapon::work_out(&library, sword, &components, size).0).collect();
+        let made: Vec<Profile> = (0..SIZES.len()).map(|size| Weapon::work_out(&library, sword, &components, size, 7).0).collect();
         for pair in made.windows(2) {
             assert!(pair[1].stat("range") > pair[0].stat("range"));
             assert!(pair[1].stat("physicalDamage") > pair[0].stat("physicalDamage"));
@@ -5567,9 +5669,223 @@ mod tests {
         for seed in 0..40_000 {
             let (family, parts) = library.roll(seed, None, 3.0);
             let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
-            let (profile, _, _) = Weapon::work_out(&library, family, &components, roll_size(seed));
+            let (profile, _, _) = Weapon::work_out(&library, family, &components, roll_size(seed), seed);
             seen.extend(profile.synergies.iter().map(|s| s.def));
         }
         assert_eq!(seen.len(), library.synergies.len());
+    }
+
+    fn damage(p: &Profile) -> f64 {
+        ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum()
+    }
+
+    /// The same parts made rarer hit harder, each for its share of the weapon, the AoE kinds and
+    /// the battle staff's spells as much as the rest
+    #[test]
+    fn rarer_parts_hit_harder() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let mut rarer = Library::parse(BUILT_IN).unwrap();
+        for pair in library.rarities.windows(2) {
+            assert!(pair[1].damage_scale > pair[0].damage_scale && pair[1].speed_scale > pair[0].speed_scale, "{} scales up from {}", pair[1].id, pair[0].id);
+        }
+        let top = library.rarities.len() - 1;
+        let made = |lib: &Library, family: usize, parts: &[usize], seed: u32| {
+            let cs: Vec<&Component> = parts.iter().map(|&p| &lib.components[p]).collect();
+            Weapon::work_out(lib, family, &cs, roll_size(seed), seed).0
+        };
+        let mut families = BTreeSet::new();
+        for seed in 0..600 {
+            let (family, parts) = library.roll(seed, None, 1.0);
+            if parts.iter().all(|&p| library.components[p].tier == top) {
+                continue;
+            }
+            let plain = made(&library, family, &parts, seed);
+            for &p in &parts {
+                rarer.components[p].tier = (library.components[p].tier + 1).min(top);
+            }
+            let better = made(&rarer, family, &parts, seed);
+            for &p in &parts {
+                rarer.components[p].tier = library.components[p].tier;
+            }
+            let fam = &library.families[family].id;
+            assert!(damage(&better) > damage(&plain) * 1.03, "{fam} from seed {seed}: {:.1} rarer, {:.1} as it is", damage(&better), damage(&plain));
+            assert!(better.quality > plain.quality && better.pace > plain.pace && better.forged == plain.forged, "{fam}");
+            for k in ["physicalDamage", "spellDamage"] {
+                if plain.stat(k) > 0.0 {
+                    assert!(better.stat(k) > plain.stat(k), "{fam}'s {k}");
+                }
+            }
+            families.insert(fam.clone());
+        }
+        for fam in ["flail", "maul", "bombs", "rod", "censer", "battlestaff", "bow", "musket", "orb"] {
+            assert!(families.contains(fam), "no {fam} was tried");
+        }
+        // A blade made rarer counts for more than a guard
+        let sword = library.family("sword").unwrap();
+        let (_, parts) = library.roll(3, Some(sword), 0.0);
+        let plain = made(&library, sword, &parts, 3);
+        let slot = |name: &str| library.families[sword].slots.iter().position(|s| s == name).unwrap();
+        let raise = |lib: &mut Library, k: usize| lib.components[parts[k]].tier = top;
+        raise(&mut rarer, slot("blade"));
+        let blade = made(&rarer, sword, &parts, 3);
+        rarer.components[parts[slot("blade")]].tier = library.components[parts[slot("blade")]].tier;
+        raise(&mut rarer, slot("guard"));
+        let guard = made(&rarer, sword, &parts, 3);
+        assert!(blade.quality - plain.quality > 2.5 * (guard.quality - plain.quality), "a blade {:.3}, a guard {:.3}", blade.quality, guard.quality);
+    }
+
+    /// No two weapons come out of the forge quite alike, but the same one always does
+    #[test]
+    fn forge_rolls_stay_in_range_and_follow_the_seed() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let (mut low, mut high) = (f64::MAX, f64::MIN);
+        let mut makes = BTreeMap::new();
+        for seed in 0..6000 {
+            let (family, parts) = library.roll(seed, None, 2.0);
+            let cs: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+            let (quality, pace, forged) = Weapon::forging(&library, &cs, seed);
+            assert_eq!((quality, pace, forged), Weapon::forging(&library, &cs, seed));
+            assert!((forged - 1.0).abs() <= FORGE_SPREAD + 1e-12, "seed {seed} forged {forged}");
+            (low, high) = (low.min(forged), high.max(forged));
+            // The same parts from another seed come out another way
+            let other = Weapon::forging(&library, &cs, seed ^ 0x5eed).2;
+            assert!(other != forged || seed % 1000 == 0, "seed {seed}");
+            let profile = Weapon::work_out(&library, family, &cs, roll_size(seed), seed).0;
+            *makes.entry(profile.make()).or_insert(0) += 1;
+        }
+        assert!(low < 1.0 - 0.95 * FORGE_SPREAD && high > 1.0 + 0.95 * FORGE_SPREAD, "{low} - {high}");
+        // Every kind of make turns up, the best and worst less often
+        assert_eq!(makes.len(), 4, "{makes:?}");
+        assert!(makes["Masterwork"] < makes["Plain"] && makes["Flawed"] < makes["Plain"], "{makes:?}");
+        // Made again from its seed, a weapon is just the same
+        for seed in 0..40 {
+            let (a, b) = (library.generate(seed, None, 3.0), library.generate(seed, None, 3.0));
+            assert_eq!(a.profile.forged, b.profile.forged);
+            assert_eq!(a.profile.stats, b.profile.stats);
+        }
+    }
+
+    /// However rare, light and small, or common, heavy and big, nothing swings, draws, casts or
+    /// loads faster or slower than the limits
+    #[test]
+    fn speeds_stay_clamped() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let mut rarest = Library::parse(BUILT_IN).unwrap();
+        for c in &mut rarest.components {
+            c.tier = rarest.rarities.len() - 1;
+        }
+        for seed in 0..8000 {
+            let luck = [0.0, 1.0, 4.0, 12.0][seed as usize % 4];
+            let (family, parts) = library.roll(seed, None, luck);
+            for lib in [&library, &rarest] {
+                let cs: Vec<&Component> = parts.iter().map(|&p| &lib.components[p]).collect();
+                for size in [0, SIZES.len() - 1] {
+                    let profile = Weapon::work_out(lib, family, &cs, size, seed).0;
+                    for k in ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"] {
+                        if let Some(&v) = profile.stats.get(k) {
+                            assert!((0.25..=6.0).contains(&v), "{} {k} {v}", library.families[family].id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A head of stone or a shaft of iron makes a weapon slower than one of bone, crystal or wood
+    #[test]
+    fn heavy_parts_are_slower_than_light_ones() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let find = |id: &str| library.components.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no {id}"));
+        // As heavy as what they're made of, next to what's usual in their slot
+        assert!(heaviness(find("stone_maul_head")) > heaviness(find("iron_maul_head")));
+        assert!(heaviness(find("iron_blade")) > heaviness(find("bone_knife")));
+        assert!(heaviness(find("iron_shaft")) > heaviness(find("oak_shaft")));
+        assert!((heaviness(find("iron_blade")) - 1.0).abs() < 1e-9 && (heaviness(find("oak_shaft")) - 1.0).abs() < 1e-9);
+        // Everything the same but the part that's swung or drawn, of the same rarity: the
+        // heaviest of them makes it the slowest, the lightest the quickest
+        let mut tried = 0;
+        for (f, fam) in library.families.iter().enumerate() {
+            let (_, parts) = library.roll(f as u32, Some(f), 0.0);
+            let main = fam.slots.iter().position(|s| slot_share(s) >= 3.0).unwrap();
+            let tier = library.components[parts[main]].tier;
+            let fits: Vec<usize> = (0..library.components.len())
+                .filter(|&i| library.components[i].slot_type == fam.slots[main] && library.components[i].compatible_families.contains(&fam.id) && library.components[i].tier == tier)
+                .collect();
+            let by = |i: &usize| heaviness(&library.components[*i]);
+            let heavy = *fits.iter().max_by(|a, b| by(a).total_cmp(&by(b))).unwrap();
+            let light = *fits.iter().min_by(|a, b| by(a).total_cmp(&by(b))).unwrap();
+            if by(&heavy) - by(&light) < 0.05 {
+                continue;
+            }
+            let pace = |part: usize| {
+                let mut with = parts.clone();
+                with[main] = part;
+                let cs: Vec<&Component> = with.iter().map(|&p| &library.components[p]).collect();
+                Weapon::forging(&library, &cs, 9).1
+            };
+            assert!(pace(heavy) < pace(light) * 0.99, "{}: {} {:.3}, {} {:.3}", fam.id, library.components[heavy].id, pace(heavy), library.components[light].id, pace(light));
+            tried += 1;
+        }
+        assert!(tried >= 12, "only {tried} families have parts of different weights");
+        // And it shows in its swings a second: a stone maul's slower than an iron one
+        let maul = library.family("maul").unwrap();
+        let (_, parts) = library.roll(5, Some(maul), 0.0);
+        let speed = |head: &str| {
+            let mut with: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+            with[0] = find(head);
+            Weapon::work_out(&library, maul, &with, 2, 5).0.stat("attackSpeed")
+        };
+        assert!(speed("stone_maul_head") < speed("iron_maul_head"));
+    }
+
+    /// What each family's weapons do, made of its commonest parts, its lightest and heaviest
+    /// common ones, and its commonest rare, epic and mythic ones, of the middle size and a plain
+    /// make: their damage and speed without what the rarity and weight of their parts do and
+    /// with, and the most a heavy critical blow of theirs does, to set against what they fight.
+    /// To look at: cargo test --release balance_table -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn balance_table() {
+        // How much harder a heavy blow hits, as combat.rs has it
+        const HEAVY_BLOW: f64 = 1.8;
+        let library = Library::parse(BUILT_IN).unwrap();
+        let speed = |p: &Profile| ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"].iter().map(|k| p.stat(k)).find(|&v| v > 0.0).unwrap_or(0.0);
+        println!("| family | made of | grade | parts | damage before | after | speed before | after | heavy crit |");
+        for (f, fam) in library.families.iter().enumerate() {
+            // For each slot, the part of `tier`, or the nearest below it, that's most `by`
+            let pick = |tier: usize, by: &dyn Fn(&Component) -> f64| -> Vec<usize> {
+                fam.slots
+                    .iter()
+                    .map(|slot| {
+                        let fits: Vec<usize> = (0..library.components.len()).filter(|&i| library.components[i].slot_type == *slot && library.components[i].compatible_families.contains(&fam.id)).collect();
+                        let tiers = || fits.iter().map(|&i| library.components[i].tier);
+                        let near = tiers().filter(|&t| t <= tier).max().unwrap_or_else(|| tiers().min().unwrap());
+                        *fits.iter().filter(|&&i| library.components[i].tier == near).max_by(|&&a, &&b| by(&library.components[a]).total_cmp(&by(&library.components[b]))).unwrap()
+                    })
+                    .collect()
+            };
+            let show = |label: &str, parts: &[usize]| {
+                let cs: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+                let (p, _, grade) = Weapon::work_out(&library, f, &cs, SIZES.len() / 2, 0);
+                let after = damage(&p) / p.forged;
+                println!(
+                    "| {} | {label} | {} | {} | {:.1} | {:.1} | {:.2} | {:.2} | {:.0} |",
+                    fam.id,
+                    library.rarities[grade].id,
+                    cs.iter().map(|c| format!("{} ({})", c.id, &library.rarities[c.tier].id[..1])).collect::<Vec<_>>().join(", "),
+                    after / p.quality,
+                    after,
+                    speed(&p) / p.pace,
+                    speed(&p),
+                    after * HEAVY_BLOW * p.stat("critDamage"),
+                );
+            };
+            show("commonest", &pick(0, &|c| c.weight));
+            show("lightest", &pick(0, &|c| -heaviness(c)));
+            show("heaviest", &pick(0, &|c| heaviness(c)));
+            show("rare", &pick(2, &|c| c.weight));
+            show("epic", &pick(3, &|c| c.weight));
+            show("mythic", &pick(5, &|c| c.weight));
+        }
     }
 }

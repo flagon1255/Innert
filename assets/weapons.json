@@ -1,11 +1,11 @@
 {
   "rarities": [
-    { "id": "common", "displayName": "Common", "color": [178, 178, 178], "chance": 0.55, "power": 0 },
-    { "id": "uncommon", "displayName": "Uncommon", "color": [96, 204, 82], "chance": 0.25, "power": 1 },
-    { "id": "rare", "displayName": "Rare", "color": [72, 146, 255], "chance": 0.13, "power": 2 },
-    { "id": "epic", "displayName": "Epic", "color": [176, 96, 244], "chance": 0.05, "power": 4 },
-    { "id": "legendary", "displayName": "Legendary", "color": [255, 152, 40], "chance": 0.018, "power": 7 },
-    { "id": "mythic", "displayName": "Mythic", "color": [255, 84, 160], "chance": 0.002, "power": 11 }
+    { "id": "common", "displayName": "Common", "color": [178, 178, 178], "chance": 0.55, "power": 0, "damageScale": 1.0, "speedScale": 1.0 },
+    { "id": "uncommon", "displayName": "Uncommon", "color": [96, 204, 82], "chance": 0.25, "power": 1, "damageScale": 1.12, "speedScale": 1.03 },
+    { "id": "rare", "displayName": "Rare", "color": [72, 146, 255], "chance": 0.13, "power": 2, "damageScale": 1.25, "speedScale": 1.06 },
+    { "id": "epic", "displayName": "Epic", "color": [176, 96, 244], "chance": 0.05, "power": 4, "damageScale": 1.45, "speedScale": 1.09 },
+    { "id": "legendary", "displayName": "Legendary", "color": [255, 152, 40], "chance": 0.018, "power": 7, "damageScale": 1.65, "speedScale": 1.12 },
+    { "id": "mythic", "displayName": "Mythic", "color": [255, 84, 160], "chance": 0.002, "power": 11, "damageScale": 1.9, "speedScale": 1.15 }
   ],
   "gradePower": [0, 3, 6, 10, 15, 22],
   "synergyPower": 3,

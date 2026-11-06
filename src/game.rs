@@ -945,12 +945,19 @@ impl Game {
             "" => String::new(),
             word => format!(" ({word})"),
         };
+        let p = &weapon.profile;
+        let speed = ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"].iter().map(|k| p.stat(k)).find(|&v| v > 0.0).unwrap_or(0.0);
+        let damage: f64 = ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum();
         format!(
-            "{} - {} {}{size}, element {}: {}. Effects: {}. Synergies: {}.",
+            "{} - {} {}{size}, element {}, {damage:.1} damage at {speed:.2}/s, {} make (x{:.3}, parts x{:.2} damage x{:.2} speed): {}. Effects: {}. Synergies: {}.",
             weapon.name,
             library.rarities[weapon.grade].display_name,
             family.display_name,
-            weapon.profile.element.map_or("none", Element::name),
+            p.element.map_or("none", Element::name),
+            p.make(),
+            p.forged,
+            p.quality,
+            p.pace,
             parts.join(", "),
             if effects.is_empty() { "none".into() } else { effects.join(", ") },
             if synergies.is_empty() { "none".into() } else { synergies.join(", ") },
@@ -3147,14 +3154,21 @@ impl Game {
     }
 
     /// For looking at parts: a weapon with each of the parts `ids` lying on the ground in rows of
-    /// four from a couple of meters along `ahead` from `near`, each `size` of weapons::SIZES big if
-    /// that's given
-    pub fn lay_out(&mut self, world: &World, ids: &[&str], size: Option<usize>, near: Vector3<f64>, ahead: Vector3<f64>, hold: bool) -> Vector3<f64> {
+    /// four from a couple of meters along `ahead` from `near`, or one or two close by, one in front
+    /// of the other, each `size` of weapons::SIZES big if that's given or its id says, as `id@4`.
+    /// Gives back the middle of them, and how long the longest is, in meters.
+    pub fn lay_out(&mut self, world: &World, ids: &[&str], size: Option<usize>, near: Vector3<f64>, ahead: Vector3<f64>, hold: bool) -> (Vector3<f64>, f64) {
         let vpm = world.voxels_per_meter as f64;
         let mut middle = Vector3::zeros();
+        let mut longest: f64 = 0.0;
         let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let side = Vector3::new(flat.y, -flat.x, 0.0);
         for (k, id) in ids.iter().enumerate() {
+            // `pitted_blade@4` makes that one weapons::SIZES[4] big, whatever `size` says
+            let (id, size) = match id.split_once('@') {
+                Some((id, s)) => (id, s.parse().ok().or(size)),
+                None => (*id, size),
+            };
             let Some(weapon) = self.library.with_part(id, size) else {
                 println!("No weapon could be made with {id}");
                 continue;
@@ -3166,18 +3180,26 @@ impl Game {
                 self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
                 self.selected = 0;
             }
-            let (row, column) = ((k / 4) as f64, (k % 4) as f64);
-            let over = near + (flat * (2.4 + row * 1.25) + side * (column - 1.5) * 1.05) * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm);
+            // In rows of four, or for a close look at one or two, one in front of the other
+            let (row, column, apart) = if ids.len() <= 2 { (k as f64, 1.5, 0.5) } else { ((k / 4) as f64, (k % 4) as f64, 1.25) };
+            let ahead = if ids.len() <= 2 { 1.6 } else { 2.4 };
+            let over = near + (flat * (ahead + row * apart) + side * (column - 1.5) * 1.05) * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm);
             let ground = (0..(40.0 * vpm) as i64)
                 .map(|d| over - Vector3::new(0.0, 0.0, d as f64))
                 .find(|p| !is_passable(world.material_at(p.x as i64, p.y as i64, p.z as i64)))
                 .map_or(over, |p| p + Vector3::new(0.0, 0.0, 1.0));
+            longest = longest.max(weapon.look.longest());
             self.weapons.push(weapon);
             self.pickups.push(Pickup::lying(Item::Weapon(self.weapons.len() - 1), ground, side.y.atan2(side.x)));
             middle += ground / ids.len() as f64;
         }
         self.models_version += 1;
-        middle
+        // Nothing in hand to get in the way of looking at them
+        if !hold {
+            self.selected = usize::MAX;
+        }
+        println!("lay_out: the longest {longest:.2} m, their middle at {:.0} {:.0} {:.0}", middle.x, middle.y, middle.z);
+        (middle, longest)
     }
 
     /// Takes the first weapon of family `id` carried in hand, or for trying it out, one rolled if
@@ -4084,6 +4106,19 @@ impl Game {
             if let Some(element) = profile.element {
                 ui.label(RichText::new(format!("·  {}", element.name())).color(color(element.color())));
             }
+        });
+        // How well it came out of the forge, and what the rarity and weight of its parts make of
+        // its blows, so two of the same can be told apart
+        let percent = |by: f64| format!("{:+.0}%", (by - 1.0) * 100.0);
+        ui.horizontal(|ui| {
+            let tint = match profile.make() {
+                "Flawed" => Color32::from_rgb(230, 140, 110),
+                "Fine" => good,
+                "Masterwork" => GOLD,
+                _ => Color32::from_gray(170),
+            };
+            ui.label(RichText::new(format!("{} {}", profile.make(), percent(profile.forged))).color(tint));
+            ui.label(RichText::new(format!("·  parts {} damage, {} speed", percent(profile.quality), percent(profile.pace))).weak());
         });
         ui.separator();
         let damage = |p: &Profile| ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum::<f64>();
