@@ -304,6 +304,12 @@ pub enum Effect {
     Vortex,
     /// Blasts scattering bomblets that go off round about
     Cluster,
+    /// Hits marking what they hit a while, so it takes more from every blow and shot
+    Mark,
+    /// Hits giving back health, a share of what they do
+    Lifesteal,
+    /// Hits on something bleeding tearing its wounds open, the bleeding to come all at once
+    Rupture,
 }
 
 impl Effect {
@@ -333,6 +339,9 @@ impl Effect {
             "miasma" => Effect::Miasma,
             "vortex" => Effect::Vortex,
             "cluster" => Effect::Cluster,
+            "mark" => Effect::Mark,
+            "lifesteal" => Effect::Lifesteal,
+            "rupture" => Effect::Rupture,
             _ => return None,
         })
     }
@@ -474,6 +483,62 @@ pub enum Heavy {
     Heave,
     /// A flail's: whirled round overhead in a loop, then brought down
     Overhead,
+    /// Drawn right back to the hip and driven out on a long step, the whole body behind it: a
+    /// long-bladed spear's, or a needle of a sword's
+    Lunge,
+}
+
+/// How a melee weapon's last blow of a chain goes, if not as its style's: what its head's like
+/// decides it, see moves_from_parts()
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Finish {
+    /// As its style has it
+    #[default]
+    Style,
+    /// Driven straight out on a long step
+    Lunge,
+    /// Swept up from low on the left, rising through to high on the right
+    Rising,
+    /// Turned right round, out of sight behind and round through in front
+    Spin,
+    /// Raised high and brought straight down
+    Slam,
+}
+
+/// How a staff, scepter or wand casts, see combat.rs's cast_keys(): what the hand does with it as
+/// it's raised, the spell gathered and let go. Its focus, element and pace decide it, see
+/// casting_of().
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Casting {
+    /// Drawn back a little and thrust out at the crosshair
+    #[default]
+    Thrust,
+    /// Drawn back and flicked from the wrist
+    Flick,
+    /// Brought in before the chest in both hands while the spell gathers, then pushed out
+    Gather,
+    /// Raised high overhead, held, and brought down to point: what comes down on a place
+    Overhead,
+    /// Swept round in from the side
+    Sweep,
+    /// Scooped up from low down
+    Scoop,
+    /// Held up and shown, as a scepter is, then levelled
+    Present,
+}
+
+/// How a bow's drawn or a crossbow or gun loaded, from what its parts are like, see knack_of()
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Knack {
+    /// As its kind has it
+    #[default]
+    Plain,
+    /// Snapped up and drawn, or loaded, quick and close
+    Quick,
+    /// Leant into, braced and hauled: a heavy bow or a long gun
+    Heavy,
+    /// With a flourish: a bow canted over, a gun spun, a lever flicked round
+    Showy,
 }
 
 /// How big a weapon was made: its look scaled by `scale` and its reach, pace, blows and how far
@@ -877,6 +942,19 @@ impl Library {
     /// For looking at a part: a weapon made with the part with id `part`, of the first family it
     /// fits, `size` of SIZES big if that's given, rolled as luckily as it needs to turn up
     pub fn with_part(&self, part: &str, size: Option<usize>) -> Option<Weapon> {
+        // Several joined by +, as `chain_lash+iron_star_fall`: one weapon made of all of them, of
+        // the first one's family, the rest of its parts the commonest that roll
+        if part.contains('+') {
+            let ids: Vec<usize> = part.split('+').map(|id| self.components.iter().position(|c| c.id == id)).collect::<Option<_>>()?;
+            let family = self.family(self.components[ids[0]].compatible_families.first()?)?;
+            let seed = (0..400_000u32).map(hash).find(|&seed| size.is_none_or(|s| roll_size(seed) == s))?;
+            let (_, mut parts) = self.roll(seed, Some(family), 0.0);
+            for &i in &ids {
+                let slot = self.families[family].slots.iter().position(|s| *s == self.components[i].slot_type)?;
+                parts[slot] = i;
+            }
+            return Some(Weapon::assemble(self, family, parts, seed));
+        }
         let index = self.components.iter().position(|c| c.id == part)?;
         let c = &self.components[index];
         let family = self.family(c.compatible_families.first()?)?;
@@ -1096,8 +1174,14 @@ pub struct Profile {
     pub forged: f64,
     /// The color of its rarity, as assets\weapons.json has it: what its blows trail from epic on
     pub color: [u8; 3],
-    /// How its heavy blow goes, for a melee weapon
+    /// How its heavy blow goes, for a melee weapon, and its chain's last blow, as its parts make
+    /// them, see moves_from_parts()
     pub heavy: Heavy,
+    pub finish: Finish,
+    /// How it's cast, for a staff, scepter or wand, see casting_of()
+    pub casting: Casting,
+    /// How it's drawn or loaded, for a bow, crossbow or gun, see knack_of()
+    pub knack: Knack,
 }
 
 /// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
@@ -1236,6 +1320,24 @@ pub enum Special {
     StonePillars,
     /// The weapon's head flung out on its chain to orbit round, wider and wider, battering all it meets
     WreckingOrbit,
+    /// The lash whirled overhead and flung out round what's aimed at, which is yanked in to the feet
+    LassoPull,
+    /// The lash flung round what's aimed at and drawn tight, holding it fast and crushing it
+    CoilBind,
+    /// A crack so hard the air itself breaks, a cone of sound staggering and throwing back what's in front
+    ThunderCrack,
+    /// The lash splitting into snaking strands that slither off along the ground after what's near
+    SerpentLash,
+    /// The lash swept right round low over the ground, taking everything round off its feet
+    TripSweep,
+    /// A burning lash cracked down along the ground, leaving a line of fire and branding what it crosses
+    BurningBrand,
+    /// The lash caught on something high ahead and swung from, carrying the player on and down
+    ChainSwing,
+    /// A string of little charges flung out across the ground, going off one after another
+    Firecrackers,
+    /// An arrow bursting where it strikes into a ring of thorns flying out all round
+    Thornburst,
 }
 
 impl Special {
@@ -1307,6 +1409,15 @@ impl Special {
             Special::PowderKeg => "Powder Keg",
             Special::StonePillars => "Rising Pillars",
             Special::WreckingOrbit => "Wrecking Orbit",
+            Special::LassoPull => "Lasso Pull",
+            Special::CoilBind => "Coil Bind",
+            Special::ThunderCrack => "Thunder Crack",
+            Special::SerpentLash => "Serpent Lash",
+            Special::TripSweep => "Trip Sweep",
+            Special::BurningBrand => "Burning Brand",
+            Special::ChainSwing => "Chain Swing",
+            Special::Firecrackers => "Firecracker String",
+            Special::Thornburst => "Thornburst",
         }
     }
 
@@ -1378,6 +1489,15 @@ impl Special {
             Special::PowderKeg => "Set down a great keg a few meters ahead; its fuse burns down and it goes off, throwing everything round it.",
             Special::StonePillars => "Slam the ground: pillars of stone burst up under everything in front of you, one after another, flinging it up.",
             Special::WreckingOrbit => "Fling your weapon's head out on its chain to orbit round you for 5 s, wider and wider, battering all it meets.",
+            Special::LassoPull => "Whirl your lash overhead and fling it round what you aim at within 18 meters, then yank it in to your feet, reeling.",
+            Special::CoilBind => "Fling your lash round what you aim at and draw it tight: it's held fast for 4 s and crushed as the coils close, and so is what's beside it.",
+            Special::ThunderCrack => "Crack your lash so hard the air breaks: a cone of sound 14 meters long staggers and throws back everything in front.",
+            Special::SerpentLash => "Your lash splits into five snaking strands that slither along the ground after the nearest enemies, biting and poisoning them.",
+            Special::TripSweep => "Sweep your lash right round you low over the ground, knocking everything within reach off its feet.",
+            Special::BurningBrand => "Crack a burning lash down along the ground ahead: a line of fire 10 meters long burns for 5 s, and what it crosses is branded and burns hard.",
+            Special::ChainSwing => "Catch your lash on something high ahead and swing from it, carried on and down; you land with a crack that throws back what's round you.",
+            Special::Firecrackers => "Fling a string of eight little charges across the ground ahead; they go off one after another, each throwing what's on it.",
+            Special::Thornburst => "Loose an arrow that bursts where it strikes into a ring of thorns flying out all round, through everything near.",
         }
     }
 }
@@ -1601,6 +1721,9 @@ impl Weapon {
         // The rarest part with a special attack gives it its own
         let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
         let (build, caliber, cycle, bolt) = (fam.build, fam.caliber, fam.cycle, fam.bolt);
+        let (heavy, finish) = moves_from_parts(fam, components);
+        let casting = casting_of(fam, components, &stats, element);
+        let knack = knack_of(fam, components);
         let profile = Profile {
             kind: fam.kind,
             style: fam.style,
@@ -1617,7 +1740,10 @@ impl Weapon {
             cycle,
             bolt,
             heft: sized.knock,
-            heavy: fam.heavy,
+            heavy,
+            finish,
+            casting,
+            knack,
             quality,
             pace,
             forged,
@@ -1660,13 +1786,25 @@ fn slot_share(slot: &str) -> f64 {
 /// drum of iron slows a weapon, a blade of bone, crystal or wood quickens it. Only what's swung
 /// or drawn counts: what's set into it, a gem or a rune, weighs nothing to speak of.
 fn heaviness(c: &Component) -> f64 {
+    let v = &c.visual_profile;
+    // A whip's fall is light whatever it's made of, but what's tied to its end isn't: a lead
+    // weight, an iron star or a blade drags the crack, barbs or a hook a little, a tuft of hair
+    // or silk hardly at all
+    if c.slot_type == "fall" {
+        return match v.shape.as_deref().unwrap_or("cracker") {
+            "weight" | "star" => 1.16,
+            "blade" | "hook" => 1.08,
+            "barbs" | "knots" => 1.04,
+            "cracker" | "tassel" | "feather" => 0.94,
+            _ => 1.0,
+        };
+    }
     let usual = match c.slot_type.as_str() {
         "blade" | "prod" | "barrel" | "casing" | "guard" => 1.0,
         "limbs" | "shaft" | "stock" => 0.9,
         "hilt" | "handle" | "lash" => 0.86,
         _ => return 1.0,
     };
-    let v = &c.visual_profile;
     let mass = match v.material.as_deref().unwrap_or("steel") {
         "rock" | "limestone" | "sandstone" | "gravel" | "clay" => 1.3,
         "gold" => 1.18,
@@ -1683,10 +1821,161 @@ fn heaviness(c: &Component) -> f64 {
     // slender one less. Only what's out of the way for its kind: every maul's head is big.
     let big = match v.shape.as_deref().unwrap_or("") {
         "maul_boulder" | "maul_anvil" | "maul_drum" | "double_axe" | "zweihander" | "broad" | "cleaver" | "flail_triple" | "flail_stone" => 1.06,
+        // A lash of links, or of bone strung like a spine, swings heavy
+        "chain" | "spine" => 1.1,
         "needle" | "tapered" | "leaf" | "sabre" => 0.95,
         _ => 1.0,
     };
     mass * big / usual
+}
+
+/// How a melee weapon made of `components` swings its heavy blow and its chain's last blow, from
+/// what its head's like: a spear with a hooked, winged or forked head sweeps where one with a long
+/// blade lunges, a curved sword draws and cuts where a needle lunges and a broad one hews, and so
+/// on. Anything else goes as its family does.
+fn moves_from_parts(family: &Family, components: &[&Component]) -> (Heavy, Finish) {
+    if family.kind != Kind::Melee {
+        return (family.heavy, Finish::Style);
+    }
+    let Some(head) = components.iter().find(|c| c.slot_type == "blade") else {
+        return (family.heavy, Finish::Style);
+    };
+    let v = &head.visual_profile;
+    let shape = v.shape.as_deref().unwrap_or("");
+    let length = v.length.unwrap_or(0.0);
+    let keep = family.heavy;
+    match family.style {
+        Style::Thrust if family.heavy == Heavy::Style => match shape {
+            "hooked" | "winged" | "trident" | "fork" | "barbed" => (Heavy::Sweep, Finish::Rising),
+            "glaive" => (Heavy::Sweep, Finish::Spin),
+            _ if length >= 0.42 || shape == "needle" => (Heavy::Lunge, Finish::Lunge),
+            _ => (keep, Finish::Style),
+        },
+        // A halberd: a bill hooks and sweeps, a moon blade's swung round
+        Style::Thrust => match shape {
+            "halberd_bill" => (Heavy::Sweep, Finish::Rising),
+            "halberd_moon" => (Heavy::Spin, Finish::Spin),
+            _ => (keep, Finish::Style),
+        },
+        Style::Slash => match (family.heavy, shape) {
+            (Heavy::Style, "sabre" | "falx" | "hooked" | "serpent") => (Heavy::Draw, Finish::Spin),
+            (Heavy::Style, "broad" | "cleaver" | "notched") => (Heavy::Hew, Finish::Slam),
+            (Heavy::Style, "needle" | "tapered" | "leaf") => (Heavy::Lunge, Finish::Lunge),
+            (Heavy::Style, "jagged" | "flame") => (keep, Finish::Rising),
+            // A greatsword: a broad or notched one heaved overhead, a slender one lunged
+            (Heavy::Spin, "broad" | "zweihander" | "notched") => (Heavy::Heave, Finish::Slam),
+            (Heavy::Spin, "tapered" | "serpent") => (keep, Finish::Lunge),
+            (Heavy::Spin, "forked" | "jagged" | "flame") => (keep, Finish::Rising),
+            // A katana: an obsidian or icy one spun through its last cut
+            (Heavy::Draw, _) if matches!(v.material.as_deref(), Some("obsidian" | "ice")) => (keep, Finish::Spin),
+            (Heavy::Draw, _) if length >= 0.82 => (keep, Finish::Lunge),
+            _ => (keep, Finish::Style),
+        },
+        Style::Chop => match shape {
+            "double_axe" | "moon_axe" => (Heavy::Spin, Finish::Spin),
+            "bearded" => (keep, Finish::Rising),
+            "spike_axe" => (keep, Finish::Slam),
+            _ => (keep, Finish::Style),
+        },
+        Style::Smash => match shape {
+            "beaked" => (Heavy::Hew, Finish::Rising),
+            "flanged" | "morning" => (Heavy::Heave, Finish::Slam),
+            "spiked" => (keep, Finish::Spin),
+            _ => (keep, Finish::Style),
+        },
+        Style::Stab => match shape {
+            "sabre" | "hooked" | "serpent" | "flame" => (Heavy::Draw, Finish::Spin),
+            "needle" | "spear" | "tapered" => (Heavy::Lunge, Finish::Lunge),
+            "leaf" => (keep, Finish::Rising),
+            _ => (keep, Finish::Style),
+        },
+        Style::Reap => match shape {
+            "scythe_twin" => (Heavy::Spin, Finish::Spin),
+            "scythe_saw" => (keep, Finish::Rising),
+            _ => (keep, Finish::Style),
+        },
+        _ => (keep, Finish::Style),
+    }
+}
+
+/// How a staff, scepter or wand made of `components` casts: what comes down on a place is called
+/// down from overhead, big slow spells gathered in both hands first, and otherwise its focus and
+/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, bells and
+/// the rest cast each their own way whatever they're made of, see combat.rs's target_pose().
+fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element: Option<Element>) -> Casting {
+    if !matches!(family.style, Style::Cast | Style::Flick) {
+        return Casting::Thrust;
+    }
+    let wand = family.style == Style::Flick;
+    let focus = components.iter().find(|c| c.slot_type == "focus").and_then(|c| c.visual_profile.shape.as_deref()).unwrap_or("");
+    let cast_speed = stats.get("castSpeed").copied().unwrap_or(2.0);
+    let area = stats.get("area").copied().unwrap_or(1.0);
+    if element == Some(Element::Holy) || matches!(focus, "halo" | "orrery" | "spire") || area >= 1.3 {
+        return Casting::Overhead;
+    }
+    if wand {
+        return match focus {
+            "crescent" | "serpent" | "crook" => Casting::Sweep,
+            "skull" | "cage" => Casting::Thrust,
+            _ => Casting::Flick,
+        };
+    }
+    if cast_speed < 1.75 || matches!(focus, "skull" | "cage" | "antlers") {
+        return Casting::Gather;
+    }
+    match (focus, element) {
+        ("crook" | "branches" | "serpent" | "crescent", _) => Casting::Sweep,
+        (_, Some(Element::Poison)) => Casting::Scoop,
+        (_, Some(Element::Storm | Element::Arcane | Element::Void)) => Casting::Sweep,
+        _ if family.id == "scepter" => Casting::Present,
+        _ => Casting::Thrust,
+    }
+}
+
+/// How a bow made of `components` is drawn, or a crossbow or gun loaded: a short or flat bow
+/// snapped up quick, a long, horn or steel one leant into, a recurve of something fine canted
+/// over; a gun with a matchlock or a long barrel loaded with care, a wheel-lock or a runed one
+/// with a flourish, a doglock quick; a crossbow with a pistol grip or a skeleton stock spanned
+/// quick, a cheek-stocked one hauled, a lacquered or gilded one with a flourish
+fn knack_of(family: &Family, components: &[&Component]) -> Knack {
+    if family.kind != Kind::Ranged || family.style == Style::Lob {
+        return Knack::Plain;
+    }
+    let part = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
+    let shape = |v: Option<&Visual>| v.and_then(|v| v.shape.as_deref()).unwrap_or("").to_owned();
+    let material = |v: Option<&Visual>| v.and_then(|v| v.material.as_deref()).unwrap_or("").to_owned();
+    if family.build == Build::None {
+        let limbs = part("limbs");
+        let length = limbs.and_then(|v| v.length).unwrap_or(1.25);
+        return match (shape(limbs).as_str(), material(limbs).as_str()) {
+            ("flat" | "simple" | "branch", _) if length <= 1.2 => Knack::Quick,
+            ("horn" | "bone" | "winged" | "long", _) => Knack::Heavy,
+            ("recurve" | "serpent" | "crystal", "gold" | "jade" | "ebony" | "copper" | "ice" | "obsidian") => Knack::Showy,
+            (_, "dark_steel" | "obsidian") => Knack::Heavy,
+            ("serpent" | "crystal", _) => Knack::Showy,
+            _ if length >= 1.45 => Knack::Heavy,
+            _ if length <= 1.1 => Knack::Quick,
+            _ => Knack::Plain,
+        };
+    }
+    let (lock, stock) = (part("lock"), part("stock"));
+    if family.build.crossbow() {
+        return match (shape(stock).as_str(), material(stock).as_str()) {
+            ("pistol" | "skeleton", _) => Knack::Quick,
+            ("cheek" | "thumbhole", _) => Knack::Heavy,
+            (_, "lacquer" | "jade") => Knack::Showy,
+            _ if material(lock) == "gold" => Knack::Showy,
+            _ => Knack::Plain,
+        };
+    }
+    let long = part("barrel").and_then(|v| v.length).unwrap_or(1.0) >= 1.08;
+    match shape(lock).as_str() {
+        "match" => Knack::Heavy,
+        "wheel" | "rune" => Knack::Showy,
+        "" => Knack::Quick,
+        _ if long => Knack::Heavy,
+        _ => Knack::Plain,
+    }
 }
 
 fn capitalized(word: &str) -> String {
@@ -3232,20 +3521,25 @@ pub struct LashLook {
 }
 
 // The sets of lash segment models among effect_models(), by what a lash is made of: braided
-// leather, hemp, chain or thorny vine, or for elemental lashes a dark cord glowing with one of
-// the elements, in the order of Element::ALL
+// leather, hemp, chain or thorny vine, bone strung like a spine, copper wire braided over dark
+// steel or red silk bound in gold, or for elemental lashes a dark cord glowing with one of the
+// elements, in the order of Element::ALL
 pub const LASH_LEATHER: usize = 0;
 pub const LASH_HEMP: usize = 1;
 pub const LASH_CHAIN: usize = 2;
 pub const LASH_VINE: usize = 3;
-pub const LASH_GLOW: usize = 4;
+pub const LASH_SPINE: usize = 4;
+pub const LASH_WIRE: usize = 5;
+pub const LASH_SILK: usize = 6;
+pub const LASH_GLOW: usize = 7;
 pub const LASH_SETS: usize = LASH_GLOW + Element::ALL.len();
 /// Each set has a segment model as thick as each of these, as parts of its length, thickest first,
 /// so a stretch of lash can be drawn about as thick as it should be however long it is
 pub const LASH_TAPERS: [f64; 6] = [0.064, 0.048, 0.036, 0.027, 0.02, 0.015];
 // The crackers on a lash's tip, by what its fall is: a pale tuft of horsehair, one of silk, a
-// knotted end, barbs, a lead weight, a blade of bone or of gold, or a tuft glowing with one of the
-// elements, in the order of Element::ALL
+// knotted end, barbs, a lead weight, a blade of bone or of gold, an iron hook, a spiked iron
+// star, a spray of feathers, or a tuft glowing with one of the elements, in the order of
+// Element::ALL
 pub const CRACKER_HAIR: usize = 0;
 pub const CRACKER_SILK: usize = 1;
 pub const CRACKER_KNOTS: usize = 2;
@@ -3253,7 +3547,10 @@ pub const CRACKER_BARBS: usize = 3;
 pub const CRACKER_WEIGHT: usize = 4;
 pub const CRACKER_BONE: usize = 5;
 pub const CRACKER_GOLD: usize = 6;
-pub const CRACKER_GLOW: usize = 7;
+pub const CRACKER_HOOK: usize = 7;
+pub const CRACKER_STAR: usize = 8;
+pub const CRACKER_FEATHER: usize = 9;
+pub const CRACKER_GLOW: usize = 10;
 pub const CRACKERS: usize = CRACKER_GLOW + Element::ALL.len();
 /// Voxels per meter of the lash's segment models. Each is a meter long up z from 0, and is drawn
 /// scaled down to the length of the stretch of lash it is.
@@ -3272,8 +3569,11 @@ fn lash_models(lash: &Visual, fall: &Visual) -> (usize, usize) {
     let set = match lash.shape.as_deref() {
         Some("chain") => LASH_CHAIN,
         Some("thorn") => LASH_VINE,
-        _ => match glowing(cord).or_else(|| accent.and_then(glowing)) {
+        shape => match glowing(cord).or_else(|| accent.and_then(glowing)) {
             Some(e) => LASH_GLOW + e,
+            None if shape == Some("spine") => LASH_SPINE,
+            None if shape == Some("wire") || cord == FUR_GINGER => LASH_WIRE,
+            None if cord == TEMPLE_RED => LASH_SILK,
             None if cord == LINEN => LASH_HEMP,
             None => LASH_LEATHER,
         },
@@ -3284,6 +3584,9 @@ fn lash_models(lash: &Visual, fall: &Visual) -> (usize, usize) {
     let cracker = match (fall.shape.as_deref().unwrap_or("cracker"), glow) {
         ("blade", _) if fall_material == Some(GOLD) || ornament == Some(GOLD) => CRACKER_GOLD,
         ("blade", _) => CRACKER_BONE,
+        ("hook", _) => CRACKER_HOOK,
+        ("star", _) => CRACKER_STAR,
+        ("feather", _) => CRACKER_FEATHER,
         (_, Some(e)) => CRACKER_GLOW + e,
         ("knots", _) => CRACKER_KNOTS,
         ("barbs", _) => CRACKER_BARBS,
@@ -3309,10 +3612,25 @@ fn lash_segment(set: usize, radius: f64) -> Vec<Part> {
         }
         return p;
     }
+    if set == LASH_SPINE {
+        // Bones strung end to end like a spine, a spur off each, every other one paler
+        let bones = 4;
+        for k in 0..bones {
+            let z = (k as f64 + 0.5) / bones as f64;
+            let material = if k % 2 == 0 { BONE } else { FUR_CREAM };
+            p.push(ellipsoid([0.0, 0.0, z], [radius * 1.55, radius * 1.55, 0.42 / bones as f64], material));
+            let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+            p.push(limb([0.0, 0.0, z], [side * radius * 2.6, 0.0, z - radius * 0.8], radius * 0.55, radius * 0.15, BONE));
+        }
+        p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], radius * 0.7, radius * 0.7, FUR_CREAM));
+        return p;
+    }
     let (cord, band) = match set {
         LASH_LEATHER => (LEATHER, FUR_TAN),
         LASH_HEMP => (LINEN, WAX),
         LASH_VINE => (MOSS, BARK_DARK),
+        LASH_WIRE => (FUR_GINGER, DARK_STEEL),
+        LASH_SILK => (TEMPLE_RED, GOLD),
         glow => (BARK_DARK, Element::ALL[glow - LASH_GLOW].glow()),
     };
     if set == LASH_VINE {
@@ -3373,6 +3691,30 @@ fn lash_cracker(kind: usize) -> Vec<Part> {
             let edge = if kind == CRACKER_GOLD { GOLD } else { BONE };
             p.push(limb([0.0, 0.0, 0.64], [0.0, 0.0, 1.06], 0.055, 0.004, edge).stretched([1.0, 0.35, 1.0]));
             LEATHER
+        }
+        // An iron hook bent back on itself, a barb at its point, for catching hold
+        CRACKER_HOOK => {
+            let bend: Vec<[f64; 3]> = (0..=8).map(|k| k as f64 / 8.0 * PI * 1.1).map(|a| [0.07 - a.cos() * 0.07, 0.0, 0.88 + a.sin() * 0.1]).collect();
+            curve(&mut p, &bend, r * 1.1, r * 0.5, DARK_STEEL);
+            p.push(limb([0.14, 0.0, 0.9], [0.115, 0.0, 0.84], r * 0.7, r * 0.15, STEEL));
+            p.push(limb([0.0, 0.0, 0.64], [0.0, 0.0, 0.9], r * 1.2, r * 1.1, DARK_STEEL));
+            LEATHER
+        }
+        // A spiked iron star, heavy enough to drag the crack
+        CRACKER_STAR => {
+            for d in sphere_points(8) {
+                p.push(limb([0.0, 0.0, 0.93], [d[0] * 0.075, d[1] * 0.075, 0.93 + d[2] * 0.075], r * 0.8, r * 0.15, STEEL));
+            }
+            p.push(ball([0.0, 0.0, 0.93], 0.042, DARK_STEEL));
+            LEATHER
+        }
+        // A spray of feathers, pale and banded, fanning out off the end
+        CRACKER_FEATHER => {
+            for (k, (dx, dy)) in [(1.0, 0.0), (-0.5, 0.87), (-0.5, -0.87), (0.3, 0.5), (0.3, -0.5)].into_iter().enumerate() {
+                let material = if k % 2 == 0 { FUR_WHITE } else { FUR_TAN };
+                p.push(limb([0.0, 0.0, 0.66], [dx * 0.06, dy * 0.06, 1.04], r * 1.3, r * 0.2, material).stretched([1.0, 0.4, 1.0]));
+            }
+            LINEN
         }
         glow => {
             let g = Element::ALL[glow - CRACKER_GLOW].glow();
@@ -5248,8 +5590,39 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     for kind in 0..CRACKERS {
         models.push(voxelize(&lash_cracker(kind), LASH_RES));
     }
+    // A lash wound round and round half a meter across, three turns climbing three quarters of a
+    // meter, banded where its braid crosses, for a coil bind, drawn as big as what it holds
+    let mut p = Vec::new();
+    let turns = 3.0;
+    let points: Vec<[f64; 3]> = (0..=60)
+        .map(|k| {
+            let u = k as f64 / 60.0;
+            let a = u * turns * TAU;
+            [a.cos() * 0.5, a.sin() * 0.5, 0.05 + 0.7 * u]
+        })
+        .collect();
+    for (k, pair) in points.windows(2).enumerate() {
+        let material = if k % 5 == 0 { FUR_TAN } else { LEATHER };
+        p.push(limb(pair[0], pair[1], 0.04, 0.04, material));
+    }
+    models.push(voxelize(&p, RING_RES));
+    // A serpent's head along x, half a meter long, glowing with venom so it shows slithering over
+    // the ground: bright eyes, a forked tongue flicking out, a dark band over its crown, and its
+    // neck trailing off behind
+    let mut p = vec![ball([0.07, 0.04, 0.035], 0.022, GLOW_HOLY), ball([0.07, -0.04, 0.035], 0.022, GLOW_HOLY)];
+    p.push(limb([0.13, 0.0, -0.01], [0.24, 0.016, -0.01], 0.008, 0.004, GLOW_BLOOD));
+    p.push(limb([0.13, 0.0, -0.01], [0.24, -0.016, -0.01], 0.008, 0.004, GLOW_BLOOD));
+    p.push(ellipsoid([0.0, 0.0, 0.035], [0.1, 0.05, 0.02], BARK_DARK));
+    p.push(ellipsoid([0.0, 0.0, 0.0], [0.14, 0.065, 0.05], GLOW_POISON));
+    p.push(limb([-0.08, 0.0, 0.0], [-0.34, 0.0, -0.03], 0.05, 0.03, MOSS));
+    models.push(voxelize(&p, MODEL_RES));
     models
 }
+
+/// Where the coil a coil bind winds round what it holds is among effect_models(), and a serpent
+/// lash's serpent's head
+pub const COIL: usize = LASH_CRACKERS + CRACKERS;
+pub const SERPENT: usize = COIL + 1;
 
 /// Voxels per meter of the models from effect_models(). What's out in the world has voxels the
 /// size of the world's, what's held is finer, like the weapons.
@@ -5364,7 +5737,7 @@ mod tests {
 
     #[test]
     fn lash_models_are_where_combat_looks_for_them() {
-        assert_eq!(effect_models().len(), LASH_CRACKERS + CRACKERS);
+        assert_eq!(effect_models().len(), SERPENT + 1);
         // Elemental lashes glow, the rest are made of what they're made of
         let library = Library::parse(BUILT_IN).unwrap();
         for c in library.components.iter().filter(|c| c.slot_type == "lash") {
@@ -5434,7 +5807,7 @@ mod tests {
         }
         // Every special attack is on some part, so they turn up in loot and shops
         let on_parts: BTreeSet<String> = library.components.iter().filter_map(|c| c.special).map(|s| s.name().to_owned()).collect();
-        assert!(on_parts.len() >= 66, "only {} special attacks are on parts", on_parts.len());
+        assert!(on_parts.len() >= 75, "only {} special attacks are on parts", on_parts.len());
         let mut found = BTreeSet::new();
         for seed in 0..40_000 {
             if let Some(special) = library.special_of(seed, 8.0) {
@@ -5654,12 +6027,74 @@ mod tests {
             (Special::PowderKeg, &["bombs"]),
             (Special::StonePillars, &["maul", "hammer"]),
             (Special::WreckingOrbit, &["flail"]),
+            (Special::LassoPull, &["whip"]),
+            (Special::CoilBind, &["whip"]),
+            (Special::ThunderCrack, &["whip"]),
+            (Special::SerpentLash, &["whip"]),
+            (Special::TripSweep, &["whip"]),
+            (Special::BurningBrand, &["whip"]),
+            (Special::ChainSwing, &["whip"]),
+            (Special::Firecrackers, &["bombs"]),
+            (Special::Thornburst, &["bow", "crossbow", "harpoon"]),
+            (Special::Thunderstorm, &["bombs"]),
+            (Special::Starfall, &["bow"]),
+            (Special::Stormchain, &["pistol", "musket"]),
+            (Special::Breath, &["blunderbuss", "handcannon"]),
         ] {
             for family in families {
                 assert!(library.components.iter().any(|c| c.special == Some(special) && c.compatible_families.iter().any(|f| f == family)), "{special:?} isn't on any {family} part");
             }
             assert!(!special.description().is_empty() && !special.name().is_empty());
         }
+        // The new whip specials each on a legendary or mythic part
+        for special in [Special::LassoPull, Special::CoilBind, Special::ThunderCrack, Special::SerpentLash, Special::TripSweep, Special::BurningBrand, Special::ChainSwing] {
+            assert!(library.components.iter().any(|c| c.special == Some(special) && c.tier >= 4 && c.compatible_families.iter().any(|f| f == "whip")), "{special:?}");
+        }
+        // The new looks and effects are there to be had
+        for shape in ["wire", "spine", "hook", "star", "feather"] {
+            assert!(library.components.iter().any(|c| c.visual_profile.shape.as_deref() == Some(shape)), "no part is shaped {shape}");
+        }
+        for id in ["mark", "lifesteal", "rupture"] {
+            let def = library.effects.iter().position(|e| e.id == id && e.effect.is_some()).unwrap_or_else(|| panic!("no {id}"));
+            let on = library.components.iter().filter(|c| c.effect_defs.contains(&def)).count();
+            assert!(on >= 4, "{id} is only on {on} parts");
+        }
+    }
+
+    /// What a weapon's head is like makes its heavy blow and its finisher, what a staff's focus
+    /// is like how it casts, and what a bow's limbs or a gun's lock are like how it's drawn or loaded
+    #[test]
+    fn parts_change_how_weapons_move() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let made = |family: &str, slot: &str, part: &str| {
+            let f = library.family(family).unwrap();
+            let mut parts = library.generate(11, Some(f), 0.0).parts;
+            let k = library.families[f].slots.iter().position(|s| s == slot).unwrap();
+            parts[k] = library.components.iter().position(|c| c.id == part).unwrap_or_else(|| panic!("no {part}"));
+            Weapon::assemble(&library, f, parts, 11).profile
+        };
+        // A hooked or winged spear sweeps, a long-bladed one lunges, a plain leaf as spears do
+        assert_eq!(made("spear", "blade", "winged_spearhead").heavy, Heavy::Sweep);
+        assert_eq!(made("spear", "blade", "obsidian_needle_point").heavy, Heavy::Lunge);
+        assert_eq!(made("spear", "blade", "leaf_point").heavy, Heavy::Style);
+        assert_eq!(made("spear", "blade", "obsidian_needle_point").finish, Finish::Lunge);
+        // A halo calls down from overhead, a bone cage gathers in both hands, a crook sweeps
+        assert_eq!(made("staff", "focus", "ivory_halo_focus").casting, Casting::Overhead);
+        assert_eq!(made("staff", "focus", "bone_cage_focus").casting, Casting::Gather);
+        // A matchlock's loaded heavily, a wheel-lock with a flourish
+        assert_eq!(made("musket", "lock", "gilded_matchlock").knack, Knack::Heavy);
+        assert_eq!(made("pistol", "lock", "copper_wheel_lock").knack, Knack::Showy);
+        // Across everything that rolls, every way of finishing, casting and drawing turns up
+        let (mut finishes, mut castings, mut knacks) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        for seed in 0..6000 {
+            let p = library.generate(seed, None, 2.0).profile;
+            finishes.insert(format!("{:?}", p.finish));
+            castings.insert(format!("{:?}", p.casting));
+            knacks.insert(format!("{:?}", p.knack));
+        }
+        assert_eq!(finishes.len(), 5, "{finishes:?}");
+        assert_eq!(castings.len(), 7, "{castings:?}");
+        assert_eq!(knacks.len(), 4, "{knacks:?}");
     }
 
     #[test]
