@@ -482,6 +482,12 @@ impl Water {
         }
     }
 
+    /// Room for how the next piece of the world's water flows and its surface, as big as this
+    /// one's, to hand to new() when it's built, if there's any water
+    pub fn make_spare(&self, memory_allocator: &Arc<StandardMemoryAllocator>) -> Option<[Arc<Image>; 2]> {
+        self.active.then(|| [(); 2].map(|_| storage_image(memory_allocator, self.size, Format::R32G32B32A32_SFLOAT).0))
+    }
+
     /// Lets go of it but for how the water flows and its surface, the biggest lots of its memory,
     /// which the next piece of the world's water can have, see new(): the rest in parts, each
     /// about one lot of memory, to let go of one at a time, as freeing it all at once held up the

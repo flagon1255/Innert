@@ -1718,6 +1718,20 @@ impl App {
         let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
         let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs, None);
         water.active &= flag("water", true);
+        // Room for the next piece of the landscape to be built into, made now while nothing's being
+        // drawn yet rather than as it's sent over, see Spare. It's let go of after a while if the
+        // world never moves on.
+        let spare = landscape.as_ref().and_then(|_| {
+            let water = water.make_spare(&memory_allocator)?;
+            let bricks = Buffer::new_slice::<u32>(
+                memory_allocator.clone(),
+                BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC, ..Default::default() },
+                AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() },
+                voxel_set.bricks.len(),
+            )
+            .unwrap();
+            Some((Spare { bricks, water }, Instant::now()))
+        });
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
@@ -1900,7 +1914,7 @@ impl App {
             window_build: None,
             retired: Vec::new(),
             burying: None,
-            spare: None,
+            spare,
             last_camera: None,
             camera_drift: Vector3::zeros(),
             lights: Vec::new(),
