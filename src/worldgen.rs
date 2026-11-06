@@ -2024,7 +2024,9 @@ pub struct Prop {
     pub luck: f32,
 }
 
-/// Something glowing that lights up what's around it, like a candle flame. In meters.
+/// Something glowing that lights up what's around it, like a candle flame. In meters. With a
+/// negative color, a glow hanging in the air of a fallen city instead, see Terrain::glow() in
+/// undercity.rs.
 #[derive(Clone, Copy)]
 pub struct Light {
     pub position: [f32; 3],

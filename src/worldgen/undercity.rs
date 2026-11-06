@@ -59,11 +59,27 @@ const CHASM_SIDE: f32 = 8.0;
 const THROAT: f32 = 4.5;
 /// How far out round the shaft's walls nothing grows, so the obelisks round it stand in the open
 const GLADE: f32 = 11.0;
-/// The light braziers give, glowing fungus, the void, and crystals
-const FIRE: [f32; 3] = [1.0, 0.6, 0.28];
-const FUNGUS: [f32; 3] = [0.3, 0.85, 0.45];
-const VOID: [f32; 3] = [0.7, 0.4, 1.0];
-const CRYSTALS: [f32; 3] = [0.35, 0.75, 1.0];
+/// The light braziers give down in the city, glowing fungus, the void, and crystals
+const FIRE: [f32; 3] = [1.9, 1.1, 0.48];
+const FUNGUS: [f32; 3] = [0.45, 1.3, 0.62];
+const VOID: [f32; 3] = [1.2, 0.55, 1.7];
+const CRYSTALS: [f32; 3] = [0.6, 1.35, 1.9];
+/// And up on the land round the top of the shaft, no brighter than fires and the void elsewhere
+const LAND_FIRE: [f32; 3] = [1.0, 0.6, 0.28];
+const LAND_VOID: [f32; 3] = [0.7, 0.4, 1.0];
+/// The glows hanging in the air of the city, see Terrain::glow(): faintly over all of it, and in
+/// each part of it in its own color, so each is told apart and what moves in it stands out
+/// against it. Pale light come down the shaft at its foot, the embers of the gate, the green of
+/// the moss in the canal and the fungus in the lanes, the cold of the crystals over the square,
+/// the void and the crystals down in the chasm, and the void in the temple.
+const HAZE: [f32; 3] = [0.07, 0.085, 0.13];
+const SKYLIGHT: [f32; 3] = [0.13, 0.15, 0.2];
+const EMBERS: [f32; 3] = [0.24, 0.13, 0.05];
+const MIRE: [f32; 3] = [0.05, 0.2, 0.12];
+const SPORES: [f32; 3] = [0.07, 0.17, 0.08];
+const FROST: [f32; 3] = [0.05, 0.12, 0.17];
+const ABYSS: [f32; 3] = [0.1, 0.09, 0.21];
+const DUSK: [f32; 3] = [0.16, 0.06, 0.25];
 
 /// How far a cavern's flat floor goes out, next to the widest of the hollow cut for it
 fn floor_width() -> f32 {
@@ -160,6 +176,9 @@ pub(super) struct Undercity {
     stone: Palette,
     /// Where it all is, x0, y0, x1, y1 in meters
     bounds: [f32; 4],
+    /// The lowest the land comes anywhere over that, so the glows in the city are kept well under
+    /// it, see Terrain::glow()
+    land: f32,
     seed: u32,
 }
 
@@ -286,10 +305,16 @@ impl Terrain {
             let s = hash3(r, attempt, 0x5c18);
             let p = [(cx as f32 + 0.2 + 0.6 * unit(s)) * CITY_CELL, (cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * CITY_CELL];
             let f = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]][(hash(s) % 4) as usize];
-            let Some(city) = self.lay_out_undercity(p, f, hash(s ^ 0x5c19)) else {
+            let Some(mut city) = self.lay_out_undercity(p, f, hash(s ^ 0x5c19)) else {
                 continue;
             };
             if self.clear_for_undercity(&city, cache) {
+                // Looked over a couple of meters apart, which the land's too smooth to dip much
+                // between
+                let b = city.bounds;
+                let n = [((b[2] - b[0]) / 2.0).ceil() as usize, ((b[3] - b[1]) / 2.0).ceil() as usize];
+                let at = |i: usize, j: usize| height_at(&self.settings, b[0] + (b[2] - b[0]) * i as f32 / n[0] as f32, b[1] + (b[3] - b[1]) * j as f32 / n[1] as f32);
+                city.land = (0..=n[1]).flat_map(|j| (0..=n[0]).map(move |i| (i, j))).map(|(i, j)| at(i, j)).fold(f32::MAX, f32::min);
                 return Some(city);
             }
             checked += 1;
@@ -386,6 +411,7 @@ impl Terrain {
             ruins: Vec::new(),
             stone,
             bounds: [0.0; 4],
+            land: 0.0,
             seed: hash(seed ^ 0x5c1a),
         };
         if !self.lay_stair(&mut c) {
@@ -562,6 +588,8 @@ impl Terrain {
         }
         self.chasm(c, &mut b, features, &mut rng);
         self.temple(c, &mut b, features, &mut rng);
+        self.lamps(c, &mut b, features);
+        self.glows(c, features);
         // Nothing grows over the shaft, no grass is drawn on it, and water falling in finds the
         // stair and the floor
         let glade = c.at.rect([-SHAFT - GLADE, SHAFT + GLADE], [-SHAFT - GLADE, SHAFT + GLADE]);
@@ -579,6 +607,138 @@ impl Terrain {
     fn light(&self, features: &mut Features, p: Vec3, color: [f32; 3], reach: f32) {
         if self.inside(p[0], p[1]) {
             features.lights.push(Light { position: p, color, reach });
+        }
+    }
+
+    /// A glow hanging in the air of city `c` at `q` in its frame, `z` high, lighting what's round
+    /// it out to `reach` a little in `color`, more from above, through walls and all, as a light of
+    /// the negative of that color, see localLight() in shaders\traverse.comp. It lights nothing
+    /// higher than itself, so it's kept COVER under the lowest of the land over the city, and
+    /// nothing past the city's bounds, where no cave, dungeon or town comes.
+    #[allow(clippy::too_many_arguments)]
+    fn glow(&self, c: &Undercity, features: &mut Features, q: [f32; 2], z: f32, color: [f32; 3], reach: f32) {
+        let p = c.at.point(q[0], q[1], 0.0);
+        if !self.inside(p[0], p[1]) {
+            return;
+        }
+        let b = c.bounds;
+        let reach = reach.min(p[0] - b[0]).min(b[2] - p[0]).min(p[1] - b[1]).min(b[3] - p[1]);
+        let z = z.min(c.land - COVER);
+        if reach > 2.0 && z > c.floor + 1.5 {
+            features.lights.push(Light { position: [p[0], p[1], z], color: color.map(|v| -v), reach });
+        }
+    }
+
+    /// The glows hanging in the air of the city, see glow(): one faint over all of it, and one in
+    /// each part of it, in its own color
+    fn glows(&self, c: &Undercity, features: &mut Features) {
+        let f = c.floor;
+        let (l, t) = (c.city, c.temple);
+        let gate = SHAFT + GATE;
+        self.glow(c, features, l.middle, f + l.height + ROUGH, HAZE, 30.0);
+        self.glow(c, features, [0.0, 0.0], f + 5.0, SKYLIGHT, 9.0);
+        self.glow(c, features, [gate + 3.0, 0.0], f + 6.0, EMBERS, 13.0);
+        // Low, so it's mostly the canal and its banks that are green
+        self.glow(c, features, [c.canal, 0.0], f + 2.5, MIRE, 11.0);
+        for side in [-1.0f32, 1.0] {
+            self.glow(c, features, [l.middle[0] - 4.0, side * l.half[1] * LANE], f + 4.0, SPORES, 10.0);
+        }
+        self.glow(c, features, c.plaza, f + 10.0, FROST, 20.0);
+        self.glow(c, features, [c.chasm, 0.0], f + 3.0, ABYSS, 11.0);
+        self.glow(c, features, t.middle, f + t.height, DUSK, 20.0);
+    }
+
+    /// What else lights the city, laid out by a chance of its own so the rest of it stays as it
+    /// was: lanterns along the main street, burning with fire on the way in from the gate and
+    /// with the void on the way on from the square to the temple, crystals hanging from the vault
+    /// here and there, more fungus round the walls and along the lanes, moss glowing on the bottom
+    /// of the canal, and a crack of the void along the bottom of the chasm
+    fn lamps(&self, c: &Undercity, b: &mut Builder, features: &mut Features) {
+        let mut rng = Rng(c.seed ^ 0x6c0e);
+        let at = c.at;
+        let f = c.floor;
+        let l = c.city;
+        let gate = SHAFT + GATE;
+        let end = l.middle[0] + l.half[0];
+        let edge = STREET + 0.3;
+        self.street_lamp(c, b, features, [gate + 3.5, -edge], f, [0.0, 1.0], FLAME, FIRE);
+        // Between two of the colonnade's pillars, about halfway along it
+        let first = c.canal + CANAL + 2.4;
+        let pillars = ((c.plaza[0] - PLAZA - 1.0 - first) / 3.6).ceil().max(1.0) as usize;
+        let u = first + 1.8 + 3.6 * (pillars.saturating_sub(2) / 2) as f32;
+        self.street_lamp(c, b, features, [u, edge], f, [0.0, -1.0], FLAME, FIRE);
+        for (k, u) in [c.plaza[0] + PLAZA + 3.5, c.plaza[0] + PLAZA + 8.5].into_iter().enumerate() {
+            if u < end - 2.0 {
+                let side = if k == 0 { -1.0 } else { 1.0 };
+                self.street_lamp(c, b, features, [u, side * edge], f, [0.0, -side], GLOW_VOID, VOID);
+            }
+        }
+        // Crystals hanging from the vault, away from the great cluster over the square
+        let mut hung = 0;
+        for _ in 0..24 {
+            if hung >= 3 {
+                break;
+            }
+            let (a, r) = (rng.next() * TAU, rng.range(0.3, 0.65));
+            let q = [l.middle[0] + a.cos() * l.half[0] * r, l.middle[1] + a.sin() * l.half[1] * r];
+            if (q[0] - c.plaza[0]).hypot(q[1] - c.plaza[1]) < 10.0 || q[0] < gate + 5.0 || q[1].abs() < 6.0 {
+                continue;
+            }
+            if let Some(roof) = l.headroom(q[0], q[1]) {
+                let size = rng.range(1.0, 1.4);
+                self.hanging_crystals(c, b, features, q, f, roof, size, &mut rng);
+                hung += 1;
+            }
+        }
+        // Fungus round the walls and beside the lanes, clear of the streets, the canal and the ruins
+        let mut lit = 0;
+        for _ in 0..40 {
+            if lit >= 8 {
+                break;
+            }
+            let q = if rng.next() < 0.5 {
+                let (a, r) = (rng.next() * TAU, rng.range(0.7, 0.88));
+                [l.middle[0] + a.cos() * l.half[0] * r, l.middle[1] + a.sin() * l.half[1] * r]
+            } else {
+                let side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+                let off = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+                [rng.range(gate + 4.0, l.middle[0] + l.half[0] * 0.75), side * (l.half[1] * LANE + off * (ALLEY + 0.6))]
+            };
+            let lane = l.half[1] * LANE;
+            let clear = q[1].abs() > STREET + 0.8
+                && (q[1].abs() - lane).abs() > ALLEY + 0.3
+                && (q[0] - c.canal).abs() > CANAL + 1.2
+                && (q[0] - c.plaza[0]).abs().max((q[1] - c.plaza[1]).abs()) > PLAZA + 0.8
+                && l.out(q[0], q[1]) < 0.85
+                && !c.ruins.iter().any(|ruin| overlaps(ruin.rect, around(q, [0.8; 2]), 0.0));
+            if clear {
+                self.fungus(c, b, features, q, f, &mut rng);
+                lit += 1;
+            }
+        }
+        // Moss glowing on the bottom of the canal, in patches, clear of the bridge and the steps
+        let bottom = f - CANAL_DEPTH;
+        let mut patches = 0;
+        for _ in 0..30 {
+            if patches >= 7 {
+                break;
+            }
+            let v = rng.range(-c.canal_reach + 1.0, c.canal_reach - 1.0);
+            if v.abs() < STREET + 0.8 || (v.abs() - c.canal_reach * 0.55).abs() < 1.2 {
+                continue;
+            }
+            let q = [c.canal + rng.range(-0.6, 0.6), v];
+            let size = [rng.range(0.6, 1.0), rng.range(0.9, 1.8)];
+            b.solids.push(Shape::ellipsoid(at.point(q[0], q[1], bottom - 0.1), b.radii([size[0], size[1], 0.17]), MOSS, GLOW_POISON).placed(Placement::Clear));
+            patches += 1;
+        }
+        // The crack of the void, zigzagging along the bottom of the chasm
+        let (u, low) = (c.chasm, f - c.chasm_depth);
+        let mut from = [u + rng.range(-0.5, 0.5), -CHASM_SIDE + 1.0];
+        while from[1] < CHASM_SIDE - 1.5 {
+            let to = [u + rng.range(-0.9, 0.9), from[1] + rng.range(1.2, 2.2)];
+            b.solids.push(Shape::capsule(at.point(from[0], from[1], low - 0.03), at.point(to[0], to[1], low - 0.03), 0.1, 0.08, GLOW_VOID, AIR, false).placed(Placement::Clear));
+            from = to;
         }
     }
 
@@ -703,7 +863,7 @@ impl Terrain {
                     let tip = at.point(q[0] + a.cos() * 0.45, q[1] + a.sin() * 0.45, g + high + 1.1);
                     b.solids.push(Shape::capsule(at.point(q[0], q[1], g + high + 0.2), tip, 0.09, 0.03, c.stone.trim.0, AIR, false).placed(Placement::Clear));
                 }
-                self.light(features, at.point(q[0], q[1], g + high + 0.6), VOID, 10.0);
+                self.light(features, at.point(q[0], q[1], g + high + 0.6), LAND_VOID, 10.0);
             }
         }
         // Braziers either side of the way down
@@ -712,7 +872,7 @@ impl Terrain {
         let along = [-out[1], out[0]];
         for side in [-1.0f32, 1.0] {
             let q = [m[0] + out[0] * (STAIR * 0.5 + 2.6) + along[0] * side * 2.0, m[1] + out[1] * (STAIR * 0.5 + 2.6) + along[1] * side * 2.0];
-            self.brazier(c, b, features, q, ground(q[0], q[1]));
+            self.brazier(c, b, features, q, ground(q[0], q[1]), LAND_FIRE);
         }
         // Vines and roots hanging down the walls from the top
         for _ in 0..12 {
@@ -752,7 +912,7 @@ impl Terrain {
             v += 0.45;
         }
         b.solids.push(b.block([gate - 0.46, -1.9, gate - 0.34, 1.9], [f + 3.6, f + 3.7], (DARK_STEEL, AIR), Pattern::Plain));
-        self.brazier(c, b, features, [SHAFT + 1.2, -1.3], f);
+        self.brazier(c, b, features, [SHAFT + 1.2, -1.3], f, FIRE);
         // Bones at the foot of the stair, from those who came down
         for _ in 0..3 {
             let q = [rng.range(-SHAFT + 2.2, SHAFT - 2.2), rng.range(-SHAFT + 2.2, SHAFT - 2.2)];
@@ -763,13 +923,78 @@ impl Terrain {
     }
 
     /// A brazier of bronze on a short stone post at `q` in the city's frame, the post's foot at
-    /// `z`, a flame in its bowl lighting what's round it
-    fn brazier(&self, c: &Undercity, b: &mut Builder, features: &mut Features, q: [f32; 2], z: f32) {
+    /// `z`, a flame in its bowl lighting what's round it in `color`
+    #[allow(clippy::too_many_arguments)]
+    fn brazier(&self, c: &Undercity, b: &mut Builder, features: &mut Features, q: [f32; 2], z: f32, color: [f32; 3]) {
         let at = c.at;
         b.solids.push(b.block(around(q, [0.22; 2]), [z - 0.4, z + 0.85], c.stone.trim, Pattern::Plain));
         b.solids.push(Shape::sphere(at.point(q[0], q[1], z + 1.12), 0.2, FLAME, AIR, false).placed(Placement::Clear));
         b.solids.push(Shape::ellipsoid(at.point(q[0], q[1], z + 0.98), [0.42, 0.42, 0.16], BRONZE, AIR).placed(Placement::Clear));
-        self.light(features, at.point(q[0], q[1], z + 1.55), FIRE, 10.0);
+        self.light(features, at.point(q[0], q[1], z + 1.55), color, 10.0);
+    }
+
+    /// A lantern on an iron post at `q` in the city's frame, its foot on the floor at `z`, hung from
+    /// an arm reaching out along `out` over the street, a flame of `core` burning in its cage and
+    /// lighting what's round it in `color`: with a glow, as it stands where the dead come at the
+    /// player, and a light with shadows to trace would cost more for each of them
+    #[allow(clippy::too_many_arguments)]
+    fn street_lamp(&self, c: &Undercity, b: &mut Builder, features: &mut Features, q: [f32; 2], z: f32, out: [f32; 2], core: u8, color: [f32; 3]) {
+        let at = c.at;
+        let iron = (DARK_STEEL, AIR);
+        let top = z + 3.0;
+        let across = [out[1] * 0.04, -out[0] * 0.04];
+        let hang = [q[0] + out[0] * 0.65, q[1] + out[1] * 0.65];
+        b.solids.push(b.block(around(q, [0.2; 2]), [z - 0.3, z + 0.3], c.stone.trim, Pattern::Plain));
+        b.solids.push(b.block(around(q, [0.06; 2]), [z, top], iron, Pattern::Plain));
+        b.solids.push(b.block(rect([q[0] - across[0], q[1] - across[1]], [hang[0] + across[0], hang[1] + across[1]]), [top - 0.08, top], iron, Pattern::Plain));
+        // Its cage: a lid and a floor, bars at the corners, and the flame in the middle
+        b.solids.push(b.block(around(hang, [0.025; 2]), [top - 0.3, top], iron, Pattern::Plain));
+        b.solids.push(b.block(around(hang, [0.16; 2]), [top - 0.36, top - 0.3], iron, Pattern::Plain));
+        b.solids.push(b.block(around(hang, [0.13; 2]), [top - 0.8, top - 0.76], iron, Pattern::Plain));
+        for (du, dv) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            b.solids.push(b.block(around([hang[0] + du * 0.11, hang[1] + dv * 0.11], [0.02; 2]), [top - 0.78, top - 0.33], iron, Pattern::Plain));
+        }
+        let flame = at.point(hang[0], hang[1], top - 0.56);
+        b.solids.push(Shape::ellipsoid(flame, [0.07, 0.07, 0.12], core, AIR).placed(Placement::Clear));
+        self.glow(c, features, hang, top + 0.2, color.map(|v| v * 0.16), 7.5);
+    }
+
+    /// Runes of the void cut into a wall whose face is at `face` along `out`, from `q` along the
+    /// wall in the city's frame, glowing purple: a stroke up it, forked at the top like a root or
+    /// a bolt, from `z` to `z + high`
+    #[allow(clippy::too_many_arguments)]
+    fn rune(&self, c: &Undercity, b: &mut Builder, q: [f32; 2], out: [f32; 2], z: f32, high: f32, rng: &mut Rng) {
+        let at = c.at;
+        let along = [-out[1], out[0]];
+        let p = |s: f32, h: f32| at.point(q[0] + along[0] * s, q[1] + along[1] * s, z + h * high);
+        let lean = rng.range(-0.1, 0.1);
+        let fork = rng.range(0.45, 0.65);
+        let r = 0.055;
+        b.solids.push(Shape::capsule(p(0.0, 0.0), p(lean, 1.0), r, r, GLOW_VOID, AIR, false).placed(Placement::Clear));
+        for side in [-1.0f32, 1.0] {
+            let spread = rng.range(0.18, 0.32) * side;
+            b.solids.push(Shape::capsule(p(lean * fork, fork), p(lean * fork + spread, fork + rng.range(0.2, 0.35)), r, r * 0.8, GLOW_VOID, AIR, false).placed(Placement::Clear));
+        }
+        // A short bar across it, below the fork
+        let bar = rng.range(0.15, 0.3);
+        b.solids.push(Shape::capsule(p(-0.12, bar), p(0.12, bar + 0.03), r * 0.8, r * 0.8, GLOW_VOID, AIR, false).placed(Placement::Clear));
+    }
+
+    /// A cluster of crystals hanging from the vault at `q`, where its roof is `roof` over the floor
+    /// at `z`, as big as `size`, a little of their light hanging under them
+    #[allow(clippy::too_many_arguments)]
+    fn hanging_crystals(&self, c: &Undercity, b: &mut Builder, features: &mut Features, q: [f32; 2], z: f32, roof: f32, size: f32, rng: &mut Rng) {
+        let at = c.at;
+        let top = z + roof + ROUGH + 0.4;
+        let low = z + roof - 1.2 * size;
+        b.solids.push(Shape::capsule(at.point(q[0], q[1], top), at.point(q[0], q[1], low), 0.42 * size, 0.08, CRYSTAL, AIR, false).placed(Placement::Clear));
+        for _ in 0..4 {
+            let a = rng.next() * TAU;
+            let reach = rng.range(0.5, 0.9) * size;
+            let tip = at.point(q[0] + a.cos() * reach, q[1] + a.sin() * reach, z + roof - rng.range(0.3, 0.9) * size);
+            b.solids.push(Shape::capsule(at.point(q[0], q[1], top - 0.3), tip, 0.2 * size, 0.05, CRYSTAL, AIR, false).placed(Placement::Clear));
+        }
+        self.glow(c, features, q, low - 0.5, [0.05, 0.12, 0.17], 12.0);
     }
 
     /// Glowing fungus at `q` on the floor at `z`: a few stems with caps glowing green, lighting a
@@ -786,7 +1011,9 @@ impl Terrain {
             let r = rng.range(0.16, 0.38);
             b.solids.push(Shape::ellipsoid([top[0], top[1], top[2] + 0.03], [r, r, r * 0.35], GLOW_POISON, AIR).placed(Placement::Clear));
         }
-        self.light(features, at.point(q[0], q[1], z + 0.9), FUNGUS, 7.0);
+        // A glow rather than a light, as it's faint and there's a lot of it, so it casts no
+        // shadows to trace
+        self.glow(c, features, q, z + 2.4, FUNGUS.map(|v| v * 0.2), 6.5);
     }
 
     /// A tangle of roots hanging down from the vault at `q`, where its roof is `roof` over the
@@ -1001,7 +1228,7 @@ impl Terrain {
         }
         // Braziers at the ends of the bridge over it
         for side in [-1.0f32, 1.0] {
-            self.brazier(c, b, features, [u + side * (CANAL + 1.1), -side * (STREET + 0.7)], f);
+            self.brazier(c, b, features, [u + side * (CANAL + 1.1), -side * (STREET + 0.7)], f, FIRE);
         }
         let side = if c.seed % 3 == 0 { -1.0 } else { 1.0 };
         // The dead keeping it on its far bank, where they can come at whoever crosses, rather than
@@ -1050,11 +1277,16 @@ impl Terrain {
         b.solids.push(Shape::capsule(at.point(q[0], q[1], f + 0.75), at.point(r[0], r[1], f + 0.55), 0.3, 0.2, c.stone.wall.0, c.stone.wall.1, false).placed(Placement::Clear).patterned(Pattern::Carved));
         // The basin's bottom, below the paving, after all that stands in it so it doesn't cut it
         b.solids.push(b.room(around(p, [basin; 2]), [f - 0.25, f + 0.05]));
-        self.light(features, at.point(p[0], p[1], f + 2.4), VOID, 10.0);
+        // The void burning on its broken top, lighting the square from over it, and its glow
+        // hanging round it
+        let stump = f + 0.85 + high;
+        b.solids.push(Shape::ellipsoid(at.point(p[0], p[1], stump + 0.12), [0.24, 0.24, 0.38], GLOW_VOID, AIR).placed(Placement::Clear));
+        self.light(features, at.point(p[0], p[1], stump + 0.9), VOID.map(|v| v * 1.4), 12.0);
+        self.glow(c, features, p, stump + 1.0, [0.13, 0.04, 0.2], 10.0);
         // Braziers at its corners
         for side in [-1.0f32, 1.0] {
             for end in [-1.0f32, 1.0] {
-                self.brazier(c, b, features, [p[0] + end * (PLAZA - 0.8), p[1] + side * (PLAZA - 0.8)], f);
+                self.brazier(c, b, features, [p[0] + end * (PLAZA - 0.8), p[1] + side * (PLAZA - 0.8)], f, FIRE);
             }
         }
         // Two towers over the square, at its far corners, broken off at the top
@@ -1102,6 +1334,36 @@ impl Terrain {
         let [u0, v0, u1, v1] = h.rect;
         let t = if h.tower { 0.55 } else { 0.42 };
         let low = if h.tower { h.wall * 0.7 } else { h.wall * 0.4 };
+        // Runes of the void cut either side of the door of most of those still standing high
+        // enough, low enough down that the wall's sure to be there, laid first so they're cut
+        // into it. By a chance of their own, so the walls stand as they did.
+        let mut marks = Rng(h.seed ^ 0x6c0f);
+        if low > 1.6 && marks.next() < 0.7 {
+            let middle = [(u0 + u1) * 0.5, (v0 + v1) * 0.5];
+            let face = [middle[0] + h.door[0] * (u1 - u0) * 0.5, middle[1] + h.door[1] * (v1 - v0) * 0.5];
+            let along = [-h.door[1], h.door[0]];
+            for side in [-1.0f32, 1.0] {
+                if marks.next() < 0.75 {
+                    let q = [face[0] + along[0] * side * 1.2, face[1] + along[1] * side * 1.2];
+                    self.rune(c, b, q, h.door, f + 0.6, (low - 0.9).min(1.4), &mut marks);
+                }
+            }
+        }
+        // Shelves of fungus glowing on the outside of one of the other walls of some, low down
+        if marks.next() < 0.45 {
+            let out = [[0.0f32, -1.0f32], [0.0, 1.0], [-1.0, 0.0], [1.0, 0.0]].into_iter().filter(|o| *o != h.door).nth((marks.next() * 2.99) as usize).unwrap_or([0.0, 1.0]);
+            let along = [-out[1], out[0]];
+            let middle = [(u0 + u1) * 0.5, (v0 + v1) * 0.5];
+            let length = (along[0] * (u1 - u0)).abs() + (along[1] * (v1 - v0)).abs();
+            let s = marks.range(-0.3, 0.3) * length;
+            let face = [middle[0] + out[0] * (u1 - u0) * 0.5 + along[0] * s, middle[1] + out[1] * (v1 - v0) * 0.5 + along[1] * s];
+            for _ in 0..(3 + (marks.next() * 3.0) as usize) {
+                let (o, z) = (marks.range(-0.5, 0.5), f + marks.range(0.3, (low - 0.2).max(0.5)));
+                let w = marks.range(0.14, 0.28);
+                let radii = b.radii([(along[0].abs() * w + out[0].abs() * w * 0.7).max(0.06), (along[1].abs() * w + out[1].abs() * w * 0.7).max(0.06), 0.06]);
+                b.solids.push(Shape::ellipsoid(at.point(face[0] + along[0] * o, face[1] + along[1] * o, z), radii, GLOW_POISON, AIR).placed(Placement::Clear));
+            }
+        }
         // Each wall in pieces, broken off at different heights, the door in the middle of the
         // one facing the street
         let walls = [([u0, v0], [u1, v0 + t], [0.0f32, -1.0f32]), ([u0, v1 - t], [u1, v1], [0.0, 1.0]), ([u0, v0], [u0 + t, v1], [-1.0, 0.0]), ([u1 - t, v0], [u1, v1], [1.0, 0.0])];
@@ -1234,6 +1496,17 @@ impl Terrain {
                 b.floors.push(b.block([lo[0], lo[1], (lo[0] + tile).min(u1), (lo[1] + tile).min(v1)], [f - 0.5, f], stone, Pattern::Plain));
             }
         }
+        // Runes of the void cut tall into the inside of its walls, between the pillars down either
+        // side and either side of the dais, under the gold, laid first so they're cut into the
+        // walls, by a chance of their own so the walls stand as they did
+        let mut marks = Rng(c.seed ^ 0x6c10);
+        for side in [-1.0f32, 1.0] {
+            let face = if side < 0.0 { v0 + t } else { v1 - t };
+            for k in [0.36f32, 0.58] {
+                self.rune(c, b, [u0 + (u1 - u0) * k, face], [0.0, -side], f + 0.7, 1.8, &mut marks);
+            }
+            self.rune(c, b, [u1 - t, side * 4.6], [-1.0, 0.0], f + 0.7, 1.8, &mut marks);
+        }
         // Its walls, broken off along the top, a band of gold round them, and the doorway
         let walls = [([u0, v0], [u1, v0 + t], [0.0f32, -1.0f32]), ([u0, v1 - t], [u1, v1], [0.0, 1.0]), ([u0, v0], [u0 + t, v1], [-1.0, 0.0]), ([u1 - t, v0], [u1, v1], [1.0, 0.0])];
         for (a, z, out) in walls {
@@ -1269,8 +1542,10 @@ impl Terrain {
                 pillar(&mut b.solids, &at, q, f, f + wall - 0.3, 0.42, c.stone.temple, broken, rng);
             }
         }
-        // The dais at the back, two steps up, the altar on it with void burning over it
+        // The dais at the back, two steps up, the void glowing along its edge, the altar on it
+        // with void burning over it
         let dais = [u1 - t - 4.2, -3.2, u1 - t, 3.2];
+        b.solids.push(b.block([dais[0] - 0.03, dais[1], dais[0] + 0.07, dais[3]], [f + 0.2, f + 0.3], (GLOW_VOID, AIR), Pattern::Plain));
         b.solids.push(b.block(dais, [f - 0.3, f + 0.3], c.stone.temple, Pattern::Plain));
         b.solids.push(b.block([dais[0] + 0.5, -2.6, dais[2], 2.6], [f + 0.3, f + 0.6], c.stone.temple, Pattern::Plain));
         let altar = [u1 - t - 1.6, 0.0];
@@ -1278,13 +1553,24 @@ impl Terrain {
         b.solids.push(b.block(around(altar, [0.68, 1.38]), [f + 1.55, f + 1.7], (GOLD, BRONZE), Pattern::Plain));
         b.solids.push(b.block(around(altar, [0.15, 1.0]), [f + 1.7, f + 1.76], (GLOW_VOID, AIR), Pattern::Plain));
         let heart = at.point(altar[0] + 0.3, altar[1], f + 3.4);
-        b.solids.push(Shape::sphere(heart, 0.45, GLOW_VOID, AIR, false).placed(Placement::Clear));
+        b.solids.push(Shape::sphere(heart, 0.6, GLOW_VOID, AIR, false).placed(Placement::Clear));
         for k in 0..6 {
             let a = k as f32 * TAU / 6.0;
             let tip = at.point(altar[0] + 0.3 + a.cos() * 1.3, altar[1] + a.sin() * 1.3, f + 3.4 + rng.range(-0.8, 0.8));
             b.solids.push(Shape::capsule(heart, tip, 0.12, 0.03, OBSIDIAN, AIR, false).placed(Placement::Clear));
         }
-        self.light(features, at.point(altar[0] - 1.2, altar[1], f + 3.0), [VOID[0] * 1.6, VOID[1] * 1.6, VOID[2] * 1.6], 20.0);
+        // The void rising from it in a thread up into the vault, motes of it hanging in the air
+        // round about: what marks the heart of the city from across the chasm
+        if let Some(roof) = l.headroom(altar[0], altar[1]) {
+            let top = at.point(altar[0] + 0.3, altar[1], f + roof + ROUGH + 0.5);
+            b.solids.push(Shape::capsule(heart, top, 0.08, 0.03, GLOW_VOID, AIR, false).placed(Placement::Clear));
+            for _ in 0..7 {
+                let (a, d) = (marks.next() * TAU, marks.range(0.6, 2.2));
+                let p = at.point(altar[0] + 0.3 + a.cos() * d, altar[1] + a.sin() * d, f + marks.range(4.3, (roof - 1.0).max(4.5)));
+                b.solids.push(Shape::sphere(p, marks.range(0.06, 0.12), GLOW_VOID, AIR, false).placed(Placement::Clear));
+            }
+        }
+        self.light(features, at.point(altar[0] - 1.2, altar[1], f + 3.0), [2.3, 1.0, 3.2], 22.0);
         // Candles on the altar, and braziers inside the doorway
         for v in [-0.9f32, 0.9] {
             let p = at.point(altar[0] - 0.3, v, f + 1.7);
@@ -1292,10 +1578,10 @@ impl Terrain {
             self.light(features, [p[0], p[1], p[2] + 0.3], [1.0, 0.6, 0.25], 6.0);
         }
         for side in [-1.0f32, 1.0] {
-            self.brazier(c, b, features, [u0 + t + 1.0, side * 3.4], f);
+            self.brazier(c, b, features, [u0 + t + 1.0, side * 3.4], f, FIRE);
             // Outside, either side of the doorway, and either side of the dais
-            self.brazier(c, b, features, [u0 - 1.3, side * 3.3], f);
-            self.brazier(c, b, features, [dais[0] - 0.7, side * 3.8], f);
+            self.brazier(c, b, features, [u0 - 1.3, side * 3.3], f, FIRE);
+            self.brazier(c, b, features, [dais[0] - 0.7, side * 3.8], f, FIRE);
         }
         // Crystals round the temple's vault, outside its walls
         for k in 0..2 {
@@ -1459,7 +1745,7 @@ mod tests {
         let settings = TerrainSettings { width_m: 192, height_m: 64, voxels_per_meter: vpm, seed: 1, grass_tufts: false };
         let middle = c.at.point(c.temple.middle[0] * 0.5, 0.0, 0.0);
         let origin = [0, 1].map(|i| ((middle[i] * vpm as f32) as i64 - (settings.size()[i] / 2) as i64).div_euclid(8) * 8);
-        let (_, world) = generate_terrain(&settings, origin, cache);
+        let (terrain, world) = generate_terrain(&settings, origin, cache);
         let v = vpm as f32;
         let to_voxels = |p: Vec3| [(p[0] * v).floor() as i64 - origin[0], (p[1] * v).floor() as i64 - origin[1], (p[2] * v).round() as i64];
         let solid = |x: i64, y: i64, z: i64| z < 0 || !is_passable(world.material_at(x, y, z));
@@ -1489,6 +1775,7 @@ mod tests {
             seen
         };
         let s = c.sunken();
+        glows_stay_in(c, &terrain, &s);
         let from_plaza = reach(to_voxels(s.plaza));
         let near = |p: Vec3, set: &std::collections::HashSet<(i64, i64, i64)>| {
             let q = to_voxels(p);
@@ -1504,4 +1791,28 @@ mod tests {
         let from_land = reach(out);
         assert!(near(s.plaza, &from_land), "the square can't be reached from the land");
         println!("walked from the land {:.1} m down into the city at {:.0}, {:.0} and out again", c.exit_at - c.floor, c.at.x, c.at.y);    }
+
+    /// The glows hanging in the air of city `c`, built in `terrain`, light nothing but the city:
+    /// nothing over them is land, nor anything past the city's bounds where caves and dungeons may
+    /// be, and no more of the lights are in reach of anywhere in it than the shader takes
+    fn glows_stay_in(c: &Undercity, terrain: &Terrain, s: &Sunken) {
+        let b = c.bounds;
+        let within = |l: &&Light| l.position[0] >= b[0] && l.position[0] <= b[2] && l.position[1] >= b[1] && l.position[1] <= b[3];
+        let glows: Vec<&Light> = terrain.lights().iter().filter(|l| l.color[0] < 0.0).filter(within).collect();
+        assert!(glows.len() >= 8, "only {} glows in the city", glows.len());
+        for g in &glows {
+            let [x, y, z] = g.position;
+            assert!(x - g.reach >= b[0] - 1e-3 && x + g.reach <= b[2] + 1e-3 && y - g.reach >= b[1] - 1e-3 && y + g.reach <= b[3] + 1e-3, "a glow reaches out of the city");
+            for k in 0..64 {
+                let (a, r) = (k as f32 * 2.4, g.reach * ((k % 8) as f32 / 7.0));
+                let land = height_at(&terrain.settings, x + a.cos() * r, y + a.sin() * r);
+                assert!(land - z >= COVER - 0.5, "a glow {:.1} m under the land", land - z);
+            }
+        }
+        for (name, p) in [("foot", s.foot), ("gate", s.gate), ("street", s.street), ("plaza", s.plaza), ("canal", s.canal), ("hall", s.hall), ("heart", s.heart)] {
+            let eye = [p[0], p[1], p[2] + 1.8];
+            let near = terrain.lights().iter().filter(|l| (0..3).map(|i| (l.position[i] - eye[i]).powi(2)).sum::<f32>().sqrt() < l.reach).count();
+            println!("  {name}: {near} lights in reach");
+        }
+    }
 }

@@ -973,6 +973,12 @@ float leafThrough(Hit hit, vec3 towards) {
     return sunReaches(voxelPoint(hit, 0.5 + towards * 0.9), towards) ? 1 : 0;
 }
 
+// A light with a negative color is a glow hanging in the air of a fallen city rather than a flame
+// or a crystal, see src\worldgen\undercity.rs: it lights everything round it a little, more from
+// above, through walls and all, with no shadows to trace. It lights nothing higher than itself,
+// fading out over this many meters below that, so it never reaches the land over the city.
+const float GLOW_FADE = 3.0;
+
 // Light on a surface from the flames and crystals near it, with their shadows. `which` is
 // ALL_LIGHTS, or only the STILL_LIGHTS or MOVING_LIGHTS.
 vec3 localLight(vec3 surface, vec3 normal, uint which) {
@@ -989,6 +995,12 @@ vec3 localLight(vec3 surface, vec3 normal, uint which) {
         if (d > light.position.w || d < 1e-3)
         continue;
         vec3 dir = to / d;
+        if (light.color.r < 0) {
+            float under = to.z / (GLOW_FADE * vpm);
+            if (under > 0)
+            total -= light.color.rgb * (0.6 + 0.4 * dot(normal, dir)) * (1 - smoothstep(0.4, 1.0, d / light.position.w)) * smoothstep(0.0, 1.0, under);
+            continue;
+        }
         float n_dot_l = dot(normal, dir);
         if (n_dot_l <= 0)
         continue;
