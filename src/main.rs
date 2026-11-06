@@ -1703,12 +1703,17 @@ impl App {
             let ids: Vec<&str> = ids.split(',').collect();
             // `gallery_hold=1` puts the first of them in hand too. The camera's brought down to look
             // at them from just behind and over them.
-            let middle = game.lay_out(&world, &ids, setting("gallery_size").and_then(|v| v.parse().ok()), start, ahead, flag("gallery_hold", false));
+            let (middle, longest) = game.lay_out(&world, &ids, setting("gallery_size").and_then(|v| v.parse().ok()), start, ahead, flag("gallery_hold", false));
             let vpm = world.voxels_per_meter as f64;
             let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
             if !flag("gallery_hold", false) {
-                camera.position = voxels_to_camera(middle - flat * 2.6 * vpm + Vector3::new(0.0, 0.0, 2.9 * vpm), world.size);
-                camera.look_at(voxels_to_camera(middle, world.size));
+                // Close over one or two, as close as the longest fits in view whichever way it's
+                // turned, further back over more
+                let span = longest.max(0.8) + 0.5;
+                let (back, up) = if ids.len() <= 2 { (0.42 * span, 0.75 * span) } else { (1.7, 2.3) };
+                camera.position = voxels_to_camera(middle - flat * back * vpm + Vector3::new(0.0, 0.0, up * vpm), world.size);
+                // At them, hovering a hand over the ground
+                camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.3 * vpm), world.size));
             }
         }
         // `--set staff_element=fire` puts a staff of fire in hand, or of another element, or `none`
