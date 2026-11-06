@@ -946,6 +946,8 @@ enum Pattern {
     /// A clump of leaves, its outside all leaves standing out at different depths in these
     /// shades, see trees::leafy()
     Leafy(trees::Canopy),
+    /// Weathered rock with moss creeping over its top, this much in 255, see trees::rock()
+    Rock(u8),
 }
 
 /// Where a shape goes in relation to the ground
@@ -1086,8 +1088,10 @@ impl Shape {
     /// Whether `p` is inside it, its squared depth being `depth`, see depth(). Rough shapes are
     /// lumpy, their surface pushed in and out by the noise only near it, as working it out costs.
     fn holds(&self, p: Vec3, depth: f32) -> bool {
-        if let Pattern::Leafy(_) = self.pattern {
-            return trees::leafy_holds(self, p, depth);
+        match self.pattern {
+            Pattern::Leafy(_) => return trees::leafy_holds(self, p, depth),
+            Pattern::Rock(_) => return trees::rock_holds(self, p, depth),
+            _ => {}
         }
         if self.rough <= 0.0 {
             return depth <= 1.0;
@@ -1172,6 +1176,7 @@ impl Shape {
         match self.pattern {
             Pattern::Aged(age) => castles::aged(self, age, p, voxel, h, ground),
             Pattern::Leafy(canopy) => trees::leafy(self, canopy, p, h),
+            Pattern::Rock(moss) => trees::rock(self, moss, p, voxel, h),
             Pattern::Plain => {
                 if sprinkled(0.15) {
                     self.accent
@@ -2549,7 +2554,9 @@ impl Terrain {
         }
 
         let strata = (fbm(xm / 7.0, ym / 7.0, 2, self.settings.seed.wrapping_add(23)) * 0.8 * vpm) as i32;
-        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * if desert { 0.0 } else { 0.6 };
+        // None in the desert, nor under the snow
+        let bare = desert || snowy || h >= snow_line + snow_jitter;
+        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * if bare { 0.0 } else { 0.6 };
 
         Column {
             height: h,
@@ -2568,11 +2575,15 @@ impl Terrain {
     }
 
     /// Bare rock: layers a few tens of centimeters thick, gently wavy, of a few kinds of stone,
-    /// with moss growing in patches. Sandstone in the deserts.
-    fn rock(&self, column: &Column, z: i32) -> u8 {
+    /// with moss growing in patches, thick over the tops of ledges, `depth` voxels down from the
+    /// top of the ground, and in flecks below. Sandstone in the deserts.
+    fn rock(&self, column: &Column, z: i32, depth: i32) -> u8 {
         let thickness = (0.3 * self.settings.voxels_per_meter as f32).max(1.0) as i32;
         let layer = (z + column.strata).div_euclid(thickness);
         let h = hash3(column.x as u32, column.y as u32, z as u32 ^ self.settings.seed);
+        if depth <= 1 && column.top == STONE && column.moss > 0.22 {
+            return if depth == 0 && unit(h >> 16) < 0.5 { JUNGLE_GRASS } else { MOSS };
+        }
         if unit(h) < column.moss * 0.5 {
             return MOSS;
         }
@@ -2591,7 +2602,7 @@ impl Terrain {
         if z <= column.height {
             let depth = column.height - z;
             if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
-                self.rock(column, z)
+                self.rock(column, z, depth)
             } else if depth == 0 {
                 column.top
             } else {
@@ -2998,6 +3009,23 @@ impl Terrain {
             })
         };
 
+        // Mossy boulders and outcrops of rock in and around the woods of the milder lands, before
+        // the trees so where one stands in the way of a rock, the rock wins. Boulders keep clear of
+        // tree trunks.
+        let mild_woods = |x: f32, y: f32, ground: f32, column: &Column| {
+            let c = climate(x, y);
+            let mild = c.jungle.max(c.desert).max(c.snow) < 0.45;
+            if mild && is_grassy(column.top) && ground - sea_level > 1.5 { forest(x, y) } else { 0.0 }
+        };
+        scatter(17.0, 0xb01d, &mut |x, y, ground, column, r| {
+            let woods = mild_woods(x, y, ground, column);
+            (unit(r) < woods * 0.4 && !self.near_tree(x, y, 2.2)).then(|| self.mossy_rock(x, y, ground, false, 150 + (woods * 100.0) as u8, hash(r)))
+        });
+        scatter(40.0, 0x0c7c, &mut |x, y, ground, column, r| {
+            let woods = mild_woods(x, y, ground, column);
+            (unit(r) < woods * 0.45).then(|| self.mossy_rock(x, y, ground, true, 180 + (woods * 70.0) as u8, hash(r)))
+        });
+
         // At most one tree per cell, denser where the forest noise is high. The jungle is thick
         // with them, the snow has pine forests, and in the desert only palms grow, by the water.
         // Willows lean out over the rivers in the milder lands.
@@ -3010,7 +3038,9 @@ impl Terrain {
             } else if column.top == SNOW || c.snow > 0.5 {
                 forest(x, y) * 0.7 + 0.08
             } else {
-                forest(x, y) * 0.85 + 0.03
+                // A little sparser in the thick of the broad-leaved woods, where the crowns are big
+                // enough to meet anyway
+                (forest(x, y) * 0.85 + 0.03) * (1.0 - 0.34 * self.broadleaf_woods(x, y, ground))
             };
             let soil = is_grassy(column.top) || column.top == SNOW && c.snow > 0.3 || column.top == SAND && c.desert > 0.5;
             let mild = c.jungle.max(c.desert).max(c.snow) < 0.4;
@@ -3018,7 +3048,7 @@ impl Terrain {
                 let mut rng = Rng(hash(r ^ 0x3171));
                 return Some(Object::new(self.willow(x, y, ground, &mut rng), rng.0));
             }
-            (soil && unit(r) < density).then(|| self.tree(x, y, ground, hash(r)))
+            (soil && unit(r) < density).then(|| self.wild_tree(x, y, ground, hash(r)))
         });
 
         // In the jungle, smaller trees in between the big ones
@@ -3049,10 +3079,15 @@ impl Terrain {
             }
         });
 
-        // Bushes, mostly around the forests
+        // Bushes, mostly around the forests, and in the thick of the broad-leaved woods a dense
+        // undergrowth of them
         scatter(4.0, 0xb054, &mut |x, y, ground, column, r| {
-            let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.38 + meadow(x, y) * 0.08 + 0.04;
-            (is_grassy(column.top) && unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), hash(r)))
+            if !is_grassy(column.top) {
+                return None;
+            }
+            let woods = self.broadleaf_woods(x, y, ground);
+            let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.38 + meadow(x, y) * 0.08 + 0.04 + woods * 0.4;
+            (unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), woods, hash(r)))
         });
 
         // Fallen logs and old stumps in the woods, out of the jungle and the desert
