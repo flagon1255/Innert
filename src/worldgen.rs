@@ -821,18 +821,43 @@ fn threads() -> usize {
     }
 }
 
+thread_local! {
+    /// Told each step generate_terrain() starts on this thread, see on_step()
+    static ON_STEP: std::cell::RefCell<Option<Box<dyn Fn(usize)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Has generate_terrain() tell `step` the number of each step it starts on this thread, for the
+/// loading screen: the ground, the rivers, what's on the land, the voxels, then grass and water.
+/// None stops it.
+pub fn on_step(step: Option<Box<dyn Fn(usize)>>) {
+    ON_STEP.with(|s| *s.borrow_mut() = step);
+}
+
+fn step(n: usize) {
+    ON_STEP.with(|s| {
+        if let Some(step) = &*s.borrow() {
+            step(n)
+        }
+    });
+}
+
 pub fn generate_terrain(settings: &TerrainSettings, origin: [i64; 2], rivers: &RiverCache) -> (Terrain, World) {
     let start = std::time::Instant::now();
 
+    step(0);
     let mut heights = Heights::new(settings, origin, [settings.size()[0] as usize; 2], settings.voxels_per_meter);
     let shaped = start.elapsed();
+    step(1);
     let mut terrain = Terrain::new(settings, &heights);
     terrain.carve_rivers(&mut heights, rivers);
     let carved = start.elapsed();
+    step(2);
     terrain.place(&heights, rivers);
     let placed = start.elapsed();
+    step(3);
     let mut world = terrain.build_from(&heights, 0, settings.size()[2]);
     let built = start.elapsed();
+    step(4);
     let (grass, mut water) = terrain.grass_and_water(&heights);
     world.grass = Some(grass);
     terrain.raise_water_ground(&world, &mut water);
