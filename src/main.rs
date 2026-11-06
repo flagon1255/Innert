@@ -2580,6 +2580,10 @@ impl App {
         // isn't moved too
         self.adopt_features();
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        // Screenshot runs say when, to line it up with the slow frames
+        if let Some(capture) = &self.capture {
+            println!("Moving over at frame {}", capture.frame_times.len() + 1);
+        }
         println!(
             "Moved over to the new piece of landscape in {:?}: water {:.0} ms, world {:.0} ms, what's about {:.0} ms, what's in it {:.0} ms",
             started.elapsed(),
@@ -4371,7 +4375,14 @@ impl App {
             buffer
         });
 
+        // Held up when another thread's making room on the GPU or letting go of it
+        let building = Instant::now();
         let command_buffer = builder.build().unwrap();
+        if let Some(capture) = &self.capture
+            && building.elapsed().as_secs_f64() > 0.010
+        {
+            println!("Slow at frame {}: building the frame's commands took {:.0} ms", capture.frame_times.len() + 1, building.elapsed().as_secs_f64() * 1000.0);
+        }
 
         let render_future = rcx
             .previous_frame_end
@@ -4469,7 +4480,13 @@ impl App {
                     later.sort_by(f64::total_cmp);
                     if !later.is_empty() {
                         let worst = later.len() - 1;
-                        println!("after the first 10 frames: 99th percentile {:.1} ms, slowest {:.1} ms, {} over 25 ms", later[worst * 99 / 100], later[worst], later.iter().filter(|&&t| t > 25.0).count());
+                        println!(
+                            "after the first 10 frames: 99th percentile {:.1} ms, slowest {:.1} ms, {} over 25 ms, {} over 20 ms",
+                            later[worst * 99 / 100],
+                            later[worst],
+                            later.iter().filter(|&&t| t > 25.0).count(),
+                            later.iter().filter(|&&t| t > 20.0).count()
+                        );
                         let long: Vec<String> = capture.frame_times.iter().enumerate().skip(10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
                         println!("long frames: {}", long.join(", "));
                     }
@@ -4642,7 +4659,126 @@ fn show_error(text: &str) {
 /// Stops, saying why
 fn fail(text: &str) -> ! {
     show_error(text);
+    background_printing::finish();
     std::process::exit(1)
+}
+
+/// Screenshot runs print what they find as they go, to a file. Writing to it can hold a frame up
+/// for a long while when the disk's busy, which isn't the game's doing and never happens in play,
+/// where there's nowhere to print to. So what they print goes through a pipe to a thread that
+/// writes it on, and the frames carry on meanwhile.
+#[cfg(windows)]
+mod background_printing {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+    use std::thread::JoinHandle;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+        fn CreatePipe(read: *mut *mut c_void, write: *mut *mut c_void, attributes: *mut c_void, size: u32) -> i32;
+        fn ReadFile(file: *mut c_void, buffer: *mut u8, len: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
+        fn WriteFile(file: *mut c_void, buffer: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn PeekNamedPipe(pipe: *mut c_void, buffer: *mut c_void, len: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+    }
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    /// Room in the pipe for what's printed while the file can't keep up
+    const PIPE_BYTES: u32 = 8 << 20;
+
+    /// The file's handle and the pipe's ends, as numbers so they can be shared, and the thread
+    /// writing to the file
+    struct Printing {
+        file: usize,
+        write: usize,
+        read: usize,
+        writer: JoinHandle<()>,
+    }
+    static STATE: Mutex<Option<Printing>> = Mutex::new(None);
+
+    /// From here on, what's printed goes to the file through the pipe
+    pub fn start() {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.is_some() {
+            return;
+        }
+        let file = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        // Nowhere to print to, as in play
+        if file.is_null() || file as isize == -1 {
+            return;
+        }
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null_mut(), PIPE_BYTES) } == 0 {
+            return;
+        }
+        let (file, read) = (file as usize, read as usize);
+        let printing = std::io::stdout().lock();
+        let writer = std::thread::spawn(move || {
+            let mut buffer = vec![0u8; 1 << 16];
+            loop {
+                let mut got = 0u32;
+                if unsafe { ReadFile(read as *mut c_void, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, std::ptr::null_mut()) } == 0 || got == 0 {
+                    break;
+                }
+                let mut sent = 0;
+                while sent < got {
+                    let mut wrote = 0u32;
+                    if unsafe { WriteFile(file as *mut c_void, buffer[sent as usize..].as_ptr(), got - sent, &mut wrote, std::ptr::null_mut()) } == 0 {
+                        break;
+                    }
+                    sent += wrote;
+                }
+            }
+            unsafe { CloseHandle(read as *mut c_void) };
+        });
+        unsafe { SetStdHandle(STD_OUTPUT_HANDLE, write) };
+        drop(printing);
+        *state = Some(Printing { file, write: write as usize, read, writer });
+    }
+
+    /// Puts printing back the way it was and waits for everything printed to reach the file
+    pub fn finish() {
+        use std::io::Write;
+        // Holding on to stdout, so nothing's being printed to the pipe as it's closed
+        let stdout = std::io::stdout();
+        let mut printing = stdout.lock();
+        let _ = printing.flush();
+        let Some(Printing { file, write, writer, .. }) = STATE.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return;
+        };
+        unsafe {
+            SetStdHandle(STD_OUTPUT_HANDLE, file as *mut c_void);
+            CloseHandle(write as *mut c_void);
+        }
+        drop(printing);
+        let _ = writer.join();
+    }
+
+    /// Gives what's been printed a moment to reach the file, without taking hold of stdout, which
+    /// whatever panicked may have been in the middle of printing to
+    pub fn drain() {
+        let Some(read) = STATE.try_lock().ok().and_then(|state| state.as_ref().map(|p| p.read)) else {
+            return;
+        };
+        for _ in 0..100 {
+            let mut waiting = 0u32;
+            let peeked = unsafe { PeekNamedPipe(read as *mut c_void, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut waiting, std::ptr::null_mut()) };
+            if peeked == 0 || waiting == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // The last of it on its way to the file
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(not(windows))]
+mod background_printing {
+    pub fn start() {}
+    pub fn finish() {}
+    pub fn drain() {}
 }
 
 /// What most often fixes it when the graphics card can't be used
@@ -4659,8 +4795,13 @@ fn main() {
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_default();
         show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}"));
+        background_printing::drain();
     }));
+    if std::env::args().any(|a| a == "--screenshot") {
+        background_printing::start();
+    }
     let event_loop = EventLoop::new().unwrap_or_else(|e| fail(&format!("Couldn't open a window: {e}")));
     let mut app = App::new(&event_loop);
     event_loop.run_app(&mut app).unwrap();
+    background_printing::finish();
 }
