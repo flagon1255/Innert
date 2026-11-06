@@ -131,6 +131,55 @@ impl CarryRows {
     }
 }
 
+/// What a piece of the world's water is kept in on the GPU, for the next piece's to be kept in
+/// instead of making room for it anew, see Water::retire() and Water::new()
+pub struct Spare {
+    ground: Arc<Image>,
+    depth: Arc<Image>,
+    flux: Arc<Image>,
+    surface: Arc<Image>,
+    blocks: Arc<Image>,
+    readback: Subbuffer<[f32]>,
+}
+
+impl Spare {
+    /// For water `size` columns across
+    fn new(memory_allocator: &Arc<StandardMemoryAllocator>, size: [u32; 2]) -> Self {
+        let image = |extent: [u32; 2], format| storage_image(memory_allocator, extent, format).0;
+        Spare {
+            ground: image(size, Format::R32_SFLOAT),
+            depth: image(size, Format::R32_SFLOAT),
+            flux: image(size, Format::R32G32B32A32_SFLOAT),
+            surface: image(size, Format::R32G32B32A32_SFLOAT),
+            blocks: image(size.map(|n| n.div_ceil(BLOCK)), Format::R32_SFLOAT),
+            readback: Buffer::new_slice::<f32>(
+                memory_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                    ..Default::default()
+                },
+                size[0] as u64 * size[1] as u64,
+            )
+            .unwrap(),
+        }
+    }
+
+    /// Whether it's for water `size` columns across
+    fn fits(&self, size: [u32; 2]) -> bool {
+        self.ground.extent() == [size[0], size[1], 1] && self.readback.len() == size[0] as u64 * size[1] as u64
+    }
+
+    /// To let go of one at a time, see App::bury_retired() in main.rs
+    pub fn into_parts(self) -> Vec<Box<dyn Send>> {
+        let Spare { ground, depth, flux, surface, blocks, readback } = self;
+        vec![Box::new(flux), Box::new(surface), Box::new(ground), Box::new(depth), Box::new((blocks, readback))]
+    }
+}
+
 /// The smallest box around both, from x and y to x and y
 fn union(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
@@ -226,9 +275,9 @@ impl Water {
     }
 
     /// `springs` are where water wells up, see worldgen::Terrain::springs(): x, y, cubic meters a
-    /// second and radius, in meters from the corner of the whole landscape. `reuse` is how the
-    /// water of the last piece of the world flowed and its surface, see retire(), to have instead
-    /// of making room for them anew, as long as they're the size.
+    /// second and radius, in meters from the corner of the whole landscape. It's kept in `reuse`,
+    /// what the last piece of the world's water was kept in, see retire(), as long as that's the
+    /// size, rather than in room made for it anew.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         memory_allocator: &Arc<StandardMemoryAllocator>,
@@ -238,7 +287,7 @@ impl Water {
         pipeline: &ComputePipeline,
         world: &World,
         springs: &[[f32; 4]],
-        reuse: Option<[Arc<Image>; 2]>,
+        reuse: Option<Spare>,
     ) -> Self {
         let map = world.water.as_ref();
         let size = if map.is_some() { [world.size[0], world.size[1]] } else { [1, 1] };
@@ -249,22 +298,13 @@ impl Water {
             None => vec![0.0; columns],
         };
 
-        let (ground_image, ground_view) = storage_image(memory_allocator, size, Format::R32_SFLOAT);
-        let (depth_image, depth_view) = storage_image(memory_allocator, size, Format::R32_SFLOAT);
-        // Both are cleared below, so whatever's left in the last ones doesn't matter
-        let fits = |image: &Arc<Image>| image.extent() == [size[0], size[1], 1] && image.format() == Format::R32G32B32A32_SFLOAT;
-        let ((flux_image, flux_view), (surface_image, surface_view)) = match reuse {
-            Some([flux, surface]) if fits(&flux) && fits(&surface) => {
-                let view = |image: &Arc<Image>| ImageView::new_default(image.clone()).unwrap();
-                ((flux.clone(), view(&flux)), (surface.clone(), view(&surface)))
-            }
-            _ => (
-                storage_image(memory_allocator, size, Format::R32G32B32A32_SFLOAT),
-                storage_image(memory_allocator, size, Format::R32G32B32A32_SFLOAT),
-            ),
-        };
-        let blocks = size.map(|n| n.div_ceil(BLOCK));
-        let (blocks_image, blocks_view) = storage_image(memory_allocator, blocks, Format::R32_SFLOAT);
+        // The ground and depths are sent over below and the rest cleared, so whatever's left in the
+        // last piece's doesn't matter
+        let Spare { ground: ground_image, depth: depth_image, flux: flux_image, surface: surface_image, blocks: blocks_image, readback } =
+            reuse.filter(|spare| spare.fits(size)).unwrap_or_else(|| Spare::new(memory_allocator, size));
+        let view = |image: &Arc<Image>| ImageView::new_default(image.clone()).unwrap();
+        let (ground_view, depth_view, flux_view, surface_view, blocks_view) =
+            (view(&ground_image), view(&depth_image), view(&flux_image), view(&surface_image), view(&blocks_image));
 
         // The ground and how deep the water is go over a few rows at a time, see staging.rs
         let row = size[0] as usize;
@@ -360,20 +400,6 @@ impl Water {
                 WriteDescriptorSet::buffer(5, springs_buffer),
             ],
             [],
-        )
-        .unwrap();
-
-        let readback = Buffer::new_slice::<f32>(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-                ..Default::default()
-            },
-            columns as u64,
         )
         .unwrap();
 
@@ -482,30 +508,27 @@ impl Water {
         }
     }
 
-    /// Room for how the next piece of the world's water flows and its surface, as big as this
-    /// one's, to hand to new() when it's built, if there's any water
-    pub fn make_spare(&self, memory_allocator: &Arc<StandardMemoryAllocator>) -> Option<[Arc<Image>; 2]> {
-        self.active.then(|| [(); 2].map(|_| storage_image(memory_allocator, self.size, Format::R32G32B32A32_SFLOAT).0))
+    /// Room for the next piece of the world's water, as big as this one's, to hand to new() when
+    /// it's built, if there's any water
+    pub fn make_spare(&self, memory_allocator: &Arc<StandardMemoryAllocator>) -> Option<Spare> {
+        self.active.then(|| Spare::new(memory_allocator, self.size))
     }
 
-    /// Lets go of it but for how the water flows and its surface, the biggest lots of its memory,
-    /// which the next piece of the world's water can have, see new(): the rest in parts, each
-    /// about one lot of memory, to let go of one at a time, as freeing it all at once held up the
-    /// frames being drawn meanwhile
-    pub fn retire(self) -> ([Arc<Image>; 2], Vec<Box<dyn Send>>) {
+    /// Lets go of it but for what it's kept in on the GPU, which the next piece of the world's
+    /// water can have, see new(): the rest in parts to let go of one at a time, as freeing it all
+    /// at once held up the frames being drawn meanwhile
+    pub fn retire(self) -> (Spare, Vec<Box<dyn Send>>) {
         let Water { set, ground_view, surface_view, blocks_view, depth_image, flux_image, readback, ground, depth, carry, carry_rows, .. } = self;
-        let surface_image = surface_view.image().clone();
-        let parts: Vec<Box<dyn Send>> = vec![
-            Box::new((set, carry, carry_rows)),
-            Box::new(ground_view),
-            Box::new(surface_view),
-            Box::new(blocks_view),
-            Box::new(depth_image),
-            Box::new(readback),
-            Box::new(ground),
-            Box::new(depth),
-        ];
-        ([flux_image, surface_image], parts)
+        let spare = Spare {
+            ground: ground_view.image().clone(),
+            depth: depth_image,
+            flux: flux_image,
+            surface: surface_view.image().clone(),
+            blocks: blocks_view.image().clone(),
+            readback,
+        };
+        let parts: Vec<Box<dyn Send>> = vec![Box::new((set, carry, carry_rows, ground_view, surface_view, blocks_view)), Box::new(ground), Box::new(depth)];
+        (spare, parts)
     }
 
     fn index(&self, x: f64, y: f64) -> Option<usize> {

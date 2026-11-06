@@ -704,29 +704,39 @@ struct GpuWorld {
     set_index: usize,
 }
 
-/// The biggest lots of the GPU's memory the last piece of the world was drawn with, its bricks and
-/// its water's flow and surface, kept for the next piece to be built into: making room for them
-/// anew, and letting go of the old, held up the frames being drawn meanwhile
+/// What a piece of the world was kept in on the GPU, kept for the next piece to be built into:
+/// making room for it anew, and letting go of the old, held up the frames being drawn meanwhile,
+/// by hundreds of milliseconds when the GPU's memory was short. Both are there at once as the next
+/// piece is sent over either way, so keeping it doesn't take any more at the most.
 struct Spare {
+    voxels: VoxelSpare,
+    water: water::Spare,
+}
+
+/// A world's bricks, brick grid and map of where grass grows on the GPU, see get_voxel_set()
+struct VoxelSpare {
     bricks: Subbuffer<[u32]>,
-    water: [Arc<Image>; 2],
+    grid: Arc<Image>,
+    grass: Option<Arc<Image>>,
 }
 
 impl Spare {
     /// To let go of one at a time, see App::bury_retired()
     fn into_parts(self) -> Vec<Box<dyn Send>> {
-        let [flow, surface] = self.water;
-        vec![Box::new(flow), Box::new(surface), Box::new(self.bricks)]
+        let mut parts = self.water.into_parts();
+        let VoxelSpare { bricks, grid, grass } = self.voxels;
+        parts.extend([Box::new(bricks) as Box<dyn Send>, Box::new(grid), Box::new(grass)]);
+        parts
     }
 }
 
 impl GpuWorld {
-    /// Lets go of it but for its bricks, which the next piece of the world can be built into, see
-    /// Spare: the rest in parts, each about one lot of memory, to let go of one at a time, see
-    /// App::retire()
-    fn retire(self) -> (Subbuffer<[u32]>, Vec<Box<dyn Send>>) {
+    /// Lets go of it but for what it's kept in, which the next piece of the world can be built
+    /// into, see Spare, and the rest to let go of aside, see App::retire()
+    fn retire(self) -> (VoxelSpare, Vec<Box<dyn Send>>) {
         let GpuWorld { set, grid, bricks, views, .. } = self;
-        (bricks, vec![Box::new(set), Box::new(views), Box::new(grid)])
+        let grass = views.iter().find(|(binding, _)| *binding == 2).map(|(_, view)| view.image().clone());
+        (VoxelSpare { bricks, grid, grass }, vec![Box::new((set, views))])
     }
 
     /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
@@ -758,23 +768,9 @@ fn spare_bricks() -> usize {
     settings_from_args().iter().find(|(k, _)| k == "spare_bricks").and_then(|(_, v)| v.parse().ok()).unwrap_or(worldgen::SPARE_BRICKS)
 }
 
-// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail.
-// Its bricks go into `reuse`, the last piece of the world's, if they fit, see Spare.
-#[allow(clippy::too_many_arguments)]
-fn get_voxel_set(
-    memory_allocator: Arc<StandardMemoryAllocator>,
-    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    render_pipeline: &ComputePipeline,
-    queue: &Arc<Queue>,
-    set_index: usize,
-    world: &World,
-    reuse: Option<Subbuffer<[u32]>>,
-) -> GpuWorld {
-    let [sx, sy, sz] = world.size;
-
-    // One texel per 8x8x8 brick, see worldgen::World
-    let image = Image::new(
+/// Room for a world's brick grid, one texel per 8x8x8 brick, see worldgen::World
+fn grid_image(memory_allocator: &Arc<StandardMemoryAllocator>, [sx, sy, sz]: [u32; 3]) -> Arc<Image> {
+    Image::new(
         memory_allocator.clone(),
         ImageCreateInfo {
             image_type: ImageType::Dim3d,
@@ -785,7 +781,63 @@ fn get_voxel_set(
         },
         AllocationCreateInfo::default(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// Room for the map of where grass grows, see worldgen::World::grass
+fn grass_image(memory_allocator: &Arc<StandardMemoryAllocator>, extent: [u32; 2]) -> Arc<Image> {
+    Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            format: Format::R32_UINT,
+            extent: [extent[0], extent[1], 1],
+            usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+    )
+    .unwrap()
+}
+
+/// Room for `words` words of bricks
+fn bricks_buffer(memory_allocator: &Arc<StandardMemoryAllocator>, words: u64) -> Subbuffer<[u32]> {
+    Buffer::new_slice::<u32>(
+        memory_allocator.clone(),
+        BufferCreateInfo {
+            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
+            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+        words,
+    )
+    .unwrap()
+}
+
+// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail.
+// It goes into `reuse`, what the last piece of the world was kept in, where that's the size, see Spare.
+#[allow(clippy::too_many_arguments)]
+fn get_voxel_set(
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+    render_pipeline: &ComputePipeline,
+    queue: &Arc<Queue>,
+    set_index: usize,
+    world: &World,
+    reuse: Option<VoxelSpare>,
+) -> GpuWorld {
+    let [sx, sy, sz] = world.size;
+    let (reuse_bricks, reuse_grid, reuse_grass) = reuse.map_or((None, None, None), |spare| (Some(spare.bricks), Some(spare.grid), spare.grass));
+
+    // One texel per 8x8x8 brick, see worldgen::World, all of them sent over below
+    let image = match reuse_grid {
+        Some(grid) if grid.extent() == [sx / 8, sy / 8, sz / 8] => grid,
+        _ => grid_image(&memory_allocator, world.size),
+    };
 
     // Everything goes over a piece at a time through the same bit of host memory, each piece
     // waited for, see staging.rs: the frames being drawn while a new piece of the landscape is
@@ -825,24 +877,11 @@ fn get_voxel_set(
     // The main world has room for more bricks, for holes blown in it, see App::blast()
     let needed = brick_words.len() / worldgen::BRICK_WORDS;
     let room = if set_index == 1 { spare_bricks() } else { 0 };
-    let bricks_buffer = match reuse {
+    let bricks_buffer = match reuse_bricks {
         // Those of the last piece of the world, if there's room in them for these and at least
         // half the room to spare
         Some(bricks) if bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS => bricks,
-        _ => Buffer::new_slice::<u32>(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                // Copied from when there's to be more room for bricks, see GpuWorld::grow()
-                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-            ((needed + room) * worldgen::BRICK_WORDS) as u64,
-        )
-        .unwrap(),
+        _ => bricks_buffer(&memory_allocator, ((needed + room) * worldgen::BRICK_WORDS) as u64),
     };
     let capacity = bricks_buffer.len() as usize / worldgen::BRICK_WORDS;
     staging::send(
@@ -872,17 +911,11 @@ fn get_voxel_set(
             Some(grass) => ([sx, sy], grass),
             None => ([1, 1], &[0]),
         };
-        let grass_image = Image::new(
-            memory_allocator.clone(),
-            ImageCreateInfo {
-                format: Format::R32_UINT,
-                extent: [extent[0], extent[1], 1],
-                usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-        )
-        .unwrap();
+        // All of it sent over below
+        let grass_image = match reuse_grass {
+            Some(grass) if grass.extent() == [extent[0], extent[1], 1] => grass,
+            _ => grass_image(&memory_allocator, extent),
+        };
         let row = extent[0] as usize;
         staging::send(
             &memory_allocator,
@@ -1723,14 +1756,12 @@ impl App {
         // world never moves on.
         let spare = landscape.as_ref().and_then(|_| {
             let water = water.make_spare(&memory_allocator)?;
-            let bricks = Buffer::new_slice::<u32>(
-                memory_allocator.clone(),
-                BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC, ..Default::default() },
-                AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() },
-                voxel_set.bricks.len(),
-            )
-            .unwrap();
-            Some((Spare { bricks, water }, Instant::now()))
+            let voxels = VoxelSpare {
+                bricks: bricks_buffer(&memory_allocator, voxel_set.bricks.len()),
+                grid: grid_image(&memory_allocator, world.size),
+                grass: world.grass.as_ref().map(|_| grass_image(&memory_allocator, [world.size[0], world.size[1]])),
+            };
+            Some((Spare { voxels, water }, Instant::now()))
         });
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
@@ -2565,7 +2596,7 @@ impl App {
         let craters = self.craters.clone();
         let stains = self.stains.clone();
         // Built into what the last piece was drawn with, see Spare
-        let (spare_bricks, spare_water) = self.spare.take().map_or((None, None), |(spare, _)| (Some(spare.bricks), Some(spare.water)));
+        let (spare_voxels, spare_water) = self.spare.take().map_or((None, None), |(spare, _)| (Some(spare.voxels), Some(spare.water)));
         let job = std::thread::spawn(move || {
             let (terrain, mut world) = worldgen::generate_terrain(&settings, origin, &rivers);
             // The holes blown in the landscape are still there, and the stains splashed on it
@@ -2593,7 +2624,7 @@ impl App {
                 &queue,
                 1,
                 &world,
-                spare_bricks,
+                spare_voxels,
             );
             let water = Water::new(
                 &memory_allocator,
@@ -2673,15 +2704,15 @@ impl App {
         // next frame, so nothing waits here for the frames still being drawn
         water.carry_over(&mut self.water, [shift.x as i64, shift.y as i64]);
         let old_water = std::mem::replace(&mut self.water, water);
-        // The old world's voxels, water and fine detail on the GPU, hundreds of megabytes, are let
-        // go of aside once the frames drawn with them are done, but for the biggest lots of it,
-        // which the next piece of the world is built into, see retire()
+        // What the old world's voxels and water were kept in on the GPU, hundreds of megabytes, is
+        // kept for the next piece of the world to be built into, and the rest, with the fine
+        // detail, let go of aside once the frames drawn with them are done, see retire()
         let old_near = self.near.take();
-        let (bricks, mut parts) = old_set.retire();
-        let (water_images, water_parts) = old_water.retire();
+        let (voxels, mut parts) = old_set.retire();
+        let (water_spare, water_parts) = old_water.retire();
         parts.extend(water_parts);
         parts.push(Box::new(old_near));
-        self.retire(parts, Some(Spare { bricks, water: water_images }));
+        self.retire(parts, Some(Spare { voxels, water: water_spare }));
         let watered = started.elapsed();
 
         let camera = camera_to_voxels(self.camera.position, self.world.size) - shift;
