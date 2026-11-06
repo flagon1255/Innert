@@ -281,6 +281,14 @@ const RECENTER_M: f64 = 30.0;
 // the edge of the one it's in.
 const BUILD_SECONDS: f64 = 6.5;
 const BUILD_LEAD_M: f64 = 70.0;
+/// Frames after the world moves on before what the GPU drew the last piece with is let go of: by
+/// then the frames drawn with it are long done, so it's freed aside rather than as they finish
+const RETIRED_FRAMES: u32 = 8;
+/// Between letting go of each part of what the last piece of the world was drawn with
+const BURY_PAUSE: Duration = Duration::from_millis(15);
+/// How long what the last piece of the world was drawn with is kept for the next one, see Spare,
+/// should no next one be built meanwhile
+const SPARE_KEPT: Duration = Duration::from_secs(60);
 /// The most flames and crystals lighting things up at once, nearest the camera first
 const MAX_LIGHTS: usize = 16;
 /// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
@@ -696,7 +704,41 @@ struct GpuWorld {
     set_index: usize,
 }
 
+/// What a piece of the world was kept in on the GPU, kept for the next piece to be built into:
+/// making room for it anew, and letting go of the old, held up the frames being drawn meanwhile,
+/// by hundreds of milliseconds when the GPU's memory was short. Both are there at once as the next
+/// piece is sent over either way, so keeping it doesn't take any more at the most.
+struct Spare {
+    voxels: VoxelSpare,
+    water: water::Spare,
+}
+
+/// A world's bricks, brick grid and map of where grass grows on the GPU, see get_voxel_set()
+struct VoxelSpare {
+    bricks: Subbuffer<[u32]>,
+    grid: Arc<Image>,
+    grass: Option<Arc<Image>>,
+}
+
+impl Spare {
+    /// To let go of one at a time, see App::bury_retired()
+    fn into_parts(self) -> Vec<Box<dyn Send>> {
+        let mut parts = self.water.into_parts();
+        let VoxelSpare { bricks, grid, grass } = self.voxels;
+        parts.extend([Box::new(bricks) as Box<dyn Send>, Box::new(grid), Box::new(grass)]);
+        parts
+    }
+}
+
 impl GpuWorld {
+    /// Lets go of it but for what it's kept in, which the next piece of the world can be built
+    /// into, see Spare, and the rest to let go of aside, see App::retire()
+    fn retire(self) -> (VoxelSpare, Vec<Box<dyn Send>>) {
+        let GpuWorld { set, grid, bricks, views, .. } = self;
+        let grass = views.iter().find(|(binding, _)| *binding == 2).map(|(_, view)| view.image().clone());
+        (VoxelSpare { bricks, grid, grass }, vec![Box::new((set, views))])
+    }
+
     /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
     /// there are copied into on the GPU, which is far quicker than sending the world over again
     fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
@@ -726,20 +768,9 @@ fn spare_bricks() -> usize {
     settings_from_args().iter().find(|(k, _)| k == "spare_bricks").and_then(|(_, v)| v.parse().ok()).unwrap_or(worldgen::SPARE_BRICKS)
 }
 
-// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail
-fn get_voxel_set(
-    memory_allocator: Arc<StandardMemoryAllocator>,
-    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    render_pipeline: &ComputePipeline,
-    queue: &Arc<Queue>,
-    set_index: usize,
-    world: &World,
-) -> GpuWorld {
-    let [sx, sy, sz] = world.size;
-
-    // One texel per 8x8x8 brick, see worldgen::World
-    let image = Image::new(
+/// Room for a world's brick grid, one texel per 8x8x8 brick, see worldgen::World
+fn grid_image(memory_allocator: &Arc<StandardMemoryAllocator>, [sx, sy, sz]: [u32; 3]) -> Arc<Image> {
+    Image::new(
         memory_allocator.clone(),
         ImageCreateInfo {
             image_type: ImageType::Dim3d,
@@ -750,7 +781,63 @@ fn get_voxel_set(
         },
         AllocationCreateInfo::default(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// Room for the map of where grass grows, see worldgen::World::grass
+fn grass_image(memory_allocator: &Arc<StandardMemoryAllocator>, extent: [u32; 2]) -> Arc<Image> {
+    Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            format: Format::R32_UINT,
+            extent: [extent[0], extent[1], 1],
+            usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+    )
+    .unwrap()
+}
+
+/// Room for `words` words of bricks
+fn bricks_buffer(memory_allocator: &Arc<StandardMemoryAllocator>, words: u64) -> Subbuffer<[u32]> {
+    Buffer::new_slice::<u32>(
+        memory_allocator.clone(),
+        BufferCreateInfo {
+            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
+            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+        words,
+    )
+    .unwrap()
+}
+
+// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail.
+// It goes into `reuse`, what the last piece of the world was kept in, where that's the size, see Spare.
+#[allow(clippy::too_many_arguments)]
+fn get_voxel_set(
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+    render_pipeline: &ComputePipeline,
+    queue: &Arc<Queue>,
+    set_index: usize,
+    world: &World,
+    reuse: Option<VoxelSpare>,
+) -> GpuWorld {
+    let [sx, sy, sz] = world.size;
+    let (reuse_bricks, reuse_grid, reuse_grass) = reuse.map_or((None, None, None), |spare| (Some(spare.bricks), Some(spare.grid), spare.grass));
+
+    // One texel per 8x8x8 brick, see worldgen::World, all of them sent over below
+    let image = match reuse_grid {
+        Some(grid) if grid.extent() == [sx / 8, sy / 8, sz / 8] => grid,
+        _ => grid_image(&memory_allocator, world.size),
+    };
 
     // Everything goes over a piece at a time through the same bit of host memory, each piece
     // waited for, see staging.rs: the frames being drawn while a new piece of the landscape is
@@ -788,21 +875,15 @@ fn get_voxel_set(
         &world.bricks
     };
     // The main world has room for more bricks, for holes blown in it, see App::blast()
-    let capacity = brick_words.len() / worldgen::BRICK_WORDS + if set_index == 1 { spare_bricks() } else { 0 };
-    let bricks_buffer = Buffer::new_slice::<u32>(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
-            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-        (capacity * worldgen::BRICK_WORDS) as u64,
-    )
-    .unwrap();
+    let needed = brick_words.len() / worldgen::BRICK_WORDS;
+    let room = if set_index == 1 { spare_bricks() } else { 0 };
+    let bricks_buffer = match reuse_bricks {
+        // Those of the last piece of the world, if there's room in them for these and at least
+        // half the room to spare
+        Some(bricks) if bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS => bricks,
+        _ => bricks_buffer(&memory_allocator, ((needed + room) * worldgen::BRICK_WORDS) as u64),
+    };
+    let capacity = bricks_buffer.len() as usize / worldgen::BRICK_WORDS;
     staging::send(
         &memory_allocator,
         &command_buffer_allocator,
@@ -830,17 +911,11 @@ fn get_voxel_set(
             Some(grass) => ([sx, sy], grass),
             None => ([1, 1], &[0]),
         };
-        let grass_image = Image::new(
-            memory_allocator.clone(),
-            ImageCreateInfo {
-                format: Format::R32_UINT,
-                extent: [extent[0], extent[1], 1],
-                usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-        )
-        .unwrap();
+        // All of it sent over below
+        let grass_image = match reuse_grass {
+            Some(grass) if grass.extent() == [extent[0], extent[1], 1] => grass,
+            _ => grass_image(&memory_allocator, extent),
+        };
         let row = extent[0] as usize;
         staging::send(
             &memory_allocator,
@@ -937,6 +1012,13 @@ struct App {
     // Rivers traced so far, for building the next piece of the landscape
     rivers: Arc<RiverCache>,
     window_build: Option<WindowBuild>,
+    /// What the GPU drew the last piece of the world with, and the frame it was swapped out at,
+    /// to let go of once the frames still being drawn with it are done, see retire(), and the
+    /// thread letting go of it
+    retired: Vec<(u32, Vec<Box<dyn Send>>, Option<Spare>)>,
+    burying: Option<std::thread::JoinHandle<()>>,
+    /// Kept for the next piece of the world to be built into, and since when
+    spare: Option<(Spare, Instant)>,
     // Where the camera was last frame and when, and which way and how fast it's been going, in
     // voxels a second, to build the next piece of the landscape ahead of it
     last_camera: Option<(Vector3<f64>, Instant)>,
@@ -1459,6 +1541,7 @@ impl App {
             &queue,
             1,
             &world,
+            None,
         );
         // Bound in place of the fine detail when there isn't any
         let empty_near_set = get_voxel_set(
@@ -1469,6 +1552,7 @@ impl App {
             &queue,
             2,
             &World::from_packed_occupancy([8; 3], &[0; 4], worldgen::material::AIR),
+            None,
         )
         .set;
 
@@ -1665,8 +1749,20 @@ impl App {
         // Start on foot, except for screenshot runs which need the camera to stay put
         let capture = Capture::from_args();
         let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
-        let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs);
+        let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs, None);
         water.active &= flag("water", true);
+        // Room for the next piece of the landscape to be built into, made now while nothing's being
+        // drawn yet rather than as it's sent over, see Spare. It's let go of after a while if the
+        // world never moves on.
+        let spare = landscape.as_ref().and_then(|_| {
+            let water = water.make_spare(&memory_allocator)?;
+            let voxels = VoxelSpare {
+                bricks: bricks_buffer(&memory_allocator, voxel_set.bricks.len()),
+                grid: grid_image(&memory_allocator, world.size),
+                grass: world.grass.as_ref().map(|_| grass_image(&memory_allocator, [world.size[0], world.size[1]])),
+            };
+            Some((Spare { voxels, water }, Instant::now()))
+        });
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
@@ -1852,6 +1948,9 @@ impl App {
             landscape,
             rivers,
             window_build: None,
+            retired: Vec::new(),
+            burying: None,
+            spare,
             last_camera: None,
             camera_drift: Vector3::zeros(),
             lights: Vec::new(),
@@ -2468,7 +2567,9 @@ impl App {
         self.last_camera = Some((camera, now));
 
         let middle = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, camera.z);
-        if self.window_build.is_some() || (camera - middle).xy().norm() < RECENTER_M * vpm {
+        // Not while the last piece is being let go of, which the next one's making room for
+        // would hold up all the more
+        if self.window_build.is_some() || self.still_burying() || (camera - middle).xy().norm() < RECENTER_M * vpm {
             return;
         }
         // Centered on where the camera's heading, lined up with the blocks the water is simulated in
@@ -2499,6 +2600,8 @@ impl App {
         let (render_pipeline, water_pipeline) = ((*self.render_pipeline).clone(), (*self.water_pipeline).clone());
         let craters = self.craters.clone();
         let stains = self.stains.clone();
+        // Built into what the last piece was drawn with, see Spare
+        let (spare_voxels, spare_water) = self.spare.take().map_or((None, None), |(spare, _)| (Some(spare.voxels), Some(spare.water)));
         let job = std::thread::spawn(move || {
             let (terrain, mut world) = worldgen::generate_terrain(&settings, origin, &rivers);
             // The holes blown in the landscape are still there, and the stains splashed on it
@@ -2526,6 +2629,7 @@ impl App {
                 &queue,
                 1,
                 &world,
+                spare_voxels,
             );
             let water = Water::new(
                 &memory_allocator,
@@ -2535,10 +2639,59 @@ impl App {
                 &water_pipeline,
                 &world,
                 &terrain.springs(),
+                spare_water,
             );
             (terrain, world, voxel_set, water)
         });
         self.window_build = Some(WindowBuild { job, craters: self.craters.len(), stains: self.stains.len() });
+    }
+
+    /// Keeps hold of what the GPU drew with, `parts` each about one lot of memory, until the
+    /// frames drawn with it are done, then lets go of it on another thread, see bury_retired():
+    /// freeing hundreds of megabytes of the GPU's memory held the frame up. `spare` is kept for
+    /// the next piece of the world to be built into instead.
+    fn retire(&mut self, parts: Vec<Box<dyn Send>>, spare: Option<Spare>) {
+        self.retired.push((self.frame, parts, spare));
+    }
+
+    /// Lets go of what was retired long enough ago that no frame still being drawn has it, on
+    /// another thread, a part at a time with a pause in between, as each holds up what the GPU's
+    /// asked to do meanwhile. Its spare is kept for the next piece of the world, unless none's
+    /// been built for a good while.
+    fn bury_retired(&mut self) {
+        if self.burying.as_ref().is_some_and(|b| !b.is_finished()) {
+            return;
+        }
+        self.burying = None;
+        let mut parts: Vec<Box<dyn Send>> = Vec::new();
+        let due = self.retired.iter().take_while(|(frame, ..)| self.frame.wrapping_sub(*frame) >= RETIRED_FRAMES).count();
+        for (_, retired, spare) in self.retired.drain(..due) {
+            parts.extend(retired);
+            if let Some(spare) = spare
+                && let Some((older, _)) = self.spare.replace((spare, Instant::now()))
+            {
+                parts.extend(older.into_parts());
+            }
+        }
+        // Not kept for good, should no next piece be built
+        if self.window_build.is_none()
+            && let Some((spare, _)) = self.spare.take_if(|(_, since)| since.elapsed() > SPARE_KEPT)
+        {
+            parts.extend(spare.into_parts());
+        }
+        if !parts.is_empty() {
+            self.burying = Some(std::thread::spawn(move || {
+                for part in parts {
+                    drop(part);
+                    std::thread::sleep(BURY_PAUSE);
+                }
+            }));
+        }
+    }
+
+    /// Whether the last piece of the world is still being let go of, see bury_retired()
+    fn still_burying(&self) -> bool {
+        !self.retired.is_empty() || self.burying.as_ref().is_some_and(|b| !b.is_finished())
     }
 
     /// Moves over to a new piece of the landscape. Everything in the world moves with it.
@@ -2550,15 +2703,21 @@ impl App {
             (world.origin[1] - self.world.origin[1]) as f64,
             0.0,
         );
-        self.voxel_set = voxel_set;
+        let old_set = std::mem::replace(&mut self.voxel_set, voxel_set);
         water.active &= self.water.active;
-        // The water flows on where the two overlap, once the GPU has finished with the old one
-        if let Some(rcx) = &mut self.rcx {
-            // Dropping a frame's future waits for it to finish
-            rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-        }
-        water.carry_over(&self.water, [shift.x as i64, shift.y as i64], &self.command_buffer_allocator, &self.queue);
-        self.water = water;
+        // The water flows on where the two overlap, copied over on the GPU at the start of the
+        // next frame, so nothing waits here for the frames still being drawn
+        water.carry_over(&mut self.water, [shift.x as i64, shift.y as i64]);
+        let old_water = std::mem::replace(&mut self.water, water);
+        // What the old world's voxels and water were kept in on the GPU, hundreds of megabytes, is
+        // kept for the next piece of the world to be built into, and the rest, with the fine
+        // detail, let go of aside once the frames drawn with them are done, see retire()
+        let old_near = self.near.take();
+        let (voxels, mut parts) = old_set.retire();
+        let (water_spare, water_parts) = old_water.retire();
+        parts.extend(water_parts);
+        parts.push(Box::new(old_near));
+        self.retire(parts, Some(Spare { voxels, water: water_spare }));
         let watered = started.elapsed();
 
         let camera = camera_to_voxels(self.camera.position, self.world.size) - shift;
@@ -2572,7 +2731,6 @@ impl App {
             player.position -= shift;
         }
         self.last_feet = None;
-        self.near = None;
         self.near_build = None;
         self.sun_map_for = None;
         self.reset_accum = true;
@@ -2585,6 +2743,10 @@ impl App {
         // isn't moved too
         self.adopt_features();
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        // Screenshot runs say when, to line it up with the slow frames
+        if let Some(capture) = &self.capture {
+            println!("Moving over at frame {}", capture.frame_times.len() + 1);
+        }
         println!(
             "Moved over to the new piece of landscape in {:?}: water {:.0} ms, world {:.0} ms, what's about {:.0} ms, what's in it {:.0} ms",
             started.elapsed(),
@@ -2621,6 +2783,7 @@ impl App {
             &self.queue,
             1,
             &world,
+            None,
         );
         let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
         self.water = Water::new(
@@ -2631,7 +2794,9 @@ impl App {
             &self.water_pipeline,
             &world,
             &springs,
+            None,
         );
+        self.spare = None;
         self.world = world;
         self.landscape = landscape;
         self.rivers = rivers;
@@ -3571,7 +3736,7 @@ impl App {
                     }
                 }
                 // Uploaded here too, so the frames carry on smoothly meanwhile
-                let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world).set;
+                let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world, None).set;
                 println!("Built fine detail: {} bricks ({:?})", world.brick_count(), start.elapsed());
                 (world, set)
             });
@@ -4376,7 +4541,14 @@ impl App {
             buffer
         });
 
+        // Held up when another thread's making room on the GPU or letting go of it
+        let building = Instant::now();
         let command_buffer = builder.build().unwrap();
+        if let Some(capture) = &self.capture
+            && building.elapsed().as_secs_f64() > 0.010
+        {
+            println!("Slow at frame {}: building the frame's commands took {:.0} ms", capture.frame_times.len() + 1, building.elapsed().as_secs_f64() * 1000.0);
+        }
 
         let render_future = rcx
             .previous_frame_end
@@ -4450,6 +4622,7 @@ impl App {
         {
             capture.gpu = timer;
         }
+        self.bury_retired();
 
         if let Some(buffer) = screenshot_buffer {
             let encoded = post_flags & POST_ENCODE_SRGB != 0;
@@ -4474,7 +4647,13 @@ impl App {
                     later.sort_by(f64::total_cmp);
                     if !later.is_empty() {
                         let worst = later.len() - 1;
-                        println!("after the first 10 frames: 99th percentile {:.1} ms, slowest {:.1} ms, {} over 25 ms", later[worst * 99 / 100], later[worst], later.iter().filter(|&&t| t > 25.0).count());
+                        println!(
+                            "after the first 10 frames: 99th percentile {:.1} ms, slowest {:.1} ms, {} over 25 ms, {} over 20 ms",
+                            later[worst * 99 / 100],
+                            later[worst],
+                            later.iter().filter(|&&t| t > 25.0).count(),
+                            later.iter().filter(|&&t| t > 20.0).count()
+                        );
                         let long: Vec<String> = capture.frame_times.iter().enumerate().skip(10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
                         println!("long frames: {}", long.join(", "));
                     }
@@ -4647,7 +4826,126 @@ fn show_error(text: &str) {
 /// Stops, saying why
 fn fail(text: &str) -> ! {
     show_error(text);
+    background_printing::finish();
     std::process::exit(1)
+}
+
+/// Screenshot runs print what they find as they go, to a file. Writing to it can hold a frame up
+/// for a long while when the disk's busy, which isn't the game's doing and never happens in play,
+/// where there's nowhere to print to. So what they print goes through a pipe to a thread that
+/// writes it on, and the frames carry on meanwhile.
+#[cfg(windows)]
+mod background_printing {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+    use std::thread::JoinHandle;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+        fn CreatePipe(read: *mut *mut c_void, write: *mut *mut c_void, attributes: *mut c_void, size: u32) -> i32;
+        fn ReadFile(file: *mut c_void, buffer: *mut u8, len: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
+        fn WriteFile(file: *mut c_void, buffer: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn PeekNamedPipe(pipe: *mut c_void, buffer: *mut c_void, len: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+    }
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    /// Room in the pipe for what's printed while the file can't keep up
+    const PIPE_BYTES: u32 = 8 << 20;
+
+    /// The file's handle and the pipe's ends, as numbers so they can be shared, and the thread
+    /// writing to the file
+    struct Printing {
+        file: usize,
+        write: usize,
+        read: usize,
+        writer: JoinHandle<()>,
+    }
+    static STATE: Mutex<Option<Printing>> = Mutex::new(None);
+
+    /// From here on, what's printed goes to the file through the pipe
+    pub fn start() {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.is_some() {
+            return;
+        }
+        let file = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        // Nowhere to print to, as in play
+        if file.is_null() || file as isize == -1 {
+            return;
+        }
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null_mut(), PIPE_BYTES) } == 0 {
+            return;
+        }
+        let (file, read) = (file as usize, read as usize);
+        let printing = std::io::stdout().lock();
+        let writer = std::thread::spawn(move || {
+            let mut buffer = vec![0u8; 1 << 16];
+            loop {
+                let mut got = 0u32;
+                if unsafe { ReadFile(read as *mut c_void, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, std::ptr::null_mut()) } == 0 || got == 0 {
+                    break;
+                }
+                let mut sent = 0;
+                while sent < got {
+                    let mut wrote = 0u32;
+                    if unsafe { WriteFile(file as *mut c_void, buffer[sent as usize..].as_ptr(), got - sent, &mut wrote, std::ptr::null_mut()) } == 0 {
+                        break;
+                    }
+                    sent += wrote;
+                }
+            }
+            unsafe { CloseHandle(read as *mut c_void) };
+        });
+        unsafe { SetStdHandle(STD_OUTPUT_HANDLE, write) };
+        drop(printing);
+        *state = Some(Printing { file, write: write as usize, read, writer });
+    }
+
+    /// Puts printing back the way it was and waits for everything printed to reach the file
+    pub fn finish() {
+        use std::io::Write;
+        // Holding on to stdout, so nothing's being printed to the pipe as it's closed
+        let stdout = std::io::stdout();
+        let mut printing = stdout.lock();
+        let _ = printing.flush();
+        let Some(Printing { file, write, writer, .. }) = STATE.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return;
+        };
+        unsafe {
+            SetStdHandle(STD_OUTPUT_HANDLE, file as *mut c_void);
+            CloseHandle(write as *mut c_void);
+        }
+        drop(printing);
+        let _ = writer.join();
+    }
+
+    /// Gives what's been printed a moment to reach the file, without taking hold of stdout, which
+    /// whatever panicked may have been in the middle of printing to
+    pub fn drain() {
+        let Some(read) = STATE.try_lock().ok().and_then(|state| state.as_ref().map(|p| p.read)) else {
+            return;
+        };
+        for _ in 0..100 {
+            let mut waiting = 0u32;
+            let peeked = unsafe { PeekNamedPipe(read as *mut c_void, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut waiting, std::ptr::null_mut()) };
+            if peeked == 0 || waiting == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // The last of it on its way to the file
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(not(windows))]
+mod background_printing {
+    pub fn start() {}
+    pub fn finish() {}
+    pub fn drain() {}
 }
 
 /// What most often fixes it when the graphics card can't be used
@@ -4664,8 +4962,13 @@ fn main() {
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_default();
         show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}"));
+        background_printing::drain();
     }));
+    if std::env::args().any(|a| a == "--screenshot") {
+        background_printing::start();
+    }
     let event_loop = EventLoop::new().unwrap_or_else(|e| fail(&format!("Couldn't open a window: {e}")));
     let mut app = App::new(&event_loop);
     event_loop.run_app(&mut app).unwrap();
+    background_printing::finish();
 }
