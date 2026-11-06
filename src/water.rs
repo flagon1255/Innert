@@ -75,10 +75,16 @@ pub struct Water {
     // The CPU's copy, one value per column
     ground: Vec<f32>,
     depth: Vec<f32>,
-    // The depths get copied into this, and read once the GPU is done with it
+    // The depths get copied into this, and read once the GPU is done with it. Only the water
+    // around the camera flows, so only the columns it's flowed in since the last time come back:
+    // `dirty`, and `readback_region` for those on their way, from x and y to x and y.
     readback: Subbuffer<[f32]>,
     readback_pending: bool,
+    readback_region: [u32; 4],
+    dirty: Option<[u32; 4]>,
     frames_since_readback: u32,
+    /// The water of the last piece of the world, to copy over at the start of the next frame
+    carry: Option<Carry>,
 
     /// Water poured in or scooped out, sent with the next step
     brush: Option<[f32; 4]>,
@@ -86,6 +92,28 @@ pub struct Water {
     time_debt: f64,
     /// Whether the surface of all the water has been worked out, not just near the camera
     drawn_once: bool,
+}
+
+/// Where the water of the last piece of the world overlaps this one, see Water::carry_over()
+struct Carry {
+    depth: Arc<Image>,
+    flux: Arc<Image>,
+    from: [u32; 2],
+    to: [u32; 2],
+    extent: [u32; 3],
+}
+
+/// The smallest box around both, from x and y to x and y
+fn union(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+}
+
+/// A box of columns of a world `size` columns across, from x and y to x and y, in the columns of
+/// one whose corner is `shift` columns on, if any of it's in that one
+fn shifted(region: [u32; 4], shift: [i64; 2], size: [u32; 2]) -> Option<[u32; 4]> {
+    let moved = |v: u32, i: usize| (v as i64 - shift[i]).clamp(0, size[i] as i64) as u32;
+    let [x0, y0, x1, y1] = [moved(region[0], 0), moved(region[1], 1), moved(region[2], 0), moved(region[3], 1)];
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
 }
 
 fn storage_image(memory_allocator: &Arc<StandardMemoryAllocator>, extent: [u32; 2], format: Format) -> (Arc<Image>, Arc<ImageView>) {
@@ -170,7 +198,10 @@ impl Water {
     }
 
     /// `springs` are where water wells up, see worldgen::Terrain::springs(): x, y, cubic meters a
-    /// second and radius, in meters from the corner of the whole landscape
+    /// second and radius, in meters from the corner of the whole landscape. `reuse` is how the
+    /// water of the last piece of the world flowed and its surface, see retire(), to have instead
+    /// of making room for them anew, as long as they're the size.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         memory_allocator: &Arc<StandardMemoryAllocator>,
         command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
@@ -179,6 +210,7 @@ impl Water {
         pipeline: &ComputePipeline,
         world: &World,
         springs: &[[f32; 4]],
+        reuse: Option<[Arc<Image>; 2]>,
     ) -> Self {
         let map = world.water.as_ref();
         let size = if map.is_some() { [world.size[0], world.size[1]] } else { [1, 1] };
@@ -191,8 +223,18 @@ impl Water {
 
         let (ground_image, ground_view) = storage_image(memory_allocator, size, Format::R32_SFLOAT);
         let (depth_image, depth_view) = storage_image(memory_allocator, size, Format::R32_SFLOAT);
-        let (flux_image, flux_view) = storage_image(memory_allocator, size, Format::R32G32B32A32_SFLOAT);
-        let (surface_image, surface_view) = storage_image(memory_allocator, size, Format::R32G32B32A32_SFLOAT);
+        // Both are cleared below, so whatever's left in the last ones doesn't matter
+        let fits = |image: &Arc<Image>| image.extent() == [size[0], size[1], 1] && image.format() == Format::R32G32B32A32_SFLOAT;
+        let ((flux_image, flux_view), (surface_image, surface_view)) = match reuse {
+            Some([flux, surface]) if fits(&flux) && fits(&surface) => {
+                let view = |image: &Arc<Image>| ImageView::new_default(image.clone()).unwrap();
+                ((flux.clone(), view(&flux)), (surface.clone(), view(&surface)))
+            }
+            _ => (
+                storage_image(memory_allocator, size, Format::R32G32B32A32_SFLOAT),
+                storage_image(memory_allocator, size, Format::R32G32B32A32_SFLOAT),
+            ),
+        };
         let blocks = size.map(|n| n.div_ceil(BLOCK));
         let (blocks_image, blocks_view) = storage_image(memory_allocator, blocks, Format::R32_SFLOAT);
 
@@ -323,7 +365,10 @@ impl Water {
             depth,
             readback,
             readback_pending: false,
+            readback_region: [0; 4],
+            dirty: None,
             frames_since_readback: 0,
+            carry: None,
             brush: None,
             time_debt: 0.0,
             drawn_once: false,
@@ -332,8 +377,9 @@ impl Water {
 
     /// Takes over the water where this world overlaps `old`, whose corner is `shift` columns
     /// before this one's, so it carries on flowing as it was. Only the newly built part starts
-    /// out fresh.
-    pub fn carry_over(&mut self, old: &Water, shift: [i64; 2], command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>) {
+    /// out fresh. On the GPU it's copied over at the start of the next frame, see record(), so
+    /// nothing waits for it here; `old` has to be kept until that frame's done.
+    pub fn carry_over(&mut self, old: &Water, shift: [i64; 2]) {
         if !self.active || !old.active || old.size != self.size {
             return;
         }
@@ -344,42 +390,61 @@ impl Water {
         if hi[0] <= lo[0] || hi[1] <= lo[1] {
             return;
         }
-        let extent = [(hi[0] - lo[0]) as u32, (hi[1] - lo[1]) as u32, 1];
-        let copy = |src: &Arc<Image>, dst: &Arc<Image>| {
-            let layers = ImageSubresourceLayers::from_parameters(src.format(), 1);
-            CopyImageInfo {
-                regions: [ImageCopy {
-                    src_subresource: layers.clone(),
-                    src_offset: [lo[0] as u32, lo[1] as u32, 0],
-                    dst_subresource: layers,
-                    dst_offset: [(lo[0] - shift[0]) as u32, (lo[1] - shift[1]) as u32, 0],
-                    extent,
-                    ..Default::default()
-                }]
-                .into(),
-                ..CopyImageInfo::images(src.clone(), dst.clone())
-            }
-        };
-        let mut builder = AutoCommandBufferBuilder::primary(
-            command_buffer_allocator.clone(),
-            queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-        builder
-            .copy_image(copy(&old.depth_image, &self.depth_image))
-            .unwrap()
-            .copy_image(copy(&old.flux_image, &self.flux_image))
-            .unwrap();
-        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        self.carry = Some(Carry {
+            depth: old.depth_image.clone(),
+            flux: old.flux_image.clone(),
+            from: [lo[0] as u32, lo[1] as u32],
+            to: [(lo[0] - shift[0]) as u32, (lo[1] - shift[1]) as u32],
+            extent: [(hi[0] - lo[0]) as u32, (hi[1] - lo[1]) as u32, 1],
+        });
 
-        for y in lo[1]..hi[1] {
-            let (from, to) = ((y * size[0]) as usize, ((y - shift[1]) * size[0]) as usize);
-            let (x0, x1) = (lo[0] as usize, hi[0] as usize);
-            let (n0, n1) = ((lo[0] - shift[0]) as usize, (hi[0] - shift[0]) as usize);
-            self.depth[to + n0..to + n1].copy_from_slice(&old.depth[from + x0..from + x1]);
-        }
+        // The CPU's copy too, tens of megabytes, a band of rows to each core so it's quick
+        let width = size[0] as usize;
+        let (x0, x1) = (lo[0] as usize, hi[0] as usize);
+        let (n0, n1) = ((lo[0] - shift[0]) as usize, (hi[0] - shift[0]) as usize);
+        let rows = (hi[1] - lo[1]) as usize;
+        let first = (lo[1] - shift[1]) as usize;
+        let into = &mut self.depth[first * width..(first + rows) * width];
+        let per = rows.div_ceil(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8));
+        let from = &old.depth;
+        std::thread::scope(|s| {
+            for (k, band) in into.chunks_mut(per * width).enumerate() {
+                s.spawn(move || {
+                    for (i, row) in band.chunks_mut(width).enumerate() {
+                        let y = lo[1] as usize + k * per + i;
+                        row[n0..n1].copy_from_slice(&from[y * width + x0..y * width + x1]);
+                    }
+                });
+            }
+        });
         self.time_debt = old.time_debt;
+
+        // What was flowing in the old one that hasn't come back to the CPU yet comes back from
+        // this one, soon
+        let pending = old.readback_pending.then_some(old.readback_region);
+        let changed = [old.dirty, pending].into_iter().flatten().reduce(union);
+        self.dirty = changed.and_then(|region| shifted(region, shift, self.size));
+        self.frames_since_readback = READBACK_FRAMES;
+    }
+
+    /// Lets go of it but for how the water flows and its surface, the biggest lots of its memory,
+    /// which the next piece of the world's water can have, see new(): the rest in parts, each
+    /// about one lot of memory, to let go of one at a time, as freeing it all at once held up the
+    /// frames being drawn meanwhile
+    pub fn retire(self) -> ([Arc<Image>; 2], Vec<Box<dyn Send>>) {
+        let Water { set, ground_view, surface_view, blocks_view, depth_image, flux_image, readback, ground, depth, carry, .. } = self;
+        let surface_image = surface_view.image().clone();
+        let parts: Vec<Box<dyn Send>> = vec![
+            Box::new((set, carry)),
+            Box::new(ground_view),
+            Box::new(surface_view),
+            Box::new(blocks_view),
+            Box::new(depth_image),
+            Box::new(readback),
+            Box::new(ground),
+            Box::new(depth),
+        ];
+        ([flux_image, surface_image], parts)
     }
 
     fn index(&self, x: f64, y: f64) -> Option<usize> {
@@ -467,6 +532,27 @@ impl Water {
         if !self.active {
             return;
         }
+        // The water of the last piece of the world flows on where the two overlap, copied over
+        // before this one's stepped
+        if let Some(carry) = self.carry.take() {
+            for (old, new) in [(&carry.depth, &self.depth_image), (&carry.flux, &self.flux_image)] {
+                let layers = ImageSubresourceLayers::from_parameters(old.format(), 1);
+                builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: layers.clone(),
+                            src_offset: [carry.from[0], carry.from[1], 0],
+                            dst_subresource: layers,
+                            dst_offset: [carry.to[0], carry.to[1], 0],
+                            extent: carry.extent,
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(old.clone(), new.clone())
+                    })
+                    .unwrap();
+            }
+        }
         self.time_debt = (self.time_debt + frame_time).min(STEP * MAX_STEPS as f64);
         let steps = (self.time_debt / STEP) as u32;
         self.time_debt -= steps as f64 * STEP;
@@ -480,6 +566,10 @@ impl Water {
         });
         let (surface_corner, surface_area) = if self.drawn_once { (corner, area) } else { ([0, 0], self.size) };
         self.drawn_once = true;
+        if steps > 0 {
+            let flowing = [corner[0], corner[1], corner[0] + area[0], corner[1] + area[1]];
+            self.dirty = Some(self.dirty.map_or(flowing, |d| union(d, flowing)));
+        }
 
         let wake = wake.map_or([0.0; 4], |(p, v)| [p[0] as f32, p[1] as f32, v[0] as f32, v[1] as f32]);
         let constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2]| Constants {
@@ -510,20 +600,57 @@ impl Water {
         let blocks = surface_area.map(|n| n.div_ceil(BLOCK).div_ceil(8));
         dispatch(builder, constants(Stage::Blocks, [0.0; 4], surface_corner), [blocks[0], blocks[1], 1]);
 
-        // Bring the depths back to the CPU now and then, picking them up once the GPU is done
+        // Bring the depths where it's been flowing back to the CPU now and then, picking them up
+        // once the GPU is done
+        let [x0, y0, x1, y1] = self.readback_region.map(|v| v as usize);
+        let back = ((x1 - x0) * (y1 - y0)).max(1) as u64;
         if self.readback_pending
-            && let Ok(data) = self.readback.read()
+            && let Ok(data) = self.readback.clone().slice(0..back).read()
         {
-            self.depth.copy_from_slice(&data);
+            let (width, row) = (self.size[0] as usize, x1 - x0);
+            for (k, y) in (y0..y1).enumerate() {
+                self.depth[y * width + x0..y * width + x1].copy_from_slice(&data[k * row..(k + 1) * row]);
+            }
             self.readback_pending = false;
         }
         self.frames_since_readback += 1;
-        if !self.readback_pending && self.frames_since_readback >= READBACK_FRAMES {
+        if !self.readback_pending
+            && self.frames_since_readback >= READBACK_FRAMES
+            && let Some(region) = self.dirty.take()
+        {
             self.frames_since_readback = 0;
+            let [x0, y0, x1, y1] = region;
             builder
-                .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(self.depth_image.clone(), self.readback.clone()))
+                .copy_image_to_buffer(CopyImageToBufferInfo {
+                    regions: [BufferImageCopy {
+                        image_subresource: self.depth_image.subresource_layers(),
+                        image_offset: [x0, y0, 0],
+                        image_extent: [x1 - x0, y1 - y0, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageToBufferInfo::image_buffer(self.depth_image.clone(), self.readback.clone())
+                })
                 .unwrap();
+            self.readback_region = region;
             self.readback_pending = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_flowed_moves_with_the_world() {
+        assert_eq!(union([10, 20, 30, 40], [5, 25, 35, 30]), [5, 20, 35, 40]);
+        // The world moved on 100 columns in x and 50 back in y
+        assert_eq!(shifted([200, 100, 400, 300], [100, -50], [1000, 1000]), Some([100, 150, 300, 350]));
+        // Partly off the edge of the new one
+        assert_eq!(shifted([0, 0, 300, 300], [200, 0], [1000, 1000]), Some([0, 0, 100, 300]));
+        assert_eq!(shifted([900, 900, 1000, 1000], [-200, -200], [1000, 1000]), None);
+        // Wholly off it
+        assert_eq!(shifted([0, 0, 100, 100], [200, 0], [1000, 1000]), None);
     }
 }

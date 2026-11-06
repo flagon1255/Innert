@@ -18,8 +18,9 @@ use vulkano::{
     },
 };
 
-/// Words in each piece, 32 MB
-pub const PIECE_WORDS: usize = 8 << 20;
+/// Words in each piece, 4 MB. Each takes a millisecond or so to go over, so a frame being drawn
+/// meanwhile never waits long behind one; with pieces of 32 MB they held frames up by several.
+pub const PIECE_WORDS: usize = 1 << 20;
 
 /// Two pieces, so one can be filled while the other goes over
 static PIECES: OnceLock<Mutex<[Subbuffer<[u32]>; 2]>> = OnceLock::new();

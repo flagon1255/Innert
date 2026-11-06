@@ -281,6 +281,14 @@ const RECENTER_M: f64 = 30.0;
 // the edge of the one it's in.
 const BUILD_SECONDS: f64 = 6.5;
 const BUILD_LEAD_M: f64 = 70.0;
+/// Frames after the world moves on before what the GPU drew the last piece with is let go of: by
+/// then the frames drawn with it are long done, so it's freed aside rather than as they finish
+const RETIRED_FRAMES: u32 = 8;
+/// Between letting go of each part of what the last piece of the world was drawn with
+const BURY_PAUSE: Duration = Duration::from_millis(15);
+/// How long what the last piece of the world was drawn with is kept for the next one, see Spare,
+/// should no next one be built meanwhile
+const SPARE_KEPT: Duration = Duration::from_secs(60);
 /// The most flames and crystals lighting things up at once, nearest the camera first
 const MAX_LIGHTS: usize = 16;
 /// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
@@ -696,7 +704,31 @@ struct GpuWorld {
     set_index: usize,
 }
 
+/// The biggest lots of the GPU's memory the last piece of the world was drawn with, its bricks and
+/// its water's flow and surface, kept for the next piece to be built into: making room for them
+/// anew, and letting go of the old, held up the frames being drawn meanwhile
+struct Spare {
+    bricks: Subbuffer<[u32]>,
+    water: [Arc<Image>; 2],
+}
+
+impl Spare {
+    /// To let go of one at a time, see App::bury_retired()
+    fn into_parts(self) -> Vec<Box<dyn Send>> {
+        let [flow, surface] = self.water;
+        vec![Box::new(flow), Box::new(surface), Box::new(self.bricks)]
+    }
+}
+
 impl GpuWorld {
+    /// Lets go of it but for its bricks, which the next piece of the world can be built into, see
+    /// Spare: the rest in parts, each about one lot of memory, to let go of one at a time, see
+    /// App::retire()
+    fn retire(self) -> (Subbuffer<[u32]>, Vec<Box<dyn Send>>) {
+        let GpuWorld { set, grid, bricks, views, .. } = self;
+        (bricks, vec![Box::new(set), Box::new(views), Box::new(grid)])
+    }
+
     /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
     /// there are copied into on the GPU, which is far quicker than sending the world over again
     fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
@@ -726,7 +758,9 @@ fn spare_bricks() -> usize {
     settings_from_args().iter().find(|(k, _)| k == "spare_bricks").and_then(|(_, v)| v.parse().ok()).unwrap_or(worldgen::SPARE_BRICKS)
 }
 
-// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail
+// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail.
+// Its bricks go into `reuse`, the last piece of the world's, if they fit, see Spare.
+#[allow(clippy::too_many_arguments)]
 fn get_voxel_set(
     memory_allocator: Arc<StandardMemoryAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
@@ -735,6 +769,7 @@ fn get_voxel_set(
     queue: &Arc<Queue>,
     set_index: usize,
     world: &World,
+    reuse: Option<Subbuffer<[u32]>>,
 ) -> GpuWorld {
     let [sx, sy, sz] = world.size;
 
@@ -788,21 +823,28 @@ fn get_voxel_set(
         &world.bricks
     };
     // The main world has room for more bricks, for holes blown in it, see App::blast()
-    let capacity = brick_words.len() / worldgen::BRICK_WORDS + if set_index == 1 { spare_bricks() } else { 0 };
-    let bricks_buffer = Buffer::new_slice::<u32>(
-        memory_allocator.clone(),
-        BufferCreateInfo {
-            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
-            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-            ..Default::default()
-        },
-        (capacity * worldgen::BRICK_WORDS) as u64,
-    )
-    .unwrap();
+    let needed = brick_words.len() / worldgen::BRICK_WORDS;
+    let room = if set_index == 1 { spare_bricks() } else { 0 };
+    let bricks_buffer = match reuse {
+        // Those of the last piece of the world, if there's room in them for these and at least
+        // half the room to spare
+        Some(bricks) if bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS => bricks,
+        _ => Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                // Copied from when there's to be more room for bricks, see GpuWorld::grow()
+                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            ((needed + room) * worldgen::BRICK_WORDS) as u64,
+        )
+        .unwrap(),
+    };
+    let capacity = bricks_buffer.len() as usize / worldgen::BRICK_WORDS;
     staging::send(
         &memory_allocator,
         &command_buffer_allocator,
@@ -937,6 +979,13 @@ struct App {
     // Rivers traced so far, for building the next piece of the landscape
     rivers: Arc<RiverCache>,
     window_build: Option<WindowBuild>,
+    /// What the GPU drew the last piece of the world with, and the frame it was swapped out at,
+    /// to let go of once the frames still being drawn with it are done, see retire(), and the
+    /// thread letting go of it
+    retired: Vec<(u32, Vec<Box<dyn Send>>, Option<Spare>)>,
+    burying: Option<std::thread::JoinHandle<()>>,
+    /// Kept for the next piece of the world to be built into, and since when
+    spare: Option<(Spare, Instant)>,
     // Where the camera was last frame and when, and which way and how fast it's been going, in
     // voxels a second, to build the next piece of the landscape ahead of it
     last_camera: Option<(Vector3<f64>, Instant)>,
@@ -1459,6 +1508,7 @@ impl App {
             &queue,
             1,
             &world,
+            None,
         );
         // Bound in place of the fine detail when there isn't any
         let empty_near_set = get_voxel_set(
@@ -1469,6 +1519,7 @@ impl App {
             &queue,
             2,
             &World::from_packed_occupancy([8; 3], &[0; 4], worldgen::material::AIR),
+            None,
         )
         .set;
 
@@ -1665,7 +1716,7 @@ impl App {
         // Start on foot, except for screenshot runs which need the camera to stay put
         let capture = Capture::from_args();
         let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
-        let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs);
+        let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs, None);
         water.active &= flag("water", true);
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
@@ -1847,6 +1898,9 @@ impl App {
             landscape,
             rivers,
             window_build: None,
+            retired: Vec::new(),
+            burying: None,
+            spare: None,
             last_camera: None,
             camera_drift: Vector3::zeros(),
             lights: Vec::new(),
@@ -2463,7 +2517,9 @@ impl App {
         self.last_camera = Some((camera, now));
 
         let middle = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, camera.z);
-        if self.window_build.is_some() || (camera - middle).xy().norm() < RECENTER_M * vpm {
+        // Not while the last piece is being let go of, which the next one's making room for
+        // would hold up all the more
+        if self.window_build.is_some() || self.still_burying() || (camera - middle).xy().norm() < RECENTER_M * vpm {
             return;
         }
         // Centered on where the camera's heading, lined up with the blocks the water is simulated in
@@ -2494,6 +2550,8 @@ impl App {
         let (render_pipeline, water_pipeline) = ((*self.render_pipeline).clone(), (*self.water_pipeline).clone());
         let craters = self.craters.clone();
         let stains = self.stains.clone();
+        // Built into what the last piece was drawn with, see Spare
+        let (spare_bricks, spare_water) = self.spare.take().map_or((None, None), |(spare, _)| (Some(spare.bricks), Some(spare.water)));
         let job = std::thread::spawn(move || {
             let (terrain, mut world) = worldgen::generate_terrain(&settings, origin, &rivers);
             // The holes blown in the landscape are still there, and the stains splashed on it
@@ -2521,6 +2579,7 @@ impl App {
                 &queue,
                 1,
                 &world,
+                spare_bricks,
             );
             let water = Water::new(
                 &memory_allocator,
@@ -2530,10 +2589,59 @@ impl App {
                 &water_pipeline,
                 &world,
                 &terrain.springs(),
+                spare_water,
             );
             (terrain, world, voxel_set, water)
         });
         self.window_build = Some(WindowBuild { job, craters: self.craters.len(), stains: self.stains.len() });
+    }
+
+    /// Keeps hold of what the GPU drew with, `parts` each about one lot of memory, until the
+    /// frames drawn with it are done, then lets go of it on another thread, see bury_retired():
+    /// freeing hundreds of megabytes of the GPU's memory held the frame up. `spare` is kept for
+    /// the next piece of the world to be built into instead.
+    fn retire(&mut self, parts: Vec<Box<dyn Send>>, spare: Option<Spare>) {
+        self.retired.push((self.frame, parts, spare));
+    }
+
+    /// Lets go of what was retired long enough ago that no frame still being drawn has it, on
+    /// another thread, a part at a time with a pause in between, as each holds up what the GPU's
+    /// asked to do meanwhile. Its spare is kept for the next piece of the world, unless none's
+    /// been built for a good while.
+    fn bury_retired(&mut self) {
+        if self.burying.as_ref().is_some_and(|b| !b.is_finished()) {
+            return;
+        }
+        self.burying = None;
+        let mut parts: Vec<Box<dyn Send>> = Vec::new();
+        let due = self.retired.iter().take_while(|(frame, ..)| self.frame.wrapping_sub(*frame) >= RETIRED_FRAMES).count();
+        for (_, retired, spare) in self.retired.drain(..due) {
+            parts.extend(retired);
+            if let Some(spare) = spare
+                && let Some((older, _)) = self.spare.replace((spare, Instant::now()))
+            {
+                parts.extend(older.into_parts());
+            }
+        }
+        // Not kept for good, should no next piece be built
+        if self.window_build.is_none()
+            && let Some((spare, _)) = self.spare.take_if(|(_, since)| since.elapsed() > SPARE_KEPT)
+        {
+            parts.extend(spare.into_parts());
+        }
+        if !parts.is_empty() {
+            self.burying = Some(std::thread::spawn(move || {
+                for part in parts {
+                    drop(part);
+                    std::thread::sleep(BURY_PAUSE);
+                }
+            }));
+        }
+    }
+
+    /// Whether the last piece of the world is still being let go of, see bury_retired()
+    fn still_burying(&self) -> bool {
+        !self.retired.is_empty() || self.burying.as_ref().is_some_and(|b| !b.is_finished())
     }
 
     /// Moves over to a new piece of the landscape. Everything in the world moves with it.
@@ -2545,15 +2653,21 @@ impl App {
             (world.origin[1] - self.world.origin[1]) as f64,
             0.0,
         );
-        self.voxel_set = voxel_set;
+        let old_set = std::mem::replace(&mut self.voxel_set, voxel_set);
         water.active &= self.water.active;
-        // The water flows on where the two overlap, once the GPU has finished with the old one
-        if let Some(rcx) = &mut self.rcx {
-            // Dropping a frame's future waits for it to finish
-            rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-        }
-        water.carry_over(&self.water, [shift.x as i64, shift.y as i64], &self.command_buffer_allocator, &self.queue);
-        self.water = water;
+        // The water flows on where the two overlap, copied over on the GPU at the start of the
+        // next frame, so nothing waits here for the frames still being drawn
+        water.carry_over(&self.water, [shift.x as i64, shift.y as i64]);
+        let old_water = std::mem::replace(&mut self.water, water);
+        // The old world's voxels, water and fine detail on the GPU, hundreds of megabytes, are let
+        // go of aside once the frames drawn with them are done, but for the biggest lots of it,
+        // which the next piece of the world is built into, see retire()
+        let old_near = self.near.take();
+        let (bricks, mut parts) = old_set.retire();
+        let (water_images, water_parts) = old_water.retire();
+        parts.extend(water_parts);
+        parts.push(Box::new(old_near));
+        self.retire(parts, Some(Spare { bricks, water: water_images }));
         let watered = started.elapsed();
 
         let camera = camera_to_voxels(self.camera.position, self.world.size) - shift;
@@ -2567,7 +2681,6 @@ impl App {
             player.position -= shift;
         }
         self.last_feet = None;
-        self.near = None;
         self.near_build = None;
         self.sun_map_for = None;
         self.reset_accum = true;
@@ -2620,6 +2733,7 @@ impl App {
             &self.queue,
             1,
             &world,
+            None,
         );
         let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
         self.water = Water::new(
@@ -2630,7 +2744,9 @@ impl App {
             &self.water_pipeline,
             &world,
             &springs,
+            None,
         );
+        self.spare = None;
         self.world = world;
         self.landscape = landscape;
         self.rivers = rivers;
@@ -3570,7 +3686,7 @@ impl App {
                     }
                 }
                 // Uploaded here too, so the frames carry on smoothly meanwhile
-                let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world).set;
+                let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world, None).set;
                 println!("Built fine detail: {} bricks ({:?})", world.brick_count(), start.elapsed());
                 (world, set)
             });
@@ -4456,6 +4572,7 @@ impl App {
         {
             capture.gpu = timer;
         }
+        self.bury_retired();
 
         if let Some(buffer) = screenshot_buffer {
             let encoded = post_flags & POST_ENCODE_SRGB != 0;
