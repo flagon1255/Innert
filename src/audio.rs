@@ -170,6 +170,21 @@ pub enum Sound {
     Rocket,
     /// A charge: feet pounding and a rush of air building
     Rush,
+    /// A lasso whirled overhead: a rope whistling round faster and faster, and the snap of its
+    /// throw
+    Lasso,
+    /// Leather coils drawn tight: a creaking groan and a squeeze of rope on rope
+    Squeeze,
+    /// The air itself cracking: a sharp report, a deep boom under it and a ringing in the ears
+    Boom,
+    /// Snakes slithering off: dry scales rasping over the ground under a hiss
+    Slither,
+    /// Fire catching along a line: a sizzle and a soft whump of flame
+    Sear,
+    /// A rope swung on, a deep sweeping whoosh rising and falling
+    Swoop,
+    /// Thorns bursting out: a dry crack and a flurry of little whistles flying off
+    Thorns,
 }
 
 /// A sound to play: where it comes from in the world, None for from the player, how loud, and
@@ -1263,6 +1278,119 @@ fn rush(seed: u32) -> Vec<f32> {
     })
 }
 
+/// A lasso whirled round overhead: a whistling whoosh coming round faster and faster, then the
+/// snap of it thrown
+fn lasso(seed: u32) -> Vec<f32> {
+    let length = 0.7;
+    let (mut a, mut b) = (Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let whirl = render(length, seed, |t, rng| {
+        phase += (3.0 + 6.0 * t / length) / RATE as f32;
+        let pass = (PI * phase).sin().abs().powi(4);
+        let cutoff = 600.0 + 2600.0 * pass;
+        let x = noise(rng);
+        let whistle = (TAU * (900.0 + 500.0 * pass) * t).sin() * 0.15 * pass;
+        ((a.step(x, cutoff) - b.step(x, cutoff * 0.3)) * 1.8 * pass + whistle) * swell(t, length).sqrt()
+    });
+    layered(&[(0.0, whirl, 1.0), (0.55, crack(2600.0, seed + 1), 0.8)], 0.85)
+}
+
+/// Leather drawn tight: a creak sliding up as it groans, and a rough squeeze of rope on rope
+fn squeeze(seed: u32) -> Vec<f32> {
+    let length = 0.5;
+    let (mut lp, mut body) = (Lowpass(0.0), Resonator(0.0, 0.0));
+    let mut wait = 0.0f32;
+    render(length, seed, |t, rng| {
+        let rate = 30.0 + 90.0 * (t / length);
+        wait -= 1.0 / RATE as f32;
+        let slip = if wait <= 0.0 {
+            wait = (0.7 + 0.6 * random(rng)) / rate;
+            0.6 + 0.4 * random(rng)
+        } else {
+            0.0
+        };
+        let groan = body.step(slip, 180.0 + 220.0 * (t / length), 0.02);
+        let rub = lp.step(noise(rng), 1400.0) * 0.5;
+        (groan * 0.8 + rub) * swell(t, length).sqrt()
+    })
+}
+
+/// The air cracking: a hard report, a deep boom sinking under it, and a high ring dying away
+fn boom(seed: u32) -> Vec<f32> {
+    let length = 1.4;
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    let mut phase = 0.0f32;
+    let deep = render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let report = (x - lp.step(x, 1800.0)) * (-t * 60.0).exp() * 1.3;
+        phase += TAU * 55.0 * (0.6 + 0.4 * (-t * 6.0).exp()) / RATE as f32;
+        let thump = phase.sin() * (-t * 3.5).exp() * (t * 400.0).min(1.0);
+        let rumble = lp2.step(x, 120.0) * 4.0 * (-t * 2.5).exp();
+        let ring = (TAU * 3300.0 * t).sin() * 0.05 * (-t * 2.0).exp() * (t * 30.0).min(1.0);
+        (report + thump + rumble + ring) * ((length - t) * 5.0).min(1.0)
+    });
+    layered(&[(0.0, deep, 1.0), (0.0, crack(1900.0, seed + 3), 0.6)], 0.95)
+}
+
+/// Snakes slithering off: dry scales rasping over the ground in little surges, under a hiss
+fn slither(seed: u32) -> Vec<f32> {
+    let length = 1.0;
+    let (mut lp, mut lp2) = (Lowpass(0.0), Lowpass(0.0));
+    let rasp = render(length, seed, |t, rng| {
+        let surge = 0.5 + 0.5 * (TAU * 7.0 * t).sin().abs();
+        let x = noise(rng);
+        let scales = (lp.step(x, 4500.0) - lp2.step(x, 1200.0)) * surge;
+        scales * swell(t, length).sqrt() * 1.4
+    });
+    layered(&[(0.0, rasp, 1.0), (0.05, hiss(0.0, seed + 5), 0.6)], 0.8)
+}
+
+/// Fire catching along a line: a soft whump of flame, and a sizzle crackling after it
+fn sear(seed: u32) -> Vec<f32> {
+    let length = 0.6;
+    let (mut lp, mut lp2, mut crackle) = (Lowpass(0.0), Lowpass(0.0), 0.0f32);
+    render(length, seed, |t, rng| {
+        let x = noise(rng);
+        let whump = lp.step(x, 300.0 + 700.0 * (-t * 8.0).exp()) * 2.4 * (-t * 7.0).exp() * (t * 200.0).min(1.0);
+        let sizzle = (x - lp2.step(x, 3000.0)) * 0.35 * (t * 20.0).min(1.0) * (1.0 - t / length);
+        crackle = if random(rng) < 0.003 { 1.0 } else { crackle * 0.9 };
+        whump + sizzle + x * crackle * 0.5
+    })
+}
+
+/// A rope swung on: a deep whoosh rising and falling, a creak of the rope at the top of it
+fn swoop(seed: u32) -> Vec<f32> {
+    let air = swing(0.8, 160.0, 1200.0, 90.0, seed);
+    layered(&[(0.0, air, 1.0), (0.3, creak_short(seed + 9), 0.35)], 0.85)
+}
+
+/// A rope creaking once as it takes the weight
+fn creak_short(seed: u32) -> Vec<f32> {
+    let length = 0.25;
+    let mut body = Resonator(0.0, 0.0);
+    render(length, seed, |t, rng| {
+        let slip = if random(rng) < 0.004 { 1.0 } else { 0.0 };
+        body.step(slip + noise(rng) * 0.02, 240.0 + 120.0 * t / length, 0.03) * swell(t, length)
+    })
+}
+
+/// Thorns bursting out: a dry crack, then a flurry of little whistles flying off every way
+fn thorns(seed: u32) -> Vec<f32> {
+    let mut rng = hash(seed);
+    let whistles: Vec<(f32, f32)> = (0..10).map(|_| (0.02 + 0.12 * random(&mut rng), 1400.0 + 1600.0 * random(&mut rng))).collect();
+    let flurry = render(0.45, seed, |t, _| {
+        let mut sum = 0.0;
+        for &(at, f) in &whistles {
+            let age = t - at;
+            if age > 0.0 && age < 0.25 {
+                sum += (TAU * f * (1.0 - 0.6 * age) * age).sin() * (-age * 14.0).exp() * (age * 300.0).min(1.0);
+            }
+        }
+        sum * 0.25
+    });
+    layered(&[(0.0, crack(2200.0, seed + 1), 0.9), (0.01, flurry, 1.0)], 0.85)
+}
+
 fn looped(seconds: f32, seed: u32, f: impl FnMut(f32, &mut u32) -> f32) -> Vec<f32> {
     let fade = (0.5 * RATE as f32) as usize;
     let mut samples = render(seconds + 0.5, seed, f);
@@ -1649,6 +1777,15 @@ fn make_clips() -> Vec<(Sound, Vec<f32>)> {
     clips.push((Sound::Rocket, normalized(rocket(320), 0.85)));
     clips.push((Sound::Rocket, normalized(rocket(321), 0.85)));
     clips.push((Sound::Rush, normalized(rush(322), 0.85)));
+    clips.push((Sound::Lasso, lasso(323)));
+    clips.push((Sound::Squeeze, normalized(squeeze(324), 0.75)));
+    clips.push((Sound::Squeeze, normalized(squeeze(325), 0.75)));
+    clips.push((Sound::Boom, boom(326)));
+    clips.push((Sound::Slither, slither(327)));
+    clips.push((Sound::Sear, normalized(sear(328), 0.8)));
+    clips.push((Sound::Sear, normalized(sear(329), 0.8)));
+    clips.push((Sound::Swoop, swoop(330)));
+    clips.push((Sound::Thorns, thorns(331)));
     for v in 0..VARIANTS as u32 {
         for ground in [Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water] {
             clips.push((Sound::Step(ground), step(ground, 100 + v * 17 + ground as u32)));
