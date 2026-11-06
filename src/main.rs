@@ -2657,7 +2657,7 @@ impl App {
         water.active &= self.water.active;
         // The water flows on where the two overlap, copied over on the GPU at the start of the
         // next frame, so nothing waits here for the frames still being drawn
-        water.carry_over(&self.water, [shift.x as i64, shift.y as i64]);
+        water.carry_over(&mut self.water, [shift.x as i64, shift.y as i64]);
         let old_water = std::mem::replace(&mut self.water, water);
         // The old world's voxels, water and fine detail on the GPU, hundreds of megabytes, are let
         // go of aside once the frames drawn with them are done, but for the biggest lots of it,

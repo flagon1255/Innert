@@ -4,6 +4,7 @@
 //! Positions are in voxels of the main world.
 
 use std::f64::consts::PI;
+use std::ops::Range;
 use std::sync::Arc;
 
 use nalgebra::Vector3;
@@ -45,6 +46,9 @@ const MAX_STEPS: u32 = 6;
 const ACTIVE_COLUMNS: u32 = 1024;
 /// Frames between copies of the water back to the CPU
 const READBACK_FRAMES: u32 = 30;
+/// Rows of the CPU's copy of the last piece of the world's water carried over a frame, see
+/// Water::carry_over(), a few megabytes
+const CARRY_ROWS: usize = 384;
 /// Water shallower than this, in meters, doesn't count as water for walking about in
 const WADE_DEPTH: f64 = 0.04;
 
@@ -85,6 +89,8 @@ pub struct Water {
     frames_since_readback: u32,
     /// The water of the last piece of the world, to copy over at the start of the next frame
     carry: Option<Carry>,
+    /// And the CPU's copy of it, to carry over a few rows a frame
+    carry_rows: Option<CarryRows>,
 
     /// Water poured in or scooped out, sent with the next step
     brush: Option<[f32; 4]>,
@@ -101,6 +107,28 @@ struct Carry {
     from: [u32; 2],
     to: [u32; 2],
     extent: [u32; 3],
+}
+
+/// The CPU's copy of how deep the water of the last piece of the world was, and the rows of this
+/// one still to take it over in, see Water::carry_over()
+struct CarryRows {
+    from: Vec<f32>,
+    left: Vec<Range<usize>>,
+    /// The overlap's columns, in this world
+    columns: Range<usize>,
+    /// How many columns the last world's corner was before this one's
+    shift: [i64; 2],
+}
+
+impl CarryRows {
+    /// Carries `rows` of `depth`, in this world, over from the last
+    fn carry(&self, depth: &mut [f32], width: usize, rows: Range<usize>) {
+        let (x0, x1) = ((self.columns.start as i64 + self.shift[0]) as usize, (self.columns.end as i64 + self.shift[0]) as usize);
+        for y in rows {
+            let from = (y as i64 + self.shift[1]) as usize * width;
+            depth[y * width + self.columns.start..y * width + self.columns.end].copy_from_slice(&self.from[from + x0..from + x1]);
+        }
+    }
 }
 
 /// The smallest box around both, from x and y to x and y
@@ -369,6 +397,7 @@ impl Water {
             dirty: None,
             frames_since_readback: 0,
             carry: None,
+            carry_rows: None,
             brush: None,
             time_debt: 0.0,
             drawn_once: false,
@@ -378,11 +407,15 @@ impl Water {
     /// Takes over the water where this world overlaps `old`, whose corner is `shift` columns
     /// before this one's, so it carries on flowing as it was. Only the newly built part starts
     /// out fresh. On the GPU it's copied over at the start of the next frame, see record(), so
-    /// nothing waits for it here; `old` has to be kept until that frame's done.
-    pub fn carry_over(&mut self, old: &Water, shift: [i64; 2]) {
+    /// nothing waits for it here; `old` has to be kept until that frame's done. The CPU's copy
+    /// is taken over where the water's been flowing, around the camera, straight away, and the
+    /// rest a few rows a frame, see carry_rows(), as all of it at once took milliseconds.
+    pub fn carry_over(&mut self, old: &mut Water, shift: [i64; 2]) {
         if !self.active || !old.active || old.size != self.size {
             return;
         }
+        // Should it still be taking over from the one before
+        old.carry_rows(usize::MAX);
         let size = [self.size[0] as i64, self.size[1] as i64];
         // The overlap, in columns of the old world
         let lo = [shift[0].max(0), shift[1].max(0)];
@@ -398,25 +431,6 @@ impl Water {
             extent: [(hi[0] - lo[0]) as u32, (hi[1] - lo[1]) as u32, 1],
         });
 
-        // The CPU's copy too, tens of megabytes, a band of rows to each core so it's quick
-        let width = size[0] as usize;
-        let (x0, x1) = (lo[0] as usize, hi[0] as usize);
-        let (n0, n1) = ((lo[0] - shift[0]) as usize, (hi[0] - shift[0]) as usize);
-        let rows = (hi[1] - lo[1]) as usize;
-        let first = (lo[1] - shift[1]) as usize;
-        let into = &mut self.depth[first * width..(first + rows) * width];
-        let per = rows.div_ceil(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8));
-        let from = &old.depth;
-        std::thread::scope(|s| {
-            for (k, band) in into.chunks_mut(per * width).enumerate() {
-                s.spawn(move || {
-                    for (i, row) in band.chunks_mut(width).enumerate() {
-                        let y = lo[1] as usize + k * per + i;
-                        row[n0..n1].copy_from_slice(&from[y * width + x0..y * width + x1]);
-                    }
-                });
-            }
-        });
         self.time_debt = old.time_debt;
 
         // What was flowing in the old one that hasn't come back to the CPU yet comes back from
@@ -425,6 +439,47 @@ impl Water {
         let changed = [old.dirty, pending].into_iter().flatten().reduce(union);
         self.dirty = changed.and_then(|region| shifted(region, shift, self.size));
         self.frames_since_readback = READBACK_FRAMES;
+
+        // The CPU's copy: first the rows where it's been flowing, around the camera, so what's
+        // there finds the water where it is, and which the first depths to come back are of;
+        // the rest, never among those, a few at a time
+        let rows = (lo[1] - shift[1]) as usize..(hi[1] - shift[1]) as usize;
+        let flowing = self.dirty.map_or(rows.start..rows.start, |[_, y0, _, y1]| (y0 as usize).clamp(rows.start, rows.end)..(y1 as usize).clamp(rows.start, rows.end));
+        let carry = CarryRows {
+            from: std::mem::take(&mut old.depth),
+            left: [rows.start..flowing.start, flowing.end..rows.end].into_iter().filter(|r| !r.is_empty()).collect(),
+            columns: (lo[0] - shift[0]) as usize..(hi[0] - shift[0]) as usize,
+            shift,
+        };
+        carry.carry(&mut self.depth, size[0] as usize, flowing);
+        self.carry_rows = Some(carry);
+    }
+
+    /// Carries over up to `most` more rows of the CPU's copy of the last piece of the world's
+    /// water, see carry_over()
+    fn carry_rows(&mut self, most: usize) {
+        let Some(carry) = &mut self.carry_rows else {
+            return;
+        };
+        let width = self.size[0] as usize;
+        let mut room = most;
+        while room > 0
+            && let Some(rows) = carry.left.first().cloned()
+        {
+            let n = room.min(rows.len());
+            carry.carry(&mut self.depth, width, rows.start..rows.start + n);
+            room -= n;
+            if n == rows.len() {
+                carry.left.remove(0);
+            } else {
+                carry.left[0].start += n;
+            }
+        }
+        if carry.left.is_empty() {
+            // Tens of megabytes, let go of aside
+            let done = self.carry_rows.take();
+            std::thread::spawn(move || drop(done));
+        }
     }
 
     /// Lets go of it but for how the water flows and its surface, the biggest lots of its memory,
@@ -432,10 +487,10 @@ impl Water {
     /// about one lot of memory, to let go of one at a time, as freeing it all at once held up the
     /// frames being drawn meanwhile
     pub fn retire(self) -> ([Arc<Image>; 2], Vec<Box<dyn Send>>) {
-        let Water { set, ground_view, surface_view, blocks_view, depth_image, flux_image, readback, ground, depth, carry, .. } = self;
+        let Water { set, ground_view, surface_view, blocks_view, depth_image, flux_image, readback, ground, depth, carry, carry_rows, .. } = self;
         let surface_image = surface_view.image().clone();
         let parts: Vec<Box<dyn Send>> = vec![
-            Box::new((set, carry)),
+            Box::new((set, carry, carry_rows)),
             Box::new(ground_view),
             Box::new(surface_view),
             Box::new(blocks_view),
@@ -553,6 +608,7 @@ impl Water {
                     .unwrap();
             }
         }
+        self.carry_rows(CARRY_ROWS);
         self.time_debt = (self.time_debt + frame_time).min(STEP * MAX_STEPS as f64);
         let steps = (self.time_debt / STEP) as u32;
         self.time_debt -= steps as f64 * STEP;
@@ -652,5 +708,18 @@ mod tests {
         assert_eq!(shifted([900, 900, 1000, 1000], [-200, -200], [1000, 1000]), None);
         // Wholly off it
         assert_eq!(shifted([0, 0, 100, 100], [200, 0], [1000, 1000]), None);
+    }
+
+    #[test]
+    fn the_cpu_copy_carries_over_row_by_row() {
+        // A world 4 columns across moved on 1 column in x and 2 rows in y: the old one's columns
+        // 1 to 3 of rows 2 and 3 are the new one's columns 0 to 2 of rows 0 and 1
+        let carry = CarryRows { from: (0..16).map(|i| i as f32).collect(), left: Vec::new(), columns: 0..3, shift: [1, 2] };
+        let mut depth = vec![-1.0; 16];
+        carry.carry(&mut depth, 4, 1..2);
+        assert_eq!(depth[0..8], [-1.0, -1.0, -1.0, -1.0, 13.0, 14.0, 15.0, -1.0]);
+        carry.carry(&mut depth, 4, 0..1);
+        assert_eq!(depth[0..4], [9.0, 10.0, 11.0, -1.0]);
+        assert!(depth[8..].iter().all(|&d| d == -1.0));
     }
 }
