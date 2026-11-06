@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use egui_winit_vulkano::{
-    Gui, GuiConfig,
+    Gui,
     egui::{self, Align2, Color32, RichText},
 };
 use nalgebra::{Matrix3, Matrix4, Rotation3, UnitQuaternion, Vector2, Vector3, Vector4};
@@ -54,6 +54,7 @@ use winit::{
     event::{DeviceEvent, DeviceId, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::KeyCode,
+    raw_window_handle::HasDisplayHandle,
     window::{CursorGrabMode, Icon, Window, WindowId},
 };
 use winit_input_helper::WinitInputHelper;
@@ -67,8 +68,10 @@ mod game;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
+mod loading;
 mod player;
 mod staging;
+mod startup;
 mod voxelize;
 mod water;
 mod weapons;
@@ -78,6 +81,7 @@ use crate::animals::AnimalInstance;
 use crate::camera::Camera;
 use crate::game::Game;
 use crate::hot_reload::HotReloadComputePipeline;
+use crate::loading::Step;
 use crate::player::Player;
 use crate::water::Water;
 use crate::worldgen::{RiverCache, Terrain, TerrainSettings, World};
@@ -986,7 +990,6 @@ fn load_icon(icon: &[u8]) -> Icon {
 }
 
 struct App {
-    instance: Arc<Instance>,
     device: Arc<Device>,
     queue: Arc<Queue>,
 
@@ -1274,12 +1277,28 @@ struct ViewKey {
     haze: f32,
 }
 
-impl App {
-    fn new(event_loop: &EventLoop<()>) -> Self {
+/// The graphics card and what's needed to use it. It's started first thing while loading, and the
+/// loading screen's drawn with it while the rest is made, see loading.rs.
+#[derive(Clone)]
+struct Gpu {
+    instance: Arc<Instance>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    // Not a graphics card of its own, so slower: it renders fewer pixels to begin with
+    integrated: bool,
+}
+
+impl Gpu {
+    /// One that draws to windows on `display`. Stops, saying why, if there's none that can run
+    /// the game.
+    fn new(display: &impl HasDisplayHandle) -> Self {
         let library = VulkanLibrary::new()
             .unwrap_or_else(|e| fail(&format!("Vulkan isn't installed on this computer ({e}).\n\n{DRIVER_HINT}")));
 
-        let mut required_extensions = Surface::required_extensions(event_loop)
+        let mut required_extensions = Surface::required_extensions(display)
             .unwrap_or_else(|e| fail(&format!("Can't draw to a window here ({e}).\n\n{DRIVER_HINT}")));
 
         // Without a driver that does Vulkan, it can't even draw to a window
@@ -1325,7 +1344,7 @@ impl App {
                     .enumerate()
                     .position(|(i, q)| {
                         q.queue_flags.intersects(QueueFlags::GRAPHICS)
-                            && p.presentation_support(i as u32, event_loop).unwrap()
+                            && p.presentation_support(i as u32, display).unwrap()
                     })
                     .map(|i| (p, i as u32))
             })
@@ -1375,25 +1394,81 @@ impl App {
 
         let (memory_allocator, descriptor_set_allocator, command_buffer_allocator) =
             get_allocators(&device);
+        Gpu {
+            instance,
+            device,
+            queue,
+            memory_allocator,
+            descriptor_set_allocator,
+            command_buffer_allocator,
+            integrated,
+        }
+    }
+}
 
-        // Read from where they are while working on them, so they reload when changed. Copies are
-        // built in for running elsewhere.
-        let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        let shader = |name: &str, built_in: &'static str| {
-            HotReloadComputePipeline::new(device.clone(), &shaders_dir.join(name), built_in)
-        };
-        let render_pipeline = shader("traverse.comp", include_str!("../shaders/traverse.comp"));
-        let post_pipeline = shader("post.comp", include_str!("../shaders/post.comp"));
-        let resample_pipeline = shader("resample.comp", include_str!("../shaders/resample.comp"));
-        let upscale_pipeline = shader("upscale.comp", include_str!("../shaders/upscale.comp"));
-        let water_pipeline = shader("water.comp", include_str!("../shaders/water.comp"));
+/// The compute shaders the world's drawn with and its water moved
+struct Pipelines {
+    render: HotReloadComputePipeline,
+    post: HotReloadComputePipeline,
+    resample: HotReloadComputePipeline,
+    upscale: HotReloadComputePipeline,
+    water: HotReloadComputePipeline,
+}
 
-        let sun_map = get_history_image_view(
-            memory_allocator.clone(),
-            [SUN_MAP_SIZE, SUN_MAP_SIZE],
-            Format::R32_SFLOAT,
-        );
+impl Pipelines {
+    // Read from where they are while working on them, so they reload when changed. Copies are
+    // built in for running elsewhere.
+    const SHADERS: [(&str, &str); 5] = [
+        ("traverse.comp", include_str!("../shaders/traverse.comp")),
+        ("post.comp", include_str!("../shaders/post.comp")),
+        ("resample.comp", include_str!("../shaders/resample.comp")),
+        ("upscale.comp", include_str!("../shaders/upscale.comp")),
+        ("water.comp", include_str!("../shaders/water.comp")),
+    ];
 
+    fn path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders").join(name)
+    }
+
+    /// Whether they've all been compiled before as they are now, which makes them quick to get
+    fn cached() -> bool {
+        Self::SHADERS.iter().all(|(name, built_in)| hot_reload::is_cached(&Self::path(name), built_in))
+    }
+
+    /// Each made on a thread of its own, as compiling traverse.comp takes far the longest. None if
+    /// one of them couldn't be made, which has been said already.
+    fn new(device: &Arc<Device>) -> Option<Self> {
+        let making = Self::SHADERS.map(|(name, built_in)| {
+            let device = device.clone();
+            std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
+        });
+        let [render, post, resample, upscale, water] = making;
+        Some(Pipelines {
+            render: render.join().ok()?,
+            post: post.join().ok()?,
+            resample: resample.join().ok()?,
+            upscale: upscale.join().ok()?,
+            water: water.join().ok()?,
+        })
+    }
+}
+
+/// Where the game starts, and the piece of the landscape around it, built while the graphics card
+/// starts up, as it doesn't need it
+struct Placed {
+    scene: Scene,
+    terrain: TerrainSettings,
+    rivers: Arc<RiverCache>,
+    world: World,
+    landscape: Option<Arc<Terrain>>,
+    camera: Camera,
+    // Whether the player starts right where the camera is, in a dungeon, a cave, a castle or a
+    // town or city down under the ground, rather than up on the ground over it
+    indoors: bool,
+}
+
+impl Placed {
+    fn place(progress: &Arc<loading::Progress>) -> Self {
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
 
@@ -1492,7 +1567,7 @@ impl App {
             let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
             [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2).div_euclid(64) * 64)
         });
-        let (world, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers);
+        let (world, landscape) = progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers));
         // The first piece of the world is built with every core, the rest in the background while
         // the game goes on, leaving it some
         worldgen::leave_cores(2);
@@ -1533,30 +1608,6 @@ impl App {
             );
             Some(*c)
         });
-        let voxel_set = get_voxel_set(
-            memory_allocator.clone(),
-            command_buffer_allocator.clone(),
-            descriptor_set_allocator.clone(),
-            &render_pipeline,
-            &queue,
-            1,
-            &world,
-            None,
-        );
-        // Bound in place of the fine detail when there isn't any
-        let empty_near_set = get_voxel_set(
-            memory_allocator.clone(),
-            command_buffer_allocator.clone(),
-            descriptor_set_allocator.clone(),
-            &render_pipeline,
-            &queue,
-            2,
-            &World::from_packed_occupancy([8; 3], &[0; 4], worldgen::material::AIR),
-            None,
-        )
-        .set;
-
-        let input = WinitInputHelper::new();
 
         let mut camera = scene.initial_camera();
         if let Some(door) = dungeon {
@@ -1744,31 +1795,149 @@ impl App {
         if let Some(target) = setting("look_at").and_then(parse_vector) {
             camera.look_at(target);
         }
+        let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city;
+        Placed { scene, terrain, rivers, world, landscape, camera, indoors }
+    }
+}
+
+/// What App::new() puts the game together from: everything that takes a while, made on the loader
+/// thread while the loading screen's up, see loading.rs
+struct Loaded {
+    gpu: Gpu,
+    pipelines: Pipelines,
+    sun_map: Arc<ImageView>,
+    placed: Placed,
+    voxel_set: GpuWorld,
+    empty_near_set: Arc<DescriptorSet>,
+    water: Water,
+    spare: Option<(Spare, Instant)>,
+}
+
+impl Loaded {
+    /// Starts the graphics card for drawing to windows on `display` while the world's built on
+    /// another thread, hands it to `started` as soon as it's going, to draw the loading screen
+    /// with, then sends the world over to it. None if loading was called off, or something went
+    /// wrong, which has been said already.
+    fn load(display: &impl HasDisplayHandle, progress: &Arc<loading::Progress>, started: impl FnOnce(&Gpu)) -> Option<Self> {
+        let (placing, placed) = std::sync::mpsc::channel();
+        {
+            let progress = progress.clone();
+            std::thread::Builder::new()
+                .name("world".into())
+                .spawn(move || {
+                    let _ = placing.send(Placed::place(&progress));
+                })
+                .unwrap();
+        }
+        let gpu = progress.run(Step::Graphics, || Gpu::new(display));
+        started(&gpu);
+        if progress.cancelled() {
+            return None;
+        }
+        if !Pipelines::cached() {
+            progress.compiling_shaders();
+        }
+        let pipelines = progress.run(Step::Shaders, || Pipelines::new(&gpu.device))?;
+        // Building the world never touches the graphics card, so it's left to it should the window
+        // be closed meanwhile, rather than waited for
+        let placed = loop {
+            match placed.recv_timeout(Duration::from_millis(50)) {
+                Ok(placed) => break placed,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !progress.cancelled() => continue,
+                // Or it went wrong, which has been said
+                Err(_) => return None,
+            }
+        };
+        if progress.cancelled() {
+            return None;
+        }
+
+        let settings = settings_from_args();
+        let flag = |key: &str, default: bool| settings.iter().find(|(k, _)| k == key).map_or(default, |(_, v)| v == "true" || v == "1");
+        let Gpu { memory_allocator, descriptor_set_allocator, command_buffer_allocator, queue, .. } = &gpu;
+        let Placed { world, landscape, .. } = &placed;
+        let (voxel_set, empty_near_set) = progress.run(Step::Upload, || {
+            let voxel_set = get_voxel_set(
+                memory_allocator.clone(),
+                command_buffer_allocator.clone(),
+                descriptor_set_allocator.clone(),
+                &pipelines.render,
+                queue,
+                1,
+                world,
+                None,
+            );
+            // Bound in place of the fine detail when there isn't any
+            let empty_near_set = get_voxel_set(
+                memory_allocator.clone(),
+                command_buffer_allocator.clone(),
+                descriptor_set_allocator.clone(),
+                &pipelines.render,
+                queue,
+                2,
+                &World::from_packed_occupancy([8; 3], &[0; 4], worldgen::material::AIR),
+                None,
+            )
+            .set;
+            (voxel_set, empty_near_set)
+        });
+        if progress.cancelled() {
+            return None;
+        }
+
+        let (water, spare) = progress.run(Step::Water, || {
+            let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
+            let mut water = Water::new(memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue, &pipelines.water, world, &springs, None);
+            water.active &= flag("water", true);
+            // Room for the next piece of the landscape to be built into, made now while nothing's being
+            // drawn yet rather than as it's sent over, see Spare. It's let go of after a while if the
+            // world never moves on.
+            let spare = landscape.as_ref().and_then(|_| {
+                let water = water.make_spare(memory_allocator)?;
+                let voxels = VoxelSpare {
+                    bricks: bricks_buffer(memory_allocator, voxel_set.bricks.len()),
+                    grid: grid_image(memory_allocator, world.size),
+                    grass: world.grass.as_ref().map(|_| grass_image(memory_allocator, [world.size[0], world.size[1]])),
+                };
+                Some((Spare { voxels, water }, Instant::now()))
+            });
+            (water, spare)
+        });
+
+        let sun_map = get_history_image_view(
+            memory_allocator.clone(),
+            [SUN_MAP_SIZE, SUN_MAP_SIZE],
+            Format::R32_SFLOAT,
+        );
+
+        Some(Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare })
+    }
+}
+
+impl App {
+    /// Puts the game together from what was loaded, with what can't be made on another thread and
+    /// sent over: the game itself, with the weapons the player starts with, and the sound. The
+    /// loading screen's window is handed over after, see attach().
+    fn new(loaded: Loaded) -> Self {
+        let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare } = loaded;
+        // The instance was only needed to make the window's surface, which the loading screen did
+        let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator, integrated } = gpu;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline } = pipelines;
+        let Placed { scene, terrain, rivers, world, landscape, mut camera, indoors } = placed;
+        let settings = settings_from_args();
+        let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+
+        let input = WinitInputHelper::new();
         let flag = |key: &str, default: bool| setting(key).map_or(default, |v| v == "true" || v == "1");
 
         // Start on foot, except for screenshot runs which need the camera to stay put
         let capture = Capture::from_args();
-        let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
-        let mut water = Water::new(&memory_allocator, &command_buffer_allocator, &descriptor_set_allocator, &queue, &water_pipeline, &world, &springs, None);
-        water.active &= flag("water", true);
-        // Room for the next piece of the landscape to be built into, made now while nothing's being
-        // drawn yet rather than as it's sent over, see Spare. It's let go of after a while if the
-        // world never moves on.
-        let spare = landscape.as_ref().and_then(|_| {
-            let water = water.make_spare(&memory_allocator)?;
-            let voxels = VoxelSpare {
-                bricks: bricks_buffer(&memory_allocator, voxel_set.bricks.len()),
-                grid: grid_image(&memory_allocator, world.size),
-                grass: world.grass.as_ref().map(|_| grass_image(&memory_allocator, [world.size[0], world.size[1]])),
-            };
-            Some((Spare { voxels, water }, Instant::now()))
-        });
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
         let walk = scene.is_terrain() && flag("walk", capture.is_none());
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
-        let player = walk.then(|| if dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
+        let player = walk.then(|| if indoors { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
@@ -1920,12 +2089,12 @@ impl App {
                 ..Default::default()
             },
         );
-        let menu_open = capture.is_none() && flag("menu", true);
+        // A preview of the loading screen shows it fade into the menu, as it does in play
+        let menu_open = (capture.is_none() || loading::previewing()) && flag("menu", true);
         // `--set waterfall=2` starts looking at the second waterfall
         let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
 
         let mut app = App {
-            instance,
             device,
             queue,
 
@@ -4679,45 +4848,54 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // `--set window=1920x1080` opens it that size, to see how it runs maximized on a screen like that
-        let size = settings_from_args()
-            .into_iter()
-            .find(|(k, _)| k == "window")
-            .and_then(|(_, v)| v.split_once('x').and_then(|(w, h)| Some(PhysicalSize::new(w.parse().ok()?, h.parse().ok()?))))
-            .unwrap_or(INITIAL_WINDOW_RESOLUTION);
-        let mut attributes = Window::default_attributes()
-            .with_inner_size(size)
-            .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
-            .with_title("Innert");
-        // Screenshot runs happen out of sight: never shown at all, so they can't take focus from
-        // whatever's on the screen, like a game in fullscreen, which would minimize it. Windows
-        // can show a window the first time in whatever way it was started instead of the way it
-        // asks, so not taking focus isn't enough on its own.
-        if self.capture.is_some() {
-            // And with nothing to show, nothing comes along to wake the loop for the next frame
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-            attributes = attributes.with_visible(false).with_active(false).with_position(winit::dpi::PhysicalPosition::new(-30000, -30000));
-            #[cfg(windows)]
-            {
-                use winit::platform::windows::WindowAttributesExtWindows;
-                attributes = attributes.with_skip_taskbar(true);
-            }
+/// How the window's made. It's never seen empty: it's shown once the loading screen's drawn in it,
+/// see loading.rs, and handed over to the game once it's loaded, see App::attach().
+fn window_attributes(out_of_sight: bool) -> winit::window::WindowAttributes {
+    // `--set window=1920x1080` opens it that size, to see how it runs maximized on a screen like that
+    let size = settings_from_args()
+        .into_iter()
+        .find(|(k, _)| k == "window")
+        .and_then(|(_, v)| v.split_once('x').and_then(|(w, h)| Some(PhysicalSize::new(w.parse().ok()?, h.parse().ok()?))))
+        .unwrap_or(INITIAL_WINDOW_RESOLUTION);
+    let mut attributes = Window::default_attributes()
+        .with_inner_size(size)
+        .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
+        .with_title("Innert")
+        .with_visible(false);
+    // Screenshot runs happen out of sight: never shown at all, so they can't take focus from
+    // whatever's on the screen, like a game in fullscreen, which would minimize it. Windows
+    // can show a window the first time in whatever way it was started instead of the way it
+    // asks, so not taking focus isn't enough on its own.
+    if out_of_sight {
+        attributes = attributes.with_active(false).with_position(winit::dpi::PhysicalPosition::new(-30000, -30000));
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes = attributes.with_skip_taskbar(true);
         }
-        let window = Arc::new(event_loop.create_window(attributes).unwrap());
-        let surface = Surface::from_window(self.instance.clone(), window.clone()).unwrap();
+    }
+    attributes
+}
 
-        let (swapchain, images) = get_swapchain_images(&self.device, &surface, &window);
-        let image_views = images
-            .iter()
-            .map(|i| ImageView::new(i.clone(), ImageViewCreateInfo::from_image(i)).unwrap())
-            .collect::<Vec<_>>();
+impl App {
+    /// Takes over the window the loading screen was drawn in, see loading.rs
+    fn attach(&mut self, screen: loading::Screen, event_loop: &ActiveEventLoop) {
+        let loading::Screen { window, swapchain, image_views, gui, previous_frame_end, recreate_swapchain } = screen;
+        // A window that's never shown is never asked to redraw, so nothing comes along to wake the
+        // loop for the next frame in screenshot runs
+        event_loop.set_control_flow(if self.capture.is_some() { winit::event_loop::ControlFlow::Poll } else { winit::event_loop::ControlFlow::Wait });
+        // The window may have been given the focus while loading, and the game's input only takes
+        // any once it's heard it has it
+        if window.has_focus() {
+            self.input.process_window_event(&WindowEvent::Focused(true));
+        }
 
-        let window_extent: [u32; 2] = window.inner_size().into();
+        // Never nothing, should the window have been minimized while loading: they're all made
+        // again once it's back
+        let window_extent: [u32; 2] = <[u32; 2]>::from(window.inner_size()).map(|n| n.max(1));
         let render_extent = [
-            (window_extent[0] as f32 * self.render_scale) as u32,
-            (window_extent[1] as f32 * self.render_scale) as u32,
+            ((window_extent[0] as f32 * self.render_scale) as u32).max(1),
+            ((window_extent[1] as f32 * self.render_scale) as u32).max(1),
         ];
         let images = get_render_images(
             self.memory_allocator.clone(),
@@ -4733,19 +4911,6 @@ impl ApplicationHandler for App {
         );
         self.last_world_to_window = None;
 
-        let gui = Gui::new(
-            event_loop,
-            surface,
-            self.queue.clone(),
-            swapchain.image_format(),
-            GuiConfig {
-                is_overlay: true,
-                ..Default::default()
-            },
-        );
-
-        let recreate_swapchain = false;
-
         self.rcx = Some(RenderContext {
             window,
             swapchain,
@@ -4759,9 +4924,14 @@ impl ApplicationHandler for App {
             recreate_images: false,
             render_scale_in_use: self.render_scale,
 
-            previous_frame_end: Some(sync::now(self.device.clone()).boxed()),
+            previous_frame_end,
         });
     }
+}
+
+impl ApplicationHandler for App {
+    // The window's made for the loading screen, and handed over once the game's loaded, see attach()
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: winit::event::StartCause) {
         self.input.step();
@@ -4825,6 +4995,8 @@ fn show_error(text: &str) {
 
 /// Stops, saying why
 fn fail(text: &str) -> ! {
+    // Alone on the screen, as when there was no window yet for it to go over
+    loading::put_away();
     show_error(text);
     background_printing::finish();
     std::process::exit(1)
@@ -4953,6 +5125,7 @@ const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3
     years do. Installing the latest driver from NVIDIA, AMD or Intel usually sorts it out.";
 
 fn main() {
+    startup::init();
     std::panic::set_hook(Box::new(|info| {
         let place = info.location().map_or(String::new(), |l| format!(" ({}:{})", l.file(), l.line()));
         let what = info
@@ -4967,8 +5140,16 @@ fn main() {
     if std::env::args().any(|a| a == "--screenshot") {
         background_printing::start();
     }
+    startup::moment("Started running");
     let event_loop = EventLoop::new().unwrap_or_else(|e| fail(&format!("Couldn't open a window: {e}")));
-    let mut app = App::new(&event_loop);
-    event_loop.run_app(&mut app).unwrap();
+    // The window's up with the loading screen in it straight away, while the game's made on
+    // other threads, see loading.rs
+    let mut launcher = loading::Launcher::start(&event_loop);
+    event_loop.run_app(&mut launcher).unwrap();
+    let loaded = launcher.finish();
     background_printing::finish();
+    // What went wrong has been said already
+    if !loaded {
+        std::process::exit(101);
+    }
 }
