@@ -2871,7 +2871,7 @@
       "description": "Hollow balls of soft lead, full of venom." },
     { "id": "bursting_shot", "displayName": "Bursting Shot", "fits": "shot", "element": "fire", "price": 6, "bundle": 5,
       "effects": ["explosive"], "statMultipliers": { "pellets": 0.0, "projectileSpeed": 0.6 },
-      "burst": { "airburst": true, "fragments": 8, "spread": 18, "power": 0.27 },
+      "burst": { "airburst": true, "fragments": 8, "spread": 24, "power": 0.27 },
       "description": "A small iron grenade instead of a ball, its fuse lit by the powder: it bursts in the air short of what it's aimed at, raining burning shot on it. A spread of shot fires one." },
     { "id": "steel_slugs", "displayName": "Steel-Core Slugs", "fits": "shot", "price": 2.5, "bundle": 8,
       "effects": ["pierce"], "baseStats": { "critChance": 0.05 }, "statMultipliers": { "physicalDamage": 1.2 },

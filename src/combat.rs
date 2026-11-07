@@ -620,7 +620,7 @@ const FRAGMENT_BLAST: f64 = 1.1;
 const FRAGMENT_HOLE: f64 = 0.6;
 /// Bursting ammo that bursts in the air does so this much of the way to what it's aimed at, no
 /// sooner than this many seconds out, taking what's aimed at as no further off than this, in meters
-const AIRBURST_AT: f64 = 0.55;
+const AIRBURST_AT: f64 = 0.45;
 const AIRBURST_SOONEST: f64 = 0.05;
 const AIRBURST_REACH: f64 = 35.0;
 /// How far round an airburst's own blast in the air reaches, in meters, and how much of the shot's

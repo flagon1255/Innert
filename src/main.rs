@@ -3758,7 +3758,8 @@ impl App {
             }
             // Standing still where the camera is, facing the nearest of a pack `--set enemy` put
             // there, and shooting what's in hand at it as fast as it'll go, reloading as it needs
-            // to, from frame 30 on: for seeing what special ammo does where it lands
+            // to, from frame 30 on: for seeing what special ammo does where it lands, and how many
+            // holes it's blown
             ("fire", f) => {
                 if f <= 30 {
                     match self.game.nearest_foe(eye) {
@@ -3768,6 +3769,9 @@ impl App {
                     }
                 }
                 self.script_controls = combat::Controls { attack: f >= 30, holding: f >= 30, ..Default::default() };
+                if f % 100 == 0 {
+                    println!("frame {frame}: {} holes blown", self.craters.len());
+                }
             }
             // Draws all the way and shoots at the ground a little way ahead, over and over
             ("volley", f) => {
