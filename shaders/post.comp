@@ -72,24 +72,68 @@ vec4 lightAt(ivec2 p) {
     return pc.step == 1 ? imageLoad(accumIn, p) : imageLoad(hdrIn, p);
 }
 
+// The pixels round a workgroup's, out as far as the denoiser looks in its widest pass (2 taps of 4
+// pixels either side), each loaded once into shared memory rather than by all 25 that look at it:
+// its light, and its depth and which way its face points (-1 for off the image)
+const int TILE = 8;
+const int APRON = 2 * 4;
+const int SPAN = TILE + 2 * APRON;
+shared vec3 s_light[SPAN * SPAN];
+shared vec2 s_shape[SPAN * SPAN];
+
+// Loads the pixels round this workgroup's that this pass looks at. Every invocation takes part.
+void loadTile(ivec2 size) {
+    int reach = 2 * int(pc.step);
+    int span = TILE + 2 * reach;
+    ivec2 corner = ivec2(gl_WorkGroupID.xy) * TILE - reach;
+    for (int i = int(gl_LocalInvocationIndex); i < span * span; i += TILE * TILE) {
+        ivec2 q = corner + ivec2(i % span, i / span);
+        bool inside = all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, size));
+        s_light[i] = inside ? lightAt(q).rgb : vec3(0);
+        s_shape[i] = inside ? vec2(imageLoad(depthImage, q).r, imageLoad(guideImage, q).w) : vec2(-1);
+    }
+    barrier();
+}
+
 // One pass of an edge-avoiding à-trous filter (Dammertz et al. 2010). It blurs the lighting
 // only, not the voxel colors, and never across edges where the depth or the face direction
 // changes. Pixels that have averaged enough frames already are left alone.
+shared uint s_any_noisy;
+
 void denoise(ivec2 p) {
-    vec4 center = lightAt(p);
-    float depth0 = imageLoad(depthImage, p).r;
-    vec4 guide0 = imageLoad(guideImage, p);
+    ivec2 size = imageSize(hdrIn);
+    bool inside = all(lessThan(p, size));
+    vec4 center = inside ? lightAt(p) : vec4(0);
+    float depth0 = inside ? imageLoad(depthImage, p).r : -1;
+    vec4 guide0 = inside ? imageLoad(guideImage, p) : vec4(0);
     float settled = (pc.flags & POST_DENOISE) != 0 ? smoothstep(4, 24, center.a) : 1;
-    // Sky (no depth), water and grass (7) have no noise to speak of, and what's held (8 and up)
-    // gets steady light
-    if (depth0 < 0 || guide0.w > 6.5 || settled >= 1) {
+    // Sky (no depth), water and grass (7) have no noise to speak of, what's held (8 and up) gets
+    // steady light, and pixels that have averaged enough frames are left as they are
+    bool leave = !inside || depth0 < 0 || guide0.w > 6.5 || settled >= 1;
+    // The pixels round about are only loaded if any of the workgroup's need smoothing, as once
+    // the view's still most don't. Steps past what the tile holds can't happen, as there are only
+    // three passes, but just in case.
+    if (gl_LocalInvocationIndex == 0)
+    s_any_noisy = 0;
+    barrier();
+    if (!leave)
+    s_any_noisy = 1;
+    barrier();
+    bool tiled = pc.step <= 4 && s_any_noisy != 0;
+    if (tiled)
+    loadTile(size);
+    if (!inside)
+    return;
+    if (leave) {
         imageStore(hdrOut, p, center);
         return;
     }
 
     const float KERNEL[3] = float[3](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
-    ivec2 size = imageSize(hdrIn);
     float light0 = luminance(center.rgb);
+    int reach = 2 * int(pc.step);
+    int span = TILE + 2 * reach;
+    ivec2 local = ivec2(gl_LocalInvocationID.xy) + reach;
 
     vec3 sum = vec3(0);
     float weights = 0;
@@ -98,11 +142,22 @@ void denoise(ivec2 p) {
             ivec2 q = p + ivec2(x, y) * int(pc.step);
             if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size)))
             continue;
-            vec4 guide = imageLoad(guideImage, q);
-            float depth = imageLoad(depthImage, q).r;
-            if (guide.w != guide0.w || depth < 0)
+            float depth;
+            float face;
+            vec3 light;
+            if (tiled) {
+                ivec2 t = local + ivec2(x, y) * int(pc.step);
+                int i = t.x + t.y * span;
+                depth = s_shape[i].x;
+                face = s_shape[i].y;
+                light = s_light[i];
+            } else {
+                depth = imageLoad(depthImage, q).r;
+                face = imageLoad(guideImage, q).w;
+                light = lightAt(q).rgb;
+            }
+            if (face != guide0.w || depth < 0)
             continue;
-            vec3 light = lightAt(q).rgb;
             float w = KERNEL[abs(x)] * KERNEL[abs(y)]
                 * exp(-abs(depth - depth0) / (0.02 * depth0 * float(pc.step) + 1e-4))
                 * exp(-abs(luminance(light) - light0) / (light0 + 0.05));
@@ -178,12 +233,12 @@ void tonemap(ivec2 p) {
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
 
-    if (pc.stage == DENOISE || pc.stage == TONEMAP) {
+    if (pc.stage == DENOISE) {
+        // It works out for itself which invocations are off the image, as they all help load
+        denoise(p);
+    } else if (pc.stage == TONEMAP) {
         if (any(greaterThanEqual(p, imageSize(hdrIn))))
         return;
-        if (pc.stage == DENOISE)
-        denoise(p);
-        else
         tonemap(p);
     } else {
         if (any(greaterThanEqual(p, imageSize(bloomOut))))
