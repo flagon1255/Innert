@@ -1803,11 +1803,11 @@ impl Castle {
                 let b = v + side * 0.95;
                 s.push(bl(at, [ta + 0.2, tb - 0.2], [b - 0.18, b + 0.18], [w, w + 0.45], (WOOD, BARK_DARK)));
             }
+            // Whichever piece of the landscape it's in, so the castle's random numbers run on the
+            // same way for every piece it's built for; those of other pieces aren't kept, see
+            // Terrain::place()
             for u in [ta + (tb - ta) * 0.3, ta + (tb - ta) * 0.7] {
-                let p = at.point(u, v, w + 0.82);
-                if t.inside(p[0], p[1]) {
-                    candle(features, p, rng);
-                }
+                candle(features, at.point(u, v, w + 0.82), rng);
             }
         }
         // The carpet from the door to the stair
