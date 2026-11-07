@@ -95,7 +95,8 @@ impl Preset {
                 wind: false,
                 bloom: 0.0,
                 sun_shafts: SunShafts::Off,
-                view_distance: 0.75,
+                // Nearer than this the mountains fade away, which shows more than it saves
+                view_distance: 1.0,
                 reflections: false,
                 fast_upscale: true,
                 flowing_water_m: 32.0,
@@ -104,7 +105,6 @@ impl Preset {
             Preset::Medium => Settings {
                 render_scale: 0.4,
                 sun_shafts: SunShafts::Low,
-                view_distance: 0.9,
                 fast_upscale: true,
                 flowing_water_m: 48.0,
                 ..high
