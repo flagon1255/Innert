@@ -82,6 +82,7 @@ mod quality;
 mod shafts;
 mod staging;
 mod startup;
+mod stream;
 mod voxelize;
 mod water;
 mod weapons;
@@ -257,6 +258,25 @@ fn build_world(scene: Scene, terrain: &TerrainSettings, voxel_resolution: u32, o
     }
 }
 
+/// Puts a whole piece of the landscape built in one go, `world` from `landscape`, into a world that
+/// moves on over the landscape a strip at a time from there, see stream.rs: with what it has besides
+/// its voxels, and where the rivers flow into it
+fn into_window(world: World, landscape: &Terrain) -> (World, Vec<worldgen::PieceFeatures>, Vec<[f32; 4]>) {
+    let strip = stream::STRIP_M * world.voxels_per_meter;
+    let mut window = World::window(world.size, strip, [world.origin[0], world.origin[1]], world.voxels_per_meter, world.sea_level);
+    let pool = window.page_pool().expect("the world that moves on has pages");
+    let mut installing = World::install(worldgen::Strip::new(world, &pool, strip));
+    while !window.install_step(&mut installing, u32::MAX) {}
+    (window, vec![landscape.piece_features()], landscape.river_springs())
+}
+
+/// How far off things fade into the sky in a world `size` voxels across that moves on `strip`
+/// voxels at a time, at `vpm` voxels a meter, with `view_distance` of as far as they can be seen:
+/// the edge of the world is never nearer than half of it less a strip, see stream.rs
+fn fade_distance(size: [u32; 3], strip: u32, vpm: f64, view_distance: f32) -> f64 {
+    (size[0].min(size[1]) as f64 * 0.5 - strip as f64 - FADE_SHORT_M * vpm).max(0.0) * view_distance.clamp(0.25, 1.0) as f64
+}
+
 /// Finer voxels in a box around the camera, rebuilt in the background as it moves.
 struct NearDetail {
     set: Arc<DescriptorSet>,
@@ -275,38 +295,20 @@ struct NearDetail {
 struct NearBuild {
     // The fine voxels, already uploaded to the GPU
     job: std::thread::JoinHandle<(World, Arc<DescriptorSet>)>,
-    landscape: Arc<Terrain>,
+    /// Which world it was built for, see App::world_builds: one built since has no use for it
+    world_build: u32,
     center: Vector3<f64>,
     craters: usize,
 }
 
-/// The next piece of the endless landscape, being built in the background, uploaded to the GPU
-/// along with its water
-struct WindowBuild {
-    job: std::thread::JoinHandle<(Terrain, World, GpuWorld, Water)>,
-    /// How many of App::craters and App::stains it was built with, so those since can be put in it
-    /// too
-    craters: usize,
-    stains: usize,
-    started: Instant,
-}
-
-// The world holds a piece of the endless landscape around the camera. Once the camera gets this
-// far from its middle, in meters, the piece around it is built and moved over to.
-const RECENTER_M: f64 = 30.0;
-// About how long building the next piece takes, in seconds, to start with: it's timed as it goes,
-// see App::build_seconds. It's built round where the camera's heading will be by then, as far as
-// BUILD_LEAD_M ahead, so it's ready before the camera gets to the edge of the one it's in.
-const BUILD_SECONDS: f64 = 6.5;
-const BUILD_LEAD_M: f64 = 70.0;
-/// Frames after the world moves on before what the GPU drew the last piece with is let go of: by
-/// then the frames drawn with it are long done, so it's freed aside rather than as they finish
+/// Frames after the world's moved on before the part of the GPU's memory it was drawn with that's
+/// no longer in it is used again for what comes in: by then the frames drawn with it are long done,
+/// see stream.rs
 const RETIRED_FRAMES: u32 = 8;
-/// Between letting go of each part of what the last piece of the world was drawn with
-const BURY_PAUSE: Duration = Duration::from_millis(15);
-/// How long what the last piece of the world was drawn with is kept for the next one, see Spare,
-/// should no next one be built meanwhile
-const SPARE_KEPT: Duration = Duration::from_secs(60);
+/// How far short of the edge of the world things fade into the sky, past a strip's width, in
+/// meters: the world moves on a strip at a time once the camera's half a strip from its middle, so
+/// the edge is never nearer than half the world less a strip, see stream.rs
+const FADE_SHORT_M: f64 = 4.0;
 /// Frames sent to the GPU before the oldest is waited for, see App::max_in_flight
 const MAX_IN_FLIGHT: usize = 2;
 /// Of what the GPU's memory has room for, see perf::vram(), this much is kept free for what comes
@@ -314,12 +316,8 @@ const MAX_IN_FLIGHT: usize = 2;
 const VRAM_MARGIN: f64 = 0.1;
 const VRAM_MARGIN_MIN: u64 = 256 << 20;
 /// The render scale the game starts at, with a graphics card of its own. A higher one comes down
-/// for want of room in the GPU's memory, but never below this: rather, no spare piece of the
-/// world is kept.
+/// for want of room in the GPU's memory, but never below this.
 const DEFAULT_RENDER_SCALE: f32 = 0.45;
-/// How long the GPU's memory has to have had room for a spare piece of the world again, after
-/// one wasn't kept for want of it, before one is again
-const SPARE_BACK_AFTER: Duration = Duration::from_secs(30);
 /// How long a render scale slider has to be left alone before the images are made again for it
 const SCALE_SETTLE: Duration = Duration::from_millis(300);
 /// How often the GPU's memory is looked at in play, to come down in render scale should something
@@ -849,70 +847,60 @@ struct GpuWorld {
     // What else the set binds, to bind again when there's more room for bricks, see grow()
     views: Vec<(u32, Arc<ImageView>)>,
     set_index: usize,
-}
-
-/// What a piece of the world was kept in on the GPU, kept for the next piece to be built into:
-/// making room for it anew, and letting go of the old, held up the frames being drawn meanwhile,
-/// by hundreds of milliseconds when the GPU's memory was short. Both are there at once as the next
-/// piece is sent over either way, so keeping it doesn't take any more at the most.
-struct Spare {
-    voxels: VoxelSpare,
-    water: water::Spare,
-}
-
-/// A world's bricks, brick grid and map of where grass grows on the GPU, see get_voxel_set()
-struct VoxelSpare {
-    bricks: Subbuffer<[u32]>,
-    grid: Arc<Image>,
-    grass: Option<Arc<Image>>,
-}
-
-impl Spare {
-    /// How much of the GPU's memory it takes, near enough
-    fn bytes(&self) -> u64 {
-        let texels = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * image.format().block_size();
-        self.voxels.bricks.size() + texels(&self.voxels.grid) + self.voxels.grass.as_ref().map_or(0, |grass| texels(grass)) + self.water.bytes()
-    }
-
-    /// To let go of one at a time, see App::bury_retired()
-    fn into_parts(self) -> Vec<Box<dyn Send>> {
-        let mut parts = self.water.into_parts();
-        let VoxelSpare { bricks, grid, grass } = self.voxels;
-        parts.extend([Box::new(bricks) as Box<dyn Send>, Box::new(grid), Box::new(grass)]);
-        parts
-    }
+    // The bricks before there was more room for them, to be copied over with the next frame, see
+    // grow_with_frame()
+    copy_from: Option<Subbuffer<[u32]>>,
 }
 
 impl GpuWorld {
-    /// Lets go of it but for what it's kept in, which the next piece of the world can be built
-    /// into, see Spare, and the rest to let go of aside, see App::retire()
-    fn retire(self) -> (VoxelSpare, Vec<Box<dyn Send>>) {
-        let GpuWorld { set, grid, bricks, views, .. } = self;
-        let grass = views.iter().find(|(binding, _)| *binding == 2).map(|(_, view)| view.image().clone());
-        (VoxelSpare { bricks, grid, grass }, vec![Box::new((set, views))])
+    /// How much of the GPU's memory it takes: its bricks, their grid, and its grass
+    fn bytes(&self) -> u64 {
+        let texels = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * image.format().block_size();
+        let grass = self.views.iter().find(|(binding, _)| *binding == 2).map_or(0, |(_, view)| texels(view.image()));
+        self.bricks.size() + texels(&self.grid) + grass
     }
 
     /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
     /// there are copied into on the GPU, which is far quicker than sending the world over again
     fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
+        self.grow_with_frame(needed, spare_bricks(), memory_allocator, descriptor_set_allocator, render_pipeline);
+        self.settle(command_buffer_allocator, queue);
+    }
+
+    /// The same, `spare` more, but copied over with the next frame, see copy_over(), so no frame
+    /// waits for it: drawn with the new buffer from then on, the old one goes once the frames
+    /// before are done with it
+    fn grow_with_frame(&mut self, needed: usize, spare: usize, memory_allocator: &Arc<StandardMemoryAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline) {
         // No more than a shader can see, see memory::most_bricks()
-        let capacity = (needed + spare_bricks()).min(memory::most_bricks()).max(needed);
-        let bricks = Buffer::new_slice::<u32>(
-            memory_allocator.clone(),
-            BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC, ..Default::default() },
-            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, ..Default::default() },
-            (capacity * worldgen::BRICK_WORDS) as u64,
-        )
-        .unwrap();
-        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
-        builder.copy_buffer(CopyBufferInfo::buffers(self.bricks.clone(), bricks.clone().slice(0..self.bricks.len()))).unwrap();
-        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        let capacity = (needed + spare).min(memory::most_bricks()).max(needed);
+        let bricks = bricks_buffer(memory_allocator, (capacity * worldgen::BRICK_WORDS) as u64);
         let mut writes: Vec<WriteDescriptorSet> = self.views.iter().map(|(binding, view)| WriteDescriptorSet::image_view(*binding, view.clone())).collect();
         writes.push(WriteDescriptorSet::buffer(1, bricks.clone()));
         let layout = render_pipeline.layout().set_layouts().get(self.set_index).unwrap().clone();
         self.set = DescriptorSet::new(descriptor_set_allocator.clone(), layout, writes, []).unwrap();
-        self.bricks = bricks;
+        // Should it grow twice before a frame, all of it's copied from the first
+        let old = std::mem::replace(&mut self.bricks, bricks);
+        self.copy_from.get_or_insert(old);
         self.capacity = capacity;
+    }
+
+    /// Copies the bricks over into the bigger buffer with the frame being recorded, if there is one
+    /// since the last, before anything else's sent into it
+    fn copy_over(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
+        if let Some(old) = self.copy_from.take() {
+            let len = old.len().min(self.bricks.len());
+            builder.copy_buffer(CopyBufferInfo::buffers(old.slice(0..len), self.bricks.clone().slice(0..len))).unwrap();
+        }
+    }
+
+    /// Copies them over now, waiting for it, before anything's sent into them outside a frame
+    fn settle(&mut self, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>) {
+        if self.copy_from.is_none() {
+            return;
+        }
+        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+        self.copy_over(&mut builder);
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
     }
 }
 
@@ -922,14 +910,14 @@ fn spare_bricks() -> usize {
     settings_from_args().iter().find(|(k, _)| k == "spare_bricks").and_then(|(_, v)| v.parse().ok()).unwrap_or(worldgen::SPARE_BRICKS)
 }
 
-/// Room for a world's brick grid, one texel per 8x8x8 brick, see worldgen::World
-fn grid_image(memory_allocator: &Arc<StandardMemoryAllocator>, [sx, sy, sz]: [u32; 3]) -> Arc<Image> {
+/// Room for a world's brick grid, one texel per 8x8x8 brick, `bricks` across, see worldgen::World
+fn grid_image(memory_allocator: &Arc<StandardMemoryAllocator>, bricks: [u32; 3]) -> Arc<Image> {
     Image::new(
         memory_allocator.clone(),
         ImageCreateInfo {
             image_type: ImageType::Dim3d,
             format: Format::R32_UINT,
-            extent: [sx / 8, sy / 8, sz / 8],
+            extent: bricks,
             usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_DST,
             ..Default::default()
         },
@@ -971,8 +959,8 @@ fn bricks_buffer(memory_allocator: &Arc<StandardMemoryAllocator>, words: u64) ->
     .unwrap()
 }
 
-// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the fine detail.
-// It goes into `reuse`, what the last piece of the world was kept in, where that's the size, see Spare.
+// Uploads a world, for traverse.comp's descriptor set `set_index`: 1 for the main world, 2 for the
+// fine detail. The main world has room for `room` bricks, or more if it has more, see memory.rs.
 #[allow(clippy::too_many_arguments)]
 fn get_voxel_set(
     memory_allocator: Arc<StandardMemoryAllocator>,
@@ -982,21 +970,15 @@ fn get_voxel_set(
     queue: &Arc<Queue>,
     set_index: usize,
     world: &World,
-    reuse: Option<VoxelSpare>,
+    room: usize,
 ) -> GpuWorld {
-    let [sx, sy, sz] = world.size;
-    let (reuse_bricks, reuse_grid, reuse_grass) = reuse.map_or((None, None, None), |spare| (Some(spare.bricks), Some(spare.grid), spare.grass));
-
-    // One texel per 8x8x8 brick, see worldgen::World, all of them sent over below
-    let image = match reuse_grid {
-        Some(grid) if grid.extent() == [sx / 8, sy / 8, sz / 8] => grid,
-        _ => grid_image(&memory_allocator, world.size),
-    };
+    // One texel per 8x8x8 brick of the room there is, see worldgen::World, all of them sent over below
+    let image = grid_image(&memory_allocator, world.grid_size());
 
     // Everything goes over a piece at a time through the same bit of host memory, each piece
     // waited for, see staging.rs: the frames being drawn while a new piece of the landscape is
     // sent over in the background get the GPU in between, and no new host memory is made for it
-    let [w, h] = [(sx / 8) as usize, (sy / 8) as usize];
+    let [w, h, _] = world.grid_size().map(|n| n as usize);
     let grid = &world.brick_grid;
     staging::send(
         &memory_allocator,
@@ -1022,37 +1004,59 @@ fn get_voxel_set(
         },
     );
 
-    // An empty world still needs a buffer to bind
-    let brick_words: &[u32] = if world.bricks.is_empty() {
-        &[0; worldgen::BRICK_WORDS]
-    } else {
-        &world.bricks
-    };
-    // The main world has room for more bricks, for holes blown in it, see App::blast()
-    let needed = brick_words.len() / worldgen::BRICK_WORDS;
-    let room = if set_index == 1 { spare_bricks() } else { 0 };
-    // Those of the last piece of the world, if there's room in them for these and at least half the
-    // room to spare. If not, they're let go of before room is made anew, so there aren't both at
-    // once, hundreds of megabytes more of the GPU's memory.
-    let reuse_bricks = reuse_bricks.filter(|bricks| bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS);
-    let bricks_buffer = match reuse_bricks {
-        Some(bricks) => bricks,
-        // No more room than a shader can see, see memory::most_bricks()
-        None => bricks_buffer(&memory_allocator, ((needed + room).min(memory::most_bricks()).max(needed) * worldgen::BRICK_WORDS) as u64),
-    };
-    let capacity = bricks_buffer.len() as usize / worldgen::BRICK_WORDS;
-    staging::send(
-        &memory_allocator,
-        &command_buffer_allocator,
-        queue,
-        brick_words.len(),
-        staging::PIECE_WORDS,
-        |piece, first| piece.copy_from_slice(&brick_words[first..first + piece.len()]),
-        |builder, piece, first| {
-            let to = bricks_buffer.clone().slice(first as u64..first as u64 + piece.len());
-            builder.copy_buffer(CopyBufferInfo::buffers(piece, to)).unwrap();
-        },
-    );
+    // The main world has room for more bricks, for holes blown in it, see App::blast(), and for
+    // the world that moves on for the strips coming in, see stream.rs
+    let needed = world.brick_room().max(1);
+    let spare = if set_index == 1 { spare_bricks() } else { 0 };
+    // No more room than a shader can see, see memory::most_bricks()
+    let capacity = (needed + spare).max(if set_index == 1 { room } else { 0 }).min(memory::most_bricks()).max(needed);
+    let bricks_buffer = bricks_buffer(&memory_allocator, (capacity * worldgen::BRICK_WORDS) as u64);
+    match &world.pages {
+        // Each page where it goes
+        Some(_) => {
+            let page_words = worldgen::PAGE_BRICKS * worldgen::BRICK_WORDS;
+            let pages: Vec<(u32, &[u32])> = (0..(world.brick_room() / worldgen::PAGE_BRICKS) as u32).filter_map(|p| Some((p, world.page(p)?))).collect();
+            staging::send(
+                &memory_allocator,
+                &command_buffer_allocator,
+                queue,
+                pages.len() * page_words,
+                staging::whole(page_words),
+                |piece, first| {
+                    for (k, chunk) in piece.chunks_mut(page_words).enumerate() {
+                        chunk.copy_from_slice(pages[first / page_words + k].1);
+                    }
+                },
+                |builder, piece, first| {
+                    let regions: Vec<BufferCopy> = (0..piece.len() as usize / page_words)
+                        .map(|k| BufferCopy {
+                            src_offset: (k * page_words * 4) as u64,
+                            dst_offset: pages[first / page_words + k].0 as u64 * page_words as u64 * 4,
+                            size: page_words as u64 * 4,
+                            ..Default::default()
+                        })
+                        .collect();
+                    builder.copy_buffer(CopyBufferInfo { regions: regions.into(), ..CopyBufferInfo::buffers(piece, bricks_buffer.clone()) }).unwrap();
+                },
+            );
+        }
+        None => {
+            // An empty world still needs a buffer to bind
+            let brick_words: &[u32] = if world.bricks.is_empty() { &[0; worldgen::BRICK_WORDS] } else { &world.bricks };
+            staging::send(
+                &memory_allocator,
+                &command_buffer_allocator,
+                queue,
+                brick_words.len(),
+                staging::PIECE_WORDS,
+                |piece, first| piece.copy_from_slice(&brick_words[first..first + piece.len()]),
+                |builder, piece, first| {
+                    let to = bricks_buffer.clone().slice(first as u64..first as u64 + piece.len());
+                    builder.copy_buffer(CopyBufferInfo::buffers(piece, to)).unwrap();
+                },
+            );
+        }
+    }
 
     let image_view =
         ImageView::new(image.clone(), ImageViewCreateInfo::from_image(&image)).unwrap();
@@ -1065,14 +1069,11 @@ fn get_voxel_set(
     // The main world also has the map of where grass grows, see worldgen::World::grass
     if set_index == 1 {
         let (extent, grass): ([u32; 2], &[u32]) = match &world.grass {
-            Some(grass) => ([sx, sy], grass),
+            Some(grass) => (world.phys, grass),
             None => ([1, 1], &[0]),
         };
         // All of it sent over below
-        let grass_image = match reuse_grass {
-            Some(grass) if grass.extent() == [extent[0], extent[1], 1] => grass,
-            _ => grass_image(&memory_allocator, extent),
-        };
+        let grass_image = grass_image(&memory_allocator, extent);
         let row = extent[0] as usize;
         staging::send(
             &memory_allocator,
@@ -1117,6 +1118,7 @@ fn get_voxel_set(
         capacity,
         views,
         set_index,
+        copy_from: None,
     }
 }
 
@@ -1163,20 +1165,16 @@ struct App {
     voxel_set: GpuWorld,
     // Kept on the CPU too, for walking around in it
     world: World,
-    // What a generated world was built from
-    landscape: Option<Arc<Terrain>>,
+    /// How a generated world moves on over the landscape a strip at a time, see stream.rs. None
+    /// for a model.
+    stream: Option<stream::Stream>,
+    /// How many times the world's been built anew, for what's built in the background to know if
+    /// it's still of use
+    world_builds: u32,
     // Rivers traced so far, for building the next piece of the landscape
     rivers: Arc<RiverCache>,
-    window_build: Option<WindowBuild>,
-    /// What the GPU drew the last piece of the world with, and the frame it was swapped out at,
-    /// to let go of once the frames still being drawn with it are done, see retire(), and the
-    /// thread letting go of it
-    retired: Vec<(u32, Vec<Box<dyn Send>>, Option<Spare>)>,
-    burying: Option<std::thread::JoinHandle<()>>,
-    /// Kept for the next piece of the world to be built into, and since when
-    spare: Option<(Spare, Instant)>,
     // Where the camera was last frame and when, and which way and how fast it's been going, in
-    // voxels a second, to build the next piece of the landscape ahead of it
+    // voxels a second, to build the next strip of the landscape ahead of it
     last_camera: Option<(Vector3<f64>, Instant)>,
     camera_drift: Vector3<f64>,
     // Flames and crystals in the world, in voxels of it: x, y, z, reach, then color, and 0 as they
@@ -1310,9 +1308,6 @@ struct App {
     max_in_flight: usize,
     /// How long frames take, smoothed, in milliseconds
     frame_ms: f64,
-    /// How long building the next piece of the world takes, smoothed, in seconds, see
-    /// BUILD_SECONDS: much longer when the frames take long, as it's sent over between them
-    build_seconds: f64,
     /// The render scales last set, while moving and when still, and when: a slider being dragged
     /// only has the images made again once it's let go of a moment
     scales_set: (f32, f32),
@@ -1321,14 +1316,8 @@ struct App {
     vram_checked: Instant,
     /// When the render scale last came down for want of room in the GPU's memory, see RAISE_AFTER
     scale_lowered_at: Instant,
-    /// Set when the GPU's memory is too short even to render at the usual scale beside a spare
-    /// piece of the world: then none is kept, see Spare, and moving on to the next piece makes
-    /// room for it anew
-    spare_given_up: bool,
     /// How the graphics card's memory was shared out at the start, see memory.rs
     memory: memory::Plan,
-    /// When there was last no room for one, see SPARE_BACK_AFTER
-    spare_short_at: Instant,
     /// `--set perf_log=60` in screenshot runs, see perf.rs
     perf: Option<perf::PerfLog>,
     /// `--set sky_check=30`: every so many frames how far away a grid of pixels is gets copied
@@ -1713,8 +1702,11 @@ struct Placed {
     scene: Scene,
     terrain: TerrainSettings,
     rivers: Arc<RiverCache>,
+    /// The world that moves on over the landscape a strip at a time, see stream.rs
     world: World,
-    landscape: Option<Arc<Terrain>>,
+    /// What it has besides its voxels, and where rivers flow into it
+    pieces: Vec<worldgen::PieceFeatures>,
+    river_springs: Vec<[f32; 4]>,
     camera: Camera,
     // Whether the player starts right where the camera is, in a dungeon, a cave, a castle or a
     // town or city down under the ground, rather than up on the ground over it
@@ -1824,10 +1816,28 @@ impl Placed {
             .or(sunken.as_ref().map(|s| [(s.foot[0] + s.heart[0]) * 0.5, (s.foot[1] + s.heart[1]) * 0.5]))
             .or(river_at)
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
-        let origin = start_in.map_or([0, 0], |spot| {
-            let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
-            [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2).div_euclid(64) * 64)
-        });
+        // Lined up with the strips the world moves on by, see stream.rs
+        let strip = (stream::STRIP_M * terrain.voxels_per_meter) as i64;
+        // Otherwise round where the camera starts, as it would in a piece of the landscape at its
+        // corner, or where `--set camera=x,y,z` says in that: the world moves on a strip at a time
+        // from there, so it's to start out round the camera, not 18 m from its edge
+        let start_camera = setting("camera").and_then(parse_vector).unwrap_or(scene.initial_camera().position);
+        // As in the widest piece there is, so it starts at the same spot, the lake shore on the
+        // default seed, however wide the world's planned to be: counted in a narrower one, a 2 GB
+        // card's started out somewhere else altogether, walled in
+        let widest = memory::WIDTHS_M[0] * terrain.voxels_per_meter;
+        let start_at = camera_to_voxels(start_camera, [widest, widest, terrain.size()[2]]);
+        let origin = match start_in {
+            Some(spot) => {
+                let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
+                [0, 1].map(|i| ((spot[i] as f64 * vpm) as i64 - size[i] as i64 / 2 + strip / 2).div_euclid(strip) * strip)
+            }
+            // The nearest whole number of strips, so it's no more than half a strip from the middle
+            // and the world doesn't move on straight away
+            None => [0, 1].map(|i| (start_at[i] as i64 - terrain.size()[i] as i64 / 2 + strip / 2).div_euclid(strip) * strip),
+        };
+        // Where the camera starts in that world
+        let start_camera = voxels_to_camera(start_at - Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), terrain.size());
         let (world, landscape) = progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers));
         // The first piece of the world is built with every core, the rest in the background while
         // the game goes on, leaving it some
@@ -1871,6 +1881,9 @@ impl Placed {
         });
 
         let mut camera = scene.initial_camera();
+        if start_in.is_none() {
+            camera.position = start_camera;
+        }
         if let Some(door) = dungeon {
             // On the landing in front of the door looking towards the halls below, or with
             // `--set dungeon=hall` or `boss` in the hall nearest it or the boss's
@@ -2028,8 +2041,8 @@ impl Placed {
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_direction(setting("look").and_then(parse_vector).unwrap_or(Vector3::new(1.0, 0.3, -0.25)));
         }
-        if let Some(position) = setting("camera").and_then(parse_vector) {
-            camera.position = position;
+        if setting("camera").and_then(parse_vector).is_some() {
+            camera.position = start_camera;
         }
         // `--set bush=1` puts the camera inside the nearest bush, to see out of it
         if setting("bush").is_some() {
@@ -2057,7 +2070,12 @@ impl Placed {
             camera.look_at(target);
         }
         let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city;
-        Placed { scene, terrain, rivers, world, landscape, camera, indoors, memory }
+        // Into the world that moves on from here a strip at a time
+        let (world, pieces, river_springs) = match &landscape {
+            Some(landscape) => into_window(world, landscape),
+            None => (world, Vec::new(), Vec::new()),
+        };
+        Placed { scene, terrain, rivers, world, pieces, river_springs, camera, indoors, memory }
     }
 }
 
@@ -2071,7 +2089,6 @@ struct Loaded {
     voxel_set: GpuWorld,
     empty_near_set: Arc<DescriptorSet>,
     water: Water,
-    spare: Option<(Spare, Instant)>,
 }
 
 impl Loaded {
@@ -2118,7 +2135,7 @@ impl Loaded {
         let settings = settings_from_args();
         let flag = |key: &str, default: bool| settings.iter().find(|(k, _)| k == key).map_or(default, |(_, v)| v == "true" || v == "1");
         let Gpu { memory_allocator, descriptor_set_allocator, command_buffer_allocator, queue, .. } = &gpu;
-        let Placed { world, landscape, .. } = &placed;
+        let Placed { world, pieces, river_springs, memory, .. } = &placed;
         let (voxel_set, empty_near_set) = progress.run(Step::Upload, || {
             let voxel_set = get_voxel_set(
                 memory_allocator.clone(),
@@ -2128,7 +2145,7 @@ impl Loaded {
                 queue,
                 1,
                 world,
-                None,
+                memory.bricks,
             );
             // Bound in place of the fine detail when there isn't any
             let empty_near_set = get_voxel_set(
@@ -2139,7 +2156,7 @@ impl Loaded {
                 queue,
                 2,
                 &World::from_packed_occupancy([8; 3], &[0; 4], worldgen::material::AIR),
-                None,
+                0,
             )
             .set;
             (voxel_set, empty_near_set)
@@ -2149,33 +2166,22 @@ impl Loaded {
         }
 
         note_vram(&gpu.device, "the world sent over");
-        let (water, spare) = progress.run(Step::Water, || {
-            let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
-            let mut water = Water::new(memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue, &pipelines.water, world, &springs, None);
+        let water = progress.run(Step::Water, || {
+            let mut springs = river_springs.clone();
+            springs.extend(pieces.iter().flat_map(|p| p.springs.iter().copied()));
+            let mut water = Water::new(memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue, &pipelines.water, world, &springs);
             water.active &= flag("water", true);
-            // Room for the next piece of the landscape to be built into, made now while nothing's being
-            // drawn yet rather than as it's sent over, see Spare. It's let go of after a while if the
-            // world never moves on. Not where the graphics card hasn't the room, see memory.rs.
-            let spare = landscape.as_ref().filter(|_| placed.memory.keep_spare).and_then(|_| {
-                let water = water.make_spare(memory_allocator)?;
-                let voxels = VoxelSpare {
-                    bricks: bricks_buffer(memory_allocator, voxel_set.bricks.len()),
-                    grid: grid_image(memory_allocator, world.size),
-                    grass: world.grass.as_ref().map(|_| grass_image(memory_allocator, [world.size[0], world.size[1]])),
-                };
-                Some((Spare { voxels, water }, Instant::now()))
-            });
-            (water, spare)
+            water
         });
 
-        note_vram(&gpu.device, "the water and spare made");
+        note_vram(&gpu.device, "the water made");
         let sun_map = get_history_image_view(
             memory_allocator.clone(),
             [SUN_MAP_SIZE, SUN_MAP_SIZE],
             Format::R32_SFLOAT,
         );
 
-        Some(Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare })
+        Some(Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water })
     }
 }
 
@@ -2184,11 +2190,12 @@ impl App {
     /// sent over: the game itself, with the weapons the player starts with, and the sound. The
     /// loading screen's window is handed over after, see attach().
     fn new(loaded: Loaded) -> Self {
-        let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare } = loaded;
+        let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
         let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline } = pipelines;
-        let Placed { scene, terrain, rivers, mut world, landscape, mut camera, indoors, memory } = placed;
+        let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory } = placed;
+        let stream = scene.is_terrain().then(|| stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, memory_allocator.clone()));
         // The water has what it needs of it now
         world.forget_water_surface();
         let settings = settings_from_args();
@@ -2398,12 +2405,9 @@ impl App {
             voxel_set,
             player,
             world,
-            landscape,
+            stream,
+            world_builds: 0,
             rivers,
-            window_build: None,
-            retired: Vec::new(),
-            burying: None,
-            spare,
             last_camera: None,
             camera_drift: Vector3::zeros(),
             lights: Vec::new(),
@@ -2497,14 +2501,11 @@ impl App {
             screenshot_requested: false,
             max_in_flight: setting("in_flight").and_then(|v| v.parse().ok()).unwrap_or(MAX_IN_FLIGHT),
             frame_ms: 0.0,
-            build_seconds: BUILD_SECONDS,
             scales_set: (0.0, 0.0),
             scales_set_at: Instant::now(),
             vram_checked: Instant::now(),
             scale_lowered_at: Instant::now(),
-            spare_given_up: !memory.keep_spare,
             memory,
-            spare_short_at: Instant::now(),
             perf: setting("perf_log").and_then(|v| v.parse().ok()).filter(|_| capture.is_some()).map(perf::PerfLog::new),
             sky_check: setting("sky_check").and_then(|v| v.parse().ok()).filter(|_| capture.is_some()).unwrap_or(0),
             sky_probe: None,
@@ -2520,7 +2521,8 @@ impl App {
 
             rcx: None,
         };
-        app.adopt_features();
+        let pieces = app.stream.as_ref().map_or(Vec::new(), |s| s.pieces.clone());
+        app.adopt_pieces(&pieces);
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -2551,16 +2553,17 @@ impl App {
         // For checking how buildings look: `--set view_site=pyramid` looks at the nearest pyramid from
         // outside, and `pyramid-inside` from inside its chamber
         if let Some(what) = setting("view_site")
-            && let Some(landscape) = app.landscape.clone()
+            && let Some(stream) = &app.stream
         {
             let (kind, inside) = what.strip_suffix("-inside").map_or((what, false), |k| (k, true));
             let vpm = app.world.voxels_per_meter as f64;
             let origin = Vector3::new(app.world.origin[0] as f64, app.world.origin[1] as f64, 0.0);
             let start = camera_to_voxels(app.camera.position, app.world.size);
             let to_voxels = |p: [f32; 3]| Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64) * vpm - origin;
-            let site = landscape
-                .sites()
+            let site = stream
+                .pieces
                 .iter()
+                .flat_map(|p| p.sites.iter())
                 .filter(|s| s.kind.replace(' ', "_") == kind)
                 .min_by(|a, b| (to_voxels(a.position) - start).norm().total_cmp(&(to_voxels(b.position) - start).norm()));
             if let Some(site) = site {
@@ -2635,19 +2638,14 @@ impl App {
         }
     }
 
-    /// Takes the lights and props of the landscape the world was just built from, in its voxels
-    fn adopt_features(&mut self) {
+    /// Takes the lights and props of what the world's made of, `landscape`, in its voxels: every
+    /// time it moves on, so what's come in turns up, see stream.rs. What's there already stays.
+    fn adopt_features(&mut self, landscape: &worldgen::PieceFeatures) {
         let vpm = self.world.voxels_per_meter as f64;
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         let to_voxels = |p: [f32; 3]| Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64) * vpm - origin;
-        let Some(landscape) = &self.landscape else {
-            self.lights.clear();
-            self.game.set_props(Vec::new());
-            self.game.set_chests(Vec::new());
-            return;
-        };
         self.lights = landscape
-            .lights()
+            .lights
             .iter()
             .map(|l| {
                 let p = to_voxels(l.position);
@@ -2657,10 +2655,10 @@ impl App {
         // Bosses guard some of the ruins: golems the castles and watchtowers, drakes the desert
         // ruins and pyramids, Ironhide the shrines, colonnades and ravines. Each waits a little way
         // out in front, where there's room to fight.
-        let camps = landscape.bandit_camps();
+        let camps = &landscape.camps;
         let camp_at = |site: &worldgen::Site| camps.iter().find(|c| c.fire == site.position);
         let lairs: Vec<game::Lair> = landscape
-            .sites()
+            .sites
             .iter()
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
@@ -2713,7 +2711,7 @@ impl App {
         // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
         // front of desert ruins and pyramids
         let dens: Vec<game::Den> = landscape
-            .sites()
+            .sites
             .iter()
             .filter_map(|site| {
                 let (kind, out, band) = match site.kind {
@@ -2745,7 +2743,7 @@ impl App {
         // Merchants keep stalls out in front of some of the ruins no boss guards, and behind the
         // counters of the stalls on the towns' squares
         let stalls: Vec<game::Stall> = landscape
-            .sites()
+            .sites
             .iter()
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
@@ -2770,7 +2768,7 @@ impl App {
         // Folk live round the towns' squares, those down in caverns in fewer of them, and some
         // stroll round the courtyards of royal castles
         let towns: Vec<game::Town> = landscape
-            .sites()
+            .sites
             .iter()
             .filter(|site| matches!(site.kind, "town" | "cave town" | "royal court"))
             .map(|site| {
@@ -2784,7 +2782,7 @@ impl App {
             .collect();
         // Royal guards at the gates of castles and by the princess's throne
         let guards: Vec<(Vector3<f64>, f64)> = landscape
-            .sites()
+            .sites
             .iter()
             .filter(|site| site.kind == "royal guard")
             .map(|site| (to_voxels(site.position), (site.facing[1] as f64).atan2(site.facing[0] as f64)))
@@ -2796,7 +2794,7 @@ impl App {
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
 
-        let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props().iter().partition(|p| p.kind == worldgen::PropKind::Chest);
+        let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props.iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
         self.game.set_chests(
             chests
@@ -2879,15 +2877,17 @@ impl App {
             return;
         }
         let start = Instant::now();
+        let needed = self.world.brick_room();
+        let grew = needed > self.voxel_set.capacity;
         let mut cells = std::mem::take(&mut self.edited);
         cells.sort_unstable();
         cells.dedup();
-        let grew = self.world.bricks.len() / worldgen::BRICK_WORDS > self.voxel_set.capacity;
         // The frames still being drawn read what's about to change, so let them finish
         if let Some(rcx) = &mut self.rcx {
             wait_for_frames(rcx, &self.device);
         }
-        let needed = self.world.bricks.len() / worldgen::BRICK_WORDS;
+        // Bricks still to be copied over into more room for them go first, see grow_with_frame()
+        self.voxel_set.settle(&self.command_buffer_allocator, &self.queue);
         if needed > self.voxel_set.capacity {
             // Out of room for more bricks: a bigger buffer, the ones there are copied over on the GPU
             self.voxel_set.grow(needed, &self.memory_allocator, &self.command_buffer_allocator, &self.descriptor_set_allocator, &self.render_pipeline, &self.queue);
@@ -2906,8 +2906,6 @@ impl App {
 
     /// Sends the brick grid `cells` of the main world to the GPU, along with their bricks
     fn upload_bricks(&mut self, cells: &[usize]) {
-        let [sx, sy, _] = self.world.size;
-        let (bx, by) = (sx as usize / 8, sy as usize / 8);
         let grid = self.voxel_set.grid.clone();
         let mut data: Vec<u32> = cells.iter().map(|&c| self.world.brick_grid[c]).collect();
         let grid_regions: Vec<BufferImageCopy> = cells
@@ -2916,7 +2914,8 @@ impl App {
             .map(|(k, &c)| BufferImageCopy {
                 buffer_offset: (k * 4) as u64,
                 image_subresource: grid.subresource_layers(),
-                image_offset: [(c % bx) as u32, ((c / bx) % by) as u32, (c / (bx * by)) as u32],
+                // Where it's kept in the room there is, see World::cell()
+                image_offset: self.world.cell_at(c),
                 image_extent: [1, 1, 1],
                 ..Default::default()
             })
@@ -3012,193 +3011,6 @@ impl App {
         }
     }
 
-    /// Once the camera has wandered far enough from the middle of the world, builds the piece of
-    /// the landscape around it in the background, and moves everything over to it once it's ready
-    fn update_window(&mut self) {
-        if self.landscape.is_none() {
-            return;
-        }
-        let vpm = self.world.voxels_per_meter as f64;
-        let [sx, sy, _] = self.world.size;
-
-        if self.window_build.as_ref().is_some_and(|build| build.job.is_finished()) {
-            let build = self.window_build.take().unwrap();
-            let (terrain, world, voxel_set, water) = build.job.join().unwrap();
-            let took = build.started.elapsed().as_secs_f64();
-            self.build_seconds += (took.clamp(1.0, 60.0) - self.build_seconds) * 0.5;
-            if let Some(perf) = &mut self.perf {
-                perf.builds.push(took as f32);
-                perf.moves += 1;
-            }
-            self.move_to(Arc::new(terrain), world, voxel_set, water);
-            // The holes blown and stains splashed while it was being built aren't in it yet
-            let vpm = self.world.voxels_per_meter as f64;
-            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
-            for k in build.craters..self.craters.len() {
-                let (center, radius) = self.craters[k];
-                self.carve(Vector3::from(center) * vpm - origin, radius, false);
-            }
-            for k in build.stains..self.stains.len() {
-                let (center, radius, material, burn) = self.stains[k];
-                self.paint(Vector3::from(center) * vpm - origin, radius, material, burn);
-            }
-            return;
-        }
-
-        // Which way and how fast the camera's going over the ground, in voxels a second, smoothed
-        let camera = camera_to_voxels(self.camera.position, self.world.size);
-        let now = Instant::now();
-        if let Some((last, at)) = self.last_camera {
-            let dt = (now - at).as_secs_f64();
-            if dt > 1e-4 && dt < 0.5 {
-                let velocity = Vector3::new(camera.x - last.x, camera.y - last.y, 0.0) / dt;
-                self.camera_drift += (velocity - self.camera_drift) * (dt / 1.5).min(1.0);
-            }
-        }
-        self.last_camera = Some((camera, now));
-
-        let middle = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, camera.z);
-        // Once the camera's this far from the middle, or will be by the time the next piece is
-        // built at the pace it's going: further, and the edge of this one comes nearer ahead than
-        // where things start to fade into the sky, and the world can be seen to end. Running,
-        // the next piece is started as soon as the last is in.
-        let far = RECENTER_M * vpm;
-        let fading = 0.7 * (sx.min(sy) as f64 * 0.5 - far);
-        let keep_in = sx.min(sy) as f64 * 0.5 - fading;
-        let then = camera + self.camera_drift * self.build_seconds;
-        // Not while the last piece is being let go of, which the next one's making room for
-        // would hold up all the more
-        if self.window_build.is_some() || self.still_burying() || ((camera - middle).xy().norm() < far && (then - middle).xy().norm() < keep_in) {
-            return;
-        }
-        // Centered on where the camera's heading, lined up with the blocks the water is simulated in
-        let mut lead = self.camera_drift * self.build_seconds;
-        // Less in a narrower piece, see memory.rs, which would otherwise end close behind
-        let most = (BUILD_LEAD_M * vpm).min(0.3 * sx.min(sy) as f64);
-        if lead.norm() > most {
-            lead *= most / lead.norm();
-        }
-        let ahead = camera + lead;
-        let align = 64;
-        let origin = [
-            (self.world.origin[0] + ahead.x as i64 - sx as i64 / 2).div_euclid(align) * align,
-            (self.world.origin[1] + ahead.y as i64 - sy as i64 / 2).div_euclid(align) * align,
-        ];
-        // The same landscape, whatever's changed in the settings since
-        let settings = TerrainSettings {
-            width_m: self.world.size[0] / self.world.voxels_per_meter,
-            height_m: self.world.size[2] / self.world.voxels_per_meter,
-            voxels_per_meter: self.world.voxels_per_meter,
-            ..self.terrain
-        };
-        let rivers = self.rivers.clone();
-        let (memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue) = (
-            self.memory_allocator.clone(),
-            self.command_buffer_allocator.clone(),
-            self.descriptor_set_allocator.clone(),
-            self.queue.clone(),
-        );
-        let (render_pipeline, water_pipeline) = ((*self.render_pipeline).clone(), (*self.water_pipeline).clone());
-        let craters = self.craters.clone();
-        let stains = self.stains.clone();
-        // Built into what the last piece was drawn with, see Spare
-        let (spare_voxels, spare_water) = self.spare.take().map_or((None, None), |(spare, _)| (Some(spare.voxels), Some(spare.water)));
-        let job = std::thread::spawn(move || {
-            let (terrain, mut world) = worldgen::generate_terrain(&settings, origin, &rivers);
-            // The holes blown in the landscape are still there, and the stains splashed on it
-            let vpm = world.voxels_per_meter as f64;
-            let local = |world: &World, center: [f64; 3], radius: f64| {
-                let p = [center[0] * vpm - world.origin[0] as f64, center[1] * vpm - world.origin[1] as f64, center[2] * vpm];
-                let reach = radius * vpm + 2.0;
-                (p[0] > -reach && p[1] > -reach && p[0] < world.size[0] as f64 + reach && p[1] < world.size[1] as f64 + reach).then_some(p)
-            };
-            for (center, radius) in craters {
-                if let Some(p) = local(&world, center, radius) {
-                    world.carve(p, radius * vpm);
-                }
-            }
-            for (center, radius, material, burn) in stains {
-                if let Some(p) = local(&world, center, radius) {
-                    world.paint(p, radius * vpm, material, burn);
-                }
-            }
-            let uploading = Instant::now();
-            let voxel_set = get_voxel_set(
-                memory_allocator.clone(),
-                command_buffer_allocator.clone(),
-                descriptor_set_allocator.clone(),
-                &render_pipeline,
-                &queue,
-                1,
-                &world,
-                spare_voxels,
-            );
-            let water = Water::new(
-                &memory_allocator,
-                &command_buffer_allocator,
-                &descriptor_set_allocator,
-                &queue,
-                &water_pipeline,
-                &world,
-                &terrain.springs(),
-                spare_water,
-            );
-            // The water has what it needs of it now
-            world.forget_water_surface();
-            println!("Sent the next piece of the landscape over in {:.0} ms", uploading.elapsed().as_secs_f64() * 1000.0);
-            (terrain, world, voxel_set, water)
-        });
-        self.window_build = Some(WindowBuild { job, craters: self.craters.len(), stains: self.stains.len(), started: Instant::now() });
-    }
-
-    /// Keeps hold of what the GPU drew with, `parts` each about one lot of memory, until the
-    /// frames drawn with it are done, then lets go of it on another thread, see bury_retired():
-    /// freeing hundreds of megabytes of the GPU's memory held the frame up. `spare` is kept for
-    /// the next piece of the world to be built into instead.
-    fn retire(&mut self, parts: Vec<Box<dyn Send>>, spare: Option<Spare>) {
-        self.retired.push((self.frame, parts, spare));
-    }
-
-    /// Lets go of what was retired long enough ago that no frame still being drawn has it, on
-    /// another thread, a part at a time with a pause in between, as each holds up what the GPU's
-    /// asked to do meanwhile. Its spare is kept for the next piece of the world, unless none's
-    /// been built for a good while.
-    fn bury_retired(&mut self) {
-        if self.burying.as_ref().is_some_and(|b| !b.is_finished()) {
-            return;
-        }
-        self.burying = None;
-        let mut parts: Vec<Box<dyn Send>> = Vec::new();
-        let due = self.retired.iter().take_while(|(frame, ..)| self.frame.wrapping_sub(*frame) >= RETIRED_FRAMES).count();
-        for (_, retired, spare) in self.retired.drain(..due) {
-            parts.extend(retired);
-            if let Some(spare) = spare
-                && let Some((older, _)) = self.spare.replace((spare, Instant::now()))
-            {
-                parts.extend(older.into_parts());
-            }
-        }
-        // Not kept for good, should no next piece be built, nor while the GPU's memory is short
-        if self.window_build.is_none()
-            && let Some((spare, _)) = self.spare.take_if(|(_, since)| since.elapsed() > SPARE_KEPT || self.spare_given_up)
-        {
-            parts.extend(spare.into_parts());
-        }
-        if !parts.is_empty() {
-            self.burying = Some(std::thread::spawn(move || {
-                for part in parts {
-                    drop(part);
-                    std::thread::sleep(BURY_PAUSE);
-                }
-            }));
-        }
-    }
-
-    /// Whether the last piece of the world is still being let go of, see bury_retired()
-    fn still_burying(&self) -> bool {
-        !self.retired.is_empty() || self.burying.as_ref().is_some_and(|b| !b.is_finished())
-    }
-
     /// Once the GPU's done with the last look at how much of the view is sky, see `sky_check`, counts
     /// it, and says so when the world's missing from it while the camera looks down at where it
     /// should be, saving a shot of the next frame
@@ -3217,8 +3029,10 @@ impl App {
             perf.sky(sky);
         }
         // Looking down a little, at least a third of the view is the ground: nearly all sky is a
-        // world gone missing, even with something held up in front of the camera
-        if sky < 0.8 || pitch > -0.15 {
+        // world gone missing, even with something held up in front of the camera. Not while the
+        // screen's dark round the world being built afresh, see stream.rs, as nothing's seen.
+        let dark = self.stream.as_ref().and_then(|s| s.teleport.as_ref()).is_some_and(|t| t.dark > 0.5);
+        if sky < 0.8 || pitch > -0.15 || dark {
             return;
         }
         let vpm = self.world.voxels_per_meter as f64;
@@ -3230,7 +3044,7 @@ impl App {
         };
         let frame = capture.frame_times.len() + 1;
         println!(
-            "BLANK at frame {frame}, {}: {:.0}% sky looking {:.0} degrees down, eye at {:.0}, {:.0}, {:.0} m in a world {:.0} x {:.0} x {:.0} m, edge {edge:.0} m off, building: {}, still burying: {}",
+            "BLANK at frame {frame}, {}: {:.0}% sky looking {:.0} degrees down, eye at {:.0}, {:.0}, {:.0} m in a world {:.0} x {:.0} x {:.0} m, edge {edge:.0} m off, a strip coming in: {}",
             perf::clock(capture.started.elapsed().as_secs_f64()),
             sky * 100.0,
             -pitch.to_degrees(),
@@ -3240,8 +3054,7 @@ impl App {
             sx / vpm,
             sy / vpm,
             sz / vpm,
-            self.window_build.is_some(),
-            !self.retired.is_empty() || self.burying.as_ref().is_some_and(|b| !b.is_finished()),
+            self.stream.as_ref().is_some_and(|s| s.busy()),
         );
         if let Some(perf) = &mut self.perf {
             perf.blank += 1;
@@ -3252,34 +3065,22 @@ impl App {
         }
     }
 
-    /// How much of the GPU's memory the piece of the world it's in takes: its bricks, the map of
-    /// them, the grass and the water
+    /// How much of the GPU's memory the world takes: its bricks, the map of them, the grass and the
+    /// water. There's only ever the one, which moves on a strip at a time, see stream.rs.
     fn piece_bytes(&self) -> u64 {
-        let grid = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * 4;
-        let grass = self.voxel_set.views.iter().find(|(binding, _)| *binding == 2).map_or(0, |(_, view)| grid(view.image()));
         let water = if self.water.active { self.water.bytes() } else { 0 };
-        self.voxel_set.bricks.size() + grid(&self.voxel_set.grid) + grass + water
+        self.voxel_set.bytes() + water
     }
 
     /// How many bytes of the GPU's memory everything sized to the render resolution may take,
     /// `in_use` of which it takes now: what Windows gives the game before it starts moving some
     /// of it out to the computer's memory, which makes every frame slow, less all else the game
-    /// has there and a margin, see VRAM_MARGIN. Moving on to the next piece of the world takes room
-    /// for two at once, so with `keep_spare` that's left for even while no spare one is kept, see
-    /// Spare; without, a spare still kept is about to be let go of. None where the driver can't say.
-    fn render_room(&self, in_use: u64, keep_spare: bool) -> Option<u64> {
+    /// has there and a margin, see VRAM_MARGIN. None where the driver can't say.
+    fn render_room(&self, in_use: u64) -> Option<u64> {
         let vram = perf::vram(&self.device)?;
-        let next_piece = keep_spare
-            && self.landscape.is_some()
-            && self.spare.is_none()
-            && self.window_build.is_none()
-            && self.retired.iter().all(|(_, _, spare)| spare.is_none());
-        let reserved = if next_piece { self.piece_bytes() } else { 0 };
-        let spare = self.spare.as_ref().map_or(0, |(spare, _)| spare.bytes());
-        let leaving = if keep_spare { 0 } else { spare };
         // At least what's known to be there: what Windows says is used lags behind at the start
-        let held = self.piece_bytes() + spare + self.light_cache.size();
-        let others = (vram.used.saturating_sub(in_use).max(held) + reserved).saturating_sub(leaving);
+        let held = self.piece_bytes() + self.light_cache.size();
+        let others = vram.used.saturating_sub(in_use).max(held);
         let margin = ((vram.budget as f64 * VRAM_MARGIN) as u64).max(VRAM_MARGIN_MIN);
         Some(vram.budget.saturating_sub(others + margin))
     }
@@ -3288,9 +3089,7 @@ impl App {
     /// has changed, or when the GPU's memory has less room for it, or more again, see VRAM_CHECK:
     /// at the render scale asked for, or as near it as there's room for, see render_room(). At
     /// 3.0 there was barely room at all, and once something else took a little, Windows moved
-    /// some of the game out to the computer's memory, which made every frame slower. Should there
-    /// be no room for even the usual render scale beside a spare piece of the world, it's that
-    /// that goes, see `spare_given_up`.
+    /// some of the game out to the computer's memory, which made every frame slower.
     fn update_render_images(&mut self, window_extent: [u32; 2]) {
         let wanted = if self.still_frames >= 2 { self.still_render_scale } else { self.render_scale };
         let scales = (self.render_scale, self.still_render_scale);
@@ -3311,29 +3110,13 @@ impl App {
         let in_use = rcx.images.bytes() + rcx.other_images.as_ref().map_or(0, |(_, images)| images.bytes());
         let (scale_in_use, scale_wanted, kept_other) = (rcx.render_scale_in_use, rcx.render_scale_wanted, rcx.other_images.is_some());
 
-        // Is there room for the usual render scale beside a spare piece of the world?
-        let usual = perf::render_bytes(render_extent(window_extent, DEFAULT_RENDER_SCALE.min(wanted)), window_extent);
-        if self.landscape.is_some()
-            && let Some(with_spare) = self.render_room(in_use, true)
-        {
-            if usual > with_spare {
-                if !self.spare_given_up {
-                    println!("The GPU's memory is short: no spare piece of the world is kept, {:.0} MB to render into", with_spare as f64 / perf::MB);
-                }
-                self.spare_given_up = true;
-                self.spare_short_at = Instant::now();
-            } else if self.spare_given_up && usual + usual / 4 + (128 << 20) <= with_spare && self.spare_short_at.elapsed() > SPARE_BACK_AFTER {
-                self.spare_given_up = false;
-                println!("There's room in the GPU's memory for a spare piece of the world again");
-            }
-        }
-        let room = self.render_room(in_use, !self.spare_given_up);
+        let room = self.render_room(in_use);
         let scale = room.map_or(wanted, |room| fitting_scale(wanted, window_extent, room));
         // Less room than what's in use takes, as when something else has taken some, or at the
         // start, before Windows counts all the game has, comes down; or up again once there's
-        // room for more of what's wanted, a while after. Not while the world's moving on, which
-        // takes more for a moment, and less after.
-        let settling = self.window_build.is_some() || self.still_burying();
+        // room for more of what's wanted, a while after. Not while the world's moved on all at
+        // once, which takes more for a moment.
+        let settling = self.stream.as_ref().is_some_and(|s| s.teleport.is_some());
         let down = !settling && scale < scale_in_use * 0.98;
         let up = !settling
             && self.scale_lowered_at.elapsed() > RAISE_AFTER
@@ -3442,23 +3225,47 @@ impl App {
     fn report_perf(&mut self, render_extent: [u32; 3], window_extent: [u32; 3]) {
         let vram = perf::vram(&self.device);
         let bytes = |b: u64| b as f64 / perf::MB;
-        let grid = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * 4;
-        let grass = |image: &Option<Arc<Image>>| image.as_ref().map_or(0, |i| grid(i));
-        let world_grass = self.voxel_set.views.iter().find(|(binding, _)| *binding == 2).map_or(0, |(_, view)| grid(view.image()));
-        let world = self.voxel_set.bricks.size() + grid(&self.voxel_set.grid) + world_grass;
+        let world = self.voxel_set.bytes();
         let water = if self.water.active { self.water.bytes() } else { 0 };
-        let spare = self.spare.as_ref().map_or(0, |(s, _)| s.voxels.bricks.size() + grid(&s.voxels.grid) + grass(&s.voxels.grass) + s.water.bytes());
         let render = perf::render_bytes([render_extent[0], render_extent[1]], [window_extent[0], window_extent[1]]);
         // What's kept on the CPU: the world's bricks, their map, grass and water maps, and the
         // water's own copies
         let cpu_world = {
             let w = &self.world;
-            (w.bricks.capacity() + w.brick_grid.capacity() + w.grass.as_ref().map_or(0, |g| g.capacity())) as u64 * 4
+            w.brick_bytes() as u64
+                + (w.brick_grid.capacity() + w.grass.as_ref().map_or(0, |g| g.capacity())) as u64 * 4
                 + w.water.as_ref().map_or(0, |m| (m.ground.capacity() + m.surface.capacity()) as u64 * 4)
+        };
+        // How the strips have been coming in since last time, see stream.rs
+        let strips = match &mut self.stream {
+            Some(stream) => {
+                let s = &mut stream.stats;
+                let most = |v: &[f32]| v.iter().copied().fold(0.0f32, f32::max);
+                let mean = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+                let line = format!(
+                    " strips={} reused={} discarded={} teleports={} strip_build_ms={:.0}/{:.0} strip_send_ms={:.0}/{:.0} strip_total_ms={:.0}/{:.0} strip_frame_ms={:.1} bricks={} pages={}",
+                    s.strips,
+                    s.reused,
+                    s.discarded,
+                    s.teleports,
+                    mean(&s.built_ms),
+                    most(&s.built_ms),
+                    mean(&s.sent_ms),
+                    most(&s.sent_ms),
+                    mean(&s.total_ms),
+                    most(&s.total_ms),
+                    s.frame_ms_max,
+                    self.world.brick_count(),
+                    self.world.page_pool().map_or(0, |p| p.lock().unwrap_or_else(|e| e.into_inner()).count()),
+                );
+                *s = stream::StreamStats::default();
+                line
+            }
+            None => String::new(),
         };
         let (heap, heap_peak) = perf::heap();
         let more = format!(
-            "rt={}x{} win={}x{} scale={:.2}/{:.2} vram={:.0}/{:.0} render_mb={:.0} world_mb={:.0} water_mb={:.0} spare_mb={:.0} models_mb={:.0} light_mb={:.0} heap_mb={:.0} heap_peak_mb={:.0} cpu_world_mb={:.0} cpu_water_mb={:.0} allocs={} retired={} building={} craters={} stains={} lights={}",
+            "rt={}x{} win={}x{} scale={:.2}/{:.2} vram={:.0}/{:.0} render_mb={:.0} world_mb={:.0} water_mb={:.0} world_m={} models_mb={:.0} light_mb={:.0} heap_mb={:.0} heap_peak_mb={:.0} cpu_world_mb={:.0} cpu_water_mb={:.0} allocs={} craters={} stains={} lights={}{strips}",
             render_extent[0],
             render_extent[1],
             window_extent[0],
@@ -3470,7 +3277,7 @@ impl App {
             bytes(render),
             bytes(world),
             bytes(water),
-            bytes(spare),
+            self.world.size[0] / self.world.voxels_per_meter.max(1),
             bytes(self.animal_models.size() + self.weapon_models.size()),
             bytes(self.light_cache.size()),
             heap as f64 / perf::MB,
@@ -3478,8 +3285,6 @@ impl App {
             bytes(cpu_world),
             bytes(self.water.cpu_bytes()),
             self.device.allocation_count(),
-            self.retired.len(),
-            self.window_build.is_some(),
             self.craters.len(),
             self.stains.len(),
             self.lights.len(),
@@ -3492,86 +3297,36 @@ impl App {
         println!("PERFGAME {}", self.game.report(eye));
     }
 
-    /// Moves over to a new piece of the landscape. Everything in the world moves with it.
-    /// `voxel_set` and `water` are for `world`, already uploaded
-    fn move_to(&mut self, landscape: Arc<Terrain>, world: World, voxel_set: GpuWorld, mut water: Water) {
-        let started = Instant::now();
-        let shift = Vector3::new(
-            (world.origin[0] - self.world.origin[0]) as f64,
-            (world.origin[1] - self.world.origin[1]) as f64,
-            0.0,
-        );
-        let old_set = std::mem::replace(&mut self.voxel_set, voxel_set);
-        water.active &= self.water.active;
-        // The water flows on where the two overlap, copied over on the GPU at the start of the
-        // next frame, so nothing waits here for the frames still being drawn
-        water.carry_over(&mut self.water, [shift.x as i64, shift.y as i64]);
-        let old_water = std::mem::replace(&mut self.water, water);
-        // What the old world's voxels and water were kept in on the GPU, hundreds of megabytes, is
-        // kept for the next piece of the world to be built into, and the rest, with the fine
-        // detail, let go of aside once the frames drawn with them are done, see retire()
-        let old_near = self.near.take();
-        let (voxels, mut parts) = old_set.retire();
-        let (water_spare, water_parts) = old_water.retire();
-        parts.extend(water_parts);
-        parts.push(Box::new(old_near));
-        self.retire(parts, Some(Spare { voxels, water: water_spare }));
-        let watered = started.elapsed();
-
-        let camera = camera_to_voxels(self.camera.position, self.world.size) - shift;
-        // Letting go of hundreds of megabytes of the old one takes a while, so it's done aside
-        let old = std::mem::replace(&mut self.world, world);
-        let old_landscape = self.landscape.replace(landscape);
-        std::thread::spawn(move || drop((old, old_landscape)));
-        self.camera.position = voxels_to_camera(camera, self.world.size);
-        self.last_camera = None;
-        if let Some(player) = &mut self.player {
-            player.position -= shift;
-        }
-        self.last_feet = None;
-        self.near_build = None;
-        self.sun_map_for = None;
-        self.reset_accum = true;
-        let water = &self.water;
-        let near = self.player.as_ref().map_or(camera, |p| p.position);
-        let swapped = started.elapsed();
-        self.game.recenter(&self.world, &|x, y| water.surface_at(x, y), shift, self.terrain.seed, near);
-        let moved = started.elapsed();
-        // Only once what's about has moved with the world, so what turns up in the new piece of it
-        // isn't moved too
-        self.adopt_features();
-        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        // Screenshot runs say when, to line it up with the slow frames
-        if let Some(capture) = &self.capture {
-            println!("Moving over at frame {}", capture.frame_times.len() + 1);
-        }
-        println!(
-            "Moved over to the new piece of landscape in {:?}: water {:.0} ms, world {:.0} ms, what's about {:.0} ms, what's in it {:.0} ms",
-            started.elapsed(),
-            ms(watered),
-            ms(swapped - watered),
-            ms(moved - swapped),
-            ms(started.elapsed() - moved)
-        );
-    }
-
     /// Builds the world picked in the settings, in place of the current one
     fn generate_world(&mut self) {
         // A new landscape has rivers of its own
         let rivers = Arc::new(RiverCache::default());
         let (world, landscape) = build_world(self.scene, &self.terrain, self.future_voxel_resolution, [0, 0], &rivers);
-        self.window_build = None;
         self.craters.clear();
         self.stains.clear();
 
         let max_bytes = limits::get().buffer_bytes() as usize;
-        if world.bricks.len() * 4 > max_bytes {
+        if world.brick_room() * worldgen::BRICK_WORDS * 4 > max_bytes {
             self.world_error = Some(format!(
                 "That world needs {} MB of bricks but your GPU allows {} MB. Try fewer voxels per metre or a smaller world.",
-                world.bricks.len() * 4 / (1024 * 1024),
+                world.brick_room() * worldgen::BRICK_WORDS * 4 / (1024 * 1024),
                 max_bytes / (1024 * 1024)
             ));
             return;
+        }
+        // A landscape moves on a strip at a time from where it's built
+        let (world, stream) = match &landscape {
+            Some(landscape) => {
+                let (world, pieces, river_springs) = into_window(world, landscape);
+                let stream = stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, self.memory_allocator.clone());
+                (world, Some(stream))
+            }
+            None => (world, None),
+        };
+        drop(landscape);
+        // What was there before isn't drawn with any more
+        if let Some(rcx) = &mut self.rcx {
+            wait_for_frames(rcx, &self.device);
         }
         self.voxel_set = get_voxel_set(
             self.memory_allocator.clone(),
@@ -3581,30 +3336,23 @@ impl App {
             &self.queue,
             1,
             &world,
-            None,
+            self.memory.bricks,
         );
-        let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
-        self.water = Water::new(
-            &self.memory_allocator,
-            &self.command_buffer_allocator,
-            &self.descriptor_set_allocator,
-            &self.queue,
-            &self.water_pipeline,
-            &world,
-            &springs,
-            None,
-        );
+        let springs = stream.as_ref().map_or(Vec::new(), |s| s.springs());
+        self.water = Water::new(&self.memory_allocator, &self.command_buffer_allocator, &self.descriptor_set_allocator, &self.queue, &self.water_pipeline, &world, &springs);
         let mut world = world;
         world.forget_water_surface();
-        self.spare = None;
         self.world = world;
-        self.landscape = landscape;
+        self.stream = stream;
+        self.world_builds += 1;
         self.rivers = rivers;
         self.light_cache_for = None;
         self.near = None;
+        self.near_build = None;
         self.world_error = None;
         self.sun_map_for = None;
-        self.adopt_features();
+        let pieces = self.stream.as_ref().map_or(Vec::new(), |s| s.pieces.clone());
+        self.adopt_pieces(&pieces);
 
         if self.scene.is_terrain() != self.loaded_scene.is_terrain() {
             self.camera = self.scene.initial_camera();
@@ -3628,17 +3376,22 @@ impl App {
 
     /// Flies over to look at one of the waterfalls, a different one each time
     fn visit_waterfall(&mut self) {
-        let Some(landscape) = &self.landscape else {
+        let Some(stream) = &self.stream else {
             return;
         };
-        let falls = landscape.waterfalls();
+        // Those in the world where it is now
+        let vpm = self.world.voxels_per_meter as f32;
+        let (lo, hi) = ([self.world.origin[0] as f32 / vpm, self.world.origin[1] as f32 / vpm], [(self.world.origin[0] + self.world.size[0] as i64) as f32 / vpm, (self.world.origin[1] + self.world.size[1] as i64) as f32 / vpm]);
+        let mut falls: Vec<([f32; 3], [f32; 2], f32)> = stream.pieces.iter().flat_map(|p| p.waterfalls.iter().copied()).filter(|(lip, ..)| lip[0] >= lo[0] && lip[1] >= lo[1] && lip[0] < hi[0] && lip[1] < hi[1]).collect();
+        falls.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]).then(a.0[1].total_cmp(&b.0[1])));
         if falls.is_empty() {
             return;
         }
         let (top, flow, _) = falls[self.waterfall_index % falls.len()];
         self.waterfall_index += 1;
         let vpm = self.world.voxels_per_meter as f64;
-        let target = Vector3::new(top[0] as f64, top[1] as f64, top[2] as f64 - 1.5) * vpm;
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        let target = Vector3::new(top[0] as f64, top[1] as f64, top[2] as f64 - 1.5) * vpm - origin;
         let flow = flow.map(f64::from);
         let heading = flow[1].atan2(flow[0]);
         // Downstream of it, somewhere in the open with nothing in the way
@@ -3968,7 +3721,11 @@ impl App {
         let alive = !self.game.dead();
         let t = |k: KeyCode| (self.focused && interactive && alive && self.input.key_held(k)) as u8 as f64;
         let mut footstep = None;
-        if let Some(player) = &mut self.player {
+        // Nor does anyone while the world's built afresh round them, see stream.rs
+        let held = self.held_still();
+        if let Some(player) = &mut self.player
+            && !held
+        {
             // Walk where the camera faces, ignoring whether it looks up or down
             let yaw = self.camera.rotation.z;
             let forward = Vector2::new(-yaw.sin(), yaw.cos());
@@ -4021,7 +3778,7 @@ impl App {
                     footstep = Some(if self.water.depth_at(feet.x, feet.y) > 0.05 * vpm { audio::Ground::Water } else { ground_of(under) });
                 }
             }
-        } else {
+        } else if self.player.is_none() {
             self.last_feet = None;
             self.wake = None;
             self.walk_speed = 0.0;
@@ -4030,12 +3787,10 @@ impl App {
                     - Vector3::new(KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyE).map(t);
 
                 let sprint = if self.input.held_shift() { 4.0 } else { 1.0 };
-                self.camera.position += (self.camera.rotation_matrix()
-                    * v.push(0.0)
-                    * delta_time
-                    * self.move_speed
-                    * sprint)
-                    .xyz();
+                let step = (self.camera.rotation_matrix() * v.push(0.0) * delta_time * self.move_speed * sprint).xyz();
+                // No faster out to the edge of the world than it moves on, see stream.rs
+                let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
+                self.camera.position += self.keep_up(step * scale) / scale;
             }
         }
         if let Some(ground) = footstep {
@@ -4148,7 +3903,58 @@ impl App {
                     let [sx, sy, _] = self.world.size.map(|n| n as f64);
                     let edge = eye.x.min(eye.y).min(sx - eye.x).min(sy - eye.y) / vpm;
                     let at = [self.world.origin[0] as f64 / vpm + eye.x / vpm, self.world.origin[1] as f64 / vpm + eye.y / vpm];
-                    println!("frame {frame}: at {:.0}, {:.0}, edge {edge:.0} m off, building: {}", at[0], at[1], self.window_build.is_some());
+                    println!("frame {frame}: at {:.0}, {:.0}, edge {edge:.0} m off, a strip coming in: {}", at[0], at[1], self.stream.as_ref().is_some_and(|s| s.busy()));
+                }
+            }
+            // Flies over the land `--set fly_speed=27` meters a second, as flying with shift held is,
+            // turning sharply round every `--set fly_turn=8` seconds or so, to see the world keeps up
+            // as it moves on a strip at a time, see stream.rs
+            ("fly", f) => {
+                let setting = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                if f == 1 {
+                    self.player = None;
+                    self.play.heading = self.camera.rotation.z;
+                    self.play.leg_end = run_time + setting("fly_turn", 8.0);
+                }
+                let dt = (run_time - self.play.fly_last).clamp(0.0, 0.1);
+                self.play.fly_last = run_time;
+                if run_time >= self.play.leg_end {
+                    self.play.leg += 1;
+                    self.play.heading += std::f64::consts::PI + (self.play.random() - 0.5) * 1.2;
+                    self.play.leg_end = run_time + setting("fly_turn", 8.0) * (0.5 + self.play.random());
+                    println!("frame {frame}: turning round");
+                }
+                // `--set shot_every=0.5`, a shot of the view every half a second
+                if let Some(every) = self.play.shot_every
+                    && run_time >= self.play.next_shot
+                    && let Some(capture) = &mut self.capture
+                {
+                    self.play.next_shot = run_time + every;
+                    capture.shots.push(frame + 2);
+                }
+                self.camera.rotation.z = self.play.heading;
+                self.camera.rotation.x = -0.25;
+                let forward = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+                let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                // As far as flying gets, no faster than the world moves on, see keep_up()
+                let step = self.keep_up(flat * setting("fly_speed", 27.0) * vpm * dt);
+                self.play.flown += step.norm() / vpm;
+                let mut at = eye + step;
+                let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                at.z = (ground + 12.0 * vpm).min(self.world.size[2] as f64 - 2.0 * vpm);
+                self.camera.position = voxels_to_camera(at, self.world.size);
+                if f % 30 == 0 {
+                    let [sx, sy, _] = self.world.size.map(|n| n as f64);
+                    let exit = |e: f64, s: f64, d: f64| if d > 1e-9 { (s - e) / d } else if d < -1e-9 { -e / d } else { f64::INFINITY };
+                    let ahead = exit(at.x, sx, flat.x).min(exit(at.y, sy, flat.y)) / vpm;
+                    let world = [self.world.origin[0] as f64 / vpm + at.x / vpm, self.world.origin[1] as f64 / vpm + at.y / vpm];
+                    println!(
+                        "frame {frame}: at {:.0}, {:.0}, edge {ahead:.0} m ahead, flown {:.0} m in {run_time:.1} s, a strip coming in: {}",
+                        world[0],
+                        world[1],
+                        self.play.flown,
+                        self.stream.as_ref().is_some_and(|s| s.busy())
+                    );
                 }
             }
             ("hunt", 20) => {
@@ -4313,7 +4119,7 @@ impl App {
                         .filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x < self.world.size[0] as f64 && p.y < self.world.size[1] as f64)
                         .filter(|p| !worldgen::is_passable(self.world.material_at(p.x as i64, p.y as i64, p.z as i64)))
                         .count();
-                    println!("frame {frame}: {} holes blown, {filled} filled back in, building: {}", self.craters.len(), self.window_build.is_some());
+                    println!("frame {frame}: {} holes blown, {filled} filled back in, a strip coming in: {}", self.craters.len(), self.stream.as_ref().is_some_and(|s| s.busy()));
                 }
             }
             // On foot, facing the nearest boss and attacking it with what's in hand
@@ -4622,10 +4428,10 @@ impl App {
     // Swaps in a finished box of fine detail, and starts building a new one once the camera
     // has wandered far enough from the middle of the current one
     fn update_near_detail(&mut self) {
-        let Some(landscape) = self.landscape.clone() else {
+        if self.stream.is_none() {
             self.near = None;
             return;
-        };
+        }
         let main_vpm = self.world.voxels_per_meter;
         let fine_vpm = self.near_detail;
         if fine_vpm <= main_vpm || fine_vpm % main_vpm != 0 {
@@ -4638,7 +4444,7 @@ impl App {
             let build = self.near_build.take().unwrap();
             let (world, set) = build.job.join().unwrap();
             // Unless the world was regenerated or the detail changed in the meantime
-            if Arc::ptr_eq(&build.landscape, &landscape) && world.voxels_per_meter == fine_vpm {
+            if build.world_build == self.world_builds && world.voxels_per_meter == fine_vpm {
                 // Its origin is from the corner of the whole landscape, the world's isn't
                 let window = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
                 self.near = Some(NearDetail {
@@ -4670,7 +4476,11 @@ impl App {
             let corner = |axis: usize| ((center[axis] - size[axis] as f64 * 0.5) / 8.0).round() as i64 * 8;
             let top = self.world.size[2] as i64 * scale as i64 - size[2] as i64;
             let origin = [corner(0), corner(1), corner(2).clamp(0, top.max(0))];
-            let job_landscape = landscape.clone();
+            // Placed just as the world is, at its voxels, out to as far as reaches into the box
+            let settings = self.terrain_settings();
+            let rivers = self.rivers.clone();
+            let place_at = [origin[0].div_euclid(scale as i64), origin[1].div_euclid(scale as i64)];
+            let place_size = [size[0] / scale + 8, size[1] / scale + 8];
             let (memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue) = (
                 self.memory_allocator.clone(),
                 self.command_buffer_allocator.clone(),
@@ -4682,7 +4492,8 @@ impl App {
             let stains = self.stains.clone();
             let job = std::thread::spawn(move || {
                 let start = Instant::now();
-                let mut world = job_landscape.build(origin, size, fine_vpm);
+                let landscape = worldgen::place_for(&settings, place_at, place_size, &rivers);
+                let mut world = landscape.build(origin, size, fine_vpm);
                 // With the holes blown in it and the stains splashed on it
                 let vpm = fine_vpm as f64;
                 let local = |center: [f64; 3], radius: f64| {
@@ -4701,13 +4512,13 @@ impl App {
                     }
                 }
                 // Uploaded here too, so the frames carry on smoothly meanwhile
-                let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world, None).set;
+                let set = get_voxel_set(memory_allocator, command_buffer_allocator, descriptor_set_allocator, &render_pipeline, &queue, 2, &world, 0).set;
                 println!("Built fine detail: {} bricks ({:?})", world.brick_count(), start.elapsed());
                 (world, set)
             });
             self.near_build = Some(NearBuild {
                 job,
-                landscape,
+                world_build: self.world_builds,
                 center: camera,
                 craters: scars,
             });
@@ -4830,18 +4641,26 @@ impl App {
             if let Some(vram) = perf::vram(&self.device) {
                 note += &format!("\nGPU memory: {:.1} of {:.1} GB in use", vram.used as f64 / perf::MB / 1024.0, vram.budget as f64 / perf::MB / 1024.0);
             }
-            if self.spare_given_up {
-                note += "\nNo room in the GPU's memory to keep the last piece of the world for the next, so moving on to it may stutter a moment";
-            }
-            if self.landscape.is_some() {
-                let half = self.world.size[0].min(self.world.size[1]) as f64 * 0.5 / self.world.voxels_per_meter as f64;
-                note += &format!("\nSees {:.0} m: the piece of the landscape around you is {:.0} m across", half - RECENTER_M, 2.0 * half);
+            if let Some(stream) = &self.stream {
+                let vpm = self.world.voxels_per_meter as f64;
+                let half = self.world.size[0].min(self.world.size[1]) as f64 * 0.5 / vpm;
+                let sees = fade_distance(self.world.size, stream.strip, vpm, 1.0) / vpm;
+                note += &format!("\nSees {sees:.0} m: the piece of the landscape around you is {:.0} m across, and moves on {} m at a time", 2.0 * half, stream::STRIP_M);
             }
             note
         });
 
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
+
+            // Dark while the world's built afresh round the camera, gone too fast for the strips to
+            // keep up, see stream.rs
+            if let Some(dark) = self.stream.as_ref().and_then(|s| s.teleport.as_ref()).map(|t| t.dark)
+                && dark > 0.0
+            {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("moving on")))
+                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark.clamp(0.0, 1.0) * 255.0) as u8));
+            }
 
             if self.menu_open {
                 // Dim the world behind the menu a little
@@ -5025,15 +4844,15 @@ impl App {
                                 size[2],
                                 100.0 / self.terrain.voxels_per_meter as f32
                             ));
-                            // Two pieces of it at once while moving on, see memory.rs
+                            // Only ever the one piece of it, moving on a strip at a time, see memory.rs
                             let piece = memory::piece_bytes(self.terrain.width_m, self.terrain.height_m, self.terrain.voxels_per_meter);
                             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
                             match self.memory.budget {
-                                Some(budget) if 2 * piece > budget / 10 * 8 => {
-                                    ui.colored_label(Color32::LIGHT_RED, format!("About {:.1} GB of the GPU's memory, twice that while the world moves on: more than its {:.1} GB, so it'd run slowly and the world could be seen to end", gb(piece), gb(budget)));
+                                Some(budget) if piece > budget / 10 * 8 => {
+                                    ui.colored_label(Color32::LIGHT_RED, format!("About {:.1} GB of the GPU's memory: more than its {:.1} GB, so it'd run slowly and the world could be seen to end", gb(piece), gb(budget)));
                                 }
                                 _ => {
-                                    ui.label(format!("About {:.1} GB of the GPU's memory, twice that while the world moves on", gb(piece)));
+                                    ui.label(format!("About {:.1} GB of the GPU's memory", gb(piece)));
                                 }
                             }
                             let max_bricks = limits::get().image_3d * 8;
@@ -5282,10 +5101,9 @@ impl App {
         )
         .unwrap();
         // Things fade into the sky before the edge of the world, which is never nearer than this
-        let fade = if self.landscape.is_some() {
-            ((self.world.size[0].min(self.world.size[1]) as f64 * 0.5 - RECENTER_M * self.world.voxels_per_meter as f64) as f32).max(0.0) * self.view_distance.clamp(0.25, 1.0)
-        } else {
-            0.0
+        let fade = match &self.stream {
+            Some(stream) => fade_distance(self.world.size, stream.strip, self.world.voxels_per_meter as f64, self.view_distance) as f32,
+            None => 0.0,
         };
 
         let view = ViewKey {
@@ -5346,7 +5164,9 @@ impl App {
             near_origin,
             near_size,
             haze: [view.haze, self.start_time.elapsed().as_secs_f32(), lights.len() as f32, fade],
-            window: [self.world.origin[0] as i32, self.world.origin[1] as i32, 0, 0],
+            // Where its first column is kept in the room there is, which they go round, see
+            // World::wrap
+            window: [self.world.origin[0] as i32, self.world.origin[1] as i32, self.world.wrap[0] as i32, self.world.wrap[1] as i32],
         };
         // Light gathered under another sun, or in another world, is no good
         let cache_for = (sun_direction, self.terrain.seed);
@@ -5385,14 +5205,30 @@ impl App {
         // The water flows on, except while the menu is open
         let now = Instant::now();
         let frame_time = if self.menu_open { 0.0 } else { (now - self.last_frame).as_secs_f64() };
-        // What's sent to the GPU meanwhile, like the next piece of the world, goes over at a pace
-        // that suits how long frames take, see staging.rs
+        // What's sent to the GPU meanwhile, like the world as it's first sent over, goes over at a
+        // pace that suits how long frames take, see staging.rs
         let took = ((now - self.last_frame).as_secs_f64() * 1000.0).min(500.0);
         self.frame_ms += (took - self.frame_ms) * 0.1;
         staging::frame_time(self.frame_ms);
         self.last_frame = now;
         let camera = camera_to_voxels(self.camera.position, self.world.size);
-        self.water.record(&mut builder, &self.water_pipeline, frame_time, [camera.x, camera.y], self.wake);
+        // What's come of strips coming into the world goes over with the frame, see stream.rs, after
+        // the bricks there were if there's more room for them now
+        if let Some(timer) = &mut timer {
+            timer.mark(&mut builder, "clear");
+        }
+        self.voxel_set.copy_over(&mut builder);
+        if let Some(stream) = &mut self.stream {
+            stream.record_uploads(&mut builder, &self.voxel_set, &self.water, self.frame, self.frame_ms);
+        }
+        if let Some(timer) = &mut timer {
+            timer.mark(&mut builder, "strips");
+        }
+        self.water.record(&mut builder, &self.water_pipeline, frame_time, [camera.x, camera.y], self.wake, |b, n| {
+            if let Some(timer) = &mut timer {
+                timer.mark(b, n);
+            }
+        });
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "water");
         }
@@ -5452,6 +5288,7 @@ impl App {
                 world_size: self.world.size,
                 voxels_per_meter: self.world.voxels_per_meter,
                 world_origin: [self.world.origin[0], self.world.origin[1]],
+                world_wrap: self.world.wrap,
                 seconds: push_constants.haze[1],
                 frame: push_constants.frame,
                 still: history_limit == STILL_HISTORY || history_limit == ANIMATED_HISTORY,
@@ -5590,7 +5427,7 @@ impl App {
                     perf.frame(took.as_secs_f32() * 1000.0);
                     // How near the edge of the world the camera's come, and how long it was nearer
                     // than where things have faded well into the sky, so the world could be seen to end
-                    if self.landscape.is_some() {
+                    if self.stream.is_some() {
                         let vpm = self.world.voxels_per_meter as f64;
                         let eye = camera_to_voxels(self.camera.position, self.world.size);
                         let [sx, sy, _] = self.world.size.map(f64::from);
@@ -5697,6 +5534,13 @@ impl App {
         };
 
         let submitting = Instant::now();
+        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
+        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
+        // its images without having taken it and stopped the game ("Image was not locked for GPU
+        // write"), on AVI as it was too, a few hundred frames into a run
+        if let Err(e) = gui_future.flush() {
+            println!("Sending the frame to the GPU went wrong: {e}");
+        }
         // Shown once it's drawn, see loading::Drawn
         let drawn = loading::Drawn::after(gui_future);
         let semaphore = drawn.semaphore();
@@ -5749,7 +5593,6 @@ impl App {
         {
             capture.gpu = timer;
         }
-        self.bury_retired();
         if let Some(capture) = &self.capture
             && matches!(capture.frame_times.len(), 0 | 1 | 2 | 30 | 300)
         {
@@ -5861,7 +5704,7 @@ impl App {
         // again once it's back
         let window_extent: [u32; 2] = <[u32; 2]>::from(window.inner_size()).map(|n| n.max(1));
         // As much as the GPU's memory has room for
-        let room = self.render_room(0, true);
+        let room = self.render_room(0);
         let scale = room.map_or(self.render_scale, |room| fitting_scale(self.render_scale, window_extent, room));
         let render_extent = render_extent(window_extent, scale);
         if self.capture.is_some() {
@@ -6122,7 +5965,11 @@ fn main() {
             .map(|s| s.to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_default();
-        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}"));
+        // Which thread, and with RUST_BACKTRACE set where it was, for screenshot runs' logs
+        let thread = std::thread::current().name().map_or(String::new(), |n| format!(" on the {n} thread"));
+        let trace = std::backtrace::Backtrace::capture();
+        let trace = if trace.status() == std::backtrace::BacktraceStatus::Captured { format!("\n\n{trace}") } else { String::new() };
+        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}{thread}{trace}"));
         background_printing::drain();
     }));
     if std::env::args().any(|a| a == "--screenshot") {

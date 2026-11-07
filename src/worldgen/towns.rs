@@ -912,11 +912,10 @@ impl Terrain {
         s.push(block([tu - 0.5, tu + 0.5], [tv - 0.4, tv + 0.4], [f + 0.72, f + 0.8], (WOOD, AIR)));
         s.push(Shape::capsule(at.point(tu, tv, f), at.point(tu, tv, f + 0.72), 0.07, 0.07, BARK_DARK, AIR, false).placed(Placement::Clear));
         s.push(block([tu + 0.65, tu + 0.95], [tv - 0.15, tv + 0.15], [f, f + 0.45], (WOOD, BARK_DARK)));
+        // Whichever piece of the landscape it's in, so the random numbers run on the same way for
+        // every piece the house is built for; those of other pieces aren't kept, see Terrain::place()
         if rng.next() < 0.6 {
-            let p = at.point(tu, tv + side * 0.15, f + 0.8);
-            if self.inside(p[0], p[1]) {
-                candle(features, p, &mut rng);
-            }
+            candle(features, at.point(tu, tv + side * 0.15, f + 0.8), &mut rng);
         }
         barrel(s, at.point(iu - 0.38, side * (iv - 0.38), f));
 

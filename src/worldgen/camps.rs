@@ -157,14 +157,10 @@ impl Terrain {
     /// y1 in meters, where something's already built, or where something of `dug`, the caves,
     /// ravines and such, opens onto the ground.
     pub(super) fn camps(&self, heights: &Heights, features: &mut Features, keep_out: &[[f32; 4]], dug: &[Object]) -> Vec<Object> {
-        let vpm = heights.voxels_per_meter;
+        // The same wherever the piece of the landscape this is placed for is, see Heights::at()
         let ground = |x: f32, y: f32| -> Option<(f32, bool)> {
-            let (gx, gy) = ((x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
-            if gx < 0 || gy < 0 || gx >= heights.size[0] as i64 || gy >= heights.size[1] as i64 {
-                return None;
-            }
-            let i = gx as usize + gy as usize * heights.size[0];
-            Some((heights.ground[i], heights.river[i].is_finite()))
+            let (g, r) = heights.at_m(x, y);
+            Some((g, r.is_finite()))
         };
         let (lo, hi) = (self.lo, self.hi);
         let first = [(lo[0] / CAMP_CELL).floor() as i32, (lo[1] / CAMP_CELL).floor() as i32];

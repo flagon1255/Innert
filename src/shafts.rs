@@ -115,6 +115,8 @@ pub struct Frame<'a> {
     pub voxels_per_meter: u32,
     /// The world's corner in the whole landscape, in voxels
     pub world_origin: [i64; 2],
+    /// Where its first column is kept in the room there is for its columns, see World::wrap
+    pub world_wrap: [u32; 2],
     pub seconds: f32,
     pub frame: u32,
     /// Whether the camera's been still since last frame
@@ -345,7 +347,7 @@ impl Shafts {
             window: [0; 4],
             world: [sx, sy, sz, 0],
             extra: [frame.haze * DUST_PER_HAZE * self.strength * low_sun, REACH_M * vpm as f32, 0.0, 0.0],
-            info: [0, frame.frame, 0, 0],
+            info: [0, frame.frame, 0, frame.world_wrap[0] | frame.world_wrap[1] << 16],
         };
         let half_groups = [extent[0].div_ceil(8), extent[1].div_ceil(8), 1];
         builder.bind_pipeline_compute(self.pipeline.clone()).unwrap();

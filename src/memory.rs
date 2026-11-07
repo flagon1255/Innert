@@ -1,11 +1,14 @@
 //! How the graphics card's memory is shared out, so the game never needs more than Windows gives
 //! it. Past that, Windows moves some of it out to the computer's memory: every frame gets slower,
-//! and the next piece of the world can't be sent over in time, so the world's seen to end.
+//! and the strips the world moves on by can't be sent over in time, so the world's seen to end.
 //!
 //! Chosen once at the start, from how much there is, see plan(): how wide the piece of the
-//! landscape kept around the player is, and so how far one sees, whether what the last piece was
-//! kept in is held on to for the next, and how big the light cache is. The render scale is kept
-//! within what's left as the game goes on, see App::render_room() in main.rs.
+//! landscape kept around the player is, and so how far one sees, how many bricks there's room for,
+//! and how big the light cache is. The render scale is kept within what's left as the game goes
+//! on, see App::render_room() in main.rs.
+//!
+//! There's only ever the one piece: it moves on over the landscape a strip at a time, see
+//! stream.rs, with room for a strip more each way for the next to come into.
 //!
 //! A quality preset asks for a width, see plan(): it gets as much of it as there's room for.
 
@@ -34,31 +37,41 @@ pub fn card_budget() -> Option<u64> {
     guard.flatten()
 }
 
-/// The widths the piece of the landscape kept around the player can be, in meters, widest first.
-/// One sees half of it, less RECENTER_M in main.rs, before things fade into the sky.
-pub const WIDTHS_M: &[u32] = &[224, 192, 176, 160, 144, 128];
+/// The widths the piece of the landscape kept around the player can be, in meters, widest first,
+/// each a whole number of strips, see stream.rs. One sees half of it, less a strip and
+/// FADE_SHORT_M in main.rs, before things fade into the sky.
+pub const WIDTHS_M: &[u32] = &[224, 208, 192, 176, 160, 144, 128];
 
 /// Stored bricks per column of voxels: pieces 224 m wide at 16 voxels a meter had 0.06 (765,000
 /// bricks) to 0.11 (1.45 million, with a fallen city under it). Planned for near the most.
 const BRICKS_PER_COLUMN: f64 = 0.1;
 
+/// How many bricks the GPU has room for to start with, in a piece of the landscape `width_m` wide
+/// at `vpm` voxels a meter: its own and the next strip's as it comes in, see BRICKS_PER_COLUMN,
+/// with room for holes blown in it
+pub fn piece_bricks(width_m: u32, vpm: u32) -> usize {
+    let columns = (width_m * vpm) as u64 * ((width_m + STRIP_M) * vpm) as u64;
+    (columns as f64 * BRICKS_PER_COLUMN) as usize + worldgen::SPARE_BRICKS
+}
+
+/// How wide the strips the piece moves on by are, see stream.rs
+const STRIP_M: u32 = crate::stream::STRIP_M;
+
 /// About how much of the graphics card's memory a piece of the landscape `width_m` wide and
-/// `height_m` tall takes at `vpm` voxels a meter: its bricks with room for holes blown in it, the
-/// map of them, the grass, and the water's ground, depth, flow and surface (the last two in half
-/// floats, see water.rs)
+/// `height_m` tall takes at `vpm` voxels a meter, with the room it has for a strip more each way:
+/// its bricks with room for holes blown in it, the map of them, the grass, and the water's ground,
+/// depth, flow and surface (the last two in half floats, see water.rs)
 pub fn piece_bytes(width_m: u32, height_m: u32, vpm: u32) -> u64 {
-    let side = (width_m * vpm) as u64;
-    let columns = side * side;
-    let grid = columns / 64 * (height_m * vpm / 8) as u64 * 4;
-    bricks_bytes(width_m, vpm) + grid + columns * 4 + columns * (4 + 4 + 8 + 8)
+    let side = ((width_m + STRIP_M) * vpm) as u64;
+    let room = side * side;
+    let grid = room / 64 * (height_m * vpm / 8) as u64 * 4;
+    bricks_bytes(width_m, vpm) + grid + room * 4 + room * (4 + 4 + 8 + 8)
 }
 
 /// About how many bytes the bricks of a piece of the landscape `width_m` wide at `vpm` voxels a
-/// meter take, with room for holes blown in it: all in one buffer, which traverse.comp sees whole
+/// meter take, see piece_bricks(): all in one buffer, which traverse.comp sees whole
 pub fn bricks_bytes(width_m: u32, vpm: u32) -> u64 {
-    let side = (width_m * vpm) as u64;
-    let bricks = (side as f64 * side as f64 * BRICKS_PER_COLUMN) as u64 + worldgen::SPARE_BRICKS as u64;
-    bricks * worldgen::BRICK_WORDS as u64 * 4
+    piece_bricks(width_m, vpm) as u64 * worldgen::BRICK_WORDS as u64 * 4
 }
 
 /// The most bricks a world can have room for on the graphics card: as many as a shader can see
@@ -69,10 +82,11 @@ pub fn most_bricks() -> usize {
 
 /// Whether the graphics card can hold a piece of the landscape `width_m` wide and `height_m` tall
 /// at `vpm` voxels a meter at all, however much memory it has: its bricks in a buffer a shader sees
-/// whole, its grid of them in a 3D image and its columns in 2D ones, see limits.rs
+/// whole, its grid of them in a 3D image and its columns in 2D ones, with room for a strip more
+/// each way, see limits.rs
 fn bindable(width_m: u32, height_m: u32, vpm: u32) -> bool {
     let limits = crate::limits::get();
-    let side = width_m * vpm;
+    let side = (width_m + STRIP_M) * vpm;
     bricks_bytes(width_m, vpm) <= limits.buffer_bytes() && side <= limits.image_2d && side / 8 <= limits.image_3d && height_m * vpm / 8 <= limits.image_3d
 }
 
@@ -101,10 +115,8 @@ const PLANNED: f64 = 0.85;
 pub struct Plan {
     /// How wide the piece of the landscape kept around the player is, in meters
     pub width_m: u32,
-    /// Whether what the last piece was kept in is held on to for the next to be built into,
-    /// which spares a frame of 20 ms or so each time the world moves on, see Spare in main.rs.
-    /// Without, two pieces are only there at once while moving on.
-    pub keep_spare: bool,
+    /// How many bricks the GPU has room for to start with, see piece_bricks()
+    pub bricks: usize,
     /// Entries in the light cache, see LIGHT_CACHE_WORDS in main.rs
     pub light_cache_entries: u64,
     /// What the graphics card has for the game, in bytes, if it could say
@@ -113,24 +125,23 @@ pub struct Plan {
 
 /// How the graphics card's memory is shared out, for `budget` bytes of it, None if unknown, with a
 /// piece of the landscape `wanted_m` wide wanted, `height_m` tall at `vpm` voxels a meter, and
-/// `render` bytes for what's rendered into at the usual render scale. The widest piece that fits
-/// twice, as moving on to the next takes, beside the rest, and no wider than wanted, or the
-/// narrowest there is. A spare's kept when there's room for two pieces: moving on takes that much
-/// anyway, and with it there's no frame held up making room for the next. When there isn't, the
-/// second's only there while moving on.
+/// `render` bytes for what's rendered into at the usual render scale: the widest piece that fits
+/// beside the rest, and no wider than wanted, or the narrowest there is. There's only ever the
+/// one, moving on a strip at a time.
 pub fn plan(budget: Option<u64>, wanted_m: u32, height_m: u32, vpm: u32, render: u64) -> Plan {
     // Nor wider than the card can hold at all, see bindable()
     let narrowest = *WIDTHS_M.last().unwrap();
+    let width = |width_m: u32, budget: Option<u64>| Plan { width_m, bricks: piece_bricks(width_m, vpm), light_cache_entries: light_cache_entries(budget.unwrap_or(u64::MAX)), budget };
     let Some(budget) = budget else {
         let width_m = if bindable(wanted_m, height_m, vpm) { wanted_m } else { WIDTHS_M.iter().copied().find(|&w| w <= wanted_m && bindable(w, height_m, vpm)).unwrap_or(narrowest) };
-        return Plan { width_m, keep_spare: true, light_cache_entries: light_cache_entries(u64::MAX), budget };
+        return width(width_m, None);
     };
     let light_cache_entries = light_cache_entries(budget);
     let fixed = OTHERS + render + light_cache_entries * crate::LIGHT_CACHE_WORDS * 4;
     let room = (budget as f64 * PLANNED) as u64;
-    let fits = |width: u32| 2 * piece_bytes(width, height_m, vpm) + fixed <= room;
+    let fits = |width: u32| piece_bytes(width, height_m, vpm) + fixed <= room;
     let width_m = WIDTHS_M.iter().copied().filter(|&w| w <= wanted_m && bindable(w, height_m, vpm)).find(|&w| fits(w)).unwrap_or(narrowest);
-    Plan { width_m, keep_spare: fits(width_m), light_cache_entries, budget: Some(budget) }
+    width(width_m, Some(budget))
 }
 
 #[cfg(test)]
@@ -147,13 +158,16 @@ mod tests {
         let four = plan(Some(3 * GB + GB / 2), 224, 64, 16, render);
         let two = plan(Some(2 * GB), 224, 64, 16, render);
         assert_eq!(six.width_m, 224);
-        assert!(six.keep_spare);
-        assert!(four.width_m < 224 && four.width_m >= 160, "{four:?}");
-        assert!(two.width_m < four.width_m, "{two:?}");
-        assert!(!two.keep_spare, "{two:?}");
+        // With only the one piece, a 4 GB card has room for all of it, and a 2 GB one for far more
+        // than the 128 m it had when moving on took two
+        assert_eq!(four.width_m, 224, "{four:?}");
+        assert!(two.width_m < four.width_m && two.width_m >= 160, "{two:?}");
         assert!(two.light_cache_entries < six.light_cache_entries);
-        // As it turned out on the 6 GB card told it had 2 GB: about 1.6 GB used, 2 GB while moving on
-        assert!(piece_bytes(two.width_m, 64, 16) + OTHERS + render + two.light_cache_entries * crate::LIGHT_CACHE_WORDS * 4 <= 3 * GB / 2, "{two:?}");
+        // Room for at least as many bricks as the most a piece has had, 0.11 a column
+        let columns = (two.width_m * 16) as usize * ((two.width_m + STRIP_M) * 16) as usize;
+        assert!(two.bricks as f64 >= columns as f64 * 0.1, "{two:?}");
+        // Every width moves on a whole number of strips
+        assert!(WIDTHS_M.iter().all(|w| w % STRIP_M == 0));
     }
 
     // On AMD's and Intel's cards, see limits::MIN, the widest piece fits however full of bricks

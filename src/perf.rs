@@ -287,6 +287,10 @@ pub struct Play {
     /// Which minute of the run it's been fighting with what weapon for
     pub minute: Option<u64>,
     pub rng: u32,
+    /// When `--script fly` last moved the camera on, in seconds into the run, and how far it's
+    /// flown, in meters
+    pub fly_last: f64,
+    pub flown: f64,
 }
 
 impl Play {
@@ -305,6 +309,8 @@ impl Play {
             next_shot: shot_every.unwrap_or(0.0),
             minute: None,
             rng: 0x9e37_79b9,
+            fly_last: 0.0,
+            flown: 0.0,
         }
     }
 
