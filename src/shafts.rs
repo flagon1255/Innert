@@ -84,7 +84,7 @@ const ANCHOR_REACH: i64 = 1 << 15;
 /// How far shafts reach, in meters: as far as traverse.comp gathers the haze
 const REACH_M: f32 = 160.0;
 /// How much dust there is in the air for so much haze, where it shows, see march() in shafts.comp
-const DUST_PER_HAZE: f32 = 7.0;
+const DUST_PER_HAZE: f32 = 10.0;
 /// How bright the screen space shafts are
 const LOW_GAIN: f32 = 0.25;
 
@@ -297,14 +297,20 @@ impl Shafts {
             self.map_key = None;
         }
         let sun = Vector3::new(frame.sun_direction[0], frame.sun_direction[1], frame.sun_direction[2]).cast::<f64>();
+        // Off, nothing's kept on the GPU, and only High needs the map. What's let go of is kept
+        // alive by the frames still using it till they're done.
+        let map_size = if self.quality == Quality::High { MAP_SIZE } else { 1 };
+        if self.map.0.extent()[0] != map_size {
+            self.map = storage_image(&self.memory_allocator, [map_size, map_size], Format::R32_UINT, ImageUsage::STORAGE | ImageUsage::TRANSFER_DST);
+            self.map_key = None;
+        }
+        if self.quality == Quality::Off {
+            self.targets = None;
+        }
         // No air, or no sun, to light up
         if self.quality == Quality::Off || frame.haze <= 0.0 || sun.z < -0.02 || self.strength <= 0.0 && self.quality == Quality::Low {
             self.history = false;
             return;
-        }
-        if self.quality == Quality::High && self.map.0.extent()[0] != MAP_SIZE {
-            self.map = storage_image(&self.memory_allocator, [MAP_SIZE, MAP_SIZE], Format::R32_UINT, ImageUsage::STORAGE | ImageUsage::TRANSFER_DST);
-            self.map_key = None;
         }
 
         let vpm = frame.voxels_per_meter.max(1);
