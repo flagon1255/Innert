@@ -3177,10 +3177,13 @@ fn plain_move(style: Style, staff: bool) -> (f64, Vec<(f64, Pose, bool)>) {
     (0.8, vec![(0.3, raised, false), (0.45, thrust.clone(), true), (0.7, thrust, false)])
 }
 
+/// How long a special attack's move takes, in seconds, and its keys, for animate()
+type SpecialMove = (f64, Vec<(f64, Pose, bool)>);
+
 /// The moves special attacks go through that special_move() leaves to others: everything cast, a
 /// bow's, crossbow's or gun's shots, bombs thrown, a battle staff's spells, and a few blades' that
 /// would otherwise only be waved about. None leaves it to special_move()'s own.
-fn own_special(special: Special, kind: Kind, style: Style) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+fn own_special(special: Special, kind: Kind, style: Style) -> Option<SpecialMove> {
     // A maul's moves are a hammer's, a battle staff's a scythe's, however they're asked for
     let style = moves_like(style);
     match (kind, style) {
@@ -3397,7 +3400,7 @@ fn bow_shot(length: f64, draw: f64, loose: f64, up: f64) -> (f64, Vec<(f64, Pose
 
 /// A bow's own moves for the special attacks that have none in special_move(): drawn up at the
 /// sky for what comes down, or level for what goes on ahead, and loosed
-fn bow_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+fn bow_special(special: Special) -> Option<SpecialMove> {
     Some(match special {
         Special::Rain => bow_shot(0.85, 0.24, 0.46, 0.9),
         Special::Meteors => bow_shot(0.95, 0.22, 0.54, 0.8),
@@ -3458,7 +3461,7 @@ fn gun_kicked(aimed: &Pose, kick: f64) -> Pose {
 /// A crossbow's or gun's own moves for its special attacks, but those special_move() has and the
 /// ones being made over elsewhere: levelled, raised to the sky or aimed down at the ground, and
 /// shot, kicking as hard as what leaves it
-fn gun_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+fn gun_special(special: Special) -> Option<SpecialMove> {
     Some(match special {
         // Braced, aimed long and steady, then kicking back hard enough to rock the shooter
         Special::Ballista => gun_shot(1.0, 0.14, 0.42, 0.02, 1.8),
@@ -3518,7 +3521,7 @@ fn gun_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
 
 /// Bombs' own moves for their special attacks but those special_move() has: lobbed overarm,
 /// tossed up high, or bowled out underarm
-fn bomb_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+fn bomb_special(special: Special) -> Option<SpecialMove> {
     let p = |hand: [f64; 3], along: [f64; 3]| pose(hand, along, [1.0, 0.0, 0.0]);
     Some(match special {
         // Drawn back over the shoulder and lobbed out at where it's aimed
@@ -3546,7 +3549,7 @@ fn bomb_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
 }
 
 /// A blade's own moves for the special attacks it would otherwise only wave about
-fn blade_special(special: Special, style: Style) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+fn blade_special(special: Special, style: Style) -> Option<SpecialMove> {
     let edge = [-1.0, 0.0, 0.0];
     Some(match special {
         // Raised overhead point up in both hands, held as the light gathers, then driven point
