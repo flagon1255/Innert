@@ -61,7 +61,7 @@ pub fn blast_stage(look: usize, t: f64) -> usize {
 
 /// Whether an explosion of `look` leaves smoke drifting off after it, rather than light just going
 pub fn leaves_smoke(look: usize) -> bool {
-    !matches!(element_of(look), Some(Element::Storm | Element::Arcane | Element::Holy))
+    !matches!(element_of(look), Some(Element::Storm | Element::Arcane | Element::Holy | Element::Void))
 }
 
 fn element_of(look: usize) -> Option<Element> {
@@ -409,6 +409,8 @@ fn blast(look: usize, stage: usize) -> (Model, Vector3<f64>) {
         3 if void => (0.84, 0.66),
         _ => (st.hollow, st.broken),
     };
+    // and its dark smoke after goes quickly, rather than hanging as a dark ball
+    let kept = st.kept * if void { [1.0, 1.0, 1.0, 1.0, 0.7, 0.55, 0.45, 0.35][stage] } else { 1.0 };
     if !(void && stage < 2) {
         let erosion = |p: [f64; 3]| fbm(scale(p, 3.1), seed ^ 0xe0de);
         let cut = if broken > 0.0 { quantile(erosion, swell, broken) } else { f64::MIN };
@@ -438,7 +440,7 @@ fn blast(look: usize, stage: usize) -> (Model, Vector3<f64>) {
                 return AIR;
             }
             let depth = r / surface;
-            if depth < hollow || erosion(p) < cut || (st.kept < 1.0 && unit(h) > st.kept) {
+            if depth < hollow || erosion(p) < cut || (kept < 1.0 && unit(h) > kept) {
                 return AIR;
             }
             if st.embers > 0.0 && unit(hash(h ^ 0x3c3)) < st.embers {
