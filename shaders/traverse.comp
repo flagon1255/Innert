@@ -630,11 +630,17 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
 
             bool solid_brick = (cell & SOLID_BRICK) != 0;
             ivec3 shift = ivec3(0);
-            bool found = (solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until;
-            if (!found) {
-                // Inner traversal over the voxels of this brick
-                vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
+            bool found = false;
+            // Inner traversal over the voxels of this brick, from the one the ray comes in at. The
+            // voxel's checked in one place only, as the shader has a copy of all this for every
+            // ray it traces.
+            vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
+            {
                 while (true) {
+                    if ((solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until) {
+                        found = true;
+                        break;
+                    }
                     steps++;
 
                     if (t.x < t.y) {
@@ -666,10 +672,6 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
                     // Stepping below 0 wraps around, which also leaves the brick
                     if (any(notEqual(coord / 8, uvec3(brick))))
                     break;
-                    if ((solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until) {
-                        found = true;
-                        break;
-                    }
                 }
             }
 
@@ -853,12 +855,19 @@ bool trace(vec3 origin, vec3 dir, bool through_water, float max_distance, out Hi
 bool traceWorld(vec3 origin, vec3 dir, bool through_water, float max_distance, out Hit hit, inout uint steps) {
     float start = 0;
     float ignore_until = 0;
-    if (insideNear(origin)) {
-        float s = pc.near_origin.w;
-        if (traverse(NEAR, toNear(origin), dir, through_water, max_distance * s, 0, hit, steps)) {
-            hit.t /= s;
+    uint level = insideNear(origin) ? NEAR : MAIN;
+    // Both levels go through the one call in this loop, so the shader holds only one copy of the
+    // traversal for every ray it traces rather than two
+    while (true) {
+        float s = level == NEAR ? pc.near_origin.w : 1;
+        vec3 from = level == NEAR ? toNear(origin) : origin + dir * start;
+        float reach = level == NEAR ? max_distance * s : max_distance - start;
+        if (traverse(level, from, dir, through_water, reach, ignore_until, hit, steps)) {
+            hit.t = level == NEAR ? hit.t / s : hit.t + start;
             return true;
         }
+        if (level == MAIN)
+        return false;
         vec3 inv_dir = clamp(1 / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
         vec3 lo = pc.near_origin.xyz;
         vec3 hi = lo + vec3(pc.near_size.xyz) / s;
@@ -869,12 +878,8 @@ bool traceWorld(vec3 origin, vec3 dir, bool through_water, float max_distance, o
         // The coarser ground at the edge of the box can stick up above the finer ground the ray
         // just passed over, so don't let it stop the ray right where it comes out
         ignore_until = 1.5;
+        level = MAIN;
     }
-    if (traverse(MAIN, origin + dir * start, dir, through_water, max_distance - start, ignore_until, hit, steps)) {
-        hit.t += start;
-        return true;
-    }
-    return false;
 }
 
 // A hit's position in voxels of its own level
@@ -1020,6 +1025,98 @@ vec3 localLight(vec3 surface, vec3 normal, uint which) {
         total += lit;
     }
     return total;
+}
+
+// Which lights directLight() looks at besides those, none of them
+const uint NO_LIGHTS = 3;
+
+// All the light straight on a point of a surface, with every shadow ray it takes traced through
+// the one call to trace() in its loop, so the shader holds one copy of it here rather than one for
+// every kind of light. If `want_sun`, how much of the sun reaches it towards `towards` (0 or 1,
+// the cosine left out), if `want_through`, the same for sunlight getting through a leaf from
+// behind, starting at `through_from`, and the light from the flames, crystals and spells around
+// it (see localLight()), `which` of them, those that stay put and those that move apart.
+void directLight(vec3 surface, vec3 normal, bool want_sun, vec3 towards, bool want_through, vec3 through_from, uint which,
+                 out float reaches, out float through, out vec3 still, out vec3 moving) {
+    reaches = 0;
+    through = 0;
+    still = vec3(0);
+    moving = vec3(0);
+    bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
+    int count = which == NO_LIGHTS ? 0 : int(pc.haze.z);
+    float vpm = float(max(pc.world_size.w, 1u));
+    // -2 is the sun, -1 the sun through a leaf, then the lights
+    for (int q = -2; q < count; q++) {
+        vec3 o = surface;
+        vec3 d = towards;
+        float reach = FLT_MAX;
+        vec3 lit = vec3(0);
+        bool is_moving = false;
+        if (q == -2) {
+            if (!want_sun)
+            continue;
+            if (!shadows) {
+                reaches = 1;
+                continue;
+            }
+        } else if (q == -1) {
+            if (!want_through)
+            continue;
+            if (!shadows) {
+                through = 1;
+                continue;
+            }
+            o = through_from;
+        } else {
+            Light light = lights[q];
+            is_moving = light.color.w > 0.5;
+            if ((which == STILL_LIGHTS && is_moving) || (which == MOVING_LIGHTS && !is_moving))
+            continue;
+            vec3 to = light.position.xyz - surface;
+            float dist = length(to);
+            if (dist > light.position.w || dist < 1e-3)
+            continue;
+            d = to / dist;
+            if (light.color.r < 0) {
+                float under = to.z / (GLOW_FADE * vpm);
+                if (under > 0) {
+                    vec3 glow = -light.color.rgb * (0.6 + 0.4 * dot(normal, d)) * (1 - smoothstep(0.4, 1.0, dist / light.position.w)) * smoothstep(0.0, 1.0, under);
+                    if (is_moving)
+                    moving += glow;
+                    else
+                    still += glow;
+                }
+                continue;
+            }
+            float n_dot_l = dot(normal, d);
+            if (n_dot_l <= 0)
+            continue;
+            float meters = dist / vpm;
+            float fade = 1 - smoothstep(0.5, 1.0, dist / light.position.w);
+            lit = light.color.rgb * n_dot_l * fade / (0.3 + meters * meters);
+            // Too faint to show: not worth a ray to see if it's in shadow
+            if (max(lit.r, max(lit.g, lit.b)) < 0.02)
+            continue;
+            // Stopping short of the light, so the candle it's on doesn't shade it
+            reach = dist - 0.35 * vpm;
+        }
+        bool blocked = false;
+        if (shadows) {
+            Hit blocker;
+            uint steps = 0;
+            blocked = trace(o, d, true, reach, blocker, steps);
+        }
+        if (q == -2)
+        reaches = blocked ? 0 : 1;
+        else if (q == -1)
+        through = blocked ? 0 : 1;
+        else if (!blocked) {
+            if (is_moving)
+            moving += lit;
+            else
+            still += lit;
+        }
+    }
 }
 
 float vertexAO(bool side1, bool side2, bool corner) {
@@ -1263,31 +1360,33 @@ float halton(uint i, uint base);
 // worked out by every pixel that sees it, so it's never left unlit, and after that by one of them
 // every DIRECT_INTERVAL frames, towards a different point on the sun each time, which blended
 // together soften the edges of shadows.
-void cachedDirect(uint e, Hit hit, vec3 face, vec3 normal, bool leaf, uint interval, out float sun, out vec3 still, out float through) {
+// This is in two halves, so the shadow rays between them can go along with the others a pixel
+// traces, see directLight(). The first reads what's kept, and says whether this pixel is to work
+// it out again now and towards which point on the sun; `last` is for the second half.
+bool cachedDirectBegin(uint e, uint interval, out uint last, out float sun, out vec3 still, out float through, out vec3 towards) {
     sun = 0;
     still = vec3(0);
     through = 0;
-    uint last = cache[e + 6];
+    towards = pc.sun_direction.xyz;
+    last = cache[e + 6];
     if (last != 0) {
         sun = uintBitsToFloat(cache[e + 7]);
         still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
         through = uintBitsToFloat(cache[e + 11]);
         // Only the pixel that gets to mark it done works it out again
         if (pc.frame + 1 - last < interval || atomicCompSwap(cache[e + 6], last, pc.frame + 1) != last)
-        return;
-    }
-
-    vec3 towards = pc.sun_direction.xyz;
-    if (last != 0) {
+        return false;
         // Each face goes round the points in its own order, so neighbors don't all step together
         uint i = pc.frame / interval % 64 + 1;
         uint offset = hash(e);
         towards = sunPoint(fract(vec2(halton(i, 2), halton(i, 3)) + vec2(offset & 0xFFFFu, offset >> 16) / 65536.0));
     }
-    float reaches = sunOn(normal, 1) > 0 && sunReaches(face, towards) ? 1 : 0;
-    vec3 light = localLight(face, normal, STILL_LIGHTS);
-    float shining = leaf && sunBehind(hit) ? leafThrough(hit, towards) : 0;
+    return true;
+}
 
+// The second half: blends what was just worked out, `reaches`, `light` from the lights that stay
+// put and `shining` through a leaf, into what's kept, and keeps it
+void cachedDirectEnd(uint e, uint last, float reaches, vec3 light, float shining, inout float sun, inout vec3 still, inout float through) {
     float blend = last == 0 ? 1 : DIRECT_BLEND;
     sun = mix(sun, reaches, blend);
     still = mix(still, light, blend);
@@ -1384,43 +1483,72 @@ float waterFresnel(vec3 dir, vec3 normal) {
     return 0.02 + 0.98 * pow(1 - max(dot(-dir, normal), 0), 5);
 }
 
-// The sea outside the world: the same water over a flat sandy bottom
-vec3 shadeOpenSea(vec3 dir, vec3 pos) {
+// The sea outside the world seen down through its surface: the same water over a flat sandy bottom
+vec3 openSeaBelow(vec3 dir) {
     vec3 up = vec3(0, 0, 1);
-    vec3 reflection = shadeSecondary(pos + up * 1e-3, reflect(dir, up), true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)));
-
     vec3 refracted = refract(dir, up, 1 / 1.33);
     float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
     vec3 transmittance = waterTransmittance(depth / max(-refracted.z, 0.05));
     vec3 sand = pow(PALETTE[MAT_SAND], vec3(2.2));
     vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6) * transmittance;
-    vec3 refraction = seabed * transmittance + waterScatter() * (1 - transmittance);
-
-    return mix(refraction, reflection, waterFresnel(dir, up));
+    return seabed * transmittance + waterScatter() * (1 - transmittance);
 }
 
-// Clear water: a reflection on top of the refracted view of whatever is under it
-vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal) {
+// Every kind of water is shaded here, so the shader holds only one copy of the rays it takes.
+// Clear water: a reflection on top of the refracted view of whatever is under it, or with
+// `open_sea`, the sea outside the world over its sandy bottom. Where `foam` is more than a little,
+// the water voxel `voxel` is churned up white over that, right through where it's `falling`.
+vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float foam, bool falling) {
     float fresnel = waterFresnel(dir, normal);
     vec3 reflection = shadeSecondary(pos + normal * 1e-3, reflect(dir, normal), true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)));
     vec3 scatter = waterScatter();
 
-    vec3 below = pos - normal * 1e-3;
-    vec3 refracted = refract(dir, normal, 1 / 1.33);
     Hit hit;
-    uint steps = 0;
-    vec3 refraction = scatter;
-    if (trace(below, refracted, true, FLT_MAX, hit, steps)) {
+    bool bottom = false;
+    vec3 refraction = open_sea ? openSeaBelow(dir) : scatter;
+    if (!open_sea) {
+        uint steps = 0;
+        bottom = trace(pos - normal * 1e-3, refract(dir, normal, 1 / 1.33), true, FLT_MAX, hit, steps);
+    }
+    // The light straight on the bottom seen through it, and on the white water, both through the
+    // one call in this loop
+    bool white = foam > 0.01;
+    vec3 on_bottom = vec3(0);
+    vec3 on_foam = vec3(0);
+    uint todo = (bottom ? 1u : 0u) | (white ? 2u : 0u);
+    while (todo != 0) {
+        bool is_bottom = (todo & 1u) != 0;
+        todo &= todo - 1;
+        Hit h = is_bottom ? hit : voxel;
+        float reaches, through;
+        vec3 still, moving;
+        directLight(faceCenter(h), h.normal, sunOn(h.normal, 1) > 0, pc.sun_direction.xyz, false, vec3(0), ALL_LIGHTS, reaches, through, still, moving);
+        vec3 light = sunColor() * sunOn(h.normal, reaches) + still + moving;
+        if (is_bottom)
+        on_bottom = light;
+        else
+        on_foam = light;
+    }
+    if (bottom) {
         uint material = hitMaterial(hit);
         vec3 albedo = hitAlbedo(hit, material);
         vec3 transmittance = waterTransmittance(hit.t);
-        vec3 face = faceCenter(hit);
         // Sunlight reaching the bottom crossed about as much water as the view does
-        vec3 lit = (albedo * (sunColor() * sunLight(face, hit.normal) + ambientLight(hit.normal) * 0.6 + localLight(face, hit.normal, ALL_LIGHTS)) + emission(material)) * transmittance;
+        vec3 lit = (albedo * (on_bottom + ambientLight(hit.normal) * 0.6) + emission(material)) * transmittance;
         refraction = lit * transmittance + scatter * (1 - transmittance);
     }
 
-    return mix(refraction, reflection, fresnel);
+    vec3 color = mix(refraction, reflection, fresnel);
+    if (white) {
+        float flow = foamFlow(voxel);
+        // Darker streaks in falling water are where it's less churned up, so they're bluer
+        vec3 albedo = pow(mix(vec3(0.55, 0.75, 0.85), PALETTE[MAT_FOAM], clamp(flow - 0.4, 0, 1)), vec3(2.2)) * min(flow, 1);
+        vec3 lit = albedo * (on_foam + ambientLight(voxel.normal));
+        // Falling water is churned white right through. Fast water on the surface just has white
+        // on top, with the clear water showing through.
+        color = mix(color, lit, falling ? 1.0 : foam * 0.75);
+    }
+    return color;
 }
 
 // The water in a column of the main world fills whole voxels, from the top of the ground up to
@@ -1902,27 +2030,6 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     return color;
 }
 
-// Water voxels: clear water with reflections and the bottom showing through, or where it's flowing
-// fast or falling, churned up white
-vec3 shadeWaterVoxel(vec3 origin, vec3 dir, WaterHit water) {
-    g_dynamic = true;
-    vec3 pos = origin + dir * water.t;
-    Hit voxel = water.voxel;
-    vec3 face = voxel.normal.z > 0.5 && water.foam < 1 ? waterTilt(ivec2(voxel.coord.xy)) : voxel.normal;
-    vec3 color = shadeWater(dir, pos, face);
-    if (water.foam > 0.01) {
-        float flow = foamFlow(voxel);
-        // Darker streaks in falling water are where it's less churned up, so they're bluer
-        vec3 albedo = pow(mix(vec3(0.55, 0.75, 0.85), PALETTE[MAT_FOAM], clamp(flow - 0.4, 0, 1)), vec3(2.2)) * min(flow, 1);
-        vec3 face_center = faceCenter(voxel);
-        vec3 lit = albedo * (sunColor() * sunLight(face_center, voxel.normal) + ambientLight(voxel.normal) + localLight(face_center, voxel.normal, ALL_LIGHTS));
-        // Falling water is churned white right through. Fast water on the surface just has white
-        // on top, with the clear water showing through.
-        color = mix(color, lit, water.falling ? 1.0 : water.foam * 0.75);
-    }
-    return color;
-}
-
 vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide) {
     Hit hit;
     // Past where everything's faded into the sky there's no need to look any further
@@ -1946,44 +2053,63 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         return shadeGrass(origin, dir, grass, guide);
     }
 
+    // Any kind of water is shaded through the one call to shadeWater() below: water voxels, water
+    // in the world's voxels, and the open sea outside it
+    bool any_water = false;
+    bool open_sea = false;
+    vec3 water_pos = vec3(0);
+    vec3 water_normal = vec3(0, 0, 1);
+    float sea_level = pc.sun_direction.w;
+    vec3 pos = origin + dir * hit.t;
+    vec3 normal = hit.normal;
+    uint material = 0;
     if (wet) {
         distance = water.t;
         // The denoiser leaves water alone
         guide = vec4(1, 1, 1, 7);
-        return shadeWaterVoxel(origin, dir, water);
-    }
-
-    if (!solid) {
-        float sea_level = pc.sun_direction.w;
+        // Water voxels: clear water with reflections and the bottom showing through, or where it's
+        // flowing fast or falling, churned up white
+        g_dynamic = true;
+        any_water = true;
+        water_pos = origin + dir * water.t;
+        Hit voxel = water.voxel;
+        water_normal = voxel.normal.z > 0.5 && water.foam < 1 ? waterTilt(ivec2(voxel.coord.xy)) : voxel.normal;
+    } else if (!solid) {
         float t = (sea_level - origin.z) / dir.z;
         if (sea_level > 0 && dir.z < 0 && t > 0) {
             distance = t;
-            return shadeOpenSea(dir, origin + dir * t);
+            any_water = true;
+            open_sea = true;
+            water_pos = origin + dir * t;
+        } else {
+            distance = -1;
+            guide.w = 6;
+            return skyColor(dir) + sunDisc(dir);
         }
-        distance = -1;
-        guide.w = 6;
-        return skyColor(dir) + sunDisc(dir);
-    }
-    distance = hit.t;
+    } else {
+        distance = hit.t;
+        material = hitMaterial(hit);
 
-    vec3 pos = origin + dir * hit.t;
-    vec3 normal = hit.normal;
-    uint material = hitMaterial(hit);
-
-    // Seen through the side of the world, the water at its edge continues the open sea
-    bool world_edge = hit.level == MAIN
-        && (any(equal(hit.coord.xy, uvec2(0))) || any(equal(hit.coord.xy, pc.world_size.xy - 1)));
-    float sea_level = pc.sun_direction.w;
-    if (material == MAT_WATER && world_edge && normal.z < 0.5 && sea_level > 0 && dir.z < 0) {
-        float t = (sea_level - origin.z) / dir.z;
-        distance = t;
-        return shadeOpenSea(dir, origin + dir * t);
+        // Seen through the side of the world, the water at its edge continues the open sea
+        bool world_edge = hit.level == MAIN
+            && (any(equal(hit.coord.xy, uvec2(0))) || any(equal(hit.coord.xy, pc.world_size.xy - 1)));
+        if (material == MAT_WATER && world_edge && normal.z < 0.5 && sea_level > 0 && dir.z < 0) {
+            float t = (sea_level - origin.z) / dir.z;
+            distance = t;
+            any_water = true;
+            open_sea = true;
+            water_pos = origin + dir * t;
+        } else if (material == MAT_WATER && hit.level != ANIMAL) {
+            any_water = true;
+            water_pos = pos;
+            water_normal = normal;
+        }
     }
+    if (any_water)
+    return shadeWater(dir, water_pos, water_normal, open_sea, water.voxel, wet ? water.foam : 0, wet && water.falling);
 
     vec3 color;
-    if (material == MAT_WATER && hit.level != ANIMAL) {
-        color = shadeWater(dir, pos, normal);
-    } else {
+    {
         vec3 albedo = hitAlbedo(hit, material);
         vec3 glow = tintAnimal(hit, albedo) + emission(material);
         if (material == MAT_FOAM && hit.level != ANIMAL) {
@@ -2022,46 +2148,81 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         float sun;
         vec3 local;
         float through = 0;
-        if (shadows && e != NO_ENTRY) {
-            float reaches;
-            vec3 still;
-            cachedDirect(e, hit, face, normal, leaf, far_face ? FAR_DIRECT_INTERVAL : DIRECT_INTERVAL, reaches, still, through);
+        bool cached = shadows && e != NO_ENTRY;
+        uint last = 0;
+        float reaches = 0;
+        vec3 still = vec3(0);
+        vec3 towards = pc.sun_direction.xyz;
+        bool fresh = cached ? cachedDirectBegin(e, far_face ? FAR_DIRECT_INTERVAL : DIRECT_INTERVAL, last, reaches, still, through, towards) : true;
+        // Spells and the like move too fast to keep their light, so theirs is worked out every frame
+        float new_reaches, new_through;
+        vec3 new_still, new_moving;
+        directLight(face, normal, fresh && sunOn(normal, 1) > 0, towards, fresh && leaf && sunBehind(hit), voxelPoint(hit, 0.5 + towards * 0.9),
+            fresh ? ALL_LIGHTS : MOVING_LIGHTS, new_reaches, new_through, new_still, new_moving);
+        if (cached) {
+            if (fresh)
+            cachedDirectEnd(e, last, new_reaches, new_still, new_through, reaches, still, through);
             sun = sunOn(normal, reaches);
-            // Spells and the like move too fast to keep their light
-            local = still + localLight(face, normal, MOVING_LIGHTS);
+            local = still + new_moving;
             // Facing away from the sun says nothing about whether it shines round about
             if (far_face)
             g_far_sun = sunOn(normal, 1) > 0 ? reaches : 0.5;
         } else {
-            sun = sunLight(face, normal);
-            local = localLight(face, normal, ALL_LIGHTS);
-            if (leaf && sunBehind(hit))
-            through = leafThrough(hit, pc.sun_direction.xyz);
+            sun = sunOn(normal, new_reaches);
+            local = new_still + new_moving;
+            through = new_through;
         }
 
-        vec3 indirect;
+        vec3 indirect = vec3(0);
+        float vpm = float(max(pc.world_size.w, 1u));
+        bool metal = material >= MAT_STEEL && material <= MAT_BRONZE;
+        bool bounce = false;
+        vec3 bounce_dir = vec3(0);
+        uint samples = 0;
         // What's held moves with the camera, so it'd only show the noise of one bounce a frame:
         // it gets steady light from the sky and ground instead
         if (gi && !held) {
-            float reach = BOUNCE_DISTANCE * float(max(pc.world_size.w, 1u));
             if (e != NO_ENTRY) {
                 // Light bounced onto this face, gathered over many frames. Faces new to the cache
                 // take a sample from every pixel that sees them, so they fill in fast, and after
                 // that only the odd one. Far off, after the first, only some of the pixels do.
-                uint samples;
                 indirect = cachedLight(e, samples);
                 uint wanted = far_face ? FAR_CACHE_SAMPLES : CACHE_SAMPLES;
                 bool filling = samples < wanted && (!far_face || samples == 0 || random(seed) < FAR_SAMPLE_CHANCE);
                 if (filling || random(seed) < 1.0 / 64.0) {
-                    vec3 light = shadeSecondary(face, outward(cosineDirection(normal, seed), hit.normal), false, reach);
-                    cacheAdd(e, light);
-                    indirect = (indirect * float(samples) + light) / float(samples + 1);
+                    bounce = true;
+                    bounce_dir = outward(cosineDirection(normal, seed), hit.normal);
                 }
             } else {
                 // One random diffuse bounce per face per frame, averaging frames smooths out the noise
                 uint face_seed = faceSeed(hit);
-                indirect = shadeSecondary(face, outward(cosineDirection(normal, face_seed), hit.normal), false, reach);
+                bounce = true;
+                bounce_dir = outward(cosineDirection(normal, face_seed), hit.normal);
             }
+        }
+        // The bounce, and what metal mirrors, both go through the one call to shadeSecondary() in
+        // this loop, so the shader holds only one copy of it
+        vec3 r = reflect(dir, normal);
+        vec3 around = vec3(0);
+        uint todo = (bounce ? 1u : 0u) | (metal ? 2u : 0u);
+        while (todo != 0) {
+            bool is_bounce = (todo & 1u) != 0;
+            todo &= todo - 1;
+            // What metal mirrors is lit as it is, not taken to be as sunlit as this face
+            if (!is_bounce)
+            g_far_sun = -1;
+            vec3 light = shadeSecondary(is_bounce ? face : face + hit.normal * 0.05, is_bounce ? bounce_dir : outward(r, hit.normal), false,
+                (is_bounce ? BOUNCE_DISTANCE : REFLECTION_DISTANCE) * vpm);
+            if (!is_bounce) {
+                around = light;
+            } else if (e != NO_ENTRY) {
+                cacheAdd(e, light);
+                indirect = (indirect * float(samples) + light) / float(samples + 1);
+            } else {
+                indirect = light;
+            }
+        }
+        if (gi && !held) {
             indirect *= mix(1, ao, 0.5);
         } else if (held) {
             // Greyer than the sky, as the world round it would bounce plenty of warmer light
@@ -2075,14 +2236,11 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         // Metal is darker than it looks, as most of its shine is reflection: it glints where it
         // catches the sun, and mirrors what's around it
         vec3 shine = vec3(0);
-        if (material >= MAT_STEEL && material <= MAT_BRONZE) {
-            vec3 r = reflect(dir, normal);
+        if (metal) {
             // Light metal reflects much more than dark, and colored metal in its own color
             float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
             vec3 tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
             float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
-            float reach = REFLECTION_DISTANCE * float(max(pc.world_size.w, 1u));
-            vec3 around = shadeSecondary(face + hit.normal * 0.05, outward(r, hit.normal), false, reach);
             shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.3) * 0.6 * ao);
             albedo *= 0.6;
         }
@@ -2130,6 +2288,7 @@ void main() {
         imageStore(sunMap, pixelCoord, vec4(blocked_at));
         return;
     }
+
 
     ivec2 imageSize = imageSize(targetImage);
 
