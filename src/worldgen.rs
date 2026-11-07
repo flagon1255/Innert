@@ -3,6 +3,16 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod camps;
+mod castles;
+mod towns;
+mod trees;
+mod undercity;
+
+pub use camps::{Camp, CampKind, camp_spots};
+#[allow(unused_imports)]
+pub use undercity::Sunken;
+
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
 pub mod material {
     pub const AIR: u8 = 0;
@@ -101,6 +111,9 @@ pub mod material {
     pub const GLOW_VOID: u8 = 84;
     pub const GLOW_BLOOD: u8 = 85;
     pub const GLOW_HOLY: u8 = 86;
+    // The sunlit tips of fresh green crowns, and the shadowy depths of red ones
+    pub const LEAVES_LIME: u8 = 87;
+    pub const LEAVES_CRIMSON: u8 = 88;
 }
 
 use material::*;
@@ -124,6 +137,8 @@ pub fn is_passable(material: u8) -> bool {
             | LEAVES_YELLOW
             | LEAVES_ORANGE
             | LEAVES_RED
+            | LEAVES_LIME
+            | LEAVES_CRIMSON
             | PINE
             | FERN
             | BLOSSOM
@@ -145,6 +160,81 @@ const BRICK_VOXELS: usize = 512;
 /// u32 words per stored brick: 16 words of occupancy bits, then 128 words of materials (one byte per voxel).
 /// Has to match BRICK_WORDS in shaders\traverse.comp.
 pub const BRICK_WORDS: usize = 16 + 128;
+
+/// A quick hash for brick cells, numbers well enough spread already: the usual one is slow for
+/// the thousands of lookups blowing a hole takes
+#[derive(Default)]
+struct CellHasher(u64);
+
+impl std::hash::Hasher for CellHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.0 = (n as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+/// Where each brick cell being changed is in a list of them
+type Cells = std::collections::HashMap<usize, usize, std::hash::BuildHasherDefault<CellHasher>>;
+/// The bricks World::carve() has unpacked, by where they are: in a box of them round the hole by
+/// their place in it, anywhere else by their cell. None for a brick that's empty.
+struct Found {
+    lo: [i64; 3],
+    dims: [i64; 3],
+    slots: Vec<u32>,
+    far: Cells,
+}
+
+impl Found {
+    const UNSEEN: u32 = u32::MAX;
+    const EMPTY: u32 = u32::MAX - 1;
+
+    /// `lo` to `hi` in bricks, `hi` not included
+    fn new(lo: [i64; 3], hi: [i64; 3]) -> Self {
+        let dims = [0, 1, 2].map(|i| (hi[i] - lo[i]).max(1));
+        Found { lo, dims, slots: vec![Self::UNSEEN; (dims[0] * dims[1] * dims[2]) as usize], far: Cells::default() }
+    }
+
+    fn slot(&self, at: [i64; 3]) -> Option<usize> {
+        let p = [0, 1, 2].map(|i| at[i] - self.lo[i]);
+        (0..3).all(|i| p[i] >= 0 && p[i] < self.dims[i]).then(|| (p[0] + (p[1] + p[2] * self.dims[1]) * self.dims[0]) as usize)
+    }
+
+    /// Whether brick `at`, at `cell`, has been seen, and if it has, which it is
+    fn get(&self, at: [i64; 3], cell: usize) -> Option<Option<usize>> {
+        let value = match self.slot(at) {
+            Some(i) => self.slots[i],
+            None => *self.far.get(&cell)? as u32,
+        };
+        match value {
+            Self::UNSEEN => None,
+            Self::EMPTY => Some(None),
+            k => Some(Some(k as usize)),
+        }
+    }
+
+    fn insert(&mut self, at: [i64; 3], cell: usize, k: Option<usize>) {
+        let value = k.map_or(Self::EMPTY, |k| k as u32);
+        match self.slot(at) {
+            Some(i) => self.slots[i] = value,
+            None => {
+                self.far.insert(cell, value as usize);
+            }
+        }
+    }
+}
+
+/// Bricks a world keeps room for beyond those it starts with, for holes blown in solid ground:
+/// a solid brick with a hole in it has to be stored
+pub const SPARE_BRICKS: usize = 131072;
 /// Grid cells with this bit set are filled with one material, kept in the low byte.
 /// Has to match SOLID_BRICK in shaders\traverse.comp.
 pub const SOLID_BRICK: u32 = 1 << 31;
@@ -163,7 +253,7 @@ const BRICK_INDEX: u32 = FOLIAGE_BRICK - 1;
 pub fn sways(material: u8) -> bool {
     matches!(
         material,
-        LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | BLOSSOM | WILLOW | PALM_LEAF | PINE | FERN | VINE | GRASS_TIP
+        LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | LEAVES_LIME | LEAVES_CRIMSON | BLOSSOM | WILLOW | PALM_LEAF | PINE | FERN | VINE | GRASS_TIP
             | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK
     )
 }
@@ -174,7 +264,8 @@ pub struct World {
     /// Where this world's first voxel is, in voxels of its own size from the corner of the
     /// whole landscape. Zero unless it's a piece of one, like the fine detail around the player.
     pub origin: [i64; 3],
-    /// One cell per brick, indexed by x + y * bricks.x + z * bricks.x * bricks.y.
+    /// One cell per brick, indexed by x + y * bricks.x + z * bricks.x * bricks.y, of the bricks
+    /// there's room for along x and y, see `phys`; find a brick's with cell().
     /// EMPTY_BRICK | distance is empty, SOLID_BRICK | material is filled,
     /// anything else is 1 + the index of a stored brick.
     pub brick_grid: Vec<u32>,
@@ -184,20 +275,233 @@ pub struct World {
     /// Height of the water surface in voxels, which carries on as an endless sea outside the world.
     /// None for worlds without water.
     pub sea_level: Option<f32>,
-    /// Where grass grows, for the triangle grass in the shader: one value per column of voxels
-    /// (x + y * size.x), with the ground's height in quarter voxels in bits 0-15 and how dense
-    /// the grass is in bits 16-23 (0 where none grows). None for worlds without grass.
+    /// Where grass grows, for the triangle grass in the shader: one value per column of voxels,
+    /// see column(), with the ground's height in quarter voxels in bits 0-15 and how dense the
+    /// grass is in bits 16-23 (0 where none grows). None for worlds without grass.
     pub grass: Option<Vec<u32>>,
     /// Where the water starts out, for the simulation in src\water.rs. Water isn't in the voxels.
     /// None for worlds without water.
     pub water: Option<WaterMap>,
+    /// How many columns of voxels along x and y the brick grid and the maps of grass and water
+    /// have room for: as many as the world's size, but for the world that moves on over the
+    /// landscape a strip at a time a strip more, see World::window(). Its columns are each kept at
+    /// where they are in the whole landscape modulo this, so as the world moves on nothing has to
+    /// be moved, only what comes in put in where what's gone was.
+    pub phys: [u32; 2],
+    /// Where in that room column 0 of the world is, along x and y
+    pub wrap: [u32; 2],
+    /// For the world that moves on, which of its bricks are in use, see Pages
+    pub pages: Option<Pages>,
 }
 
-/// One value per column of voxels (x + y * size.x), in voxels: the top of the ground, and the
+/// One value per column of voxels, see World::column(), in voxels: the top of the ground, and the
 /// top of the water on it, 0 where it's dry
 pub struct WaterMap {
     pub ground: Vec<f32>,
     pub surface: Vec<f32>,
+}
+
+/// Bricks in each page of the world that moves on, see Pages: each square of the landscape a strip
+/// across has pages of its own, see Strip::new(), with half one left over on average
+pub const PAGE_BRICKS: usize = 512;
+
+/// The bricks of the world that moves on are kept in pages of PAGE_BRICKS, each strip that comes in
+/// in pages of its own wherever some are free, and a page is free again once none of its bricks
+/// are in use any more, as the strips they're in go, see World::release()
+#[derive(Default)]
+pub struct Pages {
+    /// What's in each page, BRICK_WORDS a brick: nothing for those not in use
+    data: Vec<Box<[u32]>>,
+    /// How many of each page's bricks are in use
+    live: Vec<u32>,
+    /// Pages none of whose bricks are in use any more, but which the frames still being drawn may
+    /// have: see take_released(), and PagePool::give_back() once those are done
+    released: Vec<u32>,
+    /// The page the bricks of holes blown and stains splashed go in, and how many it has
+    carving: Option<(u32, u32)>,
+    /// Where pages are taken from, shared with the strips being built, see Strip::new()
+    pub pool: Arc<Mutex<PagePool>>,
+}
+
+/// The pages of the world that moves on that are free to fill, see Pages: taken by the strips being
+/// built as they come in, and by holes blown, given back once nothing's drawn with them any more
+#[derive(Default)]
+pub struct PagePool {
+    free: Vec<u32>,
+    /// How many pages there are, free or not
+    count: u32,
+}
+
+impl PagePool {
+    /// `n` pages to fill, made anew if there aren't enough free
+    pub fn take(&mut self, n: usize) -> Vec<u32> {
+        (0..n)
+            .map(|_| {
+                self.free.pop().unwrap_or_else(|| {
+                    self.count += 1;
+                    self.count - 1
+                })
+            })
+            .collect()
+    }
+
+    /// Pages nothing's drawn with any more, to fill again
+    pub fn give_back(&mut self, pages: impl IntoIterator<Item = u32>) {
+        self.free.extend(pages);
+    }
+
+    /// How many pages there are, so how many bricks the GPU has to have room for, PAGE_BRICKS each
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+}
+
+impl Pages {
+    /// Has room for page `page`, all of it zeros if it's new
+    fn ensure(&mut self, page: u32) {
+        let p = page as usize;
+        self.reserve(page);
+        if self.data[p].is_empty() {
+            self.data[p] = vec![0u32; PAGE_BRICKS * BRICK_WORDS].into_boxed_slice();
+        }
+    }
+
+    /// Has a place for page `page`, empty if it's new
+    fn reserve(&mut self, page: u32) {
+        let p = page as usize;
+        if self.data.len() <= p {
+            self.data.resize_with(p + 1, || Box::new([]));
+            self.live.resize(p + 1, 0);
+        }
+    }
+
+    /// One fewer of `page`'s bricks in use
+    fn drop_one(&mut self, page: u32) {
+        let live = &mut self.live[page as usize];
+        *live -= 1;
+        if *live == 0 && self.carving.is_none_or(|(p, _)| p != page) {
+            self.released.push(page);
+        }
+    }
+}
+
+/// A strip of the landscape built to go into the world that moves on, its bricks in pages of their
+/// own in it, see World::install()
+pub struct Strip {
+    /// Its first column in the whole landscape, and how many columns it is across
+    pub origin: [i64; 2],
+    pub size: [u32; 2],
+    /// Its brick grid, counted from its first brick, with the bricks' indices in the world
+    pub cells: Vec<u32>,
+    /// The pages its bricks are in: which, how many of each are in use, and what's in each
+    pub pages: Vec<(u32, u32, Box<[u32]>)>,
+    /// Its maps of grass and water, see World
+    pub grass: Vec<u32>,
+    pub ground: Vec<f32>,
+    pub surface: Vec<f32>,
+}
+
+impl Strip {
+    /// `world`, built on its own, made ready to go into the world that moves on: its empty bricks
+    /// skip no further than its edges, see keep_skips_inside(), and its bricks go in pages of the
+    /// world's from `pool`, those of each square of the landscape `tile` columns across in pages of
+    /// their own. The world lets go of a strip that wide at a time, along x or y, so its pages are
+    /// all free again once it has: with the bricks of a whole piece of the landscape in the same
+    /// pages, none of them were till all of it had gone, and the world needed twice the room.
+    pub fn new(mut world: World, pool: &Mutex<PagePool>, tile: u32) -> Self {
+        world.keep_skips_inside();
+        let n = world.bricks.len() / BRICK_WORDS;
+        let [bx, by, bz] = world.size.map(|v| (v / 8) as usize);
+        let tile = (tile as i64 / 8).max(1);
+        let first = [0, 1].map(|i| world.origin[i].div_euclid(8).div_euclid(tile));
+        let tiles_x = ((world.origin[0].div_euclid(8) + bx as i64 - 1).div_euclid(tile) - first[0] + 1) as usize;
+        let tiles_y = ((world.origin[1].div_euclid(8) + by as i64 - 1).div_euclid(tile) - first[1] + 1) as usize;
+        let tile_x: Vec<usize> = (0..bx).map(|x| ((world.origin[0].div_euclid(8) + x as i64).div_euclid(tile) - first[0]) as usize).collect();
+        let tile_y: Vec<usize> = (0..by).map(|y| ((world.origin[1].div_euclid(8) + y as i64).div_euclid(tile) - first[1]) as usize).collect();
+        // Each stored brick's square, and where it is among those of its square
+        let mut counts = vec![0u32; tiles_x * tiles_y];
+        let mut place = vec![(0u32, 0u32); n];
+        for z in 0..bz {
+            for y in 0..by {
+                for x in 0..bx {
+                    let v = world.brick_grid[x + (y + z * by) * bx];
+                    if v & (SOLID_BRICK | EMPTY_BRICK) == 0 {
+                        let t = tile_x[x] + tile_y[y] * tiles_x;
+                        place[((v & BRICK_INDEX) - 1) as usize] = (t as u32, counts[t]);
+                        counts[t] += 1;
+                    }
+                }
+            }
+        }
+        // Each square's first page among those taken
+        let mut starts = Vec::with_capacity(counts.len());
+        let mut total = 0;
+        for &count in &counts {
+            starts.push(total);
+            total += (count as usize).div_ceil(PAGE_BRICKS);
+        }
+        let ids = pool.lock().unwrap_or_else(|e| e.into_inner()).take(total);
+        let mut pages: Vec<(u32, u32, Box<[u32]>)> = ids.iter().map(|&id| (id, 0, vec![0u32; PAGE_BRICKS * BRICK_WORDS].into_boxed_slice())).collect();
+        let at = |local: usize| {
+            let (t, k) = place[local];
+            (starts[t as usize] + k as usize / PAGE_BRICKS, k as usize % PAGE_BRICKS)
+        };
+        for local in 0..n {
+            let (page, slot) = at(local);
+            pages[page].1 += 1;
+            pages[page].2[slot * BRICK_WORDS..(slot + 1) * BRICK_WORDS].copy_from_slice(&world.bricks[local * BRICK_WORDS..(local + 1) * BRICK_WORDS]);
+        }
+        let cells = world
+            .brick_grid
+            .iter()
+            .map(|&v| {
+                if v & (SOLID_BRICK | EMPTY_BRICK) != 0 {
+                    return v;
+                }
+                let (page, slot) = at(((v & BRICK_INDEX) - 1) as usize);
+                let index = ids[page] as usize * PAGE_BRICKS + slot;
+                (index as u32 + 1) | (v & FOLIAGE_BRICK)
+            })
+            .collect();
+        let map = world.water.take().unwrap_or(WaterMap { ground: Vec::new(), surface: Vec::new() });
+        Strip {
+            origin: [world.origin[0], world.origin[1]],
+            size: [world.size[0], world.size[1]],
+            cells,
+            pages,
+            grass: world.grass.take().unwrap_or_default(),
+            ground: map.ground,
+            surface: map.surface,
+        }
+    }
+
+}
+
+/// Where the `n` columns, or bricks, from `lo` of the whole landscape along one way are kept in room
+/// for `room` of them, `n` at most: in one run, or two where they go round, each where in the room
+/// it starts, how far into the `n` it is, and how many
+pub fn runs(lo: i64, n: u32, room: u32) -> impl Iterator<Item = (usize, usize, usize)> {
+    let (first, n, room) = (lo.rem_euclid(room as i64) as usize, n as usize, room as usize);
+    let a = n.min(room - first);
+    [(first, 0, a), (0, a, n - a)].into_iter().filter(|r| r.2 > 0)
+}
+
+/// Putting a strip into the world that moves on, a few layers of its bricks at a time so no frame's
+/// held up, see World::install()
+pub struct Installing {
+    pub strip: Strip,
+    /// The first layer of bricks not put in yet, and whether its pages and maps are in
+    next_z: u32,
+    started: bool,
+}
+
+/// Letting go of a part of the world that moves on, a few layers at a time, see World::release()
+pub struct Releasing {
+    /// Columns of the whole landscape, from and to
+    lo: [i64; 2],
+    hi: [i64; 2],
+    next_z: u32,
 }
 
 impl World {
@@ -219,11 +523,97 @@ impl World {
             sea_level: None,
             grass: None,
             water: None,
+            phys: [size[0], size[1]],
+            wrap: [0, 0],
+            pages: None,
         }
     }
 
+    /// A world `size` voxels across that moves on over the landscape a strip at a time, with room
+    /// for `strip` columns more along x and y for the next strip to come in, see install(). Empty
+    /// at `origin` till the strips of it are put in.
+    pub fn window(size: [u32; 3], strip: u32, origin: [i64; 2], voxels_per_meter: u32, sea_level: Option<f32>) -> Self {
+        let phys = [size[0] + strip, size[1] + strip];
+        let cells = (phys[0] / 8) as usize * (phys[1] / 8) as usize * (size[2] / 8) as usize;
+        let columns = phys[0] as usize * phys[1] as usize;
+        let mut world = World {
+            size,
+            origin: [origin[0], origin[1], 0],
+            brick_grid: vec![EMPTY_BRICK | 1; cells],
+            bricks: Vec::new(),
+            voxels_per_meter,
+            sea_level,
+            grass: Some(vec![0; columns]),
+            water: Some(WaterMap { ground: vec![0.0; columns], surface: vec![0.0; columns] }),
+            phys,
+            wrap: [0, 0],
+            pages: Some(Pages::default()),
+        };
+        world.move_to(origin);
+        world
+    }
+
+    /// Moves the world on over the landscape so its corner's at `origin`, see window(): nothing
+    /// in it moves, but the columns it's made of are counted from another one
+    pub fn move_to(&mut self, origin: [i64; 2]) {
+        self.origin[0] = origin[0];
+        self.origin[1] = origin[1];
+        self.wrap = [0, 1].map(|i| origin[i].rem_euclid(self.phys[i] as i64) as u32);
+    }
+
+    /// The cell in the brick grid of brick `b`, counted from the world's first, which has to be in it
+    #[inline]
+    pub fn cell(&self, b: [i64; 3]) -> usize {
+        let room = [self.phys[0] as i64 / 8, self.phys[1] as i64 / 8];
+        let at = [0, 1].map(|i| {
+            let p = b[i] + self.wrap[i] as i64 / 8;
+            if p >= room[i] { p - room[i] } else { p }
+        });
+        (at[0] + (at[1] + b[2] * room[1]) * room[0]) as usize
+    }
+
+    /// Where column `x`, `y`, counted from the world's first, which has to be in it, is in the maps
+    /// of grass and water
+    #[inline]
+    pub fn column(&self, x: i64, y: i64) -> usize {
+        let (px, py) = (self.phys[0] as i64, self.phys[1] as i64);
+        let x = x + self.wrap[0] as i64;
+        let y = y + self.wrap[1] as i64;
+        let x = if x >= px { x - px } else { x };
+        let y = if y >= py { y - py } else { y };
+        (x + y * px) as usize
+    }
+
     pub fn brick_count(&self) -> usize {
-        self.bricks.len() / BRICK_WORDS
+        match &self.pages {
+            Some(pages) => pages.live.iter().map(|&n| n as usize).sum(),
+            None => self.bricks.len() / BRICK_WORDS,
+        }
+    }
+
+    /// How many bricks there's room for, on the CPU and so on the GPU: those it has, and for the
+    /// world that moves on, every page so far
+    pub fn brick_room(&self) -> usize {
+        match &self.pages {
+            Some(pages) => pages.data.len() * PAGE_BRICKS,
+            None => self.bricks.len() / BRICK_WORDS,
+        }
+    }
+
+    /// How much of the computer's memory its bricks take, in bytes
+    pub fn brick_bytes(&self) -> usize {
+        match &self.pages {
+            Some(pages) => pages.data.iter().map(|d| d.len()).sum::<usize>() * 4,
+            None => self.bricks.capacity() * 4,
+        }
+    }
+
+    /// Lets go of where the water's surface starts out, once the water's been made from it, see
+    /// Water::new() in water.rs: tens of megabytes kept for nothing
+    pub fn forget_water_surface(&mut self) {
+        if let Some(water) = &mut self.water {
+            water.surface = Vec::new();
+        }
     }
 
     /// Material of a voxel, counted from this world's first voxel. AIR outside the world.
@@ -232,8 +622,7 @@ impl World {
         if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
             return AIR;
         }
-        let (bx, by) = (sx / 8, sy / 8);
-        let cell = self.brick_grid[(x / 8 + (y / 8 + (z / 8) * by) * bx) as usize];
+        let cell = self.brick_grid[self.cell([x / 8, y / 8, z / 8])];
         if cell & EMPTY_BRICK != 0 {
             return AIR;
         }
@@ -241,7 +630,218 @@ impl World {
             return cell as u8;
         }
         let i = (x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize;
-        (self.bricks[((cell & BRICK_INDEX) - 1) as usize * BRICK_WORDS + 16 + i / 4] >> ((i % 4) * 8)) as u8
+        (self.brick(((cell & BRICK_INDEX) - 1) as usize)[16 + i / 4] >> ((i % 4) * 8)) as u8
+    }
+
+    /// The words of stored brick `index`
+    #[inline]
+    fn brick(&self, index: usize) -> &[u32] {
+        match &self.pages {
+            Some(pages) => {
+                let at = (index % PAGE_BRICKS) * BRICK_WORDS;
+                &pages.data[index / PAGE_BRICKS][at..at + BRICK_WORDS]
+            }
+            None => &self.bricks[index * BRICK_WORDS..(index + 1) * BRICK_WORDS],
+        }
+    }
+
+    fn brick_mut(&mut self, index: usize) -> &mut [u32] {
+        match &mut self.pages {
+            Some(pages) => {
+                let at = (index % PAGE_BRICKS) * BRICK_WORDS;
+                &mut pages.data[index / PAGE_BRICKS][at..at + BRICK_WORDS]
+            }
+            None => &mut self.bricks[index * BRICK_WORDS..(index + 1) * BRICK_WORDS],
+        }
+    }
+
+    /// Stores a brick of `materials` that aren't all the same, for a hole blown or a stain
+    /// splashed, returning its cell: at the end of the bricks, or in the world that moves on in
+    /// the page they go in, see Pages
+    fn new_brick(&mut self, materials: &[u8; BRICK_VOXELS]) -> u32 {
+        let Some(pages) = &mut self.pages else {
+            return push_brick(materials, &mut self.bricks);
+        };
+        let (page, used) = match pages.carving {
+            Some((page, used)) if (used as usize) < PAGE_BRICKS => (page, used),
+            full => {
+                let page = pages.pool.lock().unwrap_or_else(|e| e.into_inner()).take(1)[0];
+                pages.carving = Some((page, 0));
+                // The last, full now, goes once none of it's in use, like any other
+                if let Some((old, _)) = full
+                    && pages.live[old as usize] == 0
+                {
+                    pages.released.push(old);
+                }
+                pages.ensure(page);
+                pages.live[page as usize] = 0;
+                (page, 0)
+            }
+        };
+        pages.carving = Some((page, used + 1));
+        pages.live[page as usize] += 1;
+        let index = page as usize * PAGE_BRICKS + used as usize;
+        let brick = self.brick_mut(index);
+        brick.fill(0);
+        for (i, &m) in materials.iter().enumerate() {
+            if m != AIR {
+                brick[i / 32] |= 1 << (i % 32);
+            }
+            brick[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
+        }
+        let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
+        (index as u32 + 1) | foliage
+    }
+
+    /// Stored brick `index` isn't in use any more
+    fn drop_brick(&mut self, index: usize) {
+        if let Some(pages) = &mut self.pages {
+            pages.drop_one((index / PAGE_BRICKS) as u32);
+        }
+    }
+
+    /// The pages of the world that moves on none of whose bricks are in use any more since last
+    /// asked, to give back to its pool once the frames drawn with them are done
+    pub fn take_released(&mut self) -> Vec<u32> {
+        self.pages.as_mut().map_or(Vec::new(), |p| std::mem::take(&mut p.released))
+    }
+
+    /// What's in page `page` of the world that moves on, to send to the GPU, if it's in use
+    pub fn page(&self, page: u32) -> Option<&[u32]> {
+        let data = self.pages.as_ref()?.data.get(page as usize)?;
+        (!data.is_empty()).then_some(&data[..])
+    }
+
+    /// Where the pages of the world that moves on come from, for the strips built to go in it
+    pub fn page_pool(&self) -> Option<Arc<Mutex<PagePool>>> {
+        self.pages.as_ref().map(|p| p.pool.clone())
+    }
+
+    /// For a strip of the landscape built on its own: past its edges is what's put in beside it
+    /// later, which it didn't know about, so its empty bricks skip no further than those, see
+    /// EMPTY_BRICK
+    pub fn keep_skips_inside(&mut self) {
+        let [bx, by, bz] = self.size.map(|n| n as usize / 8);
+        for z in 0..bz {
+            for y in 0..by {
+                let room_y = (y + 1).min(by - y);
+                for x in 0..bx {
+                    let cell = &mut self.brick_grid[x + (y + z * by) * bx];
+                    if *cell & EMPTY_BRICK != 0 {
+                        let room = (x + 1).min(bx - x).min(room_y) as u32;
+                        *cell = EMPTY_BRICK | (*cell & 0xFFFF).min(room).max(1);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Starts putting `strip` into the world that moves on, at where it is in the whole landscape
+    /// modulo the room there is, which has to have been let go of, see release(): its bricks are
+    /// in pages of their own already, see Strip::new(). It's done by install_step().
+    pub fn install(strip: Strip) -> Installing {
+        Installing { strip, next_z: 0, started: false }
+    }
+
+    /// Puts up to `layers` more layers of bricks of a strip in, or the first time only its pages
+    /// and its maps of grass and water. Whether it's all in.
+    pub fn install_step(&mut self, installing: &mut Installing, layers: u32) -> bool {
+        let strip = &mut installing.strip;
+        let [sx, sy] = strip.size.map(|n| n as i64);
+        if !installing.started {
+            installing.started = true;
+            // What was in its pages before goes with the strip once it's in, to be let go of
+            // aside: hundreds of them, each a few hundred kilobytes, took milliseconds to free
+            let pages = self.pages.as_mut().expect("only the world that moves on has strips put in");
+            for (id, live, data) in &mut strip.pages {
+                pages.reserve(*id);
+                std::mem::swap(&mut pages.data[*id as usize], data);
+                pages.live[*id as usize] = *live;
+                *live = 0;
+            }
+            // A row at a time, in one run or two where it goes round the room: hundreds of
+            // thousands of columns, each worked out on its own took milliseconds
+            fn put<T: Copy>(into: &mut [T], from: &[T], nothing: T) {
+                if from.len() == into.len() { into.copy_from_slice(from) } else { into.fill(nothing) }
+            }
+            let px = self.phys[0] as usize;
+            let xs: Vec<(usize, usize, usize)> = runs(strip.origin[0], sx as u32, self.phys[0]).collect();
+            for y in 0..sy {
+                let row = (strip.origin[1] + y).rem_euclid(self.phys[1] as i64) as usize * px;
+                for &(at, along, n) in &xs {
+                    let first = y as usize * sx as usize + along;
+                    let (to, from) = (row + at..row + at + n, first..first + n);
+                    if let Some(grass) = &mut self.grass {
+                        put(&mut grass[to.clone()], strip.grass.get(from.clone()).unwrap_or(&[]), 0);
+                    }
+                    if let Some(water) = &mut self.water {
+                        put(&mut water.ground[to.clone()], strip.ground.get(from.clone()).unwrap_or(&[]), 0.0);
+                        if !water.surface.is_empty() {
+                            put(&mut water.surface[to], strip.surface.get(from).unwrap_or(&[]), 0.0);
+                        }
+                    }
+                }
+            }
+            // Its layers from the next time on, that being a few milliseconds' worth
+            return false;
+        }
+        let [bx, by, bz] = [sx / 8, sy / 8, (self.size[2] / 8) as i64];
+        let first = [strip.origin[0].div_euclid(8), strip.origin[1].div_euclid(8)];
+        let room = [self.phys[0] as usize / 8, self.phys[1] as usize / 8];
+        let xs: Vec<(usize, usize, usize)> = runs(first[0], bx as u32, room[0] as u32).collect();
+        let end = (installing.next_z as i64 + layers as i64).min(bz);
+        for z in installing.next_z as i64..end {
+            for y in 0..by {
+                let row = (z as usize * room[1] + (first[1] + y).rem_euclid(room[1] as i64) as usize) * room[0];
+                let from = ((y + z * by) * bx) as usize;
+                for &(at, along, n) in &xs {
+                    for k in 0..n {
+                        let cell = row + at + k;
+                        // Anything still there's let go of, should it not have been: its page would
+                        // never be free again
+                        let old = self.brick_grid[cell];
+                        if old & (SOLID_BRICK | EMPTY_BRICK) == 0 {
+                            self.drop_brick(((old & BRICK_INDEX) - 1) as usize);
+                        }
+                        self.brick_grid[cell] = strip.cells[from + along + k];
+                    }
+                }
+            }
+        }
+        installing.next_z = end as u32;
+        end == bz
+    }
+
+    /// Starts letting go of the columns of the whole landscape from `lo` to `hi`, brick aligned, of
+    /// the world that moves on, as that part of it's to have another strip of the landscape put
+    /// in: none of its bricks are in use any more. It's done by release_step().
+    pub fn release(lo: [i64; 2], hi: [i64; 2]) -> Releasing {
+        Releasing { lo, hi, next_z: 0 }
+    }
+
+    /// Lets go of up to `layers` more layers of bricks of a part of the world. Whether that's all.
+    pub fn release_step(&mut self, releasing: &mut Releasing, layers: u32) -> bool {
+        let bz = (self.size[2] / 8) as i64;
+        let (lo, hi) = (releasing.lo.map(|v| v.div_euclid(8)), releasing.hi.map(|v| v.div_euclid(8)));
+        let end = (releasing.next_z as i64 + layers as i64).min(bz);
+        let room = [self.phys[0] as usize / 8, self.phys[1] as usize / 8];
+        let xs: Vec<(usize, usize, usize)> = runs(lo[0], (hi[0] - lo[0]) as u32, room[0] as u32).collect();
+        for z in releasing.next_z as i64..end {
+            for y in lo[1]..hi[1] {
+                let row = (z as usize * room[1] + y.rem_euclid(room[1] as i64) as usize) * room[0];
+                for &(at, _, n) in &xs {
+                    for cell in row + at..row + at + n {
+                        let value = self.brick_grid[cell];
+                        if value & (SOLID_BRICK | EMPTY_BRICK) == 0 {
+                            self.drop_brick(((value & BRICK_INDEX) - 1) as usize);
+                        }
+                        self.brick_grid[cell] = EMPTY_BRICK | 1;
+                    }
+                }
+            }
+        }
+        releasing.next_z = end as u32;
+        end == bz
     }
 
     /// Blows a hole in the world: everything within `radius` voxels of `center`, in voxels of this
@@ -249,66 +849,173 @@ impl World {
     /// with it. Returns the cells of the bricks that changed, and some of what was blown out, for
     /// debris.
     pub fn carve(&mut self, center: [f64; 3], radius: f64) -> (Vec<usize>, Vec<u8>) {
+        self.carve_in(center, radius, None)
+    }
+
+    /// The same, but only the columns from `clip`'s first to its second, if it says, change: for a
+    /// hole blown while a strip that comes into the world was being built, blown in just that once
+    /// it's in, see stream.rs
+    pub fn carve_in(&mut self, center: [f64; 3], radius: f64, clip: Option<([i64; 2], [i64; 2])>) -> (Vec<usize>, Vec<u8>) {
         let [sx, sy, sz] = self.size.map(i64::from);
         let (bx, by) = (sx / 8, sy / 8);
+        // The ragged edge goes by where each voxel is in the whole landscape, so it's the same
+        // in every piece of the world the hole's blown in again
+        let o = self.origin;
         let mut dirty: Vec<(usize, [u8; BRICK_VOXELS])> = Vec::new();
-        let mut found: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
         let mut blown = Vec::new();
 
+        let r = radius.ceil() as i64 + 1;
+        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        // The bricks round the hole, those things fall into it from and those over it, are found
+        // by where they are in a box of them, which is much quicker than looking them up
+        let lo = [cx - r - 2, cy - r - 2, cz - r - 2].map(|v| v.div_euclid(8));
+        let hi = [cx + r + 2, cy + r + 2, cz + r + 48].map(|v| v.div_euclid(8) + 1);
+        let mut found = Found::new(lo, hi);
+
         // The bricks being changed, unpacked. Empty ones have nothing to blow away.
-        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut std::collections::HashMap<usize, usize>, x: i64, y: i64, z: i64| -> Option<usize> {
+        let brick = |world: &World, dirty: &mut Vec<(usize, [u8; BRICK_VOXELS])>, found: &mut Found, x: i64, y: i64, z: i64| -> Option<usize> {
             if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
                 return None;
             }
-            let cell = (x / 8 + (y / 8 + (z / 8) * by) * bx) as usize;
-            if let Some(&k) = found.get(&cell) {
-                return Some(k);
+            let at = [x / 8, y / 8, z / 8];
+            let cell = world.cell(at);
+            if let Some(k) = found.get(at, cell) {
+                return k;
             }
             let value = world.brick_grid[cell];
             if value & EMPTY_BRICK != 0 {
+                found.insert(at, cell, None);
                 return None;
             }
             let mut materials = [AIR; BRICK_VOXELS];
             if value & SOLID_BRICK != 0 {
                 materials = [value as u8; BRICK_VOXELS];
             } else {
-                let start = ((value & BRICK_INDEX) - 1) as usize * BRICK_WORDS + 16;
+                let words = world.brick(((value & BRICK_INDEX) - 1) as usize);
                 for (i, m) in materials.iter_mut().enumerate() {
-                    *m = (world.bricks[start + i / 4] >> ((i % 4) * 8)) as u8;
+                    *m = (words[16 + i / 4] >> ((i % 4) * 8)) as u8;
                 }
             }
             dirty.push((cell, materials));
-            found.insert(cell, dirty.len() - 1);
+            found.insert(at, cell, Some(dirty.len() - 1));
             Some(dirty.len() - 1)
         };
         let local = |x: i64, y: i64, z: i64| (x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize;
-
-        let r = radius.ceil() as i64 + 1;
-        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        // The columns a hole was blown in, for what's loose above to fall into, by where they are
+        // in the square round it
+        let side = 2 * r + 1;
+        let mut holed_at = vec![false; (side * side) as usize];
+        let (inner, outer) = ((radius * 0.82).powi(2), (radius * 1.12).powi(2));
+        // What flies out is picked from all through the hole, so from the top of the ground as
+        // much as from deep down: about one in so many of the voxels, about half of it solid
+        let stride = ((2.1 * radius.powi(3) / 60.0) as u32).max(1);
         for z in cz - r..=cz + r {
             for y in cy - r..=cy + r {
                 for x in cx - r..=cx + r {
-                    let d = ((x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2)).sqrt();
-                    let ragged = 0.82 + 0.3 * unit(hash3(x as u32, y as u32, z as u32)) as f64;
-                    if d > radius * ragged || self.material_at(x, y, z) == AIR {
+                    let d2 = (x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2);
+                    if d2 > outer {
                         continue;
+                    }
+                    // Ragged at the edge: only there does each voxel get a say
+                    if d2 > inner {
+                        let ragged = 0.82 + 0.3 * unit(hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32)) as f64;
+                        if d2 > (radius * ragged).powi(2) {
+                            continue;
+                        }
                     }
                     let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
                         continue;
                     };
                     let i = local(x, y, z);
-                    if blown.len() < 64 && hash3(x as u32, y as u32, z as u32 ^ 0xb1) % 6 == 0 {
+                    if dirty[k].1[i] == AIR {
+                        continue;
+                    }
+                    if blown.len() < 80 && hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32 ^ 0xb1) % stride == 0 {
                         blown.push(dirty[k].1[i]);
                     }
                     dirty[k].1[i] = AIR;
+                    holed_at[((x - cx + r) + (y - cy + r) * side) as usize] = true;
+                }
+            }
+        }
+        let holed: Vec<(i64, i64)> = (0..side * side).filter(|&i| holed_at[i as usize]).map(|i| (cx - r + i % side, cy - r + i / side)).collect();
+
+        // Sand, gravel and snow with nothing under them any more slide down into the hole, each
+        // column of them settling onto whatever's below. Not into bricks that were empty to begin
+        // with: rays skip those, so what fell there wouldn't show. Only if there's some of it in
+        // the bricks the hole was blown in or those over them, as there mostly isn't.
+        let loose = |m: u8| matches!(m, SAND | GRAVEL | SNOW);
+        let mut any_loose = dirty.iter().any(|(_, materials)| materials.iter().any(|&m| loose(m)));
+        for bz in (cz + r).div_euclid(8)..=(cz + r + 24).div_euclid(8) {
+            for by_ in (cy - r).div_euclid(8)..=(cy + r).div_euclid(8) {
+                for bx_ in (cx - r).div_euclid(8)..=(cx + r).div_euclid(8) {
+                    if any_loose || bx_ < 0 || by_ < 0 || bz < 0 || bx_ >= bx || by_ >= by || bz >= sz / 8 {
+                        continue;
+                    }
+                    let value = self.brick_grid[self.cell([bx_, by_, bz])];
+                    any_loose = if value & EMPTY_BRICK != 0 {
+                        false
+                    } else if value & SOLID_BRICK != 0 {
+                        loose(value as u8)
+                    } else {
+                        let words = self.brick(((value & BRICK_INDEX) - 1) as usize);
+                        words[16..16 + BRICK_VOXELS / 4].iter().any(|&w| (0..4).any(|j| loose((w >> (j * 8)) as u8)))
+                    };
+                }
+            }
+        }
+        let columns = if any_loose { holed.clone() } else { Vec::new() };
+        for (x, y) in columns {
+            {
+                // Where in this column the next loose voxel would come to rest, if anywhere
+                let mut rest: Option<i64> = None;
+                let mut open = 0;
+                let mut z = cz - r - 1;
+                while z < sz && (z <= cz + r || open < 16) {
+                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
+                        // Nothing stored here: nothing to fall, nowhere to fall to
+                        rest = None;
+                        open += 8;
+                        z = (z / 8 + 1) * 8;
+                        continue;
+                    };
+                    let i = local(x, y, z);
+                    let m = dirty[k].1[i];
+                    if m == AIR {
+                        rest = rest.or(Some(z));
+                        open += 1;
+                    } else if loose(m) {
+                        open = 0;
+                        if let Some(to) = rest.filter(|&to| to < z) {
+                            if let Some(j) = brick(self, &mut dirty, &mut found, x, y, to) {
+                                dirty[j].1[local(x, y, to)] = m;
+                                dirty[k].1[i] = AIR;
+                                if blown.len() < 64 && hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32 ^ 0x5a) % 9 == 0 {
+                                    blown.push(m);
+                                }
+                                rest = Some(to + 1);
+                            }
+                        }
+                    } else {
+                        // Held up by this
+                        rest = None;
+                        open = 0;
+                    }
+                    z += 1;
                 }
             }
         }
 
-        // Grass and flowers with nothing under them any more fall in
+        // Grass and flowers with nothing under them any more fall in: only round where the hole is
         let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL);
-        for y in cy - r - 1..=cy + r + 1 {
-            for x in cx - r - 1..=cx + r + 1 {
+        let mut near: Vec<(i64, i64)> = holed.iter().flat_map(|&(x, y)| [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]).collect();
+        // Grass only grows on the top of the ground, so only where the hole broke through to the
+        // open air above does anything need to fall
+        near.retain(|&(x, y)| self.material_at(x, y, cz + r + 1) == AIR);
+        near.sort_unstable();
+        near.dedup();
+        for (x, y) in near {
+            {
                 for z in cz - r..=cz + r + 12 {
                     let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
                         continue;
@@ -327,40 +1034,16 @@ impl World {
             }
         }
 
-        // Pack the changed bricks back up, in place where they were stored already
-        let mut changed = Vec::new();
-        for (cell, materials) in dirty {
-            let old = self.brick_grid[cell];
-            let first = materials[0];
-            let value = if materials.iter().all(|&m| m == first) {
-                if first == AIR { EMPTY_BRICK | 1 } else { SOLID_BRICK | first as u32 }
-            } else if old & (SOLID_BRICK | EMPTY_BRICK) == 0 {
-                let index = ((old & BRICK_INDEX) - 1) as usize;
-                let words = &mut self.bricks[index * BRICK_WORDS..(index + 1) * BRICK_WORDS];
-                words.fill(0);
-                for (i, &m) in materials.iter().enumerate() {
-                    if m != AIR {
-                        words[i / 32] |= 1 << (i % 32);
-                    }
-                    words[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
-                }
-                let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
-                (index as u32 + 1) | foliage
-            } else {
-                push_brick(&materials, &mut self.bricks)
-            };
-            if value != old {
-                self.brick_grid[cell] = value;
-            }
-            changed.push(cell);
-        }
+        let dirty = self.clipped(dirty, clip);
+        let changed = self.store(dirty);
 
         // Water can flow down into the hole
         if self.water.is_some() {
             let mut lowered = Vec::new();
-            for y in (cy - r).max(0)..(cy + r + 1).min(sy) {
-                for x in (cx - r).max(0)..(cx + r + 1).min(sx) {
-                    let i = (x + y * sx) as usize;
+            let (lo, hi) = clip.unwrap_or(([0, 0], [sx, sy]));
+            for y in (cy - r).max(lo[1].max(0))..(cy + r + 1).min(hi[1].min(sy)) {
+                for x in (cx - r).max(lo[0].max(0))..(cx + r + 1).min(hi[0].min(sx)) {
+                    let i = self.column(x, y);
                     let old = self.water.as_ref().unwrap().ground[i] as i64;
                     let top = (0..old.min(sz)).rev().find(|&z| !is_passable(self.material_at(x, y, z))).map_or(0, |z| z + 1);
                     if top < old {
@@ -376,6 +1059,140 @@ impl World {
         (changed, blown)
     }
 
+    /// Of bricks changed by carve() or paint(), those in the columns from `clip`'s first to its
+    /// second, if it says, brick aligned
+    fn clipped(&self, dirty: Vec<(usize, [u8; BRICK_VOXELS])>, clip: Option<([i64; 2], [i64; 2])>) -> Vec<(usize, [u8; BRICK_VOXELS])> {
+        let Some((lo, hi)) = clip else {
+            return dirty;
+        };
+        let room = [self.phys[0] as i64 / 8, self.phys[1] as i64 / 8];
+        dirty
+            .into_iter()
+            .filter(|(cell, _)| {
+                let at = self.cell_at(*cell);
+                (0..2).all(|i| {
+                    let b = (at[i] as i64 - self.wrap[i] as i64 / 8).rem_euclid(room[i]);
+                    b >= lo[i].div_euclid(8) && b < hi[i].div_euclid(8)
+                })
+            })
+            .collect()
+    }
+
+    /// Packs bricks changed by carve() or paint() back up, each in place where it was stored
+    /// already if it was. Returns their cells.
+    fn store(&mut self, dirty: Vec<(usize, [u8; BRICK_VOXELS])>) -> Vec<usize> {
+        let mut changed = Vec::new();
+        for (cell, materials) in dirty {
+            let old = self.brick_grid[cell];
+            let first = materials[0];
+            let stored = old & (SOLID_BRICK | EMPTY_BRICK) == 0;
+            let value = if materials.iter().all(|&m| m == first) {
+                // What it was kept in isn't any more
+                if stored {
+                    self.drop_brick(((old & BRICK_INDEX) - 1) as usize);
+                }
+                if first == AIR { EMPTY_BRICK | 1 } else { SOLID_BRICK | first as u32 }
+            } else if stored {
+                let index = ((old & BRICK_INDEX) - 1) as usize;
+                let words = self.brick_mut(index);
+                words.fill(0);
+                for (i, &m) in materials.iter().enumerate() {
+                    if m != AIR {
+                        words[i / 32] |= 1 << (i % 32);
+                    }
+                    words[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
+                }
+                let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
+                (index as u32 + 1) | foliage
+            } else {
+                self.new_brick(&materials)
+            };
+            if value != old {
+                self.brick_grid[cell] = value;
+            }
+            changed.push(cell);
+        }
+        changed
+    }
+
+    /// Stains the ground and walls round `center` with `material`, in a ragged splotch `radius`
+    /// voxels round: a scorch mark, frost, a pool of venom or blood. Only what's open to the air
+    /// takes it. With `burn`, grass and flowers there are burnt away. Returns the cells of the
+    /// bricks that changed.
+    pub fn paint(&mut self, center: [f64; 3], radius: f64, material: u8, burn: bool) -> Vec<usize> {
+        self.paint_in(center, radius, material, burn, None)
+    }
+
+    /// The same, but only in the columns `clip` says, if it does, see carve_in()
+    pub fn paint_in(&mut self, center: [f64; 3], radius: f64, material: u8, burn: bool, clip: Option<([i64; 2], [i64; 2])>) -> Vec<usize> {
+        let [sx, sy, sz] = self.size.map(i64::from);
+        // Spattered by where each voxel is in the whole landscape, see carve()
+        let o = self.origin;
+        let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL | FERN);
+        let r = radius.ceil() as i64 + 1;
+        let [cx, cy, cz] = center.map(|v| v.floor() as i64);
+        let mut edits: Vec<([i64; 3], u8)> = Vec::new();
+        for z in cz - r..=cz + r {
+            for y in cy - r..=cy + r {
+                for x in cx - r..=cx + r {
+                    let d = ((x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2)).sqrt();
+                    // Thinning out in spatters towards the edge
+                    let spatter = 0.55 + 0.6 * unit(hash3((x + o[0]) as u32, (y + o[1]) as u32 ^ 0x5ca7, (z + o[2]) as u32)) as f64;
+                    if d > radius * spatter {
+                        continue;
+                    }
+                    let here = self.material_at(x, y, z);
+                    if burn && plant(here) {
+                        edits.push(([x, y, z], AIR));
+                        continue;
+                    }
+                    if is_passable(here) || here == WATER || plant(here) {
+                        continue;
+                    }
+                    let open = [[0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1]].iter().any(|o| {
+                        let m = self.material_at(x + o[0], y + o[1], z + o[2]);
+                        is_passable(m) || plant(m)
+                    });
+                    if open {
+                        edits.push(([x, y, z], material));
+                    }
+                }
+            }
+        }
+        let mut dirty: Vec<(usize, [u8; BRICK_VOXELS])> = Vec::new();
+        let mut found: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for ([x, y, z], m) in edits {
+            if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
+                continue;
+            }
+            let cell = self.cell([x / 8, y / 8, z / 8]);
+            let k = match found.get(&cell) {
+                Some(&k) => k,
+                None => {
+                    let value = self.brick_grid[cell];
+                    if value & EMPTY_BRICK != 0 {
+                        continue;
+                    }
+                    let mut materials = [AIR; BRICK_VOXELS];
+                    if value & SOLID_BRICK != 0 {
+                        materials = [value as u8; BRICK_VOXELS];
+                    } else {
+                        let words = self.brick(((value & BRICK_INDEX) - 1) as usize);
+                        for (i, v) in materials.iter_mut().enumerate() {
+                            *v = (words[16 + i / 4] >> ((i % 4) * 8)) as u8;
+                        }
+                    }
+                    dirty.push((cell, materials));
+                    found.insert(cell, dirty.len() - 1);
+                    dirty.len() - 1
+                }
+            };
+            dirty[k].1[(x % 8 + (y % 8) * 8 + (z % 8) * 64) as usize] = m;
+        }
+        let dirty = self.clipped(dirty, clip);
+        self.store(dirty)
+    }
+
     /// The words of the stored brick in `cell`, if it's a stored brick
     pub fn brick_words(&self, cell: usize) -> Option<(usize, &[u32])> {
         let value = self.brick_grid[cell];
@@ -383,7 +1200,18 @@ impl World {
             return None;
         }
         let index = ((value & BRICK_INDEX) - 1) as usize;
-        Some((index, &self.bricks[index * BRICK_WORDS..(index + 1) * BRICK_WORDS]))
+        Some((index, self.brick(index)))
+    }
+
+    /// Where cell `cell` of the brick grid is in it, x, y and z, as the GPU's copy of it has it
+    pub fn cell_at(&self, cell: usize) -> [u32; 3] {
+        let (bx, by) = ((self.phys[0] / 8) as usize, (self.phys[1] / 8) as usize);
+        [(cell % bx) as u32, ((cell / bx) % by) as u32, (cell / (bx * by)) as u32]
+    }
+
+    /// How many bricks there's room for along x, y and z in the brick grid, see `phys`
+    pub fn grid_size(&self) -> [u32; 3] {
+        [self.phys[0] / 8, self.phys[1] / 8, self.size[2] / 8]
     }
 
     /// Converts occupancy bits packed like voxelize::voxelize_mesh() into bricks of one material.
@@ -475,6 +1303,24 @@ fn empty_distances(grid: &[u32], dims: [usize; 3]) -> Vec<u16> {
     distances
 }
 
+/// What all of a brick is made of, if it's wholly inside the first of `shapes` reaching into it
+/// and that's all one material: then none of the rest reach any of its voxels, and every one of
+/// them is that. `lo` is its first voxel, and `above` whether it's all over the ground. Shapes are
+/// convex, so it's wholly inside one if the voxels at its corners are.
+fn uniform_brick(shapes: &[(&Shape, u32)], lo: [i64; 3], voxel: f32, above: bool) -> Option<u8> {
+    let p0 = lo.map(|v| (v as f32 + 0.5) * voxel);
+    let p1 = p0.map(|v| v + 7.0 * voxel);
+    let (shape, _) = shapes.iter().find(|(s, _)| (0..3).all(|i| p1[i] >= s.min[i] - voxel && p0[i] <= s.max[i] + voxel))?;
+    let plain = shape.pattern == Pattern::Plain && shape.accent == AIR && !shape.ragged && shape.rough <= 0.0;
+    let placed = match shape.placement {
+        Placement::Clear => true,
+        Placement::Above => above,
+        _ => false,
+    };
+    let inside = || (0..8).all(|k| shape.depth([0, 1, 2].map(|i| if k >> i & 1 == 0 { p0[i] } else { p1[i] }), voxel) <= 1.0);
+    (plain && placed && inside()).then_some(shape.material)
+}
+
 /// Returns the grid cell for a brick, storing its voxels in `bricks` unless it's uniform.
 fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
     let first = materials[0];
@@ -487,6 +1333,11 @@ fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
     }
 
     let index = bricks.len() / BRICK_WORDS;
+    if bricks.len() + BRICK_WORDS > bricks.capacity() {
+        // Half again at most, and no more than SPARE_BRICKS: doubling a world's hundreds of
+        // megabytes of bricks for a hole blown in it held as many again in the computer's memory
+        bricks.reserve_exact((bricks.len() / 2).clamp(64 * BRICK_WORDS, SPARE_BRICKS * BRICK_WORDS));
+    }
     bricks.resize(bricks.len() + BRICK_WORDS, 0);
     let brick = &mut bricks[index * BRICK_WORDS..];
     for (i, &m) in materials.iter().enumerate() {
@@ -519,27 +1370,123 @@ impl TerrainSettings {
 /// Generates the piece of the endless landscape whose corner is at `origin`, in voxels from the
 /// corner of the whole landscape, as big as the settings say, and builds it into voxels at their
 /// resolution.
+/// How many threads building the world spreads over, 0 for one per core
+static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Leaves `spare` cores free while building the world from here on, so the game goes on running
+/// smoothly while the strips it moves on by are built in the background
+pub fn leave_cores(spare: usize) {
+    let cores = thread::available_parallelism().map_or(4, |n| n.get());
+    THREADS.store(cores.saturating_sub(spare).max(2), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn threads() -> usize {
+    match THREADS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => thread::available_parallelism().map_or(4, |n| n.get()),
+        n => n,
+    }
+}
+
+thread_local! {
+    /// Told each step generate_terrain() starts on this thread, see on_step()
+    static ON_STEP: std::cell::RefCell<Option<Box<dyn Fn(usize)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Has generate_terrain() tell `step` the number of each step it starts on this thread, for the
+/// loading screen: the ground, the rivers, what's on the land, the voxels, then grass and water.
+/// None stops it.
+pub fn on_step(step: Option<Box<dyn Fn(usize)>>) {
+    ON_STEP.with(|s| *s.borrow_mut() = step);
+}
+
+fn step(n: usize) {
+    ON_STEP.with(|s| {
+        if let Some(step) = &*s.borrow() {
+            step(n)
+        }
+    });
+}
+
 pub fn generate_terrain(settings: &TerrainSettings, origin: [i64; 2], rivers: &RiverCache) -> (Terrain, World) {
+    let size = settings.size();
+    generate_area(settings, origin, [size[0], size[1]], rivers)
+}
+
+/// Generates the rectangle of the endless landscape `size` voxel columns across whose corner is at
+/// `origin`, as tall as the settings say, the same way generate_terrain() does a whole piece of it.
+/// Everything in it only depends on where it is in the whole landscape, so a rectangle built in one
+/// go and the same built a strip at a time come out the same, and so do strips built next to each
+/// other: the world moves on a strip at a time, see main.rs.
+pub fn generate_area(settings: &TerrainSettings, origin: [i64; 2], size: [u32; 2], rivers: &RiverCache) -> (Terrain, World) {
     let start = std::time::Instant::now();
 
-    let mut heights = Heights::new(settings, origin, [settings.size()[0] as usize; 2], settings.voxels_per_meter);
-    let terrain = Terrain::new(settings, &mut heights, rivers);
+    step(0);
+    let mut heights = Heights::new(settings, origin, [size[0] as usize, size[1] as usize], settings.voxels_per_meter);
+    let shaped = start.elapsed();
+    step(1);
+    let mut terrain = Terrain::new(settings, &heights);
+    terrain.carve_rivers(&mut heights, rivers);
+    let carved = start.elapsed();
+    step(2);
+    terrain.place(&heights, rivers);
+    let placed = start.elapsed();
+    step(3);
     let mut world = terrain.build_from(&heights, 0, settings.size()[2]);
-    world.grass = Some(terrain.grass_map(&heights));
-    let mut water = terrain.water_map(&heights);
+    let built = start.elapsed();
+    step(4);
+    let (grass, mut water) = terrain.grass_and_water(&heights);
+    world.grass = Some(grass);
     terrain.raise_water_ground(&world, &mut water);
     world.water = Some(water);
 
+    let ms = |d: std::time::Duration| d.as_millis();
     println!(
-        "Generated terrain around ({}, {}): {} bricks stored, {} MB ({:?})",
+        "Generated terrain around ({}, {}), {}x{}: {} bricks stored, {} MB ({:?}: ground {} ms, {} rivers {} ms, what's on the land {} ms, voxels {} ms, grass and water {} ms)",
         origin[0],
         origin[1],
+        size[0],
+        size[1],
         world.brick_count(),
         world.bricks.len() * 4 / (1024 * 1024),
-        start.elapsed()
+        start.elapsed(),
+        ms(shaped),
+        terrain.rivers.len(),
+        ms(carved - shaped),
+        ms(placed - carved),
+        ms(built - placed),
+        ms(start.elapsed() - built)
     );
 
     (terrain, world)
+}
+
+/// Everything about the landscape from `origin`, `size` columns across, that doesn't depend on the
+/// resolution, placed at that of `settings`: to build any part of it into voxels at any resolution,
+/// see Terrain::build(), like the finer detail round the camera
+pub fn place_for(settings: &TerrainSettings, origin: [i64; 2], size: [u32; 2], rivers: &RiverCache) -> Terrain {
+    let mut heights = Heights::new(settings, origin, [size[0] as usize, size[1] as usize], settings.voxels_per_meter);
+    let mut terrain = Terrain::new(settings, &heights);
+    terrain.carve_rivers(&mut heights, rivers);
+    terrain.place(&heights, rivers);
+    terrain
+}
+
+/// What a piece of the landscape has besides its voxels, all in meters from the corner of the
+/// whole landscape, and only what's its own, see Terrain::own_lo: what's kept of each strip the
+/// world's made of as it moves on, see main.rs
+#[derive(Clone, Default)]
+pub struct PieceFeatures {
+    /// The piece, from and to
+    pub lo: [f32; 2],
+    pub hi: [f32; 2],
+    pub props: Vec<Prop>,
+    pub lights: Vec<Light>,
+    pub sites: Vec<Site>,
+    pub camps: Vec<Camp>,
+    /// Where water wells up of its own, see Terrain::piece_springs()
+    pub springs: Vec<[f32; 4]>,
+    /// See Terrain::waterfalls()
+    pub waterfalls: Vec<([f32; 3], [f32; 2], f32)>,
 }
 
 type Vec3 = [f32; 3];
@@ -626,6 +1573,13 @@ enum Pattern {
     Bricks,
     /// Carved with bands round it and zigzags between them
     Carved,
+    /// Old stone, roofs or paving, weathered, stained and gone green, see castles::aged()
+    Aged(castles::Age),
+    /// A clump of leaves, its outside all leaves standing out at different depths in these
+    /// shades, see trees::leafy()
+    Leafy(trees::Canopy),
+    /// Weathered rock with moss creeping over its top, this much in 255, see trees::rock()
+    Rock(u8),
 }
 
 /// Where a shape goes in relation to the ground
@@ -660,6 +1614,10 @@ struct Shape {
     ragged: bool,
     placement: Placement,
     pattern: Pattern,
+    /// How far in meters its surface is pushed in and out, lumpily, so a cave isn't a smooth tube
+    rough: f32,
+    /// How high in meters its bottom is at the lowest, for a cave's floor, flatter than its roof
+    floor: f32,
     // Bounds
     min: Vec3,
     max: Vec3,
@@ -680,6 +1638,8 @@ impl Shape {
             ragged,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [0, 1, 2].map(|i| a[i].min(b[i]) - r),
             max: [0, 1, 2].map(|i| a[i].max(b[i]) + r),
         }
@@ -702,6 +1662,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [0, 1, 2].map(|i| lo[i].min(hi[i])),
             max: [0, 1, 2].map(|i| lo[i].max(hi[i])),
         }
@@ -722,6 +1684,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [0, 1, 2].map(|i| center[i] - radii[i]),
             max: [0, 1, 2].map(|i| center[i] + radii[i]),
         }
@@ -740,6 +1704,74 @@ impl Shape {
     fn patterned(mut self, pattern: Pattern) -> Self {
         self.pattern = pattern;
         self
+    }
+
+    /// Its surface pushed in and out by up to `rough` meters, lumpily, and nothing of it below
+    /// `floor` meters high
+    fn roughened(mut self, rough: f32, floor: f32) -> Self {
+        self.rough = rough;
+        self.floor = floor;
+        self.min = self.min.map(|v| v - rough);
+        self.max = self.max.map(|v| v + rough);
+        self.min[2] = self.min[2].max(floor - rough * 0.3);
+        self
+    }
+
+    /// Whether `p` is inside it, its squared depth being `depth`, see depth(). Rough shapes are
+    /// lumpy, their surface pushed in and out by the noise only near it, as working it out costs.
+    fn holds(&self, p: Vec3, depth: f32) -> bool {
+        match self.pattern {
+            Pattern::Leafy(_) => return trees::leafy_holds(self, p, depth),
+            Pattern::Rock(_) => return trees::rock_holds(self, p, depth),
+            _ => {}
+        }
+        if self.rough <= 0.0 {
+            return depth <= 1.0;
+        }
+        // The floor bumpy a little, worked out only near it
+        let swell = self.rough * 0.25;
+        if p[2] < self.floor || p[2] < self.floor + swell && p[2] < self.floor + (cave_noise(p) * 0.5 + 0.5) * swell {
+            return false;
+        }
+        let reach = self.radius_a.max(self.radius_b).max(0.1);
+        let d = depth.sqrt();
+        let margin = self.rough / reach;
+        if d < 1.0 - margin {
+            return true;
+        }
+        if d > 1.0 + margin {
+            return false;
+        }
+        // The big lumps first, and the small ones only where they could make a difference
+        let big = cave_lumps(p);
+        if (d - 1.0 - big * margin).abs() > CAVE_KNOBS * margin {
+            return d < 1.0 + big * margin;
+        }
+        d < 1.0 + (big + cave_knobs(p)).clamp(-1.0, 1.0) * margin
+    }
+
+    /// Whether none of it, roughness and all, comes within `m` meters of `p`: worked out from how
+    /// fast its depth can change, so it's sure but not tight, as for telling quickly that a brick
+    /// deep in the rock is nowhere near it
+    fn clear_of(&self, p: Vec3, m: f32) -> bool {
+        let m = m + self.rough;
+        if (0..3).any(|i| p[i] < self.min[i] - m || p[i] > self.max[i] + m) {
+            return true;
+        }
+        let d = sub(p, self.a);
+        if let Some(half) = &self.boxed {
+            return (0..3).any(|i| d[i].abs() > half[i] + m);
+        }
+        if let Some((axes, half)) = &self.flat {
+            let least = half[0].min(half[1]).min(half[2]).max(1e-3);
+            let out = (0..3).map(|i| (dot(axes[i], d) / half[i].max(1e-3)).powi(2)).sum::<f32>().sqrt();
+            return out > 1.0 + m / least;
+        }
+        let ab = sub(self.b, self.a);
+        let length2 = dot(ab, ab);
+        let t = if length2 > 0.0 { (dot(d, ab) / length2).clamp(0.0, 1.0) } else { 0.0 };
+        let e = sub(d, scale(ab, t));
+        dot(e, e).sqrt() > self.radius_a.max(self.radius_b) + m
     }
 
     /// A long, thin, upright ellipsoid going `along` (level), `length` long, `width` wide and
@@ -761,16 +1793,22 @@ impl Shape {
             ragged: false,
             placement: Placement::Carve,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: [center[0] - half[0].max(half[1]), center[1] - half[0].max(half[1]), center[2] - half[2]],
             max: [center[0] + half[0].max(half[1]), center[1] + half[0].max(half[1]), center[2] + half[2]],
         }
     }
 
-    /// What a voxel inside the shape is made of. `p` is its middle, `h` a hash of where it is.
-    fn material_at(&self, p: Vec3, voxel: f32, h: u32) -> u8 {
+    /// What a voxel inside the shape is made of. `p` is its middle, `h` a hash of where it is,
+    /// `ground` how high the ground under it is, in meters.
+    fn material_at(&self, p: Vec3, voxel: f32, h: u32, ground: f32) -> u8 {
         let sprinkled = |chance: f32| self.accent != AIR && unit(h >> 16) < chance;
         let dark = if matches!(self.material, SANDSTONE | CLAY_POT) { SANDSTONE_DARK } else { MORTAR };
         match self.pattern {
+            Pattern::Aged(age) => castles::aged(self, age, p, voxel, h, ground),
+            Pattern::Leafy(canopy) => trees::leafy(self, canopy, p, h),
+            Pattern::Rock(moss) => trees::rock(self, moss, p, voxel, h),
             Pattern::Plain => {
                 if sprinkled(0.15) {
                     self.accent
@@ -855,6 +1893,8 @@ impl Shape {
             ragged: false,
             placement: Placement::Above,
             pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
             min: center.map(|v| v - reach),
             max: center.map(|v| v + reach),
         }
@@ -939,6 +1979,11 @@ impl Frame {
     fn heading(&self, angle: f32) -> f32 {
         self.f[1].atan2(self.f[0]) + angle
     }
+
+    /// Which way going `d` along u and v goes in the world
+    fn dir(&self, d: [f32; 2]) -> [f32; 2] {
+        [self.f[0] * d[0] - self.f[1] * d[1], self.f[1] * d[0] + self.f[0] * d[1]]
+    }
 }
 
 /// A brick wall from (u0, v0) to (u1, v1) of a building at `at`, in pieces broken off at heights
@@ -974,6 +2019,277 @@ fn skull(features: &mut Features, at: Vec3, rng: &mut Rng) {
 /// better what's in it is likely to be: `luck` as for Library::roll_rarity().
 fn chest(features: &mut Features, at: Vec3, heading: f32, luck: f32) {
     features.props.push(Prop { kind: PropKind::Chest, position: at, heading, luck });
+}
+
+/// Ravines start at most one in each RAVINE_CELL square, and reach at most RAVINE_REACH from there
+const RAVINE_CELL: f32 = 100.0;
+const RAVINE_REACH: f32 = 100.0;
+
+/// Dungeons: at most one in each DUNGEON_CELL square, nothing of it further than DUNGEON_REACH
+/// along either axis from its doorway, all in meters
+const DUNGEON_CELL: f32 = 300.0;
+const DUNGEON_REACH: f32 = 56.0;
+
+/// Caves: at most one starting in each CAVE_CELL square, wandering no further than CAVE_REACH
+/// from where it starts, in meters
+const CAVE_CELL: f32 = 60.0;
+const CAVE_REACH: f32 = 310.0;
+
+/// A cave: what's cut out of the ground for it and what grows in the hollow, the crystals
+/// glowing in it, its caverns, and how far it reaches, x0, y0, x1, y1, in meters. Each cavern is
+/// the middle of its floor, the way in from there, and how far out there's room all round: the
+/// great ones bosses make their lairs in, the one at the end last, and the rest where cave
+/// spiders nest.
+struct Cave {
+    shapes: Vec<Shape>,
+    lights: Vec<Light>,
+    lairs: Vec<(Vec3, [f32; 2], f32)>,
+    nests: Vec<(Vec3, [f32; 2], f32)>,
+    bounds: [f32; 4],
+    seed: u32,
+}
+/// How thick the brick round the halls and passages of dungeons is
+const DUNGEON_WALL: f32 = 0.6;
+/// At least how much ground there is over the brick roofs of halls
+const DUNGEON_COVER: f32 = 1.5;
+/// Steps in dungeons: how high each is, and how deep. Floors are all at whole steps.
+const STAIR_RISE: f32 = 0.25;
+const STAIR_RUN: f32 = 0.4;
+/// Half how wide the passages of dungeons are, and how high
+const PASSAGE_HALF: f32 = 1.3;
+const PASSAGE_HEIGHT: f32 = 3.25;
+/// How high the crypt over the stairs down into a dungeon is inside, above its doorway
+const CRYPT_HEIGHT: f32 = 3.5;
+/// How deep the steps down from the landing in front of the crypt are
+const LANDING_STEP: f32 = 0.45;
+
+/// To the nearest whole step
+fn snap(z: f32) -> f32 {
+    (z / STAIR_RISE).round() * STAIR_RISE
+}
+
+/// Down to a whole step
+fn snap_down(z: f32) -> f32 {
+    (z / STAIR_RISE).floor() * STAIR_RISE
+}
+
+/// Whether two rectangles, x0, y0, x1, y1, come within `margin` of each other
+fn overlaps(a: [f32; 4], b: [f32; 4], margin: f32) -> bool {
+    a[0] < b[2] + margin && b[0] < a[2] + margin && a[1] < b[3] + margin && b[1] < a[3] + margin
+}
+
+fn grown(r: [f32; 4], by: f32) -> [f32; 4] {
+    [r[0] - by, r[1] - by, r[2] + by, r[3] + by]
+}
+
+/// The rectangle `half` either way of `middle`
+fn around(middle: [f32; 2], half: [f32; 2]) -> [f32; 4] {
+    [middle[0] - half[0], middle[1] - half[1], middle[0] + half[0], middle[1] + half[1]]
+}
+
+/// A box of brick over rectangle `r` in the frame `at`, in the ground or out of it
+fn stone_block(at: &Frame, r: [f32; 4], z: [f32; 2], stone: (u8, u8)) -> Shape {
+    at.block([r[0], r[2]], [r[1], r[3]], z, stone.0, stone.1).placed(Placement::Clear).patterned(Pattern::Bricks)
+}
+
+/// Empty space over rectangle `r` in the frame `at`, cut out of the ground and anything else
+fn hollow(at: &Frame, r: [f32; 4], z: [f32; 2]) -> Shape {
+    at.room([r[0], r[2]], [r[1], r[3]], z)
+}
+
+/// A round, carved pillar at `q` in the frame `at`, from `floor` up to `ceiling`, with a square
+/// foot and head, or broken off with chunks of it lying round its foot
+#[allow(clippy::too_many_arguments)]
+fn pillar(s: &mut Vec<Shape>, at: &Frame, q: [f32; 2], floor: f32, ceiling: f32, r: f32, stone: (u8, u8), broken: bool, rng: &mut Rng) {
+    let top = if broken { floor + rng.range(0.6, (ceiling - floor) * 0.45) } else { ceiling };
+    s.push(stone_block(at, around(q, [r + 0.18; 2]), [floor - 0.1, floor + 0.3], stone));
+    if broken {
+        for _ in 0..3 {
+            let (a, d, size) = (rng.next() * TAU, rng.range(r + 0.4, r + 1.3), rng.range(0.2, 0.4));
+            let c = [q[0] + a.cos() * d, q[1] + a.sin() * d];
+            s.push(stone_block(at, around(c, [size, size * rng.range(0.7, 1.3)]), [floor - 0.05, floor + size * 0.9], stone));
+        }
+    } else {
+        s.push(stone_block(at, around(q, [r + 0.22; 2]), [ceiling - 0.4, ceiling + 0.1], stone));
+    }
+    s.push(
+        Shape::capsule(at.point(q[0], q[1], floor), at.point(q[0], q[1], top), r, r * 0.9, stone.0, stone.1, false)
+            .placed(Placement::Clear)
+            .patterned(Pattern::Carved),
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HallKind {
+    /// On the way down to the boss
+    Main,
+    /// Off to one side, with a chest in it
+    Side,
+    /// The deepest and biggest, where the boss waits
+    Boss,
+}
+
+/// A hall of a dungeon, in the dungeon's frame and in meters: the middle of its floor, half its
+/// size along u and v, the height of its floor and how high it is inside
+#[derive(Clone, Copy)]
+struct Hall {
+    middle: [f32; 2],
+    half: [f32; 2],
+    floor: f32,
+    height: f32,
+    /// Which way from its middle its way in is, along u or v
+    door: [f32; 2],
+    kind: HallKind,
+    /// The hall its way in comes from, None for the one at the foot of the stairs down
+    parent: Option<usize>,
+}
+
+impl Hall {
+    /// Its floor from wall to wall, u0, v0, u1, v1
+    fn rect(&self) -> [f32; 4] {
+        around(self.middle, self.half)
+    }
+
+    /// Half its size along `d`, one of the axes
+    fn reach(&self, d: [f32; 2]) -> f32 {
+        d[0].abs() * self.half[0] + d[1].abs() * self.half[1]
+    }
+}
+
+/// A straight passage of a dungeon, in its frame and in meters, `PASSAGE_HALF` either side of the
+/// line from `start` going `dir` (along u or v) for `length`. Its floor goes from `from` at the
+/// start down to `to` at the end, by stairs halfway along.
+#[derive(Clone, Copy)]
+struct Passage {
+    start: [f32; 2],
+    dir: [f32; 2],
+    length: f32,
+    from: f32,
+    to: f32,
+    /// How far along from the start it's under the crypt over the stairs down, 0 for none
+    crypt: f32,
+}
+
+impl Passage {
+    /// The point `s` along it and `side` across, in its dungeon's frame
+    fn at(&self, s: f32, side: f32) -> [f32; 2] {
+        let across = [-self.dir[1], self.dir[0]];
+        [self.start[0] + self.dir[0] * s + across[0] * side, self.start[1] + self.dir[1] * s + across[1] * side]
+    }
+
+    /// The part of it from `s[0]` to `s[1]` along, `half` either side of its line, u0, v0, u1, v1
+    fn rect(&self, s: [f32; 2], half: f32) -> [f32; 4] {
+        let (a, b) = (self.at(s[0], -half), self.at(s[1], half));
+        [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])]
+    }
+
+    /// How many steps down it has, and how far along the first of them is
+    fn stairs(&self) -> (usize, f32) {
+        let drops = ((self.from - self.to) / STAIR_RISE).round().max(0.0) as usize;
+        (drops, (self.length - drops.saturating_sub(1) as f32 * STAIR_RUN) * 0.5)
+    }
+
+    /// How far along its `k`th step down is, from 1
+    fn edge(&self, k: usize) -> f32 {
+        self.stairs().1 + (k as f32 - 1.0) * STAIR_RUN
+    }
+
+    /// The height of its floor `s` along
+    fn floor_at(&self, s: f32) -> f32 {
+        let (drops, first) = self.stairs();
+        if drops == 0 || s < first {
+            self.from
+        } else if s >= self.edge(drops) {
+            self.to
+        } else {
+            self.from - (((s - first) / STAIR_RUN).floor() + 1.0) * STAIR_RISE
+        }
+    }
+
+    /// Moves `s` to the middle of the step it's on, if it's on the stairs, so things stand flat
+    fn on_step(&self, s: f32) -> f32 {
+        let (drops, first) = self.stairs();
+        if drops > 1 && s >= first && s < self.edge(drops) {
+            first + ((s - first) / STAIR_RUN).floor() * STAIR_RUN + STAIR_RUN * 0.5
+        } else {
+            s
+        }
+    }
+
+    /// The parts it's built in, each under a ceiling of its own: where along it each starts and
+    /// ends, and its lowest and highest floor. Flat at either end, and flights of four steps.
+    fn parts(&self) -> Vec<([f32; 2], f32, f32)> {
+        let (drops, _) = self.stairs();
+        if drops == 0 {
+            return vec![([0.0, self.length], self.from, self.from)];
+        }
+        let floor = |k: usize| self.from - k as f32 * STAIR_RISE;
+        let mut parts = vec![([0.0, self.edge(1)], self.from, self.from)];
+        let mut k = 1;
+        while k < drops {
+            let last = (k + 3).min(drops - 1);
+            parts.push(([self.edge(k), self.edge(last + 1)], floor(last), floor(k)));
+            k = last + 1;
+        }
+        parts.push(([self.edge(drops), self.length], self.to, self.to));
+        parts
+    }
+}
+
+/// Halls under the ground, joined by passages, and a crypt over the stairs down into them. Laid
+/// out in `at`, facing the way the stairs go down, with the doorway of the crypt at its middle.
+struct Dungeon {
+    at: Frame,
+    /// The floor of the crypt's doorway, and the top of the stairs
+    top: f32,
+    /// How many steps go down from the landing in front of it to the ground round it
+    steps: usize,
+    /// What the walls are made of, and the floors
+    stone: (u8, u8),
+    paving: (u8, u8),
+    snowy: bool,
+    vines: bool,
+    /// Its halls, and the passages into them: `passages[i]` leads into `halls[i]`, the stairs
+    /// down from the crypt into the first
+    halls: Vec<Hall>,
+    passages: Vec<Passage>,
+    seed: u32,
+}
+
+impl Dungeon {
+    /// The landing in front of the crypt and the steps down from it on three sides, u0, v0, u1, v1
+    /// in its frame
+    fn landing(&self, step: usize) -> [f32; 4] {
+        let (front, side) = (DUNGEON_WALL + 2.6 + LANDING_STEP * step as f32, PASSAGE_HALF + DUNGEON_WALL + 1.2 + LANDING_STEP * step as f32);
+        [-front, -side, -DUNGEON_WALL, side]
+    }
+
+    /// The crypt over the stairs down, with the landing and steps in front of it and the rubble
+    /// round it, u0, v0, u1, v1 in its frame
+    fn entrance_rect(&self) -> [f32; 4] {
+        let r = self.landing(self.steps);
+        [r[0] - 3.5, r[1] - 2.5, self.passages[0].crypt + 3.5, r[3] + 2.5]
+    }
+
+    /// Where it all is in the landscape, x0, y0, x1, y1 in meters: the entrance, and the passages
+    /// and halls with the brick round them
+    fn world_rects(&self) -> Vec<[f32; 4]> {
+        let mut rects = vec![self.entrance_rect()];
+        rects.extend(self.passages.iter().map(|p| p.rect([0.0, p.length], PASSAGE_HALF + DUNGEON_WALL)));
+        rects.extend(self.halls.iter().map(|h| grown(h.rect(), DUNGEON_WALL)));
+        rects
+            .into_iter()
+            .map(|r| {
+                let (lo, hi) = self.at.rect([r[0], r[2]], [r[1], r[3]]);
+                [lo[0], lo[1], hi[0], hi[1]]
+            })
+            .collect()
+    }
+
+    /// On the landing in front of the crypt's doorway, in meters
+    fn entrance(&self) -> [f32; 3] {
+        self.at.point(-DUNGEON_WALL - 1.5, 0.0, self.top)
+    }
 }
 
 /// How the leaves on the twigs of a tree look.
@@ -1030,7 +2346,9 @@ struct Column {
     blade_top: u8,
 }
 
-/// The ground under a rectangle of voxel columns, at some resolution.
+/// The ground under a rectangle of voxel columns, at some resolution. Columns outside it are
+/// worked out one at a time just the same, see Heights::at(), so whatever's placed near the edge of
+/// a piece of the landscape stands on the same ground whichever piece it's placed for.
 struct Heights {
     voxels_per_meter: f32,
     seed: u32,
@@ -1041,12 +2359,77 @@ struct Heights {
     ground: Vec<f32>,
     /// Height of river water in meters, NEG_INFINITY where there's none
     river: Vec<f32>,
-    /// How far each column is from the nearest river point reaching it, in meters
-    river_distance: Vec<f32>,
-    /// How low that point cuts the column, in meters: the bed of the river, or its bank.
-    /// INFINITY where no river reaches.
-    carved: Vec<f32>,
+    /// For the columns outside: the land's shape, and the rivers carved into it with their runs,
+    /// see carve()
+    settings: TerrainSettings,
+    paths: Vec<Arc<Vec<RiverPoint>>>,
+    runs: Vec<RiverRun>,
 }
+
+/// A few points next to each other along a river in the same pool, so the same wobble, see
+/// Heights::carve(), and the voxel columns they reach, from `lo` to `hi` in the whole landscape
+struct RiverRun {
+    river: usize,
+    points: std::ops::Range<usize>,
+    seed: u32,
+    /// How far from them the river and its banks reach, in meters
+    reach: f32,
+    lo: [i64; 2],
+    hi: [i64; 2],
+}
+
+/// No river point near a column yet, see reach_column()
+const NO_RIVER: (u32, u32) = (u32::MAX, 0);
+
+/// Takes `run` into account for the column at `xm`, `ym` in meters: if one of its points, wobbled,
+/// is nearer than `distance`, that's the nearest so far. `plain` is room for the distances.
+fn reach_column(paths: &[Arc<Vec<RiverPoint>>], run: &RiverRun, xm: f32, ym: f32, plain: &mut [f32; RIVER_RUN], distance: &mut f32, nearest: &mut (u32, u32)) {
+    let points = &paths[run.river][run.points.clone()];
+    let mut closest = f32::INFINITY;
+    for (d, p) in plain.iter_mut().zip(points) {
+        *d = ((xm - p.x) * (xm - p.x) + (ym - p.y) * (ym - p.y)).sqrt();
+        closest = closest.min(*d);
+    }
+    // However the distance wobbles, too far to reach, or to be nearer than a point already found
+    if closest - RIVER_WOBBLE > run.reach || closest - RIVER_WOBBLE >= *distance {
+        return;
+    }
+    let wobble = RIVER_WOBBLE * fbm(xm / 1.5, ym / 1.5, 2, run.seed);
+    for (k, (&d, p)) in plain.iter().zip(points).enumerate() {
+        let d = d + wobble;
+        if d <= p.half_width + RIVER_BANK && d < *distance {
+            *distance = d;
+            *nearest = (run.river as u32, (run.points.start + k) as u32);
+        }
+    }
+}
+
+/// Shapes the column at `xm`, `ym` in meters, whose ground is `g` and river `r`, by its nearest river
+/// point `p`, `d` from it, see Heights::carve()
+fn shape_column(p: &RiverPoint, d: f32, xm: f32, ym: f32, seed: u32, g: &mut f32, r: &mut f32) {
+    if d < p.half_width {
+        // Shallow at the lip of a waterfall, so the pool behind it holds its water
+        let depth = if p.lip { 0.1 } else { 0.6 + p.half_width * 0.25 };
+        let t = (d / p.half_width).max(0.0);
+        *r = p.surface;
+        *g = p.surface - depth * (1.0 - t * t).max(if p.lip { 1.0 } else { 0.0 });
+    } else {
+        // Rocky banks: their steepness wanders, with knobs and hollows in them, but they always
+        // stand clear of the water so it doesn't spill out
+        let out = d - p.half_width;
+        let wander = fbm(xm / 4.0, ym / 4.0, 3, seed.wrapping_add(21));
+        let knobs = fbm(xm / 1.2, ym / 1.2, 2, seed.wrapping_add(22));
+        let rough = (knobs * 0.5 + wander * 0.6) * out.min(1.0);
+        *g = g.min((p.surface + out * 0.9 * (1.0 + 0.5 * wander) + rough).max(p.surface + 0.15));
+    }
+}
+
+/// How far rivers' banks slope back up to the land around, in meters
+const RIVER_BANK: f32 = 2.5;
+/// How much distances from a river wobble, in meters, so the edges of its pools are ragged
+const RIVER_WOBBLE: f32 = 0.7;
+/// How many points along a river are measured from together, in Heights::carve()
+const RIVER_RUN: usize = 8;
 
 impl Heights {
     fn new(settings: &TerrainSettings, origin: [i64; 2], size: [usize; 2], voxels_per_meter: u32) -> Self {
@@ -1054,7 +2437,7 @@ impl Heights {
         let mut ground = vec![0.0; size[0] * size[1]];
 
         // Rows split across threads
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
+        let threads = threads();
         let rows_per_thread = size[1].div_ceil(threads).max(1);
         thread::scope(|s| {
             for (chunk_index, chunk) in ground.chunks_mut(rows_per_thread * size[0]).enumerate() {
@@ -1076,83 +2459,146 @@ impl Heights {
             size,
             ground,
             river: vec![f32::NEG_INFINITY; size[0] * size[1]],
-            river_distance: vec![f32::INFINITY; size[0] * size[1]],
-            carved: vec![f32::INFINITY; size[0] * size[1]],
+            settings: *settings,
+            paths: Vec::new(),
+            runs: Vec::new(),
         }
     }
 
-    /// Ground height in meters at a column, counted from this rectangle's corner (clamped to it)
-    fn ground_m(&self, x: i64, y: i64) -> f32 {
-        let x = x.clamp(0, self.size[0] as i64 - 1) as usize;
-        let y = y.clamp(0, self.size[1] as i64 - 1) as usize;
-        self.ground[x + y * self.size[0]]
-    }
-
-
-    /// Cuts a river's channel and banks into the ground. Call settle_beds() once every river is in.
-    fn carve(&mut self, path: &[RiverPoint]) {
+    /// The ground's height and the river's, NEG_INFINITY for none, in meters, at column `gx`, `gy`
+    /// of the whole landscape: from this rectangle if it's in it, otherwise worked out just the same
+    /// as it would be for a rectangle it's in
+    fn at(&self, gx: i64, gy: i64) -> (f32, f32) {
+        let (x, y) = (gx - self.origin[0], gy - self.origin[1]);
+        if x >= 0 && y >= 0 && x < self.size[0] as i64 && y < self.size[1] as i64 {
+            let i = x as usize + y as usize * self.size[0];
+            return (self.ground[i], self.river[i]);
+        }
         let vpm = self.voxels_per_meter;
-        // Banks slope back up to the land around
-        let bank = 2.5;
-        let [sx, sy] = self.size.map(|n| n as i64);
-
-        for p in path {
-            let reach = p.half_width + bank;
-            // Shallow at the lip of a waterfall, so the pool behind it holds its water
-            let depth = if p.lip { 0.1 } else { 0.6 + p.half_width * 0.25 };
-            let lo = [(p.x - reach) * vpm, (p.y - reach) * vpm].map(|v| v.floor() as i64);
-            let hi = [(p.x + reach) * vpm, (p.y + reach) * vpm].map(|v| v.ceil() as i64);
-            let (x0, x1) = ((lo[0] - self.origin[0]).max(0), (hi[0] - self.origin[0]).min(sx - 1));
-            let (y0, y1) = ((lo[1] - self.origin[1]).max(0), (hi[1] - self.origin[1]).min(sy - 1));
-            for cy in y0..=y1 {
-                for cx in x0..=x1 {
-                    let (xm, ym) = (
-                        (self.origin[0] + cx) as f32 / vpm,
-                        (self.origin[1] + cy) as f32 / vpm,
-                    );
-                    // Each column is shaped by its nearest point alone, so where the river drops
-                    // over a waterfall there's a sheer edge, with the banks of the pool above
-                    // still standing right up to it. Distances wobble differently for each pool,
-                    // so that edge is ragged rather than a straight line.
-                    let pool = (p.surface * 4.0) as i32 as u32;
-                    let d = (xm - p.x).hypot(ym - p.y) + 0.7 * fbm(xm / 1.5, ym / 1.5, 2, self.seed ^ hash(pool));
-                    if d > reach {
-                        continue;
-                    }
-                    let i = (cx + cy * sx) as usize;
-                    if d >= self.river_distance[i] {
-                        continue;
-                    }
-                    self.river_distance[i] = d;
-                    if d < p.half_width {
-                        let t = (d / p.half_width).max(0.0);
-                        self.river[i] = p.surface;
-                        self.carved[i] = p.surface - depth * (1.0 - t * t).max(if p.lip { 1.0 } else { 0.0 });
-                    } else {
-                        // Rocky banks: their steepness wanders, with knobs and hollows in them, but
-                        // they always stand clear of the water so it doesn't spill out
-                        let out = d - p.half_width;
-                        let wander = fbm(xm / 4.0, ym / 4.0, 3, self.seed.wrapping_add(21));
-                        let knobs = fbm(xm / 1.2, ym / 1.2, 2, self.seed.wrapping_add(22));
-                        let rough = (knobs * 0.5 + wander * 0.6) * out.min(1.0);
-                        self.river[i] = f32::NEG_INFINITY;
-                        self.carved[i] = (p.surface + out * 0.9 * (1.0 + 0.5 * wander) + rough).max(p.surface + 0.15);
-                    }
-                }
-            }
+        let (xm, ym) = (gx as f32 / vpm, gy as f32 / vpm);
+        let mut g = height_at(&self.settings, xm, ym);
+        let mut r = f32::NEG_INFINITY;
+        let (mut distance, mut nearest, mut plain) = (f32::INFINITY, NO_RIVER, [0.0f32; RIVER_RUN]);
+        for run in self.runs.iter().filter(|run| gx >= run.lo[0] && gx < run.hi[0] && gy >= run.lo[1] && gy < run.hi[1]) {
+            reach_column(&self.paths, run, xm, ym, &mut plain, &mut distance, &mut nearest);
         }
+        if nearest != NO_RIVER {
+            shape_column(&self.paths[nearest.0 as usize][nearest.1 as usize], distance, xm, ym, self.seed, &mut g, &mut r);
+        }
+        (g, r)
     }
 
-    /// Cuts the beds and banks of all the rivers into the ground. Beds are laid in even where the
-    /// ground was lower, so the lips of waterfalls hold back the pools behind them.
-    fn settle_beds(&mut self) {
-        for i in 0..self.ground.len() {
-            if self.river[i].is_finite() {
-                self.ground[i] = self.carved[i];
-            } else {
-                self.ground[i] = self.ground[i].min(self.carved[i]);
+    /// The same at a point in meters
+    fn at_m(&self, x: f32, y: f32) -> (f32, f32) {
+        let vpm = self.voxels_per_meter;
+        self.at((x * vpm).floor() as i64, (y * vpm).floor() as i64)
+    }
+
+    /// Ground height in meters at a column, counted from this rectangle's corner
+    fn ground_m(&self, x: i64, y: i64) -> f32 {
+        self.at(self.origin[0] + x, self.origin[1] + y).0
+    }
+
+    /// River water's height in meters at a column, counted from this rectangle's corner,
+    /// NEG_INFINITY where there's none
+    fn river_m(&self, x: i64, y: i64) -> f32 {
+        self.at(self.origin[0] + x, self.origin[1] + y).1
+    }
+
+    /// Cuts the rivers' channels and banks into the ground.
+    ///
+    /// Each column is shaped by its nearest river point alone, so where a river drops over a
+    /// waterfall there's a sheer edge, with the banks of the pool above still standing right up to
+    /// it. Distances wobble differently for each pool, so that edge is ragged rather than a
+    /// straight line. Beds are laid in even where the ground was lower, so the lips of waterfalls
+    /// hold back the pools behind them.
+    fn carve(&mut self, paths: &[Arc<Vec<RiverPoint>>]) {
+        self.paths = paths.to_vec();
+        if paths.is_empty() {
+            return;
+        }
+        let vpm = self.voxels_per_meter;
+        let (origin, seed) = (self.origin, self.seed);
+        let [sx, sy] = self.size;
+        let pool_seed = |p: &RiverPoint| seed ^ hash((p.surface * 4.0) as i32 as u32);
+
+        // A few points next to each other in the same pool, so the same wobble, and the columns
+        // they reach in the whole landscape, kept for those outside, see at()
+        let mut runs = Vec::new();
+        for (river, path) in paths.iter().enumerate() {
+            let mut start = 0;
+            while start < path.len() {
+                let seed = pool_seed(&path[start]);
+                let mut end = start + 1;
+                while end < path.len() && end - start < RIVER_RUN && pool_seed(&path[end]) == seed {
+                    end += 1;
+                }
+                let run = &path[start..end];
+                let widest = run.iter().map(|p| p.half_width).fold(0.0, f32::max);
+                let reach = widest + RIVER_BANK + RIVER_WOBBLE;
+                let lo = [0, 1].map(|a| run.iter().map(|p| if a == 0 { p.x } else { p.y }).fold(f32::MAX, f32::min) - reach);
+                let hi = [0, 1].map(|a| run.iter().map(|p| if a == 0 { p.x } else { p.y }).fold(f32::MIN, f32::max) + reach);
+                let lo = [0, 1].map(|a| (lo[a] * vpm).floor() as i64);
+                let hi = [0, 1].map(|a| (hi[a] * vpm).ceil() as i64 + 1);
+                runs.push(RiverRun { river, points: start..end, seed, reach: widest + RIVER_BANK, lo, hi });
+                start = end;
             }
         }
+        // Those reaching into this rectangle, in its columns
+        let local: Vec<(&RiverRun, [usize; 2], [usize; 2])> = runs
+            .iter()
+            .filter_map(|run| {
+                let lo = [0, 1].map(|a| (run.lo[a] - origin[a]).max(0) as usize);
+                let hi = [0, 1].map(|a| (run.hi[a] - origin[a]).clamp(0, self.size[a] as i64) as usize);
+                (lo[0] < hi[0] && lo[1] < hi[1]).then_some((run, lo, hi))
+            })
+            .collect();
+
+        // First the nearest point to each column, in rows split across threads: how far it is,
+        // and which it is
+        let mut distance = vec![f32::INFINITY; sx * sy];
+        let mut nearest = vec![NO_RIVER; sx * sy];
+        let rows = sy.div_ceil(threads()).max(1);
+        let paths = &self.paths;
+        thread::scope(|s| {
+            for (band, (distance, nearest)) in distance.chunks_mut(rows * sx).zip(nearest.chunks_mut(rows * sx)).enumerate() {
+                let local = &local;
+                s.spawn(move || {
+                    let (first, last) = (band * rows, band * rows + distance.len() / sx);
+                    let mut plain = [0.0f32; RIVER_RUN];
+                    for (run, lo, hi) in local.iter().filter(|(_, lo, hi)| lo[1] < last && hi[1] > first) {
+                        for cy in lo[1].max(first)..hi[1].min(last) {
+                            let ym = (origin[1] + cy as i64) as f32 / vpm;
+                            for cx in lo[0]..hi[0] {
+                                let xm = (origin[0] + cx as i64) as f32 / vpm;
+                                let i = cx + (cy - first) * sx;
+                                reach_column(paths, run, xm, ym, &mut plain, &mut distance[i], &mut nearest[i]);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        // Then each column shaped by its nearest point
+        thread::scope(|s| {
+            let chunks = self.ground.chunks_mut(rows * sx).zip(self.river.chunks_mut(rows * sx));
+            for (band, (ground, river)) in chunks.enumerate() {
+                let (distance, nearest) = (&distance[band * rows * sx..], &nearest[band * rows * sx..]);
+                s.spawn(move || {
+                    for (i, (g, r)) in ground.iter_mut().zip(river.iter_mut()).enumerate() {
+                        if nearest[i] == NO_RIVER {
+                            continue;
+                        }
+                        let j = band * rows * sx + i;
+                        let xm = (origin[0] + (j % sx) as i64) as f32 / vpm;
+                        let ym = (origin[1] + (j / sx) as i64) as f32 / vpm;
+                        shape_column(&paths[nearest[i].0 as usize][nearest[i].1 as usize], distance[i], xm, ym, seed, g, r);
+                    }
+                });
+            }
+        });
+        self.runs = runs;
     }
 }
 
@@ -1207,6 +2653,8 @@ pub fn find_climate(settings: &TerrainSettings, kind: &str, near: [f32; 2]) -> O
                 "jungle" => c.jungle,
                 "desert" => c.desert,
                 "snow" => c.snow,
+                // Woods where the leaves have turned, see Terrain::canopy()
+                "autumn" => (1.0 - c.jungle.max(c.desert).max(c.snow)) * f32::from(trees::autumn_woods(settings, x, y)),
                 _ => 1.0 - c.jungle.max(c.desert).max(c.snow),
             };
             if strength > 0.95 && height_at(settings, x, y) > sea_level + 3.0 {
@@ -1233,12 +2681,56 @@ pub struct RiverCache {
     cells: Mutex<HashMap<(i32, i32), Option<Arc<Vec<RiverPoint>>>>>,
 }
 
-const RIVER_CELL: f32 = 200.0;
+const RIVER_CELL: f32 = 140.0;
 /// The most points a river runs to, half a meter apart
 const RIVER_STEPS: usize = 1200;
 /// How much water a river's spring gives, in cubic meters a second, and how wide it is in meters
-const RIVER_FLOW: f32 = 4.0;
+const RIVER_FLOW: f32 = 6.0;
 const RIVER_SPRING_RADIUS: f32 = 2.0;
+/// And how much more each waterfall's fed just over its lip
+const WATERFALL_FLOW: f32 = 4.0;
+/// How wide a stream gets, half across in meters, and how many of them grow into great wide
+/// rivers, and how much wider those grow, over how many meters
+const STREAM_HALF_WIDTH: f32 = 3.0;
+const GREAT_RIVERS: f32 = 0.4;
+const GREAT_RIVER_WIDENS: [f32; 2] = [2.5, 5.5];
+const GREAT_RIVER_GROWS_M: f32 = 150.0;
+/// A river that's come less than a few meters in this many steps is going round in a hollow. It
+/// spills out over the lowest point this far round it, at most so many times.
+const RIVER_STUCK_STEPS: usize = 40;
+const RIVER_RIM: f32 = 30.0;
+const RIVER_SPILLS: usize = 4;
+
+/// How much more water a river or waterfall `half_width` across needs than a stream, to stay full
+fn river_scale(half_width: f32) -> f32 {
+    (half_width / STREAM_HALF_WIDTH).max(1.0)
+}
+
+/// Where each of `rivers` starts in the rectangle from `lo` to `hi`, in meters: at its spring, or
+/// where it flows in from outside. x, y, cubic meters a second and radius, in meters.
+fn river_springs(rivers: &[Arc<Vec<RiverPoint>>], lo: [f32; 2], hi: [f32; 2]) -> Vec<[f32; 4]> {
+    let inside = |p: &&RiverPoint| p.x >= lo[0] && p.y >= lo[1] && p.x < hi[0] && p.y < hi[1];
+    rivers
+        .iter()
+        .filter_map(|path| path.iter().find(inside))
+        .map(|p| [p.x, p.y, RIVER_FLOW * river_scale(p.half_width), RIVER_SPRING_RADIUS * river_scale(p.half_width)])
+        .collect()
+}
+
+/// The same for the world, from `lo` to `hi` in meters, wherever it's moved to: what water it
+/// has flowing in besides the springs of each of its pieces, see Terrain::piece_springs()
+pub fn window_springs(settings: &TerrainSettings, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<[f32; 4]> {
+    let terrain = Terrain::around(settings, lo, hi);
+    river_springs(&terrain.rivers_near(cache, lo, hi), lo, hi)
+}
+
+/// Where rivers pour over waterfalls from `lo` to `hi` in meters, as Terrain::waterfalls() says
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn waterfalls_in(settings: &TerrainSettings, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<([f32; 3], [f32; 2], f32)> {
+    let mut terrain = Terrain::around(settings, lo, hi);
+    terrain.rivers = terrain.rivers_near(cache, lo, hi);
+    terrain.waterfalls()
+}
 
 /// Little things inside buildings, drawn like animals, see src\animals.rs
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1259,7 +2751,9 @@ pub struct Prop {
     pub luck: f32,
 }
 
-/// Something glowing that lights up what's around it, like a candle flame. In meters.
+/// Something glowing that lights up what's around it, like a candle flame. In meters. With a
+/// negative color, a glow hanging in the air of a fallen city instead, see Terrain::glow() in
+/// undercity.rs.
 #[derive(Clone, Copy)]
 pub struct Light {
     pub position: [f32; 3],
@@ -1289,7 +2783,12 @@ struct Features {
     /// Where the ground water lies on has to be found from the voxels, as something's been cut
     /// into it: x0, y0, x1, y1 and how high to look down from
     recuts: Vec<[f32; 5]>,
+    /// Where the ground is built over or cut away, so the grass drawn in the shader doesn't grow
+    /// there: x0, y0, x1, y1
+    holes: Vec<[f32; 4]>,
     sites: Vec<Site>,
+    /// Bandits' camps, see camps.rs
+    camps: Vec<Camp>,
 }
 
 /// A building: what kind, where its middle is and which way it faces, with the lowest ground
@@ -1306,9 +2805,15 @@ pub struct Site {
 /// built into voxels at any resolution, see build().
 pub struct Terrain {
     settings: TerrainSettings,
-    /// The piece of the landscape this covers, in meters
+    /// What's placed for this piece of the landscape, in meters: everything reaching in here, well
+    /// beyond `own_lo` to `own_hi`, so what's placed near the edge of that is placed just as it
+    /// would be for any other piece, see PLACE_MARGIN_M
     lo: [f32; 2],
     hi: [f32; 2],
+    /// The piece itself, which is built, and whose props, lights, springs, buildings and camps are
+    /// its own, so pieces next to each other don't both have those along where they meet
+    own_lo: [f32; 2],
+    own_hi: [f32; 2],
     rivers: Vec<Arc<Vec<RiverPoint>>>,
     objects: Vec<Object>,
     // Indices into `objects` for each OBJECT_CELL-sized square they overlap, to find them by area
@@ -1319,97 +2824,260 @@ pub struct Terrain {
 
 const OBJECT_CELL: f32 = 8.0;
 
+/// How far past the edge of a piece of the landscape things are placed, in meters, see Terrain::lo:
+/// the farthest out something can be that reaches in, like the crown of a tree or a building, or
+/// that has a say in whether something reaching in is there, like a building or a camp keeping
+/// clear of another, and of what that keeps clear of
+const PLACE_MARGIN_M: f32 = 64.0;
+/// And past that how far out rivers are traced for the ground to be worked out at, see Heights::at()
+const RIVER_MARGIN_M: f32 = 64.0;
+
 impl Terrain {
-    /// `heights` covers the piece of the landscape to build, and gets the rivers carved into it.
-    fn new(settings: &TerrainSettings, heights: &mut Heights, rivers: &RiverCache) -> Self {
+    /// The piece of the landscape `heights` covers, with nothing in it yet
+    fn new(settings: &TerrainSettings, heights: &Heights) -> Self {
         let vpm = heights.voxels_per_meter;
-        let lo = [heights.origin[0] as f32 / vpm, heights.origin[1] as f32 / vpm];
-        let hi = [lo[0] + heights.size[0] as f32 / vpm, lo[1] + heights.size[1] as f32 / vpm];
-        let mut terrain = Terrain {
+        let own_lo = [heights.origin[0] as f32 / vpm, heights.origin[1] as f32 / vpm];
+        let own_hi = [own_lo[0] + heights.size[0] as f32 / vpm, own_lo[1] + heights.size[1] as f32 / vpm];
+        Self::around(settings, own_lo, own_hi)
+    }
+
+    /// The piece of the landscape from `own_lo` to `own_hi` in meters, with nothing in it yet
+    fn around(settings: &TerrainSettings, own_lo: [f32; 2], own_hi: [f32; 2]) -> Self {
+        Terrain {
             settings: *settings,
-            lo,
-            hi,
+            lo: own_lo.map(|v| v - PLACE_MARGIN_M),
+            hi: own_hi.map(|v| v + PLACE_MARGIN_M),
+            own_lo,
+            own_hi,
             rivers: Vec::new(),
             objects: Vec::new(),
             object_cells: Vec::new(),
             cells_across: [0; 2],
             features: Features::default(),
-        };
-
-        terrain.rivers = terrain.rivers_in(rivers);
-        for path in &terrain.rivers {
-            heights.carve(path);
         }
-        heights.settle_beds();
+    }
 
-        let (objects, features) = terrain.place_objects(heights);
-        terrain.objects = objects;
-        terrain.features = features;
+    /// Cuts the rivers running through this piece into `heights`
+    fn carve_rivers(&mut self, heights: &mut Heights, rivers: &RiverCache) {
+        self.rivers = self.rivers_in(rivers);
+        heights.carve(&self.rivers);
+    }
+
+    /// Puts everything that's out on the land, or under it, once the rivers are in. Of the props,
+    /// lights, springs, sites and camps, only those in the piece itself are kept.
+    fn place(&mut self, heights: &Heights, rivers: &RiverCache) {
+        let (lo, hi) = (self.lo, self.hi);
+        let (objects, mut features) = self.place_objects(heights, rivers);
+        let own = |p: &[f32]| self.inside(p[0], p[1]);
+        features.props.retain(|p| own(&p.position));
+        features.lights.retain(|l| own(&l.position));
+        features.springs.retain(|s| own(s));
+        features.sites.retain(|s| own(&s.position));
+        features.camps.retain(|c| own(&c.fire));
+        self.objects = objects;
+        self.features = features;
 
         let cells = [0, 1].map(|i| ((hi[i] - lo[i]) / OBJECT_CELL).ceil() as usize);
         let mut object_cells = vec![Vec::new(); cells[0] * cells[1]];
         let cell = |v: f32, axis: usize| (((v - lo[axis]) / OBJECT_CELL).floor().max(0.0) as usize).min(cells[axis] - 1);
-        for (i, object) in terrain.objects.iter().enumerate() {
+        for (i, object) in self.objects.iter().enumerate() {
             for cy in cell(object.min[1], 1)..=cell(object.max[1], 1) {
                 for cx in cell(object.min[0], 0)..=cell(object.max[0], 0) {
                     object_cells[cx + cy * cells[0]].push(i as u32);
                 }
             }
         }
-        terrain.object_cells = object_cells;
-        terrain.cells_across = cells;
-
-        terrain
+        self.object_cells = object_cells;
+        self.cells_across = cells;
     }
 
+    /// Whether a point in meters is in the piece itself, see Terrain::own_lo
     fn inside(&self, x: f32, y: f32) -> bool {
-        x >= self.lo[0] && y >= self.lo[1] && x < self.hi[0] && y < self.hi[1]
+        x >= self.own_lo[0] && y >= self.own_lo[1] && x < self.own_hi[0] && y < self.own_hi[1]
     }
 
-    /// Where rivers pour over waterfalls in this piece: the lip of each in meters, and which way
-    /// the river flows there
-    pub fn waterfalls(&self) -> Vec<([f32; 3], [f32; 2])> {
+    /// Where rivers pour over waterfalls in this piece: the lip of each in meters, which way the
+    /// river flows there, and how wide it is, half across
+    pub fn waterfalls(&self) -> Vec<([f32; 3], [f32; 2], f32)> {
+        self.waterfalls_where(|x, y| self.inside(x, y))
+    }
+
+    /// The same for all of them placed for, out to Terrain::lo, for what's built at them
+    fn waterfalls_near(&self) -> Vec<([f32; 3], [f32; 2], f32)> {
+        let (lo, hi) = (self.lo, self.hi);
+        self.waterfalls_where(|x, y| x >= lo[0] && y >= lo[1] && x < hi[0] && y < hi[1])
+    }
+
+    fn waterfalls_where(&self, keep: impl Fn(f32, f32) -> bool) -> Vec<([f32; 3], [f32; 2], f32)> {
         let mut falls = Vec::new();
         for path in &self.rivers {
             for pair in path.windows(2) {
                 let (a, b) = (&pair[0], &pair[1]);
-                if a.surface - b.surface > 1.0 && self.inside(a.x, a.y) {
+                if a.surface - b.surface > 1.0 && keep(a.x, a.y) {
                     let (dx, dy) = (b.x - a.x, b.y - a.y);
                     let length = dx.hypot(dy).max(1e-6);
-                    falls.push(([a.x, a.y, a.surface], [dx / length, dy / length]));
+                    falls.push(([a.x, a.y, a.surface], [dx / length, dy / length], a.half_width));
                 }
             }
         }
         falls
     }
 
+    /// Where the widest river within half a kilometer of `near` is at its widest, inland, in
+    /// meters. For trying them out.
+    pub fn widest_river_near(&self, near: [f32; 2], cache: &RiverCache) -> Option<[f32; 2]> {
+        let (inland, reach) = (sea_level_m(&self.settings) + 2.0, 500.0);
+        let mut widest: Option<(f32, [f32; 2])> = None;
+        for river in self.rivers_near(cache, [near[0] - reach, near[1] - reach], [near[0] + reach, near[1] + reach]) {
+            for p in river.iter() {
+                let close = (p.x - near[0]).abs() < reach && (p.y - near[1]).abs() < reach;
+                if close && p.surface > inland && widest.is_none_or(|(w, _)| p.half_width > w) {
+                    widest = Some((p.half_width, [p.x, p.y]));
+                }
+            }
+        }
+        widest.map(|(_, at)| at)
+    }
+
+    /// Where a river in this piece is at its widest, away from waterfalls and the sea: the middle
+    /// of its surface in meters, which way it flows, and how wide it is, half across. For trying
+    /// them out.
+    pub fn widest_river(&self) -> Option<([f32; 3], [f32; 2], f32)> {
+        let inland = sea_level_m(&self.settings) + 2.0;
+        let mut widest: Option<([f32; 3], [f32; 2], f32)> = None;
+        for path in &self.rivers {
+            for i in 8..path.len().saturating_sub(8) {
+                let (a, b) = (&path[i - 8], &path[i + 8]);
+                let p = &path[i];
+                if self.inside(p.x, p.y) && p.surface > inland && a.surface == b.surface && widest.is_none_or(|w| p.half_width > w.2) {
+                    let (dx, dy) = (b.x - a.x, b.y - a.y);
+                    let length = dx.hypot(dy).max(1e-6);
+                    widest = Some(([p.x, p.y, p.surface], [dx / length, dy / length], p.half_width));
+                }
+            }
+        }
+        widest
+    }
+
     /// Where water comes from in this piece: x, y, cubic meters a second and radius, in meters.
     /// Rivers start where their spring is, or where they flow in from outside it, and some
-    /// buildings have water welling up inside.
+    /// buildings have water welling up inside. Each waterfall is fed just over its lip too, so it
+    /// always pours over full, however much the pools above have spread out what came down.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn springs(&self) -> Vec<[f32; 4]> {
+        let mut springs = self.river_springs();
+        springs.extend(self.piece_springs());
+        springs
+    }
+
+    /// The springs of springs() where rivers start in this piece or flow into it, see river_springs()
+    pub fn river_springs(&self) -> Vec<[f32; 4]> {
+        river_springs(&self.rivers, self.own_lo, self.own_hi)
+    }
+
+    /// The springs of springs() that belong to this piece wherever the world is, rather than to
+    /// where its edge is: the waterfalls' and the buildings', see river_springs() for the rest
+    pub fn piece_springs(&self) -> Vec<[f32; 4]> {
         let mut springs: Vec<[f32; 4]> = self
-            .rivers
-            .iter()
-            .filter_map(|path| path.iter().find(|p| self.inside(p.x, p.y)))
-            .map(|p| [p.x, p.y, RIVER_FLOW, RIVER_SPRING_RADIUS])
+            .waterfalls()
+            .into_iter()
+            .map(|(lip, flow, wide)| {
+                let more = river_scale(wide);
+                [lip[0] - flow[0] * 1.5, lip[1] - flow[1] * 1.5, WATERFALL_FLOW * more, 1.2 * more]
+            })
             .collect();
         springs.extend_from_slice(&self.features.springs);
         springs
     }
 
+    /// What's in this piece of the landscape besides its voxels, see PieceFeatures, kept once the
+    /// rest of it isn't
+    pub fn piece_features(&self) -> PieceFeatures {
+        PieceFeatures {
+            lo: self.own_lo,
+            hi: self.own_hi,
+            props: self.features.props.clone(),
+            lights: self.features.lights.clone(),
+            sites: self.features.sites.clone(),
+            camps: self.features.camps.clone(),
+            springs: self.piece_springs(),
+            waterfalls: self.waterfalls(),
+        }
+    }
+
     /// Candles, skulls and such, in meters
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn props(&self) -> &[Prop] {
         &self.features.props
     }
 
     /// Flames and glowing crystals, in meters
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn lights(&self) -> &[Light] {
         &self.features.lights
     }
 
-    /// The buildings in this piece of the landscape
+    /// The buildings in this piece of the landscape, and the halls of dungeons: "dungeon hall" at
+    /// the middle of each hall's floor, and "dungeon" at the middle of the floor of the deepest,
+    /// the boss's, each facing its way in
     pub fn sites(&self) -> &[Site] {
         &self.features.sites
+    }
+
+    /// The bandits' camps in this piece of the landscape: who keeps each, and where the chest of
+    /// their hoard turns up once they're all dead
+    pub fn bandit_camps(&self) -> &[Camp] {
+        &self.features.camps
+    }
+
+    /// Where the way into the nearest dungeon to `near` is, anywhere within about 3 km: the
+    /// landing in front of the doorway of its crypt, in meters. For trying them out. Takes a
+    /// tenth of a second or so, tracing the rivers round each dungeon it looks at.
+    #[allow(dead_code)]
+    pub fn nearest_dungeon(&self, near: [f32; 2]) -> Option<[f32; 3]> {
+        let cache = RiverCache::default();
+        let home = near.map(|v| (v / DUNGEON_CELL).floor() as i32);
+        let mut best: Option<(f32, [f32; 3])> = None;
+        for ring in 0..10i32 {
+            for cy in home[1] - ring..=home[1] + ring {
+                for cx in home[0] - ring..=home[0] + ring {
+                    if (cx - home[0]).abs().max((cy - home[1]).abs()) != ring {
+                        continue;
+                    }
+                    if let Some(d) = self.dungeon_in(cx, cy, &cache) {
+                        let e = d.entrance();
+                        let distance = (e[0] - near[0]).hypot(e[1] - near[1]);
+                        if best.is_none_or(|(b, _)| distance < b) {
+                            best = Some((distance, e));
+                        }
+                    }
+                }
+            }
+            // Any further out are at least this far away
+            if best.is_some_and(|(b, _)| b <= ring as f32 * DUNGEON_CELL) {
+                break;
+            }
+        }
+        best.map(|(_, e)| e)
+    }
+
+    /// The nearest boss's cavern to `near`, within a kilometer or so: the middle of its floor in
+    /// meters, the way in from there, and how far out there's room all round. For trying them out.
+    #[allow(dead_code)]
+    pub fn nearest_cavern(&self, near: [f32; 2]) -> Option<([f32; 3], [f32; 2], f32)> {
+        let home = near.map(|v| (v / CAVE_CELL).floor() as i32);
+        let mut best: Option<(f32, ([f32; 3], [f32; 2], f32))> = None;
+        for cy in home[1] - 8..=home[1] + 8 {
+            for cx in home[0] - 8..=home[0] + 8 {
+                if let Some(lair) = self.cave_in(cx, cy).and_then(|c| c.lairs.last().copied()) {
+                    let distance = (lair.0[0] - near[0]).hypot(lair.0[1] - near[1]);
+                    if best.is_none_or(|(b, _)| distance < b) {
+                        best = Some((distance, lair));
+                    }
+                }
+            }
+        }
+        best.map(|(_, lair)| lair)
     }
 
     /// Builds a box of the landscape into voxels. `origin` and `size` are in voxels at
@@ -1418,10 +3086,7 @@ impl Terrain {
     /// see src\water.rs.
     pub fn build(&self, origin: [i64; 3], size: [u32; 3], voxels_per_meter: u32) -> World {
         let mut heights = Heights::new(&self.settings, [origin[0], origin[1]], [size[0] as usize, size[1] as usize], voxels_per_meter);
-        for path in &self.rivers {
-            heights.carve(path);
-        }
-        heights.settle_beds();
+        heights.carve(&self.rivers);
         let mut world = self.build_from(&heights, origin[2], size[2]);
         world.sea_level = None;
         world
@@ -1479,31 +3144,6 @@ impl Terrain {
         }
     }
 
-    /// The ground and the water lying on it for every column, see World::water
-    fn water_map(&self, heights: &Heights) -> WaterMap {
-        let [sx, sy] = heights.size;
-        let mut ground = vec![0.0f32; sx * sy];
-        let mut surface = vec![0.0f32; sx * sy];
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
-        let rows_per_thread = sy.div_ceil(threads).max(1);
-        thread::scope(|s| {
-            for (chunk_index, (ground, surface)) in ground
-                .chunks_mut(rows_per_thread * sx)
-                .zip(surface.chunks_mut(rows_per_thread * sx))
-                .enumerate()
-            {
-                s.spawn(move || {
-                    for i in 0..ground.len() {
-                        let j = chunk_index * rows_per_thread * sx + i;
-                        let column = self.column(heights, (j % sx) as i64, (j / sx) as i64);
-                        ground[i] = (column.height + 1) as f32;
-                        surface[i] = if column.water_top > column.height { (column.water_top + 1) as f32 } else { 0.0 };
-                    }
-                });
-            }
-        });
-        WaterMap { ground, surface }
-    }
 
     fn build_from(&self, heights: &Heights, origin_z: i64, size_z: u32) -> World {
         let vpm = heights.voxels_per_meter;
@@ -1511,11 +3151,13 @@ impl Terrain {
         let bz = size_z as usize / 8;
         let origin = [heights.origin[0], heights.origin[1], origin_z];
 
-        // The objects reaching into this box, and for each column of bricks which of them reach into it
-        let lo = [origin[0] as f32 / vpm, origin[1] as f32 / vpm];
+        // The objects reaching into this box, and for each column of bricks which of them reach
+        // into it. Shapes have a say up to a voxel past them, see build_column(), so those ending
+        // just short of the box too, as they'd be found for a bigger box with this in it.
+        let lo = [(origin[0] - 2) as f32 / vpm, (origin[1] - 2) as f32 / vpm];
         let hi = [
-            (origin[0] + heights.size[0] as i64) as f32 / vpm,
-            (origin[1] + heights.size[1] as i64) as f32 / vpm,
+            (origin[0] + heights.size[0] as i64 + 2) as f32 / vpm,
+            (origin[1] + heights.size[1] as i64 + 2) as f32 / vpm,
         ];
         let objects = self.objects_in(lo, hi);
         let mut objects_by_column = vec![Vec::new(); bx * by];
@@ -1530,7 +3172,7 @@ impl Terrain {
         }
 
         // Columns of bricks don't depend on each other, so rows of them are split across threads
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
+        let threads = threads();
         let rows_per_thread = by.div_ceil(threads).max(1);
         let results: Vec<(Vec<(usize, u32)>, Vec<u32>)> = thread::scope(|s| {
             let handles: Vec<_> = (0..threads)
@@ -1571,36 +3213,55 @@ impl Terrain {
         world
     }
 
-    /// See World::grass. Grass grows on grassy ground, a little thinner in the forests.
-    fn grass_map(&self, heights: &Heights) -> Vec<u32> {
+    /// Where grass grows, see World::grass, and the ground and the water lying on it for every
+    /// column, see World::water. Both in one go, as working out a column takes a while. Grass grows
+    /// on grassy ground, a little thinner in the forests.
+    fn grass_and_water(&self, heights: &Heights) -> (Vec<u32>, WaterMap) {
         let [sx, sy] = heights.size;
         let vpm = heights.voxels_per_meter;
         let seed = self.settings.seed;
         let mut map = vec![0u32; sx * sy];
+        let mut ground = vec![0.0f32; sx * sy];
+        let mut surface = vec![0.0f32; sx * sy];
+        // None where the ground's built over or cut away: every column of every such rectangle
+        // marked once, rather than each column looking through all of them
+        let mut holes = vec![false; sx * sy];
+        for h in &self.features.holes {
+            let column = |m: f32, axis: usize, size: usize| ((m * vpm).floor() as i64 - heights.origin[axis]).clamp(0, size as i64) as usize;
+            let (x0, x1) = (column(h[0], 0, sx), column(h[2], 0, sx));
+            for y in column(h[1], 1, sy)..column(h[3], 1, sy) {
+                holes[y * sx + x0..y * sx + x1].fill(true);
+            }
+        }
+        let holes = &holes;
 
         // Rows split across threads
-        let threads = thread::available_parallelism().map_or(4, |n| n.get());
-        let rows_per_thread = sy.div_ceil(threads).max(1);
+        let rows_per_thread = sy.div_ceil(threads()).max(1);
+        let rows = rows_per_thread * sx;
         thread::scope(|s| {
-            for (chunk_index, chunk) in map.chunks_mut(rows_per_thread * sx).enumerate() {
+            for (chunk_index, ((chunk, ground), surface)) in map.chunks_mut(rows).zip(ground.chunks_mut(rows)).zip(surface.chunks_mut(rows)).enumerate() {
                 s.spawn(move || {
-                    for (i, value) in chunk.iter_mut().enumerate() {
-                        let j = chunk_index * rows_per_thread * sx + i;
+                    for i in 0..chunk.len() {
+                        let j = chunk_index * rows + i;
                         let (x, y) = ((j % sx) as i64, (j / sx) as i64);
                         let column = self.column(heights, x, y);
-                        if !is_grassy(column.top) {
+                        ground[i] = (column.height + 1) as f32;
+                        surface[i] = if column.water_top > column.height { (column.water_top + 1) as f32 } else { 0.0 };
+                        if holes[j] || !is_grassy(column.top) {
                             continue;
                         }
-                        let forest = smoothstep(-0.15, 0.25, fbm(x as f32 / vpm / 80.0, y as f32 / vpm / 80.0, 3, seed.wrapping_add(4)));
+                        // Where it is in the whole landscape, so it's the same whichever piece it's in
+                        let (gx, gy) = (heights.origin[0] + x, heights.origin[1] + y);
+                        let forest = smoothstep(-0.15, 0.25, fbm(gx as f32 / vpm / 80.0, gy as f32 / vpm / 80.0, 3, seed.wrapping_add(4)));
                         let density = (255.0 * (1.0 - 0.45 * forest)) as u32;
-                        let ground = ((column.height + 1) as u32 * 4).min(0xFFFF);
-                        *value = ground | density << 16;
+                        let top = ((column.height + 1) as u32 * 4).min(0xFFFF);
+                        chunk[i] = top | density << 16;
                     }
                 });
             }
         });
 
-        map
+        (map, WaterMap { ground, surface })
     }
 
     fn objects_in(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<&Object> {
@@ -1635,8 +3296,7 @@ impl Terrain {
 
         let sea_level = (sea_level_m(&self.settings) * vpm) as i32;
         let snow_line = (self.settings.height_m as f32 * 0.7 * vpm) as i32;
-        let i = (x.clamp(0, heights.size[0] as i64 - 1) + y.clamp(0, heights.size[1] as i64 - 1) * heights.size[0] as i64) as usize;
-        let river = (heights.river[i] * vpm).floor() as i32;
+        let river = (heights.river_m(x, y) * vpm).floor() as i32;
         let water_top = if river > h { river.max(sea_level) } else { sea_level };
 
         // Which kind of land this is, with ragged edges where one meets the next
@@ -1677,14 +3337,14 @@ impl Terrain {
             // About the same number of flowers per square meter at any resolution
             let flower_chance = 0.45 * (0.01 + meadow * 0.2) * (8.0 / vpm).powi(2).min(1.0) * if jungle { 0.3 } else { 1.0 };
             let lush = smoothstep(-0.3, 0.4, fbm(xm / 9.0, ym / 9.0, 2, self.settings.seed.wrapping_add(8)));
-            let (lush, chance) = if jungle { (1.0, 0.75) } else { (lush, 0.25 + 0.35 * lush) };
+            let (lush, chance) = if jungle { (1.0, 0.8) } else { (lush, 0.4 + 0.4 * lush) };
             if unit(r) < flower_chance {
                 blade = 1 + ((r >> 16) % max_stem) as i32;
                 let patch = hash3((xm / 4.0) as u32, (ym / 4.0) as u32, self.settings.seed ^ 0xf10e);
                 blade_top = [FLOWER_RED, FLOWER_YELLOW, FLOWER_PURPLE, FLOWER_WHITE][(patch % 4) as usize];
             } else if self.settings.grass_tufts && unit(tuft) < chance {
                 // Taller in lush patches, with a lighter tip
-                let tallest = (0.08 + if jungle { 0.4 } else { 0.22 } * lush) * vpm;
+                let tallest = (0.1 + if jungle { 0.4 } else { 0.3 } * lush) * vpm;
                 blade = ((unit(tuft >> 16) * tallest).round() as i32).max(1);
                 blade_top = GRASS_TIP;
             }
@@ -1694,7 +3354,9 @@ impl Terrain {
         }
 
         let strata = (fbm(xm / 7.0, ym / 7.0, 2, self.settings.seed.wrapping_add(23)) * 0.8 * vpm) as i32;
-        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * if desert { 0.0 } else { 0.6 };
+        // None in the desert, nor under the snow
+        let bare = desert || snowy || h >= snow_line + snow_jitter;
+        let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * if bare { 0.0 } else { 0.6 };
 
         Column {
             height: h,
@@ -1713,11 +3375,15 @@ impl Terrain {
     }
 
     /// Bare rock: layers a few tens of centimeters thick, gently wavy, of a few kinds of stone,
-    /// with moss growing in patches. Sandstone in the deserts.
-    fn rock(&self, column: &Column, z: i32) -> u8 {
+    /// with moss growing in patches, thick over the tops of ledges, `depth` voxels down from the
+    /// top of the ground, and in flecks below. Sandstone in the deserts.
+    fn rock(&self, column: &Column, z: i32, depth: i32) -> u8 {
         let thickness = (0.3 * self.settings.voxels_per_meter as f32).max(1.0) as i32;
         let layer = (z + column.strata).div_euclid(thickness);
         let h = hash3(column.x as u32, column.y as u32, z as u32 ^ self.settings.seed);
+        if depth <= 1 && column.top == STONE && column.moss > 0.22 {
+            return if depth == 0 && unit(h >> 16) < 0.5 { JUNGLE_GRASS } else { MOSS };
+        }
         if unit(h) < column.moss * 0.5 {
             return MOSS;
         }
@@ -1736,7 +3402,7 @@ impl Terrain {
         if z <= column.height {
             let depth = column.height - z;
             if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
-                self.rock(column, z)
+                self.rock(column, z, depth)
             } else if depth == 0 {
                 column.top
             } else {
@@ -1778,6 +3444,7 @@ impl Terrain {
                 columns[lx + ly * 8] = column;
             }
         }
+        let highest_ground = columns.iter().map(|c| c.height).max().unwrap_or(i32::MAX);
 
         // The shapes reaching into this column of bricks, along with their object's seed
         let column_lo = [(heights.origin[0] + cx as i64 * 8) as f32 * voxel - voxel, (heights.origin[1] + cy as i64 * 8) as f32 * voxel - voxel];
@@ -1814,6 +3481,19 @@ impl Terrain {
                 cells.push((index, SOLID_BRICK | STONE as u32));
                 continue;
             }
+            // Trees, plants, rocks and buildings above the ground, and caves and rooms cut into it
+            let (z_lo, z_hi) = ((z0 - 1) as f32 * voxel, (z0 + 9) as f32 * voxel);
+            nearby.clear();
+            nearby.extend(shapes.iter().filter(|(s, _)| s.max[2] >= z_lo && s.min[2] <= z_hi));
+            // Deep in the rock and nowhere near anything cut out of it, however deep what's cut out
+            // of the ground nearby goes: plain stone, as nothing can see it, rather than layers of
+            // rock that each take a brick of their own
+            let middle = [(heights.origin[0] + (cx * 8) as i64) as f32 + 4.0, (heights.origin[1] + (cy * 8) as i64) as f32 + 4.0, z0 as f32 + 4.0].map(|v| v * voxel);
+            let deep = z0 + 7 < min_height - dirt_depth;
+            if deep && nearby.iter().all(|(s, _)| s.clear_of(middle, 8.5 * voxel)) {
+                cells.push((index, SOLID_BRICK | STONE as u32));
+                continue;
+            }
 
             for lz in 0..8 {
                 for ly in 0..8 {
@@ -1823,12 +3503,13 @@ impl Terrain {
                 }
             }
 
-            // Trees, plants, rocks and buildings above the ground, and caves and rooms cut into it
-            let (z_lo, z_hi) = ((z0 - 1) as f32 * voxel, (z0 + 9) as f32 * voxel);
-            nearby.clear();
-            nearby.extend(shapes.iter().filter(|(s, _)| s.max[2] >= z_lo && s.min[2] <= z_hi));
             let cuts = nearby.iter().any(|(s, _)| s.placement != Placement::Above);
-            if !nearby.is_empty() {
+            // A brick wholly inside solid stone all of one kind, like that inside a castle's walls,
+            // needn't be looked at voxel by voxel
+            let uniform = uniform_brick(&nearby, [heights.origin[0] + (cx * 8) as i64, heights.origin[1] + (cy * 8) as i64, z0 as i64], voxel, z0 > highest_ground);
+            if let Some(m) = uniform {
+                materials.fill(m);
+            } else if !nearby.is_empty() {
                 let x0 = heights.origin[0] + (cx * 8) as i64;
                 let y0 = heights.origin[1] + (cy * 8) as i64;
                 for lz in 0..8 {
@@ -1852,7 +3533,7 @@ impl Terrain {
                                     continue;
                                 }
                                 let depth = shape.depth(p, voxel);
-                                if depth > 1.0 {
+                                if !shape.holds(p, depth) {
                                     continue;
                                 }
                                 let i = lx + ly * 8 + lz * 64;
@@ -1867,7 +3548,7 @@ impl Terrain {
                                 if shape.ragged && depth > 0.55 && unit(h) < 0.45 {
                                     continue;
                                 }
-                                materials[i] = shape.material_at(p, voxel, h);
+                                materials[i] = shape.material_at(p, voxel, h, (columns[lx + ly * 8].height + 1) as f32 * voxel);
                                 break;
                             }
                         }
@@ -1902,9 +3583,13 @@ impl Terrain {
     /// The rivers running through this piece of the landscape, from springs near enough for their
     /// rivers to reach it
     fn rivers_in(&self, cache: &RiverCache) -> Vec<Arc<Vec<RiverPoint>>> {
+        self.rivers_near(cache, self.lo.map(|v| v - RIVER_MARGIN_M), self.hi.map(|v| v + RIVER_MARGIN_M))
+    }
+
+    /// The rivers coming near the rectangle from `lo` to `hi`, in meters, wherever it is
+    fn rivers_near(&self, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<Arc<Vec<RiverPoint>>> {
         let reach = RIVER_STEPS as f32 * 0.5;
         let cell = |v: f32| (v / RIVER_CELL).floor() as i32;
-        let (lo, hi) = (self.lo, self.hi);
         let mut rivers = Vec::new();
         for cy in cell(lo[1] - reach)..=cell(hi[1] + reach) {
             for cx in cell(lo[0] - reach)..=cell(hi[0] + reach) {
@@ -1947,10 +3632,15 @@ impl Terrain {
                 (height_at(&self.settings, x, y), x, y)
             })
             .max_by(|a, b| a.0.total_cmp(&b.0))?;
-        (h > sea_level_m(&self.settings) + 10.0).then(|| self.trace_river(x, y, hash(r)))
+        // Most stay streams, some grow into great rivers
+        let g = hash3(r, 0xb16, seed);
+        let widens = if unit(g) < GREAT_RIVERS { GREAT_RIVER_WIDENS[0] + (GREAT_RIVER_WIDENS[1] - GREAT_RIVER_WIDENS[0]) * unit(hash(g)) } else { 0.0 };
+        (h > sea_level_m(&self.settings) + 10.0).then(|| self.trace_river(x, y, hash(r), widens))
     }
 
-    fn trace_river(&self, x: f32, y: f32, seed: u32) -> Vec<RiverPoint> {
+    /// The course of a river from its spring at `x`, `y` down to the sea, `widens` meters wider on
+    /// each side once it's run far enough
+    fn trace_river(&self, x: f32, y: f32, seed: u32, widens: f32) -> Vec<RiverPoint> {
         let sea_level = sea_level_m(&self.settings);
         let step = 0.5;
         let probe = 3.0;
@@ -1964,22 +3654,50 @@ impl Terrain {
         // a gorge into the ground below it, which the ground has to fall into before the next one.
         let mut level = surface;
         let mut points: Vec<RiverPoint> = Vec::new();
+        // How many times it's filled a hollow and spilled out of it, and how much further it keeps
+        // straight on through the hollow's rim
+        let (mut spills, mut straight) = (0, 0);
 
         for i in 0..RIVER_STEPS {
-            // Downhill, wandering a little so the river isn't straight,
-            // with momentum so it doesn't zigzag and can cut through small bumps
-            let gx = height(x + probe, y) - height(x - probe, y);
-            let gy = height(x, y + probe) - height(x, y - probe);
-            let wander = fbm(x / 25.0, y / 25.0, 2, seed);
-            let (sin, cos) = wander.sin_cos();
-            let downhill = [-gx * cos + gy * sin, -gx * sin - gy * cos];
-            let length = downhill[0].hypot(downhill[1]);
-            if length > 0.0 {
-                let w = if i == 0 { 1.0 } else { 0.2 };
-                dir = [dir[0] * (1.0 - w) + downhill[0] / length * w, dir[1] * (1.0 - w) + downhill[1] / length * w];
+            // Going round and round in a hollow: it fills up into a pond, and spills over the
+            // lowest point of the hollow's rim, cutting through it. After a few, the river just
+            // ends in its pond.
+            if straight == 0 && i >= RIVER_STUCK_STEPS && i % 10 == 0 {
+                let back = &points[i - RIVER_STUCK_STEPS];
+                if (x - back.x).hypot(y - back.y) < RIVER_STUCK_STEPS as f32 * step * 0.4 {
+                    if spills == RIVER_SPILLS {
+                        break;
+                    }
+                    spills += 1;
+                    let rim = (0..24)
+                        .map(|k| k as f32 * TAU / 24.0)
+                        .min_by(|&a, &b| height(x + RIVER_RIM * a.cos(), y + RIVER_RIM * a.sin()).total_cmp(&height(x + RIVER_RIM * b.cos(), y + RIVER_RIM * b.sin())))
+                        .unwrap_or(0.0);
+                    dir = [rim.cos(), rim.sin()];
+                    straight = (RIVER_RIM / step) as usize;
+                }
             }
-            let length = dir[0].hypot(dir[1]);
-            dir = if length > 0.0 { [dir[0] / length, dir[1] / length] } else { [1.0, 0.0] };
+            if straight > 0 {
+                // Bending gently as it goes, so it isn't a canal
+                straight -= 1;
+                let (sin, cos) = (0.05 * fbm(x / 12.0, y / 12.0, 2, seed ^ 0x5b11)).sin_cos();
+                dir = [dir[0] * cos - dir[1] * sin, dir[0] * sin + dir[1] * cos];
+            } else {
+                // Downhill, wandering a little so the river isn't straight,
+                // with momentum so it doesn't zigzag and can cut through small bumps
+                let gx = height(x + probe, y) - height(x - probe, y);
+                let gy = height(x, y + probe) - height(x, y - probe);
+                let wander = fbm(x / 25.0, y / 25.0, 2, seed);
+                let (sin, cos) = wander.sin_cos();
+                let downhill = [-gx * cos + gy * sin, -gx * sin - gy * cos];
+                let length = downhill[0].hypot(downhill[1]);
+                if length > 0.0 {
+                    let w = if i == 0 { 1.0 } else { 0.2 };
+                    dir = [dir[0] * (1.0 - w) + downhill[0] / length * w, dir[1] * (1.0 - w) + downhill[1] / length * w];
+                }
+                let length = dir[0].hypot(dir[1]);
+                dir = if length > 0.0 { [dir[0] / length, dir[1] / length] } else { [1.0, 0.0] };
+            }
 
             x += dir[0] * step;
             y += dir[1] * step;
@@ -1998,13 +3716,15 @@ impl Terrain {
                 }
             }
 
-            // Wider the further it has run
-            let progress = (i as f32 * step / 60.0).min(1.0);
+            // Wider the further it has run, a great river much wider
+            let run = i as f32 * step;
+            let stream = 1.0 + (STREAM_HALF_WIDTH - 1.0) * (run / 60.0).min(1.0);
+            let great = widens * smoothstep(0.0, 1.0, run / GREAT_RIVER_GROWS_M);
             points.push(RiverPoint {
                 x,
                 y,
                 surface: level,
-                half_width: 1.0 + 2.0 * progress,
+                half_width: stream + great,
                 lip: false,
             });
 
@@ -2016,23 +3736,46 @@ impl Terrain {
         points
     }
 
-    /// Trees, plants, rocks, buildings and caves, anywhere in this piece of the landscape. Each is
+    /// Trees, plants, rocks, buildings, dungeons and caves, anywhere in this piece of the landscape. Each is
     /// placed at a spot that only depends on where it is in the whole landscape, so pieces built
     /// around different places agree where they overlap.
-    fn place_objects(&self, heights: &Heights) -> (Vec<Object>, Features) {
+    fn place_objects(&self, heights: &Heights, rivers: &RiverCache) -> (Vec<Object>, Features) {
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
         let mut features = Features::default();
-        // Buildings go first, as where they overlap other things they win
-        let mut objects = self.buildings(heights, &mut features);
-        objects.extend(self.caves(&mut features));
-        objects.extend(self.ravines(&mut features));
+        // Buildings go first, as where they overlap other things they win. None stands over a
+        // dungeon, whose halls go before the caves so no cave breaks into them.
+        let dungeons = self.dungeons(rivers);
+        // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and no
+        // ruins stand in them
+        let (mut objects, towns) = self.towns(rivers, &mut features);
+        // Royal castles keep clear of all those and of caves themselves, see castles.rs
+        let (castles, royal) = self.castles(rivers, &mut features);
+        objects.extend(castles);
+        // Fallen cities deep under the land keep clear of all those themselves, and no cave or
+        // ravine breaks into them, see undercity.rs
+        let (sunken, cities, shafts) = self.undercities(rivers, &mut features);
+        objects.extend(sunken);
+        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).collect();
+        objects.extend(self.buildings(heights, &mut features, &keep_out));
+        for dungeon in &dungeons {
+            objects.push(self.dungeon(dungeon, &mut features));
+        }
+        let shut: Vec<[f32; 4]> = royal.iter().chain(&cities).copied().collect();
+        objects.extend(self.caves(&mut features, &royal, &cities));
+        objects.extend(self.waterfall_caves(&mut features));
+        objects.extend(self.ravines(&mut features, &shut));
+        let camps = self.camps(heights, &mut features, &keep_out, &objects);
+        objects.extend(camps);
         let footprints = std::mem::take(&mut features.footprints);
-        let (lo, hi) = (self.lo, self.hi);
+        let (own_lo, own_hi) = (self.own_lo, self.own_hi);
 
         // Calls `place` for one random spot in every `cell` meter square, with the column there,
-        // except where buildings stand
-        let mut scatter = |cell: f32, salt: u32, place: &mut dyn FnMut(f32, f32, f32, &Column, u32) -> Option<Object>| {
+        // except where buildings stand: out to `reach` meters past the piece itself, as far as what
+        // `place` makes reaches from its spot, so all of what reaches in is there. Each spot goes by
+        // where it is in the whole landscape, so pieces built round different places agree.
+        let mut scatter = |cell: f32, salt: u32, reach: f32, place: &mut dyn FnMut(f32, f32, f32, &Column, u32) -> Option<Object>| {
+            let (lo, hi) = (own_lo.map(|v| v - reach), own_hi.map(|v| v + reach));
             let first = [(lo[0] / cell).floor() as i32, (lo[1] / cell).floor() as i32];
             let last = [(hi[0] / cell).ceil() as i32, (hi[1] / cell).ceil() as i32];
             for cy in first[1]..last[1] {
@@ -2049,6 +3792,14 @@ impl Terrain {
                     let column = self.column(heights, (x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
                     let ground = (column.height + 1) as f32 / vpm;
                     if let Some(object) = place(x, y, ground, &column, hash(r)) {
+                        // Anything reaching further than `reach` would be missing where it does
+                        #[cfg(test)]
+                        assert!(
+                            object.min[0] >= x - reach && object.min[1] >= y - reach && object.max[0] <= x + reach && object.max[1] <= y + reach,
+                            "salt {salt:#x}: something at {x}, {y} reaches from {:?} to {:?}, past {reach} m",
+                            object.min,
+                            object.max
+                        );
                         objects.push(object);
                     }
                 }
@@ -2061,35 +3812,62 @@ impl Terrain {
         let settings = self.settings;
         let climate = |x: f32, y: f32| climate(&settings, x, y);
 
+        // Whether a river runs within a few meters of a spot
+        let by_river = |x: f32, y: f32| [[3.5, 0.0], [-3.5, 0.0], [0.0, 3.5], [0.0, -3.5]].iter().any(|d| heights.at_m(x + d[0], y + d[1]).1.is_finite());
+
+        // Mossy boulders and outcrops of rock in and around the woods of the milder lands, before
+        // the trees so where one stands in the way of a rock, the rock wins. Boulders keep clear of
+        // tree trunks.
+        let mild_woods = |x: f32, y: f32, ground: f32, column: &Column| {
+            let c = climate(x, y);
+            let mild = c.jungle.max(c.desert).max(c.snow) < 0.45;
+            if mild && is_grassy(column.top) && ground - sea_level > 1.5 { forest(x, y) } else { 0.0 }
+        };
+        scatter(17.0, 0xb01d, 4.0, &mut |x, y, ground, column, r| {
+            let woods = mild_woods(x, y, ground, column);
+            (unit(r) < woods * 0.4 && !self.near_tree(x, y, 2.2)).then(|| self.mossy_rock(x, y, ground, false, 150 + (woods * 100.0) as u8, hash(r)))
+        });
+        scatter(40.0, 0x0c7c, 9.0, &mut |x, y, ground, column, r| {
+            let woods = mild_woods(x, y, ground, column);
+            (unit(r) < woods * 0.45).then(|| self.mossy_rock(x, y, ground, true, 180 + (woods * 70.0) as u8, hash(r)))
+        });
+
         // At most one tree per cell, denser where the forest noise is high. The jungle is thick
         // with them, the snow has pine forests, and in the desert only palms grow, by the water.
-        scatter(7.5, 0x7a3e, &mut |x, y, ground, column, r| {
+        // Willows lean out over the rivers in the milder lands.
+        scatter(trees::TREE_CELL, trees::TREE_SALT, 16.0, &mut |x, y, ground, column, r| {
             let c = climate(x, y);
             let density = if c.jungle > 0.5 {
                 0.95
             } else if column.top == SAND && c.desert > 0.5 {
                 if ground - sea_level < 2.5 { 0.25 } else { 0.0 }
             } else if column.top == SNOW || c.snow > 0.5 {
-                forest(x, y) * 0.6 + 0.05
+                forest(x, y) * 0.7 + 0.08
             } else {
-                forest(x, y) * 0.85 + 0.03
+                // A little sparser in the thick of the broad-leaved woods, where the crowns are big
+                // enough to meet anyway
+                (forest(x, y) * 0.85 + 0.03) * (1.0 - 0.34 * self.broadleaf_woods(x, y, ground))
             };
             let soil = is_grassy(column.top) || column.top == SNOW && c.snow > 0.3 || column.top == SAND && c.desert > 0.5;
-            (soil && unit(r) < density).then(|| self.tree(x, y, ground, hash(r)))
+            let mild = c.jungle.max(c.desert).max(c.snow) < 0.4;
+            if soil && mild && column.top == GRASS && unit(hash(r ^ 0x5117)) < 0.45 && by_river(x, y) {
+                let mut rng = Rng(hash(r ^ 0x3171));
+                return Some(Object::new(self.willow(x, y, ground, &mut rng), rng.0));
+            }
+            (soil && unit(r) < density).then(|| self.wild_tree(x, y, ground, hash(r)))
         });
 
         // In the jungle, smaller trees in between the big ones
-        scatter(4.5, 0x9b1e, &mut |x, y, ground, column, r| {
+        scatter(4.5, 0x9b1e, 5.0, &mut |x, y, ground, column, r| {
             let c = climate(x, y);
             (column.top == JUNGLE_GRASS && unit(r) < c.jungle * 0.7).then(|| {
                 let mut rng = Rng(hash(r));
-                let foliage = Foliage { material: LEAVES_DARK, accent: LEAVES, leaf_length: 0.3, leaves_per_twig: 10, clumps_per_twig: 2 };
-                Object::new(self.broadleaf(x, y, ground, 0.8, 2, BARK_DARK, foliage, &mut rng), rng.0)
+                Object::new(self.jungle_sapling(x, y, ground, &mut rng), rng.0)
             })
         });
 
         // Cacti and dry shrubs in the desert
-        scatter(6.0, 0xcac7, &mut |x, y, ground, column, r| {
+        scatter(6.0, 0xcac7, 4.0, &mut |x, y, ground, column, r| {
             let c = climate(x, y);
             if column.top != SAND || c.desert < 0.5 || ground - sea_level < 2.0 {
                 return None;
@@ -2107,15 +3885,30 @@ impl Terrain {
             }
         });
 
-        // Bushes, mostly around the forests
-        scatter(4.0, 0xb054, &mut |x, y, ground, column, r| {
-            let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.3 + meadow(x, y) * 0.08 + 0.04;
-            (is_grassy(column.top) && unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), hash(r)))
+        // Bushes, mostly around the forests, and in the thick of the broad-leaved woods a dense
+        // undergrowth of them
+        scatter(4.0, 0xb054, 4.0, &mut |x, y, ground, column, r| {
+            if !is_grassy(column.top) {
+                return None;
+            }
+            let woods = self.broadleaf_woods(x, y, ground);
+            let density = smoothstep(-0.3, 0.2, forest(x, y) * 2.0 - 1.0) * 0.38 + meadow(x, y) * 0.08 + 0.04 + woods * 0.4;
+            (unit(r) < density).then(|| self.bush(x, y, ground, meadow(x, y), woods, hash(r)))
+        });
+
+        // Fallen logs and old stumps in the woods, out of the jungle and the desert
+        scatter(6.0, 0xd0a7, 5.0, &mut |x, y, ground, column, r| {
+            let c = climate(x, y);
+            let soil = column.top == GRASS || column.top == SNOW && c.snow > 0.3;
+            if !soil || c.jungle > 0.4 || c.desert > 0.4 || ground - sea_level < 1.0 || unit(r) >= forest(x, y) * 0.2 {
+                return None;
+            }
+            self.deadwood(x, y, ground, hash(r))
         });
 
         // Undergrowth: ferns, big leaves and mushrooms in the forests and all over the jungle,
         // flowers in the meadows, reeds along the shore
-        scatter(1.2, 0x9a47, &mut |x, y, ground, column, r| {
+        scatter(1.2, 0x9a47, 2.0, &mut |x, y, ground, column, r| {
             if !is_grassy(column.top) {
                 return None;
             }
@@ -2149,39 +3942,21 @@ impl Terrain {
             Some(Object::new(shapes, rng.0))
         });
 
-        // Boulders, half sunk into the ground, of sandstone in the desert
-        scatter(14.0, 0xb0d3, &mut |x, y, ground, column, r| {
-            let dry = ground > sea_level && column.top != GRAVEL;
-            (dry && unit(r) < 0.45).then(|| {
-                let mut boulder = self.boulder(x, y, ground - 1.0 / vpm, hash(r));
-                if column.top == SAND && climate(x, y).desert > 0.5 {
-                    for shape in &mut boulder.shapes {
-                        (shape.material, shape.accent) = (SANDSTONE, SANDSTONE_DARK);
-                    }
-                }
-                boulder
-            })
-        });
-
         features.footprints = footprints;
         (objects, features)
     }
 
     /// Temples and ruins on flat, dry ground, at most one in each BUILDING_CELL square, and
-    /// gateways over some of the waterfalls
-    fn buildings(&self, heights: &Heights, features: &mut Features) -> Vec<Object> {
+    /// gateways over some of the waterfalls. None where `keep_out` says, x0, y0, x1, y1 in meters.
+    fn buildings(&self, heights: &Heights, features: &mut Features, keep_out: &[[f32; 4]]) -> Vec<Object> {
         const BUILDING_CELL: f32 = 56.0;
         let seed = self.settings.seed;
-        let vpm = heights.voxels_per_meter;
         let sea_level = sea_level_m(&self.settings);
-        // The ground at a point in this piece, in meters, and whether a river runs there
+        // The ground at a point, in meters, and whether a river runs there, the same whichever
+        // piece of the landscape it's worked out for
         let ground = |x: f32, y: f32| -> Option<(f32, bool)> {
-            let (gx, gy) = ((x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
-            if gx < 0 || gy < 0 || gx >= heights.size[0] as i64 || gy >= heights.size[1] as i64 {
-                return None;
-            }
-            let i = gx as usize + gy as usize * heights.size[0];
-            Some((heights.ground[i], heights.river[i].is_finite()))
+            let (g, r) = heights.at_m(x, y);
+            Some((g, r.is_finite()))
         };
         let mut objects = Vec::new();
 
@@ -2230,8 +4005,11 @@ impl Terrain {
                     "watchtower" => (4.5, 3.0),
                     _ => (8.5, 6.0),
                 };
+                if keep_out.iter().any(|k| overlaps(*k, [x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0], 0.0)) {
+                    continue;
+                }
 
-                // The whole site has to be in this piece of the landscape, dry and flat enough
+                // The whole site has to be dry and flat enough
                 let samples: Option<Vec<(f32, bool)>> = (0..25)
                     .map(|i| ground(x - half + half * 0.5 * (i % 5) as f32, y - half + half * 0.5 * (i / 5) as f32))
                     .collect();
@@ -2278,10 +4056,11 @@ impl Terrain {
             }
         }
 
-        // Aztec gateways standing over waterfalls in the jungle, for the river to pour through
-        for (lip, flow) in self.waterfalls() {
+        // Aztec gateways standing over waterfalls in the jungle, for the river to pour through, if
+        // it isn't too wide to
+        for (lip, flow, wide) in self.waterfalls_near() {
             let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, seed ^ 0x9a7e);
-            if unit(r) > 0.5 || climate(&self.settings, lip[0], lip[1]).jungle < 0.7 {
+            if unit(r) > 0.5 || wide > STREAM_HALF_WIDTH + 0.5 || climate(&self.settings, lip[0], lip[1]).jungle < 0.7 {
                 continue;
             }
             let mut rng = Rng(hash(r));
@@ -2697,253 +4476,1062 @@ impl Terrain {
     /// Ravines: long, deep, narrow cracks in the ground, wandering along with ledges down their
     /// sides, at most one in each RAVINE_CELL square. Most are open to the sky; the rest are
     /// crevices hidden under the ground, with crystals glowing at the bottom.
-    fn ravines(&self, features: &mut Features) -> Vec<Object> {
-        const RAVINE_CELL: f32 = 100.0;
+    fn ravines(&self, features: &mut Features, royal: &[[f32; 4]]) -> Vec<Object> {
+        let (lo, hi) = (self.lo, self.hi);
+        let mut objects = Vec::new();
+        let first = [((lo[0] - RAVINE_REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - RAVINE_REACH) / RAVINE_CELL).floor() as i32];
+        let last = [((hi[0] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32];
+        for cy in first[1]..last[1] {
+            for cx in first[0]..last[0] {
+                // None breaks into a royal castle, see castles.rs
+                let into = |o: &Object| royal.iter().any(|r| overlaps([o.min[0], o.min[1], o.max[0], o.max[1]], *r, 3.0));
+                if !royal.is_empty() && self.ravine(cx, cy, &mut Features::default()).is_some_and(|o| into(&o)) {
+                    continue;
+                }
+                objects.extend(self.ravine(cx, cy, features));
+            }
+        }
+        objects
+    }
+
+    /// The ravine starting in one RAVINE_CELL square, if there's one
+    fn ravine(&self, cx: i32, cy: i32, features: &mut Features) -> Option<Object> {
         const STEP: f32 = 2.0;
-        // How far from where they start ravines can reach
-        const REACH: f32 = 100.0;
         let seed = self.settings.seed;
         let sea_level = sea_level_m(&self.settings);
-        let (lo, hi) = (self.lo, self.hi);
-        let mut objects = Vec::new();
-        let first = [((lo[0] - REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - REACH) / RAVINE_CELL).floor() as i32];
-        let last = [((hi[0] + REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + REACH) / RAVINE_CELL).ceil() as i32];
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                let r = hash3(cx as u32, cy as u32, seed ^ 0x7a71);
-                if unit(r) > 0.7 {
-                    continue;
+        let r = hash3(cx as u32, cy as u32, seed ^ 0x7a71);
+        if unit(r) > 0.7 {
+            return None;
+        }
+        let mut rng = Rng(hash(r));
+        let (mut x, mut y) = ((cx as f32 + rng.next()) * RAVINE_CELL, (cy as f32 + rng.next()) * RAVINE_CELL);
+        if height_at(&self.settings, x, y) < sea_level + 4.0 {
+            return None;
+        }
+        let open = rng.next() < 0.5;
+        let mut heading = rng.next() * TAU;
+        let width = rng.range(2.0, 4.5);
+        let depth = rng.range(10.0, 22.0);
+        let steps = 15 + (rng.next() * 30.0) as usize;
+        let mut shapes = Vec::new();
+        let mut crystals = Vec::new();
+        for i in 0..steps {
+            // Narrow at both ends
+            let taper = (std::f32::consts::PI * (i as f32 + 0.5) / steps as f32).sin().sqrt();
+            heading += rng.range(-0.25, 0.25);
+            let along = [heading.cos(), heading.sin(), 0.0];
+            x += along[0] * STEP;
+            y += along[1] * STEP;
+            let ground = height_at(&self.settings, x, y);
+            if ground < sea_level + 1.0 {
+                break;
+            }
+            let top = if open { ground + 2.0 } else { ground - rng.range(4.0, 7.0) };
+            let bottom = top - depth * taper - 2.0;
+            if i == steps / 2 && self.inside(x, y) {
+                let kind = if open { "ravine" } else { "crevice" };
+                features.sites.push(Site { kind, position: [x, y, if open { ground } else { bottom + 1.5 }], facing: [along[0], along[1]] });
+            }
+            let middle = (top + bottom) * 0.5;
+            let w = width * taper + 0.6;
+            // A wide upper part and a narrower deeper one, leaving ledges down the sides
+            shapes.push(Shape::slab([x, y, middle + (top - bottom) * 0.15], along, STEP * 2.0, w, (top - bottom) * 0.75));
+            shapes.push(Shape::slab([x, y, middle - (top - bottom) * 0.1], along, STEP * 2.0, w * 0.55, top - bottom));
+            features.recuts.push([x - w - STEP, y - w - STEP, x + w + STEP, y + w + STEP, ground + 3.0]);
+            if !open && i % 6 == 3 {
+                let at = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), bottom + 0.6];
+                for _ in 0..3 {
+                    let offset = [rng.range(-0.3, 0.3), rng.range(-0.3, 0.3), rng.range(0.0, 0.4)];
+                    crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
                 }
-                let mut rng = Rng(hash(r));
-                let (mut x, mut y) = ((cx as f32 + rng.next()) * RAVINE_CELL, (cy as f32 + rng.next()) * RAVINE_CELL);
-                if height_at(&self.settings, x, y) < sea_level + 4.0 {
-                    continue;
+                if self.inside(at[0], at[1]) {
+                    features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
                 }
-                let open = rng.next() < 0.5;
-                let mut heading = rng.next() * TAU;
-                let width = rng.range(2.0, 4.5);
-                let depth = rng.range(10.0, 22.0);
-                let steps = 15 + (rng.next() * 30.0) as usize;
-                let mut shapes = Vec::new();
-                let mut crystals = Vec::new();
-                for i in 0..steps {
-                    // Narrow at both ends
-                    let taper = (std::f32::consts::PI * (i as f32 + 0.5) / steps as f32).sin().sqrt();
-                    heading += rng.range(-0.25, 0.25);
-                    let along = [heading.cos(), heading.sin(), 0.0];
-                    x += along[0] * STEP;
-                    y += along[1] * STEP;
-                    let ground = height_at(&self.settings, x, y);
-                    if ground < sea_level + 1.0 {
-                        break;
-                    }
-                    let top = if open { ground + 2.0 } else { ground - rng.range(4.0, 7.0) };
-                    let bottom = top - depth * taper - 2.0;
-                    if i == steps / 2 && self.inside(x, y) {
-                        let kind = if open { "ravine" } else { "crevice" };
-                        features.sites.push(Site { kind, position: [x, y, if open { ground } else { bottom + 1.5 }], facing: [along[0], along[1]] });
-                    }
-                    let middle = (top + bottom) * 0.5;
-                    let w = width * taper + 0.6;
-                    // A wide upper part and a narrower deeper one, leaving ledges down the sides
-                    shapes.push(Shape::slab([x, y, middle + (top - bottom) * 0.15], along, STEP * 2.0, w, (top - bottom) * 0.75));
-                    shapes.push(Shape::slab([x, y, middle - (top - bottom) * 0.1], along, STEP * 2.0, w * 0.55, top - bottom));
-                    features.recuts.push([x - w - STEP, y - w - STEP, x + w + STEP, y + w + STEP, ground + 3.0]);
-                    if !open && i % 6 == 3 {
-                        let at = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), bottom + 0.6];
-                        for _ in 0..3 {
-                            let offset = [rng.range(-0.3, 0.3), rng.range(-0.3, 0.3), rng.range(0.0, 0.4)];
-                            crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
-                        }
-                        if self.inside(at[0], at[1]) {
-                            features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
-                        }
-                    }
-                }
-                shapes.extend(crystals);
-                objects.push(Object::new(shapes, rng.0));
             }
         }
-        objects
+        shapes.extend(crystals);
+        Some(Object::new(shapes, rng.0))
     }
 
-    /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square. Some open
-    /// out onto the hillside, and glowing crystals grow on their floors here and there.
-    fn caves(&self, features: &mut Features) -> Vec<Object> {
-        const CAVE_CELL: f32 = 72.0;
-        // How far from where they start caves can wander
-        const REACH: f32 = 120.0;
-        let seed = self.settings.seed;
-        let sea_level = sea_level_m(&self.settings);
+    /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square, opening out
+    /// into caverns along the way. Most open onto the hillside, and in those the last cavern is a
+    /// great one where a boss makes its lair: "cavern", at the middle of its floor, facing the
+    /// way in.
+    fn caves(&self, features: &mut Features, royal: &[[f32; 4]], cities: &[[f32; 4]]) -> Vec<Object> {
         let (lo, hi) = (self.lo, self.hi);
         let mut objects = Vec::new();
-        let first = [((lo[0] - REACH) / CAVE_CELL).floor() as i32, ((lo[1] - REACH) / CAVE_CELL).floor() as i32];
-        let last = [((hi[0] + REACH) / CAVE_CELL).ceil() as i32, ((hi[1] + REACH) / CAVE_CELL).ceil() as i32];
+        let first = [((lo[0] - CAVE_REACH) / CAVE_CELL).floor() as i32, ((lo[1] - CAVE_REACH) / CAVE_CELL).floor() as i32];
+        let last = [((hi[0] + CAVE_REACH) / CAVE_CELL).ceil() as i32, ((hi[1] + CAVE_REACH) / CAVE_CELL).ceil() as i32];
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
-                let r = hash3(cx as u32, cy as u32, seed ^ 0xca7e);
-                if unit(r) > 0.5 {
+                let Some(cave) = self.cave_in(cx, cy) else {
                     continue;
-                }
-                let mut rng = Rng(hash(r));
-                let mut p = [(cx as f32 + rng.next()) * CAVE_CELL, (cy as f32 + rng.next()) * CAVE_CELL, 0.0];
-                let surface = height_at(&self.settings, p[0], p[1]);
-                if surface < sea_level + 3.0 {
-                    continue;
-                }
-                let mouth = rng.next() < 0.5;
-                p[2] = if mouth { surface - 0.5 } else { surface - rng.range(6.0, 14.0) };
-                let mut yaw = rng.next() * TAU;
-                let mut pitch: f32 = if mouth { -0.35 } else { 0.0 };
-                let mut radius = rng.range(1.2, 1.8);
-                let mut shapes = Vec::new();
-                let mut crystals = Vec::new();
-                for i in 0..30 + (rng.next() * 40.0) as usize {
-                    let next_radius = (radius + rng.range(-0.25, 0.25)).clamp(1.0, 2.4);
-                    let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
-                    let q = add(p, scale(dir, 1.6));
-                    shapes.push(Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve));
-                    if i % 9 == 4 {
-                        let at = [q[0] + rng.range(-0.5, 0.5), q[1] + rng.range(-0.5, 0.5), q[2] - next_radius * 0.8];
-                        for _ in 0..3 {
-                            let offset = [rng.range(-0.35, 0.35), rng.range(-0.35, 0.35), rng.range(0.0, 0.3)];
-                            crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
-                        }
-                        if self.inside(at[0], at[1]) {
-                            features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
-                        }
-                    }
-                    // Wander about, staying well under the ground, and never under the sea
-                    let depth = height_at(&self.settings, q[0], q[1]) - q[2];
-                    yaw += rng.range(-0.35, 0.35);
-                    let want = if depth < 4.0 && i > 4 { -0.3 } else if depth > 16.0 { 0.25 } else { rng.range(-0.15, 0.15) };
-                    pitch = (pitch * 0.7 + want * 0.3).clamp(-0.5, 0.5);
-                    p = q;
-                    radius = next_radius;
-                    if q[2] < sea_level - 2.0 {
-                        break;
-                    }
-                }
-                shapes.extend(crystals);
-                objects.push(Object::new(shapes, rng.0));
-            }
-        }
-        objects
-    }
-
-    // Which kind of tree grows where: pines up high, palms and willows by the water, and groves of
-    // one kind or another elsewhere
-    fn tree(&self, x: f32, y: f32, base: f32, r: u32) -> Object {
-        let seed = self.settings.seed;
-        let mut rng = Rng(r);
-
-        let sea_level = sea_level_m(&self.settings);
-        let altitude = (base - sea_level) / (self.settings.height_m as f32 - sea_level);
-        let pine_region = fbm(x / 90.0, y / 90.0, 2, seed.wrapping_add(8));
-        let pines = smoothstep(0.25, 0.45, altitude + pine_region * 0.3);
-        let grove = fbm(x / 50.0, y / 50.0, 2, seed.wrapping_add(9)) * 0.5 + 0.5;
-
-        let c = climate(&self.settings, x, y);
-        if c.jungle > 0.5 {
-            return Object::new(self.jungle_tree(x, y, base, &mut rng), rng.0);
-        }
-        if c.desert > 0.5 {
-            return Object::new(self.palm(x, y, base, &mut rng), rng.0);
-        }
-        if c.snow > 0.5 {
-            // Pines with snow on their branches
-            let mut shapes = if rng.next() < 0.5 { self.spruce(x, y, base, &mut rng) } else { self.fir(x, y, base, &mut rng) };
-            for shape in &mut shapes {
-                if shape.material == PINE {
-                    shape.accent = SNOW;
-                }
-            }
-            return Object::new(shapes, rng.0);
-        }
-
-        let pick = rng.next();
-        let shapes = if altitude > 0.55 && pick < 0.12 {
-            self.broadleaf(x, y, base, 1.0, 2, DEAD_WOOD, BARE, &mut rng)
-        } else if pick < pines {
-            if rng.next() < 0.5 { self.spruce(x, y, base, &mut rng) } else { self.fir(x, y, base, &mut rng) }
-        } else if base - sea_level < 2.5 {
-            if rng.next() < 0.6 { self.palm(x, y, base, &mut rng) } else { self.willow(x, y, base, &mut rng) }
-        } else {
-            let choice = grove * 0.7 + rng.next() * 0.3;
-            let (leaves, accent) = self.leaf_colors(x, y, &mut rng);
-            let foliage = Foliage {
-                material: leaves,
-                accent,
-                leaf_length: 0.3,
-                leaves_per_twig: 42,
-                clumps_per_twig: 1,
-            };
-            if choice < 0.3 {
-                self.broadleaf(x, y, base, 1.0, 2, WOOD, foliage, &mut rng)
-            } else if choice < 0.45 {
-                self.birch(x, y, base, &mut rng)
-            } else if choice < 0.55 {
-                let blossom = Foliage {
-                    material: BLOSSOM,
-                    accent: FLOWER_WHITE,
-                    leaf_length: 0.22,
-                    ..foliage
                 };
-                self.broadleaf(x, y, base, 0.8, 2, BARK_DARK, blossom, &mut rng)
-            } else if choice < 0.65 {
-                self.poplar(x, y, base, leaves, accent, &mut rng)
-            } else if choice < 0.75 {
-                self.willow(x, y, base, &mut rng)
-            } else if rng.next() < 0.08 {
-                // The odd giant
-                self.broadleaf(x, y, base, 2.2, 3, WOOD, foliage, &mut rng)
-            } else {
-                self.broadleaf(x, y, base, 1.2, 2, WOOD, foliage, &mut rng)
+                // Far out, it's only what reaches into this piece that matters. None breaks out of
+                // the ground inside a royal castle, see castles.rs.
+                if !overlaps([lo[0], lo[1], hi[0], hi[1]], cave.bounds, 0.0) || royal.iter().any(|r| self.breaks_into(&cave, *r)) {
+                    continue;
+                }
+                // Nor anywhere under a fallen city, see undercity.rs
+                let under = |r: &[f32; 4]| overlaps(cave.bounds, *r, 0.0) && cave.shapes.iter().any(|s| s.placement == Placement::Carve && overlaps([s.min[0], s.min[1], s.max[0], s.max[1]], *r, 2.0));
+                if cities.iter().any(under) {
+                    continue;
+                }
+                features.lights.extend(cave.lights.into_iter().filter(|l| self.inside(l.position[0], l.position[1])));
+                for &(floor, facing, _) in cave.lairs.iter().filter(|(f, ..)| self.inside(f[0], f[1])) {
+                    features.sites.push(Site { kind: "cavern", position: floor, facing });
+                }
+                for &(floor, facing, _) in cave.nests.iter().filter(|(f, ..)| self.inside(f[0], f[1])) {
+                    features.sites.push(Site { kind: "cave nest", position: floor, facing });
+                }
+                objects.push(Object::new(cave.shapes, cave.seed));
             }
-        };
-        Object::new(shapes, rng.0)
+        }
+        objects
     }
 
-    /// A jungle giant: a tall trunk on buttress roots, a wide crown of dark leaves, and vines
-    /// hanging down from it
-    fn jungle_tree(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(9.0, 15.0);
-        let radius = rng.range(0.35, 0.55);
-        let spread = rng.range(3.5, 5.5);
-        let top = [x + rng.range(-0.8, 0.8), y + rng.range(-0.8, 0.8), base + height];
-        let mut shapes = vec![Shape::wood([x, y, base - 0.5], top, radius, radius * 0.7, BARK_DARK)];
-        for i in 0..4 {
-            let angle = i as f32 / 4.0 * TAU + rng.range(-0.4, 0.4);
-            let foot = [x + angle.cos() * 1.7, y + angle.sin() * 1.7, base - 0.3];
-            shapes.push(Shape::wood([x, y, base + 1.8], foot, radius * 0.7, 0.12, BARK_DARK));
-        }
-        let mut clumps = Vec::new();
-        let foliage = Foliage {
-            material: LEAVES_DARK,
-            accent: LEAVES,
-            leaf_length: 0.45,
-            leaves_per_twig: 54,
-            clumps_per_twig: 1,
-        };
-        for i in 0..9 {
-            let angle = i as f32 / 9.0 * TAU + rng.range(-0.3, 0.3);
-            let d = if i == 0 { 0.0 } else { spread * rng.range(0.5, 1.0) };
-            let at = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] + rng.range(-0.6, 0.8) - d * 0.15];
-            if i > 0 {
-                shapes.push(Shape::wood([top[0], top[1], top[2] - 1.5], [at[0], at[1], at[2] - 0.5], 0.2, 0.1, BARK_DARK));
+    /// Behind some waterfalls, a cave: in through the falling water, a low way in under the lip of
+    /// the fall, round sideways from under the river, and back into the hill to a little cavern
+    /// glowing with crystals, where someone hid a chest. Kept under the shallow lip, where the
+    /// river's bed is high, so it never breaks into the river and drains it.
+    fn waterfall_caves(&self, features: &mut Features) -> Vec<Object> {
+        let sea_level = sea_level_m(&self.settings);
+        let mut objects = Vec::new();
+        for (lip, flow, wide) in self.waterfalls_near() {
+            let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, self.settings.seed ^ 0xfa11);
+            if unit(r) > 0.45 {
+                continue;
             }
-            let out = normalize([angle.cos() * d.min(1.0), angle.sin() * d.min(1.0), 0.6]);
-            self.leaf_cluster(&mut clumps, at, out, rng.range(1.6, 2.4), BARK_DARK, foliage, rng);
+            let mut rng = Rng(hash(r));
+            let pool = (lip[2] - FALL_HEIGHT).max(sea_level);
+            // Its floor a little over the pool the water falls into, so none of it runs in
+            let floor = pool + 0.5;
+            let side = if rng.next() < 0.5 { [-flow[1], flow[0]] } else { [flow[1], -flow[0]] };
+            // Out from under a wider river, the further it is to its bank
+            let wider = (wide - STREAM_HALF_WIDTH).max(0.0);
+            let at = |along: f32, out: f32, up: f32| {
+                let out = if out > 0.0 { out + wider } else { out };
+                [lip[0] + flow[0] * along + side[0] * out, lip[1] + flow[1] * along + side[1] * out, floor + up]
+            };
+            // Low under the lip, where there's the least rock between it and the river
+            let radius = 0.95;
+            let path = [at(0.9, 0.0, radius), at(-0.4, 0.0, radius), at(-0.4, 4.0, radius), at(-0.4, 7.5, radius), at(-3.5, 9.5, radius + 0.1)];
+            let mut shapes = Vec::new();
+            for pair in path.windows(2) {
+                let tunnel = Shape::capsule(pair[0], pair[1], radius, radius, AIR, AIR, false).placed(Placement::Carve);
+                shapes.push(tunnel.roughened(0.12, floor - 0.05));
+            }
+            // Just inside, under the lip, looking out through the falling water
+            let inside = at(-0.2, 0.0, 0.0);
+            if self.inside(inside[0], inside[1]) {
+                features.sites.push(Site { kind: "waterfall cave", position: inside, facing: flow });
+            }
+            // The cavern, with room enough over it in the hill, else the cave ends where it is
+            let middle = at(-6.0, 11.0, 1.4);
+            let ground = height_at(&self.settings, middle[0], middle[1]);
+            if middle[2] + 2.0 + 2.0 < ground {
+                let cavern = Shape::ellipsoid(middle, [3.2, 3.2, 1.9], AIR, AIR).placed(Placement::Carve);
+                shapes.push(cavern.roughened(0.35, floor - 0.05));
+                shapes.push(Shape::capsule(path[4], middle, radius, 1.3, AIR, AIR, false).placed(Placement::Carve).roughened(0.12, floor - 0.05));
+                let mut crystals = Vec::new();
+                for k in 0..3 {
+                    let a = rng.next() * TAU + k as f32 * 2.1;
+                    let c = [middle[0] + a.cos() * 2.4, middle[1] + a.sin() * 2.4, floor];
+                    for _ in 0..4 {
+                        let offset = [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), rng.range(0.0, 0.4)];
+                        crystals.push(Shape::sphere(add(c, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
+                    }
+                    if self.inside(c[0], c[1]) {
+                        features.lights.push(Light { position: [c[0], c[1], c[2] + 0.7], color: [0.4, 0.85, 1.0], reach: 8.0 });
+                    }
+                }
+                shapes.extend(crystals);
+                // Rolled whichever piece of the landscape it's in, so the random numbers run on the
+                // same way, and the cave's the same, in every piece it's built for
+                let luck = 3.0 + rng.next() * 2.0;
+                if self.inside(middle[0], middle[1]) {
+                    let heading = (lip[1] - middle[1]).atan2(lip[0] - middle[0]);
+                    chest(features, [middle[0], middle[1], floor], heading, luck);
+                }
+            }
+            objects.push(Object::new(shapes, rng.0));
         }
-        for _ in 0..12 {
-            let angle = rng.next() * TAU;
-            let d = spread * rng.range(0.4, 1.1);
-            let start = [top[0] + angle.cos() * d, top[1] + angle.sin() * d, top[2] - 0.8];
-            let end = [start[0] + rng.range(-0.2, 0.2), start[1] + rng.range(-0.2, 0.2), start[2] - rng.range(2.5, height * 0.6)];
-            shapes.push(Shape::capsule(start, end, 0.07, 0.05, VINE, LEAVES, false));
+        objects
+    }
+
+    /// The cave starting in one CAVE_CELL square, if there's one
+    fn cave_in(&self, cx: i32, cy: i32) -> Option<Cave> {
+        let sea_level = sea_level_m(&self.settings);
+        let r = hash3(cx as u32, cy as u32, self.settings.seed ^ 0xca7e);
+        if unit(r) > 0.65 {
+            return None;
         }
-        shapes.extend(clumps);
-        shapes
+        let mut rng = Rng(hash(r));
+        let mut p = [(cx as f32 + rng.next()) * CAVE_CELL, (cy as f32 + rng.next()) * CAVE_CELL, 0.0];
+        let surface = height_at(&self.settings, p[0], p[1]);
+        if surface < sea_level + 3.0 {
+            return None;
+        }
+        let mouth = rng.next() < 0.6;
+        p[2] = if mouth { surface - 0.8 } else { surface - rng.range(8.0, 16.0) };
+        let mut yaw = rng.next() * TAU;
+        let mut pitch: f32 = if mouth { -0.4 } else { 0.0 };
+        let mut radius = rng.range(1.8, 2.5);
+        let mut cave = Cave { shapes: Vec::new(), lights: Vec::new(), lairs: Vec::new(), nests: Vec::new(), bounds: [p[0], p[1], p[0], p[1]], seed: 0 };
+        let mut inside = Vec::new();
+        let segments = 70 + (rng.next() * 60.0) as usize;
+        let mut next_cavern = rng.range(10.0, 18.0) as usize;
+        let mut caverns = Vec::new();
+        let mut lairs = Vec::new();
+        for i in 0..segments {
+            let next_radius = (radius + rng.range(-0.35, 0.35)).clamp(1.8, 3.4);
+            let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
+            let q = add(p, scale(dir, 2.2));
+            // Lumpy walls and roof over a flatter floor, the round bottom of the tube left filled
+            let floor = p[2].min(q[2]) - radius.min(next_radius) * 0.6;
+            let tunnel = Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve);
+            cave.shapes.push(tunnel.roughened(0.3 * radius.max(next_radius), floor));
+            if i % 8 == 4 {
+                let at = [q[0] + rng.range(-0.6, 0.6), q[1] + rng.range(-0.6, 0.6), q[2] - next_radius * 0.8];
+                for _ in 0..3 {
+                    let offset = [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), rng.range(0.0, 0.3)];
+                    inside.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.32), CRYSTAL, AIR, false).placed(Placement::Inside));
+                }
+                cave.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 8.0 });
+            }
+            // Opening out into a cavern now and then, on the way down, where cave spiders nest.
+            // Deep in a long cave, some are great caverns a boss of its own makes its lair in.
+            if i == next_cavern && i > 4 {
+                let floor = [q[0], q[1], q[2] - next_radius * 0.75];
+                let great = mouth && i > 30 && rng.next() < 0.35;
+                if let Some((at, wide)) = self.cavern(&mut cave, &mut inside, floor, great, &mut rng) {
+                    (if great { &mut lairs } else { &mut caverns }).push((at, [-dir[0], -dir[1]], wide));
+                }
+                next_cavern += rng.range(14.0, 24.0) as usize;
+            }
+            // Wander about, staying well under the ground, and never under the sea
+            let depth = height_at(&self.settings, q[0], q[1]) - q[2];
+            yaw += rng.range(-0.3, 0.3);
+            let want = if depth < 7.0 && i > 4 { -0.3 } else if depth > 20.0 { 0.25 } else { rng.range(-0.12, 0.12) };
+            pitch = (pitch * 0.7 + want * 0.3).clamp(-0.45, 0.45);
+            p = q;
+            radius = next_radius;
+            if q[2] < sea_level - 2.0 {
+                break;
+            }
+        }
+        // A cave a way into opens at its far end into a great cavern, a boss's lair
+        if mouth {
+            let floor = [p[0], p[1], p[2] - radius * 0.75];
+            let way_in = [-yaw.cos(), -yaw.sin()];
+            match self.cavern(&mut cave, &mut inside, floor, true, &mut rng) {
+                Some((at, wide)) => lairs.push((at, way_in, wide)),
+                None => lairs.extend(caverns.pop()),
+            }
+        }
+        // Only where there's a way in
+        cave.nests = if mouth { caverns } else { Vec::new() };
+        cave.lairs = lairs;
+        cave.shapes.extend(inside);
+        for s in &cave.shapes {
+            cave.bounds = [cave.bounds[0].min(s.min[0]), cave.bounds[1].min(s.min[1]), cave.bounds[2].max(s.max[0]), cave.bounds[3].max(s.max[1])];
+        }
+        cave.seed = rng.0;
+        Some(cave)
+    }
+
+    /// Hollows a cavern out of the ground with its floor round `floor`, in meters: wide and high,
+    /// a great one for a boss's lair, with rocks hanging from its roof and rising from its floor
+    /// round the sides and crystals glowing among them. Smaller if there isn't ground enough over
+    /// it, None if there isn't room at all. Gives the middle of its floor, and how far out there's
+    /// room all round.
+    fn cavern(&self, cave: &mut Cave, inside: &mut Vec<Shape>, floor: Vec3, great: bool, rng: &mut Rng) -> Option<(Vec3, f32)> {
+        // How far out its sides are from the middle, and how high its roof is over that
+        let (mut wide, mut high) = if great { (rng.range(11.0, 14.0), rng.range(6.0, 7.5)) } else { (rng.range(5.0, 8.5), rng.range(3.5, 5.0)) };
+        let stretch = rng.range(0.75, 1.0);
+        let lengthwise = rng.next() < 0.5;
+        let turn = rng.next() * TAU;
+        // The roof stays well under the ground all round
+        let lowest_ground = |wide: f32| {
+            (0..9)
+                .map(|k| {
+                    let a = k as f32 / 8.0 * TAU;
+                    let r = if k == 8 { 0.0 } else { wide };
+                    height_at(&self.settings, floor[0] + a.cos() * r, floor[1] + a.sin() * r)
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        for _ in 0..3 {
+            if floor[2] + high * 1.8 + 3.0 < lowest_ground(wide) {
+                break;
+            }
+            wide *= 0.75;
+            high *= 0.8;
+        }
+        if floor[2] + high * 1.8 + 3.0 >= lowest_ground(wide) || floor[2] < sea_level_m(&self.settings) {
+            return None;
+        }
+        // The middle a little over the floor, so it dips only a little and is fairly flat
+        let middle = [floor[0], floor[1], floor[2] + high * 0.8];
+        let radii = if lengthwise { [wide, wide * stretch, high] } else { [wide * stretch, wide, high] };
+        // Its walls and roof bulging in and hollowed out, its floor fairly flat
+        let bottom = floor[2] - 0.3;
+        cave.shapes.push(Shape::ellipsoid(middle, radii, AIR, AIR).placed(Placement::Carve).roughened(0.6 + high * 0.35, bottom));
+        // Room to fight in is as far out as its narrower side
+        let wide = wide * stretch;
+        // Lobes off its sides, so it isn't a perfect bubble
+        for k in 0..if great { 3 } else { 2 } {
+            let a = turn + k as f32 * 2.1 + rng.range(-0.4, 0.4);
+            let off = wide * rng.range(0.45, 0.65);
+            let center = [middle[0] + a.cos() * off, middle[1] + a.sin() * off, middle[2] - high * rng.range(0.1, 0.3)];
+            let w = wide * rng.range(0.4, 0.55);
+            cave.shapes.push(Shape::ellipsoid(center, [w, w, high * rng.range(0.55, 0.8)], AIR, AIR).placed(Placement::Carve).roughened(0.4 + w * 0.25, bottom));
+        }
+        // How high the roof and floor are over the middle of the cavern, `r` of the way out to its side
+        let roof = |r: f32| middle[2] + high * (1.0 - r * r).max(0.0).sqrt();
+        let ground = |r: f32| middle[2] - high * (1.0 - r * r).max(0.0).sqrt();
+        // Rocks round the sides, the middle left clear to fight in
+        for _ in 0..if great { 14 } else { 7 } {
+            let a = rng.next() * TAU;
+            let r = rng.range(0.55, 0.85);
+            let (x, y) = (middle[0] + a.cos() * wide * r, middle[1] + a.sin() * wide * r);
+            let thick = rng.range(0.35, 0.8) * if great { 1.4 } else { 1.0 };
+            let (top, bottom) = (roof(r), ground(r).max(floor[2] - 0.6));
+            if rng.next() < 0.5 {
+                let tall = rng.range(0.25, 0.5) * (top - bottom);
+                inside.push(Shape::capsule([x, y, bottom - 0.5], [x, y, bottom + tall], thick, 0.06, LIMESTONE, STONE, false).placed(Placement::Inside));
+            } else {
+                let long = rng.range(0.2, 0.4) * (top - bottom);
+                inside.push(Shape::capsule([x, y, top + 0.5], [x, y, top - long], thick, 0.05, LIMESTONE, STONE, false).placed(Placement::Inside));
+            }
+        }
+        // Crystals glowing on the floor round the sides, and lighting it
+        let colors = [[0.35, 0.85, 1.0], [0.7, 0.45, 1.0], [0.4, 1.0, 0.7]];
+        let tint = colors[(rng.next() * 3.0) as usize % 3];
+        for _ in 0..if great { 4 } else { 2 } {
+            let a = rng.next() * TAU;
+            let r = rng.range(0.5, 0.75);
+            let at = [middle[0] + a.cos() * wide * r, middle[1] + a.sin() * wide * r, ground(r).max(floor[2] - 0.4)];
+            for _ in 0..5 {
+                let offset = [rng.range(-0.6, 0.6), rng.range(-0.6, 0.6), rng.range(0.0, 0.5)];
+                inside.push(Shape::sphere(add(at, offset), rng.range(0.2, 0.45), CRYSTAL, AIR, false).placed(Placement::Inside));
+            }
+            cave.lights.push(Light { position: [at[0], at[1], at[2] + 0.8], color: tint, reach: if great { 14.0 } else { 10.0 } });
+        }
+        // A great cluster of crystals hanging from the middle of the roof, lighting the whole of
+        // it, so what's in there can be seen to fight
+        let top = roof(0.0);
+        let hang = if great { 2.2 } else { 1.2 };
+        inside.push(Shape::capsule([middle[0], middle[1], top + 0.5], [middle[0], middle[1], top - hang], hang * 0.45, 0.15, CRYSTAL, AIR, false).placed(Placement::Inside));
+        for _ in 0..if great { 6 } else { 3 } {
+            let a = rng.next() * TAU;
+            let tip = [middle[0] + a.cos() * hang * 0.6, middle[1] + a.sin() * hang * 0.6, top - hang * rng.range(0.4, 0.8)];
+            inside.push(Shape::capsule([middle[0], middle[1], top + 0.3], tip, hang * 0.22, 0.08, CRYSTAL, AIR, false).placed(Placement::Inside));
+        }
+        let glow = [tint[0] * 0.6 + 0.4, tint[1] * 0.6 + 0.4, tint[2] * 0.6 + 0.4];
+        cave.lights.push(Light { position: [middle[0], middle[1], top - hang - 0.8], color: glow, reach: if great { 28.0 } else { 15.0 } });
+        Some((floor, wide))
+    }
+
+    /// The dungeons reaching into this piece of the landscape
+    fn dungeons(&self, cache: &RiverCache) -> Vec<Dungeon> {
+        let (lo, hi) = (self.lo, self.hi);
+        let reach = DUNGEON_REACH + 2.0;
+        let first = [((lo[0] - reach) / DUNGEON_CELL).floor() as i32, ((lo[1] - reach) / DUNGEON_CELL).floor() as i32];
+        let last = [((hi[0] + reach) / DUNGEON_CELL).floor() as i32, ((hi[1] + reach) / DUNGEON_CELL).floor() as i32];
+        let mut dungeons = Vec::new();
+        for cy in first[1]..=last[1] {
+            for cx in first[0]..=last[0] {
+                if let Some(d) = self.dungeon_in(cx, cy, cache)
+                    && d.world_rects().iter().any(|r| overlaps(*r, [lo[0], lo[1], hi[0], hi[1]], 0.0))
+                {
+                    dungeons.push(d);
+                }
+            }
+        }
+        dungeons
+    }
+
+    /// The dungeon in one DUNGEON_CELL square, if there's room for one at any of a few spots in
+    /// it. They're well away from its edges, so dungeons never meet.
+    fn dungeon_in(&self, cx: i32, cy: i32, cache: &RiverCache) -> Option<Dungeon> {
+        let r = hash3(cx as u32, cy as u32, self.settings.seed ^ 0xd07e);
+        if unit(r) > 0.9 {
+            return None;
+        }
+        (0..20u32).find_map(|attempt| {
+            let s = hash3(r, attempt, 0x5eed);
+            let x = snap((cx as f32 + 0.2 + 0.6 * unit(s)) * DUNGEON_CELL);
+            let y = snap((cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * DUNGEON_CELL);
+            self.plan_dungeon(x, y, hash(s), cache)
+        })
+    }
+
+    /// Lays out a dungeon with the doorway of its crypt at `x`, `y`, if it fits: on fairly flat,
+    /// dry ground, with no rivers or ravines near any of it. Halls lead one to the next, each a
+    /// little deeper, down to the boss's, with a hall or two off to the sides.
+    fn plan_dungeon(&self, x: f32, y: f32, seed: u32, cache: &RiverCache) -> Option<Dungeon> {
+        let settings = &self.settings;
+        let ground = |x: f32, y: f32| height_at(settings, x, y);
+        // The doorway faces downhill, and the stairs go down into the hill
+        let downhill = [[1.0f32, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+            .into_iter()
+            .min_by(|a, b| ground(x + a[0] * 8.0, y + a[1] * 8.0).total_cmp(&ground(x + b[0] * 8.0, y + b[1] * 8.0)))
+            .unwrap();
+        let at = Frame { x, y, f: [-downhill[0], -downhill[1]] };
+        // The landing in front of it is as high as the ground gets there, with as many steps
+        // down from it as it takes to reach the ground in front and to the sides
+        let (mut lowest, mut highest) = (f32::MAX, f32::MIN);
+        for i in 0..45 {
+            let p = at.point(-10.0 + 2.5 * (i % 5) as f32, -10.0 + 2.5 * (i / 5) as f32, 0.0);
+            let g = ground(p[0], p[1]);
+            (lowest, highest) = (lowest.min(g), highest.max(g));
+        }
+        if lowest < sea_level_m(settings) + 2.0 || highest - lowest > 3.0 {
+            return None;
+        }
+        let top = (highest / STAIR_RISE).ceil() * STAIR_RISE;
+        let steps = (((top - lowest) / STAIR_RISE).ceil() as usize).max(2);
+        // Of the stone of the land round it
+        let c = climate(settings, x, y);
+        let (stone, paving) = if c.desert > 0.5 {
+            ((SANDSTONE, SANDSTONE_DARK), (SANDSTONE_DARK, SANDSTONE))
+        } else if c.jungle > 0.5 {
+            ((TEMPLE_STONE, MOSS), (TEMPLE_DARK, TEMPLE_STONE))
+        } else if c.snow > 0.5 {
+            ((BRICK_STONE, LIMESTONE), (LIMESTONE, BRICK_STONE))
+        } else {
+            ((BRICK_STONE, MOSS), (LIMESTONE, BRICK_STONE))
+        };
+        let mut rng = Rng(seed);
+        let mut d = Dungeon {
+            at,
+            top,
+            steps,
+            stone,
+            paving,
+            snowy: c.snow > 0.5,
+            vines: c.desert <= 0.5 && c.snow <= 0.5,
+            halls: Vec::new(),
+            passages: Vec::new(),
+            seed: hash(seed ^ 0xd0e6),
+        };
+        let boss_depth = rng.range(11.5, 13.5);
+        let mains = 2 + (rng.next() * 3.0) as usize;
+        let sides = 1 + (rng.next() * 2.0) as usize;
+
+        // The first hall, at the foot of the stairs down, which are under the roof of the crypt
+        // for as long as there isn't ground enough over them
+        let half = [snap(rng.range(4.5, 6.0)), snap(rng.range(4.0, 6.0))];
+        let height = snap(rng.range(4.5, 5.5));
+        let (mut stairs, first) = self.fit_hall(&at, [0.0, 0.0], [1.0, 0.0], top, 0.0, 1.2, half, height, 0.0, top - 7.0, HallKind::Main, None)?;
+        let parts = stairs.parts();
+        let mut crypt = parts[0].0[1];
+        for &(s, _, high) in &parts {
+            if high + PASSAGE_HEIGHT + DUNGEON_WALL > self.lowest_ground(&at, stairs.rect(s, PASSAGE_HALF + DUNGEON_WALL)) - 0.2 {
+                crypt = crypt.max(s[1]);
+            }
+        }
+        if crypt > 11.0 {
+            return None;
+        }
+        stairs.crypt = crypt;
+        d.passages.push(stairs);
+        d.halls.push(first);
+        // What's taken so far, with the brick round it, and which hall each is
+        let mut taken = vec![
+            (d.entrance_rect(), None),
+            (stairs.rect([0.0, stairs.length], PASSAGE_HALF + DUNGEON_WALL), None),
+            (grown(first.rect(), DUNGEON_WALL), Some(0)),
+        ];
+
+        // On down, further into the hill or off to one side, never back towards the entrance
+        for i in 1..mains {
+            let side = if rng.next() < 0.5 { [0.0, 1.0] } else { [0.0, -1.0] };
+            let dirs = if rng.next() < 0.6 { [[1.0, 0.0], side, [-side[0], -side[1]]] } else { [side, [1.0, 0.0], [-side[0], -side[1]]] };
+            let half = [snap(rng.range(4.0, 6.0)), snap(rng.range(4.0, 6.0))];
+            let height = snap(rng.range(4.5, 5.5));
+            let want = top - 7.0 - (boss_depth - 7.0) * i as f32 / mains as f32;
+            let parent = d.halls.len() - 1;
+            if !self.grow(&mut d, &mut taken, parent, &dirs, half, height, want, HallKind::Main, &mut rng) {
+                break;
+            }
+        }
+        // The boss's hall, deepest of all, off the last hall that has room for it
+        let mains = d.halls.len();
+        let boss = [snap(rng.range(9.0, 10.0)), snap(rng.range(9.0, 10.0))];
+        let mut found = false;
+        for parent in (0..mains).rev() {
+            let side = if rng.next() < 0.5 { [0.0, 1.0] } else { [0.0, -1.0] };
+            let dirs = [[1.0, 0.0], side, [-side[0], -side[1]]];
+            if self.grow(&mut d, &mut taken, parent, &dirs, boss, 8.0, top - boss_depth, HallKind::Boss, &mut rng) {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+        // Halls off to the side of those on the way, at much the same depth
+        for _ in 0..sides {
+            let start = (rng.next() * mains as f32) as usize;
+            for k in 0..mains {
+                let parent = (start + k) % mains;
+                let turn = (rng.next() * 4.0) as usize;
+                let all = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+                let dirs: Vec<[f32; 2]> = (0..4).map(|j| all[(turn + j) % 4]).collect();
+                let half = [snap(rng.range(4.0, 5.5)), snap(rng.range(4.0, 5.5))];
+                let want = d.halls[parent].floor - snap(rng.range(0.0, 1.0));
+                if self.grow(&mut d, &mut taken, parent, &dirs, half, 4.5, want, HallKind::Side, &mut rng) {
+                    break;
+                }
+            }
+        }
+        if d.halls.len() < 4 {
+            return None;
+        }
+
+        // Well clear of rivers and their banks, and of ravines and crevices
+        let rects = d.world_rects();
+        let lo = [0, 1].map(|i| rects.iter().map(|r| r[i]).fold(f32::MAX, f32::min));
+        let hi = [0, 1].map(|i| rects.iter().map(|r| r[i + 2]).fold(f32::MIN, f32::max));
+        for river in self.rivers_near(cache, [lo[0] - 10.0, lo[1] - 10.0], [hi[0] + 10.0, hi[1] + 10.0]) {
+            let near = river.iter().any(|p| {
+                rects.iter().any(|r| {
+                    let (dx, dy) = ((r[0] - p.x).max(p.x - r[2]).max(0.0), (r[1] - p.y).max(p.y - r[3]).max(0.0));
+                    dx.hypot(dy) < p.half_width + 6.0
+                })
+            });
+            if near {
+                return None;
+            }
+        }
+        let first = [0, 1].map(|i| ((lo[i] - RAVINE_REACH - 2.0) / RAVINE_CELL).floor() as i32);
+        let last = [0, 1].map(|i| ((hi[i] + RAVINE_REACH + 2.0) / RAVINE_CELL).ceil() as i32);
+        let mut scratch = Features::default();
+        for cy in first[1]..last[1] {
+            for cx in first[0]..last[0] {
+                if let Some(ravine) = self.ravine(cx, cy, &mut scratch)
+                    && ravine.shapes.iter().any(|s| rects.iter().any(|r| overlaps(*r, [s.min[0], s.min[1], s.max[0], s.max[1]], 2.0)))
+                {
+                    return None;
+                }
+            }
+        }
+        Some(d)
+    }
+
+    /// The lowest the ground gets over rectangle `r`, u0, v0, u1, v1 in frame `at`, sampled every
+    /// couple of meters
+    fn lowest_ground(&self, at: &Frame, r: [f32; 4]) -> f32 {
+        let n = [0, 1].map(|i| ((r[i + 2] - r[i]) / 2.5).ceil().max(1.0) as usize + 1);
+        let mut lowest = f32::MAX;
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                let u = r[0] + (r[2] - r[0]) * i as f32 / (n[0] - 1) as f32;
+                let v = r[1] + (r[3] - r[1]) * j as f32 / (n[1] - 1) as f32;
+                let p = at.point(u, v, 0.0);
+                lowest = lowest.min(height_at(&self.settings, p[0], p[1]));
+            }
+        }
+        lowest
+    }
+
+    /// Fits a hall `half` the size along u and v and `height` high, in frame `at`, at the end of a
+    /// passage from `start` going `dir` from a floor at `from`, at least `gap` long, with flat floor
+    /// at least `flat` long at either end of its stairs. The hall's middle is `offset` across from
+    /// the passage's line. Its floor is at most at `want`, and deep enough for DUNGEON_COVER of
+    /// ground over it, so the passage gets longer if it has further to go down. None if there's
+    /// sea over it or the passage would be too long.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_hall(
+        &self,
+        at: &Frame,
+        start: [f32; 2],
+        dir: [f32; 2],
+        from: f32,
+        gap: f32,
+        flat: f32,
+        half: [f32; 2],
+        height: f32,
+        offset: f32,
+        want: f32,
+        kind: HallKind,
+        parent: Option<usize>,
+    ) -> Option<(Passage, Hall)> {
+        let sea_level = sea_level_m(&self.settings);
+        let across = [-dir[1], dir[0]];
+        let along = dir[0].abs() * half[0] + dir[1].abs() * half[1];
+        let mut length = gap;
+        let mut floor = snap_down(want.min(from));
+        for _ in 0..8 {
+            let reach = length + along;
+            let middle = [start[0] + dir[0] * reach + across[0] * offset, start[1] + dir[1] * reach + across[1] * offset];
+            let lowest = self.lowest_ground(at, grown(around(middle, half), DUNGEON_WALL + 0.5));
+            if lowest < sea_level + 1.5 {
+                return None;
+            }
+            floor = floor.min(snap_down(lowest - DUNGEON_COVER - DUNGEON_WALL - height));
+            let drops = ((from - floor) / STAIR_RISE).round();
+            let needed = (drops - 1.0).max(0.0) * STAIR_RUN + 2.0 * flat;
+            if needed <= length + 1e-3 {
+                if floor < 2.0 {
+                    return None;
+                }
+                let passage = Passage { start, dir, length, from, to: floor, crypt: 0.0 };
+                let hall = Hall { middle, half, floor, height, door: [-dir[0], -dir[1]], kind, parent };
+                return Some((passage, hall));
+            }
+            length = (needed / STAIR_RISE).ceil() * STAIR_RISE;
+            if length > 20.0 {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Adds a hall `half` the size along u and v and `height` high to dungeon `d`, with a passage
+    /// to it from hall `parent`, trying each way of `dirs` in turn till it fits clear of what's
+    /// `taken`: rectangles in its frame, brick and all, and which hall each is. Its floor is at
+    /// most at `want`. Returns whether it fitted.
+    #[allow(clippy::too_many_arguments)]
+    fn grow(
+        &self,
+        d: &mut Dungeon,
+        taken: &mut Vec<([f32; 4], Option<usize>)>,
+        parent: usize,
+        dirs: &[[f32; 2]],
+        half: [f32; 2],
+        height: f32,
+        want: f32,
+        kind: HallKind,
+        rng: &mut Rng,
+    ) -> bool {
+        let sea_level = sea_level_m(&self.settings);
+        let within = |r: [f32; 4]| r.iter().all(|v| v.abs() <= DUNGEON_REACH);
+        let jitter = |room: f32, rng: &mut Rng| if room > 0.0 { snap(rng.range(-room, room)) } else { 0.0 };
+        for &dir in dirs {
+            let p = d.halls[parent];
+            if dir == p.door {
+                continue;
+            }
+            // Where across the parent's wall the passage leaves it, and how far across from the
+            // passage's line the new hall's middle is. The boss's doorway is near the middle.
+            let across = [-dir[1], dir[0]];
+            let out = jitter(p.reach(across) - PASSAGE_HALF - 1.0, rng);
+            let room = if kind == HallKind::Boss { 2.0 } else { across[0].abs() * half[0] + across[1].abs() * half[1] - PASSAGE_HALF - 1.0 };
+            let offset = jitter(room, rng);
+            let along = p.reach(dir);
+            let start = [p.middle[0] + dir[0] * along + across[0] * out, p.middle[1] + dir[1] * along + across[1] * out];
+            let gap = snap(rng.range(4.0, 7.0));
+            let Some((passage, hall)) = self.fit_hall(&d.at, start, dir, p.floor, gap, 1.0, half, height, offset, want, kind, Some(parent)) else {
+                continue;
+            };
+            let hall_rect = grown(hall.rect(), DUNGEON_WALL);
+            let passage_rect = passage.rect([0.0, passage.length], PASSAGE_HALF + DUNGEON_WALL);
+            if !within(hall_rect) || !within(passage_rect) {
+                continue;
+            }
+            if taken.iter().any(|(t, _)| overlaps(*t, hall_rect, 1.0)) || taken.iter().any(|(t, hall)| *hall != Some(parent) && overlaps(*t, passage_rect, 0.3)) {
+                continue;
+            }
+            // With ground enough over the passage too, and no sea
+            let covered = passage.parts().iter().all(|&(s, _, high)| {
+                let lowest = self.lowest_ground(&d.at, passage.rect(s, PASSAGE_HALF + DUNGEON_WALL));
+                lowest > sea_level + 1.5 && high + PASSAGE_HEIGHT + DUNGEON_WALL + 1.0 <= lowest
+            });
+            if !covered {
+                continue;
+            }
+            taken.push((hall_rect, Some(d.halls.len())));
+            taken.push((passage_rect, None));
+            d.halls.push(hall);
+            d.passages.push(passage);
+            return true;
+        }
+        false
+    }
+
+    /// The shapes of dungeon `d`, with its candles, skulls and chests, its halls as sites, and
+    /// where its entrance stands in `features`
+    fn dungeon(&self, d: &Dungeon, features: &mut Features) -> Object {
+        let at = d.at;
+        let mut rng = Rng(d.seed);
+        // What stands in the halls and passages goes first, then the space inside them, then the
+        // paving and the brick round it all, so each wins over what comes after
+        let (mut solids, mut rooms, mut floors, mut walls) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        self.dungeon_entrance(d, &mut solids, &mut rooms, &mut walls, features, &mut rng);
+
+        for (i, p) in d.passages.iter().enumerate() {
+            let entrance = i == 0;
+            let (drops, first) = p.stairs();
+            for k in 1..drops {
+                let s = [first + (k - 1) as f32 * STAIR_RUN, first + k as f32 * STAIR_RUN];
+                solids.push(stone_block(&at, p.rect(s, PASSAGE_HALF), [p.to - DUNGEON_WALL, p.from - k as f32 * STAIR_RISE], d.paving));
+            }
+            let parts = p.parts();
+            let last = parts.len() - 1;
+            for (n, &(s, low, high)) in parts.iter().enumerate() {
+                let ceiling = if s[0] < p.crypt - 1e-3 { d.top + CRYPT_HEIGHT } else { high + PASSAGE_HEIGHT };
+                // Through the walls of the halls at either end
+                let inside = [if n == 0 && !entrance { -0.05 } else { s[0] }, if n == last { s[1] + 0.05 } else { s[1] }];
+                rooms.push(hollow(&at, p.rect(inside, PASSAGE_HALF), [low, ceiling]));
+                floors.push(stone_block(&at, p.rect(s, PASSAGE_HALF), [low - DUNGEON_WALL, low], d.paving));
+                // A little past either end, to line the wall where the ceiling steps down. That's
+                // the front wall of the crypt at the top of the stairs down.
+                let outside = [(s[0] - DUNGEON_WALL).max(if entrance { -DUNGEON_WALL } else { 0.0 }), (s[1] + DUNGEON_WALL).min(p.length)];
+                walls.push(stone_block(&at, p.rect(outside, PASSAGE_HALF + DUNGEON_WALL), [low - DUNGEON_WALL, ceiling + DUNGEON_WALL], d.stone));
+            }
+            // Candles every few meters along alternate walls, and a skull or so
+            let mut spots = if entrance { vec![(0.6, 1.0), (0.6, -1.0)] } else { Vec::new() };
+            let mut s = if entrance { 4.0 } else { 1.2 };
+            let mut side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+            while s < p.length - 0.8 {
+                spots.push((s, side));
+                side = -side;
+                s += 3.6;
+            }
+            for (s, side) in spots {
+                let s = p.on_step(s);
+                let q = p.at(s, side * (PASSAGE_HALF - 0.2));
+                self.dungeon_prop(features, PropKind::Candle, at.point(q[0], q[1], p.floor_at(s)));
+            }
+            if rng.next() < 0.7 {
+                let s = p.on_step(rng.range(1.0, p.length - 1.0));
+                let side = (if rng.next() < 0.5 { 1.0 } else { -1.0 }) * (PASSAGE_HALF - 0.35);
+                let q = p.at(s, side);
+                self.dungeon_prop(features, PropKind::Skull, at.point(q[0], q[1], p.floor_at(s)));
+            }
+        }
+
+        for (i, h) in d.halls.iter().enumerate() {
+            let (r, f) = (h.rect(), h.floor);
+            rooms.push(hollow(&at, r, [f, f + h.height]));
+            floors.push(stone_block(&at, grown(r, DUNGEON_WALL), [f - DUNGEON_WALL, f], d.paving));
+            walls.push(stone_block(&at, grown(r, DUNGEON_WALL), [f - DUNGEON_WALL, f + h.height + DUNGEON_WALL], d.stone));
+            // Its doorways: where the passage in reaches it, and where those out of it leave
+            let mut doors = vec![d.passages[i].at(d.passages[i].length, 0.0)];
+            doors.extend((0..d.halls.len()).filter(|&j| d.halls[j].parent == Some(i)).map(|j| d.passages[j].at(0.0, 0.0)));
+            self.furnish(d, h, &doors, &mut solids, features, &mut rng);
+            let middle = at.point(h.middle[0], h.middle[1], f);
+            if self.inside(middle[0], middle[1]) {
+                let kind = if h.kind == HallKind::Boss { "dungeon" } else { "dungeon hall" };
+                features.sites.push(Site { kind, position: middle, facing: at.dir(h.door) });
+            }
+        }
+
+        // Nothing grows on the entrance, and no grass on the landing or the crypt
+        let e = d.entrance_rect();
+        let (lo, hi) = at.rect([e[0], e[2]], [e[1], e[3]]);
+        features.footprints.push([lo[0], lo[1], hi[0], hi[1], d.top + 7.6]);
+        let plinth = d.landing(d.steps);
+        let (lo, hi) = at.rect([plinth[0], d.passages[0].crypt + DUNGEON_WALL], [plinth[1], plinth[3]]);
+        features.holes.push([lo[0], lo[1], hi[0], hi[1]]);
+
+        let mut shapes = solids;
+        shapes.extend(rooms);
+        shapes.extend(floors);
+        shapes.extend(walls);
+        Object::new(shapes, d.seed)
+    }
+
+    /// The way into dungeon `d`: a crypt of brick over the top of the stairs down, its roof broken
+    /// in, its doorway between two tall pillars under a broken arch, skulls on its roof, a landing
+    /// in front with steps down to the ground, and rubble lying about
+    #[allow(clippy::too_many_arguments)]
+    fn dungeon_entrance(&self, d: &Dungeon, solids: &mut Vec<Shape>, rooms: &mut Vec<Shape>, walls: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+        let at = d.at;
+        let top = d.top;
+        let crypt = d.passages[0].crypt;
+        let outer = PASSAGE_HALF + DUNGEON_WALL;
+        let roof = top + CRYPT_HEIGHT + DUNGEON_WALL;
+
+        // The doorway through the front wall, and the landing, with steps down to the ground on
+        // three sides that sink into it where it's higher, and nothing in the way above it
+        rooms.push(hollow(&at, [-DUNGEON_WALL - 0.05, -PASSAGE_HALF, 0.05, PASSAGE_HALF], [top, top + 3.0]));
+        for k in 0..=d.steps {
+            let z = top - k as f32 * STAIR_RISE;
+            solids.push(stone_block(&at, d.landing(k), [z - 1.0, z], d.paving));
+        }
+        rooms.push(hollow(&at, d.landing(0), [top, top + 4.5]));
+
+        // The pillars either side of the doorway, one of which may have fallen, taking its side of
+        // the arch with it
+        let (pu, pv) = (-DUNGEON_WALL - 0.75, outer + 0.6);
+        let tall = roof + 0.7;
+        let fallen = if rng.next() < 0.45 { if rng.next() < 0.5 { 1.0 } else { -1.0 } } else { 0.0 };
+        for side in [-1.0f32, 1.0] {
+            let q = [pu, side * pv];
+            let height = if side == fallen { top + rng.range(1.4, 3.2) } else { tall };
+            solids.push(stone_block(&at, around(q, [0.65, 0.65]), [top - 0.3, top + 0.35], d.stone));
+            if side == fallen {
+                self.dungeon_prop(features, PropKind::Skull, at.point(q[0], q[1], height + 0.4));
+            } else {
+                solids.push(stone_block(&at, around(q, [0.65, 0.65]), [tall - 0.35, tall + 0.1], d.stone));
+            }
+            solids.push(
+                Shape::capsule(at.point(q[0], q[1], top), at.point(q[0], q[1], height), 0.45, 0.42, d.stone.0, d.stone.1, false)
+                    .placed(Placement::Clear)
+                    .patterned(Pattern::Carved),
+            );
+        }
+        let gap = if fallen == 0.0 && rng.next() < 0.6 { Some(2 + (rng.next() * 5.0) as usize) } else { None };
+        for k in 0..10 {
+            // Round from the pillar on the +v side to the other
+            let lost = fallen > 0.0 && k < 6 || fallen < 0.0 && k >= 4 || gap.is_some_and(|g| k == g || k == g + 1);
+            if lost {
+                continue;
+            }
+            let (a, b) = (k as f32 / 10.0 * std::f32::consts::PI, (k + 1) as f32 / 10.0 * std::f32::consts::PI);
+            let point = |t: f32| at.point(pu, pv * t.cos(), tall + pv * t.sin());
+            solids.push(Shape::capsule(point(a), point(b), 0.35, 0.35, d.stone.0, d.stone.1, false).placed(Placement::Clear).patterned(Pattern::Carved));
+        }
+
+        // Skulls on the roof over the doorway and by the door, and a hole fallen in the roof
+        for v in [-0.9, 0.0, 0.9] {
+            if rng.next() < 0.8 {
+                self.dungeon_prop(features, PropKind::Skull, at.point(-DUNGEON_WALL * 0.5, v, roof));
+            }
+        }
+        for side in [-1.0, 1.0] {
+            let (u, v) = (-DUNGEON_WALL - rng.range(1.6, 2.4), side * rng.range(PASSAGE_HALF + 0.3, outer + 1.0));
+            self.dungeon_prop(features, PropKind::Skull, at.point(u, v, top));
+        }
+        let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+        let bite = at.point(crypt - rng.range(0.5, 2.0), side * (outer - 0.2), roof + 0.4);
+        rooms.push(Shape::sphere(bite, rng.range(0.9, 1.3), AIR, AIR, false).placed(Placement::Clear));
+        if d.snowy {
+            walls.push(at.block([-DUNGEON_WALL, crypt + DUNGEON_WALL], [-outer, outer], [roof, roof + 0.15], SNOW, AIR).placed(Placement::Clear));
+        }
+        if d.vines {
+            for _ in 0..5 {
+                let length = rng.range(0.8, 2.6);
+                let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+                let (u, v) = if rng.next() < 0.4 {
+                    (-DUNGEON_WALL - 0.07, side * rng.range(PASSAGE_HALF + 0.1, outer - 0.1))
+                } else {
+                    (rng.range(0.0, crypt), side * (outer + 0.07))
+                };
+                solids.push(Shape::capsule(at.point(u, v, roof - 0.1), at.point(u, v, roof - 0.1 - length), 0.07, 0.05, VINE, LEAVES, false));
+            }
+        }
+
+        // Rubble that's fallen off it, but not in the way in
+        let (plinth, area) = (d.landing(d.steps), d.entrance_rect());
+        for _ in 0..8 {
+            let (u, v) = (rng.range(area[0] + 0.5, area[2] - 0.5), rng.range(area[1] + 0.5, area[3] - 0.5));
+            let (size, stretch) = (rng.range(0.3, 0.7), rng.range(0.7, 1.5));
+            let on_it = u > plinth[0] - 0.2 && u < crypt + DUNGEON_WALL + 0.4 && v.abs() < plinth[3] + 0.2;
+            if on_it || u < 0.0 && v.abs() < 2.5 {
+                continue;
+            }
+            let p = at.point(u, v, 0.0);
+            let ground = height_at(&self.settings, p[0], p[1]);
+            solids.push(stone_block(&at, around([u, v], [size, size * stretch]), [ground - 0.3, ground + size * 0.7], d.stone));
+        }
+    }
+
+    /// What's in hall `h` of dungeon `d`, kept clear of its doorways at `doors`: pillars, candles
+    /// along the walls, skulls, rubble and maybe a stone coffin. A side hall has a chest at its far
+    /// end. The boss's has rows of pillars, and a dais at the far end with an altar, braziers and
+    /// the best chest of all, and heaps of bones in its corners.
+    #[allow(clippy::too_many_arguments)]
+    fn furnish(&self, d: &Dungeon, h: &Hall, doors: &[[f32; 2]], s: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+        let at = d.at;
+        let (m, f) = (h.middle, h.floor);
+        let ceiling = f + h.height;
+        let by_door = |q: [f32; 2]| doors.iter().any(|p| (q[0] - p[0]).hypot(q[1] - p[1]) < 2.4);
+        let point = |q: [f32; 2], z: f32| at.point(q[0], q[1], z);
+        let flip = |rng: &mut Rng| if rng.next() < 0.5 { 1.0 } else { -1.0 };
+        // Laid out `a` towards the far end from the doorway in, and `b` across
+        let n = [-h.door[0], -h.door[1]];
+        let t = [-n[1], n[0]];
+        let (deep, wide) = (h.reach(n), h.reach(t));
+        let q = |a: f32, b: f32| [m[0] + n[0] * a + t[0] * b, m[1] + n[1] * a + t[1] * b];
+        let rect = |a: [f32; 2], b: [f32; 2]| {
+            let (p, r) = (q(a[0], b[0]), q(a[1], b[1]));
+            [p[0].min(r[0]), p[1].min(r[1]), p[0].max(r[0]), p[1].max(r[1])]
+        };
+        // Which way the chests' locks face: back towards the doorway in
+        let heading = at.heading(h.door[1].atan2(h.door[0]));
+
+        if h.kind == HallKind::Boss {
+            for b in [-1.0, 1.0] {
+                for k in 0..4 {
+                    let a = -deep + 3.0 + (2.0 * deep - 7.5) * k as f32 / 3.0;
+                    let broken = rng.next() < 0.15;
+                    pillar(s, &at, q(a, b * (wide - 2.0)), f, ceiling, 0.55, d.stone, broken, rng);
+                }
+            }
+            s.push(stone_block(&at, rect([deep - 3.5, deep], [-4.0, 4.0]), [f - 0.1, f + STAIR_RISE], d.paving));
+            s.push(stone_block(&at, rect([deep - 2.2, deep], [-2.6, 2.6]), [f - 0.1, f + 2.0 * STAIR_RISE], d.paving));
+            s.push(stone_block(&at, rect([deep - 1.1, deep - 0.2], [-1.2, 1.2]), [f, f + 1.3], d.stone).patterned(Pattern::Carved));
+            let spot = point(q(deep - 1.65, 0.0), f + 2.0 * STAIR_RISE);
+            if self.inside(spot[0], spot[1]) {
+                chest(features, spot, heading, 2.6);
+            }
+            for b in [-0.8, 0.8] {
+                self.dungeon_prop(features, PropKind::Candle, point(q(deep - 0.65, b), f + 1.3));
+            }
+            self.dungeon_prop(features, PropKind::Skull, point(q(deep - 0.65, 0.0), f + 1.3));
+            for b in [-3.3, 3.3] {
+                let c = q(deep - 2.9, b);
+                s.push(stone_block(&at, around(c, [0.35, 0.35]), [f, f + 1.1], d.stone));
+                s.push(stone_block(&at, around(c, [0.5, 0.5]), [f + 1.1, f + 1.25], d.stone));
+                s.push(Shape::sphere(point(c, f + 1.4), 0.25, FLAME, AIR, false).placed(Placement::Clear));
+                let flame = point(c, f + 1.9);
+                if self.inside(flame[0], flame[1]) {
+                    features.lights.push(Light { position: flame, color: [1.0, 0.5, 0.2], reach: 11.0 });
+                }
+            }
+            // Candles down both sides between the pillars and the walls, and either side of the doorway
+            for b in [-1.0, 1.0] {
+                for frac in [-0.8, -0.4, 0.0, 0.4, 0.8] {
+                    let c = q(frac * deep, b * (wide - 0.3));
+                    if !by_door(c) && rng.next() < 0.85 {
+                        self.dungeon_prop(features, PropKind::Candle, point(c, f));
+                    }
+                }
+            }
+            for b in [-0.75, -0.4, 0.4, 0.75] {
+                let c = q(-deep + 0.3, b * wide);
+                if !by_door(c) {
+                    self.dungeon_prop(features, PropKind::Candle, point(c, f));
+                }
+            }
+            for b in [-0.75, 0.75] {
+                self.dungeon_prop(features, PropKind::Candle, point(q(deep - 0.3, b * wide), f));
+            }
+            // Skulls all over, though not in the middle where the boss waits, and heaps of bones
+            for _ in 0..10 + (rng.next() * 5.0) as usize {
+                let c = q(rng.range(-deep + 1.0, deep - 4.0), rng.range(-wide + 1.0, wide - 1.0));
+                if (c[0] - m[0]).hypot(c[1] - m[1]) > 4.5 && !by_door(c) {
+                    self.dungeon_prop(features, PropKind::Skull, point(c, f));
+                }
+            }
+            for (sa, sb) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                let c = q(sa * (deep - 1.3), sb * (wide - 1.3));
+                if rng.next() < 0.3 || by_door(c) {
+                    continue;
+                }
+                s.push(Shape::ellipsoid(point(c, f), [0.8, 0.8, 0.35], BONE, AIR).placed(Placement::Clear));
+                for _ in 0..2 {
+                    let p = [c[0] + rng.range(-0.3, 0.3), c[1] + rng.range(-0.3, 0.3)];
+                    self.dungeon_prop(features, PropKind::Skull, point(p, f + 0.25));
+                }
+            }
+            for _ in 0..4 {
+                let c = q(rng.range(-deep + 1.0, deep - 4.0), flip(rng) * (wide - rng.range(0.6, 1.2)));
+                let (size, stretch) = (rng.range(0.25, 0.5), rng.range(0.7, 1.4));
+                if !by_door(c) {
+                    s.push(stone_block(&at, around(c, [size, size * stretch]), [f - 0.05, f + size * 0.8], d.stone));
+                }
+            }
+            return;
+        }
+
+        // Pillars holding up the roof of the bigger halls, some fallen, and square ones in the
+        // corners of the rest. They're well out from the middle, where the monsters gather.
+        if h.half[0] >= 5.0 && h.half[1] >= 5.0 && rng.next() < 0.7 {
+            for (sa, sb) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let broken = rng.next() < 0.3;
+                pillar(s, &at, q(sa * (deep - 1.8), sb * (wide - 1.8)), f, ceiling, 0.4, d.stone, broken, rng);
+            }
+        } else {
+            for (sa, sb) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                s.push(stone_block(&at, around(q(sa * (deep - 0.35), sb * (wide - 0.35)), [0.35, 0.35]), [f - 0.1, ceiling], d.stone));
+            }
+        }
+
+        // The walls, which way out each faces in a and b, the one with the doorway in last.
+        // Whatever stands against the middle of one keeps candles off it.
+        let walls: [(f32, f32); 4] = [(1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (-1.0, 0.0)];
+        let mut taken: Vec<(f32, f32)> = Vec::new();
+        // A side hall's chest, at the far end facing the way in, between two candles
+        if h.kind == HallKind::Side {
+            let spot = point(q(deep - 0.6, 0.0), f);
+            if self.inside(spot[0], spot[1]) {
+                chest(features, spot, heading, 1.7);
+            }
+            for b in [-1.0, 1.0] {
+                self.dungeon_prop(features, PropKind::Candle, point(q(deep - 0.35, b), f));
+            }
+            self.dungeon_prop(features, PropKind::Skull, point(q(deep - 0.5, 1.6 * flip(rng)), f));
+            taken.push(walls[0]);
+        }
+        // A stone coffin against a wall without a doorway, far enough out to leave the middle
+        // clear, with a lid of paving, candles at either end and a skull on top
+        if rng.next() < 0.5 {
+            let turn = (rng.next() * 3.0) as usize;
+            for k in 0..3 {
+                let (wa, wb) = walls[(turn + k) % 3];
+                let out = if wa != 0.0 { deep } else { wide };
+                if out < 5.25 || taken.contains(&(wa, wb)) {
+                    continue;
+                }
+                let (ca, cb) = (wa * (out - 0.75), wb * (out - 0.75));
+                // Long along the wall
+                let (la, lb) = (wb.abs(), wa.abs());
+                let ends = [q(ca + la * 1.2, cb + lb * 1.2), q(ca - la * 1.2, cb - lb * 1.2)];
+                if by_door(q(ca, cb)) || ends.iter().any(|&e| by_door(e)) {
+                    continue;
+                }
+                let (ha, hb) = (wa.abs() * 0.5 + la * 1.1, wb.abs() * 0.5 + lb * 1.1);
+                let body = rect([ca - ha, ca + ha], [cb - hb, cb + hb]);
+                s.push(stone_block(&at, body, [f - 0.1, f + 0.8], d.stone));
+                s.push(stone_block(&at, grown(body, 0.06), [f + 0.8, f + 0.95], d.paving));
+                for e in [1.0, -1.0] {
+                    self.dungeon_prop(features, PropKind::Candle, point(q(ca + la * 0.85 * e, cb + lb * 0.85 * e), f + 0.95));
+                }
+                self.dungeon_prop(features, PropKind::Skull, point(q(ca, cb), f + 0.95));
+                taken.push((wa, wb));
+                break;
+            }
+        }
+        // Candles along the walls
+        for (wa, wb) in walls {
+            for frac in [-0.6, 0.0, 0.6] {
+                let c = if wa != 0.0 { q(wa * (deep - 0.3), frac * wide) } else { q(frac * deep, wb * (wide - 0.3)) };
+                if by_door(c) || frac == 0.0 && taken.contains(&(wa, wb)) || rng.next() > 0.75 {
+                    continue;
+                }
+                self.dungeon_prop(features, PropKind::Candle, point(c, f));
+            }
+        }
+        // Skulls by the walls, and rubble in the corners
+        for _ in 0..2 + (rng.next() * 4.0) as usize {
+            let (inset, along) = (rng.range(0.35, 1.2), rng.range(-0.8, 0.8));
+            let c = match (rng.next() * 4.0) as usize {
+                0 => q(deep - inset, along * wide),
+                1 => q(-deep + inset, along * wide),
+                2 => q(along * deep, wide - inset),
+                _ => q(along * deep, -wide + inset),
+            };
+            if !by_door(c) {
+                self.dungeon_prop(features, PropKind::Skull, point(c, f));
+            }
+        }
+        for _ in 0..2 + (rng.next() * 3.0) as usize {
+            let c = q(flip(rng) * (deep - rng.range(0.9, 1.8)), flip(rng) * (wide - rng.range(0.9, 1.8)));
+            let (size, stretch) = (rng.range(0.2, 0.45), rng.range(0.7, 1.4));
+            if !by_door(c) {
+                s.push(stone_block(&at, around(c, [size, size * stretch]), [f - 0.05, f + size * 0.8], d.stone));
+            }
+        }
+    }
+
+    /// A candle or skull of a dungeon at `p`, if that's in this piece of the landscape, turned the
+    /// way the spot it's on says, so it's the same whichever piece it's in
+    fn dungeon_prop(&self, features: &mut Features, kind: PropKind, p: Vec3) {
+        if !self.inside(p[0], p[1]) {
+            return;
+        }
+        let mut rng = Rng(hash3((p[0] * 16.0) as i32 as u32, (p[1] * 16.0) as i32 as u32, (p[2] * 16.0) as i32 as u32 ^ 0x5c11));
+        if kind == PropKind::Candle {
+            candle(features, p, &mut rng);
+        } else {
+            skull(features, p, &mut rng);
+        }
     }
 
     /// A cactus with a few arms bending up, sometimes in flower
@@ -2964,20 +5552,6 @@ impl Terrain {
         }
         shapes.push(Shape::capsule([x, y, ground - 0.3], [x, y, ground + height], r, r * 0.9, CACTUS, AIR, false));
         shapes
-    }
-
-    // Leaf colors come in regions, so forests turn in patches like in autumn
-    fn leaf_colors(&self, x: f32, y: f32, rng: &mut Rng) -> (u8, u8) {
-        let autumn = fbm(x / 120.0, y / 120.0, 2, self.settings.seed.wrapping_add(6));
-        let pick = (rng.next() * 0.7 + autumn * 0.8 + 0.15).clamp(0.0, 0.999);
-        [
-            (LEAVES, LEAVES_YELLOW),
-            (LEAVES_DARK, LEAVES),
-            (LEAVES, LEAVES_DARK),
-            (LEAVES_YELLOW, LEAVES_ORANGE),
-            (LEAVES_ORANGE, LEAVES_RED),
-            (LEAVES_RED, LEAVES_ORANGE),
-        ][(pick * 6.0) as usize]
     }
 
     // A trunk splitting into limbs that keep forking, with leaves on every twig
@@ -3089,128 +5663,6 @@ impl Terrain {
         }
     }
 
-    // Tall and slender with white bark, short branches and small leaves
-    fn birch(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(6.0, 9.0);
-        let radius = rng.range(0.1, 0.16);
-        let top = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), base + height];
-        let mut wood = vec![Shape::capsule([x, y, base - 0.6], top, radius * 1.2, radius * 0.4, BIRCH_BARK, BARK_DARK, false)];
-        let mut leaves = Vec::new();
-
-        let autumn = fbm(x / 120.0, y / 120.0, 2, self.settings.seed.wrapping_add(6));
-        let foliage = Foliage {
-            material: if autumn > 0.1 { LEAVES_YELLOW } else { LEAVES },
-            accent: LEAVES_YELLOW,
-            leaf_length: 0.2,
-            leaves_per_twig: 24,
-            clumps_per_twig: 1,
-        };
-        let branches = 6 + (rng.next() * 3.99) as usize;
-        for i in 0..branches {
-            let t = 0.35 + 0.6 * (i as f32 + rng.next()) / branches as f32;
-            let angle = rng.range(0.0, TAU);
-            let dir = normalize([angle.cos(), angle.sin(), rng.range(0.6, 1.2)]);
-            let length = rng.range(0.8, 1.6) * (1.2 - t * 0.6);
-            self.branch(&mut wood, &mut leaves, lerp3([x, y, base], top, t), dir, length, radius * 0.35, 1, BIRCH_BARK, foliage, rng);
-        }
-
-        wood.append(&mut leaves);
-        wood
-    }
-
-    // A thick trunk with limbs spreading out, from which long strands of leaves hang down
-    fn willow(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(2.0, 3.0);
-        let radius = rng.range(0.3, 0.45);
-        let top = [x, y, base + height];
-        let mut wood = vec![Shape::wood([x, y, base - 0.6], top, radius * 1.3, radius, WOOD)];
-        let mut leaves = Vec::new();
-
-        let limbs = 4 + (rng.next() * 2.99) as usize;
-        for i in 0..limbs {
-            let angle = (i as f32 + rng.range(-0.3, 0.3)) / limbs as f32 * TAU;
-            let dir = normalize([angle.cos(), angle.sin(), rng.range(0.5, 0.9)]);
-            let end = add(top, scale(dir, rng.range(1.5, 2.5)));
-            wood.push(Shape::wood(top, end, radius * 0.5, radius * 0.25, WOOD));
-            leaves.push(Shape::sphere(end, rng.range(0.6, 0.9), WILLOW, LEAVES, true));
-
-            // Strands hanging down from along the limb, drifting outwards a little
-            for _ in 0..(5 + (rng.next() * 3.99) as usize) {
-                let mut point = add(lerp3(top, end, rng.range(0.5, 1.0)), [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), 0.0]);
-                let length = rng.range(2.0, 3.5);
-                for _ in 0..4 {
-                    let next = add(point, [dir[0] * 0.1, dir[1] * 0.1, -length / 4.0]);
-                    leaves.push(Shape::capsule(point, next, 0.04, 0.04, WILLOW, LEAVES, false));
-                    let middle = lerp3(point, next, 0.5);
-                    for side in [-1.0, 1.0] {
-                        let out = [dir[1] * side, -dir[0] * side, 0.0];
-                        leaves.push(Shape::leaf(add(middle, scale(out, 0.08)), add(out, [0.0, 0.0, -1.5]), dir, 0.3, 0.08, WILLOW, LEAVES));
-                    }
-                    point = next;
-                }
-            }
-        }
-
-        wood.append(&mut leaves);
-        wood
-    }
-
-    // A straight trunk with narrow tiers of needles, like a spruce
-    fn spruce(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(8.0, 13.0);
-        let radius = rng.range(0.18, 0.26);
-        let crown = rng.range(1.4, 2.0);
-        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height], radius * 1.2, radius * 0.3, WOOD)];
-        let tiers = 7 + (rng.next() * 2.99) as usize;
-        for i in 0..tiers {
-            let t = i as f32 / tiers as f32;
-            let r = crown * (1.0 - 0.8 * t) * rng.range(0.85, 1.1);
-            let z = base + height * (0.2 + 0.75 * t);
-            shapes.push(Shape::capsule([x, y, z], [x, y, z + r * 1.6], r, 0.1, PINE, LEAVES_DARK, true));
-        }
-        shapes
-    }
-
-    // Wider and darker than a spruce, with fewer, drooping tiers
-    fn fir(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(7.0, 11.0);
-        let radius = rng.range(0.2, 0.3);
-        let crown = rng.range(2.0, 2.8);
-        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height], radius * 1.2, radius * 0.3, WOOD)];
-        let tiers = 5 + (rng.next() * 2.99) as usize;
-        for i in 0..tiers {
-            let t = i as f32 / tiers as f32;
-            let r = crown * (1.0 - 0.75 * t) * rng.range(0.85, 1.1);
-            let z = base + height * (0.25 + 0.68 * t);
-            shapes.push(Shape::capsule([x, y, z - r * 0.15], [x, y, z + r * 1.2], r, 0.12, LEAVES_DARK, PINE, true));
-        }
-        shapes
-    }
-
-    fn poplar(&self, x: f32, y: f32, base: f32, leaves: u8, accent: u8, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(7.0, 10.0);
-        let radius = rng.range(0.9, 1.4);
-        let foliage = Foliage {
-            material: leaves,
-            accent,
-            leaf_length: 0.26,
-            leaves_per_twig: 48,
-            clumps_per_twig: 1,
-        };
-        // A narrow tower of leaf clusters up the trunk, smaller towards the top
-        let mut shapes = vec![Shape::wood([x, y, base - 0.6], [x, y, base + height * 0.8], 0.24, 0.12, WOOD)];
-        let mut leaves = Vec::new();
-        let tiers = 5;
-        for k in 0..tiers {
-            let t = k as f32 / (tiers - 1) as f32;
-            let z = base + 2.0 + radius + (height - radius * 1.5 - 2.0) * t;
-            let r = radius * (1.0 - 0.45 * t);
-            self.leaf_cluster(&mut leaves, [x, y, z], [0.0, 0.0, 0.3], r, WOOD, foliage, rng);
-        }
-        shapes.append(&mut leaves);
-        shapes
-    }
-
     // A curving trunk with a crown of long arching fronds
     fn palm(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
         let height = rng.range(5.0, 8.0);
@@ -3229,6 +5681,26 @@ impl Terrain {
         let top = previous;
         for _ in 0..(2 + (rng.next() * 2.99) as usize) {
             shapes.push(Shape::sphere(add(top, [rng.range(-0.2, 0.2), rng.range(-0.2, 0.2), -0.25]), 0.1, DEAD_WOOD, AIR, false));
+        }
+
+        // A few old fronds gone brown, hanging down against the trunk under the green ones
+        for _ in 0..(1 + (rng.next() * 2.99) as usize) {
+            let angle = rng.range(0.0, TAU);
+            let (sin, cos) = angle.sin_cos();
+            let side = [-sin, cos, 0.0];
+            let length = rng.range(1.8, 2.6);
+            let mut point = add(top, [0.0, 0.0, -0.2]);
+            for k in 1..=3 {
+                let t = k as f32 / 3.0;
+                let next = add(top, [cos * length * (0.25 + 0.15 * t), sin * length * (0.25 + 0.15 * t), -0.2 - length * t * 0.9]);
+                shapes.push(Shape::capsule(point, next, 0.04, 0.03, DEAD_WOOD, AIR, false));
+                let at = lerp3(point, next, 0.5);
+                for s in [-1.0, 1.0] {
+                    let along = [side[0] * s * 0.6 + cos * 0.3, side[1] * s * 0.6 + sin * 0.3, -1.0];
+                    shapes.push(Shape::leaf(add(at, scale(normalize(along), 0.25)), along, [cos, sin, 0.0], 0.5, 0.08, PALM_WOOD, DEAD_WOOD));
+                }
+                point = next;
+            }
         }
 
         let fronds = 7 + (rng.next() * 3.99) as usize;
@@ -3348,44 +5820,6 @@ impl Terrain {
         }
         shapes
     }
-
-    // Round bushes: dark ones with red berries in the woods, ones covered in flowers in the meadows
-    fn bush(&self, x: f32, y: f32, ground: f32, meadow: f32, r: u32) -> Object {
-        let mut rng = Rng(r);
-        let size = rng.range(0.5, 1.0);
-        let flowering = rng.next() < meadow;
-        let (leaves, accent) = if flowering || rng.next() < 0.4 {
-            (LEAVES_DARK, FLOWER_RED)
-        } else {
-            self.leaf_colors(x, y, &mut rng)
-        };
-        let mut shapes: Vec<Shape> = Vec::new();
-        if flowering {
-            let color = [FLOWER_BLUE, FLOWER_PINK, FLOWER_WHITE][(rng.next() * 2.99) as usize];
-            for _ in 0..(4 + (rng.next() * 3.99) as usize) {
-                let mut dir = rng.direction(0.3);
-                dir[2] = dir[2].abs();
-                shapes.push(Shape::sphere(add([x, y, ground + size * 0.6], scale(dir, size * 0.8)), size * rng.range(0.2, 0.3), color, FLOWER_WHITE, true));
-            }
-        }
-        for _ in 0..(2 + (rng.next() * 2.99) as usize) {
-            let center = [x + rng.range(-0.7, 0.7) * size, y + rng.range(-0.7, 0.7) * size, ground + size * 0.6];
-            shapes.push(Shape::sphere(center, size * rng.range(0.6, 1.0), leaves, if flowering { LEAVES } else { accent }, true));
-        }
-        Object::new(shapes, rng.0)
-    }
-
-    fn boulder(&self, x: f32, y: f32, ground: f32, r: u32) -> Object {
-        let mut rng = Rng(r);
-        let size = 0.5 + rng.next().powi(2) * 1.8;
-        let center = [x, y, ground + size * 0.2];
-        let mut shapes = vec![Shape::sphere(center, size, ROCK, MOSS, false)];
-        for _ in 0..3 {
-            let offset = [0, 1, 2].map(|_| rng.range(-0.5, 0.5) * size);
-            shapes.push(Shape::sphere(add(center, [offset[0], offset[1], offset[2] * 0.5]), size * rng.range(0.5, 0.8), ROCK, MOSS, false));
-        }
-        Object::new(shapes, rng.0)
-    }
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -3405,6 +5839,35 @@ fn hash3(x: u32, y: u32, z: u32) -> u32 {
 /// Maps the low 16 bits to [0, 1].
 fn unit(bits: u32) -> f32 {
     (bits & 0xFFFF) as f32 / 65535.0
+}
+
+/// Value noise in 3D, -1 to 1, smooth over about a unit
+fn noise3(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let (fx, fy, fz) = (x.floor(), y.floor(), z.floor());
+    let (ix, iy, iz) = (fx as i32, fy as i32, fz as i32);
+    let s = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (tx, ty, tz) = (s(x - fx), s(y - fy), s(z - fz));
+    let at = |dx: i32, dy: i32, dz: i32| unit(hash3((ix + dx) as u32, (iy + dy) as u32, (iz + dz) as u32 ^ seed)) * 2.0 - 1.0;
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let plane = |dz: i32| lerp(lerp(at(0, 0, dz), at(1, 0, dz), tx), lerp(at(0, 1, dz), at(1, 1, dz), tx), ty);
+    lerp(plane(0), plane(1), tz)
+}
+
+/// The big bulges and hollows of a cave's walls at `p`, in meters, -0.7 to 0.7
+fn cave_lumps(p: Vec3) -> f32 {
+    noise3(p[0] / 2.2, p[1] / 2.2, p[2] / 1.6, 0xca7e) * 0.7
+}
+
+/// How far the smaller knobs and ledges on them go either way, and what they add at `p`
+const CAVE_KNOBS: f32 = 0.45;
+fn cave_knobs(p: Vec3) -> f32 {
+    noise3(p[0] / 0.7, p[1] / 0.7, p[2] / 0.5, 0x5a1d) * CAVE_KNOBS
+}
+
+/// The lumps of a cave's walls at `p`, -1 to 1: big bulges and hollows, with smaller knobs and
+/// ledges on them
+fn cave_noise(p: Vec3) -> f32 {
+    (cave_lumps(p) + cave_knobs(p)).clamp(-1.0, 1.0)
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -3467,4 +5930,578 @@ fn ridged(x: f32, y: f32, octaves: u32, seed: u32) -> f32 {
         frequency *= 2.0;
     }
     sum / norm
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wherever the world's built, out on the land, a river runs through most of it: counts the
+    /// squares as big as a world, over a couple of kilometers, that have one
+    #[test]
+    fn rivers_run_through_most_of_the_land() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let (terrain, _) = generate_terrain(&settings, [0, 0], &RiverCache::default());
+        let cache = RiverCache::default();
+        let sea = sea_level_m(&settings);
+        let (side, n) = (224.0, 10);
+        let (mut land, mut with) = (0, 0);
+        for j in 0..n {
+            for i in 0..n {
+                let lo = [(i - n / 2) as f32 * side, (j - n / 2) as f32 * side];
+                let hi = [lo[0] + side, lo[1] + side];
+                let dry = (0..16).filter(|k| height_at(&settings, lo[0] + side * ((k % 4) as f32 + 0.5) / 4.0, lo[1] + side * ((k / 4) as f32 + 0.5) / 4.0) > sea).count();
+                if dry < 8 {
+                    continue;
+                }
+                land += 1;
+                let rivers = terrain.rivers_near(&cache, lo, hi);
+                if rivers.iter().any(|r| r.iter().any(|p| p.x > lo[0] && p.y > lo[1] && p.x < hi[0] && p.y < hi[1])) {
+                    with += 1;
+                }
+            }
+        }
+        let rivers: Vec<_> = cache.cells.lock().unwrap().values().flatten().cloned().collect();
+        let long = rivers.iter().map(|r| r.len() as f32 * 0.5).sum::<f32>() / rivers.len().max(1) as f32;
+        println!("{with} of {land} squares of land have a river; {} rivers, {long:.0} m long on average", rivers.len());
+        assert!(land > 0 && with * 4 >= land * 3);
+    }
+
+    /// A map of two kilometers of the landscape, a pixel to a meter, with its rivers bright blue:
+    /// `cargo test --release river_map -- --ignored`, saved where RIVER_MAP says or in the temp folder
+    #[test]
+    #[ignore]
+    fn river_map() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 1, seed: 1, grass_tufts: false };
+        let side = 2000;
+        let origin = [-(side as i64) / 2, -(side as i64) / 2];
+        let mut heights = Heights::new(&settings, origin, [side, side], 1);
+        let mut terrain = Terrain::new(&settings, &heights);
+        terrain.carve_rivers(&mut heights, &RiverCache::default());
+        let sea = sea_level_m(&settings);
+        let map = image::RgbImage::from_fn(side as u32, side as u32, |x, y| {
+            let i = x as usize + (side - 1 - y as usize) * side;
+            let g = heights.ground[i];
+            let shade = |c: [f32; 3], k: f32| image::Rgb(c.map(|v| (v * k).clamp(0.0, 255.0) as u8));
+            if heights.river[i].is_finite() {
+                image::Rgb([60, 170, 255])
+            } else if g < sea {
+                shade([20.0, 50.0, 110.0], 0.6 + 0.4 * (g / sea))
+            } else {
+                let up = ((g - sea) / (settings.height_m as f32 - sea)).clamp(0.0, 1.0);
+                let land = [90.0 + 150.0 * up, 140.0 + 100.0 * up, 70.0 + 170.0 * up];
+                shade(land, 0.75 + 0.25 * up)
+            }
+        });
+        let path = std::env::var("RIVER_MAP").map_or(std::env::temp_dir().join("river_map.png"), std::path::PathBuf::from);
+        map.save(&path).unwrap();
+        println!("{} rivers, map in {}", terrain.rivers.len(), path.display());
+    }
+
+    /// What all of a brick is, by voxel: x + y * 8 + z * 64
+    fn brick_voxels(world: &World, cell: usize) -> [u8; BRICK_VOXELS] {
+        let value = world.brick_grid[cell];
+        if value & EMPTY_BRICK != 0 {
+            return [AIR; BRICK_VOXELS];
+        }
+        if value & SOLID_BRICK != 0 {
+            return [value as u8; BRICK_VOXELS];
+        }
+        let words = world.brick(((value & BRICK_INDEX) - 1) as usize);
+        std::array::from_fn(|i| (words[16 + i / 4] >> ((i % 4) * 8)) as u8)
+    }
+
+    /// Where `window` differs from the same rectangle of the landscape built in one go, `whole`,
+    /// voxel by voxel, in grass and in the ground water lies on
+    fn differences(window: &World, whole: &World) -> Vec<String> {
+        assert_eq!(window.size, whole.size);
+        let [sx, sy, sz] = window.size.map(i64::from);
+        let mut problems = Vec::new();
+        for y in 0..sy {
+            for x in 0..sx {
+                for z in 0..sz {
+                    let (a, b) = (window.material_at(x, y, z), whole.material_at(x, y, z));
+                    if a != b && problems.len() < 20 {
+                        problems.push(format!("voxel {x}, {y}, {z}: {a} moving on, {b} in one go"));
+                    }
+                }
+                let (i, j) = (window.column(x, y), (x + y * sx) as usize);
+                let (ga, gb) = (window.grass.as_ref().unwrap()[i], whole.grass.as_ref().unwrap()[j]);
+                let (wa, wb) = (window.water.as_ref().unwrap().ground[i], whole.water.as_ref().unwrap().ground[j]);
+                if (ga != gb || wa != wb) && problems.len() < 40 {
+                    problems.push(format!("column {x}, {y}: grass {ga:#x}/{gb:#x}, ground {wa}/{wb}"));
+                }
+            }
+        }
+        problems
+    }
+
+    /// Puts the strip of the landscape from `origin`, `size` columns across, into `window`
+    fn put_in(window: &mut World, settings: &TerrainSettings, cache: &RiverCache, origin: [i64; 2], size: [u32; 2]) {
+        let (_, piece) = generate_area(settings, origin, size, cache);
+        let pool = window.page_pool().unwrap();
+        let strip = window.phys[0] - window.size[0];
+        let mut installing = World::install(Strip::new(piece, &pool, strip));
+        while !window.install_step(&mut installing, 3) {}
+    }
+
+    /// Lets go of the columns from `lo` to `hi` of `window`, giving its pages back at once
+    fn let_go(window: &mut World, lo: [i64; 2], hi: [i64; 2]) {
+        let mut releasing = World::release(lo, hi);
+        while !window.release_step(&mut releasing, 5) {}
+        let pages = window.take_released();
+        window.page_pool().unwrap().lock().unwrap().give_back(pages);
+    }
+
+    /// How many cells of `world` hold a stored brick
+    fn stored(world: &World) -> usize {
+        world.brick_grid.iter().filter(|&&c| c & (SOLID_BRICK | EMPTY_BRICK) == 0).count()
+    }
+
+    /// The world moves on over the landscape a strip at a time, each column kept where it is in the
+    /// landscape modulo the room there is, so it wraps round: moved on along x and y, back again
+    /// and on, it's the same at every step as the same piece of the landscape built in one go, and
+    /// what's let go of is used again
+    #[test]
+    fn the_world_moves_on_a_strip_at_a_time() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: true };
+        let cache = RiverCache::default();
+        let (w, s) = (64 * 4, 16 * 4);
+        let size = [w as u32, w as u32, 64 * 4];
+        let mut origin = [80 * 4, 72 * 4];
+        let (_, first) = generate_area(&settings, origin, [w as u32, w as u32], &cache);
+        let mut window = World::window(size, s as u32, origin, 4, first.sea_level);
+        put_in(&mut window, &settings, &cache, origin, [w as u32, w as u32]);
+        let mut pages_most = 0;
+        // Along x, along y, back along x twice, then on along y and back
+        for (k, step) in [[1, 0], [0, 1], [-1, 0], [-1, 0], [0, 1], [0, -1], [1, 0]].into_iter().enumerate() {
+            let axis = if step[0] != 0 { 0 } else { 1 };
+            let forward = step[axis] > 0;
+            // The strip coming in, just past the edge it's moving towards
+            let mut lo = origin;
+            lo[axis] = if forward { origin[axis] + w } else { origin[axis] - s };
+            let mut room = [w as u32; 2];
+            room[axis] = s as u32;
+            // Where it goes is let go of first: what left last time along this way
+            let mut hi = [lo[0] + room[0] as i64, lo[1] + room[1] as i64];
+            let_go(&mut window, lo, hi);
+            put_in(&mut window, &settings, &cache, lo, room);
+            origin[axis] += if forward { s } else { -s };
+            window.move_to(origin);
+            // What's left behind
+            lo = origin;
+            lo[axis] = if forward { origin[axis] - s } else { origin[axis] + w };
+            hi = [lo[0] + room[0] as i64, lo[1] + room[1] as i64];
+            let_go(&mut window, lo, hi);
+
+            let (_, whole) = generate_area(&settings, origin, [w as u32, w as u32], &cache);
+            let problems = differences(&window, &whole);
+            assert!(problems.is_empty(), "after step {k}, {step:?}, at {origin:?}:\n{}", problems.join("\n"));
+            assert_eq!(window.brick_count(), stored(&window), "after step {k}");
+            pages_most = pages_most.max(window.page_pool().unwrap().lock().unwrap().count());
+        }
+        // Pages let go of were used again: room for little more than the world and a strip, give or
+        // take one part filled for each square of the landscape a strip across they reach into
+        let need = (stored(&window)).div_ceil(PAGE_BRICKS) as u32;
+        let squares = ((w / s + 1) * (w / s + 2)) as u32;
+        assert!(pages_most <= need * 2 + squares, "{pages_most} pages for {need}");
+    }
+
+    /// The bricks in each page of the world that moves on all lie in one square of the landscape a
+    /// strip across, those of the piece built in one go it starts from and of the strips put in
+    /// since alike, so as it lets go of a strip at a time each page comes free once the world's
+    /// left its square: however far it goes, it needs little more room than it has bricks
+    #[test]
+    fn pages_come_free_as_the_world_moves_on() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 3, grass_tufts: true };
+        let cache = RiverCache::default();
+        let (w, s) = (64 * 4, 16 * 4);
+        let size = [w as u32, w as u32, 64 * 4];
+        // A whole number of strips from the landscape's corner, as the game's world always is
+        let mut origin = [48 * 4, -32 * 4];
+        let (_, first) = generate_area(&settings, origin, [w as u32, w as u32], &cache);
+        let mut window = World::window(size, s as u32, origin, 4, first.sea_level);
+        put_in(&mut window, &settings, &cache, origin, [w as u32, w as u32]);
+        // Which square of the landscape each page in use has bricks of
+        let squares = |window: &World| -> usize {
+            let mut square: HashMap<usize, [i64; 2]> = HashMap::new();
+            let [bx, by, bz] = window.size.map(|n| n as i64 / 8);
+            for z in 0..bz {
+                for y in 0..by {
+                    for x in 0..bx {
+                        let value = window.brick_grid[window.cell([x, y, z])];
+                        if value & (SOLID_BRICK | EMPTY_BRICK) != 0 {
+                            continue;
+                        }
+                        let page = ((value & BRICK_INDEX) - 1) as usize / PAGE_BRICKS;
+                        let at = [(window.origin[0] / 8 + x).div_euclid(s / 8), (window.origin[1] / 8 + y).div_euclid(s / 8)];
+                        let was = *square.entry(page).or_insert(at);
+                        assert_eq!(was, at, "page {page} has bricks of squares {was:?} and {at:?}");
+                    }
+                }
+            }
+            square.len()
+        };
+        squares(&window);
+        let mut pages_most = 0;
+        // On along x for more than the world's width, along y, then back along x
+        let steps = [[1, 0]; 6].into_iter().chain([[0, 1]; 2]).chain([[-1, 0]; 3]);
+        for (k, step) in steps.enumerate() {
+            let axis = if step[0] != 0 { 0 } else { 1 };
+            let forward = step[axis] > 0;
+            let mut lo = origin;
+            lo[axis] = if forward { origin[axis] + w } else { origin[axis] - s };
+            let mut room = [w as u32; 2];
+            room[axis] = s as u32;
+            put_in(&mut window, &settings, &cache, lo, room);
+            pages_most = pages_most.max(window.page_pool().unwrap().lock().unwrap().count());
+            origin[axis] += if forward { s } else { -s };
+            window.move_to(origin);
+            // What's left behind goes at once, here
+            lo = origin;
+            lo[axis] = if forward { origin[axis] - s } else { origin[axis] + w };
+            let_go(&mut window, lo, [lo[0] + room[0] as i64, lo[1] + room[1] as i64]);
+            let in_use = squares(&window);
+            assert_eq!(window.brick_count(), stored(&window), "after step {k}");
+            // Every page let go of is free again: as many in use as there are bricks for, give or
+            // take one part filled for each square
+            let free = window.page_pool().unwrap().lock().unwrap().free.len();
+            let made = window.page_pool().unwrap().lock().unwrap().count() as usize;
+            assert_eq!(made - free, in_use, "after step {k}");
+            assert!(in_use <= stored(&window).div_ceil(PAGE_BRICKS) + ((w / s) * (w / s)) as usize, "after step {k}");
+        }
+        // Never more than the world and the strip coming in, give or take one part filled for each
+        // square of them
+        let need = stored(&window).div_ceil(PAGE_BRICKS) as u32;
+        let squares = ((w / s) * (w / s + 1)) as u32;
+        assert!(pages_most <= need * 3 / 2 + squares, "{pages_most} pages for {need}");
+    }
+
+    /// A hole blown and a stain splashed right where the world wraps round in its room, after it's
+    /// moved on, come out as they would in the same piece of the landscape built in one go
+    #[test]
+    fn holes_blown_where_the_world_wraps() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: true };
+        let cache = RiverCache::default();
+        let (w, s) = (64 * 4, 16 * 4);
+        let size = [w as u32, w as u32, 64 * 4];
+        // Started further back and moved on, so the world's column 0 isn't the room's
+        let start = [96 * 4, 30 * 4];
+        let (_, first) = generate_area(&settings, start, [w as u32, w as u32], &cache);
+        let mut window = World::window(size, s as u32, start, 4, first.sea_level);
+        put_in(&mut window, &settings, &cache, start, [w as u32, w as u32]);
+        let origin = [start[0] + s, start[1] + s];
+        let_go(&mut window, [start[0] + w, start[1]], [start[0] + w + s, start[1] + w]);
+        put_in(&mut window, &settings, &cache, [start[0] + w, start[1]], [s as u32, w as u32]);
+        window.move_to([origin[0], start[1]]);
+        let_go(&mut window, [start[0] + s, start[1] + w], [start[0] + w + s, start[1] + w + s]);
+        put_in(&mut window, &settings, &cache, [origin[0], start[1] + w], [w as u32, s as u32]);
+        window.move_to(origin);
+        assert!(window.wrap[0] > 0 && window.wrap[1] > 0, "{:?}", window.wrap);
+        let (_, mut whole) = generate_area(&settings, origin, [w as u32, w as u32], &cache);
+        // Where the room wraps round, inside the world both ways, on the ground
+        let seam = [0, 1].map(|i| (window.phys[i] - window.wrap[i]) as i64);
+        assert!(seam.iter().all(|&v| v > 16 && v < w - 16), "{seam:?}");
+        let ground = (0..size[2] as i64).rev().find(|&z| !is_passable(whole.material_at(seam[0], seam[1], z))).unwrap();
+        let center = [seam[0] as f64 + 0.5, seam[1] as f64 + 0.5, ground as f64];
+        for world in [&mut window, &mut whole] {
+            world.carve(center, 3.0 * 4.0);
+            world.paint([center[0] + 6.0, center[1] - 5.0, center[2] - 6.0], 2.0 * 4.0, ROCK, true);
+        }
+        let problems = differences(&window, &whole);
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+        assert_eq!(window.brick_count(), stored(&window));
+    }
+
+    /// What of a piece of the landscape belongs to it alone, each as a line, sorted
+    fn owned(terrain: &Terrain) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        lines.extend(terrain.props().iter().map(|p| format!("prop {:?} {:?}", p.kind, p.position)));
+        lines.extend(terrain.lights().iter().map(|l| format!("light {:?} {:?}", l.position, l.color)));
+        lines.extend(terrain.sites().iter().map(|s| format!("site {} {:?}", s.kind, s.position)));
+        lines.extend(terrain.bandit_camps().iter().map(|c| format!("camp {:?} {:?}", c.kind.name(), c.fire)));
+        lines.extend(terrain.piece_springs().iter().map(|s| format!("spring {s:?}")));
+        lines.sort();
+        lines
+    }
+
+    /// Builds the rectangle `size` voxel columns across at `origin` in one go, and again in strips
+    /// `strip` columns across along `axis`, and says where they come out differently: voxels, grass,
+    /// where water lies, and what's there besides
+    fn seams(settings: &TerrainSettings, origin: [i64; 2], size: [u32; 2], strip: u32, axis: usize) -> Vec<String> {
+        let cache = RiverCache::default();
+        let (whole_terrain, whole) = generate_area(settings, origin, size, &cache);
+        let vpm = settings.voxels_per_meter as f64;
+        let [bx, by, bz] = whole.size.map(|n| n as usize / 8);
+        let mut problems = Vec::new();
+        let mut features = Vec::new();
+        let at = |x: usize, y: usize| format!("{:.2}, {:.2} m", (origin[0] + x as i64) as f64 / vpm, (origin[1] + y as i64) as f64 / vpm);
+        for k in 0..size[axis] / strip {
+            let mut o = origin;
+            o[axis] += (k * strip) as i64;
+            let mut s = size;
+            s[axis] = strip;
+            let (terrain, piece) = generate_area(settings, o, s, &cache);
+            let shift = [(o[0] - origin[0]) as usize, (o[1] - origin[1]) as usize];
+            let [px, py] = [s[0] as usize / 8, s[1] as usize / 8];
+            for z in 0..bz {
+                for y in 0..py {
+                    for x in 0..px {
+                        let mine = (x + (y + z * py) * px, piece.brick_grid[x + (y + z * py) * px]);
+                        let theirs = ((x + shift[0] / 8) + ((y + shift[1] / 8) + z * by) * bx, 0);
+                        let theirs = (theirs.0, whole.brick_grid[theirs.0]);
+                        // Empty ones say how far it is to the next that isn't, which goes by how
+                        // much of the world there is
+                        if mine.1 & EMPTY_BRICK != 0 && theirs.1 & EMPTY_BRICK != 0 || mine.1 == theirs.1 && mine.1 & SOLID_BRICK != 0 {
+                            continue;
+                        }
+                        let (a, b) = (brick_voxels(&piece, mine.0), brick_voxels(&whole, theirs.0));
+                        if let Some(i) = (0..BRICK_VOXELS).find(|&i| a[i] != b[i]) {
+                            if problems.len() < 40 {
+                                problems.push(format!("voxel at {}, {} up: {} in strip {k}, {} in one go", at(shift[0] + x * 8 + i % 8, shift[1] + y * 8 + i / 8 % 8), z * 8 + i / 64, a[i], b[i]));
+                            }
+                        } else if (mine.1 & FOLIAGE_BRICK) != (theirs.1 & FOLIAGE_BRICK) {
+                            problems.push(format!("foliage flag at {}", at(shift[0] + x * 8, shift[1] + y * 8)));
+                        }
+                    }
+                }
+            }
+            let (pg, wg) = (piece.grass.as_ref().unwrap(), whole.grass.as_ref().unwrap());
+            let (pw, ww) = (piece.water.as_ref().unwrap(), whole.water.as_ref().unwrap());
+            for y in 0..s[1] as usize {
+                for x in 0..s[0] as usize {
+                    let (i, j) = (x + y * s[0] as usize, (x + shift[0]) + (y + shift[1]) * size[0] as usize);
+                    if problems.len() < 80 && (pg[i] != wg[j] || pw.ground[i] != ww.ground[j] || pw.surface[i] != ww.surface[j]) {
+                        problems.push(format!(
+                            "column at {}: grass {:#x}/{:#x}, ground {}/{}, water {}/{} in strip {k} and in one go",
+                            at(x + shift[0], y + shift[1]),
+                            pg[i],
+                            wg[j],
+                            pw.ground[i],
+                            ww.ground[j],
+                            pw.surface[i],
+                            ww.surface[j]
+                        ));
+                    }
+                }
+            }
+            features.extend(owned(&terrain));
+        }
+        features.sort();
+        let all = owned(&whole_terrain);
+        if features != all {
+            let only = |a: &[String], b: &[String]| a.iter().filter(|l| !b.contains(l)).take(10).cloned().collect::<Vec<_>>();
+            problems.push(format!("only in the strips: {:?}; only in one go: {:?}", only(&features, &all), only(&all, &features)));
+        }
+        println!("{} strips of {} m at {:?}: {} owned things, {} problems", size[axis] / strip, strip as f64 / vpm, origin.map(|v| v as f64 / vpm), all.len(), problems.len());
+        problems
+    }
+
+    /// A rectangle of the landscape `size` meters across centered on `at`, in voxel columns at
+    /// `vpm`, lined up with the bricks
+    fn around(at: [f32; 2], size: [u32; 2], vpm: u32) -> ([i64; 2], [u32; 2]) {
+        let origin = [0, 1].map(|i| (((at[i] - size[i] as f32 * 0.5) * vpm as f32) as i64).div_euclid(8) * 8);
+        (origin, size.map(|n| n * vpm))
+    }
+
+    /// The world moves on a strip at a time, each built on its own: those built next to each other
+    /// have to meet with no seam, through towns, castles, fallen cities, dungeons and caves as much as
+    /// out in the woods, so a strip built later lines up with the rest just as if it had all been built
+    /// in one go. Each spot here has a strip's edge going through it.
+    #[test]
+    fn strips_meet_without_seams() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: true };
+        let finder = Terrain::around(&settings, [0.0; 2], [1.0; 2]);
+        let mut spots: Vec<(&str, [f32; 2])> = vec![("start", [112.0, 112.0])];
+        if let Some((square, _)) = finder.nearest_town([112.0, 112.0], false, None) {
+            spots.push(("town", [square[0], square[1]]));
+        }
+        if let Some(royal) = finder.nearest_castle([112.0, 112.0], None) {
+            spots.push(("royal castle", [royal.middle[0], royal.middle[1]]));
+        }
+        if let Some(sunken) = finder.nearest_undercity([112.0, 112.0]) {
+            spots.push(("fallen city", [sunken.foot[0], sunken.foot[1]]));
+        }
+        if let Some(door) = finder.nearest_dungeon([112.0, 112.0]) {
+            spots.push(("dungeon", [door[0], door[1]]));
+        }
+        if let Some((floor, ..)) = finder.nearest_cavern([112.0, 112.0]) {
+            spots.push(("cavern", [floor[0], floor[1]]));
+        }
+        if let Some(fire) = camp_spots(&settings, CampKind::Fort, [112.0, 112.0], None).first() {
+            spots.push(("camp", *fire));
+        }
+        let mut failed = Vec::new();
+        for (k, (name, at)) in spots.iter().enumerate() {
+            // Strips along x for some, along y for the others, 16 m across: both ways the world moves
+            let axis = k % 2;
+            let (origin, size) = around(*at, [96, 96], settings.voxels_per_meter);
+            let problems = seams(&settings, origin, size, 16 * settings.voxels_per_meter, axis);
+            if !problems.is_empty() {
+                failed.push(format!("{name} at {at:?}:\n  {}", problems.join("\n  ")));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// The same in every kind of land, over the widest river about and at a waterfall, in strips as
+    /// narrow as the world moves on by, each way
+    #[test]
+    fn narrow_strips_meet_without_seams_anywhere() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: true };
+        let cache = RiverCache::default();
+        let mut spots: Vec<(String, [f32; 2])> = Vec::new();
+        for kind in ["jungle", "desert", "snow", "autumn", "temperate"] {
+            if let Some(at) = find_climate(&settings, kind, [160.0, 160.0]) {
+                spots.push((kind.to_string(), at));
+            }
+        }
+        let finder = Terrain::around(&settings, [0.0; 2], [1.0; 2]);
+        if let Some(at) = finder.widest_river_near([112.0, 112.0], &cache) {
+            spots.push(("river".into(), at));
+        }
+        if let Some((lip, ..)) = waterfalls_in(&settings, &cache, [-200.0, -200.0], [400.0, 400.0]).first() {
+            spots.push(("waterfall".into(), [lip[0], lip[1]]));
+        }
+        let mut failed = Vec::new();
+        for (k, (name, at)) in spots.iter().enumerate() {
+            let (origin, size) = around(*at, [64, 64], settings.voxels_per_meter);
+            let problems = seams(&settings, origin, size, 8 * settings.voxels_per_meter, k % 2);
+            if !problems.is_empty() {
+                failed.push(format!("{name} at {at:?}:\n  {}", problems.join("\n  ")));
+            }
+        }
+        assert!(spots.len() >= 6, "{spots:?}");
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// The water a world built a strip at a time has flowing in is what it'd have built in one go:
+    /// where the rivers come into it, see window_springs(), and what each strip has of its own
+    #[test]
+    fn strips_have_the_springs_of_the_whole() {
+        let settings = TerrainSettings { width_m: 96, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let cache = RiverCache::default();
+        let (origin, size) = around([112.0, 112.0], [96, 96], 4);
+        let (whole, _) = generate_area(&settings, origin, size, &cache);
+        let key = |s: &[f32; 4]| format!("{s:?}");
+        let mut wanted: Vec<String> = whole.springs().iter().map(key).collect();
+        let (lo, hi) = (whole.own_lo, whole.own_hi);
+        let mut got: Vec<String> = window_springs(&settings, &cache, lo, hi).iter().map(key).collect();
+        for k in 0..4 {
+            let o = [origin[0] + k * 24 * 4, origin[1]];
+            let (strip, _) = generate_area(&settings, o, [24 * 4, size[1]], &cache);
+            got.extend(strip.piece_springs().iter().map(key));
+        }
+        wanted.sort();
+        got.sort();
+        assert!(!wanted.is_empty());
+        assert_eq!(got, wanted);
+    }
+
+    /// The same at the resolution the game's built at, out in the woods by the start, where the
+    /// trees reach over the edges of the strips
+    #[test]
+    fn fine_strips_meet_without_seams() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
+        let (origin, size) = around([112.0, 112.0], [48, 32], 16);
+        let problems = seams(&settings, origin, size, 8 * 16, 0);
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// Pictures of where strips meet: a royal castle and a town from above, built in one go and in
+    /// strips 16 m across, each column the color of what's on top of it and lighter the higher it
+    /// is, and where the two differ in red, which is nowhere: `cargo test --release seam_pictures --
+    /// --ignored`, saved where SEAM_DIR says or in the temp folder
+    #[test]
+    #[ignore]
+    fn seam_pictures() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 8, seed: 1, grass_tufts: true };
+        let finder = Terrain::around(&settings, [0.0; 2], [1.0; 2]);
+        let dir = std::env::var("SEAM_DIR").map_or(std::env::temp_dir(), std::path::PathBuf::from);
+        let mut spots = Vec::new();
+        if let Some(royal) = finder.nearest_castle([112.0, 112.0], None) {
+            spots.push(("castle", [royal.middle[0], royal.middle[1]]));
+        }
+        if let Some((square, _)) = finder.nearest_town([112.0, 112.0], false, None) {
+            spots.push(("town", [square[0], square[1]]));
+        }
+        let cache = RiverCache::default();
+        for (name, at) in spots {
+            let (origin, size) = around(at, [96, 96], settings.voxels_per_meter);
+            let (_, whole) = generate_area(&settings, origin, size, &cache);
+            let strip = 16 * settings.voxels_per_meter;
+            let pieces: Vec<World> = (0..size[0] / strip).map(|k| generate_area(&settings, [origin[0] + (k * strip) as i64, origin[1]], [strip, size[1]], &cache).1).collect();
+            let top = |world: &World, x: i64, y: i64| (0..world.size[2] as i64).rev().find_map(|z| Some((z, world.material_at(x, y, z))).filter(|(_, m)| *m != AIR)).unwrap_or((0, AIR));
+            let shade = |(z, m): (i64, u8)| {
+                let c = hash(m as u32 * 2654435761);
+                let lift = 0.45 + 0.55 * z as f32 / (settings.height_m * settings.voxels_per_meter) as f32 * 2.0;
+                image::Rgb([c as u8, (c >> 8) as u8, (c >> 16) as u8].map(|v| ((v as f32 * 0.6 + 60.0) * lift).min(255.0) as u8))
+            };
+            let [w, h] = size;
+            let one = image::RgbImage::from_fn(w, h, |x, y| shade(top(&whole, x as i64, (h - 1 - y) as i64)));
+            let strips = image::RgbImage::from_fn(w, h, |x, y| {
+                let (k, lx) = (x / strip, x % strip);
+                // A thin line where each strip starts, so it's plain where they meet
+                if lx == 0 && y % 8 < 3 {
+                    return image::Rgb([255, 255, 255]);
+                }
+                shade(top(&pieces[k as usize], lx as i64, (h - 1 - y) as i64))
+            });
+            let mut differ = 0;
+            let diff = image::RgbImage::from_fn(w, h, |x, y| {
+                let (k, lx) = (x / strip, x % strip);
+                let same = (0..whole.size[2] as i64).all(|z| whole.material_at(x as i64, (h - 1 - y) as i64, z) == pieces[k as usize].material_at(lx as i64, (h - 1 - y) as i64, z));
+                if same {
+                    image::Rgb([0, 0, 0])
+                } else {
+                    differ += 1;
+                    image::Rgb([255, 0, 0])
+                }
+            });
+            for (kind, picture) in [("one_go", &one), ("strips", &strips), ("difference", &diff)] {
+                picture.save(dir.join(format!("seam_{name}_{kind}.png"))).unwrap();
+            }
+            println!("{name} at {at:?}: {differ} columns differ, pictures in {}", dir.display());
+            assert_eq!(differ, 0);
+        }
+    }
+
+    /// How long a strip of the world takes to build as the world moves on, 8 and 16 m across a
+    /// world 224 m wide at 16 voxels a meter, one after the other along x then y, with the cores the
+    /// game leaves it: `cargo test --release strip_takes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn strip_takes() {
+        let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
+        let cache = RiverCache::default();
+        leave_cores(2);
+        let side = 224 * 16;
+        for strip in [128u32, 256] {
+            let mut took = Vec::new();
+            for k in 0..6 {
+                let start = std::time::Instant::now();
+                if k % 2 == 0 {
+                    generate_area(&settings, [side + k as i64 * strip as i64, 0], [strip, side as u32], &cache);
+                } else {
+                    generate_area(&settings, [0, side + k as i64 * strip as i64], [side as u32, strip], &cache);
+                }
+                took.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            println!("Strips {} m across: {:?} ms", strip / 16, took.iter().map(|t| t.round()).collect::<Vec<_>>());
+        }
+    }
+
+    /// How long pieces of the world take to build, as big and as detailed as the game builds them:
+    /// `cargo test --release generating -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn generating_takes() {
+        let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
+        let cache = RiverCache::default();
+        let side = 224 * 16;
+        // The last round the fallen city nearest the start, see undercity.rs
+        for origin in [[0, 0], [side, 0], [0, side], [-side, -side], [2 * side, side], [2560, 13312]] {
+            generate_terrain(&settings, origin, &cache);
+        }
+    }
 }

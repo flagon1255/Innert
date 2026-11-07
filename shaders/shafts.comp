@@ -1,0 +1,781 @@
+#version 460
+
+// Sun shafts: the sunlight the air scatters towards the camera, wherever sunlight reaches it, so
+// shade cast into the air by leaves, walls and hills shows as beams between. A pass of its own
+// after traverse.comp, at half its resolution, added to its image after post.comp's denoiser.
+//
+// High: a map of where sunlight stops (see fill()), kept round the camera and filled in a few rows
+// a frame as the camera moves, so looking a point up in it is all it takes to know whether it's
+// sunlit. Each view ray gathers what's scattered along it at a few points (see march()), at
+// different points every frame, which are averaged over frames following the camera (resolve()),
+// then spread over the full image without bleeding across edges (composite()).
+//
+// Low: a cheap stand-in, the sky smeared towards the sun on screen (mask() and radial()).
+//
+// The air is traverse.comp's haze (see atmosphere() there), which leaves the sunlight it scatters
+// to this pass while shafts are on High, and a little dust, which there's more of in the shade, as
+// in a wood or indoors, and more of when the sun's low.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Has to match Stage in src\shafts.rs
+const uint FILL = 0;
+const uint SHADE = 1;
+const uint MARCH = 2;
+const uint RESOLVE = 3;
+const uint MASK = 4;
+const uint RADIAL = 5;
+const uint COMPOSITE = 6;
+
+// Has to match the FLAG_* constants in src\shafts.rs
+const uint FLAG_HISTORY = 1; // Last frame's shafts are there to follow
+const uint FLAG_LOW = 2; // The composite adds the screen space ones
+const uint FLAG_STILL = 4; // The camera hasn't moved, so more of the past can be kept
+const uint FLAG_FINE = 8; // The second, finer pass of radial()
+
+// Has to match MAP_SIZE in src\shafts.rs
+const int MAP_SIZE = 1024;
+// What a texel of the map holds before it's first filled in
+const uint UNKNOWN = 0xFFFFFFFFu;
+// And where sunlight reaches the bottom of the world
+const float NO_HIT = -1e30;
+
+// Has to match traverse.comp
+const float HAZE_HEIGHT = 14.0;
+const float HAZE_REACH = 160.0;
+
+// Points along each ray out to SHAFT_RANGE meters, about as far as the map reaches, and past it
+const int SAMPLES = 16;
+const int TAIL_SAMPLES = 2;
+const float SHAFT_RANGE = 80.0;
+// Dust thins out this many meters over the camera to e times less, and fades out between these
+// distances (in meters), past which shafts are small on screen anyway
+const float DUST_HEIGHT = 15.0;
+const float DUST_NEAR = 35.0;
+const float DUST_FAR = 60.0;
+// How much more dust there is when everything round the camera is in the shade, as in a wood
+// or indoors
+const float SHADE_DUST = 2.0;
+// Dust shows where there's shade this many meters beside the sunlight, and this much of it out
+// in the open
+const float BESIDE = 2.5;
+const float OPEN_DUST = 0.04;
+// Leeway in comparing a point with where sunlight stops, in voxels
+const float BIAS = 2.0;
+// Has to match traverse.comp: how wide the sun's taken to be, in radians, which softens shade
+const float SUN_RADIUS = 0.045;
+// How far off, in meters, to look for what might shade a point, and the softest shade gets, in
+// meters across
+const float SEARCH = 0.4;
+const float SOFTEST = 1.5;
+
+// Rendered pixel to ray, as in traverse.comp, and world to last frame's rendered pixel: the same
+// buffer as traverse.comp's View, rather than in the push constants, which have room for no more
+// than 128 bytes on AMD's graphics cards and some of Intel's. Bound with the voxels, as they too
+// are bound anew each frame.
+layout(set = 1, binding = 2) uniform View {
+    mat4 pixelToRay;
+    mat4 previousWorldToPixel;
+} view;
+
+layout(push_constant) uniform PushConstants {
+    // xyz: towards the sun, w: how far along it the world's corner is from the map's anchor
+    vec4 sun;
+    // x: haze per meter at sea level, y: voxels per meter, z: sea level in voxels, w: seconds
+    vec4 air;
+    // xy: the world's corner in the map, in texels, z: texels per voxel, w: how much is added
+    vec4 map;
+    // xy: the map's first texel round the camera, zw: the first of those fill() fills in
+    ivec4 window;
+    // xyz: the world's size in voxels, w: how many texels fill() fills in, width | height << 16
+    uvec4 world;
+    // x: dust per meter, y: how far shafts reach in voxels, zw: the sun on screen, in rendered
+    // pixels, for Low
+    vec4 extra;
+    // x: stage, y: frame, z: FLAG_*, w: where the main world's first column is kept in the room
+    // there is for its columns, x | y << 16, see brickCell()
+    uvec4 info;
+} pc;
+
+// Where sunlight stops: per texel the distance along the sun to the first thing it hits, as a
+// float's bits, from the map's anchor (see Shafts::map_constants() in src\shafts.rs). Texels go
+// round: one's at (x, y) & (MAP_SIZE - 1) for x and y counted from the anchor, so as the camera
+// moves only the rows and columns it comes up to have to be filled in.
+layout(set = 0, binding = 0, r32ui) uniform uimage2D sunStops;
+// Written by traverse.comp, see there
+layout(set = 0, binding = 1, r32f) readonly uniform image2D depthImage;
+layout(set = 0, binding = 2, rgba16f) readonly uniform image2D guideImage;
+// The light post.comp's denoiser left, divided by guideImage, which the shafts are added to
+layout(set = 0, binding = 3, rgba16f) uniform image2D hdrImage;
+// Half resolution. High: what march() gathered this frame, up to the nearest and the furthest of
+// the four pixels each covers, then how far those are in meters. Low: how much sky each sees.
+layout(set = 0, binding = 4, rgba16f) uniform image2D marched;
+// Half resolution, by turns: last frame's shafts and this frame's, see resolve(). Low smears the
+// mask into the first then the second.
+layout(set = 0, binding = 5, rgba16f) uniform image2D before;
+layout(set = 0, binding = 6, rgba16f) uniform image2D shafts;
+// How much of the air round the camera is in the shade, kept from frame to frame
+layout(set = 0, binding = 7) buffer State {
+    float shade;
+} state;
+
+// The main world's voxels, as in traverse.comp
+layout(set = 1, binding = 0, r32ui) readonly uniform uimage3D brickGrid;
+layout(set = 1, binding = 1) readonly buffer Bricks {
+    uint bricks[];
+};
+// Has to match traverse.comp
+const uint BRICK_WORDS = 16 + 128;
+const uint SOLID_BRICK = 0x80000000u;
+const uint EMPTY_BRICK = 0x40000000u;
+const uint FOLIAGE_BRICK = 0x20000000u;
+const uint BRICK_INDEX = FOLIAGE_BRICK - 1u;
+const uint MAT_WATER = 6;
+
+const float FLT_MAX = 3.4028235e+38;
+
+uint hash(uint x) {
+    uint state = x * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float halton(uint i, uint base) {
+    float f = 1;
+    float r = 0;
+    while (i > 0) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// Where within its pixel each ray goes through this frame, -0.5 to 0.5. Has to match traverse.comp.
+vec2 pixelJitter(uint frame) {
+    uint i = frame % 16 + 1;
+    return vec2(halton(i, 2), halton(i, 3)) - 0.5;
+}
+
+// Spread evenly over neighbouring pixels, and moved on every frame (Jimenez 2014)
+float gradientNoise(vec2 p, uint frame) {
+    p += 5.588238 * float(frame % 64u);
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+// Has to match sunColor() in traverse.comp
+vec3 sunColor() {
+    float elevation = pc.sun.z;
+    vec3 color = mix(vec3(1.0, 0.45, 0.2), vec3(1.0, 0.9, 0.78), smoothstep(0.0, 0.65, elevation));
+    return color * 2.4 * smoothstep(-0.02, 0.06, elevation);
+}
+
+// Henyey-Greenstein, times 4 pi so it averages 1 over all directions
+float phase(float cos_angle, float g) {
+    return (1 - g * g) / pow(1 + g * g - 2 * g * cos_angle, 1.5);
+}
+
+// Has to match hazePhase() in traverse.comp
+float hazePhase(float cos_angle) {
+    return phase(cos_angle, 0.5);
+}
+
+// Dust scatters mostly onwards too, but some back, so shafts still show with the sun behind
+float dustPhase(float cos_angle) {
+    return 0.7 * phase(cos_angle, 0.5) + 0.3 * phase(cos_angle, -0.2);
+}
+
+// The map's axes across the sunlight, as traverse.comp's sunMapBasis()
+void sunBasis(out vec3 u, out vec3 v) {
+    vec3 sun = pc.sun.xyz;
+    vec3 helper = abs(sun.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    u = normalize(cross(helper, sun));
+    v = cross(sun, u);
+}
+
+// ---- Filling in the map ----
+
+// The main world's columns go round the room there is for them, as in traverse.comp's mainBrick()
+uint brickCell(ivec3 brick) {
+    ivec2 room = imageSize(brickGrid).xy;
+    ivec2 p = brick.xy + ivec2(pc.info.w & 0xFFFFu, pc.info.w >> 16) / 8;
+    return imageLoad(brickGrid, ivec3(p - room * ivec2(greaterThanEqual(p, room)), brick.z)).r;
+}
+
+// Whether sunlight stops at a voxel of a stored brick: anything but water
+bool stops(uint cell, uvec3 local) {
+    uint i = local.x + local.y * 8 + local.z * 64;
+    uint base = ((cell & BRICK_INDEX) - 1) * BRICK_WORDS;
+    if ((bricks[base + i / 32] >> (i % 32) & 1u) == 0)
+    return false;
+    return (bricks[base + 16 + i / 4] >> ((i % 4) * 8) & 0xFFu) != MAT_WATER;
+}
+
+// How far a ray goes through the main world before it stops, FLT_MAX if it never does. A trimmed
+// down traverse() from traverse.comp: through water, and leaves as they grow.
+float traceSun(vec3 origin, vec3 dir) {
+    vec3 size = vec3(pc.world.xyz);
+    vec3 inv_dir = clamp(1. / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
+    vec3 sgn_dir = sign(dir);
+    vec3 t1 = -origin * inv_dir;
+    vec3 t2 = (size - origin) * inv_dir;
+    vec3 tmins = min(t1, t2);
+    vec3 tmaxs = max(t1, t2);
+    float tmin = max(max(tmins.x, tmins.y), max(tmins.z, 0));
+    float tmax = min(tmaxs.x, min(tmaxs.y, tmaxs.z));
+    if (tmin > tmax)
+    return FLT_MAX;
+    origin += dir * tmin;
+
+    ivec3 brick_count = ivec3(size) / 8;
+    ivec3 brick = clamp(ivec3(floor(origin / 8)), ivec3(0), brick_count - 1);
+    ivec3 brick_step = ivec3(sgn_dir);
+    vec3 brick_t = ((brick + 0.5 * (1 + sgn_dir)) * 8 - origin) * inv_dir;
+    vec3 brick_delta = 8 * inv_dir * sgn_dir;
+    float brick_enter = 0;
+    uvec3 ustep = uvec3(ivec3(sgn_dir));
+    vec3 delta = inv_dir * sgn_dir;
+
+    for (int guard = 0; guard < 4096; guard++) {
+        uint cell = brickCell(brick);
+        uint empty_distance = (cell & EMPTY_BRICK) != 0 ? cell & 0xFFFFu : 0;
+        if (empty_distance > 1) {
+            // Every brick within empty_distance - 1 of this one is empty
+            ivec3 reach = ivec3(empty_distance - 1);
+            vec3 t_lo = (vec3((brick - reach) * 8) - origin) * inv_dir;
+            vec3 t_hi = (vec3((brick + reach + 1) * 8) - origin) * inv_dir;
+            vec3 t_exit = max(t_lo, t_hi);
+            uint axis = t_exit.x < t_exit.y ? (t_exit.x < t_exit.z ? 0 : 2) : (t_exit.y < t_exit.z ? 1 : 2);
+            brick_enter = t_exit[axis];
+            ivec3 next = clamp(ivec3(floor((origin + dir * brick_enter) / 8)), brick - reach, brick + reach);
+            next[axis] = brick[axis] + brick_step[axis] * int(empty_distance);
+            brick = next;
+            brick_t = ((brick + 0.5 * (1 + sgn_dir)) * 8 - origin) * inv_dir;
+            if (any(lessThan(brick, ivec3(0))) || any(greaterThanEqual(brick, brick_count)))
+            return FLT_MAX;
+            continue;
+        }
+        if (empty_distance == 0 && cell != (SOLID_BRICK | MAT_WATER)) {
+            if ((cell & SOLID_BRICK) != 0)
+            return tmin + brick_enter;
+            vec3 p = origin + dir * brick_enter;
+            uvec3 coord = uvec3(clamp(ivec3(floor(p)), brick * 8, brick * 8 + 7));
+            float enter = brick_enter;
+            if (stops(cell, coord % 8))
+            return tmin + enter;
+            vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
+            for (int i = 0; i < 24; i++) {
+                if (t.x < t.y && t.x < t.z) {
+                    coord.x += ustep.x;
+                    enter = t.x;
+                    t.x += delta.x;
+                } else if (t.y < t.z) {
+                    coord.y += ustep.y;
+                    enter = t.y;
+                    t.y += delta.y;
+                } else {
+                    coord.z += ustep.z;
+                    enter = t.z;
+                    t.z += delta.z;
+                }
+                // Stepping below 0 wraps around, which also leaves the brick
+                if (any(notEqual(coord / 8, uvec3(brick))))
+                break;
+                if (stops(cell, coord % 8))
+                return tmin + enter;
+            }
+        }
+        if (brick_t.x < brick_t.y && brick_t.x < brick_t.z) {
+            brick.x += brick_step.x;
+            brick_enter = brick_t.x;
+            brick_t.x += brick_delta.x;
+        } else if (brick_t.y < brick_t.z) {
+            brick.y += brick_step.y;
+            brick_enter = brick_t.y;
+            brick_t.y += brick_delta.y;
+        } else {
+            brick.z += brick_step.z;
+            brick_enter = brick_t.z;
+            brick_t.z += brick_delta.z;
+        }
+        if (any(lessThan(brick, ivec3(0))) || any(greaterThanEqual(brick, brick_count)))
+        return FLT_MAX;
+    }
+    return FLT_MAX;
+}
+
+// Fills in a texel of the map: follows sunlight down through the world from outside it, through
+// the middle of the texel, to where it first stops
+void fill(ivec2 g) {
+    ivec2 count = ivec2(pc.world.w & 0xFFFFu, pc.world.w >> 16);
+    if (any(greaterThanEqual(g, count)))
+    return;
+    ivec2 texel = pc.window.zw + g;
+    vec3 u, v;
+    sunBasis(u, v);
+    vec3 sun = pc.sun.xyz;
+    vec2 across = (vec2(texel) + 0.5 - pc.map.xy) / pc.map.z;
+    vec3 size = vec3(pc.world.xyz);
+    float start = dot(size * 0.5, sun) + length(size) * 0.5 + 1;
+    float t = traceSun(u * across.x + v * across.y + sun * start, -sun);
+    float stop = t < FLT_MAX ? start - t + pc.sun.w : NO_HIT;
+    imageStore(sunStops, texel & (MAP_SIZE - 1), uvec4(floatBitsToUint(stop)));
+}
+
+// ---- Looking up the map ----
+
+// A point's place in the map, in texels, and how far along the sunlight it is, see fill()
+struct MapPoint {
+    vec2 texel;
+    float along;
+};
+
+MapPoint mapPoint(vec3 p, vec3 u, vec3 v) {
+    return MapPoint(vec2(dot(p, u), dot(p, v)) * pc.map.z + pc.map.xy, dot(p, pc.sun.xyz) + pc.sun.w);
+}
+
+float litTexel(ivec2 texel, float along) {
+    uint stop = imageLoad(sunStops, texel & (MAP_SIZE - 1)).r;
+    // Not filled in yet: left dark rather than lit, so shafts come in rather than go out
+    if (stop == UNKNOWN)
+    return 0;
+    return along >= uintBitsToFloat(stop) - BIAS ? 1 : 0;
+}
+
+// How much sunlight reaches a point in the air, 0-1, between the four texels round it. Off the
+// map, past where shafts show, it's taken to be sunlit.
+float sunlit(MapPoint m) {
+    vec2 t = m.texel - 0.5;
+    ivec2 i = ivec2(floor(t));
+    ivec2 within = i - pc.window.xy;
+    if (any(lessThan(within, ivec2(0))) || any(greaterThanEqual(within, ivec2(MAP_SIZE - 1))))
+    return 1;
+    vec2 f = t - vec2(i);
+    float a = litTexel(i, m.along);
+    float b = litTexel(i + ivec2(1, 0), m.along);
+    float c = litTexel(i + ivec2(0, 1), m.along);
+    float d = litTexel(i + ivec2(1, 1), m.along);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Whether a point is sunlit, from the texel it's in alone. Off the map, or not known yet, it's taken
+// to be.
+float litNearest(MapPoint m) {
+    ivec2 i = ivec2(floor(m.texel));
+    ivec2 within = i - pc.window.xy;
+    if (any(lessThan(within, ivec2(0))) || any(greaterThanEqual(within, ivec2(MAP_SIZE))))
+    return 1;
+    uint stop = imageLoad(sunStops, i & (MAP_SIZE - 1)).r;
+    return stop == UNKNOWN || m.along >= uintBitsToFloat(stop) - BIAS ? 1 : 0;
+}
+
+// How far towards the sun the nearest thing shading a point is, in voxels, from the texel it's in,
+// 0 for none
+float shadeAbove(vec2 texel, float along) {
+    ivec2 i = ivec2(floor(texel));
+    ivec2 within = i - pc.window.xy;
+    if (any(lessThan(within, ivec2(0))) || any(greaterThanEqual(within, ivec2(MAP_SIZE))))
+    return 0;
+    uint stop = imageLoad(sunStops, i & (MAP_SIZE - 1)).r;
+    return stop == UNKNOWN ? 0 : max(uintBitsToFloat(stop) - along, 0);
+}
+
+// sunlit() as seen from a point somewhere on the sun's disc, `disc` picking where, -1 to 1 across
+// it. Shade from things further off spreads wider, so beams soften away from what casts them, as
+// shadows on the ground do in traverse.comp.
+float sunlitSoft(MapPoint m, vec2 disc, vec2 search) {
+    // What shades it, looked for here and a little way off
+    float above = max(shadeAbove(m.texel, m.along), shadeAbove(m.texel + search * SEARCH * pc.air.y * pc.map.z, m.along));
+    // In voxels, then texels
+    float spread = min(above * SUN_RADIUS, SOFTEST * 0.5 * pc.air.y);
+    return sunlit(MapPoint(m.texel + disc * spread * pc.map.z, m.along));
+}
+
+// ---- High ----
+
+// How much of the air round the camera is in the shade, from points over it out to about ten
+// meters: one workgroup, eight points each
+shared uint g_lit[64];
+shared uint g_known[64];
+
+void shade(uint index) {
+    vec3 u, v;
+    sunBasis(u, v);
+    vec3 camera = view.pixelToRay[3].xyz;
+    float vpm = pc.air.y;
+    uint lit = 0;
+    uint known = 0;
+    for (uint k = 0; k < 8; k++) {
+        uint n = index * 8 + k;
+        // Spread evenly over a half ball, up from a meter under the eyes
+        float y = 1 - (float(n) + 0.5) / 512.0;
+        float r = sqrt(max(1 - y * y, 0));
+        float a = float(n) * 2.39996323;
+        float reach = (3.0 + 7.0 * float(hash(n + 17u) & 0xFFu) / 255.0) * vpm;
+        vec3 p = camera + vec3(r * cos(a), r * sin(a), y - 0.1) * reach;
+        MapPoint m = mapPoint(p, u, v);
+        ivec2 texel = ivec2(floor(m.texel));
+        ivec2 within = texel - pc.window.xy;
+        if (any(lessThan(within, ivec2(0))) || any(greaterThanEqual(within, ivec2(MAP_SIZE))))
+        continue;
+        uint stop = imageLoad(sunStops, texel & (MAP_SIZE - 1)).r;
+        if (stop == UNKNOWN)
+        continue;
+        known++;
+        if (m.along >= uintBitsToFloat(stop) - BIAS)
+        lit++;
+    }
+    g_lit[index] = lit;
+    g_known[index] = known;
+    barrier();
+    if (index != 0)
+    return;
+    uint all_lit = 0;
+    uint all_known = 0;
+    for (uint i = 0; i < 64; i++) {
+        all_lit += g_lit[i];
+        all_known += g_known[i];
+    }
+    if (all_known < 64)
+    return;
+    float shaded = 1 - float(all_lit) / float(all_known);
+    // Eased in, so walking in under the trees thickens the air over a second or so. Below 0 it
+    // isn't known yet.
+    float was = state.shade < 0 ? shaded : state.shade;
+    state.shade = mix(was, shaded, 0.06);
+}
+
+// The same ray as traverse.comp's through rendered pixel `pixel`, `jitter` and all
+vec3 rayThrough(vec2 pixel) {
+    return mat3(view.pixelToRay) * vec3(pixel, 1);
+}
+
+// How far the surface a rendered pixel sees is along its ray, in voxels, `far` for the sky
+float distanceAt(ivec2 pixel, vec2 jitter, float far) {
+    float depth = imageLoad(depthImage, pixel).r;
+    return depth < 0 ? far : min(depth * length(rayThrough(vec2(pixel) + jitter)), far);
+}
+
+// Value noise, 0-1
+float lattice(ivec3 c) {
+    return float(hash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u) & 0xFFFFu) / 65535.0;
+}
+
+float noise(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = x - i;
+    f = f * f * (3 - 2 * f);
+    ivec3 c = ivec3(i);
+    float a = mix(lattice(c), lattice(c + ivec3(1, 0, 0)), f.x);
+    float b = mix(lattice(c + ivec3(0, 1, 0)), lattice(c + ivec3(1, 1, 0)), f.x);
+    float d = mix(lattice(c + ivec3(0, 0, 1)), lattice(c + ivec3(1, 0, 1)), f.x);
+    float e = mix(lattice(c + ivec3(0, 1, 1)), lattice(c + ivec3(1, 1, 1)), f.x);
+    return mix(mix(a, b, f.y), mix(d, e, f.y), f.z);
+}
+
+// Gathers the sunlight scattered towards the camera along the ray through the middle of the four
+// rendered pixels a half resolution one covers, out to the furthest of them, noting how much there
+// was by the nearest. What one pixel gathers is good for any of them by how far each sees.
+void march(ivec2 q) {
+    ivec2 size = imageSize(marched);
+    if (any(greaterThanEqual(q, size)))
+    return;
+    float vpm = pc.air.y;
+    float reach = pc.extra.y;
+    vec2 jitter = pixelJitter(pc.info.y);
+    ivec2 full = q * 2;
+    ivec2 last = imageSize(depthImage) - 1;
+    float d0 = distanceAt(min(full, last), jitter, reach);
+    float d1 = distanceAt(min(full + ivec2(1, 0), last), jitter, reach);
+    float d2 = distanceAt(min(full + ivec2(0, 1), last), jitter, reach);
+    float d3 = distanceAt(min(full + ivec2(1, 1), last), jitter, reach);
+    float nearest = min(min(d0, d1), min(d2, d3));
+    float furthest = max(max(d0, d1), max(d2, d3));
+
+    vec3 dir = normalize(rayThrough(vec2(full) + 0.5 + jitter));
+    vec3 origin = view.pixelToRay[3].xyz;
+    vec3 u, v;
+    sunBasis(u, v);
+    // Along the ray everything changes evenly, so only its start and how it changes are needed
+    MapPoint m0 = mapPoint(origin, u, v);
+    MapPoint m1 = mapPoint(origin + dir, u, v);
+    vec2 texel_step = m1.texel - m0.texel;
+    float along_step = m1.along - m0.along;
+
+    float haze = pc.air.x;
+    float dust = pc.extra.x * (1 + SHADE_DUST * clamp(state.shade, 0, 1));
+    float sea_level = pc.air.z;
+    float dust_floor = origin.z - 2.0 * vpm;
+    // The world's corner from the map's anchor, for dust that stays put as the world moves on
+    vec3 corner = u * (pc.map.x / pc.map.z) + v * (pc.map.y / pc.map.z) + pc.sun.xyz * pc.sun.w;
+    vec3 drift = vec3(0.31, 0.14, 0.05) * pc.air.w;
+
+    float transmittance = 1;
+    vec2 gathered = vec2(0);
+    vec2 by_nearest = vec2(-1);
+    float offset = gradientNoise(vec2(q), pc.info.y);
+    float spin = float(hash(uint(q.x) | uint(q.y) << 12 ^ pc.info.y * 2654435761u) & 0xFFFFu) / 65536.0;
+    // Most of the points out to where shafts show, then a few for the haze past them
+    float shafts_end = min(furthest, SHAFT_RANGE * vpm);
+    for (int i = 0; i < SAMPLES + TAIL_SAMPLES; i++) {
+        float t, meters;
+        if (i < SAMPLES) {
+            // Closer together near the camera, where shafts are bigger on screen
+            float a = float(i) / SAMPLES;
+            float b = float(i + 1) / SAMPLES;
+            float x = (float(i) + offset) / SAMPLES;
+            t = shafts_end * x * x;
+            meters = shafts_end * (b * b - a * a) / vpm;
+        } else {
+            float tail = (furthest - shafts_end) / TAIL_SAMPLES;
+            if (tail <= 0)
+            break;
+            t = shafts_end + tail * (float(i - SAMPLES) + offset);
+            meters = tail / vpm;
+        }
+        if (by_nearest.x < 0 && t >= nearest)
+        by_nearest = gathered;
+        vec3 p = origin + dir * t;
+        float haze_here = haze * exp(-max(p.z - sea_level, 0) / vpm / HAZE_HEIGHT);
+        // A different point on the sun's disc for each, spread evenly round it
+        float angle = (spin + float(i) * 0.6180340) * 6.2831853;
+        vec2 across = vec2(cos(angle), sin(angle));
+        vec2 disc = across * sqrt(fract(offset + float(i) * 0.7548777));
+        MapPoint here = MapPoint(m0.texel + texel_step * t, m0.along + along_step * t);
+        float lit = sunlitSoft(here, disc, vec2(-across.y, across.x));
+        // Dust only shows where sunlight has shade beside it: light coming in through gaps and
+        // windows and past edges, not all the open air lit up alike, which would only look foggy
+        float dust_here = 0;
+        if (dust > 0 && lit > 0) {
+            float turn = angle * 1.618034 + 2.0;
+            vec2 probe = vec2(cos(turn), sin(turn)) * BESIDE * vpm * pc.map.z * (0.35 + 0.65 * fract(offset * 7.31 + float(i) * 0.4142136));
+            float beside = 1 - 0.5 * (litNearest(MapPoint(here.texel + probe, here.along)) + litNearest(MapPoint(here.texel - probe, here.along)));
+            float wisps = noise((p + corner) / vpm * vec3(0.55, 0.55, 0.8) + drift);
+            dust_here = dust * exp(-max(p.z - dust_floor, 0) / vpm / DUST_HEIGHT)
+                * smoothstep(DUST_FAR, DUST_NEAR, t / vpm) * (0.35 + 1.3 * wisps * wisps) * (OPEN_DUST + beside);
+        }
+        float thickness = (haze_here + dust_here) * meters;
+        float through = transmittance * exp(-0.5 * thickness);
+        gathered += through * lit * meters * vec2(haze_here, dust_here);
+        transmittance *= exp(-thickness);
+    }
+    if (by_nearest.x < 0)
+    by_nearest = gathered;
+
+    // The light's color is the same everywhere, and which way it's scattered depends only on the
+    // ray, so all that needs keeping is how bright
+    float c = dot(dir, pc.sun.xyz);
+    vec2 scatter = vec2(0.3 * hazePhase(c), dustPhase(c));
+    imageStore(marched, q, vec4(dot(by_nearest, scatter), dot(gathered, scatter), nearest / vpm, furthest / vpm));
+}
+
+// Last frame's shafts at half resolution pixel `pos`, smoothly between them
+vec4 sampleBefore(vec2 pos) {
+    ivec2 size = imageSize(before);
+    ivec2 i = ivec2(floor(pos));
+    vec2 f = pos - vec2(i);
+    vec4 a = imageLoad(before, clamp(i, ivec2(0), size - 1));
+    vec4 b = imageLoad(before, clamp(i + ivec2(1, 0), ivec2(0), size - 1));
+    vec4 c = imageLoad(before, clamp(i + ivec2(0, 1), ivec2(0), size - 1));
+    vec4 d = imageLoad(before, clamp(i + ivec2(1, 1), ivec2(0), size - 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Averages what march() gathered into last frame's shafts, found where the same air was on screen
+// then, held to what the pixels round about gathered now, so nothing that's moved leaves a trail
+void resolve(ivec2 q) {
+    ivec2 size = imageSize(marched);
+    if (any(greaterThanEqual(q, size)))
+    return;
+    vec4 now = imageLoad(marched, q);
+    vec2 m1 = vec2(0);
+    vec2 m2 = vec2(0);
+    vec2 lo = vec2(FLT_MAX);
+    vec2 hi = vec2(-FLT_MAX);
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            vec2 c = imageLoad(marched, clamp(q + ivec2(x, y), ivec2(0), size - 1)).xy;
+            m1 += c;
+            m2 += c * c;
+            lo = min(lo, c);
+            hi = max(hi, c);
+        }
+    }
+    vec2 mean = m1 / 9;
+    vec2 spread = sqrt(max(m2 / 9 - mean * mean, 0));
+    vec2 box_lo = max(lo, mean - spread * 1.5);
+    vec2 box_hi = min(hi, mean + spread * 1.5);
+
+    vec2 result = now.xy;
+    if ((pc.info.z & FLAG_HISTORY) != 0) {
+        // Followed back by the nearest surface, or for the sky by the far end of the shafts
+        float vpm = pc.air.y;
+        vec2 jitter = pixelJitter(pc.info.y);
+        vec3 dir = normalize(rayThrough(vec2(q * 2) + 0.5 + jitter));
+        vec3 world = view.pixelToRay[3].xyz + dir * now.z * vpm;
+        vec4 then = view.previousWorldToPixel * vec4(world, 1);
+        vec2 pixel = then.xy / then.z;
+        vec2 pos = (pixel - 0.5 - pixelJitter(pc.info.y - 1)) * 0.5;
+        if (then.z > 0 && all(greaterThanEqual(pos, vec2(-0.5))) && all(lessThan(pos, vec2(size) - 0.5))) {
+            vec4 old = sampleBefore(pos);
+            // Not where something nearer has moved in front, or out of the way
+            float moved = abs(old.z - now.z) / max(now.z, 0.5);
+            float keep = ((pc.info.z & FLAG_STILL) != 0 ? 0.95 : 0.88) * (1 - smoothstep(0.1, 0.4, moved));
+            result = mix(now.xy, clamp(old.xy, box_lo, box_hi), keep);
+        }
+    }
+    imageStore(shafts, q, vec4(result, now.zw));
+}
+
+// ---- Low ----
+
+// How much sky each half resolution pixel sees, brightest round the sun
+void mask(ivec2 q) {
+    ivec2 size = imageSize(marched);
+    if (any(greaterThanEqual(q, size)))
+    return;
+    ivec2 full = q * 2;
+    ivec2 last = imageSize(depthImage) - 1;
+    float sky = 0;
+    for (int k = 0; k < 4; k++) {
+        float depth = imageLoad(depthImage, min(full + ivec2(k & 1, k >> 1), last)).r;
+        sky += depth < 0 ? 0.25 : 0;
+    }
+    vec3 dir = normalize(rayThrough(vec2(full) + 0.5));
+    float towards = max(dot(dir, pc.sun.xyz), 0);
+    imageStore(marched, q, vec4(sky * (0.03 + 0.97 * pow(towards, 10.0)), 0, 0, 0));
+}
+
+vec4 sampleImage(bool from_marched, vec2 pos, ivec2 size) {
+    ivec2 i = ivec2(floor(pos));
+    vec2 f = pos - vec2(i);
+    ivec2 i0 = clamp(i, ivec2(0), size - 1);
+    ivec2 i1 = clamp(i + 1, ivec2(0), size - 1);
+    vec4 a, b, c, d;
+    if (from_marched) {
+        a = imageLoad(marched, i0);
+        b = imageLoad(marched, ivec2(i1.x, i0.y));
+        c = imageLoad(marched, ivec2(i0.x, i1.y));
+        d = imageLoad(marched, i1);
+    } else {
+        a = imageLoad(before, i0);
+        b = imageLoad(before, ivec2(i1.x, i0.y));
+        c = imageLoad(before, ivec2(i0.x, i1.y));
+        d = imageLoad(before, i1);
+    }
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Smears the sky towards the sun on screen, sixteen steps at a time: first far apart, the whole way
+// there, then the second time sixteen times closer together to fill in between
+void radial(ivec2 q) {
+    ivec2 size = imageSize(marched);
+    if (any(greaterThanEqual(q, size)))
+    return;
+    bool fine = (pc.info.z & FLAG_FINE) != 0;
+    vec2 sun = (pc.extra.zw - 0.5) * 0.5;
+    vec2 towards = (sun - vec2(q)) * 0.9;
+    vec2 stride = fine ? towards / 256.0 : towards / 16.0;
+    float sum = 0;
+    float weights = 0;
+    float w = 1;
+    for (int k = 0; k < 16; k++) {
+        sum += sampleImage(!fine, vec2(q) + stride * float(k), size).r * w;
+        weights += w;
+        w *= fine ? 1.0 : 0.9;
+    }
+    float result = sum / weights;
+    if (fine)
+    imageStore(shafts, q, vec4(result, result, 0, 1e4));
+    else
+    imageStore(before, q, vec4(result, 0, 0, 0));
+}
+
+// ---- Both ----
+
+// The screen space shafts at half resolution pixel `pos`, smoothly between them
+float sampleImageShafts(vec2 pos, ivec2 size) {
+    ivec2 i = ivec2(floor(pos));
+    vec2 f = pos - vec2(i);
+    ivec2 i0 = clamp(i, ivec2(0), size - 1);
+    ivec2 i1 = clamp(i + 1, ivec2(0), size - 1);
+    float a = imageLoad(shafts, i0).r;
+    float b = imageLoad(shafts, ivec2(i1.x, i0.y)).r;
+    float c = imageLoad(shafts, ivec2(i0.x, i1.y)).r;
+    float d = imageLoad(shafts, i1).r;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Adds the shafts to the image: for each rendered pixel, what the half resolution ones round it
+// gathered out to how far it sees, from those that saw about as far
+void composite(ivec2 p) {
+    ivec2 size = imageSize(hdrImage);
+    if (any(greaterThanEqual(p, size)))
+    return;
+    float vpm = pc.air.y;
+    ivec2 low_size = imageSize(shafts);
+    vec2 at = (vec2(p) - 0.5) * 0.5;
+    ivec2 base = ivec2(floor(at + 0.5));
+    bool low = (pc.info.z & FLAG_LOW) != 0;
+
+    float amount = 0;
+    if (low) {
+        amount = sampleImageShafts(at, low_size);
+    } else {
+        vec2 jitter = pixelJitter(pc.info.y);
+        float d = distanceAt(p, jitter, pc.extra.y) / vpm;
+        float sum = 0;
+        float weights = 0;
+        float closest = FLT_MAX;
+        float fallback = 0;
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                ivec2 q = clamp(base + ivec2(x, y), ivec2(0), low_size - 1);
+                vec4 s = imageLoad(shafts, q);
+                vec4 m = imageLoad(marched, q);
+                float lo = m.z;
+                float hi = max(m.w, lo + 1e-3);
+                float value = mix(s.x, s.y, clamp((d - lo) / (hi - lo), 0, 1));
+                // How far this pixel's surface is outside the range the half resolution one saw
+                float off = max(max(lo - d, d - hi), 0);
+                float tolerance = 0.04 * d + 0.25;
+                vec2 offset = vec2(q) - at;
+                float w = exp(-dot(offset, offset) * 0.9) * exp(-off / tolerance);
+                sum += value * w;
+                weights += w;
+                if (off < closest) {
+                    closest = off;
+                    fallback = value;
+                }
+            }
+        }
+        amount = weights > 1e-3 ? sum / weights : fallback;
+    }
+    if (amount <= 0)
+    return;
+
+    // A touch warmer than the sunlight itself, as if from dust glowing in it
+    vec3 light = sunColor() * vec3(1.0, 0.94, 0.84) * amount * pc.map.w;
+    vec4 hdr = imageLoad(hdrImage, p);
+    vec3 albedo = max(imageLoad(guideImage, p).rgb, vec3(0.03));
+    imageStore(hdrImage, p, vec4(hdr.rgb + light / albedo, hdr.a));
+}
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    uint stage = pc.info.x;
+    if (stage == FILL)
+    fill(g);
+    else if (stage == SHADE)
+    shade(gl_LocalInvocationIndex);
+    else if (stage == MARCH)
+    march(g);
+    else if (stage == RESOLVE)
+    resolve(g);
+    else if (stage == MASK)
+    mask(g);
+    else if (stage == RADIAL)
+    radial(g);
+    else
+    composite(g);
+}

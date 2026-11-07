@@ -1,0 +1,1238 @@
+INNERT SOUND CREDITS
+====================
+
+Every sound effect in Innert is made from the recordings below. All of them are released under
+Creative Commons CC0 1.0 (public domain dedication): free to use, change and give away, for any
+purpose, with no conditions. They're credited here anyway, with thanks to the people who made them.
+
+The files in this folder were trimmed, layered, pitched, filtered and brought to an even loudness
+from these recordings, then built into the game. None of them come from commercial games.
+
+Freesound sounds were downloaded from each sound's page, where its licence is shown as CC0; Kenney's
+packs say CC0 on their pages and in their own licence files.
+
+"Fishing reel winding by 1bob" by 1bob
+  https://freesound.org/people/1bob/sounds/831928/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: reel_1.ogg
+
+"Heavy Metal Thud on Ground by 7of9Designs" by 7of9Designs
+  https://freesound.org/people/7of9Designs/sounds/640204/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: brace_1.ogg, brace_2.ogg
+
+"ratchet socket wrench tool by AlaskaRobotics" by AlaskaRobotics
+  https://freesound.org/people/AlaskaRobotics/sounds/551497/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ratchet_4.ogg
+
+"Right Gravel Footstep 5 by Ali_6868" by Ali_6868
+  https://freesound.org/people/Ali_6868/sounds/384880/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_sand_5.ogg
+
+"Crossbow Fire 1 by Ali_6868" by Ali_6868
+  https://freesound.org/people/Ali_6868/sounds/384906/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: release_4.ogg, snap_3.ogg, volley_1.ogg
+
+"Bow Release (Bow and Arrow) 4 by Ali_6868" by Ali_6868
+  https://freesound.org/people/Ali_6868/sounds/384917/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: twang_2.ogg, taut_2.ogg
+
+"metal bowl - hit - with wooden spoon 01.wav by Anthousai" by Anthousai
+  https://freesound.org/people/Anthousai/sounds/405665/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_holy_1.ogg
+
+"Old fishing reel fast rewinding fishing line by AudioPapkin" by AudioPapkin
+  https://freesound.org/people/AudioPapkin/sounds/716635/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: reel_2.ogg
+
+"steps in sand.wav by BeroundSound" by BeroundSound
+  https://freesound.org/people/BeroundSound/sounds/693590/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_sand_1.ogg, step_sand_2.ogg, step_sand_3.ogg, step_sand_4.ogg
+
+"Mud Splat by Breviceps" by Breviceps
+  https://freesound.org/people/Breviceps/sounds/445109/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: squelch_3.ogg
+
+"Horror / Zombie - Biting on bones by Breviceps" by Breviceps
+  https://freesound.org/people/Breviceps/sounds/445987/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bite_3.ogg
+
+"bones.wav by CaptainYulef" by CaptainYulef
+  https://freesound.org/people/CaptainYulef/sounds/641236/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rattle_2.ogg
+
+"Swords Clash - High Quality #3 by Christopherderp" by Christopherderp
+  https://freesound.org/people/Christopherderp/sounds/364531/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: clang_4.ogg
+
+"Leather Stress 1 (Short) by Crinkem" by Crinkem
+  https://freesound.org/people/Crinkem/sounds/501015/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: squeeze_1.ogg
+
+"Crossbow Fire XI by DUDE_X-SoundLab" by DUDE_X-SoundLab
+  https://freesound.org/people/DUDE_X-SoundLab/sounds/752211/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: snap_2.ogg
+
+"Woosh (stick swung in the air) by Dalesome" by Dalesome
+  https://freesound.org/people/Dalesome/sounds/352719/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_5.ogg
+
+"Clean fast Swoosh.aiff by Danjocross" by Danjocross
+  https://freesound.org/people/Danjocross/sounds/507466/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_3.ogg, dodge_3.ogg
+
+"Fast pain grunt, male by DeqstersLab" by DeqstersLab
+  https://freesound.org/people/DeqstersLab/sounds/790832/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_1.ogg
+
+"DP Sparkler4on 1.wav by DozyPilchard" by DozyPilchard
+  https://freesound.org/people/DozyPilchard/sounds/518447/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: fuse_2.ogg
+
+"revolvercock1.wav by Dredile" by Dredile
+  https://freesound.org/people/Dredile/sounds/111676/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cock_1.ogg
+
+"punch.wav by Ekokubza123" by Ekokubza123
+  https://freesound.org/people/Ekokubza123/sounds/104183/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_3.ogg
+
+"Bow Release Hit by EminYILDIRIM" by EminYILDIRIM
+  https://freesound.org/people/EminYILDIRIM/sounds/536068/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: twang_3.ogg
+
+"Electricity by FlashTrauma" by FlashTrauma
+  https://freesound.org/people/FlashTrauma/sounds/398274/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: beam_2.ogg
+
+"Crossbow Firing by GameWithBepis" by GameWithBepis
+  https://freesound.org/people/GameWithBepis/sounds/561475/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: release_2.ogg, volley_1.ogg, harpoon_1.ogg
+
+"Wing Flap Heavy (prototype).mp3 by GearArcanaNo37" by GearArcanaNo37
+  https://freesound.org/people/GearArcanaNo37/sounds/561364/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: flap_2.ogg
+
+"Punch in the face by Huminaatio" by Huminaatio
+  https://freesound.org/people/Huminaatio/sounds/390462/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_1.ogg, hit_4.ogg
+
+"MECHRtch_Ratchet01_InMotionAudio_FREESampleSunday.wav by InMotionAudio" by InMotionAudio
+  https://freesound.org/people/InMotionAudio/sounds/689528/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ratchet_1.ogg
+
+"Pig - Grunt 2 - 96kHz.wav by JarredGibb" by JarredGibb
+  https://freesound.org/people/JarredGibb/sounds/233170/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: snort_1.ogg
+
+"Pig - Multiple Snorts 2 (2 pigs) - 96kHz.wav by JarredGibb" by JarredGibb
+  https://freesound.org/people/JarredGibb/sounds/233183/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: snort_2.ogg
+
+"whip and crack sound by JayRom01" by JayRom01
+  https://freesound.org/people/JayRom01/sounds/615761/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crack_2.ogg, boom_2.ogg
+
+"Fire Ignite.wav by Jo000" by Jo000
+  https://freesound.org/people/Jo000/sounds/687010/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: sear_1.ogg
+
+"Crispy bite by JoMungus" by JoMungus
+  https://freesound.org/people/JoMungus/sounds/718593/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: eat_2.ogg
+
+"ARROW_WOOD_IMPACT_SINGLE_ARCHERY_01.wav by JoeDinesSound" by JoeDinesSound
+  https://freesound.org/people/JoeDinesSound/sounds/534956/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: arrow_hit_3.ogg
+
+"ELECTRIC_ZAP_001.wav by JoelAudio" by JoelAudio
+  https://freesound.org/people/JoelAudio/sounds/136542/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_storm_1.ogg, zap_2.ogg
+
+"DRAGON_ROAR.wav by JoelAudio" by JoelAudio
+  https://freesound.org/people/JoelAudio/sounds/85568/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: roar_3.ogg
+
+"Sword_Clash (7).wav by JohnBuhr" by JohnBuhr
+  https://freesound.org/people/JohnBuhr/sounds/326868/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: clang_3.ogg
+
+"22_Lobo_aullando.wav by JoseAgudelo" by JoseAgudelo
+  https://freesound.org/people/JoseAgudelo/sounds/472402/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: howl_2.ogg
+
+"thunder3.ogg by Josh74000MC" by Josh74000MC
+  https://freesound.org/people/Josh74000MC/sounds/475094/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: thunder_1.ogg
+
+"Fire_Crackle_1.wav by KieranKeegan" by KieranKeegan
+  https://freesound.org/people/KieranKeegan/sounds/422742/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crackle_2.ogg
+
+"Whoosh #1 by Kinoton" by Kinoton
+  https://freesound.org/people/Kinoton/sounds/427823/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: heavy_swing_4.ogg
+
+"Musket 2 Shots.mp3 by Kmarz1" by Kmarz1
+  https://freesound.org/people/Kmarz1/sounds/593908/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: gunshot_3.ogg
+
+"Bloody Blade 2.wav by Kreastricon62" by Kreastricon62
+  https://freesound.org/people/Kreastricon62/sounds/323526/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_2.ogg, hit_5.ogg
+
+"Deep Bell A Sharp.wav by LadyCailin" by LadyCailin
+  https://freesound.org/people/LadyCailin/sounds/62963/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: toll_2.ogg
+
+"Crossbow Shot by LeMudCrab" by LeMudCrab
+  https://freesound.org/people/LeMudCrab/sounds/163453/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: release_1.ogg, snap_1.ogg, volley_1.ogg
+
+"Bird, Thrush Nightingale 03.wav by LilMati" by LilMati
+  https://freesound.org/people/LilMati/sounds/365664/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_8.ogg
+
+"Flamethrower by LilMati" by LilMati
+  https://freesound.org/people/LilMati/sounds/459884/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: breath_2.ogg
+
+"strike 3 sec.wav by Littlebrojay" by Littlebrojay
+  https://freesound.org/people/Littlebrojay/sounds/195439/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: thunder_2.ogg
+
+"whoosh.wav by LloydEvans09" by LloydEvans09
+  https://freesound.org/people/LloydEvans09/sounds/332003/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dodge_1.ogg
+
+"Robin_Sing_03.wav by Lovewerk" by Lovewerk
+  https://freesound.org/people/Lovewerk/sounds/522188/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_7.ogg
+
+"monster bite by LucasDuff" by LucasDuff
+  https://freesound.org/people/LucasDuff/sounds/467701/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bite_1.ogg
+
+"Crossbow - Ballesta.wav by Lunevix" by Lunevix
+  https://freesound.org/people/Lunevix/sounds/246015/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: release_3.ogg, volley_1.ogg
+
+"Wooden Creak by Mafon2" by Mafon2
+  https://freesound.org/people/Mafon2/sounds/377552/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: creak_4.ogg
+
+"Flies buzzing by Mafon2" by Mafon2
+  https://freesound.org/people/Mafon2/sounds/443047/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: buzz_2.ogg
+
+"Demonic Whisper by Magnesus" by Magnesus
+  https://freesound.org/people/Magnesus/sounds/438989/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hex_1.ogg
+
+"Voice_AdultMale_PainGrunts_09.wav by MrFossy" by MrFossy
+  https://freesound.org/people/MrFossy/sounds/547209/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_2.ogg
+
+"Pulling Chain.wav by Mrthenoronha" by Mrthenoronha
+  https://freesound.org/people/Mrthenoronha/sounds/405417/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chain_1.ogg, whirr_2.ogg
+
+"Short Wind/Air Woosh | A gust of wind by NIKOKnecht" by NIKOKnecht
+  https://freesound.org/people/NIKOKnecht/sounds/569109/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: gale_1.ogg
+
+"Stretch - Short by NearTheAtmoshphere" by NearTheAtmoshphere
+  https://freesound.org/people/NearTheAtmoshphere/sounds/676988/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: taut_1.ogg, taut_2.ogg, squeeze_2.ogg
+
+"Monster Roar by NicknameLarry" by NicknameLarry
+  https://freesound.org/people/NicknameLarry/sounds/487513/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: roar_1.ogg
+
+"ratchet.wav by Nomadyag" by Nomadyag
+  https://freesound.org/people/Nomadyag/sounds/193058/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ratchet_2.ogg
+
+"monster_idle by PJ_Bear" by PJ_Bear
+  https://freesound.org/people/PJ_Bear/sounds/707685/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rumble_2.ogg
+
+"Very Big Whoosh by Paul368" by Paul368
+  https://freesound.org/people/Paul368/sounds/237980/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: whistle_2.ogg, rush_1.ogg
+
+"Bow Drawn by Paveroux" by Paveroux
+  https://freesound.org/people/Paveroux/sounds/490556/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: draw_1.ogg
+
+"Money Bag by PhilSavlem" by PhilSavlem
+  https://freesound.org/people/PhilSavlem/sounds/338260/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: coins_3.ogg
+
+"howling by PhonosUPF" by PhonosUPF
+  https://freesound.org/people/PhonosUPF/sounds/499699/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: howl_1.ogg
+
+"Screech by Phorgador" by Phorgador
+  https://freesound.org/people/Phorgador/sounds/788212/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: screech_1.ogg
+
+"Poof of Smoke by Planman" by Planman
+  https://freesound.org/people/Planman/sounds/208111/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: billow_1.ogg
+
+"Bow_release.wav by PorkMuncher" by PorkMuncher
+  https://freesound.org/people/PorkMuncher/sounds/263675/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: twang_1.ogg, taut_1.ogg
+
+"Whosh - Reversed/Reverbed breath by PrdiChlp" by PrdiChlp
+  https://freesound.org/people/PrdiChlp/sounds/181889/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_plain_1.ogg, cast_arcane_1.ogg, cast_holy_1.ogg, summon_1.ogg
+
+"Electricity 4 by PureAudioNinja" by PureAudioNinja
+  https://freesound.org/people/PureAudioNinja/sounds/341612/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: beam_1.ogg
+
+"Latch_03.wav by Q.K." by Q.K.
+  https://freesound.org/people/Q.K./sounds/56245/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: latch_3.ogg
+
+"Latch_04.wav by Q.K." by Q.K.
+  https://freesound.org/people/Q.K./sounds/56246/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: latch_2.ogg
+
+"2016.07.22 Bell Single 01.wav by RP1312" by RP1312
+  https://freesound.org/people/RP1312/sounds/350616/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chime_2.ogg
+
+"Creepy Whispering by RaspberryTickle" by RaspberryTickle
+  https://freesound.org/people/RaspberryTickle/sounds/234044/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hex_2.ogg
+
+"CanaryArtie-3.wav by ReadeOnly" by ReadeOnly
+  https://freesound.org/people/ReadeOnly/sounds/85403/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_3.ogg
+
+"Footsteps_06.wav by RomanKolachnik" by RomanKolachnik
+  https://freesound.org/people/RomanKolachnik/sounds/672204/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_water_2.ogg
+
+"Arrow in something thin by Sadiquecat" by Sadiquecat
+  https://freesound.org/people/Sadiquecat/sounds/802473/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: arrow_hit_2.ogg
+
+"big boom by SamsterBirdies" by SamsterBirdies
+  https://freesound.org/people/SamsterBirdies/sounds/435695/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: burst_2.ogg, boom_1.ogg, boom_2.ogg
+
+"Whip Crack.m4a by SciFiSounds" by SciFiSounds
+  https://freesound.org/people/SciFiSounds/sounds/529925/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crack_1.ogg, boom_1.ogg, lasso_1.ogg
+
+"FUSE.wav by Seidolon" by Seidolon
+  https://freesound.org/people/Seidolon/sounds/372186/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: fuse_1.ogg
+
+"Ghost Moan 1.wav by SirBedlam" by SirBedlam
+  https://freesound.org/people/SirBedlam/sounds/329519/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: wail_2.ogg
+
+"Backwards Whoosh by SlavicMagic" by SlavicMagic
+  https://freesound.org/people/SlavicMagic/sounds/446010/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_void_1.ogg
+
+"Ghostly Moan.mp3 by SnowFightStudios" by SnowFightStudios
+  https://freesound.org/people/SnowFightStudios/sounds/643741/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: wail_1.ogg
+
+"Growling Dog 2.wav by SpaceJoe" by SpaceJoe
+  https://freesound.org/people/SpaceJoe/sounds/483190/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: growl_1.ogg
+
+"Dragon Breathing Fire by Spennnyyy" by Spennnyyy
+  https://freesound.org/people/Spennnyyy/sounds/323496/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: breath_3.ogg
+
+"Basic Melee Swing / Miss / Whoosh by SypherZent" by SypherZent
+  https://freesound.org/people/SypherZent/sounds/420668/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_6.ogg
+
+"running by Topschool" by Topschool
+  https://freesound.org/people/Topschool/sounds/443218/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rush_1.ogg
+
+"Arrow Impact by Twisted_Euphoria" by Twisted_Euphoria
+  https://freesound.org/people/Twisted_Euphoria/sounds/205938/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: arrow_hit_1.ogg
+
+"Man getting hit by Under7dude" by Under7dude
+  https://freesound.org/people/Under7dude/sounds/163441/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_4.ogg
+
+"sandfall5.wav by Wagna" by Wagna
+  https://freesound.org/people/Wagna/sounds/326304/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: powder_2.ogg
+
+"Musket Explosion by Willlewis" by Willlewis
+  https://freesound.org/people/Willlewis/sounds/244345/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: gunshot_1.ogg
+
+"Sand slidding out of shovel slowly.wav by XfiXy8" by XfiXy8
+  https://freesound.org/people/XfiXy8/sounds/467301/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: powder_1.ogg, slither_1.ogg
+
+"Swinging axe.mp3 by ZHRØ" by ZHR%C3%98
+  https://freesound.org/people/ZHR%C3%98/sounds/514162/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: heavy_swing_1.ogg
+
+"catHisses1.wav by Zabuhailo" by Zabuhailo
+  https://freesound.org/people/Zabuhailo/sounds/146963/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hiss_3.ogg
+
+"SlimeJump.wav by Zuzek06" by Zuzek06
+  https://freesound.org/people/Zuzek06/sounds/353250/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: web_1.ogg
+
+"Wing Flap 1.wav by _stubb" by _stubb
+  https://freesound.org/people/_stubb/sounds/389634/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: flap_3.ogg
+
+"war horn.wav by adharca" by adharca
+  https://freesound.org/people/adharca/sounds/539956/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: fanfare_2.ogg
+
+"Single Bird Chirp 2 by alegemaate" by alegemaate
+  https://freesound.org/people/alegemaate/sounds/233254/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_2.ogg
+
+"Single Bird Chirp by alegemaate" by alegemaate
+  https://freesound.org/people/alegemaate/sounds/233255/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_1.ogg
+
+"Human Impact on Ground by alegemaate" by alegemaate
+  https://freesound.org/people/alegemaate/sounds/364690/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: slam_2.ogg
+
+"Wing Flap (Flag Flapping) 5a by ani_music" by ani_music
+  https://freesound.org/people/ani_music/sounds/244982/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: flap_1.ogg
+
+"Short Explosion.wav by animationIsaac" by animationIsaac
+  https://freesound.org/people/animationIsaac/sounds/207322/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: burst_4.ogg, slam_1.ogg, slam_2.ogg
+
+"Hawk 2.wav by basedMedia" by basedMedia
+  https://freesound.org/people/basedMedia/sounds/548118/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: screech_2.ogg
+
+"small explosion by bevibeldesign" by bevibeldesign
+  https://freesound.org/people/bevibeldesign/sounds/315826/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: burst_1.ogg
+
+"monster croak by birdOfTheNorth" by birdOfTheNorth
+  https://freesound.org/people/birdOfTheNorth/sounds/582914/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: croak_1.ogg
+
+"rattlesnake by bjelicvuk" by bjelicvuk
+  https://freesound.org/people/bjelicvuk/sounds/733002/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hiss_2.ogg
+
+"FX - Swoosh - Low Pitch by bolkmar" by bolkmar
+  https://freesound.org/people/bolkmar/sounds/475135/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: heavy_swing_2.ogg
+
+"ricochet.mp3 by cedarstudios" by cedarstudios
+  https://freesound.org/people/cedarstudios/sounds/148840/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ricochet_2.ogg
+
+"quake and break.wav by cheetahzbrain" by cheetahzbrain
+  https://freesound.org/people/cheetahzbrain/sounds/431859/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: quake_1.ogg
+
+"step_water by coffeemakessounds" by coffeemakessounds
+  https://freesound.org/people/coffeemakessounds/sounds/849638/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_water_4.ogg
+
+"Skeleton bones (game).wav by cribbler" by cribbler
+  https://freesound.org/people/cribbler/sounds/381859/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rattle_1.ogg
+
+"Crack of branch 3.wav by deleted_user_2104797" by deleted_user_2104797
+  https://freesound.org/people/deleted_user_2104797/sounds/164472/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crack_3.ogg, thorns_1.ogg
+
+"Unsheathed blade by deleted_user_2906614" by deleted_user_2906614
+  https://freesound.org/people/deleted_user_2906614/sounds/320521/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: shing_1.ogg
+
+"firework_rocket_ignition.ogg by derplayer" by derplayer
+  https://freesound.org/people/derplayer/sounds/587173/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rocket_1.ogg
+
+"Mystical Wind Chimes Transition FX by djlprojects" by djlprojects
+  https://freesound.org/people/djlprojects/sounds/419594/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_arcane_1.ogg, summon_1.ogg
+
+"Agressive Bees by dlp_coasters" by dlp_coasters
+  https://freesound.org/people/dlp_coasters/sounds/462867/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: buzz_1.ogg
+
+"Chain.ogg by egomassive" by egomassive
+  https://freesound.org/people/egomassive/sounds/536737/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chain_2.ogg
+
+"Frog.ogg by egomassive" by egomassive
+  https://freesound.org/people/egomassive/sounds/536759/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: croak_2.ogg
+
+"Casting Fishing Rod for Game Fishing SFX by el_boss" by el_boss
+  https://freesound.org/people/el_boss/sounds/853287/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: harpoon_1.ogg
+
+"Male Grunting In Pain by elynch0901" by elynch0901
+  https://freesound.org/people/elynch0901/sounds/464486/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_3.ogg
+
+"Bubbles.wav by erkanozan" by erkanozan
+  https://freesound.org/people/erkanozan/sounds/51745/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_poison_1.ogg, bubble_2.ogg
+
+"musket.wav by fennelliott" by fennelliott
+  https://freesound.org/people/fennelliott/sounds/347647/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: gunshot_2.ogg
+
+"Soft Wind by florianreichelt" by florianreichelt
+  https://freesound.org/people/florianreichelt/sounds/459977/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: wind_1.ogg
+
+"Woosh by florianreichelt" by florianreichelt
+  https://freesound.org/people/florianreichelt/sounds/683096/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: whistle_1.ogg, swoop_1.ogg
+
+"woosh.wav by freakinbehemoth" by freakinbehemoth
+  https://freesound.org/people/freakinbehemoth/sounds/243400/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_void_1.ogg, hex_1.ogg, hex_2.ogg
+
+"wolf 2.wav by genel" by genel
+  https://freesound.org/people/genel/sounds/399186/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: howl_3.ogg
+
+"splat2.ogg by gprosser" by gprosser
+  https://freesound.org/people/gprosser/sounds/361030/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: squelch_4.ogg
+
+"firecracker by grobbd" by grobbd
+  https://freesound.org/people/grobbd/sounds/263536/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rocket_1.ogg, rocket_2.ogg
+
+"fire-whoosh.wav by hnhnh" by hnhnh
+  https://freesound.org/people/hnhnh/sounds/244926/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: breath_1.ogg
+
+"Old Church Bell (no noise) by igroglaz" by igroglaz
+  https://freesound.org/people/igroglaz/sounds/633208/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: toll_1.ogg
+
+"Long Crackle 04.wav by ironcross32" by ironcross32
+  https://freesound.org/people/ironcross32/sounds/582631/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crackle_3.ogg
+
+"Dropping Rocks by iwanPlays" by iwanPlays
+  https://freesound.org/people/iwanPlays/sounds/567250/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: quake_1.ogg
+
+"Stones Falling by iwanPlays" by iwanPlays
+  https://freesound.org/people/iwanPlays/sounds/567251/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: quake_2.ogg
+
+"Ice Crack 1 by j_p_higgins" by j_p_higgins
+  https://freesound.org/people/j_p_higgins/sounds/262635/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_frost_2.ogg
+
+"Ratchet close long.wav by jameswrowles" by jameswrowles
+  https://freesound.org/people/jameswrowles/sounds/437230/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ratchet_3.ogg
+
+"Ram rod slide out by jriches1" by jriches1
+  https://freesound.org/people/jriches1/sounds/817931/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ram_1.ogg
+
+"frog_quak.mp3 by katzlbt" by katzlbt
+  https://freesound.org/people/katzlbt/sounds/361117/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: croak_3.ogg
+
+"Battle_horn_1.wav by kirmm" by kirmm
+  https://freesound.org/people/kirmm/sounds/392180/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: fanfare_1.ogg
+
+"branch breaking forest twig snap crunch.wav by kyles" by kyles
+  https://freesound.org/people/kyles/sounds/452570/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crack_4.ogg
+
+"Water lapping on lake Pukaki,South Island,New Zealand.mp3 by laughatlantic" by laughatlantic
+  https://freesound.org/people/laughatlantic/sounds/528067/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: water_1.ogg
+
+"growl6.wav by lendrick" by lendrick
+  https://freesound.org/people/lendrick/sounds/77637/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: growl_3.ogg
+
+"BODY FALL - V HVY - DIRT by leonelmail" by leonelmail
+  https://freesound.org/people/leonelmail/sounds/504626/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: slam_1.ogg
+
+"Red Tailed Hawk Cry by loganzsound" by loganzsound
+  https://freesound.org/people/loganzsound/sounds/774252/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: screech_3.ogg
+
+"Light Metal Chain Shake by loganzsound" by loganzsound
+  https://freesound.org/people/loganzsound/sounds/874471/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chain_3.ogg, whirr_1.ogg
+
+"Small Explosion by lorenzgillner" by lorenzgillner
+  https://freesound.org/people/lorenzgillner/sounds/271979/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: burst_3.ogg
+
+"Sword Clash by loudernoises" by loudernoises
+  https://freesound.org/people/loudernoises/sounds/334169/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: clang_2.ogg
+
+"dogskitter.wav by luckylittleraven" by luckylittleraven
+  https://freesound.org/people/luckylittleraven/sounds/208654/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: skitter_2.ogg
+
+"Gut Rip (Bladed) by magnuswaker" by magnuswaker
+  https://freesound.org/people/magnuswaker/sounds/522168/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: claw_2.ogg
+
+"Explosion 1 by magnuswaker" by magnuswaker
+  https://freesound.org/people/magnuswaker/sounds/523089/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: boom_1.ogg, boom_2.ogg
+
+"Schwing 1 by magnuswaker" by magnuswaker
+  https://freesound.org/people/magnuswaker/sounds/524215/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: shing_2.ogg
+
+"Rubble Trouble by magnuswaker" by magnuswaker
+  https://freesound.org/people/magnuswaker/sounds/758580/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: slam_2.ogg
+
+"7_ground.wav by mariiao2" by mariiao2
+  https://freesound.org/people/mariiao2/sounds/240361/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: quake_2.ogg
+
+"Electric zap.wav by michael_grinnell" by michael_grinnell
+  https://freesound.org/people/michael_grinnell/sounds/512471/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_storm_2.ogg, zap_1.ogg
+
+"Arrow Flyby by modusmogulus" by modusmogulus
+  https://freesound.org/people/modusmogulus/sounds/789389/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: thorns_1.ogg
+
+"Ricochet 2.wav by morganpurkis" by morganpurkis
+  https://freesound.org/people/morganpurkis/sounds/392975/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ricochet_1.ogg
+
+"Pistol Cock.wav by nebulasnails" by nebulasnails
+  https://freesound.org/people/nebulasnails/sounds/405538/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cock_2.ogg
+
+"Wet Splat 2.mp3 by nebulasnails" by nebulasnails
+  https://freesound.org/people/nebulasnails/sounds/495117/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_blood_1.ogg
+
+"samurai slash by nekoninja" by nekoninja
+  https://freesound.org/people/nekoninja/sounds/370204/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: claw_1.ogg
+
+"PUNCH-BOXING-03.wav by newagesoup" by newagesoup
+  https://freesound.org/people/newagesoup/sounds/348242/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_5.ogg
+
+"Horse(snort)_3.wav by o_ciz" by o_ciz
+  https://freesound.org/people/o_ciz/sounds/475483/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: snort_1.ogg
+
+"whoosh.wav by petenice" by petenice
+  https://freesound.org/people/petenice/sounds/9509/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: stab_1.ogg, flick_1.ogg
+
+"Open Mouth Chomp.wav by princessemilu" by princessemilu
+  https://freesound.org/people/princessemilu/sounds/457475/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bite_2.ogg
+
+"Cinematic Rumble.flac by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/184936/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rumble_1.ogg, rumble_2.ogg
+
+"Sword Hit by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/442769/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: clang_1.ogg
+
+"Slime Squish by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/442772/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: squelch_1.ogg
+
+"Big Water Splash by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/442773/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splash_2.ogg
+
+"Fire Spell by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/442871/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_fire_2.ogg
+
+"Pig Grunt by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/442907/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: snort_3.ogg
+
+"Dragon Roar by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/442964/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: roar_2.ogg
+
+"SWOSH-01 44.1kHz by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/59988/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: stab_3.ogg, twang_1.ogg, twang_2.ogg, twang_3.ogg, cast_plain_1.ogg, web_1.ogg
+
+"Whoosh by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/60013/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_4.ogg, net_1.ogg, cast_fire_2.ogg, cast_frost_1.ogg, cast_frost_2.ogg, cast_storm_2.ogg, cast_arcane_1.ogg, cast_blood_1.ogg, whirr_1.ogg
+
+"Fire Trap by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/739487/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: sear_2.ogg
+
+"Slime Attack 1 by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/751338/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: web_2.ogg, squelch_2.ogg
+
+"Crunch by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/816237/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: eat_3.ogg
+
+"Rocket Launch by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/840511/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rocket_2.ogg
+
+"Dog Teeth Clattering Clicking by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/841350/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chitter_1.ogg, chitter_2.ogg, chitter_3.ogg
+
+"Bubbles 001.wav by ristooooo1" by ristooooo1
+  https://freesound.org/people/ristooooo1/sounds/539823/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bubble_1.ogg
+
+"Large Splash by roboroo" by roboroo
+  https://freesound.org/people/roboroo/sounds/436792/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splash_3.ogg
+
+"Slosh A.wav by samuelcable" by samuelcable
+  https://freesound.org/people/samuelcable/sounds/393494/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_water_1.ogg, step_water_3.ogg
+
+"Slingshot Fly by 2.wav by saturdaysoundguy" by saturdaysoundguy
+  https://freesound.org/people/saturdaysoundguy/sounds/394186/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: thorns_1.ogg
+
+"Blackbird by sgo.75" by sgo.75
+  https://freesound.org/people/sgo.75/sounds/845518/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_6.ogg
+
+"Another blackbird by sgo.75" by sgo.75
+  https://freesound.org/people/sgo.75/sounds/846523/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_5.ogg
+
+"whip01.wav by snowflakes" by snowflakes
+  https://freesound.org/people/snowflakes/sounds/72189/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_4.ogg, heavy_swing_1.ogg, heavy_swing_3.ogg
+
+"whip02.wav by snowflakes" by snowflakes
+  https://freesound.org/people/snowflakes/sounds/72190/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_2.ogg, heavy_swing_2.ogg, stab_2.ogg, dodge_2.ogg
+
+"whip03.wav by snowflakes" by snowflakes
+  https://freesound.org/people/snowflakes/sounds/72191/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: swing_1.ogg, swing_6.ogg, flick_2.ogg, whirr_2.ogg, claw_1.ogg
+
+"fire crackling loop.wav by soundofsong" by soundofsong
+  https://freesound.org/people/soundofsong/sounds/650574/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: crackle_1.ogg
+
+"Falling Bones.wav by spookymodem" by spookymodem
+  https://freesound.org/people/spookymodem/sounds/202091/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rattle_3.ogg
+
+"Chest Opening.wav by spookymodem" by spookymodem
+  https://freesound.org/people/spookymodem/sounds/202092/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chest_2.ogg
+
+"Match Sizzle 02 by squareal" by squareal
+  https://freesound.org/people/squareal/sounds/237407/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_poison_1.ogg
+
+"Small Bell #2 by steffcaffrey" by steffcaffrey
+  https://freesound.org/people/steffcaffrey/sounds/452379/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chime_1.ogg
+
+"crab walking by stuniverso" by stuniverso
+  https://freesound.org/people/stuniverso/sounds/761559/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: skitter_1.ogg
+
+"Splash by swordofkings128" by swordofkings128
+  https://freesound.org/people/swordofkings128/sounds/398032/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splash_1.ogg
+
+"Turdus_merula_32.wav by tinga" by tinga
+  https://freesound.org/people/tinga/sounds/189553/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bird_4.ogg
+
+"Smoke Bomb by vckhaze" by vckhaze
+  https://freesound.org/people/vckhaze/sounds/332602/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: billow_2.ogg
+
+"Beast deep groan by vykroft" by vykroft
+  https://freesound.org/people/vykroft/sounds/435149/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: rumble_1.ogg
+
+"Bite (Apple) by wadaltmon" by wadaltmon
+  https://freesound.org/people/wadaltmon/sounds/275015/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: eat_1.ogg
+
+"growl.wav by wingz" by wingz
+  https://freesound.org/people/wingz/sounds/13789/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: growl_2.ogg
+
+"Short-Fireball-Woosh.flac by wjl" by wjl
+  https://freesound.org/people/wjl/sounds/267887/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_fire_1.ogg
+
+"ice_cracking_01.flac by wwstudioswastaken" by wwstudioswastaken
+  https://freesound.org/people/wwstudioswastaken/sounds/624163/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cast_frost_1.ogg
+
+"Snake Hiss by xoiziox" by xoiziox
+  https://freesound.org/people/xoiziox/sounds/553374/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hiss_1.ogg, slither_1.ogg
+
+"Lasso rope being spun, spinning through air then throw by zapsplat.com" by zapsplat.com
+  https://freesound.org/people/zapsplat.com/sounds/719638/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: lasso_1.ogg
+
+impactPunch_heavy_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_1.ogg
+
+impactPunch_heavy_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_2.ogg
+
+impactPunch_heavy_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_4.ogg
+
+impactSoft_heavy_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hit_4.ogg
+
+impactMetal_medium_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: brace_1.ogg
+
+impactMetal_heavy_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: brace_2.ogg
+
+impactSoft_medium_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: net_1.ogg
+
+impactSoft_medium_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: net_1.ogg
+
+impactSoft_medium_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: net_1.ogg
+
+impactWood_light_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: ram_1.ogg
+
+impactPunch_medium_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_1.ogg
+
+impactPunch_medium_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_2.ogg
+
+impactPunch_medium_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_3.ogg
+
+impactPunch_medium_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: hurt_4.ogg
+
+footstep_grass_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_grass_1.ogg
+
+footstep_grass_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_grass_2.ogg
+
+footstep_grass_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_grass_3.ogg
+
+footstep_grass_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_grass_4.ogg
+
+footstep_grass_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_grass_5.ogg
+
+footstep_snow_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_snow_1.ogg
+
+footstep_snow_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_snow_2.ogg
+
+footstep_snow_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_snow_3.ogg
+
+footstep_snow_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_snow_4.ogg
+
+footstep_snow_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_snow_5.ogg
+
+footstep_concrete_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_stone_1.ogg
+
+footstep_concrete_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_stone_2.ogg
+
+footstep_concrete_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_stone_3.ogg
+
+footstep_concrete_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_stone_4.ogg
+
+footstep_concrete_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: step_stone_5.ogg
+
+cloth1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: flick_1.ogg
+
+metalLatch.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: latch_1.ogg, chest_1.ogg
+
+cloth3.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: net_1.ogg
+
+drawKnife1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: equip_1.ogg
+
+drawKnife2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: equip_2.ogg
+
+drawKnife3.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: equip_3.ogg
+
+doorOpen_1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chest_1.ogg
+
+handleSmallLeather.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: pickup_1.ogg
+
+handleSmallLeather2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: pickup_2.ogg
+
+cloth2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: pickup_3.ogg
+
+handleCoins.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: coins_1.ogg
+
+handleCoins2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: coins_2.ogg
+
+creak1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: creak_1.ogg
+
+creak2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: creak_2.ogg, swoop_1.ogg
+
+creak3.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: creak_3.ogg
+

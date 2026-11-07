@@ -43,6 +43,9 @@ pub struct Player {
     on_ground: bool,
     /// Negative for a moment after stepping up a ledge, so the view glides up instead of jumping
     eye_offset: f64,
+    /// How fast blows and dashes are throwing the player sideways, in voxels a second, on top of
+    /// walking, dying away quickly on the ground and slowly in the air
+    shove: Vector2<f64>,
 }
 
 impl Player {
@@ -54,6 +57,7 @@ impl Player {
             velocity: Vector3::zeros(),
             on_ground: false,
             eye_offset: 0.0,
+            shove: Vector2::zeros(),
         };
         while player.collides(world, player.position) && player.position.z < world.size[2] as f64 {
             player.position.z += 1.0;
@@ -82,6 +86,15 @@ impl Player {
         self.on_ground
     }
 
+    /// Thrown by a blow, `velocity` voxels a second more
+    pub fn push(&mut self, velocity: Vector3<f64>) {
+        self.shove += velocity.xy();
+        self.velocity.z += velocity.z;
+        if velocity.z > 0.0 {
+            self.on_ground = false;
+        }
+    }
+
     pub fn eye(&self, world: &World) -> Vector3<f64> {
         let vpm = world.voxels_per_meter as f64;
         self.position + Vector3::new(0.0, 0.0, EYE_HEIGHT * vpm + self.eye_offset)
@@ -100,8 +113,9 @@ impl Player {
         } else {
             WALK_SPEED
         };
-        self.velocity.x = wish.x * speed * vpm;
-        self.velocity.y = wish.y * speed * vpm;
+        self.velocity.x = wish.x * speed * vpm + self.shove.x;
+        self.velocity.y = wish.y * speed * vpm + self.shove.y;
+        self.shove *= (-(if self.on_ground { 10.0 } else { 1.0 }) * dt).exp();
 
         if swimming {
             // Sink slowly, swim up with jump

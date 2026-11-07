@@ -21,6 +21,10 @@ const uint FLAG_WATER = 32;
 const uint FLAG_SMOOTH = 64;
 // Leaves and flowers swaying in the wind, see voxelHit()
 const uint FLAG_WIND = 128;
+// Sun shafts: shaders\shafts.comp adds the sunlight the haze scatters, where sunlight reaches it
+const uint FLAG_SHAFTS = 256;
+// Water and metal mirror the world round them, not just the sky
+const uint FLAG_REFLECTIONS = 1u << 16;
 
 // Has to match the material ids in src\worldgen.rs
 const uint MAT_GRASS = 1;
@@ -30,6 +34,11 @@ const uint MAT_FOAM = 21;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
+// How far under the top of the ground, in meters, a bounce ray that goes as far as it can without
+// hitting anything is taken to be in a cave rather than out under the sky
+const float UNDERGROUND = 2.0;
+// And metal mirrors only what's this near
+const float REFLECTION_DISTANCE = 30.0;
 // Water only reflects what's this close, in meters, and the sky beyond
 const float REFLECTION_REACH = 80.0;
 
@@ -64,10 +73,17 @@ const uint BRICK_INDEX = FOLIAGE_BRICK - 1u;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(push_constant) uniform PushConstants {
+// The view, in a small buffer written each frame rather than in the push constants below: AMD's
+// graphics cards and some of Intel's have room for no more than 128 bytes of those, see
+// src\limits.rs. Has to match View in main.rs.
+layout(set = 3, binding = 8) uniform View {
     mat4 pixelToRay;
     // Projects a world position into last frame's image: pixel = xy / z, with z the depth stored for it
     mat4 previousWorldToPixel;
+} view;
+
+// No more than 128 bytes, see View
+layout(push_constant) uniform PushConstants {
     uvec4 world_size; // xyz: size in voxels, w: voxels per meter
     vec4 sun_direction; // xyz: normalized direction towards the sun, w: sea level in voxels (0 for no sea)
     uint render_mode;
@@ -82,7 +98,9 @@ layout(push_constant) uniform PushConstants {
     // move, z: how many lights there are, w: how far away things fade into the sky, in voxels,
     // as only so much of the endless landscape is there at once (0 for no fading)
     vec4 haze;
-    // xy: where the world's corner is in the whole landscape, in its voxels
+    // xy: where the world's corner is in the whole landscape, in its voxels, zw: where its first
+    // column is kept in the room there is for the main world's columns, which it goes round, see
+    // mainBrick()
     ivec4 window;
 } pc;
 
@@ -99,11 +117,14 @@ const uint ANIMAL = 2;
 layout(set = 0, binding = 0, rgba8) writeonly uniform image2D targetImage;
 layout(set = 0, binding = 1, rgba32f) readonly uniform image2D historyColor;
 layout(set = 0, binding = 2, r32f) readonly uniform image2D historyDepth;
+// The light each pixel sees averaged over frames, its color divided by guideImage's, with alpha how
+// many frames
 layout(set = 0, binding = 3, rgba32f) writeonly uniform image2D accumColor;
 layout(set = 0, binding = 4, r32f) writeonly uniform image2D accumDepth;
-// For post.comp's denoiser: the albedo of what each pixel sees, and in alpha which way the
-// face points (0-5), 6 for the sky, 7 for water
-layout(set = 0, binding = 5, rgba32f) writeonly uniform image2D guideImage;
+// For post.comp and upscale.comp: what accumColor is divided by, the albedo of what each pixel
+// sees as far as it shows through the haze, and in alpha which way the face points (0-5), 6 for
+// the sky, 7 for water and grass, and 8 more than the face for what's held
+layout(set = 0, binding = 5, rgba16f) writeonly uniform image2D guideImage;
 // Distance from a plane facing the sun to the first thing sunlight hits, see sunMapBasis()
 layout(set = 0, binding = 6, r32f) uniform image2D sunMap;
 // One cell per 8x8x8 brick. EMPTY_BRICK | distance is empty, with the distance
@@ -130,6 +151,11 @@ layout(set = 2, binding = 1) readonly buffer NearBricks {
 layout(set = 3, binding = 0) readonly buffer AnimalModels {
     uint animalModels[];
 };
+// The weapons' models, in a buffer of their own as new ones turn up: the first word is where they
+// start among all models, then they're packed the same way, from the word after it
+layout(set = 3, binding = 7) readonly buffer WeaponModels {
+    uint weaponModels[];
+};
 struct Animal {
     // xyz: where the middle of the bottom of its model is, in voxels of the main world, w: radius
     // of a sphere around it centered there
@@ -148,26 +174,35 @@ const uint TINT_FROZEN = 2;
 const uint TINT_POISONED = 3;
 const uint TINT_SHOCKED = 4;
 const uint TINT_CHILLED = 5;
+const uint TINT_HIT = 6;
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
 };
 
 // Water isn't in the voxels: shaders\water.comp simulates it flowing over the ground, one column
-// of the main world at a time. Per column, the top of the ground, and x the top of the water
-// (below the ground for none) and y how churned up and white it is. Then the highest water in
-// each block of WATER_BLOCK x WATER_BLOCK columns, -1 for none, so rays can skip dry land.
+// of the main world at a time. Per column, the top of the ground, and x how deep the water is on
+// it (-1 for none), y how churned up and white it is, and zw water falling through the air (w < z
+// for none), all heights from the top of the ground. Then the highest water in each block of
+// WATER_BLOCK x WATER_BLOCK columns, -1 for none, so rays can skip dry land.
 layout(set = 3, binding = 2, r32f) readonly uniform image2D waterGround;
-layout(set = 3, binding = 3, rgba32f) readonly uniform image2D waterSurface;
+layout(set = 3, binding = 3, rgba16f) readonly uniform image2D waterSurface;
 layout(set = 3, binding = 4, r32f) readonly uniform image2D waterBlocks;
 // Has to match BLOCK in shaders\water.comp
 const int WATER_BLOCK = 8;
+// To the right of the blocks in waterBlocks, the highest water in each block of WATER_SUPER x
+// WATER_SUPER of them. Has to match SUPER in shaders\water.comp.
+const int WATER_SUPER = 8;
 
 // Flames and glowing crystals near the camera, which light up what's around them. There are
 // haze.z of them.
 struct Light {
     vec4 position; // xyz: in voxels of the main world, w: how far its light reaches, in voxels
-    vec4 color;
+    vec4 color; // w: 1 for light that moves, like spells, 0 for flames and crystals that stay put
 };
+// Which of the lights localLight() adds up
+const uint ALL_LIGHTS = 0;
+const uint STILL_LIGHTS = 1;
+const uint MOVING_LIGHTS = 2;
 layout(set = 3, binding = 5) readonly buffer Lights {
     Light lights[];
 };
@@ -177,32 +212,53 @@ layout(set = 3, binding = 5) readonly buffer Lights {
 // none), the red, green and blue light summed over samples in fixed point, how many samples, and
 // the frame it was last used in. Faces are keyed by where they are in the whole landscape, so it
 // stays right when the world moves on to another piece of it.
+// Then the light straight on the face, see cachedDirect(): the frame it was last worked out plus
+// one (0 for never), how much of the sun reaches it, the light from the flames and crystals that
+// stay put (red, green and blue), and for leaves how much sunlight comes through from behind. The
+// last five as floats. Last, the shape of the surface round the face, see packShape(), 0 for not
+// worked out yet.
 layout(set = 3, binding = 6) buffer LightCache {
     uint cache[];
 };
-const uint CACHE_WORDS = 8;
+// Has to match LIGHT_CACHE_WORDS in main.rs
+const uint CACHE_WORDS = 13;
 const uint CACHE_PROBES = 8;
 const float CACHE_SCALE = 1024.0;
 // Once a face has this many samples it only takes the odd one more, so it can follow changes
 const uint CACHE_SAMPLES = 48;
 const uint NO_ENTRY = 0xFFFFFFFFu;
+// The light straight on a face is worked out again every this many frames, by one of the pixels
+// that see it, and blended in this much, so it follows things moving a few frames behind
+const uint DIRECT_INTERVAL = 2;
+const float DIRECT_BLEND = 0.25;
+// Past this many meters from the camera a face is about a pixel across or less, and each pixel
+// averages many of them over the frames, so the light on it needs far fewer samples: after the first
+// it only takes one now and then up to FAR_CACHE_SAMPLES, and the light straight on it is worked out
+// again only every FAR_DIRECT_INTERVAL frames
+const float FAR_FACE = 32.0;
+const uint FAR_CACHE_SAMPLES = 12;
+const float FAR_SAMPLE_CHANCE = 0.25;
+const uint FAR_DIRECT_INTERVAL = 16;
+// How far from its middle shadows are traced towards the sun, in radians. Much wider than the real
+// sun, so the edges of shadows come out soft, a few voxels wide under a tree.
+const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 87;
+const uint PALETTE_SIZE = 89;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
-    vec3(0.36, 0.64, 0.20), // grass
+    vec3(0.28, 0.48, 0.17), // grass
     vec3(0.50, 0.35, 0.22), // dirt
     vec3(0.58, 0.56, 0.55), // stone
     vec3(0.86, 0.74, 0.50), // sand
     vec3(0.95, 0.97, 1.00), // snow
     vec3(0.10, 0.30, 0.45), // water
     vec3(0.45, 0.29, 0.17), // wood
-    vec3(0.32, 0.66, 0.16), // leaves
+    vec3(0.27, 0.54, 0.15), // leaves
     vec3(0.92, 0.14, 0.14), // red flower
     vec3(0.98, 0.84, 0.14), // yellow flower
     vec3(0.80, 0.78, 0.74), // clay
-    vec3(0.52, 0.72, 0.26), // grass tip
+    vec3(0.42, 0.56, 0.22), // grass tip
     vec3(0.10, 0.36, 0.10), // dark leaves
     vec3(0.95, 0.75, 0.12), // yellow leaves
     vec3(0.95, 0.42, 0.06), // orange leaves
@@ -276,7 +332,9 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.80, 0.45, 1.00), // arcane
     vec3(0.45, 0.12, 0.75), // void
     vec3(0.95, 0.08, 0.12), // blood
-    vec3(1.00, 0.92, 0.60)  // holy
+    vec3(1.00, 0.92, 0.60), // holy
+    vec3(0.62, 0.88, 0.16), // lime leaves
+    vec3(0.46, 0.03, 0.06)  // crimson leaves
 );
 
 // Has to match the material ids in src\worldgen.rs
@@ -336,8 +394,34 @@ uvec3 levelSize(uint level) {
     return level == NEAR ? pc.near_size.xyz : pc.world_size.xyz;
 }
 
+// The main world moves on over the landscape a strip at a time, and each of its columns is kept
+// where it is in the landscape modulo the room there is for them, a strip more than the world, see
+// World::wrap in src\worldgen.rs: so nothing's moved, only what comes in put where what left was.
+// The room in bricks, set in main(): in columns it's 8 times that
+ivec2 g_room8 = ivec2(1);
+
+// Where the main world's column `c`, counted from its first, is kept
+ivec2 mainColumn(ivec2 c) {
+    ivec2 room = g_room8 << 3;
+    ivec2 p = c + pc.window.zw;
+    return ivec2(p.x >= room.x ? p.x - room.x : p.x, p.y >= room.y ? p.y - room.y : p.y);
+}
+
+// Where the main world's brick `brick` is kept in brickGrid: in the loop rays step through bricks
+// in, so as little as can be
+ivec3 mainBrick(ivec3 brick) {
+    ivec2 p = brick.xy + (pc.window.zw >> 3);
+    return ivec3(p.x >= g_room8.x ? p.x - g_room8.x : p.x, p.y >= g_room8.y ? p.y - g_room8.y : p.y, brick.z);
+}
+
+// Where a voxel of a level is in the whole landscape, for what's made up from where it is, like
+// the shade of each voxel, so it stays put as the world moves on
+uvec3 landscapeCoord(uint level, uvec3 coord) {
+    return level == MAIN ? coord + uvec3(uvec2(pc.window.xy), 0) : coord;
+}
+
 uint brickCell(uint level, ivec3 brick) {
-    return level == NEAR ? imageLoad(nearGrid, brick).r : imageLoad(brickGrid, brick).r;
+    return level == NEAR ? imageLoad(nearGrid, brick).r : imageLoad(brickGrid, mainBrick(brick)).r;
 }
 
 uint brickWord(uint level, uint index) {
@@ -427,7 +511,7 @@ bool brickHit(uint level, uint cell, uvec3 local_coord, bool through_water) {
 bool sways(uint material) {
     return material == 8u || (material >= 13u && material <= 16u) || material == 23u || material == 27u || material == 29u
         || material == 30u || material == 35u || material == 67u || material == 12u || material == 9u || material == 10u
-        || material == 17u || material == 18u || material == 25u || material == 26u;
+        || material == 17u || material == 18u || material == 25u || material == 26u || material == 87u || material == 88u;
 }
 
 // Leaves only sway this many meters from the camera, as further off it's too small to see and
@@ -436,6 +520,12 @@ const float SWAY_REACH = 30.0;
 // Only for what the camera sees: shadows and bounce light come from the leaves as they grow,
 // as tracing those rays through swaying leaves too costs much more
 bool g_sway = true;
+// Also only for what the camera sees: leaves within LEAF_CLEAR meters of it aren't there, and
+// fewer of them out to twice that, so a bush it's in doesn't hide everything. They still cast
+// shadows.
+bool g_clear_leaves = true;
+const float LEAF_CLEAR = 1.1;
+bool isFoliage(uint material);
 
 // How far leaves and flowers at `p`, in voxels of the main world, are blown aside right now: a
 // voxel either way along x and y, or not at all. A wind blowing mostly along x rolls across the
@@ -458,10 +548,25 @@ bool voxelHit(uint level, uint cell, ivec3 brick, uvec3 coord, bool through_wate
     shift = ivec3(0);
     uvec3 local = coord % 8;
     bool here = brickHit(level, cell, local, through_water);
-    if ((cell & FOLIAGE_BRICK) == 0 || (pc.flags & FLAG_WIND) == 0 || !g_sway)
+    if ((cell & FOLIAGE_BRICK) == 0)
     return here;
     vec3 p = level == NEAR ? fromNear(vec3(coord)) : vec3(coord);
-    vec3 to_camera = p - pc.pixelToRay[3].xyz;
+    // Leaves right round the camera aren't there for it, so standing in a bush leaves a hollow in
+    // it to see out of. Further out fewer and fewer are left out, so it thins away rather than
+    // ending in a wall of leaves.
+    if (g_clear_leaves && here) {
+        vec3 off = p + 0.5 - view.pixelToRay[3].xyz;
+        float clear = LEAF_CLEAR * float(max(pc.world_size.w, 1u));
+        float d = dot(off, off);
+        if (d < 4.0 * clear * clear) {
+            float kept = clamp(sqrt(d) / clear - 1.0, 0.0, 1.0);
+            if (float(hash(landscapeCoord(level, coord)) & 255u) / 255.0 >= kept && isFoliage(brickMaterial(level, cell, local)))
+            return false;
+        }
+    }
+    if ((pc.flags & FLAG_WIND) == 0 || !g_sway)
+    return here;
+    vec3 to_camera = p - view.pixelToRay[3].xyz;
     float reach = SWAY_REACH * float(max(pc.world_size.w, 1u));
     if (dot(to_camera, to_camera) > reach * reach)
     return here;
@@ -569,11 +674,35 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
 
             bool solid_brick = (cell & SOLID_BRICK) != 0;
             ivec3 shift = ivec3(0);
-            bool found = (solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until;
-            if (!found) {
-                // Inner traversal over the voxels of this brick
-                vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
+            bool found = false;
+            // Inner traversal over the voxels of this brick, from the one the ray comes in at. The
+            // voxel's checked in one place only, as the shader has a copy of all this for every
+            // ray it traces.
+            vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
+            {
+                // Bricks without leaves, most of them, only need their occupancy bits, a word of
+                // which covers 32 voxels, so it's only loaded again once the ray moves on to another
+                bool plain = !solid_brick && (cell & FOLIAGE_BRICK) == 0;
+                uint base = ((cell & BRICK_INDEX) - 1) * BRICK_WORDS;
+                uint word_at = 0xFFFFFFFFu;
+                uint word = 0;
                 while (true) {
+                    bool occupied;
+                    if (plain) {
+                        uvec3 l = coord % 8;
+                        uint i = l.x + l.y * 8 + l.z * 64;
+                        if (i >> 5 != word_at) {
+                            word_at = i >> 5;
+                            word = brickWord(level, base + word_at);
+                        }
+                        occupied = (word >> (i & 31u) & 1u) != 0 && (!through_water || brickMaterial(level, cell, l) != MAT_WATER);
+                    } else {
+                        occupied = solid_brick || voxelHit(level, cell, brick, coord, through_water, shift);
+                    }
+                    if (occupied && enter >= ignore_until) {
+                        found = true;
+                        break;
+                    }
                     steps++;
 
                     if (t.x < t.y) {
@@ -605,10 +734,6 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
                     // Stepping below 0 wraps around, which also leaves the brick
                     if (any(notEqual(coord / 8, uvec3(brick))))
                     break;
-                    if ((solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until) {
-                        found = true;
-                        break;
-                    }
                 }
             }
 
@@ -662,14 +787,19 @@ uint animalCount() {
 }
 
 uvec3 modelSize(uint model) {
-    uint packed = animalModels[model * 2 + 1];
+    uint base = weaponModels[0];
+    uint packed = model < base ? animalModels[model * 2 + 1] : weaponModels[1 + (model - base) * 2 + 1];
     return uvec3(packed & 0x3FFu, (packed >> 10) & 0x3FFu, (packed >> 20) & 0x3FFu);
 }
 
 // Material of one of a model's voxels, 0 for air
 uint modelVoxel(uint model, uvec3 size, uvec3 c) {
     uint i = c.x + (c.y + c.z * size.y) * size.x;
+    uint base = weaponModels[0];
+    if (model < base)
     return animalModels[animalModels[model * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
+    uint w = model - base;
+    return weaponModels[1 + weaponModels[1 + w * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
 }
 
 vec3 rotate(vec4 q, vec3 v) {
@@ -698,6 +828,50 @@ vec3 animalToWorld(uint index, vec3 p) {
 const uint SECONDARY_ANIMALS = 24;
 uint g_animal_limit = 0xFFFFFFFFu;
 
+// The animals and props whose bounding spheres the camera's rays through this workgroup's tile of
+// pixels might pass through, a bit each, worked out by all its invocations together before any
+// are traced, see cullTileAnimals(). Camera rays only check those, rather than every one there is.
+const uint TILE_WORDS = 8;
+shared uint s_tile_animals[TILE_WORDS];
+bool g_tile_culled = false;
+
+void cullTileAnimals() {
+    uint lid = gl_LocalInvocationIndex;
+    if (lid < TILE_WORDS)
+    s_tile_animals[lid] = 0;
+    barrier();
+    uint count = animalCount();
+    g_tile_culled = count <= TILE_WORDS * 32;
+    if (g_tile_culled) {
+        // The cone around the tile's rays, wherever in their pixels they go through, a little wider
+        vec2 lo = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy) - 1.0;
+        vec2 hi = lo + vec2(gl_WorkGroupSize.xy) + 2.0;
+        mat3 m = mat3(view.pixelToRay);
+        vec3 o = view.pixelToRay[3].xyz;
+        vec3 axis = normalize(m * vec3((lo + hi) * 0.5, 1));
+        float cos_cone = min(min(dot(axis, normalize(m * vec3(lo, 1))), dot(axis, normalize(m * vec3(hi.x, lo.y, 1)))),
+            min(dot(axis, normalize(m * vec3(lo.x, hi.y, 1))), dot(axis, normalize(m * vec3(hi, 1)))));
+        float sin_cone = sqrt(max(1 - cos_cone * cos_cone, 0));
+        for (uint i = lid; i < count; i += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+            vec4 sphere = animals[i].position;
+            vec3 to = sphere.xyz - o;
+            float d2 = dot(to, to);
+            float r = sphere.w;
+            bool keep = d2 <= r * r;
+            if (!keep) {
+                // Within the cone widened by the angle the sphere takes up
+                float d = sqrt(d2);
+                float sin_a = r / d;
+                float cos_a = sqrt(max(1 - sin_a * sin_a, 0));
+                keep = dot(to, axis) / d >= cos_cone * cos_a - sin_cone * sin_a;
+            }
+            if (keep)
+            atomicOr(s_tile_animals[i / 32], 1u << (i % 32));
+        }
+    }
+    barrier();
+}
+
 // The nearest animal a ray hits before max_t, in voxels of the main world. The ray is turned and
 // scaled into each animal's voxels, without normalizing it, so distances along it stay the same.
 bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
@@ -705,7 +879,27 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
     uint count = min(animalCount(), g_animal_limit);
     // Rays from the camera see what's held in front of anything else
     bool from_camera = g_animal_limit == 0xFFFFFFFFu;
-    for (uint i = 0; i < count; i++) {
+    // Those only look at the ones their tile might see, in the same order
+    bool tiled = from_camera && g_tile_culled;
+    uint word = 0;
+    uint bits = tiled ? s_tile_animals[0] : 0;
+    uint next = 0;
+    while (true) {
+        uint i;
+        if (tiled) {
+            while (bits == 0 && word + 1 < TILE_WORDS) {
+                word++;
+                bits = s_tile_animals[word];
+            }
+            if (bits == 0)
+            break;
+            i = word * 32 + findLSB(bits);
+            bits &= bits - 1;
+        } else {
+            if (next >= count)
+            break;
+            i = next++;
+        }
         Animal a = animals[i];
         float limit = from_camera && a.info.y == HELD ? FLT_MAX : max_t;
         // Only animals whose bounding sphere the ray passes through
@@ -787,12 +981,19 @@ bool trace(vec3 origin, vec3 dir, bool through_water, float max_distance, out Hi
 bool traceWorld(vec3 origin, vec3 dir, bool through_water, float max_distance, out Hit hit, inout uint steps) {
     float start = 0;
     float ignore_until = 0;
-    if (insideNear(origin)) {
-        float s = pc.near_origin.w;
-        if (traverse(NEAR, toNear(origin), dir, through_water, max_distance * s, 0, hit, steps)) {
-            hit.t /= s;
+    uint level = insideNear(origin) ? NEAR : MAIN;
+    // Both levels go through the one call in this loop, so the shader holds only one copy of the
+    // traversal for every ray it traces rather than two
+    while (true) {
+        float s = level == NEAR ? pc.near_origin.w : 1;
+        vec3 from = level == NEAR ? toNear(origin) : origin + dir * start;
+        float reach = level == NEAR ? max_distance * s : max_distance - start;
+        if (traverse(level, from, dir, through_water, reach, ignore_until, hit, steps)) {
+            hit.t = level == NEAR ? hit.t / s : hit.t + start;
             return true;
         }
+        if (level == MAIN)
+        return false;
         vec3 inv_dir = clamp(1 / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
         vec3 lo = pc.near_origin.xyz;
         vec3 hi = lo + vec3(pc.near_size.xyz) / s;
@@ -803,12 +1004,8 @@ bool traceWorld(vec3 origin, vec3 dir, bool through_water, float max_distance, o
         // The coarser ground at the edge of the box can stick up above the finer ground the ray
         // just passed over, so don't let it stop the ray right where it comes out
         ignore_until = 1.5;
+        level = MAIN;
     }
-    if (traverse(MAIN, origin + dir * start, dir, through_water, max_distance - start, ignore_until, hit, steps)) {
-        hit.t += start;
-        return true;
-    }
-    return false;
 }
 
 // A hit's position in voxels of its own level
@@ -855,35 +1052,94 @@ vec3 ambientLight(vec3 normal) {
     return mix(ground, sky, normal.z * 0.5 + 0.5);
 }
 
+// Whether nothing is in the way from a point towards the sun, `towards` being the way to it
+bool sunReaches(vec3 surface, vec3 towards) {
+    Hit hit;
+    uint steps = 0;
+    return !trace(surface, towards, true, FLT_MAX, hit, steps);
+}
+
+// Cosine-weighted sunlight on a surface, given how much of the sun reaches it
+float sunOn(vec3 normal, float reaches) {
+    vec3 sun = pc.sun_direction.xyz;
+    float n_dot_l = dot(normal, sun);
+    if (n_dot_l <= 0 || sun.z < -0.02)
+    return 0;
+    return n_dot_l * reaches;
+}
+
 // Cosine-weighted sunlight on a surface, 0 when it's in shadow
 float sunLight(vec3 surface, vec3 normal) {
     vec3 sun = pc.sun_direction.xyz;
     float n_dot_l = dot(normal, sun);
     if (n_dot_l <= 0 || sun.z < -0.02)
     return 0;
-    if ((pc.flags & FLAG_SHADOWS) != 0) {
-        Hit hit;
-        uint steps = 0;
-        if (trace(surface, sun, true, FLT_MAX, hit, steps))
-        return 0;
-    }
+    if ((pc.flags & FLAG_SHADOWS) != 0 && !sunReaches(surface, sun))
+    return 0;
     return n_dot_l;
 }
 
-// Light on a surface from the flames and crystals near it, with their shadows
-vec3 localLight(vec3 surface, vec3 normal) {
+// The way to a point on the sun's disc, `uv` 0-1 picking which, spread evenly over it
+vec3 sunPoint(vec2 uv) {
+    vec3 sun = pc.sun_direction.xyz;
+    vec3 helper = abs(sun.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 u = normalize(cross(helper, sun));
+    vec3 v = cross(sun, u);
+    float r = SUN_RADIUS * sqrt(uv.x);
+    float a = 6.28318530718 * uv.y;
+    return normalize(sun + (u * cos(a) + v * sin(a)) * r);
+}
+
+// Whether the sun is on the far side of a face, so it could shine through it if it's a leaf
+bool sunBehind(Hit hit) {
+    vec3 sun = pc.sun_direction.xyz;
+    return dot(hit.normal, sun) < 0 && sun.z >= -0.02;
+}
+
+// How much sunlight reaches a leaf's other side, starting just past it, `towards` being the way
+// to the sun
+float leafThrough(Hit hit, vec3 towards) {
+    if ((pc.flags & FLAG_SHADOWS) == 0)
+    return 1;
+    return sunReaches(voxelPoint(hit, 0.5 + towards * 0.9), towards) ? 1 : 0;
+}
+
+// A light with a negative color is a glow hanging in the air of a fallen city rather than a flame
+// or a crystal, see src\worldgen\undercity.rs: it lights everything round it a little, more from
+// above, through walls and all, with no shadows to trace. It lights nothing higher than itself,
+// fading out over this many meters below that, so it never reaches the land over the city.
+const float GLOW_FADE = 3.0;
+
+// Light on a surface from the flames and crystals near it, with their shadows. `which` is
+// ALL_LIGHTS, or only the STILL_LIGHTS or MOVING_LIGHTS.
+vec3 localLight(vec3 surface, vec3 normal, uint which) {
     vec3 total = vec3(0);
     uint count = uint(pc.haze.z);
     float vpm = float(max(pc.world_size.w, 1u));
     for (uint i = 0; i < count; i++) {
         Light light = lights[i];
+        bool moving = light.color.w > 0.5;
+        if ((which == STILL_LIGHTS && moving) || (which == MOVING_LIGHTS && !moving))
+        continue;
         vec3 to = light.position.xyz - surface;
         float d = length(to);
         if (d > light.position.w || d < 1e-3)
         continue;
         vec3 dir = to / d;
+        if (light.color.r < 0) {
+            float under = to.z / (GLOW_FADE * vpm);
+            if (under > 0)
+            total -= light.color.rgb * (0.6 + 0.4 * dot(normal, dir)) * (1 - smoothstep(0.4, 1.0, d / light.position.w)) * smoothstep(0.0, 1.0, under);
+            continue;
+        }
         float n_dot_l = dot(normal, dir);
         if (n_dot_l <= 0)
+        continue;
+        float meters = d / vpm;
+        float fade = 1 - smoothstep(0.5, 1.0, d / light.position.w);
+        vec3 lit = light.color.rgb * n_dot_l * fade / (0.3 + meters * meters);
+        // Too faint to show: not worth a ray to see if it's in shadow
+        if (max(lit.r, max(lit.g, lit.b)) < 0.02)
         continue;
         if ((pc.flags & FLAG_SHADOWS) != 0) {
             Hit blocker;
@@ -892,11 +1148,101 @@ vec3 localLight(vec3 surface, vec3 normal) {
             if (trace(surface, dir, true, d - 0.35 * vpm, blocker, steps))
             continue;
         }
-        float meters = d / vpm;
-        float fade = 1 - smoothstep(0.5, 1.0, d / light.position.w);
-        total += light.color.rgb * n_dot_l * fade / (0.3 + meters * meters);
+        total += lit;
     }
     return total;
+}
+
+// Which lights directLight() looks at besides those, none of them
+const uint NO_LIGHTS = 3;
+
+// All the light straight on a point of a surface, with every shadow ray it takes traced through
+// the one call to trace() in its loop, so the shader holds one copy of it here rather than one for
+// every kind of light. If `want_sun`, how much of the sun reaches it towards `towards` (0 or 1,
+// the cosine left out), if `want_through`, the same for sunlight getting through a leaf from
+// behind, starting at `through_from`, and the light from the flames, crystals and spells around
+// it (see localLight()), `which` of them, those that stay put and those that move apart.
+void directLight(vec3 surface, vec3 normal, bool want_sun, vec3 towards, bool want_through, vec3 through_from, uint which,
+                 out float reaches, out float through, out vec3 still, out vec3 moving) {
+    reaches = 0;
+    through = 0;
+    still = vec3(0);
+    moving = vec3(0);
+    bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
+    int count = which == NO_LIGHTS ? 0 : int(pc.haze.z);
+    float vpm = float(max(pc.world_size.w, 1u));
+    // -2 is the sun, -1 the sun through a leaf, then the lights
+    for (int q = -2; q < count; q++) {
+        vec3 o = surface;
+        vec3 d = towards;
+        float reach = FLT_MAX;
+        vec3 lit = vec3(0);
+        bool is_moving = false;
+        if (q == -2) {
+            if (!want_sun)
+            continue;
+            if (!shadows) {
+                reaches = 1;
+                continue;
+            }
+        } else if (q == -1) {
+            if (!want_through)
+            continue;
+            if (!shadows) {
+                through = 1;
+                continue;
+            }
+            o = through_from;
+        } else {
+            Light light = lights[q];
+            is_moving = light.color.w > 0.5;
+            if ((which == STILL_LIGHTS && is_moving) || (which == MOVING_LIGHTS && !is_moving))
+            continue;
+            vec3 to = light.position.xyz - surface;
+            float dist = length(to);
+            if (dist > light.position.w || dist < 1e-3)
+            continue;
+            d = to / dist;
+            if (light.color.r < 0) {
+                float under = to.z / (GLOW_FADE * vpm);
+                if (under > 0) {
+                    vec3 glow = -light.color.rgb * (0.6 + 0.4 * dot(normal, d)) * (1 - smoothstep(0.4, 1.0, dist / light.position.w)) * smoothstep(0.0, 1.0, under);
+                    if (is_moving)
+                    moving += glow;
+                    else
+                    still += glow;
+                }
+                continue;
+            }
+            float n_dot_l = dot(normal, d);
+            if (n_dot_l <= 0)
+            continue;
+            float meters = dist / vpm;
+            float fade = 1 - smoothstep(0.5, 1.0, dist / light.position.w);
+            lit = light.color.rgb * n_dot_l * fade / (0.3 + meters * meters);
+            // Too faint to show: not worth a ray to see if it's in shadow
+            if (max(lit.r, max(lit.g, lit.b)) < 0.02)
+            continue;
+            // Stopping short of the light, so the candle it's on doesn't shade it
+            reach = dist - 0.35 * vpm;
+        }
+        bool blocked = false;
+        if (shadows) {
+            Hit blocker;
+            uint steps = 0;
+            blocked = trace(o, d, true, reach, blocker, steps);
+        }
+        if (q == -2)
+        reaches = blocked ? 0 : 1;
+        else if (q == -1)
+        through = blocked ? 0 : 1;
+        else if (!blocked) {
+            if (is_moving)
+            moving += lit;
+            else
+            still += lit;
+        }
+    }
 }
 
 float vertexAO(bool side1, bool side2, bool corner) {
@@ -915,9 +1261,27 @@ uint hitMaterial(Hit hit) {
     return materialAt(hit.level, uvec3(ivec3(hit.coord) - hit.shift));
 }
 
+float grassAt(ivec2 column, out float ground);
+
+// Has to match the material ids in src\worldgen.rs
+const uint MAT_GRASS_TIP = 12;
+const uint MAT_GRASS_BLADE = 22;
+// How tall grass grows at most, in meters, for shading its blades from root to tip
+const float BLADE_HEIGHT = 0.45;
+
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
-    return materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : uvec3(ivec3(hit.coord) - hit.shift));
+    vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
+    // Blades of grass dark down among the roots, lighter and yellower up to their tips
+    if (hit.level != ANIMAL && (material == MAT_GRASS_BLADE || material == MAT_GRASS_TIP)) {
+        vec3 p = voxelPoint(hit, vec3(0.5) - vec3(hit.shift));
+        float ground;
+        grassAt(ivec2(floor(p.xy)), ground);
+        float h = clamp((p.z - ground) / (BLADE_HEIGHT * float(max(pc.world_size.w, 1u))), 0.0, 1.0);
+        albedo *= mix(0.4, 1.3, sqrt(h));
+        albedo = mix(albedo, albedo * vec3(1.2, 1.12, 0.62), h * h);
+    }
+    return albedo;
 }
 
 // What weapons did to an animal shows on it: burning or poisoned, frozen or crackling with
@@ -926,12 +1290,18 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     if (hit.level != ANIMAL)
     return vec3(0);
     uint tint = animals[hit.instance].info.z;
+    // Struck: flashing white for a moment
+    if (tint == TINT_HIT) {
+        albedo = mix(albedo, vec3(1.0), 0.75);
+        return vec3(2.0);
+    }
     // A few voxels at a time flare up, different ones every few frames
-    float flare = float(hash(hit.coord + uvec3(0, 0, uint(pc.haze.y * 14.0) * 31u)) & 0xFFu) / 255.0;
-    flare = flare * flare * flare;
+    float chance = float(hash(hit.coord + uvec3(0, 0, uint(pc.haze.y * 14.0) * 31u)) & 0xFFu) / 255.0;
+    float flare = chance * chance * chance;
+    // Flames licking up here and there over it, not the whole of it glowing
     if (tint == TINT_BURNING) {
-        albedo *= 0.45;
-        return vec3(3.0, 1.1, 0.25) * (0.15 + 2.0 * flare);
+        albedo *= 0.7;
+        return vec3(3.0, 1.1, 0.25) * (0.02 + 2.2 * smoothstep(0.84, 1.0, chance));
     }
     if (tint == TINT_FROZEN)
     albedo = mix(albedo, vec3(0.45, 0.72, 0.95), 0.75);
@@ -1027,7 +1397,7 @@ uint faceSeed(Hit hit) {
 // darker voxels fall at a few meters a second, and on top the voxels flicker
 float foamFlow(Hit hit) {
     float time = pc.haze.y;
-    uvec3 c = hit.coord;
+    uvec3 c = landscapeCoord(hit.level, hit.coord);
     float vpm = float(max(pc.world_size.w, 1u)) * (hit.level == NEAR ? pc.near_origin.w : 1);
     if (abs(hit.local_normal.z) < 0.5) {
         // Ribbons a few voxels long, each column falling at its own pace
@@ -1076,6 +1446,8 @@ uint cacheEntry(Hit hit, bool make) {
                 cache[e + 3] = 0;
                 cache[e + 4] = 0;
                 cache[e + 5] = pc.frame;
+                cache[e + 6] = 0;
+                cache[e + 12] = 0;
                 return e;
             }
             if (was == key)
@@ -1089,6 +1461,21 @@ uint cacheEntry(Hit hit, bool make) {
 vec3 cachedLight(uint e, out uint samples) {
     samples = cache[e + 4];
     return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u));
+}
+
+// The shape of the surface round a face, which takes looking at the 26 voxels round it to work out
+// (see voxelNormal() and voxelAO()), kept in a word of its light cache entry so it's worked out
+// only now and then: its normal a byte a component, and its ambient occlusion in the top byte.
+// Never 0, which is for none.
+uint packShape(vec3 normal, float ao) {
+    uvec3 n = uvec3(round(clamp(normal, -1, 1) * 127.0) + 128.0);
+    return n.x | n.y << 8 | n.z << 16 | uint(round(clamp(ao, 0, 1) * 255.0)) << 24;
+}
+
+void unpackShape(uint shape, out vec3 normal, out float ao) {
+    vec3 n = (vec3(shape & 0xFFu, shape >> 8 & 0xFFu, shape >> 16 & 0xFFu) - 128.0) / 127.0;
+    normal = normalize(n);
+    ao = float(shape >> 24) / 255.0;
 }
 
 // Adds a sample of bounced light to a cache entry. Once it has plenty, half of what it has is
@@ -1106,6 +1493,58 @@ void cacheAdd(uint e, vec3 light) {
     }
 }
 
+float halton(uint i, uint base);
+
+// The light straight on a face of the world with a light cache entry, kept there so that the many
+// pixels that see a face up close don't all trace the same shadow rays. `sun` is how much of the
+// sun reaches it, `still` the light from the flames and crystals that stay put, and `through`,
+// for leaves, how much sunlight gets through from behind. A face seen for the first time gets it
+// worked out by every pixel that sees it, so it's never left unlit, and after that by one of them
+// every DIRECT_INTERVAL frames, towards a different point on the sun each time, which blended
+// together soften the edges of shadows.
+// This is in two halves, so the shadow rays between them can go along with the others a pixel
+// traces, see directLight(). The first reads what's kept, and says whether this pixel is to work
+// it out again now and towards which point on the sun; `last` is for the second half.
+bool cachedDirectBegin(uint e, uint interval, out uint last, out float sun, out vec3 still, out float through, out vec3 towards) {
+    sun = 0;
+    still = vec3(0);
+    through = 0;
+    towards = pc.sun_direction.xyz;
+    last = cache[e + 6];
+    if (last != 0) {
+        sun = uintBitsToFloat(cache[e + 7]);
+        still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
+        through = uintBitsToFloat(cache[e + 11]);
+        // Only the pixel that gets to mark it done works it out again
+        if (pc.frame + 1 - last < interval || atomicCompSwap(cache[e + 6], last, pc.frame + 1) != last)
+        return false;
+        // Each face goes round the points in its own order, so neighbors don't all step together
+        uint i = pc.frame / interval % 64 + 1;
+        uint offset = hash(e);
+        towards = sunPoint(fract(vec2(halton(i, 2), halton(i, 3)) + vec2(offset & 0xFFFFu, offset >> 16) / 65536.0));
+    }
+    return true;
+}
+
+// The second half: blends what was just worked out, `reaches`, `light` from the lights that stay
+// put and `shining` through a leaf, into what's kept, and keeps it
+void cachedDirectEnd(uint e, uint last, float reaches, vec3 light, float shining, inout float sun, inout vec3 still, inout float through) {
+    float blend = last == 0 ? 1 : DIRECT_BLEND;
+    sun = mix(sun, reaches, blend);
+    still = mix(still, light, blend);
+    through = mix(through, shining, blend);
+    cache[e + 7] = floatBitsToUint(sun);
+    cache[e + 8] = floatBitsToUint(still.r);
+    cache[e + 9] = floatBitsToUint(still.g);
+    cache[e + 10] = floatBitsToUint(still.b);
+    cache[e + 11] = floatBitsToUint(through);
+    if (last == 0) {
+        // Marked done only once it's there to read
+        memoryBarrierBuffer();
+        cache[e + 6] = pc.frame + 1;
+    }
+}
+
 // `dir` turned out of the face with normal `face`, if it pointed into it
 vec3 outward(vec3 dir, vec3 face) {
     return dot(dir, face) < 0 ? reflect(dir, face) : dir;
@@ -1120,29 +1559,55 @@ vec3 cosineDirection(vec3 normal, inout uint seed) {
     return len > 1e-4 ? dir / len : normal;
 }
 
+// Set while lighting a face past FAR_FACE: how much of the sun reaches it. What its bounce light
+// comes off is taken to be about as sunlit, rather than tracing another ray to the sun to see.
+float g_far_sun = -1;
+
 // Single-bounce shading for reflections and bounce light
 vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance) {
     Hit hit;
     uint steps = 0;
-    if (!trace(origin, dir, false, max_distance, hit, steps))
-    return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+    if (!trace(origin, dir, false, max_distance, hit, steps)) {
+        // Out of reach without hitting anything. Down under the ground, in a cave or a great
+        // cavern, that's more of the dark, not the sky.
+        if (max_distance < FLT_MAX) {
+            vec3 end = origin + dir * max_distance;
+            float ground;
+            if (grassAt(ivec2(floor(end.xy)), ground) >= 0 && end.z < ground - UNDERGROUND * float(max(pc.world_size.w, 1u)))
+            return skyColor(dir) * 0.04;
+        }
+        return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+    }
 
     uint material = hitMaterial(hit);
     vec3 albedo = hitAlbedo(hit, material);
     // Glowing things that move, like a spell flying, would leave their light behind in the light
     // cache. Their light reaches what's around them as one of the lights instead.
     vec3 glow = hit.level == ANIMAL && animals[hit.instance].info.y != STILL ? vec3(0) : emission(material);
+    bool gi = (pc.flags & FLAG_GI) != 0;
+    bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
+    uint e = gi || shadows ? cacheEntry(hit, false) : NO_ENTRY;
     // The light already gathered on the face it hit, when there is some, which bounces light on
     // round corners and into caves
     vec3 bounced = ambientLight(hit.normal);
-    uint e = (pc.flags & FLAG_GI) != 0 ? cacheEntry(hit, false) : NO_ENTRY;
     uint samples = 0;
-    if (e != NO_ENTRY) {
+    if (gi && e != NO_ENTRY) {
         vec3 cached = cachedLight(e, samples);
         if (samples >= 4)
         bounced = cached;
     }
-    return albedo * (sunColor() * sunLight(faceCenter(hit), hit.normal) + bounced) + glow;
+    // The light straight on it, kept with the face if it's been seen, which has the light of the
+    // flames and crystals around it as well, so their light bounces too
+    vec3 direct;
+    if (shadows && e != NO_ENTRY && cache[e + 6] != 0) {
+        vec3 still = uintBitsToFloat(uvec3(cache[e + 8], cache[e + 9], cache[e + 10]));
+        direct = sunColor() * sunOn(hit.normal, uintBitsToFloat(cache[e + 7])) + still;
+    } else if (g_far_sun >= 0) {
+        direct = sunColor() * sunOn(hit.normal, g_far_sun);
+    } else {
+        direct = sunColor() * sunLight(faceCenter(hit), hit.normal);
+    }
+    return albedo * (direct + bounced) + glow;
 }
 
 // How much light survives travelling this many voxels through water
@@ -1160,51 +1625,85 @@ float waterFresnel(vec3 dir, vec3 normal) {
     return 0.02 + 0.98 * pow(1 - max(dot(-dir, normal), 0), 5);
 }
 
-// The sea outside the world: the same water over a flat sandy bottom
-vec3 shadeOpenSea(vec3 dir, vec3 pos) {
+// The sea outside the world seen down through its surface: the same water over a flat sandy bottom
+vec3 openSeaBelow(vec3 dir) {
     vec3 up = vec3(0, 0, 1);
-    vec3 reflection = shadeSecondary(pos + up * 1e-3, reflect(dir, up), true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)));
-
     vec3 refracted = refract(dir, up, 1 / 1.33);
     float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
     vec3 transmittance = waterTransmittance(depth / max(-refracted.z, 0.05));
     vec3 sand = pow(PALETTE[MAT_SAND], vec3(2.2));
     vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6) * transmittance;
-    vec3 refraction = seabed * transmittance + waterScatter() * (1 - transmittance);
-
-    return mix(refraction, reflection, waterFresnel(dir, up));
+    return seabed * transmittance + waterScatter() * (1 - transmittance);
 }
 
-// Clear water: a reflection on top of the refracted view of whatever is under it
-vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal) {
+// Every kind of water is shaded here, so the shader holds only one copy of the rays it takes.
+// Clear water: a reflection on top of the refracted view of whatever is under it, or with
+// `open_sea`, the sea outside the world over its sandy bottom. Where `foam` is more than a little,
+// the water voxel `voxel` is churned up white over that, right through where it's `falling`.
+vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float foam, bool falling) {
     float fresnel = waterFresnel(dir, normal);
-    vec3 reflection = shadeSecondary(pos + normal * 1e-3, reflect(dir, normal), true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)));
+    vec3 mirrored = reflect(dir, normal);
+    vec3 reflection = (pc.flags & FLAG_REFLECTIONS) != 0
+        ? shadeSecondary(pos + normal * 1e-3, mirrored, true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)))
+        : skyColor(mirrored) + sunDisc(mirrored);
     vec3 scatter = waterScatter();
 
-    vec3 below = pos - normal * 1e-3;
-    vec3 refracted = refract(dir, normal, 1 / 1.33);
     Hit hit;
-    uint steps = 0;
-    vec3 refraction = scatter;
-    if (trace(below, refracted, true, FLT_MAX, hit, steps)) {
+    bool bottom = false;
+    vec3 refraction = open_sea ? openSeaBelow(dir) : scatter;
+    if (!open_sea) {
+        uint steps = 0;
+        bottom = trace(pos - normal * 1e-3, refract(dir, normal, 1 / 1.33), true, FLT_MAX, hit, steps);
+    }
+    // The light straight on the bottom seen through it, and on the white water, both through the
+    // one call in this loop
+    bool white = foam > 0.01;
+    vec3 on_bottom = vec3(0);
+    vec3 on_foam = vec3(0);
+    uint todo = (bottom ? 1u : 0u) | (white ? 2u : 0u);
+    while (todo != 0) {
+        bool is_bottom = (todo & 1u) != 0;
+        todo &= todo - 1;
+        Hit h = is_bottom ? hit : voxel;
+        float reaches, through;
+        vec3 still, moving;
+        directLight(faceCenter(h), h.normal, sunOn(h.normal, 1) > 0, pc.sun_direction.xyz, false, vec3(0), ALL_LIGHTS, reaches, through, still, moving);
+        vec3 light = sunColor() * sunOn(h.normal, reaches) + still + moving;
+        if (is_bottom)
+        on_bottom = light;
+        else
+        on_foam = light;
+    }
+    if (bottom) {
         uint material = hitMaterial(hit);
         vec3 albedo = hitAlbedo(hit, material);
         vec3 transmittance = waterTransmittance(hit.t);
-        vec3 face = faceCenter(hit);
         // Sunlight reaching the bottom crossed about as much water as the view does
-        vec3 lit = (albedo * (sunColor() * sunLight(face, hit.normal) + ambientLight(hit.normal) * 0.6 + localLight(face, hit.normal)) + emission(material)) * transmittance;
+        vec3 lit = (albedo * (on_bottom + ambientLight(hit.normal) * 0.6) + emission(material)) * transmittance;
         refraction = lit * transmittance + scatter * (1 - transmittance);
     }
 
-    return mix(refraction, reflection, fresnel);
+    vec3 color = mix(refraction, reflection, fresnel);
+    if (white) {
+        float flow = foamFlow(voxel);
+        // Darker streaks in falling water are where it's less churned up, so they're bluer
+        vec3 albedo = pow(mix(vec3(0.55, 0.75, 0.85), PALETTE[MAT_FOAM], clamp(flow - 0.4, 0, 1)), vec3(2.2)) * min(flow, 1);
+        vec3 lit = albedo * (on_foam + ambientLight(voxel.normal));
+        // Falling water is churned white right through. Fast water on the surface just has white
+        // on top, with the clear water showing through.
+        color = mix(color, lit, falling ? 1.0 : foam * 0.75);
+    }
+    return color;
 }
 
 // The water in a column of the main world fills whole voxels, from the top of the ground up to
 // `top`, so it's made of voxels like everything else. False where it's dry.
 bool waterColumn(ivec2 c, out float bottom, out float top, out float foam) {
-    vec2 s = imageLoad(waterSurface, c).xy;
-    bottom = imageLoad(waterGround, c).r;
-    top = floor(s.x + 0.5);
+    ivec2 at = mainColumn(c);
+    vec2 s = imageLoad(waterSurface, at).xy;
+    bottom = imageLoad(waterGround, at).r;
+    // Kept as how deep it is, see shaders\water.comp
+    top = s.x >= 0 ? floor(bottom + s.x + 0.5) : -1;
     foam = s.y;
     return top > bottom;
 }
@@ -1216,7 +1715,7 @@ bool hasWater() {
 // Whether a point (in voxels of the main world) is in water
 bool isWater(vec3 p) {
     ivec2 c = ivec2(floor(p.xy));
-    if (!hasWater() || any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, imageSize(waterGround))))
+    if (!hasWater() || any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, ivec2(pc.world_size.xy))))
     return false;
     float bottom, top, foam;
     return waterColumn(c, bottom, top, foam) && p.z < top && p.z > bottom - 1;
@@ -1256,13 +1755,90 @@ bool enterWater(vec3 origin, vec3 dir, float tc, float tc_end, float bottom, flo
     return false;
 }
 
-// Where a ray first enters the water before max_t, from above or the side. It walks over blocks of
-// columns first, skipping those whose water it passes over, then over the columns of the rest.
+// Where a ray first enters the water before max_t, from above or the side. It walks over the larger
+// blocks first, skipping those whose water it passes over, then over the blocks of the rest the same
+// way, then over the columns of the blocks left.
+bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit);
+
+// The same within the block of columns `block` the ray is in from tb to block_end, coming in
+// along `axis` (-1 for none)
+bool waterInBlock(vec3 origin, vec3 dir, ivec2 size, vec2 inv, vec2 sgn, vec2 delta, ivec2 block, float tb, float block_end, int axis, out WaterHit hit) {
+    ivec2 lo = block * WATER_BLOCK;
+    ivec2 c = clamp(ivec2(floor(origin.xy + dir.xy * tb)), lo, min(lo + WATER_BLOCK, size) - 1);
+    vec2 cnext = (vec2(c) + max(sgn, vec2(0)) - origin.xy) * inv;
+    float tc = tb;
+    int caxis = axis;
+    for (int k = 0; k < 2 * WATER_BLOCK + 2 && tc < block_end; k++) {
+        float tc_end = min(min(cnext.x, cnext.y), block_end);
+        // Each column can have water lying in it, and water falling through it off a ledge
+        ivec2 at = mainColumn(c);
+        vec4 s = imageLoad(waterSurface, at);
+        float ground = imageLoad(waterGround, at).r;
+        // Kept from the top of the ground, see shaders\water.comp
+        s.x = s.x >= 0 ? ground + s.x : -1;
+        s.zw = s.w >= s.z ? ground + s.zw : vec2(1e9, -1);
+        bool from_side = caxis >= 0 && tc > 0;
+        float t_pool, t_fall;
+        int face_pool, face_fall;
+        bool pool = enterWater(origin, dir, tc, tc_end, ground, floor(s.x + 0.5), from_side, t_pool, face_pool) && face_pool != 2;
+        bool fall = enterWater(origin, dir, tc, tc_end, floor(s.z + 0.5), floor(s.w + 0.5), from_side, t_fall, face_fall);
+        if (pool || fall) {
+            fall = fall && (!pool || t_fall < t_pool);
+            int face = fall ? face_fall : face_pool;
+            hit.t = fall ? t_fall : t_pool;
+            hit.foam = fall ? 1 : s.y;
+            hit.falling = fall;
+            vec3 normal = vec3(0, 0, face == 1 ? 1 : -1);
+            float z;
+            if (face == 0) {
+                normal = vec3(0);
+                normal[caxis] = -sgn[caxis];
+                z = floor(origin.z + dir.z * tc);
+            } else if (face == 1) {
+                z = floor((fall ? s.w : s.x) + 0.5) - 1;
+            } else {
+                z = floor(s.z + 0.5);
+            }
+            hit.voxel.level = MAIN;
+            hit.voxel.instance = 0;
+            hit.voxel.coord = uvec3(c, max(z, 0));
+            hit.voxel.axis = face == 0 ? caxis : 2;
+            hit.voxel.normal = normal;
+            hit.voxel.local_normal = normal;
+            hit.voxel.t = hit.t;
+            hit.voxel.shift = ivec3(0);
+            return true;
+        }
+        if (cnext.x < cnext.y) {
+            tc = cnext.x;
+            cnext.x += delta.x;
+            c.x += int(sgn.x);
+            caxis = 0;
+        } else {
+            tc = cnext.y;
+            cnext.y += delta.y;
+            c.y += int(sgn.y);
+            caxis = 1;
+        }
+        if (any(lessThan(c, lo)) || any(greaterThanEqual(c, min(lo + WATER_BLOCK, size))))
+        break;
+    }
+    return false;
+}
+
+// Where the main world's block of WATER_BLOCK columns, or of `span` columns, is kept, as
+// mainColumn() for columns
+ivec2 mainBlock(ivec2 b, int span) {
+    ivec2 room = (g_room8 << 3) / span;
+    ivec2 p = b + pc.window.zw / span;
+    return p - room * ivec2(greaterThanEqual(p, room));
+}
+
 bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
     hit.t = FLT_MAX;
     if (!hasWater())
     return false;
-    ivec2 size = imageSize(waterGround);
+    ivec2 size = ivec2(pc.world_size.xy);
     vec2 inv = clamp(1 / dir.xy, vec2(-FLT_MAX), vec2(FLT_MAX));
     vec2 ta = -origin.xy * inv;
     vec2 tb = (vec2(size) - origin.xy) * inv;
@@ -1278,85 +1854,59 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
     vec2 sgn = sign(dir.xy);
     vec2 delta = abs(inv);
     ivec2 blocks = (size + WATER_BLOCK - 1) / WATER_BLOCK;
-    // Which way the ray came into the current block and column, -1 if it started inside
+    ivec2 supers = (blocks + WATER_SUPER - 1) / WATER_SUPER;
+    const int SPAN = WATER_BLOCK * WATER_SUPER;
+    // Which way the ray came into the current larger block, block and column, -1 if it started inside
     int axis = t > 0 ? (t_in.x > t_in.y ? 0 : 1) : -1;
-    ivec2 block = clamp(ivec2(floor((origin.xy + dir.xy * t) / WATER_BLOCK)), ivec2(0), blocks - 1);
-    vec2 next = ((vec2(block) + max(sgn, vec2(0))) * WATER_BLOCK - origin.xy) * inv;
+    ivec2 sup = clamp(ivec2(floor((origin.xy + dir.xy * t) / SPAN)), ivec2(0), supers - 1);
+    vec2 snext = ((vec2(sup) + max(sgn, vec2(0))) * SPAN - origin.xy) * inv;
 
-    for (int b = 0; b < 1024 && t < t_end; b++) {
-        float block_end = min(min(next.x, next.y), t_end);
-        float highest = imageLoad(waterBlocks, block).r;
-        float z_low = min(origin.z + dir.z * t, origin.z + dir.z * block_end);
+    for (int s = 0; s < 256 && t < t_end; s++) {
+        float super_end = min(min(snext.x, snext.y), t_end);
+        // The larger blocks are kept to the right of the blocks, all there's room for of both
+        float highest = imageLoad(waterBlocks, ivec2((g_room8.x << 3) / WATER_BLOCK, 0) + mainBlock(sup, SPAN)).r;
+        float z_low = min(origin.z + dir.z * t, origin.z + dir.z * super_end);
         if (highest >= 0 && z_low < highest + 0.5) {
-            ivec2 lo = block * WATER_BLOCK;
-            ivec2 c = clamp(ivec2(floor(origin.xy + dir.xy * t)), lo, min(lo + WATER_BLOCK, size) - 1);
-            vec2 cnext = (vec2(c) + max(sgn, vec2(0)) - origin.xy) * inv;
-            float tc = t;
-            int caxis = axis;
-            for (int k = 0; k < 2 * WATER_BLOCK + 2 && tc < block_end; k++) {
-                float tc_end = min(min(cnext.x, cnext.y), block_end);
-                // Each column can have water lying in it, and water falling through it off a ledge
-                vec4 s = imageLoad(waterSurface, c);
-                float ground = imageLoad(waterGround, c).r;
-                bool from_side = caxis >= 0 && tc > 0;
-                float t_pool, t_fall;
-                int face_pool, face_fall;
-                bool pool = enterWater(origin, dir, tc, tc_end, ground, floor(s.x + 0.5), from_side, t_pool, face_pool) && face_pool != 2;
-                bool fall = enterWater(origin, dir, tc, tc_end, floor(s.z + 0.5), floor(s.w + 0.5), from_side, t_fall, face_fall);
-                if (pool || fall) {
-                    fall = fall && (!pool || t_fall < t_pool);
-                    int face = fall ? face_fall : face_pool;
-                    hit.t = fall ? t_fall : t_pool;
-                    hit.foam = fall ? 1 : s.y;
-                    hit.falling = fall;
-                    vec3 normal = vec3(0, 0, face == 1 ? 1 : -1);
-                    float z;
-                    if (face == 0) {
-                        normal = vec3(0);
-                        normal[caxis] = -sgn[caxis];
-                        z = floor(origin.z + dir.z * tc);
-                    } else if (face == 1) {
-                        z = floor((fall ? s.w : s.x) + 0.5) - 1;
-                    } else {
-                        z = floor(s.z + 0.5);
-                    }
-                    hit.voxel.level = MAIN;
-                    hit.voxel.instance = 0;
-                    hit.voxel.coord = uvec3(c, max(z, 0));
-                    hit.voxel.axis = face == 0 ? caxis : 2;
-                    hit.voxel.normal = normal;
-                    hit.voxel.local_normal = normal;
-                    hit.voxel.t = hit.t;
-                    hit.voxel.shift = ivec3(0);
-                    return true;
-                }
-                if (cnext.x < cnext.y) {
-                    tc = cnext.x;
-                    cnext.x += delta.x;
-                    c.x += int(sgn.x);
-                    caxis = 0;
+            ivec2 first = sup * WATER_SUPER;
+            ivec2 last = min(first + WATER_SUPER, blocks) - 1;
+            ivec2 block = clamp(ivec2(floor((origin.xy + dir.xy * t) / WATER_BLOCK)), first, last);
+            vec2 next = ((vec2(block) + max(sgn, vec2(0))) * WATER_BLOCK - origin.xy) * inv;
+            float tb = t;
+            int baxis = axis;
+            for (int b = 0; b < 2 * WATER_SUPER + 2 && tb < super_end; b++) {
+                float block_end = min(min(next.x, next.y), super_end);
+                float block_highest = imageLoad(waterBlocks, mainBlock(block, WATER_BLOCK)).r;
+                float zb_low = min(origin.z + dir.z * tb, origin.z + dir.z * block_end);
+                if (block_highest >= 0 && zb_low < block_highest + 0.5
+                    && waterInBlock(origin, dir, size, inv, sgn, delta, block, tb, block_end, baxis, hit))
+                return true;
+                if (next.x < next.y) {
+                    tb = next.x;
+                    next.x += WATER_BLOCK * delta.x;
+                    block.x += int(sgn.x);
+                    baxis = 0;
                 } else {
-                    tc = cnext.y;
-                    cnext.y += delta.y;
-                    c.y += int(sgn.y);
-                    caxis = 1;
+                    tb = next.y;
+                    next.y += WATER_BLOCK * delta.y;
+                    block.y += int(sgn.y);
+                    baxis = 1;
                 }
-                if (any(lessThan(c, lo)) || any(greaterThanEqual(c, min(lo + WATER_BLOCK, size))))
+                if (any(lessThan(block, first)) || any(greaterThan(block, last)))
                 break;
             }
         }
-        if (next.x < next.y) {
-            t = next.x;
-            next.x += WATER_BLOCK * delta.x;
-            block.x += int(sgn.x);
+        if (snext.x < snext.y) {
+            t = snext.x;
+            snext.x += SPAN * delta.x;
+            sup.x += int(sgn.x);
             axis = 0;
         } else {
-            t = next.y;
-            next.y += WATER_BLOCK * delta.y;
-            block.y += int(sgn.y);
+            t = snext.y;
+            snext.y += SPAN * delta.y;
+            sup.y += int(sgn.y);
             axis = 1;
         }
-        if (any(lessThan(block, ivec2(0))) || any(greaterThanEqual(block, blocks)))
+        if (any(lessThan(sup, ivec2(0))) || any(greaterThanEqual(sup, supers)))
         break;
     }
     return false;
@@ -1365,13 +1915,16 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
 // Which way the top of the water in a column faces. Each voxel's top is flat, but tilted a little
 // with the slope of the water around it, so waves catch the light one voxel at a time.
 vec3 waterTilt(ivec2 c) {
-    ivec2 size = imageSize(waterSurface);
-    float h = imageLoad(waterSurface, c).x;
+    ivec2 size = ivec2(pc.world_size.xy);
+    // How deep it is is kept, see shaders\water.comp, so the ground's added for its height
+    ivec2 at = mainColumn(c);
+    float h = imageLoad(waterGround, at).r + imageLoad(waterSurface, at).x;
     float s[4];
     const ivec2 dirs[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
     for (int i = 0; i < 4; i++) {
-        ivec2 n = clamp(c + dirs[i], ivec2(0), size - 1);
-        float sn = imageLoad(waterSurface, n).x;
+        ivec2 n = mainColumn(clamp(c + dirs[i], ivec2(0), size - 1));
+        float depth = imageLoad(waterSurface, n).x;
+        float sn = depth >= 0 ? imageLoad(waterGround, n).r + depth : -1;
         // Dry neighbors and falling sheets don't count
         s[i] = abs(sn - h) < 2 ? sn : h;
     }
@@ -1386,32 +1939,29 @@ const uint FOLIAGE_LOW = (1u << 8) | (1u << 13) | (1u << 14) | (1u << 15) | (1u 
     | (1u << 29) | (1u << 30);
 const uint FOLIAGE_HIGH = (1u << (33 - 32)) | (1u << (35 - 32));
 
-// Has to match the material ids in src\worldgen.rs: dry grass (65), cactus (66), vines (67)
+// Has to match the material ids in src\worldgen.rs: dry grass (65), cactus (66), vines (67), lime
+// and crimson leaves (87, 88)
 const uint MAT_DRY_GRASS = 65;
 const uint MAT_VINE = 67;
+const uint MAT_LEAVES_LIME = 87;
+const uint MAT_LEAVES_CRIMSON = 88;
 
 bool isFoliage(uint material) {
     if (material >= 64)
-    return material == MAT_DRY_GRASS || material == MAT_VINE;
+    return material == MAT_DRY_GRASS || material == MAT_VINE || material == MAT_LEAVES_LIME || material == MAT_LEAVES_CRIMSON;
     return material < 32 ? (FOLIAGE_LOW & (1u << material)) != 0 : (FOLIAGE_HIGH & (1u << (material - 32))) != 0;
 }
 
-// Sunlight shining through a leaf from behind, brightest when looking towards the sun
-vec3 leafTransmission(Hit hit, vec3 dir, vec3 albedo) {
+// Sunlight shining through a leaf from behind, brightest when looking towards the sun. `through`
+// is how much of it reaches the leaf's other side, see leafThrough().
+vec3 leafTransmission(Hit hit, vec3 dir, vec3 albedo, float through) {
+    if (!sunBehind(hit) || through <= 0)
+    return vec3(0);
     vec3 sun = pc.sun_direction.xyz;
     float behind = -dot(hit.normal, sun);
-    if (behind <= 0 || sun.z < -0.02)
-    return vec3(0);
-    // Only if sunlight reaches the leaf's other side, starting just past it
-    if ((pc.flags & FLAG_SHADOWS) != 0) {
-        Hit blocker;
-        uint steps = 0;
-        if (trace(voxelPoint(hit, 0.5 + sun * 0.9), sun, true, FLT_MAX, blocker, steps))
-        return vec3(0);
-    }
     float towards_sun = pow(max(dot(dir, sun), 0), 4);
     // Light coming through is filtered by the leaf twice over, so it comes out more saturated
-    return albedo * albedo * 2.5 * sunColor() * TRANSLUCENCY * (0.3 + 0.7 * behind) * (0.4 + 1.6 * towards_sun);
+    return albedo * albedo * 2.5 * sunColor() * TRANSLUCENCY * (0.3 + 0.7 * behind) * (0.4 + 1.6 * towards_sun) * through;
 }
 
 // The sun map is an orthographic view of the world along the sunlight, from a plane outside it
@@ -1445,7 +1995,11 @@ float hazePhase(float cos_angle) {
 // Haze between the camera and what it sees, thicker near the ground. It dims what's behind it and
 // glows with the light it scatters: sunlight, except where the sun map says something casts a
 // shadow into the air, which is what makes sunbeams, plus light from the sky.
+// How much of what's behind the haze atmosphere() last let through, 0-1
+float g_transmittance = 1;
+
 vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint seed) {
+    g_transmittance = 1;
     float density = pc.haze.x;
     if (density <= 0)
     return color;
@@ -1458,7 +2012,7 @@ vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint se
     float radius;
     sunMapBasis(u, v, center, radius);
     bool beams = (pc.flags & FLAG_SUNBEAMS) != 0;
-    vec3 sun_light = sunColor() * hazePhase(dot(dir, pc.sun_direction.xyz)) * 0.3;
+    vec3 sun_light = (pc.flags & FLAG_SHAFTS) != 0 ? vec3(0) : sunColor() * hazePhase(dot(dir, pc.sun_direction.xyz)) * 0.3;
     vec3 sky_light = ambientLight(vec3(0, 0, 1)) * 0.8;
     float sea_level = pc.sun_direction.w;
 
@@ -1474,6 +2028,7 @@ vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint se
         scattered += transmittance * (sun_light * lit + sky_light) * thickness;
         transmittance *= exp(-thickness);
     }
+    g_transmittance = transmittance;
     return color * transmittance + scattered;
 }
 
@@ -1496,7 +2051,7 @@ float grassAt(ivec2 column, out float ground) {
     ground = 0;
     if (any(lessThan(column, ivec2(0))) || any(greaterThanEqual(column, ivec2(pc.world_size.xy))))
     return 0;
-    uint value = imageLoad(grassMap, column).r;
+    uint value = imageLoad(grassMap, mainColumn(column)).r;
     ground = float(value & 0xFFFFu) * 0.25;
     return float((value >> 16) & 0xFFu) / 255;
 }
@@ -1547,6 +2102,9 @@ bool traceGrass(vec3 origin, vec3 dir, float max_t, out GrassHit hit) {
     hit.height = 0;
     hit.seed = 0;
     bool found = false;
+    // The blades of each patch are made up from where it is in the whole landscape, so they stay
+    // put as the world moves on, a strip at a time, a whole number of patches
+    ivec2 patch_shift = ivec2(pc.window.xy) / max(int(round(cell)), 1);
     float t0 = 0;
     for (int i = 0; i < 512 && t0 < hit.t; i++) {
         float t1 = min(min(next.x, next.y), hit.t);
@@ -1559,7 +2117,7 @@ bool traceGrass(vec3 origin, vec3 dir, float max_t, out GrassHit hit) {
             float fade = 1 - smoothstep(0.5, 1.0, t0 / range);
             int count = int(float(GRASS_PER_CELL) * density * fade + 0.5);
             for (int k = 0; k < count; k++) {
-                uint seed = hash(uvec3(uvec2(c), uint(k)));
+                uint seed = hash(uvec3(uvec2(c + patch_shift), uint(k)));
                 vec2 base = (vec2(c) + 0.15 + 0.7 * vec2(random(seed), random(seed))) * cell;
                 float root;
                 grassAt(ivec2(floor(base)), root);
@@ -1605,7 +2163,7 @@ vec3 shadeGrass(vec3 origin, vec3 dir, GrassHit grass, inout vec4 guide) {
     float h = clamp(grass.height, 0, 1);
 
     // Dark at the root, lighter and yellower towards the tip, a little different blade to blade
-    vec3 tip_color = mix(vec3(0.16, 0.45, 0.04), vec3(0.35, 0.50, 0.06), random(seed));
+    vec3 tip_color = mix(vec3(0.11, 0.29, 0.04), vec3(0.25, 0.34, 0.06), random(seed));
     vec3 albedo = mix(vec3(0.02, 0.06, 0.01), tip_color, smoothstep(0.0, 0.9, h)) * mix(0.8, 1.15, random(seed));
     // Less light gets down between the blades
     float occlusion = mix(0.2, 1.0, h);
@@ -1651,6 +2209,13 @@ vec3 shadeUnderwater(vec3 origin, vec3 dir, inout uint steps, out float distance
 
 vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide);
 
+// How far along a ray the edge of the world is across the ground, past which there's nothing
+float edgeAlong(vec3 origin, vec3 dir) {
+    vec2 d = mix(vec2(1e-6), dir.xy, greaterThan(abs(dir.xy), vec2(1e-6)));
+    vec2 t = mix((vec2(pc.world_size.xy) - origin.xy) / d, -origin.xy / d, lessThan(d, vec2(0)));
+    return max(min(t.x, t.y), 0);
+}
+
 // `distance` is how far along the ray the visible surface is, -1 for the sky.
 // `guide` is what the denoiser needs, see guideImage.
 vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, out vec4 guide) {
@@ -1660,40 +2225,35 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
 
     vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
     color = atmosphere(origin, dir, distance, color, seed);
+    float kept = g_transmittance;
     // Only so much of the endless landscape is there at once, so things fade into the sky well
     // before its edge
     float fade_end = pc.haze.w;
-    if (fade_end > 0 && distance >= 0)
-    color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), smoothstep(0.7 * fade_end, fade_end, distance));
-    return color;
-}
-
-// Water voxels: clear water with reflections and the bottom showing through, or where it's flowing
-// fast or falling, churned up white
-vec3 shadeWaterVoxel(vec3 origin, vec3 dir, WaterHit water) {
-    g_dynamic = true;
-    vec3 pos = origin + dir * water.t;
-    Hit voxel = water.voxel;
-    vec3 face = voxel.normal.z > 0.5 && water.foam < 1 ? waterTilt(ivec2(voxel.coord.xy)) : voxel.normal;
-    vec3 color = shadeWater(dir, pos, face);
-    if (water.foam > 0.01) {
-        float flow = foamFlow(voxel);
-        // Darker streaks in falling water are where it's less churned up, so they're bluer
-        vec3 albedo = pow(mix(vec3(0.55, 0.75, 0.85), PALETTE[MAT_FOAM], clamp(flow - 0.4, 0, 1)), vec3(2.2)) * min(flow, 1);
-        vec3 face_center = faceCenter(voxel);
-        vec3 lit = albedo * (sunColor() * sunLight(face_center, voxel.normal) + ambientLight(voxel.normal) + localLight(face_center, voxel.normal));
-        // Falling water is churned white right through. Fast water on the surface just has white
-        // on top, with the clear water showing through.
-        color = mix(color, lit, water.falling ? 1.0 : water.foam * 0.75);
+    if (fade_end > 0 && distance >= 0) {
+        // Nearer still where the edge of the piece of the landscape that's there is nearer than
+        // that, as when the next piece isn't in yet: then things fade away before it rather than
+        // the world being seen to end. Never nearer than a few meters, so what's in hand and at
+        // one's feet stays, with nothing past the edge anyway.
+        fade_end = min(fade_end, max(edgeAlong(origin, dir), 6.0 * float(pc.world_size.w)));
+        float fade = smoothstep(0.7 * fade_end, fade_end, distance);
+        color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), fade);
+        kept *= 1 - fade;
     }
+    // Only as much of the color as still shows through the haze goes with the voxel's color,
+    // otherwise far off, where the jitter lands on different voxels every frame, the haze would
+    // flicker with them
+    guide.rgb = mix(vec3(1), max(guide.rgb, vec3(0.03)), kept);
     return color;
 }
 
 vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide) {
     Hit hit;
-    bool solid = trace(origin, dir, false, FLT_MAX, hit, steps);
+    // Past where everything's faded into the sky there's no need to look any further
+    float far = pc.haze.w > 0 ? pc.haze.w : FLT_MAX;
+    bool solid = trace(origin, dir, false, far, hit, steps);
     g_animal_limit = SECONDARY_ANIMALS;
     g_sway = false;
+    g_clear_leaves = false;
     // Leaves blown aside are lit as they are where they grow, so their light and shade move with
     // them rather than flickering as they sway in and out of the shade of others
     if (solid && hit.shift != ivec3(0)) {
@@ -1701,7 +2261,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         hit.shift = ivec3(0);
     }
     WaterHit water;
-    bool wet = traceWater(origin, dir, solid ? hit.t : FLT_MAX, water);
+    bool wet = traceWater(origin, dir, solid ? hit.t : far, water);
 
     GrassHit grass;
     if ((pc.flags & FLAG_GRASS) != 0 && traceGrass(origin, dir, wet ? water.t : (solid ? hit.t : FLT_MAX), grass)) {
@@ -1709,50 +2269,66 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         return shadeGrass(origin, dir, grass, guide);
     }
 
+    // Any kind of water is shaded through the one call to shadeWater() below: water voxels, water
+    // in the world's voxels, and the open sea outside it
+    bool any_water = false;
+    bool open_sea = false;
+    vec3 water_pos = vec3(0);
+    vec3 water_normal = vec3(0, 0, 1);
+    float sea_level = pc.sun_direction.w;
+    vec3 pos = origin + dir * hit.t;
+    vec3 normal = hit.normal;
+    uint material = 0;
     if (wet) {
         distance = water.t;
         // The denoiser leaves water alone
         guide = vec4(1, 1, 1, 7);
-        return shadeWaterVoxel(origin, dir, water);
-    }
-
-    if (!solid) {
-        float sea_level = pc.sun_direction.w;
+        // Water voxels: clear water with reflections and the bottom showing through, or where it's
+        // flowing fast or falling, churned up white
+        g_dynamic = true;
+        any_water = true;
+        water_pos = origin + dir * water.t;
+        Hit voxel = water.voxel;
+        water_normal = voxel.normal.z > 0.5 && water.foam < 1 ? waterTilt(ivec2(voxel.coord.xy)) : voxel.normal;
+    } else if (!solid) {
         float t = (sea_level - origin.z) / dir.z;
         if (sea_level > 0 && dir.z < 0 && t > 0) {
             distance = t;
-            return shadeOpenSea(dir, origin + dir * t);
+            any_water = true;
+            open_sea = true;
+            water_pos = origin + dir * t;
+        } else {
+            distance = -1;
+            guide.w = 6;
+            return skyColor(dir) + sunDisc(dir);
         }
-        distance = -1;
-        guide.w = 6;
-        return skyColor(dir) + sunDisc(dir);
-    }
-    distance = hit.t;
-
-    vec3 pos = origin + dir * hit.t;
-    vec3 normal = hit.normal;
-    uint material = hitMaterial(hit);
-
-    // Seen through the side of the world, the water at its edge continues the open sea
-    bool world_edge = hit.level == MAIN
-        && (any(equal(hit.coord.xy, uvec2(0))) || any(equal(hit.coord.xy, pc.world_size.xy - 1)));
-    float sea_level = pc.sun_direction.w;
-    if (material == MAT_WATER && world_edge && normal.z < 0.5 && sea_level > 0 && dir.z < 0) {
-        float t = (sea_level - origin.z) / dir.z;
-        distance = t;
-        return shadeOpenSea(dir, origin + dir * t);
-    }
-
-    vec3 color;
-    if (material == MAT_WATER && hit.level != ANIMAL) {
-        color = shadeWater(dir, pos, normal);
     } else {
-        vec3 albedo = hitAlbedo(hit, material);
-        vec3 glow = tintAnimal(hit, albedo) + emission(material);
-        if (material == MAT_FOAM && hit.level != ANIMAL) {
-            albedo *= foamFlow(hit);
-            g_dynamic = true;
+        distance = hit.t;
+        material = hitMaterial(hit);
+
+        // Seen through the side of the world, the water at its edge continues the open sea
+        bool world_edge = hit.level == MAIN
+            && (any(equal(hit.coord.xy, uvec2(0))) || any(equal(hit.coord.xy, pc.world_size.xy - 1)));
+        if (material == MAT_WATER && world_edge && normal.z < 0.5 && sea_level > 0 && dir.z < 0) {
+            float t = (sea_level - origin.z) / dir.z;
+            distance = t;
+            any_water = true;
+            open_sea = true;
+            water_pos = origin + dir * t;
+        } else if (material == MAT_WATER && hit.level != ANIMAL) {
+            any_water = true;
+            water_pos = pos;
+            water_normal = normal;
         }
+    }
+    if (any_water)
+    return shadeWater(dir, water_pos, water_normal, open_sea, water.voxel, wet ? water.foam : 0, wet && water.falling);
+
+    // In the order that keeps the least in hand while rays are traced, as what's kept meanwhile is
+    // what sets how many registers the whole shader needs: the light straight on the surface first,
+    // then its color, then the bounce and what metal mirrors last of all
+    vec3 color;
+    {
         if (hit.level == ANIMAL && animals[hit.instance].info.y != STILL)
         g_dynamic = true;
         // Leaves move in the wind, so they can't be averaged over many frames
@@ -1761,73 +2337,185 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         bool held = hit.level == ANIMAL && animals[hit.instance].info.y == HELD;
         if (held)
         g_held = true;
+        vec3 face = faceCenter(hit);
+
+        bool gi = (pc.flags & FLAG_GI) != 0;
+        bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
+        // Where the light on this face is kept, both what's bounced onto it and what's straight on it
+        uint e = gi || shadows ? cacheEntry(hit, true) : NO_ENTRY;
+        if (e != NO_ENTRY)
+        cache[e + 5] = pc.frame;
+        bool far_face = hit.t > FAR_FACE * float(max(pc.world_size.w, 1u));
+
+        // Light straight from the sun and the lights. What moves, and faces with no room in the
+        // light cache, have it worked out every frame.
+        bool leaf = isFoliage(material);
+        float sun;
+        vec3 local;
+        float through = 0;
+        bool cached = shadows && e != NO_ENTRY;
+        uint last = 0;
+        float reaches = 0;
+        vec3 still = vec3(0);
+        vec3 towards = pc.sun_direction.xyz;
+        bool fresh = cached ? cachedDirectBegin(e, far_face ? FAR_DIRECT_INTERVAL : DIRECT_INTERVAL, last, reaches, still, through, towards) : true;
+        // The shape of the surface round the face, kept with its light, worked out again whenever
+        // the light straight on it is, or every so often without shadows, so it follows the world
+        // being changed
+        float ao = 1;
+        uint shape = e != NO_ENTRY ? cache[e + 12] : 0;
+        bool reshape = shape == 0 || (cached && fresh) || (!cached && ((pc.frame + e / CACHE_WORDS) & 15u) == 0);
+        if (reshape) {
+            if ((pc.flags & FLAG_SMOOTH) != 0)
+            normal = voxelNormal(hit);
+            if ((pc.flags & FLAG_AO) != 0)
+            ao = voxelAO(hit);
+            if (e != NO_ENTRY)
+            cache[e + 12] = packShape(normal, ao);
+        } else {
+            unpackShape(shape, normal, ao);
+        }
+        // Spells and the like move too fast to keep their light, so theirs is worked out every frame
+        float new_reaches, new_through;
+        vec3 new_still, new_moving;
+        directLight(face, normal, fresh && sunOn(normal, 1) > 0, towards, fresh && leaf && sunBehind(hit), voxelPoint(hit, 0.5 + towards * 0.9),
+            fresh ? ALL_LIGHTS : MOVING_LIGHTS, new_reaches, new_through, new_still, new_moving);
+        if (cached) {
+            if (fresh)
+            cachedDirectEnd(e, last, new_reaches, new_still, new_through, reaches, still, through);
+            sun = sunOn(normal, reaches);
+            local = still + new_moving;
+            // Facing away from the sun says nothing about whether it shines round about
+            if (far_face)
+            g_far_sun = sunOn(normal, 1) > 0 ? reaches : 0.5;
+        } else {
+            sun = sunOn(normal, new_reaches);
+            local = new_still + new_moving;
+            through = new_through;
+        }
+
+        vec3 albedo = hitAlbedo(hit, material);
+        vec3 glow = tintAnimal(hit, albedo) + emission(material);
+        if (material == MAT_FOAM && hit.level != ANIMAL) {
+            albedo *= foamFlow(hit);
+            g_dynamic = true;
+        }
         // The ground under the grass is in its shade, out to where the grass thins out
         if (material == MAT_GRASS && (pc.flags & FLAG_GRASS) != 0) {
             float range = GRASS_RANGE * float(max(pc.world_size.w, 1u));
             albedo *= mix(0.35, 1.0, smoothstep(0.5 * range, range, hit.t));
         }
-        float ao = (pc.flags & FLAG_AO) != 0 ? voxelAO(hit) : 1;
-        vec3 face = faceCenter(hit);
-        if ((pc.flags & FLAG_SMOOTH) != 0)
-        normal = voxelNormal(hit);
 
-        vec3 indirect;
+        // Metal is darker than it looks, as most of its shine is reflection: it glints where it
+        // catches the sun, and mirrors what's around it. Light metal reflects much more than dark,
+        // and colored metal in its own color.
+        bool metal = material >= MAT_STEEL && material <= MAT_BRONZE;
+        vec3 r = reflect(dir, normal);
+        vec3 tint = vec3(0);
+        if (metal) {
+            float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+            tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
+            float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
+            glow += tint * sunColor() * glint;
+            albedo *= 0.6;
+        }
+        color = albedo * (sunColor() * sun + local) + glow;
+        if (leaf)
+        color += leafTransmission(hit, dir, albedo, through);
+        guide = vec4(albedo, faceId(hit.normal));
+
+        vec3 indirect = vec3(0);
+        bool bounce = false;
+        vec3 bounce_dir = vec3(0);
+        uint samples = 0;
         // What's held moves with the camera, so it'd only show the noise of one bounce a frame:
         // it gets steady light from the sky and ground instead
-        if ((pc.flags & FLAG_GI) != 0 && !held) {
-            float reach = BOUNCE_DISTANCE * float(max(pc.world_size.w, 1u));
-            uint e = cacheEntry(hit, true);
+        bool gathered = gi && !held;
+        if (gathered) {
             if (e != NO_ENTRY) {
                 // Light bounced onto this face, gathered over many frames. Faces new to the cache
                 // take a sample from every pixel that sees them, so they fill in fast, and after
-                // that only the odd one.
-                cache[e + 5] = pc.frame;
-                uint samples;
+                // that only the odd one. Far off, after the first, only some of the pixels do.
                 indirect = cachedLight(e, samples);
-                if (samples < CACHE_SAMPLES || random(seed) < 1.0 / 64.0) {
-                    vec3 light = shadeSecondary(face, outward(cosineDirection(normal, seed), hit.normal), false, reach);
-                    cacheAdd(e, light);
-                    indirect = (indirect * float(samples) + light) / float(samples + 1);
+                uint wanted = far_face ? FAR_CACHE_SAMPLES : CACHE_SAMPLES;
+                bool filling = samples < wanted && (!far_face || samples == 0 || random(seed) < FAR_SAMPLE_CHANCE);
+                if (filling || random(seed) < 1.0 / 64.0) {
+                    bounce = true;
+                    bounce_dir = outward(cosineDirection(normal, seed), hit.normal);
                 }
             } else {
                 // One random diffuse bounce per face per frame, averaging frames smooths out the noise
                 uint face_seed = faceSeed(hit);
-                indirect = shadeSecondary(face, outward(cosineDirection(normal, face_seed), hit.normal), false, reach);
+                bounce = true;
+                bounce_dir = outward(cosineDirection(normal, face_seed), hit.normal);
             }
-            indirect *= mix(1, ao, 0.5);
         } else if (held) {
             // Greyer than the sky, as the world round it would bounce plenty of warmer light
             vec3 around = ambientLight(normal);
-            indirect = mix(around, vec3(dot(around, vec3(0.333))), 0.5) * 0.8 * ao;
+            color += albedo * mix(around, vec3(dot(around, vec3(0.333))), 0.5) * 0.8 * ao;
         } else {
-            indirect = ambientLight(normal) * ao;
+            color += albedo * ambientLight(normal) * ao;
         }
-
-        float sun = sunLight(face, normal);
-        // Metal is darker than it looks, as most of its shine is reflection: it glints where it
-        // catches the sun, and mirrors a little of the sky
-        vec3 shine = vec3(0);
-        if (material >= MAT_STEEL && material <= MAT_BRONZE) {
-            vec3 r = reflect(dir, normal);
-            // Light metal reflects much more than dark, and colored metal in its own color
-            float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-            vec3 tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
-            float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
+        // How much the light bounced and mirrored onto it shows
+        vec3 indirect_weight = albedo * mix(1, ao, 0.5);
+        vec3 mirror_weight = tint * 0.6 * ao;
+        // Without reflections, metal mirrors the light of the sky and ground round about
+        bool mirrors = metal && (pc.flags & FLAG_REFLECTIONS) != 0;
+        if (metal && !mirrors) {
             vec3 around = ambientLight(r);
-            shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.6) * 0.5 * ao);
-            albedo *= 0.6;
+            color += mirror_weight * mix(around, vec3(dot(around, vec3(0.333))), 0.3);
         }
-        color = albedo * (sunColor() * sun + indirect + localLight(face, normal)) + glow + shine;
-        if (isFoliage(material))
-        color += leafTransmission(hit, dir, albedo);
-        guide = vec4(albedo, faceId(hit.normal));
+        vec3 mirror_from = face + hit.normal * 0.05;
+        vec3 mirror_dir = outward(r, hit.normal);
+        float vpm = float(max(pc.world_size.w, 1u));
+        // The bounce, and what metal mirrors, both go through the one call to shadeSecondary() in
+        // this loop, so the shader holds only one copy of it
+        uint todo = (bounce ? 1u : 0u) | (mirrors ? 2u : 0u);
+        while (todo != 0) {
+            bool is_bounce = (todo & 1u) != 0;
+            todo &= todo - 1;
+            // What metal mirrors is lit as it is, not taken to be as sunlit as this face
+            if (!is_bounce)
+            g_far_sun = -1;
+            vec3 light = shadeSecondary(is_bounce ? face : mirror_from, is_bounce ? bounce_dir : mirror_dir, false,
+                (is_bounce ? BOUNCE_DISTANCE : REFLECTION_DISTANCE) * vpm);
+            if (!is_bounce) {
+                color += mirror_weight * mix(light, vec3(dot(light, vec3(0.333))), 0.3);
+            } else if (e != NO_ENTRY) {
+                cacheAdd(e, light);
+                indirect = (indirect * float(samples) + light) / float(samples + 1);
+            } else {
+                indirect = light;
+            }
+        }
+        if (gathered)
+        color += indirect_weight * indirect;
+        g_far_sun = -1;
     }
 
     return color;
 }
 
+float halton(uint i, uint base) {
+    float f = 1;
+    float r = 0;
+    while (i > 0) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// Where within its pixel each ray goes through this frame, -0.5 to 0.5. Has to match upscale.comp.
+vec2 pixelJitter(uint frame) {
+    uint i = frame % 16 + 1;
+    return vec2(halton(i, 2), halton(i, 3)) - 0.5;
+}
+
 void main() {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    g_room8 = imageSize(brickGrid).xy;
 
     if (pc.render_mode == SUN_MAP) {
         if (any(greaterThanEqual(pixelCoord, ivec2(SUN_MAP_SIZE))))
@@ -1845,21 +2533,24 @@ void main() {
         return;
     }
 
+    // Every invocation of the workgroup takes part, so before any leave for being off the image
+    if (animalCount() > 0)
+    cullTileAnimals();
+
     ivec2 imageSize = imageSize(targetImage);
 
     if (any(greaterThanEqual(pixelCoord, imageSize)))
     return;
 
-    vec3 o = pc.pixelToRay[3].xyz;
+    vec3 o = view.pixelToRay[3].xyz;
     uint steps = 0;
 
     if (pc.render_mode == SHADED) {
         uint seed = hash(uvec3(pixelCoord, pc.frame));
-        // Jitter within the pixel, which anti-aliases edges as frames get averaged
-        // Only while the view keeps still: moving, the jitter would make edges wobble, most of
-        // all at lower resolutions
-        vec2 jitter = pc.history_limit > 16 ? vec2(random(seed), random(seed)) - 0.5 : vec2(0);
-        vec3 ray = mat3(pc.pixelToRay) * vec3(pixelCoord + jitter, 1);
+        // Every ray goes through the same spot within its pixel, a different one each frame, which
+        // upscale.comp gathers into a sharper image than any one frame
+        vec2 jitter = pixelJitter(pc.frame);
+        vec3 ray = mat3(view.pixelToRay) * vec3(pixelCoord + jitter, 1);
         vec3 d = normalize(ray);
 
         float distance;
@@ -1867,6 +2558,13 @@ void main() {
         vec3 color = shade(o, d, seed, steps, distance, guide);
         // Distance along the unnormalized ray, which is what previousWorldToPixel gives as z next frame
         float depth = distance >= 0 ? distance / length(ray) : -1;
+        // So the upscaler knows to keep what's held where it is on screen
+        if (g_held)
+        guide.w += 8;
+        // It's the light that's averaged over frames, not the voxels' colors: those are taken fresh
+        // each frame, as the jitter sees different voxels at the edges between them. post.comp
+        // puts them back.
+        color /= guide.rgb;
 
         // Find what this surface looked like last frame
         vec4 history = vec4(0);
@@ -1877,7 +2575,7 @@ void main() {
             if (abs(imageLoad(historyDepth, pixelCoord).r - depth) < 0.03 * depth)
             history = imageLoad(historyColor, pixelCoord);
         } else if (pc.history_limit > 0 && depth >= 0) {
-            vec4 p = pc.previousWorldToPixel * vec4(o + d * distance, 1);
+            vec4 p = view.previousWorldToPixel * vec4(o + d * distance, 1);
             ivec2 previous = ivec2(floor(p.xy / p.z + 0.5));
             if (p.z > 0 && all(greaterThanEqual(previous, ivec2(0))) && all(lessThan(previous, imageSize))) {
                 // Only if it's the same surface, not something in front of it that moved out of the way
@@ -1898,7 +2596,7 @@ void main() {
         return;
     }
 
-    vec3 d = normalize(mat3(pc.pixelToRay) * vec3(pixelCoord, 1));
+    vec3 d = normalize(mat3(view.pixelToRay) * vec3(pixelCoord, 1));
 
     Hit hit;
     bool did_hit = trace(o, d, false, FLT_MAX, hit, steps);
