@@ -250,44 +250,6 @@ void superBlocks(ivec2 s, ivec2 blocks) {
     imageStore(blockImage, ivec2(blocks.x, 0) + s, vec4(highest));
 }
 
-// Whether nothing can happen to the water in this workgroup's block of columns this step, so it can
-// be left as it is: it and the blocks round it had no water to speak of last frame, and no spring,
-// brush or sea edge reaches it. Water only moves a column a step, so none can come in from further
-// off within a frame. Most of the land is dry, and this spares it the loads and stores. The area
-// run is lined up with the blocks, so each workgroup is one of them. Any thin film of water too
-// shallow to show stays as it is there till water comes near again.
-shared uint s_spring_near;
-
-bool quiet(ivec2 size) {
-    uint lid = gl_LocalInvocationIndex;
-    if (lid == 0)
-    s_spring_near = 0;
-    barrier();
-    ivec2 block = ivec2(pc.info.zw) / BLOCK + ivec2(gl_WorkGroupID.xy);
-    vec2 lo = vec2(block * BLOCK);
-    vec2 hi = lo + vec2(BLOCK);
-    for (uint s = lid; s < pc.info.y; s += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
-        vec4 spring = springs[s];
-        if (distance(clamp(spring.xy, lo, hi), spring.xy) < spring.w + 1.0)
-        s_spring_near = 1;
-    }
-    barrier();
-    if (s_spring_near != 0)
-    return false;
-    if (pc.brush.z > 0 && distance(clamp(pc.brush.xy, lo, hi), pc.brush.xy) < pc.brush.z + 1.0)
-    return false;
-    ivec2 blocks = (size + BLOCK - 1) / BLOCK;
-    if (pc.params.y > 0 && (any(lessThanEqual(block, ivec2(0))) || any(greaterThanEqual(block, blocks - 1))))
-    return false;
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
-            if (imageLoad(blockImage, clamp(block + ivec2(x, y), ivec2(0), blocks - 1)).r >= 0)
-            return false;
-        }
-    }
-    return true;
-}
-
 void main() {
     ivec2 corner = ivec2(pc.info.zw);
     ivec2 c = ivec2(gl_GlobalInvocationID.xy) + corner;
@@ -306,16 +268,8 @@ void main() {
         blocks(b, size);
         return;
     }
-    // Every invocation of the workgroup takes part, so before any leave
-    bool still = quiet(size);
     if (!inside(c, size))
     return;
-    if (still) {
-        // No water flows out of it, so none's sent on that it doesn't have
-        if (stage == FLUX && imageLoad(fluxImage, c) != vec4(0))
-        imageStore(fluxImage, c, vec4(0));
-        return;
-    }
     if (stage == FLUX)
     flux(c, size);
     else if (stage == DEPTH)
