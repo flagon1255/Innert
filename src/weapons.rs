@@ -5401,9 +5401,7 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         }
     }
     for &element in &looks {
-        let glow = element.map_or(CRYSTAL, Element::glow);
-        let p = vec![ball([0.0, 0.0, 0.0], 0.07, glow), limb([0.0, 0.0, 0.0], [-0.28, 0.0, 0.0], 0.055, 0.012, glow)];
-        models.push(voxelize(&p, BOLT_RES));
+        models.push(crate::effects::bolt(element));
     }
     for &element in &looks {
         let glow = element.map_or(GLOW_HOLY, Element::glow);
@@ -5415,20 +5413,9 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
             models.push(voxelize(&arrow(element, head, HELD_ARROW_RES, &ARROW_FLETCH), HELD_ARROW_RES));
         }
     }
-    // Fireballs, a meter across: glowing balls with bites out of them, so they look torn apart
-    for (k, &element) in looks.iter().enumerate() {
-        let glow = element.map_or(GLOW_FIRE, Element::glow);
-        let mut seed = 0x0f1e + k as u32;
-        let mut p = Vec::new();
-        for _ in 0..14 {
-            let d = [random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0, random(&mut seed) * 2.0 - 1.0];
-            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(0.1);
-            p.push(ball(d.map(|v| v / n * 0.95), 0.25 + 0.2 * random(&mut seed), AIR));
-        }
-        p.push(ball([0.0, 0.0, 0.0], 0.45, GLOW_HOLY));
-        p.push(ball([0.0, 0.0, 0.0], 0.75, glow));
-        p.push(ball([0.0, 0.0, 0.0], 1.0, element.map_or(GLOW_BLOOD, |_| glow)));
-        models.push(voxelize(&p, MODEL_RES));
+    // Fireballs, a meter across: churning balls with bites out of them, see effects::orb()
+    for &element in &looks {
+        models.push(crate::effects::orb(element));
     }
     // Fine sparks, for trails and auras off the weapon in hand
     for &element in &looks {
@@ -5636,6 +5623,9 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     p.push(ellipsoid([0.0, 0.0, 0.0], [0.14, 0.065, 0.05], GLOW_POISON));
     p.push(limb([-0.08, 0.0, 0.0], [-0.34, 0.0, -0.03], 0.05, 0.03, MOSS));
     models.push(voxelize(&p, MODEL_RES));
+    // Explosions in stages, their rings, ice, pillars of light, the blood moon and sparks as
+    // streaks, see effects::BLASTS and the rest
+    models.extend(crate::effects::models());
     models
 }
 
@@ -5757,7 +5747,7 @@ mod tests {
 
     #[test]
     fn lash_models_are_where_combat_looks_for_them() {
-        assert_eq!(effect_models().len(), SERPENT + 1);
+        assert_eq!(effect_models().len(), crate::effects::EFFECT_MODELS);
         // Elemental lashes glow, the rest are made of what they're made of
         let library = Library::parse(BUILT_IN).unwrap();
         for c in library.components.iter().filter(|c| c.slot_type == "lash") {

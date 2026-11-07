@@ -64,6 +64,7 @@ mod audio;
 mod bosses;
 mod camera;
 mod combat;
+mod effects;
 mod game;
 mod gpu_timing;
 mod hot_reload;

@@ -11,6 +11,7 @@ use nalgebra::{Matrix3, Rotation3, Unit, UnitQuaternion, Vector3};
 
 use crate::animals::{Animal, AnimalInstance, HELD, Look, MODEL_RES, MOVING, Model, STILL, TINT_BURNING, TINT_CHILLED, TINT_FROZEN, TINT_HIT, TINT_NONE, TINT_POISONED, TINT_SHOCKED};
 use crate::audio::{Cue, Sound};
+use crate::effects::{BLAST_LIVE, BLAST_REACH, BLAST_RES, BLAST_RING_RES, BLAST_RINGS, BLAST_STAGES, BLASTS, ICE_RES, ICE_STAGES, MOON, MOON_RES, PILLAR_RES, PILLAR_STAGES, STREAK_RES, STREAKS, blast_stage, leaves_smoke};
 use crate::player::WaterLevel;
 use crate::weapons::{
     ARM_RES, ARMS, ARROW_HEADS, ARROW_RES, BOLT_RES, BOMB_RES, BOULDER, Build, CLOUD_RES, PUDDLE_RES, QUARREL_HEADS, SLOT_BOMB, SLOT_CLOUD, SLOT_PUDDLE, TWISTER, WAVE, CROSSBOW_SPANNED, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES,
@@ -1288,6 +1289,29 @@ struct Blast {
     lifetime: f64,
 }
 
+/// The smoke an explosion leaves drifting up and thinning away after it's gone, drawn with its
+/// last stages, see effects::BLAST_STAGES
+struct Remnant {
+    position: Vector3<f64>,
+    look: usize,
+    radius: f64,
+    yaw: f64,
+    life: f64,
+    lifetime: f64,
+}
+
+/// Seconds an explosion's smoke drifts after it, and how many drift at once at most
+const REMNANT_SECONDS: f64 = 0.7;
+const MOST_REMNANTS: usize = 8;
+/// How many explosions at once are drawn with a ring thrown up round them on the ground
+const MOST_RINGS: usize = 6;
+
+/// Which way an explosion at `at` is turned, so no two look the same
+fn blast_yaw(at: Vector3<f64>) -> f64 {
+    let h = hash((at.x * 3.0) as i64 as u32 ^ hash((at.y * 3.0) as i64 as u32 ^ hash((at.z * 3.0) as i64 as u32)));
+    (h >> 8) as f64 / 16777216.0 * TAU
+}
+
 /// A burst of light, fading
 struct Flash {
     position: Vector3<f64>,
@@ -1629,6 +1653,10 @@ pub struct Combat {
     pub stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     /// Fireballs swelling up where explosions go off
     blasts: Vec<Blast>,
+    /// How high each of `blasts` is over the ground under it, for the ring it throws up there,
+    /// worked out as each is new, see age_blasts(); and the smoke they leave after
+    blast_floors: Vec<f64>,
+    remnants: Vec<Remnant>,
     /// Arrows, spells and sparks, see weapons::effect_models()
     pub models: Vec<(Model, Vector3<f64>)>,
     /// Index of the first of `models` in the buffer of all models
@@ -4018,6 +4046,8 @@ impl Combat {
             craters: Vec::new(),
             stains: Vec::new(),
             blasts: Vec::new(),
+            blast_floors: Vec::new(),
+            remnants: Vec::new(),
             models: effect_models(),
             first_model,
             time: 0.0,
@@ -4174,6 +4204,9 @@ impl Combat {
         for b in &mut self.blasts {
             b.position -= shift;
         }
+        for r in &mut self.remnants {
+            r.position -= shift;
+        }
         for p in &mut self.popups {
             p.position -= shift;
         }
@@ -4194,6 +4227,8 @@ impl Combat {
         self.stuck.clear();
         self.flashes.clear();
         self.blasts.clear();
+        self.blast_floors.clear();
+        self.remnants.clear();
         self.echoes.clear();
         self.popups.clear();
         self.craters.clear();
@@ -4418,16 +4453,51 @@ impl Combat {
             f.life -= dt;
         }
         self.flashes.retain(|f| f.life > 0.0);
-        for b in &mut self.blasts {
-            b.life -= dt;
-        }
-        self.blasts.retain(|b| b.life > 0.0);
+        self.age_blasts(arena, dt);
         let rise = 0.9 * arena.view.vpm;
         for p in &mut self.popups {
             p.age += dt;
             p.position.z += rise * dt;
         }
         self.popups.retain(|p| p.age < 1.2);
+    }
+
+    /// Explosions going on: how high each new one is over the ground worked out once, for the ring
+    /// it throws up there; those done leaving their smoke drifting up after them, the bigger ones
+    fn age_blasts(&mut self, arena: &Arena, dt: f64) {
+        let vpm = arena.view.vpm;
+        self.blast_floors.truncate(self.blasts.len());
+        while self.blast_floors.len() < self.blasts.len() {
+            let at = self.blasts[self.blast_floors.len()].position;
+            let top = at + Vector3::new(0.0, 0.0, 0.3 * vpm);
+            let down = Vector3::new(0.0, 0.0, -5.0 * vpm);
+            let height = solid_along(arena.world, top, top + down).map_or(f64::INFINITY, |t| (at.z - (top.z + down.z * t)).max(0.0));
+            self.blast_floors.push(height);
+        }
+        for b in &mut self.blasts {
+            b.life -= dt;
+        }
+        let mut k = 0;
+        while k < self.blasts.len() {
+            if self.blasts[k].life > 0.0 {
+                k += 1;
+                continue;
+            }
+            let b = self.blasts.remove(k);
+            self.blast_floors.remove(k);
+            if b.radius >= 0.9 && leaves_smoke(b.look) {
+                self.remnants.push(Remnant { position: b.position, look: b.look, radius: b.radius, yaw: blast_yaw(b.position), life: REMNANT_SECONDS, lifetime: REMNANT_SECONDS });
+            }
+        }
+        for r in &mut self.remnants {
+            r.life -= dt;
+            r.position.z += 0.6 * vpm * dt;
+        }
+        self.remnants.retain(|r| r.life > 0.0);
+        if self.remnants.len() > MOST_REMNANTS {
+            let extra = self.remnants.len() - MOST_REMNANTS;
+            self.remnants.drain(..extra);
+        }
     }
 
     /// Attacking with the weapon in hand, weapon `index` among Game::weapons, loaded with special
@@ -7187,8 +7257,11 @@ impl Combat {
         let size = MOON_SIZE * rise * (1.0 - sink);
         if size > 0.05 {
             let at = m.moon - Vector3::new(0.0, 0.0, (1.0 - rise + sink) * 8.0 * vpm);
-            let (model, ball) = self.effect_model(SLOT_FIREBALL, blood);
-            out.push(place(model, ball, MODEL_RES, Vector3::zeros(), at, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 0.3), vpm, size, MOVING));
+            // Its face to the eye, so its rim glows all round, turning slowly, see effects::moon()
+            let face = (view.eye - at).try_normalize(1e-6).unwrap_or_else(Vector3::z);
+            let turn = UnitQuaternion::from_axis_angle(&Unit::new_normalize(face), self.time * 0.08) * UnitQuaternion::rotation_between(&Vector3::z(), &face).unwrap_or_else(UnitQuaternion::identity);
+            let (model, moon) = self.model_at(MOON);
+            out.push(place(model, moon, MOON_RES, Vector3::zeros(), at, turn, vpm, size, MOVING));
         }
         for s in &m.shots {
             let way = (s.to - s.from).try_normalize(1e-6).unwrap_or_else(Vector3::x);
@@ -7223,8 +7296,13 @@ impl Combat {
         // The drops of blood streaming back, each a streak along the way it's going
         let (model, streak) = self.effect_model(SLOT_BOLT, blood);
         for b in &m.beads {
+            // Dwindling as they come in to the lips, never slabs of red across the view
+            let off = (b.position - view.eye).norm() / vpm;
+            let near = ((off - 0.55) / 4.5).clamp(0.0, 1.0);
+            if near < 0.05 {
+                continue;
+            }
             let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &b.velocity).unwrap_or_else(UnitQuaternion::identity);
-            let near = ((b.position - view.eye).norm() / vpm / 5.0).clamp(0.25, 1.0);
             out.push(place(model, streak, BOLT_RES, Vector3::zeros(), b.position, rotation, vpm, 1.3 * near, MOVING));
         }
         // The blood pooling ahead, swelling as each stream gets there, churning, then drunk down
@@ -10711,6 +10789,8 @@ impl Combat {
             // Spikes of ice bursting up, shards falling, frost spreading over the ground
             Some(Element::Frost) => {
                 self.swells.push(Swell { model: ICE_BURST, position: at, radius, life: 0.9, lifetime: 0.9 });
+                // A burst of cold light, shards and mist rolling out round them
+                self.blasts.push(Blast { position: at, look, radius: radius * 0.8, life: 0.55, lifetime: 0.55 });
                 self.sparks(at, count(16.0), 3.5, look, 1.6, 0.7);
                 self.element_hit(at, element, 1.0 + radius * 0.4);
                 for _ in 0..count(12.0) {
@@ -10728,6 +10808,8 @@ impl Combat {
             }
             // A splash of venom thrown up and out, a pool of it, and a poisonous cloud
             Some(Element::Poison) => {
+                // A green cloud bubbling up and sinking
+                self.blasts.push(Blast { position: at, look, radius: radius * 0.85, life: 0.6, lifetime: 0.6 });
                 for _ in 0..count(28.0) {
                     let v = self.any_direction() * 0.8 + Vector3::new(0.0, 0.0, 0.9 + random(&mut self.rng));
                     self.drop(at, v * (2.5 + radius) * vpm, DROP_VENOM, 1.4);
@@ -10755,6 +10837,8 @@ impl Combat {
             }
             // Blood sprayed everywhere, a red mist, and the ground stained
             Some(Element::Blood) => {
+                // A burst of it spattering out in drops
+                self.blasts.push(Blast { position: at, look, radius: radius * 0.8, life: 0.45, lifetime: 0.45 });
                 for _ in 0..count(36.0) {
                     let v = self.any_direction() + Vector3::new(0.0, 0.0, 0.7);
                     let speed = 2.0 + radius * 1.5 * random(&mut self.rng);
@@ -13397,14 +13481,43 @@ impl Combat {
         for i in &self.swells {
             let t = 1.0 - i.life / i.lifetime;
             let grow = if t < 0.12 { t / 0.12 } else { 1.0 - ((t - 0.12) / 0.88).powi(2) };
-            let grow = if i.model == PILLAR { grow.sqrt() } else { grow };
-            let (model, shape) = self.model_at(i.model);
-            add(i.position, place(model, shape, MODEL_RES, Vector3::zeros(), i.position, UnitQuaternion::identity(), vpm, i.radius * 0.9 * grow.max(0.05), MOVING));
+            let (index, res, size, turn) = match i.model {
+                // Thrusting out past full size and back, holding, then cracking across and
+                // shattering, see effects::ice()
+                ICE_BURST => {
+                    let thrust = if t < 0.1 {
+                        let k = t / 0.1;
+                        1.0 + 2.7 * (k - 1.0).powi(3) + 1.7 * (k - 1.0).powi(2)
+                    } else {
+                        1.0 - 0.12 * ((t - 0.6) / 0.4).max(0.0)
+                    };
+                    let stage = if t < 0.6 { 0 } else if t < 0.8 { 1 } else { 2 };
+                    (ICE_STAGES + stage, ICE_RES, thrust, blast_yaw(i.position))
+                }
+                // Blazing, flickering, then thinning away, see effects::pillar()
+                PILLAR => {
+                    let flicker = 1.0 + 0.07 * (self.time * 41.0 + i.position.x).sin();
+                    (PILLAR_STAGES + (t > 0.55) as usize, PILLAR_RES, grow.sqrt() * flicker, self.time * 1.5)
+                }
+                _ => (i.model, MODEL_RES, grow, 0.0),
+            };
+            let (model, shape) = self.model_at(index);
+            let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), turn);
+            add(i.position, place(model, shape, res, Vector3::zeros(), i.position, spin, vpm, i.radius * 0.9 * size.max(0.05), MOVING));
         }
         // What goes off right in front of the eye is drawn smaller, so it doesn't fill the view:
         // full size `reach` meters off, down to `least` of it up close
         let near = |at: Vector3<f64>, reach: f64, least: f64| ((at - view.eye).norm() / (reach * vpm)).clamp(least, 1.0);
         for s in self.sparks.iter().filter(|s| s.slot != SLOT_FINE) {
+            // A spark flying fast is a streak along the way it's going, its head white-hot, see
+            // effects::streak(); one hanging still, as along a bolt of lightning, a speck
+            if s.slot == SLOT_SPARK && s.look < ELEMENT_LOOKS && s.velocity.norm() > 0.8 * vpm {
+                let (model, streak) = self.model_at(STREAKS + s.look);
+                let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity);
+                let size = (s.life / s.lifetime).clamp(0.3, 1.0) * near(s.position, 2.5, 0.12);
+                add(s.position, place(model, streak, STREAK_RES, Vector3::zeros(), s.position, rotation, vpm, size, MOVING));
+                continue;
+            }
             let (model, spark) = self.effect_model(s.slot, s.look);
             // Drops stay whole till they land, sparks dwindle, smoke billows out and thins away
             let age = 1.0 - s.life / s.lifetime;
@@ -13419,21 +13532,53 @@ impl Combat {
             };
             // A streak points the way it's going, its tail trailing
             let rotation = if s.slot == SLOT_BOLT { UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity) } else { UnitQuaternion::identity() };
-            add(s.position, place(model, spark, res, Vector3::zeros(), s.position, rotation, vpm, size * near(s.position, 1.5, 0.3), MOVING));
+            // Sparks and drops a voxel across shrink hard right in front of the eye, rather than
+            // showing as flat squares of color across the view
+            let shrink = if matches!(s.slot, SLOT_SPARK | SLOT_DROP) { near(s.position, 2.5, 0.12) } else { near(s.position, 1.5, 0.3) };
+            add(s.position, place(model, spark, res, Vector3::zeros(), s.position, rotation, vpm, size * shrink, MOVING));
         }
-        // Fireballs, swelling quickly to the size of the explosion and then shrinking away, turning
-        // as they go
-        for b in &self.blasts {
-            // White-hot as it bursts, swelling fast and easing to its full size, then dying away
+        // Explosions, each drawn in stages baked ahead of time, see effects::blast(): a white-hot
+        // core, a fireball billowing out, breaking up and dissolving into smoke, each element its
+        // own way, swelling fast to its full size and on a little as it breaks up, turning slowly.
+        // Never so big up close that it reaches the eye and fills the view: the model reaches
+        // BLAST_REACH meters from its middle at size 1, so it's kept half a meter short of the eye.
+        let blast_size = |at: Vector3<f64>, radius: f64, swell: f64| (radius * 0.8 * swell * near(at, 4.0, 0.35)).min((((at - view.eye).norm() / vpm - 0.5) / BLAST_REACH).max(0.03));
+        let storm = Element::look(Some(Element::Storm));
+        let mut rings = 0;
+        let mut extras = Vec::new();
+        for (k, b) in self.blasts.iter().enumerate().rev() {
             let t = 1.0 - b.life / b.lifetime;
-            let (model, ball) = self.effect_model(SLOT_FIREBALL, if t < 0.15 { Element::look(Some(Element::Holy)) } else { b.look });
-            let grow = if t < 0.2 { 1.0 - (1.0 - t / 0.2).powi(3) } else { 1.0 - ((t - 0.2) / 0.8).powi(2) };
-            // Never so big up close that it reaches the eye and fills the view: a fireball's a
-            // meter round at size 1, so it's kept half a meter short of the eye
-            let size = (b.radius * 0.8 * grow.max(0.05) * near(b.position, 4.0, 0.35)).min(((b.position - view.eye).norm() / vpm - 0.5).max(0.05));
-            let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), t * 2.0);
-            add(b.position, place(model, ball, MODEL_RES, Vector3::zeros(), b.position, spin, vpm, size, MOVING));
+            let (model, shape) = self.model_at(BLASTS + b.look.min(ELEMENT_LOOKS - 1) * BLAST_STAGES + blast_stage(b.look, t));
+            let swell = 0.62 + 0.38 * smooth(t / 0.22) + 0.1 * t;
+            // Lightning flickers, turning every which way each frame
+            let yaw = blast_yaw(b.position) + if b.look == storm { (self.time * 60.0).floor() * 2.4 } else { t * 0.7 };
+            let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), yaw);
+            add(b.position, place(model, shape, BLAST_RES, Vector3::zeros(), b.position, spin, vpm, blast_size(b.position, b.radius, swell), MOVING));
+            // Going off by the ground, a ring of what it throws up rolls out over it, settling
+            if let Some(&height) = self.blast_floors.get(k)
+                && b.radius >= 1.0
+                && t < 0.85
+                && rings < MOST_RINGS
+                && height < (b.radius * 0.8 + 0.6) * vpm
+            {
+                rings += 1;
+                let spread = b.radius * (0.35 + 1.25 * (1.0 - (1.0 - t / 0.85).powi(3)));
+                let sink = ((t - 0.5) / 0.35).max(0.0) * 0.06 * spread * vpm;
+                let at = b.position - Vector3::new(0.0, 0.0, height + sink);
+                let (model, ring) = self.model_at(BLAST_RINGS + b.look.min(ELEMENT_LOOKS - 1));
+                extras.push((at, place(model, ring, BLAST_RING_RES, Vector3::zeros(), at, spin, vpm, spread, MOVING)));
+            }
         }
+        // Their smoke drifting up and thinning away after them, the newest first
+        for r in self.remnants.iter().rev() {
+            let t = 1.0 - r.life / r.lifetime;
+            let (model, shape) = self.model_at(BLASTS + r.look.min(ELEMENT_LOOKS - 1) * BLAST_STAGES + BLAST_LIVE + (t > 0.5) as usize);
+            let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), r.yaw + 0.7 + 0.3 * t);
+            extras.push((r.position, place(model, shape, BLAST_RES, Vector3::zeros(), r.position, spin, vpm, blast_size(r.position, r.radius, 1.1 + 0.12 * t), MOVING)));
+        }
+        // Rings and smoke are only extra, so they go after everything else: the first left out
+        // when there's too much to draw, and the last to cast shadows
+        out.extend(extras.into_iter().map(|(at, instance)| (1e9 + (at - view.eye).norm(), instance)));
         out
     }
 
@@ -13464,8 +13609,15 @@ impl Combat {
             [p.x as f32, p.y as f32, p.z as f32, (reach * vpm) as f32, color[0] * strength, color[1] * strength, color[2] * strength, 1.0]
         };
         let mut lights = Vec::new();
+        // A flash bursts white-hot, settles into its own color and dies away fast, then lingers a
+        // little; lightning's flickers
+        let flicker = 0.55 + 0.45 * (hash((self.time * 60.0) as u32) >> 8) as f64 / 16777216.0;
         for f in &self.flashes {
-            lights.push(light(f.position, f.reach, f.color, 3.0 * (f.life / f.lifetime) as f32));
+            let k = (f.life / f.lifetime).clamp(0.0, 1.0);
+            let white = 0.55 * smooth((k - 0.7) / 0.3) as f32;
+            let color = f.color.map(|c| c + (1.0 - c) * white);
+            let strength = (3.4 * k.powf(1.6) + 0.25 * k) * if f.color == Element::Storm.light() { flicker } else { 1.0 };
+            lights.push(light(f.position, f.reach * (0.85 + 0.15 * k), color, strength as f32));
         }
         // Blood Moon's red light over everything round the player
         let moon = self.blood_moon();
