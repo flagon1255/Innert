@@ -2223,7 +2223,8 @@ impl App {
 
             menu_open,
             started: !menu_open,
-            show_settings: false,
+            // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
+            show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
             inventory_open: flag("inventory", false),
             shopping: false,
