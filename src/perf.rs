@@ -296,13 +296,15 @@ impl Play {
 /// How many bytes everything sized to the render or window resolution takes, see
 /// get_render_images(): per rendered pixel the image traced into (4), two colors gathered over
 /// frames (16 each), two depths (4 each), the guide (8), post's two (8 each) and bloom's two at a
-/// sixteenth of the pixels (16 each), and per window pixel the resampled image (4) and upscale's
-/// two (8 each)
+/// sixteenth of the pixels (16 each), sun shafts' three at a quarter of them (8 each) and their map
+/// of where sunlight stops (4 MB, on High), and per window pixel the resampled image (4) and
+/// upscale's two (8 each)
 pub fn render_bytes(render: [u32; 2], window: [u32; 2]) -> u64 {
     let rendered = render[0] as u64 * render[1] as u64;
     let bloom = render[0].div_ceil(4).max(1) as u64 * render[1].div_ceil(4).max(1) as u64;
+    let shafts = render[0].div_ceil(2).max(1) as u64 * render[1].div_ceil(2).max(1) as u64;
     let shown = window[0] as u64 * window[1] as u64;
-    rendered * (4 + 32 + 8 + 8 + 16) + bloom * 32 + shown * (4 + 16)
+    rendered * (4 + 32 + 8 + 8 + 16) + bloom * 32 + shafts * 24 + (4 << 20) + shown * (4 + 16)
 }
 
 /// Seconds as minutes and seconds, for what's printed

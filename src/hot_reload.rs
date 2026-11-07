@@ -282,6 +282,7 @@ mod tests {
             ("resample.comp", include_str!("../shaders/resample.comp")),
             ("upscale.comp", include_str!("../shaders/upscale.comp")),
             ("water.comp", include_str!("../shaders/water.comp")),
+            ("shafts.comp", include_str!("../shaders/shafts.comp")),
         ] {
             let path = missing.join(name);
             if let Err(e) = compile_source(&source(&path, built_in), &path, shaderc::ShaderKind::Compute, "main") {
