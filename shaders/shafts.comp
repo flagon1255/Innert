@@ -92,7 +92,8 @@ layout(push_constant) uniform PushConstants {
     // x: dust per meter, y: how far shafts reach in voxels, zw: the sun on screen, in rendered
     // pixels, for Low
     vec4 extra;
-    // x: stage, y: frame, z: FLAG_*
+    // x: stage, y: frame, z: FLAG_*, w: where the main world's first column is kept in the room
+    // there is for its columns, x | y << 16, see brickCell()
     uvec4 info;
 } pc;
 
@@ -194,8 +195,11 @@ void sunBasis(out vec3 u, out vec3 v) {
 
 // ---- Filling in the map ----
 
+// The main world's columns go round the room there is for them, as in traverse.comp's mainBrick()
 uint brickCell(ivec3 brick) {
-    return imageLoad(brickGrid, brick).r;
+    ivec2 room = imageSize(brickGrid).xy;
+    ivec2 p = brick.xy + ivec2(pc.info.w & 0xFFFFu, pc.info.w >> 16) / 8;
+    return imageLoad(brickGrid, ivec3(p - room * ivec2(greaterThanEqual(p, room)), brick.z)).r;
 }
 
 // Whether sunlight stops at a voxel of a stored brick: anything but water
