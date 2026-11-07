@@ -34,15 +34,19 @@ if ($runtime) {
 INNERT
 ======
 
-To play: unzip this folder anywhere and double-click innert.exe.
+To play: double-click innert.exe, or the Innert shortcut if you installed it with InnertSetup.exe.
 The very first start takes about 15-20 seconds while the shaders are prepared; after that it is
 about 5 seconds. The game picks a quality preset to suit your graphics card the first time.
 
 You need
   - Windows 10 or 11, 64-bit
-  - A graphics card that supports Vulkan 1.3. Most NVIDIA, AMD and Intel ones from the last
-    several years do. If the game says it can't use your graphics card, install the latest
-    driver from NVIDIA, AMD or Intel.
+  - A graphics card that supports Vulkan 1.3: NVIDIA GTX 950 or newer, AMD RX 400 or newer, or
+    Intel graphics from about 2015 on. Vulkan comes with the graphics card's driver, there's
+    nothing else to install. If the game says it can't use your graphics card, install the
+    latest driver:
+      NVIDIA   https://www.nvidia.com/Download/index.aspx
+      AMD      https://www.amd.com/en/support/download/drivers.html
+      Intel    https://www.intel.com/content/www/us/en/support/detect.html
   - Windows may warn that the program is from an unknown publisher: click "More info", then
     "Run anyway".
 
@@ -65,3 +69,19 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $out -DestinationPath $zip
 $size = (Get-Item $zip).Length / 1MB
 Write-Host ("Made {0} ({1:N1} MB)" -f $zip, $size)
+
+# And an installer, dist\InnertSetup.exe, with Inno Setup: see installer.iss. It can be had with
+#   winget install --id JRSoftware.InnoSetup -e --scope user
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($iscc) {
+    $version = (Select-String -Path 'Cargo.toml' -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+    $ErrorActionPreference = 'Continue'
+    & $iscc /Q "/DAppVersion=$version" 'installer.iss' 2>&1 | ForEach-Object { "$_" }
+    if ($LASTEXITCODE -ne 0) { throw 'Making the installer failed, see above.' }
+    $ErrorActionPreference = 'Stop'
+    $setup = Join-Path $PSScriptRoot 'dist\InnertSetup.exe'
+    Write-Host ("Made {0} ({1:N1} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
+} else {
+    Write-Warning 'Inno Setup was not found, so there is no installer, only the zip: winget install --id JRSoftware.InnoSetup -e --scope user'
+}
