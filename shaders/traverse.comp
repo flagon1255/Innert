@@ -2218,14 +2218,11 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     if (any_water)
     return shadeWater(dir, water_pos, water_normal, open_sea, water.voxel, wet ? water.foam : 0, wet && water.falling);
 
+    // In the order that keeps the least in hand while rays are traced, as what's kept meanwhile is
+    // what sets how many registers the whole shader needs: the light straight on the surface first,
+    // then its color, then the bounce and what metal mirrors last of all
     vec3 color;
     {
-        vec3 albedo = hitAlbedo(hit, material);
-        vec3 glow = tintAnimal(hit, albedo) + emission(material);
-        if (material == MAT_FOAM && hit.level != ANIMAL) {
-            albedo *= foamFlow(hit);
-            g_dynamic = true;
-        }
         if (hit.level == ANIMAL && animals[hit.instance].info.y != STILL)
         g_dynamic = true;
         // Leaves move in the wind, so they can't be averaged over many frames
@@ -2234,12 +2231,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         bool held = hit.level == ANIMAL && animals[hit.instance].info.y == HELD;
         if (held)
         g_held = true;
-        // The ground under the grass is in its shade, out to where the grass thins out
-        if (material == MAT_GRASS && (pc.flags & FLAG_GRASS) != 0) {
-            float range = GRASS_RANGE * float(max(pc.world_size.w, 1u));
-            albedo *= mix(0.35, 1.0, smoothstep(0.5 * range, range, hit.t));
-        }
-        float ao = (pc.flags & FLAG_AO) != 0 ? voxelAO(hit) : 1;
         vec3 face = faceCenter(hit);
         if ((pc.flags & FLAG_SMOOTH) != 0)
         normal = voxelNormal(hit);
@@ -2283,15 +2274,45 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             through = new_through;
         }
 
-        vec3 indirect = vec3(0);
-        float vpm = float(max(pc.world_size.w, 1u));
+        vec3 albedo = hitAlbedo(hit, material);
+        vec3 glow = tintAnimal(hit, albedo) + emission(material);
+        if (material == MAT_FOAM && hit.level != ANIMAL) {
+            albedo *= foamFlow(hit);
+            g_dynamic = true;
+        }
+        // The ground under the grass is in its shade, out to where the grass thins out
+        if (material == MAT_GRASS && (pc.flags & FLAG_GRASS) != 0) {
+            float range = GRASS_RANGE * float(max(pc.world_size.w, 1u));
+            albedo *= mix(0.35, 1.0, smoothstep(0.5 * range, range, hit.t));
+        }
+        float ao = (pc.flags & FLAG_AO) != 0 ? voxelAO(hit) : 1;
+
+        // Metal is darker than it looks, as most of its shine is reflection: it glints where it
+        // catches the sun, and mirrors what's around it. Light metal reflects much more than dark,
+        // and colored metal in its own color.
         bool metal = material >= MAT_STEEL && material <= MAT_BRONZE;
+        vec3 r = reflect(dir, normal);
+        vec3 tint = vec3(0);
+        if (metal) {
+            float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+            tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
+            float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
+            glow += tint * sunColor() * glint;
+            albedo *= 0.6;
+        }
+        color = albedo * (sunColor() * sun + local) + glow;
+        if (leaf)
+        color += leafTransmission(hit, dir, albedo, through);
+        guide = vec4(albedo, faceId(hit.normal));
+
+        vec3 indirect = vec3(0);
         bool bounce = false;
         vec3 bounce_dir = vec3(0);
         uint samples = 0;
         // What's held moves with the camera, so it'd only show the noise of one bounce a frame:
         // it gets steady light from the sky and ground instead
-        if (gi && !held) {
+        bool gathered = gi && !held;
+        if (gathered) {
             if (e != NO_ENTRY) {
                 // Light bounced onto this face, gathered over many frames. Faces new to the cache
                 // take a sample from every pixel that sees them, so they fill in fast, and after
@@ -2309,13 +2330,27 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
                 bounce = true;
                 bounce_dir = outward(cosineDirection(normal, face_seed), hit.normal);
             }
+        } else if (held) {
+            // Greyer than the sky, as the world round it would bounce plenty of warmer light
+            vec3 around = ambientLight(normal);
+            color += albedo * mix(around, vec3(dot(around, vec3(0.333))), 0.5) * 0.8 * ao;
+        } else {
+            color += albedo * ambientLight(normal) * ao;
         }
-        // The bounce, and what metal mirrors, both go through the one call to shadeSecondary() in
-        // this loop, so the shader holds only one copy of it
-        vec3 r = reflect(dir, normal);
+        // How much the light bounced and mirrored onto it shows
+        vec3 indirect_weight = albedo * mix(1, ao, 0.5);
+        vec3 mirror_weight = tint * 0.6 * ao;
         // Without reflections, metal mirrors the light of the sky and ground round about
         bool mirrors = metal && (pc.flags & FLAG_REFLECTIONS) != 0;
-        vec3 around = metal && !mirrors ? ambientLight(r) : vec3(0);
+        if (metal && !mirrors) {
+            vec3 around = ambientLight(r);
+            color += mirror_weight * mix(around, vec3(dot(around, vec3(0.333))), 0.3);
+        }
+        vec3 mirror_from = face + hit.normal * 0.05;
+        vec3 mirror_dir = outward(r, hit.normal);
+        float vpm = float(max(pc.world_size.w, 1u));
+        // The bounce, and what metal mirrors, both go through the one call to shadeSecondary() in
+        // this loop, so the shader holds only one copy of it
         uint todo = (bounce ? 1u : 0u) | (mirrors ? 2u : 0u);
         while (todo != 0) {
             bool is_bounce = (todo & 1u) != 0;
@@ -2323,10 +2358,10 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             // What metal mirrors is lit as it is, not taken to be as sunlit as this face
             if (!is_bounce)
             g_far_sun = -1;
-            vec3 light = shadeSecondary(is_bounce ? face : face + hit.normal * 0.05, is_bounce ? bounce_dir : outward(r, hit.normal), false,
+            vec3 light = shadeSecondary(is_bounce ? face : mirror_from, is_bounce ? bounce_dir : mirror_dir, false,
                 (is_bounce ? BOUNCE_DISTANCE : REFLECTION_DISTANCE) * vpm);
             if (!is_bounce) {
-                around = light;
+                color += mirror_weight * mix(light, vec3(dot(light, vec3(0.333))), 0.3);
             } else if (e != NO_ENTRY) {
                 cacheAdd(e, light);
                 indirect = (indirect * float(samples) + light) / float(samples + 1);
@@ -2334,32 +2369,9 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
                 indirect = light;
             }
         }
-        if (gi && !held) {
-            indirect *= mix(1, ao, 0.5);
-        } else if (held) {
-            // Greyer than the sky, as the world round it would bounce plenty of warmer light
-            vec3 around = ambientLight(normal);
-            indirect = mix(around, vec3(dot(around, vec3(0.333))), 0.5) * 0.8 * ao;
-        } else {
-            indirect = ambientLight(normal) * ao;
-        }
+        if (gathered)
+        color += indirect_weight * indirect;
         g_far_sun = -1;
-
-        // Metal is darker than it looks, as most of its shine is reflection: it glints where it
-        // catches the sun, and mirrors what's around it
-        vec3 shine = vec3(0);
-        if (metal) {
-            // Light metal reflects much more than dark, and colored metal in its own color
-            float reflectance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-            vec3 tint = mix(vec3(1), albedo / max(max(albedo.r, albedo.g), max(albedo.b, 1e-3)), 0.7) * reflectance;
-            float glint = sun > 0 ? pow(max(dot(r, pc.sun_direction.xyz), 0), 24.0) * 4.0 : 0;
-            shine = tint * (sunColor() * glint + mix(around, vec3(dot(around, vec3(0.333))), 0.3) * 0.6 * ao);
-            albedo *= 0.6;
-        }
-        color = albedo * (sunColor() * sun + indirect + local) + glow + shine;
-        if (leaf)
-        color += leafTransmission(hit, dir, albedo, through);
-        guide = vec4(albedo, faceId(hit.normal));
     }
 
     return color;
