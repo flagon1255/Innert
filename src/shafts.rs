@@ -242,6 +242,13 @@ impl Shafts {
         ui.add_enabled(self.quality != Quality::Off, egui::Slider::new(&mut self.strength, 0.0..=3.0).text("Sun Shaft Strength"));
     }
 
+    /// Lets go of the half resolution images, and the image drawn into they hold on to, as when
+    /// everything sized to the render resolution is let go of before it's made anew, see
+    /// App::make_render_images() in main.rs: they're made again when next needed
+    pub fn let_go_of_targets(&mut self) {
+        self.targets = None;
+    }
+
     /// Makes the half resolution images and what binds them, if they aren't there for the
     /// resolution and images being drawn with
     fn targets(&mut self, frame: &Frame) -> &Targets {
