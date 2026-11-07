@@ -4068,15 +4068,16 @@ impl App {
                     self.camera.rotation.x = -0.62;
                 }
                 if f >= 20 && (f - 20) % 250 == 0 {
-                    self.game.lay_pools(&self.world, eye, look);
+                    let water = &self.water;
+                    self.game.lay_pools(&self.world, &|x, y| water.surface_at(x, y), eye, look);
                 }
             }
-            // One spell cast level out over the land ahead, the view narrowed to follow it a long
-            // way off, to see it fly on and on
+            // One spell cast up over the land ahead, the view narrowed to follow it a long way
+            // off, to see it fly on and on
             ("far", f) => {
                 if f == 1 {
-                    self.camera.rotation.x = 0.03;
-                    self.camera.fov = 22.0;
+                    self.camera.rotation.x = 0.22;
+                    self.camera.fov = 30.0;
                 }
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };

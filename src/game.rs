@@ -3206,12 +3206,12 @@ impl Game {
 
     /// For looking at pools, `--script pools`: one of each element and one of churned earth laid
     /// out over the ground `ahead` of `eye`, three by three, hurting nothing
-    pub fn lay_pools(&mut self, world: &World, eye: Vector3<f64>, ahead: Vector3<f64>) {
+    pub fn lay_pools(&mut self, world: &World, water: WaterLevel, eye: Vector3<f64>, ahead: Vector3<f64>) {
         let profile = match self.held() {
             Some((_, w)) => w.profile.clone(),
             None => self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone(),
         };
-        self.combat.lay_pools(world, &profile, eye, ahead);
+        self.combat.lay_pools(world, water, &profile, eye, ahead);
     }
 
     /// What's in flight, and how far off the furthest of it is, for screenshot runs

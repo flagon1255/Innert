@@ -5530,7 +5530,8 @@ fn pool(element: Option<Element>, spent: bool, key: u32) -> Vec<Part> {
                 }
             }
             p.push(ellipsoid([0.0, 0.0, 0.01], [0.1, 0.1, 0.03], light));
-            bed(&mut p, 0.95, 0.016, LINEN, s);
+            // Burnt into the ground, so the light shows against it
+            bed(&mut p, 0.95, 0.016, BRONZE, s);
         }
         Some(Void) => {
             // Arms of it winding in to the middle, drawn in tighter once it's spent
@@ -5564,8 +5565,9 @@ fn pool(element: Option<Element>, spent: bool, key: u32) -> Vec<Part> {
                 let r = 0.95 + 0.2 * random(s);
                 p.push(ball([a.cos() * r, a.sin() * r, 0.0], 0.03 + 0.03 * random(s), CLOTH));
             }
-            p.push(ellipsoid([0.05, 0.03, 0.005], [0.55, 0.5, 0.033], if spent { FUR_DARK } else { CLOTH }));
-            bed(&mut p, 0.95, 0.03, LEAVES_CRIMSON, s);
+            // Darkest where it's deepest
+            p.push(ellipsoid([0.05, 0.03, 0.005], [0.55, 0.5, 0.033], if spent { FUR_DARK } else { LEAVES_CRIMSON }));
+            bed(&mut p, 0.95, 0.03, CLOTH, s);
         }
         Some(Arcane) => {
             let (glow, crystal) = if spent { (FLOWER_PURPLE, STEEL) } else { (GLOW_ARCANE, CRYSTAL) };

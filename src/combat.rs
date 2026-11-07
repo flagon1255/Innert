@@ -1222,6 +1222,28 @@ fn pool_look(element: Option<Element>, age: f64, left: f64, time: f64, key: f64)
     (spread * size.max(0.05), sink, base + turn, d > 0.18)
 }
 
+/// Where Combat::lay_pools() lays out a pool of each element, and one of churned earth, to look
+/// at: three by three over the ground `ahead` of `eye`, each moved on further till it's on dry
+/// ground, out of any water
+pub fn pool_layout(world: &World, water: WaterLevel, eye: Vector3<f64>, ahead: Vector3<f64>) -> Vec<(Option<Element>, Vector3<f64>)> {
+    let vpm = world.voxels_per_meter as f64;
+    let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::y);
+    let side = Vector3::new(flat.y, -flat.x, 0.0);
+    let looks = std::iter::once(None).chain(Element::ALL.map(Some));
+    looks
+        .enumerate()
+        .map(|(k, element)| {
+            let (row, column) = ((k / 3) as f64, (k % 3) as f64 - 1.0);
+            let dry = |at: &Vector3<f64>| at.z > water(at.x, at.y) + 0.1 * vpm;
+            let ground = (0..16)
+                .map(|step| ground_under(world, eye + (flat * (4.5 + 3.4 * row + step as f64) + side * column * 3.4) * vpm, vpm))
+                .find(dry)
+                .unwrap_or_else(|| ground_under(world, eye + (flat * (4.5 + 3.4 * row) + side * column * 3.4) * vpm, vpm));
+            (element, ground)
+        })
+        .collect()
+}
+
 /// What a pool of `element` leaves on the ground once it's gone, painted on as it lies there: how
 /// big a mark next to its own radius, of what, and whether it burns off what grows there. Modest,
 /// ragged at the edge: scorch for fire and lightning, frost, venom killing the grass, a pale ring
@@ -1230,15 +1252,15 @@ fn pool_look(element: Option<Element>, age: f64, left: f64, time: f64, key: f64)
 fn pool_mark(element: Option<Element>) -> (f64, u8, bool) {
     use Element::*;
     match element {
-        Some(Fire) => (0.75, BARK_DARK, true),
-        Some(Frost) => (0.8, SNOW, false),
-        Some(Poison) => (0.7, MOSS, true),
-        Some(Storm) => (0.5, BARK_DARK, true),
-        Some(Holy) => (0.6, LIMESTONE, false),
-        Some(Void) => (0.55, OBSIDIAN, true),
-        Some(Blood) => (0.65, CLOTH, false),
-        Some(Arcane) => (0.5, TEMPLE_TEAL, false),
-        None => (0.75, DIRT, true),
+        Some(Fire) => (0.55, BARK_DARK, true),
+        Some(Frost) => (0.65, SNOW, false),
+        Some(Poison) => (0.55, MOSS, true),
+        Some(Storm) => (0.4, BARK_DARK, true),
+        Some(Holy) => (0.5, LIMESTONE, false),
+        Some(Void) => (0.45, OBSIDIAN, true),
+        Some(Blood) => (0.5, CLOTH, false),
+        Some(Arcane) => (0.45, TEMPLE_TEAL, false),
+        None => (0.6, DIRT, true),
     }
 }
 
@@ -6264,15 +6286,8 @@ impl Combat {
     /// For looking at pools, see Game::lay_pools(): one of each element and one of churned earth,
     /// as a weapon's effect leaves them, laid out three by three over the ground `ahead` of `eye`,
     /// hurting nothing
-    pub fn lay_pools(&mut self, world: &World, profile: &Rc<Profile>, eye: Vector3<f64>, ahead: Vector3<f64>) {
-        let vpm = world.voxels_per_meter as f64;
-        let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::y);
-        let side = Vector3::new(flat.y, -flat.x, 0.0);
-        let looks = std::iter::once(None).chain(Element::ALL.map(Some));
-        for (k, element) in looks.enumerate() {
-            let (row, column) = ((k / 3) as f64, (k % 3) as f64 - 1.0);
-            let at = eye + (flat * (4.5 + 3.4 * row) + side * column * 3.4) * vpm;
-            let ground = ground_under(world, at, vpm);
+    pub fn lay_pools(&mut self, world: &World, water: WaterLevel, profile: &Rc<Profile>, eye: Vector3<f64>, ahead: Vector3<f64>) {
+        for (element, ground) in pool_layout(world, water, eye, ahead) {
             self.lingering.push(Lingering { pool: true, tick: f64::INFINITY, ..Lingering::new(ground, 1.5, 4.0, element, profile, 0.0) });
         }
     }
