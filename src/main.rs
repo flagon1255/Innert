@@ -2173,11 +2173,11 @@ impl App {
             game.give_ammo(id);
         }
         // `--set special=meteors` puts a weapon with that special attack in hand, charged, and
-        // `special_family=handcrossbow` one of that family
+        // `special_family=handcrossbow` one of that family, or `weapon=handcrossbow` without it
         if let Some(name) = setting("special")
             && let Ok(special) = serde_json::from_str::<weapons::Special>(&format!("\"{name}\""))
         {
-            game.find_special(special, setting("special_family"));
+            game.find_special(special, setting("special_family").or(setting("weapon")));
             println!("special: {}", game.describe_held());
         }
         // `--set gallery=pitted_blade,leafsteel_blade` lays a weapon made with each of those parts on
