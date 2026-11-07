@@ -1303,6 +1303,9 @@ struct Remnant {
 /// Seconds an explosion's smoke drifts after it, about, and how many drift at once at most
 const REMNANT_SECONDS: f64 = 0.7;
 const MOST_REMNANTS: usize = 8;
+/// Only big explosions leave smoke hanging, a bomb's, a fireball's: the smaller, as a wall of
+/// fire's or a cluster's, are gone with their own last stages, so their fire isn't hidden
+const REMNANT_RADIUS: f64 = 1.4;
 /// How many explosions at once are drawn with a ring thrown up round them on the ground
 const MOST_RINGS: usize = 6;
 
@@ -4485,7 +4488,7 @@ impl Combat {
             }
             let b = self.blasts.remove(k);
             self.blast_floors.remove(k);
-            if b.radius >= 0.9 && leaves_smoke(b.look) {
+            if b.radius >= REMNANT_RADIUS && leaves_smoke(b.look) {
                 // The bigger the explosion, the longer its smoke hangs
                 let life = REMNANT_SECONDS * (0.75 + 0.15 * b.radius).min(1.4);
                 self.remnants.push(Remnant { position: b.position, look: b.look, radius: b.radius, yaw: blast_yaw(b.position), life, lifetime: life });
