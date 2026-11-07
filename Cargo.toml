@@ -6,6 +6,8 @@ rust-version = "1.86.0"
 
 [dependencies]
 vulkano = "0.35.2"
+# The same as vulkano's, for what it doesn't wrap: how much of the graphics card's memory is free
+ash = "0.38.0"
 winit = "0.30.12"
 
 shaderc = "0.8.3"

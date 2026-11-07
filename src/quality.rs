@@ -4,8 +4,41 @@
 //! tries one out for a run without keeping it.
 
 use std::path::PathBuf;
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use crate::shafts;
+
+/// The preset that suits the graphics card, once it's been picked, see set_card()
+static CARD: (Mutex<Option<Preset>>, Condvar) = (Mutex::new(None), Condvar::new());
+
+/// Says which preset suits the graphics card picked, see suited()
+pub fn set_card(preset: Preset) {
+    let (card, picked) = &CARD;
+    *card.lock().unwrap_or_else(|e| e.into_inner()) = Some(preset);
+    picked.notify_all();
+}
+
+/// The preset to play with: `--set quality=low` and so on if given, else the one chosen in an
+/// earlier run, else the one that suits the graphics card, waiting for it to be picked, as the
+/// world's started on another thread meanwhile. Screenshot runs go by the card alone, so they come
+/// out the same whatever was chosen.
+pub fn chosen() -> Preset {
+    let args: Vec<String> = std::env::args().collect();
+    let asked = args.windows(2).filter(|w| w[0] == "--set").filter_map(|w| w[1].strip_prefix("quality=")).last().and_then(Preset::parse);
+    if let Some(preset) = asked {
+        return preset;
+    }
+    if !args.iter().any(|a| a == "--screenshot")
+        && let Some(preset) = kept()
+    {
+        return preset;
+    }
+    let (card, picked) = &CARD;
+    let guard = card.lock().unwrap_or_else(|e| e.into_inner());
+    let (guard, _) = picked.wait_timeout_while(guard, Duration::from_secs(20), |c| c.is_none()).unwrap_or_else(|e| e.into_inner());
+    guard.unwrap_or(Preset::High)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
@@ -38,6 +71,12 @@ pub struct Settings {
     /// How far across, in meters, the water flows around the camera; further off it keeps still
     /// till the camera comes near
     pub flowing_water_m: f32,
+    /// How wide the piece of the landscape kept around the player is wanted, in meters, which
+    /// memory.rs narrows if the card hasn't room for it; one sees about half of it
+    pub world_width_m: u32,
+    /// How many voxels to a meter the world's built with. Fewer would take a quarter of the memory
+    /// and be quicker to draw, but blockier, see the screenshots of Low at 8 a meter.
+    pub voxels_per_meter: u32,
 }
 
 impl Preset {
@@ -73,6 +112,8 @@ impl Preset {
             reflections: true,
             fast_upscale: false,
             flowing_water_m: 64.0,
+            world_width_m: 224,
+            voxels_per_meter: 16,
         };
         match self {
             Preset::Low => Settings {

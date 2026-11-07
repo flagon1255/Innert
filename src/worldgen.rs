@@ -294,8 +294,9 @@ impl World {
     /// `brick_grid` uses 0 for empty bricks, which get replaced by their EMPTY_BRICK distance.
     fn new(size: [u32; 3], origin: [i64; 3], mut brick_grid: Vec<u32>, mut bricks: Vec<u32>, voxels_per_meter: u32) -> Self {
         // Room for the bricks holes blown in solid ground will need, so the first ones don't have
-        // all the others copied somewhere bigger in the middle of a fight
-        bricks.reserve(SPARE_BRICKS * BRICK_WORDS);
+        // all the others copied somewhere bigger in the middle of a fight. Just that: reserve()
+        // doubled the room, hundreds of megabytes more of the computer's memory for each piece.
+        bricks.reserve_exact(SPARE_BRICKS * BRICK_WORDS);
         let dims = size.map(|n| n as usize / 8);
         let distances = empty_distances(&brick_grid, dims);
         for (cell, distance) in brick_grid.iter_mut().zip(distances) {
@@ -317,6 +318,14 @@ impl World {
 
     pub fn brick_count(&self) -> usize {
         self.bricks.len() / BRICK_WORDS
+    }
+
+    /// Lets go of where the water's surface starts out, once the water's been made from it, see
+    /// Water::new() in water.rs: tens of megabytes kept for nothing
+    pub fn forget_water_surface(&mut self) {
+        if let Some(water) = &mut self.water {
+            water.surface = Vec::new();
+        }
     }
 
     /// Material of a voxel, counted from this world's first voxel. AIR outside the world.
@@ -772,6 +781,11 @@ fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
     }
 
     let index = bricks.len() / BRICK_WORDS;
+    if bricks.len() + BRICK_WORDS > bricks.capacity() {
+        // Half again at most, and no more than SPARE_BRICKS: doubling a world's hundreds of
+        // megabytes of bricks for a hole blown in it held as many again in the computer's memory
+        bricks.reserve_exact((bricks.len() / 2).clamp(64 * BRICK_WORDS, SPARE_BRICKS * BRICK_WORDS));
+    }
     bricks.resize(bricks.len() + BRICK_WORDS, 0);
     let brick = &mut bricks[index * BRICK_WORDS..];
     for (i, &m) in materials.iter().enumerate() {

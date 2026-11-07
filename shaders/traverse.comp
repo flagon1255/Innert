@@ -2159,6 +2159,13 @@ vec3 shadeUnderwater(vec3 origin, vec3 dir, inout uint steps, out float distance
 
 vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, inout vec4 guide);
 
+// How far along a ray the edge of the world is across the ground, past which there's nothing
+float edgeAlong(vec3 origin, vec3 dir) {
+    vec2 d = mix(vec2(1e-6), dir.xy, greaterThan(abs(dir.xy), vec2(1e-6)));
+    vec2 t = mix((vec2(pc.world_size.xy) - origin.xy) / d, -origin.xy / d, lessThan(d, vec2(0)));
+    return max(min(t.x, t.y), 0);
+}
+
 // `distance` is how far along the ray the visible surface is, -1 for the sky.
 // `guide` is what the denoiser needs, see guideImage.
 vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float distance, out vec4 guide) {
@@ -2173,6 +2180,11 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     // before its edge
     float fade_end = pc.haze.w;
     if (fade_end > 0 && distance >= 0) {
+        // Nearer still where the edge of the piece of the landscape that's there is nearer than
+        // that, as when the next piece isn't in yet: then things fade away before it rather than
+        // the world being seen to end. Never nearer than a few meters, so what's in hand and at
+        // one's feet stays, with nothing past the edge anyway.
+        fade_end = min(fade_end, max(edgeAlong(origin, dir), 6.0 * float(pc.world_size.w)));
         float fade = smoothstep(0.7 * fade_end, fade_end, distance);
         color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), fade);
         kept *= 1 - fade;

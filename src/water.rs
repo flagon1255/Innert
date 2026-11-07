@@ -181,6 +181,14 @@ impl Spare {
         }
     }
 
+    /// How much of the GPU's memory it takes, near enough
+    pub fn bytes(&self) -> u64 {
+        [&self.ground, &self.depth, &self.flux, &self.surface, &self.blocks]
+            .iter()
+            .map(|image| image.extent().iter().map(|&n| n as u64).product::<u64>() * image.format().block_size())
+            .sum()
+    }
+
     /// Whether it's for water `size` columns across
     fn fits(&self, size: [u32; 2]) -> bool {
         self.ground.extent() == [size[0], size[1], 1] && self.readback.len() == size[0] as u64 * size[1] as u64
@@ -520,6 +528,19 @@ impl Water {
             let done = self.carry_rows.take();
             std::thread::spawn(move || drop(done));
         }
+    }
+
+    /// How much of the GPU's memory it takes, near enough: ground, depth, flux and surface per
+    /// column, and the blocks
+    pub fn bytes(&self) -> u64 {
+        let columns = self.size[0] as u64 * self.size[1] as u64;
+        let blocks = self.size[0].div_ceil(BLOCK) as u64 * self.size[1].div_ceil(BLOCK) as u64;
+        columns * (4 + 4 + 16 + 16) + blocks * 4
+    }
+
+    /// How much it keeps on the CPU: the ground and depths, and what's being carried over
+    pub fn cpu_bytes(&self) -> u64 {
+        ((self.ground.capacity() + self.depth.capacity() + self.carry_rows.as_ref().map_or(0, |c| c.from.capacity())) * 4) as u64
     }
 
     /// Room for the next piece of the world's water, as big as this one's, to hand to new() when
