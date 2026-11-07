@@ -241,6 +241,8 @@ pub struct Stream {
     pub stats: StreamStats,
     /// Moving the world on all at once, behind a fade, when it couldn't keep up
     pub teleport: Option<Teleport>,
+    /// How far the empty bricks skip, worked out again where strips join the world, see skips.rs
+    pub skips: crate::skips::Skips,
 }
 
 /// Building the world afresh round where the camera's got to, behind a fade, when it's going too
@@ -274,6 +276,7 @@ impl Stream {
             river_springs,
             stats: StreamStats::default(),
             teleport: None,
+            skips: Default::default(),
         }
     }
 
@@ -1017,6 +1020,9 @@ impl App {
                 let local = [0, 1].map(|i| (lo[i] - origin[i]).clamp(0, self.world.size[i] as i64) as u32);
                 let end = [0, 1].map(|i| (local[i] + size[i]).min(self.world.size[i]));
                 self.water.resurface(local, end);
+                // Its empty bricks, and those of the world beside it, skip no further than where it
+                // joins the world till they're worked out again
+                stream.skips.joined(local, end, self.world.size, self.world.wrap);
                 stream.pieces.push(features);
                 // The holes blown and stains splashed while it was being built, blown in it alone
                 // now it's in, as they're in the rest already, and sent over with the frame
@@ -1107,6 +1113,7 @@ impl App {
         stream.job = None;
         stream.installing = None;
         stream.releasing = None;
+        stream.skips.forget();
         let dropped: Vec<Subbuffer<[u32]>> = stream.uploads.drain(..).filter(|u| u.pooled).map(|u| u.piece).collect();
         stream.staging.give_back(dropped);
         stream.stats.teleports += 1;
@@ -1187,6 +1194,7 @@ impl App {
         self.water.resurface([0, 0], [self.world.size[0], self.world.size[1]]);
         stream.slots = Default::default();
         stream.quarantine.clear();
+        stream.skips.forget();
         stream.pieces = vec![features];
         stream.river_springs = springs;
         self.water.set_springs(&stream.springs(), origin);

@@ -1,0 +1,177 @@
+#version 460
+
+// How far the empty bricks of the main world skip, worked out again round where a strip that's just
+// come in joins it. Each strip's built on its own, so its empty bricks skip no further than its
+// edges, see World::keep_skips_inside() in src\worldgen.rs, nor do those at the edge of the world it
+// comes in beside: rays crossing the world a strip at a time would step through the air there a
+// brick at a time. Once it's in, the empty bricks either side of where it joins are given the
+// distance to the nearest brick that isn't empty again, as the bricks round them are now, up to
+// MOST bricks and staying inside the world as it is, in four passes, see src\skips.rs.
+//
+// The distance along any axis (Chebyshev) to the nearest brick that isn't empty comes apart into
+// one axis at a time: how far along z in the column, then the nearest of those along y within as
+// far, then along x. What's found so far is kept in an empty brick's cell above its distance, in
+// bits nothing else looks at, see SCRATCH, and taken out again by the last pass.
+
+// Has to match the stages in src\skips.rs
+const uint ALONG_Z = 0;
+const uint ALONG_Y = 1;
+const uint ALONG_X = 2;
+const uint CLEAN = 3;
+
+// Has to match src\worldgen.rs
+const uint EMPTY_BRICK = 0x40000000u;
+const uint DISTANCE = 0xFFFFu;
+// How far along z the nearest brick that isn't empty is, from ALONG_Z, and then the nearest in the
+// square across y and z, from ALONG_Y, in 6 bits each, 63 for none that near
+const uint Z_SHIFT = 16u;
+const uint Y_SHIFT = 22u;
+const uint FAR = 63u;
+const uint SCRATCH = 0x0FFF0000u;
+// The furthest an empty brick's worked out to skip, in bricks. Has to match MOST in src\skips.rs.
+const int MOST = 32;
+// The longest line of bricks across the world, as long as the grid is wide can be
+const int LONGEST = 1024;
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r32ui) uniform uimage3D brickGrid;
+
+layout(push_constant) uniform PushConstants {
+    // xy: the first brick of where the strip joins the world, either side of it, counted from the
+    // world's first brick, zw: one past its last
+    ivec4 band;
+    // xy: how many bricks across the world is, z: how many high, w: the stage
+    ivec4 world;
+    // xy: where the world's first brick is kept in the grid, which its bricks go round, see
+    // mainBrick() in traverse.comp
+    ivec4 wrap;
+} pc;
+
+shared uint s_line[LONGEST];
+
+// Where brick `b` of the world is kept in the grid
+ivec3 kept(ivec3 b) {
+    ivec2 room = imageSize(brickGrid).xy;
+    ivec2 p = b.xy + pc.wrap.xy;
+    return ivec3(p - room * ivec2(greaterThanEqual(p, room)), b.z);
+}
+
+// The bricks whose distances along y and z are wanted for the band's along x: MOST either side of
+// it along x, as far as the world goes
+ivec2 acrossX() {
+    return ivec2(max(pc.band.x - MOST, 0), min(pc.band.z + MOST, pc.world.x));
+}
+
+// And whose distances along z are wanted for those along y: MOST either side along y as well
+ivec2 acrossY() {
+    return ivec2(max(pc.band.y - MOST, 0), min(pc.band.w + MOST, pc.world.y));
+}
+
+// The column of bricks along z at x, y: how far each empty one is from the nearest one that isn't,
+// along it, kept in its cell
+void alongZ(ivec2 c) {
+    uint run = FAR;
+    for (int z = 0; z < pc.world.z; z++) {
+        ivec3 at = kept(ivec3(c, z));
+        uint cell = imageLoad(brickGrid, at).r;
+        if ((cell & EMPTY_BRICK) == 0) {
+            run = 0;
+        } else {
+            run = min(run + 1, FAR);
+            imageStore(brickGrid, at, uvec4((cell & ~SCRATCH) | run << Z_SHIFT));
+        }
+    }
+    run = FAR;
+    for (int z = pc.world.z - 1; z >= 0; z--) {
+        ivec3 at = kept(ivec3(c, z));
+        uint cell = imageLoad(brickGrid, at).r;
+        if ((cell & EMPTY_BRICK) == 0) {
+            run = 0;
+        } else {
+            run = min(run + 1, FAR);
+            uint below = cell >> Z_SHIFT & FAR;
+            if (run < below)
+            imageStore(brickGrid, at, uvec4((cell & ~SCRATCH) | run << Z_SHIFT));
+        }
+    }
+}
+
+// The nearest of what's in s_line, `n` of them, to `i`, each as far as it says or further off: for
+// each one `t` along, the furthest of how far that is and what it says. Off the ends is as far as
+// can be, as off the world is.
+uint nearest(int i, int n) {
+    uint best = s_line[i];
+    for (int t = 1; t < int(best) && t <= MOST; t++) {
+        uint before = i - t >= 0 ? s_line[i - t] : FAR;
+        uint after = i + t < n ? s_line[i + t] : FAR;
+        best = min(best, max(uint(t), min(before, after)));
+    }
+    return best;
+}
+
+void main() {
+    uint stage = pc.world.w;
+    ivec2 xs = acrossX();
+    ivec2 ys = acrossY();
+    int lid = int(gl_LocalInvocationID.x);
+    if (stage == ALONG_Z) {
+        // A column for each invocation
+        int w = xs.y - xs.x;
+        int k = int(gl_GlobalInvocationID.x);
+        if (k < w * (ys.y - ys.x))
+        alongZ(ivec2(xs.x + k % w, ys.x + k / w));
+    } else if (stage == ALONG_Y) {
+        // A line along y for each group, at x and z, from what's along z in it
+        ivec2 xz = ivec2(xs.x + int(gl_WorkGroupID.x), int(gl_WorkGroupID.y));
+        int n = ys.y - ys.x;
+        for (int i = lid; i < n; i += 64) {
+            uint cell = imageLoad(brickGrid, kept(ivec3(xz.x, ys.x + i, xz.y))).r;
+            s_line[i] = (cell & EMPTY_BRICK) != 0 ? cell >> Z_SHIFT & FAR : 0;
+        }
+        barrier();
+        for (int y = pc.band.y + lid; y < pc.band.w; y += 64) {
+            int i = y - ys.x;
+            if (s_line[i] == 0)
+            continue;
+            ivec3 at = kept(ivec3(xz.x, y, xz.y));
+            uint cell = imageLoad(brickGrid, at).r;
+            imageStore(brickGrid, at, uvec4((cell & ~(FAR << Y_SHIFT)) | nearest(i, n) << Y_SHIFT));
+        }
+    } else if (stage == ALONG_X) {
+        // A line along x for each group, at y and z, from what's along y and z in it: the band's
+        // empty bricks get how far that is, as far as it goes, but no further than the world's edges
+        ivec2 yz = ivec2(pc.band.y + int(gl_WorkGroupID.x), int(gl_WorkGroupID.y));
+        int n = xs.y - xs.x;
+        for (int i = lid; i < n; i += 64) {
+            uint cell = imageLoad(brickGrid, kept(ivec3(xs.x + i, yz))).r;
+            s_line[i] = (cell & EMPTY_BRICK) != 0 ? cell >> Y_SHIFT & FAR : 0;
+        }
+        barrier();
+        for (int x = pc.band.x + lid; x < pc.band.z; x += 64) {
+            int i = x - xs.x;
+            if (s_line[i] == 0)
+            continue;
+            ivec3 at = kept(ivec3(x, yz));
+            uint cell = imageLoad(brickGrid, at).r;
+            int y = yz.x;
+            int inside = min(min(x + 1, pc.world.x - x), min(y + 1, pc.world.y - y));
+            uint skip = min(nearest(i, n), uint(min(MOST, inside)));
+            // What it skipped already stays: it was right for the world as it was, and still is
+            skip = max(max(skip, cell & DISTANCE), 1u);
+            imageStore(brickGrid, at, uvec4(EMPTY_BRICK | skip));
+        }
+    } else if (stage == CLEAN) {
+        // What was kept in the cells along the way taken out again, a brick for each invocation, a
+        // layer of them for each row of groups
+        int w = xs.y - xs.x;
+        int k = int(gl_GlobalInvocationID.x);
+        if (k < w * (ys.y - ys.x)) {
+            ivec3 b = ivec3(xs.x + k % w, ys.x + k / w, int(gl_WorkGroupID.y));
+            ivec3 at = kept(b);
+            uint cell = imageLoad(brickGrid, at).r;
+            if ((cell & EMPTY_BRICK) != 0 && (cell & SCRATCH) != 0)
+            imageStore(brickGrid, at, uvec4(cell & ~SCRATCH));
+        }
+    }
+}

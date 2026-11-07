@@ -80,6 +80,7 @@ mod perf;
 mod player;
 mod quality;
 mod shafts;
+mod skips;
 mod staging;
 mod startup;
 mod stream;
@@ -1158,6 +1159,8 @@ struct App {
     resample_pipeline: HotReloadComputePipeline,
     upscale_pipeline: HotReloadComputePipeline,
     water_pipeline: HotReloadComputePipeline,
+    /// Works out again how far empty bricks skip where strips join the world, see skips.rs
+    skips_pipeline: HotReloadComputePipeline,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
     sun_map: Arc<ImageView>,
@@ -1655,18 +1658,20 @@ struct Pipelines {
     upscale: HotReloadComputePipeline,
     water: HotReloadComputePipeline,
     shafts: HotReloadComputePipeline,
+    skips: HotReloadComputePipeline,
 }
 
 impl Pipelines {
     // Read from where they are while working on them, so they reload when changed. Copies are
     // built in for running elsewhere.
-    const SHADERS: [(&str, &str); 6] = [
+    const SHADERS: [(&str, &str); 7] = [
         ("traverse.comp", include_str!("../shaders/traverse.comp")),
         ("post.comp", include_str!("../shaders/post.comp")),
         ("resample.comp", include_str!("../shaders/resample.comp")),
         ("upscale.comp", include_str!("../shaders/upscale.comp")),
         ("water.comp", include_str!("../shaders/water.comp")),
         ("shafts.comp", include_str!("../shaders/shafts.comp")),
+        ("skips.comp", include_str!("../shaders/skips.comp")),
     ];
 
     fn path(name: &str) -> PathBuf {
@@ -1685,7 +1690,7 @@ impl Pipelines {
             let device = device.clone();
             std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
         });
-        let [render, post, resample, upscale, water, shafts] = making;
+        let [render, post, resample, upscale, water, shafts, skips] = making;
         Some(Pipelines {
             render: render.join().ok()?,
             post: post.join().ok()?,
@@ -1693,6 +1698,7 @@ impl Pipelines {
             upscale: upscale.join().ok()?,
             water: water.join().ok()?,
             shafts: shafts.join().ok()?,
+            skips: skips.join().ok()?,
         })
     }
 }
@@ -2194,7 +2200,7 @@ impl App {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
-        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline } = pipelines;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline } = pipelines;
         let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory } = placed;
         let stream = scene.is_terrain().then(|| stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, memory_allocator.clone()));
         // The water has what it needs of it now
@@ -2399,6 +2405,7 @@ impl App {
             resample_pipeline,
             upscale_pipeline,
             water_pipeline,
+            skips_pipeline,
 
             sun_map,
             sun_map_for: None,
@@ -4543,6 +4550,7 @@ impl App {
         self.resample_pipeline.maybe_reload();
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
+        self.skips_pipeline.maybe_reload();
         if let Some(preset) = self.pending_quality.take() {
             self.apply_quality(preset);
             quality::keep(preset);
@@ -5221,6 +5229,7 @@ impl App {
         self.voxel_set.copy_over(&mut builder);
         if let Some(stream) = &mut self.stream {
             stream.record_uploads(&mut builder, &self.voxel_set, &self.water, self.frame, self.frame_ms);
+            stream.skips.record(&mut builder, &self.skips_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator);
         }
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "strips");
