@@ -766,6 +766,50 @@ vec3 animalToWorld(uint index, vec3 p) {
 const uint SECONDARY_ANIMALS = 24;
 uint g_animal_limit = 0xFFFFFFFFu;
 
+// The animals and props whose bounding spheres the camera's rays through this workgroup's tile of
+// pixels might pass through, a bit each, worked out by all its invocations together before any
+// are traced, see cullTileAnimals(). Camera rays only check those, rather than every one there is.
+const uint TILE_WORDS = 8;
+shared uint s_tile_animals[TILE_WORDS];
+bool g_tile_culled = false;
+
+void cullTileAnimals() {
+    uint lid = gl_LocalInvocationIndex;
+    if (lid < TILE_WORDS)
+    s_tile_animals[lid] = 0;
+    barrier();
+    uint count = animalCount();
+    g_tile_culled = count <= TILE_WORDS * 32;
+    if (g_tile_culled) {
+        // The cone around the tile's rays, wherever in their pixels they go through, a little wider
+        vec2 lo = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy) - 1.0;
+        vec2 hi = lo + vec2(gl_WorkGroupSize.xy) + 2.0;
+        mat3 m = mat3(pc.pixelToRay);
+        vec3 o = pc.pixelToRay[3].xyz;
+        vec3 axis = normalize(m * vec3((lo + hi) * 0.5, 1));
+        float cos_cone = min(min(dot(axis, normalize(m * vec3(lo, 1))), dot(axis, normalize(m * vec3(hi.x, lo.y, 1)))),
+            min(dot(axis, normalize(m * vec3(lo.x, hi.y, 1))), dot(axis, normalize(m * vec3(hi, 1)))));
+        float sin_cone = sqrt(max(1 - cos_cone * cos_cone, 0));
+        for (uint i = lid; i < count; i += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+            vec4 sphere = animals[i].position;
+            vec3 to = sphere.xyz - o;
+            float d2 = dot(to, to);
+            float r = sphere.w;
+            bool keep = d2 <= r * r;
+            if (!keep) {
+                // Within the cone widened by the angle the sphere takes up
+                float d = sqrt(d2);
+                float sin_a = r / d;
+                float cos_a = sqrt(max(1 - sin_a * sin_a, 0));
+                keep = dot(to, axis) / d >= cos_cone * cos_a - sin_cone * sin_a;
+            }
+            if (keep)
+            atomicOr(s_tile_animals[i / 32], 1u << (i % 32));
+        }
+    }
+    barrier();
+}
+
 // The nearest animal a ray hits before max_t, in voxels of the main world. The ray is turned and
 // scaled into each animal's voxels, without normalizing it, so distances along it stay the same.
 bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
@@ -773,7 +817,27 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
     uint count = min(animalCount(), g_animal_limit);
     // Rays from the camera see what's held in front of anything else
     bool from_camera = g_animal_limit == 0xFFFFFFFFu;
-    for (uint i = 0; i < count; i++) {
+    // Those only look at the ones their tile might see, in the same order
+    bool tiled = from_camera && g_tile_culled;
+    uint word = 0;
+    uint bits = tiled ? s_tile_animals[0] : 0;
+    uint next = 0;
+    while (true) {
+        uint i;
+        if (tiled) {
+            while (bits == 0 && word + 1 < TILE_WORDS) {
+                word++;
+                bits = s_tile_animals[word];
+            }
+            if (bits == 0)
+            break;
+            i = word * 32 + findLSB(bits);
+            bits &= bits - 1;
+        } else {
+            if (next >= count)
+            break;
+            i = next++;
+        }
         Animal a = animals[i];
         float limit = from_camera && a.info.y == HELD ? FLT_MAX : max_t;
         // Only animals whose bounding sphere the ray passes through
@@ -2289,6 +2353,9 @@ void main() {
         return;
     }
 
+    // Every invocation of the workgroup takes part, so before any leave for being off the image
+    if (animalCount() > 0)
+    cullTileAnimals();
 
     ivec2 imageSize = imageSize(targetImage);
 
