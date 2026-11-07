@@ -203,12 +203,13 @@ layout(set = 3, binding = 5) readonly buffer Lights {
 // Then the light straight on the face, see cachedDirect(): the frame it was last worked out plus
 // one (0 for never), how much of the sun reaches it, the light from the flames and crystals that
 // stay put (red, green and blue), and for leaves how much sunlight comes through from behind. The
-// last five as floats.
+// last five as floats. Last, the shape of the surface round the face, see packShape(), 0 for not
+// worked out yet.
 layout(set = 3, binding = 6) buffer LightCache {
     uint cache[];
 };
 // Has to match LIGHT_CACHE_WORDS in main.rs
-const uint CACHE_WORDS = 12;
+const uint CACHE_WORDS = 13;
 const uint CACHE_PROBES = 8;
 const float CACHE_SCALE = 1024.0;
 // Once a face has this many samples it only takes the odd one more, so it can follow changes
@@ -1390,6 +1391,7 @@ uint cacheEntry(Hit hit, bool make) {
                 cache[e + 4] = 0;
                 cache[e + 5] = pc.frame;
                 cache[e + 6] = 0;
+                cache[e + 12] = 0;
                 return e;
             }
             if (was == key)
@@ -1403,6 +1405,21 @@ uint cacheEntry(Hit hit, bool make) {
 vec3 cachedLight(uint e, out uint samples) {
     samples = cache[e + 4];
     return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u));
+}
+
+// The shape of the surface round a face, which takes looking at the 26 voxels round it to work out
+// (see voxelNormal() and voxelAO()), kept in a word of its light cache entry so it's worked out
+// only now and then: its normal a byte a component, and its ambient occlusion in the top byte.
+// Never 0, which is for none.
+uint packShape(vec3 normal, float ao) {
+    uvec3 n = uvec3(round(clamp(normal, -1, 1) * 127.0) + 128.0);
+    return n.x | n.y << 8 | n.z << 16 | uint(round(clamp(ao, 0, 1) * 255.0)) << 24;
+}
+
+void unpackShape(uint shape, out vec3 normal, out float ao) {
+    vec3 n = (vec3(shape & 0xFFu, shape >> 8 & 0xFFu, shape >> 16 & 0xFFu) - 128.0) / 127.0;
+    normal = normalize(n);
+    ao = float(shape >> 24) / 255.0;
 }
 
 // Adds a sample of bounced light to a cache entry. Once it has plenty, half of what it has is
@@ -2232,8 +2249,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         if (held)
         g_held = true;
         vec3 face = faceCenter(hit);
-        if ((pc.flags & FLAG_SMOOTH) != 0)
-        normal = voxelNormal(hit);
 
         bool gi = (pc.flags & FLAG_GI) != 0;
         bool shadows = (pc.flags & FLAG_SHADOWS) != 0;
@@ -2255,6 +2270,22 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         vec3 still = vec3(0);
         vec3 towards = pc.sun_direction.xyz;
         bool fresh = cached ? cachedDirectBegin(e, far_face ? FAR_DIRECT_INTERVAL : DIRECT_INTERVAL, last, reaches, still, through, towards) : true;
+        // The shape of the surface round the face, kept with its light, worked out again whenever
+        // the light straight on it is, or every so often without shadows, so it follows the world
+        // being changed
+        float ao = 1;
+        uint shape = e != NO_ENTRY ? cache[e + 12] : 0;
+        bool reshape = shape == 0 || (cached && fresh) || (!cached && ((pc.frame + e / CACHE_WORDS) & 15u) == 0);
+        if (reshape) {
+            if ((pc.flags & FLAG_SMOOTH) != 0)
+            normal = voxelNormal(hit);
+            if ((pc.flags & FLAG_AO) != 0)
+            ao = voxelAO(hit);
+            if (e != NO_ENTRY)
+            cache[e + 12] = packShape(normal, ao);
+        } else {
+            unpackShape(shape, normal, ao);
+        }
         // Spells and the like move too fast to keep their light, so theirs is worked out every frame
         float new_reaches, new_through;
         vec3 new_still, new_moving;
@@ -2285,7 +2316,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             float range = GRASS_RANGE * float(max(pc.world_size.w, 1u));
             albedo *= mix(0.35, 1.0, smoothstep(0.5 * range, range, hit.t));
         }
-        float ao = (pc.flags & FLAG_AO) != 0 ? voxelAO(hit) : 1;
 
         // Metal is darker than it looks, as most of its shine is reflection: it glints where it
         // catches the sun, and mirrors what's around it. Light metal reflects much more than dark,

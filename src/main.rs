@@ -301,7 +301,7 @@ const MAX_LIGHTS: usize = 16;
 /// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
 const LIGHT_CACHE_ENTRIES: u64 = 1 << 21;
 /// Has to match CACHE_WORDS in shaders\traverse.comp
-const LIGHT_CACHE_WORDS: u64 = 12;
+const LIGHT_CACHE_WORDS: u64 = 13;
 
 // The box of fine detail around the camera, in meters. It gets rebuilt once the camera
 // gets this far from where it was last built.
