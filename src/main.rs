@@ -1953,14 +1953,12 @@ impl App {
         if let Some(id) = setting("ammo") {
             game.give_ammo(id);
         }
-        // `--set special=meteors` puts a weapon with that special attack in hand, charged, of the
-        // family `--set weapon=staff` asks for if one of its parts gives it
+        // `--set special=meteors` puts a weapon with that special attack in hand, charged, and
+        // `special_family=handcrossbow` one of that family, or `weapon=handcrossbow` without it
         if let Some(name) = setting("special")
             && let Ok(special) = serde_json::from_str::<weapons::Special>(&format!("\"{name}\""))
         {
-            if !setting("weapon").is_some_and(|family| game.find_special_of(special, family)) {
-                game.find_special(special);
-            }
+            game.find_special(special, setting("special_family").or(setting("weapon")));
             println!("special: {}", game.describe_held());
         }
         // `--set gallery=pitted_blade,leafsteel_blade` lays a weapon made with each of those parts on
@@ -3758,6 +3756,23 @@ impl App {
                     println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
                 }
             }
+            // Standing still where the camera is, facing the nearest of a pack `--set enemy` put
+            // there, and shooting what's in hand at it as fast as it'll go, reloading as it needs
+            // to, from frame 30 on: for seeing what special ammo does where it lands, and how many
+            // holes it's blown
+            ("fire", f) => {
+                if f <= 30 {
+                    match self.game.nearest_foe(eye) {
+                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                        None if f == 1 => self.camera.rotation.x = -0.2,
+                        None => {}
+                    }
+                }
+                self.script_controls = combat::Controls { attack: f >= 30, holding: f >= 30, ..Default::default() };
+                if f % 100 == 0 {
+                    println!("frame {frame}: {} holes blown", self.craters.len());
+                }
+            }
             // Draws all the way and shoots at the ground a little way ahead, over and over
             ("volley", f) => {
                 if f == 1 {
@@ -5129,6 +5144,8 @@ const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3
 
 fn main() {
     startup::init();
+    // Decoding the sounds on a thread of their own, done long before anything's heard
+    audio::preload();
     std::panic::set_hook(Box::new(|info| {
         let place = info.location().map_or(String::new(), |l| format!(" ({}:{})", l.file(), l.line()));
         let what = info

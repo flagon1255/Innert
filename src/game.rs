@@ -1393,7 +1393,7 @@ impl Game {
         if self.loaded.as_ref().map(|(key, _)| *key) != wanted {
             self.loaded = wanted.map(|(w, k)| {
                 let profile = Rc::new(self.library.loaded(&self.weapons[w], k));
-                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head })
+                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst })
             });
         }
         let weapon = held.map(|i| (i, &self.weapons[i]));
@@ -2272,12 +2272,12 @@ impl Game {
             .map(|a| a.center(vpm as u32))
     }
 
-    /// Where the middle of the living monster nearest `near` is, not a boss, if there's one about
+    /// Where the middle of the living monster nearest `near` is, if there's one about
     pub fn nearest_foe(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
         let vpm = self.combat.vpm();
         self.animals
             .iter()
-            .filter(|a| a.look.build().is_none() && a.look.is_monster() && a.health > 0.0)
+            .filter(|a| a.look.is_monster() && a.health > 0.0)
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
             .map(|a| a.center(vpm as u32))
     }
@@ -2485,7 +2485,7 @@ impl Game {
                 if pickup.flying <= 0.0 {
                     let cue = match pickup.item {
                         Item::Weapon(_) => Cue::at(Sound::Clang, pickup.position, 0.35).pitched(1.6),
-                        Item::Gold(_) => Cue::at(Sound::Pickup, pickup.position, 0.35).pitched(1.9),
+                        Item::Gold(_) => Cue::at(Sound::Coins, pickup.position, 0.35).pitched(1.1),
                         _ => Cue::at(Sound::Pickup, pickup.position, 0.2).pitched(0.8),
                     };
                     self.cues.push(cue);
@@ -2745,7 +2745,7 @@ impl Game {
         match item {
             Item::Gold(n) => {
                 self.gold += n;
-                self.cues.push(Cue::here(Sound::Pickup, 0.7).pitched(1.8));
+                self.cues.push(Cue::here(Sound::Coins, 0.7));
                 self.say(format!("+{n} gold"));
             }
             Item::Weapon(w) => {
@@ -2990,7 +2990,7 @@ impl Game {
             Item::Weapon(_) => self.slots.push((item, 1)),
             _ => self.add_item(item, 1),
         }
-        self.cues.push(Cue::here(Sound::Pickup, 0.8).pitched(1.5));
+        self.cues.push(Cue::here(Sound::Coins, 0.8));
         self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
     }
 
@@ -3016,7 +3016,7 @@ impl Game {
         if let Item::Weapon(w) = item {
             self.stocks.entry(key).or_default().insert(0, Ware::Weapon(w));
         }
-        self.cues.push(Cue::here(Sound::Pickup, 0.8).pitched(1.2));
+        self.cues.push(Cue::here(Sound::Coins, 0.8).pitched(0.9));
         self.say(format!("Sold {} for {paid} gold.", self.item_name(item)));
     }
 
@@ -3133,15 +3133,17 @@ impl Game {
         }
     }
 
-    /// For trying them out: rolls lucky weapons of any family until one has the special attack
-    /// `special`, puts it in hand and charges it
-    pub fn find_special(&mut self, special: Special) {
+    /// For trying them out: rolls lucky weapons of any family, or of family `family` if that's
+    /// given and there is one called that, until one has the special attack `special`, puts it in
+    /// hand and charges it
+    pub fn find_special(&mut self, special: Special, family: Option<&str>) {
+        let family = family.and_then(|id| self.library.family(id));
         for seed in 0..200_000u32 {
             // Looked for in the parts alone, as building each weapon's models takes a while
-            if self.library.special_of(hash(seed ^ 0x5bec), 8.0) != Some(special) {
+            if self.library.special_of(hash(seed ^ 0x5bec), family, 8.0) != Some(special) {
                 continue;
             }
-            let weapon = self.library.generate(hash(seed ^ 0x5bec), None, 8.0);
+            let weapon = self.library.generate(hash(seed ^ 0x5bec), family, 8.0);
             if weapon.profile.special.as_ref().is_some_and(|(s, _)| *s == special) {
                 self.weapons.push(weapon);
                 self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
@@ -3151,34 +3153,6 @@ impl Game {
                 return;
             }
         }
-    }
-
-    /// For trying them out: a weapon of the family with id `family` that has the special attack
-    /// `special`, made with a part of it that gives one, in hand and charged. False if none of
-    /// that family's parts give it.
-    pub fn find_special_of(&mut self, special: Special, family: &str) -> bool {
-        let library = &self.library;
-        let (Some(f), Some(part)) = (library.family(family), library.components.iter().position(|c| c.special() == Some(special) && c.fits(family))) else {
-            return false;
-        };
-        let Some(slot) = library.families[f].slots.iter().position(|s| *s == library.components[part].slot_type) else {
-            return false;
-        };
-        // Its other parts lucky ones, unless one of them gives a special attack of its own
-        let seed = hash(0x5bec ^ part as u32);
-        let made = |luck: f64| {
-            let mut parts = library.generate(seed, Some(f), luck).parts;
-            parts[slot] = part;
-            Weapon::assemble(library, f, parts, seed)
-        };
-        let lucky = made(3.0);
-        let weapon = if lucky.profile.special.as_ref().is_some_and(|(s, _)| *s == special) { lucky } else { made(0.0) };
-        self.weapons.push(weapon);
-        self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
-        self.selected = 0;
-        self.models_version += 1;
-        self.combat.charge = 1.0;
-        true
     }
 
     /// For looking at parts: a weapon with each of the parts `ids` lying on the ground in rows of

@@ -14,6 +14,8 @@ $out = Join-Path $PSScriptRoot 'dist\Innert'
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item 'target\release\innert.exe' $out
+# Where each sound came from. They're all free to use with no conditions, but credited anyway.
+Copy-Item 'assets\sounds\CREDITS.txt' (Join-Path $out 'Sound credits.txt')
 
 # Microsoft allows these to be shipped next to a program, so it runs without installing them
 $studios = @("${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio") | Where-Object { Test-Path $_ }

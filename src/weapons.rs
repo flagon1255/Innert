@@ -734,6 +734,7 @@ fn first_level() -> u32 {
     1
 }
 
+#[cfg(test)]
 impl Component {
     /// The special attack it gives a weapon, if it's a legendary or mythic part that gives one
     pub fn special(&self) -> Option<Special> {
@@ -771,9 +772,28 @@ pub struct AmmoDef {
     /// Gold a merchant asks for each one, and how many come in a bundle
     pub price: f64,
     pub bundle: u32,
+    /// How it bursts apart into a spray of burning shards, if it does
+    #[serde(default)]
+    pub burst: Option<Burst>,
     /// Indices of its effects
     #[serde(skip)]
     pub effect_defs: Vec<usize>,
+}
+
+/// How bursting ammo flies apart into a spray of shards, each going off in a little blast where
+/// it lands: partway to where it's aimed, as a grenade does, or where it strikes, throwing its iron
+/// back out off what it hit
+#[derive(Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Burst {
+    /// Bursting in the air partway to where it's aimed, rather than where it strikes
+    #[serde(default)]
+    pub airburst: bool,
+    /// How many shards, how far they spread from the way they're thrown, in degrees, and how much
+    /// of the shot's damage each does
+    pub fragments: usize,
+    pub spread: f64,
+    pub power: f64,
 }
 
 impl AmmoDef {
@@ -945,9 +965,10 @@ impl Library {
     }
 
     /// The special attack the weapon generate() would make from `seed` would have, worked out from
-    /// its parts alone, without building it: as work_out() picks it, the rarest part's that has one
-    pub fn special_of(&self, seed: u32, luck: f64) -> Option<Special> {
-        let (_, parts) = self.roll(seed, None, luck);
+    /// its parts alone, without building it: as work_out() picks it, the rarest part's that has one.
+    /// Of family `family` if that's given, otherwise whichever the seed rolls.
+    pub fn special_of(&self, seed: u32, family: Option<usize>, luck: f64) -> Option<Special> {
+        let (_, parts) = self.roll(seed, family, luck);
         parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some()).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
     }
 
@@ -5802,6 +5823,16 @@ mod tests {
         // Bursting shot fires a single grenade, even from a blunderbuss
         let bursting = library.ammo.iter().position(|a| a.id == "bursting_shot").unwrap();
         assert!(library.loaded(&blunderbuss, bursting).stat("pellets") < 1.0);
+        // It bursts in the air into a spray of shot, and bursting bolts where they strike into a
+        // wider spray of shards, each doing a share of the damage
+        let shot = library.ammo[bursting].burst.expect("bursting shot bursts");
+        let bolts = library.ammo.iter().find(|a| a.id == "bursting_bolts").and_then(|a| a.burst).expect("bursting bolts burst");
+        assert!(shot.airburst && !bolts.airburst);
+        for burst in [shot, bolts] {
+            assert!(burst.fragments >= 4 && burst.fragments <= 12 && burst.spread > 0.0 && burst.power > 0.1 && burst.power < 0.5);
+        }
+        assert!(bolts.spread > shot.spread);
+        assert!(library.ammo.iter().filter(|a| a.burst.is_some()).count() == 2, "only bursting ammo bursts");
     }
 
     #[test]
@@ -5822,14 +5853,16 @@ mod tests {
         assert!(on_parts.len() >= 75, "only {} special attacks are on parts", on_parts.len());
         let mut found = BTreeSet::new();
         for seed in 0..40_000 {
-            if let Some(special) = library.special_of(seed, 8.0) {
+            if let Some(special) = library.special_of(seed, None, 8.0) {
                 found.insert(special.name());
             }
         }
         assert_eq!(found.len(), on_parts.len(), "every special attack rolls in lucky loot");
-        // Worked out from the parts alone, it's what the weapon really has
+        // Worked out from the parts alone, it's what the weapon really has, whatever its family
         for seed in 0..300 {
-            assert_eq!(library.special_of(seed, 8.0), library.generate(seed, None, 8.0).profile.special.as_ref().map(|(s, _)| *s));
+            assert_eq!(library.special_of(seed, None, 8.0), library.generate(seed, None, 8.0).profile.special.as_ref().map(|(s, _)| *s));
+            let family = Some(seed as usize % library.families.len());
+            assert_eq!(library.special_of(seed, family, 8.0), library.generate(seed, family, 8.0).profile.special.as_ref().map(|(s, _)| *s));
         }
     }
 
