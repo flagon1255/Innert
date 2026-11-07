@@ -49,9 +49,31 @@ const BRICKS_PER_COLUMN: f64 = 0.1;
 pub fn piece_bytes(width_m: u32, height_m: u32, vpm: u32) -> u64 {
     let side = (width_m * vpm) as u64;
     let columns = side * side;
-    let bricks = (columns as f64 * BRICKS_PER_COLUMN) as u64 + worldgen::SPARE_BRICKS as u64;
     let grid = columns / 64 * (height_m * vpm / 8) as u64 * 4;
-    bricks * worldgen::BRICK_WORDS as u64 * 4 + grid + columns * 4 + columns * (4 + 4 + 8 + 8)
+    bricks_bytes(width_m, vpm) + grid + columns * 4 + columns * (4 + 4 + 8 + 8)
+}
+
+/// About how many bytes the bricks of a piece of the landscape `width_m` wide at `vpm` voxels a
+/// meter take, with room for holes blown in it: all in one buffer, which traverse.comp sees whole
+pub fn bricks_bytes(width_m: u32, vpm: u32) -> u64 {
+    let side = (width_m * vpm) as u64;
+    let bricks = (side as f64 * side as f64 * BRICKS_PER_COLUMN) as u64 + worldgen::SPARE_BRICKS as u64;
+    bricks * worldgen::BRICK_WORDS as u64 * 4
+}
+
+/// The most bricks a world can have room for on the graphics card: as many as a shader can see
+/// of one buffer, 1 GB's worth on Intel's integrated graphics, see limits.rs
+pub fn most_bricks() -> usize {
+    (crate::limits::get().buffer_bytes() / (worldgen::BRICK_WORDS as u64 * 4)) as usize
+}
+
+/// Whether the graphics card can hold a piece of the landscape `width_m` wide and `height_m` tall
+/// at `vpm` voxels a meter at all, however much memory it has: its bricks in a buffer a shader sees
+/// whole, its grid of them in a 3D image and its columns in 2D ones, see limits.rs
+fn bindable(width_m: u32, height_m: u32, vpm: u32) -> bool {
+    let limits = crate::limits::get();
+    let side = width_m * vpm;
+    bricks_bytes(width_m, vpm) <= limits.buffer_bytes() && side <= limits.image_2d && side / 8 <= limits.image_3d && height_m * vpm / 8 <= limits.image_3d
 }
 
 /// Light cache entries, LIGHT_CACHE_WORDS words each in main.rs, for a card with `budget` bytes
@@ -97,14 +119,17 @@ pub struct Plan {
 /// anyway, and with it there's no frame held up making room for the next. When there isn't, the
 /// second's only there while moving on.
 pub fn plan(budget: Option<u64>, wanted_m: u32, height_m: u32, vpm: u32, render: u64) -> Plan {
+    // Nor wider than the card can hold at all, see bindable()
+    let narrowest = *WIDTHS_M.last().unwrap();
     let Some(budget) = budget else {
-        return Plan { width_m: wanted_m, keep_spare: true, light_cache_entries: light_cache_entries(u64::MAX), budget };
+        let width_m = if bindable(wanted_m, height_m, vpm) { wanted_m } else { WIDTHS_M.iter().copied().find(|&w| w <= wanted_m && bindable(w, height_m, vpm)).unwrap_or(narrowest) };
+        return Plan { width_m, keep_spare: true, light_cache_entries: light_cache_entries(u64::MAX), budget };
     };
     let light_cache_entries = light_cache_entries(budget);
     let fixed = OTHERS + render + light_cache_entries * crate::LIGHT_CACHE_WORDS * 4;
     let room = (budget as f64 * PLANNED) as u64;
     let fits = |width: u32| 2 * piece_bytes(width, height_m, vpm) + fixed <= room;
-    let width_m = WIDTHS_M.iter().copied().filter(|&w| w <= wanted_m).find(|&w| fits(w)).unwrap_or(*WIDTHS_M.last().unwrap());
+    let width_m = WIDTHS_M.iter().copied().filter(|&w| w <= wanted_m && bindable(w, height_m, vpm)).find(|&w| fits(w)).unwrap_or(narrowest);
     Plan { width_m, keep_spare: fits(width_m), light_cache_entries, budget: Some(budget) }
 }
 
@@ -129,6 +154,19 @@ mod tests {
         assert!(two.light_cache_entries < six.light_cache_entries);
         // As it turned out on the 6 GB card told it had 2 GB: about 1.6 GB used, 2 GB while moving on
         assert!(piece_bytes(two.width_m, 64, 16) + OTHERS + render + two.light_cache_entries * crate::LIGHT_CACHE_WORDS * 4 <= 3 * GB / 2, "{two:?}");
+    }
+
+    // On AMD's and Intel's cards, see limits::MIN, the widest piece fits however full of bricks
+    // it's planned for, and the most a piece has been seen to have, with a fallen city under it,
+    // 1.45 million, and all its maps fit in their images
+    #[test]
+    fn widest_pieces_fit_amd_and_intel() {
+        let most = crate::limits::MIN.buffer_bytes();
+        assert!(bricks_bytes(224, 16) <= most);
+        assert!((1_450_000 + worldgen::SPARE_BRICKS as u64) * worldgen::BRICK_WORDS as u64 * 4 <= most);
+        assert!(bindable(224, 64, 16));
+        assert_eq!(plan(None, 224, 64, 16, 0).width_m, 224);
+        assert!(most_bricks() >= 1_450_000 + worldgen::SPARE_BRICKS);
     }
 
     #[test]

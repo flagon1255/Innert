@@ -94,9 +94,11 @@ pub fn vram(device: &Device) -> Option<Vram> {
 /// with `budget` if the card can say
 pub fn card_vram(physical: &std::sync::Arc<vulkano::device::physical::PhysicalDevice>, budget: bool) -> Option<Vram> {
     let cap = VRAM_CAP.load(Ordering::Relaxed);
+    let integrated = physical.properties().device_type == vulkano::device::physical::PhysicalDeviceType::IntegratedGpu;
+    let heaps: Vec<(u64, bool)> = physical.memory_properties().memory_heaps.iter().map(|h| (h.size, h.flags.intersects(vulkano::memory::MemoryHeapFlags::DEVICE_LOCAL))).collect();
+    let counted = counted_heaps(&heaps, integrated);
     if !budget {
-        let heaps = &physical.memory_properties().memory_heaps;
-        let size: u64 = heaps.iter().filter(|h| h.flags.intersects(vulkano::memory::MemoryHeapFlags::DEVICE_LOCAL)).map(|h| h.size).sum();
+        let size: u64 = counted.iter().map(|&i| heaps[i].0).sum();
         return (size > 0).then(|| Vram { budget: (size / 5 * 4).min(cap), used: 0 });
     }
     let mut budget = ash::vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
@@ -105,16 +107,38 @@ pub fn card_vram(physical: &std::sync::Arc<vulkano::device::physical::PhysicalDe
     // SAFETY: the physical device belongs to the instance, and supports the extension, which is
     // all asking it about its memory takes
     unsafe { (fns.v1_1.get_physical_device_memory_properties2)(physical.handle(), &mut properties) };
-    let heaps = properties.memory_properties;
     let mut vram = Vram { budget: 0, used: 0 };
-    for i in 0..heaps.memory_heap_count as usize {
-        if heaps.memory_heaps[i].flags.contains(ash::vk::MemoryHeapFlags::DEVICE_LOCAL) {
+    let count = properties.memory_properties.memory_heap_count as usize;
+    for (i, &(_, own)) in heaps.iter().enumerate().take(count) {
+        if counted.contains(&i) {
             vram.budget += budget.heap_budget[i];
+        }
+        // What's used of a heap that isn't counted is still used of the same memory
+        if counted.contains(&i) || own {
             vram.used += budget.heap_usage[i];
         }
     }
     vram.budget = vram.budget.min(cap);
     (vram.budget > 0).then_some(vram)
+}
+
+/// Which of a graphics card's memory heaps, each so many bytes and whether it's the card's own,
+/// count towards what the game has room for. Graphics of the processor's own (`integrated`) use the
+/// computer's memory whichever heap it's in, as an AMD one does past the bit set aside for it: all of
+/// them. A graphics card of its own, just its own memory: a second heap of it the CPU can write to
+/// that's as big as half the first is the same memory, as AMD's are with Smart Access Memory, and
+/// isn't counted twice, while a small one, the 256 MB window of it the CPU can write to without
+/// that, is counted, as it always was on NVIDIA's.
+pub fn counted_heaps(heaps: &[(u64, bool)], integrated: bool) -> Vec<usize> {
+    if integrated {
+        return (0..heaps.len()).collect();
+    }
+    let own = || heaps.iter().enumerate().filter(|(_, h)| h.1);
+    // The first of the biggest
+    let Some((largest, &(size, _))) = own().min_by_key(|(_, h)| std::cmp::Reverse(h.0)) else {
+        return Vec::new();
+    };
+    own().filter(|&(i, h)| i == largest || h.0 < size / 2).map(|(i, _)| i).collect()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -310,4 +334,29 @@ pub fn render_bytes(render: [u32; 2], window: [u32; 2]) -> u64 {
 /// Seconds as minutes and seconds, for what's printed
 pub fn clock(seconds: f64) -> String {
     format!("{}:{:02}", (seconds / 60.0) as u64, seconds as u64 % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+
+    // The heaps NVIDIA's, AMD's and Intel's cards have, see vulkan.gpuinfo.org: the card's own memory
+    // once, however the CPU gets at it, and all of the computer's for the processor's graphics
+    #[test]
+    fn memory_is_counted_once() {
+        // An RTX 4050 laptop's with Resizable BAR: the CPU writes to the card's memory in its own heap
+        assert_eq!(counted_heaps(&[(6 * GB, true), (8 * GB, false)], false), [0]);
+        // NVIDIA's and AMD's without it: a 256 MB window the CPU can write through
+        assert_eq!(counted_heaps(&[(8 * GB, true), (16 * GB, false), (256 * MIB, true)], false), [0, 2]);
+        // AMD's with Smart Access Memory: the same memory again, as big
+        assert_eq!(counted_heaps(&[(8 * GB, true), (16 * GB, false), (8 * GB, true)], false), [0]);
+        // Intel's integrated graphics, the computer's memory as the card's own
+        assert_eq!(counted_heaps(&[(8 * GB, true)], true), [0]);
+        // AMD's, with a little set aside for it and the rest of the computer's
+        assert_eq!(counted_heaps(&[(512 * MIB, true), (8 * GB, false)], true), [0, 1]);
+        assert!(counted_heaps(&[(8 * GB, false)], false).is_empty());
+    }
 }

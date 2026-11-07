@@ -69,10 +69,16 @@ const float SUN_RADIUS = 0.045;
 const float SEARCH = 0.4;
 const float SOFTEST = 1.5;
 
-layout(push_constant) uniform PushConstants {
-    // Rendered pixel to ray, as in traverse.comp, and world to last frame's rendered pixel
+// Rendered pixel to ray, as in traverse.comp, and world to last frame's rendered pixel: the same
+// buffer as traverse.comp's View, rather than in the push constants, which have room for no more
+// than 128 bytes on AMD's graphics cards and some of Intel's. Bound with the voxels, as they too
+// are bound anew each frame.
+layout(set = 1, binding = 2) uniform View {
     mat4 pixelToRay;
     mat4 previousWorldToPixel;
+} view;
+
+layout(push_constant) uniform PushConstants {
     // xyz: towards the sun, w: how far along it the world's corner is from the map's anchor
     vec4 sun;
     // x: haze per meter at sea level, y: voxels per meter, z: sea level in voxels, w: seconds
@@ -391,7 +397,7 @@ shared uint g_known[64];
 void shade(uint index) {
     vec3 u, v;
     sunBasis(u, v);
-    vec3 camera = pc.pixelToRay[3].xyz;
+    vec3 camera = view.pixelToRay[3].xyz;
     float vpm = pc.air.y;
     uint lit = 0;
     uint known = 0;
@@ -437,7 +443,7 @@ void shade(uint index) {
 
 // The same ray as traverse.comp's through rendered pixel `pixel`, `jitter` and all
 vec3 rayThrough(vec2 pixel) {
-    return mat3(pc.pixelToRay) * vec3(pixel, 1);
+    return mat3(view.pixelToRay) * vec3(pixel, 1);
 }
 
 // How far the surface a rendered pixel sees is along its ray, in voxels, `far` for the sky
@@ -483,7 +489,7 @@ void march(ivec2 q) {
     float furthest = max(max(d0, d1), max(d2, d3));
 
     vec3 dir = normalize(rayThrough(vec2(full) + 0.5 + jitter));
-    vec3 origin = pc.pixelToRay[3].xyz;
+    vec3 origin = view.pixelToRay[3].xyz;
     vec3 u, v;
     sunBasis(u, v);
     // Along the ray everything changes evenly, so only its start and how it changes are needed
@@ -602,8 +608,8 @@ void resolve(ivec2 q) {
         float vpm = pc.air.y;
         vec2 jitter = pixelJitter(pc.info.y);
         vec3 dir = normalize(rayThrough(vec2(q * 2) + 0.5 + jitter));
-        vec3 world = pc.pixelToRay[3].xyz + dir * now.z * vpm;
-        vec4 then = pc.previousWorldToPixel * vec4(world, 1);
+        vec3 world = view.pixelToRay[3].xyz + dir * now.z * vpm;
+        vec4 then = view.previousWorldToPixel * vec4(world, 1);
         vec2 pixel = then.xy / then.z;
         vec2 pos = (pixel - 0.5 - pixelJitter(pc.info.y - 1)) * 0.5;
         if (then.z > 0 && all(greaterThanEqual(pos, vec2(-0.5))) && all(lessThan(pos, vec2(size) - 0.5))) {

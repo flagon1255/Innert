@@ -149,6 +149,7 @@ impl Preset {
 pub fn suited(name: &str, vendor: u32, discrete: bool, memory: u64) -> Preset {
     const NVIDIA: u32 = 0x10de;
     const AMD: u32 = 0x1002;
+    const INTEL: u32 = 0x8086;
     let name = name.to_ascii_lowercase();
     // The first number in the name past a word like "rtx", so "geforce rtx 4050 laptop gpu" is 4050
     let model = |after: &str| -> Option<u32> {
@@ -186,11 +187,27 @@ pub fn suited(name: &str, vendor: u32, discrete: bool, memory: u64) -> Preset {
                 6600..=6799 | 5600..=5999 | 7000..=7699 => Preset::High,
                 _ => Preset::Ultra,
             }
+        } else if name.contains("vega") || name.contains("radeon vii") {
+            // RX Vega 56 and 64 and the Radeon VII, about a GTX 1070 to 1080
+            Preset::Medium
         } else {
             Preset::Low
         }
-    } else if name.contains("arc") {
-        Preset::Medium
+    } else if vendor == INTEL && name.contains("arc") {
+        // Arc A310 to A770 and B570 and B580, by the letter and number past "Arc(TM)"
+        let model = name.split(|c: char| !c.is_ascii_alphanumeric()).find_map(|word| {
+            let digits = word.strip_prefix('a').or_else(|| word.strip_prefix('b'))?;
+            digits.get(..3).filter(|d| d.chars().all(|c| c.is_ascii_digit())).and_then(|d| d.parse::<u32>().ok())
+        });
+        match model {
+            // A310 to A370M, about a GTX 1050
+            Some(0..=379) => Preset::Low,
+            // A380, about a GTX 1650
+            Some(380..=499) => Preset::Medium,
+            // A580 to A770 and the B-series, about an RTX 3060 to 4060
+            Some(_) => Preset::High,
+            None => Preset::Medium,
+        }
     } else {
         Preset::Low
     };
@@ -245,7 +262,25 @@ mod tests {
         assert_eq!(suited("AMD Radeon RX 470", 0x1002, true, 4 * GB), Preset::Low);
         assert_eq!(suited("AMD Radeon RX 6600", 0x1002, true, 8 * GB), Preset::High);
         assert_eq!(suited("Intel(R) Iris(R) Xe Graphics", 0x8086, false, 2 * GB), Preset::Low);
-        assert_eq!(suited("Intel(R) Arc(TM) A770 Graphics", 0x8086, true, 16 * GB), Preset::Medium);
+        assert_eq!(suited("Intel(R) Arc(TM) A770 Graphics", 0x8086, true, 16 * GB), Preset::High);
+        // AMD's and Intel's of a GTX 960's age and up, as their drivers name them under Windows
+        assert_eq!(suited("Radeon RX 570 Series", 0x1002, true, 4 * GB), Preset::Low);
+        assert_eq!(suited("AMD Radeon RX 580 2048SP", 0x1002, true, 8 * GB), Preset::Low);
+        assert_eq!(suited("Radeon RX Vega", 0x1002, true, 8 * GB), Preset::Medium);
+        assert_eq!(suited("AMD Radeon RX 5700 XT", 0x1002, true, 8 * GB), Preset::High);
+        assert_eq!(suited("AMD Radeon RX 6500 XT", 0x1002, true, 4 * GB), Preset::Medium);
+        assert_eq!(suited("AMD Radeon RX 7900 XTX", 0x1002, true, 24 * GB), Preset::Ultra);
+        assert_eq!(suited("AMD Radeon(TM) Graphics", 0x1002, false, 512 << 20), Preset::Low);
+        assert_eq!(suited("AMD Radeon 780M Graphics", 0x1002, false, 2 * GB), Preset::Low);
+        assert_eq!(suited("Intel(R) UHD Graphics 620", 0x8086, false, 4 * GB), Preset::Low);
+        assert_eq!(suited("Intel(R) RaptorLake-S Mobile Graphics Controller", 0x8086, false, 8 * GB), Preset::Low);
+        // Meteor Lake's integrated graphics are called Arc too
+        assert_eq!(suited("Intel(R) Arc(TM) Graphics", 0x8086, false, 8 * GB), Preset::Low);
+        assert_eq!(suited("Intel(R) Arc(TM) A380 Graphics", 0x8086, true, 6 * GB), Preset::Medium);
+        assert_eq!(suited("Intel(R) Arc(TM) A370M Graphics", 0x8086, true, 4 * GB), Preset::Low);
+        assert_eq!(suited("Intel(R) Arc(TM) B580 Graphics", 0x8086, true, 12 * GB), Preset::High);
+        // Only Intel's are Arc
+        assert_eq!(suited("Searchlight GPU", 0x1234, true, 8 * GB), Preset::Low);
         // However fast, without the memory for more
         assert_eq!(suited("NVIDIA GeForce RTX 3080", 0x10de, true, 4 * GB), Preset::Medium);
     }

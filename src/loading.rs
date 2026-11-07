@@ -6,19 +6,29 @@
 use std::f32::consts::{PI, TAU};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, LayerId, Mesh, Pos2, Rect, Shape, Stroke, pos2, vec2};
 use egui_winit_vulkano::{Gui, GuiConfig};
+use std::ops::Range;
+
 use vulkano::{
-    Validated, VulkanError,
+    DeviceSize, Validated, VulkanError,
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyImageToBufferInfo},
-    image::view::{ImageView, ImageViewCreateInfo},
+    device::{Device, DeviceOwned, Queue},
+    image::{
+        Image, ImageLayout,
+        view::{ImageView, ImageViewCreateInfo},
+    },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
     swapchain::{Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo, acquire_next_image},
-    sync::{self, GpuFuture},
+    sync::{
+        self, GpuFuture,
+        future::{AccessCheckError, SemaphoreSignalFuture, SubmitAnyBuilder},
+    },
 };
 use winit::{
     application::ApplicationHandler,
@@ -255,6 +265,100 @@ pub struct Screen {
     pub gui: Gui,
     pub previous_frame_end: Option<Box<dyn GpuFuture>>,
     pub recreate_swapchain: bool,
+    pub presented: Presented,
+}
+
+/// The semaphore each of the window's images was last shown once it said it was drawn, see Drawn,
+/// kept till that image comes round again: showing it may wait on the semaphore till then, so it
+/// mustn't go back to vulkano's pool for another frame to signal before, see
+/// https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html
+#[derive(Default)]
+pub struct Presented(Vec<Option<Signal>>);
+
+impl Presented {
+    /// `image` has come round again: what it was last shown with can go
+    pub fn acquired(&mut self, image: u32) {
+        if let Some(slot) = self.0.get_mut(image as usize) {
+            *slot = None;
+        }
+    }
+
+    /// `image` is being shown once `drawn` is
+    pub fn showing(&mut self, image: u32, drawn: Signal) {
+        let i = image as usize;
+        if self.0.len() <= i {
+            self.0.resize_with(i + 1, || None);
+        }
+        self.0[i] = Some(drawn);
+    }
+}
+
+/// A frame, then a semaphore signaled once it's drawn, which showing it waits on. Without, vulkano
+/// shows it straight after it's sent, which Vulkan doesn't promise waits for it to be drawn, and
+/// which the validation layers' synchronization checks call a hazard
+/// (SYNC-HAZARD-PRESENT-AFTER-WRITE). Shared, so the semaphore can be kept, see Presented: just as
+/// vulkano's own otherwise.
+pub struct Drawn(Signal);
+
+/// A frame's semaphore that it's drawn, as kept, see Drawn
+pub type Signal = Rc<SemaphoreSignalFuture<Box<dyn GpuFuture>>>;
+
+impl Drawn {
+    pub fn after(frame: Box<dyn GpuFuture>) -> Self {
+        Drawn(Rc::new(frame.then_signal_semaphore()))
+    }
+
+    /// To keep, see Presented
+    pub fn semaphore(&self) -> Signal {
+        self.0.clone()
+    }
+}
+
+unsafe impl DeviceOwned for Drawn {
+    fn device(&self) -> &Arc<Device> {
+        self.0.device()
+    }
+}
+
+// SAFETY: all just as the semaphore's future, but for cleaning up after it while it's kept
+unsafe impl GpuFuture for Drawn {
+    fn cleanup_finished(&mut self) {
+        if let Some(future) = Rc::get_mut(&mut self.0) {
+            future.cleanup_finished();
+        }
+    }
+
+    unsafe fn build_submission(&self) -> Result<SubmitAnyBuilder, Validated<VulkanError>> {
+        unsafe { self.0.build_submission() }
+    }
+
+    fn flush(&self) -> Result<(), Validated<VulkanError>> {
+        self.0.flush()
+    }
+
+    unsafe fn signal_finished(&self) {
+        unsafe { self.0.signal_finished() }
+    }
+
+    fn queue_change_allowed(&self) -> bool {
+        self.0.queue_change_allowed()
+    }
+
+    fn queue(&self) -> Option<Arc<Queue>> {
+        self.0.queue()
+    }
+
+    fn check_buffer_access(&self, buffer: &Buffer, range: Range<DeviceSize>, exclusive: bool, queue: &Queue) -> Result<(), AccessCheckError> {
+        self.0.check_buffer_access(buffer, range, exclusive, queue)
+    }
+
+    fn check_image_access(&self, image: &Image, range: Range<DeviceSize>, exclusive: bool, expected_layout: ImageLayout, queue: &Queue) -> Result<(), AccessCheckError> {
+        self.0.check_image_access(image, range, exclusive, expected_layout, queue)
+    }
+
+    fn check_swapchain_image_acquired(&self, swapchain: &Swapchain, image_index: u32, before: bool) -> Result<(), AccessCheckError> {
+        self.0.check_swapchain_image_acquired(swapchain, image_index, before)
+    }
 }
 
 /// What the loader thread tells the loading screen
@@ -545,6 +649,7 @@ impl Loading {
             gui,
             previous_frame_end: Some(sync::now(gpu.device.clone()).boxed()),
             recreate_swapchain: false,
+            presented: Presented::default(),
         });
         if self.drawn {
             // Everything moving in it starts from now, fading in over the night sky's color
@@ -629,6 +734,7 @@ impl Loading {
             }
             Err(e) => panic!("failed to acquire next image: {e}"),
         };
+        screen.presented.acquired(image_index);
         if suboptimal {
             screen.recreate_swapchain = true;
         }
@@ -672,7 +778,11 @@ impl Loading {
             None => drawn,
         };
 
+        // Shown once it's drawn, see Drawn
+        let drawn = Drawn::after(drawn);
+        let semaphore = drawn.semaphore();
         let frame_end = drawn
+            .boxed()
             .then_swapchain_present(gpu.queue.clone(), SwapchainPresentInfo::swapchain_image_index(screen.swapchain.clone(), image_index))
             .then_signal_fence_and_flush();
         match frame_end.map_err(Validated::unwrap) {
@@ -685,6 +795,7 @@ impl Loading {
                     frame_end.wait(None).unwrap();
                     save_screen(buffer, image.extent(), image.format(), path);
                 }
+                screen.presented.showing(image_index, semaphore);
                 screen.previous_frame_end = Some(frame_end.boxed());
             }
             Err(VulkanError::OutOfDate) => {
