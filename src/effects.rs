@@ -303,10 +303,10 @@ fn palette(element: Option<Element>) -> Palette {
     use Element::*;
     let p = |white, hot, glow, ember, edge, dark, light| Palette { white, hot, glow, ember, edge, dark, light };
     match element {
-        // Powder: a fireball going to rust, grey smoke and dust
-        None => p(FLAME, GLOW_HOLY, GLOW_FIRE, GLOW_BLOOD, FUR_RED, FUR_GRAY, CLAY),
-        // Flame going to black smoke
-        Some(Fire) => p(FLAME, GLOW_HOLY, GLOW_FIRE, GLOW_BLOOD, LEAVES_ORANGE, BARK_DARK, MORTAR),
+        // Powder: a fireball going to rust and pale powder smoke
+        None => p(FLAME, GLOW_HOLY, GLOW_FIRE, GLOW_BLOOD, FUR_RED, CLAY, FUR_WHITE),
+        // Flame going to dark smoke
+        Some(Fire) => p(FLAME, GLOW_HOLY, GLOW_FIRE, GLOW_BLOOD, LEAVES_ORANGE, MORTAR, FUR_GRAY),
         // Cold light going to ice and mist
         Some(Frost) => p(GLOW_STORM, CRYSTAL, GLOW_FROST, CRYSTAL, ICE, ICE, FOAM),
         // Lightning in a thundercloud
@@ -363,11 +363,11 @@ const STAGES: [Stage; BLAST_STAGES] = [
     Stage { swell: 0.5, lumps: 0.14, broken: 0.0, kept: 1.0, hollow: 0.0, heat: 1.8, falloff: 0.7, smoke: 0.0, embers: 0.0, rise: 0.0 },
     Stage { swell: 0.78, lumps: 0.22, broken: 0.0, kept: 1.0, hollow: 0.0, heat: 1.5, falloff: 0.85, smoke: 0.2, embers: 0.0, rise: 0.0 },
     Stage { swell: 0.95, lumps: 0.27, broken: 0.07, kept: 1.0, hollow: 0.0, heat: 1.38, falloff: 0.9, smoke: 0.4, embers: 0.0, rise: 0.03 },
-    Stage { swell: 1.05, lumps: 0.3, broken: 0.26, kept: 0.94, hollow: 0.5, heat: 1.1, falloff: 0.9, smoke: 0.5, embers: 0.05, rise: 0.07 },
-    Stage { swell: 1.12, lumps: 0.31, broken: 0.46, kept: 0.84, hollow: 0.62, heat: 0.78, falloff: 0.85, smoke: 0.55, embers: 0.06, rise: 0.12 },
-    Stage { swell: 1.18, lumps: 0.32, broken: 0.64, kept: 0.72, hollow: 0.7, heat: 0.48, falloff: 0.8, smoke: 0.55, embers: 0.05, rise: 0.17 },
-    Stage { swell: 1.24, lumps: 0.33, broken: 0.76, kept: 0.58, hollow: 0.74, heat: 0.22, falloff: 0.75, smoke: 0.55, embers: 0.03, rise: 0.22 },
-    Stage { swell: 1.3, lumps: 0.34, broken: 0.86, kept: 0.45, hollow: 0.78, heat: 0.0, falloff: 0.7, smoke: 0.55, embers: 0.0, rise: 0.27 },
+    Stage { swell: 1.05, lumps: 0.3, broken: 0.3, kept: 0.9, hollow: 0.5, heat: 1.1, falloff: 0.9, smoke: 0.5, embers: 0.05, rise: 0.07 },
+    Stage { swell: 1.12, lumps: 0.31, broken: 0.55, kept: 0.74, hollow: 0.62, heat: 0.78, falloff: 0.85, smoke: 0.55, embers: 0.06, rise: 0.12 },
+    Stage { swell: 1.18, lumps: 0.32, broken: 0.72, kept: 0.56, hollow: 0.7, heat: 0.48, falloff: 0.8, smoke: 0.55, embers: 0.05, rise: 0.17 },
+    Stage { swell: 1.24, lumps: 0.33, broken: 0.82, kept: 0.42, hollow: 0.74, heat: 0.22, falloff: 0.75, smoke: 0.55, embers: 0.03, rise: 0.22 },
+    Stage { swell: 1.3, lumps: 0.34, broken: 0.9, kept: 0.3, hollow: 0.78, heat: 0.0, falloff: 0.7, smoke: 0.55, embers: 0.0, rise: 0.27 },
 ];
 
 /// The value of `f` that `share` of the points in a ball `radius` round fall under
@@ -405,8 +405,8 @@ fn blast(look: usize, stage: usize) -> (Model, Vector3<f64>) {
     // Void draws in on itself first, see implode(), then bursts as a thin shell of light broken
     // into shards round its dark heart
     let (hollow, broken) = match stage {
-        2 if void => (0.84, 0.42),
-        3 if void => (0.86, 0.58),
+        2 if void => (0.8, 0.5),
+        3 if void => (0.84, 0.66),
         _ => (st.hollow, st.broken),
     };
     if !(void && stage < 2) {
@@ -415,10 +415,12 @@ fn blast(look: usize, stage: usize) -> (Model, Vector3<f64>) {
         let fire = element == Some(Fire);
         // Venom squats low and sinks rather than rising
         let (squat, rise) = if element == Some(Poison) { (1.3, -st.rise * 0.6) } else { (1.0, st.rise) };
+        // As far as its surface can reach, so the noise needn't be worked out further out
+        let furthest = (swell * (1.0 + st.lumps + 0.13) * if fire { 1.55 } else { 1.0 }).min(BLAST_REACH);
         g.fill(|p, h| {
             let q = [p[0], p[1], (p[2] - rise) * squat];
             let r = length(q);
-            if r > BLAST_REACH {
+            if r > furthest {
                 return AIR;
             }
             let n = if r > 1e-6 { scale(q, 1.0 / r) } else { [0.0, 0.0, 1.0] };
@@ -446,9 +448,12 @@ fn blast(look: usize, stage: usize) -> (Model, Vector3<f64>) {
             if void {
                 return void_shade(stage, fbm(scale(q, 3.3), seed ^ 0x7e1), grain);
             }
-            // Powder throws up dust from under it
+            // Powder throws up dust from under it; fire's smoke is blackest at its top
             if element.is_none() && stage >= 2 && unit(hash(h ^ 0xd057)) < 2.5 * (-q[2] / surface - 0.3) {
-                return pal.light;
+                return DIRT;
+            }
+            if fire && stage >= 3 && q[2] / surface > 0.45 && grain > -0.15 {
+                return BARK_DARK;
             }
             let heat = st.heat - st.falloff * depth.powf(1.5) + 0.34 * billow - st.smoke * (q[2] / surface).max(0.0);
             pal.at(heat, grain)
@@ -473,10 +478,10 @@ fn blast(look: usize, stage: usize) -> (Model, Vector3<f64>) {
 /// noise that's near 0 along the veins.
 fn void_shade(stage: usize, vein: f64, grain: f64) -> u8 {
     if stage <= 3 {
-        return if vein.abs() < 0.09 {
+        return if vein.abs() < 0.07 {
             GLOW_ARCANE
-        } else if grain < -0.22 {
-            FUR_DARK
+        } else if grain < -0.02 {
+            if grain < -0.2 { OBSIDIAN } else { FUR_DARK }
         } else {
             GLOW_VOID
         };
@@ -786,12 +791,12 @@ fn blast_ring(look: usize) -> (Model, Vector3<f64>) {
         Some(Blood) => [CLOTH, LEAVES_CRIMSON, GLOW_BLOOD, MEAT],
         Some(Holy) => [GOLD, WAX, GLOW_HOLY, LINEN],
     };
-    let mut g = Grid::span([-1.2, -1.2, -0.05], [1.2, 1.2, 0.22], BLAST_RING_RES);
+    let mut g = Grid::span([-1.25, -1.25, -0.05], [1.25, 1.25, 0.32], BLAST_RING_RES);
     let mut s = 0x41a7 + look as u32;
-    for k in 0..84 {
-        let a = (k as f64 + random(&mut s) * 0.7) / 84.0 * TAU;
+    for k in 0..72 {
+        let a = (k as f64 + random(&mut s) * 0.7) / 72.0 * TAU;
         let r = 1.0 + (random(&mut s) - 0.5) * 0.1;
-        let size = 0.022 + 0.03 * random(&mut s);
+        let size = 0.04 + 0.045 * random(&mut s);
         let material = match k % 9 {
             0 | 5 => m[2],
             1 | 4 | 7 => m[1],
@@ -942,20 +947,27 @@ fn moon() -> (Model, Vector3<f64>) {
             (d, 0.08 + 0.17 * random(&mut s).powi(2))
         })
         .collect();
+    // How far round each crater reaches, and its rim, as 1 less the cosine of the angle
+    let craters: Vec<([f64; 3], f64, f64)> = craters.into_iter().map(|(c, size)| (c, 1.0 - size.cos(), 1.0 - (size * 1.3).cos())).collect();
     let mut g = Grid::round(1.16, MOON_RES);
     g.fill(|p, h| {
         let r = length(p);
-        if r < 0.85 {
+        // Deep inside, or round the back, it's never seen
+        if r < 0.92 || (p[2] < -0.1 * r && r <= 1.0) {
             return LEAVES_CRIMSON;
         }
         let n = scale(p, 1.0 / r);
+        // Off its surface, the halo's only round its edge
+        if r > 1.035 && n[2].abs() >= 0.32 {
+            return AIR;
+        }
         // In a crater, lower, or on its rim, higher
         let (mut dent, mut rim) = (0.0f64, false);
-        for &(c, size) in &craters {
-            let angle = (n[0] * c[0] + n[1] * c[1] + n[2] * c[2]).clamp(-1.0, 1.0).acos();
-            if angle < size {
-                dent = dent.max(0.06 * (1.0 - (angle / size).powi(2)));
-            } else if angle < size * 1.3 {
+        for &(c, inner, outer) in &craters {
+            let off = 1.0 - (n[0] * c[0] + n[1] * c[1] + n[2] * c[2]);
+            if off < inner {
+                dent = dent.max(0.06 * (1.0 - off / inner));
+            } else if off < outer {
                 rim = true;
             }
         }
@@ -1022,7 +1034,8 @@ pub fn orb(element: Option<Element>) -> (Model, Vector3<f64>) {
         Some(Arcane) => (GLOW_HOLY, GLOW_HOLY, GLOW_ARCANE, GLOW_VOID, CRYSTAL),
         // Dark, light swirling through it
         Some(Void) => (GLOW_ARCANE, GLOW_VOID, OBSIDIAN, GLOW_ARCANE, FUR_DARK),
-        Some(Blood) => (GLOW_BLOOD, GLOW_BLOOD, CLOTH, LEAVES_CRIMSON, MEAT),
+        // Dark blood, glowing bands swirling through it
+        Some(Blood) => (GLOW_BLOOD, GLOW_BLOOD, LEAVES_CRIMSON, CLOTH, MEAT),
         Some(Holy) => (FLAME, FLAME, GLOW_HOLY, GOLD, WAX),
     };
     let seed = 0x0f1e ^ element.map_or(0, |e| e as u32 + 1).wrapping_mul(0x9e37);
