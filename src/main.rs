@@ -4060,6 +4060,30 @@ impl App {
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
             }
+            // A pool of each element and one of churned earth laid out over the ground ahead, all
+            // at once, to watch them spread out, go on, die down and leave their marks, and laid
+            // out again every 250 frames, for timing them
+            ("pools", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.62;
+                }
+                if f >= 20 && (f - 20) % 250 == 0 {
+                    self.game.lay_pools(&self.world, eye, look);
+                }
+            }
+            // One spell cast level out over the land ahead, the view narrowed to follow it a long
+            // way off, to see it fly on and on
+            ("far", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = 0.03;
+                    self.camera.fov = 22.0;
+                }
+                let cast = (30..33).contains(&f);
+                self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+                if f % 15 == 0 {
+                    println!("frame {frame}: {}", self.game.in_flight(eye));
+                }
+            }
             // One spell cast at the ground a few meters ahead, to watch it go off and what it leaves
             ("spells", f) => {
                 if f == 1 {

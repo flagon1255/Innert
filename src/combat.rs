@@ -14,13 +14,13 @@ use crate::audio::{Cue, Sound};
 use crate::effects::{BLAST_LIVE, BLAST_REACH, BLAST_RES, BLAST_RING_RES, BLAST_RINGS, BLAST_STAGES, BLASTS, ICE_RES, ICE_STAGES, MOON, MOON_RES, PILLAR_RES, PILLAR_STAGES, STREAK_RES, STREAKS, blast_stage, leaves_smoke};
 use crate::player::WaterLevel;
 use crate::weapons::{
-    ARM_RES, ARMS, ARROW_HEADS, ARROW_RES, BOLT_RES, BOMB_RES, BOULDER, Build, CLOUD_RES, PUDDLE_RES, QUARREL_HEADS, SLOT_BOMB, SLOT_CLOUD, SLOT_PUDDLE, TWISTER, WAVE, CROSSBOW_SPANNED, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES,
+    ARM_RES, ARMS, ARROW_HEADS, ARROW_RES, BOLT_RES, BOMB_RES, BOULDER, Build, CLOUD_RES, PUDDLE_RES, QUARREL_HEADS, SLOT_BOMB, SLOT_CLOUD, SLOT_POOL_SPENT, SLOT_PUDDLE, TWISTER, WAVE, CROSSBOW_SPANNED, DROP_ASH, DROP_BLOOD, DROP_EMBER, DROP_GOLD, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, ELEMENT_LOOKS, Effect, Element, FINE_SPARK_RES,
     GUN_COCKED, GUN_FIRED, HELD_ARROW_RES, ICE_BURST, Kind, LASH_CHAIN, LASH_CRACKERS, LASH_HEMP, LASH_RES, LASH_SEGMENTS, LASH_TAPERS, MUZZLE, MUZZLE_RES, NET, PILLAR, Profile, QUARREL_HARPOON, QUARREL_HEAD, RING, RING_RES, ROOTS, RUNE, SHELL, SHOT_RES, SLOT_ARROW, SLOT_BOLT,
     SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_HELD_QUARREL, SLOT_QUARREL, SLOT_SHOT, SLOT_SMOKE, SLOT_SPARK, SMOKE_RES, SPARK_RES, STONE_PILLAR, Shot, Special, Style, Synergy, THORN, WEB, Weapon, effect_models, Heavy,
     Casting, Finish, Knack, COIL, SERPENT,
 };
 use crate::weapons::{Burst, CRACKER_HOOK};
-use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, MOSS, OBSIDIAN, SNOW};
+use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, LIMESTONE, MOSS, OBSIDIAN, SNOW, TEMPLE_TEAL};
 use crate::worldgen::{World, is_passable};
 
 pub const MAX_MANA: f64 = 100.0;
@@ -269,7 +269,15 @@ struct Projectile {
     pierce: u32,
     /// Animals it went through already
     hit: Vec<u32>,
-    life: f64,
+    /// How far it's flown, and how far it flies true, in voxels. Nothing in flight runs out of
+    /// time: it flies on till it strikes something or leaves the world, see lost(). Only a
+    /// blunderbuss's shot is spent past its range, dropping short, and a harpoon's line only pays
+    /// out so far, see Combat::fly().
+    flown: f64,
+    range: f64,
+    /// How far round it's turned after what it's homing in on, in radians: past MOST_STEER it's
+    /// lost what it was after and flies straight on, so it never circles round and round
+    steered: f64,
     /// Which arrowhead, see weapons::ARROW_HEADS
     head: usize,
     /// Shot from a bow drawn all the way, so it streaks
@@ -335,6 +343,75 @@ enum Trick {
     /// where it got to, or with `sky` round `target`, coming down out of the sky. With no special
     /// attack it's only a tracer, showing where one went.
     Carry { special: Option<Special>, aim: Vector3<f64>, target: Vector3<f64>, sky: bool },
+}
+
+impl Projectile {
+    /// The world moved over by `shift` voxels
+    fn recenter(&mut self, shift: Vector3<f64>) {
+        self.position -= shift;
+        if let Trick::Net(at) | Trick::Comet(at) | Trick::Rocket(at) = &mut self.trick {
+            *at -= shift;
+        }
+        if let Trick::Carry { aim, target, .. } = &mut self.trick {
+            *aim -= shift;
+            *target -= shift;
+        }
+    }
+
+    /// Turned `turn` of the way, 0-1, towards `to`, if it hasn't already turned as far after
+    /// things as it ever does, see MOST_STEER
+    fn steer(&mut self, to: Vector3<f64>, turn: f64) {
+        let Some(direction) = self.velocity.try_normalize(1e-9) else {
+            return;
+        };
+        let Some(turned) = direction.lerp(&to.normalize(), turn).try_normalize(1e-9) else {
+            return;
+        };
+        self.steered += direction.dot(&turned).clamp(-1.0, 1.0).acos();
+        self.velocity = turned * self.velocity.norm();
+    }
+
+    /// Whether it's still homing in on what it's after, or has lost it and flies straight on
+    fn steering(&self) -> bool {
+        self.steered < MOST_STEER
+    }
+}
+
+/// How far round anything in flight turns after what it's homing in on, in all, before it's lost
+/// it and flies straight on: enough to come round onto something it's passed, never enough to
+/// circle it for ever
+const MOST_STEER: f64 = 1.5 * PI;
+/// The most things in flight at once. Past it, the furthest off and out of sight go first.
+const MOST_PROJECTILES: usize = 192;
+/// The most arrows, bolts and thorns left stuck in where they landed, and the seconds one takes to
+/// sink away into what it's stuck in as it goes
+const MOST_STUCK: usize = 40;
+const STUCK_SINK: f64 = 0.8;
+/// A blunderbuss's shot past its range: how much of its speed it keeps, how much more it falls
+/// than things do, and how much of its damage it still does, dropping short just past it
+const SPENT_PACE: f64 = 0.18;
+const SPENT_GRAVITY: f64 = 4.0;
+const SPENT_POWER: f64 = 0.25;
+
+/// How far from the eye anything's ever seen in `world`, in voxels: never further than its edge
+/// is from the middle less a strip, as it moves on a strip at a time once the eye's half a strip
+/// off its middle, and things fade into the sky short of there, see main::fade_distance()
+fn seen_within(world: &World) -> f64 {
+    let vpm = world.voxels_per_meter as f64;
+    (world.size[0].min(world.size[1]) as f64 * 0.5 - crate::stream::STRIP_M as f64 * vpm).max(16.0 * vpm)
+}
+
+/// Whether something flying at `at` has gone out of `world` where it's never seen again: past its
+/// edge, where everything's faded into the sky, or up over its top and further off from `eye` than
+/// anything's seen, never to come back down, which `returns` says it will: falling, coming down
+/// already, or on its way somewhere in the world. Over the top, nothing's to be hit, and what
+/// doesn't fall goes on up out of sight.
+fn lost(world: &World, eye: Vector3<f64>, at: Vector3<f64>, returns: bool) -> bool {
+    let [sx, sy, sz] = world.size.map(f64::from);
+    if at.x < 0.0 || at.y < 0.0 || at.x >= sx || at.y >= sy {
+        return true;
+    }
+    !returns && at.z >= sz && (at - eye).norm() > seen_within(world)
 }
 
 /// When a special attack's let go of, see Combat::let_go()
@@ -1064,8 +1141,12 @@ struct Lingering {
     position: Vector3<f64>,
     /// In meters
     radius: f64,
+    /// Seconds left of it, and how long it was to last in all, for a pool spreading out as it's
+    /// left and dying down as it goes, see pool_look()
     life: f64,
-    element: Element,
+    lifetime: f64,
+    /// None for the churned earth a weapon without an element leaves
+    element: Option<Element>,
     profile: Rc<Profile>,
     /// How much each tick of it hurts, and how long until the next
     damage: f64,
@@ -1079,8 +1160,86 @@ struct Lingering {
     /// A cloud hanging in the air, billowing, rather than something lying on the ground: what a
     /// censer leaves, or what something killed by miasma bursts into
     cloud: bool,
-    /// A pool left by a weapon's effect, drawn as a puddle of its element lying on the ground
+    /// A pool left by a weapon's effect, drawn as a pool of its element lying on the ground, see
+    /// weapons::pool(), and whether it's left its mark on the ground under it yet
     pool: bool,
+    marked: bool,
+}
+
+impl Lingering {
+    /// `element` left `radius` meters round `position` for `life` seconds, hurting what's in it for
+    /// `damage` a tick: lying low over the ground, not a pool or a cloud
+    fn new(position: Vector3<f64>, radius: f64, life: f64, element: Option<Element>, profile: &Rc<Profile>, damage: f64) -> Lingering {
+        Lingering { position, radius, life, lifetime: life, element, profile: profile.clone(), damage, tick: 0.0, effects: false, collapse: 0.0, tall: false, cloud: false, pool: false, marked: false }
+    }
+
+    /// Seconds since it was left
+    fn age(&self) -> f64 {
+        self.lifetime - self.life
+    }
+}
+
+/// Seconds a pool takes to spread out as it's left, and to die down as it goes
+const POOL_SPREAD: f64 = 0.4;
+const POOL_FADE: f64 = 1.2;
+/// How far into a pool's life it leaves its mark on the ground under it, 0-1: once it's spread out
+/// over it, so the mark's hidden under it till it's dying down
+const POOL_MARK: f64 = 0.35;
+
+/// How a pool of `element` `age` seconds old with `left` to go is drawn, and with `time` the
+/// fight's clock and `key` something of its own so no two go alike: how big next to its radius,
+/// how far down it's sunk into the ground in meters next to its radius, which way round it's
+/// turned, and whether it's spent, dying down, see weapons::SLOT_POOL_SPENT.
+///
+/// Each spreads out as it's left, a little past its size and back, and lives a while, each its
+/// own way: fire flickers, venom bubbles, a fork of lightning jumps round, a sigil and runes turn
+/// slowly, the void swirls in, blood spreads. Then each dies down, never just gone: embers burn
+/// out to ash, sinking; ice melts away; venom and blood soak in; the scorch fades; the sigil and
+/// runes draw in on themselves, the void faster and faster, collapsing; the earth settles. By the
+/// end it's down under the ground, or all but gone.
+fn pool_look(element: Option<Element>, age: f64, left: f64, time: f64, key: f64) -> (f64, f64, f64, bool) {
+    use Element::*;
+    // Spreading out, past its size and back
+    let t = (age / POOL_SPREAD).clamp(0.0, 1.0);
+    let (c1, c3) = (1.2, 2.2);
+    let spread = 0.12 + 0.88 * (1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2));
+    // Dying down, 0 till it does, 1 as it's gone
+    let d = (1.0 - left / POOL_FADE).clamp(0.0, 1.0);
+    let ease = d * d * (3.0 - 2.0 * d);
+    let base = key * 7.3;
+    let (size, sink, turn) = match element {
+        Some(Fire) => (1.0 + 0.025 * (time * 13.0 + base).sin() - 0.4 * ease, 0.16 * ease, 0.0),
+        Some(Frost) => (1.0 - 0.72 * ease, 0.08 * ease, 0.0),
+        Some(Poison) => (1.0 + 0.03 * (time * 5.0 + base).sin() * (1.0 - d) - 0.25 * ease, 0.18 * ease.powf(1.5), 0.0),
+        // Jumping round a little now and then, as lightning does
+        Some(Storm) => (1.0 - 0.45 * ease, 0.15 * ease, ((time * 8.0 + base).floor() * 2.4).sin() * 0.25),
+        Some(Holy) => (1.0 + 0.03 * (time * 3.0 + base).sin() - 0.85 * ease * ease, 0.05 * ease, time * 0.5 + 1.6 * ease),
+        Some(Void) => (1.0 - 0.9 * ease, 0.06 * ease, time * 1.6 + 6.0 * ease * ease),
+        Some(Blood) => (1.0 + 0.1 * (age / (age + left).max(1e-6)) - 0.15 * ease, 0.2 * ease, 0.0),
+        Some(Arcane) => (1.0 + 0.02 * (time * 4.0 + base).sin() - 0.75 * ease, 0.05 * ease, -time * 0.8 - 2.5 * ease),
+        None => (1.0 - 0.1 * ease, 0.2 * ease, 0.0),
+    };
+    (spread * size.max(0.05), sink, base + turn, d > 0.18)
+}
+
+/// What a pool of `element` leaves on the ground once it's gone, painted on as it lies there: how
+/// big a mark next to its own radius, of what, and whether it burns off what grows there. Modest,
+/// ragged at the edge: scorch for fire and lightning, frost, venom killing the grass, a pale ring
+/// for holy light, blackened ground for the void, blood, the stone a little blue for arcane
+/// magic, churned earth.
+fn pool_mark(element: Option<Element>) -> (f64, u8, bool) {
+    use Element::*;
+    match element {
+        Some(Fire) => (0.75, BARK_DARK, true),
+        Some(Frost) => (0.8, SNOW, false),
+        Some(Poison) => (0.7, MOSS, true),
+        Some(Storm) => (0.5, BARK_DARK, true),
+        Some(Holy) => (0.6, LIMESTONE, false),
+        Some(Void) => (0.55, OBSIDIAN, true),
+        Some(Blood) => (0.65, CLOTH, false),
+        Some(Arcane) => (0.5, TEMPLE_TEAL, false),
+        None => (0.75, DIRT, true),
+    }
 }
 
 /// Seconds after an explosion blows a hole before another can, so a pack going up at once
@@ -1787,6 +1946,8 @@ pub struct Combat {
     mana_warning: f64,
     /// Voxels per meter of the world, as of the last update
     vpm: f64,
+    /// How far off anything's seen at all, in voxels, as of the last update, see seen_within()
+    seen: f64,
     rng: u32,
 }
 
@@ -4700,14 +4861,16 @@ impl Combat {
             time: 0.0,
             mana_warning: 0.0,
             vpm: 8.0,
+            seen: f64::INFINITY,
             rng: hash(seed ^ 0xc0b47),
         }
     }
 
     /// The world moved over by `shift` voxels
     pub fn recenter(&mut self, shift: Vector3<f64>) {
-        for p in &mut self.projectiles {
-            p.position -= shift;
+        // What's in flight, and what's about to be, as an echo's shots
+        for p in self.projectiles.iter_mut().chain(self.echoes.iter_mut().filter_map(|e| e.shot.as_mut())) {
+            p.recenter(shift);
         }
         for h in &mut self.hostiles {
             h.position -= shift;
@@ -4750,15 +4913,6 @@ impl Combat {
                 | Act::Flay(_)
                 | Act::Quick(_)
                 | Act::Reckon(_) => {}
-            }
-        }
-        for p in &mut self.projectiles {
-            if let Trick::Net(at) | Trick::Comet(at) | Trick::Rocket(at) = &mut p.trick {
-                *at -= shift;
-            }
-            if let Trick::Carry { aim, target, .. } = &mut p.trick {
-                *aim -= shift;
-                *target -= shift;
             }
         }
         for r in &mut self.ripples {
@@ -4933,6 +5087,7 @@ impl Combat {
         self.marks.clear();
         self.rays.clear();
         self.vpm = arena.view.vpm;
+        self.seen = seen_within(arena.world);
         self.speed = arena.view.speed;
         self.stride = arena.view.stride;
         self.time += dt;
@@ -5579,11 +5734,11 @@ impl Combat {
         } else {
             self.shoot(view, &profile, Some(missile), Form::Bolt, muzzle, ahead, speed, damage);
         }
-        // A blunderbuss's shot only carries so far
+        // A blunderbuss's shot only carries so far, dropping short past it
         let range = profile.stat("range");
         if range > 0.0 {
             for p in &mut self.projectiles[before..] {
-                p.life = p.life.min(range * vpm / p.velocity.norm().max(1.0));
+                p.range = p.range.min(range * vpm);
             }
         }
 
@@ -5606,7 +5761,7 @@ impl Combat {
             && harpoon
         {
             first.trick = Trick::Harpoon;
-            first.life = HARPOON_REACH * vpm / speed.max(1.0);
+            first.range = HARPOON_REACH * vpm;
         }
         if base.build == Build::Siege {
             for p in &mut self.projectiles[before..] {
@@ -5896,7 +6051,6 @@ impl Combat {
         self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.0 }), Form::Bolt, from, velocity, damage, BOMB_GRAVITY);
         if let Some(bomb) = self.projectiles.last_mut() {
             bomb.trick = Trick::Bomb { fuse: time + BOMB_FUSE, cluster, hole: true };
-            bomb.life = time + 3.0;
         }
         self.cues.push(Cue::here(Sound::Swing, 0.55).pitched(0.75));
     }
@@ -5940,7 +6094,6 @@ impl Combat {
             self.launch(&quiet, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: BOMBLET_SIZE }), Form::Bolt, at + Vector3::new(0.0, 0.0, 0.5 * vpm), v, damage, BOMB_GRAVITY);
             if let Some(b) = self.projectiles.last_mut() {
                 b.trick = Trick::Bomb { fuse, cluster: 0, hole: true };
-                b.life = 2.5;
             }
         }
         self.cues.push(Cue::at(Sound::Chain, at, 0.5).pitched(0.6));
@@ -6009,7 +6162,6 @@ impl Combat {
             shard.shot = Shot::Ball;
             shard.gravity = gravity;
             shard.size = FRAGMENT_SIZE;
-            shard.life = 1.4;
             shard.power = false;
             self.projectiles.push(shard);
         }
@@ -6078,7 +6230,8 @@ impl Combat {
     }
 
     /// A pool of `profile`'s element left on the ground under `at`, hurting what stands in it,
-    /// though not more often than every so often
+    /// though not more often than every so often. Without an element it's churned earth, grinding
+    /// at what stands in it and dragging at its feet.
     fn leave_pool(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, damage: f64) {
         if self.pool_timer > 0.0 {
             return;
@@ -6091,22 +6244,61 @@ impl Combat {
         };
         self.pool_timer = 0.45;
         let ground = top + down * t;
-        let element = profile.element.unwrap_or(Element::Fire);
         let radius = profile.param(Effect::Pool, "radius", 1.5) * profile.stat("area").max(1.0);
         let life = profile.param(Effect::Pool, "duration", 4.0);
         let tick = damage * profile.param(Effect::Pool, "power", 0.2) * profile.potency(Effect::Pool).max(1.0);
-        self.keep_pools_few();
-        self.lingering.push(Lingering { pool: true, cloud: false, tall: false, position: ground, radius, life, element, profile: profile.clone(), damage: tick, tick: 0.2, effects: false, collapse: 0.0 });
-        self.element_hit(ground + Vector3::new(0.0, 0.0, 0.2 * vpm), Some(element), 0.7);
+        self.leave_pool_at(profile, ground, radius, life, profile.element, tick);
+        // The ground thrown up as it's churned, or a hit of its element
+        match profile.element {
+            Some(element) => self.element_hit(ground + Vector3::new(0.0, 0.0, 0.2 * vpm), Some(element), 0.7),
+            None => {
+                for _ in 0..8 {
+                    let v = (self.any_direction() * 0.6 + Vector3::new(0.0, 0.0, 1.2)) * 2.5 * vpm;
+                    self.drop(ground + Vector3::new(0.0, 0.0, 0.1 * vpm), v, DROP_MUD, 0.8);
+                }
+                self.cues.push(Cue::at(Sound::Crack, ground, 0.35).pitched(0.6));
+            }
+        }
     }
 
-    /// The oldest pool or cloud gone if there are as many as there can be
+    /// For looking at pools, see Game::lay_pools(): one of each element and one of churned earth,
+    /// as a weapon's effect leaves them, laid out three by three over the ground `ahead` of `eye`,
+    /// hurting nothing
+    pub fn lay_pools(&mut self, world: &World, profile: &Rc<Profile>, eye: Vector3<f64>, ahead: Vector3<f64>) {
+        let vpm = world.voxels_per_meter as f64;
+        let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::y);
+        let side = Vector3::new(flat.y, -flat.x, 0.0);
+        let looks = std::iter::once(None).chain(Element::ALL.map(Some));
+        for (k, element) in looks.enumerate() {
+            let (row, column) = ((k / 3) as f64, (k % 3) as f64 - 1.0);
+            let at = eye + (flat * (4.5 + 3.4 * row) + side * column * 3.4) * vpm;
+            let ground = ground_under(world, at, vpm);
+            self.lingering.push(Lingering { pool: true, tick: f64::INFINITY, ..Lingering::new(ground, 1.5, 4.0, element, profile, 0.0) });
+        }
+    }
+
+    /// How many things are in flight, and how far the furthest is from `eye`, in meters
+    pub fn in_flight(&self, eye: Vector3<f64>) -> (usize, f64) {
+        (self.projectiles.len(), self.projectiles.iter().map(|p| (p.position - eye).norm() / self.vpm).fold(0.0, f64::max))
+    }
+
+    /// A pool of `element` lying `radius` meters round `ground` for `life` seconds, hurting what's
+    /// in it for `damage` every so often, the oldest dying down if there are too many
+    fn leave_pool_at(&mut self, profile: &Rc<Profile>, ground: Vector3<f64>, radius: f64, life: f64, element: Option<Element>, damage: f64) {
+        self.keep_pools_few();
+        self.lingering.push(Lingering { pool: true, tick: 0.2, ..Lingering::new(ground, radius, life, element, profile, damage) });
+    }
+
+    /// The oldest pool or cloud dying down if there are as many as there can be, as it would have
+    /// as it ended, so none's ever just gone
     fn keep_pools_few(&mut self) {
-        let left = |l: &Lingering| l.pool || l.cloud;
+        let left = |l: &Lingering| (l.pool || l.cloud) && l.life > POOL_FADE;
         if self.lingering.iter().filter(|l| left(l)).count() >= MOST_POOLS
-            && let Some(k) = self.lingering.iter().position(left)
+            && let Some(l) = self.lingering.iter_mut().find(|l| left(l))
         {
-            self.lingering.remove(k);
+            // As old as it was, only with less left
+            l.lifetime -= l.life - POOL_FADE;
+            l.life = POOL_FADE;
         }
     }
 
@@ -6143,7 +6335,7 @@ impl Combat {
         let life = profile.param(Effect::Miasma, "duration", 4.0);
         let damage = (profile.stat("physicalDamage") + profile.stat("spellDamage") + profile.stat("elementalDamage")) * profile.param(Effect::Miasma, "power", 0.25) * profile.potency(Effect::Miasma).max(1.0);
         self.keep_pools_few();
-        self.lingering.push(Lingering { pool: false, cloud: true, tall: false, position: at, radius, life, element, profile: profile.clone(), damage, tick: 0.3, effects: false, collapse: 0.0 });
+        self.lingering.push(Lingering { cloud: true, tick: 0.3, ..Lingering::new(at, radius, life, Some(element), profile, damage) });
         let center = a.center(vpm as u32);
         self.sparks(center, 16, 2.2, Element::look(Some(element)), -0.1, 0.8);
         for _ in 0..4 {
@@ -6300,7 +6492,7 @@ impl Combat {
         let radius = 2.4 * profile.stat("area").max(0.5);
         let damage = (profile.stat("spellDamage") + profile.stat("elementalDamage")) * 0.5;
         self.keep_pools_few();
-        self.lingering.push(Lingering { pool: false, cloud: true, tall: false, position, radius, life: 4.5, element, profile: profile.clone(), damage, tick: 0.35, effects: true, collapse: 0.0 });
+        self.lingering.push(Lingering { cloud: true, tick: 0.35, effects: true, ..Lingering::new(position, radius, 4.5, Some(element), &profile, damage) });
         // A stream of smoke pouring out of it to where it settles
         let look = Element::look(Some(element));
         for k in 0..5 {
@@ -6775,16 +6967,25 @@ impl Combat {
     }
 
     /// A crescent of light flying on ahead, cutting through each thing it meets once, till it runs
-    /// into something solid or fades. Until its `tick` runs out it's still being cut loose from
-    /// the blade, and waits.
+    /// into something solid, breaking against it, or goes out of the world where it's never seen
+    /// again: never fading away in the air, however far it goes. Until its `tick` runs out it's
+    /// still being cut loose from the blade, and waits.
     fn crescent(&mut self, arena: &mut Arena, z: &mut Zone, dt: f64) {
         if z.tick > 0.0 {
             return;
         }
+        // Flying, it never runs out
+        z.life = z.life.max(0.5);
         let vpm = arena.view.vpm;
         let next = z.position + z.velocity * dt;
         if solid(arena.world, next + Vector3::new(0.0, 0.0, 0.3 * vpm)) {
             z.life = 0.0;
+            return;
+        }
+        // Out of sight for good, see zone_ends()
+        if lost(arena.world, arena.view.eye, next, false) {
+            z.life = 0.0;
+            z.tick = f64::INFINITY;
             return;
         }
         z.position = next;
@@ -6943,7 +7144,22 @@ impl Combat {
                 self.cues.push(Cue::at(Sound::Slam, at, 1.0).pitched(0.7));
                 self.shake = self.shake.max(1.0);
             }
-            ZoneKind::Crescent | ZoneKind::Orbit => {
+            // Gone out of the world, out of sight: nothing's to be seen of it
+            ZoneKind::Crescent if z.tick.is_infinite() => {}
+            // Breaking against what it ran into, all along its edge, in a flash
+            ZoneKind::Crescent => {
+                let look = Element::look(profile.element.or(Some(Element::Holy)));
+                let ahead = z.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                let side = ahead.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::y);
+                for k in 0..7 {
+                    let s = k as f64 / 6.0 * 2.0 - 1.0;
+                    let at = z.position + side * s * z.radius * vpm - ahead * s * s * 0.35 * z.radius * vpm;
+                    self.sparks(at, 4, 2.5, look, 0.3, 0.35);
+                }
+                self.flashes.push(Flash { position: z.position, color: profile.element.map_or(Element::Holy.light(), Element::light), reach: 6.0, life: 0.2, lifetime: 0.2 });
+                self.cues.push(Cue::at(Sound::Shing, z.position, 0.6).pitched(1.4));
+            }
+            ZoneKind::Orbit => {
                 let look = Element::look(profile.element.or(Some(Element::Holy)));
                 self.sparks(z.position, 10, 2.0, look, 0.0, 0.35);
             }
@@ -7086,13 +7302,12 @@ impl Combat {
             s.chill = 0.0;
         }
         self.scarless = false;
-        // Shards flung out all round, going off quietly where they land
+        // Shards flung out all round, falling as they go, going off quietly where they land
         for k in 0..12 {
             let a = k as f64 / 12.0 * TAU;
             let out = Vector3::new(a.cos(), a.sin(), 0.12);
-            self.launch(&profile, None, Form::Shard, at + Vector3::new(0.0, 0.0, 0.7 * vpm) + out * 0.8 * vpm, out * 22.0 * vpm, p.damage * 0.3, 0.05);
+            self.launch(&profile, None, Form::Shard, at + Vector3::new(0.0, 0.0, 0.7 * vpm) + out * 0.8 * vpm, out * 22.0 * vpm, p.damage * 0.3, 1.0);
             if let Some(shard) = self.projectiles.last_mut() {
-                shard.life = 0.55;
                 shard.trick = Trick::Shard;
             }
         }
@@ -7124,8 +7339,10 @@ impl Combat {
             s.burn_dps = s.burn_dps.max(damage * 0.2);
             s.staggered = s.staggered.max(0.8);
         }
-        self.keep_pools_few();
-        self.lingering.push(Lingering { pool: true, cloud: false, tall: false, position: at, radius: 1.3, life: 3.0, element: Element::Fire, profile: profile.clone(), damage: damage * 0.15, tick: 0.5, effects: false, collapse: 0.0 });
+        self.leave_pool_at(profile, at, 1.3, 3.0, Some(Element::Fire), damage * 0.15);
+        if let Some(l) = self.lingering.last_mut() {
+            l.tick = 0.5;
+        }
     }
 
     /// A tome's familiar conjured a little way ahead, to hang there casting at whatever's near,
@@ -7815,7 +8032,6 @@ impl Combat {
             self.launch(&l.profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.25 }), Form::Bolt, from, velocity, l.damage, BOMB_GRAVITY);
             if let Some(bomb) = self.projectiles.last_mut() {
                 bomb.trick = Trick::Bomb { fuse: time + 0.25 + 0.08 * l.k as f64, cluster: 4, hole: true };
-                bomb.life = time + 3.0;
             }
             if l.profile.style == Style::Lob {
                 if l.k == 0 {
@@ -8067,11 +8283,8 @@ impl Combat {
         };
         let distance = (aim - from).norm();
         if profile.style == Style::Lob {
-            let (velocity, time) = lobbed(from, aim, vpm);
+            let (velocity, _) = lobbed(from, aim, vpm);
             self.launch(&carrier, missile, Form::Bolt, from, velocity, 0.0, BOMB_GRAVITY);
-            if let Some(p) = self.projectiles.last_mut() {
-                p.life = time + 0.6;
-            }
         } else {
             // Faster up into the sky, so what it calls down isn't long coming
             let speed = match missile.map(|m| m.shot) {
@@ -8083,7 +8296,6 @@ impl Combat {
             } * vpm;
             self.launch(&carrier, missile, carrier_form(element), from, (aim - from) / distance.max(1e-6) * speed, 0.0, 0.0);
             if let Some(p) = self.projectiles.last_mut() {
-                p.life = distance / speed + 0.3;
                 if missile.is_none() {
                     // Bigger than a plain spell, so it reads as more than one
                     p.size *= 1.5;
@@ -8132,7 +8344,6 @@ impl Combat {
         self.launch(&profile, missile, carrier_form(element), from, (to - from) / distance * speed, 0.0, 0.0);
         if let Some(p) = self.projectiles.last_mut() {
             p.trick = Trick::Carry { special: None, aim: to, target: to, sky: false };
-            p.life = distance / speed + 0.05;
         }
     }
 
@@ -8218,14 +8429,14 @@ impl Combat {
                 }
             }
             Special::Singularity => {
-                self.lingering.push(Lingering { pool: false, cloud: false, tall: false, position: target, radius: 4.5, life: 2.2, element: Element::Void, profile: profile.clone(), damage: base * 0.2, tick: 0.0, effects: false, collapse: base * 2.2 });
+                self.lingering.push(Lingering { collapse: base * 2.2, ..Lingering::new(target, 4.5, 2.2, Some(Element::Void), &profile, base * 0.2) });
             }
             Special::Blizzard => {
-                self.lingering.push(Lingering { pool: false, cloud: false, tall: false, position: target, radius: 5.0, life: 4.0, element: Element::Frost, profile: profile.clone(), damage: base * 0.3, tick: 0.0, effects: true, collapse: 0.0 });
+                self.lingering.push(Lingering { effects: true, ..Lingering::new(target, 5.0, 4.0, Some(Element::Frost), &profile, base * 0.3) });
                 self.stains.push((target, 5.0, SNOW, false));
             }
             Special::Plague => {
-                self.lingering.push(Lingering { pool: false, cloud: false, tall: false, position: target, radius: 5.5, life: 7.0, element: Element::Poison, profile: profile.clone(), damage: base * 0.25, tick: 0.0, effects: true, collapse: 0.0 });
+                self.lingering.push(Lingering { effects: true, ..Lingering::new(target, 5.5, 7.0, Some(Element::Poison), &profile, base * 0.25) });
                 for _ in 0..50 {
                     let v = self.any_direction() * 0.8 + Vector3::new(0.0, 0.0, 1.0 + random(&mut self.rng));
                     self.drop(target, v * 4.0 * vpm, DROP_VENOM, 1.5);
@@ -8487,7 +8698,6 @@ impl Combat {
                     self.launch(&profile, Some(missile), Form::Bolt, from, direction * speed * vpm, base * 0.5, 0.05);
                     if let Some(p) = self.projectiles.last_mut() {
                         p.seek = 4.0;
-                        p.life = 3.0;
                     }
                 }
                 self.cues.push(Cue::here(if shot == Shot::Arrow { Sound::Twang } else { Sound::Release }, 0.9).pitched(1.2));
@@ -8514,7 +8724,7 @@ impl Combat {
                     let ahead = feet + flat * 6.0 * vpm + across * (k as f64 - 2.0) * 2.0 * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm);
                     let down = Vector3::new(0.0, 0.0, -5.0 * vpm);
                     let at = solid_along(arena.world, ahead, ahead + down).map_or(ahead + down, |t| ahead + down * t);
-                    self.lingering.push(Lingering { pool: false, cloud: false, tall: true, position: at, radius: 1.1, life: 6.0, element: Element::Fire, profile: profile.clone(), damage: base * 0.3, tick: 0.0, effects: true, collapse: 0.0 });
+                    self.lingering.push(Lingering { tall: true, effects: true, ..Lingering::new(at, 1.1, 6.0, Some(Element::Fire), &profile, base * 0.3) });
                     self.blasts.push(Blast { position: at + Vector3::new(0.0, 0.0, 0.6 * vpm), look: Element::look(Some(Element::Fire)), radius: 1.0, life: 0.5, lifetime: 0.5 });
                 }
                 self.cues.push(Cue::here(Sound::Breath, 0.8).pitched(1.2));
@@ -8570,7 +8780,6 @@ impl Combat {
                 self.launch(&profile, Some(missile), Form::Bolt, from, (ahead + Vector3::z() * ahead.norm() * 0.08).normalize() * 45.0 * vpm, base * 0.4, 0.5);
                 if let Some(bolt) = self.projectiles.last_mut() {
                     bolt.trick = Trick::Net(target);
-                    bolt.life = 2.5;
                 }
                 self.cues.push(Cue::here(Sound::Release, 0.9).pitched(0.75));
             }
@@ -8746,7 +8955,6 @@ impl Combat {
                 if let Some(comet) = self.projectiles.last_mut() {
                     comet.trick = Trick::Comet(ground);
                     comet.size = 4.5;
-                    comet.life = 4.0;
                 }
                 self.cues.push(Cue::at(Sound::Whistle, ground, 1.0).pitched(0.55));
             }
@@ -8993,14 +9201,13 @@ impl Combat {
                     aims = (0..5).map(|_| ground + disc(&mut self.rng, 4.0)).collect();
                 }
                 let from = self.held_point(weapon, view, false);
-                for (k, at) in aims.into_iter().enumerate() {
+                for at in aims {
                     let burst = at + Vector3::new(0.0, 0.0, (6.5 + random(&mut self.rng)) * vpm);
                     // Up first, curving over onto it, so they go up in a fan
                     let rise = (burst - from).normalize() + Vector3::new(0.0, 0.0, 0.8);
                     self.launch(&profile, None, Form::Missile, from, rise.normalize() * 24.0 * vpm, base * 1.3, 0.0);
                     if let Some(rocket) = self.projectiles.last_mut() {
                         rocket.trick = Trick::Rocket(burst);
-                        rocket.life = 1.6 + 0.12 * k as f64;
                         rocket.seek = 0.0;
                         rocket.hit = arena.animals.iter().map(|a| a.id).collect();
                     }
@@ -9149,7 +9356,6 @@ impl Combat {
                     self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 0.55 }), Form::Bolt, from, velocity, base * 0.75, BOMB_GRAVITY);
                     if let Some(b) = self.projectiles.last_mut() {
                         b.trick = Trick::Bomb { fuse: time + 0.3 + 0.13 * k as f64, cluster: 0, hole: false };
-                        b.life = time + 3.0;
                     }
                 }
                 self.cues.push(Cue::here(Sound::Fuse, 0.8).pitched(1.3));
@@ -9207,7 +9413,9 @@ impl Combat {
             profile: profile.clone(),
             pierce: 0,
             hit: Vec::new(),
-            life: 4.0,
+            flown: 0.0,
+            range: f64::INFINITY,
+            steered: 0.0,
             head,
             power,
             trail: 0.0,
@@ -9370,9 +9578,10 @@ impl Combat {
                         let out = Vector3::new(a.cos(), a.sin(), 0.02);
                         let swirl = Vector3::new(-a.sin(), a.cos(), 0.0) * 0.35;
                         let knife = Missile { shot: Shot::Quarrel, head: 0, power: true, size: 0.8 };
-                        self.launch(&profile, Some(knife), Form::Bolt, from + out * 0.5 * vpm, (out + swirl).normalize() * 22.0 * vpm, p.damage, 0.05);
+                        // Falling as they go, so they come down into the ground round about
+                        // and stick there, rather than flying on out of sight
+                        self.launch(&profile, Some(knife), Form::Bolt, from + out * 0.5 * vpm, (out + swirl).normalize() * 22.0 * vpm, p.damage, 1.0);
                         if let Some(knife) = self.projectiles.last_mut() {
-                            knife.life = 0.7;
                             knife.pierce = 3;
                         }
                     }
@@ -9539,7 +9748,7 @@ impl Combat {
                         let down = Vector3::new(0.0, 0.0, -6.0 * vpm);
                         let at = solid_along(arena.world, out, out + down).map_or(out + down, |t| out + down * t);
                         let lingers = if matches!(element, Element::Poison | Element::Frost) { element } else { Element::Fire };
-                        self.lingering.push(Lingering { pool: false, cloud: false, tall: false, position: at, radius: 1.5, life: 3.0, element: lingers, profile: profile.clone(), damage: p.damage * 0.1, tick: 0.0, effects: false, collapse: 0.0 });
+                        self.lingering.push(Lingering::new(at, 1.5, 3.0, Some(lingers), &profile, p.damage * 0.1));
                     }
                 }
                 // A bolt plunging down out of the sky onto it
@@ -11010,12 +11219,6 @@ impl Combat {
             },
             None => form.flight(),
         };
-        let life = match (arrow.map(|m| m.shot), form) {
-            (Some(Shot::Ball), _) => 1.5,
-            (Some(_), _) => 4.0,
-            (None, Form::Orb) => 6.0,
-            (None, _) => 3.0,
-        };
         let make = |direction: Vector3<f64>, damage: f64| Projectile {
             arrow: arrow.is_some(),
             shot,
@@ -11025,7 +11228,9 @@ impl Combat {
             profile: profile.clone(),
             pierce,
             hit: Vec::new(),
-            life,
+            flown: 0.0,
+            range: f64::INFINITY,
+            steered: 0.0,
             head,
             power,
             trail: 0.0,
@@ -11060,12 +11265,14 @@ impl Combat {
     /// Moves everything in flight, and sees what it hits
     fn fly(&mut self, arena: &mut Arena, dt: f64) {
         let vpm = arena.view.vpm;
+        // As far off as things are seen, about, past which they've faded into the sky
+        let trail_reach = seen_within(arena.world) * 0.85;
         let projectiles = std::mem::take(&mut self.projectiles);
         let mut keep = Vec::new();
         for mut p in projectiles {
             let profile = p.profile.clone();
             // A splitting bolt bursts apart partway, and a net bursts open nearing where it's
-            // aimed, or as it's about to fall out of the air
+            // aimed, or wherever it comes down short of it
             if let Trick::Split(left) = p.trick {
                 if left <= dt {
                     self.split(&p, p.position, 7, 0.45, Trick::Splinter);
@@ -11074,28 +11281,25 @@ impl Combat {
                 p.trick = Trick::Split(left - dt);
             }
             if let Trick::Net(aim) = p.trick
-                && ((p.position - aim).norm() < 2.5 * vpm || p.life <= dt)
+                && (p.position - aim).norm() < 2.5 * vpm
             {
                 self.net(arena, &p, p.position);
                 continue;
             }
-            // A rocket bursting once it's up over what it was sent up over
+            // A rocket bursting once it's up over what it was sent up over, or at the top of its
+            // climb if it never gets that high
             if let Trick::Rocket(aim) = p.trick
-                && (p.position.z >= aim.z || p.life <= dt)
+                && (p.position.z >= aim.z || p.velocity.z <= 0.0)
             {
                 self.skyburst(arena, &p, p.position);
                 continue;
             }
-            // A special attack's shot getting where it was going this frame, or past it, or
-            // falling out of the air, going off there
+            // A special attack's shot getting where it was going this frame, or past it, going
+            // off there
             if let Trick::Carry { aim, .. } = p.trick {
                 let to = aim - p.position;
                 if to.norm() <= p.velocity.norm() * dt || to.dot(&p.velocity) <= 0.0 {
                     self.arrive(&p, aim);
-                    continue;
-                }
-                if p.life <= dt {
-                    self.arrive(&p, p.position);
                     continue;
                 }
             }
@@ -11121,9 +11325,13 @@ impl Combat {
             }
             // Homing ones turn towards the animal most nearly ahead of them, not just the nearest,
             // so they keep on at what they were shot at rather than veering off after a squirrel
+            // Each turns only so far round after things in all, then flies straight on, see
+            // MOST_STEER
             let ahead = |to: &Vector3<f64>, direction: &Vector3<f64>| to.normalize().dot(direction) - 0.1 * to.norm() / (25.0 * vpm);
-            if profile.has(Effect::Homing) {
-                let direction = p.velocity.normalize();
+            let direction = p.velocity.try_normalize(1e-9).filter(|_| p.steering());
+            if let Some(direction) = direction
+                && profile.has(Effect::Homing)
+            {
                 let range = profile.param(Effect::Homing, "range", 18.0) * vpm;
                 let target = arena
                     .animals
@@ -11133,13 +11341,16 @@ impl Combat {
                     .filter(|to| to.norm() < range && to.normalize().dot(&direction) > 0.5)
                     .max_by(|a, b| ahead(a, &direction).total_cmp(&ahead(b, &direction)));
                 if let Some(to) = target {
-                    let turn = (profile.param(Effect::Homing, "turn", 4.0) * dt).min(1.0);
-                    p.velocity = direction.lerp(&to.normalize(), turn).normalize() * p.velocity.norm();
+                    p.steer(to, (profile.param(Effect::Homing, "turn", 4.0) * dt).min(1.0));
                 }
             }
             // Shots seeking out what a hunter's mark is on
-            if self.hunt > 0.0 && p.arrow && !self.marked.is_empty() && !matches!(p.trick, Trick::Bomb { .. } | Trick::Harpoon | Trick::Carry { .. }) {
-                let direction = p.velocity.normalize();
+            if let Some(direction) = direction
+                && self.hunt > 0.0
+                && p.arrow
+                && !self.marked.is_empty()
+                && !matches!(p.trick, Trick::Bomb { .. } | Trick::Harpoon | Trick::Carry { .. })
+            {
                 let marked = &self.marked;
                 let target = arena
                     .animals
@@ -11149,7 +11360,7 @@ impl Combat {
                     .filter(|to| to.norm() < 35.0 * vpm && to.normalize().dot(&direction) > 0.2)
                     .max_by(|a, b| ahead(a, &direction).total_cmp(&ahead(b, &direction)));
                 if let Some(to) = target {
-                    p.velocity = direction.lerp(&to.normalize(), (6.0 * dt).min(1.0)).normalize() * p.velocity.norm();
+                    p.steer(to, (6.0 * dt).min(1.0));
                 }
             }
             // Missiles, hexes and a swarm of seekers home in on the nearest animal ahead
@@ -11160,8 +11371,9 @@ impl Combat {
             } else {
                 0.0
             };
-            if seek > 0.0 {
-                let direction = p.velocity.normalize();
+            if let Some(direction) = direction
+                && seek > 0.0
+            {
                 let target = arena
                     .animals
                     .iter()
@@ -11170,7 +11382,7 @@ impl Combat {
                     .filter(|to| to.norm() < 25.0 * vpm && to.normalize().dot(&direction) > 0.3)
                     .max_by(|a, b| ahead(a, &direction).total_cmp(&ahead(b, &direction)));
                 if let Some(to) = target {
-                    p.velocity = direction.lerp(&to.normalize(), (seek * dt).min(1.0)).normalize() * p.velocity.norm();
+                    p.steer(to, (seek * dt).min(1.0));
                 }
             }
             // A void orb drags in what it passes
@@ -11187,9 +11399,11 @@ impl Combat {
 
             // Spells and arrows with an element leave it trailing behind them, and arrows shot at
             // full draw and a gun's balls a streak. A fireball sheds more, venom and blood drip,
-            // and a shell's fuse sputters, smoking.
+            // and a shell's fuse sputters, smoking. Not so far off it's faded into the sky,
+            // where none of it would be seen.
             let shell = p.arrow && p.shot == Shot::Shell;
-            if (!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power || shell {
+            let shown = (start - arena.view.eye).norm() < trail_reach;
+            if shown && ((!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power || shell) {
                 // A burst's shards trail less, as there are several at once
                 p.trail += dt * if !p.arrow && p.form == Form::Fireball {
                     150.0
@@ -11341,7 +11555,8 @@ impl Combat {
                             p.position = at;
                             p.damage *= 1.15;
                             p.trick = Trick::Ricochet(n - 1);
-                            p.life = p.life.max(1.0);
+                            // After the next one now, turning afresh
+                            p.steered = 0.0;
                             self.sparks(at, 6, 3.0, Element::look(None), 0.4, 0.25);
                             self.cues.push(Cue::at(Sound::Ricochet, at, 0.6).pitched(1.0 + 0.06 * (8 - n) as f32));
                             bounced = true;
@@ -11457,9 +11672,7 @@ impl Combat {
                         let direction = p.velocity.normalize();
                         let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
                         self.stuck.push(Stuck { position: at + direction * 0.1 * vpm, rotation, look: 0, head: None, quarrel: false, element: None, life: 2.5, glowing: 0.0 });
-                        if self.stuck.len() > 40 {
-                            self.stuck.remove(0);
-                        }
+                        self.keep_stuck_few();
                         continue;
                     }
                     // A bomb bouncing, losing most of its speed each time, till it comes to rest
@@ -11520,22 +11733,69 @@ impl Combat {
                         life: 20.0,
                         glowing: if profile.element.is_some() { 5.0 } else { 0.0 },
                     });
-                    if self.stuck.len() > 40 {
-                        self.stuck.remove(0);
-                    }
+                    self.keep_stuck_few();
                 }
                 continue;
             }
             p.position = end;
-            p.life -= dt;
-            if p.life > 0.0 {
+            p.flown += (end - start).norm();
+            if p.flown >= p.range {
+                p.range = f64::INFINITY;
+                if p.trick == Trick::Harpoon {
+                    // A harpoon's line played out to its end: let go of, as right click lets go of
+                    // it, the harpoon flying on free till it comes down and sticks in
+                    p.trick = Trick::None;
+                    self.cues.push(Cue::here(Sound::Taut, 0.5).pitched(1.4));
+                } else {
+                    // A blunderbuss's shot spent past its range, dropping short just past it
+                    p.velocity *= SPENT_PACE;
+                    p.gravity = p.gravity.max(SPENT_GRAVITY);
+                    p.damage *= SPENT_POWER;
+                    p.power = false;
+                }
+            }
+            // Gone out of the world where it's never seen again, or else flying on. What falls
+            // comes back down, and what's on its way somewhere gets there.
+            let returns = p.gravity > 0.0 || p.velocity.z < 0.0 || matches!(p.trick, Trick::Carry { .. } | Trick::Rocket(_) | Trick::Comet(_) | Trick::Net(_));
+            if !lost(arena.world, arena.view.eye, p.position, returns) {
                 keep.push(p);
-            } else if !p.arrow {
-                self.sparks(p.position, 6, 1.5, Element::look(profile.element), 0.0, 0.4);
             }
         }
         keep.append(&mut self.projectiles);
         self.projectiles = keep;
+        self.keep_projectiles_few(arena.view);
+    }
+
+    /// No more than MOST_STUCK arrows, bolts and thorns stuck in where they landed: past it, the
+    /// oldest sink away into what they're stuck in, as they would have as they went, and only
+    /// past half as many again are any just gone
+    fn keep_stuck_few(&mut self) {
+        let standing = |s: &Stuck| s.life > STUCK_SINK;
+        if self.stuck.iter().filter(|s| standing(s)).count() > MOST_STUCK
+            && let Some(s) = self.stuck.iter_mut().find(|s| standing(s))
+        {
+            s.life = STUCK_SINK;
+        }
+        if self.stuck.len() > MOST_STUCK * 3 / 2 {
+            self.stuck.remove(0);
+        }
+    }
+
+    /// No more in flight than MOST_PROJECTILES: past it, those furthest off go, those out of
+    /// sight before any in it, never a shot carrying a special attack
+    fn keep_projectiles_few(&mut self, view: &View) {
+        if self.projectiles.len() <= MOST_PROJECTILES {
+            return;
+        }
+        let order = |p: &Projectile| {
+            if matches!(p.trick, Trick::Carry { special: Some(_), .. }) {
+                return f64::NEG_INFINITY;
+            }
+            let on_screen = view.project(p.position).is_some_and(|[x, y]| (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y));
+            (p.position - view.eye).norm() + if on_screen { 0.0 } else { 1e9 }
+        };
+        self.projectiles.sort_by(|a, b| order(a).total_cmp(&order(b)));
+        self.projectiles.truncate(MOST_PROJECTILES);
     }
 
     /// Something in flight landing at `at`
@@ -11604,7 +11864,9 @@ impl Combat {
             profile: p.profile.clone(),
             pierce: 0,
             hit: p.hit.clone(),
-            life: if trick == Trick::Glanced { 0.8 } else { 1.6 },
+            flown: 0.0,
+            range: f64::INFINITY,
+            steered: 0.0,
             head: p.head,
             power: true,
             trail: 0.0,
@@ -11627,10 +11889,11 @@ impl Combat {
         for k in 0..n {
             let a = turn + k as f64 / n as f64 * TAU;
             let out = Vector3::new(a.cos(), a.sin(), 0.12 + 0.1 * (k % 3) as f64).normalize();
-            let mut thorn = self.offshoot(p, at + out * 0.3 * vpm, out * 24.0 * vpm, p.damage * 0.55, Trick::Thorn);
+            // Falling as an arrow does, so they come down a dozen meters or so round about and
+            // stick in, rather than flying on out of sight
+            let mut thorn = self.offshoot(p, at + out * 0.3 * vpm, out * 18.0 * vpm, p.damage * 0.55, Trick::Thorn);
             thorn.pierce = 2;
-            thorn.life = 0.55;
-            thorn.gravity = 0.25;
+            thorn.gravity = 1.0;
             thorn.size = 1.0;
             self.projectiles.push(thorn);
         }
@@ -11777,7 +12040,7 @@ impl Combat {
                 }
                 self.stains.push((at, radius * 0.9, BARK_DARK, true));
                 if element.is_some() {
-                    self.lingering.push(Lingering { pool: false, cloud: false, tall: false, position: at, radius: radius * 0.6, life: 3.0, element: Element::Fire, profile: profile.clone(), damage: damage * 0.15, tick: 0.0, effects: false, collapse: 0.0 });
+                    self.lingering.push(Lingering::new(at, radius * 0.6, 3.0, Some(Element::Fire), profile, damage * 0.15));
                 }
                 for k in 0..count(14.0) {
                     let v = self.any_direction() + Vector3::new(0.0, 0.0, 1.2);
@@ -11814,7 +12077,7 @@ impl Combat {
                 }
                 self.element_hit(at, element, 1.5);
                 self.stains.push((at, radius, MOSS, false));
-                self.lingering.push(Lingering { pool: false, cloud: false, tall: false, position: at, radius: radius * 0.9, life: 4.0, element: Element::Poison, profile: profile.clone(), damage: damage * 0.12, tick: 0.0, effects: false, collapse: 0.0 });
+                self.lingering.push(Lingering::new(at, radius * 0.9, 4.0, Some(Element::Poison), profile, damage * 0.12));
             }
             // Rings of runes turning, and a burst of arcane light
             Some(Element::Arcane) => {
@@ -11874,6 +12137,161 @@ impl Combat {
         self.cap_sparks();
     }
 
+    /// A pool `l` lying on the ground going on as its element does, as pool_look() draws it: fire
+    /// smoulders, embers rising and little flames licking up off it, smoking as it burns out;
+    /// frost breathes a mist low over it, glinting; venom bubbles, fumes rising; lightning
+    /// crackles over it in little arcs; a sigil of light sends motes up off its rings; the void
+    /// draws sparks round and in; blood bubbles darkly; runes shimmer; churned earth throws up
+    /// dust and the odd clod as it settles. A while into it, it leaves its mark on the ground
+    /// under it, hidden under it till it's gone, see pool_mark().
+    fn pool_alive(&mut self, l: &mut Lingering, dt: f64) {
+        let vpm = self.vpm;
+        let (age, left) = (l.age(), l.life);
+        if !l.marked && age >= POOL_MARK * l.lifetime {
+            // Not if it's dying down already, and only one mark on the ground at a time, as each
+            // takes a while, see SCAR_GAP
+            if left <= POOL_FADE {
+                l.marked = true;
+            } else if self.scar_timer <= 0.0 {
+                let (size, material, burn) = pool_mark(l.element);
+                self.stains.push((l.position, l.radius * size, material, burn));
+                self.scar_timer = SCAR_GAP;
+                l.marked = true;
+            }
+        }
+        let key = l.position.x * 0.13 + l.position.y * 0.07;
+        let (size, _, _, spent) = pool_look(l.element, age, left, self.time, key);
+        // How far out it reaches now, in voxels, and how much goes on over it: more over a
+        // bigger one, building up as it spreads out
+        let reach = l.radius * size * vpm;
+        let k = (l.radius / 1.5).clamp(0.6, 1.6) * (age / POOL_SPREAD).min(1.0);
+        let owed = |rng: &mut u32, rate: f64| (rate * k * dt + random(rng)) as usize;
+        let on = |rng: &mut u32, from: f64, to: f64, up: f64| {
+            let a = random(rng) * TAU;
+            let r = (from + (to - from) * random(rng).sqrt()) * reach;
+            l.position + Vector3::new(a.cos() * r, a.sin() * r, up * vpm)
+        };
+        let look = Element::look(l.element);
+        let smoke = |s: &mut Combat, at: Vector3<f64>, velocity: Vector3<f64>, life: f64, gravity: f64| {
+            s.sparks.push(Spark { position: at, velocity: velocity * vpm, look, life, lifetime: life, gravity, slot: SLOT_SMOKE });
+        };
+        match l.element {
+            Some(Element::Fire) => {
+                for _ in 0..owed(&mut self.rng, if spent { 1.5 } else { 5.0 }) {
+                    let at = on(&mut self.rng, 0.0, 0.85, 0.12);
+                    self.mote(at, Some(Element::Fire), 1.6);
+                }
+                for _ in 0..owed(&mut self.rng, if spent { 0.0 } else { 1.8 }) {
+                    let at = on(&mut self.rng, 0.0, 0.7, 0.18);
+                    let radius = 0.22 + 0.1 * random(&mut self.rng);
+                    self.blasts.push(Blast { position: at, look, radius, life: 0.45, lifetime: 0.45 });
+                }
+                for _ in 0..owed(&mut self.rng, if spent { 2.5 } else { 0.0 }) {
+                    let at = on(&mut self.rng, 0.0, 0.7, 0.15);
+                    let life = 1.0 + 0.4 * random(&mut self.rng);
+                    smoke(self, at, Vector3::new(0.0, 0.0, 0.35), life, -0.02);
+                }
+            }
+            Some(Element::Frost) => {
+                // Mist rolling out low off it, slow, and ice glinting
+                for _ in 0..owed(&mut self.rng, if spent { 1.5 } else { 3.0 }) {
+                    let at = on(&mut self.rng, 0.2, 0.9, 0.08);
+                    let out = (at - l.position).xy().try_normalize(1e-6).unwrap_or_else(|| Vector3::new(1.0, 0.0, 0.0).xy());
+                    let life = 1.4 + 0.6 * random(&mut self.rng);
+                    smoke(self, at, Vector3::new(out.x * 0.3, out.y * 0.3, 0.04), life, 0.0);
+                }
+                for _ in 0..owed(&mut self.rng, if spent { 0.5 } else { 3.0 }) {
+                    let at = on(&mut self.rng, 0.0, 0.85, 0.1);
+                    self.mote(at, Some(Element::Frost), 0.9);
+                }
+            }
+            Some(Element::Poison) => {
+                // Bubbles bursting up off it, and fumes
+                for _ in 0..owed(&mut self.rng, if spent { 0.5 } else { 5.0 }) {
+                    let at = on(&mut self.rng, 0.0, 0.7, 0.06);
+                    let up = 1.0 + 0.6 * random(&mut self.rng);
+                    self.drop(at, Vector3::new(0.0, 0.0, up * vpm), DROP_VENOM, 0.5);
+                }
+                for _ in 0..owed(&mut self.rng, if spent { 1.0 } else { 1.5 }) {
+                    let at = on(&mut self.rng, 0.0, 0.7, 0.15);
+                    let life = 1.3 + 0.5 * random(&mut self.rng);
+                    smoke(self, at, Vector3::new(0.0, 0.0, 0.3), life, -0.01);
+                }
+            }
+            Some(Element::Storm) => {
+                // Little arcs jumping across it, from one point of it to another
+                for _ in 0..owed(&mut self.rng, if spent { 0.8 } else { 3.5 }) {
+                    let from = on(&mut self.rng, 0.0, 0.8, 0.05);
+                    let to = on(&mut self.rng, 0.0, 0.8, 0.05);
+                    let steps = 5;
+                    for j in 0..=steps {
+                        let f = j as f64 / steps as f64;
+                        let lift = (f * PI).sin() * (0.12 + 0.15 * random(&mut self.rng)) * vpm;
+                        let jitter = self.any_direction() * 0.06 * vpm;
+                        let at = from.lerp(&to, f) + Vector3::new(0.0, 0.0, lift) + jitter;
+                        self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.1, lifetime: 0.1, gravity: 0.0, slot: SLOT_SPARK });
+                    }
+                }
+            }
+            Some(Element::Holy) => {
+                // Motes rising off its rings
+                for _ in 0..owed(&mut self.rng, if spent { 1.5 } else { 5.0 }) {
+                    let at = on(&mut self.rng, 0.66, 0.92, 0.05);
+                    self.mote(at, Some(Element::Holy), 1.4);
+                }
+            }
+            Some(Element::Void) => {
+                // Sparks drawn round and in off its edge, faster as it collapses
+                for _ in 0..owed(&mut self.rng, if spent { 10.0 } else { 12.0 }) {
+                    let at = on(&mut self.rng, 0.85, 0.95, 0.06);
+                    let inward = (l.position - at).xy().try_normalize(1e-6).unwrap_or_else(|| Vector3::new(1.0, 0.0, 0.0).xy());
+                    let (inward, round) = (Vector3::new(inward.x, inward.y, 0.0), Vector3::new(-inward.y, inward.x, 0.0));
+                    // Most of the way in over its life, going round as it goes
+                    let pace = if spent { 1.5 } else { 1.0 };
+                    let velocity = (inward * 1.8 + round * 2.2) * reach * pace;
+                    self.sparks.push(Spark { position: at, velocity, look, life: 0.45, lifetime: 0.45, gravity: 0.0, slot: SLOT_SPARK });
+                }
+            }
+            Some(Element::Blood) => {
+                for _ in 0..owed(&mut self.rng, if spent { 0.5 } else { 2.0 }) {
+                    let at = on(&mut self.rng, 0.0, 0.6, 0.05);
+                    self.drop(at, Vector3::new(0.0, 0.0, 0.8 * vpm), DROP_BLOOD, 0.4);
+                }
+                for _ in 0..owed(&mut self.rng, if spent { 0.0 } else { 1.5 }) {
+                    let at = on(&mut self.rng, 0.0, 0.8, 0.08);
+                    self.mote(at, Some(Element::Blood), 0.9);
+                }
+            }
+            Some(Element::Arcane) => {
+                // Shimmering up off the runes
+                for _ in 0..owed(&mut self.rng, if spent { 2.0 } else { 6.0 }) {
+                    let at = on(&mut self.rng, 0.58, 0.9, 0.04);
+                    self.fine(at, Vector3::new(0.0, 0.0, 0.4 * vpm), look, 0.6, -0.02);
+                }
+                for _ in 0..owed(&mut self.rng, if spent { 0.0 } else { 1.5 }) {
+                    let at = on(&mut self.rng, 0.0, 0.6, 0.1);
+                    self.mote(at, Some(Element::Arcane), 1.4);
+                }
+            }
+            None => {
+                // Dust, and clods hopping as the churned earth settles, most at first
+                let fresh = age < 1.5;
+                for _ in 0..owed(&mut self.rng, if fresh { 1.5 } else { 0.6 }) {
+                    let at = on(&mut self.rng, 0.0, 0.9, 0.08);
+                    let drift = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.25) * 0.4;
+                    let life = 1.2 + 0.4 * random(&mut self.rng);
+                    smoke(self, at, drift, life, -0.01);
+                }
+                for _ in 0..owed(&mut self.rng, if fresh { 2.0 } else { 0.0 }) {
+                    let at = on(&mut self.rng, 0.0, 0.85, 0.05);
+                    let v = (self.any_direction() * 0.4 + Vector3::new(0.0, 0.0, 1.0)) * (1.5 + random(&mut self.rng)) * vpm;
+                    self.drop(at, v, DROP_MUD, 0.7);
+                }
+            }
+        }
+        self.cap_sparks();
+    }
+
     /// Fire burning and venom hanging where spells went off, hurting what's in them; light coming
     /// down where holy spells were aimed; ice melting away
     fn linger(&mut self, arena: &mut Arena, dt: f64) {
@@ -11881,50 +12299,53 @@ impl Combat {
         for mut l in std::mem::take(&mut self.lingering) {
             l.life -= dt;
             l.tick -= dt;
-            // Flames flickering up, or bubbles and a haze of venom. A wall of fire's flames leap
-            // high, tongues of fire swelling and dying away, so it shows over the grass: a few
-            // at a time, as each is a single model however big.
-            // A cloud billows, a few great puffs of it at a time, and a pool shimmers a little
-            let mut owed = dt * if l.tall {
-                4.0
-            } else if l.cloud {
-                3.0 + l.radius
-            } else if l.pool {
-                (6.0 * l.radius).min(14.0)
+            if l.pool {
+                self.pool_alive(&mut l, dt);
             } else {
-                25.0 * l.radius
-            };
-            while owed > 0.0 {
-                if random(&mut self.rng) < owed {
-                    let a = random(&mut self.rng) * TAU;
-                    let r = random(&mut self.rng).sqrt() * l.radius * vpm;
-                    if l.cloud {
-                        let at = l.position + Vector3::new(a.cos() * r * 0.7, a.sin() * r * 0.7, (0.3 + 0.9 * random(&mut self.rng)) * vpm);
-                        let drift = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.4) * 0.6 * vpm;
-                        let life = 1.7 + 0.5 * random(&mut self.rng);
-                        let look = Element::look(Some(l.element));
-                        self.sparks.push(Spark { position: at, velocity: drift, look, life, lifetime: life, gravity: -0.01, slot: SLOT_CLOUD });
-                        self.mote(at, Some(l.element), 1.5);
-                    } else if l.tall {
-                        let at = l.position + Vector3::new(a.cos() * r * 0.6, a.sin() * r * 0.6, (0.3 + 1.1 * random(&mut self.rng)) * vpm);
-                        let radius = 0.3 + 0.2 * random(&mut self.rng);
-                        self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius, life: 0.5, lifetime: 0.5 });
-                    } else {
-                        let at = l.position + Vector3::new(a.cos() * r, a.sin() * r, 0.2 * vpm);
-                        self.mote(at, Some(l.element), 2.0);
+                // Flames flickering up, or bubbles and a haze of venom. A wall of fire's flames
+                // leap high, tongues of fire swelling and dying away, so it shows over the grass:
+                // a few at a time, as each is a single model however big. A cloud billows, a few
+                // great puffs of it at a time.
+                let mut owed = dt * if l.tall {
+                    4.0
+                } else if l.cloud {
+                    3.0 + l.radius
+                } else {
+                    25.0 * l.radius
+                };
+                while owed > 0.0 {
+                    if random(&mut self.rng) < owed {
+                        let a = random(&mut self.rng) * TAU;
+                        let r = random(&mut self.rng).sqrt() * l.radius * vpm;
+                        if l.cloud {
+                            let at = l.position + Vector3::new(a.cos() * r * 0.7, a.sin() * r * 0.7, (0.3 + 0.9 * random(&mut self.rng)) * vpm);
+                            let drift = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.4) * 0.6 * vpm;
+                            let life = 1.7 + 0.5 * random(&mut self.rng);
+                            let look = Element::look(l.element);
+                            self.sparks.push(Spark { position: at, velocity: drift, look, life, lifetime: life, gravity: -0.01, slot: SLOT_CLOUD });
+                            self.mote(at, l.element, 1.5);
+                        } else if l.tall {
+                            let at = l.position + Vector3::new(a.cos() * r * 0.6, a.sin() * r * 0.6, (0.3 + 1.1 * random(&mut self.rng)) * vpm);
+                            let radius = 0.3 + 0.2 * random(&mut self.rng);
+                            self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Fire)), radius, life: 0.5, lifetime: 0.5 });
+                        } else {
+                            let at = l.position + Vector3::new(a.cos() * r, a.sin() * r, 0.2 * vpm);
+                            self.mote(at, l.element, 2.0);
+                        }
                     }
+                    owed -= 1.0;
                 }
-                owed -= 1.0;
             }
-            // The void draws everything round it in
-            if l.element == Element::Void {
+            // The void draws everything round it in. A pool of it swirls in its own way, see
+            // pool_alive().
+            if l.element == Some(Element::Void) {
                 for animal in arena.animals.iter_mut().filter(|a| a.health > 0.0 && !a.look.is_pet()) {
                     let to = l.position - animal.position;
                     if to.xy().norm() < l.radius * 1.6 * vpm {
                         animal.status.push = Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * 4.0 * vpm;
                     }
                 }
-                if random(&mut self.rng) < dt * 60.0 {
+                if !l.pool && random(&mut self.rng) < dt * 60.0 {
                     let from = l.position + self.any_direction() * l.radius * vpm;
                     self.sparks.push(Spark { position: from, velocity: (l.position - from) * 2.0, look: Element::look(Some(Element::Void)), life: 0.5, lifetime: 0.5, gravity: 0.0, slot: SLOT_SPARK });
                 }
@@ -11938,17 +12359,22 @@ impl Combat {
                 let profile = l.profile.clone();
                 let depth = if l.effects { 0 } else { 1 };
                 for i in inside {
-                    self.strike(arena, &profile, i, Blow { damage: l.damage, crit: false, heavy: false, from: l.position, depth, element: Some(l.element) });
+                    self.strike(arena, &profile, i, Blow { damage: l.damage, crit: false, heavy: false, from: l.position, depth, element: l.element });
                     // What stands in a pool or a cloud takes on its element: set alight, chilled
-                    // till it freezes, poisoned, shocked or bleeding
+                    // till it freezes, poisoned, shocked or bleeding; churned earth drags at its
+                    // feet
                     if (l.pool || l.cloud) && arena.animals[i].health > 0.0 {
                         let s = &mut arena.animals[i].status;
                         match l.element {
-                            Element::Fire => {
+                            None => {
+                                s.slowed = s.slowed.max(0.6);
+                                s.slow = s.slow.max(0.25);
+                            }
+                            Some(Element::Fire) => {
                                 s.burn = s.burn.max(1.0);
                                 s.burn_dps = s.burn_dps.max(l.damage * 0.5);
                             }
-                            Element::Frost => {
+                            Some(Element::Frost) => {
                                 s.slowed = s.slowed.max(0.8);
                                 s.slow = s.slow.max(0.4);
                                 s.chill += 0.2;
@@ -11957,13 +12383,13 @@ impl Combat {
                                     s.frozen = s.frozen.max(1.5);
                                 }
                             }
-                            Element::Poison => {
+                            Some(Element::Poison) => {
                                 s.poison = s.poison.max(2.5);
                                 s.poison_stacks = s.poison_stacks.max(1);
                                 s.poison_dps = s.poison_dps.max(l.damage * 0.4);
                             }
-                            Element::Storm => s.shocked = s.shocked.max(0.4),
-                            Element::Blood => {
+                            Some(Element::Storm) => s.shocked = s.shocked.max(0.4),
+                            Some(Element::Blood) => {
                                 s.bleed = s.bleed.max(2.0);
                                 s.bleed_stacks = s.bleed_stacks.max(1);
                                 s.bleed_dps = s.bleed_dps.max(l.damage * 0.4);
@@ -11977,7 +12403,7 @@ impl Combat {
                 self.lingering.push(l);
             } else if l.collapse > 0.0 {
                 let profile = l.profile.clone();
-                self.burst(arena, &profile, l.position, l.radius * 0.8, l.collapse, 0, false, Some(l.element), None);
+                self.burst(arena, &profile, l.position, l.radius * 0.8, l.collapse, 0, false, l.element, None);
             }
         }
         for mut s in std::mem::take(&mut self.strikes) {
@@ -13136,10 +13562,14 @@ impl Combat {
             let wall = solid_along(arena.world, start, end);
             let (high, low) = ((arena.water)(start.x, start.y), (arena.water)(end.x, end.y));
             let water = (start.z > high && end.z <= low && low.is_finite()).then(|| ((start.z - low) / (start.z - end.z)).clamp(0.0, 1.0));
+            // Missing, it flies on till it comes down or strikes something, or goes out of the
+            // world where it's never seen again, see lost()
             let landed = [direct, wall, water].into_iter().flatten().reduce(f64::min);
-            let Some(t) = landed.or((h.life <= 0.0).then_some(1.0)) else {
+            let Some(t) = landed else {
                 h.position = end;
-                self.hostiles.push(h);
+                if !lost(arena.world, arena.view.eye, h.position, h.kind.gravity() > 0.0 || h.velocity.z < 0.0) {
+                    self.hostiles.push(h);
+                }
                 continue;
             };
             let at = start + (end - start) * t;
@@ -13174,9 +13604,7 @@ impl Combat {
                 let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
                 let (head, quarrel) = if h.kind == HostileKind::Bolt { (Some(0), true) } else { (None, false) };
                 self.stuck.push(Stuck { position: at + direction * 0.12 * vpm, rotation, look: Element::look(None), head, quarrel, element: None, life: 12.0, glowing: 0.0 });
-                if self.stuck.len() > 40 {
-                    self.stuck.remove(0);
-                }
+                self.keep_stuck_few();
             }
         }
     }
@@ -14144,7 +14572,8 @@ impl Combat {
         let vpm = view.vpm;
         let mut out = Vec::new();
         let mut add = |at: Vector3<f64>, instance: AnimalInstance| out.push(((at - view.eye).norm(), instance));
-        for p in &self.projectiles {
+        // Not what's flown on so far off it's faded into the sky
+        for p in self.projectiles.iter().filter(|p| (p.position - view.eye).norm() < self.seen) {
             let direction = p.velocity.normalize();
             let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
             let look = Element::look(p.profile.element);
@@ -14216,21 +14645,26 @@ impl Combat {
             }
         }
         for s in &self.stuck {
+            // Sinking away into what it's stuck in as it goes, point first, never just gone, and
+            // drawn as moving while it does
+            let sunk = smooth(1.0 - s.life / STUCK_SINK) * 0.75 * vpm;
+            let at = s.position + s.rotation * Vector3::x() * sunk;
+            let kind = if s.life < STUCK_SINK { MOVING } else { STILL };
             let instance = match s.head {
                 Some(head) if s.quarrel => {
                     let (model, quarrel) = self.effect_model(SLOT_QUARREL + head.min(QUARREL_HEADS - 1), s.look);
-                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL)
+                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), at, s.rotation, vpm, 1.0, kind)
                 }
                 Some(head) => {
                     let (model, arrow) = self.effect_model(SLOT_ARROW + head, s.look);
-                    place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, 1.0, STILL)
+                    place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), at, s.rotation, vpm, 1.0, kind)
                 }
                 None => {
                     let (model, thorn) = self.model_at(THORN);
-                    place(model, thorn, MODEL_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, s.rotation, vpm, THORN_SIZE, STILL)
+                    place(model, thorn, MODEL_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), at, s.rotation, vpm, THORN_SIZE, kind)
                 }
             };
-            add(s.position, instance);
+            add(at, instance);
         }
         // What bosses throw, tumbling
         for h in &self.hostiles {
@@ -14337,17 +14771,20 @@ impl Combat {
         // Runes waiting on the ground, pulsing once they're armed
         let (model, rune) = self.model_at(RUNE);
         for m in &self.mines {
-            let size = if m.arming > 0.0 { 0.6 } else { 1.1 + 0.08 * (self.time * 5.0 + m.position.x).sin() };
+            // Shrinking away into the ground as it runs out, never just gone
+            let size = if m.arming > 0.0 { 0.6 } else { 1.1 + 0.08 * (self.time * 5.0 + m.position.x).sin() } * smooth(m.life / 0.5).max(0.05);
             let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 0.6 + m.position.y);
             add(m.position, place(model, rune, RING_RES, Vector3::zeros(), m.position, turn, vpm, size, MOVING));
         }
-        // Pools lying on the ground, spreading out as they're left and drying up as they go
+        // Pools lying on the ground, spreading out as they're left, going on each its own way and
+        // dying down as they go, sinking into the ground, see pool_look()
         for l in self.lingering.iter().filter(|l| l.pool) {
-            let grow = (l.life / 0.8).min(1.0).sqrt();
-            let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), l.position.x * 0.13 + l.position.y * 0.07);
-            let (model, puddle) = self.effect_model(SLOT_PUDDLE, Element::look(Some(l.element)));
-            let at = l.position + Vector3::new(0.0, 0.0, 0.06 * vpm);
-            add(at, place(model, puddle, PUDDLE_RES, Vector3::zeros(), at, turn, vpm, l.radius * grow, MOVING));
+            let key = l.position.x * 0.13 + l.position.y * 0.07;
+            let (size, sink, yaw, spent) = pool_look(l.element, l.age(), l.life, self.time, key);
+            let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), yaw);
+            let (model, pool) = self.effect_model(if spent { SLOT_POOL_SPENT } else { SLOT_PUDDLE }, Element::look(l.element));
+            let at = l.position + Vector3::new(0.0, 0.0, (0.06 - sink * l.radius) * vpm);
+            add(at, place(model, pool, PUDDLE_RES, Vector3::zeros(), at, turn, vpm, l.radius * size, MOVING));
         }
         // Shockwaves rolling out, rubble heaved up along their fronts
         let (model, wave) = self.model_at(WAVE);
@@ -14448,17 +14885,20 @@ impl Combat {
                 }
                 // A burning brand's line: a puddle of fire on each stretch once it's caught,
                 // flickering, dying down as it burns out
+                // Each catching, spreading out as it does, and burning out sinking into the ground
                 ZoneKind::Brand => {
-                    let (model, puddle) = self.effect_model(SLOT_PUDDLE, Element::look(Some(Element::Fire)));
                     let fade = (z.life / 0.6).min(1.0);
+                    let (model, puddle) = self.effect_model(if fade < 0.6 { SLOT_POOL_SPENT } else { SLOT_PUDDLE }, Element::look(Some(Element::Fire)));
                     for (k, w) in z.path.windows(2).enumerate() {
-                        if age < 0.38 + 0.045 * k as f64 {
+                        let caught = age - (0.38 + 0.045 * k as f64);
+                        if caught < 0.0 {
                             continue;
                         }
-                        let at = w[0].lerp(&w[1], 0.5) + Vector3::new(0.0, 0.0, 0.06 * vpm);
+                        let spread = 0.15 + 0.85 * smooth(caught / 0.25);
+                        let at = w[0].lerp(&w[1], 0.5) + Vector3::new(0.0, 0.0, (0.06 - 0.12 * (1.0 - fade)) * vpm);
                         let flicker = 1.0 + 0.12 * (self.time * 11.0 + k as f64 * 1.7).sin();
                         let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), k as f64 * 0.9);
-                        add(at, place(model, puddle, PUDDLE_RES, Vector3::zeros(), at, turn, vpm, 0.75 * BRAND_WIDTH * flicker * fade.max(0.1), MOVING));
+                        add(at, place(model, puddle, PUDDLE_RES, Vector3::zeros(), at, turn, vpm, 0.75 * BRAND_WIDTH * flicker * spread * (0.5 + 0.5 * fade), MOVING));
                     }
                 }
                 ZoneKind::Storm | ZoneKind::Swarm => {}
@@ -14654,7 +15094,8 @@ impl Combat {
         if moon > 0.0 {
             lights.push(light(view.eye + Vector3::new(0.0, 0.0, 4.0 * vpm), 30.0, Element::Blood.light(), 1.6 * moon as f32));
         }
-        for p in &self.projectiles {
+        // Not what's flown on so far off it's faded into the sky, and lights nothing to be seen
+        for p in self.projectiles.iter().filter(|p| (p.position - view.eye).norm() < self.seen) {
             if !p.arrow {
                 lights.push(light(p.position, 6.0, p.profile.element.map_or([0.5, 0.9, 1.0], Element::light), 1.2));
             } else if p.shot == Shot::Shell {
@@ -14670,9 +15111,11 @@ impl Combat {
                 None => {}
             }
         }
-        // Fire left burning, and holy light gathering
-        for l in self.lingering.iter().filter(|l| l.element == Element::Fire) {
-            lights.push(light(l.position + Vector3::new(0.0, 0.0, 0.5 * vpm), 3.0 + l.radius, Element::Fire.light(), 0.7 * (l.life / 1.0).min(1.0) as f32));
+        // Fire left burning, and holy light gathering: a pool's light coming up as it spreads and
+        // dying down with it
+        for l in self.lingering.iter().filter(|l| l.element == Some(Element::Fire)) {
+            let strength = if l.pool { (l.age() / POOL_SPREAD).min(1.0) * (l.life / POOL_FADE).min(1.0).powi(2) } else { (l.life / 1.0).min(1.0) };
+            lights.push(light(l.position + Vector3::new(0.0, 0.0, 0.5 * vpm), 3.0 + l.radius, Element::Fire.light(), 0.7 * strength as f32));
         }
         for s in &self.strikes {
             lights.push(light(s.position + Vector3::new(0.0, 0.0, 1.0 * vpm), 4.0, Element::Holy.light(), 0.6));
@@ -15883,6 +16326,304 @@ mod tests {
             }
         }
         assert!(twirled > 50, "only {twirled} twirl");
+    }
+
+    /// A wide flat stretch of open ground `meters` across at `vpm` voxels a meter, four meters of
+    /// earth deep, 32 m of sky over it
+    fn open_ground(meters: u32, vpm: u32) -> World {
+        let size = [meters * vpm, meters * vpm, 64];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * (4 * vpm as usize / 8)].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = vpm;
+        world
+    }
+
+    /// A staff's profile with no element, effects or synergies, so what it shoots does only what
+    /// its form does
+    fn plain_profile() -> Rc<Profile> {
+        let library = crate::weapons::Library::load();
+        let staff = library.generate(3, library.family("staff"), 1.0);
+        Rc::new(Profile { element: None, effects: Vec::new(), synergies: Vec::new(), ..(*staff.profile).clone() })
+    }
+
+    /// Where `p` is going to have got to after `dt`, falling as it does
+    fn next_at(p: &Projectile, vpm: f64, dt: f64) -> Vector3<f64> {
+        let mut v = p.velocity;
+        v.z -= 9.8 * p.gravity * vpm * dt;
+        p.position + v * dt
+    }
+
+    /// The rule for what's shot or cast: nothing in flight runs out of time and falls out of the
+    /// air. Shot level out over open ground, every kind of spell and every kind of shot flies on
+    /// till it strikes the ground or leaves the world, and only then is gone: what doesn't fall
+    /// goes on past 300 m and then out of the world, and nothing's left of it after.
+    #[test]
+    fn nothing_in_flight_runs_out_of_time() {
+        let vpm = 2.0;
+        let world = open_ground(640, 2);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(320.0, 320.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let forms = [Form::Bolt, Form::Fireball, Form::Shard, Form::Lightning, Form::Glob, Form::Missile, Form::Orb, Form::Lance, Form::Hex];
+        let shots = [Shot::Arrow, Shot::Quarrel, Shot::Ball, Shot::Shell];
+        let kinds: Vec<(Option<Shot>, Form)> = forms.iter().map(|&f| (None, f)).chain(shots.iter().map(|&s| (Some(s), Form::Bolt))).collect();
+        let dt = 1.0 / 60.0;
+        for (shot, form) in kinds {
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            let mut animals = Vec::new();
+            let missile = shot.map(|shot| Missile { shot, head: 0, power: false, size: 1.0 });
+            let speed = if shot.is_some() { 60.0 } else { 24.0 } * vpm;
+            combat.shoot(&view, &profile, missile, form, eye, Vector3::y(), speed, 10.0);
+            assert_eq!(combat.projectiles.len(), 1, "{shot:?} {form:?}");
+            let (mut furthest, mut seconds) = (0.0f64, 0.0);
+            let mut last = None;
+            while seconds < 40.0 {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.fly(&mut arena, dt);
+                seconds += dt;
+                let Some(p) = combat.projectiles.first() else {
+                    break;
+                };
+                furthest = furthest.max((p.position - eye).norm() / vpm);
+                last = Some((p.position, next_at(p, vpm, dt)));
+            }
+            let falls = shot.is_some() || form.flight().1 > 0.0;
+            assert!(combat.projectiles.is_empty(), "{shot:?} {form:?} still flying after {seconds:.0} s, {furthest:.0} m off");
+            let (at, next) = last.expect("it flew");
+            let struck = solid_along(&world, at, next).is_some();
+            let left = lost(&world, eye, next, false);
+            assert!(struck || left, "{shot:?} {form:?} gone in the air {:.0} m off, {:.1} m up, after {seconds:.1} s", (at - eye).norm() / vpm, at.z / vpm - 4.0);
+            if falls {
+                assert!(struck, "{shot:?} {form:?} never came down, gone {furthest:.0} m off");
+            } else {
+                assert!(left && furthest > 300.0, "{shot:?} {form:?} only got {furthest:.0} m off in {seconds:.1} s");
+            }
+            println!("{shot:?} {form:?}: {} after {seconds:.1} s, {furthest:.0} m off", if struck { "came down" } else { "left the world" });
+        }
+        // Shot up into the sky over the world: a spell goes on up out of sight, gone only once
+        // it's further off than anything's seen, and an arrow comes back down
+        for (shot, form, up) in [(None, Form::Bolt, 1.0f64), (Some(Shot::Arrow), Form::Bolt, 0.97)] {
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            let mut animals = Vec::new();
+            let missile = shot.map(|shot| Missile { shot, head: 0, power: false, size: 1.0 });
+            let direction = Vector3::new(0.0, (1.0 - up * up).sqrt(), up);
+            combat.shoot(&view, &profile, missile, form, eye, direction, 48.0 * vpm, 10.0);
+            let (mut highest, mut last) = (0.0f64, None);
+            for _ in 0..(40.0 / dt) as usize {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.fly(&mut arena, dt);
+                let Some(p) = combat.projectiles.first() else {
+                    break;
+                };
+                highest = highest.max(p.position.z / vpm);
+                last = Some((p.position, next_at(p, vpm, dt)));
+            }
+            let (at, next) = last.unwrap();
+            assert!(combat.projectiles.is_empty(), "{shot:?} still up there");
+            if shot.is_some() {
+                assert!(solid_along(&world, at, next).is_some() && highest > 50.0, "an arrow shot up, {highest:.0} m up at the most, gone {:.0} m up", at.z / vpm);
+            } else {
+                assert!((at - eye).norm() > seen_within(&world) - 48.0 * vpm * dt, "a spell shot up gone {:.0} m off", (at - eye).norm() / vpm);
+            }
+        }
+    }
+
+    /// A spell cast at something a long way off gets there and hits it, going off as it does,
+    /// however far it has to fly
+    #[test]
+    fn a_spell_hits_what_its_cast_at_however_far() {
+        let vpm = 2.0;
+        let world = open_ground(640, 2);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(320.0, 200.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        for (form, meters) in [(Form::Bolt, 150.0), (Form::Orb, 110.0), (Form::Lance, 200.0)] {
+            let mut animals = crate::animals::spawn_pack(&world, &water, &[Look::Bandit], feet + Vector3::new(0.0, meters * vpm, 0.0), 0.0, 3);
+            assert_eq!(animals.len(), 1);
+            let was = animals[0].health;
+            let target = animals[0].center(vpm as u32);
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            combat.shoot(&view, &profile, None, form, eye, (target - eye).normalize(), 24.0 * vpm, 10.0);
+            let mut went_off = false;
+            for _ in 0..(30.0 * 60.0) as usize {
+                let blasts = combat.blasts.len();
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.fly(&mut arena, 1.0 / 60.0);
+                went_off |= combat.blasts.len() > blasts;
+                if combat.projectiles.is_empty() {
+                    break;
+                }
+            }
+            assert!(animals[0].health < was, "{form:?} cast at something {meters} m off never hurt it");
+            assert!(went_off, "{form:?} hit something {meters} m off without going off");
+        }
+    }
+
+    /// Something homing in on what's near turns only so far round after it in all, then flies
+    /// straight on, rather than circling it for ever: here what it's after keeps a little ahead
+    /// of it off to one side, out of reach, however it turns
+    #[test]
+    fn homing_shots_give_up_rather_than_circle() {
+        let vpm = 2.0;
+        let world = open_ground(640, 2);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(320.0, 320.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let mut animals = crate::animals::spawn_pack(&world, &water, &[Look::Bandit], feet + Vector3::new(0.0, 6.0 * vpm, 0.0), 0.0, 3);
+        let lift = animals[0].center(vpm as u32) - animals[0].position;
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        combat.shoot(&view, &plain_profile(), None, Form::Missile, eye, Vector3::y(), 24.0 * vpm, 10.0);
+        let dt = 1.0 / 60.0;
+        let mut headings = Vec::new();
+        for _ in 0..(6.0 / dt) as usize {
+            let p = &combat.projectiles[0];
+            let ahead = p.velocity.normalize();
+            let off = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 1.0) * ahead;
+            animals[0].position = p.position + off * 6.0 * vpm - lift;
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.fly(&mut arena, dt);
+            headings.push(combat.projectiles[0].velocity.normalize());
+        }
+        let p = &combat.projectiles[0];
+        assert!(p.steered >= MOST_STEER && p.steered < MOST_STEER + 0.5, "turned {:.2} rad in all", p.steered);
+        let (a, b) = (headings[headings.len() - 60], headings[headings.len() - 1]);
+        assert!(a.dot(&b) > 1.0 - 1e-9, "still turning after {:.1} rad", p.steered);
+    }
+
+    /// When the world moves on a strip, what's in flight and what's about to be, an echo's shots,
+    /// moves with it, and where they're going too
+    #[test]
+    fn what_flies_moves_with_the_world() {
+        let vpm = 8.0;
+        let eye = Vector3::new(24.0, 10.0, 6.0) * vpm;
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let mut combat = Combat::new(1, 0);
+        combat.shoot(&view, &profile, None, Form::Bolt, eye, Vector3::y(), 24.0 * vpm, 10.0);
+        combat.shoot(&view, &profile, None, Form::Bolt, eye + Vector3::x() * vpm, Vector3::y(), 24.0 * vpm, 10.0);
+        let echo = combat.projectiles.pop().unwrap();
+        combat.echoes.push(Echo { delay: 0.2, profile: profile.clone(), shot: Some(echo), heavy: false, power: 1.0 });
+        let aim = eye + Vector3::new(0.0, 30.0, 0.0) * vpm;
+        combat.projectiles[0].trick = Trick::Carry { special: None, aim, target: aim, sky: false };
+        let shift = Vector3::new(16.0 * vpm, -16.0 * vpm, 0.0);
+        combat.recenter(shift);
+        assert!((combat.projectiles[0].position - (eye - shift)).norm() < 1e-9);
+        let Trick::Carry { aim: moved, .. } = combat.projectiles[0].trick else { unreachable!() };
+        assert!((moved - (aim - shift)).norm() < 1e-9);
+        let echoed = combat.echoes[0].shot.as_ref().unwrap();
+        assert!((echoed.position - (eye + Vector3::x() * vpm - shift)).norm() < 1e-9, "an echo's shot left behind");
+    }
+
+    /// However many are in flight, only so many are kept, those near and in sight first
+    #[test]
+    fn too_many_in_flight_go_furthest_first() {
+        let vpm = 8.0;
+        let eye = Vector3::new(24.0, 10.0, 6.0) * vpm;
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let mut combat = Combat::new(1, 0);
+        for k in 0..MOST_PROJECTILES + 40 {
+            let at = eye + Vector3::new(0.0, (2.0 + k as f64 * 0.3) * vpm, 0.0);
+            combat.shoot(&view, &profile, None, Form::Bolt, at, Vector3::y(), 24.0 * vpm, 10.0);
+        }
+        // One behind, near: out of sight, so it goes before ones further off in sight
+        combat.shoot(&view, &profile, None, Form::Bolt, eye - Vector3::new(0.0, 3.0 * vpm, 0.0), -Vector3::y(), 24.0 * vpm, 10.0);
+        combat.keep_projectiles_few(&view);
+        assert_eq!(combat.projectiles.len(), MOST_PROJECTILES);
+        let furthest = combat.projectiles.iter().map(|p| (p.position - eye).y).fold(f64::MIN, f64::max);
+        assert!(furthest < (2.0 + MOST_PROJECTILES as f64 * 0.3) * vpm + 1e-6, "kept one {:.0} m off", furthest / vpm);
+        assert!(combat.projectiles.iter().all(|p| p.position.y > eye.y), "kept the one out of sight");
+    }
+
+    /// Every pool spreads out from small as it's left, never jumping in size or sinking all at
+    /// once from one frame to the next however it goes on, and dies down till it's under the
+    /// ground or all but gone by the end, turning to its spent look once on the way
+    #[test]
+    fn pools_spread_out_and_die_down_without_popping() {
+        let looks = std::iter::once(None).chain(Element::ALL.map(Some));
+        for element in looks {
+            let (life, dt) = (4.0, 1.0 / 120.0);
+            let mut last: Option<(f64, f64)> = None;
+            let mut spent_at = None;
+            for k in 0..=(life / dt) as usize {
+                let age = k as f64 * dt;
+                let (size, sink, _, spent) = pool_look(element, age, life - age, age, 0.3);
+                if k == 0 {
+                    assert!(size < 0.2, "{element:?} starts out {size:.2} big");
+                }
+                // As quick as it spreads out, never more in a frame than that
+                if let Some((s, d)) = last {
+                    assert!((size - s).abs() < 0.1 && (sink - d).abs() < 0.01, "{element:?} jumps {s:.3}->{size:.3}, sinks {d:.3}->{sink:.3} at {age:.2} s");
+                }
+                match (spent, spent_at) {
+                    (true, None) => spent_at = Some(age),
+                    (false, Some(_)) => panic!("{element:?} comes back from being spent at {age:.2} s"),
+                    _ => {}
+                }
+                last = Some((size, sink));
+            }
+            let (size, sink) = last.unwrap();
+            // Its highest point, a third of a meter at the most next to its radius, under the
+            // ground, or it's all but gone
+            assert!(size < 0.3 || sink > 0.06 + 0.12 * size, "{element:?} ends {size:.2} big, sunk {sink:.2}");
+            assert!(spent_at.is_some_and(|t| t > life - POOL_FADE), "{element:?} spent at {spent_at:?}");
+        }
+    }
+
+    /// A pool goes on hurting what stands in it all its life, leaves a mark of its element on the
+    /// ground under it a while in, and when there are too many the oldest dies down rather than
+    /// going all at once. Without an element it's churned earth, not fire.
+    #[test]
+    fn pools_hurt_leave_their_mark_and_die_down_when_too_many() {
+        let vpm = 8.0;
+        let world = field();
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let ground = feet + Vector3::new(0.0, 6.0 * vpm, 0.0);
+        let mut animals = crate::animals::spawn_pack(&world, &water, &[Look::Bandit], ground, 0.0, 3);
+        let was = animals[0].health;
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        combat.leave_pool_at(&profile, ground, 1.5, 4.0, None, 1.0);
+        let dt = 1.0 / 60.0;
+        let mut ticks = 0;
+        for _ in 0..(4.2 / dt) as usize {
+            let health = animals[0].health;
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.scar_timer -= dt;
+            combat.linger(&mut arena, dt);
+            ticks += (animals[0].health < health) as usize;
+        }
+        assert!(combat.lingering.is_empty());
+        assert!(animals[0].health < was && ticks >= 6, "hurt {ticks} times");
+        assert!(animals[0].status.slowed > 0.0, "churned earth didn't drag at its feet");
+        assert_eq!(combat.stains.len(), 1, "{} marks left", combat.stains.len());
+        assert_eq!(combat.stains[0].2, DIRT);
+        // Too many: the oldest dies down from where it was
+        let mut combat = Combat::new(1, 0);
+        for k in 0..MOST_POOLS {
+            combat.leave_pool_at(&profile, ground + Vector3::new(k as f64 * vpm, 0.0, 0.0), 1.5, 4.0, Some(Element::Fire), 1.0);
+            // The first left the longest ago
+            combat.lingering[k].life -= 0.1 * (MOST_POOLS - k) as f64;
+        }
+        let oldest_age = combat.lingering[0].age();
+        combat.leave_pool_at(&profile, ground, 1.5, 4.0, Some(Element::Frost), 1.0);
+        assert_eq!(combat.lingering.len(), MOST_POOLS + 1, "one just gone");
+        assert!((combat.lingering[0].life - POOL_FADE).abs() < 1e-9 && (combat.lingering[0].age() - oldest_age).abs() < 1e-9);
+        assert!(combat.lingering[1..].iter().all(|l| l.life > POOL_FADE));
     }
 
     /// The moves special attacks go through with weapons that cast start and end where

@@ -3204,6 +3204,22 @@ impl Game {
         (middle, longest)
     }
 
+    /// For looking at pools, `--script pools`: one of each element and one of churned earth laid
+    /// out over the ground `ahead` of `eye`, three by three, hurting nothing
+    pub fn lay_pools(&mut self, world: &World, eye: Vector3<f64>, ahead: Vector3<f64>) {
+        let profile = match self.held() {
+            Some((_, w)) => w.profile.clone(),
+            None => self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone(),
+        };
+        self.combat.lay_pools(world, &profile, eye, ahead);
+    }
+
+    /// What's in flight, and how far off the furthest of it is, for screenshot runs
+    pub fn in_flight(&self, eye: Vector3<f64>) -> String {
+        let (count, furthest) = self.combat.in_flight(eye);
+        format!("{count} in flight, the furthest {furthest:.0} m off")
+    }
+
     /// Takes the first weapon of family `id` carried in hand, or for trying it out, one rolled if
     /// none is carried
     pub fn select_family(&mut self, id: &str) {
