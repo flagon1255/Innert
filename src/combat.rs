@@ -13511,6 +13511,11 @@ impl Combat {
         // full size `reach` meters off, down to `least` of it up close
         let near = |at: Vector3<f64>, reach: f64, least: f64| ((at - view.eye).norm() / (reach * vpm)).clamp(least, 1.0);
         for s in self.sparks.iter().filter(|s| s.slot != SLOT_FINE) {
+            // Sparks and drops a voxel across right up against the eye would be flat squares of
+            // color across the view, so they're left out
+            if matches!(s.slot, SLOT_SPARK | SLOT_DROP) && (s.position - view.eye).norm() < 0.6 * vpm {
+                continue;
+            }
             // A spark flying fast is a streak along the way it's going, its head white-hot, see
             // effects::streak(); one hanging still, as along a bolt of lightning, a speck
             if s.slot == SLOT_SPARK && s.look < ELEMENT_LOOKS && s.velocity.norm() > 0.8 * vpm {
@@ -13534,8 +13539,7 @@ impl Combat {
             };
             // A streak points the way it's going, its tail trailing
             let rotation = if s.slot == SLOT_BOLT { UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity) } else { UnitQuaternion::identity() };
-            // Sparks and drops a voxel across shrink hard right in front of the eye, rather than
-            // showing as flat squares of color across the view
+            // Sparks and drops a voxel across shrink hard in front of the eye
             let shrink = if matches!(s.slot, SLOT_SPARK | SLOT_DROP) { near(s.position, 2.5, 0.12) } else { near(s.position, 1.5, 0.3) };
             add(s.position, place(model, spark, res, Vector3::zeros(), s.position, rotation, vpm, size * shrink, MOVING));
         }
