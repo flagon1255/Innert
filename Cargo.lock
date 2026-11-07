@@ -1332,6 +1332,7 @@ dependencies = [
 name = "innert"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "bytemuck",
  "crossterm",
  "egui_winit_vulkano",
