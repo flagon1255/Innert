@@ -40,6 +40,7 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo},
     },
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
+    memory::MemoryHeapFlags,
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     swapchain::{
@@ -70,6 +71,7 @@ mod hot_reload;
 mod leaves;
 mod loading;
 mod player;
+mod quality;
 mod staging;
 mod startup;
 mod voxelize;
@@ -118,6 +120,7 @@ const FLAG_GRASS: u32 = 16;
 const FLAG_WATER: u32 = 32;
 const FLAG_SMOOTH: u32 = 64;
 const FLAG_WIND: u32 = 128;
+const FLAG_REFLECTIONS: u32 = 1 << 16;
 
 // Has to match shaders\traverse.comp
 const SUN_MAP_MODE: u32 = 100;
@@ -625,6 +628,7 @@ struct UpscaleConstants {
 
 // Has to match upscale.comp
 const UPSCALE_HISTORY: u32 = 1;
+const UPSCALE_FAST: u32 = 2;
 
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
@@ -1067,6 +1071,13 @@ struct App {
     denoise: bool,
     color_grade: bool,
     bloom: f32,
+    // Which of the presets the settings above came from, see quality.rs, and what else it sets
+    quality: quality::Preset,
+    view_distance: f32,
+    reflections: bool,
+    fast_upscale: bool,
+    // Picked in the settings, put in place at the start of the next frame
+    pending_quality: Option<quality::Preset>,
 
     frame: u32,
     accum_count: u32,
@@ -1926,6 +1937,16 @@ impl App {
         let Placed { scene, terrain, rivers, world, landscape, mut camera, indoors } = placed;
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        // The preset chosen before, or the one that suits the graphics card. Screenshot runs go by
+        // the card alone, so they come out the same whatever was chosen.
+        let card = device.physical_device();
+        let card_memory = card.memory_properties().memory_heaps.iter().filter(|h| h.flags.intersects(MemoryHeapFlags::DEVICE_LOCAL)).map(|h| h.size).max().unwrap_or(0);
+        let quality = setting("quality")
+            .and_then(quality::Preset::parse)
+            .or_else(|| if Capture::from_args().is_none() { quality::kept() } else { None })
+            .unwrap_or_else(|| quality::suited(&card.properties().device_name, card.properties().vendor_id, !integrated, card_memory));
+        let preset = quality.settings();
+        println!("Quality: {} (sun shafts {})", quality.name(), preset.sun_shafts.name());
 
         let input = WinitInputHelper::new();
         let flag = |key: &str, default: bool| setting(key).map_or(default, |v| v == "true" || v == "1");
@@ -2139,8 +2160,8 @@ impl App {
             move_speed: scene.initial_move_speed(),
             render_mode: RenderMode::Shaded,
             // The same moving or still, so stopping doesn't cost more rays and rebuild every image
-            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.33 } else { 0.45 }),
-            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.33 } else { 0.45 }),
+            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(preset.render_scale),
+            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(preset.render_scale),
             still_frames: 0,
             last_camera_view: None,
 
@@ -2148,15 +2169,20 @@ impl App {
             // haze, so the voxels read crisply. Grass is made of voxels rather than triangles.
             sun_azimuth: setting("sun_azimuth").and_then(|v| v.parse().ok()).unwrap_or(150.0),
             sun_elevation: setting("sun_elevation").and_then(|v| v.parse().ok()).unwrap_or(38.0),
-            shadows: flag("shadows", true),
-            ambient_occlusion: flag("ao", true),
-            bounce_light: flag("bounce", true),
-            smooth_shading: flag("smooth", true),
-            wind: flag("wind", true),
+            shadows: flag("shadows", preset.shadows),
+            ambient_occlusion: flag("ao", preset.ambient_occlusion),
+            bounce_light: flag("bounce", preset.bounce_light),
+            smooth_shading: flag("smooth", preset.smooth_shading),
+            wind: flag("wind", preset.wind),
             sunbeams: flag("sunbeams", false),
-            denoise: flag("denoise", true),
+            denoise: flag("denoise", preset.denoise),
             color_grade: flag("grade", true),
-            bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(0.3),
+            bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(preset.bloom),
+            quality,
+            view_distance: setting("view_distance").and_then(|v| v.parse().ok()).unwrap_or(preset.view_distance),
+            reflections: flag("reflections", preset.reflections),
+            fast_upscale: flag("fast_upscale", preset.fast_upscale),
+            pending_quality: None,
             haze: setting("haze").and_then(|v| v.parse().ok()).unwrap_or(0.0012),
             grass: flag("grass", false),
 
@@ -3454,6 +3480,24 @@ impl App {
         self.run_script();
     }
 
+    /// Sets everything a quality preset does, as when one's picked in the settings
+    fn apply_quality(&mut self, preset: quality::Preset) {
+        let s = preset.settings();
+        self.quality = preset;
+        self.render_scale = s.render_scale;
+        self.still_render_scale = s.render_scale;
+        self.shadows = s.shadows;
+        self.ambient_occlusion = s.ambient_occlusion;
+        self.bounce_light = s.bounce_light;
+        self.smooth_shading = s.smooth_shading;
+        self.wind = s.wind;
+        self.denoise = s.denoise;
+        self.bloom = s.bloom;
+        self.view_distance = s.view_distance;
+        self.reflections = s.reflections;
+        self.fast_upscale = s.fast_upscale;
+    }
+
     /// Plays through things that need input, for checking them in screenshot runs: `--script bucket`
     /// scoops up water and pours it back, `wade` walks through a lake, `hunt` hits a squirrel,
     /// `fight` attacks with each weapon and `loot` opens a chest. What happens is printed.
@@ -3935,6 +3979,10 @@ impl App {
         self.resample_pipeline.maybe_reload();
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
+        if let Some(preset) = self.pending_quality.take() {
+            self.apply_quality(preset);
+            quality::keep(preset);
+        }
         let start = Instant::now();
         self.update_window();
         self.slow("moving the world along", start);
@@ -4137,6 +4185,14 @@ impl App {
                     "Flying: WASDQE to move, Shift to go faster, F to walk"
                 });
                 ui.separator();
+                // Sets the render scale and the lighting below, and is kept for next time
+                egui::ComboBox::from_label("Quality").selected_text(self.quality.name()).show_ui(ui, |ui| {
+                    for preset in quality::Preset::ALL {
+                        if ui.selectable_label(self.quality == preset, preset.name()).clicked() {
+                            self.pending_quality = Some(preset);
+                        }
+                    }
+                });
                 ui.add(egui::Slider::new(&mut self.camera.fov, 0.0..=180.0).text("FOV"));
                 ui.add(egui::Slider::new(&mut self.render_scale, 0.125..=2.0).text("Render Scale While Moving"));
                 ui.add(egui::Slider::new(&mut self.still_render_scale, 0.125..=2.0).text("Render Scale When Still"));
@@ -4365,6 +4421,9 @@ impl App {
         if self.wind {
             flags |= FLAG_WIND;
         }
+        if self.reflections {
+            flags |= FLAG_REFLECTIONS;
+        }
 
         let mut post_flags = 0;
         // An sRGB swapchain encodes on its own, otherwise the shader has to
@@ -4431,7 +4490,7 @@ impl App {
         .unwrap();
         // Things fade into the sky before the edge of the world, which is never nearer than this
         let fade = if self.landscape.is_some() {
-            ((self.world.size[0].min(self.world.size[1]) as f64 * 0.5 - RECENTER_M * self.world.voxels_per_meter as f64) as f32).max(0.0)
+            ((self.world.size[0].min(self.world.size[1]) as f64 * 0.5 - RECENTER_M * self.world.voxels_per_meter as f64) as f32).max(0.0) * self.view_distance.clamp(0.25, 1.0)
         } else {
             0.0
         };
@@ -4639,7 +4698,7 @@ impl App {
                 pixel_to_ray: push_constants.pixel_to_ray,
                 previous_world_to_pixel: previous.unwrap_or(world_to_window).cast(),
                 frame: push_constants.frame,
-                flags: if previous.is_some() { UPSCALE_HISTORY } else { 0 },
+                flags: if previous.is_some() { UPSCALE_HISTORY } else { 0 } | if self.fast_upscale { UPSCALE_FAST } else { 0 },
                 // Smoother once the view settles, quicker to catch up while it moves
                 most: if self.still_frames >= 2 { 12.0 } else { 4.0 },
                 padding: 0.0,

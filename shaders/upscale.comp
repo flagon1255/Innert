@@ -25,6 +25,9 @@ layout(push_constant) uniform PushConstants {
 
 // Has to match the UPSCALE_* constants in main.rs
 const uint UPSCALE_HISTORY = 1; // Last frame's image is there to use
+// Cheaper for slower graphics cards: last frame's image is read between its four nearest pixels
+// rather than its sixteen, which softens it a little more as it moves
+const uint UPSCALE_FAST = 2;
 
 // Tone mapped, from post.comp
 layout(set = 0, binding = 0, rgba8) readonly uniform image2D current;
@@ -71,11 +74,19 @@ vec3 clipToBox(vec3 c, vec3 center, vec3 lo, vec3 hi) {
     return center + r * min(min(t.x, t.y), min(t.z, 1));
 }
 
-// Last frame's image at `pos`, in window pixels, smoothly between them (Catmull-Rom)
+// Last frame's image at `pos`, in window pixels, smoothly between them (Catmull-Rom), or between
+// the nearest four for UPSCALE_FAST
 vec4 sampleHistory(vec2 pos) {
     ivec2 size = imageSize(historyIn);
     vec2 i = floor(pos);
     vec2 f = pos - i;
+    if ((pc.flags & UPSCALE_FAST) != 0) {
+        ivec2 a = clamp(ivec2(i), ivec2(0), size - 1);
+        ivec2 b = clamp(ivec2(i) + 1, ivec2(0), size - 1);
+        vec4 top = mix(imageLoad(historyIn, a), imageLoad(historyIn, ivec2(b.x, a.y)), f.x);
+        vec4 bottom = mix(imageLoad(historyIn, ivec2(a.x, b.y)), imageLoad(historyIn, b), f.x);
+        return mix(top, bottom, f.y);
+    }
     vec2 w[4] = vec2[4](
         f * (-0.5 + f * (1 - 0.5 * f)),
         1 + f * f * (-2.5 + 1.5 * f),
@@ -118,8 +129,14 @@ void main() {
     vec3 lo = vec3(FLT_MAX);
     vec3 hi = vec3(-FLT_MAX);
     float closest = FLT_MAX;
+    // UPSCALE_FAST looks at only the nearest rendered pixel and the four beside it
+    bool fast = (pc.flags & UPSCALE_FAST) != 0;
+    float taps = 0;
     for (int y = -1; y <= 1; y++) {
         for (int x = -1; x <= 1; x++) {
+            if (fast && x != 0 && y != 0)
+            continue;
+            taps++;
             ivec2 q = clamp(nearest + ivec2(x, y), ivec2(0), rendered - 1);
             vec3 c = imageLoad(current, q).rgb;
             vec2 offset = vec2(q) + jitter - at;
@@ -165,8 +182,8 @@ void main() {
     if (found) {
         vec4 history = sampleHistory(previous);
         // Held to what's around now, within a little more than the usual spread of its colors
-        vec3 mean = m1 / 9;
-        vec3 spread = sqrt(max(m2 / 9 - mean * mean, 0));
+        vec3 mean = m1 / taps;
+        vec3 spread = sqrt(max(m2 / taps - mean * mean, 0));
         vec3 box_lo = max(lo, mean - spread * 1.25);
         vec3 box_hi = min(hi, mean + spread * 1.25);
         vec3 kept = fromYCoCg(clipToBox(toYCoCg(history.rgb), clamp(mean, box_lo, box_hi), box_lo, box_hi));
