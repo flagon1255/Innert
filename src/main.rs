@@ -5895,6 +5895,9 @@ const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3
 static ALLOCATOR: perf::Counting = perf::Counting;
 
 fn main() {
+    if std::env::args().any(|a| a == "--screenshot") {
+        perf::count_heap();
+    }
     startup::init();
     // `--set vram_budget=2048` takes the graphics card to have no more memory for the game than
     // that, in MB, as a smaller card would

@@ -6,24 +6,40 @@
 //! world's gone missing from.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use vulkano::{VulkanObject, device::Device};
 
-/// The system allocator, counting how much is allocated, see heap()
+/// The system allocator, counting how much is allocated in screenshot runs, see heap() and
+/// count_heap()
 pub struct Counting;
 
-static HEAP: AtomicUsize = AtomicUsize::new(0);
-static HEAP_PEAK: AtomicUsize = AtomicUsize::new(0);
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static HEAP: AtomicIsize = AtomicIsize::new(0);
+static HEAP_PEAK: AtomicIsize = AtomicIsize::new(0);
+
+/// Starts counting what's allocated, see heap(): only in screenshot runs, as every allocation
+/// counted on every thread at once costs a little
+pub fn count_heap() {
+    COUNTING.store(true, Ordering::Relaxed);
+}
+
+fn grew(by: isize) {
+    if COUNTING.load(Ordering::Relaxed) {
+        let now = HEAP.fetch_add(by, Ordering::Relaxed) + by;
+        if by > 0 {
+            HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
+        }
+    }
+}
 
 // SAFETY: passes everything straight on to the system allocator
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
-            let now = HEAP.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
+            grew(layout.size() as isize);
         }
         p
     }
@@ -31,36 +47,31 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc_zeroed(layout) };
         if !p.is_null() {
-            let now = HEAP.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
+            grew(layout.size() as isize);
         }
         p
     }
 
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         unsafe { System.dealloc(p, layout) };
-        HEAP.fetch_sub(layout.size(), Ordering::Relaxed);
+        grew(-(layout.size() as isize));
     }
 
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         let q = unsafe { System.realloc(p, layout, size) };
         if !q.is_null() {
-            if size >= layout.size() {
-                let now = HEAP.fetch_add(size - layout.size(), Ordering::Relaxed) + size - layout.size();
-                HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
-            } else {
-                HEAP.fetch_sub(layout.size() - size, Ordering::Relaxed);
-            }
+            grew(size as isize - layout.size() as isize);
         }
         q
     }
 }
 
 /// How many bytes the game has allocated now, and the most it has had at once since the last time
-/// this was asked
+/// this was asked, counted from when count_heap() was: what was allocated before and let go of
+/// after is taken off, so it starts out a little under
 pub fn heap() -> (usize, usize) {
     let now = HEAP.load(Ordering::Relaxed);
-    (now, HEAP_PEAK.swap(now, Ordering::Relaxed))
+    (now.max(0) as usize, HEAP_PEAK.swap(now, Ordering::Relaxed).max(0) as usize)
 }
 
 /// `--set vram_budget=2048`: the most of the graphics card's memory, in MB, the game takes it to
