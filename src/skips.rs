@@ -2,8 +2,8 @@
 //! that comes in joins the world, see shaders\skips.comp. Built on its own, a strip's empty bricks
 //! skip no further than its edges, nor do those at the edge of the world it comes in beside, see
 //! World::keep_skips_inside(): a world that had moved on a while, with a seam like that every 16 m
-//! each way, took a fifth longer to trace than the piece it started as. One of the four passes a
-//! frame, a tenth of a millisecond or so each.
+//! each way, took a third longer to trace than the piece it started as. Three passes, each in
+//! SLICES slices, one a frame: a pass in one frame was 0.3 ms of it on an RTX 4050.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -16,8 +16,10 @@ use vulkano::{
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
 };
 
-/// The passes, one a frame, has to match the stages in shaders\skips.comp
-const STAGES: u32 = 4;
+/// The passes, has to match the stages in shaders\skips.comp
+const STAGES: u32 = 3;
+/// Each pass is done a slice of it a frame, in this many
+const SLICES: u32 = 8;
 /// The furthest an empty brick's worked out to skip, in bricks, has to match MOST in
 /// shaders\skips.comp
 const MOST: i32 = 32;
@@ -36,6 +38,9 @@ struct Constants {
     world: [i32; 4],
     /// Where its first brick is kept in the grid, which they go round
     wrap: [i32; 4],
+    /// The first of the columns along z, or of the layers, a slice of a pass works on, and one past
+    /// its last
+    slice: [i32; 4],
 }
 
 impl Constants {
@@ -46,20 +51,26 @@ impl Constants {
         ([(x0 - MOST).max(0), (x1 + MOST).min(self.world[0])], [(y0 - MOST).max(0), (y1 + MOST).min(self.world[1])])
     }
 
-    /// The groups to dispatch for `stage`
-    fn groups(&self, stage: u32) -> [u32; 3] {
+    /// Slice `k` of `stage`: the first and one past the last column along z, for the first pass,
+    /// or layer, for the others
+    fn slice(&self, stage: u32, k: u32) -> [i32; 2] {
         let (xs, ys) = self.across();
-        let columns = ((xs[1] - xs[0]) * (ys[1] - ys[0])) as u32;
-        let high = self.world[2] as u32;
+        let n = if stage == 0 { (xs[1] - xs[0]) * (ys[1] - ys[0]) } else { self.world[2] };
+        let each = (n as u32).div_ceil(SLICES) as i32;
+        [(k as i32 * each).min(n), ((k as i32 + 1) * each).min(n)]
+    }
+
+    /// The groups to dispatch for `stage`, over slice `slice` of it
+    fn groups(&self, stage: u32, slice: [i32; 2]) -> [u32; 3] {
+        let (xs, _) = self.across();
+        let n = (slice[1] - slice[0]) as u32;
         match stage {
             // A column along z for each invocation
-            0 => [columns.div_ceil(GROUP), 1, 1],
-            // A line along y for each group, at each x and z
-            1 => [(xs[1] - xs[0]) as u32, high, 1],
-            // A line along x for each group, at each y of the band and z
-            2 => [(self.band[3] - self.band[1]) as u32, high, 1],
-            // A brick for each invocation, a layer for each row of groups
-            _ => [columns.div_ceil(GROUP), high, 1],
+            0 => [n.div_ceil(GROUP), 1, 1],
+            // A line along y for each group, at each x and z of the slice
+            1 => [(xs[1] - xs[0]) as u32, n, 1],
+            // A line along x for each group, at each y of the band and z of the slice
+            _ => [(self.band[3] - self.band[1]) as u32, n, 1],
         }
     }
 }
@@ -82,14 +93,17 @@ fn plan(lo: [u32; 2], hi: [u32; 2], size: [u32; 3], wrap: [u32; 2]) -> Option<Co
         band: [band[0].0, band[1].0, band[0].1, band[1].1],
         world: [world[0], world[1], world[2], 0],
         wrap: [(wrap[0] / 8) as i32, (wrap[1] / 8) as i32, 0, 0],
+        slice: [0; 4],
     };
     (constants.band[2] > constants.band[0] && constants.band[3] > constants.band[1]).then_some(constants)
 }
 
-/// The skips round where the strip joins the world to work out again, and the next pass
+/// The skips round where the strip joins the world to work out again, and the next slice of which
+/// pass
 struct Job {
     constants: Constants,
-    next: u32,
+    stage: u32,
+    slice: u32,
 }
 
 #[derive(Default)]
@@ -106,7 +120,7 @@ impl Skips {
     /// so they still hold however it moves on meanwhile: nothing's skipped past its edges.
     pub fn joined(&mut self, lo: [u32; 2], hi: [u32; 2], size: [u32; 3], wrap: [u32; 2]) {
         if let Some(constants) = plan(lo, hi, size, wrap) {
-            self.jobs.push_back(Job { constants, next: 0 });
+            self.jobs.push_back(Job { constants, stage: 0, slice: 0 });
         }
     }
 
@@ -115,8 +129,8 @@ impl Skips {
         self.jobs.clear();
     }
 
-    /// The next pass, if any, with the frame being recorded, by `pipeline`, shaders\skips.comp, on
-    /// the grid `grid` of the main world
+    /// The next slice of a pass, if any, with the frame being recorded, by `pipeline`,
+    /// shaders\skips.comp, on the grid `grid` of the main world
     pub fn record(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>, pipeline: &Arc<ComputePipeline>, grid: &Arc<ImageView>, allocator: &Arc<StandardDescriptorSetAllocator>) {
         let Some(job) = self.jobs.front_mut() else {
             return;
@@ -130,25 +144,30 @@ impl Skips {
                 set
             }
         };
-        let stage = job.next;
+        let slice = job.constants.slice(job.stage, job.slice);
         let mut constants = job.constants;
-        constants.world[3] = stage as i32;
-        let groups = constants.groups(stage);
-        builder
-            .bind_pipeline_compute(pipeline.clone())
-            .unwrap()
-            .bind_descriptor_sets(PipelineBindPoint::Compute, pipeline.layout().clone(), 0, vec![set])
-            .unwrap()
-            .push_constants(pipeline.layout().clone(), 0, constants)
-            .unwrap();
+        constants.world[3] = job.stage as i32;
+        constants.slice = [slice[0], slice[1], 0, 0];
+        let groups = constants.groups(job.stage, slice);
         if groups.iter().all(|&n| n > 0) {
+            builder
+                .bind_pipeline_compute(pipeline.clone())
+                .unwrap()
+                .bind_descriptor_sets(PipelineBindPoint::Compute, pipeline.layout().clone(), 0, vec![set])
+                .unwrap()
+                .push_constants(pipeline.layout().clone(), 0, constants)
+                .unwrap();
             unsafe {
                 builder.dispatch(groups).unwrap();
             }
         }
-        job.next += 1;
-        if job.next == STAGES {
-            self.jobs.pop_front();
+        job.slice += 1;
+        if job.slice == SLICES {
+            job.slice = 0;
+            job.stage += 1;
+            if job.stage == STAGES {
+                self.jobs.pop_front();
+            }
         }
     }
 }
@@ -176,7 +195,15 @@ mod tests {
             assert_eq!(c.wrap, [192, 128, 0, 0]);
             assert_eq!(c.world, [448, 448, 128, 0]);
             for stage in 0..STAGES {
-                assert!(c.groups(stage).iter().all(|&n| n > 0 && n <= 65535));
+                // The slices of each pass cover all of it, once, in order
+                let slices: Vec<[i32; 2]> = (0..SLICES).map(|k| c.slice(stage, k)).collect();
+                let all = if stage == 0 { (xs[1] - xs[0]) * (ys[1] - ys[0]) } else { c.world[2] };
+                assert_eq!(slices[0][0], 0);
+                assert_eq!(slices[SLICES as usize - 1][1], all);
+                assert!(slices.windows(2).all(|w| w[0][1] == w[1][0]));
+                for s in slices {
+                    assert!(c.groups(stage, s).iter().all(|&n| n <= 65535));
+                }
             }
         }
         // Wider than the shader can work along, it's left as it is
