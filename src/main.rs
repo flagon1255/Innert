@@ -4512,6 +4512,8 @@ impl App {
             let craters = self.craters.clone();
             let stains = self.stains.clone();
             let job = std::thread::spawn(move || {
+                // Built in the background, as the strips are, giving way to the game
+                worldgen::give_way();
                 let start = Instant::now();
                 let landscape = worldgen::place_for(&settings, place_at, place_size, &rivers);
                 let mut world = landscape.build(origin, size, fine_vpm);
@@ -5628,7 +5630,7 @@ impl App {
 
         if let Some(buffer) = screenshot_buffer {
             let encoded = post_flags & POST_ENCODE_SRGB != 0;
-            if capture_done && let Some(capture) = self.capture.take() {
+            if capture_done && let Some(mut capture) = self.capture.take() {
                 save_screenshot(&buffer, resample_extent, encoded, &capture.path);
 
                 let mut times: Vec<f64> = capture.frame_times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
@@ -5660,7 +5662,7 @@ impl App {
                         println!("long frames: {}", long.join(", "));
                     }
                 }
-                if let Some(timer) = &capture.gpu {
+                if let Some(timer) = &mut capture.gpu {
                     println!("{}", timer.report());
                 }
                 event_loop.exit();

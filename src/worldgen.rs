@@ -1373,16 +1373,84 @@ impl TerrainSettings {
 /// How many threads building the world spreads over, 0 for one per core
 static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Whether the world's built in the background from here on, while the game goes on, see
+/// leave_cores(): the threads building it then give way to the game's, see give_way()
+static BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Leaves `spare` cores free while building the world from here on, so the game goes on running
 /// smoothly while the strips it moves on by are built in the background
 pub fn leave_cores(spare: usize) {
-    let cores = thread::available_parallelism().map_or(4, |n| n.get());
-    THREADS.store(cores.saturating_sub(spare).max(2), std::sync::atomic::Ordering::Relaxed);
+    THREADS.store(cores().saturating_sub(spare).max(2), std::sync::atomic::Ordering::Relaxed);
+    BACKGROUND.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many cores the game can run on: as many as the computer has, or as few as it's been held to,
+/// as with Task Manager's "Set affinity", which available_parallelism() doesn't count on Windows,
+/// where held to 2 of 16 the world was built on 14 threads
+pub fn cores() -> usize {
+    let all = thread::available_parallelism().map_or(4, |n| n.get());
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn GetProcessAffinityMask(process: *mut std::ffi::c_void, mine: *mut usize, system: *mut usize) -> i32;
+        }
+        let (mut mine, mut system) = (0usize, 0usize);
+        if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) } != 0 && mine != 0 {
+            return all.min(mine.count_ones() as usize);
+        }
+    }
+    all
+}
+
+/// Whether the world being built in the background is wanted soon, see hurry()
+static HURRY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether what's built in the background is wanted soon, as the edge of the world is getting near
+/// where it'd be seen: then it doesn't give way to the game, see give_way()
+pub fn hurry(on: bool) {
+    HURRY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A thread building the world in the background gives way to the game's own and the graphics
+/// driver's, if the world's built in the background by now: at the same priority, 14 of them on 16
+/// cores held up handing frames over to be shown by up to half a second while a strip was built,
+/// at Low, where frames are drawn as fast as they can be, and held to 4 cores 64 frames in 100 s
+/// took over 20 ms. It still has all the time they leave, which on two cores, the game drawing as
+/// fast as it can, wasn't enough to keep up: so not while it's hurried, see hurry(). Each thread
+/// building the world calls this as it starts on each step, and now and then along the longest, so
+/// a hurry's taken up straight away. Only a load of an atomic unless it's to change.
+pub fn give_way() {
+    if !BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut std::ffi::c_void;
+            fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
+        }
+        const THREAD_PRIORITY_NORMAL: i32 = 0;
+        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+        thread_local! {
+            /// What this thread's priority was last set to, if it was
+            static SET: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+        }
+        let priority = if HURRY.load(std::sync::atomic::Ordering::Relaxed) { THREAD_PRIORITY_NORMAL } else { THREAD_PRIORITY_BELOW_NORMAL };
+        if SET.get() != Some(priority) {
+            SET.set(Some(priority));
+            unsafe {
+                SetThreadPriority(GetCurrentThread(), priority);
+            }
+        }
+    }
 }
 
 fn threads() -> usize {
     match THREADS.load(std::sync::atomic::Ordering::Relaxed) {
-        0 => thread::available_parallelism().map_or(4, |n| n.get()),
+        0 => cores(),
         n => n,
     }
 }
@@ -1400,6 +1468,7 @@ pub fn on_step(step: Option<Box<dyn Fn(usize)>>) {
 }
 
 fn step(n: usize) {
+    give_way();
     ON_STEP.with(|s| {
         if let Some(step) = &*s.borrow() {
             step(n)
@@ -2443,6 +2512,9 @@ impl Heights {
             for (chunk_index, chunk) in ground.chunks_mut(rows_per_thread * size[0]).enumerate() {
                 s.spawn(move || {
                     for (i, h) in chunk.iter_mut().enumerate() {
+                        if i % 1024 == 0 {
+                            give_way();
+                        }
                         let j = chunk_index * rows_per_thread * size[0] + i;
                         let x = (origin[0] + (j % size[0]) as i64) as f32 / vpm;
                         let y = (origin[1] + (j / size[0]) as i64) as f32 / vpm;
@@ -2564,6 +2636,7 @@ impl Heights {
             for (band, (distance, nearest)) in distance.chunks_mut(rows * sx).zip(nearest.chunks_mut(rows * sx)).enumerate() {
                 let local = &local;
                 s.spawn(move || {
+                    give_way();
                     let (first, last) = (band * rows, band * rows + distance.len() / sx);
                     let mut plain = [0.0f32; RIVER_RUN];
                     for (run, lo, hi) in local.iter().filter(|(_, lo, hi)| lo[1] < last && hi[1] > first) {
@@ -2586,6 +2659,7 @@ impl Heights {
             for (band, (ground, river)) in chunks.enumerate() {
                 let (distance, nearest) = (&distance[band * rows * sx..], &nearest[band * rows * sx..]);
                 s.spawn(move || {
+                    give_way();
                     for (i, (g, r)) in ground.iter_mut().zip(river.iter_mut()).enumerate() {
                         if nearest[i] == NO_RIVER {
                             continue;
@@ -3182,6 +3256,7 @@ impl Terrain {
                         let mut cells = Vec::new();
                         let mut bricks = Vec::new();
                         for cy in (t * rows_per_thread)..((t + 1) * rows_per_thread).min(by) {
+                            give_way();
                             for cx in 0..bx {
                                 let column_objects: Vec<&Object> =
                                     objects_by_column[cx + cy * bx].iter().map(|&i| objects[i as usize]).collect();
@@ -3241,6 +3316,7 @@ impl Terrain {
         thread::scope(|s| {
             for (chunk_index, ((chunk, ground), surface)) in map.chunks_mut(rows).zip(ground.chunks_mut(rows)).zip(surface.chunks_mut(rows)).enumerate() {
                 s.spawn(move || {
+                    give_way();
                     for i in 0..chunk.len() {
                         let j = chunk_index * rows + i;
                         let (x, y) = ((j % sx) as i64, (j / sx) as i64);
