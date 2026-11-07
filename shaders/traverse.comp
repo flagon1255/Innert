@@ -21,6 +21,8 @@ const uint FLAG_WATER = 32;
 const uint FLAG_SMOOTH = 64;
 // Leaves and flowers swaying in the wind, see voxelHit()
 const uint FLAG_WIND = 128;
+// Sun shafts: shaders\shafts.comp adds the sunlight the haze scatters, where sunlight reaches it
+const uint FLAG_SHAFTS = 256;
 // Water and metal mirror the world round them, not just the sky
 const uint FLAG_REFLECTIONS = 1u << 16;
 
@@ -1963,7 +1965,7 @@ vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint se
     float radius;
     sunMapBasis(u, v, center, radius);
     bool beams = (pc.flags & FLAG_SUNBEAMS) != 0;
-    vec3 sun_light = sunColor() * hazePhase(dot(dir, pc.sun_direction.xyz)) * 0.3;
+    vec3 sun_light = (pc.flags & FLAG_SHAFTS) != 0 ? vec3(0) : sunColor() * hazePhase(dot(dir, pc.sun_direction.xyz)) * 0.3;
     vec3 sky_light = ambientLight(vec3(0, 0, 1)) * 0.8;
     float sea_level = pc.sun_direction.w;
 
