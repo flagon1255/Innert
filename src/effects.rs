@@ -486,7 +486,7 @@ fn void_shade(stage: usize, vein: f64, grain: f64) -> u8 {
             GLOW_VOID
         };
     }
-    let wide = [0.0, 0.0, 0.0, 0.0, 0.11, 0.08, 0.05, 0.03][stage];
+    let wide = [0.0, 0.0, 0.0, 0.0, 0.075, 0.055, 0.04, 0.025][stage];
     if vein.abs() < wide * 0.3 {
         GLOW_ARCANE
     } else if vein.abs() < wide {
