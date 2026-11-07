@@ -655,6 +655,9 @@ impl Water {
             (c as u32 / BLOCK) * BLOCK
         });
         let (surface_corner, surface_area) = if self.drawn_once { (corner, area) } else { ([0, 0], self.size) };
+        // Till the blocks have been worked out once, they say nothing about where the water is, so
+        // water.comp mustn't leave any land alone for being dry
+        let blocks_known = self.drawn_once;
         self.drawn_once = true;
         if steps > 0 {
             let flowing = [corner[0], corner[1], corner[0] + area[0], corner[1] + area[1]];
@@ -665,7 +668,7 @@ impl Water {
         let constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2]| Constants {
             brush,
             wake,
-            params: [STEP as f32, self.sea_level, self.voxels_per_meter as f32, 0.0],
+            params: [STEP as f32, self.sea_level, self.voxels_per_meter as f32, if blocks_known { 1.0 } else { 0.0 }],
             info: [stage as u32, self.spring_count, corner[0], corner[1]],
         };
 
