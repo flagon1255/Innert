@@ -1422,6 +1422,7 @@ mod tests {
             println!("look {look}: {} times the old fireball's ray steps by stage", costs.join(" "));
         }
         println!("orb (fire): {:.2}", ray_steps(&orb(Some(Element::Fire)), MODEL_RES) / old);
+        println!("moon: {:.2}", ray_steps(&moon(), MOON_RES) / old);
     }
 
     #[test]
