@@ -98,7 +98,9 @@ layout(push_constant) uniform PushConstants {
     // move, z: how many lights there are, w: how far away things fade into the sky, in voxels,
     // as only so much of the endless landscape is there at once (0 for no fading)
     vec4 haze;
-    // xy: where the world's corner is in the whole landscape, in its voxels
+    // xy: where the world's corner is in the whole landscape, in its voxels, zw: where its first
+    // column is kept in the room there is for the main world's columns, which it goes round, see
+    // mainBrick()
     ivec4 window;
 } pc;
 
@@ -392,8 +394,34 @@ uvec3 levelSize(uint level) {
     return level == NEAR ? pc.near_size.xyz : pc.world_size.xyz;
 }
 
+// The main world moves on over the landscape a strip at a time, and each of its columns is kept
+// where it is in the landscape modulo the room there is for them, a strip more than the world, see
+// World::wrap in src\worldgen.rs: so nothing's moved, only what comes in put where what left was.
+// The room in bricks, set in main(): in columns it's 8 times that
+ivec2 g_room8 = ivec2(1);
+
+// Where the main world's column `c`, counted from its first, is kept
+ivec2 mainColumn(ivec2 c) {
+    ivec2 room = g_room8 << 3;
+    ivec2 p = c + pc.window.zw;
+    return ivec2(p.x >= room.x ? p.x - room.x : p.x, p.y >= room.y ? p.y - room.y : p.y);
+}
+
+// Where the main world's brick `brick` is kept in brickGrid: in the loop rays step through bricks
+// in, so as little as can be
+ivec3 mainBrick(ivec3 brick) {
+    ivec2 p = brick.xy + (pc.window.zw >> 3);
+    return ivec3(p.x >= g_room8.x ? p.x - g_room8.x : p.x, p.y >= g_room8.y ? p.y - g_room8.y : p.y, brick.z);
+}
+
+// Where a voxel of a level is in the whole landscape, for what's made up from where it is, like
+// the shade of each voxel, so it stays put as the world moves on
+uvec3 landscapeCoord(uint level, uvec3 coord) {
+    return level == MAIN ? coord + uvec3(uvec2(pc.window.xy), 0) : coord;
+}
+
 uint brickCell(uint level, ivec3 brick) {
-    return level == NEAR ? imageLoad(nearGrid, brick).r : imageLoad(brickGrid, brick).r;
+    return level == NEAR ? imageLoad(nearGrid, brick).r : imageLoad(brickGrid, mainBrick(brick)).r;
 }
 
 uint brickWord(uint level, uint index) {
@@ -532,7 +560,7 @@ bool voxelHit(uint level, uint cell, ivec3 brick, uvec3 coord, bool through_wate
         float d = dot(off, off);
         if (d < 4.0 * clear * clear) {
             float kept = clamp(sqrt(d) / clear - 1.0, 0.0, 1.0);
-            if (float(hash(uvec3(coord)) & 255u) / 255.0 >= kept && isFoliage(brickMaterial(level, cell, local)))
+            if (float(hash(landscapeCoord(level, coord)) & 255u) / 255.0 >= kept && isFoliage(brickMaterial(level, cell, local)))
             return false;
         }
     }
@@ -1243,7 +1271,7 @@ const float BLADE_HEIGHT = 0.45;
 
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
-    vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : uvec3(ivec3(hit.coord) - hit.shift));
+    vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
     // Blades of grass dark down among the roots, lighter and yellower up to their tips
     if (hit.level != ANIMAL && (material == MAT_GRASS_BLADE || material == MAT_GRASS_TIP)) {
         vec3 p = voxelPoint(hit, vec3(0.5) - vec3(hit.shift));
@@ -1369,7 +1397,7 @@ uint faceSeed(Hit hit) {
 // darker voxels fall at a few meters a second, and on top the voxels flicker
 float foamFlow(Hit hit) {
     float time = pc.haze.y;
-    uvec3 c = hit.coord;
+    uvec3 c = landscapeCoord(hit.level, hit.coord);
     float vpm = float(max(pc.world_size.w, 1u)) * (hit.level == NEAR ? pc.near_origin.w : 1);
     if (abs(hit.local_normal.z) < 0.5) {
         // Ribbons a few voxels long, each column falling at its own pace
@@ -1671,8 +1699,9 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float
 // The water in a column of the main world fills whole voxels, from the top of the ground up to
 // `top`, so it's made of voxels like everything else. False where it's dry.
 bool waterColumn(ivec2 c, out float bottom, out float top, out float foam) {
-    vec2 s = imageLoad(waterSurface, c).xy;
-    bottom = imageLoad(waterGround, c).r;
+    ivec2 at = mainColumn(c);
+    vec2 s = imageLoad(waterSurface, at).xy;
+    bottom = imageLoad(waterGround, at).r;
     // Kept as how deep it is, see shaders\water.comp
     top = s.x >= 0 ? floor(bottom + s.x + 0.5) : -1;
     foam = s.y;
@@ -1686,7 +1715,7 @@ bool hasWater() {
 // Whether a point (in voxels of the main world) is in water
 bool isWater(vec3 p) {
     ivec2 c = ivec2(floor(p.xy));
-    if (!hasWater() || any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, imageSize(waterGround))))
+    if (!hasWater() || any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, ivec2(pc.world_size.xy))))
     return false;
     float bottom, top, foam;
     return waterColumn(c, bottom, top, foam) && p.z < top && p.z > bottom - 1;
@@ -1742,8 +1771,9 @@ bool waterInBlock(vec3 origin, vec3 dir, ivec2 size, vec2 inv, vec2 sgn, vec2 de
     for (int k = 0; k < 2 * WATER_BLOCK + 2 && tc < block_end; k++) {
         float tc_end = min(min(cnext.x, cnext.y), block_end);
         // Each column can have water lying in it, and water falling through it off a ledge
-        vec4 s = imageLoad(waterSurface, c);
-        float ground = imageLoad(waterGround, c).r;
+        ivec2 at = mainColumn(c);
+        vec4 s = imageLoad(waterSurface, at);
+        float ground = imageLoad(waterGround, at).r;
         // Kept from the top of the ground, see shaders\water.comp
         s.x = s.x >= 0 ? ground + s.x : -1;
         s.zw = s.w >= s.z ? ground + s.zw : vec2(1e9, -1);
@@ -1796,11 +1826,19 @@ bool waterInBlock(vec3 origin, vec3 dir, ivec2 size, vec2 inv, vec2 sgn, vec2 de
     return false;
 }
 
+// Where the main world's block of WATER_BLOCK columns, or of `span` columns, is kept, as
+// mainColumn() for columns
+ivec2 mainBlock(ivec2 b, int span) {
+    ivec2 room = (g_room8 << 3) / span;
+    ivec2 p = b + pc.window.zw / span;
+    return p - room * ivec2(greaterThanEqual(p, room));
+}
+
 bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
     hit.t = FLT_MAX;
     if (!hasWater())
     return false;
-    ivec2 size = imageSize(waterGround);
+    ivec2 size = ivec2(pc.world_size.xy);
     vec2 inv = clamp(1 / dir.xy, vec2(-FLT_MAX), vec2(FLT_MAX));
     vec2 ta = -origin.xy * inv;
     vec2 tb = (vec2(size) - origin.xy) * inv;
@@ -1825,7 +1863,8 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
 
     for (int s = 0; s < 256 && t < t_end; s++) {
         float super_end = min(min(snext.x, snext.y), t_end);
-        float highest = imageLoad(waterBlocks, ivec2(blocks.x, 0) + sup).r;
+        // The larger blocks are kept to the right of the blocks, all there's room for of both
+        float highest = imageLoad(waterBlocks, ivec2((g_room8.x << 3) / WATER_BLOCK, 0) + mainBlock(sup, SPAN)).r;
         float z_low = min(origin.z + dir.z * t, origin.z + dir.z * super_end);
         if (highest >= 0 && z_low < highest + 0.5) {
             ivec2 first = sup * WATER_SUPER;
@@ -1836,7 +1875,7 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
             int baxis = axis;
             for (int b = 0; b < 2 * WATER_SUPER + 2 && tb < super_end; b++) {
                 float block_end = min(min(next.x, next.y), super_end);
-                float block_highest = imageLoad(waterBlocks, block).r;
+                float block_highest = imageLoad(waterBlocks, mainBlock(block, WATER_BLOCK)).r;
                 float zb_low = min(origin.z + dir.z * tb, origin.z + dir.z * block_end);
                 if (block_highest >= 0 && zb_low < block_highest + 0.5
                     && waterInBlock(origin, dir, size, inv, sgn, delta, block, tb, block_end, baxis, hit))
@@ -1876,13 +1915,14 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
 // Which way the top of the water in a column faces. Each voxel's top is flat, but tilted a little
 // with the slope of the water around it, so waves catch the light one voxel at a time.
 vec3 waterTilt(ivec2 c) {
-    ivec2 size = imageSize(waterSurface);
+    ivec2 size = ivec2(pc.world_size.xy);
     // How deep it is is kept, see shaders\water.comp, so the ground's added for its height
-    float h = imageLoad(waterGround, c).r + imageLoad(waterSurface, c).x;
+    ivec2 at = mainColumn(c);
+    float h = imageLoad(waterGround, at).r + imageLoad(waterSurface, at).x;
     float s[4];
     const ivec2 dirs[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
     for (int i = 0; i < 4; i++) {
-        ivec2 n = clamp(c + dirs[i], ivec2(0), size - 1);
+        ivec2 n = mainColumn(clamp(c + dirs[i], ivec2(0), size - 1));
         float depth = imageLoad(waterSurface, n).x;
         float sn = depth >= 0 ? imageLoad(waterGround, n).r + depth : -1;
         // Dry neighbors and falling sheets don't count
@@ -2011,7 +2051,7 @@ float grassAt(ivec2 column, out float ground) {
     ground = 0;
     if (any(lessThan(column, ivec2(0))) || any(greaterThanEqual(column, ivec2(pc.world_size.xy))))
     return 0;
-    uint value = imageLoad(grassMap, column).r;
+    uint value = imageLoad(grassMap, mainColumn(column)).r;
     ground = float(value & 0xFFFFu) * 0.25;
     return float((value >> 16) & 0xFFu) / 255;
 }
@@ -2062,6 +2102,9 @@ bool traceGrass(vec3 origin, vec3 dir, float max_t, out GrassHit hit) {
     hit.height = 0;
     hit.seed = 0;
     bool found = false;
+    // The blades of each patch are made up from where it is in the whole landscape, so they stay
+    // put as the world moves on, a strip at a time, a whole number of patches
+    ivec2 patch_shift = ivec2(pc.window.xy) / max(int(round(cell)), 1);
     float t0 = 0;
     for (int i = 0; i < 512 && t0 < hit.t; i++) {
         float t1 = min(min(next.x, next.y), hit.t);
@@ -2074,7 +2117,7 @@ bool traceGrass(vec3 origin, vec3 dir, float max_t, out GrassHit hit) {
             float fade = 1 - smoothstep(0.5, 1.0, t0 / range);
             int count = int(float(GRASS_PER_CELL) * density * fade + 0.5);
             for (int k = 0; k < count; k++) {
-                uint seed = hash(uvec3(uvec2(c), uint(k)));
+                uint seed = hash(uvec3(uvec2(c + patch_shift), uint(k)));
                 vec2 base = (vec2(c) + 0.15 + 0.7 * vec2(random(seed), random(seed))) * cell;
                 float root;
                 grassAt(ivec2(floor(base)), root);
@@ -2472,6 +2515,7 @@ vec2 pixelJitter(uint frame) {
 
 void main() {
     ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    g_room8 = imageSize(brickGrid).xy;
 
     if (pc.render_mode == SUN_MAP) {
         if (any(greaterThanEqual(pixelCoord, ivec2(SUN_MAP_SIZE))))

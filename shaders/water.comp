@@ -49,6 +49,11 @@ layout(push_constant) uniform PushConstants {
     // x: stage, y: how many springs, zw: the corner of the area around the camera that's kept
     // flowing, in columns. Water further away keeps still until the camera comes near.
     uvec4 info;
+    // xy: how many columns the world is across, zw: where its first column is kept in the images.
+    // The world moves on over the landscape a strip at a time, and its columns are kept where they
+    // are in the landscape modulo the room there is, which they go round, see at(): so the water
+    // just flows on as it does, with nothing moved but what comes in put where what left was.
+    uvec4 room;
 } pc;
 
 // Top of the ground in each column, which never changes
@@ -81,24 +86,42 @@ bool inside(ivec2 c, ivec2 size) {
     return all(greaterThanEqual(c, ivec2(0))) && all(lessThan(c, size));
 }
 
+// How many columns there's room for, set in main()
+ivec2 g_room = ivec2(1);
+
+// Where the world's column `c`, counted from its first, is kept in the images
+ivec2 at(ivec2 c) {
+    ivec2 p = c + ivec2(pc.room.zw);
+    return ivec2(p.x >= g_room.x ? p.x - g_room.x : p.x, p.y >= g_room.y ? p.y - g_room.y : p.y);
+}
+
+// The same for blocks of BLOCK columns, 8 of them, so shifted rather than divided
+ivec2 blockAt(ivec2 b) {
+    ivec2 room = g_room >> 3;
+    ivec2 p = b + (ivec2(pc.room.zw) >> 3);
+    return ivec2(p.x >= room.x ? p.x - room.x : p.x, p.y >= room.y ? p.y - room.y : p.y);
+}
+
 float height(ivec2 c) {
-    return imageLoad(groundImage, c).r + imageLoad(depthImage, c).r;
+    ivec2 p = at(c);
+    return imageLoad(groundImage, p).r + imageLoad(depthImage, p).r;
 }
 
 // How hard water is pushed through each pipe, from how much higher it stands than its neighbor's
 void flux(ivec2 c, ivec2 size) {
     float dt = pc.params.x;
     float gravity = 9.8 * pc.params.z;
-    float depth = imageLoad(depthImage, c).r;
-    vec4 f = imageLoad(fluxImage, c);
+    ivec2 here = at(c);
+    float depth = imageLoad(depthImage, here).r;
+    vec4 f = imageLoad(fluxImage, here);
     // A dry column can't send any water anywhere, as below it'd all be scaled down to nothing, so
     // most of the land needn't look at its neighbors
     if (depth <= 0) {
         if (f != vec4(0))
-        imageStore(fluxImage, c, vec4(0));
+        imageStore(fluxImage, here, vec4(0));
         return;
     }
-    float h = imageLoad(groundImage, c).r + depth;
+    float h = imageLoad(groundImage, here).r + depth;
     for (int i = 0; i < 4; i++) {
         ivec2 n = c + DIRS[i];
         f[i] = inside(n, size) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
@@ -122,20 +145,21 @@ void flux(ivec2 c, ivec2 size) {
     float total = f.x + f.y + f.z + f.w;
     if (total * dt > depth)
     f *= depth / (total * dt);
-    imageStore(fluxImage, c, f);
+    imageStore(fluxImage, here, f);
 }
 
 // Moves the water along the pipes, and adds and takes away water
 void depth(ivec2 c, ivec2 size) {
     float dt = pc.params.x;
-    vec4 f = imageLoad(fluxImage, c);
+    ivec2 here = at(c);
+    vec4 f = imageLoad(fluxImage, here);
     float inflow = 0;
     for (int i = 0; i < 4; i++) {
         ivec2 n = c + DIRS[i];
         if (inside(n, size))
-        inflow += imageLoad(fluxImage, n)[OPPOSITE[i]];
+        inflow += imageLoad(fluxImage, at(n))[OPPOSITE[i]];
     }
-    float d = imageLoad(depthImage, c).r + dt * (inflow - (f.x + f.y + f.z + f.w));
+    float d = imageLoad(depthImage, here).r + dt * (inflow - (f.x + f.y + f.z + f.w));
 
     vec2 center = vec2(c) + 0.5;
     for (uint s = 0; s < pc.info.y; s++) {
@@ -151,21 +175,22 @@ void depth(ivec2 c, ivec2 size) {
     // The edges of the world are the open sea, which takes in rivers and fills anything below it
     float sea = pc.params.y;
     if (sea > 0 && (any(equal(c, ivec2(0))) || any(equal(c, size - 1))))
-    d = sea - imageLoad(groundImage, c).r;
+    d = sea - imageLoad(groundImage, here).r;
 
     // Thin films left behind dry up
     if (d < 0.02)
     d -= dt * 0.01;
-    imageStore(depthImage, c, vec4(max(d, 0)));
+    imageStore(depthImage, here, vec4(max(d, 0)));
 }
 
 // What traverse.comp draws: the top of the water lying in a column, how white it is, and any water
 // falling through it
 void surface(ivec2 c, ivec2 size) {
-    float ground = imageLoad(groundImage, c).r;
-    float d = imageLoad(depthImage, c).r;
+    ivec2 here = at(c);
+    float ground = imageLoad(groundImage, here).r;
+    float d = imageLoad(depthImage, here).r;
     float top = d > MIN_DEPTH ? ground + d : -1;
-    vec4 f = imageLoad(fluxImage, c);
+    vec4 f = imageLoad(fluxImage, here);
 
     // Fast water churns white: from about two meters a second
     float speed = (f.x + f.y + f.z + f.w) / max(d, 1) / pc.params.z;
@@ -185,7 +210,7 @@ void surface(ivec2 c, ivec2 size) {
     ivec2 block_count = (size + BLOCK - 1) / BLOCK;
     for (int by = -1; by <= 1; by++) {
         for (int bx = -1; bx <= 1; bx++) {
-            near_water = near_water || imageLoad(blockImage, clamp(c / BLOCK + ivec2(bx, by), ivec2(0), block_count - 1)).r >= 0;
+            near_water = near_water || imageLoad(blockImage, blockAt(clamp(c / BLOCK + ivec2(bx, by), ivec2(0), block_count - 1))).r >= 0;
         }
     }
     float vpm = pc.params.z;
@@ -198,13 +223,14 @@ void surface(ivec2 c, ivec2 size) {
                 if (!inside(lip, size) || !inside(lip + DIRS[i], size))
                 break;
                 // A ledge: ground that drops away towards this column, with water flowing over it
-                float lip_ground = imageLoad(groundImage, lip).r;
-                if (lip_ground < imageLoad(groundImage, lip + DIRS[i]).r + LEDGE * vpm)
+                ivec2 lip_at = at(lip);
+                float lip_ground = imageLoad(groundImage, lip_at).r;
+                if (lip_ground < imageLoad(groundImage, at(lip + DIRS[i])).r + LEDGE * vpm)
                 continue;
-                float over = imageLoad(fluxImage, lip)[i];
+                float over = imageLoad(fluxImage, lip_at)[i];
                 if (over < LEAST_FALL * vpm * vpm)
                 break;
-                float lip_depth = max(imageLoad(depthImage, lip).r, FALL_THICKNESS * vpm);
+                float lip_depth = max(imageLoad(depthImage, lip_at).r, FALL_THICKNESS * vpm);
                 float lip_top = lip_ground + lip_depth;
                 float v = max(over / lip_depth, 0.06 * vpm);
                 // When the outer edge of the band gets out to this column, and when the inner edge
@@ -227,7 +253,7 @@ void surface(ivec2 c, ivec2 size) {
     }
     // Kept from the top of the ground
     bool falling = fall_top >= fall_bottom;
-    imageStore(surfaceImage, c, vec4(top >= 0 ? top - ground : -1, foam, falling ? fall_bottom - ground : NO_FALL, falling ? fall_top - ground : -NO_FALL));
+    imageStore(surfaceImage, here, vec4(top >= 0 ? top - ground : -1, foam, falling ? fall_bottom - ground : NO_FALL, falling ? fall_top - ground : -NO_FALL));
 }
 
 void blocks(ivec2 b, ivec2 size) {
@@ -236,8 +262,9 @@ void blocks(ivec2 b, ivec2 size) {
         for (int x = 0; x < BLOCK; x++) {
             ivec2 c = b * BLOCK + ivec2(x, y);
             if (inside(c, size)) {
-                vec4 s = imageLoad(surfaceImage, c);
-                float ground = imageLoad(groundImage, c).r;
+                ivec2 p = at(c);
+                vec4 s = imageLoad(surfaceImage, p);
+                float ground = imageLoad(groundImage, p).r;
                 if (s.x >= 0)
                 highest = max(highest, ground + s.x);
                 if (s.w >= s.z)
@@ -245,10 +272,11 @@ void blocks(ivec2 b, ivec2 size) {
             }
         }
     }
-    imageStore(blockImage, b, vec4(highest));
+    imageStore(blockImage, blockAt(b), vec4(highest));
 }
 
-// The highest of the blocks in the larger block `s`, after this frame's blocks are worked out
+// The highest of the blocks in the larger block `s`, after this frame's blocks are worked out, all
+// as they're kept in the images, see at()
 void superBlocks(ivec2 s, ivec2 blocks) {
     float highest = -1;
     for (int y = 0; y < SUPER; y++) {
@@ -262,12 +290,15 @@ void superBlocks(ivec2 s, ivec2 blocks) {
 }
 
 void main() {
+    g_room = imageSize(depthImage);
     ivec2 corner = ivec2(pc.info.zw);
     ivec2 c = ivec2(gl_GlobalInvocationID.xy) + corner;
-    ivec2 size = imageSize(depthImage);
+    // Counted from the world's first column, as far as it goes, see at()
+    ivec2 size = ivec2(pc.room.xy);
     uint stage = pc.info.x;
     if (stage == SUPER_BLOCKS) {
-        ivec2 blocks = (size + BLOCK - 1) / BLOCK;
+        // All of them, wherever they're kept
+        ivec2 blocks = (imageSize(depthImage) + BLOCK - 1) / BLOCK;
         ivec2 s = ivec2(gl_GlobalInvocationID.xy);
         if (all(lessThan(s, (blocks + SUPER - 1) / SUPER)))
         superBlocks(s, blocks);
