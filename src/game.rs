@@ -2485,7 +2485,7 @@ impl Game {
                 if pickup.flying <= 0.0 {
                     let cue = match pickup.item {
                         Item::Weapon(_) => Cue::at(Sound::Clang, pickup.position, 0.35).pitched(1.6),
-                        Item::Gold(_) => Cue::at(Sound::Pickup, pickup.position, 0.35).pitched(1.9),
+                        Item::Gold(_) => Cue::at(Sound::Coins, pickup.position, 0.35).pitched(1.1),
                         _ => Cue::at(Sound::Pickup, pickup.position, 0.2).pitched(0.8),
                     };
                     self.cues.push(cue);
@@ -2745,7 +2745,7 @@ impl Game {
         match item {
             Item::Gold(n) => {
                 self.gold += n;
-                self.cues.push(Cue::here(Sound::Pickup, 0.7).pitched(1.8));
+                self.cues.push(Cue::here(Sound::Coins, 0.7));
                 self.say(format!("+{n} gold"));
             }
             Item::Weapon(w) => {
@@ -2990,7 +2990,7 @@ impl Game {
             Item::Weapon(_) => self.slots.push((item, 1)),
             _ => self.add_item(item, 1),
         }
-        self.cues.push(Cue::here(Sound::Pickup, 0.8).pitched(1.5));
+        self.cues.push(Cue::here(Sound::Coins, 0.8));
         self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
     }
 
@@ -3016,7 +3016,7 @@ impl Game {
         if let Item::Weapon(w) = item {
             self.stocks.entry(key).or_default().insert(0, Ware::Weapon(w));
         }
-        self.cues.push(Cue::here(Sound::Pickup, 0.8).pitched(1.2));
+        self.cues.push(Cue::here(Sound::Coins, 0.8).pitched(0.9));
         self.say(format!("Sold {} for {paid} gold.", self.item_name(item)));
     }
 

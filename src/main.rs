@@ -5126,6 +5126,8 @@ const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3
 
 fn main() {
     startup::init();
+    // Decoding the sounds on a thread of their own, done long before anything's heard
+    audio::preload();
     std::panic::set_hook(Box::new(|info| {
         let place = info.location().map_or(String::new(), |l| format!(" ({}:{})", l.file(), l.line()));
         let what = info
