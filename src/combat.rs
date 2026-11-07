@@ -1180,7 +1180,7 @@ impl Lingering {
 }
 
 /// Seconds a pool takes to spread out as it's left, and to die down as it goes
-const POOL_SPREAD: f64 = 0.4;
+const POOL_SPREAD: f64 = 0.6;
 const POOL_FADE: f64 = 1.2;
 /// How far into a pool's life it leaves its mark on the ground under it, 0-1: once it's spread out
 /// over it, so the mark's hidden under it till it's dying down
@@ -1223,25 +1223,24 @@ fn pool_look(element: Option<Element>, age: f64, left: f64, time: f64, key: f64)
 }
 
 /// Where Combat::lay_pools() lays out a pool of each element, and one of churned earth, to look
-/// at: three by three over the ground `ahead` of `eye`, each moved on further till it's on dry
-/// ground, out of any water
-pub fn pool_layout(world: &World, water: WaterLevel, eye: Vector3<f64>, ahead: Vector3<f64>) -> Vec<(Option<Element>, Vector3<f64>)> {
+/// at: three by three over the ground `ahead` of `eye`, all moved over to the right together till
+/// they're all on dry ground, out of any water
+fn pool_layout(world: &World, water: WaterLevel, eye: Vector3<f64>, ahead: Vector3<f64>) -> Vec<(Option<Element>, Vector3<f64>)> {
     let vpm = world.voxels_per_meter as f64;
     let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::y);
     let side = Vector3::new(flat.y, -flat.x, 0.0);
-    let looks = std::iter::once(None).chain(Element::ALL.map(Some));
-    looks
-        .enumerate()
-        .map(|(k, element)| {
-            let (row, column) = ((k / 3) as f64, (k % 3) as f64 - 1.0);
-            let dry = |at: &Vector3<f64>| at.z > water(at.x, at.y) + 0.1 * vpm;
-            let ground = (0..16)
-                .map(|step| ground_under(world, eye + (flat * (4.5 + 3.4 * row + step as f64) + side * column * 3.4) * vpm, vpm))
-                .find(dry)
-                .unwrap_or_else(|| ground_under(world, eye + (flat * (4.5 + 3.4 * row) + side * column * 3.4) * vpm, vpm));
-            (element, ground)
-        })
-        .collect()
+    let dry = |at: &Vector3<f64>| at.z > water(at.x, at.y) + 0.1 * vpm;
+    let grid = |over: f64| -> Vec<(Option<Element>, Vector3<f64>)> {
+        std::iter::once(None)
+            .chain(Element::ALL.map(Some))
+            .enumerate()
+            .map(|(k, element)| {
+                let (row, column) = ((k / 3) as f64, (k % 3) as f64 - 1.0);
+                (element, ground_under(world, eye + (flat * (4.5 + 3.4 * row) + side * (column * 3.4 + over)) * vpm, vpm))
+            })
+            .collect()
+    };
+    (0..12).map(|k| grid(k as f64)).find(|g| g.iter().all(|(_, at)| dry(at))).unwrap_or_else(|| grid(0.0))
 }
 
 /// What a pool of `element` leaves on the ground once it's gone, painted on as it lies there: how
@@ -12196,7 +12195,7 @@ impl Combat {
                     let at = on(&mut self.rng, 0.0, 0.85, 0.12);
                     self.mote(at, Some(Element::Fire), 1.6);
                 }
-                for _ in 0..owed(&mut self.rng, if spent { 0.0 } else { 1.8 }) {
+                for _ in 0..owed(&mut self.rng, if spent { 0.0 } else { 2.5 }) {
                     let at = on(&mut self.rng, 0.0, 0.7, 0.18);
                     let radius = 0.22 + 0.1 * random(&mut self.rng);
                     self.blasts.push(Blast { position: at, look, radius, life: 0.45, lifetime: 0.45 });

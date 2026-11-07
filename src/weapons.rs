@@ -5422,7 +5422,7 @@ fn pool(element: Option<Element>, spent: bool, key: u32) -> Vec<Part> {
         }
         Some(Fire) => {
             let (coal, crack) = if spent { (BARK_DARK, MORTAR) } else { (GLOW_FIRE, GLOW_FIRE) };
-            for k in 0..11 {
+            for k in 0..16 {
                 let (x, y) = round(s, 0.8);
                 let r = 0.035 + 0.04 * random(s);
                 // A few still glowing as it burns out
@@ -5434,11 +5434,11 @@ fn pool(element: Option<Element>, spent: bool, key: u32) -> Vec<Part> {
                 let (r0, r1) = (0.08, 0.6 + 0.3 * random(s));
                 jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.012, 0.07, 0.018, crack, s);
             }
-            // Ash at its edge, all over it once it's burnt out
+            // Ash lying flat at its edge, all over it once it's burnt out
             for k in 0..9 {
                 let a = k as f64 / 9.0 * TAU + random(s) * 0.5;
                 let r = if spent { 0.2 + 0.6 * random(s) } else { 0.72 + 0.2 * random(s) };
-                p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.004], [0.2, 0.13, 0.034], if k % 2 == 0 { MORTAR } else { FUR_GRAY }));
+                p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [0.2, 0.13, 0.031], if spent && k % 2 == 0 { FUR_GRAY } else { MORTAR }));
             }
             bed(&mut p, 0.95, 0.03, BARK_DARK, s);
         }
