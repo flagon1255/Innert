@@ -4512,6 +4512,8 @@ impl App {
             let craters = self.craters.clone();
             let stains = self.stains.clone();
             let job = std::thread::spawn(move || {
+                // Built in the background, as the strips are, giving way to the game
+                worldgen::give_way();
                 let start = Instant::now();
                 let landscape = worldgen::place_for(&settings, place_at, place_size, &rivers);
                 let mut world = landscape.build(origin, size, fine_vpm);

@@ -52,6 +52,13 @@ const FAST_M_S: f64 = 10.0;
 /// and its edge is still well past where things fade into the sky
 const SLOW_FROM_STRIPS: f64 = 1.0;
 const STOP_AT_STRIPS: f64 = 2.5;
+/// How much of where things fade into the sky the edge of the world can come within and still not
+/// be seen, as screenshot runs count it, see perf::PerfLog::cut: within a strip of that, what's
+/// built in the background is hurried, see worldgen::hurry()
+const HURRY_FADE: f64 = 0.7;
+/// A strip's hurried, too, once it's been this long on its way: on four cores one takes a second
+/// or so to build and send over, but once one took four, its first step held up three
+const HURRY_AFTER: Duration = Duration::from_secs(2);
 
 /// What a part of the room beyond the world, each way, holds
 #[derive(Default)]
@@ -479,6 +486,7 @@ struct JobInput {
 /// Builds a strip of the landscape, with the holes blown and the stains splashed in it, then once
 /// told there's room for it, sends it over to the GPU a piece at a time
 fn run_job(input: JobInput, to_main: Sender<FromJob>, from_main: Receiver<()>) {
+    worldgen::give_way();
     let started = Instant::now();
     let JobInput { settings, rivers, origin, size, next_corner, world_size, craters, stains, pool, staging, room, water } = input;
     let (terrain, mut world) = worldgen::generate_area(&settings, origin, size, &rivers);
@@ -590,6 +598,15 @@ impl App {
             return;
         };
         let frame_start = Instant::now();
+        // What's built in the background gives way to the game, see worldgen::give_way(), unless
+        // the edge of the world's getting to within a strip of where it'd be seen, the strip being
+        // built is taking far longer than it should, held up by what else the computer's doing, or
+        // the world's being built afresh behind a fade
+        let camera = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+        let edge = (0..2).map(|i| self.world.size[i] as f64 * 0.5 - (camera[i] - self.world.size[i] as f64 * 0.5).abs()).fold(f64::INFINITY, f64::min);
+        let fade = fade_distance(self.world.size, stream.strip, self.world.voxels_per_meter as f64, self.view_distance);
+        let held_up = stream.job.as_ref().is_some_and(|job| job.started.elapsed() > HURRY_AFTER);
+        worldgen::hurry(stream.teleport.is_some() || held_up || edge < HURRY_FADE * fade + stream.strip as f64);
         // Pages, and pieces of host memory, nothing's drawn with any more, to be filled again
         let released = self.world.take_released();
         if !released.is_empty() {
