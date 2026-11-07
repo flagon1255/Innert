@@ -3153,6 +3153,34 @@ impl Game {
         }
     }
 
+    /// For trying them out: a weapon of the family with id `family` that has the special attack
+    /// `special`, made with a part of it that gives one, in hand and charged. False if none of
+    /// that family's parts give it.
+    pub fn find_special_of(&mut self, special: Special, family: &str) -> bool {
+        let library = &self.library;
+        let (Some(f), Some(part)) = (library.family(family), library.components.iter().position(|c| c.special() == Some(special) && c.fits(family))) else {
+            return false;
+        };
+        let Some(slot) = library.families[f].slots.iter().position(|s| *s == library.components[part].slot_type) else {
+            return false;
+        };
+        // Its other parts lucky ones, unless one of them gives a special attack of its own
+        let seed = hash(0x5bec ^ part as u32);
+        let made = |luck: f64| {
+            let mut parts = library.generate(seed, Some(f), luck).parts;
+            parts[slot] = part;
+            Weapon::assemble(library, f, parts, seed)
+        };
+        let lucky = made(3.0);
+        let weapon = if lucky.profile.special.as_ref().is_some_and(|(s, _)| *s == special) { lucky } else { made(0.0) };
+        self.weapons.push(weapon);
+        self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+        self.selected = 0;
+        self.models_version += 1;
+        self.combat.charge = 1.0;
+        true
+    }
+
     /// For looking at parts: a weapon with each of the parts `ids` lying on the ground in rows of
     /// four from a couple of meters along `ahead` from `near`, or one or two close by, one in front
     /// of the other, each `size` of weapons::SIZES big if that's given or its id says, as `id@4`.

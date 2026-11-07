@@ -1953,11 +1953,14 @@ impl App {
         if let Some(id) = setting("ammo") {
             game.give_ammo(id);
         }
-        // `--set special=meteors` puts a weapon with that special attack in hand, charged
+        // `--set special=meteors` puts a weapon with that special attack in hand, charged, of the
+        // family `--set weapon=staff` asks for if one of its parts gives it
         if let Some(name) = setting("special")
             && let Ok(special) = serde_json::from_str::<weapons::Special>(&format!("\"{name}\""))
         {
-            game.find_special(special);
+            if !setting("weapon").is_some_and(|family| game.find_special_of(special, family)) {
+                game.find_special(special);
+            }
             println!("special: {}", game.describe_held());
         }
         // `--set gallery=pitted_blade,leafsteel_blade` lays a weapon made with each of those parts on

@@ -320,6 +320,111 @@ enum Trick {
     Thornburst,
     /// One of those thorns, drawn as a thorn and sticking where it lands
     Thorn,
+    /// A special attack's shot carrying it out of the weapon, see Combat::carry(): it gets there
+    /// once it's reached `aim` or strikes something on the way, and the special attack goes off
+    /// where it got to, or with `sky` round `target`, coming down out of the sky. With no special
+    /// attack it's only a tracer, showing where one went.
+    Carry { special: Option<Special>, aim: Vector3<f64>, target: Vector3<f64>, sky: bool },
+}
+
+/// When a special attack's let go of, see Combat::let_go()
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Release {
+    /// As soon as it's unleashed, going on in time with the move by itself
+    AtOnce,
+    /// As the move lets go, on its first quick key: what it shoots leaves the weapon then
+    Struck,
+    /// Then too, but carried out of the weapon by a shot, going off where that gets to
+    Carried(Flight),
+}
+
+/// Where a special attack's shot carries it, see Combat::carry()
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Flight {
+    /// Straight at the crosshair
+    Aimed,
+    /// At the ground this many meters on ahead
+    Ground(f64),
+    /// Out this many meters ahead, a little under the eye
+    Ahead(f64),
+    /// Up into the sky this many meters over the ground where it's aimed, what it carries
+    /// coming down round there
+    Sky(f64),
+    /// Up over the ground a few meters ahead, this many meters over the eye, still in sight, bursting
+    /// into what it carries there
+    Overhead(f64),
+}
+
+/// When a weapon's special attack is let go of. Shackle Chain, Blood Moon and Cluster Volley are
+/// left as they are, being made over elsewhere. Struck in hand, what goes off all at once round the
+/// player does so on the blow that sets it off, the rest as it always did. From a bow, a crossbow,
+/// a gun, bombs or a weapon that casts, everything leaves the weapon as the move lets it go:
+/// what's shot or poured out of it, or carried out of it by a shot, see Flight.
+fn release(special: Special, profile: &Profile) -> Release {
+    if matches!(special, Special::Shackle | Special::Bloodmoon | Special::ClusterBomb) {
+        return Release::AtOnce;
+    }
+    if profile.kind == Kind::Melee {
+        let struck = matches!(special, Special::FrostNova | Special::Nova | Special::BattleCry | Special::SpectralBlades | Special::Tempest | Special::Fissure | Special::Sunburst);
+        return if struck { Release::Struck } else { Release::AtOnce };
+    }
+    match special {
+        // Arrows and shots in time with the move already
+        Special::Volley | Special::Quickdraw | Special::Reckoning => Release::AtOnce,
+        Special::Singularity | Special::Stasis | Special::RuneMines | Special::Wildfire | Special::Stormchain | Special::SoulSiphon | Special::Plague | Special::Mire | Special::Eruption => Release::Carried(Flight::Aimed),
+        Special::Firewall => Release::Carried(Flight::Ground(6.0)),
+        Special::Fissure => Release::Carried(Flight::Ground(3.5)),
+        Special::PowderKeg => Release::Carried(Flight::Ground(4.0)),
+        Special::BallLightning => Release::Carried(Flight::Ahead(2.5)),
+        Special::PhantomHost => Release::Carried(Flight::Ahead(2.6)),
+        Special::Swarm => Release::Carried(Flight::Ahead(3.0)),
+        Special::Meteors => Release::Carried(Flight::Sky(14.0)),
+        Special::Rain | Special::BoltRain => Release::Carried(Flight::Sky(16.0)),
+        Special::Barrage => Release::Carried(Flight::Sky(18.0)),
+        Special::Comet => Release::Carried(Flight::Sky(22.0)),
+        Special::Tempest => Release::Carried(Flight::Sky(12.0)),
+        Special::Blizzard => Release::Carried(Flight::Sky(10.0)),
+        Special::Thunderstorm => Release::Carried(Flight::Sky(9.0)),
+        Special::Sunburst => Release::Carried(Flight::Sky(SUN_HEIGHT)),
+        Special::Starfall => Release::Carried(Flight::Overhead(1.6)),
+        Special::FrostNova => Release::Carried(Flight::Ground(2.0)),
+        Special::ThunderWeb => Release::Carried(Flight::Overhead(1.2)),
+        Special::HuntersMark => Release::Carried(Flight::Overhead(2.5)),
+        // The rest shoot what they shoot as the move lets go: a bolt, a spread of shot, rockets,
+        // a beam, flame
+        _ => Release::Struck,
+    }
+}
+
+/// The element a special attack's shot comes out in, so it looks like what it carries: its own if
+/// it has one, whatever the weapon's, otherwise the weapon's
+fn carried_in(special: Special, weapon: Option<Element>) -> Option<Element> {
+    match special {
+        Special::Blizzard | Special::Comet | Special::FrostNova => Some(Element::Frost),
+        Special::Singularity | Special::SoulSiphon => Some(Element::Void),
+        Special::Plague | Special::Mire | Special::Swarm => Some(Element::Poison),
+        Special::Thunderstorm | Special::Tempest | Special::ThunderWeb | Special::BallLightning | Special::Stormchain => Some(Element::Storm),
+        Special::Wildfire | Special::Firewall | Special::Eruption | Special::PowderKeg => Some(Element::Fire),
+        Special::Sunburst | Special::PhantomHost | Special::HuntersMark => Some(Element::Holy),
+        Special::Stasis | Special::RuneMines | Special::Starfall => Some(Element::Arcane),
+        _ => weapon,
+    }
+}
+
+/// How a special attack's shot flies when it's cast, so it's seen going: as its element's spells
+/// do, but not as lightning, there and gone at once, nor as missiles going after what's near or a
+/// void orb dragging it in, as it's to get where it was sent
+fn carrier_form(element: Option<Element>) -> Form {
+    match Form::of(element) {
+        Form::Lightning | Form::Missile => Form::Bolt,
+        Form::Orb => Form::Lance,
+        form => form,
+    }
+}
+
+/// When a special attack's move lets go, as part of the move: its first quick key
+fn lets_go(special: Special, profile: &Profile) -> f64 {
+    special_move(special, moves_kind(profile), moves_like(profile.style)).1.iter().find(|k| k.2).map_or(0.0, |k| k.0)
 }
 
 /// The ground under `at`, looked for from two meters over it to ten under, or `at` itself if
@@ -1205,6 +1310,9 @@ pub struct Combat {
     /// Where what bosses threw only just missed the player, since game.rs last looked
     pub near_misses: Vec<Vector3<f64>>,
     pending: Vec<Pending>,
+    /// Special attacks carried out of the weapon that have got where they were going this frame,
+    /// with where, to go off there, see carry()
+    arrivals: Vec<(Special, Vector3<f64>)>,
     /// Standing guard, ready to riposte
     guard: Option<Guard>,
     /// A riptide's wave crashed down on something big, so the rest of it's gone
@@ -2666,6 +2774,11 @@ fn special_cracks(special: Special) -> Vec<Crack> {
 /// How long a special attack takes with a weapon of `kind` and `style`, and the poses the weapon
 /// goes through, for animate()
 fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
+    // Bows, crossbows, guns, bombs and anything cast, and a few blades, go through moves of their
+    // own for what they'd otherwise only wave about, see own_special()
+    if let Some(found) = own_special(special, kind, style) {
+        return found;
+    }
     // A bow drawn and loosed, kicking a little each time
     let drawn = pose([-0.1, 0.66, -0.08], [-0.33, 0.02, 0.94], [0.0, 1.0, 0.0]);
     let kicked = |side: f64| {
@@ -2778,19 +2891,24 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
             settled.hand.z -= 0.05;
             (1.0, vec![(0.3, pose([0.1, 0.3, 0.06], [0.05, -0.25, 0.97], [0.0, 1.0, 0.0]), false), (0.45, slammed, true), (0.6, settled, false)])
         }
-        // Held across the face to guard
+        // Held across the face to guard, snapped up into it
         Special::Riposte => {
             let guard = pose([0.12, 0.42, -0.12], [-0.95, 0.15, 0.25], [0.0, 1.0, 0.1]);
             let mut braced = guard.clone();
             braced.hand.y -= 0.06;
-            (1.0, vec![(0.25, guard, false), (0.3, braced.clone(), false), (0.85, braced, false)])
+            (1.0, vec![(0.25, guard, false), (0.3, braced.clone(), true), (0.85, braced, false)])
         }
-        // Three arrows loosed, drawn again between
-        Special::Volley => (0.7, vec![(0.14, drawn.clone(), false), (0.18, kicked(1.0), true), (0.27, drawn.clone(), false), (0.35, kicked(-1.0), true), (0.45, drawn.clone(), false), (0.52, kicked(0.0), true)]),
-        // Thrust out, held as the lightning leaps
+        // Three arrows loosed, drawn again between, and the bow lowered after the last
+        Special::Volley => {
+            let mut lowered = drawn.clone();
+            lowered.hand += Vector3::new(-0.02, -0.03, -0.05);
+            (0.7, vec![(0.14, drawn.clone(), false), (0.18, kicked(1.0), true), (0.27, drawn.clone(), false), (0.35, kicked(-1.0), true), (0.45, drawn.clone(), false), (0.52, kicked(0.0), true), (0.66, lowered, false)])
+        }
+        // Drawn back a moment, thrust out, held as the lightning leaps
         Special::Stormchain => {
+            let back = pose([0.3, 0.4, -0.14], [0.06, 0.35, 0.94], [1.0, 0.0, 0.0]);
             let out = pose([0.18, 0.66, -0.18], [-0.18, 0.9, 0.4], [1.0, 0.0, 0.0]);
-            (1.2, vec![(0.1, out.clone(), true), (0.75, out, false)])
+            (1.2, vec![(0.05, back, false), (0.1, out.clone(), true), (0.75, out, false)])
         }
         // Drawn back low and swept up and out, sending the wave
         Special::Riptide if staff => {
@@ -2808,13 +2926,15 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
             pushed.hand.y += 0.03;
             (1.9, vec![(0.08, pose([0.3, 0.15, -0.32], [0.0, 0.97, 0.2], [-1.0, 0.0, 0.0]), false), (0.12, levelled, true), (0.88, pushed, false)])
         }
-        // Raised high overhead and shaken as the roar goes up
+        // Raised high overhead and thrust up as the roar goes up, then shaken
         Special::BattleCry => {
             let raised = pose([0.2, 0.36, 0.1], [0.08, 0.2, 0.98], [-1.0, 0.0, 0.0]);
             let mut shaken = raised.clone();
             shaken.hand.z += 0.04;
             shaken.hand.x -= 0.02;
-            (1.0, vec![(0.25, raised.clone(), false), (0.45, shaken, false), (0.65, raised, false)])
+            let mut thrust = raised.clone();
+            thrust.hand += Vector3::new(-0.01, 0.02, 0.07);
+            (1.0, vec![(0.22, raised.clone(), false), (0.32, thrust, true), (0.48, shaken, false), (0.65, raised, false)])
         }
         // Drawn back over the shoulder and hurled, the empty hand held out till it comes back
         Special::HurledBlade => {
@@ -2835,11 +2955,15 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
             }
             (length, keys)
         }
-        // The bow raised and swept across what's round about, the mark going on each
+        // The bow raised and swept across what's round about, then drawn up and a flare loosed
+        // overhead, bursting into the marks, see Combat::carry()
         Special::HuntersMark if kind == Kind::Ranged => {
             let left = pose([-0.2, 0.62, 0.0], [-0.45, 0.25, 0.86], [0.35, 0.94, 0.0]);
             let right = pose([0.04, 0.64, 0.0], [-0.2, 0.25, 0.95], [-0.25, 0.97, 0.0]);
-            (1.0, vec![(0.2, left, false), (0.55, right, false), (0.75, drawn.clone(), false)])
+            let (_, up) = bow_shot(1.0, 0.56, 0.68, 0.55);
+            let mut keys = vec![(0.16, left, false), (0.38, right, false)];
+            keys.extend(up);
+            (1.0, keys)
         }
         // A whip's lash whirled round over the head, three times, cracking out at the end of each
         Special::CoilingLash => {
@@ -3004,6 +3128,7 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
         Special::ChainSwing => (
             1.25,
             vec![
+                (0.1, grip([0.27, 0.4, -0.14], [0.05, 0.4, 0.92]), false),
                 (0.22, grip([0.18, 0.56, 0.02], [-0.1, 0.6, 0.8]), true),
                 (0.35, grip([0.22, 0.32, 0.2], [-0.15, 0.3, 0.94]), false),
                 (0.68, grip([0.23, 0.33, 0.18], [-0.13, 0.35, 0.93]), false),
@@ -3019,27 +3144,478 @@ fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, P
         }
         // Drawn and loosed level at the crosshair
         Special::Thornburst if kind == Kind::Ranged => (0.7, vec![(0.16, drawn.clone(), false), (0.24, kicked(0.0), true), (0.48, drawn.clone(), false)]),
-        // Bent down to set the keg on the ground ahead, then straightening up and back away
+        // Taken up low in both hands, lifted, and heaved out underarm onto the ground a few meters
+        // ahead, see Combat::carry(), then straightening up
         Special::PowderKeg => {
-            let set = pose([0.12, 0.62, -0.62], [0.0, 0.3, 0.95], [1.0, 0.0, 0.0]);
-            let mut down = set.clone();
-            down.hand.z -= 0.03;
-            (0.9, vec![(0.3, set, false), (0.42, down, true), (0.65, pose([0.3, 0.3, -0.35], [0.1, 0.0, 0.99], [1.0, 0.0, 0.0]), false)])
+            let low = pose([0.12, 0.56, -0.56], [0.0, 0.3, 0.95], [1.0, 0.0, 0.0]);
+            let mut lifted = low.clone();
+            lifted.hand += Vector3::new(0.01, -0.05, 0.08);
+            let heaved = pose([0.12, 0.68, -0.2], [0.0, 0.75, 0.66], [1.0, 0.0, 0.0]);
+            (0.9, vec![(0.2, low, false), (0.32, lifted, false), (0.42, heaved, true), (0.66, pose([0.26, 0.42, -0.32], [0.08, 0.2, 0.97], [1.0, 0.0, 0.0]), false)])
         }
         // The rest: a bow drawn up at the sky and loosed
-        _ if kind == Kind::Ranged => {
-            let up = pose([-0.08, 0.5, 0.1], [-0.3, 0.1, 0.95], [0.0, 0.6, 0.8]);
-            let mut loosed = up.clone();
-            loosed.hand.y -= 0.05;
-            (0.8, vec![(0.3, up, false), (0.4, loosed.clone(), true), (0.7, loosed, false)])
-        }
+        _ if kind == Kind::Ranged => plain_shot(),
         // Or the weapon raised to the sky, then thrust out at where it's aimed
-        _ => {
-            let raised = pose([0.15, 0.4, 0.1], [0.0, 0.2, 0.98], [-1.0, 0.0, 0.0]);
-            let thrust = if style == Style::Thrust || staff { pose([0.12, 0.7, -0.18], [-0.1, 0.99, 0.05], [-1.0, 0.0, 0.0]) } else { pose([0.1, 0.62, -0.25], [-0.1, 0.95, 0.25], [-1.0, 0.0, 0.0]) };
-            (0.8, vec![(0.3, raised, false), (0.45, thrust.clone(), true), (0.7, thrust, false)])
-        }
+        _ => plain_move(style, staff),
     }
+}
+
+/// What a bow does for a special attack nothing gives a move of its own: drawn up at the sky and
+/// loosed. Every special attack there is has a move of its own, see
+/// tests::every_special_moves_and_ranged_ones_shoot().
+fn plain_shot() -> (f64, Vec<(f64, Pose, bool)>) {
+    let up = pose([-0.08, 0.5, 0.1], [-0.3, 0.1, 0.95], [0.0, 0.6, 0.8]);
+    let mut loosed = up.clone();
+    loosed.hand.y -= 0.05;
+    (0.8, vec![(0.3, up, false), (0.4, loosed.clone(), true), (0.7, loosed, false)])
+}
+
+/// What anything else does for one: raised to the sky, then thrust out at where it's aimed
+fn plain_move(style: Style, staff: bool) -> (f64, Vec<(f64, Pose, bool)>) {
+    let raised = pose([0.15, 0.4, 0.1], [0.0, 0.2, 0.98], [-1.0, 0.0, 0.0]);
+    let thrust = if style == Style::Thrust || staff { pose([0.12, 0.7, -0.18], [-0.1, 0.99, 0.05], [-1.0, 0.0, 0.0]) } else { pose([0.1, 0.62, -0.25], [-0.1, 0.95, 0.25], [-1.0, 0.0, 0.0]) };
+    (0.8, vec![(0.3, raised, false), (0.45, thrust.clone(), true), (0.7, thrust, false)])
+}
+
+/// The moves special attacks go through that special_move() leaves to others: everything cast, a
+/// bow's, crossbow's or gun's shots, bombs thrown, a battle staff's spells, and a few blades' that
+/// would otherwise only be waved about. None leaves it to special_move()'s own.
+fn own_special(special: Special, kind: Kind, style: Style) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+    // A maul's moves are a hammer's, a battle staff's a scythe's, however they're asked for
+    let style = moves_like(style);
+    match (kind, style) {
+        (Kind::Magic, _) => Some(spell_special(special, style)),
+        (Kind::Ranged, Style::Draw) => bow_special(special),
+        (Kind::Ranged, Style::Crank | Style::Powder) => gun_special(special),
+        (Kind::Melee, Style::Lob) => bomb_special(special),
+        // Only a battle staff swung as a scythe is has a spell for its special attack
+        (Kind::Melee, Style::Reap) if spell_only(special) => Some(spell_special(special, style)),
+        (Kind::Melee, _) => blade_special(special, style),
+        _ => None,
+    }
+}
+
+/// Whether only weapons that cast roll `special`, so a battle staff with it is casting it
+fn spell_only(special: Special) -> bool {
+    matches!(
+        special,
+        Special::BallLightning
+            | Special::Blizzard
+            | Special::Comet
+            | Special::Firewall
+            | Special::Meteors
+            | Special::Mire
+            | Special::PhantomHost
+            | Special::Plague
+            | Special::Prism
+            | Special::RuneMines
+            | Special::Singularity
+            | Special::SoulSiphon
+            | Special::Starfall
+            | Special::Stasis
+            | Special::Sunburst
+            | Special::Swarm
+            | Special::Thunderstorm
+            | Special::ThunderWeb
+            | Special::Wildfire
+    )
+}
+
+/// How a weapon that casts, held in `style`, sits in the hand at rest, as Combat::target_pose() has
+/// it: a battle staff as a scythe is
+fn spell_rest(style: Style) -> Pose {
+    match style {
+        Style::Channel => pose([0.24, 0.52, -0.24], [-0.05, 0.1, 0.99], [1.0, 0.0, 0.0]),
+        Style::Summon => pose([-0.24, 0.52, -0.3], [0.1, 0.3, 0.95], [1.0, 0.0, -0.1]),
+        Style::Hex => pose([0.3, 0.46, -0.34], [-0.03, 0.4, 0.92], [-0.2, -0.92, 0.4]),
+        Style::Toll => pose([0.24, 0.55, -0.1], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]),
+        Style::Censer => pose([0.24, 0.55, -0.08], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]),
+        Style::Arc => pose([0.3, 0.44, -0.33], [-0.03, 0.42, 0.9], [1.0, 0.0, 0.0]),
+        Style::Flick => pose([0.29, 0.44, -0.24], [-0.04, 0.55, 0.83], [1.0, 0.0, 0.0]),
+        Style::Reap => pose([0.31, 0.4, -0.4], [-0.2, 0.45, 0.86], [-1.0, 0.0, 0.25]),
+        _ => pose([0.31, 0.45, -0.3], [-0.02, 0.5, 0.86], [1.0, 0.0, 0.0]),
+    }
+}
+
+/// `rest` with the hand moved by `by` meters, its length tipped `tip` of the way round from where
+/// it points to `toward`, still turned the same way about its length so nothing flips over
+fn shifted(rest: &Pose, by: [f64; 3], toward: [f64; 3], tip: f64) -> Pose {
+    let along = rest.turn * Vector3::z();
+    let full = UnitQuaternion::rotation_between(&along, &Vector3::from(toward).normalize()).unwrap_or_else(UnitQuaternion::identity);
+    Pose { hand: rest.hand + Vector3::from(by), turn: UnitQuaternion::from_scaled_axis(full.scaled_axis() * tip) * rest.turn }
+}
+
+/// How a weapon that casts lets go of a special attack, see spell_special()
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Gesture {
+    /// Drawn back and up, then thrust out at the crosshair
+    Hurl,
+    /// Dipped low, then scooped up and out, lobbing it
+    Lob,
+    /// Raised high, then driven down at the ground ahead
+    Plant,
+    /// Drawn down, then thrust up at the sky ahead and held there
+    Skyward,
+    /// Raised straight up overhead, held as it gathers, then pulsed higher
+    Overhead,
+    /// Drawn in to the chest as it gathers, then pushed out and held
+    Present,
+    /// Thrust out at the crosshair and held there, trembling, as it pours out
+    Pour,
+    /// Wound back to the right, swung across to the left, then swept back over to the right
+    Sweep,
+}
+
+/// What a weapon that casts, held in `style`, goes through letting go of `special`: how long it
+/// takes, and the poses, let go on the quick one as the gesture fitting it has it, see
+/// Combat::let_go(). A staff, wand or rod points with it, an orb, a tome or a bell only leans.
+fn spell_special(special: Special, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
+    let (gesture, length, s) = match special {
+        Special::Singularity => (Gesture::Hurl, 1.0, 0.45),
+        Special::Stasis => (Gesture::Hurl, 0.85, 0.38),
+        Special::Wildfire => (Gesture::Hurl, 0.75, 0.32),
+        Special::RuneMines => (Gesture::Lob, 0.8, 0.36),
+        Special::Plague => (Gesture::Lob, 0.85, 0.38),
+        Special::Mire => (Gesture::Lob, 0.85, 0.36),
+        Special::Firewall => (Gesture::Plant, 0.85, 0.4),
+        Special::Blizzard => (Gesture::Skyward, 0.95, 0.4),
+        Special::Sunburst => (Gesture::Skyward, 0.9, 0.38),
+        Special::Thunderstorm => (Gesture::Skyward, 0.95, 0.4),
+        Special::Meteors => (Gesture::Skyward, 0.95, 0.36),
+        Special::Comet => (Gesture::Skyward, 0.95, 0.4),
+        Special::Starfall => (Gesture::Overhead, 0.9, 0.42),
+        Special::FrostNova => (Gesture::Plant, 0.85, 0.4),
+        Special::ThunderWeb => (Gesture::Overhead, 0.95, 0.4),
+        Special::PhantomHost => (Gesture::Present, 0.9, 0.36),
+        Special::BallLightning => (Gesture::Present, 0.85, 0.34),
+        Special::Swarm => (Gesture::Present, 0.8, 0.32),
+        Special::Stormchain => (Gesture::Pour, 1.2, 0.24),
+        Special::SoulSiphon => (Gesture::Pour, 1.2, 0.22),
+        Special::Prism => (Gesture::Sweep, 1.9, 0.15),
+        _ => (Gesture::Hurl, 0.8, 0.35),
+    };
+    let rest = spell_rest(style);
+    // How far it's turned to point along with the hand
+    let tip = match style {
+        Style::Channel => 0.3,
+        Style::Summon => 0.45,
+        Style::Toll | Style::Censer => 0.35,
+        Style::Hex => 0.8,
+        _ => 1.0,
+    };
+    // A tome's in the left hand, so in towards the middle is the other way; a wand's moves are
+    // little ones, a battle staff's big
+    let side = if style == Style::Summon { -1.0 } else { 1.0 };
+    let reach = match style {
+        Style::Flick => 0.8,
+        Style::Reap => 1.3,
+        _ => 1.0,
+    };
+    // A tome's kept out to the left and low, out of the way of the view, its pages being big
+    let (out, lift) = if style == Style::Summon { (-0.06, 0.5) } else { (0.0, 1.0) };
+    let at = |by: [f64; 3], toward: [f64; 3]| shifted(&rest, [by[0] * side * reach + out, by[1] * reach, by[2] * reach * lift], [toward[0] * side, toward[1], toward[2]], tip);
+    let keys = match gesture {
+        Gesture::Hurl => vec![
+            (s - 0.2, at([0.05, -0.1, 0.07], [0.1, -0.35, 0.93]), false),
+            (s - 0.07, at([0.05, -0.13, 0.1], [0.12, -0.45, 0.88]), false),
+            (s, at([-0.11, 0.17, 0.05], [-0.12, 1.0, 0.3]), true),
+            (s + 0.2, at([-0.09, 0.14, 0.02], [-0.1, 1.0, 0.2]), false),
+        ],
+        Gesture::Lob => vec![
+            (s - 0.2, at([0.02, 0.0, -0.12], [0.05, 1.0, -0.35]), false),
+            (s - 0.06, at([0.01, 0.02, -0.1], [0.05, 1.0, -0.2]), false),
+            (s, at([-0.08, 0.15, 0.08], [-0.08, 0.8, 0.6]), true),
+            (s + 0.2, at([-0.06, 0.12, 0.05], [-0.06, 0.8, 0.5]), false),
+        ],
+        Gesture::Plant => vec![
+            (s - 0.22, at([0.0, -0.04, 0.15], [0.0, -0.1, 1.0]), false),
+            (s - 0.08, at([0.0, -0.05, 0.19], [0.0, -0.15, 1.0]), false),
+            (s, at([-0.06, 0.16, -0.08], [-0.05, 0.55, -0.83]), true),
+            (s + 0.22, at([-0.05, 0.14, -0.1], [-0.05, 0.5, -0.86]), false),
+        ],
+        // Up only so far that its head's still in sight as what it shoots up leaves it
+        Gesture::Skyward => vec![
+            (s - 0.2, at([0.03, -0.02, -0.07], [0.08, 0.4, 0.91]), false),
+            (s - 0.07, at([0.03, -0.03, -0.06], [0.1, 0.35, 0.93]), false),
+            (s, at([-0.04, 0.1, 0.1], [-0.05, 0.8, 0.6]), true),
+            (s + 0.18, at([-0.04, 0.09, 0.09], [-0.05, 0.78, 0.62]), false),
+            (s + 0.34, at([-0.02, 0.05, 0.05], [-0.03, 0.7, 0.5]), false),
+        ],
+        Gesture::Overhead => vec![
+            (s - 0.25, at([-0.02, -0.02, 0.14], [0.0, 0.15, 1.0]), false),
+            (s - 0.09, at([-0.02, -0.04, 0.17], [0.0, 0.1, 1.0]), false),
+            (s, at([-0.06, 0.12, 0.14], [-0.05, 0.75, 0.66]), true),
+            (s + 0.18, at([-0.05, 0.1, 0.12], [-0.05, 0.72, 0.68]), false),
+            (s + 0.34, at([-0.02, 0.05, 0.06], [-0.03, 0.65, 0.6]), false),
+        ],
+        Gesture::Present => vec![
+            (s - 0.22, at([-0.08, -0.06, 0.06], [-0.1, 0.2, 0.98]), false),
+            (s - 0.08, at([-0.09, -0.08, 0.08], [-0.12, 0.15, 0.98]), false),
+            (s, at([-0.1, 0.18, 0.08], [-0.1, 0.9, 0.45]), true),
+            (s + 0.24, at([-0.09, 0.16, 0.06], [-0.1, 0.85, 0.5]), false),
+        ],
+        Gesture::Pour => vec![
+            (s - 0.16, at([0.05, -0.1, 0.07], [0.1, -0.35, 0.93]), false),
+            (s, at([-0.11, 0.18, 0.05], [-0.12, 1.0, 0.28]), true),
+            (s + 0.16, at([-0.105, 0.175, 0.055], [-0.12, 1.0, 0.3]), false),
+            (s + 0.34, at([-0.115, 0.18, 0.045], [-0.11, 1.0, 0.27]), false),
+            (s + 0.52, at([-0.11, 0.17, 0.05], [-0.12, 1.0, 0.29]), false),
+            (s + 0.66, at([-0.08, 0.12, 0.03], [-0.1, 0.9, 0.3]), false),
+        ],
+        // The beam sweeps across from the left in a second and a half, see Combat::conjured()
+        Gesture::Sweep => vec![
+            (s - 0.09, at([0.08, 0.0, 0.04], [0.6, 0.7, 0.4]), false),
+            (s, at([-0.2, 0.14, 0.06], [-0.55, 0.8, 0.25]), true),
+            (s + 0.75 / length, at([-0.08, 0.18, 0.06], [-0.05, 1.0, 0.25]), false),
+            (s + 1.4 / length, at([0.06, 0.14, 0.05], [0.5, 0.85, 0.25]), false),
+        ],
+    };
+    (length, keys)
+}
+
+/// A bow drawn and aimed `up` radians over the crosshair and `yaw` across to the right of it,
+/// raised with it so it's still in sight
+fn bow_aimed(up: f64, yaw: f64) -> Pose {
+    let drawn = pose([-0.1, 0.66, -0.08], [-0.33, 0.02, 0.94], [0.0, 1.0, 0.0]);
+    let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), -yaw) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), up) * drawn.turn;
+    Pose { hand: drawn.hand + Vector3::new(0.1 * yaw.sin(), -0.08 * up.sin(), 0.16 * up.sin()), turn }
+}
+
+/// A bow drawn by `draw` of the way through, held against the string, loosed `up` radians over
+/// the crosshair at `loose`, kicking, and lowered, `length` seconds in all
+fn bow_shot(length: f64, draw: f64, loose: f64, up: f64) -> (f64, Vec<(f64, Pose, bool)>) {
+    let aimed = bow_aimed(up, 0.0);
+    let mut held = aimed.clone();
+    held.hand += Vector3::new(0.004, 0.015, 0.004);
+    let mut loosed = aimed.clone();
+    loosed.hand += Vector3::new(0.03, -0.045, -0.01);
+    loosed.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.16) * loosed.turn;
+    let mut lowered = bow_aimed(up * 0.6, 0.0);
+    lowered.hand.z -= 0.05;
+    (length, vec![(draw, aimed, false), (loose - 0.07, held, false), (loose, loosed, true), (loose + 0.22, lowered, false)])
+}
+
+/// A bow's own moves for the special attacks that have none in special_move(): drawn up at the
+/// sky for what comes down, or level for what goes on ahead, and loosed
+fn bow_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+    Some(match special {
+        Special::Rain => bow_shot(0.85, 0.24, 0.46, 0.9),
+        Special::Meteors => bow_shot(0.95, 0.22, 0.54, 0.8),
+        Special::Starfall => bow_shot(0.85, 0.24, 0.44, 0.5),
+        Special::Tempest => bow_shot(0.9, 0.24, 0.42, 1.0),
+        // Drawn and held a long moment, gathering the dark, then loosed level
+        Special::Singularity => bow_shot(1.0, 0.2, 0.56, 0.02),
+        Special::Swarm => bow_shot(0.75, 0.2, 0.36, 0.12),
+        // Drawn out at the left, loosed as it's swept across, the swarm fanning out
+        Special::SeekerSwarm => {
+            let left = bow_aimed(0.25, -0.35);
+            let mut held = left.clone();
+            held.hand.y += 0.015;
+            let mut loosed = bow_aimed(0.25, -0.1);
+            loosed.hand += Vector3::new(0.03, -0.045, -0.01);
+            loosed.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.16) * loosed.turn;
+            let mut lowered = bow_aimed(0.1, 0.25);
+            lowered.hand.z -= 0.05;
+            (0.8, vec![(0.2, left, false), (0.3, held, false), (0.36, loosed, true), (0.52, bow_aimed(0.2, 0.35), false), (0.72, lowered, false)])
+        }
+        _ => return None,
+    })
+}
+
+/// A crossbow or gun levelled at the crosshair, then turned `up` radians over it and `yaw` across
+/// to the right of it, raised off to the side as it's turned up so what's coming down can be seen
+fn levelled(up: f64, yaw: f64) -> Pose {
+    let level = pose([0.12, 0.5, -0.17], [0.03, -0.08, 0.99], [-0.1, 1.0, 0.05]);
+    let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), -yaw) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), up) * level.turn;
+    let lift = up.max(0.0).sin();
+    Pose { hand: level.hand + Vector3::new(0.1 * yaw.sin() + 0.08 * lift, -0.06 * lift, 0.14 * up.sin()), turn }
+}
+
+/// A crossbow or gun shouldered and aimed `up` radians over the crosshair by `aim` of the way
+/// through, settled, shot at `at` kicking `kick` times as hard as a plain shot, and brought back
+/// down, `length` seconds in all
+fn gun_shot(length: f64, aim: f64, at: f64, up: f64, kick: f64) -> (f64, Vec<(f64, Pose, bool)>) {
+    let aimed = levelled(up, 0.0);
+    let mut settled = aimed.clone();
+    settled.hand += Vector3::new(-0.005, 0.012, -0.004);
+    let kicked = gun_kicked(&aimed, kick);
+    let mut rocked = aimed.clone();
+    rocked.hand += Vector3::new(0.0, -0.012 * kick, 0.004 * kick);
+    rocked.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.07 * kick) * rocked.turn;
+    let mut lowered = levelled(up * 0.5, 0.0);
+    lowered.hand.z -= 0.02;
+    (length, vec![(aim, aimed, false), (at - 0.06, settled, false), (at, kicked, true), (at + 0.1, rocked, false), (at + 0.26, lowered, false)])
+}
+
+/// `aimed` kicked back and up by a shot `kick` times as hard as a plain one
+fn gun_kicked(aimed: &Pose, kick: f64) -> Pose {
+    let mut kicked = aimed.clone();
+    kicked.hand += Vector3::new(0.006 * kick, -0.04 * kick, 0.014 * kick);
+    kicked.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.26 * kick) * kicked.turn;
+    kicked
+}
+
+/// A crossbow's or gun's own moves for its special attacks, but those special_move() has and the
+/// ones being made over elsewhere: levelled, raised to the sky or aimed down at the ground, and
+/// shot, kicking as hard as what leaves it
+fn gun_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+    Some(match special {
+        // Braced, aimed long and steady, then kicking back hard enough to rock the shooter
+        Special::Ballista => gun_shot(1.0, 0.14, 0.42, 0.02, 1.8),
+        // Snapped up and shot
+        Special::Ricochet => gun_shot(0.7, 0.1, 0.24, 0.0, 0.8),
+        Special::SplitBolt => gun_shot(0.75, 0.12, 0.28, 0.08, 1.0),
+        // Tipped up, to lob the net
+        Special::NetBolt => gun_shot(0.8, 0.14, 0.32, 0.26, 1.0),
+        Special::ChainBlast => gun_shot(0.8, 0.12, 0.3, 0.03, 1.2),
+        Special::Thornburst => gun_shot(0.7, 0.12, 0.26, 0.04, 0.9),
+        Special::BallLightning => gun_shot(0.95, 0.12, 0.3, 0.02, 0.7),
+        // Held steady a long moment, gathering the dark
+        Special::Singularity => gun_shot(1.0, 0.12, 0.48, 0.0, 1.0),
+        Special::Stormchain => gun_shot(1.0, 0.12, 0.26, 0.0, 0.9),
+        Special::Plague => gun_shot(0.8, 0.14, 0.3, 0.2, 1.0),
+        // Turned up at the sky, for what comes down, its muzzle still in sight as it goes off
+        Special::Barrage => gun_shot(0.9, 0.16, 0.36, 0.55, 1.2),
+        Special::BoltRain => gun_shot(0.9, 0.16, 0.34, 0.65, 1.0),
+        Special::Meteors => gun_shot(0.95, 0.16, 0.4, 0.6, 1.2),
+        Special::Starfall => gun_shot(0.85, 0.16, 0.34, 0.5, 0.9),
+        Special::Tempest => gun_shot(0.9, 0.16, 0.32, 0.75, 1.0),
+        // Turned down at the ground ahead, for what bursts out of it
+        Special::Eruption => gun_shot(0.8, 0.14, 0.3, -0.22, 1.0),
+        Special::Fissure => gun_shot(0.8, 0.14, 0.3, -0.38, 1.3),
+        // Swept across what's round about from the left, then raised and a flare shot up overhead
+        Special::HuntersMark => {
+            let up = levelled(0.55, 0.0);
+            let mut settled = up.clone();
+            settled.hand.y += 0.012;
+            let mut lowered = levelled(0.3, 0.0);
+            lowered.hand.z -= 0.02;
+            (1.0, vec![(0.14, levelled(0.1, -0.35), false), (0.32, levelled(0.1, 0.3), false), (0.46, up.clone(), false), (0.52, settled, false), (0.58, gun_kicked(&up, 0.8), true), (0.82, lowered, false)])
+        }
+        // Aimed out at the left and shot as it's swept across, the swarm fanning out
+        Special::SeekerSwarm => {
+            let left = levelled(0.2, -0.3);
+            let mut settled = left.clone();
+            settled.hand.y += 0.012;
+            let mut lowered = levelled(0.1, 0.25);
+            lowered.hand.z -= 0.02;
+            (0.85, vec![(0.14, left, false), (0.26, settled, false), (0.32, gun_kicked(&levelled(0.2, -0.12), 1.0), true), (0.5, levelled(0.18, 0.32), false), (0.72, lowered, false)])
+        }
+        // Brought down to the hip and braced, the flame pouring out of it, shaking it
+        Special::Breath => {
+            let braced = pose([0.1, 0.42, -0.24], [0.02, -0.05, 1.0], [-0.08, 1.0, 0.05]);
+            let shaken = |x: f64, z: f64| {
+                let mut p = braced.clone();
+                p.hand += Vector3::new(x, -0.02, z);
+                p.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.06) * p.turn;
+                p
+            };
+            (1.9, vec![(0.06, braced.clone(), false), (0.12, gun_kicked(&braced, 0.5), true), (0.3, shaken(0.008, 0.006), false), (0.5, shaken(-0.006, 0.01), false), (0.7, shaken(0.006, 0.004), false), (0.86, braced, false)])
+        }
+        _ => return None,
+    })
+}
+
+/// Bombs' own moves for their special attacks but those special_move() has: lobbed overarm,
+/// tossed up high, or bowled out underarm
+fn bomb_special(special: Special) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+    let p = |hand: [f64; 3], along: [f64; 3]| pose(hand, along, [1.0, 0.0, 0.0]);
+    Some(match special {
+        // Drawn back over the shoulder and lobbed out at where it's aimed
+        Special::Eruption | Special::Mire => (
+            0.85,
+            vec![
+                (0.18, p([0.3, 0.3, -0.12], [0.15, -0.35, 0.92]), false),
+                (0.36, p([0.33, 0.14, 0.04], [0.1, -0.6, 0.8]), false),
+                (0.42, p([0.2, 0.64, 0.02], [0.0, 0.85, 0.53]), true),
+                (0.7, p([0.12, 0.6, -0.36], [0.0, 0.6, -0.8]), false),
+            ],
+        ),
+        // Crouched low, then tossed straight up into the sky
+        Special::Tempest | Special::Thunderstorm => (
+            0.85,
+            vec![(0.2, p([0.26, 0.42, -0.42], [0.05, 0.2, 0.98]), false), (0.4, p([0.22, 0.5, 0.12], [0.0, 0.25, 0.97]), true), (0.56, p([0.22, 0.5, 0.06], [0.0, 0.2, 0.98]), false), (0.74, p([0.26, 0.46, -0.16], [0.03, 0.12, 0.99]), false)],
+        ),
+        // Swung back low and bowled out underarm, the hand following on up
+        Special::Swarm => (
+            0.8,
+            vec![(0.2, p([0.32, 0.28, -0.38], [0.1, -0.4, 0.9]), false), (0.38, p([0.2, 0.62, -0.22], [0.0, 0.85, 0.5]), true), (0.6, p([0.18, 0.6, -0.1], [0.0, 0.6, 0.8]), false)],
+        ),
+        _ => return None,
+    })
+}
+
+/// A blade's own moves for the special attacks it would otherwise only wave about
+fn blade_special(special: Special, style: Style) -> Option<(f64, Vec<(f64, Pose, bool)>)> {
+    let edge = [-1.0, 0.0, 0.0];
+    Some(match special {
+        // Raised overhead point up in both hands, held as the light gathers, then driven point
+        // down into the ground before the feet, the burst going off as it goes in
+        Special::Nova => (
+            1.0,
+            vec![
+                (0.2, pose([0.12, 0.42, 0.02], [0.0, 0.1, 0.99], edge), false),
+                (0.36, pose([0.11, 0.42, 0.07], [0.0, 0.05, 1.0], edge), false),
+                (0.48, pose([0.08, 0.6, -0.38], [0.0, 0.35, -0.94], edge), true),
+                (0.7, pose([0.08, 0.58, -0.42], [0.0, 0.33, -0.94], edge), false),
+            ],
+        ),
+        // A salute, the blade held up before the face, then swept right round flat as the ghostly
+        // blades peel off it
+        Special::SpectralBlades => (
+            1.0,
+            vec![
+                (0.18, pose([0.05, 0.42, -0.12], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]), false),
+                (0.3, pose([0.05, 0.43, -0.1], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]), false),
+                (0.42, pose([0.45, 0.4, -0.22], [0.9, 0.3, 0.1], [0.0, 0.0, 1.0]), true),
+                (0.56, pose([0.0, 0.65, -0.2], [0.05, 0.99, 0.05], [0.0, 0.0, 1.0]), false),
+                (0.7, pose([-0.4, 0.42, -0.25], [-0.9, 0.3, 0.1], [0.0, 0.0, 1.0]), false),
+                (0.84, pose([0.2, 0.46, -0.28], [0.0, 0.6, 0.8], [0.0, 1.0, 0.0]), false),
+            ],
+        ),
+        // A whip's lash wound back and cracked straight up at the sky
+        Special::Tempest if style == Style::Lash => (
+            0.9,
+            vec![
+                (0.15, grip([0.3, 0.45, -0.25], [0.0, 0.9, -0.3]), false),
+                (0.3, grip([0.25, 0.3, 0.1], [0.05, -0.6, 0.8]), false),
+                (0.42, grip([0.15, 0.55, 0.15], [0.0, 0.4, 0.92]), true),
+                (0.65, grip([0.2, 0.5, 0.0], [0.0, 0.7, 0.7]), false),
+            ],
+        ),
+        // Drawn back low, then thrust up at the sky and held there as the lightning comes down
+        Special::Tempest => (
+            0.9,
+            vec![
+                (0.2, pose([0.3, 0.25, -0.35], [0.05, 0.6, 0.8], edge), false),
+                (0.4, pose([0.15, 0.45, 0.1], [0.0, 0.3, 0.95], edge), true),
+                (0.6, pose([0.15, 0.44, 0.08], [0.0, 0.28, 0.96], edge), false),
+                (0.8, pose([0.22, 0.42, -0.1], [0.0, 0.5, 0.86], edge), false),
+            ],
+        ),
+        // Raised overhead and hewn down into the ground just ahead, where it splits open
+        Special::Fissure => (
+            0.9,
+            vec![
+                (0.22, pose([0.12, 0.3, 0.1], [0.05, -0.3, 0.95], edge), false),
+                (0.32, pose([0.12, 0.28, 0.14], [0.05, -0.4, 0.92], edge), false),
+                (0.42, pose([0.06, 0.62, -0.45], [0.0, 0.5, -0.87], edge), true),
+                (0.62, pose([0.07, 0.6, -0.47], [0.0, 0.48, -0.88], edge), false),
+            ],
+        ),
+        // A flail whirled round overhead faster and faster, then its head flung up at the sky
+        Special::Sunburst if style == Style::Whirl => {
+            let mut keys = Vec::new();
+            for k in 0..10 {
+                let a = k as f64 / 6.0 * TAU;
+                keys.push((0.06 + 0.4 * (k as f64 / 9.0).powf(0.85), pose([0.18, 0.42, 0.04], [a.cos() * 0.85, a.sin() * 0.85, 0.5], [-a.sin(), a.cos(), 0.0]), false));
+            }
+            keys.push((0.56, pose([0.2, 0.45, 0.1], [0.0, 0.3, 0.95], [1.0, 0.0, 0.0]), true));
+            keys.push((0.76, pose([0.24, 0.44, -0.1], [-0.05, 0.6, 0.8], [1.0, 0.0, 0.0]), false));
+            (1.0, keys)
+        }
+        _ => return None,
+    })
 }
 
 /// The hand at `p` in the world, holding a model's point `grip` there, gives the model this instance
@@ -3167,6 +3743,21 @@ fn flourish_turns(grade: usize, last: bool) -> f64 {
         (true, _, false) | (_, true, true) => 1.0,
         _ => 0.0,
     }
+}
+
+/// How far round its own length a blade of `grade`, swung in `style`, is twirled in the hand `f`
+/// of the way through a special attack's move `keys`, in radians, and how far it's lifted for it,
+/// 0-1: as twirl() has a finisher, from legendary once and from mythic twice, after the move's
+/// last key, if there's time left in it. Not a whip, a flail or a bomb.
+fn special_twirl(grade: usize, style: Style, keys: &[(f64, Pose, bool)], f: f64) -> (f64, f64) {
+    let turns = flourish_turns(grade, true);
+    let from = keys.last().map_or(1.0, |k| k.0) + 0.02;
+    if turns <= 0.0 || 0.97 - from < 0.22 || matches!(style, Style::Lash | Style::Whirl | Style::Lob) {
+        return (0.0, 0.0);
+    }
+    let to = from + 0.8 * (0.97 - from);
+    let u = ((f - from) / (to - from)).clamp(0.0, 1.0);
+    (TAU * turns * u * u * u * (u * (u * 6.0 - 15.0) + 10.0), (PI * u).sin().powi(2))
 }
 
 /// How far round a staff or wand of `grade` is twirled `f` of the way through its cast, in
@@ -3593,6 +4184,7 @@ impl Combat {
             webs: Vec::new(),
             near_misses: Vec::new(),
             pending: Vec::new(),
+            arrivals: Vec::new(),
             guard: None,
             wave_broken: false,
             close: false,
@@ -3676,6 +4268,10 @@ impl Combat {
         for p in &mut self.projectiles {
             if let Trick::Net(at) | Trick::Comet(at) | Trick::Rocket(at) = &mut p.trick {
                 *at -= shift;
+            }
+            if let Trick::Carry { aim, target, .. } = &mut p.trick {
+                *aim -= shift;
+                *target -= shift;
             }
         }
         for r in &mut self.ripples {
@@ -3769,6 +4365,7 @@ impl Combat {
         self.strikes.clear();
         self.swells.clear();
         self.pending.clear();
+        self.arrivals.clear();
         self.sparks.clear();
         self.glints.clear();
         self.stuck.clear();
@@ -3887,6 +4484,10 @@ impl Combat {
                 if p.trick == Trick::Harpoon {
                     p.trick = Trick::None;
                 }
+                // A special attack's shot carries it no further
+                if let Trick::Carry { special, .. } = &mut p.trick {
+                    *special = None;
+                }
             }
             if let Some((_, weapon)) = weapon {
                 let pitch = match weapon.kind() {
@@ -3948,6 +4549,12 @@ impl Combat {
         self.follow_up(arena, dt);
         self.conjured(arena, weapon.map(|(_, w)| w), dt);
         self.fly(arena, dt);
+        // Special attacks carried out of the weapon going off where their shots got to
+        for (special, at) in std::mem::take(&mut self.arrivals) {
+            if let Some((_, weapon)) = weapon {
+                self.unleash_at(arena, weapon, special, at, true);
+            }
+        }
         self.fly_hostiles(arena, dt);
         self.linger(arena, dt);
         // Shockwaves and the special attacks that go on a while hit a lot at once, so what they
@@ -4027,6 +4634,13 @@ impl Combat {
         }
         // Nothing else till a special attack's done, or the weapon's back in hand
         if let Action::Special { t, length, special } = self.action {
+            // What it shoots or carries leaves the weapon just as the move lets go, see release()
+            if release(special, &profile) != Release::AtOnce {
+                let at = lets_go(special, &profile) * length;
+                if t <= at && t + dt > at {
+                    self.let_go(arena, weapon, special);
+                }
+            }
             self.action = if t + dt >= length { Action::Idle } else { Action::Special { t: t + dt, length, special } };
             if self.action == Action::Idle {
                 self.lash_aim = None;
@@ -6205,25 +6819,12 @@ impl Combat {
         self.shake = self.shake.max(0.35);
     }
 
-    /// The special attack of the weapon in hand, see weapons::Special
+    /// The special attack of the weapon in hand, see weapons::Special, going off now or as its
+    /// move lets go, see release()
     fn unleash(&mut self, arena: &mut Arena, weapon: &Weapon, special: Special) {
         let view = arena.view;
-        let vpm = view.vpm;
         let profile = weapon.profile.clone();
-        let base = match profile.kind {
-            Kind::Magic => profile.stat("spellDamage"),
-            _ => profile.stat("physicalDamage"),
-        } + profile.stat("elementalDamage");
-        let target = self.aim(arena);
-        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
-        let forward = view.forward();
-        let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let look = Element::look(profile.element);
-        let disc = |rng: &mut u32, radius: f64| {
-            let a = random(rng) * TAU;
-            let r = random(rng).sqrt() * radius * vpm;
-            Vector3::new(a.cos() * r, a.sin() * r, 0.0)
-        };
         // The weapon goes through its own moves for it, see special_move()
         let (length, _) = special_move(special, moves_kind(&profile), profile.style);
         self.action = Action::Special { t: 0.0, length, special };
@@ -6233,7 +6834,177 @@ impl Combat {
         self.cues.push(Cue::here(Sound::Cast(look as u8), 1.0).pitched(0.65));
         self.shake = self.shake.max(0.5);
         self.messages.push(format!("{}!", special.name()));
-        let later = |pending: &mut Vec<Pending>, delay: f64, act: Act, damage: f64| pending.push(Pending { delay, act, profile: profile.clone(), damage });
+        if release(special, &profile) == Release::AtOnce {
+            let target = self.aim(arena);
+            self.unleash_at(arena, weapon, special, target, false);
+        }
+    }
+
+    /// A special attack held back till its move lets go, see release(): shot out of the weapon
+    /// now, or carried out of it by a shot to go off where that gets to
+    fn let_go(&mut self, arena: &mut Arena, weapon: &Weapon, special: Special) {
+        match release(special, &weapon.profile) {
+            Release::Carried(flight) => self.carry(arena, weapon, special, flight),
+            _ => {
+                let target = self.aim(arena);
+                self.unleash_at(arena, weapon, special, target, false);
+            }
+        }
+    }
+
+    /// `special` carried out of `weapon` by a shot as its move lets go: an arrow, a bolt, a ball, a
+    /// bomb or a spell in what it carries' element, flying where `flight` says, to go off where it
+    /// gets to, see arrive()
+    fn carry(&mut self, arena: &mut Arena, weapon: &Weapon, special: Special, flight: Flight) {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let profile = &weapon.profile;
+        let up = Vector3::z();
+        let feet = arena.player.unwrap_or(view.eye - up * 1.6 * vpm);
+        let forward = view.forward();
+        let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let crosshair = self.aim(arena);
+        let (aim, target, sky) = match flight {
+            Flight::Aimed => (crosshair, crosshair, false),
+            Flight::Ground(meters) => {
+                let ground = ground_under(arena.world, feet + flat * meters * vpm + up * 1.0 * vpm, vpm);
+                (ground, ground, false)
+            }
+            Flight::Ahead(meters) => {
+                let ahead = view.eye + flat * meters * vpm - up * 0.3 * vpm;
+                (ahead, ahead, false)
+            }
+            Flight::Sky(height) => {
+                let ground = ground_under(arena.world, crosshair, vpm);
+                (ground + up * height * vpm, ground, true)
+            }
+            Flight::Overhead(height) => {
+                let over = view.eye + flat * 4.5 * vpm + up * height * vpm;
+                (over, over, false)
+            }
+        };
+        let bow = profile.kind == Kind::Ranged && profile.build == Build::None && profile.style == Style::Draw;
+        let from = self.held_point(weapon, view, bow);
+        let element = carried_in(special, profile.element);
+        let carrier = Rc::new(Profile { element, ..(**profile).clone() });
+        // What it is: what the weapon shoots, a bomb thrown, or a spell
+        let missile = match (profile.style, profile.shot()) {
+            (Style::Lob, _) => Some(Missile { shot: Shot::Shell, head: 0, power: false, size: if special == Special::PowderKeg { 2.6 } else { 1.3 } }),
+            (_, Some(Shot::Arrow)) => Some(Missile::arrow(weapon.arrowhead(), true)),
+            (_, Some(shot)) => Some(Missile { shot, head: 0, power: true, size: 1.4 }),
+            (_, None) => None,
+        };
+        let distance = (aim - from).norm();
+        if profile.style == Style::Lob {
+            let (velocity, time) = lobbed(from, aim, vpm);
+            self.launch(&carrier, missile, Form::Bolt, from, velocity, 0.0, BOMB_GRAVITY);
+            if let Some(p) = self.projectiles.last_mut() {
+                p.life = time + 0.6;
+            }
+        } else {
+            // Faster up into the sky, so what it calls down isn't long coming
+            let speed = match missile.map(|m| m.shot) {
+                Some(Shot::Arrow) => 55.0,
+                Some(Shot::Quarrel) => 70.0,
+                Some(_) => 85.0,
+                None if sky => 60.0,
+                None => 32.0,
+            } * vpm;
+            self.launch(&carrier, missile, carrier_form(element), from, (aim - from) / distance.max(1e-6) * speed, 0.0, 0.0);
+            if let Some(p) = self.projectiles.last_mut() {
+                p.life = distance / speed + 0.3;
+                if missile.is_none() {
+                    // Bigger than a plain spell, so it reads as more than one
+                    p.size *= 1.5;
+                }
+            }
+        }
+        if let Some(p) = self.projectiles.last_mut() {
+            p.trick = Trick::Carry { special: Some(special), aim, target, sky };
+        }
+        // The phantoms either side have shots of their own going out to where they'll stand
+        if special == Special::PhantomHost {
+            for a in [-1.1f64, 1.1] {
+                let at = feet + UnitQuaternion::from_axis_angle(&Vector3::z_axis(), a) * flat * 2.6 * vpm + up * 1.6 * vpm;
+                self.tracer(&carrier, element, missile, from, at, 32.0);
+            }
+        }
+        // Going off out of it: a flash and a puff of its element at the tip, kicking back, and
+        // sounding as what it is does
+        let look = Element::look(element);
+        self.flashes.push(Flash { position: from, color: element.map_or([1.0, 0.9, 0.7], Element::light), reach: 5.0, life: 0.2, lifetime: 0.2 });
+        for _ in 0..8 {
+            let v = (forward * 1.5 + self.any_direction()) * 0.8 * vpm;
+            self.fine(from, v, look, 0.3, 0.0);
+        }
+        let (sound, pitch) = match (profile.style, missile.map(|m| m.shot)) {
+            (Style::Lob, _) => (Sound::Swoop, 0.9),
+            (_, Some(Shot::Arrow)) => (Sound::Twang, 0.85),
+            (_, Some(Shot::Quarrel)) => (Sound::Release, 0.9),
+            (_, Some(_)) => (Sound::Gunshot, 0.8),
+            (_, None) => (Sound::Cast(look as u8), 0.85),
+        };
+        self.cues.push(Cue::here(sound, 0.9).pitched(pitch));
+        if missile.is_some_and(|m| m.shot != Shot::Shell) || profile.build != Build::None {
+            self.kick += 0.03;
+        }
+    }
+
+    /// A shot showing where a special attack went, carrying nothing: from `from` to `to` at
+    /// `speed` meters a second, as `missile` shot from a bow, crossbow or gun, or else as a spell,
+    /// in `element`
+    #[allow(clippy::too_many_arguments)]
+    fn tracer(&mut self, profile: &Rc<Profile>, element: Option<Element>, missile: Option<Missile>, from: Vector3<f64>, to: Vector3<f64>, speed: f64) {
+        let speed = speed * self.vpm;
+        let profile = if element == profile.element { profile.clone() } else { Rc::new(Profile { element, ..(**profile).clone() }) };
+        let distance = (to - from).norm().max(1e-6);
+        self.launch(&profile, missile, carrier_form(element), from, (to - from) / distance * speed, 0.0, 0.0);
+        if let Some(p) = self.projectiles.last_mut() {
+            p.trick = Trick::Carry { special: None, aim: to, target: to, sky: false };
+            p.life = distance / speed + 0.05;
+        }
+    }
+
+    /// A special attack's shot `p` getting where it was going, at `at`: a flash and a puff of its
+    /// element, bigger bursting in the sky, and what it carries going off there, or with `sky`
+    /// round where it was aimed, see update()
+    fn arrive(&mut self, p: &Projectile, at: Vector3<f64>) {
+        let Trick::Carry { special, target, sky, .. } = p.trick else {
+            return;
+        };
+        let look = Element::look(p.profile.element);
+        let Some(special) = special else {
+            self.sparks(at, 4, 1.5, look, 0.3, 0.25);
+            return;
+        };
+        let color = p.profile.element.map_or([1.0, 0.9, 0.7], Element::light);
+        self.flashes.push(Flash { position: at, color, reach: if sky { 12.0 } else { 6.0 }, life: 0.3, lifetime: 0.3 });
+        self.sparks(at, if sky { 14 } else { 8 }, if sky { 5.0 } else { 3.0 }, look, 0.1, 0.45);
+        if sky {
+            self.cues.push(Cue::at(Sound::Burst, at, 0.7).pitched(1.5));
+        }
+        self.arrivals.push((special, if sky { target } else { at }));
+    }
+
+    /// What weapon's special attack does, aimed at `target`, or with `carried` going off at
+    /// `target` where the shot that carried it out of the weapon got to, see carry()
+    fn unleash_at(&mut self, arena: &mut Arena, weapon: &Weapon, special: Special, target: Vector3<f64>, carried: bool) {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let profile = weapon.profile.clone();
+        let base = match profile.kind {
+            Kind::Magic => profile.stat("spellDamage"),
+            _ => profile.stat("physicalDamage"),
+        } + profile.stat("elementalDamage");
+        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
+        let forward = view.forward();
+        let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let disc = |rng: &mut u32, radius: f64| {
+            let a = random(rng) * TAU;
+            let r = random(rng).sqrt() * radius * vpm;
+            Vector3::new(a.cos() * r, a.sin() * r, 0.0)
+        };
+        let later =|pending: &mut Vec<Pending>, delay: f64, act: Act, damage: f64| pending.push(Pending { delay, act, profile: profile.clone(), damage });
         // How far the player can dash on ahead, in meters, before running into something
         let room = arena
             .animals
@@ -6318,9 +7089,10 @@ impl Combat {
                     later(&mut self.pending, 0.1 + 0.12 * (k / 3) as f64, Act::Volley(degrees), base * 0.9);
                 }
             }
-            // At what's nearest where it's aimed, or else whatever's ahead
+            // At what's nearest where it's aimed, or else whatever's ahead, from the weapon or
+            // from where the shot that carried it got to
             Special::Stormchain => {
-                let tip = self.held_point(weapon, view, false);
+                let tip = if carried { target } else { self.held_point(weapon, view, false) };
                 let alive = |a: &&Animal| a.health > 0.0 && !a.look.is_pet();
                 let near_aim = arena.animals.iter().filter(alive).map(|a| ((a.center(vpm as u32) - target).norm(), a.id)).filter(|&(d, _)| d < 4.0 * vpm).min_by(|a, b| a.0.total_cmp(&b.0));
                 let ahead = || {
@@ -6403,9 +7175,11 @@ impl Combat {
                 }
                 self.heal = self.heal.min(45.0);
             }
+            // From over the player's head, or where the shot that carried it burst
             Special::Starfall => {
+                let over = if carried { target } else { feet + Vector3::new(0.0, 0.0, 3.0 * vpm) };
                 for k in 0..12 {
-                    let from = feet + Vector3::new(0.0, 0.0, 3.0 * vpm) + disc(&mut self.rng, 1.5);
+                    let from = over + disc(&mut self.rng, 1.5);
                     later(&mut self.pending, k as f64 * 0.05, Act::Star(from), base * 0.6);
                 }
             }
@@ -6483,7 +7257,7 @@ impl Combat {
             }
             // One great bolt, through everything in a line, pinning it
             Special::Ballista => {
-                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.15) * vpm;
+                let from = self.held_point(weapon, view, false);
                 let missile = Missile { shot: Shot::Quarrel, head: 0, power: true, size: 3.0 };
                 self.launch(&profile, Some(missile), Form::Bolt, from, (target - from).normalize() * 120.0 * vpm, base * 3.0, QUARREL_GRAVITY * 0.3);
                 if let Some(bolt) = self.projectiles.last_mut() {
@@ -6496,7 +7270,7 @@ impl Combat {
             // The weapon's own shots fanning out, then each turning after what's near
             Special::SeekerSwarm => {
                 let shot = weapon.shot().unwrap_or(Shot::Arrow);
-                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.1) * vpm;
+                let from = self.held_point(weapon, view, profile.build == Build::None);
                 let up = view.rotation * Vector3::z();
                 let right = view.rotation * Vector3::x();
                 for k in 0..14 {
@@ -6564,7 +7338,7 @@ impl Combat {
             }
             // One bolt, glancing on from each thing it hits to the next
             Special::Ricochet => {
-                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.15) * vpm;
+                let from = self.held_point(weapon, view, false);
                 let missile = Missile { shot: Shot::Quarrel, head: 0, power: true, size: 1.2 };
                 self.launch(&profile, Some(missile), Form::Bolt, from, (target - from).normalize() * 90.0 * vpm, base * 1.3, QUARREL_GRAVITY * 0.2);
                 if let Some(bolt) = self.projectiles.last_mut() {
@@ -6575,7 +7349,7 @@ impl Combat {
             }
             // A bolt that bursts apart in flight
             Special::SplitBolt => {
-                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.15) * vpm;
+                let from = self.held_point(weapon, view, false);
                 let missile = Missile { shot: Shot::Quarrel, head: 1, power: true, size: 1.4 };
                 self.launch(&profile, Some(missile), Form::Bolt, from, (target - from).normalize() * 70.0 * vpm, base * 1.2, QUARREL_GRAVITY * 0.3);
                 if let Some(bolt) = self.projectiles.last_mut() {
@@ -6585,7 +7359,7 @@ impl Combat {
             }
             // A weighted net lobbed out to burst open over where it's aimed
             Special::NetBolt => {
-                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.15) * vpm;
+                let from = self.held_point(weapon, view, false);
                 let ahead = target - from;
                 let missile = Missile { shot: Shot::Quarrel, head: 3, power: false, size: 1.3 };
                 self.launch(&profile, Some(missile), Form::Bolt, from, (ahead + Vector3::z() * ahead.norm() * 0.08).normalize() * 45.0 * vpm, base * 0.4, 0.5);
@@ -6616,7 +7390,7 @@ impl Combat {
             }
             // A bolt that blows up in what it hits, the blast leaping on
             Special::ChainBlast => {
-                let from = view.eye + view.rotation * Vector3::new(0.1, 0.6, -0.15) * vpm;
+                let from = self.held_point(weapon, view, false);
                 let missile = Missile { shot: Shot::Quarrel, head: 0, power: true, size: 1.3 };
                 self.launch(&profile, Some(missile), Form::Bolt, from, (target - from).normalize() * 80.0 * vpm, base * 1.1, QUARREL_GRAVITY * 0.3);
                 if let Some(bolt) = self.projectiles.last_mut() {
@@ -6685,8 +7459,16 @@ impl Combat {
                 let direction = (target - from).try_normalize(1e-6).unwrap_or(forward);
                 self.thrown = Some(Thrown { t: -0.28, length: 1.15, from, direction, reach, position: from, hit: Vec::new(), back: false, profile: profile.clone(), damage: base * 1.6 });
             }
-            // A beam swept across from the left to the right, cycling through the elements
-            Special::Prism => self.sweep = Some(Sweep { t: -0.12, length: 1.5, profile: profile.clone(), damage: base * 2.2, hit: Vec::new() }),
+            // A beam swept across from the left to the right, cycling through the elements, a bolt
+            // of each fanning out from the weapon ahead of it
+            Special::Prism => {
+                self.sweep = Some(Sweep { t: -0.12, length: 1.5, profile: profile.clone(), damage: base * 2.2, hit: Vec::new() });
+                let tip = self.held_point(weapon, view, false);
+                for (k, element) in PRISM.into_iter().enumerate() {
+                    let across = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), (0.5 - k as f64 / 4.0) * 1.1) * forward;
+                    self.tracer(&profile, Some(element), None, tip, tip + across * 14.0 * vpm, 30.0);
+                }
+            }
             // Six runes scattered round where it's aimed
             Special::RuneMines => {
                 for k in 0..6 {
@@ -6703,9 +7485,10 @@ impl Combat {
                 }
                 self.cues.push(Cue::at(Sound::Hex, target, 0.8).pitched(1.3));
             }
-            // At what's nearest where it's aimed, or else whatever's ahead
+            // At what's nearest where it's aimed, or else whatever's ahead, from the weapon or
+            // from where the shot that carried it got to
             Special::Wildfire => {
-                let tip = self.held_point(weapon, view, false);
+                let tip = if carried { target } else { self.held_point(weapon, view, false) };
                 let aimed = arena
                     .animals
                     .iter()
@@ -6819,7 +7602,7 @@ impl Combat {
                 self.shake = self.shake.max(0.7);
             }
             Special::BallLightning => {
-                let from = view.eye + forward * 1.5 * vpm - Vector3::new(0.0, 0.0, 0.2 * vpm);
+                let from = if carried { target } else { view.eye + forward * 1.5 * vpm - Vector3::new(0.0, 0.0, 0.2 * vpm) };
                 self.zone(ZoneKind::Ball, &profile, from, flat * 5.0 * vpm, 6.0, 5.0, base * 0.7);
                 if let Some(z) = self.zones.last_mut() {
                     z.tick = 0.2;
@@ -6828,7 +7611,7 @@ impl Combat {
                 self.cues.push(Cue::here(Sound::Beam, 0.6).pitched(0.8));
             }
             Special::Swarm => {
-                let from = feet + flat * 1.0 * vpm + Vector3::new(0.0, 0.0, 1.4 * vpm);
+                let from = if carried { target } else { feet + flat * 1.0 * vpm + Vector3::new(0.0, 0.0, 1.4 * vpm) };
                 self.zone(ZoneKind::Swarm, &profile, from, flat * 6.0 * vpm, 2.6, 7.0, base * 0.35);
                 self.cues.push(Cue::here(Sound::Buzz, 1.0));
             }
@@ -6928,6 +7711,10 @@ impl Combat {
                 }
                 if seen.is_empty() {
                     self.messages.push("Nothing in sight to reckon with.".into());
+                    // Shot off all the same, each as the move kicks, at nothing
+                    for k in 0..8 {
+                        later(&mut self.pending, 0.18 + 0.14 * k as f64, Act::Reckon(u32::MAX), 0.0);
+                    }
                 }
                 self.cues.push(Cue::here(Sound::Cock, 0.9).pitched(0.8));
             }
@@ -6986,7 +7773,7 @@ impl Combat {
                     let ground = ground_under(arena.world, target, vpm);
                     aims = (0..5).map(|_| ground + disc(&mut self.rng, 4.0)).collect();
                 }
-                let from = view.eye + view.rotation * Vector3::new(0.2, 0.4, -0.3) * vpm;
+                let from = self.held_point(weapon, view, false);
                 for (k, at) in aims.into_iter().enumerate() {
                     let burst = at + Vector3::new(0.0, 0.0, (6.5 + random(&mut self.rng)) * vpm);
                     // Up first, curving over onto it, so they go up in a fan
@@ -7002,10 +7789,13 @@ impl Combat {
                 self.cues.push(Cue::here(Sound::Rocket, 1.0));
                 self.cues.push(Cue::here(Sound::Fuse, 0.5).pitched(1.3));
             }
-            // Set down a few meters ahead, its fuse burning
+            // Set down a few meters ahead, its fuse burning, or there already where it was heaved
             Special::PowderKeg => {
-                let at = ground_under(arena.world, feet + flat * (room.min(4.0).max(2.0)) * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm), vpm);
+                let at = if carried { ground_under(arena.world, target + Vector3::new(0.0, 0.0, 0.5 * vpm), vpm) } else { ground_under(arena.world, feet + flat * (room.min(4.0).max(2.0)) * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm), vpm) };
                 self.zone(ZoneKind::Keg, &profile, at, Vector3::zeros(), 5.0, 2.4 + KEG_SET, base * 3.2);
+                if carried && let Some(z) = self.zones.last_mut() {
+                    z.life -= KEG_SET;
+                }
                 self.cues.push(Cue::at(Sound::Fuse, at, 1.0));
                 self.cues.push(Cue::at(Sound::Clang, at, 0.5).pitched(0.6));
             }
@@ -7127,7 +7917,7 @@ impl Combat {
             // A string of little charges flung out over the ground ahead, each going off a moment
             // after the one before
             Special::Firecrackers => {
-                let from = view.eye + view.rotation * Vector3::new(0.2, 0.5, -0.25) * vpm;
+                let from = self.held_point(weapon, view, false);
                 let side = flat.cross(&Vector3::z());
                 for k in 0..8 {
                     let along = 2.5 + 1.25 * k as f64;
@@ -7497,6 +8287,12 @@ impl Combat {
                     if k == 0 {
                         self.cues.push(Cue::here(Sound::Breath, 1.0));
                     }
+                    // Out of a gun, burning shot flung out with it
+                    if profile.kind != Kind::Melee && k % 2 == 0 {
+                        let to = from + (forward + self.any_direction() * 0.06).normalize() * 7.0 * vpm;
+                        let shot = Missile { shot: Shot::Ball, head: 0, power: true, size: 1.1 };
+                        self.tracer(&profile, Some(element), Some(shot), from, to, 30.0);
+                    }
                     let caught: Vec<usize> = (0..arena.animals.len())
                         .filter(|&i| {
                             let a = &arena.animals[i];
@@ -7857,12 +8653,24 @@ impl Combat {
                 // A shot straight at it, sure to strike true: a line of light out to it
                 Act::Reckon(id) => {
                     let Some(i) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) else {
+                        // Gone, or nothing was in sight: the shot goes off anyway, at the crosshair
+                        let view = arena.view;
+                        let side = if profile.build == Build::Hand { -1.0 } else { 1.0 };
+                        let from = view.eye + view.rotation * Vector3::new(0.15 * side, 0.75, -0.15) * vpm;
+                        let shot = Missile { shot: if profile.build.crossbow() { Shot::Quarrel } else { Shot::Ball }, head: 0, power: true, size: 1.2 };
+                        self.tracer(&profile, profile.element, Some(shot), from, view.eye + view.forward() * 40.0 * vpm, 140.0);
+                        self.cues.push(Cue::here(if profile.build.crossbow() { Sound::Release } else { Sound::Gunshot }, 0.7).pitched(1.15));
                         continue;
                     };
                     let view = arena.view;
                     let center = arena.animals[i].center(vpm as u32);
-                    let from = view.eye + view.rotation * Vector3::new(0.15, 0.75, -0.15) * vpm;
+                    // Out of the left hand for a hand crossbow
+                    let side = if profile.build == Build::Hand { -1.0 } else { 1.0 };
+                    let from = view.eye + view.rotation * Vector3::new(0.15 * side, 0.75, -0.15) * vpm;
                     self.lash_line(from, center, Element::look(Some(Element::Holy)));
+                    // The shot itself, streaking out to it
+                    let shot = Missile { shot: if profile.build.crossbow() { Shot::Quarrel } else { Shot::Ball }, head: 0, power: true, size: 1.2 };
+                    self.tracer(&profile, profile.element, Some(shot), from, center, 140.0);
                     self.sparks(center, 10, 3.0, Element::look(None), 0.8, 0.3);
                     self.element_hit(center, profile.element, 1.4);
                     self.say_at(center + Vector3::new(0.0, 0.0, 0.6 * vpm), "Reckoned!", [255, 230, 140], 16.0);
@@ -8947,6 +9755,19 @@ impl Combat {
                 self.skyburst(arena, &p, p.position);
                 continue;
             }
+            // A special attack's shot getting where it was going this frame, or past it, or
+            // falling out of the air, going off there
+            if let Trick::Carry { aim, .. } = p.trick {
+                let to = aim - p.position;
+                if to.norm() <= p.velocity.norm() * dt || to.dot(&p.velocity) <= 0.0 {
+                    self.arrive(&p, aim);
+                    continue;
+                }
+                if p.life <= dt {
+                    self.arrive(&p, p.position);
+                    continue;
+                }
+            }
             // A bomb's fuse burning down, wherever it's got to
             if let Trick::Bomb { fuse, cluster, hole } = p.trick {
                 if fuse <= dt {
@@ -8978,7 +9799,7 @@ impl Combat {
                 }
             }
             // Shots seeking out what a hunter's mark is on
-            if self.hunt > 0.0 && p.arrow && !self.marked.is_empty() && !matches!(p.trick, Trick::Bomb { .. } | Trick::Harpoon) {
+            if self.hunt > 0.0 && p.arrow && !self.marked.is_empty() && !matches!(p.trick, Trick::Bomb { .. } | Trick::Harpoon | Trick::Carry { .. }) {
                 let direction = p.velocity.normalize();
                 let marked = &self.marked;
                 let target = arena
@@ -9073,6 +9894,10 @@ impl Combat {
                         self.comet_impact(arena, &p, at);
                         continue;
                     }
+                    if let Trick::Carry { .. } = p.trick {
+                        self.arrive(&p, at);
+                        continue;
+                    }
                     if !p.arrow {
                         self.impact(arena, &p, at);
                         continue;
@@ -9092,6 +9917,12 @@ impl Combat {
             hits.sort_by(|a, b| a.0.total_cmp(&b.0));
             for (t, i) in hits {
                 let at = start + (end - start) * t;
+                // A special attack's shot goes off on what it strikes, doing nothing of itself
+                if let Trick::Carry { .. } = p.trick {
+                    self.arrive(&p, at);
+                    gone = true;
+                    break;
+                }
                 // A bomb goes off on what it hits, a comet comes down on it
                 if let Trick::Bomb { .. } = p.trick {
                     self.bomb_burst(arena, &p, at);
@@ -9284,6 +10115,11 @@ impl Combat {
                     }
                     Trick::Comet(_) => {
                         self.comet_impact(arena, &p, at);
+                        continue;
+                    }
+                    // Just short of the wall or the ground, so what it carries isn't in it
+                    Trick::Carry { .. } => {
+                        self.arrive(&p, at - p.velocity.normalize() * 0.3 * vpm);
                         continue;
                     }
                     Trick::None | Trick::Glanced | Trick::Splinter => self.landing(arena, &profile, at, p.damage, None, true),
@@ -11312,7 +12148,15 @@ impl Combat {
                         p.turn *= UnitQuaternion::from_axis_angle(&Vector3::z_axis(), spin);
                         p
                     }
-                    Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Melee, style).1, t / length),
+                    // And a rare one twirled as it follows through, see special_twirl()
+                    Action::Special { t, length, special } => {
+                        let keys = special_move(special, Kind::Melee, style).1;
+                        let mut p = animate(&rest, &keys, t / length);
+                        let (spin, lift) = special_twirl(weapon.grade, style, &keys, t / length);
+                        p.hand += Vector3::new(-0.02, 0.02, 0.04) * lift;
+                        p.turn *= UnitQuaternion::from_axis_angle(&Vector3::z_axis(), spin);
+                        p
+                    }
                     _ => rest,
                 }
             }
@@ -11908,6 +12752,9 @@ impl Combat {
             let direction = p.velocity.normalize();
             let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
             let look = Element::look(p.profile.element);
+            // A shot carrying a special attack is what shows it's coming, so it's drawn however
+            // much else is about, as if it were right at the eye
+            let key = if matches!(p.trick, Trick::Carry { special: Some(_), .. }) { view.eye } else { p.position };
             if p.arrow {
                 let instance = match p.shot {
                     // A thornburst's thorns, point first
@@ -11927,8 +12774,9 @@ impl Combat {
                         let (model, ball) = self.effect_model(SLOT_SHOT, look);
                         place(model, ball, SHOT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size, MOVING)
                     }
-                    // A bomb tumbling as it flies, lying still once it's come to rest
-                    Shot::Shell if matches!(p.trick, Trick::Bomb { .. }) => {
+                    // A bomb tumbling as it flies, lying still once it's come to rest, and one
+                    // carrying a special attack
+                    Shot::Shell if matches!(p.trick, Trick::Bomb { .. }) || (matches!(p.trick, Trick::Carry { .. }) && p.profile.style == Style::Lob) => {
                         let rolling = if p.velocity.norm() > 1e-6 { self.time * 7.0 } else { 0.0 };
                         let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), rolling) * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), p.position.x * 0.3);
                         let (model, bomb) = self.effect_model(SLOT_BOMB, look);
@@ -11941,7 +12789,7 @@ impl Combat {
                         place(model, shell, SHOT_RES, Vector3::zeros(), p.position, spin, vpm, p.size, MOVING)
                     }
                 };
-                add(p.position, instance);
+                add(key, instance);
             } else if matches!(p.form, Form::Fireball | Form::Orb | Form::Hex) {
                 // A ball of fire or darkness churning as it goes, or a hex, a knot of it
                 let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 6.0) * rotation;
@@ -11952,10 +12800,10 @@ impl Combat {
                     _ => (look, 0.15 * p.size),
                 };
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, look);
-                add(p.position, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, size, MOVING));
+                add(key, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, size, MOVING));
             } else if p.form != Form::Lightning {
                 let (model, bolt) = self.effect_model(SLOT_BOLT, look);
-                add(p.position, place(model, bolt, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size, MOVING));
+                add(key, place(model, bolt, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size, MOVING));
             }
         }
         for s in &self.stuck {
@@ -12612,10 +13460,21 @@ mod tests {
                 (Kind::Melee, Style::Lash),
                 (Kind::Melee, Style::Whirl),
                 (Kind::Melee, Style::Lob),
+                (Kind::Melee, Style::Chop),
+                (Kind::Melee, Style::Smash),
+                (Kind::Melee, Style::Stab),
+                (Kind::Melee, Style::Reap),
                 (Kind::Ranged, Style::Draw),
                 (Kind::Ranged, Style::Powder),
                 (Kind::Ranged, Style::Crank),
                 (Kind::Magic, Style::Cast),
+                (Kind::Magic, Style::Flick),
+                (Kind::Magic, Style::Channel),
+                (Kind::Magic, Style::Summon),
+                (Kind::Magic, Style::Hex),
+                (Kind::Magic, Style::Toll),
+                (Kind::Magic, Style::Arc),
+                (Kind::Magic, Style::Censer),
             ] {
                 let (seconds, keys) = special_move(special, kind, style);
                 moves.push((format!("{special:?} with {kind:?} {style:?}"), keys, seconds));
@@ -13080,5 +13939,284 @@ mod tests {
         // Mythic's pink is between two of them
         let (a, b, share) = rarity_looks(library.rarities[5].color);
         assert!(a != b && (0.3..0.7).contains(&share), "{a} {b} {share}");
+    }
+
+    /// A flat field 48 m across, its ground 4 m up, to fight in without a landscape or a GPU
+    fn field() -> World {
+        let size = [384u32, 384, 64];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 4].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 8;
+        world
+    }
+
+    /// Every special attack with each family that can roll it, and a part that gives it to one
+    fn special_weapons(library: &crate::weapons::Library) -> Vec<(Special, usize, usize)> {
+        let mut out: Vec<(Special, usize, usize)> = Vec::new();
+        for (part, c) in library.components.iter().enumerate() {
+            let Some(special) = c.special() else {
+                continue;
+            };
+            for (family, f) in library.families.iter().enumerate() {
+                if c.fits(&f.id) && !out.iter().any(|&(s, g, _)| s == special && g == family) {
+                    out.push((special, family, part));
+                }
+            }
+        }
+        out
+    }
+
+    /// A weapon of `family` made with `part`, its other parts the commonest, so they give it no
+    /// special attack of their own
+    fn made_with(library: &crate::weapons::Library, family: usize, part: usize) -> Weapon {
+        let mut parts = library.generate(7, Some(family), 0.0).parts;
+        let slot = library.families[family].slots.iter().position(|s| *s == library.components[part].slot_type).expect("the part fits a slot");
+        parts[slot] = part;
+        Weapon::assemble(library, family, parts, 7)
+    }
+
+    /// What a weapon's special attack looked like let go in the field, a pack ahead or not
+    struct Trial {
+        /// The move the weapon went through, as it's drawn
+        keys: Vec<(f64, Pose, bool)>,
+        length: f64,
+        /// How far the tip of the weapon as drawn went over the move, in meters
+        travel: f64,
+        /// Seconds after it was let go that each shot left the weapon
+        shots: Vec<f64>,
+        /// Shots that turned up in the first second from anywhere else, out of the sky or the like
+        others: usize,
+        /// The most sparks flying at once
+        sparks: usize,
+        /// Shots carrying the special attack seen in flight, and how many never got anywhere
+        carriers: usize,
+        stranded: usize,
+    }
+
+    /// Lets go of `weapon`'s special attack standing in `world`, with a pack of bandits 12 m ahead
+    /// with `foes`, and watches what comes of it for a second and a half
+    fn trial(world: &World, weapon: &Weapon, foes: bool) -> Trial {
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.12), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let mut animals = if foes { crate::animals::spawn_pack(world, &water, &[Look::Bandit; 5], feet + Vector3::new(0.0, 12.0 * vpm, 0.0), crate::animals::PACK_SPREAD, 3) } else { Vec::new() };
+        let mut combat = Combat::new(1, 0);
+        combat.charge = 1.0;
+        let dt = 1.0 / 240.0;
+        let profile = weapon.profile.clone();
+        let special = profile.special.as_ref().expect("a special attack").0;
+        let (length, mut keys) = special_move(special, moves_kind(&profile), moves_like(profile.style));
+        if profile.build == Build::Hand {
+            for key in &mut keys {
+                key.1 = mirrored(&key.1);
+            }
+        }
+        let mut out = Trial { keys, length, travel: 0.0, shots: Vec::new(), others: 0, sparks: 0, carriers: 0, stranded: 0 };
+        let mut last_tip: Option<Vector3<f64>> = None;
+        for frame in 0..(1.85 / dt) as usize {
+            // Raised into the hand first, then let go
+            let t = frame as f64 * dt - 0.35;
+            let before: Vec<Vector3<f64>> = combat.projectiles.iter().map(|p| p.position).collect();
+            let mut arena = Arena { world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.update(&mut arena, Some((0, weapon)), None, Controls { special: frame == (0.35 / dt) as usize, ..Default::default() }, dt);
+            if t < 0.0 {
+                continue;
+            }
+            if matches!(combat.action, Action::Special { .. }) {
+                let tip = tip(&combat.target_pose(weapon));
+                if let Some(last) = last_tip {
+                    out.travel += (tip - last).norm();
+                }
+                last_tip = Some(tip);
+            }
+            out.sparks = out.sparks.max(combat.sparks.len());
+            let carrying = combat.projectiles.iter().filter(|p| matches!(p.trick, Trick::Carry { special: Some(_), .. })).count();
+            out.carriers = out.carriers.max(carrying);
+            out.stranded = carrying;
+            if t > 1.0 {
+                continue;
+            }
+            // What's new in flight: not where anything was, or would have got to from there
+            let hand = view.eye + view.rotation * combat.pose(weapon).hand * vpm;
+            let points = [combat.held_point(weapon, &view, false), combat.held_point(weapon, &view, true), hand];
+            for p in &combat.projectiles {
+                let from = p.position - p.velocity * dt;
+                if before.iter().any(|q| (q - from).norm() < 0.05 * vpm || (q - p.position).norm() < 0.05 * vpm) {
+                    continue;
+                }
+                if points.iter().any(|q| (q - from).norm() < 0.6 * vpm) {
+                    out.shots.push(t);
+                } else {
+                    out.others += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Every special attack with every family that can roll it, what it does and looks like, to
+    /// look at: cargo test --release special_audit -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn special_audit() {
+        let library = crate::weapons::Library::load();
+        let world = field();
+        for (special, family, part) in special_weapons(&library) {
+            let weapon = made_with(&library, family, part);
+            let profile = &weapon.profile;
+            let (kind, style) = (moves_kind(profile), moves_like(profile.style));
+            let fallback = is_fallback(style, &special_move(special, kind, style).1);
+            let alone = trial(&world, &weapon, false);
+            let pack = trial(&world, &weapon, true);
+            let strikes = alone.keys.iter().filter(|k| k.2).count();
+            let first = |t: &Trial| t.shots.first().map_or("-".to_string(), |s| format!("{s:.2}"));
+            println!(
+                "AUDIT|{}|{:?}|{}|{:?}|{:?}|{:?}|{}|{}|{:.2}|{:.2}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
+                special.name(),
+                special,
+                library.families[family].id,
+                profile.kind,
+                profile.style,
+                kind,
+                alone.keys.len(),
+                strikes,
+                alone.length,
+                alone.travel,
+                if fallback { "generic" } else { "own" },
+                alone.shots.len(),
+                first(&alone),
+                pack.shots.len(),
+                first(&pack),
+                alone.others + pack.others,
+                alone.sparks.max(pack.sparks),
+                release(special, profile),
+                alone.stranded + pack.stranded,
+            );
+        }
+    }
+
+    /// Whether `keys` are one of the moves special_move() falls back on for a special attack with
+    /// no move of its own: plain_shot(), plain_move(), or a crossbow or gun levelled or raised and
+    /// shot, as its own fallback has it, mirrored for a hand crossbow or not
+    fn is_fallback(style: Style, keys: &[(f64, Pose, bool)]) -> bool {
+        let same = |other: &[(f64, Pose, bool)]| other.len() == keys.len() && other.iter().zip(keys).all(|(a, b)| (a.0 - b.0).abs() < 1e-9 && (a.1.hand - b.1.hand).norm() < 1e-9);
+        let levelled = keys.len() == 3 && [0.25, 0.3, 0.55].iter().zip(keys).all(|(t, k)| (t - k.0).abs() < 1e-9) && keys[1].2;
+        same(&plain_shot().1) || same(&plain_move(style, false).1) || same(&plain_move(style, true).1) || (matches!(style, Style::Crank | Style::Powder) && levelled)
+    }
+
+    /// Being made over elsewhere, so left as they are for now, see release()
+    const MADE_OVER: [Special; 3] = [Special::Shackle, Special::Bloodmoon, Special::ClusterBomb];
+
+    /// The rule, for every special attack and every family of weapon that can roll it: it plays a
+    /// move of its own, not one of special_move()'s fallbacks, with a wind-up, a strike and a
+    /// follow-through, the weapon going well through it; and from a bow, a crossbow, a gun, bombs or
+    /// a weapon that casts, something flies out of the weapon within the first second, a pack ahead
+    /// or none, and whatever carries the special attack gets where it's going
+    #[test]
+    fn every_special_moves_and_ranged_ones_shoot() {
+        let library = crate::weapons::Library::load();
+        let world = field();
+        let pairs = special_weapons(&library);
+        let specials: Vec<Special> = pairs.iter().map(|p| p.0).collect();
+        assert!(SPECIALS.iter().all(|s| specials.contains(s)), "a special attack no part gives");
+        let mut broken = Vec::new();
+        let mut checked = 0;
+        for (special, family, part) in pairs {
+            if MADE_OVER.contains(&special) {
+                continue;
+            }
+            checked += 1;
+            let weapon = made_with(&library, family, part);
+            let profile = &weapon.profile;
+            assert_eq!(profile.special.as_ref().map(|s| s.0), Some(special), "{}", library.families[family].id);
+            let name = format!("{} with a {}", special.name(), library.families[family].id);
+            let (kind, style) = (moves_kind(profile), moves_like(profile.style));
+            let (length, keys) = special_move(special, kind, style);
+            let mut wrong = |why: String| broken.push(format!("{name}: {why}"));
+            // The move it's drawn going through is the one the special attack takes as long as
+            if (special_move(special, kind, profile.style).0 - length).abs() > 1e-9 {
+                wrong("its move and how long it takes don't agree".into());
+            }
+            let strikes: Vec<f64> = keys.iter().filter(|k| k.2).map(|k| k.0).collect();
+            let (Some(&first), Some(&last)) = (strikes.first(), strikes.last()) else {
+                wrong(format!("{} keys and none of them strikes", keys.len()));
+                continue;
+            };
+            if keys.len() < 3 {
+                wrong(format!("only {} keys", keys.len()));
+            }
+            if !keys.iter().any(|k| !k.2 && k.0 < first) {
+                wrong(format!("nothing winds up before it strikes at {first:.2}"));
+            }
+            if !keys.iter().any(|k| !k.2 && k.0 > last) && last > 0.92 {
+                wrong(format!("nothing follows through after it strikes at {last:.2}"));
+            }
+            if is_fallback(style, &keys) {
+                wrong("only the move special_move() falls back on".into());
+            }
+            for foes in [false, true] {
+                let t = trial(&world, &weapon, foes);
+                let pack = if foes { "with a pack ahead" } else { "alone" };
+                if t.travel < 0.25 {
+                    wrong(format!("{pack}, the weapon only moves {:.2} m", t.travel));
+                }
+                if profile.kind == Kind::Melee {
+                    continue;
+                }
+                match t.shots.first() {
+                    Some(&at) if at <= 1.0 => {}
+                    _ => wrong(format!("{pack}, nothing leaves the weapon in the first second, {} from elsewhere", t.others)),
+                }
+                if t.stranded > 0 {
+                    wrong(format!("{pack}, {} shots carrying it never got anywhere", t.stranded));
+                }
+            }
+        }
+        println!("{checked} special attacks on the weapons that roll them follow the rule");
+        assert!(broken.is_empty(), "{} break the rule:\n{}", broken.len(), broken.join("\n"));
+    }
+
+    /// A rare blade's special attack twirls it whole turns round after its move's last key, and
+    /// it's done before the move's over
+    #[test]
+    fn rare_specials_twirl_as_they_follow_through() {
+        let mut twirled = 0;
+        for special in SPECIALS {
+            for style in STYLES {
+                let (_, keys) = special_move(special, Kind::Melee, style);
+                let last = keys.last().map_or(0.0, |k| k.0);
+                for grade in 0..6 {
+                    let (end, lifted) = special_twirl(grade, style, &keys, 0.975);
+                    let turns = end / TAU;
+                    assert!((turns - turns.round()).abs() < 1e-9 && lifted.abs() < 1e-9, "{special:?} {style:?} grade {grade}: {turns} turns");
+                    assert_eq!(special_twirl(grade, style, &keys, last).0, 0.0, "{special:?} {style:?}: not before its last key");
+                    twirled += (turns > 0.5) as usize;
+                }
+                assert_eq!(special_twirl(3, style, &keys, 0.9).0, 0.0, "not below legendary");
+            }
+        }
+        assert!(twirled > 50, "only {twirled} twirl");
+    }
+
+    /// The moves special attacks go through with weapons that cast start and end where
+    /// Combat::target_pose() holds them, see spell_rest()
+    #[test]
+    fn casting_weapons_rest_as_their_specials_think() {
+        let library = crate::weapons::Library::load();
+        for (family, f) in library.families.iter().enumerate() {
+            let style = moves_like(f.style);
+            if f.kind != Kind::Magic {
+                continue;
+            }
+            let weapon = library.generate(5, Some(family), 0.0);
+            let mut combat = Combat::new(1, 0);
+            combat.raise = 1.0;
+            let rest = combat.target_pose(&weapon);
+            let mine = spell_rest(style);
+            assert!((rest.hand - mine.hand).norm() < 1e-9 && rest.turn.angle_to(&mine.turn) < 1e-9, "{}: {:?} rests at {:?}, not {:?}", f.id, style, rest.hand, mine.hand);
+        }
     }
 }

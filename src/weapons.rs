@@ -734,6 +734,18 @@ fn first_level() -> u32 {
     1
 }
 
+impl Component {
+    /// The special attack it gives a weapon, if it's a legendary or mythic part that gives one
+    pub fn special(&self) -> Option<Special> {
+        self.special
+    }
+
+    /// Whether it fits a weapon of the family with id `family`
+    pub fn fits(&self, family: &str) -> bool {
+        self.compatible_families.iter().any(|f| f == family)
+    }
+}
+
 /// Special ammo for bows, crossbows and guns, carried in stacks and used up a shot at a time.
 /// Plain ammo never runs out, so isn't one of these. What it does is added to what the weapon
 /// shooting it does, see Library::loaded().
