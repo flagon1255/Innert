@@ -535,7 +535,7 @@ struct Bead {
 
 /// The most of Blood Moon's drops of blood in the air at once, and how many a second stream back
 /// from each it drained
-const BEADS: usize = 18;
+const BEADS: usize = 14;
 const BEAD_RATE: f64 = 9.0;
 
 /// Blood streaming back out of what a Blood Moon drained to the player
@@ -7099,7 +7099,7 @@ impl Combat {
     /// What to draw for a shackle's chains, see drag(): bursting out of the crossbow in a fan, one
     /// to each of what it catches, a glowing iron hook on the end of each; hanging from the
     /// crossbow to what they hooked; then hauled taut, drawing together as what they caught is
-    /// dragged in onto the biggest. Thirty-odd instances at most.
+    /// dragged in onto the biggest. Thirty instances at most, while they're flying out.
     fn shackle_instances(&self, s: &Shackle, view: &View) -> Vec<AnimalInstance> {
         let vpm = view.vpm;
         let mut out = Vec::new();
@@ -7107,7 +7107,9 @@ impl Combat {
         if fly <= 0.0 {
             return out;
         }
-        let most = (24 / s.chains.len().max(1)).clamp(2, CHAIN_STRETCHES);
+        // About two dozen instances in all, however many chains, so the rest of what's flying
+        // about still gets drawn
+        let most = (18 / s.chains.len().max(1)).clamp(2, CHAIN_STRETCHES);
         let (hook_model, hook) = self.model_at(LASH_CRACKERS + CRACKER_HOOK);
         let (glow_model, glow) = self.effect_model(SLOT_FIREBALL, Element::look(s.profile.element));
         // A hook as big as it needs to be to be seen as far off as it is, its bend on `at`
