@@ -6,6 +6,7 @@
 use std::f64::consts::PI;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use nalgebra::Vector3;
 use vulkano::{
@@ -46,8 +47,14 @@ const STEP: f64 = 1.0 / 120.0;
 /// At most this many steps a frame, so a slow frame doesn't make the next one slower still
 const MAX_STEPS: u32 = 6;
 /// The water flows in an area this many columns across around the camera. Further away it keeps
-/// still until the camera comes near, and rivers flowing in from there keep flowing in.
-const ACTIVE_COLUMNS: u32 = 1024;
+/// still until the camera comes near, and rivers flowing in from there keep flowing in. The lower
+/// quality presets make it smaller, see set_flowing_area().
+static ACTIVE_COLUMNS: AtomicU32 = AtomicU32::new(1024);
+
+/// How many columns across the water flows in around the camera, see ACTIVE_COLUMNS
+pub fn set_flowing_area(columns: u32) {
+    ACTIVE_COLUMNS.store(columns.max(64), Ordering::Relaxed);
+}
 /// Frames between copies of the water back to the CPU
 const READBACK_FRAMES: u32 = 30;
 /// Rows of the CPU's copy of the last piece of the world's water carried over a frame, see
@@ -651,7 +658,7 @@ impl Water {
 
         // Only the water near the camera flows. The first time round, all of it gets its surface
         // worked out to draw.
-        let area = self.size.map(|n| n.min(ACTIVE_COLUMNS));
+        let area = self.size.map(|n| n.min(ACTIVE_COLUMNS.load(Ordering::Relaxed)));
         let corner = [0, 1].map(|i| {
             let c = (camera[i] as i64 - area[i] as i64 / 2).clamp(0, (self.size[i] - area[i]) as i64);
             (c as u32 / BLOCK) * BLOCK

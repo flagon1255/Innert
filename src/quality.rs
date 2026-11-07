@@ -50,6 +50,9 @@ pub struct Settings {
     pub reflections: bool,
     /// The cheaper way of building the shown image from the rendered one, see shaders\upscale.comp
     pub fast_upscale: bool,
+    /// How far across, in meters, the water flows around the camera; further off it keeps still
+    /// till the camera comes near
+    pub flowing_water_m: f32,
 }
 
 impl Preset {
@@ -84,6 +87,7 @@ impl Preset {
             view_distance: 1.0,
             reflections: true,
             fast_upscale: false,
+            flowing_water_m: 64.0,
         };
         match self {
             Preset::Low => Settings {
@@ -94,9 +98,17 @@ impl Preset {
                 view_distance: 0.75,
                 reflections: false,
                 fast_upscale: true,
+                flowing_water_m: 32.0,
                 ..high
             },
-            Preset::Medium => Settings { render_scale: 0.4, sun_shafts: SunShafts::Low, view_distance: 0.9, fast_upscale: true, ..high },
+            Preset::Medium => Settings {
+                render_scale: 0.4,
+                sun_shafts: SunShafts::Low,
+                view_distance: 0.9,
+                fast_upscale: true,
+                flowing_water_m: 48.0,
+                ..high
+            },
             Preset::High => high,
             Preset::Ultra => Settings { render_scale: 0.7, ..high },
         }

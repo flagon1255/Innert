@@ -1947,6 +1947,7 @@ impl App {
             .unwrap_or_else(|| quality::suited(&card.properties().device_name, card.properties().vendor_id, !integrated, card_memory));
         let preset = quality.settings();
         println!("Quality: {} (sun shafts {})", quality.name(), preset.sun_shafts.name());
+        water::set_flowing_area((setting("flowing_water_m").and_then(|v| v.parse().ok()).unwrap_or(preset.flowing_water_m) * world.voxels_per_meter as f32) as u32);
 
         let input = WinitInputHelper::new();
         let flag = |key: &str, default: bool| setting(key).map_or(default, |v| v == "true" || v == "1");
@@ -3496,6 +3497,7 @@ impl App {
         self.view_distance = s.view_distance;
         self.reflections = s.reflections;
         self.fast_upscale = s.fast_upscale;
+        water::set_flowing_area((s.flowing_water_m * self.world.voxels_per_meter as f32) as u32);
     }
 
     /// Plays through things that need input, for checking them in screenshot runs: `--script bucket`
