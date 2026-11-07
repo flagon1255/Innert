@@ -13554,8 +13554,12 @@ impl Combat {
         let mut extras = Vec::new();
         for (k, b) in self.blasts.iter().enumerate().rev() {
             let t = 1.0 - b.life / b.lifetime;
-            let (model, shape) = self.model_at(BLASTS + b.look.min(ELEMENT_LOOKS - 1) * BLAST_STAGES + blast_stage(b.look, t));
-            let swell = 0.62 + 0.38 * smooth(t / 0.22) + 0.1 * t;
+            // A little puff, as a tongue of a wall of fire or a hit's, stays hot, never turning to
+            // smoke, and dwindles away instead
+            let small = b.radius < 0.6;
+            let stage = blast_stage(b.look, if small { t * 0.45 } else { t });
+            let (model, shape) = self.model_at(BLASTS + b.look.min(ELEMENT_LOOKS - 1) * BLAST_STAGES + stage);
+            let swell = (0.62 + 0.38 * smooth(t / 0.22) + 0.1 * t) * if small { 1.0 - 0.9 * smooth((t - 0.5) / 0.5) } else { 1.0 };
             // Lightning flickers, turning every which way each frame
             let yaw = blast_yaw(b.position) + if b.look == storm { (self.time * 60.0).floor() * 2.4 } else { t * 0.7 };
             let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), yaw);
