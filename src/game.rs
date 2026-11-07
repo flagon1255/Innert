@@ -1393,7 +1393,7 @@ impl Game {
         if self.loaded.as_ref().map(|(key, _)| *key) != wanted {
             self.loaded = wanted.map(|(w, k)| {
                 let profile = Rc::new(self.library.loaded(&self.weapons[w], k));
-                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head })
+                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst })
             });
         }
         let weapon = held.map(|i| (i, &self.weapons[i]));
@@ -2272,12 +2272,12 @@ impl Game {
             .map(|a| a.center(vpm as u32))
     }
 
-    /// Where the middle of the living monster nearest `near` is, not a boss, if there's one about
+    /// Where the middle of the living monster nearest `near` is, if there's one about
     pub fn nearest_foe(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
         let vpm = self.combat.vpm();
         self.animals
             .iter()
-            .filter(|a| a.look.build().is_none() && a.look.is_monster() && a.health > 0.0)
+            .filter(|a| a.look.is_monster() && a.health > 0.0)
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
             .map(|a| a.center(vpm as u32))
     }
@@ -3133,15 +3133,17 @@ impl Game {
         }
     }
 
-    /// For trying them out: rolls lucky weapons of any family until one has the special attack
-    /// `special`, puts it in hand and charges it
-    pub fn find_special(&mut self, special: Special) {
+    /// For trying them out: rolls lucky weapons of any family, or of family `family` if that's
+    /// given and there is one called that, until one has the special attack `special`, puts it in
+    /// hand and charges it
+    pub fn find_special(&mut self, special: Special, family: Option<&str>) {
+        let family = family.and_then(|id| self.library.family(id));
         for seed in 0..200_000u32 {
             // Looked for in the parts alone, as building each weapon's models takes a while
-            if self.library.special_of(hash(seed ^ 0x5bec), 8.0) != Some(special) {
+            if self.library.special_of(hash(seed ^ 0x5bec), family, 8.0) != Some(special) {
                 continue;
             }
-            let weapon = self.library.generate(hash(seed ^ 0x5bec), None, 8.0);
+            let weapon = self.library.generate(hash(seed ^ 0x5bec), family, 8.0);
             if weapon.profile.special.as_ref().is_some_and(|(s, _)| *s == special) {
                 self.weapons.push(weapon);
                 self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));

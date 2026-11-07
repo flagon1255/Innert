@@ -18,6 +18,7 @@ use crate::weapons::{
     SLOT_DROP, SLOT_FINE, SLOT_FIREBALL, SLOT_HELD_ARROW, SLOT_HELD_QUARREL, SLOT_QUARREL, SLOT_SHOT, SLOT_SMOKE, SLOT_SPARK, SMOKE_RES, SPARK_RES, STONE_PILLAR, Shot, Special, Style, Synergy, THORN, WEB, Weapon, effect_models, Heavy,
     Casting, Finish, Knack, COIL, SERPENT,
 };
+use crate::weapons::{Burst, CRACKER_HOOK};
 use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, MOSS, OBSIDIAN, SNOW};
 use crate::worldgen::{World, is_passable};
 
@@ -186,6 +187,8 @@ pub struct Loaded {
     pub profile: Rc<Profile>,
     /// Its arrowhead or bolt head, if not the weapon's own
     pub head: Option<usize>,
+    /// How it bursts apart, if it does
+    pub burst: Option<Burst>,
 }
 
 /// A number or a word floating up from where something was hit
@@ -310,6 +313,12 @@ enum Trick {
     /// off, scattering this many bomblets as it does, and blowing a small hole if it was thrown
     /// by hand
     Bomb { fuse: f64, cluster: u8, hole: bool },
+    /// Bursting ammo, see weapons::Burst: bursting into a spray of shards once this many more
+    /// seconds have gone by in the air, or where it strikes if that's sooner, see Combat::airburst()
+    /// and Combat::shatter()
+    Burst { fuse: f64, burst: Burst },
+    /// One of those shards, going off in a little blast where it lands, see Combat::pop()
+    Fragment,
     /// A comet of ice coming down on here
     Comet(Vector3<f64>),
     /// A shard of a comet, going off quietly where it lands
@@ -391,16 +400,389 @@ struct Thrown {
     damage: f64,
 }
 
-/// A chain flung round a pack, dragging them together onto `center`, then crashing them into
-/// each other
+/// Shackle Chain: chains shot out of the crossbow, a hook on the end of each, one to each of what's
+/// caught near where it's aimed, then hauled on, dragging them all in together onto `center`, then
+/// crashing them into each other, see Combat::drag()
 struct Shackle {
+    /// Where they're dragged to: the feet of the biggest it caught, or where it was aimed
     center: Vector3<f64>,
-    caught: Vec<u32>,
-    /// Where each of them is now, to draw the chain to
-    at: Vec<Vector3<f64>>,
+    chains: Vec<ShackleChain>,
+    /// The biggest it caught, which the rest are dragged to, and how big round it is in meters
+    anchor: Option<u32>,
+    girth: f64,
+    /// Where the chains leave the crossbow, as it's held now
+    from: Vector3<f64>,
+    /// Seconds since it was unleashed, see SHACKLE_RELEASE and the rest
     t: f64,
     profile: Rc<Profile>,
     damage: f64,
+}
+
+/// One of a shackle's chains
+struct ShackleChain {
+    /// What it's flung at, by id, or None when nothing was near and it's flung at the ground
+    id: Option<u32>,
+    /// Where that is now
+    at: Vector3<f64>,
+    /// Seconds after the chains leave the crossbow that it gets there and hooks in
+    reach: f64,
+    hooked: bool,
+}
+
+/// Seconds into Shackle Chain that the chains leave the crossbow, that they're hauled on, and that
+/// what they caught crash into each other, as own_move() has the crossbow kick, haul and jolt
+const SHACKLE_RELEASE: f64 = 0.2;
+const SHACKLE_HAUL: f64 = 0.62;
+const SHACKLE_CRASH: f64 = 1.05;
+/// How far from the player a shackle's chains catch anything, and how far one's flung at the
+/// ground when nothing's near where it's aimed, in meters
+const SHACKLE_REACH: f64 = 30.0;
+const CHAIN_FLING: f64 = 22.0;
+/// How far a shackle reels in the one thing it caught when that's all it caught, at most, in meters
+const SHACKLE_REEL: f64 = 6.0;
+/// The most stretches each of a shackle's chains is drawn with, and how thick it's drawn for each
+/// meter it is from the eye, in meters, see chain_instances()
+const CHAIN_STRETCHES: usize = 5;
+const CHAIN_THICK: f64 = 0.0065;
+
+/// Where along a shackle's chain `length` meters long, `near` meters from the eye at one end and
+/// `far` at the other, each of its stretches of links begins and ends, 0-1 of the way, for
+/// chain_instances(): each longer the further off it is, so they all look about as long, as many
+/// as it takes for none to look longer than about seven degrees, and at most `most`
+fn chain_stretches(length: f64, near: f64, far: f64, most: usize) -> Vec<f64> {
+    let (near, far) = (near.max(0.3), far.max(0.3));
+    let even = (far - near).abs() < 0.05;
+    // How long it looks, in radians, near enough, taking it as running straight from one end to
+    // the other and getting further off evenly along it
+    let looks = if even { length / near } else { length * (far / near).ln() / (far - near) };
+    let n = ((looks / 0.12).ceil() as usize).clamp(1, most.max(1));
+    (0..=n)
+        .map(|k| {
+            let f = k as f64 / n as f64;
+            if even { f } else { ((near * (far / near).powf(f) - near) / (far - near)).clamp(0.0, 1.0) }
+        })
+        .collect()
+}
+
+/// Seconds after a shackle's chains leave the crossbow that the `k`th of them, flung `meters` off,
+/// gets there: a little after the one before, and quicker the further it has to go, so even the
+/// last has hooked in before they're hauled on
+fn chain_flight(k: usize, meters: f64) -> f64 {
+    0.03 * k.min(5) as f64 + 0.07 + 0.2 * (meters / SHACKLE_REACH).min(1.0)
+}
+
+/// Blood Moon: a red moon rising over the player, its light reddening everything, the weapon's
+/// shots flying out at what's near, or a blade cutting down, blood torn out of each and streaming
+/// back to heal the player, see Combat::wax()
+struct BloodMoon {
+    /// Seconds since it was unleashed, and when the shots leave the weapon or the blade comes down
+    t: f64,
+    release: f64,
+    /// Where the moon hangs in the sky
+    moon: Vector3<f64>,
+    /// What's to be drained, by id, nearest first, and the shots flying at each
+    targets: Vec<u32>,
+    shots: Vec<Bloodshot>,
+    streams: Vec<Stream>,
+    /// The drops of blood streaming back into the pool, see Bead
+    beads: Vec<Bead>,
+    /// Seconds in that the pool was drunk down
+    drunk: Option<f64>,
+    /// Whether it's been let go yet, and whether it's a blade's, which tears the blood out itself
+    /// rather than shooting
+    released: bool,
+    blade: bool,
+    /// What the weapon shoots, to draw its shots as, None for a blood orb
+    shot: Option<Shot>,
+    /// Health given back so far, and how much each one drained gives
+    healed: f64,
+    heal: f64,
+    /// How many streams of blood have got to the pool ahead of the player, see blood_pool()
+    gathered: usize,
+    profile: Rc<Profile>,
+    damage: f64,
+    /// Seconds in that it was all done, and the moon began to sink away
+    ending: Option<f64>,
+}
+
+impl BloodMoon {
+    /// Seconds in that the moon begins to sink away, if it has
+    fn end(&self) -> f64 {
+        self.ending.unwrap_or(f64::MAX)
+    }
+}
+
+/// A Blood Moon's shot, flying from the weapon at what it drains, or up at the moon if there's
+/// nothing near
+struct Bloodshot {
+    target: Option<u32>,
+    from: Vector3<f64>,
+    to: Vector3<f64>,
+    position: Vector3<f64>,
+    /// Seconds it's been flying, and how long it takes to get there
+    t: f64,
+    arrive: f64,
+}
+
+/// A drop of blood streaming back from what Blood Moon drained into the pool ahead of the player,
+/// flying as a spark does. Kept and drawn with the moon rather than among the sparks, so however
+/// busy it gets they're never what's left out, and there are only ever BEADS of them.
+struct Bead {
+    position: Vector3<f64>,
+    velocity: Vector3<f64>,
+    life: f64,
+}
+
+/// The most of Blood Moon's drops of blood in the air at once, and how many a second stream back
+/// from each it drained
+const BEADS: usize = 18;
+const BEAD_RATE: f64 = 9.0;
+
+/// Blood streaming back out of what a Blood Moon drained to the player
+struct Stream {
+    /// Where it pours out from
+    from: Vector3<f64>,
+    /// Seconds it's been pouring, sparks owed, and whether the health it brings has come yet
+    t: f64,
+    owed: f64,
+    arrived: bool,
+}
+
+/// How long a Blood Moon hangs at least, how far off it rises, in meters, how high up in the view
+/// it rises, as part of the way from the middle to the top, and the least it rises over the
+/// horizon, in radians, and how far round the player it drains, in meters
+const MOON_SECONDS: f64 = 2.4;
+const MOON_OFF: f64 = 42.0;
+const MOON_IN_VIEW: f64 = 0.35;
+const MOON_LOWEST: f64 = 0.12;
+const MOON_REACH: f64 = 14.0;
+/// Where Blood Moon's blood pools before the player drinks it, in meters ahead of and under the eye
+const POOL_AHEAD: f64 = 2.2;
+const POOL_LOW: f64 = 0.55;
+
+/// Where Blood Moon's blood pools before the player drinks it, as the view's turned now: a little
+/// way ahead and low, where it's seen gathering without filling the view
+fn blood_pool(view: &View) -> Vector3<f64> {
+    view.eye + view.rotation * Vector3::new(0.0, POOL_AHEAD, -POOL_LOW) * view.vpm
+}
+
+/// Where a Blood Moon rises for a view looking `forward`, with the tangent of half its field of
+/// view up and down `tan_up`, from `eye`: on ahead, well up in the view, but never under the horizon
+fn moon_rise(eye: Vector3<f64>, forward: Vector3<f64>, tan_up: f64, vpm: f64) -> Vector3<f64> {
+    let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+    let pitch = forward.z.clamp(-1.0, 1.0).asin();
+    let up = (pitch + tan_up.atan() * MOON_IN_VIEW).clamp(MOON_LOWEST, 1.2);
+    eye + (flat * up.cos() + Vector3::new(0.0, 0.0, up.sin())) * MOON_OFF * vpm
+}
+
+/// How long the moon takes to sink away once it's all done, in seconds, and how big it is drawn,
+/// in meters round
+const MOON_SINK: f64 = 0.6;
+const MOON_SIZE: f64 = 5.0;
+/// How long blood takes to stream back to the player, and how long each stream pours, in seconds,
+/// and how much it falls as it arcs over, 1 as fast as things do
+const STREAM_FLIGHT: f64 = 0.42;
+const STREAM_SECONDS: f64 = 0.7;
+const STREAM_GRAVITY: f64 = 0.5;
+/// How much of its speed a spark loses to the air each second, as Combat::update() slows them
+const SPARK_DRAG: f64 = 1.5;
+/// The most Blood Moon heals in all
+const MOON_HEAL: f64 = 45.0;
+/// How fast Blood Moon's shots fly, in meters a second: slow enough to be seen on their way
+const BLOODSHOT_PACE: f64 = 30.0;
+
+/// How fast to send a spark off from `from`, in voxels a second, so it gets to `to` in `flight`
+/// seconds, slowing in the air as sparks do and falling `gravity` as fast as things do, so it
+/// arcs over on its way
+fn streamed(from: Vector3<f64>, to: Vector3<f64>, flight: f64, gravity: f64, vpm: f64) -> Vector3<f64> {
+    let g = 9.8 * gravity * vpm;
+    let carry = (1.0 - (-SPARK_DRAG * flight).exp()) / SPARK_DRAG;
+    let up = Vector3::new(0.0, 0.0, g / SPARK_DRAG);
+    (to - from + up * flight) / carry - up
+}
+
+/// A bomb of Cluster Volley waiting to be fired, as own_move() has the weapon kick: seconds till it
+/// goes, and where it's aimed to come down
+struct Lob {
+    delay: f64,
+    to: Vector3<f64>,
+    k: usize,
+    profile: Rc<Profile>,
+    damage: f64,
+}
+
+/// How big a bomblet is, next to a bomb, and how big a hole it blows, in meters, and the shards of
+/// bursting ammo, see weapons::Burst: how far round each one's blast reaches, and how big a hole
+/// the first to go off blows
+const BOMBLET_SIZE: f64 = 0.7;
+const BOMBLET_HOLE: f64 = 0.6;
+const FRAGMENT_BLAST: f64 = 1.1;
+const FRAGMENT_HOLE: f64 = 0.6;
+/// Bursting ammo that bursts in the air does so this much of the way to what it's aimed at, no
+/// sooner than this many seconds out, taking what's aimed at as no further off than this, in meters
+const AIRBURST_AT: f64 = 0.55;
+const AIRBURST_SOONEST: f64 = 0.05;
+const AIRBURST_REACH: f64 = 35.0;
+/// How far round an airburst's own blast in the air reaches, in meters, and how much of the shot's
+/// damage it does
+const AIRBURST_BLAST: f64 = 1.6;
+const AIRBURST_POWER: f64 = 0.3;
+/// How big a shard of bursting ammo is drawn, next to a ball of shot, how much of its damage its
+/// little blast does to what's round it, and how fast shards fly: from a burst in the air, as part
+/// of the shot's speed, and from one where it strikes, in meters a second
+const FRAGMENT_SIZE: f64 = 2.6;
+const POP_SHARE: f64 = 0.4;
+const AIRBURST_SHARDS: f64 = 0.4;
+const STRIKE_SHARDS: f64 = 11.0;
+
+/// The way the `k`th of `n` shards of bursting ammo flies, bursting apart going `way`, spread
+/// `spread` degrees round it at most: round a golden-angle spiral out over the cone, so however
+/// many there are they're spread evenly over it, turned `jitter` radians round it so no two bursts
+/// are alike
+fn shard_way(way: Vector3<f64>, spread: f64, k: usize, n: usize, jitter: f64) -> Vector3<f64> {
+    let way = way.try_normalize(1e-6).unwrap_or_else(Vector3::z);
+    let side = way.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+    let up = side.cross(&way);
+    let a = k as f64 * 2.399_963 + jitter;
+    let off = (spread.to_radians() * ((k as f64 + 0.5) / n.max(1) as f64).sqrt()).min(PI * 0.6);
+    (way * off.cos() + (side * a.cos() + up * a.sin()) * off.sin()).normalize()
+}
+
+/// How much further a cluster shell's blast reaches than a plain explosion's, and how much bigger
+/// a hole a bomb packed with bomblets blows than a plain bomb, see Combat::impact() and bomb_burst()
+const CLUSTER_BLAST: f64 = 1.25;
+/// Seconds into Cluster Volley that a crossbow or gun fires its first bomb, and between each and
+/// the next, as own_move() has it kick
+const VOLLEY_FIRST: f64 = 0.22;
+const VOLLEY_GAP: f64 = 0.07;
+/// When bombs flung out underarm leave the hand, seconds in
+const VOLLEY_FLUNG: f64 = 0.3;
+
+/// How long a special attack takes and the poses the weapon goes through, see special_move()
+type SpecialMove = (f64, Vec<(f64, Pose, bool)>);
+
+/// The moves of the special attacks that have their own, for special_move(), or None for the
+/// rest: Shackle Chain's crossbow levelled and shot, hauled back hard as the chains bite and jolted
+/// as what they caught crashes together; Blood Moon's, see blood_moon_move(); Cluster Volley's bombs
+/// fired off one after another, each kicking the weapon up, or flung out underarm
+fn own_move(special: Special, kind: Kind, style: Style) -> Option<SpecialMove> {
+    let shouldered = matches!(style, Style::Crank | Style::Powder);
+    match special {
+        Special::Shackle if shouldered => {
+            let length = 1.25;
+            let s = |t: f64| t / length;
+            let level = shouldered_level();
+            // Hauled back and down, its nose tipped up, kept low and out to the side so what's
+            // being dragged in can still be seen, straining, then jolted forward and down as the
+            // chains go slack
+            let mut hauled = level.clone();
+            hauled.hand += Vector3::new(0.05, -0.07, -0.05);
+            hauled.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3) * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), -0.12) * hauled.turn;
+            let mut strain = hauled.clone();
+            strain.hand += Vector3::new(0.006, -0.02, -0.008);
+            let mut slack = level.clone();
+            slack.hand += Vector3::new(0.0, 0.04, -0.05);
+            slack.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.15) * slack.turn;
+            Some((
+                length,
+                vec![
+                    (s(0.12), level.clone(), false),
+                    (s(SHACKLE_RELEASE), kicked(&level, 1.2), true),
+                    (s(0.36), level.clone(), false),
+                    (s(SHACKLE_HAUL - 0.06), level.clone(), false),
+                    (s(SHACKLE_HAUL), hauled, true),
+                    (s(SHACKLE_CRASH - 0.05), strain, false),
+                    (s(SHACKLE_CRASH), slack, true),
+                    (s(1.15), level, false),
+                ],
+            ))
+        }
+        Special::Bloodmoon => Some(blood_moon_move(kind, style)),
+        // Raised off to the side, aimed up to lob them, and fired five times, kicking each time
+        Special::ClusterBomb if shouldered => {
+            let length = 0.95;
+            let raised = pose([0.24, 0.4, -0.16], [0.08, -0.55, 0.83], [-0.08, 0.83, 0.55]);
+            let mut keys = vec![(0.14 / length, raised.clone(), false)];
+            for k in 0..5 {
+                let at = VOLLEY_FIRST + VOLLEY_GAP * k as f64;
+                keys.push((at / length, kicked(&raised, 0.8), true));
+                keys.push(((at + 0.035) / length, raised.clone(), false));
+            }
+            keys.push((0.75 / length, raised, false));
+            Some((length, keys))
+        }
+        // A bomb held low, swung back and flung out underarm, all five leaving the hand together
+        Special::ClusterBomb if style == Style::Lob => {
+            let length = 0.9;
+            let low = pose([0.3, 0.3, -0.36], [0.1, -0.4, 0.9], [1.0, 0.0, 0.0]);
+            let flung = pose([0.18, 0.62, -0.12], [0.0, 0.8, 0.6], [1.0, 0.0, 0.0]);
+            let after = pose([0.2, 0.55, -0.24], [0.0, 0.7, -0.7], [1.0, 0.0, 0.0]);
+            Some((length, vec![(0.16 / length, low, false), (VOLLEY_FLUNG / length, flung, true), (0.55 / length, after, false)]))
+        }
+        _ => None,
+    }
+}
+
+/// A crossbow or gun levelled at the crosshair, for own_move()
+fn shouldered_level() -> Pose {
+    pose([0.14, 0.42, -0.17], [0.04, -0.12, 0.99], [-0.1, 1.0, 0.08])
+}
+
+/// `p` kicked back and up by a shot, `kick` 1 for a hard one
+fn kicked(p: &Pose, kick: f64) -> Pose {
+    let mut k = p.clone();
+    k.hand.y -= 0.05 * kick;
+    k.hand.z += 0.02 * kick;
+    k.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3 * kick) * k.turn;
+    k
+}
+
+/// Blood Moon's moves: a crossbow or gun levelled and shot, a bow drawn and loosed, bombs flung,
+/// or a staff thrust out, at what's near, then raised to the moon as the blood comes back; or a
+/// blade raised high to the moon, held trembling, then cut down hard across, which tears the blood
+/// out, and held low as it streams back. The shots go, or the blade comes down, on the first quick
+/// key, see first_release().
+fn blood_moon_move(kind: Kind, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
+    let length = 1.3;
+    let s = |t: f64| t / length;
+    let keys = if matches!(style, Style::Crank | Style::Powder) {
+        let level = shouldered_level();
+        let mut raised = level.clone();
+        raised.hand.z += 0.06;
+        raised.turn = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.45) * raised.turn;
+        vec![(s(0.1), level.clone(), false), (s(0.26), kicked(&level, 1.0), true), (s(0.42), level, false), (s(0.7), raised.clone(), false), (s(1.1), raised, false)]
+    } else if style == Style::Lob {
+        let low = pose([0.3, 0.3, -0.36], [0.1, -0.4, 0.9], [1.0, 0.0, 0.0]);
+        let flung = pose([0.18, 0.62, -0.12], [0.0, 0.8, 0.6], [1.0, 0.0, 0.0]);
+        let raised = pose([0.22, 0.45, 0.1], [0.0, 0.2, 0.98], [1.0, 0.0, 0.0]);
+        vec![(s(0.16), low, false), (s(0.28), flung, true), (s(0.48), raised.clone(), false), (s(1.1), raised, false)]
+    } else if kind == Kind::Ranged {
+        let drawn = pose([-0.1, 0.66, -0.08], [-0.33, 0.02, 0.94], [0.0, 1.0, 0.0]);
+        let mut loosed = drawn.clone();
+        loosed.hand.y -= 0.04;
+        let up = pose([-0.08, 0.5, 0.1], [-0.3, 0.1, 0.95], [0.0, 0.6, 0.8]);
+        vec![(s(0.16), drawn.clone(), false), (s(0.26), loosed, true), (s(0.4), drawn, false), (s(0.7), up.clone(), false), (s(1.1), up, false)]
+    } else if kind == Kind::Magic {
+        let raised = pose([0.15, 0.4, 0.1], [0.0, 0.2, 0.98], [-1.0, 0.0, 0.0]);
+        let thrust = pose([0.12, 0.7, -0.18], [-0.1, 0.99, 0.05], [-1.0, 0.0, 0.0]);
+        vec![(s(0.2), raised.clone(), false), (s(0.32), thrust.clone(), true), (s(0.5), thrust, false), (s(0.8), raised.clone(), false), (s(1.1), raised, false)]
+    } else {
+        // Raised up ahead towards the moon, the blade standing up into the view, not out of sight
+        // overhead
+        let raised = pose([0.2, 0.5, -0.1], [0.06, 0.5, 0.86], [-1.0, 0.0, 0.0]);
+        let mut shaking = raised.clone();
+        shaking.hand += Vector3::new(-0.012, 0.01, 0.025);
+        shaking.turn = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.05) * shaking.turn;
+        let cut = pose([0.06, 0.62, -0.16], [-0.35, 0.92, 0.1], [-0.75, -0.2, -0.6]);
+        let low = pose([-0.2, 0.5, -0.36], [-0.85, 0.45, -0.25], [-0.3, -0.2, -0.93]);
+        vec![(s(0.22), raised, false), (s(0.42), shaking, false), (s(0.52), cut, true), (s(0.68), low.clone(), false), (s(1.1), low, false)]
+    };
+    (length, keys)
+}
+
+/// Seconds into a move of `length` seconds that it lets go: its first quick key
+fn first_release(length: f64, keys: &[(f64, Pose, bool)]) -> f64 {
+    keys.iter().find(|k| k.2).map_or(length * 0.3, |k| k.0 * length)
 }
 
 /// Something a coil bind holds fast, by id: rooted where it stands, crushed every so often as the
@@ -1162,6 +1544,9 @@ pub struct Combat {
     sweep: Option<Sweep>,
     thrown: Option<Thrown>,
     shackle: Option<Shackle>,
+    blood_moon: Option<BloodMoon>,
+    /// Cluster Volley's bombs waiting to be fired, see Lob
+    lobs: Vec<Lob>,
     /// Rings rolling out along the ground, see Ripple
     ripples: Vec<Ripple>,
     /// Special attacks going on a while somewhere, see Zone
@@ -1357,6 +1742,17 @@ fn pose(hand: [f64; 3], along: [f64; 3], edge: [f64; 3]) -> Pose {
 fn mirrored(p: &Pose) -> Pose {
     let q = p.turn.quaternion();
     Pose { hand: Vector3::new(-p.hand.x, p.hand.y, p.hand.z), turn: UnitQuaternion::new_normalize(nalgebra::Quaternion::new(q.w, q.i, -q.j, -q.k)) }
+}
+
+/// `p` for a crossbow mirrored from the right of the view to the left, as a hand crossbow goes
+/// through its moves in the left hand. mirrored() flips the weapon's own x, which a blade swung the
+/// other way round can take, but a crossbow's x is the way it shoots: flipped, it would turn round
+/// and point back at the player. So it's turned half round its own length too, which puts the
+/// way it shoots ahead again and only swaps its two sides, as a crossbow looks the same either way.
+fn mirrored_shouldered(p: &Pose) -> Pose {
+    let mut m = mirrored(p);
+    m.turn *= UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI);
+    m
 }
 
 fn blend(a: &Pose, b: &Pose, t: f64) -> Pose {
@@ -2666,6 +3062,10 @@ fn special_cracks(special: Special) -> Vec<Crack> {
 /// How long a special attack takes with a weapon of `kind` and `style`, and the poses the weapon
 /// goes through, for animate()
 fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
+    // Shackle Chain, Blood Moon and Cluster Volley have their own, see own_move()
+    if let Some(own) = own_move(special, kind, style) {
+        return own;
+    }
     // A bow drawn and loosed, kicking a little each time
     let drawn = pose([-0.1, 0.66, -0.08], [-0.33, 0.02, 0.94], [0.0, 1.0, 0.0]);
     let kicked = |side: f64| {
@@ -3569,6 +3969,8 @@ impl Combat {
             sweep: None,
             thrown: None,
             shackle: None,
+            blood_moon: None,
+            lobs: Vec::new(),
             ripples: Vec::new(),
             zones: Vec::new(),
             pool_timer: 0.0,
@@ -3705,9 +4107,27 @@ impl Combat {
         }
         if let Some(s) = &mut self.shackle {
             s.center -= shift;
-            for at in &mut s.at {
-                *at -= shift;
+            s.from -= shift;
+            for c in &mut s.chains {
+                c.at -= shift;
             }
+        }
+        if let Some(m) = &mut self.blood_moon {
+            m.moon -= shift;
+            for s in &mut m.shots {
+                s.from -= shift;
+                s.to -= shift;
+                s.position -= shift;
+            }
+            for s in &mut m.streams {
+                s.from -= shift;
+            }
+            for b in &mut m.beads {
+                b.position -= shift;
+            }
+        }
+        for l in &mut self.lobs {
+            l.to -= shift;
         }
         for f in &mut self.familiars {
             f.position -= shift;
@@ -3789,6 +4209,8 @@ impl Combat {
         self.sweep = None;
         self.thrown = None;
         self.shackle = None;
+        self.blood_moon = None;
+        self.lobs.clear();
         self.ripples.clear();
         self.zones.clear();
         self.hunt = 0.0;
@@ -4424,6 +4846,20 @@ impl Combat {
             }
         }
 
+        // Bursting ammo bursts out of the shot that carries its charge, the first: in the air most
+        // of the way to what it's aimed at, if it bursts in the air, or else where it strikes
+        if let Some(burst) = loaded.and_then(|l| l.burst)
+            && !harpoon
+            && let Some(first) = self.projectiles.get_mut(before)
+        {
+            let fuse = if burst.airburst {
+                let reach = (target - muzzle).norm().min(AIRBURST_REACH * vpm);
+                (reach * AIRBURST_AT / first.velocity.norm().max(1.0)).max(AIRBURST_SOONEST)
+            } else {
+                f64::MAX
+            };
+            first.trick = Trick::Burst { fuse, burst };
+        }
         // A harpoon trails its line, a siege crossbow's great bolt pins what it goes through
         if let Some(first) = self.projectiles.get_mut(before)
             && harpoon
@@ -4737,8 +5173,9 @@ impl Combat {
         self.scarless = true;
         self.burst(arena, &profile, at, radius, p.damage, bomblet as u32, false, profile.element.or(Some(Element::Fire)), None);
         self.scarless = false;
+        // A bomblet blows its own small hole, and a bomb packed with them a bigger one
         if hole {
-            self.craters.push((at, BOMB_HOLE));
+            self.craters.push((at, if bomblet { BOMBLET_HOLE } else if cluster > 0 { BOMB_HOLE * CLUSTER_BLAST } else { BOMB_HOLE }));
         }
         if !bomblet {
             self.landing(arena, &profile, at, p.damage, None, false);
@@ -4750,21 +5187,122 @@ impl Combat {
     }
 
     /// `n` bomblets flung out from `at`, each going off a moment later where it lands for `damage`
+    /// and blowing a small hole there
     fn scatter(&mut self, profile: &Rc<Profile>, at: Vector3<f64>, n: usize, damage: f64) {
         let vpm = self.vpm;
         let quiet = Rc::new(profile.without(Effect::Cluster));
         for k in 0..n.min(8) {
             let a = (k as f64 + 0.6 * random(&mut self.rng)) / n as f64 * TAU;
-            let out = 3.0 + 3.0 * random(&mut self.rng);
+            let out = 3.5 + 3.5 * random(&mut self.rng);
             let v = Vector3::new(a.cos() * out, a.sin() * out, 5.0 + 3.0 * random(&mut self.rng)) * vpm;
             let fuse = 0.5 + 0.4 * random(&mut self.rng);
-            self.launch(&quiet, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 0.6 }), Form::Bolt, at + Vector3::new(0.0, 0.0, 0.5 * vpm), v, damage, BOMB_GRAVITY);
+            self.launch(&quiet, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: BOMBLET_SIZE }), Form::Bolt, at + Vector3::new(0.0, 0.0, 0.5 * vpm), v, damage, BOMB_GRAVITY);
             if let Some(b) = self.projectiles.last_mut() {
-                b.trick = Trick::Bomb { fuse, cluster: 0, hole: false };
+                b.trick = Trick::Bomb { fuse, cluster: 0, hole: true };
                 b.life = 2.5;
             }
         }
         self.cues.push(Cue::at(Sound::Chain, at, 0.5).pitched(0.6));
+    }
+
+    /// Bursting ammo `p` bursting in the air at `at` as its fuse runs out: a crack and a flash, a
+    /// puff of fire hurting what's right round it, and a spray of burning shot flying on the way
+    /// it was going, spreading as `burst` has it, each bursting again where it lands. It leaves
+    /// nothing on the ground itself, being up in the air.
+    fn airburst(&mut self, arena: &mut Arena, p: &Projectile, at: Vector3<f64>, burst: Burst) {
+        let vpm = arena.view.vpm;
+        let element = p.profile.element.or(Some(Element::Fire));
+        let look = Element::look(element);
+        // A quick white-hot crack rather than a rolling fireball, so it doesn't hide its shards
+        // flying on behind it, and a starburst of sparks
+        self.blasts.push(Blast { position: at, look, radius: 0.55, life: 0.18, lifetime: 0.18 });
+        self.flashes.push(Flash { position: at, color: element.map_or([1.0, 0.8, 0.5], Element::light), reach: 9.0, life: 0.2, lifetime: 0.2 });
+        self.sparks(at, 12, 7.0, look, 0.3, 0.3);
+        self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(1.15));
+        let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
+        self.shake = self.shake.max(near * 0.3);
+        let r = AIRBURST_BLAST * vpm;
+        let inside: Vec<(usize, f64)> = arena
+            .animals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.health > 0.0 && !a.look.is_pet())
+            .map(|(i, a)| (i, ((a.center(vpm as u32) - at).norm() - a.look.body().1 * vpm).max(0.0)))
+            .filter(|&(_, d)| d < r)
+            .collect();
+        let profile = p.profile.clone();
+        for (i, d) in inside {
+            self.strike(arena, &profile, i, Blow { damage: p.damage * AIRBURST_POWER * (1.0 - 0.5 * d / r), crit: false, heavy: false, from: at, depth: 0, element });
+        }
+        let speed = (p.velocity.norm() * AIRBURST_SHARDS).clamp(22.0 * vpm, 50.0 * vpm);
+        self.fling_fragments(p, at, p.velocity, burst.spread, speed, BALL_GRAVITY, burst);
+        self.cap_sparks();
+    }
+
+    /// Bursting ammo `p` bursting where it strikes at `at`: the blast of its charge, as any
+    /// explosive shot's, and its iron thrown back out and up off what it hit, roughly `off`, in
+    /// burning shards fanning out wide, each bursting again where it lands
+    fn shatter(&mut self, arena: &mut Arena, p: &Projectile, at: Vector3<f64>, off: Vector3<f64>, burst: Burst) {
+        let vpm = arena.view.vpm;
+        self.impact(arena, p, at);
+        let off = off.try_normalize(1e-6).unwrap_or_else(Vector3::z);
+        let way = (off + Vector3::new(0.0, 0.0, 0.8)).normalize();
+        self.fling_fragments(p, at + off * 0.3 * vpm, way, burst.spread.max(50.0), STRIKE_SHARDS * vpm, 1.0, burst);
+        self.cues.push(Cue::at(Sound::Ricochet, at, 0.5).pitched(0.7));
+    }
+
+    /// The shards bursting ammo `p` flies apart into at `at`, as many as `burst` has it, spread
+    /// evenly over a cone `spread` degrees round `way`, flying at about `speed`, in voxels a
+    /// second, and falling `gravity` as fast as things do, each a Trick::Fragment doing `burst`'s
+    /// share of `p`'s damage and bursting again where it lands, see pop(). None of them hits what
+    /// `p` hit already.
+    #[allow(clippy::too_many_arguments)]
+    fn fling_fragments(&mut self, p: &Projectile, at: Vector3<f64>, way: Vector3<f64>, spread: f64, speed: f64, gravity: f64, burst: Burst) {
+        let quiet = Rc::new(p.profile.without(Effect::Explosive).without(Effect::Cluster));
+        let n = burst.fragments.clamp(1, 12);
+        for k in 0..n {
+            let d = shard_way(way, spread, k, n, random(&mut self.rng) * 0.5);
+            let velocity = d * speed * (0.85 + 0.3 * random(&mut self.rng));
+            let mut shard = self.offshoot(p, at + d * 0.15 * self.vpm, velocity, p.damage * burst.power, Trick::Fragment);
+            shard.profile = quiet.clone();
+            shard.shot = Shot::Ball;
+            shard.gravity = gravity;
+            shard.size = FRAGMENT_SIZE;
+            shard.life = 1.4;
+            shard.power = false;
+            self.projectiles.push(shard);
+        }
+    }
+
+    /// A shard of bursting ammo `p` going off in a little blast where it lands at `at`, or in
+    /// animal `struck`: a puff of fire and a crack, what's right round hurt a little, and on the
+    /// ground a small hole, if no other blast has blown one just now
+    fn pop(&mut self, arena: &mut Arena, p: &Projectile, at: Vector3<f64>, struck: Option<usize>) {
+        let vpm = arena.view.vpm;
+        let element = p.profile.element.or(Some(Element::Fire));
+        let look = Element::look(element);
+        let back = p.velocity.try_normalize(1e-9).unwrap_or_else(Vector3::z);
+        let puff = at - back * 0.25 * vpm;
+        self.blasts.push(Blast { position: puff, look, radius: FRAGMENT_BLAST * 0.55, life: 0.22, lifetime: 0.22 });
+        self.flashes.push(Flash { position: puff, color: element.map_or([1.0, 0.8, 0.5], Element::light), reach: 3.0, life: 0.12, lifetime: 0.12 });
+        self.sparks(puff, 3, 3.0, look, 0.4, 0.25);
+        self.cues.push(Cue::at(Sound::Burst, at, 0.3).pitched(1.45 + 0.3 * random(&mut self.rng) as f32));
+        let r = FRAGMENT_BLAST * vpm;
+        let near: Vec<usize> = (0..arena.animals.len())
+            .filter(|&i| {
+                let a = &arena.animals[i];
+                Some(i) != struck && a.health > 0.0 && !a.look.is_pet() && (a.center(vpm as u32) - at).norm() - a.look.body().1 * vpm < r
+            })
+            .collect();
+        let profile = p.profile.clone();
+        for i in near {
+            self.strike(arena, &profile, i, Blow { damage: p.damage * POP_SHARE, crit: false, heavy: false, from: at, depth: 1, element });
+        }
+        if struck.is_none() && !self.scarless && self.scar_timer <= 0.0 {
+            self.craters.push((at, FRAGMENT_HOLE));
+            self.scar_timer = SCAR_GAP;
+        }
+        self.cap_sparks();
     }
 
     /// What `profile`'s effects do round where something of it lands at `at`, doing `damage`, or
@@ -6060,7 +6598,9 @@ impl Combat {
             }
         }
         self.throw_weapon(arena, dt);
-        self.drag(arena, dt);
+        self.drag(arena, weapon, dt);
+        self.wax(arena, weapon, dt);
+        self.fire_lobs(arena, weapon, dt);
     }
 
     /// A harpoon's line pulling: what it caught reeled in to the player, or the player hauled out
@@ -6169,40 +6709,534 @@ impl Combat {
         }
     }
 
-    /// A shackle's chain dragging what it caught together, then crashing them into each other
-    fn drag(&mut self, arena: &mut Arena, dt: f64) {
+    /// Shackle Chain going on: its chains shot out of the crossbow in hand as it kicks, each hooking
+    /// into what it's flung at, then hauled on, dragging all they caught in onto the biggest, then
+    /// crashing them into each other in a heap, a ring rolling out along the ground from it. With
+    /// nothing caught, the one chain bites into the ground and is drawn back.
+    fn drag(&mut self, arena: &mut Arena, weapon: Option<&Weapon>, dt: f64) {
         let Some(mut s) = self.shackle.take() else {
             return;
         };
-        let vpm = arena.view.vpm;
+        let view = arena.view;
+        let vpm = view.vpm;
+        let before = s.t;
         s.t += dt;
-        let crash = s.t >= 0.85;
-        let caught: Vec<usize> = s.caught.iter().filter_map(|&id| arena.animals.iter().position(|a| a.id == id && a.health > 0.0)).collect();
-        s.at = caught.iter().map(|&i| arena.animals[i].center(vpm as u32)).collect();
-        for &i in &caught {
-            let a = &mut arena.animals[i];
-            let to = s.center - a.position;
-            let gap = to.xy().norm() / vpm - a.look.body().1;
-            if a.boss.is_none() && gap > 0.6 {
-                a.status.push = Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * (gap * 5.0).min(14.0) * vpm;
-            }
-            a.status.rooted = a.status.rooted.max(0.2);
+        let passed = |at: f64| before < at && s.t >= at;
+        let (released, hauled, crashed) = (passed(SHACKLE_RELEASE), passed(SHACKLE_HAUL), passed(SHACKLE_CRASH));
+        s.from = weapon.map_or(view.eye + view.rotation * Vector3::new(0.15, 0.6, -0.15) * vpm, |w| self.held_point(w, view, false));
+        // Where each is now. What's died lets its chain go.
+        s.chains.retain_mut(|c| match c.id {
+            Some(id) => arena.animals.iter().find(|a| a.id == id && a.health > 0.0).map(|a| c.at = a.center(vpm as u32)).is_some(),
+            None => true,
+        });
+        let look = Element::look(s.profile.element);
+        if released {
+            self.flashes.push(Flash { position: s.from, color: s.profile.element.map_or([1.0, 0.85, 0.6], Element::light), reach: 3.5, life: 0.15, lifetime: 0.15 });
+            self.sparks(s.from, 5, 3.0, look, 0.3, 0.25);
+            self.cues.push(Cue::here(Sound::Harpoon, 1.0).pitched(0.85));
+            self.cues.push(Cue::here(Sound::Chain, 0.8).pitched(1.1));
         }
-        if !crash {
+        // Each chain hooking in as it gets there
+        let fly = s.t - SHACKLE_RELEASE;
+        let mut hooks = Vec::new();
+        for c in s.chains.iter_mut().filter(|c| !c.hooked && fly >= c.reach) {
+            c.hooked = true;
+            hooks.push((c.id, c.at));
+        }
+        for (id, at) in hooks {
+            self.sparks(at, 6, 2.5, Element::look(None), 0.6, 0.3);
+            match id.and_then(|id| arena.animals.iter().position(|a| a.id == id)) {
+                // Bitten into and held, not hurt yet: whatever's caught lives to be dragged in and
+                // crashed into the rest, which is where the damage is
+                Some(i) => {
+                    self.cues.push(Cue::at(Sound::Chain, at, 0.7).pitched(1.15));
+                    self.flashes.push(Flash { position: at, color: s.profile.element.map_or([1.0, 0.85, 0.6], Element::light), reach: 3.0, life: 0.15, lifetime: 0.15 });
+                    let st = &mut arena.animals[i].status;
+                    st.flash = st.flash.max(0.09);
+                    st.rooted = st.rooted.max(1.0);
+                    st.staggered = st.staggered.max(0.4);
+                }
+                // Biting into the ground, dirt flying
+                None => {
+                    for _ in 0..6 {
+                        let v = (self.any_direction() + Vector3::new(0.0, 0.0, 1.3)) * 3.0 * vpm;
+                        self.drop(at, v, DROP_MUD, 0.8);
+                    }
+                    self.cues.push(Cue::at(Sound::Clang, at, 0.7).pitched(0.85));
+                }
+            }
+        }
+        let caught = s.chains.iter().any(|c| c.id.is_some());
+        if !caught {
+            // Drawn back in once it's bitten, or all it caught have died
+            let back = s.chains.first().map_or(0.0, |c| c.reach) + 0.35;
+            if fly < back && !s.chains.is_empty() {
+                self.shackle = Some(s);
+            }
+            return;
+        }
+        if hauled {
+            self.cues.push(Cue::here(Sound::Taut, 1.0).pitched(0.7));
+            self.cues.push(Cue::at(Sound::Chain, s.center, 0.9).pitched(0.8));
+            self.shake = self.shake.max(0.25);
+        }
+        // Hauled in onto the biggest, quicker the further each has to come, arriving together.
+        // Bosses are too big to be moved.
+        if s.t >= SHACKLE_HAUL && s.t < SHACKLE_CRASH {
+            let left = (SHACKLE_CRASH - s.t).max(0.05);
+            for c in &s.chains {
+                let Some(i) = c.id.and_then(|id| arena.animals.iter().position(|a| a.id == id)) else {
+                    continue;
+                };
+                let a = &mut arena.animals[i];
+                let to = s.center - a.position;
+                let gap = to.xy().norm() / vpm - a.look.body().1 - s.girth * 0.6;
+                a.status.rooted = a.status.rooted.max(0.2);
+                if a.boss.is_some() || Some(a.id) == s.anchor || gap <= 0.2 {
+                    continue;
+                }
+                a.status.push = Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * (gap / left).min(24.0) * vpm;
+                // Scraping up dirt as it's dragged
+                if random(&mut self.rng) < dt * 7.0 {
+                    let feet = a.position + Vector3::new(0.0, 0.0, 0.1 * vpm);
+                    let v = (self.any_direction() * 0.6 + Vector3::new(0.0, 0.0, 1.0)) * 2.5 * vpm;
+                    self.drop(feet, v, DROP_MUD, 0.6);
+                }
+            }
+        }
+        if !crashed {
             self.shackle = Some(s);
             return;
         }
+        // Crashed into each other in a heap: each struck hard and knocked off its feet, bouncing
+        // back apart, a blast and a ring rolling out from where they land, dirt and sparks thrown
+        // up, and the ground dented
         let profile = s.profile.clone();
-        for i in caught {
+        let ground = ground_under(arena.world, s.center, vpm);
+        let ids: Vec<u32> = s.chains.iter().filter_map(|c| c.id).collect();
+        for &id in &ids {
+            let Some(i) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) else {
+                continue;
+            };
             let at = arena.animals[i].center(vpm as u32);
-            self.sparks(at, 8, 3.5, Element::look(None), 0.8, 0.35);
+            self.sparks(at, 4, 3.5, Element::look(None), 0.8, 0.35);
             self.strike(arena, &profile, i, Blow { damage: s.damage, crit: false, heavy: true, from: s.center, depth: 0, element: profile.element });
-            let st = &mut arena.animals[i].status;
-            st.staggered = st.staggered.max(1.5);
+            let a = &mut arena.animals[i];
+            let away = a.position - s.center;
+            a.status.staggered = a.status.staggered.max(1.5);
+            if a.boss.is_none() && Some(a.id) != s.anchor {
+                a.status.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x) * 4.0 * vpm;
+            }
         }
-        self.cues.push(Cue::at(Sound::Clang, s.center, 1.0).pitched(0.8));
-        self.cues.push(Cue::at(Sound::Chain, s.center, 0.7).pitched(1.2));
-        self.shake = self.shake.max(0.35);
+        self.blasts.push(Blast { position: ground + Vector3::new(0.0, 0.0, 0.6 * vpm), look, radius: 1.6, life: 0.45, lifetime: 0.45 });
+        self.flashes.push(Flash { position: ground + Vector3::new(0.0, 0.0, 1.2 * vpm), color: profile.element.map_or([1.0, 0.85, 0.6], Element::light), reach: 12.0, life: 0.4, lifetime: 0.4 });
+        self.ripples.push(Ripple { center: ground, radius: 0.5, reach: 5.5, speed: 13.0, hit: ids, profile: profile.clone(), damage: s.damage * 0.35, push: 7.0, stagger: 0.8, effects: false, rocks: true, owed: 0.0 });
+        for k in 0..18 {
+            let a = k as f64 / 18.0 * TAU;
+            let out = Vector3::new(a.cos(), a.sin(), 0.15);
+            self.sparks.push(Spark { position: ground + Vector3::new(0.0, 0.0, 0.3 * vpm), velocity: out * 11.0 * vpm, look: Element::look(None), life: 0.45, lifetime: 0.45, gravity: 0.2, slot: SLOT_SPARK });
+        }
+        for _ in 0..10 {
+            let v = (self.any_direction() * 0.7 + Vector3::new(0.0, 0.0, 1.2)) * 4.0 * vpm;
+            self.drop(ground + Vector3::new(0.0, 0.0, 0.2 * vpm), v, DROP_MUD, 1.0);
+        }
+        // The chains snapping apart as they go slack, bits of them flying off all along them
+        for c in &s.chains {
+            for k in 1..4 {
+                let at = s.from.lerp(&c.at, k as f64 / 4.0);
+                let v = (self.any_direction() + Vector3::new(0.0, 0.0, 0.7)) * 2.5 * vpm;
+                self.sparks.push(Spark { position: at, velocity: v, look, life: 0.45, lifetime: 0.45, gravity: 0.8, slot: SLOT_SPARK });
+            }
+        }
+        self.cap_sparks();
+        if !self.scarless && self.scar_timer <= 0.0 {
+            self.craters.push((ground, 0.8));
+            self.scar_timer = SCAR_GAP;
+        }
+        let near = (1.0 - (ground - view.eye).norm() / vpm / 30.0).max(0.0);
+        self.shake = self.shake.max(0.3 + 0.5 * near);
+        self.say_at(ground + Vector3::new(0.0, 0.0, 2.2 * vpm), "Shackled!", [205, 215, 230], 20.0);
+        self.cues.push(Cue::at(Sound::Slam, s.center, 1.0).pitched(0.85));
+        self.cues.push(Cue::at(Sound::Clang, s.center, 0.9).pitched(0.7));
+        self.cues.push(Cue::at(Sound::Chain, s.center, 0.8).pitched(1.25));
+    }
+
+    /// Blood Moon going on, see BloodMoon: the shots let go as the weapon kicks, flying at what's
+    /// near and tearing the blood out of each as they hit, or up at the moon if there's nothing,
+    /// or a blade coming down and tearing it out of all of them at once; the blood streaming back
+    /// to the player and healing them as it comes; and the moon hanging till it's all done, then
+    /// sinking away
+    fn wax(&mut self, arena: &mut Arena, weapon: Option<&Weapon>, dt: f64) {
+        let Some(mut m) = self.blood_moon.take() else {
+            return;
+        };
+        let view = arena.view;
+        let vpm = view.vpm;
+        m.t += dt;
+        let blood = Element::look(Some(Element::Blood));
+        // Where the blood comes back to, pooling a little way ahead where it's seen gathering, and
+        // where the player drinks it from, just under the view
+        let pool = blood_pool(view);
+        let lips = view.eye + view.rotation * Vector3::new(0.0, 0.3, -0.5) * vpm;
+        // Red light gathering on the weapon as it's raised to the moon
+        if !m.released && m.t > 0.15 && random(&mut self.rng) < dt * 30.0 {
+            let at = weapon.map_or(view.eye + view.rotation * Vector3::new(0.15, 0.6, -0.15) * vpm, |w| self.held_point(w, view, false));
+            let v = self.any_direction() * 0.3 * vpm;
+            self.fine(at + v * 0.4, -v, blood, 0.35, 0.0);
+        }
+        if !m.released && m.t >= m.release {
+            m.released = true;
+            let from = weapon.map_or(view.eye + view.rotation * Vector3::new(0.15, 0.6, -0.15) * vpm, |w| self.held_point(w, view, false));
+            if m.blade {
+                for id in m.targets.clone() {
+                    if let Some(i) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) {
+                        self.tear(arena, &mut m, i);
+                    }
+                }
+                // A crescent of blood thrown out ahead along the cut, from high on the right
+                // down across to the left
+                for k in 0..14 {
+                    let f = k as f64 / 13.0;
+                    let a = 0.9 - 1.9 * f;
+                    let out = view.rotation * Vector3::new(a.sin() * 1.1, 1.6, a.cos() * 0.7 - 0.3) * vpm;
+                    let ahead = view.rotation * Vector3::new(0.0, 6.0, 0.0) * vpm;
+                    self.sparks.push(Spark { position: view.eye + out, velocity: ahead + out * 2.0, look: blood, life: 0.35, lifetime: 0.35, gravity: 0.4, slot: SLOT_SPARK });
+                }
+                self.cap_sparks();
+                self.cues.push(Cue::here(Sound::HeavySwing, 0.9).pitched(0.8));
+            } else {
+                for (k, &id) in m.targets.iter().enumerate() {
+                    if let Some(a) = arena.animals.iter().find(|a| a.id == id && a.health > 0.0) {
+                        let to = a.center(vpm as u32);
+                        let arrive = 0.05 * k as f64 + (to - from).norm() / vpm / BLOODSHOT_PACE;
+                        m.shots.push(Bloodshot { target: Some(id), from, to, position: from, t: 0.0, arrive });
+                    }
+                }
+                // Nothing near: shot up at the moon
+                if m.shots.is_empty() {
+                    for k in 0..3 {
+                        let to = m.moon + self.any_direction() * 2.0 * vpm;
+                        m.shots.push(Bloodshot { target: None, from, to, position: from, t: 0.0, arrive: 0.55 + 0.06 * k as f64 });
+                    }
+                }
+                self.flashes.push(Flash { position: from, color: Element::Blood.light(), reach: 4.0, life: 0.15, lifetime: 0.15 });
+                let sound = match m.shot {
+                    Some(Shot::Arrow) => Sound::Twang,
+                    Some(Shot::Quarrel) => Sound::Release,
+                    Some(_) => Sound::Gunshot,
+                    None => Sound::Cast(blood as u8),
+                };
+                self.cues.push(Cue::here(sound, 0.9).pitched(0.75));
+            }
+        }
+        // The shots flying, trailing blood, each tearing the blood out of what it reaches
+        for mut shot in std::mem::take(&mut m.shots) {
+            shot.t += dt;
+            if let Some(a) = shot.target.and_then(|id| arena.animals.iter().find(|a| a.id == id && a.health > 0.0)) {
+                shot.to = a.center(vpm as u32);
+            }
+            let k = (shot.t / shot.arrive).min(1.0);
+            shot.position = shot.from.lerp(&shot.to, k) + Vector3::new(0.0, 0.0, 4.0 * k * (1.0 - k) * 0.4 * vpm);
+            if random(&mut self.rng) < dt * 50.0 {
+                self.mote(shot.position, Some(Element::Blood), 1.6);
+            }
+            if k < 1.0 {
+                m.shots.push(shot);
+                continue;
+            }
+            match shot.target.and_then(|id| arena.animals.iter().position(|a| a.id == id && a.health > 0.0)) {
+                Some(i) => self.tear(arena, &mut m, i),
+                // Gone into the moon, or what it was at is already dead
+                None => {
+                    self.sparks(shot.position, 5, 2.0, blood, 0.2, 0.4);
+                    self.flashes.push(Flash { position: shot.position, color: Element::Blood.light(), reach: 6.0, life: 0.2, lifetime: 0.2 });
+                }
+            }
+        }
+        // Blood streaming back, arcing over into the pool ahead, each stream's health coming as its
+        // blood gets there, and some of it running on from the pool into the player
+        for b in &mut m.beads {
+            b.velocity.z -= 9.8 * STREAM_GRAVITY * vpm * dt;
+            b.velocity *= (-SPARK_DRAG * dt).exp();
+            b.position += b.velocity * dt;
+            b.life -= dt;
+        }
+        m.beads.retain(|b| b.life > 0.0);
+        let pouring = m.streams.iter().filter(|s| s.t < STREAM_SECONDS).count().max(1);
+        let rate = BEAD_RATE.min(BEADS as f64 / STREAM_FLIGHT / pouring as f64);
+        for k in 0..m.streams.len() {
+            m.streams[k].t += dt;
+            if m.streams[k].t < STREAM_SECONDS {
+                m.streams[k].owed += dt * rate;
+                while m.streams[k].owed >= 1.0 {
+                    m.streams[k].owed -= 1.0;
+                    let start = m.streams[k].from + self.any_direction() * 0.2 * vpm;
+                    let flight = STREAM_FLIGHT * (0.9 + 0.2 * random(&mut self.rng));
+                    let velocity = streamed(start, pool, flight, STREAM_GRAVITY, vpm);
+                    if m.beads.len() >= BEADS {
+                        m.beads.remove(0);
+                    }
+                    m.beads.push(Bead { position: start, velocity, life: flight });
+                }
+            }
+            if !m.streams[k].arrived && m.streams[k].t >= STREAM_FLIGHT {
+                m.streams[k].arrived = true;
+                m.gathered += 1;
+                let gain = m.heal.min(MOON_HEAL - m.healed).max(0.0);
+                if gain >= 0.5 {
+                    m.healed += gain;
+                    self.heal += gain;
+                    self.say_at(pool, &format!("+{gain:.0}"), [255, 60, 75], 26.0);
+                    self.flashes.push(Flash { position: pool, color: Element::Blood.light(), reach: 3.5, life: 0.3, lifetime: 0.3 });
+                    self.cues.push(Cue::here(Sound::Squelch, 0.4).pitched(1.3));
+                }
+                self.drink(pool, lips, 8);
+            }
+        }
+        self.cap_sparks();
+        let done = m.released && m.shots.is_empty() && m.streams.iter().all(|s| s.t >= STREAM_SECONDS + STREAM_FLIGHT);
+        // What's pooled drunk down all at once as soon as the last of it's there, a red flash over
+        // the view
+        if done && m.drunk.is_none() {
+            m.drunk = Some(m.t);
+            if m.gathered > 0 {
+                self.drink(pool, lips, 18);
+                self.flashes.push(Flash { position: lips, color: Element::Blood.light(), reach: 4.0, life: 0.45, lifetime: 0.45 });
+                self.cues.push(Cue::here(Sound::Squelch, 0.6).pitched(0.7));
+            }
+            if m.healed > 0.0 {
+                self.messages.push(format!("Blood Moon drank from {}: +{:.0} health.", m.streams.len(), m.healed));
+            }
+        }
+        if done && m.t >= MOON_SECONDS && m.ending.is_none() {
+            m.ending = Some(m.t);
+        }
+        if m.t >= m.end() + MOON_SINK {
+            return;
+        }
+        self.blood_moon = Some(m);
+    }
+
+    /// Blood Moon tearing the blood out of animal `i`: struck hard, a gout of blood thrown out of
+    /// it, and a stream of it starting back to the player
+    fn tear(&mut self, arena: &mut Arena, m: &mut BloodMoon, i: usize) {
+        let vpm = arena.view.vpm;
+        let at = arena.animals[i].center(vpm as u32);
+        let profile = m.profile.clone();
+        self.strike(arena, &profile, i, Blow { damage: m.damage, crit: false, heavy: true, from: at, depth: 0, element: Some(Element::Blood) });
+        for _ in 0..4 {
+            let v = (self.any_direction() * 1.2 + Vector3::new(0.0, 0.0, 1.5)) * 2.5 * vpm;
+            self.drop(at, v, DROP_BLOOD, 1.0);
+        }
+        self.sparks(at, 5, 3.0, Element::look(Some(Element::Blood)), 0.3, 0.35);
+        self.flashes.push(Flash { position: at, color: Element::Blood.light(), reach: 4.0, life: 0.25, lifetime: 0.25 });
+        self.cues.push(Cue::at(Sound::Squelch, at, 0.8).pitched(0.8));
+        m.streams.push(Stream { from: at, t: 0.0, owed: 0.0, arrived: false });
+    }
+
+    /// `n` fine drops of blood running from Blood Moon's pool at `pool` into the player at `lips`
+    fn drink(&mut self, pool: Vector3<f64>, lips: Vector3<f64>, n: usize) {
+        let vpm = self.vpm;
+        let blood = Element::look(Some(Element::Blood));
+        for _ in 0..n {
+            let start = pool + self.any_direction() * 0.12 * vpm;
+            let flight = 0.22 + 0.1 * random(&mut self.rng);
+            let velocity = streamed(start, lips, flight, 0.0, vpm);
+            self.sparks.push(Spark { position: start, velocity, look: blood, life: flight, lifetime: flight, gravity: 0.0, slot: SLOT_FINE });
+        }
+        self.cap_sparks();
+    }
+
+    /// How strong Blood Moon's red is now, 0-1: rising as the moon does, sinking away with it, for
+    /// the light it casts
+    fn blood_moon(&self) -> f64 {
+        self.blood_moon.as_ref().map_or(0.0, |m| smooth(m.t / 0.45) * (1.0 - smooth((m.t - m.end()) / MOON_SINK)))
+    }
+
+    /// Cluster Volley's bombs fired as their time comes, from the weapon's muzzle or the hand, each
+    /// lobbed to come down where it's aimed, a flash, a puff of smoke and a thump as each goes
+    fn fire_lobs(&mut self, arena: &mut Arena, weapon: Option<&Weapon>, dt: f64) {
+        if self.lobs.is_empty() {
+            return;
+        }
+        let view = arena.view;
+        let vpm = view.vpm;
+        let mut k = 0;
+        while k < self.lobs.len() {
+            self.lobs[k].delay -= dt;
+            if self.lobs[k].delay > 0.0 {
+                k += 1;
+                continue;
+            }
+            let l = self.lobs.remove(k);
+            let from = weapon.map_or(view.eye + view.rotation * Vector3::new(0.15, 0.5, 0.1) * vpm, |w| self.held_point(w, view, false));
+            let (velocity, time) = lobbed(from, l.to, vpm);
+            self.launch(&l.profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.25 }), Form::Bolt, from, velocity, l.damage, BOMB_GRAVITY);
+            if let Some(bomb) = self.projectiles.last_mut() {
+                bomb.trick = Trick::Bomb { fuse: time + 0.25 + 0.08 * l.k as f64, cluster: 4, hole: true };
+                bomb.life = time + 3.0;
+            }
+            if l.profile.style == Style::Lob {
+                if l.k == 0 {
+                    self.cues.push(Cue::here(Sound::HeavySwing, 0.8).pitched(0.8));
+                }
+                continue;
+            }
+            self.flashes.push(Flash { position: from, color: [1.0, 0.75, 0.4], reach: 4.0, life: 0.12, lifetime: 0.12 });
+            let ahead = velocity.try_normalize(1e-6).unwrap_or_else(|| view.forward());
+            for _ in 0..2 {
+                let life = 0.6 + 0.3 * random(&mut self.rng);
+                let velocity = (ahead * 1.5 + self.any_direction() * 0.4) * vpm;
+                self.sparks.push(Spark { position: from, velocity, look: 0, life, lifetime: life, gravity: -0.03, slot: SLOT_SMOKE });
+            }
+            self.sparks(from, 4, 3.0, Element::look(Some(Element::Fire)), 0.2, 0.2);
+            let sound = if l.profile.build.crossbow() { Sound::Release } else { Sound::Gunshot };
+            self.cues.push(Cue::here(sound, 0.8).pitched(0.6 + 0.04 * l.k as f32));
+            self.kick_speed += 1.6;
+        }
+    }
+
+    /// What to draw for a shackle's chains, see drag(): bursting out of the crossbow in a fan, one
+    /// to each of what it catches, a glowing iron hook on the end of each; hanging from the
+    /// crossbow to what they hooked; then hauled taut, drawing together as what they caught is
+    /// dragged in onto the biggest. Thirty-odd instances at most.
+    fn shackle_instances(&self, s: &Shackle, view: &View) -> Vec<AnimalInstance> {
+        let vpm = view.vpm;
+        let mut out = Vec::new();
+        let fly = s.t - SHACKLE_RELEASE;
+        if fly <= 0.0 {
+            return out;
+        }
+        let most = (24 / s.chains.len().max(1)).clamp(2, CHAIN_STRETCHES);
+        let (hook_model, hook) = self.model_at(LASH_CRACKERS + CRACKER_HOOK);
+        let (glow_model, glow) = self.effect_model(SLOT_FIREBALL, Element::look(s.profile.element));
+        // A hook as big as it needs to be to be seen as far off as it is, its bend on `at`
+        let hook_at = |out: &mut Vec<AnimalInstance>, at: Vector3<f64>, way: Vector3<f64>| {
+            let way = way.try_normalize(1e-6).unwrap_or_else(Vector3::z);
+            let rotation = UnitQuaternion::rotation_between(&Vector3::z(), &way).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI));
+            let size = ((at - view.eye).norm() / vpm * 0.045).clamp(0.35, 1.2);
+            out.push(place(hook_model, hook, LASH_RES, Vector3::new(0.0, 0.0, 0.8), at, rotation, vpm, size, MOVING));
+        };
+        // Hanging a little once they've bitten, taut once they're hauled on
+        let sag = if s.t >= SHACKLE_HAUL { 0.0 } else { 0.05 };
+        for c in &s.chains {
+            if fly < c.reach {
+                // Flying out, arcing a little, its hook glowing with the crossbow's element
+                let k = fly / c.reach;
+                let e = 1.0 - (1.0 - k) * (1.0 - k);
+                let head = s.from.lerp(&c.at, e) + Vector3::new(0.0, 0.0, 2.0 * e * (1.0 - e) * vpm);
+                out.extend(self.chain_instances(view.eye, s.from, head, 0.02, most));
+                hook_at(&mut out, head, head - s.from);
+                let size = ((head - view.eye).norm() / vpm * 0.012).clamp(0.1, 0.3);
+                out.push(place(glow_model, glow, MODEL_RES, Vector3::zeros(), head, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 9.0), vpm, size, MOVING));
+            } else if c.id.is_none() {
+                // Bitten into the ground, then drawn back in
+                let r = ((fly - c.reach) / 0.35).min(1.0);
+                let head = c.at.lerp(&s.from, r * r);
+                out.extend(self.chain_instances(view.eye, s.from, head, 0.05, most));
+                hook_at(&mut out, head, c.at - s.from);
+            } else {
+                out.extend(self.chain_instances(view.eye, s.from, c.at, sag, most));
+                hook_at(&mut out, c.at, c.at - s.from);
+            }
+        }
+        out
+    }
+
+    /// A shackle's heavy chain from `from` to `to`, sagging by `sag` of how long it is in the
+    /// middle, as at most `most` straight stretches of links. Seen from `eye`, each stretch is as
+    /// long and as thick as it is far off, so the links look much the same size all along it: the
+    /// chain still reads as a chain twenty meters off, and the links by the crossbow don't fill
+    /// the view.
+    fn chain_instances(&self, eye: Vector3<f64>, from: Vector3<f64>, to: Vector3<f64>, sag: f64, most: usize) -> Vec<AnimalInstance> {
+        let vpm = self.vpm;
+        let length = (to - from).norm() / vpm;
+        if length < 1e-3 {
+            return Vec::new();
+        }
+        let n = chain_stretches(length, (from - eye).norm() / vpm, (to - eye).norm() / vpm, most);
+        let point = |t: f64| from.lerp(&to, t) - Vector3::new(0.0, 0.0, 4.0 * t * (1.0 - t) * sag * length * vpm);
+        let mut out = Vec::with_capacity(n.len());
+        for w in n.windows(2) {
+            let (a, b) = (point(w[0]), point(w[1]));
+            let meters = (b - a).norm() / vpm;
+            if meters < 1e-3 {
+                continue;
+            }
+            let rotation = UnitQuaternion::rotation_between(&Vector3::z(), &((b - a) / (meters * vpm))).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI));
+            let far = ((a + b) * 0.5 - eye).norm() / vpm;
+            let ratio = (CHAIN_THICK * far).clamp(0.025, 0.18) / meters;
+            let off = |k: usize| (LASH_TAPERS[k] / ratio).ln().abs();
+            let taper = (0..LASH_TAPERS.len()).min_by(|&x, &y| off(x).total_cmp(&off(y))).unwrap_or(0);
+            let (model, shape) = self.model_at(LASH_SEGMENTS + LASH_CHAIN * LASH_TAPERS.len() + taper);
+            out.push(place(model, shape, LASH_RES, Vector3::zeros(), a, rotation, vpm, meters, MOVING));
+        }
+        out
+    }
+
+    /// What to draw for Blood Moon: the moon, rising up the sky, hanging and sinking away, and its
+    /// shots in flight, each the weapon's own made of blood, or an orb of blood
+    fn blood_moon_instances(&self, m: &BloodMoon, view: &View) -> Vec<AnimalInstance> {
+        let vpm = view.vpm;
+        let blood = Element::look(Some(Element::Blood));
+        let mut out = Vec::new();
+        let rise = smooth(m.t / 0.6);
+        let sink = smooth((m.t - m.end()) / MOON_SINK);
+        let size = MOON_SIZE * rise * (1.0 - sink);
+        if size > 0.05 {
+            let at = m.moon - Vector3::new(0.0, 0.0, (1.0 - rise + sink) * 8.0 * vpm);
+            let (model, ball) = self.effect_model(SLOT_FIREBALL, blood);
+            out.push(place(model, ball, MODEL_RES, Vector3::zeros(), at, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 0.3), vpm, size, MOVING));
+        }
+        for s in &m.shots {
+            let way = (s.to - s.from).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+            let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &way).unwrap_or_else(UnitQuaternion::identity);
+            // Big enough to be seen on their way, but not so big as they leave the weapon that
+            // they reach back past the eye and fill the view
+            let off = (s.position - view.eye).norm() / vpm;
+            if off < 1.0 {
+                continue;
+            }
+            let grow = ((off - 0.6) / 5.0).clamp(0.2, 1.0);
+            out.push(match m.shot {
+                Some(Shot::Arrow) => {
+                    let (model, arrow) = self.effect_model(SLOT_ARROW, blood);
+                    place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), s.position, rotation, vpm, 2.0 * grow, MOVING)
+                }
+                Some(Shot::Quarrel) => {
+                    let (model, quarrel) = self.effect_model(SLOT_QUARREL, blood);
+                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), s.position, rotation, vpm, 2.4 * grow, MOVING)
+                }
+                Some(_) => {
+                    let (model, ball) = self.effect_model(SLOT_SHOT, blood);
+                    place(model, ball, SHOT_RES, Vector3::zeros(), s.position, rotation, vpm, 4.5 * grow, MOVING)
+                }
+                None => {
+                    let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 6.0) * rotation;
+                    let (model, ball) = self.effect_model(SLOT_FIREBALL, blood);
+                    place(model, ball, MODEL_RES, Vector3::zeros(), s.position, spin, vpm, 0.28 * grow, MOVING)
+                }
+            });
+        }
+        // The drops of blood streaming back, each a streak along the way it's going
+        let (model, streak) = self.effect_model(SLOT_BOLT, blood);
+        for b in &m.beads {
+            let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &b.velocity).unwrap_or_else(UnitQuaternion::identity);
+            let near = ((b.position - view.eye).norm() / vpm / 5.0).clamp(0.25, 1.0);
+            out.push(place(model, streak, BOLT_RES, Vector3::zeros(), b.position, rotation, vpm, 1.3 * near, MOVING));
+        }
+        // The blood pooling ahead, swelling as each stream gets there, churning, then drunk down
+        if m.gathered > 0 {
+            let full = (m.gathered as f64 / 4.0).min(1.0);
+            let drunk = m.drunk.map_or(1.0, |at| 1.0 - smooth((m.t - at) / 0.25));
+            let size = (0.06 + 0.07 * full) * (1.0 + 0.12 * (self.time * 14.0).sin()) * drunk;
+            if size > 0.02 {
+                let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 5.0) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.time * 3.0);
+                let (model, ball) = self.effect_model(SLOT_FIREBALL, blood);
+                out.push(place(model, ball, MODEL_RES, Vector3::zeros(), blood_pool(view), spin, vpm, size, MOVING));
+            }
+        }
+        out
     }
 
     /// The special attack of the weapon in hand, see weapons::Special
@@ -6389,19 +7423,53 @@ impl Combat {
                 }
                 self.heal += 30.0;
             }
+            // A red moon rising, then shots let go at what's near, or a blade cutting down, and the
+            // blood torn out of each streaming back, see wax()
             Special::Bloodmoon => {
-                let chest = feet + Vector3::new(0.0, 0.0, 1.2 * vpm);
-                let near: Vec<usize> = (0..arena.animals.len())
-                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).norm() < 14.0 * vpm)
+                let (length, keys) = special_move(special, moves_kind(&profile), profile.style);
+                let mut near: Vec<(f64, u32)> = arena
+                    .animals
+                    .iter()
+                    .filter(|a| a.health > 0.0 && !a.look.is_pet())
+                    .map(|a| ((a.position - feet).norm() / vpm - a.look.body().1, a.id))
+                    .filter(|&(d, _)| d < MOON_REACH)
                     .collect();
+                near.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let blade = moves_kind(&profile) == Kind::Melee && profile.style != Style::Lob;
+                // Bombs flung as orbs of blood, the rest shooting what they shoot
+                let shot = weapon.shot().filter(|&s| s != Shot::Shell);
+                let moon = moon_rise(view.eye, forward, view.tan[1], vpm);
+                self.blood_moon = Some(BloodMoon {
+                    t: 0.0,
+                    release: first_release(length, &keys),
+                    moon,
+                    targets: near.iter().take(8).map(|&(_, id)| id).collect(),
+                    shots: Vec::new(),
+                    streams: Vec::new(),
+                    beads: Vec::new(),
+                    drunk: None,
+                    released: false,
+                    blade,
+                    shot,
+                    healed: 0.0,
+                    heal: base * 0.3,
+                    gathered: 0,
+                    profile: Rc::new(Profile { element: Some(Element::Blood), ..(*profile).clone() }),
+                    damage: base * 1.2,
+                    ending: None,
+                });
+                // Blood spurting up out of the ground in a ring round the player as it rises, never
+                // as high as the eye, the light going red
                 let blood = Element::look(Some(Element::Blood));
-                for i in near {
-                    let center = arena.animals[i].center(vpm as u32);
-                    self.bolt_line(center, chest, blood);
-                    self.strike(arena, &profile, i, Blow { damage: base * 1.2, crit: false, heavy: true, from: chest, depth: 0, element: Some(Element::Blood) });
-                    self.heal += base * 0.3;
+                for k in 0..16 {
+                    let a = k as f64 / 16.0 * TAU;
+                    let out = Vector3::new(a.cos(), a.sin(), 0.0);
+                    self.sparks.push(Spark { position: feet + out * 2.4 * vpm + Vector3::new(0.0, 0.0, 0.2 * vpm), velocity: (out * 2.0 + Vector3::new(0.0, 0.0, 3.0)) * vpm, look: blood, life: 0.6, lifetime: 0.6, gravity: 1.0, slot: SLOT_SPARK });
                 }
-                self.heal = self.heal.min(45.0);
+                self.cap_sparks();
+                self.flashes.push(Flash { position: feet + Vector3::new(0.0, 0.0, 2.0 * vpm), color: Element::Blood.light(), reach: 16.0, life: 0.7, lifetime: 0.7 });
+                self.cues.push(Cue::here(Sound::Toll, 0.9).pitched(0.5));
+                self.cues.push(Cue::here(Sound::Wail, 0.45).pitched(0.6));
             }
             Special::Starfall => {
                 for k in 0..12 {
@@ -6595,24 +7663,49 @@ impl Combat {
                 }
                 self.cues.push(Cue::here(Sound::Release, 0.9).pitched(0.75));
             }
-            // A chain flung round everything near where it's aimed, the biggest an anchor for it
+            // Chains shot out of the crossbow at up to six near where it's aimed, within reach, the
+            // biggest an anchor the rest are dragged to, see drag()
             Special::Shackle => {
+                let from = self.held_point(weapon, view, false);
                 let mut caught: Vec<(f64, usize)> = (0..arena.animals.len())
-                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
+                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - view.eye).norm() < SHACKLE_REACH * vpm)
                     .map(|i| ((arena.animals[i].position - target).xy().norm(), i))
                     .filter(|&(d, _)| d < 8.0 * vpm)
                     .collect();
                 caught.sort_by(|a, b| a.0.total_cmp(&b.0));
                 caught.truncate(6);
                 let anchor = caught.iter().map(|&(_, i)| i).max_by(|&a, &b| arena.animals[a].look.body().1.total_cmp(&arena.animals[b].look.body().1));
-                let center = anchor.map_or(target, |i| arena.animals[i].position);
-                let ids: Vec<u32> = caught.iter().map(|&(_, i)| arena.animals[i].id).collect();
-                for &(_, i) in &caught {
-                    let at = arena.animals[i].center(vpm as u32);
-                    self.sparks(at, 6, 2.0, Element::look(None), 0.6, 0.3);
+                let ground = ground_under(arena.world, target, vpm);
+                let center = anchor.map_or(ground, |i| arena.animals[i].position);
+                let mut chains: Vec<ShackleChain> = caught
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &(_, i))| {
+                        let at = arena.animals[i].center(vpm as u32);
+                        ShackleChain { id: Some(arena.animals[i].id), at, reach: chain_flight(k, (at - from).norm() / vpm), hooked: false }
+                    })
+                    .collect();
+                // Nothing near: flung at the ground where it's aimed, as far as it reaches
+                if chains.is_empty() {
+                    let at = if (ground - from).norm() > CHAIN_FLING * vpm { ground_under(arena.world, from + (ground - from).normalize() * CHAIN_FLING * vpm, vpm) } else { ground };
+                    chains.push(ShackleChain { id: None, at, reach: chain_flight(0, (at - from).norm() / vpm), hooked: false });
                 }
-                self.shackle = Some(Shackle { center, caught: ids, at: Vec::new(), t: 0.0, profile: profile.clone(), damage: base * 1.6 });
-                self.cues.push(Cue::at(Sound::Chain, center, 1.0));
+                let girth = anchor.map_or(0.0, |i| arena.animals[i].look.body().1);
+                let mut anchor = anchor.map(|i| arena.animals[i].id);
+                // Only the one caught, and not a boss: reeled a good way in towards the player and
+                // slammed down there instead
+                let (center, girth) = match caught.as_slice() {
+                    &[(_, i)] if arena.animals[i].boss.is_none() => {
+                        anchor = None;
+                        let a = &arena.animals[i];
+                        let to = feet - a.position;
+                        let pull = (to.xy().norm() * 0.4).min(SHACKLE_REEL * vpm).min((to.xy().norm() - (a.look.body().1 + 2.5) * vpm).max(0.0));
+                        (ground_under(arena.world, a.position + Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * pull, vpm), 0.0)
+                    }
+                    _ => (center, girth),
+                };
+                self.shackle = Some(Shackle { center, chains, anchor, girth, from, t: 0.0, profile: profile.clone(), damage: base * 1.6 });
+                self.cues.push(Cue::here(Sound::Chain, 0.6).pitched(0.85));
             }
             // A bolt that blows up in what it hits, the blast leaping on
             Special::ChainBlast => {
@@ -6743,21 +7836,17 @@ impl Combat {
                 }
                 self.cues.push(Cue::at(Sound::Whistle, ground, 1.0).pitched(0.55));
             }
-            // Five bombs lobbed out round where it's aimed, bomblets bursting out of each
+            // Five bombs lobbed out round where it's aimed, bomblets bursting out of each: fired one
+            // after another as the weapon kicks, or flung out together, see own_move() and
+            // fire_lobs()
             Special::ClusterBomb => {
-                let from = view.eye + view.rotation * Vector3::new(0.15, 0.5, 0.1) * vpm;
                 let ground = ground_under(arena.world, target, vpm);
+                let flung = profile.style == Style::Lob;
                 for k in 0..5 {
-                    let at = ground_under(arena.world, ground + disc(&mut self.rng, 4.0), vpm);
-                    let (velocity, time) = lobbed(from, at, vpm);
-                    let velocity = velocity + Vector3::new(0.0, 0.0, 0.4 * k as f64) * vpm;
-                    self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.2 }), Form::Bolt, from, velocity, base * 0.9, BOMB_GRAVITY);
-                    if let Some(bomb) = self.projectiles.last_mut() {
-                        bomb.trick = Trick::Bomb { fuse: time + 0.3 + 0.1 * k as f64, cluster: 4, hole: false };
-                        bomb.life = time + 3.0;
-                    }
+                    let to = ground_under(arena.world, ground + disc(&mut self.rng, 4.0), vpm);
+                    let delay = if flung { VOLLEY_FLUNG } else { VOLLEY_FIRST + VOLLEY_GAP * k as f64 };
+                    self.lobs.push(Lob { delay, to, k, profile: profile.clone(), damage: base * 1.05 });
                 }
-                self.cues.push(Cue::here(Sound::Volley, 0.9).pitched(0.6));
                 self.cues.push(Cue::here(Sound::Fuse, 0.6));
             }
             Special::Thunderstorm => {
@@ -8955,6 +10044,14 @@ impl Combat {
                 }
                 p.trick = Trick::Bomb { fuse: fuse - dt, cluster, hole };
             }
+            // Bursting ammo's fuse burning down, bursting apart in the air when it's out
+            if let Trick::Burst { fuse, burst } = p.trick {
+                if fuse <= dt {
+                    self.airburst(arena, &p, p.position, burst);
+                    continue;
+                }
+                p.trick = Trick::Burst { fuse: fuse - dt, burst };
+            }
             // A comet's shadow, a ring where it's coming down
             if let Trick::Comet(aim) = p.trick {
                 self.marks.push((aim + Vector3::new(0.0, 0.0, 0.1 * vpm), 6.0));
@@ -9030,7 +10127,14 @@ impl Combat {
             // and a shell's fuse sputters, smoking.
             let shell = p.arrow && p.shot == Shot::Shell;
             if (!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power || shell {
-                p.trail += dt * if !p.arrow && p.form == Form::Fireball { 150.0 } else { 80.0 };
+                // A burst's shards trail less, as there are several at once
+                p.trail += dt * if !p.arrow && p.form == Form::Fireball {
+                    150.0
+                } else if p.trick == Trick::Fragment {
+                    30.0
+                } else {
+                    80.0
+                };
                 while p.trail >= 1.0 {
                     p.trail -= 1.0;
                     let at = start.lerp(&end, random(&mut self.rng));
@@ -9196,6 +10300,19 @@ impl Combat {
                         gone = true;
                         break;
                     }
+                    // Bursting ammo bursting in what it strikes, its shards thrown back out off it
+                    Trick::Burst { burst, .. } => {
+                        let off = at - arena.animals[i].center(vpm as u32);
+                        self.shatter(arena, &p, at, off, burst);
+                        gone = true;
+                        break;
+                    }
+                    // One of its shards going off in what it strikes
+                    Trick::Fragment => {
+                        self.pop(arena, &p, at, Some(i));
+                        gone = true;
+                        break;
+                    }
                     _ => {}
                 }
                 if p.pierce > 0 {
@@ -9249,6 +10366,17 @@ impl Combat {
                     }
                     Trick::Thornburst => {
                         self.thornburst(&p, at - p.velocity.normalize() * 0.3 * vpm);
+                        continue;
+                    }
+                    // Bursting ammo bursting where it strikes the ground or a wall, its shards
+                    // thrown back out off it, and one of its shards going off where it lands
+                    Trick::Burst { burst, .. } => {
+                        let off = glance(arena.world, at, p.velocity);
+                        self.shatter(arena, &p, at - p.velocity.normalize() * 0.3 * vpm, off, burst);
+                        continue;
+                    }
+                    Trick::Fragment => {
+                        self.pop(arena, &p, at, None);
                         continue;
                     }
                     // A thorn sticks in where it lands, as a boss's do
@@ -9352,9 +10480,17 @@ impl Combat {
             self.sparks(at, 10, -2.0, Element::look(Some(Element::Void)), 0.0, 0.4);
             self.cues.push(Cue::at(Sound::Hex, at, 0.4).pitched(0.8));
         } else if profile.has(Effect::Explosive) {
-            let radius = profile.param(Effect::Explosive, "radius", 2.2) * profile.stat("area").max(1.0);
+            // A shell packed with bomblets bursts bigger, but blows no bigger a hole: blowing one
+            // takes as much longer as there's more in it, and it's the bomblets' own holes that
+            // tear the ground up round about
+            let packed = if profile.has(Effect::Cluster) { CLUSTER_BLAST } else { 1.0 };
+            let radius = profile.param(Effect::Explosive, "radius", 2.2) * profile.stat("area").max(1.0) * packed;
             let damage = p.damage * profile.param(Effect::Explosive, "power", 0.7) * profile.potency(Effect::Explosive).max(1.0);
+            let holes = self.craters.len();
             self.burst(arena, profile, at, radius, damage, 1, false, profile.element.or(Some(Element::Fire)), None);
+            for hole in &mut self.craters[holes..] {
+                hole.1 /= packed;
+            }
             // Bomblets scattering out of it
             if profile.has(Effect::Cluster) {
                 let n = (profile.param(Effect::Cluster, "count", 4.0) * profile.potency(Effect::Cluster).max(1.0)).round() as usize;
@@ -11593,7 +12729,7 @@ impl Combat {
                 let mut keys = special_move(special, Kind::Ranged, profile.style).1;
                 if profile.build == Build::Hand {
                     for key in &mut keys {
-                        key.1 = mirrored(&key.1);
+                        key.1 = mirrored_shouldered(&key.1);
                     }
                 }
                 animate(&rest, &keys, t / length)
@@ -11915,6 +13051,19 @@ impl Combat {
                         let (model, thorn) = self.model_at(THORN);
                         place(model, thorn, MODEL_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, THORN_SIZE * 0.5, MOVING)
                     }
+                    // A burst's shards, each a glowing streak along the way it's flying, smaller up
+                    // close so they don't fill the view
+                    _ if p.trick == Trick::Fragment => {
+                        let (model, streak) = self.effect_model(SLOT_BOLT, look);
+                        let near = ((p.position - view.eye).norm() / vpm / 4.0).clamp(0.3, 1.0);
+                        place(model, streak, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size * near, MOVING)
+                    }
+                    // A bursting grenade, an iron ball with its fuse burning, tumbling
+                    Shot::Ball if matches!(p.trick, Trick::Burst { .. }) => {
+                        let spin = rotation * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 9.0);
+                        let (model, shell) = self.model_at(SHELL);
+                        place(model, shell, SHOT_RES, Vector3::zeros(), p.position, spin, vpm, p.size.max(0.8), MOVING)
+                    }
                     Shot::Arrow => {
                         let (model, arrow) = self.effect_model(SLOT_ARROW + p.head, look);
                         place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING)
@@ -12045,12 +13194,16 @@ impl Combat {
                 }
             }
         }
-        // A shackle's chain, from what it caught in to where it's dragging them
+        // A shackle's chains and Blood Moon's moon and shots, ahead of everything else flying about,
+        // as there are only ever so many of them, so they're never what's left out
         if let Some(s) = &self.shackle {
-            for &at in &s.at {
-                for (at, instance) in self.line_instances(at, s.center + Vector3::new(0.0, 0.0, 0.8 * vpm), 0.03, LASH_CHAIN, 0.045) {
-                    add(at, instance);
-                }
+            for instance in self.shackle_instances(s, view) {
+                add(view.eye, instance);
+            }
+        }
+        if let Some(m) = &self.blood_moon {
+            for instance in self.blood_moon_instances(m, view) {
+                add(view.eye, instance);
             }
         }
         // Nets over what's rooted, and a net bolt's net folded up as it flies
@@ -12311,6 +13464,11 @@ impl Combat {
         let mut lights = Vec::new();
         for f in &self.flashes {
             lights.push(light(f.position, f.reach, f.color, 3.0 * (f.life / f.lifetime) as f32));
+        }
+        // Blood Moon's red light over everything round the player
+        let moon = self.blood_moon();
+        if moon > 0.0 {
+            lights.push(light(view.eye + Vector3::new(0.0, 0.0, 4.0 * vpm), 30.0, Element::Blood.light(), 1.6 * moon as f32));
         }
         for p in &self.projectiles {
             if !p.arrow {
@@ -12656,6 +13814,124 @@ mod tests {
         // The old way, stopping dead at each key, jumped by 10-30 m/s at once
         let (most, at, name) = &worst[0];
         assert!(*most < 0.5, "{name} velocity jumps {most:.2} m/s at {at:.3}");
+    }
+
+    /// A hand crossbow goes through every special attack's moves in the left hand still pointing
+    /// on ahead, never turned round to point back at the player, as Shackle Chain used to
+    #[test]
+    fn a_hand_crossbow_never_turns_round() {
+        for special in SPECIALS {
+            let (_, keys) = special_move(special, Kind::Ranged, Style::Crank);
+            for (at, key, _) in &keys {
+                let ahead = (key.turn * Vector3::x()).y;
+                let left = mirrored_shouldered(key);
+                let mirrored_ahead = (left.turn * Vector3::x()).y;
+                assert!(ahead > 0.3 && mirrored_ahead > 0.3, "{special:?} at {at:.2}: points {ahead:.2} ahead, {mirrored_ahead:.2} in the left hand");
+                assert!((left.hand.x + key.hand.x).abs() < 1e-9, "{special:?}: on the other side");
+            }
+        }
+    }
+
+    /// Shackle Chain, Blood Moon and Cluster Volley let go on the move, the weapon kicking, and
+    /// before they're over
+    #[test]
+    fn own_specials_let_go_on_a_quick_key() {
+        // Each with every kind of weapon it's on: Shackle Chain on crossbows, Cluster Volley on
+        // crossbows, guns and bombs, Blood Moon on all of those, bows and blades, and a staff
+        let shouldered = [(Kind::Ranged, Style::Crank), (Kind::Ranged, Style::Powder)];
+        let all = [(Kind::Ranged, Style::Crank), (Kind::Ranged, Style::Powder), (Kind::Ranged, Style::Draw), (Kind::Melee, Style::Lob), (Kind::Melee, Style::Slash), (Kind::Melee, Style::Reap), (Kind::Magic, Style::Cast)];
+        let cases: [(Special, &[(Kind, Style)]); 3] = [(Special::Shackle, &shouldered[..1]), (Special::ClusterBomb, &[shouldered[0], shouldered[1], (Kind::Melee, Style::Lob)]), (Special::Bloodmoon, &all)];
+        for (special, ways) in cases {
+            for &(kind, style) in ways {
+                let (length, keys) = special_move(special, kind, style);
+                let release = first_release(length, &keys);
+                assert!(keys.iter().any(|k| k.2), "{special:?} with {kind:?} {style:?} never lets go");
+                assert!(release > 0.0 && release < length * 0.8, "{special:?} with {kind:?} {style:?} lets go at {release:.2} of {length:.2}");
+            }
+        }
+        // The chains leave the crossbow as it kicks, and even the furthest has hooked in by the
+        // time they're hauled on, before they crash
+        let (length, keys) = special_move(Special::Shackle, Kind::Ranged, Style::Crank);
+        assert!((first_release(length, &keys) - SHACKLE_RELEASE).abs() < 1e-9);
+        assert!(SHACKLE_RELEASE + chain_flight(5, SHACKLE_REACH) <= SHACKLE_HAUL + 1e-9 && SHACKLE_HAUL < SHACKLE_CRASH && SHACKLE_CRASH < length);
+    }
+
+    /// A shackle's chain is drawn in stretches that start at the crossbow and end at what it caught,
+    /// longer further off, never more than it may have
+    #[test]
+    fn chain_stretches_grow_further_off() {
+        for (length, near, far, most) in [(20.0, 0.6, 20.0, 5), (6.0, 15.0, 16.0, 4), (0.4, 0.5, 0.8, 5), (30.0, 25.0, 1.0, 3)] {
+            let cuts = chain_stretches(length, near, far, most);
+            assert!(cuts.len() >= 2 && cuts.len() <= most + 1, "{cuts:?}");
+            assert_eq!(cuts[0], 0.0);
+            assert!((cuts[cuts.len() - 1] - 1.0).abs() < 1e-9, "{cuts:?}");
+            assert!(cuts.windows(2).all(|w| w[1] > w[0]), "{cuts:?}");
+            let stretches: Vec<f64> = cuts.windows(2).map(|w| w[1] - w[0]).collect();
+            if far > near * 2.0 {
+                assert!(stretches[0] < stretches[stretches.len() - 1], "nearest {stretches:?}");
+            }
+        }
+        // One from the crossbow twenty meters out has as many stretches as it may
+        assert_eq!(chain_stretches(20.0, 0.6, 20.0, 5).len(), 6);
+    }
+
+    /// Something sent off with streamed() gets where it's sent when it's meant to, slowed by the
+    /// air and falling as sparks do
+    #[test]
+    fn streams_arrive_where_theyre_sent() {
+        let vpm = 16.0;
+        let (from, to) = (Vector3::new(10.0, 40.0, 30.0) * vpm, Vector3::new(1.0, 2.0, 25.0) * vpm);
+        for (flight, gravity) in [(0.42, 0.5), (0.25, 0.0), (0.6, 1.0)] {
+            let mut at = from;
+            let mut v = streamed(from, to, flight, gravity, vpm);
+            let steps = 2000;
+            let dt = flight / steps as f64;
+            for _ in 0..steps {
+                v.z -= 9.8 * vpm * gravity * dt;
+                v *= (-SPARK_DRAG * dt).exp();
+                at += v * dt;
+            }
+            assert!((at - to).norm() < 0.05 * vpm, "{flight} {gravity}: {:.3} m off", (at - to).norm() / vpm);
+        }
+    }
+
+    /// Blood Moon rises up in the view however it's looked, but never under the horizon
+    #[test]
+    fn the_blood_moon_rises_in_view() {
+        let vpm = 16.0;
+        let tan_up = 35f64.to_radians().tan();
+        for pitch in [-0.3f64, -0.15, 0.0, 0.2] {
+            let forward = Vector3::new(pitch.cos(), 0.0, pitch.sin());
+            let moon = moon_rise(Vector3::zeros(), forward, tan_up, vpm);
+            let to = moon.normalize();
+            assert!(to.z > MOON_LOWEST.sin() - 1e-9, "under the horizon looking {pitch}");
+            let above = to.z.asin() - pitch;
+            assert!(above > 0.0 && above.tan() < tan_up * 0.85, "out of view looking {pitch}: {above:.2} up");
+            assert!((moon.norm() / vpm - MOON_OFF).abs() < 1e-6);
+        }
+    }
+
+    /// A burst's shards spread out over its cone, none of them outside it and no two the same way
+    #[test]
+    fn shards_spread_over_the_cone() {
+        let way = Vector3::new(0.3, 1.0, -0.1).normalize();
+        for (spread, n) in [(18.0, 8), (65.0, 6), (12.0, 1)] {
+            let ways: Vec<Vector3<f64>> = (0..n).map(|k| shard_way(way, spread, k, n, 0.3)).collect();
+            for d in &ways {
+                assert!((d.norm() - 1.0).abs() < 1e-9);
+                assert!(d.dot(&way).acos().to_degrees() <= spread + 1e-6, "{spread}");
+            }
+            for i in 0..n {
+                for j in i + 1..n {
+                    assert!(ways[i].dot(&ways[j]) < 0.9999, "{spread}: {i} and {j} go the same way");
+                }
+            }
+            // Spread right round, not all off to one side
+            if n > 4 {
+                let middle = ways.iter().sum::<Vector3<f64>>() / n as f64;
+                assert!(middle.normalize().dot(&way) > (spread.to_radians() * 0.4).cos(), "{spread}: lopsided");
+            }
+        }
     }
 
     #[test]
