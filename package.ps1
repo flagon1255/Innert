@@ -35,6 +35,8 @@ INNERT
 ======
 
 To play: unzip this folder anywhere and double-click innert.exe.
+The very first start takes about 15-20 seconds while the shaders are prepared; after that it is
+about 5 seconds. The game picks a quality preset to suit your graphics card the first time.
 
 You need
   - Windows 10 or 11, 64-bit
@@ -53,7 +55,7 @@ Controls
   E                      pick up, open chests, pet
   I or Tab               inventory
   F                      walk or fly
-  F1                     settings: lower "Render Scale" there if it runs slowly
+  F1                     settings: pick a lower Quality there if it runs slowly
   F12                    screenshot
   Esc                    menu
 '@ | Set-Content -Encoding utf8 (Join-Path $out 'README.txt')
