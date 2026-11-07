@@ -5697,6 +5697,13 @@ impl App {
         };
 
         let submitting = Instant::now();
+        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
+        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
+        // its images without having taken it and stopped the game ("Image was not locked for GPU
+        // write"), on AVI as it was too, a few hundred frames into a run
+        if let Err(e) = gui_future.flush() {
+            println!("Sending the frame to the GPU went wrong: {e}");
+        }
         // Shown once it's drawn, see loading::Drawn
         let drawn = loading::Drawn::after(gui_future);
         let semaphore = drawn.semaphore();
@@ -6122,7 +6129,11 @@ fn main() {
             .map(|s| s.to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_default();
-        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}"));
+        // Which thread, and with RUST_BACKTRACE set where it was, for screenshot runs' logs
+        let thread = std::thread::current().name().map_or(String::new(), |n| format!(" on the {n} thread"));
+        let trace = std::backtrace::Backtrace::capture();
+        let trace = if trace.status() == std::backtrace::BacktraceStatus::Captured { format!("\n\n{trace}") } else { String::new() };
+        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}{thread}{trace}"));
         background_printing::drain();
     }));
     if std::env::args().any(|a| a == "--screenshot") {
