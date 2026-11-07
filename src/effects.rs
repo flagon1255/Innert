@@ -2,9 +2,10 @@
 //! more of them: explosions in stages, from a white-hot core through a fireball billowing out to
 //! smoke breaking up and drifting off, each element its own way; rings of what they throw up where
 //! they go off by the ground; ice bursting out, cracking and shattering; pillars of light; sparks as
-//! streaks with hot heads; orbs churning; and the blood moon. They're made voxel by voxel from
-//! noise rather than out of shapes, and go after the rest of weapons::effect_models(), see BLASTS
-//! and the rest.
+//! streaks with hot heads; orbs churning; spells with bright heads; and the blood moon. Most are made
+//! voxel by voxel from noise rather than out of shapes, and go after the rest of
+//! weapons::effect_models(), see BLASTS and the rest; orb() and bolt() are among them, see
+//! weapons::SLOT_FIREBALL and SLOT_BOLT.
 
 use std::f64::consts::TAU;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,7 +65,7 @@ pub fn leaves_smoke(look: usize) -> bool {
 }
 
 fn element_of(look: usize) -> Option<Element> {
-    look.checked_sub(1).map(|k| Element::ALL[k])
+    look.checked_sub(1).and_then(|k| Element::ALL.get(k).copied())
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -1144,6 +1145,7 @@ mod tests {
         let took = start.elapsed();
         assert_eq!(models.len(), EFFECT_MODELS - BLASTS);
         let filled = |(m, _): &(Model, Vector3<f64>)| m.voxels.iter().filter(|&&v| v != AIR).count();
+        assert!(models.iter().all(|m| filled(m) > 0), "an empty effect model");
         for look in 0..ELEMENT_LOOKS {
             let counts: Vec<usize> = (0..BLAST_STAGES).map(|s| filled(&models[look * BLAST_STAGES + s])).collect();
             assert!(counts.iter().all(|&c| c > 0), "look {look}: {counts:?}");
