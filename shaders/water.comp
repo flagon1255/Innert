@@ -44,8 +44,7 @@ layout(push_constant) uniform PushConstants {
     vec4 brush;
     // Something wading through the water: xy column, zw velocity in columns per second
     vec4 wake;
-    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter, w: 1 once
-    // the blocks have been worked out for this piece of the world
+    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter
     vec4 params;
     // x: stage, y: how many springs, zw: the corner of the area around the camera that's kept
     // flowing, in columns. Water further away keeps still until the camera comes near.
@@ -260,10 +259,6 @@ void superBlocks(ivec2 s, ivec2 blocks) {
 shared uint s_spring_near;
 
 bool quiet(ivec2 size) {
-    // Not before the blocks have been worked out once for this piece of the world: till then they
-    // say there's no water anywhere
-    if (pc.params.w < 0.5)
-    return false;
     uint lid = gl_LocalInvocationIndex;
     if (lid == 0)
     s_spring_near = 0;
