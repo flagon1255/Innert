@@ -1953,11 +1953,12 @@ impl App {
         if let Some(id) = setting("ammo") {
             game.give_ammo(id);
         }
-        // `--set special=meteors` puts a weapon with that special attack in hand, charged
+        // `--set special=meteors` puts a weapon with that special attack in hand, charged, and
+        // `special_family=handcrossbow` one of that family
         if let Some(name) = setting("special")
             && let Ok(special) = serde_json::from_str::<weapons::Special>(&format!("\"{name}\""))
         {
-            game.find_special(special);
+            game.find_special(special, setting("special_family"));
             println!("special: {}", game.describe_held());
         }
         // `--set gallery=pitted_blade,leafsteel_blade` lays a weapon made with each of those parts on
@@ -3753,6 +3754,23 @@ impl App {
                 }
                 if f % 60 == 0 {
                     println!("frame {frame}: {} · carrying {}", self.game.report(eye), self.game.carried());
+                }
+            }
+            // Standing still where the camera is, facing the nearest of a pack `--set enemy` put
+            // there, and shooting what's in hand at it as fast as it'll go, reloading as it needs
+            // to, from frame 30 on: for seeing what special ammo does where it lands, and how many
+            // holes it's blown
+            ("fire", f) => {
+                if f <= 30 {
+                    match self.game.nearest_foe(eye) {
+                        Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
+                        None if f == 1 => self.camera.rotation.x = -0.2,
+                        None => {}
+                    }
+                }
+                self.script_controls = combat::Controls { attack: f >= 30, holding: f >= 30, ..Default::default() };
+                if f % 100 == 0 {
+                    println!("frame {frame}: {} holes blown", self.craters.len());
                 }
             }
             // Draws all the way and shoots at the ground a little way ahead, over and over
