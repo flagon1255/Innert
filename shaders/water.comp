@@ -54,11 +54,16 @@ layout(push_constant) uniform PushConstants {
 // Top of the ground in each column, which never changes
 layout(set = 0, binding = 0, r32f) readonly uniform image2D groundImage;
 layout(set = 0, binding = 1, r32f) uniform image2D depthImage;
-// How much water flows out of each column per second towards -x, +x, -y and +y
-layout(set = 0, binding = 2, rgba32f) uniform image2D fluxImage;
-// For drawing, see traverse.comp: x the top of the water lying on the ground (below the ground for
-// none), y how white it is, and z to w water falling through the air, w < z for none
-layout(set = 0, binding = 3, rgba32f) uniform image2D surfaceImage;
+// How much water flows out of each column per second towards -x, +x, -y and +y. Half floats, as
+// the water takes a lot of memory: what one column sends, its neighbor takes, read from the same
+// half float, so no water's lost or made on the way however they're rounded.
+layout(set = 0, binding = 2, rgba16f) uniform image2D fluxImage;
+// For drawing, see traverse.comp: x how deep the water lying on the ground is (-1 for none), y how
+// white it is, and z to w water falling through the air, w < z for none. Heights are from the top of
+// the ground in the column, so half floats hold them finely enough for the waves to show.
+layout(set = 0, binding = 3, rgba16f) uniform image2D surfaceImage;
+// What's kept in surfaceImage's z and w for no water falling
+const float NO_FALL = 60000.0;
 // The highest top of the water in each block of BLOCK x BLOCK columns, -1 for none, and to the
 // right of those the same for each block of SUPER x SUPER blocks
 layout(set = 0, binding = 4, r32f) uniform image2D blockImage;
@@ -220,7 +225,9 @@ void surface(ivec2 c, ivec2 size) {
             }
         }
     }
-    imageStore(surfaceImage, c, vec4(top, foam, fall_bottom, fall_top));
+    // Kept from the top of the ground
+    bool falling = fall_top >= fall_bottom;
+    imageStore(surfaceImage, c, vec4(top >= 0 ? top - ground : -1, foam, falling ? fall_bottom - ground : NO_FALL, falling ? fall_top - ground : -NO_FALL));
 }
 
 void blocks(ivec2 b, ivec2 size) {
@@ -230,7 +237,11 @@ void blocks(ivec2 b, ivec2 size) {
             ivec2 c = b * BLOCK + ivec2(x, y);
             if (inside(c, size)) {
                 vec4 s = imageLoad(surfaceImage, c);
-                highest = max(highest, max(s.x, s.w));
+                float ground = imageLoad(groundImage, c).r;
+                if (s.x >= 0)
+                highest = max(highest, ground + s.x);
+                if (s.w >= s.z)
+                highest = max(highest, ground + s.w);
             }
         }
     }

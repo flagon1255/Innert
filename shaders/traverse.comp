@@ -169,11 +169,12 @@ layout(set = 3, binding = 1) readonly buffer Animals {
 };
 
 // Water isn't in the voxels: shaders\water.comp simulates it flowing over the ground, one column
-// of the main world at a time. Per column, the top of the ground, and x the top of the water
-// (below the ground for none) and y how churned up and white it is. Then the highest water in
-// each block of WATER_BLOCK x WATER_BLOCK columns, -1 for none, so rays can skip dry land.
+// of the main world at a time. Per column, the top of the ground, and x how deep the water is on
+// it (-1 for none), y how churned up and white it is, and zw water falling through the air (w < z
+// for none), all heights from the top of the ground. Then the highest water in each block of
+// WATER_BLOCK x WATER_BLOCK columns, -1 for none, so rays can skip dry land.
 layout(set = 3, binding = 2, r32f) readonly uniform image2D waterGround;
-layout(set = 3, binding = 3, rgba32f) readonly uniform image2D waterSurface;
+layout(set = 3, binding = 3, rgba16f) readonly uniform image2D waterSurface;
 layout(set = 3, binding = 4, r32f) readonly uniform image2D waterBlocks;
 // Has to match BLOCK in shaders\water.comp
 const int WATER_BLOCK = 8;
@@ -1663,7 +1664,8 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float
 bool waterColumn(ivec2 c, out float bottom, out float top, out float foam) {
     vec2 s = imageLoad(waterSurface, c).xy;
     bottom = imageLoad(waterGround, c).r;
-    top = floor(s.x + 0.5);
+    // Kept as how deep it is, see shaders\water.comp
+    top = s.x >= 0 ? floor(bottom + s.x + 0.5) : -1;
     foam = s.y;
     return top > bottom;
 }
@@ -1733,6 +1735,9 @@ bool waterInBlock(vec3 origin, vec3 dir, ivec2 size, vec2 inv, vec2 sgn, vec2 de
         // Each column can have water lying in it, and water falling through it off a ledge
         vec4 s = imageLoad(waterSurface, c);
         float ground = imageLoad(waterGround, c).r;
+        // Kept from the top of the ground, see shaders\water.comp
+        s.x = s.x >= 0 ? ground + s.x : -1;
+        s.zw = s.w >= s.z ? ground + s.zw : vec2(1e9, -1);
         bool from_side = caxis >= 0 && tc > 0;
         float t_pool, t_fall;
         int face_pool, face_fall;
@@ -1863,12 +1868,14 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
 // with the slope of the water around it, so waves catch the light one voxel at a time.
 vec3 waterTilt(ivec2 c) {
     ivec2 size = imageSize(waterSurface);
-    float h = imageLoad(waterSurface, c).x;
+    // How deep it is is kept, see shaders\water.comp, so the ground's added for its height
+    float h = imageLoad(waterGround, c).r + imageLoad(waterSurface, c).x;
     float s[4];
     const ivec2 dirs[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
     for (int i = 0; i < 4; i++) {
         ivec2 n = clamp(c + dirs[i], ivec2(0), size - 1);
-        float sn = imageLoad(waterSurface, n).x;
+        float depth = imageLoad(waterSurface, n).x;
+        float sn = depth >= 0 ? imageLoad(waterGround, n).r + depth : -1;
         // Dry neighbors and falling sheets don't count
         s[i] = abs(sn - h) < 2 ? sn : h;
     }

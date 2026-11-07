@@ -153,8 +153,9 @@ impl Spare {
         Spare {
             ground: image(size, Format::R32_SFLOAT),
             depth: image(size, Format::R32_SFLOAT),
-            flux: image(size, Format::R32G32B32A32_SFLOAT),
-            surface: image(size, Format::R32G32B32A32_SFLOAT),
+            // Half floats, see shaders\water.comp
+            flux: image(size, Format::R16G16B16A16_SFLOAT),
+            surface: image(size, Format::R16G16B16A16_SFLOAT),
             // The blocks, then to their right the larger blocks
             blocks: image([size[0].div_ceil(BLOCK) + size[0].div_ceil(BLOCK * SUPER), size[1].div_ceil(BLOCK)], Format::R32_SFLOAT),
             readback: Buffer::new_slice::<f32>(
@@ -352,7 +353,8 @@ impl Water {
             .clear_color_image(ClearColorImageInfo::image(flux_image.clone()))
             .unwrap()
             .clear_color_image(ClearColorImageInfo {
-                clear_value: [-1.0, 0.0, 0.0, 0.0].into(),
+                // No water lying or falling anywhere, see shaders\water.comp
+                clear_value: [-1.0, 0.0, 60000.0, -60000.0].into(),
                 ..ClearColorImageInfo::image(surface_image)
             })
             .unwrap()
