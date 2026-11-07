@@ -175,6 +175,9 @@ layout(set = 3, binding = 3, rgba32f) readonly uniform image2D waterSurface;
 layout(set = 3, binding = 4, r32f) readonly uniform image2D waterBlocks;
 // Has to match BLOCK in shaders\water.comp
 const int WATER_BLOCK = 8;
+// To the right of the blocks in waterBlocks, the highest water in each block of WATER_SUPER x
+// WATER_SUPER of them. Has to match SUPER in shaders\water.comp.
+const int WATER_SUPER = 8;
 
 // Flames and glowing crystals near the camera, which light up what's around them. There are
 // haze.z of them.
@@ -1672,8 +1675,73 @@ bool enterWater(vec3 origin, vec3 dir, float tc, float tc_end, float bottom, flo
     return false;
 }
 
-// Where a ray first enters the water before max_t, from above or the side. It walks over blocks of
-// columns first, skipping those whose water it passes over, then over the columns of the rest.
+// Where a ray first enters the water before max_t, from above or the side. It walks over the larger
+// blocks first, skipping those whose water it passes over, then over the blocks of the rest the same
+// way, then over the columns of the blocks left.
+bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit);
+
+// The same within the block of columns `block` the ray is in from tb to block_end, coming in
+// along `axis` (-1 for none)
+bool waterInBlock(vec3 origin, vec3 dir, ivec2 size, vec2 inv, vec2 sgn, vec2 delta, ivec2 block, float tb, float block_end, int axis, out WaterHit hit) {
+    ivec2 lo = block * WATER_BLOCK;
+    ivec2 c = clamp(ivec2(floor(origin.xy + dir.xy * tb)), lo, min(lo + WATER_BLOCK, size) - 1);
+    vec2 cnext = (vec2(c) + max(sgn, vec2(0)) - origin.xy) * inv;
+    float tc = tb;
+    int caxis = axis;
+    for (int k = 0; k < 2 * WATER_BLOCK + 2 && tc < block_end; k++) {
+        float tc_end = min(min(cnext.x, cnext.y), block_end);
+        // Each column can have water lying in it, and water falling through it off a ledge
+        vec4 s = imageLoad(waterSurface, c);
+        float ground = imageLoad(waterGround, c).r;
+        bool from_side = caxis >= 0 && tc > 0;
+        float t_pool, t_fall;
+        int face_pool, face_fall;
+        bool pool = enterWater(origin, dir, tc, tc_end, ground, floor(s.x + 0.5), from_side, t_pool, face_pool) && face_pool != 2;
+        bool fall = enterWater(origin, dir, tc, tc_end, floor(s.z + 0.5), floor(s.w + 0.5), from_side, t_fall, face_fall);
+        if (pool || fall) {
+            fall = fall && (!pool || t_fall < t_pool);
+            int face = fall ? face_fall : face_pool;
+            hit.t = fall ? t_fall : t_pool;
+            hit.foam = fall ? 1 : s.y;
+            hit.falling = fall;
+            vec3 normal = vec3(0, 0, face == 1 ? 1 : -1);
+            float z;
+            if (face == 0) {
+                normal = vec3(0);
+                normal[caxis] = -sgn[caxis];
+                z = floor(origin.z + dir.z * tc);
+            } else if (face == 1) {
+                z = floor((fall ? s.w : s.x) + 0.5) - 1;
+            } else {
+                z = floor(s.z + 0.5);
+            }
+            hit.voxel.level = MAIN;
+            hit.voxel.instance = 0;
+            hit.voxel.coord = uvec3(c, max(z, 0));
+            hit.voxel.axis = face == 0 ? caxis : 2;
+            hit.voxel.normal = normal;
+            hit.voxel.local_normal = normal;
+            hit.voxel.t = hit.t;
+            hit.voxel.shift = ivec3(0);
+            return true;
+        }
+        if (cnext.x < cnext.y) {
+            tc = cnext.x;
+            cnext.x += delta.x;
+            c.x += int(sgn.x);
+            caxis = 0;
+        } else {
+            tc = cnext.y;
+            cnext.y += delta.y;
+            c.y += int(sgn.y);
+            caxis = 1;
+        }
+        if (any(lessThan(c, lo)) || any(greaterThanEqual(c, min(lo + WATER_BLOCK, size))))
+        break;
+    }
+    return false;
+}
+
 bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
     hit.t = FLT_MAX;
     if (!hasWater())
@@ -1694,85 +1762,58 @@ bool traceWater(vec3 origin, vec3 dir, float max_t, out WaterHit hit) {
     vec2 sgn = sign(dir.xy);
     vec2 delta = abs(inv);
     ivec2 blocks = (size + WATER_BLOCK - 1) / WATER_BLOCK;
-    // Which way the ray came into the current block and column, -1 if it started inside
+    ivec2 supers = (blocks + WATER_SUPER - 1) / WATER_SUPER;
+    const int SPAN = WATER_BLOCK * WATER_SUPER;
+    // Which way the ray came into the current larger block, block and column, -1 if it started inside
     int axis = t > 0 ? (t_in.x > t_in.y ? 0 : 1) : -1;
-    ivec2 block = clamp(ivec2(floor((origin.xy + dir.xy * t) / WATER_BLOCK)), ivec2(0), blocks - 1);
-    vec2 next = ((vec2(block) + max(sgn, vec2(0))) * WATER_BLOCK - origin.xy) * inv;
+    ivec2 sup = clamp(ivec2(floor((origin.xy + dir.xy * t) / SPAN)), ivec2(0), supers - 1);
+    vec2 snext = ((vec2(sup) + max(sgn, vec2(0))) * SPAN - origin.xy) * inv;
 
-    for (int b = 0; b < 1024 && t < t_end; b++) {
-        float block_end = min(min(next.x, next.y), t_end);
-        float highest = imageLoad(waterBlocks, block).r;
-        float z_low = min(origin.z + dir.z * t, origin.z + dir.z * block_end);
+    for (int s = 0; s < 256 && t < t_end; s++) {
+        float super_end = min(min(snext.x, snext.y), t_end);
+        float highest = imageLoad(waterBlocks, ivec2(blocks.x, 0) + sup).r;
+        float z_low = min(origin.z + dir.z * t, origin.z + dir.z * super_end);
         if (highest >= 0 && z_low < highest + 0.5) {
-            ivec2 lo = block * WATER_BLOCK;
-            ivec2 c = clamp(ivec2(floor(origin.xy + dir.xy * t)), lo, min(lo + WATER_BLOCK, size) - 1);
-            vec2 cnext = (vec2(c) + max(sgn, vec2(0)) - origin.xy) * inv;
-            float tc = t;
-            int caxis = axis;
-            for (int k = 0; k < 2 * WATER_BLOCK + 2 && tc < block_end; k++) {
-                float tc_end = min(min(cnext.x, cnext.y), block_end);
-                // Each column can have water lying in it, and water falling through it off a ledge
-                vec4 s = imageLoad(waterSurface, c);
-                float ground = imageLoad(waterGround, c).r;
-                bool from_side = caxis >= 0 && tc > 0;
-                float t_pool, t_fall;
-                int face_pool, face_fall;
-                bool pool = enterWater(origin, dir, tc, tc_end, ground, floor(s.x + 0.5), from_side, t_pool, face_pool) && face_pool != 2;
-                bool fall = enterWater(origin, dir, tc, tc_end, floor(s.z + 0.5), floor(s.w + 0.5), from_side, t_fall, face_fall);
-                if (pool || fall) {
-                    fall = fall && (!pool || t_fall < t_pool);
-                    int face = fall ? face_fall : face_pool;
-                    hit.t = fall ? t_fall : t_pool;
-                    hit.foam = fall ? 1 : s.y;
-                    hit.falling = fall;
-                    vec3 normal = vec3(0, 0, face == 1 ? 1 : -1);
-                    float z;
-                    if (face == 0) {
-                        normal = vec3(0);
-                        normal[caxis] = -sgn[caxis];
-                        z = floor(origin.z + dir.z * tc);
-                    } else if (face == 1) {
-                        z = floor((fall ? s.w : s.x) + 0.5) - 1;
-                    } else {
-                        z = floor(s.z + 0.5);
-                    }
-                    hit.voxel.level = MAIN;
-                    hit.voxel.instance = 0;
-                    hit.voxel.coord = uvec3(c, max(z, 0));
-                    hit.voxel.axis = face == 0 ? caxis : 2;
-                    hit.voxel.normal = normal;
-                    hit.voxel.local_normal = normal;
-                    hit.voxel.t = hit.t;
-                    hit.voxel.shift = ivec3(0);
-                    return true;
-                }
-                if (cnext.x < cnext.y) {
-                    tc = cnext.x;
-                    cnext.x += delta.x;
-                    c.x += int(sgn.x);
-                    caxis = 0;
+            ivec2 first = sup * WATER_SUPER;
+            ivec2 last = min(first + WATER_SUPER, blocks) - 1;
+            ivec2 block = clamp(ivec2(floor((origin.xy + dir.xy * t) / WATER_BLOCK)), first, last);
+            vec2 next = ((vec2(block) + max(sgn, vec2(0))) * WATER_BLOCK - origin.xy) * inv;
+            float tb = t;
+            int baxis = axis;
+            for (int b = 0; b < 2 * WATER_SUPER + 2 && tb < super_end; b++) {
+                float block_end = min(min(next.x, next.y), super_end);
+                float block_highest = imageLoad(waterBlocks, block).r;
+                float zb_low = min(origin.z + dir.z * tb, origin.z + dir.z * block_end);
+                if (block_highest >= 0 && zb_low < block_highest + 0.5
+                    && waterInBlock(origin, dir, size, inv, sgn, delta, block, tb, block_end, baxis, hit))
+                return true;
+                if (next.x < next.y) {
+                    tb = next.x;
+                    next.x += WATER_BLOCK * delta.x;
+                    block.x += int(sgn.x);
+                    baxis = 0;
                 } else {
-                    tc = cnext.y;
-                    cnext.y += delta.y;
-                    c.y += int(sgn.y);
-                    caxis = 1;
+                    tb = next.y;
+                    next.y += WATER_BLOCK * delta.y;
+                    block.y += int(sgn.y);
+                    baxis = 1;
                 }
-                if (any(lessThan(c, lo)) || any(greaterThanEqual(c, min(lo + WATER_BLOCK, size))))
+                if (any(lessThan(block, first)) || any(greaterThan(block, last)))
                 break;
             }
         }
-        if (next.x < next.y) {
-            t = next.x;
-            next.x += WATER_BLOCK * delta.x;
-            block.x += int(sgn.x);
+        if (snext.x < snext.y) {
+            t = snext.x;
+            snext.x += SPAN * delta.x;
+            sup.x += int(sgn.x);
             axis = 0;
         } else {
-            t = next.y;
-            next.y += WATER_BLOCK * delta.y;
-            block.y += int(sgn.y);
+            t = snext.y;
+            snext.y += SPAN * delta.y;
+            sup.y += int(sgn.y);
             axis = 1;
         }
-        if (any(lessThan(block, ivec2(0))) || any(greaterThanEqual(block, blocks)))
+        if (any(lessThan(sup, ivec2(0))) || any(greaterThanEqual(sup, supers)))
         break;
     }
     return false;

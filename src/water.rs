@@ -33,10 +33,14 @@ enum Stage {
     Depth,
     Surface,
     Blocks,
+    SuperBlocks,
 }
 
 /// Columns per side of the blocks rays skip dry land in, has to match shaders\water.comp
 const BLOCK: u32 = 8;
+/// Blocks per side of the larger blocks rays skip dry land in a long way at a time, kept beside the
+/// blocks in the same image, has to match shaders\water.comp
+const SUPER: u32 = 8;
 /// The longest step the simulation takes, in seconds. Longer ones aren't stable in deep water.
 const STEP: f64 = 1.0 / 120.0;
 /// At most this many steps a frame, so a slow frame doesn't make the next one slower still
@@ -151,7 +155,8 @@ impl Spare {
             depth: image(size, Format::R32_SFLOAT),
             flux: image(size, Format::R32G32B32A32_SFLOAT),
             surface: image(size, Format::R32G32B32A32_SFLOAT),
-            blocks: image(size.map(|n| n.div_ceil(BLOCK)), Format::R32_SFLOAT),
+            // The blocks, then to their right the larger blocks
+            blocks: image([size[0].div_ceil(BLOCK) + size[0].div_ceil(BLOCK * SUPER), size[1].div_ceil(BLOCK)], Format::R32_SFLOAT),
             readback: Buffer::new_slice::<f32>(
                 memory_allocator.clone(),
                 BufferCreateInfo {
@@ -684,6 +689,9 @@ impl Water {
         dispatch(builder, constants(Stage::Surface, [0.0; 4], surface_corner), groups(surface_area));
         let blocks = surface_area.map(|n| n.div_ceil(BLOCK).div_ceil(8));
         dispatch(builder, constants(Stage::Blocks, [0.0; 4], surface_corner), [blocks[0], blocks[1], 1]);
+        // All of the larger blocks, a few thousand, each the highest of the blocks in it
+        let supers = self.size.map(|n| n.div_ceil(BLOCK * SUPER).div_ceil(8));
+        dispatch(builder, constants(Stage::SuperBlocks, [0.0; 4], [0, 0]), [supers[0], supers[1], 1]);
 
         // Bring the depths where it's been flowing back to the CPU now and then, picking them up
         // once the GPU is done
