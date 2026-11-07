@@ -1900,8 +1900,9 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     if (fade_end > 0 && distance >= 0) {
         // Nearer still where the edge of the piece of the landscape that's there is nearer than
         // that, as when the next piece isn't in yet: then things fade away before it rather than
-        // the world being seen to end
-        fade_end = min(fade_end, edgeAlong(origin, dir));
+        // the world being seen to end. Never nearer than a few meters, so what's in hand and at
+        // one's feet stays, with nothing past the edge anyway.
+        fade_end = min(fade_end, max(edgeAlong(origin, dir), 6.0 * float(pc.world_size.w)));
         float fade = smoothstep(0.7 * fade_end, fade_end, distance);
         color = mix(color, skyColor(normalize(vec3(dir.xy, max(dir.z, 0.02)))), fade);
         kept *= 1 - fade;
