@@ -4075,7 +4075,10 @@ impl App {
             // One spell cast up over the land ahead, the view narrowed to follow it a long way
             // off, to see it fly on and on
             ("far", f) => {
+                // `--set far_turn=2` turns round that many radians first, away from what's near
                 if f == 1 {
+                    let turn = settings_from_args().into_iter().find(|(k, _)| k == "far_turn").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    self.camera.rotation.z += turn;
                     self.camera.rotation.x = 0.22;
                     self.camera.fov = 30.0;
                 }
