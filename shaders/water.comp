@@ -183,9 +183,118 @@ void depth(ivec2 c, ivec2 size) {
     imageStore(depthImage, here, vec4(max(d, 0)));
 }
 
+// The surface is worked out for each group of GROUP x GROUP columns, one block, together: whether
+// any water's near, which is the same for all of them, and where the ledges are along the lines of
+// columns they look back along for falls, see surface(). Has to match the dispatch's local size.
+const int GROUP = 8;
+// How far out from the group's columns the ledges are looked for: FALL_REACH at 16 voxels a meter.
+// Further reaches, at more voxels a meter, look along the ground in the image instead.
+const int HALO = 24;
+const int SPAN = GROUP + 2 * HALO;
+const int CROSS = GROUP + 2;
+// The ground of the group's rows and the one either side of them, from HALO before the group to
+// HALO after it along x, a row at a time
+shared float s_rows[CROSS * SPAN];
+// The same for its columns, along y, a column at a time: COLUMN_STRIDE apart, so the columns a warp
+// reads from at once are each in banks of their own
+const int COLUMN_STRIDE = SPAN + 4;
+shared float s_columns[CROSS * COLUMN_STRIDE];
+// Where the ledges are along each of those rows and columns, a bit for each column of it, in two
+// words: for each of DIRS, a ledge being ground that drops away that way, see ledge()
+shared uint s_ledges[4 * CROSS * 2];
+
+// The ground at `q`, along x or y from the group with its first column at `g`, as read into shared
+// memory, see loadLines()
+float lineGround(ivec2 q, ivec2 g, bool along_x) {
+    ivec2 d = q - g;
+    return along_x ? s_rows[(d.y + 1) * SPAN + d.x + HALO] : s_columns[(d.x + 1) * COLUMN_STRIDE + d.y + HALO];
+}
+
+// Whether ground this high is a ledge over ground that high beside it: it drops away far enough
+// for water going over to fall rather than run down a slope
+bool ledge(float ground, float beside) {
+    return !(ground < beside + LEDGE * pc.params.z);
+}
+
+// Reads the ground the group with its first column at `g` looks along for ledges into shared
+// memory, each invocation of the group a few of them
+void loadLines(ivec2 g, ivec2 size) {
+    for (int n = int(gl_LocalInvocationIndex); n < CROSS * SPAN; n += GROUP * GROUP) {
+        int along = n % SPAN - HALO;
+        int across = n / SPAN - 1;
+        ivec2 row = g + ivec2(along, across);
+        ivec2 column = g + ivec2(across, along);
+        s_rows[n] = inside(row, size) ? imageLoad(groundImage, at(row)).r : 0;
+        s_columns[(across + 1) * COLUMN_STRIDE + along + HALO] = inside(column, size) ? imageLoad(groundImage, at(column)).r : 0;
+    }
+}
+
+// Marks the ledges along the rows and columns in shared memory, see s_ledges. Those off the world
+// are marked as whatever, as they're never looked at.
+void markLedges() {
+    for (int n = int(gl_LocalInvocationIndex); n < CROSS * SPAN; n += GROUP * GROUP) {
+        int along = n % SPAN;
+        int line = n / SPAN;
+        uint bit = 1u << (along & 31);
+        int word = along >> 5;
+        float row = s_rows[n];
+        int column_at = line * COLUMN_STRIDE + along;
+        float column = s_columns[column_at];
+        // DIRS[0] is -x: the ground drops away to the column before it along the row, and so on
+        if (along > 0 && ledge(row, s_rows[n - 1]))
+        atomicOr(s_ledges[(0 * CROSS + line) * 2 + word], bit);
+        if (along < SPAN - 1 && ledge(row, s_rows[n + 1]))
+        atomicOr(s_ledges[(1 * CROSS + line) * 2 + word], bit);
+        if (along > 0 && ledge(column, s_columns[column_at - 1]))
+        atomicOr(s_ledges[(2 * CROSS + line) * 2 + word], bit);
+        if (along < SPAN - 1 && ledge(column, s_columns[column_at + 1]))
+        atomicOr(s_ledges[(3 * CROSS + line) * 2 + word], bit);
+    }
+}
+
+// How many columns back from `line` along DIRS[i] the nearest ledge is, 0 for none within the first
+// `last` of them, from what's marked in s_ledges: `line` is in the group whose first column is `g` or
+// beside it
+int nearestLedge(int i, ivec2 line, ivec2 g, int last) {
+    ivec2 dir = DIRS[i];
+    ivec2 d = line - g;
+    bool along_x = dir.y == 0;
+    int at_line = along_x ? d.y + 1 : d.x + 1;
+    // Where the line is along it, from HALO to HALO + GROUP - 1
+    int b = (along_x ? d.x : d.y) + HALO;
+    uint lo = s_ledges[(i * CROSS + at_line) * 2];
+    int k;
+    if (dir.x + dir.y < 0) {
+        // The lips are further along the row or column: the first marked after b
+        uint hi = s_ledges[(i * CROSS + at_line) * 2 + 1];
+        int s = b + 1;
+        uint after = s < 32 ? (lo >> s) | (hi << (32 - s)) : hi;
+        k = findLSB(after) + 1;
+    } else {
+        // The lips are before it: the last marked before b, b being under 32
+        int p = findMSB(lo & ((1u << b) - 1u));
+        k = p >= 0 ? b - p : 0;
+    }
+    return k <= last ? k : 0;
+}
+
+// Whether there's water in the blocks round the block `b`, last frame's. The same for all the
+// columns of a block, so for all of a group.
+bool nearWater(ivec2 b, ivec2 size) {
+    ivec2 block_count = (size + BLOCK - 1) / BLOCK;
+    float highest = -1;
+    for (int by = -1; by <= 1; by++) {
+        for (int bx = -1; bx <= 1; bx++) {
+            highest = max(highest, imageLoad(blockImage, blockAt(clamp(b + ivec2(bx, by), ivec2(0), block_count - 1))).r);
+        }
+    }
+    return highest >= 0;
+}
+
 // What traverse.comp draws: the top of the water lying in a column, how white it is, and any water
-// falling through it
-void surface(ivec2 c, ivec2 size) {
+// falling through it. `g` is the first column of its group, `near_water` whether there's water in the
+// blocks round it, and `tiled` whether where the ledges are is marked in shared memory.
+void surface(ivec2 c, ivec2 size, ivec2 g, bool near_water, bool tiled) {
     ivec2 here = at(c);
     float ground = imageLoad(groundImage, here).r;
     float d = imageLoad(depthImage, here).r;
@@ -205,50 +314,58 @@ void surface(ivec2 c, ivec2 size) {
     float gravity = 9.8 * pc.params.z;
     float fall_bottom = 1e9;
     float fall_top = -1;
-    // Falls only ever come off wet ledges, so dry land is skipped. The blocks are last frame's.
-    bool near_water = false;
-    ivec2 block_count = (size + BLOCK - 1) / BLOCK;
-    for (int by = -1; by <= 1; by++) {
-        for (int bx = -1; bx <= 1; bx++) {
-            near_water = near_water || imageLoad(blockImage, blockAt(clamp(c / BLOCK + ivec2(bx, by), ivec2(0), block_count - 1))).r >= 0;
-        }
-    }
+    // Falls only ever come off wet ledges, so dry land is skipped
     float vpm = pc.params.z;
     int reach = int(FALL_REACH * vpm);
     for (int i = 0; i < 4 && near_water; i++) {
-        ivec2 across = ivec2(DIRS[i].y, DIRS[i].x);
+        ivec2 dir = DIRS[i];
+        ivec2 across = ivec2(dir.y, dir.x);
+        bool along_x = dir.y == 0;
         for (int j = -1; j <= 1; j++) {
-            for (int k = 1; k <= reach; k++) {
-                ivec2 lip = c - DIRS[i] * k + across * j;
-                if (!inside(lip, size) || !inside(lip + DIRS[i], size))
-                break;
-                // A ledge: ground that drops away towards this column, with water flowing over it
-                ivec2 lip_at = at(lip);
-                float lip_ground = imageLoad(groundImage, lip_at).r;
-                if (lip_ground < imageLoad(groundImage, at(lip + DIRS[i])).r + LEDGE * vpm)
-                continue;
-                float over = imageLoad(fluxImage, lip_at)[i];
-                if (over < LEAST_FALL * vpm * vpm)
-                break;
-                float lip_depth = max(imageLoad(depthImage, lip_at).r, FALL_THICKNESS * vpm);
-                float lip_top = lip_ground + lip_depth;
-                float v = max(over / lip_depth, 0.06 * vpm);
-                // When the outer edge of the band gets out to this column, and when the inner edge
-                // has gone past it
-                float t_outer = max(float(k - 1) - lip_depth, 0) / (v + FALL_SPREAD * pc.params.z);
-                float t_inner = float(k) / (0.5 * v);
-                float upper = lip_top - 0.5 * gravity * t_outer * t_outer;
-                float lower = lip_top - 0.5 * gravity * t_inner * t_inner;
-                if (upper <= level)
-                break;
-                fall_top = max(fall_top, upper);
-                fall_bottom = min(fall_bottom, max(lower, level));
-                foam = 1;
-                // Where it lands it throws up a mound of white water
-                if (lower <= level)
-                fall_top = max(fall_top, level + min(0.15 * (lip_ground - level), 0.5 * pc.params.z));
-                break;
+            // Looking back from beside this column for the nearest ledge, as far as the world goes:
+            // a lip k columns back, the ground dropping away from it towards this column
+            ivec2 line = c + across * j;
+            if (!inside(line, size))
+            continue;
+            int room = dir.x < 0 ? size.x - 1 - line.x : dir.x > 0 ? line.x : dir.y < 0 ? size.y - 1 - line.y : line.y;
+            int last = min(reach, room);
+            int k = 0;
+            if (tiled) {
+                k = nearestLedge(i, line, g, last);
+            } else {
+                float below = imageLoad(groundImage, at(line)).r;
+                for (int n = 1; n <= last && k == 0; n++) {
+                    float lip_ground = imageLoad(groundImage, at(line - dir * n)).r;
+                    k = ledge(lip_ground, below) ? n : 0;
+                    below = lip_ground;
+                }
             }
+            if (k == 0)
+            continue;
+            // With water flowing over it
+            ivec2 lip = line - dir * k;
+            ivec2 lip_at = at(lip);
+            float lip_ground = tiled ? lineGround(lip, g, along_x) : imageLoad(groundImage, lip_at).r;
+            float over = imageLoad(fluxImage, lip_at)[i];
+            if (over < LEAST_FALL * vpm * vpm)
+            continue;
+            float lip_depth = max(imageLoad(depthImage, lip_at).r, FALL_THICKNESS * vpm);
+            float lip_top = lip_ground + lip_depth;
+            float v = max(over / lip_depth, 0.06 * vpm);
+            // When the outer edge of the band gets out to this column, and when the inner edge
+            // has gone past it
+            float t_outer = max(float(k - 1) - lip_depth, 0) / (v + FALL_SPREAD * pc.params.z);
+            float t_inner = float(k) / (0.5 * v);
+            float upper = lip_top - 0.5 * gravity * t_outer * t_outer;
+            float lower = lip_top - 0.5 * gravity * t_inner * t_inner;
+            if (upper <= level)
+            continue;
+            fall_top = max(fall_top, upper);
+            fall_bottom = min(fall_bottom, max(lower, level));
+            foam = 1;
+            // Where it lands it throws up a mound of white water
+            if (lower <= level)
+            fall_top = max(fall_top, level + min(0.15 * (lip_ground - level), 0.5 * pc.params.z));
         }
     }
     // Kept from the top of the ground
@@ -310,12 +427,28 @@ void main() {
         blocks(b, size);
         return;
     }
+    if (stage == SURFACE) {
+        // A group at a time, its columns all in one block as the corner's on a block's, so every
+        // invocation of it gets to the barrier
+        ivec2 g = corner + ivec2(gl_WorkGroupID.xy) * GROUP;
+        bool near_water = nearWater(g / BLOCK, size);
+        bool tiled = int(FALL_REACH * pc.params.z) <= HALO;
+        for (int n = int(gl_LocalInvocationIndex); n < 4 * CROSS * 2; n += GROUP * GROUP)
+        s_ledges[n] = 0;
+        if (near_water && tiled)
+        loadLines(g, size);
+        barrier();
+        if (near_water && tiled)
+        markLedges();
+        barrier();
+        if (inside(c, size))
+        surface(c, size, g, near_water, tiled);
+        return;
+    }
     if (!inside(c, size))
     return;
     if (stage == FLUX)
     flux(c, size);
-    else if (stage == DEPTH)
-    depth(c, size);
     else
-    surface(c, size);
+    depth(c, size);
 }

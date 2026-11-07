@@ -131,6 +131,9 @@ pub struct Water {
     time_debt: f64,
     /// Whether the surface of all the water has been worked out, not just near the camera
     drawn_once: bool,
+    /// Whether the ground's changed since the surface round the camera was last worked out, like
+    /// when a hole's been blown in it, see record()
+    ground_changed: bool,
 }
 
 /// The smallest box around both, from x and y to x and y
@@ -285,6 +288,7 @@ impl Water {
         let lo = [lo[0].clamp(0, sx) as u32, lo[1].clamp(0, sy) as u32];
         let hi = [hi[0].clamp(0, sx) as u32, hi[1].clamp(0, sy) as u32];
         let image = self.ground_view.image().clone();
+        self.ground_changed = true;
         for (at, from, extent) in kept(lo, hi, self.room, self.wrap) {
             let width = self.room[0] as usize;
             for y in 0..extent[1] as usize {
@@ -316,6 +320,7 @@ impl Water {
         let lo = [lo[0].clamp(0, sx) as u32, lo[1].clamp(0, sy) as u32];
         let hi = [hi[0].clamp(0, sx) as u32, hi[1].clamp(0, sy) as u32];
         let width = self.room[0] as usize;
+        self.ground_changed = true;
         kept(lo, hi, self.room, self.wrap)
             .into_iter()
             .map(|(at, _, extent)| {
@@ -443,6 +448,7 @@ impl Water {
             brush: None,
             time_debt: 0.0,
             drawn_once: false,
+            ground_changed: false,
         }
     }
 
@@ -612,6 +618,7 @@ impl Water {
             (c as u32 / BLOCK) * BLOCK
         });
         let (surface_corner, surface_area) = if self.drawn_once { (corner, area) } else { ([0, 0], self.size) };
+        let first = !self.drawn_once;
         self.drawn_once = true;
         if steps > 0 {
             let flowing = [corner[0], corner[1], corner[0] + area[0], corner[1] + area[1]];
@@ -647,8 +654,14 @@ impl Water {
         }
         // Screenshot runs with `--set gpu_times=1` time each part
         mark(builder, "water flow");
-        // The surface round the camera, and of strips that have just come in, whose blocks go by it
-        let mut surfaces = vec![(surface_corner, surface_area)];
+        // The surface round the camera, and of strips that have just come in, whose blocks go by it.
+        // Round the camera only when the water's moved since, or the ground has: it steps 120 times
+        // a second, so on faster frames than that it often hasn't, and the surface would come out
+        // the same as last frame's.
+        let mut surfaces = Vec::new();
+        if steps > 0 || first || std::mem::take(&mut self.ground_changed) {
+            surfaces.push((surface_corner, surface_area));
+        }
         for [x0, y0, x1, y1] in std::mem::take(&mut self.resurface) {
             let (lo, hi) = ([x0 / BLOCK * BLOCK, y0 / BLOCK * BLOCK], [x1, y1]);
             surfaces.push((lo, [hi[0] - lo[0], hi[1] - lo[1]]));
@@ -661,8 +674,10 @@ impl Water {
             dispatch(builder, constants(Stage::Blocks, [0.0; 4], corner), [blocks[0], blocks[1], 1]);
         }
         // All of the larger blocks, a few thousand, each the highest of the blocks in it
-        let supers = self.room.map(|n| n.div_ceil(BLOCK * SUPER).div_ceil(8));
-        dispatch(builder, constants(Stage::SuperBlocks, [0.0; 4], [0, 0]), [supers[0], supers[1], 1]);
+        if !surfaces.is_empty() {
+            let supers = self.room.map(|n| n.div_ceil(BLOCK * SUPER).div_ceil(8));
+            dispatch(builder, constants(Stage::SuperBlocks, [0.0; 4], [0, 0]), [supers[0], supers[1], 1]);
+        }
         mark(builder, "water surface");
 
         // Bring the depths where it's been flowing back to the CPU now and then, picking them up
