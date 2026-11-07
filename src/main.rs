@@ -3715,6 +3715,19 @@ impl App {
                     println!("ROSE at frame {} {}", capture.frame_times.len(), if spot.is_some() { "where it was safe" } else { "where they fell" });
                 }
             }
+            // `--set leap_at=N` takes the player 150 m on at frame N of a screenshot run, further
+            // than strips can keep up with, as rising far off can: the world's built afresh round
+            // them, see stream.rs
+            static LEAP_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+            let leap_at = *LEAP_AT.get_or_init(|| settings_from_args().into_iter().find(|(k, _)| k == "leap_at").and_then(|(_, v)| v.parse().ok()));
+            if let Some(capture) = &self.capture
+                && leap_at == Some(capture.frame_times.len())
+                && let Some(player) = &mut self.player
+            {
+                player.position.x += 150.0 * self.world.voxels_per_meter as f64;
+                self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+                println!("LEAPT at frame {} 150 m on", capture.frame_times.len());
+            }
         }
         self.ambience(delta_time);
 

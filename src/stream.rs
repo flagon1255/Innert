@@ -1139,20 +1139,26 @@ impl App {
             return;
         }
         teleport.dark = (teleport.dark + dt / FADE_SECONDS).min(1.0);
-        let from_job = std::mem::replace(&mut teleport.job.from_job, channel().1);
-        let heard = stream.hear(&from_job);
-        let teleport = stream.teleport.as_mut().unwrap();
-        teleport.job.from_job = from_job;
-        match heard {
-            Ok(Some(FromJob::Built { pages })) => teleport.job.built = Some(pages),
-            Ok(Some(FromJob::Sent(arrival))) => teleport.arrival = Some(arrival),
-            Ok(_) => {}
-            Err(()) => {
-                println!("The world couldn't be built afresh");
-                stream.teleport = None;
-                return;
+        // Listened to till it's all been sent: it's done then, and gone, which isn't its having
+        // gone wrong. Taken for that, with pieces of it still to go over, it was all started again,
+        // and again, every time.
+        if teleport.arrival.is_none() {
+            let from_job = std::mem::replace(&mut teleport.job.from_job, channel().1);
+            let heard = stream.hear(&from_job);
+            let teleport = stream.teleport.as_mut().unwrap();
+            teleport.job.from_job = from_job;
+            match heard {
+                Ok(Some(FromJob::Built { pages })) => teleport.job.built = Some(pages),
+                Ok(Some(FromJob::Sent(arrival))) => teleport.arrival = Some(arrival),
+                Ok(_) => {}
+                Err(()) => {
+                    println!("The world couldn't be built afresh");
+                    stream.teleport = None;
+                    return;
+                }
             }
         }
+        let teleport = stream.teleport.as_mut().unwrap();
         // Sent over once it's built and nothing can be seen
         if teleport.dark >= 1.0
             && teleport.job.built.is_some()
@@ -1199,6 +1205,15 @@ impl App {
         stream.river_springs = springs;
         self.water.set_springs(&stream.springs(), origin);
         self.shift_everything(Vector3::new(shift[0] as f64, shift[1] as f64, 0.0));
+        // Up out of anything solid there, as wherever they were taken, the world wasn't there yet
+        // to stand them on
+        if let Some(player) = &self.player {
+            let lifted = Player::new(player.eye(&self.world), &self.world);
+            if lifted.position.z > player.position.z + 0.5 {
+                self.camera.position = voxels_to_camera(lifted.eye(&self.world), self.world.size);
+                self.player = Some(lifted);
+            }
+        }
         let pieces = std::mem::take(&mut stream.pieces);
         self.adopt_pieces(&pieces);
         stream.pieces = pieces;
