@@ -375,8 +375,15 @@ fn release(special: Special, profile: &Profile) -> Release {
         return Release::AtOnce;
     }
     if profile.kind == Kind::Melee {
-        let struck = matches!(special, Special::FrostNova | Special::Nova | Special::BattleCry | Special::SpectralBlades | Special::Tempest | Special::Fissure | Special::Sunburst);
-        return if struck { Release::Struck } else { Release::AtOnce };
+        // What goes off far away is carried there out of the blade too: lightning flung at what's
+        // aimed at, a storm or a sun sent up into the sky over it
+        return match special {
+            Special::Stormchain => Release::Carried(Flight::Aimed),
+            Special::Tempest => Release::Carried(Flight::Sky(12.0)),
+            Special::Sunburst => Release::Carried(Flight::Sky(SUN_HEIGHT)),
+            Special::FrostNova | Special::Nova | Special::BattleCry | Special::SpectralBlades | Special::Fissure | Special::Harvest => Release::Struck,
+            _ => Release::AtOnce,
+        };
     }
     match special {
         // Arrows and shots in time with the move already
@@ -1266,6 +1273,9 @@ enum Act {
     Brand { from: Vector3<f64>, to: Vector3<f64>, k: u32 },
     /// A chain swing: swung off from where the lash caught, or come down again
     Swing { land: bool },
+    /// What a special attack's ring, wave, hook, flare or shot does to the animal with id id,
+    /// once it's got to it, the `k`th of them, see Combat::reach()
+    Reach { special: Special, id: u32, k: u32 },
 }
 
 /// Standing guard for a riposte: seconds left, and what answers a blow turned aside
@@ -3946,10 +3956,48 @@ fn bomb_special(special: Special) -> Option<SpecialMove> {
     })
 }
 
+/// Grim Harvest's move: how long it is, in seconds, and when the hooks are flung and the sweep
+/// comes through, as parts of it, see blade_special()
+const HARVEST_LENGTH: f64 = 1.1;
+const HARVEST_THROW: f64 = 0.16;
+const HARVEST_REAP: f64 = 0.62;
+/// How fast Grim Harvest's hooks fly out, and Hunter's Mark's motes of light fly down from its
+/// flare, in meters a second
+const HOOK_SPEED: f64 = 40.0;
+const MOTE_SPEED: f64 = 22.0;
+/// How fast Dragon's Breath's flame pours out, about as fast as breathe() throws it, in meters a second
+const FLAME_SPEED: f64 = 10.0;
+
 /// A blade's own moves for the special attacks it would otherwise only wave about
 fn blade_special(special: Special, style: Style) -> Option<SpecialMove> {
     let edge = [-1.0, 0.0, 0.0];
     Some(match special {
+        // A whip's lash flung out on the hooks, hauled back, wound out to the right and swept
+        // right across through what's been dragged in
+        Special::Harvest if style == Style::Lash => (
+            HARVEST_LENGTH,
+            vec![
+                (0.08, grip([0.28, 0.36, -0.1], [0.1, 0.3, 0.95]), false),
+                (HARVEST_THROW, grip([0.15, 0.68, -0.12], [-0.1, 0.97, 0.15]), true),
+                (0.34, grip([0.3, 0.3, -0.2], [0.0, 0.5, 0.86]), false),
+                (0.5, grip([0.35, 0.42, -0.2], [0.6, 0.5, 0.6]), false),
+                (HARVEST_REAP, grip([0.0, 0.6, -0.2], [-0.8, 0.5, 0.2]), true),
+                (0.82, grip([-0.15, 0.5, -0.25], [-0.9, 0.3, 0.1]), false),
+            ],
+        ),
+        // Thrust out as the hooks fly, hauled back on them, wound out to the right and swept right
+        // across, low, through what's been dragged in
+        Special::Harvest => (
+            HARVEST_LENGTH,
+            vec![
+                (0.08, pose([0.32, 0.3, -0.2], [0.1, 0.3, 0.95], edge), false),
+                (HARVEST_THROW, pose([0.14, 0.66, -0.18], [-0.1, 0.97, 0.15], edge), true),
+                (0.34, pose([0.3, 0.32, -0.25], [0.05, 0.4, 0.9], edge), false),
+                (0.5, pose([0.5, 0.35, -0.25], [0.85, 0.45, 0.2], [0.0, 0.0, 1.0]), false),
+                (HARVEST_REAP, pose([0.0, 0.65, -0.22], [0.05, 0.99, 0.05], [0.0, 0.0, 1.0]), true),
+                (0.82, pose([-0.4, 0.42, -0.28], [-0.9, 0.3, 0.1], [0.0, 0.0, 1.0]), false),
+            ],
+        ),
         // Raised overhead point up in both hands, held as the light gathers, then driven point
         // down into the ground before the feet, the burst going off as it goes in
         Special::Nova => (
@@ -4178,6 +4226,9 @@ fn cast_twirl(grade: usize, third: bool, release: f64, f: f64) -> (f64, f64) {
 
 /// Most sparks flying about at once
 const MOST_SPARKS: usize = 140;
+/// Most fine sparks a weapon's trail keeps of them, so it never crowds out the rest, see
+/// Combat::flourish()
+const TRAIL_SPARKS: usize = 64;
 
 /// Seconds into a powder keg special before the keg's been set down on the ground
 const KEG_SET: f64 = 0.38;
@@ -4644,7 +4695,7 @@ impl Combat {
                     *from -= shift;
                     *to -= shift;
                 }
-                Act::Lasso { .. } | Act::Bind(_) | Act::Boom(_) | Act::Serpents | Act::Trip(_) | Act::Swing { .. } => {}
+                Act::Lasso { .. } | Act::Bind(_) | Act::Boom(_) | Act::Serpents | Act::Trip(_) | Act::Swing { .. } | Act::Reach { .. } => {}
                 Act::Bolt(_)
                 | Act::Spin
                 | Act::Slash
@@ -8117,8 +8168,19 @@ impl Combat {
                 later(&mut self.pending, 0.25, Act::Land { wait: 1.5 }, base);
                 later(&mut self.pending, 0.4, Act::Dash(Vector3::new(0.0, 0.0, -20.0 * vpm)), 0.0);
             }
+            // A ward shimmering up in an arc before the player as the guard's raised, to be seen
+            // whether anything comes or not
             Special::Riposte => {
                 self.guard = Some(Guard { left: 1.2, profile: profile.clone(), damage: base });
+                let look = Element::look(profile.element.or(Some(Element::Holy)));
+                for k in 0..14 {
+                    let a = (k as f64 / 13.0 - 0.5) * 1.6;
+                    let out = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), a) * flat;
+                    let at = feet + out * 1.6 * vpm + Vector3::new(0.0, 0.0, (1.0 + 0.5 * (a * 2.0).cos()) * vpm);
+                    self.sparks.push(Spark { position: at, velocity: Vector3::new(0.0, 0.0, 0.3 * vpm), look, life: 0.9, lifetime: 0.9, gravity: 0.0, slot: SLOT_SPARK });
+                }
+                self.cap_sparks();
+                self.cues.push(Cue::here(Sound::Clang, 0.5).pitched(1.4));
             }
             // Three waves of three arrows, the middle first, fanning out
             Special::Volley => {
@@ -8186,15 +8248,10 @@ impl Combat {
                 self.cap_sparks();
                 self.flashes.push(Flash { position: feet + Vector3::new(0.0, 0.0, 1.0 * vpm), color: Element::Holy.light(), reach: 12.0, life: 0.5, lifetime: 0.5 });
                 self.cues.push(Cue::here(Sound::Burst, 1.0).pitched(1.1));
-                let near: Vec<usize> = (0..arena.animals.len())
-                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).norm() < 7.0 * vpm + arena.animals[i].look.body().1 * vpm)
-                    .collect();
-                for i in near {
-                    let away = arena.animals[i].position - feet;
-                    arena.animals[i].status.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x()) * 9.0 * vpm;
-                    let at = arena.animals[i].center(vpm as u32);
-                    self.element_hit(at, Some(Element::Holy), 1.5);
-                    self.strike(arena, &profile, i, Blow { damage: base * 1.8, crit: false, heavy: true, from: feet, depth: 0, element: Some(Element::Holy) });
+                // Each thing near thrown back and hurt as the ring of light gets out to it
+                for a in arena.animals.iter().filter(|a| a.health > 0.0 && !a.look.is_pet() && (a.position - feet).norm() < (7.0 + a.look.body().1) * vpm) {
+                    let out = ((a.position - feet).norm() / vpm - 0.8 - a.look.body().1).max(0.0);
+                    later(&mut self.pending, out / 8.5, Act::Reach { special: Special::Nova, id: a.id, k: 0 }, base * 1.8);
                 }
                 self.heal += 30.0;
             }
@@ -8269,16 +8326,10 @@ impl Combat {
                     self.swells.push(Swell { model: ICE_BURST, position: at, radius: 1.6, life: 1.2, lifetime: 1.2 });
                 }
                 self.cues.push(Cue::here(Sound::Crack, 1.0).pitched(0.7));
-                let near: Vec<usize> = (0..arena.animals.len())
-                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).norm() < (9.0 + arena.animals[i].look.body().1) * vpm)
-                    .collect();
-                for i in near {
-                    let at = arena.animals[i].center(vpm as u32);
-                    self.element_hit(at, Some(Element::Frost), 1.5);
-                    self.strike(arena, &profile, i, Blow { damage: base * 1.2, crit: false, heavy: true, from: feet, depth: 0, element: Some(Element::Frost) });
-                    let s = &mut arena.animals[i].status;
-                    s.frozen = s.frozen.max(3.0);
-                    s.chill = 0.0;
+                // Each thing near hurt and frozen as the ring of ice gets out to it
+                for a in arena.animals.iter().filter(|a| a.health > 0.0 && !a.look.is_pet() && (a.position - feet).norm() < (9.0 + a.look.body().1) * vpm) {
+                    let out = ((a.position - feet).norm() / vpm - 0.8 - a.look.body().1).max(0.0);
+                    later(&mut self.pending, out / 14.0, Act::Reach { special: Special::FrostNova, id: a.id, k: 0 }, base * 1.2);
                 }
             }
             // Lightning strung round everything near, again and again
@@ -8495,30 +8546,29 @@ impl Combat {
                 }
                 self.cues.push(Cue::here(Sound::Release, 1.0).pitched(0.85));
             }
-            // Everything in front hooked and dragged in to the player, then cut through
+            // Hooks flung out on lines of darkness at everything in front, each dragging what it
+            // catches in to the player as it gets there, then a great sweep through it all as the
+            // move comes round, see blade_special()
             Special::Harvest => {
-                let hooked: Vec<usize> = (0..arena.animals.len())
-                    .filter(|&i| {
-                        let a = &arena.animals[i];
+                let hooked: Vec<(u32, Vector3<f64>)> = arena
+                    .animals
+                    .iter()
+                    .filter(|a| {
                         let to = a.position - feet;
                         a.health > 0.0 && !a.look.is_pet() && to.xy().norm() < 10.0 * vpm && to.xy().try_normalize(1e-6).is_some_and(|d| d.dot(&flat.xy()) > 0.45)
                     })
+                    .map(|a| (a.id, a.center(vpm as u32)))
                     .collect();
-                let chest = feet + Vector3::new(0.0, 0.0, 1.1 * vpm);
-                let void = Element::look(Some(Element::Void));
-                for i in hooked {
-                    let a = &mut arena.animals[i];
-                    let to = feet - a.position;
-                    let gap = (to.xy().norm() / vpm - a.look.body().1 - 1.6).max(0.0);
-                    // Thrown in so it comes to rest just in front, as a push dies away
-                    if a.boss.is_none() {
-                        a.status.push = Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * (gap * PUSH_DECAY).min(45.0) * vpm;
-                    }
-                    a.status.staggered = a.status.staggered.max(0.7);
-                    let center = a.center(vpm as u32);
-                    self.bolt_line(center, chest, void);
+                let tip = self.held_point(weapon, view, false);
+                for &(id, center) in &hooked {
+                    self.tracer(&profile, Some(Element::Void), None, tip, center, HOOK_SPEED);
+                    later(&mut self.pending, (center - tip).norm() / (HOOK_SPEED * vpm), Act::Reach { special: Special::Harvest, id, k: 0 }, 0.0);
                 }
-                later(&mut self.pending, 0.42, Act::Reap, base * 2.2);
+                // Nothing to catch: a hook flung out ahead all the same, catching on nothing
+                if hooked.is_empty() {
+                    self.tracer(&profile, Some(Element::Void), None, tip, tip + flat * 9.0 * vpm, HOOK_SPEED);
+                }
+                later(&mut self.pending, (HARVEST_REAP - HARVEST_THROW) * HARVEST_LENGTH, Act::Reap, base * 2.2);
                 self.cues.push(Cue::here(Sound::Chain, 0.9).pitched(0.8));
             }
             // A roar, everything near staggered, and a frenzy
@@ -8536,15 +8586,10 @@ impl Combat {
                 self.flashes.push(Flash { position: feet + Vector3::new(0.0, 0.0, 1.0 * vpm), color: Element::Blood.light(), reach: 10.0, life: 0.45, lifetime: 0.45 });
                 self.cues.push(Cue::here(Sound::Roar, 1.0).pitched(1.35));
                 self.cues.push(Cue::here(Sound::Quake, 0.6).pitched(1.3));
-                let near: Vec<usize> = (0..arena.animals.len())
-                    .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet() && (arena.animals[i].position - feet).norm() < (12.0 + arena.animals[i].look.body().1) * vpm)
-                    .collect();
-                for i in near {
-                    let away = arena.animals[i].position - feet;
-                    let s = &mut arena.animals[i].status;
-                    s.staggered = s.staggered.max(1.4);
-                    s.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x()) * 4.0 * vpm;
-                    s.shown = 4.0;
+                // Each thing near staggered as the roar's ring gets out to it
+                for a in arena.animals.iter().filter(|a| a.health > 0.0 && !a.look.is_pet() && (a.position - feet).norm() < (12.0 + a.look.body().1) * vpm) {
+                    let out = ((a.position - feet).norm() / vpm - 0.8 - a.look.body().1).max(0.0);
+                    later(&mut self.pending, out / 11.0, Act::Reach { special: Special::BattleCry, id: a.id, k: 0 }, 0.0);
                 }
                 self.messages.push("Frenzy: attacks 50% faster for 8 s.".into());
             }
@@ -8770,19 +8815,28 @@ impl Combat {
                     .filter(|&(d, _)| d < 30.0 * vpm)
                     .collect();
                 near.sort_by(|a, b| a.0.total_cmp(&b.0));
-                self.marked = near.iter().take(12).map(|&(_, id)| id).collect();
+                near.truncate(12);
+                // From where the flare burst, or the weapon, a mote of light flies down to each,
+                // the mark going on it as it gets there, see reach()
+                self.marked.clear();
                 self.hunt = 10.0;
-                let holy = Element::look(Some(Element::Holy));
-                for a in arena.animals.iter().filter(|a| self.marked.contains(&a.id)) {
+                let from = if carried { target } else { self.held_point(weapon, view, false) };
+                for a in arena.animals.iter().filter(|a| near.iter().any(|n| n.1 == a.id)) {
                     let over = a.center(vpm as u32) + Vector3::new(0.0, 0.0, (a.look.body().1 + 0.6) * vpm);
-                    for k in 0..10 {
-                        let t = k as f64 / 10.0 * TAU;
-                        self.sparks.push(Spark { position: over, velocity: Vector3::new(t.cos(), t.sin(), 0.0) * 2.5 * vpm, look: holy, life: 0.35, lifetime: 0.35, gravity: 0.0, slot: SLOT_SPARK });
-                    }
+                    self.tracer(&profile, Some(Element::Holy), None, from, over, MOTE_SPEED);
+                    later(&mut self.pending, (over - from).norm() / (MOTE_SPEED * vpm), Act::Reach { special: Special::HuntersMark, id: a.id, k: 0 }, 0.0);
                 }
-                self.cap_sparks();
+                // A shower of light falling from the flare all the same, marking nothing
+                if near.is_empty() {
+                    let holy = Element::look(Some(Element::Holy));
+                    for _ in 0..12 {
+                        let v = (self.any_direction() * 0.8 - Vector3::new(0.0, 0.0, 0.6)) * 2.5 * vpm;
+                        self.sparks.push(Spark { position: from, velocity: v, look: holy, life: 0.8, lifetime: 0.8, gravity: 0.15, slot: SLOT_SPARK });
+                    }
+                    self.cap_sparks();
+                }
                 self.cues.push(Cue::here(Sound::Chime, 1.0));
-                self.messages.push(format!("{} marked: your shots seek them out and hit 50% harder for 10 s.", self.marked.len()));
+                self.messages.push(format!("{} marked: your shots seek them out and hit 50% harder for 10 s.", near.len()));
             }
             // One at a time, the nearest to the crosshair first, each a moment after the last
             Special::Reckoning => {
@@ -8832,21 +8886,11 @@ impl Combat {
                 self.flashes.push(Flash { position: from, color: [1.0, 0.75, 0.4], reach: 10.0, life: 0.25, lifetime: 0.25 });
                 self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(0.55));
                 self.cues.push(Cue::here(Sound::Slam, 0.7).pitched(1.2));
-                let caught: Vec<usize> = (0..arena.animals.len())
-                    .filter(|&i| {
-                        let a = &arena.animals[i];
-                        let to = a.center(vpm as u32) - view.eye;
-                        a.health > 0.0 && !a.look.is_pet() && to.norm() < (9.0 + a.look.body().1) * vpm && to.normalize().dot(&forward) > 0.75
-                    })
-                    .collect();
-                for i in caught {
-                    let away = arena.animals[i].position - feet;
-                    let near = 1.0 - ((away.norm() / vpm) / 10.0).min(0.8);
-                    let boss = arena.animals[i].boss.is_some();
-                    let s = &mut arena.animals[i].status;
-                    s.staggered = s.staggered.max(0.9);
-                    if !boss {
-                        s.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(flat) * 16.0 * near * vpm;
+                // What's in front thrown back as the shot gets to it
+                for a in arena.animals.iter() {
+                    let to = a.center(vpm as u32) - view.eye;
+                    if a.health > 0.0 && !a.look.is_pet() && to.norm() < (9.0 + a.look.body().1) * vpm && to.normalize().dot(&forward) > 0.75 {
+                        later(&mut self.pending, (to.norm() / vpm - a.look.body().1).max(0.0) / 60.0, Act::Reach { special: Special::Grapeshot, id: a.id, k: 0 }, 0.0);
                     }
                 }
             }
@@ -8934,6 +8978,8 @@ impl Combat {
                     None => {
                         self.lash_aim = Some(view.eye + forward * 12.0 * vpm);
                         self.messages.push("Nothing in reach to lasso.".into());
+                        // Its loop cracking shut on nothing, see lasso()
+                        later(&mut self.pending, 0.42, Act::Lasso { id: u32::MAX, yank: false }, 0.0);
                     }
                 }
                 self.cues.push(Cue::here(Sound::Lasso, 0.9));
@@ -8948,6 +8994,8 @@ impl Combat {
                     None => {
                         self.lash_aim = Some(view.eye + forward * 10.0 * vpm);
                         self.messages.push("Nothing in reach to bind.".into());
+                        // Its coils snapping shut on nothing, see bind()
+                        later(&mut self.pending, 0.34, Act::Bind(u32::MAX), 0.0);
                     }
                 }
                 self.cues.push(Cue::here(Sound::HeavySwing, 0.7).pitched(1.2));
@@ -9172,6 +9220,15 @@ impl Combat {
                     let look = Element::look(profile.element);
                     let side = self.any_direction() * 0.6 * vpm;
                     self.bolt_line(view.eye + forward * 1.2 * vpm - side, view.eye + forward * 1.2 * vpm + side, look);
+                    // An arc of light flung on ahead off the cut, to be seen whatever it catches
+                    let roll = UnitQuaternion::from_axis_angle(&Unit::new_normalize(forward), random(&mut self.rng) * PI);
+                    let bend = Unit::new_normalize(roll * (view.rotation * Vector3::z()));
+                    for j in 0..8 {
+                        let a = (j as f64 / 7.0 - 0.5) * 1.1;
+                        let out = UnitQuaternion::from_axis_angle(&bend, a) * forward;
+                        self.sparks.push(Spark { position: view.eye + out * 1.8 * vpm - Vector3::new(0.0, 0.0, 0.25 * vpm), velocity: out * 8.0 * vpm, look, life: 0.5, lifetime: 0.5, gravity: 0.0, slot: SLOT_SPARK });
+                    }
+                    self.cap_sparks();
                     for i in ahead {
                         let at = arena.animals[i].center(vpm as u32);
                         self.element_hit(at, profile.element, 1.2);
@@ -9385,15 +9442,13 @@ impl Combat {
                         let shot = Missile { shot: Shot::Ball, head: 0, power: true, size: 1.1 };
                         self.tracer(&profile, Some(element), Some(shot), from, to, 30.0);
                     }
-                    let caught: Vec<usize> = (0..arena.animals.len())
-                        .filter(|&i| {
-                            let a = &arena.animals[i];
-                            let to = a.center(vpm as u32) - view.eye;
-                            a.health > 0.0 && !a.look.is_pet() && to.norm() < (9.0 + a.look.body().1) * vpm && to.normalize().dot(&forward) > 0.8
-                        })
-                        .collect();
-                    for i in caught {
-                        self.strike(arena, &profile, i, Blow { damage: p.damage * 0.45, crit: false, heavy: false, from: view.eye, depth: k % 2, element: Some(element) });
+                    // What's in the gout's way burnt as the flame gets out to it
+                    for a in arena.animals.iter() {
+                        let to = a.center(vpm as u32) - view.eye;
+                        if a.health > 0.0 && !a.look.is_pet() && to.norm() < (9.0 + a.look.body().1) * vpm && to.normalize().dot(&forward) > 0.8 {
+                            let delay = (to.norm() / vpm - a.look.body().1 - 0.9).max(0.0) / FLAME_SPEED;
+                            self.pending.push(Pending { delay, act: Act::Reach { special: Special::Breath, id: a.id, k }, profile: profile.clone(), damage: p.damage * 0.45 });
+                        }
                     }
                     // Leaving flames, venom or frost on the ground where it pours
                     if k % 2 == 1 {
@@ -9557,38 +9612,12 @@ impl Combat {
                     self.cues.push(Cue::here(Sound::Crack, 1.0).pitched(0.6));
                     self.cues.push(Cue::here(Sound::HeavySwing, 0.9).pitched(0.6));
                     self.shake = self.shake.max(0.8);
-                    let caught: Vec<usize> = (0..arena.animals.len())
-                        .filter(|&i| {
-                            let a = &arena.animals[i];
-                            let to = a.position - feet;
-                            a.health > 0.0 && !a.look.is_pet() && to.xy().norm() < (11.0 + a.look.body().1) * vpm && to.xy().try_normalize(1e-6).is_some_and(|d| d.dot(&flat.xy()) > 0.76)
-                        })
-                        .collect();
-                    for i in caught {
-                        let frozen = arena.animals[i].status.frozen > 0.0;
-                        let center = arena.animals[i].center(vpm as u32);
-                        if frozen {
-                            arena.animals[i].status.frozen = 0.0;
-                            self.sparks(center, 24, 5.0, frost, 0.8, 0.7);
-                            self.say_at(center, "Shatter!", Element::Frost.color(), 22.0);
-                            for other in arena.animals.iter_mut().filter(|o| o.health > 0.0 && !o.look.is_pet() && (o.center(vpm as u32) - center).norm() < 2.5 * vpm) {
-                                other.status.chill += 0.5;
-                                other.status.slowed = other.status.slowed.max(3.0);
-                                other.status.slow = other.status.slow.max(0.45);
-                            }
-                        }
-                        self.element_hit(center, Some(Element::Frost), 1.3);
-                        self.strike(arena, &profile, i, Blow { damage: p.damage * if frozen { 2.5 } else { 1.0 }, crit: frozen, heavy: true, from: feet, depth: 0, element: Some(Element::Frost) });
-                        if arena.animals[i].health > 0.0 {
-                            let away = arena.animals[i].position - feet;
-                            let s = &mut arena.animals[i].status;
-                            s.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x()) * 9.0 * vpm;
-                            s.staggered = s.staggered.max(0.6);
-                            s.chill += 0.5;
-                            if !frozen && s.chill >= 1.0 {
-                                s.chill = 0.0;
-                                s.frozen = s.frozen.max(2.0);
-                            }
+                    // Each thing in front torn through as the wave gets out to it, see reach()
+                    for a in arena.animals.iter() {
+                        let to = a.position - feet;
+                        if a.health > 0.0 && !a.look.is_pet() && to.xy().norm() < (11.0 + a.look.body().1) * vpm && to.xy().try_normalize(1e-6).is_some_and(|d| d.dot(&flat.xy()) > 0.76) {
+                            let out = (to.xy().norm() / vpm - 1.0 - a.look.body().1).max(0.0);
+                            self.pending.push(Pending { delay: out / 17.0, act: Act::Reach { special: Special::Shatterwave, id: a.id, k: 0 }, profile: profile.clone(), damage: p.damage });
                         }
                     }
                 }
@@ -9760,13 +9789,11 @@ impl Combat {
                     let side = if profile.build == Build::Hand { -1.0 } else { 1.0 };
                     let from = view.eye + view.rotation * Vector3::new(0.15 * side, 0.75, -0.15) * vpm;
                     self.lash_line(from, center, Element::look(Some(Element::Holy)));
-                    // The shot itself, streaking out to it
+                    // The shot itself, streaking out to it, and striking true as it gets there, see
+                    // reach()
                     let shot = Missile { shot: if profile.build.crossbow() { Shot::Quarrel } else { Shot::Ball }, head: 0, power: true, size: 1.2 };
                     self.tracer(&profile, profile.element, Some(shot), from, center, 140.0);
-                    self.sparks(center, 10, 3.0, Element::look(None), 0.8, 0.3);
-                    self.element_hit(center, profile.element, 1.4);
-                    self.say_at(center + Vector3::new(0.0, 0.0, 0.6 * vpm), "Reckoned!", [255, 230, 140], 16.0);
-                    self.strike(arena, &profile, i, Blow { damage: p.damage, crit: true, heavy: false, from: view.eye, depth: 0, element: profile.element });
+                    self.pending.push(Pending { delay: (center - from).norm() / (140.0 * vpm), act: Act::Reach { special: Special::Reckoning, id, k: 0 }, profile: profile.clone(), damage: p.damage });
                     let gun = matches!(profile.build.shot(), Shot::Ball | Shot::Shell);
                     if gun {
                         self.flare = FLARE;
@@ -9809,9 +9836,134 @@ impl Combat {
                 Act::Trip(k) => self.trip(arena, &profile, k, p.damage),
                 Act::Brand { from, to, k } => self.brand(arena, &profile, from, to, k, p.damage),
                 Act::Swing { land } => self.chain_swing(arena, &profile, land, p.damage),
+                Act::Reach { special, id, k } => self.reach(arena, &profile, special, id, k, p.damage),
             }
         }
         self.scarless = false;
+    }
+
+    /// A whip's lash cracking out on nothing where it was flung, nothing there to catch: a puff of
+    /// sparks and dust at its end, and the crack, so it's seen to have gone
+    fn whiff(&mut self, profile: &Rc<Profile>) {
+        let Some(at) = self.lash_aim else {
+            return;
+        };
+        self.sparks(at, 12, 3.5, Element::look(profile.element), 0.3, 0.6);
+        self.sparks(at, 6, 1.5, Element::look(None), 0.8, 0.5);
+        self.cues.push(Cue::at(Sound::Crack, at, 0.8).pitched(1.2));
+    }
+
+    /// What a special attack's ring, wave, hook, mote or shot does to animal `id` once it's got
+    /// out to it, scheduled for as long as that takes: Holy Nova's, Frost Nova's and Battle Cry's
+    /// rings, Shatterwave's wave, Grim Harvest's hooks, Hunter's Mark's motes, Grapeshot's and
+    /// Reckoning's shots, and the `k`th gout of Dragon's Breath's flame
+    #[allow(clippy::too_many_arguments)]
+    fn reach(&mut self, arena: &mut Arena, profile: &Rc<Profile>, special: Special, id: u32, k: u32, damage: f64) {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
+        let Some(i) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) else {
+            return;
+        };
+        let center = arena.animals[i].center(vpm as u32);
+        let away = arena.animals[i].position - feet;
+        let out = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+        let boss = arena.animals[i].boss.is_some();
+        match special {
+            Special::Nova => {
+                arena.animals[i].status.push = out * 9.0 * vpm;
+                self.element_hit(center, Some(Element::Holy), 1.5);
+                self.strike(arena, profile, i, Blow { damage, crit: false, heavy: true, from: feet, depth: 0, element: Some(Element::Holy) });
+            }
+            Special::FrostNova => {
+                self.element_hit(center, Some(Element::Frost), 1.5);
+                self.strike(arena, profile, i, Blow { damage, crit: false, heavy: true, from: feet, depth: 0, element: Some(Element::Frost) });
+                let s = &mut arena.animals[i].status;
+                s.frozen = s.frozen.max(3.0);
+                s.chill = 0.0;
+            }
+            Special::BattleCry => {
+                let s = &mut arena.animals[i].status;
+                s.staggered = s.staggered.max(1.4);
+                s.push = out * 4.0 * vpm;
+                s.shown = 4.0;
+            }
+            // Caught on its hook and dragged in so it comes to rest just in front, as a push dies
+            // away, a line of darkness drawing it in
+            Special::Harvest => {
+                let a = &mut arena.animals[i];
+                let gap = (away.xy().norm() / vpm - a.look.body().1 - 1.6).max(0.0);
+                if !boss {
+                    a.status.push = -out * (gap * PUSH_DECAY).min(45.0) * vpm;
+                }
+                a.status.staggered = a.status.staggered.max(0.7);
+                let void = Element::look(Some(Element::Void));
+                self.bolt_line(center, feet + Vector3::new(0.0, 0.0, 1.1 * vpm), void);
+                self.sparks(center, 6, 2.0, void, 0.4, 0.3);
+                self.cues.push(Cue::at(Sound::Chain, center, 0.6).pitched(1.1));
+            }
+            // Hurt and thrown back, and what's frozen shattered, chilling what's beside it
+            Special::Shatterwave => {
+                let frost = Element::look(Some(Element::Frost));
+                let frozen = arena.animals[i].status.frozen > 0.0;
+                if frozen {
+                    arena.animals[i].status.frozen = 0.0;
+                    self.sparks(center, 24, 5.0, frost, 0.8, 0.7);
+                    self.say_at(center, "Shatter!", Element::Frost.color(), 22.0);
+                    for other in arena.animals.iter_mut().filter(|o| o.health > 0.0 && !o.look.is_pet() && (o.center(vpm as u32) - center).norm() < 2.5 * vpm) {
+                        other.status.chill += 0.5;
+                        other.status.slowed = other.status.slowed.max(3.0);
+                        other.status.slow = other.status.slow.max(0.45);
+                    }
+                }
+                self.element_hit(center, Some(Element::Frost), 1.3);
+                self.strike(arena, profile, i, Blow { damage: damage * if frozen { 2.5 } else { 1.0 }, crit: frozen, heavy: true, from: feet, depth: 0, element: Some(Element::Frost) });
+                if arena.animals[i].health > 0.0 {
+                    let s = &mut arena.animals[i].status;
+                    s.push = out * 9.0 * vpm;
+                    s.staggered = s.staggered.max(0.6);
+                    s.chill += 0.5;
+                    if !frozen && s.chill >= 1.0 {
+                        s.chill = 0.0;
+                        s.frozen = s.frozen.max(2.0);
+                    }
+                }
+            }
+            // Marked as the mote of light settles on it, a ring of it going round over its head
+            Special::HuntersMark => {
+                if !self.marked.contains(&id) {
+                    self.marked.push(id);
+                }
+                let over = center + Vector3::new(0.0, 0.0, (arena.animals[i].look.body().1 + 0.6) * vpm);
+                let holy = Element::look(Some(Element::Holy));
+                for j in 0..10 {
+                    let t = j as f64 / 10.0 * TAU;
+                    self.sparks.push(Spark { position: over, velocity: Vector3::new(t.cos(), t.sin(), 0.0) * 2.5 * vpm, look: holy, life: 0.35, lifetime: 0.35, gravity: 0.0, slot: SLOT_SPARK });
+                }
+                self.cap_sparks();
+            }
+            // Thrown back, the harder the nearer
+            Special::Grapeshot => {
+                let near = 1.0 - ((away.norm() / vpm) / 10.0).min(0.8);
+                let s = &mut arena.animals[i].status;
+                s.staggered = s.staggered.max(0.9);
+                if !boss {
+                    s.push = out * 16.0 * near * vpm;
+                }
+            }
+            // Struck true
+            Special::Reckoning => {
+                self.sparks(center, 10, 3.0, Element::look(None), 0.8, 0.3);
+                self.element_hit(center, profile.element, 1.4);
+                self.say_at(center + Vector3::new(0.0, 0.0, 0.6 * vpm), "Reckoned!", [255, 230, 140], 16.0);
+                self.strike(arena, profile, i, Blow { damage, crit: true, heavy: false, from: view.eye, depth: 0, element: profile.element });
+            }
+            Special::Breath => {
+                let element = profile.element.unwrap_or(Element::Fire);
+                self.strike(arena, profile, i, Blow { damage, crit: false, heavy: false, from: view.eye, depth: k % 2, element: Some(element) });
+            }
+            _ => {}
+        }
     }
 
     /// A lasso's loop dropping round animal `id`, holding it a moment, or it yanked in to the
@@ -9821,6 +9973,9 @@ impl Combat {
         let vpm = view.vpm;
         let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
         let Some(i) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) else {
+            if !yank {
+                self.whiff(profile);
+            }
             self.lash_aim = None;
             return;
         };
@@ -9870,6 +10025,7 @@ impl Combat {
     fn bind(&mut self, arena: &mut Arena, profile: &Rc<Profile>, id: u32, damage: f64) {
         let vpm = arena.view.vpm;
         let Some(first) = arena.animals.iter().position(|a| a.id == id && a.health > 0.0) else {
+            self.whiff(profile);
             self.lash_aim = None;
             return;
         };
@@ -13161,6 +13317,18 @@ impl Combat {
                     let at = last.lerp(&tip, k as f64 / steps as f64);
                     self.fine(at, Vector3::zeros(), look, if profile.element.is_some() { 0.22 } else { 0.12 }, 0.0);
                 }
+                // A blade whirled fast lays far more of a trail than there's room for, which would
+                // crowd out what its blows and special attacks send flying: past TRAIL_SPARKS fine
+                // sparks, the oldest go first
+                let fine = self.sparks.iter().filter(|s| s.slot == SLOT_FINE).count();
+                if fine > TRAIL_SPARKS {
+                    let mut extra = fine - TRAIL_SPARKS;
+                    self.sparks.retain(|s| {
+                        let old = extra > 0 && s.slot == SLOT_FINE;
+                        extra -= old as usize;
+                        !old
+                    });
+                }
             }
             if glowing {
                 let (first, second, share) = rarity_looks(profile.color);
@@ -15272,16 +15440,25 @@ mod tests {
         /// Shots carrying the special attack seen in flight, and how many never got anywhere
         carriers: usize,
         stranded: usize,
+        /// Seconds after it was let go that the move lets it go, 0 for what goes at once
+        release: f64,
+        /// Seconds after it was let go that anything in the pack was first hurt, and first had
+        /// anything done to it at all: hurt, thrown, staggered, held, frozen, marked, set burning
+        first_hurt: Option<f64>,
+        first_touched: Option<f64>,
+        /// Seconds anything it made was to be seen, out away from the weapon: shots, sparks, what
+        /// swells up, rings, clouds, storms, phantoms and the like
+        seen: f64,
     }
 
-    /// Lets go of `weapon`'s special attack standing in `world`, with a pack of bandits 12 m ahead
+    /// Lets go of `weapon`'s special attack standing in `world`, with a pack of bandits 7 m ahead, near enough for every ring, wave and hook to reach
     /// with `foes`, and watches what comes of it for a second and a half
     fn trial(world: &World, weapon: &Weapon, foes: bool) -> Trial {
         let vpm = 8.0;
         let water = |_: f64, _: f64| f64::NEG_INFINITY;
         let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
         let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.12), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
-        let mut animals = if foes { crate::animals::spawn_pack(world, &water, &[Look::Bandit; 5], feet + Vector3::new(0.0, 12.0 * vpm, 0.0), crate::animals::PACK_SPREAD, 3) } else { Vec::new() };
+        let mut animals = if foes { crate::animals::spawn_pack(world, &water, &[Look::Bandit; 5], feet + Vector3::new(0.0, 7.0 * vpm, 0.0), crate::animals::PACK_SPREAD, 3) } else { Vec::new() };
         let mut combat = Combat::new(1, 0);
         combat.charge = 1.0;
         let dt = 1.0 / 240.0;
@@ -15294,8 +15471,10 @@ mod tests {
                 key.1 = mirrored_shouldered(&key.1);
             }
         }
-        let mut out = Trial { keys, length, travel: 0.0, shots: Vec::new(), others: 0, sparks: 0, carriers: 0, stranded: 0 };
+        let release = if release(special, &profile) == Release::AtOnce { 0.0 } else { lets_go(special, &profile) * length };
+        let mut out = Trial { keys, length, travel: 0.0, shots: Vec::new(), others: 0, sparks: 0, carriers: 0, stranded: 0, release, first_hurt: None, first_touched: None, seen: 0.0 };
         let mut last_tip: Option<Vector3<f64>> = None;
+        let health: Vec<(u32, f64)> = animals.iter().map(|a| (a.id, a.health)).collect();
         for frame in 0..(1.85 / dt) as usize {
             // Raised into the hand first, then let go
             let t = frame as f64 * dt - 0.35;
@@ -15316,12 +15495,53 @@ mod tests {
             let carrying = combat.projectiles.iter().filter(|p| matches!(p.trick, Trick::Carry { special: Some(_), .. })).count();
             out.carriers = out.carriers.max(carrying);
             out.stranded = carrying;
+            // Anything done to the pack, and when
+            for a in animals.iter() {
+                let Some(&(_, was)) = health.iter().find(|h| h.0 == a.id) else {
+                    continue;
+                };
+                let s = &a.status;
+                let hurt = a.health < was - 1e-6;
+                let held = s.push.norm() > 1e-6 || s.staggered > 0.0 || s.rooted > 0.0 || s.frozen > 0.0 || s.shocked > 0.0 || s.marked > 0.0;
+                let afflicted = s.burn > 0.0 || s.poison > 0.0 || s.bleed > 0.0 || s.hex > 0.0 || s.slowed > 0.0 || combat.marked.contains(&a.id);
+                if hurt && out.first_hurt.is_none() {
+                    out.first_hurt = Some(t);
+                }
+                if (hurt || held || afflicted) && out.first_touched.is_none() {
+                    out.first_touched = Some(t);
+                }
+            }
+            let hand = view.eye + view.rotation * combat.pose(weapon).hand * vpm;
+            let points = [combat.held_point(weapon, &view, false), combat.held_point(weapon, &view, true), hand];
+            // What it made to be seen, out away from the weapon, so not its glow or its trail
+            let away = |p: &Vector3<f64>| points.iter().all(|q| (q - p).norm() > 1.2 * vpm);
+            let seen = !combat.projectiles.is_empty()
+                || !combat.swells.is_empty()
+                || !combat.zones.is_empty()
+                || !combat.lingering.is_empty()
+                || !combat.ripples.is_empty()
+                || !combat.mines.is_empty()
+                || !combat.familiars.is_empty()
+                || !combat.stases.is_empty()
+                || !combat.serpents.is_empty()
+                || !combat.binds.is_empty()
+                || !combat.strikes.is_empty()
+                || !combat.blasts.is_empty()
+                || combat.orbit.is_some()
+                || combat.thrown.is_some()
+                || combat.sweep.is_some()
+                || combat.siphon.is_some()
+                || combat.blood_moon.is_some()
+                || combat.shackle.is_some()
+                || !combat.stuck.is_empty()
+                || combat.sparks.iter().any(|s| away(&s.position));
+            if seen {
+                out.seen += dt;
+            }
             if t > 1.0 {
                 continue;
             }
             // What's new in flight: not where anything was, or would have got to from there
-            let hand = view.eye + view.rotation * combat.pose(weapon).hand * vpm;
-            let points = [combat.held_point(weapon, &view, false), combat.held_point(weapon, &view, true), hand];
             for p in &combat.projectiles {
                 let from = p.position - p.velocity * dt;
                 if before.iter().any(|q| (q - from).norm() < 0.05 * vpm || (q - p.position).norm() < 0.05 * vpm) {
@@ -15358,8 +15578,9 @@ mod tests {
             let pack = trial(&world, &weapon, true);
             let strikes = alone.keys.iter().filter(|k| k.2).count();
             let first = |t: &Trial| t.shots.first().map_or("-".to_string(), |s| format!("{s:.2}"));
+            let at = |t: Option<f64>| t.map_or("-".to_string(), |t| format!("{t:.3}"));
             println!(
-                "AUDIT|{}|{:?}|{}|{:?}|{:?}|{:?}|{}|{}|{:.2}|{:.2}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
+                "AUDIT|{}|{:?}|{}|{:?}|{:?}|{:?}|{}|{}|{:.2}|{:.2}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}|{:.3}|{}|{}|{:.2}",
                 special.name(),
                 special,
                 library.families[family].id,
@@ -15379,6 +15600,10 @@ mod tests {
                 alone.sparks.max(pack.sparks),
                 release(special, profile),
                 alone.stranded + pack.stranded,
+                pack.release,
+                at(pack.first_touched),
+                at(pack.first_hurt),
+                alone.seen,
             );
         }
     }
@@ -15441,6 +15666,21 @@ mod tests {
                 let pack = if foes { "with a pack ahead" } else { "alone" };
                 if t.travel < 0.25 {
                     wrong(format!("{pack}, the weapon only moves {:.2} m", t.travel));
+                }
+                // With nothing about, it still plays out to be seen
+                if !foes && t.seen < 0.4 {
+                    wrong(format!("with nothing about, what it does is only to be seen for {:.2} s", t.seen));
+                }
+                // Never all at once: nothing's hurt on the frame it's let go, and what's 7 m off isn't
+                // reached the moment it's unleashed nor the moment the move lets it go
+                let frame = 1.5 / 240.0;
+                if foes && t.first_hurt.is_some_and(|h| h <= frame) {
+                    wrong("hurts on the very frame it's let go".into());
+                }
+                if let Some(touched) = t.first_touched.filter(|_| foes)
+                    && (touched <= frame || (t.release > 0.0 && (touched - t.release).abs() <= frame))
+                {
+                    wrong(format!("reaches the pack 7 m off at once, {touched:.3} s in, letting go at {:.3} s", t.release));
                 }
                 if profile.kind == Kind::Melee {
                     continue;
