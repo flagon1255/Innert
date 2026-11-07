@@ -44,13 +44,14 @@ const BRICKS_PER_COLUMN: f64 = 0.1;
 
 /// About how much of the graphics card's memory a piece of the landscape `width_m` wide and
 /// `height_m` tall takes at `vpm` voxels a meter: its bricks with room for holes blown in it, the
-/// map of them, the grass, and the water's ground, depth, flow and surface
+/// map of them, the grass, and the water's ground, depth, flow and surface (the last two in half
+/// floats, see water.rs)
 pub fn piece_bytes(width_m: u32, height_m: u32, vpm: u32) -> u64 {
     let side = (width_m * vpm) as u64;
     let columns = side * side;
     let bricks = (columns as f64 * BRICKS_PER_COLUMN) as u64 + worldgen::SPARE_BRICKS as u64;
     let grid = columns / 64 * (height_m * vpm / 8) as u64 * 4;
-    bricks * worldgen::BRICK_WORDS as u64 * 4 + grid + columns * 4 + columns * (4 + 4 + 16 + 16)
+    bricks * worldgen::BRICK_WORDS as u64 * 4 + grid + columns * 4 + columns * (4 + 4 + 8 + 8)
 }
 
 /// Light cache entries, LIGHT_CACHE_WORDS words each in main.rs, for a card with `budget` bytes
@@ -100,7 +101,7 @@ pub fn plan(budget: Option<u64>, wanted_m: u32, height_m: u32, vpm: u32, render:
         return Plan { width_m: wanted_m, keep_spare: true, light_cache_entries: light_cache_entries(u64::MAX), budget };
     };
     let light_cache_entries = light_cache_entries(budget);
-    let fixed = OTHERS + render + light_cache_entries * 12 * 4;
+    let fixed = OTHERS + render + light_cache_entries * crate::LIGHT_CACHE_WORDS * 4;
     let room = (budget as f64 * PLANNED) as u64;
     let fits = |width: u32| 2 * piece_bytes(width, height_m, vpm) + fixed <= room;
     let width_m = WIDTHS_M.iter().copied().filter(|&w| w <= wanted_m).find(|&w| fits(w)).unwrap_or(*WIDTHS_M.last().unwrap());
@@ -127,7 +128,7 @@ mod tests {
         assert!(!two.keep_spare, "{two:?}");
         assert!(two.light_cache_entries < six.light_cache_entries);
         // As it turned out on the 6 GB card told it had 2 GB: about 1.6 GB used, 2 GB while moving on
-        assert!(piece_bytes(two.width_m, 64, 16) + OTHERS + render + two.light_cache_entries * 48 <= 3 * GB / 2, "{two:?}");
+        assert!(piece_bytes(two.width_m, 64, 16) + OTHERS + render + two.light_cache_entries * crate::LIGHT_CACHE_WORDS * 4 <= 3 * GB / 2, "{two:?}");
     }
 
     #[test]

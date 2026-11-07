@@ -12,9 +12,14 @@ const uint FLUX = 0;
 const uint DEPTH = 1;
 const uint SURFACE = 2;
 const uint BLOCKS = 3;
+const uint SUPER_BLOCKS = 4;
 
 // Has to match WATER_BLOCK in shaders\traverse.comp
 const int BLOCK = 8;
+// Blocks of SUPER x SUPER blocks have the highest water in them too, to the right of the blocks in
+// the same image, so rays skip dry land a long way at a time. Has to match WATER_SUPER in
+// shaders\traverse.comp and SUPER in src\water.rs.
+const int SUPER = 8;
 
 // How much of last step's flow carries on, which settles waves down over a couple of seconds
 const float DAMPING = 0.996;
@@ -49,12 +54,18 @@ layout(push_constant) uniform PushConstants {
 // Top of the ground in each column, which never changes
 layout(set = 0, binding = 0, r32f) readonly uniform image2D groundImage;
 layout(set = 0, binding = 1, r32f) uniform image2D depthImage;
-// How much water flows out of each column per second towards -x, +x, -y and +y
-layout(set = 0, binding = 2, rgba32f) uniform image2D fluxImage;
-// For drawing, see traverse.comp: x the top of the water lying on the ground (below the ground for
-// none), y how white it is, and z to w water falling through the air, w < z for none
-layout(set = 0, binding = 3, rgba32f) uniform image2D surfaceImage;
-// The highest top of the water in each block of BLOCK x BLOCK columns, -1 for none
+// How much water flows out of each column per second towards -x, +x, -y and +y. Half floats, as
+// the water takes a lot of memory: what one column sends, its neighbor takes, read from the same
+// half float, so no water's lost or made on the way however they're rounded.
+layout(set = 0, binding = 2, rgba16f) uniform image2D fluxImage;
+// For drawing, see traverse.comp: x how deep the water lying on the ground is (-1 for none), y how
+// white it is, and z to w water falling through the air, w < z for none. Heights are from the top of
+// the ground in the column, so half floats hold them finely enough for the waves to show.
+layout(set = 0, binding = 3, rgba16f) uniform image2D surfaceImage;
+// What's kept in surfaceImage's z and w for no water falling
+const float NO_FALL = 60000.0;
+// The highest top of the water in each block of BLOCK x BLOCK columns, -1 for none, and to the
+// right of those the same for each block of SUPER x SUPER blocks
 layout(set = 0, binding = 4, r32f) uniform image2D blockImage;
 // Where water wells up, rivers' springs and inside buildings: xy column, z volume per second,
 // w radius in columns. info.y of them.
@@ -214,7 +225,9 @@ void surface(ivec2 c, ivec2 size) {
             }
         }
     }
-    imageStore(surfaceImage, c, vec4(top, foam, fall_bottom, fall_top));
+    // Kept from the top of the ground
+    bool falling = fall_top >= fall_bottom;
+    imageStore(surfaceImage, c, vec4(top >= 0 ? top - ground : -1, foam, falling ? fall_bottom - ground : NO_FALL, falling ? fall_top - ground : -NO_FALL));
 }
 
 void blocks(ivec2 b, ivec2 size) {
@@ -224,11 +237,28 @@ void blocks(ivec2 b, ivec2 size) {
             ivec2 c = b * BLOCK + ivec2(x, y);
             if (inside(c, size)) {
                 vec4 s = imageLoad(surfaceImage, c);
-                highest = max(highest, max(s.x, s.w));
+                float ground = imageLoad(groundImage, c).r;
+                if (s.x >= 0)
+                highest = max(highest, ground + s.x);
+                if (s.w >= s.z)
+                highest = max(highest, ground + s.w);
             }
         }
     }
     imageStore(blockImage, b, vec4(highest));
+}
+
+// The highest of the blocks in the larger block `s`, after this frame's blocks are worked out
+void superBlocks(ivec2 s, ivec2 blocks) {
+    float highest = -1;
+    for (int y = 0; y < SUPER; y++) {
+        for (int x = 0; x < SUPER; x++) {
+            ivec2 b = s * SUPER + ivec2(x, y);
+            if (all(lessThan(b, blocks)))
+            highest = max(highest, imageLoad(blockImage, b).r);
+        }
+    }
+    imageStore(blockImage, ivec2(blocks.x, 0) + s, vec4(highest));
 }
 
 void main() {
@@ -236,6 +266,13 @@ void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy) + corner;
     ivec2 size = imageSize(depthImage);
     uint stage = pc.info.x;
+    if (stage == SUPER_BLOCKS) {
+        ivec2 blocks = (size + BLOCK - 1) / BLOCK;
+        ivec2 s = ivec2(gl_GlobalInvocationID.xy);
+        if (all(lessThan(s, (blocks + SUPER - 1) / SUPER)))
+        superBlocks(s, blocks);
+        return;
+    }
     if (stage == BLOCKS) {
         ivec2 b = ivec2(gl_GlobalInvocationID.xy) + corner / BLOCK;
         if (all(lessThan(b, (size + BLOCK - 1) / BLOCK)))

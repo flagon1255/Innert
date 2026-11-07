@@ -6,6 +6,7 @@
 use std::f64::consts::PI;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use nalgebra::Vector3;
 use vulkano::{
@@ -33,17 +34,27 @@ enum Stage {
     Depth,
     Surface,
     Blocks,
+    SuperBlocks,
 }
 
 /// Columns per side of the blocks rays skip dry land in, has to match shaders\water.comp
 const BLOCK: u32 = 8;
+/// Blocks per side of the larger blocks rays skip dry land in a long way at a time, kept beside the
+/// blocks in the same image, has to match shaders\water.comp
+const SUPER: u32 = 8;
 /// The longest step the simulation takes, in seconds. Longer ones aren't stable in deep water.
 const STEP: f64 = 1.0 / 120.0;
 /// At most this many steps a frame, so a slow frame doesn't make the next one slower still
 const MAX_STEPS: u32 = 6;
 /// The water flows in an area this many columns across around the camera. Further away it keeps
-/// still until the camera comes near, and rivers flowing in from there keep flowing in.
-const ACTIVE_COLUMNS: u32 = 1024;
+/// still until the camera comes near, and rivers flowing in from there keep flowing in. The lower
+/// quality presets make it smaller, see set_flowing_area().
+static ACTIVE_COLUMNS: AtomicU32 = AtomicU32::new(1024);
+
+/// How many columns across the water flows in around the camera, see ACTIVE_COLUMNS
+pub fn set_flowing_area(columns: u32) {
+    ACTIVE_COLUMNS.store(columns.max(64), Ordering::Relaxed);
+}
 /// Frames between copies of the water back to the CPU
 const READBACK_FRAMES: u32 = 30;
 /// Rows of the CPU's copy of the last piece of the world's water carried over a frame, see
@@ -149,9 +160,11 @@ impl Spare {
         Spare {
             ground: image(size, Format::R32_SFLOAT),
             depth: image(size, Format::R32_SFLOAT),
-            flux: image(size, Format::R32G32B32A32_SFLOAT),
-            surface: image(size, Format::R32G32B32A32_SFLOAT),
-            blocks: image(size.map(|n| n.div_ceil(BLOCK)), Format::R32_SFLOAT),
+            // Half floats, see shaders\water.comp
+            flux: image(size, Format::R16G16B16A16_SFLOAT),
+            surface: image(size, Format::R16G16B16A16_SFLOAT),
+            // The blocks, then to their right the larger blocks
+            blocks: image([size[0].div_ceil(BLOCK) + size[0].div_ceil(BLOCK * SUPER), size[1].div_ceil(BLOCK)], Format::R32_SFLOAT),
             readback: Buffer::new_slice::<f32>(
                 memory_allocator.clone(),
                 BufferCreateInfo {
@@ -355,7 +368,8 @@ impl Water {
             .clear_color_image(ClearColorImageInfo::image(flux_image.clone()))
             .unwrap()
             .clear_color_image(ClearColorImageInfo {
-                clear_value: [-1.0, 0.0, 0.0, 0.0].into(),
+                // No water lying or falling anywhere, see shaders\water.comp
+                clear_value: [-1.0, 0.0, 60000.0, -60000.0].into(),
                 ..ClearColorImageInfo::image(surface_image)
             })
             .unwrap()
@@ -665,7 +679,7 @@ impl Water {
 
         // Only the water near the camera flows. The first time round, all of it gets its surface
         // worked out to draw.
-        let area = self.size.map(|n| n.min(ACTIVE_COLUMNS));
+        let area = self.size.map(|n| n.min(ACTIVE_COLUMNS.load(Ordering::Relaxed)));
         let corner = [0, 1].map(|i| {
             let c = (camera[i] as i64 - area[i] as i64 / 2).clamp(0, (self.size[i] - area[i]) as i64);
             (c as u32 / BLOCK) * BLOCK
@@ -705,6 +719,9 @@ impl Water {
         dispatch(builder, constants(Stage::Surface, [0.0; 4], surface_corner), groups(surface_area));
         let blocks = surface_area.map(|n| n.div_ceil(BLOCK).div_ceil(8));
         dispatch(builder, constants(Stage::Blocks, [0.0; 4], surface_corner), [blocks[0], blocks[1], 1]);
+        // All of the larger blocks, a few thousand, each the highest of the blocks in it
+        let supers = self.size.map(|n| n.div_ceil(BLOCK * SUPER).div_ceil(8));
+        dispatch(builder, constants(Stage::SuperBlocks, [0.0; 4], [0, 0]), [supers[0], supers[1], 1]);
 
         // Bring the depths where it's been flowing back to the CPU now and then, picking them up
         // once the GPU is done

@@ -42,7 +42,7 @@ use vulkano::{
     },
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::{
-        MemoryPropertyFlags,
+        MemoryHeapFlags, MemoryPropertyFlags,
         allocator::{AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     },
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
@@ -77,6 +77,7 @@ mod loading;
 mod memory;
 mod perf;
 mod player;
+mod quality;
 mod shafts;
 mod staging;
 mod startup;
@@ -128,6 +129,7 @@ const FLAG_SMOOTH: u32 = 64;
 const FLAG_WIND: u32 = 128;
 // The haze leaves the sunlight it scatters to shaders\shafts.comp
 const FLAG_SHAFTS: u32 = 256;
+const FLAG_REFLECTIONS: u32 = 1 << 16;
 
 // Has to match shaders\traverse.comp
 const SUN_MAP_MODE: u32 = 100;
@@ -329,7 +331,7 @@ const RAISE_AFTER: Duration = Duration::from_secs(30);
 const MAX_LIGHTS: usize = 16;
 /// Has to match CACHE_WORDS in shaders\traverse.comp. How many entries the light cache has is
 /// up to how much memory the graphics card has, see memory.rs: the shader goes by how big it is.
-const LIGHT_CACHE_WORDS: u64 = 12;
+const LIGHT_CACHE_WORDS: u64 = 13;
 
 // The box of fine detail around the camera, in meters. It gets rebuilt once the camera
 // gets this far from where it was last built.
@@ -743,6 +745,7 @@ struct UpscaleConstants {
 
 // Has to match upscale.comp
 const UPSCALE_HISTORY: u32 = 1;
+const UPSCALE_FAST: u32 = 2;
 
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
@@ -1195,6 +1198,13 @@ struct App {
     denoise: bool,
     color_grade: bool,
     bloom: f32,
+    // Which of the presets the settings above came from, see quality.rs, and what else it sets
+    quality: quality::Preset,
+    view_distance: f32,
+    reflections: bool,
+    fast_upscale: bool,
+    // Picked in the settings, put in place at the start of the next frame
+    pending_quality: Option<quality::Preset>,
 
     frame: u32,
     accum_count: u32,
@@ -1470,8 +1480,6 @@ struct Gpu {
     memory_allocator: Arc<StandardMemoryAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    // Not a graphics card of its own, so slower: it renders fewer pixels to begin with
-    integrated: bool,
 }
 
 impl Gpu {
@@ -1549,7 +1557,7 @@ impl Gpu {
             physical_device.properties().device_name,
             physical_device.properties().device_type,
         );
-        // Not a graphics card of its own, so slower: it renders fewer pixels to begin with
+        // Not a graphics card of its own, so slower: it gets a lower quality preset, see quality.rs
         let integrated = physical_device.properties().device_type != PhysicalDeviceType::DiscreteGpu;
 
         if physical_device.api_version() < Version::V1_3 {
@@ -1559,6 +1567,9 @@ impl Gpu {
         device_extensions.ext_memory_budget = physical_device.supported_extensions().ext_memory_budget;
         // Which the world being built meanwhile is waiting on, to know how big it can be
         memory::set_card(perf::card_vram(&physical_device, device_extensions.ext_memory_budget).map(|v| v.budget));
+        // And the quality preset that suits it, see quality.rs
+        let card_memory = physical_device.memory_properties().memory_heaps.iter().filter(|h| h.flags.intersects(MemoryHeapFlags::DEVICE_LOCAL)).map(|h| h.size).max().unwrap_or(0);
+        quality::set_card(quality::suited(&physical_device.properties().device_name, physical_device.properties().vendor_id, !integrated, card_memory));
 
         let (device, mut queues) = Device::new(
             physical_device,
@@ -1588,7 +1599,6 @@ impl Gpu {
             memory_allocator,
             descriptor_set_allocator,
             command_buffer_allocator,
-            integrated,
         }
     }
 }
@@ -1666,12 +1676,10 @@ impl Placed {
 
         let scene = Scene::Terrain;
         let mut terrain = INITIAL_TERRAIN;
-        if let Some(v) = setting("voxels_per_meter").and_then(|v| v.parse().ok()) {
-            terrain.voxels_per_meter = v;
-        }
-        if let Some(v) = setting("width_m").and_then(|v| v.parse().ok()) {
-            terrain.width_m = v;
-        }
+        // As fine and as wide as the quality preset wants it, see quality.rs
+        let preset = quality::chosen().settings();
+        terrain.voxels_per_meter = setting("voxels_per_meter").and_then(|v| v.parse().ok()).unwrap_or(preset.voxels_per_meter);
+        terrain.width_m = setting("width_m").and_then(|v| v.parse().ok()).unwrap_or(preset.world_width_m);
         // As wide as asked for, or as there's room for in the graphics card's memory, once it's
         // been picked, see memory.rs
         let window = setting("window").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?])).unwrap_or([1920, 1080]);
@@ -2124,13 +2132,19 @@ impl App {
     fn new(loaded: Loaded) -> Self {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
-        let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator, integrated } = gpu;
+        let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
         let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline } = pipelines;
         let Placed { scene, terrain, rivers, mut world, landscape, mut camera, indoors, memory } = placed;
         // The water has what it needs of it now
         world.forget_water_surface();
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        // The preset asked for, chosen before, or that suits the graphics card, the same the world
+        // was built for, see Placed::place()
+        let quality = quality::chosen();
+        let preset = quality.settings();
+        println!("Quality: {} (sun shafts {})", quality.name(), preset.sun_shafts.name());
+        water::set_flowing_area((setting("flowing_water_m").and_then(|v| v.parse().ok()).unwrap_or(preset.flowing_water_m) * world.voxels_per_meter as f32) as u32);
 
         let input = WinitInputHelper::new();
         let flag = |key: &str, default: bool| setting(key).map_or(default, |v| v == "true" || v == "1");
@@ -2304,7 +2318,8 @@ impl App {
             shafts_pipeline,
             &memory_allocator,
             &descriptor_set_allocator,
-            setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(if integrated { shafts::Quality::Low } else { shafts::Quality::High }),
+            // As the quality preset has them, which on cards that aren't their own is Low
+            setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(preset.sun_shafts),
             setting("sun_shafts_strength").and_then(|v| v.parse().ok()).unwrap_or(1.0),
         );
 
@@ -2353,8 +2368,8 @@ impl App {
             move_speed: scene.initial_move_speed(),
             render_mode: RenderMode::Shaded,
             // The same moving or still, so stopping doesn't cost more rays and rebuild every image
-            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.33 } else { 0.45 }),
-            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(if integrated { 0.33 } else { 0.45 }),
+            render_scale: setting("render_scale").and_then(|v| v.parse().ok()).unwrap_or(preset.render_scale),
+            still_render_scale: setting("still_render_scale").and_then(|v| v.parse().ok()).unwrap_or(preset.render_scale),
             still_frames: 0,
             last_camera_view: None,
 
@@ -2362,15 +2377,20 @@ impl App {
             // haze, so the voxels read crisply. Grass is made of voxels rather than triangles.
             sun_azimuth: setting("sun_azimuth").and_then(|v| v.parse().ok()).unwrap_or(150.0),
             sun_elevation: setting("sun_elevation").and_then(|v| v.parse().ok()).unwrap_or(38.0),
-            shadows: flag("shadows", true),
-            ambient_occlusion: flag("ao", true),
-            bounce_light: flag("bounce", true),
-            smooth_shading: flag("smooth", true),
-            wind: flag("wind", true),
+            shadows: flag("shadows", preset.shadows),
+            ambient_occlusion: flag("ao", preset.ambient_occlusion),
+            bounce_light: flag("bounce", preset.bounce_light),
+            smooth_shading: flag("smooth", preset.smooth_shading),
+            wind: flag("wind", preset.wind),
             sunbeams: flag("sunbeams", false),
-            denoise: flag("denoise", true),
+            denoise: flag("denoise", preset.denoise),
             color_grade: flag("grade", true),
-            bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(0.3),
+            bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(preset.bloom),
+            quality,
+            view_distance: setting("view_distance").and_then(|v| v.parse().ok()).unwrap_or(preset.view_distance),
+            reflections: flag("reflections", preset.reflections),
+            fast_upscale: flag("fast_upscale", preset.fast_upscale),
+            pending_quality: None,
             haze: setting("haze").and_then(|v| v.parse().ok()).unwrap_or(0.0012),
             shafts,
             grass: flag("grass", false),
@@ -2411,7 +2431,8 @@ impl App {
 
             menu_open,
             started: !menu_open,
-            show_settings: false,
+            // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
+            show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
             inventory_open: flag("inventory", false),
             shopping: false,
@@ -4009,6 +4030,26 @@ impl App {
         self.run_script();
     }
 
+    /// Sets everything a quality preset does, as when one's picked in the settings
+    fn apply_quality(&mut self, preset: quality::Preset) {
+        let s = preset.settings();
+        self.quality = preset;
+        self.render_scale = s.render_scale;
+        self.still_render_scale = s.render_scale;
+        self.shadows = s.shadows;
+        self.ambient_occlusion = s.ambient_occlusion;
+        self.bounce_light = s.bounce_light;
+        self.smooth_shading = s.smooth_shading;
+        self.wind = s.wind;
+        self.denoise = s.denoise;
+        self.bloom = s.bloom;
+        self.view_distance = s.view_distance;
+        self.reflections = s.reflections;
+        self.fast_upscale = s.fast_upscale;
+        self.shafts.quality = s.sun_shafts;
+        water::set_flowing_area((s.flowing_water_m * self.world.voxels_per_meter as f32) as u32);
+    }
+
     /// Plays through things that need input, for checking them in screenshot runs: `--script bucket`
     /// scoops up water and pours it back, `wade` walks through a lake, `hunt` hits a squirrel,
     /// `fight` attacks with each weapon and `loot` opens a chest. What happens is printed.
@@ -4635,6 +4676,10 @@ impl App {
         self.resample_pipeline.maybe_reload();
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
+        if let Some(preset) = self.pending_quality.take() {
+            self.apply_quality(preset);
+            quality::keep(preset);
+        }
         let start = Instant::now();
         self.update_window();
         self.slow("moving the world along", start);
@@ -4846,6 +4891,14 @@ impl App {
                     "Flying: WASDQE to move, Shift to go faster, F to walk"
                 });
                 ui.separator();
+                // Sets the render scale and the lighting below, and is kept for next time
+                egui::ComboBox::from_label("Quality").selected_text(self.quality.name()).show_ui(ui, |ui| {
+                    for preset in quality::Preset::ALL {
+                        if ui.selectable_label(self.quality == preset, preset.name()).clicked() {
+                            self.pending_quality = Some(preset);
+                        }
+                    }
+                });
                 ui.add(egui::Slider::new(&mut self.camera.fov, 0.0..=180.0).text("FOV"));
                 ui.add(egui::Slider::new(&mut self.render_scale, 0.125..=2.0).text("Render Scale While Moving"));
                 ui.add(egui::Slider::new(&mut self.still_render_scale, 0.125..=2.0).text("Render Scale When Still"));
@@ -5094,6 +5147,9 @@ impl App {
         if self.wind {
             flags |= FLAG_WIND;
         }
+        if self.reflections {
+            flags |= FLAG_REFLECTIONS;
+        }
 
         let mut post_flags = 0;
         // An sRGB swapchain encodes on its own, otherwise the shader has to
@@ -5163,7 +5219,7 @@ impl App {
         .unwrap();
         // Things fade into the sky before the edge of the world, which is never nearer than this
         let fade = if self.landscape.is_some() {
-            ((self.world.size[0].min(self.world.size[1]) as f64 * 0.5 - RECENTER_M * self.world.voxels_per_meter as f64) as f32).max(0.0)
+            ((self.world.size[0].min(self.world.size[1]) as f64 * 0.5 - RECENTER_M * self.world.voxels_per_meter as f64) as f32).max(0.0) * self.view_distance.clamp(0.25, 1.0)
         } else {
             0.0
         };
@@ -5400,7 +5456,7 @@ impl App {
                 pixel_to_ray: push_constants.pixel_to_ray,
                 previous_world_to_pixel: previous.unwrap_or(world_to_window).cast(),
                 frame: push_constants.frame,
-                flags: if previous.is_some() { UPSCALE_HISTORY } else { 0 },
+                flags: if previous.is_some() { UPSCALE_HISTORY } else { 0 } | if self.fast_upscale { UPSCALE_FAST } else { 0 },
                 // Smoother once the view settles, quicker to catch up while it moves
                 most: if self.still_frames >= 2 { 12.0 } else { 4.0 },
                 padding: 0.0,
