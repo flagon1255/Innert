@@ -110,7 +110,8 @@ impl Preset {
                 ..high
             },
             Preset::High => high,
-            Preset::Ultra => Settings { render_scale: 0.7, ..high },
+            // At the window's own resolution, for cards a few times faster than a 4050 laptop's
+            Preset::Ultra => Settings { render_scale: 1.0, ..high },
         }
     }
 }
