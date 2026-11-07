@@ -183,6 +183,8 @@ struct Pending {
     stains: usize,
     /// Whether all its layers are in
     done: bool,
+    /// Whether it's only just arrived, this frame
+    fresh: bool,
 }
 
 /// A strip that's just been put in, for App::scroll(): where it is, what it has besides its voxels,
@@ -630,7 +632,7 @@ impl App {
                         // go of, and nothing's drawn there till the world moves on to it
                         self.water.take_strip(strip.origin, strip.size, &strip.ground, &strip.surface);
                         let installing = World::install(strip);
-                        stream.installing = Some(Pending { installing, features, springs, axis: job.axis, forward: job.forward, started: job.started, craters: job.craters, stains: job.stains, done: false });
+                        stream.installing = Some(Pending { installing, features, springs, axis: job.axis, forward: job.forward, started: job.started, craters: job.craters, stains: job.stains, done: false, fresh: true });
                     } else {
                         // Its pages go back, nothing drawn with them
                         stream.stats.discarded += 1;
@@ -684,7 +686,9 @@ impl App {
 
         // Putting a strip in, and moving on to it once it's in and all of it's gone over
         let mut put_in = Duration::ZERO;
+        // Not in the frame it's arrived in, whose water's been taken in, a few milliseconds
         if let Some(pending) = &mut stream.installing
+            && !std::mem::take(&mut pending.fresh)
             && (pending.done || {
                 let putting = Instant::now();
                 let done = self.world.install_step(&mut pending.installing, LAYERS_A_FRAME);

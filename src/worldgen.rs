@@ -743,8 +743,8 @@ impl World {
         Installing { strip, next_z: 0, started: false }
     }
 
-    /// Puts up to `layers` more layers of bricks of a strip in, and the first time its pages and
-    /// its maps of grass and water. Whether it's all in.
+    /// Puts up to `layers` more layers of bricks of a strip in, or the first time only its pages
+    /// and its maps of grass and water. Whether it's all in.
     pub fn install_step(&mut self, installing: &mut Installing, layers: u32) -> bool {
         let strip = &mut installing.strip;
         let [sx, sy] = strip.size.map(|n| n as i64);
@@ -782,6 +782,8 @@ impl World {
                     }
                 }
             }
+            // Its layers from the next time on, that being a few milliseconds' worth
+            return false;
         }
         let [bx, by, bz] = [sx / 8, sy / 8, (self.size[2] / 8) as i64];
         let first = [strip.origin[0].div_euclid(8), strip.origin[1].div_euclid(8)];

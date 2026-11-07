@@ -1822,7 +1822,11 @@ impl Placed {
         // corner, or where `--set camera=x,y,z` says in that: the world moves on a strip at a time
         // from there, so it's to start out round the camera, not 18 m from its edge
         let start_camera = setting("camera").and_then(parse_vector).unwrap_or(scene.initial_camera().position);
-        let start_at = camera_to_voxels(start_camera, terrain.size());
+        // As in the widest piece there is, so it starts at the same spot, the lake shore on the
+        // default seed, however wide the world's planned to be: counted in a narrower one, a 2 GB
+        // card's started out somewhere else altogether, walled in
+        let widest = memory::WIDTHS_M[0] * terrain.voxels_per_meter;
+        let start_at = camera_to_voxels(start_camera, [widest, widest, terrain.size()[2]]);
         let origin = match start_in {
             Some(spot) => {
                 let (vpm, size) = (terrain.voxels_per_meter as f64, terrain.size());
