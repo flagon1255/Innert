@@ -73,10 +73,17 @@ const uint BRICK_INDEX = FOLIAGE_BRICK - 1u;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(push_constant) uniform PushConstants {
+// The view, in a small buffer written each frame rather than in the push constants below: AMD's
+// graphics cards and some of Intel's have room for no more than 128 bytes of those, see
+// src\limits.rs. Has to match View in main.rs.
+layout(set = 3, binding = 8) uniform View {
     mat4 pixelToRay;
     // Projects a world position into last frame's image: pixel = xy / z, with z the depth stored for it
     mat4 previousWorldToPixel;
+} view;
+
+// No more than 128 bytes, see View
+layout(push_constant) uniform PushConstants {
     uvec4 world_size; // xyz: size in voxels, w: voxels per meter
     vec4 sun_direction; // xyz: normalized direction towards the sun, w: sea level in voxels (0 for no sea)
     uint render_mode;
@@ -520,7 +527,7 @@ bool voxelHit(uint level, uint cell, ivec3 brick, uvec3 coord, bool through_wate
     // it to see out of. Further out fewer and fewer are left out, so it thins away rather than
     // ending in a wall of leaves.
     if (g_clear_leaves && here) {
-        vec3 off = p + 0.5 - pc.pixelToRay[3].xyz;
+        vec3 off = p + 0.5 - view.pixelToRay[3].xyz;
         float clear = LEAF_CLEAR * float(max(pc.world_size.w, 1u));
         float d = dot(off, off);
         if (d < 4.0 * clear * clear) {
@@ -531,7 +538,7 @@ bool voxelHit(uint level, uint cell, ivec3 brick, uvec3 coord, bool through_wate
     }
     if ((pc.flags & FLAG_WIND) == 0 || !g_sway)
     return here;
-    vec3 to_camera = p - pc.pixelToRay[3].xyz;
+    vec3 to_camera = p - view.pixelToRay[3].xyz;
     float reach = SWAY_REACH * float(max(pc.world_size.w, 1u));
     if (dot(to_camera, to_camera) > reach * reach)
     return here;
@@ -811,8 +818,8 @@ void cullTileAnimals() {
         // The cone around the tile's rays, wherever in their pixels they go through, a little wider
         vec2 lo = vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy) - 1.0;
         vec2 hi = lo + vec2(gl_WorkGroupSize.xy) + 2.0;
-        mat3 m = mat3(pc.pixelToRay);
-        vec3 o = pc.pixelToRay[3].xyz;
+        mat3 m = mat3(view.pixelToRay);
+        vec3 o = view.pixelToRay[3].xyz;
         vec3 axis = normalize(m * vec3((lo + hi) * 0.5, 1));
         float cos_cone = min(min(dot(axis, normalize(m * vec3(lo, 1))), dot(axis, normalize(m * vec3(hi.x, lo.y, 1)))),
             min(dot(axis, normalize(m * vec3(lo.x, hi.y, 1))), dot(axis, normalize(m * vec3(hi, 1)))));
@@ -2491,7 +2498,7 @@ void main() {
     if (any(greaterThanEqual(pixelCoord, imageSize)))
     return;
 
-    vec3 o = pc.pixelToRay[3].xyz;
+    vec3 o = view.pixelToRay[3].xyz;
     uint steps = 0;
 
     if (pc.render_mode == SHADED) {
@@ -2499,7 +2506,7 @@ void main() {
         // Every ray goes through the same spot within its pixel, a different one each frame, which
         // upscale.comp gathers into a sharper image than any one frame
         vec2 jitter = pixelJitter(pc.frame);
-        vec3 ray = mat3(pc.pixelToRay) * vec3(pixelCoord + jitter, 1);
+        vec3 ray = mat3(view.pixelToRay) * vec3(pixelCoord + jitter, 1);
         vec3 d = normalize(ray);
 
         float distance;
@@ -2524,7 +2531,7 @@ void main() {
             if (abs(imageLoad(historyDepth, pixelCoord).r - depth) < 0.03 * depth)
             history = imageLoad(historyColor, pixelCoord);
         } else if (pc.history_limit > 0 && depth >= 0) {
-            vec4 p = pc.previousWorldToPixel * vec4(o + d * distance, 1);
+            vec4 p = view.previousWorldToPixel * vec4(o + d * distance, 1);
             ivec2 previous = ivec2(floor(p.xy / p.z + 0.5));
             if (p.z > 0 && all(greaterThanEqual(previous, ivec2(0))) && all(lessThan(previous, imageSize))) {
                 // Only if it's the same surface, not something in front of it that moved out of the way
@@ -2545,7 +2552,7 @@ void main() {
         return;
     }
 
-    vec3 d = normalize(mat3(pc.pixelToRay) * vec3(pixelCoord, 1));
+    vec3 d = normalize(mat3(view.pixelToRay) * vec3(pixelCoord, 1));
 
     Hit hit;
     bool did_hit = trace(o, d, false, FLT_MAX, hit, steps);

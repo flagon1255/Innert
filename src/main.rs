@@ -34,7 +34,7 @@ use vulkano::{
         Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
         QueueFlags, physical::PhysicalDeviceType,
     },
-    format::{Format, NumericFormat},
+    format::{Format, FormatFeatures, NumericFormat},
     image::{
         Image, ImageCreateInfo, ImageType, ImageUsage,
         sampler::Filter,
@@ -47,7 +47,7 @@ use vulkano::{
     },
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     swapchain::{
-        PresentFuture, PresentMode, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
+        PresentFuture, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
         acquire_next_image,
     },
     sync::{self, GpuFuture, future::FenceSignalFuture},
@@ -73,6 +73,7 @@ mod game;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
+mod limits;
 mod loading;
 mod memory;
 mod perf;
@@ -378,6 +379,7 @@ fn get_allocators(
             memory_type_bits &= !(1 << i);
         }
     }
+    let memory_type_bits = limits::memory_types(properties, memory_type_bits);
     let block_sizes = vec![block; properties.memory_types.len()];
     let memory_allocator = Arc::new(StandardMemoryAllocator::new(
         device.clone(),
@@ -403,16 +405,14 @@ fn get_swapchain_images(
     surface: &Arc<Surface>,
     window: &Window,
 ) -> (Arc<Swapchain>, Vec<Arc<Image>>) {
-    let caps = device
-        .physical_device()
-        .surface_capabilities(surface, Default::default())
-        .unwrap();
+    let physical = device.physical_device();
+    let caps = physical.surface_capabilities(surface, Default::default()).unwrap();
 
-    let image_format = device
-        .physical_device()
-        .surface_formats(surface, Default::default())
-        .unwrap()[0]
-        .0;
+    // One the rendered image can be blitted to, see limits::surface_format()
+    let blits = |format: Format| physical.format_properties(format).is_ok_and(|p| p.optimal_tiling_features.contains(FormatFeatures::BLIT_DST));
+    let (image_format, image_color_space) = limits::surface_format(&physical.surface_formats(surface, Default::default()).unwrap(), blits);
+    // Immediate where it's there, see limits::present_mode()
+    let present_mode = limits::present_mode(&physical.surface_present_modes(surface, Default::default()).unwrap_or_default());
 
     let composite_alpha = caps.supported_composite_alpha.into_iter().next().unwrap();
 
@@ -420,12 +420,14 @@ fn get_swapchain_images(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
-            min_image_count: caps.min_image_count.max(3),
+            min_image_count: caps.max_image_count.map_or(caps.min_image_count.max(3), |most| caps.min_image_count.max(3).min(most)),
             image_format,
+            image_color_space,
             image_extent: window.inner_size().into(),
-            image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
+            // Blitted to, and copied from for shots of the screen where it can be
+            image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST | (caps.supported_usage_flags & ImageUsage::TRANSFER_SRC),
             composite_alpha,
-            present_mode: PresentMode::Immediate,
+            present_mode,
             ..Default::default()
         },
     )
@@ -732,11 +734,31 @@ fn get_render_images(
     }
 }
 
+/// The view, for traverse.comp and shafts.comp: in a small buffer written each frame, rather than
+/// in their push constants, which AMD's graphics cards and some of Intel's have room for only 128
+/// bytes of, see limits.rs. Each frame's is a buffer of its own, see App::instance_allocator, so
+/// the frames still being drawn keep theirs. Has to match View in those shaders.
+#[derive(BufferContents, Clone, Copy)]
+#[repr(C)]
+struct View {
+    pixel_to_ray: Matrix4<f32>,
+    /// World to last frame's rendered pixel
+    previous_world_to_pixel: Matrix4<f32>,
+}
+
+/// The top three rows of `m`, whose last is 0, 0, 0, 1, as upscale.comp takes them
+fn top_rows(m: &Matrix4<f64>) -> [[f32; 4]; 3] {
+    [0, 1, 2].map(|i| [0, 1, 2, 3].map(|j| m[(i, j)] as f32))
+}
+
+/// No more than 128 bytes, see limits.rs
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
 struct UpscaleConstants {
-    pixel_to_ray: Matrix4<f32>,
-    previous_world_to_pixel: Matrix4<f32>,
+    /// See top_rows()
+    pixel_to_ray: [[f32; 4]; 3],
+    /// World to window pixel last frame
+    previous_world_to_pixel: [[f32; 4]; 3],
     frame: u32,
     flags: u32,
     most: f32,
@@ -873,7 +895,8 @@ impl GpuWorld {
     /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
     /// there are copied into on the GPU, which is far quicker than sending the world over again
     fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
-        let capacity = needed + spare_bricks();
+        // No more than a shader can see, see memory::most_bricks()
+        let capacity = (needed + spare_bricks()).min(memory::most_bricks()).max(needed);
         let bricks = Buffer::new_slice::<u32>(
             memory_allocator.clone(),
             BufferCreateInfo { usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC, ..Default::default() },
@@ -1014,7 +1037,8 @@ fn get_voxel_set(
     let reuse_bricks = reuse_bricks.filter(|bricks| bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS);
     let bricks_buffer = match reuse_bricks {
         Some(bricks) => bricks,
-        None => bricks_buffer(&memory_allocator, ((needed + room) * worldgen::BRICK_WORDS) as u64),
+        // No more room than a shader can see, see memory::most_bricks()
+        None => bricks_buffer(&memory_allocator, ((needed + room).min(memory::most_bricks()).max(needed) * worldgen::BRICK_WORDS) as u64),
     };
     let capacity = bricks_buffer.len() as usize / worldgen::BRICK_WORDS;
     staging::send(
@@ -1347,6 +1371,8 @@ struct RenderContext {
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     /// The frames sent to the GPU that may not be done yet, oldest first, see App::max_in_flight
     in_flight: VecDeque<Arc<FrameEnd>>,
+    /// What each of the window's images was last shown with, see loading::Presented
+    presented: loading::Presented,
 }
 
 /// What's waited for to know a frame's done
@@ -1523,18 +1549,34 @@ impl Gpu {
             .map(|p| format!("{} (Vulkan {})", p.properties().device_name, p.api_version()))
             .collect::<Vec<_>>()
             .join(", ");
-        let (physical_device, queue_family_index) = devices
+        // `--set gpu=intel` picks the one whose name has that in it, `gpu=1` the second found, as
+        // where a laptop has a graphics card of its own and its processor's too
+        let wanted = settings_from_args().into_iter().find(|(k, _)| k == "gpu").map(|(_, v)| v.to_lowercase());
+        // And why those passed over were, see limits.rs
+        let mut unsuited = Vec::new();
+        let picked = devices
             .into_iter()
+            .enumerate()
+            .filter(|(i, p)| wanted.as_ref().is_none_or(|w| w.parse::<usize>().map_or_else(|_| p.properties().device_name.to_lowercase().contains(w.as_str()), |n| n == *i)))
+            .map(|(_, p)| p)
             .filter(|p| {
                 p.api_version() >= Version::V1_3 || p.supported_extensions().khr_dynamic_rendering
             })
             .filter(|p| p.supported_extensions().contains(&device_extensions))
+            .filter(|p| match limits::unsuitable(p) {
+                Some(why) => {
+                    unsuited.push(format!("{} has no {why}", p.properties().device_name));
+                    false
+                }
+                None => true,
+            })
             .filter_map(|p| {
                 p.queue_family_properties()
                     .iter()
                     .enumerate()
                     .position(|(i, q)| {
-                        q.queue_flags.intersects(QueueFlags::GRAPHICS)
+                        // Every card has one that does both, but not certainly the first that draws
+                        q.queue_flags.contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
                             && p.presentation_support(i as u32, display).unwrap()
                     })
                     .map(|i| (p, i as u32))
@@ -1546,25 +1588,37 @@ impl Gpu {
                 PhysicalDeviceType::Cpu => 3,
                 PhysicalDeviceType::Other => 4,
                 _ => 5,
-            })
-            .unwrap_or_else(|| {
-                let found = if found.is_empty() { "none".to_string() } else { found };
-                fail(&format!("None of the graphics cards here can run Innert. Found: {found}.\n\n{DRIVER_HINT}"))
             });
+        let (physical_device, queue_family_index) = picked.unwrap_or_else(|| {
+            let found = if found.is_empty() { "none".to_string() } else { found };
+            let unsuited = if unsuited.is_empty() { String::new() } else { format!("\n\n{}.", unsuited.join(".\n")) };
+            let asked = wanted.as_ref().map_or(String::new(), |w| match w.parse::<usize>() {
+                Ok(n) => format!(" numbered {n}, counting from 0,"),
+                Err(_) => format!(" called {w:?}"),
+            });
+            fail(&format!("None of the graphics cards here{asked} can run Innert. Found: {found}.{unsuited}\n\n{DRIVER_HINT}"))
+        });
 
         println!(
             "Using device: {} (type: {:?})",
             physical_device.properties().device_name,
             physical_device.properties().device_type,
         );
+        // What it can do, which the shaders are checked against and the world sized to fit, see
+        // limits.rs
+        let limits = limits::set(&physical_device);
+        if Capture::from_args().is_some() {
+            println!("Limits{}: {limits:?}", if limits::min_mode() { " (no more than AMD's and Intel's)" } else { "" });
+        }
         // Not a graphics card of its own, so slower: it gets a lower quality preset, see quality.rs
         let integrated = physical_device.properties().device_type != PhysicalDeviceType::DiscreteGpu;
 
         if physical_device.api_version() < Version::V1_3 {
             device_extensions.khr_dynamic_rendering = true;
         }
-        // To see how much of its memory is free, see perf::vram()
-        device_extensions.ext_memory_budget = physical_device.supported_extensions().ext_memory_budget;
+        // To see how much of its memory is free, see perf::vram(). As if there were none with
+        // `--set limits=min`, to try out how the game does without.
+        device_extensions.ext_memory_budget = physical_device.supported_extensions().ext_memory_budget && !limits::min_mode();
         // Which the world being built meanwhile is waiting on, to know how big it can be
         memory::set_card(perf::card_vram(&physical_device, device_extensions.ext_memory_budget).map(|v| v.budget));
         // And the quality preset that suits it, see quality.rs
@@ -2304,7 +2358,8 @@ impl App {
         let instance_allocator = SubbufferAllocator::new(
             memory_allocator.clone(),
             SubbufferAllocatorCreateInfo {
-                buffer_usage: BufferUsage::STORAGE_BUFFER,
+                // And each frame's View
+                buffer_usage: BufferUsage::STORAGE_BUFFER | BufferUsage::UNIFORM_BUFFER,
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
@@ -3509,7 +3564,7 @@ impl App {
         self.craters.clear();
         self.stains.clear();
 
-        let max_bytes = self.device.physical_device().properties().max_storage_buffer_range as usize;
+        let max_bytes = limits::get().buffer_bytes() as usize;
         if world.bricks.len() * 4 > max_bytes {
             self.world_error = Some(format!(
                 "That world needs {} MB of bricks but your GPU allows {} MB. Try fewer voxels per metre or a smaller world.",
@@ -4746,6 +4801,7 @@ impl App {
                 }
                 Err(e) => panic!("failed to acquire next image: {e}"),
             };
+        rcx.presented.acquired(image_index);
         if let Some(capture) = &self.capture
             && acquiring.elapsed().as_secs_f64() > 0.015
         {
@@ -4980,7 +5036,7 @@ impl App {
                                     ui.label(format!("About {:.1} GB of the GPU's memory, twice that while the world moves on", gb(piece)));
                                 }
                             }
-                            let max_bricks = self.device.physical_device().properties().max_image_dimension3_d * 8;
+                            let max_bricks = limits::get().image_3d * 8;
                             if size.iter().any(|&n| n > max_bricks) {
                                 can_generate = false;
                                 ui.colored_label(Color32::LIGHT_RED, "This world is too big for your GPU's 3D image limit.");
@@ -5200,6 +5256,14 @@ impl App {
         let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();
         light_buffer.write().unwrap()[..lights.len()].copy_from_slice(&lights);
 
+        // The view, for traverse.comp and shafts.comp
+        let previous_world_to_pixel = self
+            .last_view
+            .as_ref()
+            .map_or(Matrix4::identity(), |last| world_to_pixel(&last.pixel_to_ray.cast()));
+        let view_buffer = self.instance_allocator.allocate_sized::<View>().unwrap();
+        *view_buffer.write().unwrap() = View { pixel_to_ray: pixel_to_ray.cast(), previous_world_to_pixel: previous_world_to_pixel.cast() };
+
         let animal_set = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
             self.render_pipeline.layout().set_layouts()[3].clone(),
@@ -5212,6 +5276,7 @@ impl App {
                 WriteDescriptorSet::buffer(5, light_buffer),
                 WriteDescriptorSet::buffer(6, self.light_cache.clone()),
                 WriteDescriptorSet::buffer(7, self.weapon_models.clone()),
+                WriteDescriptorSet::buffer(8, view_buffer.clone()),
             ],
             [],
         )
@@ -5244,16 +5309,11 @@ impl App {
         } else {
             0
         };
-        let previous_world_to_pixel = self
-            .last_view
-            .as_ref()
-            .map_or(Matrix4::identity(), |last| world_to_pixel(&last.pixel_to_ray.cast()));
 
+        // The view's in view_buffer, see View
         #[derive(BufferContents, Clone, Copy)]
         #[repr(C)]
         struct PushConstants {
-            pixel_to_ray: Matrix4<f32>,
-            previous_world_to_pixel: Matrix4<f32>,
             world_size: [u32; 4],
             sun_direction: [f32; 4],
             render_mode: u32,
@@ -5277,8 +5337,6 @@ impl App {
         // The last of near_size is free, so it carries how many animals there are
         let near_size = [near_size[0], near_size[1], near_size[2], instances.len() as u32];
         let push_constants = PushConstants {
-            pixel_to_ray: view.pixel_to_ray,
-            previous_world_to_pixel: previous_world_to_pixel.cast(),
             world_size: [sx, sy, sz, self.world.voxels_per_meter],
             sun_direction: view.sun_direction,
             render_mode: view.render_mode,
@@ -5307,7 +5365,12 @@ impl App {
         .unwrap();
         // Screenshot runs time each part of the frame on the GPU
         let device = self.device.clone();
-        let mut timer = self.capture.as_mut().filter(|c| c.time_gpu).map(|c| c.gpu.take().unwrap_or_else(|| gpu_timing::GpuTimer::new(&device)));
+        let mut timer = self.capture.as_mut().filter(|c| c.time_gpu).and_then(|c| {
+            // Not where the GPU can't time its work
+            let timer = c.gpu.take().or_else(|| gpu_timing::GpuTimer::new(&device));
+            c.time_gpu = timer.is_some();
+            timer
+        });
         if let Some(timer) = &mut timer {
             timer.begin(&mut builder);
         }
@@ -5382,8 +5445,8 @@ impl App {
         if shaded {
             let images = &rcx.images;
             let frame = shafts::Frame {
-                pixel_to_ray: push_constants.pixel_to_ray,
-                previous_world_to_pixel: push_constants.previous_world_to_pixel,
+                pixel_to_ray: pixel_to_ray.cast(),
+                view: &view_buffer,
                 sun_direction,
                 haze: self.haze,
                 world_size: self.world.size,
@@ -5452,8 +5515,8 @@ impl App {
             let world_to_window = to_window * world_to_pixel(&pixel_to_ray);
             let previous = self.last_world_to_window.replace(world_to_window);
             let constants = UpscaleConstants {
-                pixel_to_ray: push_constants.pixel_to_ray,
-                previous_world_to_pixel: previous.unwrap_or(world_to_window).cast(),
+                pixel_to_ray: top_rows(&pixel_to_ray),
+                previous_world_to_pixel: top_rows(&previous.unwrap_or(world_to_window)),
                 frame: push_constants.frame,
                 flags: if previous.is_some() { UPSCALE_HISTORY } else { 0 } | if self.fast_upscale { UPSCALE_FAST } else { 0 },
                 // Smoother once the view settles, quicker to catch up while it moves
@@ -5634,7 +5697,11 @@ impl App {
         };
 
         let submitting = Instant::now();
-        let frame_end = gui_future
+        // Shown once it's drawn, see loading::Drawn
+        let drawn = loading::Drawn::after(gui_future);
+        let semaphore = drawn.semaphore();
+        let frame_end = drawn
+            .boxed()
             .then_swapchain_present(
                 self.queue.clone(),
                 SwapchainPresentInfo::swapchain_image_index(rcx.swapchain.clone(), image_index),
@@ -5668,6 +5735,8 @@ impl App {
                 } else {
                     rcx.previous_frame_end = Some(frame_end.boxed());
                 }
+                // Kept till its image comes round again, see loading::Presented
+                rcx.presented.showing(image_index, semaphore);
             }
             Err(VulkanError::OutOfDate) => {
                 rcx.recreate_swapchain = true;
@@ -5778,7 +5847,7 @@ fn window_attributes(out_of_sight: bool) -> winit::window::WindowAttributes {
 impl App {
     /// Takes over the window the loading screen was drawn in, see loading.rs
     fn attach(&mut self, screen: loading::Screen, event_loop: &ActiveEventLoop) {
-        let loading::Screen { window, swapchain, image_views, gui, previous_frame_end, recreate_swapchain } = screen;
+        let loading::Screen { window, swapchain, image_views, gui, previous_frame_end, recreate_swapchain, presented } = screen;
         // A window that's never shown is never asked to redraw, so nothing comes along to wake the
         // loop for the next frame in screenshot runs
         event_loop.set_control_flow(if self.capture.is_some() { winit::event_loop::ControlFlow::Poll } else { winit::event_loop::ControlFlow::Wait });
@@ -5829,6 +5898,7 @@ impl App {
 
             previous_frame_end,
             in_flight: VecDeque::new(),
+            presented,
         });
     }
 }
