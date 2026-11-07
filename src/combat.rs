@@ -6285,10 +6285,14 @@ impl Combat {
     /// For looking at pools, see Game::lay_pools(): one of each element and one of churned earth,
     /// as a weapon's effect leaves them, laid out three by three over the ground `ahead` of `eye`,
     /// hurting nothing
-    pub fn lay_pools(&mut self, world: &World, water: WaterLevel, profile: &Rc<Profile>, eye: Vector3<f64>, ahead: Vector3<f64>) {
-        for (element, ground) in pool_layout(world, water, eye, ahead) {
+    /// Gives back where the middle of them is.
+    pub fn lay_pools(&mut self, world: &World, water: WaterLevel, profile: &Rc<Profile>, eye: Vector3<f64>, ahead: Vector3<f64>) -> Vector3<f64> {
+        let layout = pool_layout(world, water, eye, ahead);
+        let middle = layout[4].1;
+        for (element, ground) in layout {
             self.lingering.push(Lingering { pool: true, tick: f64::INFINITY, ..Lingering::new(ground, 1.5, 4.0, element, profile, 0.0) });
         }
+        middle
     }
 
     /// How many things are in flight, and how far the furthest is from `eye`, in meters

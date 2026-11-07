@@ -4069,7 +4069,11 @@ impl App {
                 }
                 if f >= 20 && (f - 20) % 250 == 0 {
                     let water = &self.water;
-                    self.game.lay_pools(&self.world, &|x, y| water.surface_at(x, y), eye, look);
+                    let middle = self.game.lay_pools(&self.world, &|x, y| water.surface_at(x, y), eye, look);
+                    // Looking down at the middle of them, the first time
+                    if f == 20 {
+                        self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    }
                 }
             }
             // One spell cast up over the land ahead, the view narrowed to follow it a long way
@@ -4081,6 +4085,10 @@ impl App {
                     self.camera.rotation.z += turn;
                     self.camera.rotation.x = 0.22;
                     self.camera.fov = 30.0;
+                }
+                // Nothing near for it to home in on
+                if f <= 30 {
+                    self.game.shoo_animals(eye, 80.0);
                 }
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
