@@ -1300,7 +1300,7 @@ struct Remnant {
     lifetime: f64,
 }
 
-/// Seconds an explosion's smoke drifts after it, and how many drift at once at most
+/// Seconds an explosion's smoke drifts after it, about, and how many drift at once at most
 const REMNANT_SECONDS: f64 = 0.7;
 const MOST_REMNANTS: usize = 8;
 /// How many explosions at once are drawn with a ring thrown up round them on the ground
@@ -4486,7 +4486,9 @@ impl Combat {
             let b = self.blasts.remove(k);
             self.blast_floors.remove(k);
             if b.radius >= 0.9 && leaves_smoke(b.look) {
-                self.remnants.push(Remnant { position: b.position, look: b.look, radius: b.radius, yaw: blast_yaw(b.position), life: REMNANT_SECONDS, lifetime: REMNANT_SECONDS });
+                // The bigger the explosion, the longer its smoke hangs
+                let life = REMNANT_SECONDS * (0.75 + 0.15 * b.radius).min(1.4);
+                self.remnants.push(Remnant { position: b.position, look: b.look, radius: b.radius, yaw: blast_yaw(b.position), life, lifetime: life });
             }
         }
         for r in &mut self.remnants {
