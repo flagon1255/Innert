@@ -88,11 +88,10 @@ const DUST_PER_HAZE: f32 = 10.0;
 /// How bright the screen space shafts are
 const LOW_GAIN: f32 = 0.25;
 
+/// No more than 128 bytes, see limits.rs: the view's in a buffer of its own, Frame::view
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
 struct Constants {
-    pixel_to_ray: Matrix4<f32>,
-    previous_world_to_pixel: Matrix4<f32>,
     sun: [f32; 4],
     air: [f32; 4],
     map: [f32; 4],
@@ -104,9 +103,10 @@ struct Constants {
 
 /// What shafts.comp needs from the frame being drawn
 pub struct Frame<'a> {
-    /// As in traverse.comp's push constants
+    /// As in traverse.comp
     pub pixel_to_ray: Matrix4<f32>,
-    pub previous_world_to_pixel: Matrix4<f32>,
+    /// The view traverse.comp was given: that, and world to last frame's rendered pixel
+    pub view: &'a Subbuffer<crate::View>,
     /// xyz: towards the sun, w: sea level in voxels
     pub sun_direction: [f32; 4],
     /// Haze per meter at sea level
@@ -327,10 +327,11 @@ impl Shafts {
             (targets.extent, targets.sets[parity].clone())
         };
         let render_extent = self.targets.as_ref().unwrap().render_extent;
+        // And the view, see View in shafts.comp
         let voxels = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
             self.pipeline.layout().set_layouts()[1].clone(),
-            [WriteDescriptorSet::image_view(0, frame.grid.clone()), WriteDescriptorSet::buffer(1, frame.bricks.clone())],
+            [WriteDescriptorSet::image_view(0, frame.grid.clone()), WriteDescriptorSet::buffer(1, frame.bricks.clone()), WriteDescriptorSet::buffer(2, frame.view.clone())],
             [],
         )
         .unwrap();
@@ -338,8 +339,6 @@ impl Shafts {
         let low_sun = 1.0 - 0.65 * smoothstep(0.2, 0.85, sun.z as f32);
         let [sx, sy, sz] = frame.world_size;
         let mut constants = Constants {
-            pixel_to_ray: frame.pixel_to_ray,
-            previous_world_to_pixel: frame.previous_world_to_pixel,
             sun: [frame.sun_direction[0], frame.sun_direction[1], frame.sun_direction[2], 0.0],
             air: [frame.haze, vpm as f32, frame.sun_direction[3], frame.seconds],
             map: [0.0, 0.0, 0.0, 1.0],

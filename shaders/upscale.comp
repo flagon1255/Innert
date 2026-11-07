@@ -11,10 +11,12 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(push_constant) uniform PushConstants {
-    // Rendered pixel to ray, as in traverse.comp
-    mat4 pixelToRay;
-    // World to window pixel last frame, as (x * z, y * z, z)
-    mat4 previousWorldToPixel;
+    // Rendered pixel to ray, as in traverse.comp, and world to window pixel last frame, as
+    // (x * z, y * z, z): the top three rows of each, a column here each, as the bottom one's always
+    // 0, 0, 0, 1. That leaves them room in the 128 bytes of push constants AMD's graphics cards have,
+    // see src\limits.rs. Taken as vec4(p, 1) * pixelToRay.
+    mat3x4 pixelToRay;
+    mat3x4 previousWorldToPixel;
     uint frame;
     uint flags;
     // How much the most that's been gathered counts for against a new pixel landing right on
@@ -171,8 +173,8 @@ void main() {
     if (!held) {
         // The sky is far enough away that only turning moves it
         float depth = closest < FLT_MAX ? closest : 1e6;
-        vec3 world = pc.pixelToRay[3].xyz + mat3(pc.pixelToRay) * vec3(at, 1) * depth;
-        vec4 then = pc.previousWorldToPixel * vec4(world, 1);
+        vec3 world = vec4(vec3(at, 1) * depth, 1) * pc.pixelToRay;
+        vec3 then = vec4(world, 1) * pc.previousWorldToPixel;
         previous = then.xy / then.z;
         found = found && then.z > 0 && all(greaterThanEqual(previous, vec2(-0.5))) && all(lessThan(previous, vec2(size) - 0.5));
     }

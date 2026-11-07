@@ -32,7 +32,7 @@ fn source(path: &Path, built_in: &str) -> String {
     source_text
 }
 
-fn compile_source(
+pub(crate) fn compile_source(
     source_text: &str,
     path: &Path,
     kind: shaderc::ShaderKind,
@@ -150,6 +150,17 @@ fn spirv(path: &Path, built_in: &str, kind: shaderc::ShaderKind, entry_point_nam
     Ok(words)
 }
 
+/// What the shader `words` from `path` needs more of than the graphics card has, see limits.rs,
+/// if anything: 128 bytes of push constants on AMD's cards, say, where NVIDIA's have 256
+fn shortfalls(path: &Path, words: &[u32]) -> Option<String> {
+    let name = path.file_name().map_or("a shader".into(), |n| n.to_string_lossy());
+    let short = match crate::limits::Needs::of(words) {
+        Ok(needs) => crate::limits::get().shortfalls(&needs),
+        Err(e) => vec![e],
+    };
+    (!short.is_empty()).then(|| format!("{name} needs {}", short.join(", and ")))
+}
+
 fn get_pipeline(shader_module: Arc<ShaderModule>) -> Arc<ComputePipeline> {
     let device = shader_module.device().clone();
     let entry_point = shader_module.entry_point("main").unwrap();
@@ -209,6 +220,10 @@ impl HotReloadComputePipeline {
         });
 
         let words = spirv(path, built_in, shaderc::ShaderKind::Compute, "main").unwrap();
+        // Said plainly where the graphics card hasn't what it takes, rather than falling over
+        if let Some(short) = shortfalls(path, &words) {
+            crate::fail(&format!("This graphics card can't run Innert: {short}."));
+        }
 
         let shader_module = unsafe {
             ShaderModule::new(device, ShaderModuleCreateInfo::new(&words)).unwrap()
@@ -235,6 +250,10 @@ impl HotReloadComputePipeline {
                     return false;
                 }
             };
+            if let Some(short) = shortfalls(&self.path, &words) {
+                eprintln!("{short}");
+                return false;
+            }
 
             let shader_module = unsafe {
                 ShaderModule::new(
