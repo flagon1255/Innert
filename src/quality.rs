@@ -5,30 +5,14 @@
 
 use std::path::PathBuf;
 
+use crate::shafts;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
     Low,
     Medium,
     High,
     Ultra,
-}
-
-/// How the light shafts of the sun through the haze are drawn, see shaders\shafts.comp
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SunShafts {
-    Off,
-    Low,
-    High,
-}
-
-impl SunShafts {
-    pub fn name(self) -> &'static str {
-        match self {
-            SunShafts::Off => "off",
-            SunShafts::Low => "low",
-            SunShafts::High => "high",
-        }
-    }
 }
 
 /// What a preset sets
@@ -43,7 +27,8 @@ pub struct Settings {
     pub wind: bool,
     pub denoise: bool,
     pub bloom: f32,
-    pub sun_shafts: SunShafts,
+    /// How the sun shafts in the haze are drawn, see shafts.rs
+    pub sun_shafts: shafts::Quality,
     /// How far off things fade into the sky, as a part of as far as the world reaches
     pub view_distance: f32,
     /// Whether water and metal mirror the world around them, rather than just the sky
@@ -83,7 +68,7 @@ impl Preset {
             wind: true,
             denoise: true,
             bloom: 0.3,
-            sun_shafts: SunShafts::High,
+            sun_shafts: shafts::Quality::High,
             view_distance: 1.0,
             reflections: true,
             fast_upscale: false,
@@ -94,7 +79,8 @@ impl Preset {
                 render_scale: 0.33,
                 wind: false,
                 bloom: 0.0,
-                sun_shafts: SunShafts::Off,
+                // The sky smeared towards the sun, a tenth of a millisecond on a 4050 laptop
+                sun_shafts: shafts::Quality::Low,
                 // Nearer than this the mountains fade away, which shows more than it saves
                 view_distance: 1.0,
                 reflections: false,
@@ -104,7 +90,7 @@ impl Preset {
             },
             Preset::Medium => Settings {
                 render_scale: 0.4,
-                sun_shafts: SunShafts::Low,
+                sun_shafts: shafts::Quality::Low,
                 fast_upscale: true,
                 flowing_water_m: 48.0,
                 ..high

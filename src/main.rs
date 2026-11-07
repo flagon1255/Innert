@@ -2136,7 +2136,8 @@ impl App {
             shafts_pipeline,
             &memory_allocator,
             &descriptor_set_allocator,
-            setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(if integrated { shafts::Quality::Low } else { shafts::Quality::High }),
+            // As the quality preset has them, which on cards that aren't their own is Low
+            setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(preset.sun_shafts),
             setting("sun_shafts_strength").and_then(|v| v.parse().ok()).unwrap_or(1.0),
         );
 
@@ -3533,6 +3534,7 @@ impl App {
         self.view_distance = s.view_distance;
         self.reflections = s.reflections;
         self.fast_upscale = s.fast_upscale;
+        self.shafts.quality = s.sun_shafts;
         water::set_flowing_area((s.flowing_water_m * self.world.voxels_per_meter as f32) as u32);
     }
 
