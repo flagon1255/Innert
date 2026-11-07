@@ -4802,7 +4802,6 @@ impl App {
                                 ui.set_width(340.0);
                                 ui.vertical_centered(|ui| {
                                     ui.label(RichText::new("INNERT").size(60.0).strong().color(Color32::WHITE));
-                                    ui.label(RichText::new("a little voxel wilderness").size(15.0).color(Color32::from_gray(200)));
                                     ui.add_space(26.0);
 
                                     let button = |ui: &mut egui::Ui, text: &str| {

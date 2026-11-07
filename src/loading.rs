@@ -1001,20 +1001,17 @@ fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Op
     let middle = h * 0.42;
     let center = w * 0.5;
     cube(&painter, pos2(center, middle - 118.0 + (t * 1.7).sin() * 3.0), t, alpha);
-    let (mut name, mut motto, mut solid) = (pos2(center, middle - 18.0), pos2(center, middle + 24.0), alpha);
+    let (mut name, mut solid) = (pos2(center, middle - 18.0), alpha);
     if let Some((menu, along)) = glide {
         // As the menu lays them out, under its margin, see App::render()
         let row = |size: f32| ctx.fonts(|f| f.row_height(&FontId::proportional(size)));
         let to = pos2(menu.center().x, menu.top() + 36.0 + row(60.0) * 0.5);
-        let gap = ctx.style().spacing.item_spacing.y;
         name = name.lerp(to, smoothstep(along));
-        motto = motto.lerp(pos2(to.x, to.y + row(60.0) * 0.5 + gap + row(15.0) * 0.5), smoothstep(along));
         if along < 1.0 {
             solid = 1.0;
         }
     }
     painter.text(name, Align2::CENTER_CENTER, "INNERT", FontId::proportional(60.0), Color32::WHITE.gamma_multiply(solid));
-    painter.text(motto, Align2::CENTER_CENTER, "a little voxel wilderness", FontId::proportional(15.0), Color32::from_gray(200).gamma_multiply(solid));
 
     let width = (w * 0.56).min(360.0);
     let bar = Rect::from_min_size(pos2(center - width * 0.5, middle + 78.0), vec2(width, 4.0));
