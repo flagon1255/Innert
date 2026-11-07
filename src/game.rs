@@ -16,6 +16,7 @@ use crate::bosses::{self, Deed, Flock, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
+use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
@@ -526,6 +527,8 @@ pub struct Game {
     models_version: u32,
     seed: u32,
     rng: u32,
+    /// Something worth saving the game for straight away has happened, see take_milestone()
+    milestone: bool,
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -660,6 +663,7 @@ impl Game {
             models_version: 0,
             seed,
             rng: hash(seed ^ 0x9a3e),
+            milestone: false,
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -2126,6 +2130,11 @@ impl Game {
         self.dead.is_some()
     }
 
+    /// Where the player last stood safe, their feet in voxels, where they'd rise again
+    pub fn rest_spot(&self) -> Option<Vector3<f64>> {
+        self.rest
+    }
+
     /// How far the view has sunk to the ground as the player fell dead, 0 to 1
     pub fn fallen(&self) -> f64 {
         self.dead.as_ref().map_or(0.0, |(_, since)| {
@@ -2381,6 +2390,7 @@ impl Game {
             }
             if let Some(boss) = animal.boss.as_ref().filter(|_| look.is_boss()) {
                 self.defeated.insert(boss.key);
+                self.milestone = true;
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
                 let raid = look.is_raid();
@@ -2426,6 +2436,7 @@ impl Game {
             {
                 self.cleared.insert(key);
                 cleared.push(key);
+                self.milestone = true;
             }
             self.target = None;
         }
@@ -2780,6 +2791,7 @@ impl Game {
         let hoard = chest.hoard;
         let gold = if hoard { gold + 60 + (hash(seed ^ 0x40a2) % 60) as u32 } else { gold };
         self.opened.insert(key);
+        self.milestone = true;
         self.target = None;
         let rarity = &self.library.rarities[weapon.grade];
         let family = &self.library.families[weapon.family];
@@ -2991,6 +3003,7 @@ impl Game {
             _ => self.add_item(item, 1),
         }
         self.cues.push(Cue::here(Sound::Coins, 0.8));
+        self.milestone = true;
         self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
     }
 
@@ -3017,6 +3030,7 @@ impl Game {
             self.stocks.entry(key).or_default().insert(0, Ware::Weapon(w));
         }
         self.cues.push(Cue::here(Sound::Coins, 0.8).pitched(0.9));
+        self.milestone = true;
         self.say(format!("Sold {} for {paid} gold.", self.item_name(item)));
     }
 
@@ -3227,6 +3241,268 @@ impl Game {
         if let Some(slot) = self.slots.iter().position(|(item, _)| matches!(item, Item::Weapon(i) if self.weapons[*i].kind() == kind)) {
             self.hold(slot);
         }
+    }
+
+    /// Whether something's happened since last asked that's worth saving the game for straight
+    /// away: a boss beaten, a camp cleared, a chest opened, something bought or sold
+    pub fn take_milestone(&mut self) -> bool {
+        std::mem::take(&mut self.milestone)
+    }
+
+    /// Weapon `w` as it's saved, by what it's made of: each part by its id, and where a few parts
+    /// share an id, as some do in assets\weapons.json, which of them it is after a #, as
+    /// `earthshaker_head#1` for the second
+    fn weapon_save(&self, w: usize) -> save::WeaponSave {
+        let weapon = &self.weapons[w];
+        let components = &self.library.components;
+        let part = |p: usize| {
+            let id = &components[p].id;
+            match components[..p].iter().filter(|c| c.id == *id).count() {
+                0 => id.clone(),
+                twin => format!("{id}#{twin}"),
+            }
+        };
+        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed }
+    }
+
+    /// Makes a saved weapon again, kept among Game::weapons: None if the parts it was made of are
+    /// no more, or don't fit its family any more
+    fn weapon_from(&mut self, saved: &save::WeaponSave) -> Option<usize> {
+        let family = self.library.family(&saved.family)?;
+        let slots = &self.library.families[family].slots;
+        let components = &self.library.components;
+        let part = |name: &String| {
+            let (id, twin) = name.split_once('#').map_or((name.as_str(), 0), |(id, n)| (id, n.parse().unwrap_or(0)));
+            components.iter().enumerate().filter(|(_, c)| c.id == id).nth(twin).map(|(p, _)| p)
+        };
+        let parts: Vec<usize> = saved.parts.iter().map(part).collect::<Option<_>>()?;
+        if parts.len() != slots.len() || parts.iter().zip(slots).any(|(&p, slot)| self.library.components[p].slot_type != *slot) {
+            return None;
+        }
+        self.weapons.push(Weapon::assemble(&self.library, family, parts, saved.seed));
+        Some(self.weapons.len() - 1)
+    }
+
+    /// `item` as it's saved
+    fn item_save(&self, item: Item) -> save::ItemSave {
+        use save::ItemSave as S;
+        match item {
+            Item::Bucket => S::Bucket,
+            Item::Apple => S::Apple,
+            Item::Meat => S::Meat,
+            Item::Bread => S::Bread,
+            Item::Potion => S::Potion,
+            Item::Gold(amount) => S::Gold { amount },
+            Item::Weapon(w) => S::Weapon(self.weapon_save(w)),
+            Item::Ammo(k, rounds) => S::Ammo { id: self.library.ammo[k].id.clone(), rounds },
+        }
+    }
+
+    /// A saved item made again: None for what's no more, like ammo since taken out of the game
+    fn item_from(&mut self, saved: &save::ItemSave) -> Option<Item> {
+        use save::ItemSave as S;
+        Some(match saved {
+            S::Bucket => Item::Bucket,
+            S::Apple => Item::Apple,
+            S::Meat => Item::Meat,
+            S::Bread => Item::Bread,
+            S::Potion => Item::Potion,
+            S::Gold { amount } => Item::Gold(*amount),
+            S::Weapon(w) => Item::Weapon(self.weapon_from(w)?),
+            S::Ammo { id, rounds } => Item::Ammo(self.library.ammo.iter().position(|a| a.id == *id)?, *rounds),
+            S::Unknown => return None,
+        })
+    }
+
+    /// What the player carries, as it's saved
+    pub fn carried_save(&self) -> save::CarriedSave {
+        save::CarriedSave {
+            gold: self.gold,
+            selected: self.selected.min(self.slots.len().saturating_sub(1)),
+            bucket: self.bucket,
+            slots: self.slots.iter().map(|&(item, count)| save::SlotSave { item: self.item_save(item), count }).collect(),
+        }
+    }
+
+    /// What's been done in this world that stays done, as it's saved: chests opened, bosses beaten,
+    /// dens cleared and what's left on the merchants' stalls
+    pub fn world_save(&self) -> save::WorldSave {
+        let sorted = |set: &HashSet<[i64; 3]>| {
+            let mut keys: Vec<[i64; 3]> = set.iter().copied().collect();
+            keys.sort_unstable();
+            keys
+        };
+        let mut stocks: Vec<save::StockSave> = self
+            .stocks
+            .iter()
+            .map(|(&key, wares)| save::StockSave {
+                key,
+                wares: wares
+                    .iter()
+                    .map(|ware| match *ware {
+                        Ware::Weapon(w) => save::WareSave::Weapon(self.weapon_save(w)),
+                        Ware::Food(item, left) => save::WareSave::Goods { item: self.item_save(item), left },
+                    })
+                    .collect(),
+            })
+            .collect();
+        stocks.sort_by_key(|s| s.key);
+        save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() }
+    }
+
+    /// Health, hunger and mana
+    pub fn vitals(&self) -> (f64, f64, f64) {
+        (self.health, self.hunger, self.combat.mana)
+    }
+
+    /// Lets go of everything of the world the player was in: its animals, bosses, monsters,
+    /// merchants and what lies about, for another to be built round them, landscape `seed`. What
+    /// they carry stays, and so does what's been done there, till restore() or new_character().
+    pub fn leave_world(&mut self, seed: u32) {
+        self.animals.clear();
+        self.pickups.clear();
+        self.props.clear();
+        self.chests.clear();
+        self.lairs.clear();
+        self.dens.clear();
+        self.boss_chests.clear();
+        self.hoards.clear();
+        self.beams.clear();
+        self.merchants.clear();
+        self.royals.clear();
+        self.shop = None;
+        self.target = None;
+        self.combat.clear();
+        self.leaves.clear();
+        self.roots.clear();
+        self.webs.clear();
+        self.fumes.clear();
+        self.rest = None;
+        self.safe_for = 0.0;
+        self.knockback = Vector3::zeros();
+        self.thrown = Vector3::zeros();
+        self.seed = seed;
+    }
+
+    /// Someone setting out afresh: what the player starts with, at full health, and nothing yet
+    /// done anywhere
+    pub fn new_character(&mut self, seed: u32) {
+        self.slots.clear();
+        self.arm(seed, 1.0);
+        self.gold = STARTING_GOLD;
+        self.bucket = 0.0;
+        self.opened.clear();
+        self.defeated.clear();
+        self.cleared.clear();
+        self.stocks.clear();
+        self.ammo_choice.clear();
+        self.set_vitals(MAX_HEALTH, 80.0, MAX_MANA);
+    }
+
+    /// The player as saved: what they carry, how they are, and what's been done in the world
+    /// they're in. What can't be made again, like a weapon whose parts are no more, is left out.
+    pub fn restore(&mut self, carried: &save::CarriedSave, world: &save::WorldSave, (health, hunger, mana): (f64, f64, f64)) {
+        self.weapons.clear();
+        self.combat.renumber(|_| None);
+        self.loaded = None;
+        self.ammo_choice.clear();
+        self.slots.clear();
+        for slot in &carried.slots {
+            if let Some(item) = self.item_from(&slot.item) {
+                self.slots.push((item, slot.count.max(1)));
+            }
+        }
+        self.selected = carried.selected.min(self.slots.len().saturating_sub(1));
+        self.gold = carried.gold;
+        self.bucket = carried.bucket.clamp(0.0, BUCKET_CAPACITY);
+        self.restore_world(world);
+        self.set_vitals(health, hunger, mana);
+        self.models_version += 1;
+    }
+
+    /// What's been done in the world the player's in, as saved
+    pub fn restore_world(&mut self, world: &save::WorldSave) {
+        self.opened = world.opened.iter().copied().collect();
+        self.defeated = world.defeated.iter().copied().collect();
+        self.cleared = world.cleared.iter().copied().collect();
+        self.stocks.clear();
+        for stock in &world.stocks {
+            let mut wares = Vec::new();
+            for ware in &stock.wares {
+                match ware {
+                    save::WareSave::Weapon(w) => wares.extend(self.weapon_from(w).map(Ware::Weapon)),
+                    save::WareSave::Goods { item, left } => wares.extend(self.item_from(item).map(|i| Ware::Food(i, *left))),
+                    save::WareSave::Unknown => {}
+                }
+            }
+            self.stocks.insert(stock.key, wares);
+        }
+        self.models_version += 1;
+    }
+
+    fn set_vitals(&mut self, health: f64, hunger: f64, mana: f64) {
+        self.health = health.clamp(1.0, MAX_HEALTH);
+        self.hunger = hunger.clamp(0.0, 100.0);
+        self.combat.mana = mana.clamp(0.0, MAX_MANA);
+        self.dead = None;
+        self.died = false;
+        self.down = DOWN_SECONDS;
+        self.since_hurt = 100.0;
+        self.hurt_flash = 0.0;
+        self.splats.clear();
+        self.burning = 0.0;
+        self.poisoned = 0.0;
+        self.chilled = 0.0;
+        self.snared = 0.0;
+    }
+
+    /// Animals about `near`, a merchant not far off and apples under the trees, in a world just
+    /// come to, keeping what's been done there
+    pub fn spawn_wildlife(&mut self, world: &World, water: WaterLevel, near: Vector3<f64>) {
+        let seed = self.seed;
+        self.animals.extend(animals::spawn(world, water, seed, near));
+        let away = hash(seed ^ 0x3e7) as f64 / u32::MAX as f64 * TAU;
+        let stall = near + Vector3::new(away.cos(), away.sin(), 0.0) * 9.0 * world.voxels_per_meter as f64;
+        if let Some(merchant) = animals::spawn_merchant(world, water, stall, 4.0, seed ^ 0x3e7) {
+            self.merchants.push((merchant.id, [near.x as i64, near.y as i64, -2 - seed as i64]));
+            self.animals.push(merchant);
+        }
+        for _ in 0..4000 {
+            if self.apple_count() >= APPLES {
+                break;
+            }
+            self.grow_apple(world, water, near);
+        }
+    }
+
+    /// For trying out saving: the player carrying `gold`
+    pub fn set_gold(&mut self, gold: u32) {
+        self.gold = gold;
+    }
+
+    /// For checking a game saved comes back the same: the player's state in a line
+    pub fn summary(&self) -> String {
+        let weapons: Vec<String> = self.slots.iter().filter_map(|(item, _)| match item {
+            Item::Weapon(w) => Some(format!("{}#{}", self.weapons[*w].name, self.weapons[*w].seed)),
+            _ => None,
+        }).collect();
+        let others: Vec<String> = self.slots.iter().filter(|(item, _)| !matches!(item, Item::Weapon(_))).map(|&(item, n)| format!("{}x{n}", self.item_name(item))).collect();
+        format!(
+            "health={:.1} hunger={:.1} mana={:.1} gold={} bucket={:.2} selected={} slots={} weapons=[{}] items=[{}] opened={} defeated={} cleared={} stocks={}",
+            self.health,
+            self.hunger,
+            self.combat.mana,
+            self.gold,
+            self.bucket,
+            self.selected,
+            self.slots.len(),
+            weapons.join(", "),
+            others.join(", "),
+            self.opened.len(),
+            self.defeated.len(),
+            self.cleared.len(),
+            self.stocks.len()
+        )
     }
 
     fn eat(&mut self, slot: usize) {
@@ -4698,5 +4974,58 @@ mod tests {
                 assert!(weapons[i + 1..].iter().all(|b| b.family != a.family));
             }
         }
+    }
+
+    /// What's carried and what's been done, saved and restored into another game, is all there
+    /// again as it was, weapons made of the same parts with the same names
+    #[test]
+    fn a_saved_player_comes_back_the_same() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.arm(77, 4.0);
+        game.add_item(Item::Bread, 3);
+        game.add_item(Item::Potion, 1);
+        game.add_item(Item::Gold(5), 1);
+        game.gold = 812;
+        game.bucket = 1.25;
+        game.selected = 3;
+        game.health = 42.0;
+        game.hunger = 13.5;
+        game.combat.mana = 20.0;
+        game.opened.insert([1, 2, 3]);
+        game.defeated.insert([-4, 5, 6]);
+        game.cleared.insert([7, -8, 9]);
+        game.stock([10, 11, 12]);
+        // A ware bought and one sold back onto the stall
+        game.shop = Some([10, 11, 12]);
+        game.buy(5);
+        game.sell(0);
+        game.shop = None;
+        let carried = game.carried_save();
+        let done = game.world_save();
+        let summary = game.summary();
+        // Through the file's own form and back
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&carried).unwrap()).unwrap();
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&done).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &done, game.vitals());
+        assert_eq!(other.summary(), summary);
+        assert_eq!(other.carried_save(), game.carried_save());
+        assert_eq!(other.world_save(), game.world_save());
+        let names = |g: &Game| g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(g.weapons[*w].name.clone()) } else { None }).collect::<Vec<_>>();
+        assert_eq!(names(&other), names(&game));
+        // A weapon whose parts are no more is left out, the rest kept
+        let mut damaged = carried.clone();
+        if let save::ItemSave::Weapon(w) = &mut damaged.slots[0].item {
+            w.parts[0] = "a part long gone".into();
+        }
+        other.restore(&damaged, &done, game.vitals());
+        assert_eq!(other.slots.len(), game.slots.len() - 1);
+        // Starting afresh leaves nothing of it
+        other.new_character(9);
+        assert_eq!(other.gold, STARTING_GOLD);
+        assert!(other.defeated.is_empty() && other.opened.is_empty() && other.stocks.is_empty());
+        assert_eq!(other.health, MAX_HEALTH);
     }
 }
