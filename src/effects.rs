@@ -872,7 +872,7 @@ fn ice(stage: usize) -> (Model, Vector3<f64>) {
     g.model()
 }
 
-/// A pillar of light six meters high: a white-hot thread up its heart, light wound round it, motes
+/// A pillar of light six meters high: spirals of white-hot light and gold wound round it, motes
 /// rising round it and a blaze spreading over the ground at its foot; then thinning, breaking up
 fn pillar(stage: usize) -> (Model, Vector3<f64>) {
     let mut g = Grid::span([-1.3, -1.3, 0.0], [1.3, 1.3, 6.2], PILLAR_RES);
@@ -893,7 +893,7 @@ fn pillar(stage: usize) -> (Model, Vector3<f64>) {
             if fading && k % 3 == 0 {
                 continue;
             }
-            g.line(w[0], w[1], 0.045, 0.045, FLAME, false);
+            g.line(w[0], w[1], 0.045, 0.045, if strand == 0 { FLAME } else { GOLD }, false);
         }
     }
     // The column, broken into lengths as it fades
