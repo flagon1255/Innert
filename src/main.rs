@@ -307,8 +307,9 @@ struct NearBuild {
 const RETIRED_FRAMES: u32 = 8;
 /// How far short of the edge of the world things fade into the sky, past a strip's width, in
 /// meters: the world moves on a strip at a time once the camera's half a strip from its middle, so
-/// the edge is never nearer than half the world less a strip, see stream.rs
-const FADE_SHORT_M: f64 = 4.0;
+/// the edge is never nearer than half the world less a strip, see stream.rs. 14 m gives 82 m in a
+/// 224 m world, as far as one saw before it moved on in strips: 4 m gave 92 m for 0.08 ms more
+const FADE_SHORT_M: f64 = 14.0;
 /// Frames sent to the GPU before the oldest is waited for, see App::max_in_flight
 const MAX_IN_FLIGHT: usize = 2;
 /// Of what the GPU's memory has room for, see perf::vram(), this much is kept free for what comes
