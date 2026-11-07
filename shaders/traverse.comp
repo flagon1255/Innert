@@ -642,8 +642,26 @@ bool traverse(uint level, vec3 origin, vec3 dir, bool through_water, float max_d
             // ray it traces.
             vec3 t = (coord + 0.5 * (1 + sgn_dir) - origin) * inv_dir;
             {
+                // Bricks without leaves, most of them, only need their occupancy bits, a word of
+                // which covers 32 voxels, so it's only loaded again once the ray moves on to another
+                bool plain = !solid_brick && (cell & FOLIAGE_BRICK) == 0;
+                uint base = ((cell & BRICK_INDEX) - 1) * BRICK_WORDS;
+                uint word_at = 0xFFFFFFFFu;
+                uint word = 0;
                 while (true) {
-                    if ((solid_brick || voxelHit(level, cell, brick, coord, through_water, shift)) && enter >= ignore_until) {
+                    bool occupied;
+                    if (plain) {
+                        uvec3 l = coord % 8;
+                        uint i = l.x + l.y * 8 + l.z * 64;
+                        if (i >> 5 != word_at) {
+                            word_at = i >> 5;
+                            word = brickWord(level, base + word_at);
+                        }
+                        occupied = (word >> (i & 31u) & 1u) != 0 && (!through_water || brickMaterial(level, cell, l) != MAT_WATER);
+                    } else {
+                        occupied = solid_brick || voxelHit(level, cell, brick, coord, through_water, shift);
+                    }
+                    if (occupied && enter >= ignore_until) {
                         found = true;
                         break;
                     }
