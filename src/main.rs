@@ -9,6 +9,7 @@ use egui_winit_vulkano::{
 use nalgebra::{Matrix3, Matrix4, Rotation3, UnitQuaternion, Vector2, Vector3, Vector4};
 use std::path::PathBuf;
 use std::{
+    collections::VecDeque,
     f64::consts::{FRAC_PI_2, TAU},
     path::Path,
     sync::Arc,
@@ -40,13 +41,16 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo},
     },
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    memory::{
+        MemoryPropertyFlags,
+        allocator::{AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    },
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     swapchain::{
-        PresentMode, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
+        PresentFuture, PresentMode, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
         acquire_next_image,
     },
-    sync::{self, GpuFuture},
+    sync::{self, GpuFuture, future::FenceSignalFuture},
 };
 use winit::{
     application::ApplicationHandler,
@@ -69,7 +73,10 @@ mod gpu_timing;
 mod hot_reload;
 mod leaves;
 mod loading;
+mod memory;
+mod perf;
 mod player;
+mod shafts;
 mod staging;
 mod startup;
 mod voxelize;
@@ -118,6 +125,8 @@ const FLAG_GRASS: u32 = 16;
 const FLAG_WATER: u32 = 32;
 const FLAG_SMOOTH: u32 = 64;
 const FLAG_WIND: u32 = 128;
+// The haze leaves the sunlight it scatters to shaders\shafts.comp
+const FLAG_SHAFTS: u32 = 256;
 
 // Has to match shaders\traverse.comp
 const SUN_MAP_MODE: u32 = 100;
@@ -275,14 +284,15 @@ struct WindowBuild {
     /// too
     craters: usize,
     stains: usize,
+    started: Instant,
 }
 
 // The world holds a piece of the endless landscape around the camera. Once the camera gets this
 // far from its middle, in meters, the piece around it is built and moved over to.
 const RECENTER_M: f64 = 30.0;
-// About how long building the next piece takes, in seconds. It's built round where the camera's
-// heading will be by then, as far as BUILD_LEAD_M ahead, so it's ready before the camera gets to
-// the edge of the one it's in.
+// About how long building the next piece takes, in seconds, to start with: it's timed as it goes,
+// see App::build_seconds. It's built round where the camera's heading will be by then, as far as
+// BUILD_LEAD_M ahead, so it's ready before the camera gets to the edge of the one it's in.
 const BUILD_SECONDS: f64 = 6.5;
 const BUILD_LEAD_M: f64 = 70.0;
 /// Frames after the world moves on before what the GPU drew the last piece with is let go of: by
@@ -293,11 +303,31 @@ const BURY_PAUSE: Duration = Duration::from_millis(15);
 /// How long what the last piece of the world was drawn with is kept for the next one, see Spare,
 /// should no next one be built meanwhile
 const SPARE_KEPT: Duration = Duration::from_secs(60);
+/// Frames sent to the GPU before the oldest is waited for, see App::max_in_flight
+const MAX_IN_FLIGHT: usize = 2;
+/// Of what the GPU's memory has room for, see perf::vram(), this much is kept free for what comes
+/// and goes, like making more room for bricks, and never less than VRAM_MARGIN_MIN bytes
+const VRAM_MARGIN: f64 = 0.1;
+const VRAM_MARGIN_MIN: u64 = 256 << 20;
+/// The render scale the game starts at, with a graphics card of its own. A higher one comes down
+/// for want of room in the GPU's memory, but never below this: rather, no spare piece of the
+/// world is kept.
+const DEFAULT_RENDER_SCALE: f32 = 0.45;
+/// How long the GPU's memory has to have had room for a spare piece of the world again, after
+/// one wasn't kept for want of it, before one is again
+const SPARE_BACK_AFTER: Duration = Duration::from_secs(30);
+/// How long a render scale slider has to be left alone before the images are made again for it
+const SCALE_SETTLE: Duration = Duration::from_millis(300);
+/// How often the GPU's memory is looked at in play, to come down in render scale should something
+/// else take some of it, and back up once it's let go of
+const VRAM_CHECK: Duration = Duration::from_secs(2);
+/// How long after coming down for want of room the render scale may go back up, so it doesn't go
+/// up and down while whatever took the room comes and goes
+const RAISE_AFTER: Duration = Duration::from_secs(30);
 /// The most flames and crystals lighting things up at once, nearest the camera first
 const MAX_LIGHTS: usize = 16;
-/// Voxel faces the light cache can hold, LIGHT_CACHE_WORDS each
-const LIGHT_CACHE_ENTRIES: u64 = 1 << 21;
-/// Has to match CACHE_WORDS in shaders\traverse.comp
+/// Has to match CACHE_WORDS in shaders\traverse.comp. How many entries the light cache has is
+/// up to how much memory the graphics card has, see memory.rs: the shader goes by how big it is.
 const LIGHT_CACHE_WORDS: u64 = 12;
 
 // The box of fine detail around the camera, in meters. It gets rebuilt once the camera
@@ -332,7 +362,24 @@ fn get_allocators(
     Arc<StandardDescriptorSetAllocator>,
     Arc<StandardCommandBufferAllocator>,
 ) {
-    let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+    // Blocks of 64 MB, `--set block_mb=256` for vulkano's own size. Anything over half a block gets
+    // memory of its own, just as big and let go of when it is; the tens of megabytes of the
+    // world's maps and the light cache otherwise went into blocks of 256 MB that are never let
+    // go of, a block for each kind of memory, much of them empty.
+    let block = settings_from_args().iter().find(|(k, _)| k == "block_mb").and_then(|(_, v)| v.parse::<u64>().ok()).unwrap_or(64) << 20;
+    let properties = device.physical_device().memory_properties();
+    let mut memory_type_bits = u32::MAX;
+    for (i, memory_type) in properties.memory_types.iter().enumerate() {
+        // As StandardMemoryAllocator::new_default() leaves out
+        if memory_type.property_flags.intersects(MemoryPropertyFlags::LAZILY_ALLOCATED | MemoryPropertyFlags::PROTECTED | MemoryPropertyFlags::DEVICE_COHERENT | MemoryPropertyFlags::RDMA_CAPABLE) {
+            memory_type_bits &= !(1 << i);
+        }
+    }
+    let block_sizes = vec![block; properties.memory_types.len()];
+    let memory_allocator = Arc::new(StandardMemoryAllocator::new(
+        device.clone(),
+        GenericMemoryAllocatorCreateInfo { block_sizes: &block_sizes, memory_type_bits, ..Default::default() },
+    ));
     let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
         device.clone(),
         Default::default(),
@@ -413,10 +460,20 @@ fn get_history_image_view(
     extent: [u32; 2],
     format: Format,
 ) -> Arc<ImageView> {
+    storage_image_view(memory_allocator, extent, format, ImageUsage::empty())
+}
+
+/// A storage image `extent` big, usable for `more` as well
+fn storage_image_view(
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    extent: [u32; 2],
+    format: Format,
+    more: ImageUsage,
+) -> Arc<ImageView> {
     let image = Image::new(
         memory_allocator,
         ImageCreateInfo {
-            usage: ImageUsage::STORAGE,
+            usage: ImageUsage::STORAGE | more,
             format,
             extent: [extent[0], extent[1], 1],
             ..Default::default()
@@ -473,6 +530,62 @@ struct RenderImages {
     // read and write by turns
     upscale_sets: [Arc<DescriptorSet>; 2],
     histories: [Arc<ImageView>; 2],
+    // For sun shafts, see shafts.rs: traverse.comp's depths and guide, and what the denoiser leaves.
+    // The depths are -1 for the sky, which screenshot runs look at too, see perf::PerfLog
+    depths: [Arc<ImageView>; 2],
+    guide: Arc<ImageView>,
+    hdr: Arc<ImageView>,
+}
+
+/// Screenshot runs say how much of the graphics card's memory is used by then, to see what takes it
+fn note_vram(device: &Device, by: &str) {
+    if std::env::args().any(|a| a == "--screenshot")
+        && let Some(vram) = perf::vram(device)
+    {
+        println!("VRAM once {by}: {:.0} MB of {:.0}", vram.used as f64 / perf::MB, vram.budget as f64 / perf::MB);
+    }
+}
+
+/// Waits for the frames sent to the GPU to be done, so what they were drawn with can change or be
+/// let go of
+fn wait_for_frames(rcx: &mut RenderContext, device: &Arc<Device>) {
+    for frame in rcx.in_flight.drain(..) {
+        let _ = frame.wait(None);
+    }
+    // Letting go of what's left of the last one waits for it too
+    rcx.previous_frame_end = Some(sync::now(device.clone()).boxed());
+}
+
+/// How big the image traced into is at render scale `scale` for a window `window` big
+fn render_extent(window: [u32; 2], scale: f32) -> [u32; 2] {
+    window.map(|n| ((n as f32 * scale) as u32).max(1))
+}
+
+/// The render scale nearest `wanted` that everything sized to the render resolution fits into
+/// `room` bytes of the GPU's memory at, for a window `window` big. Never below the usual one,
+/// DEFAULT_RENDER_SCALE: under it there's next to nothing to be had, tens of megabytes, for a
+/// blurrier picture.
+fn fitting_scale(wanted: f32, window: [u32; 2], room: u64) -> f32 {
+    let lowest = wanted.min(DEFAULT_RENDER_SCALE);
+    let mut scale = wanted;
+    while scale > lowest && perf::render_bytes(render_extent(window, scale), window) > room {
+        scale = (scale * 0.97).max(lowest);
+    }
+    scale
+}
+
+impl RenderImages {
+    /// How much of the GPU's memory they take, near enough
+    fn bytes(&self) -> u64 {
+        let [rw, rh, _] = self.render_image.extent();
+        let [ww, wh, _] = self.resample_image.extent();
+        perf::render_bytes([rw, rh], [ww, wh])
+    }
+
+    /// Whether they're for rendering `render` big into a window `window` big
+    fn fits(&self, render: [u32; 2], window: [u32; 2]) -> bool {
+        self.render_image.extent()[..2] == render[..] && self.resample_image.extent()[..2] == window[..]
+    }
 }
 
 /// `histories` are upscale.comp's from before, kept if the window's the same size
@@ -497,7 +610,8 @@ fn get_render_images(
 
     // Two sets of history images that swap roles every frame, one read while the other is written
     let colors = [0, 1].map(|_| float_image(render_extent, Format::R32G32B32A32_SFLOAT));
-    let depths = [0, 1].map(|_| float_image(render_extent, Format::R32_SFLOAT));
+    // Copied from for a look at how much of the view is sky, see App::check_sky()
+    let depths = [0, 1].map(|_| storage_image_view(memory_allocator.clone(), render_extent, Format::R32_SFLOAT, ImageUsage::TRANSFER_SRC));
     // Half floats are plenty for colors and which way faces point, and quicker to read many times
     let guide = float_image(render_extent, Format::R16G16B16A16_SFLOAT);
 
@@ -609,6 +723,9 @@ fn get_render_images(
         resample_set,
         upscale_sets,
         histories,
+        hdr: temps[0].clone(),
+        depths,
+        guide,
     }
 }
 
@@ -725,6 +842,12 @@ struct VoxelSpare {
 }
 
 impl Spare {
+    /// How much of the GPU's memory it takes, near enough
+    fn bytes(&self) -> u64 {
+        let texels = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * image.format().block_size();
+        self.voxels.bricks.size() + texels(&self.voxels.grid) + self.voxels.grass.as_ref().map_or(0, |grass| texels(grass)) + self.water.bytes()
+    }
+
     /// To let go of one at a time, see App::bury_retired()
     fn into_parts(self) -> Vec<Box<dyn Send>> {
         let mut parts = self.water.into_parts();
@@ -881,11 +1004,13 @@ fn get_voxel_set(
     // The main world has room for more bricks, for holes blown in it, see App::blast()
     let needed = brick_words.len() / worldgen::BRICK_WORDS;
     let room = if set_index == 1 { spare_bricks() } else { 0 };
+    // Those of the last piece of the world, if there's room in them for these and at least half the
+    // room to spare. If not, they're let go of before room is made anew, so there aren't both at
+    // once, hundreds of megabytes more of the GPU's memory.
+    let reuse_bricks = reuse_bricks.filter(|bricks| bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS);
     let bricks_buffer = match reuse_bricks {
-        // Those of the last piece of the world, if there's room in them for these and at least
-        // half the room to spare
-        Some(bricks) if bricks.len() as usize >= (needed + room / 2) * worldgen::BRICK_WORDS => bricks,
-        _ => bricks_buffer(&memory_allocator, ((needed + room) * worldgen::BRICK_WORDS) as u64),
+        Some(bricks) => bricks,
+        None => bricks_buffer(&memory_allocator, ((needed + room) * worldgen::BRICK_WORDS) as u64),
     };
     let capacity = bricks_buffer.len() as usize / worldgen::BRICK_WORDS;
     staging::send(
@@ -1063,6 +1188,8 @@ struct App {
     sunbeams: bool,
     // Density of the haze near the ground, per meter
     haze: f32,
+    // Beams of sunlight in the haze, see shafts.rs
+    shafts: shafts::Shafts,
     grass: bool,
     denoise: bool,
     color_grade: bool,
@@ -1141,6 +1268,40 @@ struct App {
 
     screenshot_requested: bool,
     capture: Option<Capture>,
+    /// How many frames may be sent to the GPU before the oldest is waited for. With no limit, as
+    /// when nothing on the screen held them back, seconds' worth piled up: what was asked of the
+    /// GPU meanwhile, like sending over the next piece of the world, waited behind them all, and
+    /// the GPU's memory they held grew. `--set in_flight=0` for no limit.
+    max_in_flight: usize,
+    /// How long frames take, smoothed, in milliseconds
+    frame_ms: f64,
+    /// How long building the next piece of the world takes, smoothed, in seconds, see
+    /// BUILD_SECONDS: much longer when the frames take long, as it's sent over between them
+    build_seconds: f64,
+    /// The render scales last set, while moving and when still, and when: a slider being dragged
+    /// only has the images made again once it's let go of a moment
+    scales_set: (f32, f32),
+    scales_set_at: Instant,
+    /// When the GPU's memory was last looked at, see VRAM_CHECK
+    vram_checked: Instant,
+    /// When the render scale last came down for want of room in the GPU's memory, see RAISE_AFTER
+    scale_lowered_at: Instant,
+    /// Set when the GPU's memory is too short even to render at the usual scale beside a spare
+    /// piece of the world: then none is kept, see Spare, and moving on to the next piece makes
+    /// room for it anew
+    spare_given_up: bool,
+    /// How the graphics card's memory was shared out at the start, see memory.rs
+    memory: memory::Plan,
+    /// When there was last no room for one, see SPARE_BACK_AFTER
+    spare_short_at: Instant,
+    /// `--set perf_log=60` in screenshot runs, see perf.rs
+    perf: Option<perf::PerfLog>,
+    /// `--set sky_check=30`: every so many frames how far away a grid of pixels is gets copied
+    /// back, to see how much of the view is sky, with how far the camera was looking down then
+    sky_check: u32,
+    sky_probe: Option<(Subbuffer<[f32]>, f64)>,
+    blank_shots: u32,
+    play: perf::Play,
 
     input: WinitInputHelper,
     focused: bool,
@@ -1157,16 +1318,28 @@ struct RenderContext {
     image_views: Vec<Arc<ImageView>>,
 
     images: RenderImages,
+    /// Those made for the other of the render scales while moving and when still, if they're not
+    /// the same, kept as long as the GPU's memory has room for both, so the view settling or
+    /// starting to move again doesn't make them anew each time, see App::make_render_images()
+    other_images: Option<(f32, RenderImages)>,
 
     gui: Gui,
 
     recreate_swapchain: bool,
     recreate_images: bool,
     render_scale_in_use: f32,
+    /// What render scale was asked for when they were made: as much less of it as `render_scale_in_use`
+    /// is, there wasn't room for in the GPU's memory
+    render_scale_wanted: f32,
 
     // Lets the CPU get on with the next frame while the GPU works on this one
     previous_frame_end: Option<Box<dyn GpuFuture>>,
+    /// The frames sent to the GPU that may not be done yet, oldest first, see App::max_in_flight
+    in_flight: VecDeque<Arc<FrameEnd>>,
 }
+
+/// What's waited for to know a frame's done
+type FrameEnd = FenceSignalFuture<PresentFuture<Box<dyn GpuFuture>>>;
 
 /// Set by `--screenshot <path> [--frames <n>]`: render n frames, save the last one, print timings and exit.
 /// `--shots 10,50` also saves those frames, next to the last one with the frame number added to the
@@ -1187,6 +1360,12 @@ struct Capture {
     /// Whether shots show what's on screen, the HUD and windows over the game, rather than just
     /// the game
     gui: bool,
+    /// `--seconds 1200` ends the run after that long, whichever comes first with `--frames`
+    seconds: Option<f64>,
+    started: Instant,
+    /// `--set nowait=1` doesn't wait for each frame to finish before starting the next, as in
+    /// play, where the frames being drawn overlap: then frame times are what a player sees
+    nowait: bool,
 }
 
 impl Capture {
@@ -1210,6 +1389,9 @@ impl Capture {
             gpu: None,
             // `--set gui=1` takes shots of the whole screen, HUD and all
             gui: settings_from_args().iter().any(|(k, v)| k == "gui" && (v == "1" || v == "true")),
+            seconds: value("--seconds").and_then(|n| n.parse().ok()),
+            started: Instant::now(),
+            nowait: settings_from_args().iter().any(|(k, v)| k == "nowait" && (v == "1" || v == "true")),
         })
     }
 }
@@ -1372,6 +1554,10 @@ impl Gpu {
         if physical_device.api_version() < Version::V1_3 {
             device_extensions.khr_dynamic_rendering = true;
         }
+        // To see how much of its memory is free, see perf::vram()
+        device_extensions.ext_memory_budget = physical_device.supported_extensions().ext_memory_budget;
+        // Which the world being built meanwhile is waiting on, to know how big it can be
+        memory::set_card(perf::card_vram(&physical_device, device_extensions.ext_memory_budget).map(|v| v.budget));
 
         let (device, mut queues) = Device::new(
             physical_device,
@@ -1413,17 +1599,19 @@ struct Pipelines {
     resample: HotReloadComputePipeline,
     upscale: HotReloadComputePipeline,
     water: HotReloadComputePipeline,
+    shafts: HotReloadComputePipeline,
 }
 
 impl Pipelines {
     // Read from where they are while working on them, so they reload when changed. Copies are
     // built in for running elsewhere.
-    const SHADERS: [(&str, &str); 5] = [
+    const SHADERS: [(&str, &str); 6] = [
         ("traverse.comp", include_str!("../shaders/traverse.comp")),
         ("post.comp", include_str!("../shaders/post.comp")),
         ("resample.comp", include_str!("../shaders/resample.comp")),
         ("upscale.comp", include_str!("../shaders/upscale.comp")),
         ("water.comp", include_str!("../shaders/water.comp")),
+        ("shafts.comp", include_str!("../shaders/shafts.comp")),
     ];
 
     fn path(name: &str) -> PathBuf {
@@ -1442,13 +1630,14 @@ impl Pipelines {
             let device = device.clone();
             std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
         });
-        let [render, post, resample, upscale, water] = making;
+        let [render, post, resample, upscale, water, shafts] = making;
         Some(Pipelines {
             render: render.join().ok()?,
             post: post.join().ok()?,
             resample: resample.join().ok()?,
             upscale: upscale.join().ok()?,
             water: water.join().ok()?,
+            shafts: shafts.join().ok()?,
         })
     }
 }
@@ -1465,6 +1654,8 @@ struct Placed {
     // Whether the player starts right where the camera is, in a dungeon, a cave, a castle or a
     // town or city down under the ground, rather than up on the ground over it
     indoors: bool,
+    /// How the graphics card's memory is shared out, see memory.rs
+    memory: memory::Plan,
 }
 
 impl Placed {
@@ -1480,6 +1671,13 @@ impl Placed {
         if let Some(v) = setting("width_m").and_then(|v| v.parse().ok()) {
             terrain.width_m = v;
         }
+        // As wide as asked for, or as there's room for in the graphics card's memory, once it's
+        // been picked, see memory.rs
+        let window = setting("window").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?])).unwrap_or([1920, 1080]);
+        let render = perf::render_bytes(render_extent(window, DEFAULT_RENDER_SCALE), window);
+        let memory = memory::plan(memory::card_budget(), terrain.width_m, terrain.height_m, terrain.voxels_per_meter, render);
+        terrain.width_m = memory.width_m;
+        println!("Memory plan: {memory:?}");
         if let Some(v) = setting("tufts") {
             terrain.grass_tufts = v == "true" || v == "1";
         }
@@ -1796,7 +1994,7 @@ impl Placed {
             camera.look_at(target);
         }
         let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city;
-        Placed { scene, terrain, rivers, world, landscape, camera, indoors }
+        Placed { scene, terrain, rivers, world, landscape, camera, indoors, memory }
     }
 }
 
@@ -1837,7 +2035,9 @@ impl Loaded {
         if !Pipelines::cached() {
             progress.compiling_shaders();
         }
+        note_vram(&gpu.device, "the graphics card started");
         let pipelines = progress.run(Step::Shaders, || Pipelines::new(&gpu.device))?;
+        note_vram(&gpu.device, "the shaders made");
         // Building the world never touches the graphics card, so it's left to it should the window
         // be closed meanwhile, rather than waited for
         let placed = loop {
@@ -1885,14 +2085,15 @@ impl Loaded {
             return None;
         }
 
+        note_vram(&gpu.device, "the world sent over");
         let (water, spare) = progress.run(Step::Water, || {
             let springs = landscape.as_ref().map_or(Vec::new(), |l| l.springs());
             let mut water = Water::new(memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue, &pipelines.water, world, &springs, None);
             water.active &= flag("water", true);
             // Room for the next piece of the landscape to be built into, made now while nothing's being
             // drawn yet rather than as it's sent over, see Spare. It's let go of after a while if the
-            // world never moves on.
-            let spare = landscape.as_ref().and_then(|_| {
+            // world never moves on. Not where the graphics card hasn't the room, see memory.rs.
+            let spare = landscape.as_ref().filter(|_| placed.memory.keep_spare).and_then(|_| {
                 let water = water.make_spare(memory_allocator)?;
                 let voxels = VoxelSpare {
                     bricks: bricks_buffer(memory_allocator, voxel_set.bricks.len()),
@@ -1904,6 +2105,7 @@ impl Loaded {
             (water, spare)
         });
 
+        note_vram(&gpu.device, "the water and spare made");
         let sun_map = get_history_image_view(
             memory_allocator.clone(),
             [SUN_MAP_SIZE, SUN_MAP_SIZE],
@@ -1922,8 +2124,10 @@ impl App {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator, integrated } = gpu;
-        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline } = pipelines;
-        let Placed { scene, terrain, rivers, world, landscape, mut camera, indoors } = placed;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline } = pipelines;
+        let Placed { scene, terrain, rivers, mut world, landscape, mut camera, indoors, memory } = placed;
+        // The water has what it needs of it now
+        world.forget_water_surface();
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
 
@@ -2079,7 +2283,7 @@ impl App {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
-            LIGHT_CACHE_ENTRIES * LIGHT_CACHE_WORDS,
+            memory.light_cache_entries * LIGHT_CACHE_WORDS,
         )
         .unwrap();
         let instance_allocator = SubbufferAllocator::new(
@@ -2094,6 +2298,14 @@ impl App {
         let menu_open = (capture.is_none() || loading::previewing()) && flag("menu", true);
         // `--set waterfall=2` starts looking at the second waterfall
         let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
+        // `--set sun_shafts=off`, `low` or `high`, and `sun_shafts_strength=1.5` for thicker air
+        let shafts = shafts::Shafts::new(
+            shafts_pipeline,
+            &memory_allocator,
+            &descriptor_set_allocator,
+            setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(if integrated { shafts::Quality::Low } else { shafts::Quality::High }),
+            setting("sun_shafts_strength").and_then(|v| v.parse().ok()).unwrap_or(1.0),
+        );
 
         let mut app = App {
             device,
@@ -2159,6 +2371,7 @@ impl App {
             color_grade: flag("grade", true),
             bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(0.3),
             haze: setting("haze").and_then(|v| v.parse().ok()).unwrap_or(0.0012),
+            shafts,
             grass: flag("grass", false),
 
             frame: 0,
@@ -2205,6 +2418,21 @@ impl App {
             waterfall_requested: false,
 
             screenshot_requested: false,
+            max_in_flight: setting("in_flight").and_then(|v| v.parse().ok()).unwrap_or(MAX_IN_FLIGHT),
+            frame_ms: 0.0,
+            build_seconds: BUILD_SECONDS,
+            scales_set: (0.0, 0.0),
+            scales_set_at: Instant::now(),
+            vram_checked: Instant::now(),
+            scale_lowered_at: Instant::now(),
+            spare_given_up: !memory.keep_spare,
+            memory,
+            spare_short_at: Instant::now(),
+            perf: setting("perf_log").and_then(|v| v.parse().ok()).filter(|_| capture.is_some()).map(perf::PerfLog::new),
+            sky_check: setting("sky_check").and_then(|v| v.parse().ok()).filter(|_| capture.is_some()).unwrap_or(0),
+            sky_probe: None,
+            blank_shots: 0,
+            play: perf::Play::new(setting("churn").and_then(|v| v.parse().ok()), setting("shot_every").and_then(|v| v.parse().ok())),
             capture,
 
             input,
@@ -2281,6 +2509,16 @@ impl App {
                 println!("looking at a tree {:.1} m high, {:.0} m away", height, (foot - start).xy().norm() / vpm);
                 app.view_tree(foot, height, reach, distance);
             }
+        }
+        // `--set tilt=30` tips the view that many degrees further up than wherever it starts
+        if let Some(tilt) = setting("tilt").and_then(|v| v.parse::<f64>().ok()) {
+            app.camera.rotation.x = (app.camera.rotation.x + tilt.to_radians()).clamp(-FRAC_PI_2, FRAC_PI_2);
+        }
+        // `--set sun_ahead=20` turns the sun to that many degrees round from straight ahead of the
+        // view, keeping its elevation, to see light coming towards the camera, as sun shafts do
+        if let Some(offset) = setting("sun_ahead").and_then(|v| v.parse::<f64>().ok()) {
+            let ahead = (app.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            app.sun_azimuth = (ahead.y.atan2(ahead.x).to_degrees() + offset).rem_euclid(360.0) as f32;
         }
         // For checking how an animal or a prop looks: `--set view_animal=bear` looks at the nearest one
         if let Some(name) = setting("view_animal")
@@ -2570,7 +2808,7 @@ impl App {
         let grew = self.world.bricks.len() / worldgen::BRICK_WORDS > self.voxel_set.capacity;
         // The frames still being drawn read what's about to change, so let them finish
         if let Some(rcx) = &mut self.rcx {
-            rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
+            wait_for_frames(rcx, &self.device);
         }
         let needed = self.world.bricks.len() / worldgen::BRICK_WORDS;
         if needed > self.voxel_set.capacity {
@@ -2709,6 +2947,12 @@ impl App {
         if self.window_build.as_ref().is_some_and(|build| build.job.is_finished()) {
             let build = self.window_build.take().unwrap();
             let (terrain, world, voxel_set, water) = build.job.join().unwrap();
+            let took = build.started.elapsed().as_secs_f64();
+            self.build_seconds += (took.clamp(1.0, 60.0) - self.build_seconds) * 0.5;
+            if let Some(perf) = &mut self.perf {
+                perf.builds.push(took as f32);
+                perf.moves += 1;
+            }
             self.move_to(Arc::new(terrain), world, voxel_set, water);
             // The holes blown and stains splashed while it was being built aren't in it yet
             let vpm = self.world.voxels_per_meter as f64;
@@ -2737,15 +2981,25 @@ impl App {
         self.last_camera = Some((camera, now));
 
         let middle = Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, camera.z);
+        // Once the camera's this far from the middle, or will be by the time the next piece is
+        // built at the pace it's going: further, and the edge of this one comes nearer ahead than
+        // where things start to fade into the sky, and the world can be seen to end. Running,
+        // the next piece is started as soon as the last is in.
+        let far = RECENTER_M * vpm;
+        let fading = 0.7 * (sx.min(sy) as f64 * 0.5 - far);
+        let keep_in = sx.min(sy) as f64 * 0.5 - fading;
+        let then = camera + self.camera_drift * self.build_seconds;
         // Not while the last piece is being let go of, which the next one's making room for
         // would hold up all the more
-        if self.window_build.is_some() || self.still_burying() || (camera - middle).xy().norm() < RECENTER_M * vpm {
+        if self.window_build.is_some() || self.still_burying() || ((camera - middle).xy().norm() < far && (then - middle).xy().norm() < keep_in) {
             return;
         }
         // Centered on where the camera's heading, lined up with the blocks the water is simulated in
-        let mut lead = self.camera_drift * BUILD_SECONDS;
-        if lead.norm() > BUILD_LEAD_M * vpm {
-            lead *= BUILD_LEAD_M * vpm / lead.norm();
+        let mut lead = self.camera_drift * self.build_seconds;
+        // Less in a narrower piece, see memory.rs, which would otherwise end close behind
+        let most = (BUILD_LEAD_M * vpm).min(0.3 * sx.min(sy) as f64);
+        if lead.norm() > most {
+            lead *= most / lead.norm();
         }
         let ahead = camera + lead;
         let align = 64;
@@ -2791,6 +3045,7 @@ impl App {
                     world.paint(p, radius * vpm, material, burn);
                 }
             }
+            let uploading = Instant::now();
             let voxel_set = get_voxel_set(
                 memory_allocator.clone(),
                 command_buffer_allocator.clone(),
@@ -2811,9 +3066,12 @@ impl App {
                 &terrain.springs(),
                 spare_water,
             );
+            // The water has what it needs of it now
+            world.forget_water_surface();
+            println!("Sent the next piece of the landscape over in {:.0} ms", uploading.elapsed().as_secs_f64() * 1000.0);
             (terrain, world, voxel_set, water)
         });
-        self.window_build = Some(WindowBuild { job, craters: self.craters.len(), stains: self.stains.len() });
+        self.window_build = Some(WindowBuild { job, craters: self.craters.len(), stains: self.stains.len(), started: Instant::now() });
     }
 
     /// Keeps hold of what the GPU drew with, `parts` each about one lot of memory, until the
@@ -2843,9 +3101,9 @@ impl App {
                 parts.extend(older.into_parts());
             }
         }
-        // Not kept for good, should no next piece be built
+        // Not kept for good, should no next piece be built, nor while the GPU's memory is short
         if self.window_build.is_none()
-            && let Some((spare, _)) = self.spare.take_if(|(_, since)| since.elapsed() > SPARE_KEPT)
+            && let Some((spare, _)) = self.spare.take_if(|(_, since)| since.elapsed() > SPARE_KEPT || self.spare_given_up)
         {
             parts.extend(spare.into_parts());
         }
@@ -2862,6 +3120,299 @@ impl App {
     /// Whether the last piece of the world is still being let go of, see bury_retired()
     fn still_burying(&self) -> bool {
         !self.retired.is_empty() || self.burying.as_ref().is_some_and(|b| !b.is_finished())
+    }
+
+    /// Once the GPU's done with the last look at how much of the view is sky, see `sky_check`, counts
+    /// it, and says so when the world's missing from it while the camera looks down at where it
+    /// should be, saving a shot of the next frame
+    fn check_sky(&mut self) {
+        let Some((probe, pitch)) = &self.sky_probe else {
+            return;
+        };
+        let pitch = *pitch;
+        let sky = match probe.read() {
+            Ok(depths) => depths.iter().filter(|&&d| d < 0.0).count() as f32 / depths.len().max(1) as f32,
+            // Still being drawn
+            Err(_) => return,
+        };
+        self.sky_probe = None;
+        if let Some(perf) = &mut self.perf {
+            perf.sky(sky);
+        }
+        // Looking down a little, at least a third of the view is the ground: nearly all sky is a
+        // world gone missing, even with something held up in front of the camera
+        if sky < 0.8 || pitch > -0.15 {
+            return;
+        }
+        let vpm = self.world.voxels_per_meter as f64;
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        let [sx, sy, sz] = self.world.size.map(f64::from);
+        let edge = eye.x.min(eye.y).min(sx - eye.x).min(sy - eye.y) / vpm;
+        let Some(capture) = &mut self.capture else {
+            return;
+        };
+        let frame = capture.frame_times.len() + 1;
+        println!(
+            "BLANK at frame {frame}, {}: {:.0}% sky looking {:.0} degrees down, eye at {:.0}, {:.0}, {:.0} m in a world {:.0} x {:.0} x {:.0} m, edge {edge:.0} m off, building: {}, still burying: {}",
+            perf::clock(capture.started.elapsed().as_secs_f64()),
+            sky * 100.0,
+            -pitch.to_degrees(),
+            eye.x / vpm,
+            eye.y / vpm,
+            eye.z / vpm,
+            sx / vpm,
+            sy / vpm,
+            sz / vpm,
+            self.window_build.is_some(),
+            !self.retired.is_empty() || self.burying.as_ref().is_some_and(|b| !b.is_finished()),
+        );
+        if let Some(perf) = &mut self.perf {
+            perf.blank += 1;
+        }
+        if self.blank_shots < 30 {
+            self.blank_shots += 1;
+            capture.shots.push(frame + 1);
+        }
+    }
+
+    /// How much of the GPU's memory the piece of the world it's in takes: its bricks, the map of
+    /// them, the grass and the water
+    fn piece_bytes(&self) -> u64 {
+        let grid = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * 4;
+        let grass = self.voxel_set.views.iter().find(|(binding, _)| *binding == 2).map_or(0, |(_, view)| grid(view.image()));
+        let water = if self.water.active { self.water.bytes() } else { 0 };
+        self.voxel_set.bricks.size() + grid(&self.voxel_set.grid) + grass + water
+    }
+
+    /// How many bytes of the GPU's memory everything sized to the render resolution may take,
+    /// `in_use` of which it takes now: what Windows gives the game before it starts moving some
+    /// of it out to the computer's memory, which makes every frame slow, less all else the game
+    /// has there and a margin, see VRAM_MARGIN. Moving on to the next piece of the world takes room
+    /// for two at once, so with `keep_spare` that's left for even while no spare one is kept, see
+    /// Spare; without, a spare still kept is about to be let go of. None where the driver can't say.
+    fn render_room(&self, in_use: u64, keep_spare: bool) -> Option<u64> {
+        let vram = perf::vram(&self.device)?;
+        let next_piece = keep_spare
+            && self.landscape.is_some()
+            && self.spare.is_none()
+            && self.window_build.is_none()
+            && self.retired.iter().all(|(_, _, spare)| spare.is_none());
+        let reserved = if next_piece { self.piece_bytes() } else { 0 };
+        let spare = self.spare.as_ref().map_or(0, |(spare, _)| spare.bytes());
+        let leaving = if keep_spare { 0 } else { spare };
+        // At least what's known to be there: what Windows says is used lags behind at the start
+        let held = self.piece_bytes() + spare + self.light_cache.size();
+        let others = (vram.used.saturating_sub(in_use).max(held) + reserved).saturating_sub(leaving);
+        let margin = ((vram.budget as f64 * VRAM_MARGIN) as u64).max(VRAM_MARGIN_MIN);
+        Some(vram.budget.saturating_sub(others + margin))
+    }
+
+    /// Makes everything sized to the render resolution again when the window or the render scale
+    /// has changed, or when the GPU's memory has less room for it, or more again, see VRAM_CHECK:
+    /// at the render scale asked for, or as near it as there's room for, see render_room(). At
+    /// 3.0 there was barely room at all, and once something else took a little, Windows moved
+    /// some of the game out to the computer's memory, which made every frame slower. Should there
+    /// be no room for even the usual render scale beside a spare piece of the world, it's that
+    /// that goes, see `spare_given_up`.
+    fn update_render_images(&mut self, window_extent: [u32; 2]) {
+        let wanted = if self.still_frames >= 2 { self.still_render_scale } else { self.render_scale };
+        let scales = (self.render_scale, self.still_render_scale);
+        if scales != self.scales_set {
+            self.scales_set = scales;
+            self.scales_set_at = Instant::now();
+        }
+        let settled = self.scales_set_at.elapsed() > SCALE_SETTLE;
+        let rcx = self.rcx.as_ref().unwrap();
+        let changed = rcx.recreate_images || (settled && wanted != rcx.render_scale_wanted);
+        let checking = self.vram_checked.elapsed() > VRAM_CHECK;
+        if !changed && !checking {
+            return;
+        }
+        if checking {
+            self.vram_checked = Instant::now();
+        }
+        let in_use = rcx.images.bytes() + rcx.other_images.as_ref().map_or(0, |(_, images)| images.bytes());
+        let (scale_in_use, scale_wanted, kept_other) = (rcx.render_scale_in_use, rcx.render_scale_wanted, rcx.other_images.is_some());
+
+        // Is there room for the usual render scale beside a spare piece of the world?
+        let usual = perf::render_bytes(render_extent(window_extent, DEFAULT_RENDER_SCALE.min(wanted)), window_extent);
+        if self.landscape.is_some()
+            && let Some(with_spare) = self.render_room(in_use, true)
+        {
+            if usual > with_spare {
+                if !self.spare_given_up {
+                    println!("The GPU's memory is short: no spare piece of the world is kept, {:.0} MB to render into", with_spare as f64 / perf::MB);
+                }
+                self.spare_given_up = true;
+                self.spare_short_at = Instant::now();
+            } else if self.spare_given_up && usual + usual / 4 + (128 << 20) <= with_spare && self.spare_short_at.elapsed() > SPARE_BACK_AFTER {
+                self.spare_given_up = false;
+                println!("There's room in the GPU's memory for a spare piece of the world again");
+            }
+        }
+        let room = self.render_room(in_use, !self.spare_given_up);
+        let scale = room.map_or(wanted, |room| fitting_scale(wanted, window_extent, room));
+        // Less room than what's in use takes, as when something else has taken some, or at the
+        // start, before Windows counts all the game has, comes down; or up again once there's
+        // room for more of what's wanted, a while after. Not while the world's moving on, which
+        // takes more for a moment, and less after.
+        let settling = self.window_build.is_some() || self.still_burying();
+        let down = !settling && scale < scale_in_use * 0.98;
+        let up = !settling
+            && self.scale_lowered_at.elapsed() > RAISE_AFTER
+            && scale_in_use < scale_wanted.min(wanted) * 0.98
+            && scale >= (scale_in_use * 1.15).min(wanted);
+        if down && kept_other && !changed {
+            // Those kept for the other render scale go first
+            self.rcx.as_mut().unwrap().other_images = None;
+        } else if changed || down || up {
+            if down {
+                self.scale_lowered_at = Instant::now();
+            }
+            self.make_render_images(window_extent, wanted, scale, room);
+        }
+    }
+
+    /// Makes everything sized to the render resolution again, at render scale `scale` for the
+    /// `wanted` one, with `room` bytes of the GPU's memory for them, see update_render_images().
+    /// Those made for the other of the render scales while moving and when still are used again if
+    /// they're the size, and the ones in use kept for it if there's room for both. If there isn't
+    /// room for the old ones and the new at once, the old are let go of first, once the frames
+    /// drawn with them are done.
+    fn make_render_images(&mut self, window_extent: [u32; 2], wanted: f32, scale: f32, room: Option<u64>) {
+        let extent = render_extent(window_extent, scale);
+        let device = self.device.clone();
+        let other_scale = if wanted == self.render_scale { self.still_render_scale } else { self.render_scale };
+        let rcx = self.rcx.as_mut().unwrap();
+        let remade = rcx.recreate_images;
+        rcx.recreate_images = false;
+        let old_wanted = rcx.render_scale_wanted;
+        rcx.render_scale_wanted = wanted;
+        rcx.render_scale_in_use = scale;
+        if !remade && rcx.images.fits(extent, window_extent) {
+            return;
+        }
+        if let Some(capture) = &self.capture {
+            println!(
+                "Render images made again at frame {}: {}x{} at scale {scale:.2}{}",
+                capture.frame_times.len() + 1,
+                extent[0],
+                extent[1],
+                if scale < wanted { format!(", {wanted:.2} wanted but the GPU's memory has room for only {:.0} MB", room.unwrap_or(0) as f64 / perf::MB) } else { String::new() }
+            );
+        }
+        let new_bytes = perf::render_bytes(extent, window_extent);
+        let room = room.unwrap_or(u64::MAX);
+        let kept = rcx.images.histories.clone();
+        let images = match rcx.other_images.take_if(|(_, images)| !remade && images.fits(extent, window_extent)) {
+            Some((_, images)) => images,
+            None => {
+                // Only one other lot is kept
+                let other = rcx.other_images.take();
+                if new_bytes + rcx.images.bytes() + other.as_ref().map_or(0, |(_, images)| images.bytes()) > room {
+                    // No room for both at once: the old ones are let go of first, once the frames
+                    // drawn with them are done, with tiny ones in their place meanwhile, and the
+                    // sun shafts' with them, which hold on to one of them
+                    wait_for_frames(rcx, &device);
+                    drop(other);
+                    self.shafts.let_go_of_targets();
+                    let tiny = get_render_images(
+                        self.memory_allocator.clone(),
+                        self.descriptor_set_allocator.clone(),
+                        &self.render_pipeline,
+                        &self.post_pipeline,
+                        &self.resample_pipeline,
+                        &self.upscale_pipeline,
+                        &self.sun_map,
+                        [1, 1],
+                        [1, 1],
+                        None,
+                    );
+                    drop(std::mem::replace(&mut rcx.images, tiny));
+                }
+                get_render_images(
+                    self.memory_allocator.clone(),
+                    self.descriptor_set_allocator.clone(),
+                    &self.render_pipeline,
+                    &self.post_pipeline,
+                    &self.resample_pipeline,
+                    &self.upscale_pipeline,
+                    &self.sun_map,
+                    extent,
+                    window_extent,
+                    Some(kept.clone()),
+                )
+            }
+        };
+        let old = std::mem::replace(&mut rcx.images, images);
+        // Kept for the other render scale, while moving or when still, if that's what they were
+        // made for and there's room for both
+        if !remade && old_wanted == other_scale && other_scale != wanted && old.bytes() + new_bytes <= room && old.resample_image.extent()[..2] == window_extent[..] {
+            rcx.other_images = Some((old_wanted, old));
+        }
+        // New ones have nothing in them yet
+        if !Arc::ptr_eq(&rcx.images.histories[0], &kept[0]) {
+            self.last_world_to_window = None;
+        }
+        self.reset_accum = true;
+        if let Some(perf) = &mut self.perf {
+            perf.recreated += 1;
+        }
+    }
+
+    /// Says how the frames went since the last time, how much of the GPU's memory is used, and
+    /// what's piled up, see perf.rs
+    fn report_perf(&mut self, render_extent: [u32; 3], window_extent: [u32; 3]) {
+        let vram = perf::vram(&self.device);
+        let bytes = |b: u64| b as f64 / perf::MB;
+        let grid = |image: &Image| image.extent().iter().map(|&n| n as u64).product::<u64>() * 4;
+        let grass = |image: &Option<Arc<Image>>| image.as_ref().map_or(0, |i| grid(i));
+        let world_grass = self.voxel_set.views.iter().find(|(binding, _)| *binding == 2).map_or(0, |(_, view)| grid(view.image()));
+        let world = self.voxel_set.bricks.size() + grid(&self.voxel_set.grid) + world_grass;
+        let water = if self.water.active { self.water.bytes() } else { 0 };
+        let spare = self.spare.as_ref().map_or(0, |(s, _)| s.voxels.bricks.size() + grid(&s.voxels.grid) + grass(&s.voxels.grass) + s.water.bytes());
+        let render = perf::render_bytes([render_extent[0], render_extent[1]], [window_extent[0], window_extent[1]]);
+        // What's kept on the CPU: the world's bricks, their map, grass and water maps, and the
+        // water's own copies
+        let cpu_world = {
+            let w = &self.world;
+            (w.bricks.capacity() + w.brick_grid.capacity() + w.grass.as_ref().map_or(0, |g| g.capacity())) as u64 * 4
+                + w.water.as_ref().map_or(0, |m| (m.ground.capacity() + m.surface.capacity()) as u64 * 4)
+        };
+        let (heap, heap_peak) = perf::heap();
+        let more = format!(
+            "rt={}x{} win={}x{} scale={:.2}/{:.2} vram={:.0}/{:.0} render_mb={:.0} world_mb={:.0} water_mb={:.0} spare_mb={:.0} models_mb={:.0} light_mb={:.0} heap_mb={:.0} heap_peak_mb={:.0} cpu_world_mb={:.0} cpu_water_mb={:.0} allocs={} retired={} building={} craters={} stains={} lights={}",
+            render_extent[0],
+            render_extent[1],
+            window_extent[0],
+            window_extent[1],
+            self.render_scale,
+            self.still_render_scale,
+            vram.map_or(-1.0, |v| bytes(v.used)),
+            vram.map_or(-1.0, |v| bytes(v.budget)),
+            bytes(render),
+            bytes(world),
+            bytes(water),
+            bytes(spare),
+            bytes(self.animal_models.size() + self.weapon_models.size()),
+            bytes(self.light_cache.size()),
+            heap as f64 / perf::MB,
+            heap_peak as f64 / perf::MB,
+            bytes(cpu_world),
+            bytes(self.water.cpu_bytes()),
+            self.device.allocation_count(),
+            self.retired.len(),
+            self.window_build.is_some(),
+            self.craters.len(),
+            self.stains.len(),
+            self.lights.len(),
+        );
+        let Some(perf) = &mut self.perf else {
+            return;
+        };
+        println!("{}", perf.report(&more));
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        println!("PERFGAME {}", self.game.report(eye));
     }
 
     /// Moves over to a new piece of the landscape. Everything in the world moves with it.
@@ -2966,6 +3517,8 @@ impl App {
             &springs,
             None,
         );
+        let mut world = world;
+        world.forget_water_surface();
         self.spare = None;
         self.world = world;
         self.landscape = landscape;
@@ -3466,11 +4019,13 @@ impl App {
             return;
         };
         let frame = capture.frame_times.len();
+        let run_time = capture.started.elapsed().as_secs_f64();
         let vpm = self.world.voxels_per_meter as f64;
         let eye = camera_to_voxels(self.camera.position, self.world.size);
         let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
         let before = self.game.last_message().map(str::to_owned);
         match (script.as_str(), frame) {
+            ("play", f) => self.play_step(f, run_time, eye),
             ("bucket", 1) => self.stand_in_water(0.6, false),
             ("wade", 1) => self.stand_in_water(0.5, true),
             ("bucket", 40) => {
@@ -3811,6 +4366,132 @@ impl App {
         }
     }
 
+    /// `--script play`, a long run of play for seeing whether anything gets slower the longer it
+    /// goes on: on foot, walking and running about in legs a quarter to half a minute long, turning
+    /// some way between them and stopping a moment every few seconds, fighting with a different
+    /// kind of weapon each minute, with a pack of monsters turning up every two minutes, so the
+    /// world moves on many times. With `--set churn=90` the settings change every 90 seconds, as a
+    /// player trying them out would: the render scale up and down, while moving and while still
+    /// apart and together, and the window bigger and smaller. `t` is seconds into the run.
+    fn play_step(&mut self, frame: usize, t: f64, eye: Vector3<f64>) {
+        let vpm = self.world.voxels_per_meter as f64;
+        if frame == 1 {
+            if self.player.is_none() {
+                self.player = Some(Player::new(eye, &self.world));
+            }
+            self.play.heading = self.camera.rotation.z;
+        }
+        let feet = self.player.as_ref().map_or(eye, |p| p.position);
+        // Turned away from whatever it's walked into
+        let walking = t - self.play.leg_start > 3.0;
+        let mut stuck = false;
+        match self.play.check {
+            Some((at, when)) if t - when > 4.0 => {
+                stuck = walking && (feet - at).xy().norm() < 3.0 * vpm;
+                self.play.check = Some((feet, t));
+            }
+            None => self.play.check = Some((feet, t)),
+            _ => {}
+        }
+        if t >= self.play.leg_end || stuck {
+            self.play.leg += 1;
+            let side = if self.play.random() < 0.5 { -1.0 } else { 1.0 };
+            self.play.heading += side * (0.4 + 0.6 * self.play.random()) * std::f64::consts::PI;
+            self.play.leg_start = t;
+            self.play.leg_end = t + 15.0 + 15.0 * self.play.random();
+            self.play.check = None;
+        }
+        // A moment stood still every eight seconds, when the view settles and what's drawn at the
+        // render scale for a still view, if that's different
+        let standing = (t - self.play.leg_start) % 8.0 < 1.5;
+        self.camera.rotation.z = self.play.heading;
+        self.camera.rotation.x = -0.22;
+        self.scripted_walk = !standing;
+        self.scripted_sprint = self.play.leg % 3 != 0;
+
+        // Swinging, shooting or casting most of the time, with something else each minute
+        let minute = (t / 60.0) as u64;
+        if self.play.minute != Some(minute) {
+            self.play.minute = Some(minute);
+            let kind = [weapons::Kind::Melee, weapons::Kind::Ranged, weapons::Kind::Magic][minute as usize % 3];
+            self.game.select_weapon(kind);
+        }
+        let swinging = t % 10.0 < 6.0;
+        self.script_controls = combat::Controls { attack: swinging, holding: swinging, ..Default::default() };
+
+        if t >= self.play.next_pack {
+            self.play.next_pack = t + 120.0;
+            let monsters: Vec<animals::Look> = animals::Look::ALL.into_iter().filter(|l| l.is_monster()).collect();
+            if !monsters.is_empty() {
+                let look = monsters[self.play.leg as usize * 7 % monsters.len()];
+                let ahead = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+                let water = &self.water;
+                self.game.summon_pack(&self.world, &|x, y| water.surface_at(x, y), &vec![look; look.pack_size()], feet, ahead, 14.0, 0.0, false, None);
+                println!("PLAY t={}: a pack of {} {}", perf::clock(t), look.pack_size(), look.name());
+            }
+        }
+
+        if let Some(every) = self.play.churn
+            && t >= self.play.next_churn
+        {
+            self.play.next_churn = t + every;
+            let step = self.play.churns % 8;
+            self.play.churns += 1;
+            let mut resize = None;
+            let what = match step {
+                0 => {
+                    self.render_scale = 2.0;
+                    "render scale while moving 2.0, still as it was"
+                }
+                1 => {
+                    resize = Some([1920, 1200]);
+                    "window 1920x1200, as full screen"
+                }
+                2 => {
+                    self.still_render_scale = 2.0;
+                    "render scale still 2.0 too"
+                }
+                3 => {
+                    resize = Some([1280, 800]);
+                    "window 1280x800"
+                }
+                4 => {
+                    self.render_scale = 1.0;
+                    self.still_render_scale = 1.0;
+                    "render scale 1.0 moving and still"
+                }
+                5 => {
+                    resize = Some([1920, 1200]);
+                    "window 1920x1200, as full screen"
+                }
+                6 => {
+                    self.render_scale = 0.45;
+                    self.still_render_scale = 0.45;
+                    "render scale back to 0.45"
+                }
+                _ => {
+                    resize = Some([1280, 800]);
+                    "window 1280x800"
+                }
+            };
+            if let (Some([w, h]), Some(rcx)) = (resize, &self.rcx) {
+                let _ = rcx.window.request_inner_size(PhysicalSize::new(w, h));
+            }
+            let vram = perf::vram(&self.device);
+            println!("CHURN t={}: {what}, vram {:.0} of {:.0} MB", perf::clock(t), vram.map_or(-1.0, |v| v.used as f64 / perf::MB), vram.map_or(-1.0, |v| v.budget as f64 / perf::MB));
+        }
+
+        if let Some(every) = self.play.shot_every
+            && t >= self.play.next_shot
+        {
+            self.play.next_shot = t + every;
+            // This frame's number as render() counts it, once it's taken this one's time
+            if let Some(capture) = &mut self.capture {
+                capture.shots.push(frame + 2);
+            }
+        }
+    }
+
     /// Puts the camera just above some water near where it is, looking down at it, `deep` meters
     /// deep at least. With `walk`, as a player standing in it.
     fn stand_in_water(&mut self, deep: f64, walk: bool) {
@@ -3973,6 +4654,17 @@ impl App {
         }
 
         rcx.previous_frame_end.as_mut().unwrap().cleanup_finished();
+        // No more than so many frames queued up for the GPU: the oldest is waited for
+        let waiting = Instant::now();
+        while self.max_in_flight > 0 && rcx.in_flight.len() >= self.max_in_flight {
+            let _ = rcx.in_flight.pop_front().unwrap().wait(None);
+        }
+        // Far longer than frames take
+        if let Some(capture) = &self.capture
+            && waiting.elapsed().as_secs_f64() * 1000.0 > (3.0 * self.frame_ms).max(50.0)
+        {
+            println!("Slow at frame {}: waiting for the frames before took {:.0} ms", capture.frame_times.len() + 1, waiting.elapsed().as_secs_f64() * 1000.0);
+        }
 
         if rcx.recreate_swapchain {
             let images;
@@ -3993,36 +4685,10 @@ impl App {
             rcx.recreate_images = true;
         }
 
-        // Lower resolution while the view changes, full detail once it settles
-        let scale = if self.still_frames >= 2 { self.still_render_scale } else { self.render_scale };
-        if rcx.recreate_images || scale != rcx.render_scale_in_use {
-            let window_extent: [u32; 2] = window_size.into();
-            let render_extent = [
-                ((window_extent[0] as f32 * scale) as u32).max(1),
-                ((window_extent[1] as f32 * scale) as u32).max(1),
-            ];
-            let kept = rcx.images.histories.clone();
-            rcx.images = get_render_images(
-                self.memory_allocator.clone(),
-                self.descriptor_set_allocator.clone(),
-                &self.render_pipeline,
-                &self.post_pipeline,
-                &self.resample_pipeline,
-                &self.upscale_pipeline,
-                &self.sun_map,
-                render_extent,
-                window_extent,
-                Some(kept.clone()),
-            );
-            // New ones have nothing in them yet
-            if !Arc::ptr_eq(&rcx.images.histories[0], &kept[0]) {
-                self.last_world_to_window = None;
-            }
-
-            rcx.render_scale_in_use = scale;
-            rcx.recreate_images = false;
-            self.reset_accum = true;
-        }
+        // Lower resolution while the view changes, full detail once it settles, as much as the
+        // GPU's memory has room for
+        self.update_render_images(window_size.into());
+        let rcx = self.rcx.as_mut().unwrap();
 
         let acquiring = Instant::now();
         let (image_index, suboptimal, acquire_future) =
@@ -4047,6 +4713,30 @@ impl App {
         // What the menu and inventory ask for, done once the GUI is drawn
         let mut focus_change = None;
         let mut quit = false;
+        // Under the render scale sliders: what that comes to
+        let render_note = self.show_settings.then(|| {
+            let [w, h, _] = rcx.images.render_image.extent();
+            let (in_use, wanted) = (rcx.render_scale_in_use, rcx.render_scale_wanted);
+            let mut note = format!(
+                "Rendering {w}x{h}, {:.0} MB of the GPU's memory, about {:.1}x the work of {DEFAULT_RENDER_SCALE}",
+                rcx.images.bytes() as f64 / perf::MB,
+                (in_use / DEFAULT_RENDER_SCALE).powi(2)
+            );
+            if in_use < wanted * 0.98 {
+                note += &format!("\nRender scale {in_use:.2} rather than {wanted:.2}: as much as the GPU's memory has room for");
+            }
+            if let Some(vram) = perf::vram(&self.device) {
+                note += &format!("\nGPU memory: {:.1} of {:.1} GB in use", vram.used as f64 / perf::MB / 1024.0, vram.budget as f64 / perf::MB / 1024.0);
+            }
+            if self.spare_given_up {
+                note += "\nNo room in the GPU's memory to keep the last piece of the world for the next, so moving on to it may stutter a moment";
+            }
+            if self.landscape.is_some() {
+                let half = self.world.size[0].min(self.world.size[1]) as f64 * 0.5 / self.world.voxels_per_meter as f64;
+                note += &format!("\nSees {:.0} m: the piece of the landscape around you is {:.0} m across", half - RECENTER_M, 2.0 * half);
+            }
+            note
+        });
 
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
@@ -4158,6 +4848,9 @@ impl App {
                 ui.add(egui::Slider::new(&mut self.camera.fov, 0.0..=180.0).text("FOV"));
                 ui.add(egui::Slider::new(&mut self.render_scale, 0.125..=2.0).text("Render Scale While Moving"));
                 ui.add(egui::Slider::new(&mut self.still_render_scale, 0.125..=2.0).text("Render Scale When Still"));
+                if let Some(note) = &render_note {
+                    ui.label(RichText::new(note).size(12.0).color(Color32::from_gray(190)));
+                }
                 ui.add(
                     egui::Slider::new(&mut self.move_speed, 0.01..=4.0)
                         .logarithmic(true)
@@ -4177,6 +4870,7 @@ impl App {
                         ui.add(egui::Slider::new(&mut self.haze, 0.0..=0.06).text("Haze"));
                         ui.checkbox(&mut self.grass, "Smooth Grass Blades (not voxels)");
                         ui.checkbox(&mut self.sunbeams, "Sunbeams Through the Haze");
+                        self.shafts.settings_ui(ui);
                         ui.checkbox(&mut self.denoise, "Smooth Out Noise While Moving");
                         ui.checkbox(&mut self.color_grade, "Warm Color Grade");
                         ui.add(egui::Slider::new(&mut self.bloom, 0.0..=1.5).text("Glow"));
@@ -4222,6 +4916,17 @@ impl App {
                                 size[2],
                                 100.0 / self.terrain.voxels_per_meter as f32
                             ));
+                            // Two pieces of it at once while moving on, see memory.rs
+                            let piece = memory::piece_bytes(self.terrain.width_m, self.terrain.height_m, self.terrain.voxels_per_meter);
+                            let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+                            match self.memory.budget {
+                                Some(budget) if 2 * piece > budget / 10 * 8 => {
+                                    ui.colored_label(Color32::LIGHT_RED, format!("About {:.1} GB of the GPU's memory, twice that while the world moves on: more than its {:.1} GB, so it'd run slowly and the world could be seen to end", gb(piece), gb(budget)));
+                                }
+                                _ => {
+                                    ui.label(format!("About {:.1} GB of the GPU's memory, twice that while the world moves on", gb(piece)));
+                                }
+                            }
                             let max_bricks = self.device.physical_device().properties().max_image_dimension3_d * 8;
                             if size.iter().any(|&n| n > max_bricks) {
                                 can_generate = false;
@@ -4368,8 +5073,13 @@ impl App {
         if self.bounce_light {
             flags |= FLAG_GI;
         }
-        if self.sunbeams {
+        // Sun shafts on High do the sunbeams' job better
+        let sunbeams = self.sunbeams && !self.shafts.in_the_haze();
+        if sunbeams {
             flags |= FLAG_SUNBEAMS;
+        }
+        if self.shafts.in_the_haze() {
+            flags |= FLAG_SHAFTS;
         }
         if self.grass && self.world.grass.is_some() {
             flags |= FLAG_GRASS;
@@ -4410,6 +5120,9 @@ impl App {
         // shader to trace
         let playing = self.loaded_scene.is_terrain() && self.animals_on;
         let instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        if let Some(perf) = &mut self.perf {
+            perf.instances = perf.instances.max(instances.len());
+        }
         let instance_buffer = self
             .instance_allocator
             .allocate_slice::<AnimalInstance>(instances.len().max(1) as u64)
@@ -4553,6 +5266,11 @@ impl App {
         // The water flows on, except while the menu is open
         let now = Instant::now();
         let frame_time = if self.menu_open { 0.0 } else { (now - self.last_frame).as_secs_f64() };
+        // What's sent to the GPU meanwhile, like the next piece of the world, goes over at a pace
+        // that suits how long frames take, see staging.rs
+        let took = ((now - self.last_frame).as_secs_f64() * 1000.0).min(500.0);
+        self.frame_ms += (took - self.frame_ms) * 0.1;
+        staging::frame_time(self.frame_ms);
         self.last_frame = now;
         let camera = camera_to_voxels(self.camera.position, self.world.size);
         self.water.record(&mut builder, &self.water_pipeline, frame_time, [camera.x, camera.y], self.wake);
@@ -4573,7 +5291,7 @@ impl App {
 
         let shaded = self.render_mode == RenderMode::Shaded;
         // The sun map only changes with the sun or the world
-        if shaded && self.sunbeams && self.haze > 0.0 && self.sun_map_for != Some(sun_direction) {
+        if shaded && sunbeams && self.haze > 0.0 && self.sun_map_for != Some(sun_direction) {
             let sun_map_constants = PushConstants {
                 render_mode: SUN_MAP_MODE,
                 ..push_constants
@@ -4607,6 +5325,28 @@ impl App {
 
         if shaded {
             let images = &rcx.images;
+            let frame = shafts::Frame {
+                pixel_to_ray: push_constants.pixel_to_ray,
+                previous_world_to_pixel: push_constants.previous_world_to_pixel,
+                sun_direction,
+                haze: self.haze,
+                world_size: self.world.size,
+                voxels_per_meter: self.world.voxels_per_meter,
+                world_origin: [self.world.origin[0], self.world.origin[1]],
+                seconds: push_constants.haze[1],
+                frame: push_constants.frame,
+                still: history_limit == STILL_HISTORY || history_limit == ANIMATED_HISTORY,
+                grid: &self.voxel_set.views[0].1,
+                bricks: &self.voxel_set.bricks,
+                depths: &images.depths,
+                guide: &images.guide,
+                hdr: &images.hdr,
+            };
+            self.shafts.record(&mut builder, &frame, timer.as_mut());
+        }
+
+        if shaded {
+            let images = &rcx.images;
             let render_extent = [render_extent[0], render_extent[1]];
             let constants = |stage: PostStage, step: u32| PostConstants {
                 stage: stage as u32,
@@ -4618,6 +5358,8 @@ impl App {
                 let step = 1 << i;
                 dispatch_post(&mut builder, &self.post_pipeline, set, constants(PostStage::Denoise, step), render_extent);
             }
+            // Before the bloom, so shafts towards the sun glow too
+            self.shafts.composite(&mut builder);
             if self.bloom > 0.0 {
                 dispatch_post(&mut builder, &self.post_pipeline, &images.bloom_extract_set, constants(PostStage::BloomExtract, 0), images.bloom_extent);
                 dispatch_post(&mut builder, &self.post_pipeline, &images.bloom_blur_sets[0], constants(PostStage::BloomBlurX, 0), images.bloom_extent);
@@ -4687,16 +5429,83 @@ impl App {
             timer.mark(&mut builder, "upscale");
         }
 
+        // How far away what a grid of pixels shows is, to see how much of the view is sky once
+        // it's back, see perf.rs
+        if shaded && self.sky_check > 0 && self.sky_probe.is_none() && self.frame % self.sky_check == 0 {
+            let depth = rcx.images.depths[parity].image().clone();
+            let [w, h, _] = depth.extent();
+            let (across, down) = (64u32, 36u32);
+            let regions: Vec<BufferImageCopy> = (0..across * down)
+                .map(|k| {
+                    let (i, j) = (k % across, k / across);
+                    BufferImageCopy {
+                        buffer_offset: k as u64 * 4,
+                        image_subresource: depth.subresource_layers(),
+                        image_offset: [((i as f32 + 0.5) / across as f32 * w as f32) as u32, ((j as f32 + 0.5) / down as f32 * h as f32) as u32, 0],
+                        image_extent: [1, 1, 1],
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            let probe = Buffer::new_slice::<f32>(
+                self.memory_allocator.clone(),
+                BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() },
+                AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
+                (across * down) as u64,
+            )
+            .unwrap();
+            builder
+                .copy_image_to_buffer(CopyImageToBufferInfo { regions: regions.into(), ..CopyImageToBufferInfo::image_buffer(depth, probe.clone()) })
+                .unwrap();
+            self.sky_probe = Some((probe, self.camera.rotation.x));
+        }
+
         let mut capture_done = false;
         let mut capture_shot = None;
         if let Some(capture) = &mut self.capture {
             let now = Instant::now();
             if let Some(last) = capture.last_frame {
-                capture.frame_times.push(now - last);
+                let took = now - last;
+                capture.frame_times.push(took);
+                if let Some(perf) = &mut self.perf {
+                    perf.frame(took.as_secs_f32() * 1000.0);
+                    // How near the edge of the world the camera's come, and how long it was nearer
+                    // than where things have faded well into the sky, so the world could be seen to end
+                    if self.landscape.is_some() {
+                        let vpm = self.world.voxels_per_meter as f64;
+                        let eye = camera_to_voxels(self.camera.position, self.world.size);
+                        let [sx, sy, _] = self.world.size.map(f64::from);
+                        let edge = eye.x.min(eye.y).min(sx - eye.x).min(sy - eye.y) / vpm;
+                        perf.edge_min = perf.edge_min.min(edge);
+                        if edge < 0.7 * fade as f64 / vpm {
+                            perf.cut += took.as_secs_f64();
+                        }
+                        // And straight ahead, where it'd be seen
+                        let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+                        let flat = Vector2::new(look.x, look.y);
+                        if flat.norm() > 1e-6 {
+                            let d = flat / flat.norm();
+                            let exit = |e: f64, s: f64, d: f64| if d > 1e-9 { (s - e) / d } else if d < -1e-9 { -e / d } else { f64::INFINITY };
+                            let ahead = exit(eye.x, sx, d.x).min(exit(eye.y, sy, d.y)) / vpm;
+                            perf.ahead_min = perf.ahead_min.min(ahead);
+                            if ahead < 0.7 * fade as f64 / vpm {
+                                perf.cut_ahead += took.as_secs_f64();
+                            }
+                            // A few shots of the world seen to end near ahead, this frame
+                            let frame = capture.frame_times.len() + 1;
+                            if ahead < 0.35 * fade as f64 / vpm && perf.edge_shots < 8 && frame > perf.last_edge_shot + 600 {
+                                perf.edge_shots += 1;
+                                perf.last_edge_shot = frame;
+                                capture.shots.push(frame);
+                                println!("EDGE at frame {frame}, {}: the world ends {ahead:.0} m ahead", perf::clock(capture.started.elapsed().as_secs_f64()));
+                            }
+                        }
+                    }
+                }
             }
             capture.last_frame = Some(now);
             let frame = capture.frame_times.len() + 1;
-            capture_done = frame >= capture.frames as usize;
+            capture_done = frame >= capture.frames as usize || capture.seconds.is_some_and(|s| capture.started.elapsed().as_secs_f64() >= s);
             if capture.shots.contains(&frame) {
                 let stem = capture.path.file_stem().map_or("shot".into(), |s| s.to_string_lossy().into_owned());
                 capture_shot = Some(capture.path.with_file_name(format!("{stem}-{frame}.png")));
@@ -4783,8 +5592,8 @@ impl App {
         match frame_end.map_err(Validated::unwrap) {
             Ok(frame_end) => {
                 // Screenshots read the frame back, so it has to be finished first. Screenshot runs
-                // also wait for every frame, so their timings are the GPU's.
-                if screenshot_buffer.is_some() || self.capture.is_some() {
+                // also wait for every frame, so their timings are the GPU's, unless `nowait`.
+                if screenshot_buffer.is_some() || self.capture.as_ref().is_some_and(|c| !c.nowait) {
                     let waiting = Instant::now();
                     frame_end.wait(None).unwrap();
                     if let Some(capture) = &self.capture
@@ -4796,7 +5605,13 @@ impl App {
                         timer.finish(waiting.elapsed());
                     }
                 }
-                rcx.previous_frame_end = Some(frame_end.boxed());
+                if self.max_in_flight > 0 {
+                    let frame_end = Arc::new(frame_end);
+                    rcx.in_flight.push_back(frame_end.clone());
+                    rcx.previous_frame_end = Some(frame_end.boxed());
+                } else {
+                    rcx.previous_frame_end = Some(frame_end.boxed());
+                }
             }
             Err(VulkanError::OutOfDate) => {
                 rcx.recreate_swapchain = true;
@@ -4810,6 +5625,15 @@ impl App {
             capture.gpu = timer;
         }
         self.bury_retired();
+        if let Some(capture) = &self.capture
+            && matches!(capture.frame_times.len(), 0 | 1 | 2 | 30 | 300)
+        {
+            note_vram(&self.device, &format!("{} frames drawn", capture.frame_times.len() + 1));
+        }
+        self.check_sky();
+        if self.perf.as_ref().is_some_and(perf::PerfLog::due) {
+            self.report_perf(render_extent, resample_extent);
+        }
 
         if let Some(buffer) = screenshot_buffer {
             let encoded = post_flags & POST_ENCODE_SRGB != 0;
@@ -4911,10 +5735,13 @@ impl App {
         // Never nothing, should the window have been minimized while loading: they're all made
         // again once it's back
         let window_extent: [u32; 2] = <[u32; 2]>::from(window.inner_size()).map(|n| n.max(1));
-        let render_extent = [
-            ((window_extent[0] as f32 * self.render_scale) as u32).max(1),
-            ((window_extent[1] as f32 * self.render_scale) as u32).max(1),
-        ];
+        // As much as the GPU's memory has room for
+        let room = self.render_room(0, true);
+        let scale = room.map_or(self.render_scale, |room| fitting_scale(self.render_scale, window_extent, room));
+        let render_extent = render_extent(window_extent, scale);
+        if self.capture.is_some() {
+            println!("Render images made at {}x{}, scale {scale:.2} of {:.2}, with room for {:.0} MB", render_extent[0], render_extent[1], self.render_scale, room.unwrap_or(0) as f64 / perf::MB);
+        }
         let images = get_render_images(
             self.memory_allocator.clone(),
             self.descriptor_set_allocator.clone(),
@@ -4940,9 +5767,12 @@ impl App {
 
             recreate_swapchain,
             recreate_images: false,
-            render_scale_in_use: self.render_scale,
+            render_scale_in_use: scale,
+            render_scale_wanted: self.render_scale,
+            other_images: None,
 
             previous_frame_end,
+            in_flight: VecDeque::new(),
         });
     }
 }
@@ -5142,8 +5972,20 @@ mod background_printing {
 const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3, which most made in the last several \
     years do. Installing the latest driver from NVIDIA, AMD or Intel usually sorts it out.";
 
+/// Counts how much is allocated, for what's printed about it in screenshot runs, see perf.rs
+#[global_allocator]
+static ALLOCATOR: perf::Counting = perf::Counting;
+
 fn main() {
+    if std::env::args().any(|a| a == "--screenshot") {
+        perf::count_heap();
+    }
     startup::init();
+    // `--set vram_budget=2048` takes the graphics card to have no more memory for the game than
+    // that, in MB, as a smaller card would
+    if let Some(megabytes) = settings_from_args().iter().find(|(k, _)| k == "vram_budget").and_then(|(_, v)| v.parse().ok()) {
+        perf::cap_vram(megabytes);
+    }
     // Decoding the sounds on a thread of their own, done long before anything's heard
     audio::preload();
     std::panic::set_hook(Box::new(|info| {
