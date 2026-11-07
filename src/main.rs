@@ -70,6 +70,7 @@ mod hot_reload;
 mod leaves;
 mod loading;
 mod player;
+mod shafts;
 mod staging;
 mod startup;
 mod voxelize;
@@ -118,6 +119,8 @@ const FLAG_GRASS: u32 = 16;
 const FLAG_WATER: u32 = 32;
 const FLAG_SMOOTH: u32 = 64;
 const FLAG_WIND: u32 = 128;
+// The haze leaves the sunlight it scatters to shaders\shafts.comp
+const FLAG_SHAFTS: u32 = 256;
 
 // Has to match shaders\traverse.comp
 const SUN_MAP_MODE: u32 = 100;
@@ -473,6 +476,10 @@ struct RenderImages {
     // read and write by turns
     upscale_sets: [Arc<DescriptorSet>; 2],
     histories: [Arc<ImageView>; 2],
+    // For sun shafts, see shafts.rs: traverse.comp's depths and guide, and what the denoiser leaves
+    depths: [Arc<ImageView>; 2],
+    guide: Arc<ImageView>,
+    hdr: Arc<ImageView>,
 }
 
 /// `histories` are upscale.comp's from before, kept if the window's the same size
@@ -609,6 +616,9 @@ fn get_render_images(
         resample_set,
         upscale_sets,
         histories,
+        hdr: temps[0].clone(),
+        depths,
+        guide,
     }
 }
 
@@ -1063,6 +1073,8 @@ struct App {
     sunbeams: bool,
     // Density of the haze near the ground, per meter
     haze: f32,
+    // Beams of sunlight in the haze, see shafts.rs
+    shafts: shafts::Shafts,
     grass: bool,
     denoise: bool,
     color_grade: bool,
@@ -1413,17 +1425,19 @@ struct Pipelines {
     resample: HotReloadComputePipeline,
     upscale: HotReloadComputePipeline,
     water: HotReloadComputePipeline,
+    shafts: HotReloadComputePipeline,
 }
 
 impl Pipelines {
     // Read from where they are while working on them, so they reload when changed. Copies are
     // built in for running elsewhere.
-    const SHADERS: [(&str, &str); 5] = [
+    const SHADERS: [(&str, &str); 6] = [
         ("traverse.comp", include_str!("../shaders/traverse.comp")),
         ("post.comp", include_str!("../shaders/post.comp")),
         ("resample.comp", include_str!("../shaders/resample.comp")),
         ("upscale.comp", include_str!("../shaders/upscale.comp")),
         ("water.comp", include_str!("../shaders/water.comp")),
+        ("shafts.comp", include_str!("../shaders/shafts.comp")),
     ];
 
     fn path(name: &str) -> PathBuf {
@@ -1442,13 +1456,14 @@ impl Pipelines {
             let device = device.clone();
             std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
         });
-        let [render, post, resample, upscale, water] = making;
+        let [render, post, resample, upscale, water, shafts] = making;
         Some(Pipelines {
             render: render.join().ok()?,
             post: post.join().ok()?,
             resample: resample.join().ok()?,
             upscale: upscale.join().ok()?,
             water: water.join().ok()?,
+            shafts: shafts.join().ok()?,
         })
     }
 }
@@ -1922,7 +1937,7 @@ impl App {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water, spare } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator, integrated } = gpu;
-        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline } = pipelines;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline } = pipelines;
         let Placed { scene, terrain, rivers, world, landscape, mut camera, indoors } = placed;
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
@@ -2094,6 +2109,14 @@ impl App {
         let menu_open = (capture.is_none() || loading::previewing()) && flag("menu", true);
         // `--set waterfall=2` starts looking at the second waterfall
         let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
+        // `--set sun_shafts=off`, `low` or `high`, and `sun_shafts_strength=1.5` for thicker air
+        let shafts = shafts::Shafts::new(
+            shafts_pipeline,
+            &memory_allocator,
+            &descriptor_set_allocator,
+            setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(if integrated { shafts::Quality::Low } else { shafts::Quality::High }),
+            setting("sun_shafts_strength").and_then(|v| v.parse().ok()).unwrap_or(1.0),
+        );
 
         let mut app = App {
             device,
@@ -2159,6 +2182,7 @@ impl App {
             color_grade: flag("grade", true),
             bloom: setting("bloom").and_then(|v| v.parse().ok()).unwrap_or(0.3),
             haze: setting("haze").and_then(|v| v.parse().ok()).unwrap_or(0.0012),
+            shafts,
             grass: flag("grass", false),
 
             frame: 0,
@@ -2281,6 +2305,16 @@ impl App {
                 println!("looking at a tree {:.1} m high, {:.0} m away", height, (foot - start).xy().norm() / vpm);
                 app.view_tree(foot, height, reach, distance);
             }
+        }
+        // `--set tilt=30` tips the view that many degrees further up than wherever it starts
+        if let Some(tilt) = setting("tilt").and_then(|v| v.parse::<f64>().ok()) {
+            app.camera.rotation.x = (app.camera.rotation.x + tilt.to_radians()).clamp(-FRAC_PI_2, FRAC_PI_2);
+        }
+        // `--set sun_ahead=20` turns the sun to that many degrees round from straight ahead of the
+        // view, keeping its elevation, to see light coming towards the camera, as sun shafts do
+        if let Some(offset) = setting("sun_ahead").and_then(|v| v.parse::<f64>().ok()) {
+            let ahead = (app.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            app.sun_azimuth = (ahead.y.atan2(ahead.x).to_degrees() + offset).rem_euclid(360.0) as f32;
         }
         // For checking how an animal or a prop looks: `--set view_animal=bear` looks at the nearest one
         if let Some(name) = setting("view_animal")
@@ -4177,6 +4211,7 @@ impl App {
                         ui.add(egui::Slider::new(&mut self.haze, 0.0..=0.06).text("Haze"));
                         ui.checkbox(&mut self.grass, "Smooth Grass Blades (not voxels)");
                         ui.checkbox(&mut self.sunbeams, "Sunbeams Through the Haze");
+                        self.shafts.settings_ui(ui);
                         ui.checkbox(&mut self.denoise, "Smooth Out Noise While Moving");
                         ui.checkbox(&mut self.color_grade, "Warm Color Grade");
                         ui.add(egui::Slider::new(&mut self.bloom, 0.0..=1.5).text("Glow"));
@@ -4368,8 +4403,13 @@ impl App {
         if self.bounce_light {
             flags |= FLAG_GI;
         }
-        if self.sunbeams {
+        // Sun shafts on High do the sunbeams' job better
+        let sunbeams = self.sunbeams && !self.shafts.in_the_haze();
+        if sunbeams {
             flags |= FLAG_SUNBEAMS;
+        }
+        if self.shafts.in_the_haze() {
+            flags |= FLAG_SHAFTS;
         }
         if self.grass && self.world.grass.is_some() {
             flags |= FLAG_GRASS;
@@ -4573,7 +4613,7 @@ impl App {
 
         let shaded = self.render_mode == RenderMode::Shaded;
         // The sun map only changes with the sun or the world
-        if shaded && self.sunbeams && self.haze > 0.0 && self.sun_map_for != Some(sun_direction) {
+        if shaded && sunbeams && self.haze > 0.0 && self.sun_map_for != Some(sun_direction) {
             let sun_map_constants = PushConstants {
                 render_mode: SUN_MAP_MODE,
                 ..push_constants
@@ -4607,6 +4647,28 @@ impl App {
 
         if shaded {
             let images = &rcx.images;
+            let frame = shafts::Frame {
+                pixel_to_ray: push_constants.pixel_to_ray,
+                previous_world_to_pixel: push_constants.previous_world_to_pixel,
+                sun_direction,
+                haze: self.haze,
+                world_size: self.world.size,
+                voxels_per_meter: self.world.voxels_per_meter,
+                world_origin: [self.world.origin[0], self.world.origin[1]],
+                seconds: push_constants.haze[1],
+                frame: push_constants.frame,
+                still: history_limit == STILL_HISTORY || history_limit == ANIMATED_HISTORY,
+                grid: &self.voxel_set.views[0].1,
+                bricks: &self.voxel_set.bricks,
+                depths: &images.depths,
+                guide: &images.guide,
+                hdr: &images.hdr,
+            };
+            self.shafts.record(&mut builder, &frame, timer.as_mut());
+        }
+
+        if shaded {
+            let images = &rcx.images;
             let render_extent = [render_extent[0], render_extent[1]];
             let constants = |stage: PostStage, step: u32| PostConstants {
                 stage: stage as u32,
@@ -4618,6 +4680,8 @@ impl App {
                 let step = 1 << i;
                 dispatch_post(&mut builder, &self.post_pipeline, set, constants(PostStage::Denoise, step), render_extent);
             }
+            // Before the bloom, so shafts towards the sun glow too
+            self.shafts.composite(&mut builder);
             if self.bloom > 0.0 {
                 dispatch_post(&mut builder, &self.post_pipeline, &images.bloom_extract_set, constants(PostStage::BloomExtract, 0), images.bloom_extent);
                 dispatch_post(&mut builder, &self.post_pipeline, &images.bloom_blur_sets[0], constants(PostStage::BloomBlurX, 0), images.bloom_extent);
