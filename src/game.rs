@@ -24,6 +24,9 @@ use crate::worldgen::{self, World, is_passable, material::*};
 use crate::serpents;
 use crate::tools;
 
+/// What dragons breathe and leave burning, see src\dragons.rs
+mod dragonfire;
+
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
 /// Hunger drops from full to empty in this many seconds
@@ -749,6 +752,8 @@ pub struct Game {
     ward_models: Vec<(Model, Vector3<f64>)>,
     /// How many more monsters than usual each den's pack has, see realms::crowd()
     crowd: usize,
+    /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
+    dragonfire: dragonfire::Fire,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -908,6 +913,7 @@ impl Game {
             covered: false,
             worn: None,
             wing_models: wings::models(),
+            dragonfire: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
             ward_models: crate::guardians::models(),
@@ -972,6 +978,7 @@ impl Game {
         self.target = None;
         self.seed = seed;
         self.combat.clear();
+        self.dragonfire.clear();
         self.leaves.clear();
         self.rest = None;
         self.safe_for = 0.0;
@@ -1593,7 +1600,11 @@ impl Game {
             if let Some(boss) = &mut animal.boss {
                 boss.recenter(shift);
             }
+            if let Some(dragon) = &mut animal.dragon {
+                dragon.recenter(shift);
+            }
         }
+        self.dragonfire.recenter(shift);
         for root in &mut self.roots {
             root.at -= shift;
         }
@@ -1762,6 +1773,10 @@ impl Game {
                 animal.toughen(toughness);
             }
             animal.update(world, water, player, dt);
+            // What's struck at a dragon lands on whichever part of it the player's looking at
+            if let Some(dragon) = &mut animal.dragon {
+                dragon.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
+            }
         }
         self.aim_at_serpents(view);
 
@@ -1802,6 +1817,8 @@ impl Game {
         for (look, element, deed) in deeds {
             self.carry_out(look, element, deed, world, water, player, view);
         }
+        self.tend_dragonfire(world, player, view, dt);
+        self.watch_for_lairs(player);
         self.grow_roots(world, player, view, dt);
         self.whirl(world, water, player, dt);
         self.shove_out_of_serpents(player, world.voxels_per_meter as f64);
@@ -1950,6 +1967,12 @@ impl Game {
     #[allow(clippy::too_many_arguments)]
     fn carry_out(&mut self, look: Look, element: Option<Element>, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
+        // What dragons do is their own, see game\dragonfire.rs
+        match deed {
+            Deed::Dragon(act) => return self.dragon_act(look, act, world, water, player, view),
+            Deed::Phase { at, stage } if look.is_dragon() => return self.dragon_phase(look, at, stage, view),
+            _ => {}
+        }
         // How much something at `at` is felt, from 1 right there to nothing 40 meters off
         let felt = |at: Vector3<f64>| (1.0 - (at - view.eye).norm() / vpm / 40.0).max(0.0);
         // Monsters snarl and rattle rather than roar, and don't shake the ground
@@ -2497,6 +2520,8 @@ impl Game {
                     self.cues.push(Cue::at(Sound::Step(Ground::Stone), at, 0.9).pitched(0.4));
                 }
             }
+            // Seen to above
+            Deed::Dragon(_) => {}
             // The Colossus working stone, see combat/stones.rs: the boulder it tore up and lifted
             // hurled out of its hands, with a grunt
             Deed::Hurl { id, from, to } => {
@@ -2719,6 +2744,7 @@ impl Game {
             }
         }
         self.combat.clear();
+        self.dragonfire.clear();
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
@@ -2961,7 +2987,8 @@ impl Game {
                 let throes = if a.look.is_great_serpent() { serpents::GREAT_THROES } else { serpents::DEATH_THROES };
                 (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
             };
-            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) {
+            // And a dragon falls out of the sky and lies a moment where it fell first
+            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -3033,9 +3060,14 @@ impl Game {
                         self.find_once(Item::Wings(kind), &format!("Among what it leaves are the {name}!"));
                     }
                 }
+                // The Worldpyre Ancient leaves its fang, see game\dragonfire.rs
+                if look == crate::dragons::ULTRA {
+                    self.claim_worldpyre();
+                }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
-                let ultra = look.is_ultra();
+                // Both ultras: the Coil Unending, and the Worldpyre Ancient, see src\dragons.rs
+                let ultra = look.is_ultra() || look == crate::dragons::ULTRA;
                 let raid = look.is_raid() || block.is_some() || ultra;
                 // Its best weapon's the luckiest, a raid boss's very likely with a special attack,
                 // a huge one's, a finale's or an ultra's always, the rest a mix; the Coil Unending
@@ -3050,7 +3082,9 @@ impl Game {
                 let (piles, potions) = if ultra { (6, 5) } else if raid { (3, 3) } else { (1, 1) };
                 let rolls = hoard_rolls(hoard, &mut self.rng);
                 let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon(luck, sure)).collect();
-                if ultra {
+                // The Coil Unending's fang among it; the Worldpyre Ancient's is put straight into
+                // the player's hands, above
+                if look == Look::Ysveth {
                     let fang = self.fang();
                     loot.insert(0, fang);
                 }
@@ -4148,7 +4182,10 @@ impl Game {
             })
             .collect();
         stocks.sort_by_key(|s| s.key);
-        save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() }
+        let mut done = save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() };
+        // What's known of the dragons' lairs, see game\dragonfire.rs
+        done.set_section(crate::dragons::WORLD_SECTION, &self.dragonfire.lore);
+        done
     }
 
     /// Health, hunger and mana
@@ -4203,6 +4240,7 @@ impl Game {
         self.cleared.clear();
         self.stocks.clear();
         self.ammo_choice.clear();
+        self.dragonfire.lore = Default::default();
         self.set_vitals(MAX_HEALTH, 80.0, MAX_MANA);
     }
 
@@ -4241,6 +4279,7 @@ impl Game {
         self.opened = world.opened.iter().copied().collect();
         self.defeated = world.defeated.iter().copied().collect();
         self.cleared = world.cleared.iter().copied().collect();
+        self.dragonfire.lore = world.section(crate::dragons::WORLD_SECTION).unwrap_or_default();
         self.stocks.clear();
         for stock in &world.stocks {
             let mut wares = Vec::new();
@@ -4655,7 +4694,10 @@ impl Game {
         // about they're always drawn
         let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
         let mut pieces = Vec::new();
-        for animal in &self.animals {
+        // A dragon's drawn in pieces, all of them or none, see dragons::instances(), as one creature
+        // among the rest, by how near it is
+        let mut dragons: Vec<(f64, usize)> = Vec::new();
+        for (k, animal) in self.animals.iter().enumerate() {
             let d = (animal.position - camera).norm();
             // A great serpent's head, jaw and every piece of its long body, see serpents::Coils,
             // before any but other bosses, the nearest of them first, so however many are about
@@ -4664,13 +4706,39 @@ impl Game {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
                 creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+            } else if animal.dragon.is_some() {
+                if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+                    dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
+                }
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
             }
         }
-        creatures.sort_by(|a, b| a.0.total_cmp(&b.0));
-        out.extend(creatures.into_iter().take(MAX_INSTANCES / 2).map(|(_, i)| i));
+        let mut order: Vec<(f64, Option<AnimalInstance>, usize)> = creatures.into_iter().map(|(d, i)| (d, Some(i), 0)).chain(dragons.into_iter().map(|(d, k)| (d, None, k))).collect();
+        order.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut room = MAX_INSTANCES / 2;
+        for (_, one, k) in order {
+            match one {
+                Some(instance) if room > 0 => {
+                    room -= 1;
+                    out.push(instance);
+                }
+                Some(_) => {}
+                None => {
+                    let animal = &self.animals[k];
+                    if let Some(dragon) = &animal.dragon {
+                        pieces.clear();
+                        crate::dragons::instances(animal, dragon, vpm, &mut pieces);
+                        if pieces.len() <= room {
+                            room -= pieces.len();
+                            out.extend(pieces.iter().copied());
+                        }
+                    }
+                }
+            }
+        }
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
+        near.extend(self.dragonfire_instances(view));
         let time = self.combat.time();
         for pickup in &self.pickups {
             let at = pickup.at(vpm);
@@ -4734,6 +4802,7 @@ impl Game {
     /// Lights from the fighting, in the form main.rs keeps the world's lights in
     pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
         let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view);
+        self.dragonfire_lights(view, &mut lights);
         // The veil of the gate or a portal glows, breathing slowly
         let vpm = view.vpm;
         let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
@@ -5031,11 +5100,14 @@ impl Game {
                 painter.text(label + vec2(1.0, 1.0), Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), shadow);
                 painter.text(label, Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), Color32::WHITE);
             }
-            // The Coil Unending's bar is the biggest of all, across most of the view, in the color
-            // of the element its body's taken on, its stages marked across it
-            let ultra = foe.is_ultra();
-            let name = if ultra {
+            // An ultra's bar is the biggest of all, across most of the view: the Coil Unending's in
+            // the color of the element its body's taken on, its stages marked across it, and the
+            // Worldpyre Ancient's with its phases
+            let ultra = foe.is_ultra() || foe == crate::dragons::ULTRA;
+            let name = if foe == Look::Ysveth {
                 "ULTRA  ·  YSVETH, THE COIL UNENDING".to_owned()
+            } else if ultra {
+                format!("ULTRA  ·  {}", foe.name())
             } else if foe.is_raid() {
                 format!("RAID  ·  {}", foe.name())
             } else {
@@ -5074,7 +5146,15 @@ impl Game {
             let [r, g, b] = element.map_or([190, 40, 35], |e| e.color().map(|c| (c as f32 * 0.85) as u8));
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
             // Where a raid boss goes into its next phases, marked across the bar
-            let marks: &[f64] = if ultra { &serpents::ULTRA_STAGES } else if foe.is_raid() { &[0.66, 0.33] } else { &[] };
+            let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {
+                crate::dragons::phases(foe)
+            } else if ultra {
+                &serpents::ULTRA_STAGES
+            } else if foe.is_raid() {
+                &[0.66, 0.33]
+            } else {
+                &[]
+            };
             for &mark in marks {
                 let x = back.left() + width * mark as f32;
                 painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));

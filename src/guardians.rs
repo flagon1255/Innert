@@ -293,11 +293,33 @@ impl App {
     }
 
     /// For trying it out, as the game's set going: `--set guardians_slain=3` has that many of the
-    /// realm's guardians slain already, the farthest from the gate first, and `hold_family=staff`
-    /// a weapon of that family carried taken in hand, to strike a ward from afar
+    /// realm's guardians slain already, the farthest from the gate first, `hold_family=staff` a
+    /// weapon of that family carried taken in hand, to strike a ward from afar, and
+    /// `near_guardian=2` the player stood by that guardian's lair
     pub(super) fn try_guardians(&mut self, settings: &[(String, String)]) {
         if let Some((_, family)) = settings.iter().find(|(k, _)| k == "hold_family") {
             self.game.select_family(family);
+        }
+        // `near_guardian=2` stands the player 20 m off guardian 2's lair, on the gate's side of it,
+        // looking at it, once the world's built round them
+        let near = settings.iter().find(|(k, _)| k == "near_guardian").and_then(|(_, v)| v.parse::<usize>().ok());
+        if let (Some(k), Some(places)) = (near, self.session.places.clone())
+            && let Some(&lair) = places.guardians.get(k)
+        {
+            let (dx, dy) = (places.gate[0] - lair[0], places.gate[1] - lair[1]);
+            let d = dx.hypot(dy).max(1.0);
+            let vpm = self.world.voxels_per_meter as f64;
+            let spot = [lair[0] + dx / d * 20.0, lair[1] + dy / d * 20.0];
+            let at = Vector3::new(spot[0] * vpm - self.world.origin[0] as f64, spot[1] * vpm - self.world.origin[1] as f64, self.world.size[2] as f64 - 2.0 * vpm);
+            let mut player = Player::new(at, &self.world);
+            player.position = at;
+            self.player = Some(player);
+            self.camera.position = voxels_to_camera(at, self.world.size);
+            self.camera.rotation.z = dx.atan2(-dy);
+            self.camera.rotation.x = 0.1;
+            self.session.find_ground = true;
+            self.session.arriving = true;
+            self.rebuild_world();
         }
         let slain = settings.iter().find(|(k, _)| k == "guardians_slain").and_then(|(_, v)| v.parse::<usize>().ok());
         let (Some(slain), Some(places)) = (slain, self.session.places.clone()) else {

@@ -230,8 +230,10 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         raid_bosses: [(Look::Hollowtide, [270.0, 90.0]), (Look::Reefcoil, [-150.0, 260.0]), (Look::Gyremaw, [-210.0, -220.0])],
         lair_names: ["the sea cave", "the reef", "the whirlpool"],
         lair_marks: [Landmark::Anywhere; 3],
-        // Stand-ins for the serpents' own lesser bosses, which take their places when they're in
-        guardians: &[Look::Spider, Look::Treant, Look::Golem, Look::StormDrake],
+        // Its guardians the lesser great serpents, each of them at home in a realm of its own but
+        // all of them come to the sea: the Meremaw from the lakes, the Galecoil out of the sky, the
+        // Veinbinder and the Shatterfang, see serpents.rs
+        guardians: &[Look::Meremaw, Look::Galecoil, Look::Veinbinder, Look::Shatterfang],
         // And the Coil Unending, rising from the deep of the Drowned Ring once they're beaten, see
         // worldgen::Arena
         finale: Some((Look::Ysveth, [60.0, -330.0], "the Drowned Ring")),
@@ -252,23 +254,26 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "dragon",
         name: "The Cinder Crown",
         seed: DRAGON_SEED,
-        // Stand-ins for the dragons' own raid bosses, which take their places when they're in
-        raid_bosses: [(Look::Drake, [240.0, 170.0]), (Look::MagmaGolem, [-250.0, 110.0]), (Look::Colossus, [-60.0, -300.0])],
+        // Its three great dragons, see dragons.rs: the Pyre Matriarch on her roost, the Cindermaw
+        // Tyrant by its caldera and the Gildscale Hoardwarden on its gold at a bone cave's mouth
+        raid_bosses: [(Look::PyreMatriarch, [240.0, 170.0]), (Look::CindermawTyrant, [-250.0, 110.0]), (Look::GildscaleHoardwarden, [-60.0, -300.0])],
         lair_names: ["the peak roost", "the caldera", "the bone cave"],
         lair_marks: [Landmark::Roost, Landmark::Caldera, Landmark::BoneCave],
-        // Stand-ins for the dragons' own lesser drakes and beasts too, which take their places when
-        // they're in
-        guardians: &[Look::StormDrake, Look::Golem, Look::GraveKnight, Look::Ironhide],
-        // And for the dragon that comes down once they're beaten
-        finale: Some((Look::ElderWyrm, [40.0, 340.0], "the heart of the mountain")),
+        // Its guardians fire and stone from before the great dragons: a golem of magma and an ember
+        // drake, and with them a storm drake and a grave knight, as the dragons have no lesser
+        // bosses of their own, only drakelings
+        guardians: &[Look::MagmaGolem, Look::Drake, Look::StormDrake, Look::GraveKnight],
+        // And the first fire, that comes down once they're beaten, in an arena of its own, see
+        // worldgen\dragonlair.rs and Places::find()
+        finale: Some((Look::WorldpyreAncient, [40.0, 340.0], "the heart of the mountain")),
         finale_mark: Landmark::Anywhere,
-        // Stand-ins too, till the dragons' fire beasts and drakes come: burrowers in the ash,
-        // gloomwings on the wing, the dead of the bone fields and tuskers
+        // Drakelings: ashwings above all, the Matriarch's brood, and now and then squallwings, the
+        // Hoardwarden's, and blightwings flying with them
         monsters: &[
-            Pack { looks: &[Look::DuneBurrower, Look::DuneBurrower], most: 2 },
-            Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 2 },
-            Pack { looks: &[Look::ArmoredSkeleton, Look::BoneArcher, Look::GraveBrute], most: 2 },
-            Pack { looks: &[Look::Tusker, Look::Tusker], most: 1 },
+            Pack { looks: &[Look::Ashwing, Look::Ashwing, Look::Ashwing], most: 3 },
+            Pack { looks: &[Look::Ashwing, Look::Ashwing], most: 2 },
+            Pack { looks: &[Look::Squallwing, Look::Squallwing, Look::Ashwing], most: 1 },
+            Pack { looks: &[Look::Blightwing, Look::Ashwing], most: 1 },
         ],
         scaling: Scaling { toughness: 6.8, damage: 3.5, luck: 9.0 },
         color: [255, 120, 50],
@@ -357,11 +362,19 @@ impl Places {
             let by = worldgen::landmark_near(settings, r.lair_marks[k], near.map(|v| v as f32), &rivers);
             dry(by.map_or(near, |p| p.map(f64::from)), 160.0, 7.0)
         });
-        // The finale's in the middle of its arena if it's fought in one, else on dry land
+        // The finale's in the middle of its arena if it's fought in one, else on dry land. The
+        // Cinder Crown's fights in an arena of its own, built round wherever it is, see
+        // worldgen\dragonlair.rs: room for the floor of it, and no river of lava anywhere in it,
+        // rim and all.
+        let dragon_arena = |near: [f64; 2]| {
+            let clear = |at: [f32; 2]| !worldgen::river_near(settings, at, worldgen::DRAGON_ARENA_REACH, &rivers);
+            worldgen::dry_land_near(settings, near.map(|v| v as f32), 260.0, 16.0, &clear).map(|p| p.map(f64::from))
+        };
         let finale = on_raids_beaten(realm).map(|(_, off)| {
             let near = [gate[0] + off[0] as f64, gate[1] + off[1] as f64];
             match worldgen::landmark_near(settings, r.finale_mark, near.map(|v| v as f32), &rivers) {
                 Some(at) if r.finale_mark == Landmark::Arena => at.map(f64::from),
+                _ if lava => dragon_arena(near).unwrap_or_else(|| dry(near, 200.0, 9.0)),
                 by => dry(by.map_or(near, |p| p.map(f64::from)), 200.0, 9.0),
             }
         });
@@ -393,9 +406,14 @@ impl Places {
 
     /// The same for the realm's finale's lair, if it has one, see is_finale_key()
     pub fn finale_key(&self) -> Option<[i64; 3]> {
-        let [x, y] = self.finale?;
-        Some([(x * 10.0).round() as i64, (y * 10.0).round() as i64, LAIR_KEY - RAIDS as i64])
+        self.finale.map(finale_key_at)
     }
+}
+
+/// What a finale's lair at `at`, in meters, is called: a realm's, or the Worldpyre Ancient's far
+/// lair in Free Roam, as hard to beat as a finale, see dragons.rs
+pub fn finale_key_at(at: [f64; 2]) -> [i64; 3] {
+    [(at[0] * 10.0).round() as i64, (at[1] * 10.0).round() as i64, LAIR_KEY - RAIDS as i64]
 }
 
 /// Whether `key` is a realm's finale's lair's, see Places::finale_key()

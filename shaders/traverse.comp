@@ -858,20 +858,38 @@ uint animalCount() {
     return pc.near_size.w;
 }
 
-uvec3 modelSize(uint model) {
-    uint base = weaponModels[0];
-    uint packed = model < base ? animalModels[model * 2 + 1] : weaponModels[1 + (model - base) * 2 + 1];
+// Words in each model's header: where its voxels start, its size, and the size of the box round
+// what's solid in it and where that box is in it. Has to match HEADER_WORDS in src\animals.rs.
+const uint MODEL_HEADER = 4;
+
+uvec3 unpackSize(uint packed) {
     return uvec3(packed & 0x3FFu, (packed >> 10) & 0x3FFu, (packed >> 20) & 0x3FFu);
 }
 
-// Material of one of a model's voxels, 0 for air
-uint modelVoxel(uint model, uvec3 size, uvec3 c) {
-    uint i = c.x + (c.y + c.z * size.y) * size.x;
+// Word `k` of a model's header
+uint modelHeader(uint model, uint k) {
     uint base = weaponModels[0];
-    if (model < base)
-    return animalModels[animalModels[model * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
-    uint w = model - base;
-    return weaponModels[1 + weaponModels[1 + w * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
+    return model < base ? animalModels[model * MODEL_HEADER + k] : weaponModels[1 + (model - base) * MODEL_HEADER + k];
+}
+
+uvec3 modelSize(uint model) {
+    return unpackSize(modelHeader(model, 1));
+}
+
+// Material of voxel `k` of the box `kept` voxels across round what's solid in a model, an animal's
+// or a weapon's, its voxels starting at `start`: 0 outside it, where there's only air. Below the
+// box wraps round to past it.
+uint keptVoxel(bool weapon, uint start, uvec3 kept, uvec3 k) {
+    if (any(greaterThanEqual(k, kept)))
+    return 0;
+    uint i = k.x + (k.y + k.z * kept.y) * kept.x;
+    return (weapon ? weaponModels[1 + start + i / 4] : animalModels[start + i / 4]) >> ((i % 4) * 8) & 0xFFu;
+}
+
+// Material of one of a model's voxels, 0 for air: only those in the box round what's solid in it
+// are kept, see pack_models() in src\animals.rs
+uint modelVoxel(uint model, uvec3 size, uvec3 c) {
+    return keptVoxel(model >= weaponModels[0], modelHeader(model, 0), unpackSize(modelHeader(model, 2)), c - unpackSize(modelHeader(model, 3)));
 }
 
 vec3 rotate(vec4 q, vec3 v) {
@@ -983,6 +1001,11 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
 
         uint model = a.info.x;
         uvec3 size = modelSize(model);
+        // What's kept of its voxels, looked up once for every step through them
+        bool weapon = model >= weaponModels[0];
+        uint start = modelHeader(model, 0);
+        uvec3 kept = unpackSize(modelHeader(model, 2));
+        uvec3 kept_from = unpackSize(modelHeader(model, 3));
         float s = a.scale.x;
         vec3 o = toAnimal(a, -to) / s + vec3(vec2(size.xy) * 0.5, 0);
         vec3 d = toAnimal(a, dir) / s;
@@ -1002,7 +1025,7 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
         vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
         vec3 delta = abs(inv);
         for (int k = 0; k < 512 && t <= limit; k++) {
-            if (modelVoxel(model, size, uvec3(c)) != 0) {
+            if (keptVoxel(weapon, start, kept, uvec3(c) - kept_from) != 0) {
                 vec3 local_normal = vec3(0);
                 local_normal[axis] = -sgn[axis];
                 hit.level = ANIMAL;

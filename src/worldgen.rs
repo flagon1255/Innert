@@ -5,11 +5,14 @@ use std::thread;
 
 mod camps;
 mod castles;
+mod dragonlair;
 mod towns;
 mod trees;
 mod undercity;
 
 pub use camps::{Camp, CampKind, camp_spots};
+#[allow(unused_imports)]
+pub use dragonlair::{DRAGON_ARENA_FLOOR, DRAGON_ARENA_REACH, LairKind, dragon_arena_way, far_lair, lairs_set, set_lairs};
 #[allow(unused_imports)]
 pub use undercity::Sunken;
 
@@ -4406,6 +4409,11 @@ impl Terrain {
         // the sea, just above the water and under it: for building with, see src\bases.rs
         let wet_edge = land != Land::Dragon && (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
         let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
+        // Burnt black where a dragon keeps its lair, and on the way to it, see dragonlair.rs
+        let top = match dragonlair::scorch(&self.settings, xm, ym) {
+            Some(burnt) if !frozen && river <= h && h > sea_level + v => burnt,
+            _ => top,
+        };
         let below = match top {
             SAND | STONE | GRAVEL | CLAY | ICE | ROCK | OBSIDIAN => top,
             GLOW_BLOOD | GLOW_FIRE | GLOW_HOLY => OBSIDIAN,
@@ -4893,7 +4901,9 @@ impl Terrain {
             // ravine breaks into them, see undercity.rs
             let (sunken, cities, shafts) = self.undercities(rivers, &mut features);
             objects.extend(sunken);
-            let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).collect();
+            // Nor in a dragon's lair, see dragonlair.rs
+            let lairs = self.dragon_footprints().into_iter().map(|f| [f[0], f[1], f[2], f[3]]);
+            let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).chain(lairs).collect();
             objects.extend(self.buildings(heights, &mut features, &keep_out));
             for dungeon in &dungeons {
                 objects.push(self.dungeon(dungeon, &mut features));
@@ -4907,6 +4917,8 @@ impl Terrain {
                 objects.extend(camps);
             }
         }
+        // Nothing grows in a dragon's lair, see dragonlair.rs
+        features.footprints.extend(self.dragon_footprints());
         // The Drowned Ring's pillars, arch and statues, where they reach this piece
         let arena = self.arena;
         if let Some(arena) = &arena {
@@ -5256,6 +5268,12 @@ impl Terrain {
                 })
             });
         }
+        // On the way to the Worldpyre Ancient's far lair, the land scorched and the bones of what it
+        // killed, and the lairs of the dragons, see dragonlair.rs
+        if land == Land::Normal && dragonlair::far_lair(&self.settings).is_some() {
+            scatter(dragonlair::OMEN_CELL, 0xd7a9, dragonlair::OMEN_REACH, &mut |x, y, ground, column, r| self.dragon_omen(x, y, ground, column, r));
+        }
+        objects.extend(self.dragon_lairs(&mut features));
 
         features.footprints = footprints;
         (objects, features)
@@ -7757,6 +7775,10 @@ mod tests {
         }
         if let Some((lip, ..)) = waterfalls_in(&settings, &cache, [-200.0, -200.0], [400.0, 400.0]).first() {
             spots.push(("waterfall".into(), [lip[0], lip[1]]));
+        }
+        // And the Worldpyre Ancient's arena, see dragonlair.rs
+        if let Some(at) = far_lair(&settings) {
+            spots.push(("dragon arena".into(), at));
         }
         let mut failed = Vec::new();
         for (k, (name, at)) in spots.iter().enumerate() {

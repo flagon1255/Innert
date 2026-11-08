@@ -371,6 +371,17 @@ impl App {
                     places.arrival[1],
                     places.lairs.iter().zip(&REALMS[realm].raid_bosses).map(|(p, (look, _))| format!("{} {:.0}, {:.0}", look.name(), p[0], p[1])).collect::<Vec<_>>().join("; ")
                 );
+                // The great dragons' lairs built into the land, and the Worldpyre Ancient's if it's
+                // the realm's finale, see dragons.rs
+                let mut lairs: Vec<(worldgen::LairKind, [f32; 2])> = places.lairs.iter().zip(&REALMS[realm].raid_bosses).filter_map(|(at, (look, _))| Some((dragons::lair_kind(*look)?, [at[0] as f32, at[1] as f32]))).collect();
+                if let (Some((look, ..)), Some(at)) = (REALMS[realm].finale, places.finale)
+                    && let Some(kind) = dragons::lair_kind(look)
+                {
+                    lairs.push((kind, [at[0] as f32, at[1] as f32]));
+                }
+                if !lairs.is_empty() {
+                    worldgen::set_lairs(REALMS[realm].seed, lairs);
+                }
                 self.session.places = Some(places);
                 self.session.finale_risen = false;
                 self.grandfather_guardians();
@@ -533,7 +544,9 @@ impl App {
         let mut left = self.game.world_save();
         left.craters = std::mem::take(&mut self.craters);
         left.stains = std::mem::take(&mut self.stains);
+        let own = std::mem::take(&mut left.sections);
         left.sections = std::mem::take(&mut self.session.world_sections);
+        left.sections.extend(own);
         // And what's built there, see bases.rs
         left.set_section(bases::WORLD_SECTION, &self.bases.world_save());
         let from = std::mem::replace(&mut self.session.world, realm.id.to_owned());
@@ -626,8 +639,9 @@ impl App {
             self.session.gate_open = true;
         }
         if let (Some(slot), Some(places)) = (number("near_raid"), self.session.places.clone()) {
-            // On the near side of it, from the gate, stood on the ground once it's built round them
-            let lair = places.lairs[slot.min(realms::RAIDS - 1)];
+            // On the near side of it, from the gate, stood on the ground once it's built round them;
+            // `near_raid=3` by where the realm's finale rises, if it has one
+            let lair = places.finale.filter(|_| slot >= realms::RAIDS).unwrap_or(places.lairs[slot.min(realms::RAIDS - 1)]);
             let (dx, dy) = (places.gate[0] - lair[0], places.gate[1] - lair[1]);
             let d = dx.hypot(dy).max(1.0);
             let vpm = self.world.voxels_per_meter as f64;
@@ -877,8 +891,10 @@ impl App {
         done.craters = self.craters.clone();
         done.stains = self.stains.clone();
         // Other systems put in what's theirs here, as Save::set_section() and
-        // WorldSave::set_section() do
+        // WorldSave::set_section() do, over what the game's put in of its own
+        let own = std::mem::take(&mut done.sections);
         done.sections = session.world_sections.clone();
+        done.sections.extend(own);
         done.set_section(bases::WORLD_SECTION, &self.bases.world_save());
         let mut worlds = session.others.clone();
         worlds.insert(session.world.clone(), done);
