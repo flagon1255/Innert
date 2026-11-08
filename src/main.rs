@@ -80,6 +80,7 @@ mod perf;
 mod player;
 mod quality;
 mod realms;
+mod rope;
 mod save;
 mod session;
 mod shafts;
@@ -1302,6 +1303,10 @@ struct App {
     session: session::Session,
     /// The seed a new Free Roam game's landscape is to have, picked in the menu
     new_seed: u32,
+    /// A grappling hook thrown, and the winds bringing the player back after a fall below the sky
+    /// isles, see rope.rs
+    hook: Option<rope::Hook>,
+    fall_back: Option<rope::FallBack>,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -2512,6 +2517,8 @@ impl App {
             session,
             // `--set new_seed=42` for a new Free Roam game on that seed
             new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
+            hook: None,
+            fall_back: None,
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -3682,6 +3689,9 @@ impl App {
             } else if self.input.mouse_pressed(MouseButton::Left) {
                 if bucket {
                     self.scoop_water(eye, look);
+                } else if self.game.holding_hook() && !self.game.has_target() {
+                    // The grappling hook thrown, see rope.rs
+                    self.throw_hook();
                 } else {
                     self.game.primary(eye);
                 }
@@ -3796,6 +3806,18 @@ impl App {
                 Some(_) => None,
                 None => Some(Player::new(camera_to_voxels(self.camera.position, self.world.size), &self.world)),
             };
+        }
+
+        // The grappling hook hauling the player along its rope, which jump lets go of, wings
+        // spread while jump's held in the air, and the winds bringing the player back after a
+        // fall below the sky isles, see rope.rs
+        let jump_held = self.focused && interactive && !self.game.dead() && self.input.key_held(KeyCode::Space);
+        let let_go = self.focused && interactive && self.input.key_pressed(KeyCode::Space);
+        self.update_hook(delta_time.min(0.05), let_go);
+        self.update_fall();
+        let gliding = self.gliding(jump_held || self.session.trial_glides());
+        if let Some(player) = &mut self.player {
+            player.gliding = gliding;
         }
 
         // The dead don't walk
@@ -4634,6 +4656,12 @@ impl App {
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
+        // A grappling hook's rope, and wings spread to glide, see rope.rs
+        let rope = if self.hook.is_some() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        // How white the screen is as the winds bring the player back up, see rope.rs, and whether
+        // they're gliding
+        let fallen = self.fall_dark();
+        let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4747,6 +4775,21 @@ impl App {
                     let shade = (dark.clamp(0.0, 1.0) * 200.0) as u8;
                     painter.text(ctx.screen_rect().center(), Align2::CENTER_CENTER, "The world takes shape...", egui::FontId::proportional(22.0), Color32::from_gray(shade));
                 }
+            }
+            // Wings spread, out of sight behind: said under the crosshair instead
+            if gliding_now && !self.menu_open {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gliding"))).text(
+                    ctx.screen_rect().center() + egui::vec2(0.0, 42.0),
+                    Align2::CENTER_CENTER,
+                    "Gliding",
+                    egui::FontId::proportional(16.0),
+                    Color32::from_rgba_unmultiplied(235, 240, 255, 200),
+                );
+            }
+            // Brought back up after a fall below the sky isles, see rope.rs
+            if fallen > 0.0 {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("fallen")))
+                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_rgba_unmultiplied(225, 235, 250, (fallen * 255.0) as u8));
             }
             // Going through the gate or a portal: the light of its veil, then the dark
             let leaving = self.session.leaving_dark();
@@ -5120,7 +5163,9 @@ impl App {
         // The weapon in hand, and the animals, food and things flying near the camera, for the
         // shader to trace
         let playing = self.loaded_scene.is_terrain() && self.animals_on;
-        let instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        let mut instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        // A grappling hook's rope, and wings spread to glide, see rope.rs
+        instances.extend(rope);
         if let Some(perf) = &mut self.perf {
             perf.instances = perf.instances.max(instances.len());
         }

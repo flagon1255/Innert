@@ -73,6 +73,16 @@ pub const FREE_ROAM_SEEDS: u32 = 0xEFFF_FFFF;
 /// raid bosses already: as hard to beat as one of those
 pub const RAID_PROMOTION: f64 = 5.0;
 
+/// How far the grappling hook throws, in meters, in the sky isles and anywhere else: every island
+/// there has neighbours across gaps well within it, see worldgen::sky_island()
+pub const HOOK_REACH_M: f32 = 40.0;
+
+/// The sky isles: the grappling hook lies by their portal home, given on first coming to them, so
+/// every island's within reach from the start, and the first of their raid bosses beaten leaves
+/// wings to glide with. Both are sold in the normal world too, once the way there's open.
+pub const HOOK_REALM: usize = 1;
+pub const WINGS_REALM: usize = 1;
+
 pub const REALMS: [Realm; 4] = [
     Realm {
         id: "normal",
@@ -175,13 +185,17 @@ impl Places {
     /// the nearest dry land to where the realm says
     pub fn find(realm: usize, settings: &TerrainSettings, start: [f64; 2], ahead: [f64; 2]) -> Places {
         let r = &REALMS[realm];
-        let dry = |near: [f64; 2], within: f32| worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], within).map_or(near, |p| [p[0] as f64, p[1] as f64]);
-        let gate = dry([start[0] + ahead[0] * 14.0, start[1] + ahead[1] * 14.0], 60.0);
+        let dry = |near: [f64; 2], within: f32, room: f32| worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], within, room).map_or(near, |p| [p[0] as f64, p[1] as f64]);
+        // Room for the gate's dais all round it, and for a raid boss to fight in
+        let gate = dry([start[0] + ahead[0] * 14.0, start[1] + ahead[1] * 14.0], 80.0, 4.0);
         let back = [start[0] - gate[0], start[1] - gate[1]];
         let length = back[0].hypot(back[1]).max(1e-6);
         let facing = back[1].atan2(back[0]);
-        let arrival = [gate[0] + back[0] / length * ARRIVAL_M, gate[1] + back[1] / length * ARRIVAL_M];
-        let lairs = r.raid_bosses.map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 140.0));
+        // As far out in front of it as there's land to stand on, as on a floating island
+        let out = |d: f64| [gate[0] + back[0] / length * d, gate[1] + back[1] / length * d];
+        let stand = (0..16).map(|k| ARRIVAL_M - k as f64 * 0.5).find(|&d| worldgen::is_dry_land(settings, out(d).map(|v| v as f32), 1.0)).unwrap_or(ARRIVAL_M);
+        let arrival = out(stand);
+        let lairs = r.raid_bosses.map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 160.0, 7.0));
         Places { realm, arrival, gate, facing, lairs }
     }
 
@@ -250,15 +264,73 @@ mod tests {
         let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: NORMAL_SEED, grass_tufts: true };
         let a = Places::find(0, &settings, [200.0, 180.0], [0.0, 1.0]);
         assert_eq!(a, Places::find(0, &settings, [200.0, 180.0], [0.0, 1.0]));
-        for p in a.lairs.iter().chain([&a.gate]) {
-            assert!(worldgen::is_dry_land(&settings, [p[0] as f32, p[1] as f32]), "{p:?}");
+        for p in a.lairs {
+            assert!(worldgen::is_dry_land(&settings, [p[0] as f32, p[1] as f32], 7.0), "{p:?}");
         }
+        assert!(worldgen::is_dry_land(&settings, [a.gate[0] as f32, a.gate[1] as f32], 4.0));
         // Its gate faces the way it's come at from, the player stands in front of it
         let to_arrival = [a.arrival[0] - a.gate[0], a.arrival[1] - a.gate[1]];
         assert!((to_arrival[1].atan2(to_arrival[0]) - a.facing).abs() < 1e-6);
-        assert!((to_arrival[0].hypot(to_arrival[1]) - ARRIVAL_M).abs() < 1e-6);
+        assert!((3.0..=ARRIVAL_M + 1e-6).contains(&to_arrival[0].hypot(to_arrival[1])));
         // Each lair's key is its own, and none is a landscape lair's
         assert!(a.lair_key(0) != a.lair_key(1) && a.lair_key(1) != a.lair_key(2));
         assert!((0..3).all(|k| a.lair_key(k)[2] < -1000));
+    }
+
+    /// In the sky isles too: the gate, where the player comes to it and every raid boss's lair are
+    /// on a floating island, and from each island there's another within a grappling hook's reach
+    #[test]
+    fn the_sky_isles_have_room_and_are_within_reach_of_each_other() {
+        let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: SKY_SEED, grass_tufts: true };
+        let p = Places::find(1, &settings, [200.0, 180.0], [0.0, 1.0]);
+        assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0), "the gate's on an island");
+        assert!(worldgen::is_dry_land(&settings, [p.arrival[0] as f32, p.arrival[1] as f32], 1.0), "the player comes to an island");
+        for lair in p.lairs {
+            assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
+        }
+        // Over a square kilometer, from every island's edge another's within reach, a gap of no
+        // more than the hook throws less a little, along the ground, and no higher than it
+        // throws less what it pulls up
+        let island = |x: f32, y: f32| worldgen::sky_island(SKY_SEED, x, y);
+        let mut islands = 0;
+        let mut x = -500.0;
+        while x < 500.0 {
+            let mut y = -500.0;
+            while y < 500.0 {
+                if island(x, y).is_some() {
+                    islands += 1;
+                }
+                y += 2.0;
+            }
+            x += 2.0;
+        }
+        let share = islands as f32 / (500.0 * 500.0);
+        assert!((0.15..0.6).contains(&share), "{share} of the sky is island");
+        // Every island has a neighbour across a gap the hook reaches over with room to spare, the
+        // gap measured along the line between their middles, and none is so much higher than its
+        // lowest neighbour that the hook can't pull up to it
+        for cy in -10..10 {
+            for cx in -10..10 {
+                let (a, _, low) = worldgen::sky_isle(SKY_SEED, cx, cy);
+                let mut gaps = Vec::new();
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
+                    let (b, _, high) = worldgen::sky_isle(SKY_SEED, cx + dx, cy + dy);
+                    let steps = ((b[0] - a[0]).hypot(b[1] - a[1]) / 0.5) as usize;
+                    let (mut gap, mut widest) = (0.0f32, 0.0f32);
+                    for s in 0..steps {
+                        let t = s as f32 / steps as f32;
+                        if island(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t).is_none() {
+                            gap += 0.5;
+                            widest = widest.max(gap);
+                        } else {
+                            gap = 0.0;
+                        }
+                    }
+                    gaps.push((widest, high - low));
+                }
+                let reachable = gaps.iter().filter(|(gap, rise)| *gap < HOOK_REACH_M - 10.0 && *rise < HOOK_REACH_M * 0.5).count();
+                assert!(reachable >= 2, "the island of square {cx}, {cy}: gaps and rises to its neighbours {gaps:?}");
+            }
+        }
     }
 }

@@ -2344,6 +2344,9 @@ struct Column {
     y: i64,
     blade: i32,
     blade_top: u8,
+    /// Nothing's under this height in voxels: the open air under a floating island in the sky
+    /// isles, or all of it where there's none. 0 elsewhere.
+    under: i32,
 }
 
 /// The ground under a rectangle of voxel columns, at some resolution. Columns outside it are
@@ -2602,9 +2605,88 @@ impl Heights {
     }
 }
 
+/// What kind of land a landscape is, from its seed: the normal world's for every seed Free Roam
+/// can have, and the realms' own for theirs past those, see src\realms.rs
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Land {
+    Normal,
+    /// Islands floating high over the sea, see sky_island()
+    Sky,
+    Dream,
+    Ice,
+}
+
+pub fn land_of(seed: u32) -> Land {
+    match seed >> 24 {
+        0xF1 => Land::Sky,
+        0xF2 => Land::Dream,
+        0xF3 => Land::Ice,
+        _ => Land::Normal,
+    }
+}
+
+/// How far apart the sky isles are, in meters: each SKY_CELL square has one, near its middle
+const SKY_CELL: f32 = 46.0;
+
+/// The island floating over a spot in the sky isles, in meters: how high the top of its ground is,
+/// and how high its underside, or None in the open air between them. Each square SKY_CELL across
+/// has an island near its middle, some of them great isles twice the size of the rest, their tops
+/// at their own heights, their shores ragged, their undersides tapering down to a rocky point, so
+/// none is out of reach of the next: a grappling hook's throw or a glide away.
+pub fn sky_island(seed: u32, x: f32, y: f32) -> Option<(f32, f32)> {
+    let (cx, cy) = ((x / SKY_CELL).floor() as i32, (y / SKY_CELL).floor() as i32);
+    // The same ragged shore and gentle hills for all of them, worked out only where it's needed
+    let mut shore = None;
+    let mut best: Option<(f32, f32)> = None;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (middle, radius, height) = sky_isle(seed, cx + dx, cy + dy);
+            let d = (x - middle[0]).hypot(y - middle[1]);
+            if d > radius * 1.3 {
+                continue;
+            }
+            let wobble = *shore.get_or_insert_with(|| fbm(x / 9.0, y / 9.0, 3, seed.wrapping_add(41)));
+            let edge = radius * (1.0 + 0.28 * wobble);
+            if d >= edge {
+                continue;
+            }
+            let t = d / edge;
+            let hills = fbm(x / 14.0, y / 14.0, 3, seed.wrapping_add(42));
+            let top = height + (1.0 - t * t) * 2.5 + hills * 1.8 - smoothstep(0.82, 1.0, t) * 1.2;
+            // Deeper the bigger it is, rocky knobs hanging from it, all of it coming to a point
+            let r = hash3((cx + dx) as u32, (cy + dy) as u32, seed ^ 0x5c1e);
+            let depth = (0.5 + 0.25 * unit(r >> 12)) * radius.min(20.0);
+            let knobs = ridged(x / 3.5, y / 3.5, 2, seed.wrapping_add(43)) * 2.5 * (1.0 - t);
+            let under = top - 1.8 - (depth + knobs) * (1.0 - t.powf(1.5));
+            if best.is_none_or(|(b, _)| top > b) {
+                best = Some((top, under));
+            }
+        }
+    }
+    best
+}
+
+/// The island of the SKY_CELL square `i`, `j` in the sky isles: its middle and how far out its
+/// shore is, give or take its raggedness, and how high its edge is, in meters. A few are great
+/// isles twice the size of the rest.
+pub fn sky_isle(seed: u32, i: i32, j: i32) -> ([f32; 2], f32, f32) {
+    let r = hash3(i as u32, j as u32, seed ^ 0x5c1e);
+    let great = unit(hash(r)) < 0.22;
+    let middle = [(i as f32 + 0.5 + 0.3 * (unit(r) - 0.5)) * SKY_CELL, (j as f32 + 0.5 + 0.3 * (unit(r >> 16) - 0.5)) * SKY_CELL];
+    let radius = if great { 22.0 + 4.0 * unit(r >> 8) } else { 12.0 + 6.0 * unit(r >> 4) };
+    (middle, radius, 26.0 + 14.0 * unit(hash(r ^ 0x77)))
+}
+
+/// Where the open sky's ground is said to be in the sky isles, far under everything: nothing's
+/// built there, see Column::under
+const SKY_VOID: f32 = -40.0;
+
 // Terrain shapes are defined in meters, so more voxels per meter means the same landscape with finer voxels
 fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     let seed = settings.seed;
+    if land_of(seed) == Land::Sky {
+        return sky_island(seed, x, y).map_or(SKY_VOID, |(top, _)| top);
+    }
     let height_m = settings.height_m as f32;
 
     let continent = fbm(x / 160.0, y / 160.0, 4, seed);
@@ -2629,6 +2711,10 @@ pub struct Climate {
 
 pub fn climate(settings: &TerrainSettings, x: f32, y: f32) -> Climate {
     let seed = settings.seed;
+    // The sky isles are all green meadows and woods
+    if land_of(seed) == Land::Sky {
+        return Climate::default();
+    }
     let heat = fbm(x / 900.0, y / 900.0, 3, seed.wrapping_add(31)) * 1.6;
     let wet = fbm(x / 650.0, y / 650.0, 3, seed.wrapping_add(32)) * 1.6;
     let hot = smoothstep(0.1, 0.4, heat);
@@ -2665,25 +2751,30 @@ pub fn find_climate(settings: &TerrainSettings, kind: &str, near: [f32; 2]) -> O
     None
 }
 
-/// Whether `at`, in meters, is dry land a few meters round, a little over the sea and not steep:
+/// Whether `at`, in meters, is dry land `room` meters round, a little over the sea and not steep:
 /// room for something to stand on, as the gate to the realms or a raid boss's lair, see realms.rs.
 /// Only the land's shape is looked at, not the rivers cut into it, which are narrow.
-pub fn is_dry_land(settings: &TerrainSettings, at: [f32; 2]) -> bool {
+pub fn is_dry_land(settings: &TerrainSettings, at: [f32; 2], room: f32) -> bool {
     let sea = sea_level_m(settings);
     let h = height_at(settings, at[0], at[1]);
-    let round = [[3.0, 0.0], [-3.0, 0.0], [0.0, 3.0], [0.0, -3.0]].map(|[dx, dy]| height_at(settings, at[0] + dx, at[1] + dy));
-    h > sea + 1.5 && round.iter().all(|&r| r > sea + 1.0 && (r - h).abs() < 1.6)
+    let step = room.min(3.0);
+    let near = [[step, 0.0], [-step, 0.0], [0.0, step], [0.0, -step]].map(|[dx, dy]| height_at(settings, at[0] + dx, at[1] + dy));
+    let far = (0..8).map(|k| {
+        let a = k as f32 * TAU / 8.0;
+        height_at(settings, at[0] + a.cos() * room, at[1] + a.sin() * room)
+    });
+    h > sea + 1.5 && near.iter().all(|&r| r > sea + 1.0 && (r - h).abs() < 1.6) && far.into_iter().all(|r| r > sea + 1.0 && (r - h).abs() < room * 0.5)
 }
 
-/// The nearest dry land to `near` within `within` meters, see is_dry_land(), looking in rings
-/// four meters apart
-pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32) -> Option<[f32; 2]> {
+/// The nearest dry land to `near` within `within` meters with `room` round it, see is_dry_land(),
+/// looking in rings four meters apart
+pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32, room: f32) -> Option<[f32; 2]> {
     for ring in 0..=(within / 4.0) as usize {
         let count = (ring * 6).max(1);
         for i in 0..count {
             let angle = i as f32 / count as f32 * TAU;
             let at = [near[0] + angle.cos() * ring as f32 * 4.0, near[1] + angle.sin() * ring as f32 * 4.0];
-            if is_dry_land(settings, at) {
+            if is_dry_land(settings, at, room) {
                 return Some(at);
             }
         }
@@ -2696,7 +2787,11 @@ fn is_grassy(material: u8) -> bool {
 }
 
 fn sea_level_m(settings: &TerrainSettings) -> f32 {
-    settings.height_m as f32 * 0.3
+    match land_of(settings.seed) {
+        // Far down under the floating islands, seen only beyond them, see sky_island()
+        Land::Sky => 3.0,
+        _ => settings.height_m as f32 * 0.3,
+    }
 }
 
 /// The landscape goes on forever. Rivers start at springs, at most one in each RIVER_CELL meter
@@ -3324,6 +3419,15 @@ impl Terrain {
         let snow_line = (self.settings.height_m as f32 * 0.7 * vpm) as i32;
         let river = (heights.river_m(x, y) * vpm).floor() as i32;
         let water_top = if river > h { river.max(sea_level) } else { sea_level };
+        // In the sky isles, the open air under an island, and everywhere between them; nor is
+        // there any water, but for the sea far below, seen only past the islands
+        let (under, water_top) = match land_of(self.settings.seed) {
+            Land::Sky => match sky_island(self.settings.seed, gx as f32 / vpm, gy as f32 / vpm) {
+                Some((_, under)) => ((under * vpm) as i32, i32::MIN),
+                None => (i32::MAX, i32::MIN),
+            },
+            _ => (0, water_top),
+        };
 
         // Which kind of land this is, with ragged edges where one meets the next
         let (xm, ym) = (gx as f32 / vpm, gy as f32 / vpm);
@@ -3397,6 +3501,7 @@ impl Terrain {
             blade,
             blade_body,
             blade_top,
+            under,
         }
     }
 
@@ -3425,7 +3530,9 @@ impl Terrain {
     }
 
     fn material(&self, column: &Column, z: i32, dirt_depth: i32) -> u8 {
-        if z <= column.height {
+        if z < column.under {
+            AIR
+        } else if z <= column.height {
             let depth = column.height - z;
             if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
                 self.rock(column, z, depth)
@@ -3492,6 +3599,10 @@ impl Terrain {
 
         // Below this every voxel in the column is stone
         let stone_below = (min_height - dirt_depth).min(lowest_cut);
+        // Under the floating islands of the sky isles, nothing below the lowest of their
+        // undersides, and only above the highest is there stone all through
+        let open_below = columns.iter().map(|c| c.under).min().unwrap_or(0);
+        let solid_from = columns.iter().map(|c| c.under).max().unwrap_or(0);
 
         let mut materials = [AIR; BRICK_VOXELS];
         let mut nearby: Vec<(&Shape, u32)> = Vec::new();
@@ -3503,7 +3614,10 @@ impl Terrain {
                 break;
             }
             let index = cx + (cy + z * by) * bx;
-            if z0 + 7 < stone_below {
+            if z0 + 7 < open_below {
+                continue;
+            }
+            if z0 + 7 < stone_below && z0 >= solid_from {
                 cells.push((index, SOLID_BRICK | STONE as u32));
                 continue;
             }
@@ -3515,7 +3629,7 @@ impl Terrain {
             // of the ground nearby goes: plain stone, as nothing can see it, rather than layers of
             // rock that each take a brick of their own
             let middle = [(heights.origin[0] + (cx * 8) as i64) as f32 + 4.0, (heights.origin[1] + (cy * 8) as i64) as f32 + 4.0, z0 as f32 + 4.0].map(|v| v * voxel);
-            let deep = z0 + 7 < min_height - dirt_depth;
+            let deep = z0 + 7 < min_height - dirt_depth && z0 >= solid_from;
             if deep && nearby.iter().all(|(s, _)| s.clear_of(middle, 8.5 * voxel)) {
                 cells.push((index, SOLID_BRICK | STONE as u32));
                 continue;
@@ -3614,6 +3728,10 @@ impl Terrain {
 
     /// The rivers coming near the rectangle from `lo` to `hi`, in meters, wherever it is
     fn rivers_near(&self, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<Arc<Vec<RiverPoint>>> {
+        // No river runs off a floating island
+        if land_of(self.settings.seed) == Land::Sky {
+            return Vec::new();
+        }
         let reach = RIVER_STEPS as f32 * 0.5;
         let cell = |v: f32| (v / RIVER_CELL).floor() as i32;
         let mut rivers = Vec::new();
@@ -3769,30 +3887,36 @@ impl Terrain {
         let seed = self.settings.seed;
         let vpm = heights.voxels_per_meter;
         let mut features = Features::default();
-        // Buildings go first, as where they overlap other things they win. None stands over a
-        // dungeon, whose halls go before the caves so no cave breaks into them.
-        let dungeons = self.dungeons(rivers);
-        // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and no
-        // ruins stand in them
-        let (mut objects, towns) = self.towns(rivers, &mut features);
-        // Royal castles keep clear of all those and of caves themselves, see castles.rs
-        let (castles, royal) = self.castles(rivers, &mut features);
-        objects.extend(castles);
-        // Fallen cities deep under the land keep clear of all those themselves, and no cave or
-        // ravine breaks into them, see undercity.rs
-        let (sunken, cities, shafts) = self.undercities(rivers, &mut features);
-        objects.extend(sunken);
-        let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).collect();
-        objects.extend(self.buildings(heights, &mut features, &keep_out));
-        for dungeon in &dungeons {
-            objects.push(self.dungeon(dungeon, &mut features));
+        let mut objects = Vec::new();
+        // Nothing's built on the floating islands of the sky isles, nor cut into them: only what
+        // grows there
+        if land_of(seed) != Land::Sky {
+            // Buildings go first, as where they overlap other things they win. None stands over a
+            // dungeon, whose halls go before the caves so no cave breaks into them.
+            let dungeons = self.dungeons(rivers);
+            // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and
+            // no ruins stand in them
+            let (in_towns, towns) = self.towns(rivers, &mut features);
+            objects.extend(in_towns);
+            // Royal castles keep clear of all those and of caves themselves, see castles.rs
+            let (castles, royal) = self.castles(rivers, &mut features);
+            objects.extend(castles);
+            // Fallen cities deep under the land keep clear of all those themselves, and no cave or
+            // ravine breaks into them, see undercity.rs
+            let (sunken, cities, shafts) = self.undercities(rivers, &mut features);
+            objects.extend(sunken);
+            let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).collect();
+            objects.extend(self.buildings(heights, &mut features, &keep_out));
+            for dungeon in &dungeons {
+                objects.push(self.dungeon(dungeon, &mut features));
+            }
+            let shut: Vec<[f32; 4]> = royal.iter().chain(&cities).copied().collect();
+            objects.extend(self.caves(&mut features, &royal, &cities));
+            objects.extend(self.waterfall_caves(&mut features));
+            objects.extend(self.ravines(&mut features, &shut));
+            let camps = self.camps(heights, &mut features, &keep_out, &objects);
+            objects.extend(camps);
         }
-        let shut: Vec<[f32; 4]> = royal.iter().chain(&cities).copied().collect();
-        objects.extend(self.caves(&mut features, &royal, &cities));
-        objects.extend(self.waterfall_caves(&mut features));
-        objects.extend(self.ravines(&mut features, &shut));
-        let camps = self.camps(heights, &mut features, &keep_out, &objects);
-        objects.extend(camps);
         let footprints = std::mem::take(&mut features.footprints);
         let (own_lo, own_hi) = (self.own_lo, self.own_hi);
 
@@ -3816,6 +3940,10 @@ impl Terrain {
                         continue;
                     }
                     let column = self.column(heights, (x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
+                    // Nothing grows in the open air between the sky isles
+                    if column.under > column.height {
+                        continue;
+                    }
                     let ground = (column.height + 1) as f32 / vpm;
                     if let Some(object) = place(x, y, ground, &column, hash(r)) {
                         // Anything reaching further than `reach` would be missing where it does

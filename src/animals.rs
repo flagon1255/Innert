@@ -105,6 +105,11 @@ pub enum Look {
     RealmPortal,
     PortalVeil,
     InnertBlock,
+    // Getting about the sky isles, see src\rope.rs: a grappling hook's head, a length of its rope,
+    // and wings spread to glide
+    GrappleHook,
+    HookRope,
+    Wings,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -155,7 +160,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 62] = [
+    pub const ALL: [Look; 65] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -218,6 +223,9 @@ impl Look {
         Look::RealmPortal,
         Look::PortalVeil,
         Look::InnertBlock,
+        Look::GrappleHook,
+        Look::HookRope,
+        Look::Wings,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -384,7 +392,7 @@ impl Look {
 
     /// Part of the way through the realms, which stands where it is, see src\realms.rs
     pub fn is_shrine(self) -> bool {
-        matches!(self, Look::Teleporter | Look::RealmPortal | Look::PortalVeil | Look::InnertBlock)
+        matches!(self, Look::Teleporter | Look::RealmPortal | Look::PortalVeil | Look::InnertBlock | Look::GrappleHook | Look::HookRope | Look::Wings)
     }
 
     /// Bones rather than rotting flesh, for the walking dead
@@ -563,6 +571,10 @@ impl Look {
             Look::RealmPortal => 7.9,
             Look::PortalVeil => 6.6,
             Look::InnertBlock => 0.28,
+            Look::GrappleHook => 0.3,
+            // Half its length, lying along x
+            Look::HookRope => 0.8,
+            Look::Wings => 1.5,
         }
     }
 
@@ -605,6 +617,9 @@ impl Look {
             Look::RealmPortal => (2.6, 2.1),
             Look::PortalVeil => (2.7, 1.2),
             Look::InnertBlock => (0.12, 0.3),
+            Look::GrappleHook => (0.1, 0.3),
+            Look::HookRope => (0.03, 0.1),
+            Look::Wings => (0.3, 0.6),
         }
     }
 
@@ -669,6 +684,9 @@ impl Look {
             Look::RealmPortal => "portal home",
             Look::PortalVeil => "portal",
             Look::InnertBlock => "Innert block",
+            Look::GrappleHook => "grappling hook",
+            Look::HookRope => "rope",
+            Look::Wings => "wings",
         }
     }
 
@@ -2657,6 +2675,35 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             }
             p.push(cuboid([-h, -h, 0.02], [h, h, 0.02 + 2.0 * h], GLOW_ARCANE));
         }
+        Look::GrappleHook => {
+            // Three barbed prongs curving back from the head of an iron shank, a ring at its tail
+            // for the rope
+            let z = 0.14;
+            for k in 0..3 {
+                let a = k as f64 * TAU / 3.0;
+                let (c, s) = (a.cos(), a.sin());
+                p.push(limb([0.13, 0.0, z], [0.07, 0.1 * c, z + 0.1 * s], 0.016, 0.012, STEEL));
+                p.push(limb([0.07, 0.1 * c, z + 0.1 * s], [0.1, 0.12 * c, z + 0.12 * s], 0.012, 0.004, STEEL));
+            }
+            p.push(ball([0.14, 0.0, z], 0.024, DARK_STEEL));
+            p.push(limb([-0.12, 0.0, z], [0.13, 0.0, z], 0.018, 0.018, DARK_STEEL));
+            p.push(ball([-0.15, 0.0, z], 0.032, BRONZE));
+        }
+        // A length of plaited rope lying along x, a grappling hook's, many of them making the line
+        Look::HookRope => p.push(limb([-0.75, 0.0, 0.03], [0.75, 0.0, 0.03], 0.008, 0.008, LEATHER)),
+        Look::Wings => {
+            // Wings of white feathers spread wide either side, on a light frame of bone along
+            // their leading edges, as when gliding
+            for side in [-1.0, 1.0] {
+                p.push(limb([0.0, side * 0.18, 0.65], [-0.05, side * 0.8, 0.82], 0.035, 0.03, BONE));
+                p.push(limb([-0.05, side * 0.8, 0.82], [-0.2, side * 1.35, 0.78], 0.03, 0.015, BONE));
+                for k in 0..6 {
+                    let out = 0.25 + 0.2 * k as f64;
+                    let tint = if k % 2 == 0 { LINEN } else { FUR_WHITE };
+                    p.push(ellipsoid([-0.2 - 0.03 * k as f64, side * out, 0.66 - 0.03 * k as f64], [0.24 - 0.02 * k as f64, 0.11, 0.025], tint));
+                }
+            }
+        }
         // Bosses, all built above
         _ => {}
     }
@@ -3112,6 +3159,12 @@ const BURIED_THROUGH: f64 = 0.3;
 pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_voxels_per_meter: u32) -> AnimalInstance {
     let vpm = world_voxels_per_meter as f64;
     AnimalInstance::new(model_index(look, 0), position, facing(heading), vpm / look.resolution(), look.reach() * vpm, STILL)
+}
+
+/// The same for something moving with the player, turned any way, like a grappling hook's rope
+pub fn moving_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, world_voxels_per_meter: u32) -> AnimalInstance {
+    let vpm = world_voxels_per_meter as f64;
+    AnimalInstance::new(model_index(look, 0), position, rotation, vpm / look.resolution(), look.reach() * vpm, MOVING)
 }
 
 fn hash(mut x: u32) -> u32 {
