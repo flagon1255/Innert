@@ -21,6 +21,9 @@ use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
 
+/// What dragons breathe and leave burning, see src\dragons.rs
+mod dragonfire;
+
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
 /// Hunger drops from full to empty in this many seconds
@@ -610,6 +613,8 @@ pub struct Game {
     hands_busy: bool,
     /// The map's open over the middle of the view, see set_map_open()
     map_open: bool,
+    /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
+    dragonfire: dragonfire::Fire,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -768,6 +773,7 @@ impl Game {
             sky_wares: false,
             hands_busy: false,
             map_open: false,
+            dragonfire: Default::default(),
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -816,6 +822,7 @@ impl Game {
         self.target = None;
         self.seed = seed;
         self.combat.clear();
+        self.dragonfire.clear();
         self.leaves.clear();
         self.rest = None;
         self.safe_for = 0.0;
@@ -1359,7 +1366,11 @@ impl Game {
             if let Some(boss) = &mut animal.boss {
                 boss.recenter(shift);
             }
+            if let Some(dragon) = &mut animal.dragon {
+                dragon.recenter(shift);
+            }
         }
+        self.dragonfire.recenter(shift);
         for root in &mut self.roots {
             root.at -= shift;
         }
@@ -1516,6 +1527,10 @@ impl Game {
                 animal.toughen(toughness);
             }
             animal.update(world, water, player, dt);
+            // What's struck at a dragon lands on whichever part of it the player's looking at
+            if let Some(dragon) = &mut animal.dragon {
+                dragon.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
+            }
         }
 
         // The dead don't fight
@@ -1552,6 +1567,7 @@ impl Game {
         for (look, deed) in deeds {
             self.carry_out(look, deed, world, water, player, view);
         }
+        self.tend_dragonfire(world, player, view, dt);
         self.grow_roots(world, player, view, dt);
         self.spin_webs(player, dt);
         self.reek(world, player, dt);
@@ -1618,6 +1634,12 @@ impl Game {
     /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
     fn carry_out(&mut self, look: Look, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
+        // What dragons do is their own, see game\dragonfire.rs
+        match deed {
+            Deed::Dragon(act) => return self.dragon_act(look, act, world, water, player, view),
+            Deed::Phase { at, stage } if look.is_dragon() => return self.dragon_phase(look, at, stage, view),
+            _ => {}
+        }
         // How much something at `at` is felt, from 1 right there to nothing 40 meters off
         let felt = |at: Vector3<f64>| (1.0 - (at - view.eye).norm() / vpm / 40.0).max(0.0);
         // Monsters snarl and rattle rather than roar, and don't shake the ground
@@ -2066,6 +2088,8 @@ impl Game {
                     self.cues.push(Cue::at(Sound::Step(Ground::Stone), at, 0.9).pitched(0.4));
                 }
             }
+            // Seen to above
+            Deed::Dragon(_) => {}
         }
     }
 
@@ -2254,6 +2278,7 @@ impl Game {
             }
         }
         self.combat.clear();
+        self.dragonfire.clear();
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
@@ -2478,7 +2503,8 @@ impl Game {
         let mut cleared = Vec::new();
         let mut k = 0;
         while k < self.animals.len() {
-            if self.animals[k].health > 0.0 {
+            // A dragon falls out of the sky and lies a moment where it fell first
+            if self.animals[k].health > 0.0 || crate::dragons::dying(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -3923,16 +3949,38 @@ impl Game {
         }
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
-        let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
-        for animal in &self.animals {
+        // A dragon's drawn in pieces, all of them or none, see dragons::instances()
+        let mut creatures: Vec<(f64, usize)> = Vec::new();
+        for (k, animal) in self.animals.iter().enumerate() {
             let d = (animal.position - camera).norm();
             if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, k));
             }
         }
         creatures.sort_by(|a, b| a.0.total_cmp(&b.0));
-        out.extend(creatures.into_iter().take(MAX_INSTANCES / 2).map(|(_, i)| i));
+        let mut room = MAX_INSTANCES / 2;
+        let mut pieces = Vec::new();
+        for (_, k) in creatures {
+            let animal = &self.animals[k];
+            match &animal.dragon {
+                Some(dragon) => {
+                    pieces.clear();
+                    crate::dragons::instances(animal, dragon, vpm, &mut pieces);
+                    if pieces.len() > room {
+                        continue;
+                    }
+                    room -= pieces.len();
+                    out.extend(pieces.iter().copied());
+                }
+                None if room > 0 => {
+                    room -= 1;
+                    out.push(animal.instance(world.voxels_per_meter));
+                }
+                None => {}
+            }
+        }
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
+        near.extend(self.dragonfire_instances(view));
         let time = self.combat.time();
         for pickup in &self.pickups {
             let at = pickup.at(vpm);
@@ -3989,6 +4037,7 @@ impl Game {
     /// Lights from the fighting, in the form main.rs keeps the world's lights in
     pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
         let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view);
+        self.dragonfire_lights(view, &mut lights);
         // The veil of the gate or a portal glows, breathing slowly
         let vpm = view.vpm;
         let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
@@ -4267,14 +4316,22 @@ impl Game {
                 painter.text(label + vec2(1.0, 1.0), Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), shadow);
                 painter.text(label, Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), Color32::WHITE);
             }
-            let name = if foe.is_raid() { format!("RAID  ·  {}", foe.name()) } else { foe.name().to_string() };
+            // The Dragon realm's finale has a bar of its own, longer and thicker still
+            let ultra = foe == crate::dragons::ULTRA;
+            let name = if ultra {
+                format!("ULTRA  ·  {}", foe.name())
+            } else if foe.is_raid() {
+                format!("RAID  ·  {}", foe.name())
+            } else {
+                foe.name().to_string()
+            };
             // A raid boss's bar is longer
-            let width = (screen.width() * if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 900.0);
+            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 1300.0);
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
             let flash = flash as f32;
             let jolt = (self.combat.time() * 90.0).sin() as f32 * 4.0 * flash;
-            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - 54.0), vec2(width, 12.0));
+            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, if ultra { 20.0 } else { 12.0 }));
             let title = if enraged { format!("{name}  —  enraged") } else { name.to_string() };
             let at = pos2(center.x, back.top() - 6.0);
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), shadow);
@@ -4288,8 +4345,9 @@ impl Game {
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(190), red(40), red(35)));
             // Where a raid boss goes into its next phases, marked across the bar
             if foe.is_raid() {
-                for mark in [0.66, 0.33] {
-                    let x = back.left() + width * mark;
+                let marks: &[f64] = if foe.is_dragon() { crate::dragons::phases(foe) } else { &[0.66, 0.33] };
+                for &mark in marks {
+                    let x = back.left() + width * mark as f32;
                     painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
                 }
             }

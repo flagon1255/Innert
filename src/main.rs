@@ -72,6 +72,7 @@ mod camera;
 mod combat;
 mod compass;
 mod daynight;
+mod dragons;
 mod effects;
 mod game;
 mod gather;
@@ -2364,6 +2365,36 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+        }
+        // Dragons, see dragons.rs: `--set spawn=dragon:0`, `1` or `2` puts the Dragon realm's raid
+        // boss of that lair a little way ahead, `spawn=dragon:ashwing` or another drakeling a pair
+        // of them, and `--set dragon_ultra=1` the Worldpyre Ancient, its finale
+        if let Some(which) = setting("spawn").and_then(|v| v.strip_prefix("dragon:").map(str::to_owned)) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            match which.parse::<usize>() {
+                Ok(n) => {
+                    let look = dragons::RAID_DRAGONS[n.min(2)];
+                    game.summon(&world, &water_level, look, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(32.0));
+                    println!("dragon: {}", look.name());
+                }
+                Err(_) => {
+                    let look = dragons::DRAKELINGS.into_iter().find(|l| l.name().eq_ignore_ascii_case(&which)).unwrap_or(animals::Look::Ashwing);
+                    let count = setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(2);
+                    game.summon_pack(&world, &water_level, &vec![look; count], start, ahead, setting("enemy_distance").and_then(|v| v.parse().ok()).unwrap_or(18.0), 0.0, flag("enemy_calm", false), None);
+                    println!("dragons: {count} {}", look.name());
+                }
+            }
+            if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_bosses(fraction);
+            }
+        }
+        if flag("dragon_ultra", false) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            game.summon(&world, &water_level, dragons::ULTRA, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(55.0));
+            if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_bosses(fraction);
+            }
+            println!("dragon: {}", dragons::ULTRA.name());
         }
         // `--set enemy=crossbowman`, `shieldbearer`, `burrower`, `wraith`, `lurker`, `gloomwing`,
         // `tusker` or any other monster puts a pack of them a little way ahead, or `gang` a gang of

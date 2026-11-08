@@ -169,6 +169,8 @@ pub enum Deed {
     Cataclysm { to: Vector3<f64>, k: usize },
     /// A raid boss going into its `stage`th phase, 1 or 2, here
     Phase { at: Vector3<f64>, stage: u8 },
+    /// What a dragon does that no other boss does, see src\dragons.rs
+    Dragon(crate::dragons::Act),
 }
 
 pub struct Boss {
@@ -655,6 +657,18 @@ impl Boss {
         self.engaged && self.sighted
     }
 
+    /// For a dragon, which thinks for itself, see src\dragons.rs: whether it saw the player this
+    /// frame, for the rest of its pack to come too, and the seconds it goes on leaving them be
+    /// after beating them, counting down
+    pub fn set_sighted(&mut self, seen: bool) {
+        self.sighted = seen;
+    }
+
+    pub fn spare_for(&mut self, dt: f64) -> bool {
+        self.grace -= dt;
+        self.grace > 0.0
+    }
+
     /// Dug in under the sand
     pub fn buried(&self) -> bool {
         self.buried
@@ -896,8 +910,9 @@ impl Boss {
             Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],
             Some(Build::Wolf) => &[(Move::Slam, 0.0, 3.2), (Move::Summon, 0.0, 30.0), (Move::Maul, 2.5, 8.0), (Move::Leap, 7.0, 22.0)],
             Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
-            // Only ever monsters, all seen to above
-            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar) | None => &[],
+            // Only ever monsters, all seen to above; and dragons, which think for themselves, see
+            // src\dragons.rs
+            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon) | None => &[],
         };
         moves.iter().find(|&&(m, near, far)| within(m, near, far)).map(|&(m, _, _)| m)
     }
