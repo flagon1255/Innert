@@ -4923,7 +4923,8 @@ impl App {
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
         let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
-        self.game.set_map_open(map_marks.is_some());
+        // And hints and messages aren't half hidden behind it or any other window
+        self.game.set_covered(map_marks.is_some() || self.inventory_open || self.session.gate_open || self.game.shopping());
 
         let rcx = self.rcx.as_mut().unwrap();
 

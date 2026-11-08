@@ -611,8 +611,8 @@ pub struct Game {
     /// Whether the merchants sell a grappling hook and wings, as they do in the journey through
     /// the realms once the way to the sky isles is open
     sky_wares: bool,
-    /// The map's open over the middle of the view, see set_map_open()
-    map_open: bool,
+    /// A window's open over the middle of the view, see set_covered()
+    covered: bool,
     /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
     worn: Option<u8>,
     wing_models: Vec<(Model, Vector3<f64>)>,
@@ -772,7 +772,7 @@ impl Game {
             scaling: Scaling::NONE,
             raid_lairs: HashMap::new(),
             sky_wares: false,
-            map_open: false,
+            covered: false,
             worn: None,
             wing_models: wings::models(),
         };
@@ -3920,10 +3920,15 @@ impl Game {
         self.combat.held_arm(which, grip, axis, elbow)
     }
 
-    /// Whether the map's open, so what's in hand and the messages aren't shown under the quick bar
-    /// where the map is
-    pub fn set_map_open(&mut self, open: bool) {
-        self.map_open = open;
+    /// Whether the map, the inventory, the Gate's window or a merchant's is open over the middle of
+    /// the view, so what's in hand and the messages aren't shown under the quick bar, half hidden
+    /// behind it. The messages wait meanwhile, to be read once it's closed.
+    pub fn set_covered(&mut self, covered: bool) {
+        self.covered = covered;
+        if covered {
+            let now = Instant::now();
+            self.messages.iter_mut().for_each(|(_, at)| *at = now);
+        }
     }
 
     /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
@@ -4485,8 +4490,8 @@ impl Game {
 
         // The weapon in hand's name, in the color of its rarity, under the panel
         let mut below = panel.bottom() + 8.0;
-        // None of it, nor the messages, over the map, see compass.rs
-        if let Some((_, weapon)) = self.held().filter(|_| !self.map_open) {
+        // None of it, nor the messages, behind the map or another window, see set_covered()
+        if let Some((_, weapon)) = self.held().filter(|_| !self.covered) {
             let rarity = &self.library.rarities[weapon.grade];
             let at = pos2(center.x, below);
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), shadow);
@@ -4531,7 +4536,7 @@ impl Game {
         // Messages under that, newest first, fading out, and with no weapon in hand still under
         // what's in the pack and the gold, either side under the panel
         let below = below.max(panel.bottom() + 26.0);
-        for (k, (message, at)) in self.messages.iter().rev().enumerate().filter(|_| !self.map_open) {
+        for (k, (message, at)) in self.messages.iter().rev().enumerate().filter(|_| !self.covered) {
             let alpha = (1.0 - (at.elapsed().as_secs_f32() - 3.0).max(0.0)).clamp(0.0, 1.0);
             let pos = pos2(center.x, below + 4.0 + k as f32 * 24.0);
             painter.text(pos + vec2(1.0, 1.0), Align2::CENTER_TOP, message, FontId::proportional(17.0), Color32::from_black_alpha((150.0 * alpha) as u8));
