@@ -18,8 +18,9 @@ use crate::leaves::Leaves;
 use crate::player::WaterLevel;
 use crate::realms::{self, Scaling};
 use crate::save;
-use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
-use crate::worldgen::{World, is_passable, material::*};
+use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
+use crate::worldgen::{self, World, is_passable, material::*};
+use crate::serpents;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -805,6 +806,8 @@ impl Game {
     /// Fills a new world with animals and apples. What the player carries stays.
     pub fn populate(&mut self, world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) {
         self.animals = animals::spawn(world, water, seed, near);
+        let mut rng = hash(seed ^ 0x5e4);
+        self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
         self.lairs.clear();
         self.defeated.clear();
         self.dens.clear();
@@ -1150,8 +1153,11 @@ impl Game {
                 continue;
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
-            let look = if lair.raid.is_some() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
-            if let Some(mut boss) = animals::spawn_boss(world, water, look, lair.position, lair.key, seed) {
+            let look = if lair.raid.is_some() || lair.look.is_great_serpent() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
+            // A great serpent that swims lies in the water of its lair, the rest on the ground
+            let surface = water(lair.position.x, lair.position.y);
+            let swimming = (look.swims() && surface > lair.position.z).then(|| Animal::boss(look, Vector3::new(lair.position.x, lair.position.y, surface - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
+            if let Some(mut boss) = swimming.or_else(|| animals::spawn_boss(world, water, look, lair.position, lair.key, seed)) {
                 if lair.raid.is_some() && !look.is_raid() {
                     boss.toughen(realms::RAID_PROMOTION);
                 }
@@ -1414,6 +1420,14 @@ impl Game {
                 }
             }
         }
+        // And serpents of the land it is, a nest or two of them, as those about are left behind
+        let serpents = self.animals.iter().filter(|a| a.look.is_serpent()).count();
+        if serpents < 3 {
+            let vpm = world.voxels_per_meter as f64;
+            let mut rng = hash(self.rng ^ 0x5e4);
+            let nests = animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS);
+            self.animals.extend(nests.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm));
+        }
         self.rng = hash(self.rng);
     }
 
@@ -1517,6 +1531,7 @@ impl Game {
             }
             animal.update(world, water, player, dt);
         }
+        self.aim_at_serpents(view);
 
         // The dead don't fight
         let held = match self.slots.get(self.selected) {
@@ -1615,6 +1630,23 @@ impl Game {
         self.messages.retain(|(_, at)| at.elapsed().as_secs_f64() < 4.0);
     }
 
+    /// Where blows on each serpent near enough to be hit land: the part of its long body the player's
+    /// aiming at, see serpents::focus()
+    fn aim_at_serpents(&mut self, view: &View) {
+        let vpm = view.vpm;
+        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent()) {
+            a.focus = None;
+            let points = match a.coils() {
+                Some(coils) => Some(coils.hit_points(vpm)),
+                None if (a.position - view.eye).norm() < 70.0 * vpm => a.spine(vpm as u32),
+                None => None,
+            };
+            if let Some(points) = points {
+                a.focus = serpents::focus(&points, view.eye, view.forward()).map(|p| p - a.position);
+            }
+        }
+    }
+
     /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
     fn carry_out(&mut self, look: Look, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
@@ -1682,12 +1714,29 @@ impl Game {
                     (Look::Necromancer, Some(Move::Summon)) => Cue::at(Sound::Wail, at, 0.8).pitched(0.5),
                     (Look::Necromancer, Some(Move::Spit)) => Cue::at(Sound::Cast(Element::look(Some(Element::Void)) as u8), at, 0.7).pitched(0.6),
                     (Look::Necromancer, _) => Cue::at(Sound::Wail, at, 0.6).pitched(0.7),
+                    // A serpent's hiss as it rears to strike, deeper as it raises its head to spit
+                    // with its element gathering in its throat, the snow or sand hissing away as it
+                    // dives in, and a loud hiss as it turns on the player or dies
+                    (look, Some(Move::Spit)) if look.is_serpent() => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(look.element()) as u8), at, 0.5).pitched(0.7));
+                        Cue::at(Sound::Hiss, at, 0.8).pitched(serpents::voice(look) * 0.8)
+                    }
+                    (look, Some(Move::Burrow)) if look.is_serpent() => Cue::at(Sound::Slither, at, 0.8).pitched(0.8),
+                    (look, None) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.95).pitched(serpents::voice(look) * vary),
+                    (look, _) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.7).pitched(serpents::voice(look) * vary * 1.1),
                     _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
                 };
                 self.cues.push(cue);
-                // A lurker bursting up out of the water it lay in
-                if look == Look::MireLurker && m.is_none() && water(at.x, at.y) > at.z {
+                // A lurker or a coiler bursting up out of the water it lay in
+                if matches!(look, Look::MireLurker | Look::SiltCoiler) && m.is_none() && water(at.x, at.y) > at.z {
                     self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 0.9);
+                    if look == Look::SiltCoiler {
+                        self.cues.push(Cue::at(Sound::Splash, at, 0.8).pitched(1.1));
+                    }
+                }
+                // A viper rising up out of the grass it lay in, the blades thrown aside
+                if look == Look::ReedViper && m.is_none() {
+                    self.combat.stir(at, 0.9, 0.2, DROP_MUD);
                 }
                 return;
             }
@@ -1701,6 +1750,36 @@ impl Game {
         };
         let element = look.element();
         match deed {
+            // A great serpent's hiss, deep as its size, and what each move sounds like coming: its
+            // body tightening to coil, its tail swishing up, water or earth churning as it dives,
+            // the ground rumbling where it's coming up, its element gathering in its throat
+            Deed::WindUp(m, at) if look.is_great_serpent() => {
+                let deep = serpents::voice(look);
+                let hiss = Cue::at(Sound::Hiss, at, 1.0).pitched(deep);
+                let cue = match m {
+                    Move::Coil => {
+                        self.cues.push(Cue::at(Sound::Squeeze, at, 0.9).pitched(0.55));
+                        Cue::at(Sound::Slither, at, 1.0).pitched(0.6)
+                    }
+                    Move::Tail => {
+                        self.cues.push(Cue::at(Sound::Slither, at, 0.8).pitched(0.7));
+                        Cue::at(Sound::Swoop, at, 0.9).pitched(0.55)
+                    }
+                    Move::Burrow if serpents::great_of(look).is_some_and(|g| g.medium == serpents::Medium::Water) => Cue::at(Sound::Splash, at, 1.0).pitched(0.6),
+                    Move::Burrow => Cue::at(Sound::Dig, at, 1.0).pitched(0.5),
+                    Move::Erupt => Cue::at(Sound::Rumble, at, 1.0).pitched(0.55),
+                    Move::Spit | Move::Breath | Move::Storm | Move::Cataclysm => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element.unwrap_or(Element::Poison))) as u8), at, 0.8).pitched(0.45));
+                        hiss
+                    }
+                    Move::Charge => {
+                        self.cues.push(Cue::at(Sound::Roar, at, 0.6).pitched(deep * 1.2));
+                        hiss
+                    }
+                    _ => hiss,
+                };
+                self.cues.push(cue);
+            }
             // Each move sounds its own way coming, so it can be told apart
             Deed::WindUp(m, at) => {
                 let cue = match m {
@@ -1728,6 +1807,14 @@ impl Game {
                 self.cues.push(cue);
             }
             Deed::Roar { at, angry } => {
+                // A great serpent's hiss under its roar, water thrown off it as it rears out of it
+                if look.is_great_serpent() {
+                    self.cues.push(Cue::at(Sound::Hiss, at, 1.0).pitched(serpents::voice(look) * 0.85));
+                    if water(at.x, at.y) > at.z - 1.0 * vpm {
+                        self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 1.6);
+                        self.cues.push(Cue::at(Sound::Splash, at, 1.0).pitched(0.5));
+                    }
+                }
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if angry { 1.1 } else { 1.0 }));
                 // A drake spreads its wings as it roars
                 if look.build() == Some(Build::Drake) {
@@ -1767,6 +1854,17 @@ impl Game {
                     Look::GraveBrute => {
                         self.shake = self.shake.max(0.35 * felt(at));
                         Cue::at(Sound::Burst, at, 0.8).pitched(0.55)
+                    }
+                    // A serpent's jaws snapping shut where its head lunged to
+                    _ if look.is_serpent() => {
+                        self.cues.push(Cue::at(Sound::Swing, at, 0.5).pitched(1.3));
+                        Cue::at(Sound::Bite, at, 0.9).pitched(serpents::voice(look) * 1.15)
+                    }
+                    // A great serpent's, or its tail or its coils coming down, shaking the ground
+                    _ if look.is_great_serpent() => {
+                        self.shake = self.shake.max(0.5 * felt(at));
+                        self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(0.5));
+                        Cue::at(Sound::Bite, at, 1.0).pitched(serpents::voice(look))
                     }
                     _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
                     _ => {
@@ -1947,6 +2045,7 @@ impl Game {
                     Look::Spiderling | Look::Bandit => 4,
                     Look::Skeleton => 3,
                     Look::ArmoredSkeleton | Look::Zombie => 4,
+                    _ if brood.is_serpent() => 3,
                     _ => 2,
                 };
                 let near = self.animals.iter().filter(|a| a.look == brood && a.health > 0.0 && (a.position - at).norm() < 30.0 * vpm).count();
@@ -1958,6 +2057,10 @@ impl Game {
                         if let Some(state) = &mut monster.boss {
                             state.provoke();
                             state.pack = pack;
+                            // A serpent rising up out of the ground or the water it was called from
+                            if brood.is_serpent() {
+                                state.emerge();
+                            }
                         }
                         self.combat.stir(monster.position, 0.8, 0.4, DROP_MUD);
                         self.animals.push(monster);
@@ -2013,17 +2116,23 @@ impl Game {
             }
             // Sand churned up over a burrower tunnelling along, hissing
             Deed::Burrow { at } => {
-                self.combat.stir(at, 0.45, 0.14, DROP_MUD);
+                // Snow thrown up over a drift serpent swimming along under it, or water churned over
+                // a great serpent under it
+                let snow = element == Some(Element::Frost);
+                let kind = if look.swims() && water(at.x, at.y) > at.z { DROP_WATER } else if snow { DROP_ICE } else { DROP_MUD };
+                let size = if look.is_great_serpent() { 1.6 } else { 0.45 };
+                self.combat.stir(at, size, 0.14, kind);
                 self.rng = hash(self.rng);
                 if random(&mut self.rng) < 0.2 {
-                    self.cues.push(Cue::at(Sound::Skitter, at, 0.35).pitched(0.5));
+                    self.cues.push(if look.is_serpent() { Cue::at(Sound::Slither, at, 0.35).pitched(0.9) } else { Cue::at(Sound::Skitter, at, 0.35).pitched(0.5) });
                 }
             }
             // Bursting up out of the sand, throwing whoever's on top of it into the air
             Deed::Erupt { at } => {
-                self.combat.burst_up(at, DROP_MUD);
+                let snow = element == Some(Element::Frost);
+                self.combat.burst_up(at, if snow { DROP_ICE } else { DROP_MUD });
                 self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(1.4));
-                self.cues.push(Cue::at(Sound::Chitter, at, 0.8).pitched(0.8));
+                self.cues.push(if look.is_serpent() { Cue::at(Sound::Hiss, at, 0.9).pitched(serpents::voice(look)) } else { Cue::at(Sound::Chitter, at, 0.8).pitched(0.8) });
                 self.shake = self.shake.max(0.3 * felt(at));
                 if let Some(feet) = player {
                     let off = feet - at;
@@ -2478,7 +2587,13 @@ impl Game {
         let mut cleared = Vec::new();
         let mut k = 0;
         while k < self.animals.len() {
-            if self.animals[k].health > 0.0 {
+            // A serpent thrashes, rolls over and lies still a moment before it's gone, and a great
+            // serpent crashes down and sinks away
+            let writhing = |a: &Animal| {
+                let throes = if a.look.is_great_serpent() { serpents::GREAT_THROES } else { serpents::DEATH_THROES };
+                (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
+            };
+            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -2491,6 +2606,11 @@ impl Game {
             let burst = animal.health <= animals::BURST * 0.5;
             if look.is_monster() {
                 self.combat.perish(&animal);
+                // A serpent's blood, or the venom it was full of, spilling out along it
+                if look.is_serpent() {
+                    let kind = if look.element() == Some(Element::Poison) { DROP_VENOM } else { DROP_BLOOD };
+                    self.combat.stir(animal.position, 1.2, 0.35, kind);
+                }
                 // A bloater bursts into a cloud of venom, however it died
                 if look == Look::Bloater {
                     self.fumes.push((animal.position, FUMES_SECONDS, 0.3));
@@ -3669,6 +3789,8 @@ impl Game {
     pub fn spawn_wildlife(&mut self, world: &World, water: WaterLevel, near: Vector3<f64>) {
         let seed = self.seed;
         self.animals.extend(animals::spawn(world, water, seed, near));
+        let mut rng = hash(seed ^ 0x5e4);
+        self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
         let away = hash(seed ^ 0x3e7) as f64 / u32::MAX as f64 * TAU;
         let stall = near + Vector3::new(away.cos(), away.sin(), 0.0) * 9.0 * world.voxels_per_meter as f64;
         if let Some(merchant) = animals::spawn_merchant(world, water, stall, 4.0, seed ^ 0x3e7) {
@@ -3924,9 +4046,17 @@ impl Game {
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
         let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
+        let mut pieces = Vec::new();
         for animal in &self.animals {
             let d = (animal.position - camera).norm();
-            if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+            // A great serpent's head, jaw and every piece of its long body, see serpents::Coils,
+            // before any but other bosses, the nearest of them first, so however many are about
+            // the one being fought is drawn whole
+            if let Some(coils) = animal.coils() {
+                pieces.clear();
+                coils.instances(vpm, animal.status.tint(), &mut pieces);
+                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+            } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
             }
         }

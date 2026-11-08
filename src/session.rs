@@ -854,6 +854,7 @@ impl App {
         }
         if let Some(frame) = self.capture.as_ref().map(|c| c.frame_times.len()) {
             self.trial_step(frame);
+            self.serpent_trial(frame, self.session.trial.ready);
         }
         if self.session.mode.is_none() || self.menu_open {
             return;

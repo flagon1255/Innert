@@ -10,6 +10,7 @@
 //! are in the realm they're in is worked out from the landscape, see Places.
 
 use crate::animals::Look;
+use crate::serpents;
 use crate::worldgen::{self, TerrainSettings};
 
 /// One of the realms
@@ -94,6 +95,8 @@ pub const REALMS: [Realm; 4] = [
             Pack { looks: &[Look::Bandit, Look::Crossbowman, Look::Shieldbearer, Look::BanditBrute], most: 2 },
             Pack { looks: &[Look::Skeleton, Look::Zombie, Look::ArmoredSkeleton], most: 2 },
             Pack { looks: &[Look::Tusker, Look::Tusker], most: 1 },
+            Pack { looks: &[Look::ReedViper, Look::ReedViper], most: 2 },
+            Pack { looks: &[Look::SiltCoiler, Look::SiltCoiler], most: 1 },
         ],
         scaling: Scaling::NONE,
         color: [255, 214, 120],
@@ -107,6 +110,7 @@ pub const REALMS: [Realm; 4] = [
             Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 3 },
             Pack { looks: &[Look::Crossbowman, Look::Crossbowman, Look::Shieldbearer], most: 2 },
             Pack { looks: &[Look::BoneArcher, Look::ArmoredSkeleton, Look::ArmoredSkeleton], most: 1 },
+            Pack { looks: &[Look::GaleSerpent, Look::GaleSerpent, Look::GaleSerpent], most: 2 },
         ],
         scaling: Scaling { toughness: 1.6, damage: 1.35, luck: 1.8 },
         color: [140, 200, 255],
@@ -121,6 +125,7 @@ pub const REALMS: [Realm; 4] = [
             Pack { looks: &[Look::Necromancer, Look::Zombie, Look::ArmoredZombie], most: 2 },
             Pack { looks: &[Look::GraveBrute, Look::BoneArcher, Look::BoneArcher], most: 1 },
             Pack { looks: &[Look::MireLurker, Look::MireLurker], most: 1 },
+            Pack { looks: &[Look::BloodAdder, Look::BloodAdder], most: 2 },
         ],
         scaling: Scaling { toughness: 2.4, damage: 1.75, luck: 2.8 },
         color: [235, 60, 70],
@@ -134,6 +139,7 @@ pub const REALMS: [Realm; 4] = [
             Pack { looks: &[Look::RimeWraith, Look::RimeWraith, Look::RimeWraith], most: 3 },
             Pack { looks: &[Look::Wolf, Look::Wolf, Look::Wolf, Look::Wolf], most: 2 },
             Pack { looks: &[Look::ArmoredSkeleton, Look::BoneArcher, Look::Skeleton], most: 1 },
+            Pack { looks: &[Look::DriftSerpent, Look::DriftSerpent], most: 2 },
         ],
         scaling: Scaling { toughness: 3.4, damage: 2.2, luck: 4.0 },
         color: [150, 235, 255],
@@ -176,6 +182,9 @@ pub struct Places {
     pub gate: [f64; 2],
     pub facing: f64,
     pub lairs: [[f64; 2]; RAIDS],
+    /// The realm's great serpent and where its lair is, if it has one there, see
+    /// serpents::realm_serpent()
+    pub serpent: Option<(Look, [f64; 2])>,
 }
 
 impl Places {
@@ -196,7 +205,8 @@ impl Places {
         let stand = (0..16).map(|k| ARRIVAL_M - k as f64 * 0.5).find(|&d| worldgen::is_dry_land(settings, out(d).map(|v| v as f32), 1.0)).unwrap_or(ARRIVAL_M);
         let arrival = out(stand);
         let lairs = r.raid_bosses.map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 160.0, 7.0));
-        Places { realm, arrival, gate, facing, lairs }
+        let serpent = serpents::realm_serpent(r.id).and_then(|(look, off)| Some((look, serpents::lair_spot(look, settings, [gate[0] + off[0], gate[1] + off[1]])?)));
+        Places { realm, arrival, gate, facing, lairs, serpent }
     }
 
     /// What raid boss `slot`'s lair is called, to remember it's beaten: where it is in the
@@ -204,6 +214,11 @@ impl Places {
     pub fn lair_key(&self, slot: usize) -> [i64; 3] {
         let [x, y] = self.lairs[slot];
         [(x * 10.0).round() as i64, (y * 10.0).round() as i64, LAIR_KEY - slot as i64]
+    }
+
+    /// What the realm's great serpent's lair is called, the same way
+    pub fn serpent_key(&self) -> Option<[i64; 3]> {
+        self.serpent.map(|(_, [x, y])| [(x * 10.0).round() as i64, (y * 10.0).round() as i64, serpents::LAIR_KEY])
     }
 }
 

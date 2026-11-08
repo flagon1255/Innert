@@ -78,6 +78,9 @@ mod gather;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
+mod serpent_lairs;
+mod serpent_trials;
+mod serpents;
 mod limits;
 mod loading;
 mod memory;
@@ -2845,7 +2848,7 @@ impl App {
         // In Realms, the realm's own three raid bosses too, and the Innert Gate or its portal home,
         // see session.rs
         let (raids, shrines) = self.realm_sites();
-        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).collect();
+        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).chain(self.serpent_sites()).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
         // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
