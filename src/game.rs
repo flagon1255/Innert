@@ -615,8 +615,8 @@ pub struct Game {
     /// Whether the merchants sell a grappling hook and wings, as they do in the journey through
     /// the realms once the way to the sky isles is open
     sky_wares: bool,
-    /// The map's open over the middle of the view, see set_map_open()
-    map_open: bool,
+    /// A window's open over the middle of the view, see set_covered()
+    covered: bool,
     /// Omens of the Coil Unending lying on the way to its lair in Free Roam, see serpents::omens(),
     /// and how dark the sky's got over it, 0 to 1
     omens: Vec<(Look, Vector3<f64>, f64)>,
@@ -780,7 +780,7 @@ impl Game {
             scaling: Scaling::NONE,
             raid_lairs: HashMap::new(),
             sky_wares: false,
-            map_open: false,
+            covered: false,
             worn: None,
             wing_models: wings::models(),
             omens: Vec::new(),
@@ -3724,6 +3724,13 @@ impl Game {
         self.combat.lay_pools(world, water, &profile, eye, ahead)
     }
 
+    /// For screenshot runs, `--script shore`: a pool of `element` on the ground at `ground`, as a
+    /// shot of it leaves one, hurting nothing
+    pub fn lay_pool(&mut self, ground: Vector3<f64>, element: Option<Element>) {
+        let profile = self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone();
+        self.combat.lay_pool(ground, element, &profile);
+    }
+
     /// For screenshot runs, `--script far`: every animal within `meters` of `near` gone, so a
     /// spell cast out over the land has nothing to home in on
     pub fn shoo_animals(&mut self, near: Vector3<f64>, meters: f64) {
@@ -4132,6 +4139,11 @@ impl Game {
         }
     }
 
+    /// Standing in lava, as in the Cinder Crown: set burning, see afflict()
+    pub fn scorch(&mut self) {
+        self.afflict(Some(Element::Fire));
+    }
+
     /// A little health back, as the wings that mend do while gliding
     pub fn mend(&mut self, health: f64) {
         if self.dead.is_none() {
@@ -4206,10 +4218,15 @@ impl Game {
         self.combat.held_arm(which, grip, axis, elbow)
     }
 
-    /// Whether the map's open, so what's in hand and the messages aren't shown under the quick bar
-    /// where the map is
-    pub fn set_map_open(&mut self, open: bool) {
-        self.map_open = open;
+    /// Whether the map, the inventory, the Gate's window or a merchant's is open over the middle of
+    /// the view, so what's in hand and the messages aren't shown under the quick bar, half hidden
+    /// behind it. The messages wait meanwhile, to be read once it's closed.
+    pub fn set_covered(&mut self, covered: bool) {
+        self.covered = covered;
+        if covered {
+            let now = Instant::now();
+            self.messages.iter_mut().for_each(|(_, at)| *at = now);
+        }
     }
 
     /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
@@ -4817,8 +4834,8 @@ impl Game {
 
         // The weapon in hand's name, in the color of its rarity, under the panel
         let mut below = panel.bottom() + 8.0;
-        // None of it, nor the messages, over the map, see compass.rs
-        if let Some((_, weapon)) = self.held().filter(|_| !self.map_open) {
+        // None of it, nor the messages, behind the map or another window, see set_covered()
+        if let Some((_, weapon)) = self.held().filter(|_| !self.covered) {
             let rarity = &self.library.rarities[weapon.grade];
             let at = pos2(center.x, below);
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), shadow);
@@ -4863,7 +4880,7 @@ impl Game {
         // Messages under that, newest first, fading out, and with no weapon in hand still under
         // what's in the pack and the gold, either side under the panel
         let below = below.max(panel.bottom() + 26.0);
-        for (k, (message, at)) in self.messages.iter().rev().enumerate().filter(|_| !self.map_open) {
+        for (k, (message, at)) in self.messages.iter().rev().enumerate().filter(|_| !self.covered) {
             let alpha = (1.0 - (at.elapsed().as_secs_f32() - 3.0).max(0.0)).clamp(0.0, 1.0);
             let pos = pos2(center.x, below + 4.0 + k as f32 * 24.0);
             painter.text(pos + vec2(1.0, 1.0), Align2::CENTER_TOP, message, FontId::proportional(17.0), Color32::from_black_alpha((150.0 * alpha) as u8));

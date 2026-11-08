@@ -175,6 +175,7 @@ pub fn of_realm(realm: usize) -> Option<u8> {
         1 => Some(STORMCALLER),
         2 => Some(VEILMOTH),
         3 => Some(RIMEGLASS),
+        5 => Some(CINDERWING),
         _ => None,
     }
 }

@@ -6227,14 +6227,19 @@ mod tests {
             assert!(count >= most, "only {count} {family} {slot}s");
         }
         // The new effects have code, and come on parts of the old weapons too, and on ammo
-        for id in ["cleave", "shockwave", "splash", "pool", "miasma", "vortex", "cluster"] {
+        for id in ["cleave", "shockwave", "splash", "miasma", "vortex", "cluster"] {
             let def = library.effects.iter().position(|e| e.id == id && e.effect.is_some()).unwrap_or_else(|| panic!("there's no {id}"));
             let old = library.components.iter().filter(|c| c.effect_defs.contains(&def) && c.compatible_families.iter().any(|f| !["flail", "maul", "bombs", "rod", "censer"].contains(&f.as_str()))).count();
             assert!(old >= 2, "{id} is only on {old} parts of the old weapons");
         }
-        for id in ["splash", "vortex", "pool", "cluster", "miasma"] {
+        for id in ["splash", "vortex", "cluster", "miasma"] {
             assert!(library.ammo.iter().any(|a| a.effects.iter().any(|e| e == id)), "no ammo with {id}");
         }
+        // Pools left on the ground were taken out, the user asking for it: no part or ammo leaves
+        // them, though what they'd do is kept
+        let pool = library.effects.iter().position(|e| e.id == "pool").expect("there's no pool");
+        assert!(!library.components.iter().any(|c| c.effect_defs.contains(&pool)), "a part leaves pools");
+        assert!(!library.ammo.iter().any(|a| a.effects.iter().any(|e| e == "pool")), "ammo leaves pools");
         // Each new special attack is on a part of one of the weapons it suits
         for (special, families) in [
             (Special::Earthquake, &["maul", "hammer"][..]),

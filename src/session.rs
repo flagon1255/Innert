@@ -782,6 +782,7 @@ impl App {
             worldgen::Land::Dream => 2.0,
             worldgen::Land::Ice => 3.0,
             worldgen::Land::Water => 4.0,
+            worldgen::Land::Dragon => 5.0,
         };
         if land != worldgen::Land::Dream {
             return [which, 0.0, 0.0, 0.0];
@@ -915,6 +916,13 @@ impl App {
         }
         if !held {
             self.raise_finale();
+            // Lava burns whoever stands in it
+            if worldgen::land_of(self.terrain.seed) == worldgen::Land::Dragon
+                && let Some(p) = self.player.as_ref().filter(|p| p.on_ground())
+                && worldgen::is_lava(self.world.material_at(p.position.x.floor() as i64, p.position.y.floor() as i64, p.position.z.round() as i64 - 1))
+            {
+                self.game.scorch();
+            }
         }
         // At the gate or a portal: its window opens, freeing the mouse for it
         if self.game.take_shrine() && self.session.places.is_some() && self.session.leaving.is_none() {

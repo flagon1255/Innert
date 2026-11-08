@@ -576,7 +576,7 @@ pub fn lair_spot(look: Look, settings: &TerrainSettings, near: [f64; 2]) -> Opti
     if wet {
         water_near(settings, near, 220.0, 1.5, 24.0)
     } else {
-        worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], 160.0, 7.0).map(|p| [p[0] as f64, p[1] as f64])
+        worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], 160.0, 7.0, &|_| true).map(|p| [p[0] as f64, p[1] as f64])
     }
 }
 
@@ -634,7 +634,7 @@ pub fn free_roam_ultra(settings: &TerrainSettings, start: [f64; 2]) -> Option<[f
         })
         .or_else(|| {
             let near = [start[0] + way.cos() * 1850.0, start[1] + way.sin() * 1850.0];
-            worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], 300.0, 9.0).map(|p| [p[0] as f64, p[1] as f64]).filter(far)
+            worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], 300.0, 9.0, &|_| true).map(|p| [p[0] as f64, p[1] as f64]).filter(far)
         });
     if let Ok(mut f) = FOUND.lock() {
         *f = Some((settings.seed, key, found));

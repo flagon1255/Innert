@@ -3281,6 +3281,9 @@ pub const TINT_SHOCKED: u32 = 4;
 pub const TINT_CHILLED: u32 = 5;
 /// Struck a moment ago
 pub const TINT_HIT: u32 = 6;
+/// Lit by its own light, as something hanging in the sky is: as clear by night as by day, and never
+/// faded into the sky with what's on the land as far off, as Blood Moon's moon
+pub const TINT_LIT: u32 = 7;
 
 /// One animal as traverse.comp reads it, see the Animal struct there
 #[derive(BufferContents, Clone, Copy)]
@@ -4246,6 +4249,8 @@ pub fn spawn_serpents(world: &World, water: WaterLevel, rng: &mut u32, near: Vec
                     }
                 }
                 Land::Water => (Look::ReedViper, at),
+                // None on the Cinder Crown's ash: its beasts are the dragons' own
+                Land::Dragon => continue,
                 Land::Normal => match ground {
                     SNOW | ICE => (Look::DriftSerpent, at),
                     STONE | ROCK if random(rng) < 0.5 => (Look::GaleSerpent, at),
