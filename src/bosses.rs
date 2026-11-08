@@ -237,6 +237,12 @@ pub struct Boss {
     /// For looking at them: the frame it's held in, see animals::POSE_WINDUP, whatever it's doing
     pub fixed_pose: Option<usize>,
     pub deeds: Vec<Deed>,
+    /// Come in a night raid, see raids.rs: it hunts the player down however far it has to go, and
+    /// never gives up or goes home
+    pub raider: bool,
+    /// Where a raider's led instead of straight at the player, in voxels: round walls on its way to
+    /// a door, or with `true`, to beat down the door there
+    pub lure: Option<(Vector3<f64>, bool)>,
 }
 
 /// Seconds a boss goes on after the player once it can't see them, and a monster
@@ -630,6 +636,8 @@ impl Boss {
             spun_from: 0.0,
             fixed_pose: None,
             deeds: Vec::new(),
+            raider: false,
+            lure: None,
         }
     }
 
@@ -1036,6 +1044,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     for c in &mut boss.cooldowns {
         *c -= dt;
     }
+    // A raider led round walls or to a door goes there rather than straight at the player
+    let lure = boss.lure;
+    let player = lure.map(|(p, _)| p).or(player);
+    let breaking = lure.is_some_and(|(_, b)| b);
     boss.clock += dt;
     boss.retreat_wait -= dt;
     let struck = std::mem::take(&mut boss.struck);
@@ -1062,13 +1074,15 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         Look::MireLurker if boss.lurking => (7.0, 24.0, 30.0),
         Look::MireLurker => (16.0, 24.0, 30.0),
         Look::Gloomwing => (14.0, 26.0, 32.0),
+        _ if boss.raider => (f64::MAX, f64::MAX, f64::MAX),
         _ if monster => (MONSTER_NOTICE, MONSTER_GIVE_UP, MONSTER_LEASH),
         _ => (NOTICE, GIVE_UP, LEASH),
     };
     let level = player.is_some_and(|p| (p.z - a.position.z).abs() < 5.0 * vpm);
     boss.grace -= dt;
     let near = level && distance < notice && boss.grace <= 0.0;
-    let seen = (near || boss.engaged) && player.is_some_and(|p| sees(a, p, world));
+    // A raider knows where the player is: a door's in the way of seeing them, not of going for them
+    let seen = (near || boss.engaged) && (boss.raider || player.is_some_and(|p| sees(a, p, world)));
     if near && seen {
         boss.engaged = true;
     }
@@ -1144,6 +1158,12 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             }
             Phase::Roam
         }
+        // Led round walls on the way to a door: straight on to where it's led, no stopping to fight
+        Phase::Chase if lure.is_some_and(|(_, b)| !b) => {
+            a.target_heading = heading_to(a.position, player.unwrap_or(boss.home));
+            a.mood = Mood::Run;
+            Phase::Chase
+        }
         Phase::Chase => {
             let p = player.unwrap_or(boss.home);
             a.target_heading = heading_to(a.position, p);
@@ -1166,7 +1186,9 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             let facing = ((a.target_heading - a.heading + PI).rem_euclid(TAU) - PI).abs() < 0.6;
             let blink = (look == Look::RimeWraith && struck && boss.cooldowns[Move::Blink as usize] <= 0.0).then_some(Move::Blink);
             let backing = boss.retreat > 0.0 && distance > 1.8;
-            match blink.or(boss.choose(distance).filter(|_| facing && !backing)) {
+            // At a door it only beats on it
+            let chosen = boss.choose(distance).filter(|m| !breaking || *m == Move::Slam);
+            match blink.filter(|_| !breaking).or(chosen.filter(|_| facing && !backing)) {
                 Some(m) => {
                     a.mood = Mood::Idle;
                     boss.aim = p;
@@ -1193,7 +1215,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     } else {
                         Mood::Run
                     };
-                    if backing {
+                    if breaking {
+                        // Right up to the door, and facing it
+                        a.mood = if distance < close * 0.8 { Mood::Idle } else { Mood::Run };
+                    } else if backing {
                         let away = (a.position - p).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
                         let back = if packed { (flock.middle - a.position).xy() / vpm * 0.15 } else { Vector2::zeros() };
                         let way = away + back;
@@ -1275,6 +1300,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 match m {
                     Move::Slam => {
                         let (reach, radius, damage, crater) = slam(look);
+                        // Beating on a door, the blow lands on its outside, not through it
+                        let reach = if breaking { reach.min(((boss.aim - a.position).xy().norm() / vpm - 0.4).max(0.0)) } else { reach };
                         boss.deeds.push(Deed::Slam { at: a.position + forward * reach * vpm, radius, damage, crater });
                         // A bloater's burst is the end of it, see Game::reap() for the cloud it
                         // leaves

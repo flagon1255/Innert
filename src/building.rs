@@ -691,7 +691,7 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 5] = ["chop", "mine", "hut", "away", "moon"];
+pub const SCRIPTS: [&str; 6] = ["chop", "mine", "hut", "away", "moon", "raid"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
@@ -791,6 +791,9 @@ impl App {
         count += self.script_build(Kind::Torch, [at[0] + 4, at[1] + 4, at[2] + 1], 0) as usize;
         count += self.script_build(Kind::StoneWall, [at[0] + 1, at[1] - 1, at[2]], 0) as usize;
         count += self.script_build(Kind::Lantern, [at[0] + 1, at[1] - 1, at[2] + 1], 0) as usize;
+        // And a torch on a post on the door's other side
+        count += self.script_build(Kind::StoneWall, [at[0] + 4, at[1] - 1, at[2]], 0) as usize;
+        count += self.script_build(Kind::Torch, [at[0] + 4, at[1] - 1, at[2] + 1], 0) as usize;
         count
     }
 
@@ -815,6 +818,57 @@ impl App {
                 }
                 self.look_from(eye, eye + toward * 100.0 * vpm);
                 self.reset_accum = false;
+            }
+            // A raid on a hut with the player shut in it: the camera off to one side of its door,
+            // a shot as it's first struck, once it's half broken, and as it gives way
+            ("raid", 3) => {
+                self.bases.materials.add(bases::Materials::new(400, 300, 120));
+                let ahead = Vector3::new(-self.camera.rotation.z.sin(), self.camera.rotation.z.cos(), 0.0);
+                let Some(at) = self.open_ground(feet + ahead * 9.0 * vpm, 6) else {
+                    println!("frame {frame}: nowhere open to build");
+                    return;
+                };
+                let count = self.build_hut(at);
+                self.building.hut = Some(at);
+                // The player inside, on its floor
+                let inside = Vector3::new((at[0] + 3) as f64, (at[1] + 3) as f64, (at[2] + 1) as f64) * BLOCK as f64 - origin;
+                let mut player = Player::new(inside + Vector3::new(0.0, 0.0, 1.6 * vpm), &self.world);
+                player.position = inside;
+                self.player = Some(player);
+                self.raid.next_wave = self.raid.next_wave.min(1.0);
+                println!("frame {frame}: built {count} pieces, the player shut in at block {:?}", [at[0] + 3, at[1] + 3, at[2] + 1]);
+            }
+            ("raid", f) if f > 3 => {
+                let Some(at) = self.building.hut else { return };
+                // Looking at the door from off to its side, a little way out
+                let door = Vector3::new((at[0] + 3) as f64, at[1] as f64, at[2] as f64) * BLOCK as f64 - origin;
+                let eye = door + Vector3::new(-3.2 * vpm, -4.4 * vpm, 2.2 * vpm);
+                self.camera.position = voxels_to_camera(eye, self.world.size);
+                self.camera.look_at(voxels_to_camera(door + Vector3::new(0.0, -0.8 * vpm, 0.8 * vpm), self.world.size));
+                let door_piece = self.bases.piece_at([at[0] + 2, at[1], at[2]]).map(|p| (p.health / p.kind.health(), p.id));
+                match (self.building.phase, door_piece) {
+                    (0, Some((left, _))) if left < 0.999 => {
+                        self.shoot_soon("the door first struck");
+                        self.building.phase = 1;
+                    }
+                    (1, Some((left, _))) if left < 0.5 => {
+                        self.shoot_soon("the door half broken");
+                        self.building.phase = 2;
+                    }
+                    (0..=2, None) => {
+                        self.shoot_soon("the door broken down");
+                        self.building.phase = 3;
+                        self.building.mark = f;
+                    }
+                    (3, _) if f == self.building.mark + 90 => {
+                        self.shoot_soon("in through the door");
+                        self.building.phase = 4;
+                    }
+                    _ => {}
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: raid on: {}, {} about, the door {:?}, the player {} at {:.0} health, {}", self.raid.on, self.raid.about, door_piece.map(|d| (d.0 * 100.0).round()), if self.game.dead() { "down" } else { "standing" }, self.game.vitals().0, self.game.last_message().unwrap_or(""));
+                }
             }
             ("chop", 5) => {
                 let trees = self.trees_near(feet, 30.0);

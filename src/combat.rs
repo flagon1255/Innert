@@ -88,6 +88,12 @@ pub struct Status {
 }
 
 impl Status {
+    /// Set burning for `seconds`, `dps` a second, as night raiders are by the dawn, see raids.rs
+    pub fn ignite(&mut self, seconds: f64, dps: f64) {
+        self.burn = self.burn.max(seconds);
+        self.burn_dps = self.burn_dps.max(dps);
+    }
+
     /// A boss is only ever frozen or knocked off its feet for a moment
     pub fn limit_for_boss(&mut self) {
         self.frozen = self.frozen.min(0.6);

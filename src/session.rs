@@ -649,7 +649,9 @@ impl App {
         let clock = game.clock.unwrap_or_default();
         let running = self.cycle.clock.running;
         self.cycle = daynight::DayNight::new(daynight::Clock { running, ..clock });
-        // What's in it goes in as the world's built afresh, see stream.rs
+        // What's in it goes in as the world's built afresh, see stream.rs, and the raid, if it's
+        // night, starts again
+        self.raid = night::Raid::default();
         self.building = building::Building::default();
         self.building.applied = self.bases.version;
     }

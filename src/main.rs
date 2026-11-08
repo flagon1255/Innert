@@ -80,9 +80,11 @@ mod leaves;
 mod limits;
 mod loading;
 mod memory;
+mod night;
 mod perf;
 mod player;
 mod quality;
+mod raids;
 mod realms;
 mod save;
 mod session;
@@ -1204,6 +1206,8 @@ struct App {
     /// and gathering going on, see building.rs
     bases: bases::Bases,
     building: building::Building,
+    /// The night's raid, see night.rs
+    raid: night::Raid,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
     sun_map: Arc<ImageView>,
@@ -2470,6 +2474,7 @@ impl App {
             builds_pipeline,
             bases: bases::Bases::new(),
             building: building::Building::default(),
+            raid: night::Raid::default(),
 
             sun_map,
             sun_map_for: None,
@@ -3828,6 +3833,10 @@ impl App {
             let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // Monsters coming at night, and what's built taking their blows, see night.rs
+            let start = Instant::now();
+            self.update_raid(delta_time.min(0.1));
+            self.slow("the night's raid", start);
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -4758,6 +4767,7 @@ impl App {
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        let raid_note = self.raid_note();
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4924,8 +4934,9 @@ impl App {
             if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
                 if !self.fixed_sun {
-                    self.cycle.hud(&ctx, None);
+                    self.cycle.hud(&ctx, raid_note.as_deref());
                 }
+                night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
                 building::hud(&self.building, &self.bases, ghost.as_ref(), &self.world, &ctx, &view);
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);

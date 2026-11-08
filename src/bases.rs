@@ -139,10 +139,10 @@ impl Kind {
         }
     }
 
-    /// Whether ordinary monsters can harm it at all: they go for doors, and knock over lights, but
-    /// only the biggest can break walls
+    /// Whether ordinary monsters can harm it at all: they go for doors, but only the biggest can
+    /// break walls, or anything else built
     pub fn weak(self) -> bool {
-        matches!(self, Kind::Door | Kind::Torch | Kind::Lantern)
+        self == Kind::Door
     }
 
     /// Blocks across and high: a door's two by four, all else one
