@@ -3090,18 +3090,98 @@ pub fn animal_models() -> Vec<Model> {
     models
 }
 
-/// Models packed for shaders\traverse.comp: two header words per model (where its voxels start, and
-/// its size packed x | y << 10 | z << 20), then the voxels, four to a word.
+/// Words in each model's header, see pack_models(). Has to match MODEL_HEADER in
+/// shaders\traverse.comp.
+pub const HEADER_WORDS: usize = 4;
+
+/// Models packed for shaders\traverse.comp: HEADER_WORDS words of header per model, then the voxels,
+/// four to a word. Each header: where its voxels start, its size, and the size of the box round
+/// what's solid in it and where that box is in it, each packed x | y << 10 | z << 20. Only that box's
+/// voxels are kept, the air round it left out, as most of every model's air is; and models alike,
+/// as frames that come out the same, share theirs. Every model reads back exactly as it was, see
+/// packed_voxel().
 pub fn pack_models(models: &[&Model]) -> Vec<u32> {
-    let mut words = vec![0u32; models.len() * 2];
+    let pack = |v: [u32; 3]| v[0] | v[1] << 10 | v[2] << 20;
+    let mut words = vec![0u32; models.len() * HEADER_WORDS];
+    // Where the voxels kept so far start, by a hash of them, and the box they're of
+    let mut stored: std::collections::HashMap<u64, Vec<(usize, u32)>> = std::collections::HashMap::new();
+    let mut kept: Vec<u8> = Vec::new();
     for (i, model) in models.iter().enumerate() {
-        words[i * 2] = words.len() as u32;
-        words[i * 2 + 1] = model.size[0] | model.size[1] << 10 | model.size[2] << 20;
-        for chunk in model.voxels.chunks(4) {
-            words.push(chunk.iter().enumerate().fold(0, |w, (j, &m)| w | (m as u32) << (j * 8)));
+        let (from, size) = solid_box(model);
+        kept.clear();
+        let [sx, sy, _] = model.size.map(|v| v as usize);
+        for z in from[2]..from[2] + size[2] {
+            for y in from[1]..from[1] + size[1] {
+                let row = from[0] as usize + (y as usize + z as usize * sy) * sx;
+                kept.extend_from_slice(&model.voxels[row..row + size[0] as usize]);
+            }
         }
+        let packed = pack_voxels(&kept);
+        let header = i * HEADER_WORDS;
+        words[header + 1] = pack(model.size);
+        words[header + 2] = pack(size);
+        words[header + 3] = pack(from);
+        let key = voxels_hash(size, &kept);
+        let same = stored.get(&key).and_then(|those| those.iter().find(|&&(at, box_size)| box_size == pack(size) && words[at..at + packed.len()] == packed[..]));
+        if let Some(&(at, _)) = same {
+            words[header] = at as u32;
+            continue;
+        }
+        let at = words.len();
+        stored.entry(key).or_default().push((at, pack(size)));
+        words[header] = at as u32;
+        words.extend(packed);
     }
     words
+}
+
+/// Voxels four to a word
+fn pack_voxels(voxels: &[u8]) -> Vec<u32> {
+    voxels.chunks(4).map(|chunk| chunk.iter().enumerate().fold(0, |w, (j, &m)| w | (m as u32) << (j * 8))).collect()
+}
+
+/// Where the box round what's solid in `model` starts in it, and how big it is, in its voxels:
+/// nothing at all for a model that's all air
+fn solid_box(model: &Model) -> ([u32; 3], [u32; 3]) {
+    let [sx, sy, _] = model.size.map(|v| v as usize);
+    let (mut lo, mut hi) = ([u32::MAX; 3], [0u32; 3]);
+    for (i, &v) in model.voxels.iter().enumerate() {
+        if v != AIR {
+            let c = [(i % sx) as u32, (i / sx % sy) as u32, (i / (sx * sy)) as u32];
+            for a in 0..3 {
+                lo[a] = lo[a].min(c[a]);
+                hi[a] = hi[a].max(c[a] + 1);
+            }
+        }
+    }
+    if lo[0] == u32::MAX { ([0; 3], [0; 3]) } else { (lo, [0, 1, 2].map(|a| hi[a] - lo[a])) }
+}
+
+/// A quick hash of a box's size and voxels, eight at a time, to find those alike
+fn voxels_hash(size: [u32; 3], voxels: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ (size[0] as u64 | (size[1] as u64) << 20 | (size[2] as u64) << 40);
+    for chunk in voxels.chunks(8) {
+        let mut w = [0u8; 8];
+        w[..chunk.len()].copy_from_slice(chunk);
+        h = (h ^ u64::from_le_bytes(w)).wrapping_mul(0x0000_0100_0000_01b3);
+        h ^= h >> 31;
+    }
+    h
+}
+
+/// Voxel `c` of model `model` as shaders\traverse.comp reads it from what pack_models() made of
+/// them, see modelVoxel() there: air outside the box round what's solid in it
+#[cfg(test)]
+pub fn packed_voxel(words: &[u32], model: usize, c: [u32; 3]) -> u8 {
+    let unpack = |w: u32| [w & 0x3FF, w >> 10 & 0x3FF, w >> 20 & 0x3FF];
+    let header = model * HEADER_WORDS;
+    let (start, size, from) = (words[header] as usize, unpack(words[header + 2]), unpack(words[header + 3]));
+    let k = [0, 1, 2].map(|a| c[a].wrapping_sub(from[a]));
+    if (0..3).any(|a| k[a] >= size[a]) {
+        return AIR;
+    }
+    let i = (k[0] + (k[1] + k[2] * size[1]) * size[0]) as usize;
+    (words[start + i / 4] >> ((i % 4) * 8) & 0xFF) as u8
 }
 
 // How an instance moves, has to match shaders\traverse.comp
@@ -4111,6 +4191,30 @@ mod tests {
             of(Look::CryptTitan) as f64 / 1e6
         );
         assert!(bytes < 150_000_000, "the models take {bytes} bytes");
+    }
+
+    /// Packed for the shader, every frame of every creature and every dragon's piece reads back
+    /// exactly as it was made, voxel for voxel, though only the box round what's solid in each is
+    /// kept and those alike share theirs
+    #[test]
+    fn every_model_unpacks_as_it_was_made() {
+        let models = animal_models();
+        let words = pack_models(&models.iter().collect::<Vec<_>>());
+        for (i, model) in models.iter().enumerate() {
+            let size = words[i * HEADER_WORDS + 1];
+            assert_eq!([size & 0x3FF, size >> 10 & 0x3FF, size >> 20 & 0x3FF], model.size, "model {i}'s size");
+            let [sx, sy, sz] = model.size;
+            for z in 0..sz {
+                for y in 0..sy {
+                    for x in 0..sx {
+                        let at = (x + (y + z * sy) * sx) as usize;
+                        assert_eq!(packed_voxel(&words, i, [x, y, z]), model.voxels[at], "model {i} at {x}, {y}, {z}");
+                    }
+                }
+            }
+        }
+        let whole: usize = models.iter().map(|m| m.voxels.len().div_ceil(4) * 4 + 8).sum();
+        println!("models {:.1} MB as they were, {:.1} MB packed", whole as f64 / 1e6, words.len() as f64 * 4.0 / 1e6);
     }
 
     /// The new monsters each have their own name, so they can be told apart in what's said
