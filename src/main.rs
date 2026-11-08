@@ -2409,6 +2409,11 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+            // `--set boss_move=throw` has it make only that move, as soon as it's ready, wherever
+            // the player is, for shots of it in a screenshot run
+            if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                game.force_boss_move(m);
+            }
         }
         // `--set enemy=crossbowman`, `shieldbearer`, `burrower`, `wraith`, `lurker`, `gloomwing`,
         // `tusker` or any other monster puts a pack of them a little way ahead, or `gang` a gang of
