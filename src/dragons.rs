@@ -106,7 +106,9 @@ pub fn health(look: Look) -> f64 {
         Look::PyreMatriarch => 15500.0,
         Look::CindermawTyrant => 17500.0,
         Look::GildscaleHoardwarden => 16000.0,
-        _ => 46000.0,
+        // The Worldpyre Ancient, a finale wherever it is, raised to 46000 as one, see
+        // realms::FINALE_PROMOTION
+        _ => 18400.0,
     }
 }
 
@@ -2866,22 +2868,8 @@ pub fn roosting(world: &World, water: WaterLevel, near: Vector3<f64>, ground: u8
     animals::spawn_pack(world, water, &vec![look; count], near, 3.0, seed)
 }
 
-// Where the great ones keep their lairs
-
-/// The Dragon realm's monsters, for its entry in realms::REALMS: ashwings above all, and the rest
-/// now and then. Once it's been come to, they come in the night raids of the others too.
-#[allow(dead_code)]
-pub const REALM_MONSTERS: &[crate::realms::Pack] = &[
-    crate::realms::Pack { looks: &[Look::Ashwing, Look::Ashwing, Look::Ashwing], most: 3 },
-    crate::realms::Pack { looks: &[Look::Ashwing, Look::Squallwing], most: 2 },
-    crate::realms::Pack { looks: &[Look::Sleetwing, Look::Sleetwing], most: 1 },
-    crate::realms::Pack { looks: &[Look::Blightwing, Look::Ashwing], most: 1 },
-];
-
-/// Its three raid bosses, and about where their lairs are from where it's come to, in meters east
-/// and north, for its entry in realms::REALMS
-#[allow(dead_code)]
-pub const REALM_RAIDS: [(Look, [f32; 2]); 3] = [(Look::PyreMatriarch, [260.0, 130.0]), (Look::CindermawTyrant, [-240.0, 200.0]), (Look::GildscaleHoardwarden, [-40.0, -300.0])];
+// Where the great ones keep their lairs: the Cinder Crown's, see realms.rs, and in Free Roam the
+// Worldpyre Ancient's far lair, see worldgen\dragonlair.rs
 
 /// The kind of lair each great dragon keeps, see worldgen\dragonlair.rs
 pub fn lair_kind(look: Look) -> Option<crate::worldgen::LairKind> {
@@ -2890,9 +2878,14 @@ pub fn lair_kind(look: Look) -> Option<crate::worldgen::LairKind> {
         Look::PyreMatriarch => Some(LairKind::Peak),
         Look::CindermawTyrant => Some(LairKind::Caldera),
         Look::GildscaleHoardwarden => Some(LairKind::Hoard),
+        Look::WorldpyreAncient => Some(LairKind::Ancient),
         _ => None,
     }
 }
+
+/// What's kept of the dragons in a world's save, see game\dragonfire.rs: whether the far lair's
+/// been found, to show on the map
+pub const WORLD_SECTION: &str = "dragons";
 
 /// Whether ground of `material` at `z` voxels up a world `height` voxels high is the high bare rock
 /// drakelings roost on
@@ -3112,6 +3105,23 @@ mod tests {
                 assert!(down > 200, "{look:?} kept to the air after its first phase");
             }
         }
+    }
+
+    /// The Cinder Crown is the dragons' realm: its three raid bosses the great dragons, by the lairs
+    /// they keep, its finale the Worldpyre Ancient, as hard as it is in its far lair, and its
+    /// monsters drakelings, flying in its night raids into the other realms
+    #[test]
+    fn the_cinder_crown_is_the_dragons_realm() {
+        use crate::realms::{self, REALMS};
+        let realm = &REALMS[realms::by_id("dragon").expect("the Cinder Crown")];
+        assert_eq!(realm.raid_bosses.map(|(look, _)| look), RAID_DRAGONS);
+        for (look, _) in realm.raid_bosses {
+            assert!(lair_kind(look).is_some() && look.is_raid(), "{look:?}");
+        }
+        assert_eq!(realm.finale.map(|(look, ..)| look), Some(ULTRA));
+        assert!(realm.monsters.iter().all(|p| p.looks.iter().all(|&l| is_drakeling(l))));
+        let ancient = Animal::boss(ULTRA, Vector3::zeros(), [0, 0, -1], 1);
+        assert_eq!(ancient.max_health * realms::FINALE_PROMOTION, 46000.0);
     }
 
     /// Struck as it rests, as by the player rising again beside it where they fell, it turns on them

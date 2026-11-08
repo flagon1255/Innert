@@ -107,21 +107,30 @@ impl App {
             (Some(save::Mode::Realms), Some(p)) => REALMS[p.realm].name.to_owned(),
             _ => "Free Roam".to_owned(),
         };
+        let mut lairs = places.map_or(Vec::new(), |p| {
+            let mut lairs: Vec<([f64; 2], &'static str, bool)> = (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect();
+            // The finale too, once it's risen
+            if let (Some(spot), Some(key), Some((look, ..))) = (p.finale, p.finale_key(), REALMS[p.realm].finale)
+                && lairs.iter().all(|&(_, _, beaten)| beaten)
+            {
+                lairs.push((spot, look.name(), self.game.is_defeated(&key)));
+            }
+            lairs
+        });
+        // In Free Roam, the Worldpyre Ancient's far lair once it's been found, see dragons.rs
+        if self.session.mode != Some(save::Mode::Realms)
+            && self.game.far_lair_found()
+            && let Some(at) = worldgen::far_lair(&self.terrain_settings())
+        {
+            let at = [at[0] as f64, at[1] as f64];
+            lairs.push((at, crate::dragons::ULTRA.name(), self.game.beaten_near(at)));
+        }
         Marks {
             title,
             player: self.feet_m(),
             heading: self.heading(),
             gate: places.map(|p| (p.gate, if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
-            lairs: places.map_or(Vec::new(), |p| {
-                let mut lairs: Vec<([f64; 2], &'static str, bool)> = (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect();
-                // The finale too, once it's risen
-                if let (Some(spot), Some(key), Some((look, ..))) = (p.finale, p.finale_key(), REALMS[p.realm].finale)
-                    && lairs.iter().all(|&(_, _, beaten)| beaten)
-                {
-                    lairs.push((spot, look.name(), self.game.is_defeated(&key)));
-                }
-                lairs
-            }),
+            lairs,
             settings: self.terrain_settings(),
         }
     }

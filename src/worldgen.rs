@@ -12,7 +12,7 @@ mod undercity;
 
 pub use camps::{Camp, CampKind, camp_spots};
 #[allow(unused_imports)]
-pub use dragonlair::{FREE_ROAM_START, LairKind, lairs_set, set_lairs};
+pub use dragonlair::{FREE_ROAM_START, LairKind, far_lair, lairs_set, set_lairs};
 #[allow(unused_imports)]
 pub use undercity::Sunken;
 
@@ -4012,7 +4012,7 @@ impl Terrain {
         // the sea, just above the water and under it: for building with, see src\bases.rs
         let wet_edge = land != Land::Dragon && (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
         let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
-        // Burnt black where a dragon keeps its lair, see dragonlair.rs
+        // Burnt black where a dragon keeps its lair, and on the way to it, see dragonlair.rs
         let top = match dragonlair::scorch(&self.settings, xm, ym) {
             Some(burnt) if !frozen && river <= h && h > sea_level + v => burnt,
             _ => top,
@@ -4833,7 +4833,11 @@ impl Terrain {
                 })
             });
         }
-        // The lairs of the dragons, see dragonlair.rs
+        // On the way to the Worldpyre Ancient's far lair, the land scorched and the bones of what it
+        // killed, and the lairs of the dragons, see dragonlair.rs
+        if land == Land::Normal && dragonlair::far_lair(&self.settings).is_some() {
+            scatter(dragonlair::OMEN_CELL, 0xd7a9, dragonlair::OMEN_REACH, &mut |x, y, ground, column, r| self.dragon_omen(x, y, ground, column, r));
+        }
         objects.extend(self.dragon_lairs(&mut features));
 
         features.footprints = footprints;

@@ -197,19 +197,20 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "dragon",
         name: "The Cinder Crown",
         seed: DRAGON_SEED,
-        // Stand-ins for the dragons' own raid bosses, which take their places when they're in
-        raid_bosses: [(Look::Drake, [240.0, 170.0]), (Look::MagmaGolem, [-250.0, 110.0]), (Look::Colossus, [-60.0, -300.0])],
+        // Its three great dragons, see dragons.rs: the Pyre Matriarch on her roost, the Cindermaw
+        // Tyrant by its caldera and the Gildscale Hoardwarden on its gold at a bone cave's mouth
+        raid_bosses: [(Look::PyreMatriarch, [240.0, 170.0]), (Look::CindermawTyrant, [-250.0, 110.0]), (Look::GildscaleHoardwarden, [-60.0, -300.0])],
         lair_names: ["the peak roost", "the caldera", "the bone cave"],
         lair_marks: [Landmark::Roost, Landmark::Caldera, Landmark::BoneCave],
-        // And for the dragon that comes down once they're beaten
-        finale: Some((Look::ElderWyrm, [40.0, 340.0], "the heart of the mountain")),
-        // Stand-ins too, till the dragons' fire beasts and drakes come: burrowers in the ash,
-        // gloomwings on the wing, the dead of the bone fields and tuskers
+        // And the first fire, that comes down once they're beaten
+        finale: Some((Look::WorldpyreAncient, [40.0, 340.0], "the heart of the mountain")),
+        // Drakelings: ashwings above all, the Matriarch's brood, and now and then squallwings, the
+        // Hoardwarden's, and blightwings flying with them
         monsters: &[
-            Pack { looks: &[Look::DuneBurrower, Look::DuneBurrower], most: 2 },
-            Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 2 },
-            Pack { looks: &[Look::ArmoredSkeleton, Look::BoneArcher, Look::GraveBrute], most: 2 },
-            Pack { looks: &[Look::Tusker, Look::Tusker], most: 1 },
+            Pack { looks: &[Look::Ashwing, Look::Ashwing, Look::Ashwing], most: 3 },
+            Pack { looks: &[Look::Ashwing, Look::Ashwing], most: 2 },
+            Pack { looks: &[Look::Squallwing, Look::Squallwing, Look::Ashwing], most: 1 },
+            Pack { looks: &[Look::Blightwing, Look::Ashwing], most: 1 },
         ],
         scaling: Scaling { toughness: 6.2, damage: 3.3, luck: 7.0 },
         color: [255, 120, 50],
@@ -306,9 +307,14 @@ impl Places {
 
     /// The same for the realm's finale's lair, if it has one, see is_finale_key()
     pub fn finale_key(&self) -> Option<[i64; 3]> {
-        let [x, y] = self.finale?;
-        Some([(x * 10.0).round() as i64, (y * 10.0).round() as i64, LAIR_KEY - RAIDS as i64])
+        self.finale.map(finale_key_at)
     }
+}
+
+/// What a finale's lair at `at`, in meters, is called: a realm's, or the Worldpyre Ancient's far
+/// lair in Free Roam, as hard to beat as a finale, see dragons.rs
+pub fn finale_key_at(at: [f64; 2]) -> [i64; 3] {
+    [(at[0] * 10.0).round() as i64, (at[1] * 10.0).round() as i64, LAIR_KEY - RAIDS as i64]
 }
 
 /// Whether `key` is a realm's finale's lair's, see Places::finale_key()

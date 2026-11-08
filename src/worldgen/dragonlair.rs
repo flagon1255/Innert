@@ -1,7 +1,14 @@
-//! Dragons' lairs, see src\dragons.rs. The three great dragons' lairs, wherever a realm has them,
-//! are each their own: a crown of crags round a nest of bones on the heights, a caldera walled in
-//! black rock with cooling magma at its heart, and a hollow under a dead giant's ribs heaped with
-//! gold, each one's floor burnt black.
+//! Dragons' lairs, see src\dragons.rs. In Free Roam the Worldpyre Ancient keeps a far lair, high on
+//! open ground a long way from where the journey starts: a scorched hollow ringed with black
+//! spires, a dais in its middle, the ribs and skull of something huge it brought down long ago and
+//! the hoard it's gathered, embers glowing in cracks in the floor. On the way to it the land's
+//! scorched here and there, and the great bones of what it killed lie about, the more of both the
+//! nearer it. The three great dragons' lairs, wherever a realm has them, are each their own: a
+//! crown of crags round a nest of bones on the heights, a caldera walled in black rock with cooling
+//! magma at its heart, and a hollow under a dead giant's ribs heaped with gold. In the Cinder Crown,
+//! whose land has roosts, calderas and bone caves of its own for them to keep their lairs by,
+//! they're only touched with what's the dragons' own, see by_landmark(); its finale, the Ancient,
+//! keeps a hollow like its far lair's.
 
 use std::f32::consts::PI;
 use std::sync::RwLock;
@@ -11,6 +18,18 @@ use super::*;
 /// Where Free Roam starts, in meters of the landscape: where main.rs puts the player in a new game,
 /// see default_start() there
 pub const FREE_ROAM_START: [f32; 2] = [206.08, 179.2];
+/// How far from there the far lair is, at the nearest and furthest, in meters
+const LAIR_FROM: [f32; 2] = [1650.0, 2150.0];
+/// How far round the middle of the far lair its hollow reaches, in meters
+pub const HOLLOW: f32 = 38.0;
+/// How far out from the far lair the omens of it lie, and how far either side of the way there
+/// from where the journey starts
+const OMENS_OUT: f32 = 950.0;
+const OMENS_SIDE: f32 = 300.0;
+/// One spot looked at for an omen in each square this many meters across, and how far what's put
+/// there reaches from it
+pub const OMEN_CELL: f32 = 26.0;
+pub const OMEN_REACH: f32 = 12.0;
 
 /// What kind of lair a dragon keeps
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,6 +40,8 @@ pub enum LairKind {
     Caldera,
     /// The Gildscale Hoardwarden's hollow under a giant's ribs, heaped with gold
     Hoard,
+    /// The Worldpyre Ancient's scorched hollow
+    Ancient,
 }
 
 impl LairKind {
@@ -30,12 +51,76 @@ impl LairKind {
             LairKind::Peak => 20.0,
             LairKind::Caldera => 24.0,
             LairKind::Hoard => 20.0,
+            LairKind::Ancient => HOLLOW,
         }
+    }
+
+    /// How far round it reaches in landscape `settings`: less by a landmark the land has of its
+    /// own, see by_landmark()
+    fn reach_in(self, settings: &TerrainSettings) -> f32 {
+        if by_landmark(self, settings) { TOUCHED } else { self.reach() }
     }
 }
 
+/// Whether a lair of `kind` in landscape `settings` is by a landmark the land has of its own, as
+/// the Cinder Crown's raid bosses' are, by a roost, a caldera's rim and a bone cave, see
+/// worldgen::Landmark: then the land's own is the lair, and it's only touched with what's the
+/// dragon's, its floor scorched, the Hoardwarden's gold and the Tyrant's embers
+fn by_landmark(kind: LairKind, settings: &TerrainSettings) -> bool {
+    kind != LairKind::Ancient && land_of(settings.seed) == Land::Dragon
+}
+
+/// How far round its middle a lair by a landmark reaches, in meters
+const TOUCHED: f32 = 11.0;
+
+/// Where each landscape's far lair is, worked out once
+static FAR: RwLock<Vec<(u32, Option<[f32; 2]>)>> = RwLock::new(Vec::new());
 /// The great dragons' lairs a realm's said it has, by its landscape, see set_lairs()
 static REALM: RwLock<Vec<(u32, Vec<(LairKind, [f32; 2])>)>> = RwLock::new(Vec::new());
+
+/// Where the Worldpyre Ancient's far lair is in landscape `settings`, in meters: in the normal
+/// world's land only, on the highest open ground of those looked at in the way the seed says, out
+/// past LAIR_FROM's nearest from where the journey starts
+pub fn far_lair(settings: &TerrainSettings) -> Option<[f32; 2]> {
+    if land_of(settings.seed) != Land::Normal {
+        return None;
+    }
+    if let Some(&(_, found)) = FAR.read().ok()?.iter().find(|(seed, _)| *seed == settings.seed) {
+        return found;
+    }
+    let r = hash(settings.seed ^ 0xd4a6_0f1e);
+    let toward = unit(r) * TAU;
+    let [sx, sy] = FREE_ROAM_START;
+    let mut best: Option<([f32; 2], f32)> = None;
+    for ring in 0..4 {
+        let d = LAIR_FROM[0] + (LAIR_FROM[1] - LAIR_FROM[0]) * ring as f32 / 3.0;
+        for k in 0..17 {
+            let a = toward + (k as f32 - 8.0) * 0.07;
+            let at = [sx + a.cos() * d, sy + a.sin() * d];
+            if !is_dry_land(settings, at, 22.0) {
+                continue;
+            }
+            // High, but above all level enough to fight on: how far the ground round it rises or
+            // falls from it counts against it
+            let h = height_at(settings, at[0], at[1]);
+            let rough = (0..16)
+                .map(|j| {
+                    let (b, r) = (j as f32 * TAU / 8.0, if j < 8 { 22.0 } else { 34.0 });
+                    (height_at(settings, at[0] + b.cos() * r, at[1] + b.sin() * r) - h).abs()
+                })
+                .fold(0.0f32, f32::max);
+            let score = h - 3.0 * rough;
+            if best.is_none_or(|(_, b)| score > b) {
+                best = Some((at, score));
+            }
+        }
+    }
+    let found = best.map(|(at, _)| at).or_else(|| dry_land_near(settings, [sx + toward.cos() * LAIR_FROM[0], sy + toward.sin() * LAIR_FROM[0]], 600.0, 14.0, &|_| true));
+    if let Ok(mut far) = FAR.write() {
+        far.push((settings.seed, found));
+    }
+    found
+}
 
 /// The great dragons' lairs landscape `seed` has, for a realm to say, see session.rs: where each is
 /// in meters, of which kind. They're built into the land as it's made.
@@ -57,6 +142,7 @@ struct Near {
     seed: u32,
     said: u32,
     lairs: Vec<(LairKind, [f32; 2])>,
+    far: Option<[f32; 2]>,
     /// The last half-meter square looked at, and how it's scorched
     cell: (i32, i32),
     burnt: Option<u8>,
@@ -65,21 +151,24 @@ struct Near {
 thread_local! {
     /// The lairs of the landscape whose ground's being made on this thread, so each column needn't
     /// ask again
-    static NEAR: std::cell::RefCell<Near> = const { std::cell::RefCell::new(Near { seed: u32::MAX, said: u32::MAX, lairs: Vec::new(), cell: (i32::MIN, i32::MIN), burnt: None }) };
+    static NEAR: std::cell::RefCell<Near> = const { std::cell::RefCell::new(Near { seed: u32::MAX, said: u32::MAX, lairs: Vec::new(), far: None, cell: (i32::MIN, i32::MIN), burnt: None }) };
 }
 
 /// How a column of ground at `x`, `y` in meters is scorched by a dragon, if it is: burnt black
-/// across each lair's floor, ragged at its edge. What it's burnt to: obsidian-black, or charred.
-/// Worked out a half meter square at a time, as the columns of each come one after another.
+/// across each lair's floor, ragged at its edge, and in patches along the way to the far lair, more
+/// of them the nearer. What it's burnt to: obsidian-black, or charred. Worked out a half meter
+/// square at a time, as the columns of each come one after another.
 pub(super) fn scorch(settings: &TerrainSettings, x: f32, y: f32) -> Option<u8> {
     let said = SAID.load(std::sync::atomic::Ordering::Relaxed);
     NEAR.with(|near| {
         let mut near = near.borrow_mut();
         if near.seed != settings.seed || near.said != said {
-            *near = Near { seed: settings.seed, said, lairs: lairs(settings), cell: (i32::MIN, i32::MIN), burnt: None };
+            *near = Near { seed: settings.seed, said, lairs: lairs(settings), far: far_lair(settings), cell: (i32::MIN, i32::MIN), burnt: None };
         }
         // Nowhere near any of them, as for nearly all the ground there is
-        if !near.lairs.iter().any(|&(k, at)| (x - at[0]).abs() < k.reach() + 2.0 && (y - at[1]).abs() < k.reach() + 2.0) {
+        let near_any = near.lairs.iter().any(|&(k, at)| (x - at[0]).abs() < k.reach_in(settings) + 2.0 && (y - at[1]).abs() < k.reach_in(settings) + 2.0);
+        let near_far = near.far.is_some_and(|l| (x - l[0]).abs() < OMENS_OUT && (y - l[1]).abs() < OMENS_OUT);
+        if !near_any && !near_far {
             return None;
         }
         let cell = ((x * 2.0).floor() as i32, (y * 2.0).floor() as i32);
@@ -91,8 +180,23 @@ pub(super) fn scorch(settings: &TerrainSettings, x: f32, y: f32) -> Option<u8> {
         let mut burnt = None;
         for &(kind, at) in &near.lairs {
             let d = (cx - at[0]).hypot(cy - at[1]);
-            if d < kind.reach() + 2.0 && d < kind.reach() - 2.0 + 3.0 * fbm(cx / 6.0, cy / 6.0, 2, settings.seed ^ 0x5c0d) {
+            let reach = kind.reach_in(settings);
+            if d < reach + 2.0 && d < reach - 2.0 + 3.0 * fbm(cx / 6.0, cy / 6.0, 2, settings.seed ^ 0x5c0d) {
                 burnt = Some(char);
+            }
+        }
+        // Patches of it on the way to the far lair, out to where the omens are: blotches where
+        // the noise is high, more of the ground the nearer
+        if burnt.is_none()
+            && let Some(lair) = near.far
+        {
+            let to = (cx - lair[0]).hypot(cy - lair[1]);
+            if to < OMENS_OUT && (to < 320.0 || off_the_way([cx, cy], FREE_ROAM_START, lair) < OMENS_SIDE) {
+                let closeness = 1.0 - to / OMENS_OUT;
+                let blotch = fbm(cx / 11.0, cy / 11.0, 3, settings.seed ^ 0x5c0e);
+                if blotch > 0.55 - 0.45 * closeness * closeness {
+                    burnt = Some(char);
+                }
             }
         }
         near.cell = cell;
@@ -108,7 +212,16 @@ pub fn lairs_set(seed: u32) -> Vec<(LairKind, [f32; 2])> {
 
 /// Every dragon's lair in landscape `settings`
 fn lairs(settings: &TerrainSettings) -> Vec<(LairKind, [f32; 2])> {
-    lairs_set(settings.seed)
+    let mut out: Vec<(LairKind, [f32; 2])> = REALM.read().map_or(Vec::new(), |r| r.iter().filter(|(s, _)| *s == settings.seed).flat_map(|(_, l)| l.clone()).collect());
+    out.extend(far_lair(settings).map(|at| (LairKind::Ancient, at)));
+    out
+}
+
+/// How far `p` is from the way from `a` to `b`, in meters
+fn off_the_way(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let t = (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / (ab[0] * ab[0] + ab[1] * ab[1]).max(1e-6)).clamp(0.0, 1.0);
+    (p[0] - a[0] - ab[0] * t).hypot(p[1] - a[1] - ab[1] * t)
 }
 
 impl Terrain {
@@ -117,12 +230,44 @@ impl Terrain {
     pub(super) fn dragon_footprints(&self) -> Vec<[f32; 5]> {
         lairs(&self.settings)
             .into_iter()
+            // Not by a landmark, which mustn't be kept out of where it is, see by_landmark()
+            .filter(|&(kind, _)| !by_landmark(kind, &self.settings))
             .map(|(kind, at)| {
-                let r = kind.reach();
+                let r = kind.reach_in(&self.settings);
                 [at[0] - r, at[1] - r, at[0] + r, at[1] + r, height_at(&self.settings, at[0], at[1]) + 20.0]
             })
             .filter(|f| f[2] > self.lo[0] && f[3] > self.lo[1] && f[0] < self.hi[0] && f[1] < self.hi[1])
             .collect()
+    }
+
+    /// An omen of the far lair at `x`, `y` on the ground at `ground`, if there's one there: the
+    /// ground scorched, a great rib cage half sunk in it, or a skull and the line of a spine, more
+    /// and more of them the nearer the lair
+    pub(super) fn dragon_omen(&self, x: f32, y: f32, ground: f32, column: &Column, r: u32) -> Option<Object> {
+        let lair = far_lair(&self.settings)?;
+        let to = (x - lair[0]).hypot(y - lair[1]);
+        if !(HOLLOW + 6.0..OMENS_OUT).contains(&to) || (off_the_way([x, y], FREE_ROAM_START, lair) > OMENS_SIDE && to > 320.0) {
+            return None;
+        }
+        if ground < sea_level_m(&self.settings) + 0.8 || column.top == WATER {
+            return None;
+        }
+        let near = 1.0 - to / OMENS_OUT;
+        if unit(r) > 0.05 + 0.55 * near * near {
+            return None;
+        }
+        let mut rng = Rng(hash(r ^ 0x0e11));
+        let pick = rng.next();
+        // The ground itself is scorched as it's made, see scorch(): what's on it here is bones,
+        // and now and then the charred stump of a tree that burnt
+        let shapes = if pick < 0.5 {
+            ribs(x, y, ground, 0.7 + 0.5 * rng.next(), &mut rng)
+        } else if pick < 0.8 {
+            skull(x, y, ground, 0.8 + 0.4 * rng.next(), &mut rng)
+        } else {
+            stumps(x, y, ground, &mut rng)
+        };
+        Some(Object::new(shapes, rng.0))
     }
 
     /// The dragons' lairs reaching into this piece, and the sites of those whose middles are its
@@ -130,7 +275,7 @@ impl Terrain {
     pub(super) fn dragon_lairs(&self, features: &mut Features) -> Vec<Object> {
         let mut objects = Vec::new();
         for (kind, at) in lairs(&self.settings) {
-            let reach = kind.reach() + 6.0;
+            let reach = kind.reach_in(&self.settings) + 6.0;
             if at[0] + reach < self.lo[0] || at[1] + reach < self.lo[1] || at[0] - reach > self.hi[0] || at[1] - reach > self.hi[1] {
                 continue;
             }
@@ -138,6 +283,8 @@ impl Terrain {
             let mut rng = Rng(hash3(at[0] as i32 as u32, at[1] as i32 as u32, self.settings.seed ^ 0x1a14));
             let ground_at = |x: f32, y: f32| height_at(&self.settings, x, y);
             let (shapes, top) = match kind {
+                _ if by_landmark(kind, &self.settings) => touched(kind, at, ground, &ground_at, &mut rng),
+                LairKind::Ancient => ancient_hollow(at, ground, &ground_at, &mut rng),
                 LairKind::Peak => peak_roost(at, ground, &ground_at, &mut rng),
                 LairKind::Caldera => caldera(at, ground, &ground_at, &mut rng),
                 LairKind::Hoard => hoard_hollow(at, ground, &ground_at, &mut rng),
@@ -147,6 +294,7 @@ impl Terrain {
                 let back = [FREE_ROAM_START[0] - at[0], FREE_ROAM_START[1] - at[1]];
                 let length = back[0].hypot(back[1]).max(1e-3);
                 let kind = match kind {
+                    LairKind::Ancient => "dragon lair",
                     LairKind::Peak => "dragon peak",
                     LairKind::Caldera => "dragon caldera",
                     LairKind::Hoard => "dragon hoard",
@@ -156,6 +304,18 @@ impl Terrain {
         }
         objects
     }
+}
+
+/// A few charred stumps of trees that burnt, round `x`, `y`
+fn stumps(x: f32, y: f32, ground: f32, rng: &mut Rng) -> Vec<Shape> {
+    (0..1 + (rng.next() * 2.99) as usize)
+        .map(|_| {
+            let (a, r) = (rng.range(0.0, TAU), rng.range(0.0, 3.0));
+            let foot = [x + a.cos() * r, y + a.sin() * r, ground - 0.3];
+            let tall = rng.range(1.0, 2.8);
+            Shape::capsule(foot, [foot[0] + rng.range(-0.3, 0.3), foot[1] + rng.range(-0.3, 0.3), foot[2] + tall], rng.range(0.22, 0.34), 0.1, BARK_DARK, OBSIDIAN, false)
+        })
+        .collect()
 }
 
 /// A great rib cage half sunk in the ground at `x`, `y`, `size` times the usual: a spine along the
@@ -278,6 +438,55 @@ fn hoard(shapes: &mut Vec<Shape>, at: [f32; 2], count: usize, reach: f32, ground
     }
 }
 
+/// A great dragon's lair by a landmark of the land's own, see by_landmark(): the bones of what it's
+/// eaten strewn round where it waits on the heights, embers in cracks in the scorched ground by a
+/// caldera, and gold heaped up at the mouth of a bone cave, skulls among it
+fn touched(kind: LairKind, at: [f32; 2], ground: f32, height: &dyn Fn(f32, f32) -> f32, rng: &mut Rng) -> (Vec<Shape>, f32) {
+    let mut shapes = Vec::new();
+    match kind {
+        LairKind::Peak => {
+            for k in 0..9 {
+                let a = k as f32 / 9.0 * TAU + rng.range(-0.3, 0.3);
+                let r = rng.range(3.0, 7.0);
+                let (x, y) = (at[0] + a.cos() * r, at[1] + a.sin() * r);
+                let b = rng.range(0.0, TAU);
+                let long = rng.range(0.8, 1.6);
+                let z = height(x, y) + 0.15;
+                shapes.push(Shape::capsule([x - b.cos() * long, y - b.sin() * long, z], [x + b.cos() * long, y + b.sin() * long, z + rng.range(0.0, 0.3)], 0.2, 0.14, BONE, LIMESTONE, false));
+            }
+        }
+        LairKind::Caldera => embers(&mut shapes, at, 6, 2.5, TOUCHED - 1.0, height, rng),
+        _ => {
+            hoard(&mut shapes, at, 12, TOUCHED - 2.0, height, rng);
+            for k in 0..2 {
+                let a = rng.range(0.0, TAU);
+                let (x, y) = (at[0] + a.cos() * 5.0, at[1] + a.sin() * 5.0);
+                shapes.extend(skull(x, y, height(x, y), 0.6 + 0.25 * k as f32, rng));
+            }
+        }
+    }
+    (shapes, ground)
+}
+
+/// The Worldpyre Ancient's hollow: see the top of this file. Returns its shapes and how high its
+/// dais stands, where it waits.
+fn ancient_hollow(at: [f32; 2], ground: f32, height: &dyn Fn(f32, f32) -> f32, rng: &mut Rng) -> (Vec<Shape>, f32) {
+    let mut shapes = Vec::new();
+    // A broad dais of black rock in the middle, where it rests
+    let dais = ground + 0.8;
+    embers(&mut shapes, at, 7, 7.0, HOLLOW - 6.0, height, rng);
+    // The skull of what it brought down long ago, by the dais, and its ribs off to one side
+    let side = rng.range(0.0, TAU);
+    let (sx, sy) = (at[0] + side.cos() * 13.0, at[1] + side.sin() * 13.0);
+    shapes.extend(skull(sx, sy, height(sx, sy), 2.6, rng));
+    let (rx, ry) = (at[0] - side.cos() * 20.0, at[1] - side.sin() * 20.0);
+    shapes.extend(ribs(rx, ry, height(rx, ry), 2.2, rng));
+    hoard(&mut shapes, at, 9, 10.0, height, rng);
+    shapes.push(Shape::ellipsoid([at[0], at[1], ground - 0.4], [8.5, 8.5, 1.2], OBSIDIAN, STONE).placed(Placement::Clear));
+    spires(&mut shapes, at, 18, HOLLOW - 4.0, HOLLOW + 1.0, 7.0, 17.0, (OBSIDIAN, STONE), height, rng, &[]);
+    (shapes, dais)
+}
+
 /// The Pyre Matriarch's crown of crags on the heights, round a nest of bones and charred branches
 /// with her eggs glowing in it
 fn peak_roost(at: [f32; 2], ground: f32, height: &dyn Fn(f32, f32) -> f32, rng: &mut Rng) -> (Vec<Shape>, f32) {
@@ -371,5 +580,42 @@ mod tests {
             }
         }
         assert!(found[OBSIDIAN as usize] > 1000, "obsidian {}", found[OBSIDIAN as usize]);
+    }
+
+    /// The far lair's a long way from where Free Roam starts, on open ground, the same every time,
+    /// and only in the normal world's land
+    #[test]
+    fn the_far_lair_is_far_and_on_open_ground() {
+        for seed in [1, 2, 77, 4021] {
+            let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed, grass_tufts: false };
+            let at = far_lair(&settings).expect("a lair");
+            let d = (at[0] - FREE_ROAM_START[0]).hypot(at[1] - FREE_ROAM_START[1]);
+            assert!(d > 1500.0, "seed {seed}: only {d:.0} m from the start");
+            assert!(is_dry_land(&settings, at, 22.0) || is_dry_land(&settings, at, 14.0), "seed {seed}: not on open ground");
+            assert_eq!(far_lair(&settings), Some(at));
+        }
+        let sky = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 0xF100_0001, grass_tufts: false };
+        assert_eq!(far_lair(&sky), None);
+    }
+
+    /// The piece of the landscape round the far lair has its site for the Ancient to wait at, and
+    /// is built with the lair in it: black rock and gold where the hollow is
+    #[test]
+    fn the_far_lair_is_built() {
+        let settings = TerrainSettings { width_m: 96, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let at = far_lair(&settings).unwrap();
+        let corner = [((at[0] - 48.0) * 4.0) as i64, ((at[1] - 48.0) * 4.0) as i64];
+        let (terrain, world) = generate_area(&settings, corner, [96 * 4, 96 * 4], &RiverCache::default());
+        let site = terrain.sites().iter().find(|s| s.kind == "dragon lair").expect("the lair's site");
+        assert!((site.position[0] - at[0]).abs() < 1.0 && (site.position[1] - at[1]).abs() < 1.0);
+        let mut found = [0usize; 256];
+        for y in 0..96 * 4 {
+            for x in 0..96 * 4 {
+                if let Some(z) = (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(x, y, z))) {
+                    found[world.material_at(x, y, z) as usize] += 1;
+                }
+            }
+        }
+        assert!(found[OBSIDIAN as usize] > 1000 && found[GOLD as usize] > 20, "obsidian {} gold {}", found[OBSIDIAN as usize], found[GOLD as usize]);
     }
 }

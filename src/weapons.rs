@@ -6322,7 +6322,8 @@ mod tests {
                 seen[p] = true;
             }
         }
-        let missing: Vec<&str> = library.components.iter().zip(&seen).filter(|(_, s)| !**s).map(|(c, _)| c.id.as_str()).collect();
+        // Not those of no weight, which are never rolled but only given, as the Worldpyre Fang
+        let missing: Vec<&str> = library.components.iter().zip(&seen).filter(|(c, s)| !**s && c.weight > 0.0).map(|(c, _)| c.id.as_str()).collect();
         assert!(missing.is_empty(), "never rolled: {missing:?}");
         // The new shapes and patterns are there to be had
         for shape in ["leaf", "tapered", "serpent", "hooked", "falx", "notched", "forked", "bearded", "spike_axe", "moon_axe", "flanged", "beaked", "morning", "winged", "trident", "fork", "scythe_saw", "scythe_twin", "halberd_bill", "halberd_moon", "flail_skull", "flail_crystal", "flail_triple", "maul_drum", "maul_spiked", "maul_crystal", "ring", "serpent", "crescent", "shell", "spiked", "flat", "bone", "winged", "horned", "ribbed", "fluted", "bell", "spiral", "inlaid", "talon", "halo", "branches", "prism", "twin", "geode", "vertebrae", "keg", "skull"] {

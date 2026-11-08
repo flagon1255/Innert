@@ -1587,6 +1587,7 @@ impl Game {
             self.carry_out(look, deed, world, water, player, view);
         }
         self.tend_dragonfire(world, player, view, dt);
+        self.watch_for_lairs(player);
         self.grow_roots(world, player, view, dt);
         self.spin_webs(player, dt);
         self.reek(world, player, dt);
@@ -2589,6 +2590,10 @@ impl Game {
                         let name = wings::KINDS[kind as usize].name;
                         self.find_once(Item::Wings(kind), &format!("Among what it leaves are the {name}!"));
                     }
+                }
+                // The Worldpyre Ancient leaves its fang, see game\dragonfire.rs
+                if look == crate::dragons::ULTRA {
+                    self.claim_worldpyre();
                 }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
@@ -3624,7 +3629,10 @@ impl Game {
             })
             .collect();
         stocks.sort_by_key(|s| s.key);
-        save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() }
+        let mut done = save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() };
+        // What's known of the dragons' lairs, see game\dragonfire.rs
+        done.set_section(crate::dragons::WORLD_SECTION, &self.dragonfire.lore);
+        done
     }
 
     /// Health, hunger and mana
@@ -3677,6 +3685,7 @@ impl Game {
         self.cleared.clear();
         self.stocks.clear();
         self.ammo_choice.clear();
+        self.dragonfire.lore = Default::default();
         self.set_vitals(MAX_HEALTH, 80.0, MAX_MANA);
     }
 
@@ -3715,6 +3724,7 @@ impl Game {
         self.opened = world.opened.iter().copied().collect();
         self.defeated = world.defeated.iter().copied().collect();
         self.cleared = world.cleared.iter().copied().collect();
+        self.dragonfire.lore = world.section(crate::dragons::WORLD_SECTION).unwrap_or_default();
         self.stocks.clear();
         for stock in &world.stocks {
             let mut wares = Vec::new();

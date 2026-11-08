@@ -85,8 +85,20 @@ const PUFF_RATE: f64 = 16.0;
 /// How far round the player's middle a billow or a ball catches them, in meters
 const PLAYER_GIRTH: f64 = 0.45;
 
+/// What's kept of the dragons in a world's save: whether the Worldpyre Ancient's far lair's been
+/// come to, to show on the map
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct Lore {
+    pub found: bool,
+}
+
+/// How near its lair the player has to come to have found it, in meters
+const FOUND_WITHIN: f64 = 240.0;
+
 #[derive(Default)]
 pub struct Fire {
+    pub lore: Lore,
     puffs: Vec<Puff>,
     balls: Vec<Ball>,
     patches: Vec<Patch>,
@@ -123,9 +135,10 @@ fn fx_random(rng: &mut u32) -> f64 {
 }
 
 impl Fire {
+    /// Everything breathed and burning gone, what's known of the lairs kept
     pub fn clear(&mut self) {
-        let rng = self.rng;
-        *self = Fire { rng, ..Default::default() };
+        let (rng, lore) = (self.rng, self.lore);
+        *self = Fire { rng, lore, ..Default::default() };
     }
 
     pub fn recenter(&mut self, shift: Vector3<f64>) {
@@ -809,6 +822,66 @@ impl Game {
             .map(|a| (a.position + Vector3::new(0.0, 0.0, a.look.body().0 * vpm), a.look.reach()))
     }
 
+    /// Whether the player's come to the Worldpyre Ancient's far lair, for the map, see src\compass.rs
+    pub fn far_lair_found(&self) -> bool {
+        self.dragonfire.lore.found
+    }
+
+    /// Whether the boss of the lair at `at`, in meters of the landscape, has been beaten, whatever
+    /// height its lair's at
+    pub fn beaten_near(&self, at: [f64; 2]) -> bool {
+        self.defeated.iter().any(|k| (k[0] as f64 / 10.0 - at[0]).abs() < 1.0 && (k[1] as f64 / 10.0 - at[1]).abs() < 1.0)
+    }
+
+    /// The Worldpyre Ancient put out in the open for trying it, see `--set dragon_ultra=1` in
+    /// main.rs: as hard as it is as a finale, see realms::FINALE_PROMOTION
+    pub fn promote_ultra(&mut self) {
+        for animal in self.animals.iter_mut().filter(|a| a.look == dragons::ULTRA) {
+            animal.toughen(realms::FINALE_PROMOTION);
+        }
+    }
+
+    /// Whether the player's at `feet` has come near enough to the Worldpyre Ancient's lair to know
+    /// where it is, said once, kept in the save
+    pub(super) fn watch_for_lairs(&mut self, feet: Option<Vector3<f64>>) {
+        let Some(feet) = feet.filter(|_| !self.dragonfire.lore.found) else {
+            return;
+        };
+        let vpm = self.combat.vpm();
+        let near = self.lairs.iter().any(|l| l.look == dragons::ULTRA && l.raid.is_none() && (l.position - feet).xy().norm() < FOUND_WITHIN * vpm);
+        if near {
+            self.dragonfire.lore.found = true;
+            self.milestone = true;
+            self.say(format!("Scorched rock and old bones: you've found the lair of the {}. It's on your map.", dragons::ULTRA.name()));
+            self.cues.push(Cue::here(Sound::Rumble, 0.8).pitched(0.5));
+        }
+    }
+
+    /// The Worldpyre Ancient slain: its fang, the Worldpyre Fang, a mythic greatsword made with a
+    /// blade of no other weapon, straight into the player's hands
+    pub(super) fn claim_worldpyre(&mut self) {
+        let Some(family) = self.library.family("greatsword") else {
+            return;
+        };
+        let Some(blade) = self.library.components.iter().position(|c| c.id == "worldpyre_fang") else {
+            return;
+        };
+        let Some(slot) = self.library.families[family].slots.iter().position(|s| s == "blade") else {
+            return;
+        };
+        self.rng = hash(self.rng ^ 0xfa96);
+        let lucky = self.library.generate(self.rng, Some(family), 16.0);
+        let mut parts = lucky.parts.clone();
+        parts[slot] = blade;
+        let weapon = Weapon::assemble(&self.library, family, parts, lucky.seed);
+        let name = weapon.name.clone();
+        self.weapons.push(weapon);
+        self.add_item(Item::Weapon(self.weapons.len() - 1), 1);
+        self.models_version += 1;
+        self.cues.push(Cue::here(Sound::Chime, 1.0).pitched(0.6));
+        self.say(format!("From the ashes of the {} you take its fang: {name}, a mythic greatsword of the first fire.", dragons::ULTRA.name()));
+    }
+
     /// The light of what dragons breathed and left burning: the brightest few, nearest first
     pub(super) fn dragonfire_lights(&self, view: &View, lights: &mut Vec<[f32; 8]>) {
         let vpm = view.vpm;
@@ -903,5 +976,34 @@ mod tests {
                 assert!(!game.dragonfire.balls.is_empty() || !game.dragonfire.patches.is_empty(), "{look:?}'s fireball from {meters} m vanished");
             }
         }
+    }
+
+    /// The Worldpyre Ancient slain leaves its fang in the player's hands, and it, and that the
+    /// Ancient's beaten and where its far lair is, are all there again in a game restored from the
+    /// save
+    #[test]
+    fn the_ancient_stays_beaten_and_its_fang_kept() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let key = [12345, -6789, -9100];
+        game.defeated.insert(key);
+        game.claim_worldpyre();
+        game.dragonfire.lore.found = true;
+        let is_fang = |w: usize| game.weapons[w].parts.iter().any(|&p| game.library.components[p].id == "worldpyre_fang");
+        let fang = game.slots.iter().find_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w).filter(|&w| is_fang(w)) } else { None });
+        let fang = fang.expect("the fang in hand");
+        assert_eq!(game.library.rarities[game.weapons[fang].grade].id, "mythic");
+        let name = game.weapons[fang].name.clone();
+        let carried: crate::save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let done: crate::save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &done, game.vitals());
+        assert!(other.is_defeated(&key) && other.beaten_near([1234.5, -678.9]), "the Ancient's beaten no more");
+        assert!(other.far_lair_found());
+        assert!(other.weapons.iter().any(|w| w.name == name), "the fang's gone");
+        // Starting afresh, it's all to do again
+        other.new_character(9);
+        assert!(!other.far_lair_found() && !other.is_defeated(&key));
     }
 }
