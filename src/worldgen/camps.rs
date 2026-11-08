@@ -121,7 +121,7 @@ pub struct Camp {
     pub brutes: u32,
     pub warlord: bool,
     pub spread: f32,
-    /// How rare what's in the chest is likely to be, see Library::roll_rarity(): more so the more
+    /// How rare what's in the chest is likely to be, see Library::odds(): more so the more
     /// there are to fight, far more than in ordinary chests
     pub luck: f32,
 }

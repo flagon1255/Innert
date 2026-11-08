@@ -196,6 +196,9 @@ const uint TINT_POISONED = 3;
 const uint TINT_SHOCKED = 4;
 const uint TINT_CHILLED = 5;
 const uint TINT_HIT = 6;
+// Lit by its own light, as something hanging in the sky is, and never faded into the sky, see
+// src\animals.rs
+const uint TINT_LIT = 7;
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
 };
@@ -278,7 +281,7 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.27, 0.54, 0.15), // leaves
     vec3(0.92, 0.14, 0.14), // red flower
     vec3(0.98, 0.84, 0.14), // yellow flower
-    vec3(0.80, 0.78, 0.74), // clay
+    vec3(0.58, 0.38, 0.27), // clay
     vec3(0.42, 0.56, 0.22), // grass tip
     vec3(0.10, 0.36, 0.10), // dark leaves
     vec3(0.95, 0.75, 0.12), // yellow leaves
@@ -1433,9 +1436,16 @@ const uint MAT_GRASS_BLADE = 22;
 // How tall grass grows at most, in meters, for shading its blades from root to tip
 const float BLADE_HEIGHT = 0.45;
 
+// Has to match worldgen::material::CLAY
+const uint MAT_CLAY = 11;
+
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
     vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
+    // Clay's darker and muddier where it's wet, under the sea or just over it. Only that, as
+    // anything more here costs every ray that hits anything.
+    if (material == MAT_CLAY && hit.level != ANIMAL && voxelPoint(hit, vec3(0.5)).z < pc.sun_direction.w + 0.3 * float(max(pc.world_size.w, 1u)))
+    albedo *= vec3(0.5, 0.62, 0.4);
     // Blades of grass dark down among the roots, lighter and yellower up to their tips
     if (hit.level != ANIMAL && (material == MAT_GRASS_BLADE || material == MAT_GRASS_TIP)) {
         vec3 p = voxelPoint(hit, vec3(0.5) - vec3(hit.shift));
@@ -1464,6 +1474,14 @@ vec3 realmAlbedo(Hit hit, uint material) {
 vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     if (hit.level != ANIMAL)
     return vec3(0);
+    // A skin taken on, the whole of it turned towards one colour, light and dark as it was: the
+    // Coil Unending's body taking on each element in turn. Red, green, blue and how far, a byte each.
+    uint skin = animals[hit.instance].info.w;
+    if (skin != 0u) {
+        vec4 to = unpackUnorm4x8(skin);
+        float light = dot(albedo, vec3(0.299, 0.587, 0.114));
+        albedo = mix(albedo, to.rgb * (0.35 + 1.3 * light), to.a);
+    }
     uint tint = animals[hit.instance].info.z;
     // Struck: flashing white for a moment
     if (tint == TINT_HIT) {
@@ -1488,6 +1506,9 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     }
     if (tint == TINT_SHOCKED)
     return vec3(1.4, 1.8, 3.2) * 2.0 * flare;
+    // Shining in its own colors, whatever light's on it, its seas and craters still showing
+    if (tint == TINT_LIT)
+    return albedo * 1.6;
     return vec3(0);
 }
 
@@ -2185,6 +2206,9 @@ float hazePhase(float cos_angle) {
 // shadow into the air, which is what makes sunbeams, plus light from the sky.
 // How much of what's behind the haze atmosphere() last let through, 0-1
 float g_transmittance = 1;
+// Set while shading what a pixel sees directly if it hangs in the sky lit by its own light, see
+// TINT_LIT, so it isn't faded into the sky with what's on the land as far off
+bool g_sky_lit = false;
 
 vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint seed) {
     g_transmittance = 1;
@@ -2413,13 +2437,14 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     if (isWater(origin))
     return shadeUnderwater(origin, dir, steps, distance);
 
+    g_sky_lit = false;
     vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
     color = atmosphere(origin, dir, distance, color, seed);
     float kept = g_transmittance;
     // Only so much of the endless landscape is there at once, so things fade into the sky well
-    // before its edge
+    // before its edge, but for what hangs in the sky
     float fade_end = pc.haze.w;
-    if (fade_end > 0 && distance >= 0) {
+    if (fade_end > 0 && distance >= 0 && !g_sky_lit) {
         // Nearer still where the edge of the piece of the landscape that's there is nearer than
         // that, as when the next piece isn't in yet: then things fade away before it rather than
         // the world being seen to end. Never nearer than a few meters, so what's in hand and at
@@ -2521,6 +2546,8 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     {
         if (hit.level == ANIMAL && animals[hit.instance].info.y != STILL)
         g_dynamic = true;
+        if (hit.level == ANIMAL && animals[hit.instance].info.z == TINT_LIT)
+        g_sky_lit = true;
         // Leaves move in the wind, so they can't be averaged over many frames
         if ((pc.flags & FLAG_WIND) != 0 && hit.level != ANIMAL && sways(material))
         g_dynamic = true;

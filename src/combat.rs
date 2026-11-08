@@ -4,12 +4,12 @@
 //! and seconds.
 
 use std::collections::HashMap;
-use std::f64::consts::{FRAC_PI_2, PI, TAU};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
 use std::rc::Rc;
 
 use nalgebra::{Matrix3, Rotation3, Unit, UnitQuaternion, Vector3};
 
-use crate::animals::{Animal, AnimalInstance, HELD, Look, MODEL_RES, MOVING, Model, STILL, TINT_BURNING, TINT_CHILLED, TINT_FROZEN, TINT_HIT, TINT_NONE, TINT_POISONED, TINT_SHOCKED};
+use crate::animals::{Animal, AnimalInstance, HELD, Look, MODEL_RES, MOVING, Model, STILL, TINT_BURNING, TINT_CHILLED, TINT_FROZEN, TINT_HIT, TINT_LIT, TINT_NONE, TINT_POISONED, TINT_SHOCKED};
 use crate::audio::{Cue, Sound};
 use crate::effects::{BLAST_LIVE, BLAST_REACH, BLAST_RES, BLAST_RING_RES, BLAST_RINGS, BLAST_STAGES, BLASTS, ICE_RES, ICE_STAGES, MOON, MOON_RES, PILLAR_RES, PILLAR_STAGES, STREAK_RES, STREAKS, blast_stage, leaves_smoke};
 use crate::player::WaterLevel;
@@ -20,7 +20,7 @@ use crate::weapons::{
     Casting, Finish, Knack, COIL, SERPENT,
 };
 use crate::weapons::{Burst, CRACKER_HOOK};
-use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, LIMESTONE, MOSS, OBSIDIAN, SNOW, TEMPLE_TEAL};
+use crate::worldgen::material::{AIR, BARK_DARK, CLOTH, DIRT, LIMESTONE, MOSS, OBSIDIAN, SNOW, TEMPLE_TEAL};
 use crate::worldgen::{World, is_passable};
 
 /// The signature special attacks giving families an identity of their own, see signatures.rs
@@ -796,12 +796,13 @@ struct Stream {
 }
 
 /// How long a Blood Moon hangs at least, how far off it rises, in meters, how high up in the view
-/// it rises, as part of the way from the middle to the top, and the least it rises over the
-/// horizon, in radians, and how far round the player it drains, in meters
+/// it rises, as part of the way from the middle to the top, the least it rises over the horizon
+/// and the most, in radians, and how far round the player it drains, in meters
 const MOON_SECONDS: f64 = 2.4;
 const MOON_OFF: f64 = 42.0;
 const MOON_IN_VIEW: f64 = 0.35;
-const MOON_LOWEST: f64 = 0.12;
+const MOON_LOWEST: f64 = 0.2;
+const MOON_HIGHEST: f64 = 1.2;
 const MOON_REACH: f64 = 14.0;
 /// Where Blood Moon's blood pools before the player drinks it, in meters ahead of and under the eye
 const POOL_AHEAD: f64 = 2.2;
@@ -813,19 +814,40 @@ fn blood_pool(view: &View) -> Vector3<f64> {
     view.eye + view.rotation * Vector3::new(0.0, POOL_AHEAD, -POOL_LOW) * view.vpm
 }
 
-/// Where a Blood Moon rises for a view looking `forward`, with the tangent of half its field of
-/// view up and down `tan_up`, from `eye`: on ahead, well up in the view, but never under the horizon
-fn moon_rise(eye: Vector3<f64>, forward: Vector3<f64>, tan_up: f64, vpm: f64) -> Vector3<f64> {
+/// Where a Blood Moon rises in `world` for a view looking `forward`, with the tangent of half its
+/// field of view up and down `tan_up`, from `eye`: on ahead, well up in the view, never under the
+/// horizon, and in the sky, clear of the land and of all that's on it, seen over the hills from the
+/// eye. Shot at the ground or looking down at it, it's never set down on it: raised up the sky till
+/// it's clear, out of the view if it has to be.
+fn moon_rise(world: &World, eye: Vector3<f64>, forward: Vector3<f64>, tan_up: f64, vpm: f64) -> Vector3<f64> {
     let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
     let pitch = forward.z.clamp(-1.0, 1.0).asin();
-    let up = (pitch + tan_up.atan() * MOON_IN_VIEW).clamp(MOON_LOWEST, 1.2);
-    eye + (flat * up.cos() + Vector3::new(0.0, 0.0, up.sin())) * MOON_OFF * vpm
+    let at = |up: f64| eye + (flat * up.cos() + Vector3::new(0.0, 0.0, up.sin())) * MOON_OFF * vpm;
+    // Its middle, its lowest edge as it rises, a little lower than where it hangs, either side and
+    // half way down them, halo and all: nothing there, and nothing but air and leaves in the way
+    // of the eye's seeing its middle, so it's seen rising over a hill, if from behind it
+    let side = Vector3::new(-flat.y, flat.x, 0.0);
+    let reach = MOON_SIZE * MOON_HALO * vpm;
+    let clear = |up: f64| {
+        let middle = at(up);
+        let low = Vector3::new(0.0, 0.0, -reach - MOON_RISE * vpm);
+        let points = [middle, middle + low, middle + side * reach, middle - side * reach, middle + (low - side * reach) * FRAC_1_SQRT_2, middle + (low + side * reach) * FRAC_1_SQRT_2];
+        points.iter().all(|p| world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64) == AIR) && solid_along(world, eye, middle).is_none()
+    };
+    let mut up = (pitch + tan_up.atan() * MOON_IN_VIEW).clamp(MOON_LOWEST, MOON_HIGHEST);
+    while up < MOON_HIGHEST && !clear(up) {
+        up = (up + 0.04).min(MOON_HIGHEST);
+    }
+    at(up)
 }
 
-/// How long the moon takes to sink away once it's all done, in seconds, and how big it is drawn,
-/// in meters round
+/// How long the moon takes to sink away once it's all done, in seconds, how big it is drawn, in
+/// meters round its face, how much further its halo reaches, as part of that, and how far below
+/// where it hangs it starts to rise from, in meters
 const MOON_SINK: f64 = 0.6;
-const MOON_SIZE: f64 = 5.0;
+const MOON_SIZE: f64 = 3.5;
+const MOON_HALO: f64 = 1.16;
+const MOON_RISE: f64 = 4.0;
 /// How long blood takes to stream back to the player, and how long each stream pours, in seconds,
 /// and how much it falls as it arcs over, 1 as fast as things do
 const STREAM_FLIGHT: f64 = 0.42;
@@ -1245,6 +1267,34 @@ const POOL_MARK: f64 = 0.35;
 /// mark waits to go with others, as each change to the world costs a wait for the frames being
 /// drawn, see Combat::linger().
 const MARK_SLACK: f64 = 0.5;
+/// How deep under water, in meters, a pool's never left, and one that ends up there dies down
+const POOL_SUNK: f64 = 0.3;
+
+/// A pool `l` with nothing left under it, as when a hole's been blown where it lay, settles onto
+/// the ground under that, rather than hanging in the air where the ground was; with nothing under
+/// it at all, or once it's under water, it dies down
+fn settle_pool(arena: &Arena, l: &mut Lingering) {
+    let vpm = arena.view.vpm;
+    let p = l.position;
+    let solid = |z: f64| !is_passable(arena.world.material_at(p.x.floor() as i64, p.y.floor() as i64, z.floor() as i64));
+    // As old as it was, only with as little left as it has dying down, as when there are too many
+    let die_down = |l: &mut Lingering| {
+        if l.life > POOL_FADE {
+            l.lifetime -= l.life - POOL_FADE;
+            l.life = POOL_FADE;
+        }
+    };
+    if !solid(p.z) && !solid(p.z - 1.0) {
+        let down = Vector3::new(0.0, 0.0, -12.0 * vpm);
+        match solid_along(arena.world, p, p + down) {
+            Some(t) => l.position = p + down * t,
+            None => die_down(l),
+        }
+    }
+    if (arena.water)(l.position.x, l.position.y) > l.position.z + POOL_SUNK * vpm {
+        die_down(l);
+    }
+}
 
 /// How a pool of `element` `age` seconds old with `left` to go is drawn, and with `time` the
 /// fight's clock and `key` something of its own so no two go alike: how big next to its radius,
@@ -1880,6 +1930,8 @@ impl Lash {
 
 pub struct Combat {
     pub mana: f64,
+    /// Melee blows landed, swung at anything or nothing, for a tool's to gather, see tools.rs
+    pub landed: u32,
     action: Action,
     /// Seconds until the weapon in hand can attack again
     cooldown: f64,
@@ -4875,6 +4927,7 @@ impl Combat {
     pub fn new(seed: u32, first_model: u32) -> Self {
         Combat {
             mana: MAX_MANA,
+            landed: 0,
             action: Action::Idle,
             cooldown: 0.0,
             frenzy: 0.0,
@@ -5510,6 +5563,7 @@ impl Combat {
                     let land = !struck && t >= length * lands;
                     self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
                     if land {
+                        self.landed = self.landed.wrapping_add(1);
                         self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
                         // A battle staff's finishing blow, or its heavy one, looses a spell too
                         let cost = profile.stat("manaCost");
@@ -6377,8 +6431,12 @@ impl Combat {
         let Some(t) = solid_along(arena.world, top, top + down) else {
             return;
         };
-        self.pool_timer = 0.45;
         let ground = top + down * t;
+        // Not on the bed of water: what lands in water just splashes
+        if (arena.water)(ground.x, ground.y) > ground.z + POOL_SUNK * vpm {
+            return;
+        }
+        self.pool_timer = 0.45;
         let radius = profile.param(Effect::Pool, "radius", 1.5) * profile.stat("area").max(1.0);
         let life = profile.param(Effect::Pool, "duration", 4.0);
         let tick = damage * profile.param(Effect::Pool, "power", 0.2) * profile.potency(Effect::Pool).max(1.0);
@@ -6407,6 +6465,12 @@ impl Combat {
             self.lingering.push(Lingering { pool: true, tick: f64::INFINITY, ..Lingering::new(ground, 1.5, 4.0, element, profile, 0.0) });
         }
         middle
+    }
+
+    /// For looking at a pool, see Game::lay_pool(): one of `element` lying on the ground at
+    /// `ground`, hurting nothing
+    pub fn lay_pool(&mut self, ground: Vector3<f64>, element: Option<Element>, profile: &Rc<Profile>) {
+        self.lingering.push(Lingering { pool: true, tick: f64::INFINITY, ..Lingering::new(ground, 1.5, 6.0, element, profile, 0.0) });
     }
 
     /// How many things are in flight, and how far the furthest is from `eye`, in meters
@@ -8310,12 +8374,14 @@ impl Combat {
         let sink = smooth((m.t - m.end()) / MOON_SINK);
         let size = MOON_SIZE * rise * (1.0 - sink);
         if size > 0.05 {
-            let at = m.moon - Vector3::new(0.0, 0.0, (1.0 - rise + sink) * 8.0 * vpm);
-            // Its face to the eye, so its rim glows all round, turning slowly, see effects::moon()
+            let at = m.moon - Vector3::new(0.0, 0.0, (1.0 - rise + sink) * MOON_RISE * vpm);
+            // Its face to the eye, so its rim glows all round, turning slowly, see effects::moon().
+            // Lit by its own red light, as the sky's own moon shines, so it's as clear by night as
+            // by day, and never faded into the sky with what's on the land as far off.
             let face = (view.eye - at).try_normalize(1e-6).unwrap_or_else(Vector3::z);
             let turn = UnitQuaternion::from_axis_angle(&Unit::new_normalize(face), self.time * 0.08) * UnitQuaternion::rotation_between(&Vector3::z(), &face).unwrap_or_else(UnitQuaternion::identity);
             let (model, moon) = self.model_at(MOON);
-            out.push(place(model, moon, MOON_RES, Vector3::zeros(), at, turn, vpm, size, MOVING));
+            out.push(place(model, moon, MOON_RES, Vector3::zeros(), at, turn, vpm, size, MOVING).tinted(TINT_LIT));
         }
         for s in &m.shots {
             let way = (s.to - s.from).try_normalize(1e-6).unwrap_or_else(Vector3::x);
@@ -8807,7 +8873,7 @@ impl Combat {
                 let blade = moves_kind(&profile) == Kind::Melee && profile.style != Style::Lob;
                 // Bombs flung as orbs of blood, the rest shooting what they shoot
                 let shot = weapon.shot().filter(|&s| s != Shot::Shell);
-                let moon = moon_rise(view.eye, forward, view.tan[1], vpm);
+                let moon = moon_rise(arena.world, view.eye, forward, view.tan[1], vpm);
                 self.blood_moon = Some(BloodMoon {
                     t: 0.0,
                     release: first_release(length, &keys),
@@ -12662,6 +12728,7 @@ impl Combat {
             l.life -= dt;
             l.tick -= dt;
             if l.pool {
+                settle_pool(arena, &mut l);
                 self.pool_alive(&mut l, dt, marking);
             } else {
                 // Flames flickering up, or bubbles and a haze of venom. A wall of fire's flames
@@ -15139,9 +15206,12 @@ impl Combat {
                     let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(e)));
                     place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.5, MOVING)
                 }
+                // A little bigger the further off it is past 15 m, so a serpent's glob of venom or
+                // a boss's ball of fire is never lost to the eye, as a shot isn't
                 HostileKind::Spell(e) => {
+                    let far = ((h.position - view.eye).norm() / vpm / 15.0).max(1.0).sqrt();
                     let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(e)));
-                    place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.35, MOVING)
+                    place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.35 * far, MOVING)
                 }
                 HostileKind::Web => {
                     let (model, web) = self.model_at(WEB);
@@ -15159,7 +15229,9 @@ impl Combat {
                     place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), h.position, rotation, vpm, 1.0, MOVING)
                 }
             };
-            add(h.position, instance);
+            // What's coming at the player is what the eye follows, so it's drawn before props and
+            // such lying about nearer, as if it were a tenth as far off, as a shot is
+            add(view.eye + (h.position - view.eye) * 0.1, instance);
         }
         // Familiars, glowing orbs bobbing where they hang, and phantoms, pillars of light
         for f in &self.familiars {
@@ -15989,19 +16061,57 @@ mod tests {
         }
     }
 
-    /// Blood Moon rises up in the view however it's looked, but never under the horizon
+    /// Blood Moon rises up in the view however it's looked over open ground, but never under the
+    /// horizon
     #[test]
     fn the_blood_moon_rises_in_view() {
-        let vpm = 16.0;
+        let world = wide_field();
+        let vpm = 8.0;
+        let eye = Vector3::new(96.0, 40.0, 5.6) * vpm;
         let tan_up = 35f64.to_radians().tan();
         for pitch in [-0.3f64, -0.15, 0.0, 0.2] {
             let forward = Vector3::new(pitch.cos(), 0.0, pitch.sin());
-            let moon = moon_rise(Vector3::zeros(), forward, tan_up, vpm);
+            let moon = moon_rise(&world, eye, forward, tan_up, vpm) - eye;
             let to = moon.normalize();
             assert!(to.z > MOON_LOWEST.sin() - 1e-9, "under the horizon looking {pitch}");
             let above = to.z.asin() - pitch;
             assert!(above > 0.0 && above.tan() < tan_up * 0.85, "out of view looking {pitch}: {above:.2} up");
             assert!((moon.norm() / vpm - MOON_OFF).abs() < 1e-6);
+        }
+    }
+
+    /// Blood Moon shot at the ground with a hill ahead, as high as the world goes, is never set down
+    /// on the land or in it: it rises up the sky till nothing's where it hangs, its lowest edge as it
+    /// rises and all, and it's seen over the hill from the eye
+    #[test]
+    fn the_blood_moon_rises_clear_of_the_land() {
+        let vpm = 8.0;
+        let size = [1536u32, 1536, 128];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 4].fill(u128::MAX);
+        // The hill, 20 to 35 m ahead of the eye and 32 m across
+        let texels = |meters: f64| (meters * vpm / 4.0) as usize;
+        for z in 4..size[2] as usize / 8 {
+            for y in texels(60.0)..texels(75.0) {
+                for x in texels(80.0)..texels(112.0) {
+                    occupancy[x + (y + z * ty) * tx] = u128::MAX;
+                }
+            }
+        }
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 8;
+        let eye = Vector3::new(96.0, 40.0, 5.6) * vpm;
+        let tan_up = 35f64.to_radians().tan();
+        let solid = |p: Vector3<f64>| world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64) != AIR;
+        for pitch in [-0.6f64, -0.3, 0.0] {
+            let forward = Vector3::new(0.0, pitch.cos(), pitch.sin());
+            let moon = moon_rise(&world, eye, forward, tan_up, vpm);
+            let low = moon - Vector3::new(0.0, 0.0, (MOON_SIZE * MOON_HALO + MOON_RISE) * vpm);
+            assert!(!solid(moon) && !solid(low), "in the hill looking {pitch}");
+            assert!(solid_along(&world, eye, moon).is_none(), "behind the hill looking {pitch}");
+            let up = (moon - eye).normalize().z.asin();
+            assert!(up > 0.45 && up <= MOON_HIGHEST + 1e-9, "{up:.2} up the sky looking {pitch}");
         }
     }
 
@@ -17011,6 +17121,53 @@ mod tests {
         }
     }
 
+    /// What a serpent spits, a glob of venom lobbed or a ball of storm, blood, frost or the void
+    /// flying straight, as game.rs throws it, is seen coming all the way from 60 m off till it
+    /// lands: drawn every frame, on screen and big enough, and sorted with what the eye follows
+    #[test]
+    fn a_serpents_spit_can_be_followed() {
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(96.0, 40.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        for element in [Element::Poison, Element::Storm, Element::Blood, Element::Frost, Element::Void] {
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            let mut animals = Vec::new();
+            let from = eye + Vector3::new(1.0, 60.0, 0.0) * vpm;
+            let to = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
+            let pace = if element == Element::Poison { 15.0 } else { 22.0 };
+            combat.hurl(HostileKind::Spell(element), from, to, (to - from).norm() / vpm / pace, 11.0, 1.6);
+            let (mut frames, mut seen) = (0, 0);
+            for _ in 0..1200 {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.update(&mut arena, None, None, Controls::default(), 1.0 / 120.0);
+                let Some(h) = combat.hostiles.first() else {
+                    break;
+                };
+                let d = (h.position - eye).norm();
+                if d < 3.0 * vpm {
+                    continue;
+                }
+                frames += 1;
+                let mut drawn = Vec::new();
+                combat.other_instances(&view, &mut drawn);
+                // Of what's drawn as the eye follows it, the nearest to where it is: the ball itself
+                let near = drawn.iter().filter(|(key, _)| *key < d * 0.2).map(|(_, i)| i.sphere()).min_by(|a, b| (a.0 - h.position).norm().total_cmp(&(b.0 - h.position).norm()));
+                let Some((at, reach)) = near else {
+                    continue;
+                };
+                // Wherever it is, high in its arc or not: the eye goes after it
+                let big = reach / (at - eye).norm() > SEEN_ANGLE;
+                let there = (at - h.position).norm() < 1.0 * vpm;
+                seen += (big && there) as usize;
+            }
+            assert!(frames > 20 && seen == frames, "{element:?}: seen in {seen} of {frames} frames from 60 m");
+        }
+    }
+
     /// Whether what's at `at` is hidden from the eye behind smoke or a cloud hanging nearer it,
     /// as they're drawn, by all but their thin edges
     fn hidden_behind_smoke(combat: &Combat, view: &View, at: Vector3<f64>) -> bool {
@@ -17215,6 +17372,44 @@ mod tests {
             assert!(size < 0.3 || sink > 0.06 + 0.12 * size, "{element:?} ends {size:.2} big, sunk {sink:.2}");
             assert!(spent_at.is_some_and(|t| t > life - POOL_FADE), "{element:?} spent at {spent_at:?}");
         }
+    }
+
+    /// A pool with a hole blown under where it lies settles into the hole, never left hanging in
+    /// the air where the ground was, as a sheet of ice over a crater; one sunk under water dies
+    /// down; and none's left on the bed of water
+    #[test]
+    fn pools_settle_into_holes_and_keep_out_of_water() {
+        let vpm = 8.0;
+        let mut world = field();
+        let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let ground = feet + Vector3::new(0.0, 6.0 * vpm, 0.0);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut animals = Vec::new();
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        combat.leave_pool_at(&profile, ground - Vector3::new(0.0, 0.0, 0.5), 1.5, 4.0, Some(Element::Frost), 1.0);
+        world.carve(ground.into(), 2.0 * vpm);
+        let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &dry };
+        combat.linger(&mut arena, 1.0 / 60.0);
+        let p = combat.lingering[0].position;
+        let under = |z: f64| world.material_at(p.x.floor() as i64, p.y.floor() as i64, z.floor() as i64);
+        assert!(p.z < ground.z - 1.0 * vpm, "left {:.2} m up", (p.z - ground.z) / vpm);
+        assert!(!is_passable(under(p.z)) || !is_passable(under(p.z - 1.0)), "hanging in the hole");
+        assert!(combat.lingering[0].life > POOL_FADE, "died down as it settled");
+        // Water fills the hole over it: it dies down
+        let flooded = |_: f64, _: f64| ground.z;
+        let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &flooded };
+        combat.linger(&mut arena, 1.0 / 60.0);
+        assert!(combat.lingering[0].life <= POOL_FADE, "went on under the water");
+        // And none's left where a shot lands in water
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        let wet = |_: f64, _: f64| feet.z + 1.0 * vpm;
+        let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &wet };
+        combat.leave_pool(&mut arena, &profile, feet + Vector3::new(4.0 * vpm, 0.0, 0.0), 10.0);
+        assert!(combat.lingering.is_empty(), "a pool on the bed of the water");
     }
 
     /// Pools of every element laid together leave their marks on the ground together, in one
