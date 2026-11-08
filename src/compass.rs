@@ -95,6 +95,13 @@ impl App {
             .min_by(|a, b| far(a.0).total_cmp(&far(b.0)))
             .or(finale)
             .unwrap_or_else(|| (places.gate, if places.realm == 0 { "The Innert Gate" } else { "The portal home" }.to_owned()));
+        // The realm's great serpent's lair instead, while it's still to beat and nearer, within a
+        // couple of hundred meters, see serpents::realm_serpent()
+        let serpent = places.serpent.zip(places.serpent_key()).filter(|(_, key)| !self.game.is_defeated(key)).map(|((look, spot), _)| (spot, format!("Serpent: {}", look.name())));
+        let (spot, label) = match serpent {
+            Some((lair, name)) if far(lair) < 200.0 && far(lair) < far(spot) => (lair, name),
+            _ => (spot, label),
+        };
         let heading = self.heading();
         let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
         Some(Bearing { label, distance: far(spot), turn: wrapped(heading - toward), heading })
@@ -121,7 +128,11 @@ impl App {
                     lairs.push((spot, look.name(), self.game.is_defeated(&key)));
                 }
                 lairs
-            }),
+            })
+            .into_iter()
+            // The great serpents' lairs, see serpent_lairs.rs
+            .chain(self.serpent_marks())
+            .collect(),
             settings: self.terrain_settings(),
         }
     }

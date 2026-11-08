@@ -54,7 +54,78 @@ fn key_of(spot: [f64; 2]) -> [i64; 3] {
     [(spot[0] * 10.0).round() as i64, (spot[1] * 10.0).round() as i64, serpents::LAIR_KEY]
 }
 
+/// What's kept in the save of the great serpents' lairs, see Save::section(): the lairs found in
+/// Free Roam, to be marked on the map, by who's there and where, in meters
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, Debug, PartialEq)]
+#[serde(default)]
+pub struct SerpentsSave {
+    pub found: Vec<(String, [f64; 2])>,
+}
+
+/// Its name in the save, see save::Save::sections
+const SECTION: &str = "serpents";
+
+/// How near a great serpent's lair the player has to come in Free Roam to find it, in meters
+const FIND_M: f64 = 120.0;
+
 impl App {
+    /// What's kept in the save of the great serpents' lairs
+    fn serpents_save(&self) -> SerpentsSave {
+        self.session.sections.get(SECTION).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+    }
+
+    fn keep_serpents_save(&mut self, kept: &SerpentsSave) {
+        if let Ok(value) = serde_json::to_value(kept) {
+            self.session.sections.insert(SECTION.to_owned(), value);
+        }
+    }
+
+    /// The great serpents' lairs to mark on the map: the realm's own in Realms, and those found in
+    /// Free Roam, with who's there and whether they're beaten
+    pub(super) fn serpent_marks(&self) -> Vec<([f64; 2], &'static str, bool)> {
+        match (&self.session.places, self.session.mode) {
+            (Some(places), Some(save::Mode::Realms)) => places.serpent.zip(places.serpent_key()).map(|((look, spot), key)| (spot, look.name(), self.game.is_defeated(&key))).into_iter().collect(),
+            (_, Some(save::Mode::FreeRoam)) => self
+                .serpents_save()
+                .found
+                .iter()
+                .filter_map(|(name, spot)| {
+                    let look = Look::ALL.into_iter().find(|l| l.is_great_serpent() && l.name() == name)?;
+                    Some((*spot, look.name(), self.game.is_defeated(&key_of(*spot))))
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Now and then in Free Roam, the great serpents' lairs the player's come near enough to find,
+    /// kept to be marked on the map from then on
+    pub(super) fn find_serpent_lairs(&mut self) {
+        if self.session.mode != Some(save::Mode::FreeRoam) {
+            return;
+        }
+        let vpm = self.world.voxels_per_meter as f64;
+        let Some(feet) = self.player.as_ref().map(|p| p.position) else {
+            return;
+        };
+        let mut kept = self.serpents_save();
+        let mut newly = Vec::new();
+        for lair in self.serpent_sites() {
+            let spot = [(lair.position.x + self.world.origin[0] as f64) / vpm, (lair.position.y + self.world.origin[1] as f64) / vpm];
+            let found = kept.found.iter().any(|(_, at)| (at[0] - spot[0]).hypot(at[1] - spot[1]) < 1.0);
+            if !found && (lair.position - feet).xy().norm() < FIND_M * vpm {
+                kept.found.push((lair.look.name().to_owned(), spot));
+                newly.push(lair.look);
+            }
+        }
+        if !newly.is_empty() {
+            self.keep_serpents_save(&kept);
+            for look in newly {
+                self.game.say(format!("You've found the lair of the {}. It's marked on your map (M).", look.name()));
+            }
+        }
+    }
+
     /// The great serpents' lairs in the world where it is now, in its voxels, for adopt_features()
     pub(super) fn serpent_sites(&self) -> Vec<game::Lair> {
         let vpm = self.world.voxels_per_meter as f64;

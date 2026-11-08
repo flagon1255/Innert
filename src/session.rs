@@ -935,6 +935,10 @@ impl App {
             self.trial_step(frame);
             self.serpent_trial(frame, self.session.trial.ready);
         }
+        // The great serpents' lairs come across, now and then, see serpent_lairs.rs
+        if self.frame % 30 == 0 {
+            self.find_serpent_lairs();
+        }
         if self.session.mode.is_none() || self.menu_open {
             return;
         }
