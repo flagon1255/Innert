@@ -3774,11 +3774,14 @@ impl App {
             self.pending_craters.extend(craters.into_iter().map(|(center, radius)| (center + origin, radius)));
             let stains = self.game.take_stains();
             self.pending_stains.extend(stains.into_iter().map(|(center, radius, material, burn)| (center + origin, radius, material, burn)));
-            let start = Instant::now();
-            while start.elapsed().as_secs_f64() < CARVE_SECONDS
+            // At least a quarter of those waiting, so however many come they never fall far behind
+            let (start, least) = (Instant::now(), 1 + self.pending_craters.len() / 4);
+            let mut blown = 0;
+            while (blown < least || start.elapsed().as_secs_f64() < CARVE_SECONDS)
                 && let Some((at, radius)) = self.pending_craters.pop_front()
             {
                 self.blast(at - origin, radius);
+                blown += 1;
             }
             if self.pending_craters.is_empty() {
                 let start = Instant::now();
