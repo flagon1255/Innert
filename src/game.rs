@@ -626,7 +626,7 @@ pub struct Shrine {
     pub gate: bool,
     pub position: Vector3<f64>,
     pub facing: f64,
-    pub placed: [u32; 4],
+    pub placed: [u32; realms::REALM_COUNT],
     pub open: bool,
 }
 
@@ -1144,6 +1144,14 @@ impl Game {
         self.target = None;
     }
 
+    /// One more lair, as when a realm's finale rises, see realms::on_raids_beaten()
+    pub fn add_lair(&mut self, world: &World, water: WaterLevel, lair: Lair) {
+        let mut lairs = std::mem::take(&mut self.lairs);
+        lairs.retain(|l| l.key != lair.key);
+        lairs.push(lair);
+        self.set_lairs(world, water, lairs);
+    }
+
     /// The bosses' lairs in the piece of the world just built, in its voxels: a boss turns up in each
     /// that isn't beaten and doesn't have one already
     pub fn set_lairs(&mut self, world: &World, water: WaterLevel, lairs: Vec<Lair>) {
@@ -1161,6 +1169,10 @@ impl Game {
             if let Some(mut boss) = animals::spawn_boss(world, water, look, lair.position, lair.key, seed) {
                 if lair.raid.is_some() && !look.is_raid() {
                     boss.toughen(realms::RAID_PROMOTION);
+                }
+                // A realm's finale is the hardest of all of it
+                if realms::is_finale_key(&lair.key) {
+                    boss.toughen(realms::FINALE_PROMOTION);
                 }
                 self.animals.push(boss);
             }
@@ -2537,7 +2549,8 @@ impl Game {
                 self.milestone = true;
                 // One of a realm's raid bosses leaves its Innert block, straight into the player's
                 // hands, so it can't be left behind and lost as the world moves on
-                let block = self.raid_lairs.get(&boss.key).copied();
+                // A realm's finale leaves no block, see realms::on_raids_beaten()
+                let block = self.raid_lairs.get(&boss.key).copied().filter(|_| !realms::is_finale_key(&boss.key));
                 if let Some(realm) = block {
                     self.add_item(Item::InnertBlock(realm), 1);
                     self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.6));

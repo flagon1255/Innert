@@ -2721,13 +2721,17 @@ pub const GATE_OPENING: [f64; 3] = [1.12, 0.52 + GATE_SINK, 4.98 + GATE_SINK];
 /// stand that much lower than the ground they're on, and all of them's that much higher up in them
 pub const GATE_SINK: f64 = 1.5;
 
+/// How high each row of a realm's three sockets is up the front of the Innert Gate's pillars, over
+/// its foundation, in meters: clear of the bands round them, up to three realms' to a pillar
+const SOCKET_ROWS: [f64; 3] = [1.3, 2.15, 3.55];
+
 /// Where the bottom middle of the socket for realm `realm`'s Innert block `slot` of three is on the
-/// Innert Gate, in meters from the middle of its foot, facing along x: down the front of its
-/// pillars, the first two realms' on the left one, the other two's on the right
+/// Innert Gate, in meters from the middle of its foot, facing along x: a row of three across the
+/// front of a pillar for each realm, the realms taking turns, left and right, going up
 pub fn socket(realm: usize, slot: usize) -> [f64; 3] {
-    let y = if realm < 2 { -1.6 } else { 1.6 };
-    let k = (realm % 2) * 3 + slot;
-    [0.36, y, GATE_SINK + 1.25 + k as f64 * 0.6 + if realm % 2 == 1 { 0.25 } else { 0.0 }]
+    let side = if realm % 2 == 0 { -1.0 } else { 1.0 };
+    let row = SOCKET_ROWS[(realm / 2).min(SOCKET_ROWS.len() - 1)];
+    [0.36, side * (GATE_OPENING[0] + 0.48) + (slot as f64 - 1.0) * 0.295, GATE_SINK + row]
 }
 
 /// The Innert Gate, or with `gate` false a portal home in a realm: two square pillars banded in
@@ -2738,16 +2742,15 @@ pub fn socket(realm: usize, slot: usize) -> [f64; 3] {
 fn gate(p: &mut Vec<Part>, gate: bool) {
     let (stone, pillar, band) = if gate { (TEMPLE_STONE, TEMPLE_DARK, OBSIDIAN) } else { (ROCK, OBSIDIAN, TEMPLE_DARK) };
     if gate {
-        for realm in 0..4 {
+        for (realm, r) in crate::realms::REALMS.iter().enumerate() {
             for slot in 0..3 {
                 let [x, y, z] = socket(realm, slot);
                 // Hollowed out of the pillar, so it's left before the pillar's laid
-                p.push(cuboid([x - 0.16, y - 0.17, z - 0.03], [x + 0.2, y + 0.17, z + 0.31], AIR));
+                p.push(cuboid([x - 0.16, y - 0.14, z - 0.03], [x + 0.2, y + 0.14, z + 0.31], AIR));
             }
-            let rune = [GLOW_HOLY, GLOW_STORM, GLOW_BLOOD, GLOW_FROST][realm];
-            let ([x, y, low], top) = (socket(realm, 0), socket(realm, 2)[2] + 0.28);
-            let outer = y + y.signum() * 0.32;
-            p.push(cuboid([x + 0.04, outer - 0.035, low], [x + 0.11, outer + 0.035, top], rune));
+            // A bar of its rune's light under its row
+            let ([x, left, low], right) = (socket(realm, 0), socket(realm, 2)[1]);
+            p.push(cuboid([x + 0.04, left - 0.12, low - 0.13], [x + 0.11, right + 0.12, low - 0.07], r.rune));
         }
     }
     // What's below is built from the foot of it, and raised by GATE_SINK after, see below

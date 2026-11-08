@@ -793,7 +793,8 @@ impl View {
 
 /// The colours the sky of the realm with look `realm` is tinted towards straight up and round the
 /// horizon, and how far, see App::realm_look(): the dreaming realm's lilac over a rosy horizon, deep
-/// red over its bleeding half, the frozen realm's pale and cold, and no tint for the rest. Worked
+/// red over its bleeding half, the frozen realm's pale and cold, the sunken reach's clear, and no
+/// tint for the normal world's and the sky isles'. Worked
 /// out here once a frame rather than for every ray that looks at the sky in traverse.comp.
 fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
     let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t);
@@ -802,6 +803,8 @@ fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
     match realm[0].round() as u32 {
         2 => [with(mix([0.42, 0.3, 0.85], [0.45, 0.04, 0.05], blood), 0.85), with(mix([1.0, 0.68, 0.8], [0.95, 0.28, 0.16], blood), 0.85)],
         3 => [with([0.32, 0.5, 0.82], 0.6), with([0.82, 0.9, 1.0], 0.6)],
+        // The sunken reach's a clear sea blue over a pale green-blue horizon
+        4 => [with([0.06, 0.4, 0.82], 0.4), with([0.6, 0.88, 0.9], 0.45)],
         _ => [[0.0; 4]; 2],
     }
 }

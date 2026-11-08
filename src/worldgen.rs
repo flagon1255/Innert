@@ -2696,6 +2696,8 @@ pub enum Land {
     Sky,
     Dream,
     Ice,
+    /// Open sea with islands strung across it on sandbars and reefs, see water_height()
+    Water,
 }
 
 pub fn land_of(seed: u32) -> Land {
@@ -2703,6 +2705,7 @@ pub fn land_of(seed: u32) -> Land {
         0xF1 => Land::Sky,
         0xF2 => Land::Dream,
         0xF3 => Land::Ice,
+        0xF4 => Land::Water,
         _ => Land::Normal,
     }
 }
@@ -2802,6 +2805,70 @@ fn dream_height(seed: u32, x: f32, y: f32) -> f32 {
     soft + (torn - soft) * blood
 }
 
+/// How far apart the sunken reach's islands are, in meters: each WATER_CELL square has one
+const WATER_CELL: f32 = 92.0;
+
+/// The island of the WATER_CELL square `i`, `j` in the sunken reach: its middle and how far out its
+/// shore is, in meters, how high its top is over the sea, and whether it's a ring of land round a
+/// lagoon
+fn water_isle(seed: u32, i: i32, j: i32) -> ([f32; 2], f32, f32, bool) {
+    let r = hash3(i as u32, j as u32, seed ^ 0x5ea);
+    let middle = [(i as f32 + 0.5 + 0.4 * (unit(r) - 0.5)) * WATER_CELL, (j as f32 + 0.5 + 0.4 * (unit(r >> 16) - 0.5)) * WATER_CELL];
+    let radius = 15.0 + 15.0 * unit(r >> 8);
+    let top = 2.0 + 7.0 * unit(hash(r));
+    (middle, radius, top, unit(hash(r ^ 0xa70)) < 0.2)
+}
+
+/// Whether the island of square `i`, `j` is joined to the one north of it by a sandbar, as it
+/// always is to the one east of it, so every island can be walked to, wading
+fn water_bar_north(seed: u32, i: i32, j: i32) -> bool {
+    unit(hash3(i as u32, j as u32, seed ^ 0xba5)) < 0.55
+}
+
+/// The ground of the sunken reach, in meters: deep water, `sea` meters up being where the sea is,
+/// islands rising out of it, some of them rings round a shallow lagoon, reefs round some just under
+/// the surface, and sandbars joining them up, a little under it, to wade across
+fn water_height(seed: u32, sea: f32, x: f32, y: f32) -> f32 {
+    let mut h = sea - 7.0 + fbm(x / 60.0, y / 60.0, 3, seed.wrapping_add(5)) * 2.0;
+    let (cx, cy) = ((x / WATER_CELL).floor() as i32, (y / WATER_CELL).floor() as i32);
+    let wobble = fbm(x / 11.0, y / 11.0, 3, seed.wrapping_add(6));
+    for j in cy - 1..=cy + 1 {
+        for i in cx - 1..=cx + 1 {
+            let (middle, radius, top, atoll) = water_isle(seed, i, j);
+            let d = (x - middle[0]).hypot(y - middle[1]) / (radius * (1.0 + 0.22 * wobble));
+            if d < 1.7 {
+                // Up out of the deep to the shore, then gently up to the island's top
+                let land = if d < 1.0 {
+                    sea + 0.6 + top * (1.0 - d * d).powf(0.8) + fbm(x / 9.0, y / 9.0, 2, seed.wrapping_add(7)) * 0.8
+                } else {
+                    sea + 0.6 - (d - 1.0) / 0.7 * 7.0
+                };
+                let land = if atoll && d < 0.55 { land.min(sea - 1.4 - (0.55 - d) * 2.0) } else { land };
+                h = h.max(land);
+                // A reef ringing some, just under the surface
+                if unit(hash3(i as u32, j as u32, seed ^ 0x2eef)) < 0.4 {
+                    h = h.max(sea - 0.5 - ((d - 1.4).abs() / 0.08).powi(2));
+                }
+            }
+            // Sandbars to the neighbours, a little under the surface, a few meters wide
+            for (di, dj, bar) in [(1, 0, true), (0, 1, water_bar_north(seed, i, j))] {
+                if !bar {
+                    continue;
+                }
+                let (other, ..) = water_isle(seed, i + di, j + dj);
+                let (ax, ay, bx, by) = (middle[0], middle[1], other[0], other[1]);
+                let (vx, vy) = (bx - ax, by - ay);
+                let t = (((x - ax) * vx + (y - ay) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+                let off = (x - ax - vx * t).hypot(y - ay - vy * t) + wobble * 1.2;
+                if off < 4.0 {
+                    h = h.max(sea - 0.25 - (off / 2.6).powi(2) * 1.6);
+                }
+            }
+        }
+    }
+    h
+}
+
 /// Where the open sky's ground is said to be in the sky isles, far under everything: nothing's
 /// built there, see Column::under
 const SKY_VOID: f32 = -40.0;
@@ -2812,6 +2879,7 @@ fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     match land_of(seed) {
         Land::Sky => return sky_island(seed, x, y).map_or(SKY_VOID, |(top, _)| top),
         Land::Dream => return dream_height(seed, x, y),
+        Land::Water => return water_height(seed, sea_level_m(settings), x, y),
         _ => {}
     }
     let height_m = settings.height_m as f32;
@@ -2844,6 +2912,8 @@ pub fn climate(settings: &TerrainSettings, x: f32, y: f32) -> Climate {
         Land::Sky | Land::Dream => return Climate::default(),
         // The frozen realm's snow from end to end
         Land::Ice => return Climate { snow: 1.0, ..Climate::default() },
+        // The sunken reach's islands green, sandy at their shores
+        Land::Water => return Climate::default(),
         Land::Normal => {}
     }
     let heat = fbm(x / 900.0, y / 900.0, 3, seed.wrapping_add(31)) * 1.6;
@@ -4064,8 +4134,8 @@ impl Terrain {
         // grows there. No one lives in the dreaming realm: there are ruins and the dead there, but
         // no towns, castles or bandits.
         let land = land_of(seed);
-        let peopled = land != Land::Dream;
-        if land != Land::Sky {
+        let peopled = !matches!(land, Land::Dream | Land::Water);
+        if !matches!(land, Land::Sky | Land::Water) {
             // Buildings go first, as where they overlap other things they win. None stands over a
             // dungeon, whose halls go before the caves so no cave breaks into them.
             let dungeons = self.dungeons(rivers);
@@ -4302,6 +4372,52 @@ impl Terrain {
                         shapes.push(Shape::capsule(foot, add(foot, lean), rng.range(0.35, 0.7), 0.05, BONE, BONE, false));
                     }
                     Object::new(shapes, rng.0)
+                })
+            });
+        }
+        // The sunken reach's own: stacks of rock standing up out of the sea, the ruins of a city
+        // drowned long ago under the water, to be seen down through it, and pillars of it fallen
+        // across the shallows
+        if land == Land::Water {
+            scatter(58.0, 0x5eac, 9.0, &mut |x, y, ground, _, r| {
+                (ground < sea_level - 2.0 && unit(r) < 0.4).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let tall = sea_level - ground + rng.range(5.0, 15.0);
+                    let wide = rng.range(1.8, 3.4);
+                    let top = [x + rng.range(-1.0, 1.0), y + rng.range(-1.0, 1.0), ground + tall];
+                    let shapes = vec![
+                        Shape::capsule([x, y, ground - 1.0], top, wide, wide * 0.55, ROCK, STONE, true),
+                        Shape::sphere([top[0], top[1], top[2] + 0.2], wide * 0.5, GRASS, MOSS, true),
+                    ];
+                    Object::new(shapes, rng.0)
+                })
+            });
+            scatter(34.0, 0x5e1c, 8.0, &mut |x, y, ground, _, r| {
+                (ground < sea_level - 1.6 && ground > sea_level - 7.5 && unit(r) < 0.5).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let mut shapes = Vec::new();
+                    // A ring of columns, some broken off short, round a fallen one
+                    let turn = rng.range(0.0, TAU);
+                    let ring = rng.range(3.0, 5.0);
+                    for k in 0..6 {
+                        let a = turn + k as f32 * TAU / 6.0;
+                        let foot = [x + a.cos() * ring, y + a.sin() * ring, ground - 0.4];
+                        let tall = if rng.next() < 0.4 { rng.range(0.6, 1.6) } else { rng.range(2.5, 4.5) };
+                        shapes.push(Shape::capsule(foot, add(foot, [0.0, 0.0, tall]), 0.42, 0.38, LIMESTONE, TEMPLE_STONE, false));
+                    }
+                    let lie = [turn.cos() * 2.5, turn.sin() * 2.5, 0.0];
+                    shapes.push(Shape::capsule([x - lie[0], y - lie[1], ground + 0.2], [x + lie[0], y + lie[1], ground + 0.3], 0.45, 0.45, LIMESTONE, TEMPLE_STONE, false));
+                    Object::new(shapes, rng.0)
+                })
+            });
+            scatter(46.0, 0xfa11, 7.0, &mut |x, y, ground, _, r| {
+                (ground < sea_level - 0.4 && ground > sea_level - 3.5 && unit(r) < 0.35).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let a = rng.range(0.0, TAU);
+                    let half = rng.range(4.0, 6.0);
+                    let (dx, dy) = (a.cos() * half, a.sin() * half);
+                    let z = sea_level + 0.15;
+                    Object::new(vec![Shape::capsule([x - dx, y - dy, z], [x + dx, y + dy, z], 0.65, 0.6, LIMESTONE, TEMPLE_STONE, false)], rng.0)
                 })
             });
         }
