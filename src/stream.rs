@@ -1211,6 +1211,7 @@ impl App {
         let origin = teleport.origin;
         let pool = teleport.pool.clone();
         let started = teleport.job.started;
+        let built_with = teleport.job.bases;
         teleport.lighter = true;
         // A world of its own, all of it put in at once while nothing can be seen
         let mut world = World::window(self.world.size, stream.strip, origin, self.world.voxels_per_meter, self.world.sea_level);
@@ -1253,6 +1254,13 @@ impl App {
         stream.pieces = pieces;
         self.reset_accum = true;
         self.light_cache_for = None;
+        // What was built and dug while it was being built goes in now, see bases.rs
+        if self.bases.version > built_with {
+            let edits = self.bases.edits();
+            let (cells, filled) = crate::bases::apply_edits(&mut self.world, &edits, Some(built_with), None);
+            self.built_into(&filled);
+            self.send_edits(stream, cells, None);
+        }
         stream.stats.total_ms.push(started.elapsed().as_secs_f32() * 1000.0);
         std::thread::spawn(move || drop(strip));
     }

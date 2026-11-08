@@ -1003,6 +1003,57 @@ mod tests {
         assert_eq!(edits.iter().filter(|e| e.version > before).count(), 1);
     }
 
+    // What's built goes into the save of the world it's in and comes back out, and what's carried
+    // and the time of day into the game's, through the save's own versioned format; a save from
+    // before there were bases loads as nothing built
+    #[test]
+    fn bases_go_in_the_save() {
+        use crate::save::{self, Mode, Save, WorldSave};
+        let mut bases = Bases::new();
+        bases.materials = Materials::new(30, 12, 7);
+        bases.build(Kind::StoneWall, [10, 10, 5], 0).unwrap();
+        bases.build(Kind::Door, [11, 10, 5], 3).unwrap();
+        bases.build(Kind::Lantern, [12, 12, 5], 0).unwrap();
+        let door = bases.piece_at([11, 10, 5]).unwrap().id;
+        bases.toggle_door(door);
+        bases.damage(door, 20.0);
+        bases.clear_voxels([3, 3, 2], &[5, 6, 7]);
+        bases.nights_survived = 4;
+        let mut clock = crate::daynight::Clock::default();
+        clock.seconds = 1000.0;
+        clock.day = 6;
+
+        let mut world = WorldSave::default();
+        world.set_section(WORLD_SECTION, &bases.world_save());
+        let mut saved = Save { version: save::VERSION, mode: Mode::Realms, world: "normal".into(), ..Default::default() };
+        saved.worlds.insert("normal".into(), world);
+        saved.set_section(GAME_SECTION, &bases.game_save(clock));
+        let bytes = serde_json::to_vec(&saved).unwrap();
+
+        let back = save::parse(&bytes, Mode::Realms).unwrap();
+        let mut again = Bases::new();
+        again.load_world(back.worlds["normal"].section::<WorldBases>(WORLD_SECTION).unwrap());
+        let game = back.section::<GameBases>(GAME_SECTION).unwrap();
+        again.load_game(&game);
+        assert_eq!(again.pieces(), bases.pieces());
+        assert_eq!(again.materials, bases.materials);
+        assert_eq!(again.nights_survived, 4);
+        assert_eq!(game.clock, Some(clock));
+        let door_back = again.piece(door).unwrap();
+        assert!(door_back.open && door_back.health < Kind::Door.health());
+        assert_eq!(again.edits().len(), bases.edits().len());
+        // New pieces built after don't take the old ones' ids
+        again.build(Kind::Torch, [20, 20, 5], 0).unwrap();
+        assert!(again.pieces().iter().filter(|p| p.kind == Kind::Torch).all(|p| p.id > door));
+
+        // A save without them: nothing built, nothing carried
+        let mut old = Save { version: save::VERSION, mode: Mode::Realms, ..Default::default() };
+        old.worlds.insert("normal".into(), WorldSave::default());
+        let back = save::parse(&serde_json::to_vec(&old).unwrap(), Mode::Realms).unwrap();
+        assert!(back.worlds["normal"].section::<WorldBases>(WORLD_SECTION).is_none());
+        assert_eq!(back.section::<GameBases>(GAME_SECTION).unwrap_or_default().materials, Materials::default());
+    }
+
     // Empty bricks round what's built stop short of it, near and far
     #[test]
     fn skips_stop_short_of_what_is_built() {

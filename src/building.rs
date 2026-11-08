@@ -103,6 +103,10 @@ impl App {
     /// Reads the keys for gathering and building, called each frame while playing. Returns whether
     /// the mouse's buttons went to building, so they don't swing what's in hand too.
     pub(super) fn update_building(&mut self, dt: f64) -> bool {
+        // Not while the world's built afresh round the player, behind the dark
+        if self.held_still() {
+            return false;
+        }
         self.building.wait -= dt;
         self.building.since_blow += dt;
         if self.input.key_pressed(KeyCode::KeyB) {
@@ -691,7 +695,7 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 6] = ["chop", "mine", "hut", "away", "moon", "raid"];
+pub const SCRIPTS: [&str; 7] = ["chop", "mine", "hut", "away", "moon", "raid", "saved"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
@@ -818,6 +822,34 @@ impl App {
                 }
                 self.look_from(eye, eye + toward * 100.0 * vpm);
                 self.reset_accum = false;
+            }
+            // Going on from a save: once the world's built round the player, says what's built, what's
+            // carried and the time, whether every block of what's built is in the world, and takes
+            // a shot of it
+            ("saved", f) if f >= 30 && self.building.phase == 0 => {
+                let settled = !self.held_still() && self.stream.as_ref().is_none_or(|s| s.teleport.is_none());
+                if !settled {
+                    return;
+                }
+                let first = self.bases.pieces().first().map(|p| p.at);
+                println!(
+                    "frame {frame}: loaded {} pieces, carrying {:?}, {:.2} o'clock on day {}, the time {}, blocks missing {}",
+                    self.bases.pieces().len(),
+                    self.bases.materials,
+                    self.cycle.hour(),
+                    self.cycle.clock.day,
+                    if self.cycle.clock.running { "going on" } else { "held" },
+                    first.map_or(0, |at| self.missing_blocks(at))
+                );
+                if let Some(at) = first {
+                    self.look_at_hut(at, -1.0);
+                }
+                self.building.phase = 1;
+                self.building.mark = f;
+            }
+            ("saved", f) if self.building.phase == 1 && f == self.building.mark + 40 => {
+                self.shoot_soon("what was built, back from the save");
+                self.building.phase = 2;
             }
             // A raid on a hut with the player shut in it: the camera off to one side of its door,
             // a shot as it's first struck, once it's half broken, and as it gives way
