@@ -80,6 +80,18 @@ layout(set = 3, binding = 8) uniform View {
     mat4 pixelToRay;
     // Projects a world position into last frame's image: pixel = xy / z, with z the depth stored for it
     mat4 previousWorldToPixel;
+    // The day going round, see src\daynight.rs. pc.sun_direction is towards whichever of the sun
+    // and the moon lights the world; these are each of them for itself. Towards the sun, w unused.
+    vec4 sun;
+    // The sun's own light, 0 once it's set, w: how much the stars show
+    vec4 sunLight;
+    // Towards the moon, w: how bright its disc is
+    vec4 moon;
+    // The light the world's lit by, the sun's or the moon's, w: the moon's phase, radians round from
+    // new, PI full
+    vec4 keyLight;
+    // What the light bounced onto faces is kept relative to, see cacheAdd()
+    vec4 cacheLevel;
 } view;
 
 // No more than 128 bytes, see View
@@ -1019,30 +1031,86 @@ vec3 voxelPoint(Hit hit, vec3 local) {
     return hit.level == NEAR ? fromNear(p) : p;
 }
 
+// How much of the sky's daylight there is, by how high the sun is. Has to match daylight() in
+// src\daynight.rs.
 float daylight() {
-    return smoothstep(-0.1, 0.25, pc.sun_direction.z);
+    return smoothstep(-0.1, 0.25, view.sun.z);
 }
 
+// The light the world's lit by, towards pc.sun_direction: the sun's, golden low in the sky and
+// never quite white, or at night the moon's, dim and blue, see src\daynight.rs
 vec3 sunColor() {
-    float elevation = pc.sun_direction.z;
-    // Golden low in the sky, never quite white
-    vec3 color = mix(vec3(1.0, 0.45, 0.2), vec3(1.0, 0.9, 0.78), smoothstep(0.0, 0.65, elevation));
-    return color * 2.4 * smoothstep(-0.02, 0.06, elevation);
+    return view.keyLight.rgb;
 }
 
 vec3 skyColor(vec3 dir) {
     // A deep, saturated blue
     vec3 zenith = vec3(0.08, 0.3, 0.92);
-    // Warmer horizon around sunrise and sunset
-    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, pc.sun_direction.z));
+    // Warmer horizon around sunrise and sunset, glowing round where the sun's going down
+    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, view.sun.z));
     vec3 sky = mix(horizon, zenith, sqrt(clamp(dir.z, 0, 1)));
     sky = mix(sky, horizon * 0.4, clamp(-dir.z * 4.0, 0, 1));
-    return sky * mix(0.02, 1.0, daylight());
+    float low = 1 - smoothstep(0.0, 0.22, abs(view.sun.z + 0.02));
+    if (low > 0) {
+        vec2 across = dir.xy / max(length(dir.xy), 1e-4);
+        vec2 sun_across = view.sun.xy / max(length(view.sun.xy), 1e-4);
+        float toward = pow(max(dot(across, sun_across), 0), 3) * (1 - clamp(abs(dir.z) * 2.5, 0, 1));
+        sky += vec3(1.0, 0.42, 0.16) * toward * low * 0.7;
+    }
+    // The night sky, a little lighter round the moon. Has to match zenith() in src\daynight.rs.
+    vec3 night = mix(vec3(0.022, 0.028, 0.050), vec3(0.008, 0.014, 0.040), sqrt(clamp(dir.z, 0, 1)));
+    night = mix(night, night * 0.5, clamp(-dir.z * 4.0, 0, 1));
+    night += vec3(0.045, 0.055, 0.08) * view.moon.w * (0.5 - 0.5 * cos(view.keyLight.w)) * pow(max(dot(dir, view.moon.xyz), 0), 8);
+    float day = daylight();
+    return sky * day + night * (1 - day);
 }
 
+// The sun and the moon in the sky, and the stars, seen straight on or mirrored, not lighting
+// anything
 vec3 sunDisc(vec3 dir) {
-    float d = max(dot(dir, pc.sun_direction.xyz), 0);
-    return sunColor() * (pow(d, 2000.0) * 50.0 + pow(d, 12.0) * 0.15);
+    float d = max(dot(dir, view.sun.xyz), 0);
+    vec3 color = view.sunLight.rgb * (pow(d, 2000.0) * 50.0 + pow(d, 12.0) * 0.15);
+    if (view.moon.w > 0.001) {
+        // A pale disc far off, darker where its seas are, lit as much as its phase says, the rest
+        // of it just showing, with a soft glow round it as bright as it is
+        vec3 m = view.moon.xyz;
+        float c = dot(dir, m);
+        float phase = view.keyLight.w;
+        float lit_part = 0.5 - 0.5 * cos(phase);
+        // Much bigger than it'd really look, so it's there to see
+        const float MOON_RADIUS = 0.036;
+        if (c > cos(MOON_RADIUS)) {
+            vec3 helper = abs(m.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+            vec3 u = normalize(cross(helper, m));
+            vec3 v = cross(m, u);
+            vec2 p = vec2(dot(dir, u), dot(dir, v)) / MOON_RADIUS;
+            float seas = 0.28 * (1 - smoothstep(0.0, 0.45, length(p - vec2(0.25, 0.18))))
+                + 0.2 * (1 - smoothstep(0.0, 0.3, length(p - vec2(-0.3, -0.25))))
+                + 0.15 * (1 - smoothstep(0.0, 0.25, length(p - vec2(0.1, -0.45))));
+            float edge = smoothstep(1.0, 0.9, length(p));
+            // The sphere it is, lit from the side its phase says: from behind when new, from the
+            // front when full
+            vec3 n = vec3(p, sqrt(max(1 - dot(p, p), 0)));
+            vec3 light = vec3(sin(phase), 0, -cos(phase));
+            float day_side = smoothstep(-0.04, 0.08, dot(n, light));
+            color += vec3(0.95, 0.96, 1.0) * 1.6 * (1 - seas) * edge * view.moon.w * mix(0.035, 1.0, day_side);
+        }
+        color += vec3(0.5, 0.55, 0.7) * pow(max(c, 0), 300.0) * 0.25 * view.moon.w * lit_part;
+    }
+    if (view.sunLight.w > 0.001 && dir.z > 0.0) {
+        // Points on a fine grid round the sky, a few of its cells with one, twinkling a little
+        vec3 q = dir * 520.0;
+        vec3 cell = floor(q);
+        uint h = hash(uvec3(ivec3(cell) + 4096));
+        if ((h & 255u) < 7u) {
+            vec3 at = cell + 0.25 + 0.5 * vec3(h >> 8 & 15u, h >> 12 & 15u, h >> 16 & 15u) / 15.0;
+            float near = 1 - smoothstep(0.0, 0.32, length(q - at));
+            float bright = 0.25 + 0.75 * float(h >> 20 & 255u) / 255.0;
+            float twinkle = 0.8 + 0.2 * sin(pc.haze.y * (1.5 + float(h >> 28)) + float(h & 63u));
+            color += vec3(0.9, 0.93, 1.0) * near * bright * twinkle * 0.45 * view.sunLight.w * smoothstep(0.0, 0.15, dir.z);
+        }
+    }
+    return color;
 }
 
 // Cheap stand-in for light from the sky and the ground, used when bounce light is off
@@ -1457,10 +1525,11 @@ uint cacheEntry(Hit hit, bool make) {
     return NO_ENTRY;
 }
 
-// The light gathered at a cache entry so far, and how many samples went into it
+// The light gathered at a cache entry so far, and how many samples went into it. It's kept
+// relative to how bright the day is, see cacheAdd().
 vec3 cachedLight(uint e, out uint samples) {
     samples = cache[e + 4];
-    return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u));
+    return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u)) * view.cacheLevel.rgb;
 }
 
 // The shape of the surface round a face, which takes looking at the 26 voxels round it to work out
@@ -1479,9 +1548,11 @@ void unpackShape(uint shape, out vec3 normal, out float ao) {
 }
 
 // Adds a sample of bounced light to a cache entry. Once it has plenty, half of what it has is
-// forgotten, so newer light counts for more.
+// forgotten, so newer light counts for more. It's kept relative to view.cacheLevel, about how bright
+// everything lit by the sun and the sky is, so as the day goes round, what's gathered goes dimmer
+// and warmer with it, rather than having to be gathered again, see src\daynight.rs.
 void cacheAdd(uint e, vec3 light) {
-    uvec3 add = uvec3(clamp(light, vec3(0), vec3(16)) * CACHE_SCALE);
+    uvec3 add = uvec3(min(clamp(light, vec3(0), vec3(16)) / view.cacheLevel.rgb, vec3(64)) * CACHE_SCALE);
     atomicAdd(cache[e + 1], add.x);
     atomicAdd(cache[e + 2], add.y);
     atomicAdd(cache[e + 3], add.z);

@@ -81,6 +81,9 @@ const REFRESH_ROWS: u32 = 8;
 /// Past this many voxels from where the map was started, it's started again where the world is,
 /// so the numbers in it stay small enough to be exact
 const ANCHOR_REACH: i64 = 1 << 15;
+/// The most the sun can move on, in radians, for the map to be filled in again over what's there
+/// rather than started afresh
+const STEPPED: f64 = 0.05;
 /// How far shafts reach, in meters: as far as traverse.comp gathers the haze
 const REACH_M: f32 = 160.0;
 /// How much dust there is in the air for so much haze, where it shows, see march() in shafts.comp
@@ -242,6 +245,12 @@ impl Shafts {
             }
         });
         ui.add_enabled(self.quality != Quality::Off, egui::Slider::new(&mut self.strength, 0.0..=3.0).text("Sun Shaft Strength"));
+    }
+
+    /// The moon lights the world, not the sun, so there are no shafts in the air this frame
+    pub fn moonlit(&mut self) {
+        self.pending = None;
+        self.history = false;
     }
 
     /// Lets go of the half resolution images, and the image drawn into they hold on to, as when
@@ -425,7 +434,18 @@ impl Shafts {
             shafts.window = None;
             shafts.history = false;
         };
-        if self.map_key != Some(key) || far {
+        // The sun moving on a step with the day, see daynight.rs: where sunlight stops is much as it
+        // was, so it's filled in again over the next few frames rather than thrown away, which would
+        // light up all the air till it's done
+        let stepped = !far
+            && self.map_key.is_some_and(|old| {
+                let [a, b] = [old.sun, key.sun].map(|s| Vector3::new(f32::from_bits(s[0]), f32::from_bits(s[1]), f32::from_bits(s[2])).cast::<f64>());
+                old.voxels_per_meter == key.voxels_per_meter && a.dot(&b) > STEPPED.cos()
+            });
+        if self.map_key != Some(key) && stepped {
+            self.map_key = Some(key);
+            self.rebuild = Some(0);
+        } else if self.map_key != Some(key) || far {
             self.map_key = Some(key);
             self.anchor = frame.world_origin;
             afresh(self, builder);

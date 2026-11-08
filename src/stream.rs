@@ -160,6 +160,8 @@ struct Job {
     /// it's in
     craters: usize,
     stains: usize,
+    /// How far through Bases::version what's built and dug it's built with goes, see bases.rs
+    bases: u64,
 }
 
 enum FromJob {
@@ -188,6 +190,7 @@ struct Pending {
     started: Instant,
     craters: usize,
     stains: usize,
+    bases: u64,
     /// Whether all its layers are in
     done: bool,
     /// Whether it's only just arrived, this frame
@@ -204,6 +207,7 @@ struct Arrived {
     springs: Vec<[f32; 4]>,
     craters: usize,
     stains: usize,
+    bases: u64,
 }
 
 /// How strips have been coming in, for perf logs
@@ -476,6 +480,8 @@ struct JobInput {
     world_size: [u32; 2],
     craters: Vec<([f64; 3], f64)>,
     stains: Vec<([f64; 3], f64, u8, bool)>,
+    /// What's been built and dug, see bases.rs
+    edits: crate::bases::Edits,
     pool: Arc<Mutex<PagePool>>,
     staging: Arc<Staging>,
     /// How many columns there's room for each way, see World::phys, and whether there's water
@@ -488,7 +494,7 @@ struct JobInput {
 fn run_job(input: JobInput, to_main: Sender<FromJob>, from_main: Receiver<()>) {
     worldgen::give_way();
     let started = Instant::now();
-    let JobInput { settings, rivers, origin, size, next_corner, world_size, craters, stains, pool, staging, room, water } = input;
+    let JobInput { settings, rivers, origin, size, next_corner, world_size, craters, stains, edits, pool, staging, room, water } = input;
     let (terrain, mut world) = worldgen::generate_area(&settings, origin, size, &rivers);
     // The holes blown in the landscape are still there, and the stains splashed on it
     let vpm = world.voxels_per_meter as f64;
@@ -507,6 +513,11 @@ fn run_job(input: JobInput, to_main: Sender<FromJob>, from_main: Receiver<()>) {
             world.paint(p, radius * vpm, material, burn);
         }
     }
+    // And what's been built and dug, the empty bricks round what's built skipping no further than
+    // it: as far as they can, which for a strip is no further than its edges, see Strip::new()
+    let (_, filled) = crate::bases::apply_edits(&mut world, &edits, None, None);
+    let reach = (world.size[0].min(world.size[1]) as i64 / 16).clamp(1, world.size[2] as i64 / 8);
+    crate::bases::stop_skips(&mut world, &filled, reach);
     let features = terrain.piece_features();
     drop(terrain);
     let m = |v: i64| v as f32 / vpm as f32;
@@ -557,6 +568,7 @@ impl App {
             world_size: [self.world.size[0], self.world.size[1]],
             craters: self.craters.clone(),
             stains: self.stains.clone(),
+            edits: self.bases.edits(),
             pool,
             staging: stream.staging.clone(),
             room: self.world.phys,
@@ -575,7 +587,7 @@ impl App {
         let (to_job, from_main) = channel();
         std::thread::Builder::new().name("strip".into()).spawn(move || run_job(input, to_main, from_main)).unwrap();
         let base = [self.world.origin[0], self.world.origin[1]];
-        stream.job = Some(Job { axis, forward, base, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len() });
+        stream.job = Some(Job { axis, forward, base, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len(), bases: self.bases.version });
     }
 
     /// Room on the GPU for every page there is, `pages` of them: made now, before anything's sent
@@ -652,7 +664,7 @@ impl App {
                         // go of, and nothing's drawn there till the world moves on to it
                         self.water.take_strip(strip.origin, strip.size, &strip.ground, &strip.surface);
                         let installing = World::install(strip);
-                        stream.installing = Some(Pending { installing, features, springs, axis: job.axis, forward: job.forward, started: job.started, craters: job.craters, stains: job.stains, done: false, fresh: true });
+                        stream.installing = Some(Pending { installing, features, springs, axis: job.axis, forward: job.forward, started: job.started, craters: job.craters, stains: job.stains, bases: job.bases, done: false, fresh: true });
                     } else {
                         // Its pages go back, nothing drawn with them
                         stream.stats.discarded += 1;
@@ -718,11 +730,11 @@ impl App {
         {
             pending.done = true;
             if stream.uploads.is_empty() {
-                let Pending { installing, features, springs, axis, forward, started, craters, stains, .. } = stream.installing.take().unwrap();
+                let Pending { installing, features, springs, axis, forward, started, craters, stains, bases, .. } = stream.installing.take().unwrap();
                 let strip = installing.strip;
                 stream.stats.total_ms.push(started.elapsed().as_secs_f32() * 1000.0);
                 stream.stats.strips += 1;
-                self.scroll(&mut stream, axis, forward, Some(Arrived { origin: strip.origin, size: strip.size, features, springs, craters, stains }));
+                self.scroll(&mut stream, axis, forward, Some(Arrived { origin: strip.origin, size: strip.size, features, springs, craters, stains, bases }));
                 // Tens of megabytes of maps, let go of aside
                 std::thread::spawn(move || drop(strip));
             }
@@ -937,7 +949,7 @@ impl App {
     /// column to its second, over with the frame like the strip was: flush_edits() waits for the
     /// frames there are first, which held up the frame moving on by 10 to 16 ms. None of the frames
     /// still being drawn have the strip, and the bricks they go in are new.
-    fn send_edits(&mut self, stream: &mut Stream, mut cells: Vec<usize>, ground: Option<([i64; 2], [i64; 2])>) {
+    pub(super) fn send_edits(&mut self, stream: &mut Stream, mut cells: Vec<usize>, ground: Option<([i64; 2], [i64; 2])>) {
         cells.sort_unstable();
         cells.dedup();
         let host = |words: Vec<u32>| {
@@ -1032,7 +1044,7 @@ impl App {
         stream.slots[1 - axis].holds = None;
 
         let springs = match arrived {
-            Some(Arrived { origin: lo, size, features, springs, craters, stains }) => {
+            Some(Arrived { origin: lo, size, features, springs, craters, stains, bases }) => {
                 // Its water's surface is worked out to be drawn
                 let local = [0, 1].map(|i| (lo[i] - origin[i]).clamp(0, self.world.size[i] as i64) as u32);
                 let end = [0, 1].map(|i| (local[i] + size[i]).min(self.world.size[i]));
@@ -1072,6 +1084,13 @@ impl App {
                     if reaches(at, radius * vpm) {
                         cells.extend(self.world.paint_in(at.into(), radius * vpm, material, burn, Some((lo, hi))));
                     }
+                }
+                // And what was built and dug meanwhile, see bases.rs
+                if self.bases.version > bases {
+                    let edits = self.bases.edits();
+                    let (changed, filled) = crate::bases::apply_edits(&mut self.world, &edits, Some(bases), Some((lo, hi)));
+                    cells.extend(changed);
+                    self.built_into(&filled);
                 }
                 self.send_edits(stream, cells, ground);
                 springs
@@ -1135,7 +1154,7 @@ impl App {
         stream.staging.give_back(dropped);
         stream.stats.teleports += 1;
         println!("The world moves on all at once to {origin:?}, too far to keep up a strip at a time");
-        let job = Job { axis: 0, forward: true, base: origin, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len() };
+        let job = Job { axis: 0, forward: true, base: origin, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len(), bases: self.bases.version };
         // Dark at once if the camera's been taken out of the world, as there's nothing to see
         let outside = (0..2).any(|i| camera[i] < 0.0 || camera[i] >= self.world.size[i] as f64);
         stream.teleport = Some(Teleport { job, pool, origin, arrival: None, dark: if outside { 1.0 } else { 0.0 }, lighter: false, last: Instant::now() });
@@ -1209,6 +1228,7 @@ impl App {
         let origin = teleport.origin;
         let pool = teleport.pool.clone();
         let started = teleport.job.started;
+        let built_with = teleport.job.bases;
         teleport.lighter = true;
         // A world of its own, all of it put in at once while nothing can be seen
         let mut world = World::window(self.world.size, stream.strip, origin, self.world.voxels_per_meter, self.world.sea_level);
@@ -1251,6 +1271,13 @@ impl App {
         stream.pieces = pieces;
         self.reset_accum = true;
         self.light_cache_for = None;
+        // What was built and dug while it was being built goes in now, see bases.rs
+        if self.bases.version > built_with {
+            let edits = self.bases.edits();
+            let (cells, filled) = crate::bases::apply_edits(&mut self.world, &edits, Some(built_with), None);
+            self.built_into(&filled);
+            self.send_edits(stream, cells, None);
+        }
         stream.stats.total_ms.push(started.elapsed().as_secs_f32() * 1000.0);
         std::thread::spawn(move || drop(strip));
     }

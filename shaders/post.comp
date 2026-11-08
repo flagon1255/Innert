@@ -33,6 +33,11 @@ layout(push_constant) uniform PushConstants {
     uint step; // Spacing between the denoiser's samples, it doubles every pass
     uint flags;
     float bloom; // Strength
+    // How much brighter it's shown: more at night, as eyes get used to the dark, see
+    // src\daynight.rs
+    float exposure;
+    // How much of the color goes at night, 0 by day to 1, as eyes see color less in the dark
+    float night;
 } pc;
 
 // Linear light, the color divided by guideImage's, with alpha being how many frames were averaged
@@ -159,7 +164,10 @@ void tonemap(ivec2 p) {
     color += sampleBloom(p) * pc.bloom;
 
     color = max(mix(vec3(luminance(color)), color, RICHNESS), 0);
-    vec3 mapped = aces(color * EXPOSURE);
+    // Greyer and bluer by night, but for what's brightly lit, like round a torch
+    float lit = smoothstep(0.08, 0.5, luminance(color));
+    color = mix(color, luminance(color) * vec3(0.78, 0.9, 1.25), pc.night * 0.55 * (1 - lit));
+    vec3 mapped = aces(color * EXPOSURE * pc.exposure);
     mapped = clamp(mix(vec3(luminance(mapped)), mapped, SATURATION), 0, 1);
 
     if ((pc.flags & POST_GRADE) != 0) {

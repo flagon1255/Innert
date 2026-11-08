@@ -204,6 +204,19 @@ pub enum Sound {
     Thorns,
     /// Coins: gold picked up, paid or taken
     Coins,
+    /// An axe biting into a trunk, a pick on rock, and a spade into earth or clay, see gather.rs
+    Chop,
+    Mine,
+    Dig,
+    /// A tree coming down: its wood groaning, then crashing apart
+    Timber,
+    /// A block set in place, or taken down, see bases.rs
+    Place,
+    DoorOpen,
+    DoorClose,
+    /// Something beating on a door, and a door giving way, splitting into pieces
+    Bang,
+    Splinter,
     /// The wind blowing all around, looped, see Audio::ambience()
     Wind,
     /// Water lapping nearby, looped, see Audio::ambience()
@@ -900,6 +913,29 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Bird, include_bytes!("../assets/sounds/bird_8.ogg"), 0.91),
     (Sound::Wind, include_bytes!("../assets/sounds/wind_1.ogg"), 0.77),
     (Sound::Water, include_bytes!("../assets/sounds/water_1.ogg"), 2.42),
+    (Sound::Chop, include_bytes!("../assets/sounds/chop_1.ogg"), 3.34),
+    (Sound::Chop, include_bytes!("../assets/sounds/chop_2.ogg"), 2.93),
+    (Sound::Chop, include_bytes!("../assets/sounds/chop_3.ogg"), 3.33),
+    (Sound::Mine, include_bytes!("../assets/sounds/mine_1.ogg"), 2.10),
+    (Sound::Mine, include_bytes!("../assets/sounds/mine_2.ogg"), 3.73),
+    (Sound::Mine, include_bytes!("../assets/sounds/mine_3.ogg"), 2.82),
+    (Sound::Dig, include_bytes!("../assets/sounds/dig_1.ogg"), 1.95),
+    (Sound::Dig, include_bytes!("../assets/sounds/dig_2.ogg"), 1.50),
+    (Sound::Timber, include_bytes!("../assets/sounds/timber_1.ogg"), 1.23),
+    (Sound::Timber, include_bytes!("../assets/sounds/timber_2.ogg"), 1.32),
+    (Sound::Place, include_bytes!("../assets/sounds/place_1.ogg"), 2.86),
+    (Sound::Place, include_bytes!("../assets/sounds/place_2.ogg"), 3.80),
+    (Sound::Place, include_bytes!("../assets/sounds/place_3.ogg"), 2.43),
+    (Sound::DoorOpen, include_bytes!("../assets/sounds/door_open_1.ogg"), 2.23),
+    (Sound::DoorOpen, include_bytes!("../assets/sounds/door_open_2.ogg"), 2.74),
+    (Sound::DoorClose, include_bytes!("../assets/sounds/door_close_1.ogg"), 1.29),
+    (Sound::DoorClose, include_bytes!("../assets/sounds/door_close_2.ogg"), 1.34),
+    (Sound::DoorClose, include_bytes!("../assets/sounds/door_close_3.ogg"), 1.97),
+    (Sound::Bang, include_bytes!("../assets/sounds/bang_1.ogg"), 2.54),
+    (Sound::Bang, include_bytes!("../assets/sounds/bang_2.ogg"), 3.22),
+    (Sound::Bang, include_bytes!("../assets/sounds/bang_3.ogg"), 2.54),
+    (Sound::Splinter, include_bytes!("../assets/sounds/splinter_1.ogg"), 1.42),
+    (Sound::Splinter, include_bytes!("../assets/sounds/splinter_2.ogg"), 1.91),
 ];
 
 #[cfg(test)]
@@ -914,6 +950,7 @@ mod tests {
             Whistle, Claw, Web, Creak, Crack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Gunshot, Release, Ratchet, Latch, Powder, Ram, Cock,
             Ricochet, Beam, Toll, Summon, Hex, Snap, Volley, Harpoon, Taut, Brace, Reel, Net, Chain, Chitter, Wail, Croak, Screech, Snort, Whirr, Slam, Fuse, Zap, Thunder,
             Gale, Buzz, Bubble, Billow, Shing, Chime, Rocket, Rush, Lasso, Squeeze, Boom, Slither, Sear, Swoop, Thorns, Coins, Wind, Water,
+            Chop, Mine, Dig, Timber, Place, DoorOpen, DoorClose, Bang, Splinter,
         ];
         all.extend((0..9).map(Cast));
         all.extend([Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water].map(Step));

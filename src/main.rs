@@ -65,20 +65,26 @@ use winit_input_helper::WinitInputHelper;
 
 mod animals;
 mod audio;
+mod bases;
+mod building;
 mod bosses;
 mod camera;
 mod combat;
+mod daynight;
 mod effects;
 mod game;
+mod gather;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
 mod limits;
 mod loading;
 mod memory;
+mod night;
 mod perf;
 mod player;
 mod quality;
+mod raids;
 mod realms;
 mod rope;
 mod save;
@@ -124,6 +130,9 @@ const STILL_HISTORY: u32 = 4096;
 const MOVING_HISTORY: u32 = 12;
 // While animals are about even a still view keeps changing, as their shadows move over the ground
 const ANIMATED_HISTORY: u32 = 32;
+// Frames a pixel keeps averaging as the sun moves on a step with the day, see daynight.rs: the light
+// changes only a little, so what was there is let go of over a few frames
+const SUN_STEP_HISTORY: u32 = 6;
 
 // Has to match the FLAG_* constants in shaders\traverse.comp
 const FLAG_SHADOWS: u32 = 1;
@@ -748,6 +757,30 @@ struct View {
     pixel_to_ray: Matrix4<f32>,
     /// World to last frame's rendered pixel
     previous_world_to_pixel: Matrix4<f32>,
+    /// The day going round, see daynight::Sky: towards the sun, its light and how much the stars
+    /// show, towards the moon and how bright it is, the light the world's lit by, and what the light
+    /// cache keeps light relative to. Only traverse.comp reads these.
+    sun: [f32; 4],
+    sun_light: [f32; 4],
+    moon: [f32; 4],
+    key_light: [f32; 4],
+    cache_level: [f32; 4],
+}
+
+impl View {
+    fn new(pixel_to_ray: Matrix4<f32>, previous_world_to_pixel: Matrix4<f32>, sky: &daynight::Sky) -> Self {
+        let v = |v: Vector3<f64>, w: f64| [v.x as f32, v.y as f32, v.z as f32, w as f32];
+        let c = |c: [f64; 3], w: f64| [c[0] as f32, c[1] as f32, c[2] as f32, w as f32];
+        View {
+            pixel_to_ray,
+            previous_world_to_pixel,
+            sun: v(sky.sun, 0.0),
+            sun_light: c(sky.sun_light, sky.stars),
+            moon: v(sky.moon, sky.moon_shine),
+            key_light: c(sky.key_light, sky.moon_phase),
+            cache_level: c(sky.cache_level, 0.0),
+        }
+    }
 }
 
 /// The top three rows of `m`, whose last is 0, 0, 0, 1, as upscale.comp takes them
@@ -780,6 +813,9 @@ struct PostConstants {
     step: u32,
     flags: u32,
     bloom: f32,
+    /// How much brighter it's shown, and how much of the color goes at night, see daynight::Sky
+    exposure: f32,
+    night: f32,
 }
 
 // Runs one of post.comp's stages over an image of the given size
@@ -1165,6 +1201,14 @@ struct App {
     water_pipeline: HotReloadComputePipeline,
     /// Works out again how far empty bricks skip where strips join the world, see skips.rs
     skips_pipeline: HotReloadComputePipeline,
+    /// Makes empty bricks round what's just been built skip no further than it, see building.rs
+    builds_pipeline: HotReloadComputePipeline,
+    /// What's been built and dug, and what's carried to build with, see bases.rs, and the building
+    /// and gathering going on, see building.rs
+    bases: bases::Bases,
+    building: building::Building,
+    /// The night's raid, see night.rs
+    raid: night::Raid,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
     sun_map: Arc<ImageView>,
@@ -1212,6 +1256,10 @@ struct App {
 
     sun_azimuth: f32,
     sun_elevation: f32,
+    /// The day going round, see daynight.rs, unless the sun's held where `sun_azimuth` and
+    /// `sun_elevation` put it, as `--set sun_azimuth=` and the like do and the settings can
+    cycle: daynight::DayNight,
+    fixed_sun: bool,
     shadows: bool,
     ambient_occlusion: bool,
     bounce_light: bool,
@@ -1257,7 +1305,10 @@ struct App {
     // Light bounced onto each voxel face, gathered over frames, see LightCache in traverse.comp
     light_cache: Subbuffer<[u32]>,
     // What the light in it was gathered for. When that changes it's thrown away.
-    light_cache_for: Option<([f32; 4], u32)>,
+    light_cache_for: Option<(u64, u32)>,
+    /// Which sun the frames were last drawn under, see sky_epoch in render(): a step of the sun
+    /// with the day keeps it
+    sky_epoch: u64,
     // For things that move on their own, like waterfalls
     start_time: Instant,
     // Flowing water, simulated on the GPU
@@ -1671,12 +1722,13 @@ struct Pipelines {
     water: HotReloadComputePipeline,
     shafts: HotReloadComputePipeline,
     skips: HotReloadComputePipeline,
+    builds: HotReloadComputePipeline,
 }
 
 impl Pipelines {
     // Read from where they are while working on them, so they reload when changed. Copies are
     // built in for running elsewhere.
-    const SHADERS: [(&str, &str); 7] = [
+    const SHADERS: [(&str, &str); 8] = [
         ("traverse.comp", include_str!("../shaders/traverse.comp")),
         ("post.comp", include_str!("../shaders/post.comp")),
         ("resample.comp", include_str!("../shaders/resample.comp")),
@@ -1684,6 +1736,7 @@ impl Pipelines {
         ("water.comp", include_str!("../shaders/water.comp")),
         ("shafts.comp", include_str!("../shaders/shafts.comp")),
         ("skips.comp", include_str!("../shaders/skips.comp")),
+        ("builds.comp", include_str!("../shaders/builds.comp")),
     ];
 
     fn path(name: &str) -> PathBuf {
@@ -1702,7 +1755,7 @@ impl Pipelines {
             let device = device.clone();
             std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
         });
-        let [render, post, resample, upscale, water, shafts, skips] = making;
+        let [render, post, resample, upscale, water, shafts, skips, builds] = making;
         Some(Pipelines {
             render: render.join().ok()?,
             post: post.join().ok()?,
@@ -1711,6 +1764,7 @@ impl Pipelines {
             water: water.join().ok()?,
             shafts: shafts.join().ok()?,
             skips: skips.join().ok()?,
+            builds: builds.join().ok()?,
         })
     }
 }
@@ -2212,7 +2266,7 @@ impl App {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
-        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline } = pipelines;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline, builds: builds_pipeline } = pipelines;
         let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory } = placed;
         let stream = scene.is_terrain().then(|| stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, memory_allocator.clone()));
         // The water has what it needs of it now
@@ -2422,6 +2476,10 @@ impl App {
             upscale_pipeline,
             water_pipeline,
             skips_pipeline,
+            builds_pipeline,
+            bases: bases::Bases::new(),
+            building: building::Building::default(),
+            raid: night::Raid::default(),
 
             sun_map,
             sun_map_for: None,
@@ -2460,6 +2518,21 @@ impl App {
             // haze, so the voxels read crisply. Grass is made of voxels rather than triangles.
             sun_azimuth: setting("sun_azimuth").and_then(|v| v.parse().ok()).unwrap_or(150.0),
             sun_elevation: setting("sun_elevation").and_then(|v| v.parse().ok()).unwrap_or(38.0),
+            // `--set time=21.5` starts at that hour, `--set day_cycle=0` holds the sun still where
+            // it is then, and setting where the sun is holds it there
+            cycle: {
+                let mut cycle = daynight::DayNight::new(daynight::Clock::default());
+                // `--set day=3` for the fourth day, and its moon
+                if let Some(day) = setting("day").and_then(|v| v.parse::<u32>().ok()) {
+                    cycle.clock.day = day;
+                }
+                if let Some(hour) = setting("time").and_then(|v| v.parse::<f64>().ok()) {
+                    cycle.set_hour(hour);
+                }
+                cycle.clock.running = flag("day_cycle", true);
+                cycle
+            },
+            fixed_sun: ["sun_azimuth", "sun_elevation", "sun_ahead"].iter().any(|k| setting(k).is_some()),
             shadows: flag("shadows", preset.shadows),
             ambient_occlusion: flag("ao", preset.ambient_occlusion),
             bounce_light: flag("bounce", preset.bounce_light),
@@ -2492,6 +2565,7 @@ impl App {
             instance_allocator,
             light_cache,
             light_cache_for: None,
+            sky_epoch: 0,
             start_time: Instant::now(),
             water,
             last_frame: Instant::now(),
@@ -3044,10 +3118,36 @@ impl App {
         // Windier high up
         let height = (eye.z - self.world.sea_level.unwrap_or(0.0) as f64) / vpm;
         let wind = 0.45 + 0.55 * ((height - 15.0) / 30.0).clamp(0.0, 1.0);
-        let birds = outdoors && self.sun_elevation > 5.0 && self.game.leaves_falling() > 4;
+        let birds = outdoors && self.sky().sun.z > 0.09 && self.game.leaves_falling() > 4;
         let quiet = if outdoors { 1.0 } else { 0.35 };
         if let Some(sound) = &mut self.audio {
             sound.ambience(wind as f32 * quiet, ((wet / all) as f32 * 1.6).min(1.0) * quiet, birds, &view, dt);
+        }
+    }
+
+    /// The sky as it's drawn now: going round with the day, or held where the settings put the sun
+    fn sky(&self) -> daynight::Sky {
+        if self.fixed_sun { daynight::DayNight::fixed_sky(self.sun_azimuth as f64, self.sun_elevation as f64) } else { self.cycle.sky() }
+    }
+
+    /// The day's turned to `part`: the dusk's warned of with a bell, as the monsters will come
+    /// once it's dark, see raids.rs
+    fn day_turned(&mut self, part: daynight::Part) {
+        let message = match part {
+            daynight::Part::Dusk => "The sun's going down. Monsters come out at night: get behind walls.",
+            daynight::Part::Night => "Night has fallen.",
+            daynight::Part::Dawn => "Dawn breaks.",
+            daynight::Part::Day => return,
+        };
+        self.game.say(message);
+        if matches!(part, daynight::Part::Dusk | daynight::Part::Dawn) {
+            let view = self.view();
+            if let Some(sound) = &mut self.audio {
+                sound.play(audio::Cue::here(audio::Sound::Toll, if part == daynight::Part::Dusk { 0.55 } else { 0.35 }).pitched(if part == daynight::Part::Dusk { 0.85 } else { 1.1 }), &view);
+            }
+        }
+        if let Some(capture) = &self.capture {
+            println!("DAY TURNED to {part:?} at frame {}, {:.2} o'clock", capture.frame_times.len(), self.cycle.hour());
         }
     }
 
@@ -3574,7 +3674,8 @@ impl App {
     fn view_tree(&mut self, foot: Vector3<f64>, height: f64, reach: f64, distance: f64) {
         let vpm = self.world.voxels_per_meter as f64;
         let target = foot + Vector3::new(0.0, 0.0, height * 0.5 * vpm);
-        let sun = (self.sun_azimuth as f64).to_radians();
+        let key = self.sky().key;
+        let sun = key.y.atan2(key.x);
         let mut best = (usize::MAX, target);
         for turn in 0..12 {
             // Starting from the side the sun's on, so it's lit
@@ -3676,9 +3777,13 @@ impl App {
         if playing && !self.focused && !self.inventory_open && !self.game.shopping() && !self.session.gate_open && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
         } else if playing && self.focused && !self.game.dead() {
+            // Gathering with G, and building with B, which takes the mouse and the keys for picking
+            // what to build, see building.rs
+            let building = self.loaded_scene.is_terrain() && self.update_building(delta_time);
             let bucket = self.game.holding_bucket() && !self.game.has_target();
-            let armed = self.game.holding_weapon();
-            if armed {
+            let armed = self.game.holding_weapon() && !building;
+            if building {
+            } else if armed {
                 controls = combat::Controls {
                     attack: self.input.mouse_pressed(MouseButton::Left),
                     holding: self.input.mouse_held(MouseButton::Left),
@@ -3699,14 +3804,17 @@ impl App {
             if self.input.key_pressed(KeyCode::KeyT) {
                 self.game.switch_ammo();
             }
-            if self.input.key_pressed(KeyCode::KeyE) {
+            // Building, E mends what's damaged
+            if self.input.key_pressed(KeyCode::KeyE) && building {
+                self.mend_here();
+            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
                 if self.game.shopping() {
                     self.set_focus(false);
                 }
             }
-            if self.input.mouse_pressed(MouseButton::Right) && !armed {
+            if self.input.mouse_pressed(MouseButton::Right) && !armed && !building {
                 if self.game.holding_bucket() {
                     self.pour_water(eye, look);
                 } else {
@@ -3717,12 +3825,12 @@ impl App {
                 KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5,
                 KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
             ];
-            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)) {
+            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)).filter(|_| !building) {
                 self.game.select(slot);
             }
             // On foot the wheel goes through what's carried, flying it zooms
             let wheel = self.input.scroll_diff().1;
-            if self.focused && self.player.is_some() && wheel != 0.0 {
+            if self.focused && self.player.is_some() && wheel != 0.0 && !building {
                 self.game.scroll(if wheel < 0.0 { 1 } else { -1 });
             }
         }
@@ -3735,6 +3843,10 @@ impl App {
             let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // Monsters coming at night, and what's built taking their blows, see night.rs
+            let start = Instant::now();
+            self.update_raid(delta_time.min(0.1));
+            self.slow("the night's raid", start);
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -3748,14 +3860,19 @@ impl App {
             // Explosions blowing holes in the world, and splashing stains on it, sent to the GPU
             // all together
             self.batching = true;
+            let mut struck = Vec::new();
             for (center, radius) in self.game.take_craters() {
                 self.blast(center, radius);
+                struck.push((center, radius, true));
             }
             let start = Instant::now();
             for (center, radius, material, burn) in self.game.take_stains() {
                 self.stain(center, radius, material, burn);
+                struck.push((center, radius, false));
             }
             self.slow("splashing stains", start);
+            // What's built is damaged by blasts rather than holed, see building.rs
+            self.blasted(&struck);
             self.batching = false;
             let start = Instant::now();
             self.flush_edits();
@@ -3800,6 +3917,16 @@ impl App {
             }
         }
         self.ambience(delta_time);
+
+        // The day goes round, except while the menu holds the world still
+        if !self.menu_open && self.loaded_scene.is_terrain() && !self.fixed_sun {
+            // `--set day_speed=30` goes round that much faster, to see the sun moving costs nothing
+            static DAY_SPEED: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+            let speed = *DAY_SPEED.get_or_init(|| settings_from_args().into_iter().find(|(k, _)| k == "day_speed").and_then(|(_, v)| v.parse().ok()).unwrap_or(1.0));
+            if let Some(part) = self.cycle.advance(delta_time.min(0.25) * speed) {
+                self.day_turned(part);
+            }
+        }
 
         if playing && self.input.key_pressed(KeyCode::KeyF) {
             self.player = match self.player {
@@ -3919,6 +4046,7 @@ impl App {
             }
         }
 
+        let sky_key = self.sky().key;
         let view = [
             self.camera.position.x,
             self.camera.position.y,
@@ -3927,8 +4055,8 @@ impl App {
             self.camera.rotation.y,
             self.camera.rotation.z,
             self.camera.fov,
-            self.sun_azimuth as f64,
-            self.sun_elevation as f64,
+            sky_key.x + 2.0 * sky_key.z,
+            sky_key.y,
             self.shadows as u8 as f64,
             self.ambient_occlusion as u8 as f64,
             self.bounce_light as u8 as f64,
@@ -4391,6 +4519,7 @@ impl App {
                 self.camera.position = voxels_to_camera(moved, self.world.size);
                 println!("frame {frame}: hopped {side} m");
             }
+            (name, f) if building::SCRIPTS.contains(&name) => self.bases_script(name, f),
             _ => {}
         }
         if let Some(player) = &self.player
@@ -4684,6 +4813,7 @@ impl App {
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
         self.skips_pipeline.maybe_reload();
+        self.builds_pipeline.maybe_reload();
         if let Some(preset) = self.pending_quality.take() {
             self.apply_quality(preset);
             quality::keep(preset);
@@ -4700,6 +4830,10 @@ impl App {
         // they're gliding
         let fallen = self.fall_dark();
         let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
+        // The torches and lamps built, and where what's picked to build would go, see building.rs
+        let base_lights = building::base_lights(&self.bases, &self.world);
+        let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        let raid_note = self.raid_note();
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4867,6 +5001,7 @@ impl App {
                                              Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Number keys pick what's in hand · I inventory\n\
+                                             G gather wood, stone, clay · B build · E opens doors\n\
                                              F1 settings · Esc menu",
                                         )
                                         .size(13.0)
@@ -4879,6 +5014,11 @@ impl App {
 
             if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
+                if !self.fixed_sun {
+                    self.cycle.hud(&ctx, raid_note.as_deref());
+                }
+                night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
+                building::hud(&self.building, &self.bases, ghost.as_ref(), &self.world, &ctx, &view);
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
@@ -4943,8 +5083,18 @@ impl App {
                 egui::CollapsingHeader::new("Lighting")
                     .default_open(true)
                     .show(ui, |ui| {
-                        ui.add(egui::Slider::new(&mut self.sun_azimuth, 0.0..=360.0).text("Sun Azimuth"));
-                        ui.add(egui::Slider::new(&mut self.sun_elevation, -10.0..=90.0).text("Sun Elevation"));
+                        // The day going round, or the sun held where the sliders put it
+                        ui.checkbox(&mut self.fixed_sun, "Hold the Sun Still");
+                        if self.fixed_sun {
+                            ui.add(egui::Slider::new(&mut self.sun_azimuth, 0.0..=360.0).text("Sun Azimuth"));
+                            ui.add(egui::Slider::new(&mut self.sun_elevation, -10.0..=90.0).text("Sun Elevation"));
+                        } else {
+                            let mut hour = self.cycle.hour();
+                            if ui.add(egui::Slider::new(&mut hour, 0.0..=23.99).text("Time of Day")).changed() {
+                                self.cycle.set_hour(hour);
+                            }
+                            ui.checkbox(&mut self.cycle.clock.running, "Day Goes Round");
+                        }
                         ui.checkbox(&mut self.shadows, "Shadows");
                         ui.checkbox(&mut self.ambient_occlusion, "Ambient Occlusion");
                         ui.checkbox(&mut self.bounce_light, "Bounce Light");
@@ -5134,13 +5284,16 @@ impl App {
         scale_and_center.set_column(3, &(0.5 * size).push(1.0));
         let pixel_to_ray = scale_and_center * pixel_to_ray;
 
-        let (azimuth, elevation) = (self.sun_azimuth.to_radians(), self.sun_elevation.to_radians());
-        let sun_direction = [
-            elevation.cos() * azimuth.cos(),
-            elevation.cos() * azimuth.sin(),
-            elevation.sin(),
-            self.world.sea_level.unwrap_or(0.0),
-        ];
+        // Towards whichever of the sun and the moon lights the world, see daynight.rs
+        let sky = if self.fixed_sun { daynight::DayNight::fixed_sky(self.sun_azimuth as f64, self.sun_elevation as f64) } else { self.cycle.sky() };
+        let sun_direction = [sky.key.x as f32, sky.key.y as f32, sky.key.z as f32, self.world.sea_level.unwrap_or(0.0)];
+        // Changes when the sun's put somewhere else rather than moving on a step with the day, for
+        // the light kept for it to be thrown away
+        let sky_epoch = if self.fixed_sun {
+            1 << 32 | (sun_direction[0].to_bits() ^ sun_direction[1].to_bits().rotate_left(11) ^ sun_direction[2].to_bits().rotate_left(22)) as u64
+        } else {
+            self.cycle.jumps as u64
+        };
 
         let mut flags = 0;
         if self.shadows {
@@ -5152,12 +5305,13 @@ impl App {
         if self.bounce_light {
             flags |= FLAG_GI;
         }
-        // Sun shafts on High do the sunbeams' job better
-        let sunbeams = self.sunbeams && !self.shafts.in_the_haze();
+        // Sun shafts on High do the sunbeams' job better. By moonlight there are none.
+        let shafts = self.shafts.in_the_haze() && !sky.moonlit;
+        let sunbeams = self.sunbeams && !shafts;
         if sunbeams {
             flags |= FLAG_SUNBEAMS;
         }
-        if self.shafts.in_the_haze() {
+        if shafts {
             flags |= FLAG_SHAFTS;
         }
         if self.grass && self.world.grass.is_some() {
@@ -5219,6 +5373,7 @@ impl App {
         let mut lights: Vec<(f32, [f32; 8])> = self
             .lights
             .iter()
+            .chain(base_lights.iter())
             .map(|l| ((Vector3::new(l[0], l[1], l[2]) - camera_voxels).norm() - l[3], *l))
             .filter(|(d, _)| *d < 0.0)
             .collect();
@@ -5234,7 +5389,7 @@ impl App {
             .as_ref()
             .map_or(Matrix4::identity(), |last| world_to_pixel(&last.pixel_to_ray.cast()));
         let view_buffer = self.instance_allocator.allocate_sized::<View>().unwrap();
-        *view_buffer.write().unwrap() = View { pixel_to_ray: pixel_to_ray.cast(), previous_world_to_pixel: previous_world_to_pixel.cast() };
+        *view_buffer.write().unwrap() = View::new(pixel_to_ray.cast(), previous_world_to_pixel.cast(), &sky);
 
         let animal_set = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
@@ -5266,14 +5421,18 @@ impl App {
             flags,
             haze: self.haze,
         };
-        // Last frame can be reprojected onto this one as long as only the camera moved
+        // Last frame can be reprojected onto this one as long as only the camera moved. The sun moving
+        // on a step, see daynight.rs, only changes the light a little: what was there is let go of
+        // over a few frames rather than all at once.
         let history_limit = match &self.last_view {
             _ if self.reset_accum => 0,
             Some(last) if *last == view && !instances.is_empty() => ANIMATED_HISTORY,
             Some(last) if *last == view => STILL_HISTORY,
             Some(last) if (last.sun_direction, last.render_mode, last.flags, last.haze) == (view.sun_direction, view.render_mode, view.flags, view.haze) => MOVING_HISTORY,
+            Some(last) if (last.render_mode, last.flags, last.haze) == (view.render_mode, view.flags, view.haze) && self.sky_epoch == sky_epoch => SUN_STEP_HISTORY,
             _ => 0,
         };
+        self.sky_epoch = sky_epoch;
         self.reset_accum = false;
         self.accum_count = if history_limit == STILL_HISTORY || history_limit == ANIMATED_HISTORY {
             (self.accum_count + 1).min(history_limit)
@@ -5321,8 +5480,9 @@ impl App {
             // World::wrap
             window: [self.world.origin[0] as i32, self.world.origin[1] as i32, self.world.wrap[0] as i32, self.world.wrap[1] as i32],
         };
-        // Light gathered under another sun, or in another world, is no good
-        let cache_for = (sun_direction, self.terrain.seed);
+        // Light gathered under another sun, or in another world, is no good. The sun moving on with
+        // the day only nudges it along, see daynight.rs.
+        let cache_for = (sky_epoch, self.terrain.seed);
         let clear_light_cache = self.light_cache_for != Some(cache_for);
         self.light_cache_for = Some(cache_for);
         let parity = (self.frame % 2) as usize;
@@ -5375,6 +5535,9 @@ impl App {
             stream.record_uploads(&mut builder, &self.voxel_set, &self.water, self.frame, self.frame_ms);
             stream.skips.record(&mut builder, &self.skips_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator);
         }
+        // Empty bricks round what's just been built skip no further than it, see building.rs
+        let busy = self.stream.as_ref().is_some_and(|s| s.skips.busy());
+        building::record_reskips(&mut self.building, &mut builder, &self.builds_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator, &self.world, busy);
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "strips");
         }
@@ -5432,7 +5595,9 @@ impl App {
             timer.mark(&mut builder, "trace");
         }
 
-        if shaded {
+        if shaded && sky.moonlit {
+            self.shafts.moonlit();
+        } else if shaded {
             let images = &rcx.images;
             let frame = shafts::Frame {
                 pixel_to_ray: pixel_to_ray.cast(),
@@ -5463,6 +5628,8 @@ impl App {
                 step,
                 flags: post_flags,
                 bloom: self.bloom,
+                exposure: sky.exposure as f32,
+                night: sky.night as f32,
             };
             for (i, set) in images.denoise_sets[parity].iter().enumerate() {
                 let step = 1 << i;

@@ -1193,6 +1193,14 @@ impl World {
         self.store(dirty)
     }
 
+    /// Puts `materials` in brick `b`, counted from the world's first, which has to be in it: for
+    /// what's built and dug, see src\bases.rs. Returns its cell.
+    pub fn set_brick(&mut self, b: [i64; 3], materials: &[u8; BRICK_VOXELS]) -> usize {
+        let cell = self.cell(b);
+        self.store(vec![(cell, *materials)]);
+        cell
+    }
+
     /// The words of the stored brick in `cell`, if it's a stored brick
     pub fn brick_words(&self, cell: usize) -> Option<(usize, &[u32])> {
         let value = self.brick_grid[cell];
@@ -3526,8 +3534,12 @@ impl Terrain {
         } else {
             GRASS
         };
+        // Clay in patches in the shallows at the edges of rivers, and along the shores of lakes and
+        // the sea, just above the water and under it: for building with, see src\bases.rs
+        let wet_edge = (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
+        let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
         let below = match top {
-            SAND | STONE | GRAVEL => top,
+            SAND | STONE | GRAVEL | CLAY => top,
             _ => DIRT,
         };
 

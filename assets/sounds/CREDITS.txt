@@ -1236,3 +1236,165 @@ creak3.ogg from Kenney's "RPG Audio" pack
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: creak_3.ogg
 
+For building and gathering, and for doors, see src\bases.rs and src\gather.rs:
+
+chop.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chop_1.ogg, chop_2.ogg, chop_3.ogg
+
+creak1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splinter_1.ogg
+
+creak2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg
+
+creak3.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, splinter_2.ogg
+
+doorClose_1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_close_1.ogg
+
+doorClose_2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_close_2.ogg
+
+doorClose_4.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_close_3.ogg
+
+doorOpen_1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_open_1.ogg
+
+doorOpen_2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_open_2.ogg
+
+footstep_grass_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_1.ogg
+
+footstep_grass_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_2.ogg
+
+impactGeneric_light_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_2.ogg
+
+impactMining_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: mine_1.ogg
+
+impactMining_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: mine_2.ogg
+
+impactMining_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: mine_3.ogg
+
+impactPlank_medium_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_1.ogg, bang_3.ogg
+
+impactPlank_medium_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg, splinter_1.ogg
+
+impactPlank_medium_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bang_1.ogg, splinter_2.ogg
+
+impactPlank_medium_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, splinter_1.ogg
+
+impactPlank_medium_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_3.ogg, splinter_2.ogg
+
+impactPunch_heavy_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bang_2.ogg
+
+impactSoft_heavy_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_1.ogg
+
+impactSoft_heavy_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_2.ogg
+
+impactWood_heavy_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg, bang_1.ogg
+
+impactWood_heavy_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chop_2.ogg, splinter_1.ogg
+
+impactWood_heavy_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, bang_2.ogg
+
+impactWood_heavy_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg, splinter_2.ogg
+
+impactWood_heavy_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, bang_3.ogg
+
+impactWood_light_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splinter_1.ogg
+
+impactWood_light_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_2.ogg
+
+impactWood_light_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splinter_2.ogg
+
+impactWood_medium_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chop_3.ogg
+

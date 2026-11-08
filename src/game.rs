@@ -405,6 +405,19 @@ const STORM_HEIGHT: f64 = 18.0;
 /// solid ground with room to stand over it, looking down from a few meters over that height, so
 /// down in a cave or a fallen city rather than up on the land over it; the top of the ground there
 /// if there's none
+/// Whether there's nothing solid between a blow landing at `at` and the player standing at `feet`,
+/// both in voxels, looking a quarter of a meter at a time, from a little over the ground to their
+/// chest
+fn open_between(world: &World, at: Vector3<f64>, feet: Vector3<f64>) -> bool {
+    let vpm = world.voxels_per_meter as f64;
+    let (from, to) = (at + Vector3::new(0.0, 0.0, 0.6 * vpm), feet + Vector3::new(0.0, 0.0, 1.0 * vpm));
+    let steps = ((to - from).norm() / (0.25 * vpm)).ceil() as usize;
+    (1..steps).all(|s| {
+        let p = from + (to - from) * (s as f64 / steps as f64);
+        is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+    })
+}
+
 fn floor_near(world: &World, x: f64, y: f64, z: f64) -> f64 {
     let vpm = world.voxels_per_meter as f64;
     let (xi, yi) = (x as i64, y as i64);
@@ -453,6 +466,16 @@ enum Target {
     Animal(usize),
     Pickup(usize),
     Chest(usize),
+}
+
+/// A blow a boss or monster landed: where, in voxels, how far round in meters, how hard, and what
+/// landed it, for what's built there to take, see raids.rs
+#[derive(Clone, Copy, Debug)]
+pub struct Blow {
+    pub at: Vector3<f64>,
+    pub radius: f64,
+    pub damage: f64,
+    pub look: Look,
 }
 
 pub struct Game {
@@ -549,6 +572,8 @@ pub struct Game {
     messages: Vec<(String, Instant)>,
     /// Sounds to play
     cues: Vec<Cue>,
+    /// Blows bosses and monsters landed since last asked, for what's built to take, see raids.rs
+    blows: Vec<Blow>,
     target: Option<Target>,
     apple_timer: f64,
     /// What weapons can be made of, and the ones the player has
@@ -718,6 +743,7 @@ impl Game {
             inspected: None,
             messages: Vec::new(),
             cues: Vec::new(),
+            blows: Vec::new(),
             target: None,
             apple_timer: 0.0,
             library: Library::load(),
@@ -1420,6 +1446,21 @@ impl Game {
     }
 
     /// The sounds to play since last time, the fighting's too
+    /// The blows bosses and monsters landed since last asked, see Blow
+    pub fn take_blows(&mut self) -> Vec<Blow> {
+        std::mem::take(&mut self.blows)
+    }
+
+    /// Brings a monster into the world, as night raids do, see raids.rs
+    pub fn add_animal(&mut self, animal: Animal) {
+        self.animals.push(animal);
+    }
+
+    /// Every animal, boss and monster, for night raids to lead round walls, see raids.rs
+    pub fn animals_mut(&mut self) -> impl Iterator<Item = &mut Animal> {
+        self.animals.iter_mut()
+    }
+
     pub fn take_cues(&mut self) -> Vec<Cue> {
         let mut cues = std::mem::take(&mut self.cues);
         cues.append(&mut self.combat.cues);
@@ -1690,6 +1731,8 @@ impl Game {
                 self.say(if angry { format!("The {} is enraged!", look.name()) } else { format!("The {} turns on you!", look.name()) });
             }
             Deed::Slam { at, radius, damage, crater } => {
+                // What's built round it takes the blow too, see raids.rs
+                self.blows.push(Blow { at, radius, damage, look });
                 if crater > 0.0 {
                     self.combat.craters.push((at, crater));
                     // Frost spreading out from it, the ground scorched, or venom splashed
@@ -1729,7 +1772,8 @@ impl Game {
                 if let Some(feet) = player {
                     let off = feet - at;
                     let d = off.xy().norm() / vpm;
-                    if d < radius && off.z.abs() < 2.5 * vpm {
+                    // Not through a wall or a shut door
+                    if d < radius && off.z.abs() < 2.5 * vpm && open_between(world, at, feet) {
                         self.hurt(damage * (1.0 - 0.5 * d / radius), at, feet, world, look.name());
                         self.afflict(element);
                         // A tusker tosses what it gores, and a shieldbearer shoves them back with
