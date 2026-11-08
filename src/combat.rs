@@ -1929,6 +1929,8 @@ impl Lash {
 
 pub struct Combat {
     pub mana: f64,
+    /// Melee blows landed, swung at anything or nothing, for a tool's to gather, see tools.rs
+    pub landed: u32,
     action: Action,
     /// Seconds until the weapon in hand can attack again
     cooldown: f64,
@@ -4921,6 +4923,7 @@ impl Combat {
     pub fn new(seed: u32, first_model: u32) -> Self {
         Combat {
             mana: MAX_MANA,
+            landed: 0,
             action: Action::Idle,
             cooldown: 0.0,
             frenzy: 0.0,
@@ -5552,6 +5555,7 @@ impl Combat {
                     let land = !struck && t >= length * lands;
                     self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
                     if land {
+                        self.landed = self.landed.wrapping_add(1);
                         self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
                         // A battle staff's finishing blow, or its heavy one, looses a spell too
                         let cost = profile.stat("manaCost");

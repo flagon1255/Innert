@@ -22,6 +22,7 @@ use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{self, World, is_passable, material::*};
 use crate::serpents;
+use crate::tools;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -1028,6 +1029,48 @@ impl Game {
 
     pub fn holding_weapon(&self) -> bool {
         self.held().is_some()
+    }
+
+    /// The tool in hand, if it's a tool: which, and how good, see tools.rs
+    pub fn held_tool(&self) -> Option<(tools::Tool, usize)> {
+        self.held().and_then(|(_, w)| tools::of(&self.library, w))
+    }
+
+    /// How good the best `tool` carried is, if one is
+    pub fn best_tool(&self, tool: tools::Tool) -> Option<usize> {
+        self.slots
+            .iter()
+            .filter_map(|&(item, _)| match item {
+                Item::Weapon(w) => tools::of(&self.library, &self.weapons[w]),
+                _ => None,
+            })
+            .filter(|&(t, _)| t == tool)
+            .map(|(_, grade)| grade)
+            .max()
+    }
+
+    /// How many melee blows have landed, for a tool's to gather where they land, see tools.rs
+    pub fn swings_landed(&self) -> u32 {
+        self.combat.landed
+    }
+
+    /// Puts a tool of `grade` in the pack, see tools.rs, if there's one to make
+    pub fn give_tool(&mut self, tool: tools::Tool, grade: usize) -> bool {
+        match tools::make(&self.library, tool, grade) {
+            Some(weapon) => {
+                self.give_weapon(weapon);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Puts `weapon`, made rather than found, in the pack
+    pub fn give_weapon(&mut self, weapon: Weapon) {
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        self.milestone = true;
     }
 
     pub fn holding_bucket(&self) -> bool {
@@ -3588,6 +3631,12 @@ impl Game {
             self.weapons.push(self.library.generate(seed, None, luck * loot_scaling(self.scaling)));
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
+        // And a fine tool, for gathering with, see tools.rs
+        let tool = tools::Tool::ALL[hash(seed ^ 0x7001) as usize % tools::Tool::ALL.len()];
+        if let Some(made) = tools::make(&self.library, tool, tools::FINE) {
+            self.weapons.push(made);
+            wares.push(Ware::Weapon(self.weapons.len() - 1));
+        }
         self.models_version += 1;
         wares.sort_by_key(|w| match *w {
             Ware::Weapon(i) => self.weapon_price(i),
@@ -5032,9 +5081,10 @@ impl Game {
 
     /// The inventory: everything carried as a grid of icons, the quick bar along the top, and the
     /// card of what's clicked on, with what can be done with it
-    pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool) {
+    pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool, crafting: &mut tools::Crafting) {
         let mut chosen = None;
         let mut deed = None;
+        let mut made = None;
         egui::Window::new("Inventory")
             .open(open)
             .collapsible(false)
@@ -5042,6 +5092,11 @@ impl Game {
             // Just under the quick bar
             .anchor(Align2::CENTER_TOP, [0.0, 100.0])
             .show(ctx, |ui| {
+                // What's carried, or making tools from what's been gathered, see tools.rs
+                if tools::tabs(ui, crafting) {
+                    made = tools::craft_tab(ui, crafting, &|tool| self.best_tool(tool));
+                    return;
+                }
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong());
                     ui.separator();
@@ -5148,6 +5203,15 @@ impl Game {
             Some(Deal::Wear(slot)) => self.wear(slot),
             Some(Deal::TakeOff) => self.take_off(),
             _ => {}
+        }
+        // A tool made, paid for with what's been gathered
+        if let Some((tool, grade)) = made
+            && let Some(weapon) = tools::make(&self.library, tool, grade)
+            && crafting.materials.take(tools::cost(tool, grade))
+        {
+            self.say(format!("Crafted a {}. Hold it and click at what it's for to gather it.", weapon.name));
+            self.give_weapon(weapon);
+            self.cues.push(Cue::here(Sound::Place, 0.8).pitched(1.2));
         }
     }
 

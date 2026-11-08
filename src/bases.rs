@@ -91,6 +91,9 @@ pub enum Kind {
     Torch,
     /// A clay lamp, brighter than a torch
     Lantern,
+    /// One of the weathered stones in a ring where the Innert Gate once stood, laid in a new game
+    /// of Realms, see session.rs: never built by the player, nor taken down
+    OldStone,
 }
 
 impl Kind {
@@ -107,7 +110,13 @@ impl Kind {
             Kind::Door => "Door",
             Kind::Torch => "Torch",
             Kind::Lantern => "Clay Lantern",
+            Kind::OldStone => "Old Foundation Stone",
         }
+    }
+
+    /// Whether the player builds it and can take it down
+    pub fn player_built(self) -> bool {
+        self != Kind::OldStone
     }
 
     /// What it costs to build, and what's given back for taking it down whole
@@ -121,6 +130,7 @@ impl Kind {
             Kind::Door => Materials::new(4, 0, 0),
             Kind::Torch => Materials::new(1, 0, 0),
             Kind::Lantern => Materials::new(1, 0, 1),
+            Kind::OldStone => Materials::new(0, 0, 0),
         }
     }
 
@@ -136,6 +146,7 @@ impl Kind {
             Kind::Door => 160.0,
             Kind::Torch => 40.0,
             Kind::Lantern => 60.0,
+            Kind::OldStone => 2000.0,
         }
     }
 
@@ -159,9 +170,10 @@ impl Kind {
         }
     }
 
-    /// Whether it turns, so it matters which way it's put: stairs go up one way, a door spans one
+    /// Whether it turns, so it matters which way it's put: stairs go up one way, a door spans one.
+    /// An old stone's turn is 1 for the top one of its stack, the one worn down.
     pub fn turns(self) -> bool {
-        matches!(self, Kind::Stairs | Kind::Door)
+        matches!(self, Kind::Stairs | Kind::Door | Kind::OldStone)
     }
 
     /// What it's mostly made of, for its debris
@@ -169,6 +181,7 @@ impl Kind {
         match self {
             Kind::ClayWall | Kind::Lantern => CLAY_POT,
             Kind::StoneWall => BRICK_STONE,
+            Kind::OldStone => STONE,
             _ => WOOD,
         }
     }
@@ -373,6 +386,7 @@ impl Piece {
                                 AIR
                             }
                         }
+                        Kind::OldStone => old_stone_voxel(block, x, y, z, g, self.turn == 1),
                     };
                     // Cracked as it's damaged: some voxels darkened, the worst knocked out
                     let m = if m != AIR && stage > 0 && self.kind != Kind::Door {
@@ -380,7 +394,7 @@ impl Piece {
                         if crack < stage as u32 * 4 && stage >= 2 && is_surface(x, y, z) {
                             AIR
                         } else if crack < stage as u32 * 12 {
-                            if self.kind == Kind::StoneWall || self.kind == Kind::ClayWall { GRAVEL } else { DEAD_WOOD }
+                            if matches!(self.kind, Kind::StoneWall | Kind::ClayWall | Kind::OldStone) { GRAVEL } else { DEAD_WOOD }
                         } else {
                             m
                         }
@@ -397,6 +411,33 @@ impl Piece {
 
 fn is_surface(x: i64, y: i64, z: i64) -> bool {
     x == 0 || y == 0 || z == 0 || x == 7 || y == 7 || z == 7
+}
+
+/// A voxel of an old foundation stone in block `block`, `g` in the whole landscape: a block of grey
+/// stone chipped at its edges and cracked across, lichen down its sides, and if it's the top of
+/// its stack, `crown`, worn lower and round and grown over with moss
+fn old_stone_voxel(block: [i64; 3], x: i64, y: i64, z: i64, g: [i64; 3], crown: bool) -> u8 {
+    let r = hash3(g[0] as u32 ^ 0x01d5, g[1] as u32, g[2] as u32);
+    // How far in from its sides
+    let edge = x.min(7 - x).min(y).min(7 - y);
+    let worn = hash3(block[0] as u32, block[1] as u32, block[2] as u32 ^ 0x5701);
+    let top = if crown { 7 - (worn % 3) as i64 } else { 8 };
+    if z > top || (z == top && edge == 0) || (z >= top - 1 && edge == 0 && r % 3 == 0) || (edge == 0 && r % 9 == 0) {
+        return AIR;
+    }
+    // A crack running across it, a little way up
+    let crack = (worn >> 4) % 6 + 1;
+    let across = if worn & 0x100 == 0 { x } else { y };
+    if z == crack as i64 && (across + z) % 5 != 0 && edge > 0 && r % 4 != 0 {
+        return GRAVEL;
+    }
+    if z == top && r % 3 != 0 {
+        return MOSS;
+    }
+    if edge == 0 && z >= top - 2 && r % 5 == 0 {
+        return MOSS;
+    }
+    [STONE, STONE, STONE, ROCK, LIMESTONE][(r % 5) as usize]
 }
 
 /// A voxel of a door's panel: planks up and down, braced across, with iron hinges on one side and
@@ -679,7 +720,7 @@ impl Bases {
     /// Mends door `id` back to whole if `materials` pay for it: half what it cost
     pub fn repair_cost(&self, id: u32) -> Option<Materials> {
         let piece = self.piece(id)?;
-        (piece.health < piece.kind.health()).then(|| piece.kind.cost().share(0.5))
+        (piece.health < piece.kind.health() && piece.kind.player_built()).then(|| piece.kind.cost().share(0.5))
     }
 
     pub fn repair(&mut self, id: u32) -> Result<Vec<[i64; 3]>, &'static str> {

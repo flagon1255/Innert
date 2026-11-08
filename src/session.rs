@@ -112,8 +112,12 @@ pub struct Session {
     pub menu: ModeMenu,
     /// Picked from the menu this frame
     pub action: Option<MenuAction>,
-    /// Where things are in the realm the player's in, in Realms, see realms.rs
+    /// Where things are in the realm the player's in, in Realms, see realms.rs: with the gate or
+    /// the portal home where the player built it, see gates.rs, and as they were found
     pub places: Option<realms::Places>,
+    pub found: Option<realms::Places>,
+    /// Whether the gate, or the portal home, stands: not till the player builds the gate
+    pub standing: bool,
     /// Whether the window of the gate or the portal is open, and what was picked in it
     pub gate_open: bool,
     pub gate_action: Option<GateAction>,
@@ -144,6 +148,8 @@ impl Session {
             menu: ModeMenu::default(),
             action: None,
             places: None,
+            found: None,
+            standing: true,
             gate_open: false,
             gate_action: None,
             leaving: None,
@@ -169,7 +175,7 @@ impl Session {
 }
 
 /// The realm being played in Realms, and whether that's so
-fn realm_of(session: &Session) -> Option<usize> {
+pub(super) fn realm_of(session: &Session) -> Option<usize> {
     session.realms.as_ref().map(|r| (r.realm as usize).min(realms::REALMS.len() - 1))
 }
 
@@ -266,6 +272,9 @@ impl App {
         }
         // Where the gate, the portal and the raid bosses are in the realm, and how hard it is
         self.enter_realm();
+        if fresh && !self.session.standing {
+            self.game.say("Long ago the Innert Gate stood near here, where its old foundations lie. Gather wood, stone and clay (G), then build it anew (B).");
+        }
 
         // Where they are, in the world as it is
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
@@ -340,7 +349,11 @@ impl App {
     fn enter_realm(&mut self) {
         match (self.session.mode, realm_of(&self.session)) {
             (Some(Mode::Realms), Some(realm)) => {
-                let places = self.places_in(realm);
+                // The gate or portal home where the player built it, or none yet, see gates.rs
+                let found = self.places_in(realm);
+                let (places, standing) = self.session.realms.as_ref().map_or((found.clone(), true), |r| crate::gates::stand(&found, r));
+                self.session.found = Some(found);
+                self.session.standing = standing;
                 let journeys = self.session.realms.as_ref().map_or(0, |r| r.completed);
                 self.game.set_scaling(REALMS[realm].scaling.after(journeys));
                 // Hooks and wings on sale once the way to the sky isles is open
@@ -363,6 +376,8 @@ impl App {
                 // Free Roam's merchants have hooks and wings to sell from the first
                 self.game.set_sky_wares(self.session.mode == Some(Mode::FreeRoam));
                 self.session.places = None;
+                self.session.found = None;
+                self.session.standing = true;
             }
         }
     }
@@ -392,7 +407,7 @@ impl App {
         }
         let gate = local(places.gate);
         let placed = std::array::from_fn(|r| progress.placed.get(r).copied().unwrap_or(0));
-        let shrines = if inside(&gate) {
+        let shrines = if inside(&gate) && self.session.standing {
             // The gate's veil is lit once it leads anywhere; a portal always leads home
             vec![game::Shrine { gate: places.realm == 0, position: gate, facing: places.facing, placed, open: places.realm != 0 || progress.unlocked.len() > 1 }]
         } else {
@@ -444,7 +459,7 @@ impl App {
     }
 
     /// The gate or portal as it is now, after blocks are set in it
-    fn refresh_shrines(&mut self) {
+    pub(super) fn refresh_shrines(&mut self) {
         let (_, shrines) = self.realm_sites();
         self.game.set_shrines(&self.world, shrines);
     }
