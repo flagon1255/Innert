@@ -1225,6 +1225,10 @@ const POOL_FADE: f64 = 1.2;
 /// How far into a pool's life it leaves its mark on the ground under it, 0-1: once it's spread out
 /// over it, so the mark's hidden under it till it's dying down
 const POOL_MARK: f64 = 0.35;
+/// Seconds before a pool starts dying down that it's left its mark at the latest. Till then the
+/// mark waits to go with others, as each change to the world costs a wait for the frames being
+/// drawn, see Combat::linger().
+const MARK_SLACK: f64 = 0.5;
 
 /// How a pool of `element` `age` seconds old with `left` to go is drawn, and with `time` the
 /// fight's clock and `key` something of its own so no two go alike: how big next to its radius,
@@ -12417,20 +12421,19 @@ impl Combat {
     /// frost breathes a mist low over it, glinting; venom bubbles, fumes rising; lightning
     /// crackles over it in little arcs; a sigil of light sends motes up off its rings; the void
     /// draws sparks round and in; blood bubbles darkly; runes shimmer; churned earth throws up
-    /// dust and the odd clod as it settles. A while into it, it leaves its mark on the ground
-    /// under it, hidden under it till it's gone, see pool_mark().
-    fn pool_alive(&mut self, l: &mut Lingering, dt: f64) {
+    /// dust and the odd clod as it settles. Once it's spread out it leaves its mark on the ground
+    /// under it, hidden under it till it's gone, see pool_mark(), the first time it's `marking`,
+    /// see linger().
+    fn pool_alive(&mut self, l: &mut Lingering, dt: f64, marking: bool) {
         let vpm = self.vpm;
         let (age, left) = (l.age(), l.life);
         if !l.marked && age >= POOL_MARK * l.lifetime {
-            // Not if it's dying down already, and only one mark on the ground at a time, as each
-            // takes a while, see SCAR_GAP
+            // Not if it's dying down already
             if left <= POOL_FADE {
                 l.marked = true;
-            } else if self.scar_timer <= 0.0 {
+            } else if marking {
                 let (size, material, burn) = pool_mark(l.element);
                 self.stains.push((l.position, l.radius * size, material, burn));
-                self.scar_timer = SCAR_GAP;
                 l.marked = true;
             }
         }
@@ -12571,11 +12574,20 @@ impl Combat {
     /// down where holy spells were aimed; ice melting away
     fn linger(&mut self, arena: &mut Arena, dt: f64) {
         let vpm = arena.view.vpm;
+        // Pools leave their marks all together, each change to the world costing a wait for the
+        // frames being drawn: along with a hole blown or a stain splashed this frame, as that's
+        // waited for anyway, or once one can't wait any longer, MARK_SLACK before it starts
+        // dying down, and then not straight after other changes, see SCAR_GAP
+        let due = |l: &Lingering| l.pool && !l.marked && l.age() + dt >= POOL_MARK * l.lifetime;
+        let changing = !self.stains.is_empty() || !self.craters.is_empty();
+        let pressed = self.scar_timer <= 0.0 && self.lingering.iter().any(|l| due(l) && l.life - dt <= POOL_FADE + MARK_SLACK);
+        let marking = changing || pressed;
+        let marks = self.stains.len();
         for mut l in std::mem::take(&mut self.lingering) {
             l.life -= dt;
             l.tick -= dt;
             if l.pool {
-                self.pool_alive(&mut l, dt);
+                self.pool_alive(&mut l, dt, marking);
             } else {
                 // Flames flickering up, or bubbles and a haze of venom. A wall of fire's flames
                 // leap high, tongues of fire swelling and dying away, so it shows over the grass:
@@ -12680,6 +12692,9 @@ impl Combat {
                 let profile = l.profile.clone();
                 self.burst(arena, &profile, l.position, l.radius * 0.8, l.collapse, 0, false, l.element, None);
             }
+        }
+        if self.stains.len() > marks {
+            self.scar_timer = SCAR_GAP;
         }
         for mut s in std::mem::take(&mut self.strikes) {
             s.delay -= dt;
@@ -17077,6 +17092,53 @@ mod tests {
             assert!(size < 0.3 || sink > 0.06 + 0.12 * size, "{element:?} ends {size:.2} big, sunk {sink:.2}");
             assert!(spent_at.is_some_and(|t| t > life - POOL_FADE), "{element:?} spent at {spent_at:?}");
         }
+    }
+
+    /// Pools of every element laid together leave their marks on the ground together, in one
+    /// frame, as each frame the world's changed in costs a wait for the frames being drawn; and a
+    /// pool's mark goes along with a stain splashed by something else, as that's waited for anyway
+    #[test]
+    fn pools_leave_their_marks_together() {
+        let vpm = 8.0;
+        let world = field();
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let ground = feet + Vector3::new(-12.0 * vpm, 6.0 * vpm, 0.0);
+        let elements = [None, Some(Element::Fire), Some(Element::Frost), Some(Element::Poison), Some(Element::Storm), Some(Element::Holy), Some(Element::Void), Some(Element::Blood), Some(Element::Arcane)];
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        for (k, &element) in elements.iter().enumerate() {
+            combat.leave_pool_at(&profile, ground + Vector3::new(k as f64 * 3.0 * vpm, 0.0, 0.0), 1.5, 4.0, element, 1.0);
+        }
+        let mut animals = Vec::new();
+        let dt = 1.0 / 60.0;
+        let mut frames = 0;
+        for _ in 0..(4.2 / dt) as usize {
+            let was = combat.stains.len();
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.scar_timer -= dt;
+            combat.linger(&mut arena, dt);
+            frames += (combat.stains.len() > was) as usize;
+        }
+        assert_eq!(combat.stains.len(), elements.len(), "{} marks left by {} pools", combat.stains.len(), elements.len());
+        assert_eq!(frames, 1, "the marks left over {frames} frames");
+        // One left a little later rides along with a stain splashed by something else
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        combat.leave_pool_at(&profile, ground, 1.5, 4.0, Some(Element::Fire), 1.0);
+        for frame in 0..(2.0 / dt) as usize {
+            if frame == (1.8 / dt) as usize {
+                combat.stains.push((feet, 1.0, DIRT, false));
+            }
+            let was = combat.stains.len();
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.scar_timer -= dt;
+            combat.linger(&mut arena, dt);
+            assert!(combat.stains.len() == was || frame == (1.8 / dt) as usize, "marked alone {:.2} s in", frame as f64 * dt);
+        }
+        assert_eq!(combat.stains.len(), 2);
     }
 
     /// A pool goes on hurting what stands in it all its life, leaves a mark of its element on the
