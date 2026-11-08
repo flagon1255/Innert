@@ -49,6 +49,21 @@ pub struct Hook {
     thrown: Instant,
 }
 
+impl Hook {
+    /// The world's corner moved on `shift` voxels over the landscape, see App::shift_everything():
+    /// where the hook bites and its rope hauls to, counted from there, move with it, or it'd haul
+    /// the player off past where it bit as the world moves on under them
+    pub fn shift(&mut self, shift: Vector3<f64>) {
+        if let Some((at, target, by)) = &mut self.bite {
+            *at -= shift;
+            *target -= shift;
+            if let Some(by) = by {
+                *by -= shift;
+            }
+        }
+    }
+}
+
 /// The winds bringing the player back up after a fall below the sky isles, see App::update_fall():
 /// since when, and whether they've been brought back yet, the fade lifting
 pub struct FallBack {
@@ -160,6 +175,10 @@ impl App {
                 let to = goal - player.position;
                 let d = to.norm();
                 if by.is_none() && d < HAUL_NEAR * vpm || *t > HAUL_MOST || let_go {
+                    if self.capture.is_some() {
+                        let why = if let_go { "let go" } else if *t > HAUL_MOST { "gave" } else { "got there" };
+                        println!("HOOK haul ends after {:.2} s, {why}, {:.1} m short, at {:.1}, {:.1}, {:.1} m", *t, d / vpm, player.position.x / vpm, player.position.y / vpm, player.position.z / vpm);
+                    }
                     // Stepping on in over the edge with a little hop, or let go of in the air
                     if d < 2.0 * vpm {
                         let flat = Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros);

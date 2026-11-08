@@ -519,6 +519,14 @@ impl App {
     pub(super) fn try_journey(&mut self, settings: &[(String, String)]) {
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
         let number = |key: &str| setting(key).and_then(|v| v.parse::<usize>().ok());
+        // `--set time=22.5` and `day=3` hold for a game begun or gone on with, as for the world
+        // first seen, see App::new(), rather than the time the game was at
+        if let Some(day) = setting("day").and_then(|v| v.parse::<u32>().ok()) {
+            self.cycle.clock.day = day;
+        }
+        if let Some(hour) = setting("time").and_then(|v| v.parse::<f64>().ok()) {
+            self.cycle.set_hour(hour);
+        }
         if let Some(realm) = number("realm") {
             self.set_out_for(realm);
         }
@@ -581,6 +589,10 @@ impl App {
                 if let Some(degrees) = trial.face {
                     self.camera.rotation.z = degrees.to_radians() - FRAC_PI_2;
                 }
+                // `--set look_up=30` looks that many degrees up from level, as at the moon
+                if let Some(degrees) = settings_from_args().iter().find(|(k, _)| k == "look_up").and_then(|(_, v)| v.parse::<f64>().ok()) {
+                    self.camera.rotation.x = degrees.to_radians();
+                }
                 if let Some(up) = trial.overlook
                     && let Some(player) = self.player.take()
                 {
@@ -623,8 +635,20 @@ impl App {
         if trial.hook_at.is_some_and(|w| w >= 20 && ready + w - 20 == frame) {
             self.game.hold_item(Item::Hook);
         }
+        let hook_at = trial.hook_at;
         if hook {
             self.hook_nearest_island();
+        }
+        // Where the hook's taken them, now and then after
+        if let Some(w) = hook_at
+            && frame >= ready + w
+            && (frame - ready - w) % 40 == 0
+            && frame - ready - w <= 800
+            && let Some(p) = &self.player
+        {
+            let vpm = self.world.voxels_per_meter as f64;
+            let at = (p.position + Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0)) / vpm;
+            println!("HOOKED frame {}: at {:.1}, {:.1}, {:.1} m, on the ground {}", frame - ready - w, at.x, at.y, at.z, p.on_ground());
         }
         // Lifted high over the island, wings spread, gliding on ahead for a while
         let vpm = self.world.voxels_per_meter as f64;

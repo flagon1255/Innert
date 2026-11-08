@@ -608,6 +608,8 @@ pub struct Game {
     sky_wares: bool,
     /// The player's hands full of something else, see set_hands_busy()
     hands_busy: bool,
+    /// The map's open over the middle of the view, see set_map_open()
+    map_open: bool,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -765,6 +767,7 @@ impl Game {
             raid_lairs: HashMap::new(),
             sky_wares: false,
             hands_busy: false,
+            map_open: false,
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -3804,6 +3807,12 @@ impl Game {
         self.hands_busy = busy;
     }
 
+    /// Whether the map's open, so what's in hand and the messages aren't shown under the quick bar
+    /// where the map is
+    pub fn set_map_open(&mut self, open: bool) {
+        self.map_open = open;
+    }
+
     /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
     pub fn give_innert_blocks(&mut self, realm: u8, count: u32) {
         if count > 0 {
@@ -4363,7 +4372,8 @@ impl Game {
 
         // The weapon in hand's name, in the color of its rarity, under the panel
         let mut below = panel.bottom() + 8.0;
-        if let Some((_, weapon)) = self.held() {
+        // None of it, nor the messages, over the map, see compass.rs
+        if let Some((_, weapon)) = self.held().filter(|_| !self.map_open) {
             let rarity = &self.library.rarities[weapon.grade];
             let at = pos2(center.x, below);
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), shadow);
@@ -4405,8 +4415,10 @@ impl Game {
             }
         }
 
-        // Messages under that, newest first, fading out
-        for (k, (message, at)) in self.messages.iter().rev().enumerate() {
+        // Messages under that, newest first, fading out, and with no weapon in hand still under
+        // what's in the pack and the gold, either side under the panel
+        let below = below.max(panel.bottom() + 26.0);
+        for (k, (message, at)) in self.messages.iter().rev().enumerate().filter(|_| !self.map_open) {
             let alpha = (1.0 - (at.elapsed().as_secs_f32() - 3.0).max(0.0)).clamp(0.0, 1.0);
             let pos = pos2(center.x, below + 4.0 + k as f32 * 24.0);
             painter.text(pos + vec2(1.0, 1.0), Align2::CENTER_TOP, message, FontId::proportional(17.0), Color32::from_black_alpha((150.0 * alpha) as u8));

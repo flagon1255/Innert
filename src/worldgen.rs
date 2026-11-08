@@ -2901,8 +2901,14 @@ pub fn is_dry_land(settings: &TerrainSettings, at: [f32; 2], room: f32) -> bool 
 /// the sea, in meters, under it if that's less than nothing, or None in the open air between the
 /// sky isles. Only the land's shape, not the rivers cut into it.
 pub fn seen_from_above(settings: &TerrainSettings, x: f32, y: f32) -> Option<f32> {
+    land_height_m(settings, x, y).map(|h| h - sea_level_m(settings))
+}
+
+/// How high the land's own ground is at a spot, in meters, not what stands or floats on it, or
+/// None in the open air between the sky isles. Only its shape: rivers cut it a little lower.
+pub fn land_height_m(settings: &TerrainSettings, x: f32, y: f32) -> Option<f32> {
     let h = height_at(settings, x, y);
-    (h > SKY_VOID).then(|| h - sea_level_m(settings))
+    (h > SKY_VOID).then_some(h)
 }
 
 /// The nearest dry land to `near` within `within` meters with `room` round it, see is_dry_land(),

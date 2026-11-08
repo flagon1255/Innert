@@ -1123,6 +1123,19 @@ vec3 skyColor(vec3 dir) {
     vec3 night = mix(vec3(0.022, 0.028, 0.050), vec3(0.008, 0.014, 0.040), sqrt(clamp(dir.z, 0, 1)));
     night = mix(night, night * 0.5, clamp(-dir.z * 4.0, 0, 1));
     night += vec3(0.045, 0.055, 0.08) * view.moon.w * (0.5 - 0.5 * cos(view.keyLight.w)) * pow(max(dot(dir, view.moon.xyz), 0), 8);
+    // The realms' own nights, about as dark: the dreaming realm's violet, deep red over its bleeding
+    // half, and over the frozen realm curtains of pale green light rippling round the sky
+    if (realm == REALM_DREAM) {
+        vec3 dream_night = mix(vec3(0.030, 0.016, 0.052), vec3(0.046, 0.007, 0.012), view.realm.w);
+        night = mix(night, dream_night * (0.6 + 0.4 * sqrt(clamp(1 - dir.z, 0, 1))), 0.75);
+    } else if (realm == REALM_ICE && dir.z > 0.04) {
+        // Brightest along their wavering lower edge, fading away upwards, in fine folds
+        float around = atan(dir.y, dir.x);
+        float above = dir.z - (0.34 + 0.06 * sin(around * 3.0 + 1.0) + 0.025 * sin(around * 7.0));
+        float band = above < 0 ? exp(-pow(above / 0.03, 2.0)) : exp(-above / 0.13);
+        float folds = 0.55 + 0.45 * sin(around * 43.0 + 3.0 * sin(around * 6.0));
+        night += vec3(0.016, 0.085, 0.05) * band * folds * smoothstep(0.04, 0.15, dir.z);
+    }
     float day = daylight();
     return sky * day + night * (1 - day);
 }
@@ -1838,11 +1851,12 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float
         // on top, with the clear water showing through.
         color = mix(color, lit, falling ? 1.0 : foam * 0.75);
     }
-    // Blood rather than water in the dreaming realm's red half: dark and thick, its sheen red
+    // Blood rather than water in the dreaming realm's red half: dark and thick, its sheen red, a
+    // little red even where little light's on it by day, but not glowing in the dark
     float blood = bloodAt(pos.xy);
     if (blood > 0) {
         float lum = dot(color, vec3(0.3, 0.55, 0.15));
-        color = mix(color, vec3(lum * 1.5 + 0.02, lum * 0.08, lum * 0.1), blood * 0.9);
+        color = mix(color, vec3(lum * 1.5 + 0.02 * daylight(), lum * 0.08, lum * 0.1), blood * 0.9);
     }
     return color;
 }

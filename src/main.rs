@@ -3851,8 +3851,10 @@ impl App {
             }
         }
 
-        // The world stands still while the menu is open
-        if !self.menu_open && self.animals_on && self.loaded_scene.is_terrain() {
+        // The world stands still while the menu is open, and while it's built afresh round the
+        // player behind the dark, as on going through to another realm, so nothing that was about
+        // them, a night's raiders least of all, can fall on them unseen meanwhile
+        if !self.menu_open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
             let water = &self.water;
@@ -4858,6 +4860,7 @@ impl App {
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
         let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
+        self.game.set_map_open(map_marks.is_some());
 
         let rcx = self.rcx.as_mut().unwrap();
 

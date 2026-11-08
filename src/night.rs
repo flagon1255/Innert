@@ -17,6 +17,11 @@ const DOOR_TAKES: f64 = 0.8;
 const WALL_TAKES: f64 = 0.5;
 /// Seconds a door that's been struck shows on the HUD
 const STRUCK_SECONDS: f64 = 4.0;
+/// Seconds till a wave that found nowhere to come from tries again
+const WAVE_RETRY_SECONDS: f64 = 2.0;
+/// In the sky isles, how near the player a wave may come when there's no room on their island
+/// further off, in meters
+const SKY_SPAWN_NEAREST_M: f64 = 8.0;
 
 /// How the night's raid is going
 #[derive(Default)]
@@ -87,10 +92,25 @@ impl App {
             if self.raid.next_wave <= 0.0 && self.raid.waves < plan.waves {
                 self.raid.next_wave = raids::WAVE_SECONDS;
                 self.raid.waves += 1;
-                self.send_wave(plan);
+                // Nowhere for it to come from just now, as while gliding out over the open air
+                // between the sky isles: it comes a moment later instead
+                if !self.send_wave(plan) {
+                    self.raid.waves -= 1;
+                    self.raid.next_wave = WAVE_RETRY_SECONDS;
+                }
             }
         }
         self.lead_raiders(dt);
+        // Now and then in screenshot runs, where the raiders are, to see they've ground under them
+        if let Some(frame) = self.capture.as_ref().map(|c| c.frame_times.len())
+            && self.raid.on
+            && frame % 240 == 0
+        {
+            let vpm = self.world.voxels_per_meter as f64;
+            let feet = self.player.as_ref().map_or(0.0, |p| p.position.z);
+            let raiders: Vec<String> = self.game.animals_mut().filter(|a| a.boss.as_ref().is_some_and(|b| b.raider) && a.health > 0.0).map(|a| format!("{:+.0}", (a.position.z - feet) / vpm)).collect();
+            println!("RAIDERS at frame {frame}: {} about, m up from the player: {}", raiders.len(), raiders.join(" "));
+        }
         self.blows_on_bases();
         // Those left at dawn burn away; any still about after go
         if let Some(t) = &mut self.raid.burning {
@@ -142,13 +162,13 @@ impl App {
     }
 
     /// A wave of the night's monsters, from behind the player, out of sight, as many as `plan` has
-    /// come at once and no more than it lets be about
-    fn send_wave(&mut self, plan: raids::Plan) {
+    /// come at once and no more than it lets be about: whether it found somewhere to come from
+    fn send_wave(&mut self, plan: raids::Plan) -> bool {
         let (here, visited, _) = self.realm_progress();
         let roster = raids::night_roster(here, &visited);
         let count = plan.per_wave.min((plan.most as usize).saturating_sub(self.raid.about) as u32);
         if count == 0 || roster.is_empty() {
-            return;
+            return true;
         }
         let vpm = self.world.voxels_per_meter as f64;
         let feet = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
@@ -156,16 +176,42 @@ impl App {
         let yaw = self.camera.rotation.z;
         let behind = (-yaw.cos()).atan2(yaw.sin());
         let [sx, sy, _] = self.world.size.map(|n| n as f64);
+        // The land's own ground in voxels, rather than the top of a tree's crown, a giant
+        // mushroom's cap, an orb of crystal or a spire of ice on it, and None out in the open air
+        // between the sky isles, see worldgen::land_height_m()
+        let settings = self.terrain_settings();
+        let origin = [self.world.origin[0] as f64, self.world.origin[1] as f64];
+        let land = |x: f64, y: f64| worldgen::land_height_m(&settings, ((x + origin[0]) / vpm) as f32, ((y + origin[1]) / vpm) as f32).map(|h| h as f64 * vpm);
+        // In the sky isles only where the monsters can walk to the player from, on the island
+        // they're on: none across the open air, and nearer than elsewhere if their island's small
+        let sky = worldgen::land_of(self.terrain.seed) == worldgen::Land::Sky;
+        let walkable = |x: f64, y: f64| {
+            let steps = ((x - feet.x).hypot(y - feet.y) / (0.5 * vpm)).ceil().max(1.0) as usize;
+            let mut last: Option<f64> = None;
+            (0..=steps).all(|k| {
+                let t = k as f64 / steps as f64;
+                let Some(h) = land(feet.x + (x - feet.x) * t, feet.y + (y - feet.y) * t) else { return false };
+                let ok = last.is_none_or(|l| (h - l).abs() < 1.5 * vpm);
+                last = Some(h);
+                ok
+            })
+        };
         // Somewhere dry on the ground behind them, trying round a little if it's water there
         let mut spot = None;
-        for attempt in 0..10 {
+        for attempt in 0..if sky { 24 } else { 10 } {
             let a = behind + (random(&mut self.raid.rng) - 0.5) * (1.6 + attempt as f64 * 0.3);
-            let d = (raids::SPAWN_NEAR_M + random(&mut self.raid.rng) * (raids::SPAWN_FAR_M - raids::SPAWN_NEAR_M)) * vpm;
+            let (near, far) = if attempt >= 10 { (SKY_SPAWN_NEAREST_M, raids::SPAWN_NEAR_M) } else { (raids::SPAWN_NEAR_M, raids::SPAWN_FAR_M) };
+            let d = (near + random(&mut self.raid.rng) * (far - near)) * vpm;
             let (x, y) = (feet.x + a.cos() * d, feet.y + a.sin() * d);
             if x < 8.0 || y < 8.0 || x > sx - 8.0 || y > sy - 8.0 {
                 continue;
             }
-            let Some(top) = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(x as i64, y as i64, z))) else { continue };
+            let Some(lay) = land(x, y) else { continue };
+            if sky && !walkable(x, y) {
+                continue;
+            }
+            let below = (lay + 1.5 * vpm).min(self.world.size[2] as f64 - 1.0) as i64;
+            let Some(top) = (0..=below).rev().find(|&z| !worldgen::is_passable(self.world.material_at(x as i64, y as i64, z))) else { continue };
             let ground = top as f64 + 1.0;
             if self.water.surface_at(x, y) < ground + 0.2 * vpm {
                 spot = Some(Vector3::new(x, y, ground));
@@ -173,7 +219,7 @@ impl App {
             }
         }
         let Some(at) = spot else {
-            return;
+            return false;
         };
         let mut looks = Vec::new();
         let mut tough = Vec::new();
@@ -199,8 +245,9 @@ impl App {
             self.game.say("Something's coming out of the dark.");
         }
         if let Some(capture) = &self.capture {
-            println!("RAID wave {} at frame {}: {came} of {looks:?} {:.0} m off", self.raid.waves, capture.frame_times.len(), (at - feet).norm() / vpm);
+            println!("RAID wave {} at frame {}: {came} of {looks:?} {:.0} m off, {:+.1} m up", self.raid.waves, capture.frame_times.len(), (at - feet).norm() / vpm, (at.z - feet.z) / vpm);
         }
+        true
     }
 
     /// Leads each raider round what's built to the player, or to the door in their way, see Nav
