@@ -4092,7 +4092,7 @@ impl App {
                 }
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
-                if f % 15 == 0 {
+                if f % 15 == 0 || (30..42).contains(&f) {
                     println!("frame {frame}: {}", self.game.in_flight(eye));
                 }
             }

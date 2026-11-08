@@ -382,8 +382,22 @@ impl Projectile {
 /// circle it for ever
 const MOST_STEER: f64 = 1.5 * PI;
 /// How big a gun's ball is drawn as a tracer's streak, next to a spark's, see effects::streak():
-/// about a third of a meter long for a musket ball
-const TRACER_SIZE: f64 = 1.7;
+/// about two thirds of a meter long for a musket ball, its hot head a glowing slug, a voxel some
+/// 10 cm across, big enough to be seen end on, flying straight away from the eye
+const TRACER_SIZE: f64 = 3.4;
+/// How far from the eye, in meters, what a shot leaves trailing behind it starts
+const TRAIL_CLEAR: f64 = 2.5;
+/// How far off a tracer starts getting smaller to the eye, in meters: from there out to three
+/// times as far it's drawn as big to the eye as it is there, and on from there it only slowly
+/// dwindles
+const TRACER_HELD: f64 = 6.0;
+/// How far a gun's ball leaves a line of sparks behind it, how far apart, in meters, and how long
+/// each lasts, in seconds: the flash at the muzzle drawn out into the line the shot takes, there
+/// a moment. Glowing, they hide neither the shot nor what it's shot at, as smoke along its way
+/// would, seen end on as the one who fired it sees it.
+const TRACE_LINE: f64 = 24.0;
+const TRACE_GAP: f64 = 1.2;
+const TRACE_LIFE: f64 = 0.07;
 /// The most things in flight at once. Past it, the furthest off and out of sight go first.
 const MOST_PROJECTILES: usize = 192;
 /// The most arrows, bolts and thorns left stuck in where they landed, and the seconds one takes to
@@ -523,6 +537,22 @@ fn carrier_form(element: Option<Element>) -> Form {
 /// When a special attack's move lets go, as part of the move: its first quick key
 fn lets_go(special: Special, profile: &Profile) -> f64 {
     special_move(special, moves_kind(profile), moves_like(profile.style)).1.iter().find(|k| k.2).map_or(0.0, |k| k.0)
+}
+
+/// What a tempest let go of with the player's feet at `feet` strikes, by how far off and id, in
+/// the order it strikes them: what's fighting, the bandits, monsters and bosses, first, the
+/// nearest first, then the rest of what's living within TEMPEST_REACH, at most ten in all
+fn tempest_targets(arena: &Arena, feet: Vector3<f64>) -> Vec<(f64, u32)> {
+    let vpm = arena.view.vpm;
+    let mut near: Vec<(bool, f64, u32)> = arena
+        .animals
+        .iter()
+        .filter(|a| a.health > 0.0 && !a.look.is_pet())
+        .map(|a| (a.boss.is_none(), (a.position - feet).norm(), a.id))
+        .filter(|&(_, d, _)| d < TEMPEST_REACH * vpm)
+        .collect();
+    near.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    near.into_iter().take(10).map(|(_, d, id)| (d, id)).collect()
 }
 
 /// Somewhere at random on the ground round 0, from `inner` to `outer` out, in the same units
@@ -1282,7 +1312,9 @@ const SUN_HEIGHT: f64 = 4.2;
 /// How high a tempest's thunderheads gather over the ground, in meters, low enough to be seen
 /// looking at what's under them, and seconds they gather before lightning first strikes
 const TEMPEST_HEIGHT: f64 = 7.0;
-const TEMPEST_GATHER: f64 = 0.4;
+const TEMPEST_GATHER: f64 = 0.25;
+/// How far round the player a tempest strikes what's there, in meters
+const TEMPEST_REACH: f64 = 25.0;
 /// How far off a special attack sent up into the sky over where it's aimed goes at the most, in
 /// meters across the ground, so it's never lost in the haze or up in an empty sky
 const SKY_REACH: f64 = 30.0;
@@ -5869,10 +5901,20 @@ impl Combat {
         self.flashes.push(Flash { position: muzzle, color: [1.0, 0.72, 0.38], reach: 7.0 + 3.0 * bore.min(3.0), life: 0.09, lifetime: 0.09 });
         let look = Element::look(profile.element);
         let puffs = (6.0 + 2.0 * bore.min(4.0)) as usize;
+        // The smoke rolls out of the muzzle as much outwards, off the line from the eye to the
+        // crosshair, as ahead, so it never hangs over that line hiding the shot as it flies off
+        // along it: out every way round the muzzle with the gun up at the eye, the muzzle on that
+        // line, and otherwise mostly off to the side it's held to
+        let forward = view.forward();
+        let from_eye = muzzle - view.eye;
+        let held_off = (from_eye - forward * forward.dot(&from_eye)).try_normalize(0.03 * vpm);
         for k in 0..puffs {
-            let out = (ahead * (0.6 + 2.6 * random(&mut self.rng)) + self.any_direction() * 0.7) * (1.0 + 0.3 * bore.min(3.0));
+            let any = self.any_direction();
+            let round = (any - forward * forward.dot(&any)).try_normalize(1e-6).unwrap_or_else(Vector3::z);
+            let outward = held_off.and_then(|o| (o * 1.2 + round).try_normalize(1e-6)).unwrap_or(round);
+            let out = (ahead * (0.4 + 1.6 * random(&mut self.rng)) + outward * (1.6 + 1.6 * random(&mut self.rng))) * (1.0 + 0.3 * bore.min(3.0));
             let life = 1.1 + 0.9 * random(&mut self.rng);
-            let at = muzzle + ahead * (0.04 * k as f64) * vpm;
+            let at = muzzle + (ahead * 0.04 * k as f64 + outward * 0.07) * vpm;
             self.sparks.push(Spark { position: at, velocity: out * vpm, look, life, lifetime: life, gravity: -0.03, slot: SLOT_SMOKE });
         }
         for _ in 0..6 {
@@ -8366,7 +8408,15 @@ impl Combat {
             // It bursts up there no higher than it's still in sight looking at the ground under
             // it, and what it calls down comes down out of the sky all the same
             Flight::Sky(height) => {
-                let ground = if aimed_at_nothing || (crosshair - feet).xy().norm() > SKY_REACH * vpm { reaching(crosshair - feet) } else { ground_under(arena.world, crosshair, vpm) };
+                // A tempest's storm gathers over the first few it's to strike, if any are near
+                let foes: Vec<Vector3<f64>> = tempest_targets(arena, feet).iter().take(3).filter_map(|&(_, id)| arena.animals.iter().find(|a| a.id == id)).map(|a| a.position).collect();
+                let ground = if special == Special::Tempest && !foes.is_empty() {
+                    ground_under(arena.world, foes.iter().sum::<Vector3<f64>>() / foes.len() as f64 + up * 1.0 * vpm, vpm)
+                } else if aimed_at_nothing || (crosshair - feet).xy().norm() > SKY_REACH * vpm {
+                    reaching(crosshair - feet)
+                } else {
+                    ground_under(arena.world, crosshair, vpm)
+                };
                 let off = (ground - feet).xy().norm() / vpm;
                 (ground + up * height.min(2.0 + 0.55 * off) * vpm, ground, true)
             }
@@ -8411,10 +8461,10 @@ impl Combat {
             // Faster up into the sky, so what it calls down isn't long coming, though never so
             // fast it's gone before it's seen
             let speed = match missile.map(|m| m.shot) {
+                _ if sky => 65.0,
                 Some(Shot::Arrow) => 55.0,
                 Some(Shot::Quarrel) => 60.0,
                 Some(_) => 48.0,
-                None if sky => 48.0,
                 None => 32.0,
             } * vpm;
             // However near it's going, it takes long enough getting there to be seen going
@@ -8550,16 +8600,9 @@ impl Combat {
             Special::Tempest => {
                 let ground = ground_under(arena.world, target, vpm);
                 self.storm_gathers(ground);
-                let mut near: Vec<(f64, u32)> = arena
-                    .animals
-                    .iter()
-                    .filter(|a| a.health > 0.0 && !a.look.is_pet())
-                    .map(|a| ((a.position - feet).norm(), a.id))
-                    .filter(|&(d, _)| d < 25.0 * vpm)
-                    .collect();
-                near.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let near = tempest_targets(arena, feet);
                 for (k, &(_, id)) in near.iter().take(10).enumerate() {
-                    later(&mut self.pending, TEMPEST_GATHER + k as f64 * 0.14, Act::Bolt(id), base * 1.5);
+                    later(&mut self.pending, TEMPEST_GATHER + k as f64 * 0.12, Act::Bolt(id), base * 1.5);
                 }
                 if near.is_empty() {
                     for k in 0..5 {
@@ -11461,6 +11504,9 @@ impl Combat {
         let vpm = arena.view.vpm;
         // As far off as things are seen, about, past which they've faded into the sky
         let trail_reach = seen_within(arena.world) * 0.85;
+        // Sparks shots leave in a line behind them this frame at the most, so a spread of shot
+        // doesn't fill the air with them
+        let mut traces = 16;
         let projectiles = std::mem::take(&mut self.projectiles);
         let mut keep = Vec::new();
         for mut p in projectiles {
@@ -11596,7 +11642,7 @@ impl Combat {
 
             // Spells and arrows with an element leave it trailing behind them, and arrows shot at
             // full draw and a gun's balls a streak. A fireball sheds more, venom and blood drip,
-            // and a shell's fuse sputters, smoking. Not so far off it's faded into the sky,
+            // and a shell's fuse sputters. Not so far off it's faded into the sky,
             // where none of it would be seen.
             let shell = p.arrow && p.shot == Shot::Shell;
             let shown = (start - arena.view.eye).norm() < trail_reach;
@@ -11615,14 +11661,23 @@ impl Combat {
                 while p.trail >= 1.0 {
                     p.trail -= 1.0;
                     let at = start.lerp(&end, random(&mut self.rng));
+                    // A shot's trail starts a little way out from the eye: right in front of it,
+                    // where it's just left the bow or the muzzle, it'd be blots of color bigger
+                    // to the eye than the shot itself, hanging over the way it went
+                    if p.arrow && (at - arena.view.eye).norm() < TRAIL_CLEAR * vpm {
+                        continue;
+                    }
                     if !p.arrow && p.form == Form::Hex {
                         // A hex trails darkness, whatever its totem's element
                         self.mote(at, Some(Element::Void), 1.6);
                     } else if shell {
+                        // Sparks off its burning fuse, now and then a big one so the dark ball's
+                        // seen going against dark ground, and no smoke, which would hang right
+                        // behind it, hiding it from the one who shot it
                         let v = self.any_direction() * 0.6 * vpm;
                         self.fine(at, v, Element::look(Some(Element::Fire)), 0.25, -0.1);
-                        if random(&mut self.rng) < 0.12 {
-                            self.sparks.push(Spark { position: at, velocity: Vector3::new(0.0, 0.0, 0.2) * vpm, look: 0, life: 0.7, lifetime: 0.7, gravity: -0.03, slot: SLOT_SMOKE });
+                        if random(&mut self.rng) < 0.35 {
+                            self.mote(at, Some(Element::Fire), 1.2);
                         }
                     } else if profile.element.is_none() && p.arrow {
                         self.fine(at, Vector3::zeros(), 0, 0.15, 0.0);
@@ -11938,7 +11993,24 @@ impl Combat {
                 continue;
             }
             p.position = end;
+            // A gun's ball leaves a line of sparks behind it for its first stretch, each a little
+            // streak of its tracer's glow there a moment, so the flash at the muzzle leads into the
+            // line it takes, followed by eye even shot straight away from it
+            let flew = p.flown;
             p.flown += (end - start).norm();
+            if p.arrow && p.shot == Shot::Ball && p.trick == Trick::None && flew < TRACE_LINE * vpm && shown {
+                let gap = TRACE_GAP * vpm;
+                let look = Element::look(profile.element).min(ELEMENT_LOOKS - 1);
+                let along = (end - start).try_normalize(1e-9).unwrap_or_else(Vector3::x) * 1.5 * vpm;
+                let mut at = (flew / gap).floor() * gap + gap;
+                while at < p.flown.min(TRACE_LINE * vpm) && traces > 0 {
+                    traces -= 1;
+                    let f = ((at - flew) / (p.flown - flew).max(1e-6)).clamp(0.0, 1.0);
+                    self.sparks.push(Spark { position: start.lerp(&end, f), velocity: along, look, life: TRACE_LIFE, lifetime: TRACE_LIFE, gravity: 0.0, slot: SLOT_SPARK });
+                    at += gap;
+                }
+                self.cap_sparks();
+            }
             if p.flown >= p.range {
                 p.range = f64::INFINITY;
                 if p.trick == Trick::Harpoon {
@@ -14777,8 +14849,10 @@ impl Combat {
         // Not what's flown on so far off it's faded into the sky
         for p in self.projectiles.iter().filter(|p| (p.position - view.eye).norm() < self.seen) {
             // A shot carrying a special attack is what shows it's coming, so it's drawn however
-            // much else is about, as if it were right at the eye
-            let key = if matches!(p.trick, Trick::Carry { special: Some(_), .. }) { view.eye } else { p.position };
+            // much else is about, as if it were right at the eye; and any shot's what the eye
+            // follows, so it's drawn before props and such lying about nearer, as if it were a
+            // tenth as far off
+            let key = if matches!(p.trick, Trick::Carry { special: Some(_), .. }) { view.eye } else { view.eye + (p.position - view.eye) * 0.1 };
             if let Some(instance) = self.projectile_instance(p, view) {
                 add(key, instance);
             }
@@ -14793,6 +14867,8 @@ impl Combat {
         let direction = p.velocity.try_normalize(1e-9).unwrap_or_else(Vector3::x);
         let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
         let look = Element::look(p.profile.element);
+        // Drawn a little bigger the further off it is past 15 m, so it's never lost to the eye
+        let far = ((p.position - view.eye).norm() / vpm / 15.0).max(1.0).sqrt();
         {
             if p.arrow {
                 let instance = match p.shot {
@@ -14824,11 +14900,15 @@ impl Combat {
                     }
                     // A ball's too small and quick to follow by itself, so it's drawn as the
                     // glowing streak of a tracer, its hot head where the ball is and its tail
-                    // trailing back the way it came, in its element's colors if it has one
+                    // trailing back the way it came, in its element's colors if it has one. Seen
+                    // end on, shot straight away from the eye as it mostly is, it's only its head
+                    // that shows, so it's held as big to the eye a while further off, a glowing
+                    // slug never lost however far it goes, see TRACER_HELD.
                     Shot::Ball => {
                         let (model, streak) = self.model_at(STREAKS + look.min(ELEMENT_LOOKS - 1));
-                        let near = ((p.position - view.eye).norm() / vpm / 3.0).clamp(0.35, 1.0);
-                        place(model, streak, STREAK_RES, Vector3::zeros(), p.position, rotation, vpm, TRACER_SIZE * p.size.max(1.0) * near, MOVING)
+                        let d = (p.position - view.eye).norm() / vpm;
+                        let scale = (d / 3.0).clamp(0.35, 1.0) * (d / TRACER_HELD).clamp(1.0, 3.0) * far;
+                        place(model, streak, STREAK_RES, Vector3::zeros(), p.position, rotation, vpm, TRACER_SIZE * p.size.max(1.0) * scale, MOVING)
                     }
                     // A bomb tumbling as it flies, lying still once it's come to rest, and one
                     // carrying a special attack
@@ -14842,7 +14922,7 @@ impl Combat {
                     Shot::Shell => {
                         let spin = rotation * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 9.0);
                         let (model, shell) = self.model_at(SHELL);
-                        place(model, shell, SHOT_RES, Vector3::zeros(), p.position, spin, vpm, p.size * 1.8, MOVING)
+                        place(model, shell, SHOT_RES, Vector3::zeros(), p.position, spin, vpm, p.size * 1.8 * far, MOVING)
                     }
                 };
                 Some(instance)
@@ -14850,20 +14930,59 @@ impl Combat {
                 // A ball of fire or darkness churning as it goes, or a hex, a knot of it
                 let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 6.0) * rotation;
                 let (look, size) = match p.form {
-                    Form::Hex => (Element::look(Some(Element::Void)), 0.07),
+                    Form::Hex => (Element::look(Some(Element::Void)), 0.1),
                     Form::Orb => (look, 0.13),
                     // A comet's far bigger than a fireball
                     _ => (look, 0.15 * p.size),
                 };
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, look);
-                Some(place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, size, MOVING))
+                Some(place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, size * far, MOVING))
             } else if p.form != Form::Lightning {
                 let (model, bolt) = self.effect_model(SLOT_BOLT, look);
-                Some(place(model, bolt, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size, MOVING))
+                Some(place(model, bolt, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size * far, MOVING))
             } else {
                 None
             }
         }
+    }
+
+    /// What to draw for spark `s`, if it's drawn, see other_instances(): not one of the fine
+    /// sparks, SLOT_FINE, which fine_instances() draws
+    fn spark_instance(&self, s: &Spark, view: &View) -> Option<AnimalInstance> {
+        let vpm = view.vpm;
+        // What goes off right in front of the eye is drawn smaller, so it doesn't fill the view:
+        // full size `reach` meters off, down to `least` of it up close
+        let near = |reach: f64, least: f64| ((s.position - view.eye).norm() / (reach * vpm)).clamp(least, 1.0);
+        // Sparks and drops a voxel across right up against the eye would be flat squares of color
+        // across the view, so they're left out
+        if matches!(s.slot, SLOT_SPARK | SLOT_DROP) && (s.position - view.eye).norm() < 0.6 * vpm {
+            return None;
+        }
+        // A spark flying fast is a streak along the way it's going, its head white-hot, see
+        // effects::streak(); one hanging still, as along a bolt of lightning, a speck
+        if s.slot == SLOT_SPARK && s.look < ELEMENT_LOOKS && s.velocity.norm() > 0.8 * vpm {
+            let (model, streak) = self.model_at(STREAKS + s.look);
+            let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity);
+            let size = (s.life / s.lifetime).clamp(0.3, 1.0) * near(2.5, 0.12);
+            return Some(place(model, streak, STREAK_RES, Vector3::zeros(), s.position, rotation, vpm, size, MOVING));
+        }
+        let (model, spark) = self.effect_model(s.slot, s.look);
+        // Drops stay whole till they land, sparks dwindle, smoke billows out and thins away
+        let age = 1.0 - s.life / s.lifetime;
+        let (size, res) = match s.slot {
+            SLOT_DROP => (1.0, SPARK_RES),
+            SLOT_SMOKE => ((0.4 + 1.3 * age.sqrt()) * (1.0 - age.powi(3)).max(0.15), SMOKE_RES),
+            // Billowing out, then thinning away
+            SLOT_CLOUD => ((0.45 + 0.65 * age.sqrt()) * (1.0 - age.powi(3)).max(0.1), CLOUD_RES),
+            // A streak of light, a good deal bigger than a spark, dwindling as it goes
+            SLOT_BOLT => (2.2 * (s.life / s.lifetime).clamp(0.35, 1.0), BOLT_RES),
+            _ => ((s.life / s.lifetime).clamp(0.2, 1.0), SPARK_RES),
+        };
+        // A streak points the way it's going, its tail trailing
+        let rotation = if s.slot == SLOT_BOLT { UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity) } else { UnitQuaternion::identity() };
+        // Sparks and drops a voxel across shrink hard in front of the eye
+        let shrink = if matches!(s.slot, SLOT_SPARK | SLOT_DROP) { near(2.5, 0.12) } else { near(1.5, 0.3) };
+        Some(place(model, spark, res, Vector3::zeros(), s.position, rotation, vpm, size * shrink, MOVING))
     }
 
     /// What to draw for everything else flying about, arrows stuck where they landed, what lies
@@ -15199,37 +15318,9 @@ impl Combat {
         // full size `reach` meters off, down to `least` of it up close
         let near = |at: Vector3<f64>, reach: f64, least: f64| ((at - view.eye).norm() / (reach * vpm)).clamp(least, 1.0);
         for s in self.sparks.iter().filter(|s| s.slot != SLOT_FINE) {
-            // Sparks and drops a voxel across right up against the eye would be flat squares of
-            // color across the view, so they're left out
-            if matches!(s.slot, SLOT_SPARK | SLOT_DROP) && (s.position - view.eye).norm() < 0.6 * vpm {
-                continue;
+            if let Some(instance) = self.spark_instance(s, view) {
+                add(s.position, instance);
             }
-            // A spark flying fast is a streak along the way it's going, its head white-hot, see
-            // effects::streak(); one hanging still, as along a bolt of lightning, a speck
-            if s.slot == SLOT_SPARK && s.look < ELEMENT_LOOKS && s.velocity.norm() > 0.8 * vpm {
-                let (model, streak) = self.model_at(STREAKS + s.look);
-                let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity);
-                let size = (s.life / s.lifetime).clamp(0.3, 1.0) * near(s.position, 2.5, 0.12);
-                add(s.position, place(model, streak, STREAK_RES, Vector3::zeros(), s.position, rotation, vpm, size, MOVING));
-                continue;
-            }
-            let (model, spark) = self.effect_model(s.slot, s.look);
-            // Drops stay whole till they land, sparks dwindle, smoke billows out and thins away
-            let age = 1.0 - s.life / s.lifetime;
-            let (size, res) = match s.slot {
-                SLOT_DROP => (1.0, SPARK_RES),
-                SLOT_SMOKE => ((0.4 + 1.3 * age.sqrt()) * (1.0 - age.powi(3)).max(0.15), SMOKE_RES),
-                // Billowing out, then thinning away
-                SLOT_CLOUD => ((0.45 + 0.65 * age.sqrt()) * (1.0 - age.powi(3)).max(0.1), CLOUD_RES),
-                // A streak of light, a good deal bigger than a spark, dwindling as it goes
-                SLOT_BOLT => (2.2 * (s.life / s.lifetime).clamp(0.35, 1.0), BOLT_RES),
-                _ => ((s.life / s.lifetime).clamp(0.2, 1.0), SPARK_RES),
-            };
-            // A streak points the way it's going, its tail trailing
-            let rotation = if s.slot == SLOT_BOLT { UnitQuaternion::rotation_between(&Vector3::x(), &s.velocity).unwrap_or_else(UnitQuaternion::identity) } else { UnitQuaternion::identity() };
-            // Sparks and drops a voxel across shrink hard in front of the eye
-            let shrink = if matches!(s.slot, SLOT_SPARK | SLOT_DROP) { near(s.position, 2.5, 0.12) } else { near(s.position, 1.5, 0.3) };
-            add(s.position, place(model, spark, res, Vector3::zeros(), s.position, rotation, vpm, size * shrink, MOVING));
         }
         // Explosions, each drawn in stages baked ahead of time, see effects::blast(): a white-hot
         // core, a fireball billowing out, breaking up and dissolving into smoke, each element its
@@ -16355,8 +16446,9 @@ mod tests {
                     out.travel += (tip - last).norm();
                 }
                 last_tip = Some(tip);
-                // How nearly it points back at the eye, as drawn
-                let along = pose.turn * Vector3::z();
+                // How nearly it points back at the eye, as drawn: from where it's held to its tip,
+                // its muzzle or its point
+                let along = pose.turn * (weapon.look.tip - weapon.look.grip).try_normalize(1e-6).unwrap_or_else(Vector3::z);
                 if let Some(to_eye) = (-pose.hand).try_normalize(1e-6) {
                     out.facing = out.facing.max(along.dot(&to_eye));
                 }
@@ -16563,8 +16655,10 @@ mod tests {
                 if t.travel < 0.25 {
                     wrong(format!("{pack}, the weapon only moves {:.2} m", t.travel));
                 }
-                // Never turned round to point back at the player's own face
-                if !foes && !level && t.facing > 0.9 {
+                // A crossbow or gun never turned round with its muzzle pointing back at the
+                // player's own face. A bow's tip is the end of a limb, a book's a corner and a
+                // scythe's the point of a blade curving back, so theirs say nothing.
+                if !foes && !level && profile.build != Build::None && t.facing > 0.9 {
                     wrong(format!("the weapon points back at the eye, {:.0} degrees off it", t.facing.clamp(-1.0, 1.0).acos().to_degrees()));
                 }
                 // With nothing about, it still plays out to be seen, really seen as it's drawn:
@@ -16735,7 +16829,8 @@ mod tests {
     /// Every shot, not only a special attack's, can be followed by eye as it's drawn: an arrow, a
     /// crossbow's bolt, a gun's ball and a blunderbuss's pellet, a hand cannon's shell, each shot
     /// level out ahead is on screen and big enough to be seen all the way out to 40 m, or till it
-    /// comes down
+    /// comes down, and nothing it leaves hanging in the air behind it, as smoke, hides it from
+    /// the one who shot it, looking after it along the way it went
     #[test]
     fn every_shot_can_be_followed() {
         let world = wide_field();
@@ -16746,13 +16841,17 @@ mod tests {
         let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
         let profile = plain_profile();
         let muzzle = eye + Vector3::new(0.25, 0.4, -0.25) * vpm;
-        for (shot, size, speed) in [(Shot::Arrow, 1.0, 48.0), (Shot::Quarrel, 1.0, 70.0), (Shot::Ball, 1.0, 150.0), (Shot::Ball, 0.55, 120.0), (Shot::Shell, 1.0, 55.0)] {
+        let shots = [(Some(Shot::Arrow), 1.0, 48.0), (Some(Shot::Quarrel), 1.0, 70.0), (Some(Shot::Ball), 1.0, 150.0), (Some(Shot::Ball), 0.55, 120.0), (Some(Shot::Shell), 1.0, 55.0)];
+        // And every kind of spell, as slow as the slowest a weapon casts
+        let spells = [Form::Bolt, Form::Fireball, Form::Shard, Form::Glob, Form::Missile, Form::Orb, Form::Lance, Form::Hex].map(|_| (None, 0.0, 13.0));
+        let forms = [Form::Bolt; 5].into_iter().chain([Form::Bolt, Form::Fireball, Form::Shard, Form::Glob, Form::Missile, Form::Orb, Form::Lance, Form::Hex]);
+        for ((shot, size, speed), form) in shots.into_iter().chain(spells).zip(forms) {
             let mut combat = Combat::new(1, 0);
             combat.vpm = vpm;
             let mut animals = Vec::new();
-            combat.shoot(&view, &profile, Some(Missile { shot, head: 0, power: false, size }), Form::Bolt, muzzle, Vector3::new(0.0, 1.0, 0.02).normalize(), speed * vpm, 10.0);
+            combat.shoot(&view, &profile, shot.map(|shot| Missile { shot, head: 0, power: false, size }), form, muzzle, Vector3::new(0.0, 1.0, 0.02).normalize(), speed * vpm, 10.0);
             let (mut frames, mut seen) = (0, 0);
-            for _ in 0..240 {
+            for _ in 0..720 {
                 let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
                 combat.update(&mut arena, None, None, Controls::default(), 1.0 / 120.0);
                 let Some(p) = combat.projectiles.first() else {
@@ -16768,9 +16867,68 @@ mod tests {
                 frames += 1;
                 let (at, reach) = combat.projectile_instance(p, &view).expect("drawn").sphere();
                 let on_screen = view.project(at).is_some_and(|[x, y]| (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y));
-                seen += (on_screen && reach / (at - eye).norm() > SEEN_ANGLE) as usize;
+                seen += (on_screen && !hidden_behind_smoke(&combat, &view, at) && reach / (at - eye).norm() > SEEN_ANGLE) as usize;
             }
-            assert!(frames > 3 && seen == frames, "{shot:?} {size}: seen in {seen} of {frames} frames out to 40 m");
+            assert!(frames > 3 && seen == frames, "{shot:?} {size} {form:?}: seen in {seen} of {frames} frames out to 40 m");
+        }
+    }
+
+    /// Whether what's at `at` is hidden from the eye behind smoke or a cloud hanging nearer it,
+    /// as they're drawn, by all but their thin edges
+    fn hidden_behind_smoke(combat: &Combat, view: &View, at: Vector3<f64>) -> bool {
+        let towards = (at - view.eye).normalize();
+        combat.sparks.iter().filter(|s| matches!(s.slot, SLOT_SMOKE | SLOT_CLOUD)).filter_map(|s| combat.spark_instance(s, view)).any(|i| {
+            let (c, r) = i.sphere();
+            let d = (c - view.eye).norm();
+            d < (at - view.eye).norm() && (c - view.eye).normalize().dot(&towards).clamp(-1.0, 1.0).acos() < (0.7 * r / d).min(1.0).asin()
+        })
+    }
+
+    /// A gun's ordinary shot as it's fired in play, from the gun in hand at the crosshair, out
+    /// over open ground: each ball, pellet or shell is seen by the one who fired it all the way out
+    /// to 40 m, or till it comes down, on screen, big enough, and never hidden behind the smoke
+    /// of the shot rolling out of the muzzle or anything else it left hanging in the air
+    #[test]
+    fn a_gun_shot_is_seen_by_who_fired_it() {
+        let library = crate::weapons::Library::load();
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(96.0, 40.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let dt = 1.0 / 120.0;
+        for id in ["pistol", "musket", "blunderbuss", "handcannon"] {
+            let family = library.families.iter().position(|f| f.id == id).expect("a gun");
+            for seed in 1..4 {
+                let weapon = library.generate(seed, Some(family), 0.0);
+                let mut combat = Combat::new(1, 0);
+                combat.vpm = vpm;
+                let mut animals = Vec::new();
+                let (mut fired, mut looks, mut seen, mut hidden) = (0, 0, 0, 0);
+                for frame in 0..(4.0 / dt) as usize {
+                    let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                    combat.update(&mut arena, Some((0, &weapon)), None, Controls { attack: frame == (0.6 / dt) as usize, ..Default::default() }, dt);
+                    fired = fired.max(combat.projectiles.len());
+                    for p in &combat.projectiles {
+                        let d = (p.position - view.eye).norm();
+                        if !(2.0 * vpm..40.0 * vpm).contains(&d) {
+                            continue;
+                        }
+                        looks += 1;
+                        let (at, reach) = combat.projectile_instance(p, &view).expect("drawn").sphere();
+                        let on_screen = view.project(at).is_some_and(|[x, y]| (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y));
+                        let behind = hidden_behind_smoke(&combat, &view, at);
+                        if behind {
+                            println!("{} hidden at {:.1} m, frame {frame}", weapon.name, d / vpm);
+                        }
+                        hidden += behind as usize;
+                        seen += (on_screen && !behind && reach / d > SEEN_ANGLE) as usize;
+                    }
+                }
+                let name = &weapon.name;
+                assert!(fired > 0 && looks > 3, "the {name} never fired");
+                assert!(seen == looks, "the {name}'s shot seen {seen} times of {looks} out to 40 m, {hidden} of them hidden behind smoke");
+            }
         }
     }
 
