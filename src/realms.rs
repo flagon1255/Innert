@@ -277,6 +277,54 @@ mod tests {
         assert!((0..3).all(|k| a.lair_key(k)[2] < -1000));
     }
 
+    /// The dreaming realm is soft west of its divide and bleeding east of it, its gate on the soft
+    /// side where the player comes to it, its raid bosses' lairs on dry land, and a piece of it
+    /// across the divide builds, with all that grows there
+    #[test]
+    fn the_dreaming_realm_has_two_halves() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: DREAM_SEED, grass_tufts: false };
+        let p = Places::find(2, &settings, [200.0, 180.0], [0.0, 1.0]);
+        assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0));
+        for lair in p.lairs {
+            assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
+        }
+        assert!(worldgen::dream_blood(p.gate[0] as f32, p.gate[1] as f32) < 0.01, "the gate's in the soft half");
+        assert_eq!(worldgen::dream_blood(320.0, 0.0), 1.0);
+        assert_eq!(worldgen::dream_blood(150.0, 0.0), 0.0);
+        let (terrain, world) = worldgen::generate_area(&settings, [200 * 4, 150 * 4], [64 * 4, 64 * 4], &worldgen::RiverCache::default());
+        assert!(world.brick_count() > 0);
+        // No one lives there
+        assert!(terrain.sites().iter().all(|s| !matches!(s.kind, "town" | "royal court" | "bandit camp")));
+    }
+
+    /// The frozen realm's snow from end to end, its sea and rivers iced over so nothing flows
+    /// anywhere in it, its gate and raid bosses' lairs on dry land
+    #[test]
+    fn the_frozen_realm_is_iced_over() {
+        use crate::worldgen::material::{GRASS, ICE, JUNGLE_GRASS, SAND, SNOW};
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: ICE_SEED, grass_tufts: false };
+        let p = Places::find(3, &settings, [200.0, 180.0], [0.0, 1.0]);
+        assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0));
+        for lair in p.lairs {
+            assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
+        }
+        // A piece of it round somewhere low, by the sea or a river
+        let low = (0..900).map(|k| [(k % 30) as f32 * 40.0 - 600.0, (k / 30) as f32 * 40.0 - 600.0]).find(|&at| !worldgen::is_dry_land(&settings, at, 0.5)).expect("somewhere low");
+        let corner = [(low[0] as i64 - 32) * 4, (low[1] as i64 - 32) * 4];
+        let (terrain, world) = worldgen::generate_area(&settings, corner, [64 * 4, 64 * 4], &worldgen::RiverCache::default());
+        assert!(terrain.springs().is_empty(), "nothing flows");
+        let mut tops = [0usize; 256];
+        for y in (0..256).step_by(2) {
+            for x in (0..256).step_by(2) {
+                if let Some(z) = (0..256).rev().find(|&z| !worldgen::is_passable(world.material_at(x, y, z))) {
+                    tops[world.material_at(x, y, z) as usize] += 1;
+                }
+            }
+        }
+        assert!(tops[ICE as usize] > 0 && tops[SNOW as usize] > 0, "ice {} snow {}", tops[ICE as usize], tops[SNOW as usize]);
+        assert_eq!([GRASS, JUNGLE_GRASS, SAND].map(|m| tops[m as usize]), [0; 3], "no grass or sand");
+    }
+
     /// In the sky isles too: the gate, where the player comes to it and every raid boss's lair are
     /// on a floating island, and from each island there's another within a grappling hook's reach
     #[test]

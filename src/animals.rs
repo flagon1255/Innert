@@ -105,10 +105,9 @@ pub enum Look {
     RealmPortal,
     PortalVeil,
     InnertBlock,
-    // Getting about the sky isles, see src\rope.rs: a grappling hook's head, a length of its rope,
-    // and wings spread to glide
+    // Getting about the sky isles, see src\rope.rs: a grappling hook's head, and wings spread to
+    // glide
     GrappleHook,
-    HookRope,
     Wings,
 }
 
@@ -160,7 +159,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 65] = [
+    pub const ALL: [Look; 64] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -224,7 +223,6 @@ impl Look {
         Look::PortalVeil,
         Look::InnertBlock,
         Look::GrappleHook,
-        Look::HookRope,
         Look::Wings,
     ];
 
@@ -392,7 +390,7 @@ impl Look {
 
     /// Part of the way through the realms, which stands where it is, see src\realms.rs
     pub fn is_shrine(self) -> bool {
-        matches!(self, Look::Teleporter | Look::RealmPortal | Look::PortalVeil | Look::InnertBlock | Look::GrappleHook | Look::HookRope | Look::Wings)
+        matches!(self, Look::Teleporter | Look::RealmPortal | Look::PortalVeil | Look::InnertBlock | Look::GrappleHook | Look::Wings)
     }
 
     /// Bones rather than rotting flesh, for the walking dead
@@ -514,9 +512,14 @@ impl Look {
         }
     }
 
-    /// Voxels per meter of its model: the same size as the world's, like everything else
+    /// Voxels per meter of its model: the same size as the world's, like everything else but what's
+    /// held right in front of the eye, a grappling hook or wings, finer like a weapon in hand
     fn resolution(self) -> f64 {
-        MODEL_RES
+        match self {
+            Look::GrappleHook => 3.0 * MODEL_RES,
+            Look::Wings => 4.0 * MODEL_RES,
+            _ => MODEL_RES,
+        }
     }
 
     /// Radius of a sphere around the whole model wherever it's turned, in meters
@@ -571,9 +574,7 @@ impl Look {
             Look::RealmPortal => 7.9,
             Look::PortalVeil => 6.6,
             Look::InnertBlock => 0.28,
-            Look::GrappleHook => 0.3,
-            // Half its length, lying along x
-            Look::HookRope => 0.8,
+            Look::GrappleHook => 0.5,
             Look::Wings => 1.5,
         }
     }
@@ -618,7 +619,6 @@ impl Look {
             Look::PortalVeil => (2.7, 1.2),
             Look::InnertBlock => (0.12, 0.3),
             Look::GrappleHook => (0.1, 0.3),
-            Look::HookRope => (0.03, 0.1),
             Look::Wings => (0.3, 0.6),
         }
     }
@@ -685,7 +685,6 @@ impl Look {
             Look::PortalVeil => "portal",
             Look::InnertBlock => "Innert block",
             Look::GrappleHook => "grappling hook",
-            Look::HookRope => "rope",
             Look::Wings => "wings",
         }
     }
@@ -2676,33 +2675,39 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(cuboid([-h, -h, 0.02], [h, h, 0.02 + 2.0 * h], GLOW_ARCANE));
         }
         Look::GrappleHook => {
-            // Three barbed prongs curving back from the head of an iron shank, a ring at its tail
-            // for the rope
-            let z = 0.14;
+            // Three barbed prongs of bright steel curling back from the head of an iron shank,
+            // their points catching the light, and a bronze ring at its tail for the rope, big
+            // enough to be seen flying out a long way off
+            let z = 0.22;
             for k in 0..3 {
-                let a = k as f64 * TAU / 3.0;
+                let a = k as f64 * TAU / 3.0 + 0.5;
                 let (c, s) = (a.cos(), a.sin());
-                p.push(limb([0.13, 0.0, z], [0.07, 0.1 * c, z + 0.1 * s], 0.016, 0.012, STEEL));
-                p.push(limb([0.07, 0.1 * c, z + 0.1 * s], [0.1, 0.12 * c, z + 0.12 * s], 0.012, 0.004, STEEL));
+                p.push(ball([0.2, 0.17 * c, z + 0.17 * s], 0.025, GLOW_HOLY));
+                p.push(limb([0.26, 0.0, z], [0.12, 0.16 * c, z + 0.16 * s], 0.028, 0.022, STEEL));
+                p.push(limb([0.12, 0.16 * c, z + 0.16 * s], [0.2, 0.18 * c, z + 0.18 * s], 0.022, 0.01, STEEL));
             }
-            p.push(ball([0.14, 0.0, z], 0.024, DARK_STEEL));
-            p.push(limb([-0.12, 0.0, z], [0.13, 0.0, z], 0.018, 0.018, DARK_STEEL));
-            p.push(ball([-0.15, 0.0, z], 0.032, BRONZE));
+            p.push(ball([0.27, 0.0, z], 0.04, STEEL));
+            p.push(limb([-0.2, 0.0, z], [0.26, 0.0, z], 0.03, 0.03, DARK_STEEL));
+            p.push(ball([-0.25, 0.0, z], 0.05, BRONZE));
         }
-        // A length of plaited rope lying along x, a grappling hook's, many of them making the line
-        Look::HookRope => p.push(limb([-0.75, 0.0, 0.03], [0.75, 0.0, 0.03], 0.008, 0.008, LEATHER)),
         Look::Wings => {
-            // Wings of white feathers spread wide either side, on a light frame of bone along
-            // their leading edges, as when gliding
+            // Wings of white feathers spread wide either side and sweeping down to their tips, on
+            // a light frame of bone along their leading edges, with a strut down from the middle
+            // of each to the bar they're held by underneath, as when gliding
             for side in [-1.0, 1.0] {
-                p.push(limb([0.0, side * 0.18, 0.65], [-0.05, side * 0.8, 0.82], 0.035, 0.03, BONE));
-                p.push(limb([-0.05, side * 0.8, 0.82], [-0.2, side * 1.35, 0.78], 0.03, 0.015, BONE));
-                for k in 0..6 {
-                    let out = 0.25 + 0.2 * k as f64;
-                    let tint = if k % 2 == 0 { LINEN } else { FUR_WHITE };
-                    p.push(ellipsoid([-0.2 - 0.03 * k as f64, side * out, 0.66 - 0.03 * k as f64], [0.24 - 0.02 * k as f64, 0.11, 0.025], tint));
+                let edge = |f: f64| [0.05 - 0.23 * f, side * (0.15 + 1.2 * f), 0.75 - 0.45 * f];
+                p.push(limb(edge(0.0), edge(0.5), 0.035, 0.03, BONE));
+                p.push(limb(edge(0.5), edge(1.0), 0.03, 0.015, BONE));
+                for k in 0..7 {
+                    let f = 0.08 + 0.14 * k as f64;
+                    let [x, y, z] = edge(f);
+                    // Grey-tipped flight feathers out at the end
+                    let tint = if k >= 5 { FUR_GRAY } else if k % 2 == 0 { LINEN } else { FUR_WHITE };
+                    p.push(ellipsoid([x - 0.22, y, z - 0.02], [0.24 - 0.015 * k as f64, 0.1, 0.025], tint));
                 }
+                p.push(limb([0.03, side * 0.15, 0.73], [-0.22, side * 0.28, 0.15], 0.013, 0.013, BONE));
             }
+            p.push(limb([-0.22, -0.3, 0.15], [-0.22, 0.3, 0.15], 0.014, 0.014, BONE));
         }
         // Bosses, all built above
         _ => {}
@@ -3169,7 +3174,13 @@ pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_vo
     AnimalInstance::new(model_index(look, 0), position, facing(heading), vpm / look.resolution(), look.reach() * vpm, STILL)
 }
 
-/// The same for something moving with the player, turned any way, like a grappling hook's rope
+/// The same in the player's hand, turned any way, like a grappling hook or wings spread to glide
+pub fn held_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, world_voxels_per_meter: u32) -> AnimalInstance {
+    let vpm = world_voxels_per_meter as f64;
+    AnimalInstance::new(model_index(look, 0), position, rotation, vpm / look.resolution(), look.reach() * vpm, HELD)
+}
+
+/// The same for something moving about, turned any way, like a grappling hook flying out
 pub fn moving_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, world_voxels_per_meter: u32) -> AnimalInstance {
     let vpm = world_voxels_per_meter as f64;
     AnimalInstance::new(model_index(look, 0), position, rotation, vpm / look.resolution(), look.reach() * vpm, MOVING)

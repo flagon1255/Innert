@@ -31,6 +31,7 @@ const uint MAT_GRASS = 1;
 const uint MAT_SAND = 4;
 const uint MAT_WATER = 6;
 const uint MAT_FOAM = 21;
+const uint MAT_ICE = 78;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
@@ -92,6 +93,11 @@ layout(set = 3, binding = 8) uniform View {
     vec4 keyLight;
     // What the light bounced onto faces is kept relative to, see cacheAdd()
     vec4 cacheLevel;
+    // The look of the realm the world is, see src\realms.rs and realmGrade(). x: which, REALM_*,
+    // y: where the dreaming realm's divide is, in voxels across the world, z: where the world's
+    // corner is in the whole landscape, in voxels along it, w: how much of the blood-red half the
+    // camera's in, 0 to 1
+    vec4 realm;
 } view;
 
 // No more than 128 bytes, see View
@@ -486,6 +492,50 @@ vec3 fromNear(vec3 p) {
 bool insideNear(vec3 p) {
     vec3 q = toNear(p);
     return nearActive() && all(greaterThanEqual(q, vec3(0))) && all(lessThan(q, vec3(pc.near_size.xyz)));
+}
+
+// The realms' own looks, see View::realm. Has to match App::realm_look() in src\session.rs.
+const uint REALM_DREAM = 2;
+const uint REALM_ICE = 3;
+// The dreaming realm's divide wanders this many meters either side of its line, over this many
+// meters along it, and its halves give way to each other over this many meters either side of it.
+// Has to match DREAM_DIVIDE in src\worldgen.rs.
+const float DIVIDE_AT = 240.0;
+const float DIVIDE_WANDER = 18.0;
+const float DIVIDE_ALONG = 70.0;
+const float DIVIDE_EDGE = 2.0;
+
+// How much of the dreaming realm's blood-red half a point is, 0 to 1, from where its divide is
+float bloodAt(vec2 p) {
+    if (uint(view.realm.x) != REALM_DREAM)
+    return 0;
+    float vpm = float(max(pc.world_size.w, 1u));
+    float line = view.realm.y + DIVIDE_WANDER * vpm * sin((p.y + view.realm.z) / (DIVIDE_ALONG * vpm));
+    return smoothstep(-DIVIDE_EDGE * vpm, DIVIDE_EDGE * vpm, p.x - line);
+}
+
+// The colours of the land in the realms that have their own: the dreaming realm's soft half washed
+// pale, lilac and rose, its other half bled crimson, the frozen realm a little frosted
+vec3 realmGrade(vec3 albedo, vec3 p) {
+    uint realm = uint(view.realm.x);
+    if (realm == REALM_DREAM) {
+        float lum = dot(albedo, vec3(0.3, 0.55, 0.15));
+        // Washed pale in drifting patches of mint, lilac and rose, where they are in the whole
+        // landscape so they stay put as the world moves on
+        float vpm = float(max(pc.world_size.w, 1u));
+        vec2 g = vec2(p.x + DIVIDE_AT * vpm - view.realm.y, p.y + view.realm.z) / vpm;
+        float drift = sin(g.x / 37.0) + sin(g.y / 53.0 + 1.3) + 0.5 * sin((g.x + g.y) / 23.0);
+        vec3 tint = mix(vec3(0.95, 1.32, 1.12), vec3(1.3, 0.95, 1.42), smoothstep(-1.2, 1.2, drift));
+        tint = mix(tint, vec3(1.42, 1.0, 1.08), smoothstep(1.0, 2.0, drift));
+        vec3 dream = mix(albedo, lum * tint * 1.1 + vec3(0.03, 0.025, 0.035), 0.55);
+        vec3 blood = vec3(lum * 1.7 + 0.025, lum * 0.16, lum * 0.2);
+        return mix(dream, blood, bloodAt(p.xy));
+    }
+    if (realm == REALM_ICE) {
+        float lum = dot(albedo, vec3(0.3, 0.55, 0.15));
+        return mix(albedo, lum * vec3(0.92, 1.0, 1.12), 0.35);
+    }
+    return albedo;
 }
 
 vec3 materialAlbedo(uint material, uvec3 coord) {
@@ -1048,6 +1098,18 @@ vec3 skyColor(vec3 dir) {
     vec3 zenith = vec3(0.08, 0.3, 0.92);
     // Warmer horizon around sunrise and sunset, glowing round where the sun's going down
     vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, view.sun.z));
+    // The dreaming realm's sky soft lilac over a rosy horizon, bleeding to deep red over its other
+    // half, and the frozen realm's pale and cold
+    uint realm = uint(view.realm.x);
+    if (realm == REALM_DREAM) {
+        vec3 dream_zenith = mix(vec3(0.42, 0.3, 0.85), vec3(0.45, 0.04, 0.05), view.realm.w);
+        vec3 dream_horizon = mix(vec3(1.0, 0.68, 0.8), vec3(0.95, 0.28, 0.16), view.realm.w);
+        zenith = mix(zenith, dream_zenith, 0.85);
+        horizon = mix(horizon, dream_horizon, 0.85);
+    } else if (realm == REALM_ICE) {
+        zenith = mix(zenith, vec3(0.32, 0.5, 0.82), 0.6);
+        horizon = mix(horizon, vec3(0.82, 0.9, 1.0), 0.6);
+    }
     vec3 sky = mix(horizon, zenith, sqrt(clamp(dir.z, 0, 1)));
     sky = mix(sky, horizon * 0.4, clamp(-dir.z * 4.0, 0, 1));
     float low = 1 - smoothstep(0.0, 0.22, abs(view.sun.z + 0.02));
@@ -1349,6 +1411,9 @@ vec3 hitAlbedo(Hit hit, uint material) {
         albedo *= mix(0.4, 1.3, sqrt(h));
         albedo = mix(albedo, albedo * vec3(1.2, 1.12, 0.62), h * h);
     }
+    // In the colours of the realm, for the land, not what moves about on it
+    if (hit.level != ANIMAL && view.realm.x > 0.5)
+    albedo = realmGrade(albedo, voxelPoint(hit, vec3(0.5) - vec3(hit.shift)));
     return albedo;
 }
 
@@ -1713,6 +1778,15 @@ vec3 openSeaBelow(vec3 dir) {
 // the water voxel `voxel` is churned up white over that, right through where it's `falling`.
 vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float foam, bool falling) {
     float fresnel = waterFresnel(dir, normal);
+    // The frozen realm's sea is iced over out past the world as it is in it, see Terrain::column()
+    // in src\worldgen.rs: pale ice with the sky's glare on it
+    if (open_sea && uint(view.realm.x) == REALM_ICE) {
+        vec3 up = vec3(0, 0, 1);
+        vec3 ice = pow(PALETTE[MAT_ICE], vec3(2.2));
+        vec3 lit = ice * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up));
+        vec3 glare = reflect(dir, up);
+        return mix(lit, skyColor(glare) + sunDisc(glare), fresnel * 0.5);
+    }
     vec3 mirrored = reflect(dir, normal);
     vec3 reflection = (pc.flags & FLAG_REFLECTIONS) != 0
         ? shadeSecondary(pos + normal * 1e-3, mirrored, true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)))
@@ -1763,6 +1837,12 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float
         // Falling water is churned white right through. Fast water on the surface just has white
         // on top, with the clear water showing through.
         color = mix(color, lit, falling ? 1.0 : foam * 0.75);
+    }
+    // Blood rather than water in the dreaming realm's red half: dark and thick, its sheen red
+    float blood = bloodAt(pos.xy);
+    if (blood > 0) {
+        float lum = dot(color, vec3(0.3, 0.55, 0.15));
+        color = mix(color, vec3(lum * 1.5 + 0.02, lum * 0.08, lum * 0.1), blood * 0.9);
     }
     return color;
 }
@@ -2236,6 +2316,7 @@ vec3 shadeGrass(vec3 origin, vec3 dir, GrassHit grass, inout vec4 guide) {
     // Dark at the root, lighter and yellower towards the tip, a little different blade to blade
     vec3 tip_color = mix(vec3(0.11, 0.29, 0.04), vec3(0.25, 0.34, 0.06), random(seed));
     vec3 albedo = mix(vec3(0.02, 0.06, 0.01), tip_color, smoothstep(0.0, 0.9, h)) * mix(0.8, 1.15, random(seed));
+    albedo = realmGrade(albedo, pos);
     // Less light gets down between the blades
     float occlusion = mix(0.2, 1.0, h);
 

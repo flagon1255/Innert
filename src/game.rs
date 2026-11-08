@@ -606,6 +606,8 @@ pub struct Game {
     /// Whether the merchants sell a grappling hook and wings, as they do in the journey through
     /// the realms once the way to the sky isles is open
     sky_wares: bool,
+    /// The player's hands full of something else, see set_hands_busy()
+    hands_busy: bool,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -762,6 +764,7 @@ impl Game {
             scaling: Scaling::NONE,
             raid_lairs: HashMap::new(),
             sky_wares: false,
+            hands_busy: false,
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -3752,12 +3755,17 @@ impl Game {
     }
 
     /// Gives the player `item`, a hook or wings, if they haven't one already, telling them how it
-    /// came to them: whether it was given
+    /// came to them: whether it was given. It goes on the quick bar's last slot, to take in hand
+    /// with a number key, what was there moving along into the pack.
     pub fn find_once(&mut self, item: Item, how: &str) -> bool {
         if self.carries(item) {
             return false;
         }
-        self.add_item(item, 1);
+        let at = self.slots.len().min(HOTBAR - 1);
+        self.slots.insert(at, (item, 1));
+        if self.selected >= at && self.selected < self.slots.len() - 1 {
+            self.selected += 1;
+        }
         self.cues.push(Cue::here(Sound::Equip, 0.9));
         self.cues.push(Cue::here(Sound::Fanfare, 0.5));
         self.milestone = true;
@@ -3768,6 +3776,32 @@ impl Game {
     /// Whether the merchants sell the grappling hook and wings, see Game::sky_wares
     pub fn set_sky_wares(&mut self, sold: bool) {
         self.sky_wares = sold;
+    }
+
+    /// Takes `item` in hand if it's carried, on the quick bar or not: whether it is now
+    pub fn hold_item(&mut self, item: Item) -> bool {
+        let Some(slot) = self.slots.iter().position(|(i, _)| *i == item) else {
+            return false;
+        };
+        self.hold(slot);
+        self.slots.get(self.selected).is_some_and(|(i, _)| *i == item)
+    }
+
+    /// A rope from `from` to `to`, in voxels, sagging `sag` of its length in the middle, `thick`
+    /// meters thick, see Combat::rope_instances()
+    pub fn rope_instances(&self, from: Vector3<f64>, to: Vector3<f64>, sag: f64, thick: f64) -> Vec<AnimalInstance> {
+        self.combat.rope_instances(from, to, sag, thick)
+    }
+
+    /// The player's arm holding something that isn't a weapon, see Combat::held_arm()
+    pub fn held_arm(&self, which: usize, grip: Vector3<f64>, axis: Vector3<f64>, elbow: Vector3<f64>) -> AnimalInstance {
+        self.combat.held_arm(which, grip, axis, elbow)
+    }
+
+    /// Whether the player's hands are full of something else, like wings spread to glide, so the
+    /// weapon in hand isn't drawn
+    pub fn set_hands_busy(&mut self, busy: bool) {
+        self.hands_busy = busy;
     }
 
     /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
@@ -3855,8 +3889,8 @@ impl Game {
     pub fn instances(&self, world: &World, view: &View) -> Vec<AnimalInstance> {
         let vpm = world.voxels_per_meter as f64;
         let camera = view.eye;
-        // Nothing in hand while lying dead
-        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
+        // Nothing in hand while lying dead, nor while the hands are full of something else
+        let held = self.held().filter(|_| self.dead.is_none() && !self.hands_busy).map(|(i, w)| (w, self.weapon_model(i)));
         let mut out = self.combat.held_instances(held, view);
         // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
         // the blocks set in it up close

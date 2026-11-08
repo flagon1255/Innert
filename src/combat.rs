@@ -14696,6 +14696,19 @@ impl Combat {
         out
     }
 
+    /// A rope from `from` to `to`, sagging `sag` of its length in the middle, `thick` meters
+    /// thick, drawn as a whip's braided leather lash is: for a line that isn't a weapon's, like a
+    /// grappling hook's, see src\rope.rs
+    pub fn rope_instances(&self, from: Vector3<f64>, to: Vector3<f64>, sag: f64, thick: f64) -> Vec<AnimalInstance> {
+        self.line_instances(from, to, sag, crate::weapons::LASH_LEATHER, thick).into_iter().map(|(_, i)| i).collect()
+    }
+
+    /// An arm in the player's hand holding `grip` round `axis`, its forearm back towards `elbow`,
+    /// see arm(): for what's held that isn't a weapon, like a grappling hook or wings
+    pub fn held_arm(&self, which: usize, grip: Vector3<f64>, axis: Vector3<f64>, elbow: Vector3<f64>) -> AnimalInstance {
+        self.arm(which, grip, axis, elbow, self.vpm)
+    }
+
     /// Model `look` of the set at `slot`, see weapons::SLOT_ARROW and the rest
     fn effect_model(&self, slot: usize, look: usize) -> (u32, &(Model, Vector3<f64>)) {
         self.model_at(slot * ELEMENT_LOOKS + look)

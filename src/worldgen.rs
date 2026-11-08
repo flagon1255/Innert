@@ -2759,6 +2759,49 @@ pub fn sky_isle(seed: u32, i: i32, j: i32) -> ([f32; 2], f32, f32) {
     (middle, radius, 26.0 + 14.0 * unit(hash(r ^ 0x77)))
 }
 
+/// The line between the dreaming realm's two halves, the soft one and the one bleeding red: east
+/// of x meters, wandering this far either side of it, over this many meters along it, and how far
+/// either side of it the one gives way to the other. Has to match DIVIDE_* in
+/// shaders\traverse.comp, which colours the halves, see App::realm_look().
+pub const DREAM_DIVIDE: [f32; 4] = [240.0, 18.0, 70.0, 2.0];
+
+/// How much a spot in the dreaming realm, in meters, is of its blood-red half, 0 to 1: the half east
+/// of a wandering line, see DREAM_DIVIDE
+pub fn dream_blood(x: f32, y: f32) -> f32 {
+    let [at, wander, along, edge] = DREAM_DIVIDE;
+    smoothstep(-edge, edge, x - (at + wander * (y / along).sin()))
+}
+
+/// The ground of the dreaming realm, in meters: soft rolling land with great round domes rising
+/// smooth out of it here and there, giving way past the divide to the bleeding half, torn into
+/// sharp crests with gullies between where blood pools
+fn dream_height(seed: u32, x: f32, y: f32) -> f32 {
+    let blood = dream_blood(x, y);
+    let mut soft = 23.0 + fbm(x / 140.0, y / 140.0, 3, seed) * 6.0 + fbm(x / 35.0, y / 35.0, 2, seed.wrapping_add(1)) * 1.5;
+    if blood < 1.0 {
+        const DOME_CELL: f32 = 64.0;
+        let (cx, cy) = ((x / DOME_CELL).floor() as i32, (y / DOME_CELL).floor() as i32);
+        let mut dome = 0.0f32;
+        for j in cy - 1..=cy + 1 {
+            for i in cx - 1..=cx + 1 {
+                let r = hash3(i as u32, j as u32, seed ^ 0xd0e5);
+                if unit(r) > 0.6 {
+                    continue;
+                }
+                let middle = [(i as f32 + 0.25 + 0.5 * unit(r >> 4)) * DOME_CELL, (j as f32 + 0.25 + 0.5 * unit(r >> 12)) * DOME_CELL];
+                let radius = 10.0 + 12.0 * unit(r >> 20);
+                let d = (x - middle[0]).hypot(y - middle[1]) / radius;
+                if d < 1.0 {
+                    dome = dome.max(radius * (0.45 + 0.35 * unit(hash(r))) * (1.0 - d * d).sqrt());
+                }
+            }
+        }
+        soft += dome;
+    }
+    let torn = 18.0 + fbm(x / 90.0, y / 90.0, 3, seed.wrapping_add(2)) * 4.0 + ridged(x / 28.0, y / 28.0, 4, seed.wrapping_add(3)) * 11.0;
+    soft + (torn - soft) * blood
+}
+
 /// Where the open sky's ground is said to be in the sky isles, far under everything: nothing's
 /// built there, see Column::under
 const SKY_VOID: f32 = -40.0;
@@ -2766,8 +2809,10 @@ const SKY_VOID: f32 = -40.0;
 // Terrain shapes are defined in meters, so more voxels per meter means the same landscape with finer voxels
 fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     let seed = settings.seed;
-    if land_of(seed) == Land::Sky {
-        return sky_island(seed, x, y).map_or(SKY_VOID, |(top, _)| top);
+    match land_of(seed) {
+        Land::Sky => return sky_island(seed, x, y).map_or(SKY_VOID, |(top, _)| top),
+        Land::Dream => return dream_height(seed, x, y),
+        _ => {}
     }
     let height_m = settings.height_m as f32;
 
@@ -2793,9 +2838,13 @@ pub struct Climate {
 
 pub fn climate(settings: &TerrainSettings, x: f32, y: f32) -> Climate {
     let seed = settings.seed;
-    // The sky isles are all green meadows and woods
-    if land_of(seed) == Land::Sky {
-        return Climate::default();
+    // The sky isles are all green meadows and woods, and so's the dreaming realm, in colours of its
+    // own, see shaders\traverse.comp
+    match land_of(seed) {
+        Land::Sky | Land::Dream => return Climate::default(),
+        // The frozen realm's snow from end to end
+        Land::Ice => return Climate { snow: 1.0, ..Climate::default() },
+        Land::Normal => {}
     }
     let heat = fbm(x / 900.0, y / 900.0, 3, seed.wrapping_add(31)) * 1.6;
     let wet = fbm(x / 650.0, y / 650.0, 3, seed.wrapping_add(32)) * 1.6;
@@ -2846,6 +2895,14 @@ pub fn is_dry_land(settings: &TerrainSettings, at: [f32; 2], room: f32) -> bool 
         height_at(settings, at[0] + a.cos() * room, at[1] + a.sin() * room)
     });
     h > sea + 1.5 && near.iter().all(|&r| r > sea + 1.0 && (r - h).abs() < 1.6) && far.into_iter().all(|r| r > sea + 1.0 && (r - h).abs() < room * 0.5)
+}
+
+/// How a spot looks from high above, for the map, see src\compass.rs: how high its ground is over
+/// the sea, in meters, under it if that's less than nothing, or None in the open air between the
+/// sky isles. Only the land's shape, not the rivers cut into it.
+pub fn seen_from_above(settings: &TerrainSettings, x: f32, y: f32) -> Option<f32> {
+    let h = height_at(settings, x, y);
+    (h > SKY_VOID).then(|| h - sea_level_m(settings))
 }
 
 /// The nearest dry land to `near` within `within` meters with `room` round it, see is_dry_land(),
@@ -2923,6 +2980,9 @@ fn river_springs(rivers: &[Arc<Vec<RiverPoint>>], lo: [f32; 2], hi: [f32; 2]) ->
 /// The same for the world, from `lo` to `hi` in meters, wherever it's moved to: what water it
 /// has flowing in besides the springs of each of its pieces, see Terrain::piece_springs()
 pub fn window_springs(settings: &TerrainSettings, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<[f32; 4]> {
+    if land_of(settings.seed) == Land::Ice {
+        return Vec::new();
+    }
     let terrain = Terrain::around(settings, lo, hi);
     river_springs(&terrain.rivers_near(cache, lo, hi), lo, hi)
 }
@@ -3175,12 +3235,19 @@ impl Terrain {
 
     /// The springs of springs() where rivers start in this piece or flow into it, see river_springs()
     pub fn river_springs(&self) -> Vec<[f32; 4]> {
+        if land_of(self.settings.seed) == Land::Ice {
+            return Vec::new();
+        }
         river_springs(&self.rivers, self.own_lo, self.own_hi)
     }
 
     /// The springs of springs() that belong to this piece wherever the world is, rather than to
-    /// where its edge is: the waterfalls' and the buildings', see river_springs() for the rest
+    /// where its edge is: the waterfalls' and the buildings', see river_springs() for the rest.
+    /// None in the frozen realm, where every river and fall is iced over.
     pub fn piece_springs(&self) -> Vec<[f32; 4]> {
+        if land_of(self.settings.seed) == Land::Ice {
+            return Vec::new();
+        }
         let mut springs: Vec<[f32; 4]> = self
             .waterfalls()
             .into_iter()
@@ -3503,13 +3570,19 @@ impl Terrain {
         let snow_line = (self.settings.height_m as f32 * 0.7 * vpm) as i32;
         let river = (heights.river_m(x, y) * vpm).floor() as i32;
         let water_top = if river > h { river.max(sea_level) } else { sea_level };
+        // In the frozen realm the sea, the lakes and the rivers are iced over: the ground's ice up
+        // to where the water would be, and no water flows there, see Terrain::piece_springs()
+        let land = land_of(self.settings.seed);
+        let frozen = land == Land::Ice && water_top > h;
+        let h = if frozen { water_top } else { h };
         // In the sky isles, the open air under an island, and everywhere between them; nor is
         // there any water, but for the sea far below, seen only past the islands
-        let (under, water_top) = match land_of(self.settings.seed) {
+        let (under, water_top) = match land {
             Land::Sky => match sky_island(self.settings.seed, gx as f32 / vpm, gy as f32 / vpm) {
                 Some((_, under)) => ((under * vpm) as i32, i32::MIN),
                 None => (i32::MAX, i32::MIN),
             },
+            Land::Ice => (0, i32::MIN),
             _ => (0, water_top),
         };
 
@@ -3519,7 +3592,12 @@ impl Terrain {
         let edge = (unit(hash3(gx as u32, gy as u32, self.settings.seed ^ 0xb10e)) - 0.5) * 0.3;
         let (jungle, desert, snowy) = (c.jungle + edge > 0.5, c.desert + edge > 0.5, c.snow + edge > 0.5);
 
-        let top = if h <= sea_level + v {
+        let top = if frozen {
+            ICE
+        } else if land == Land::Ice {
+            // Snow down to the ice's edge, but for bare rock where it's too steep to lie
+            if slope > 1.4 { STONE } else { SNOW }
+        } else if h <= sea_level + v {
             SAND
         } else if river > h {
             GRAVEL
@@ -3539,7 +3617,7 @@ impl Terrain {
         let wet_edge = (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
         let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
         let below = match top {
-            SAND | STONE | GRAVEL | CLAY => top,
+            SAND | STONE | GRAVEL | CLAY | ICE => top,
             _ => DIRT,
         };
 
@@ -3977,17 +4055,20 @@ impl Terrain {
         let mut features = Features::default();
         let mut objects = Vec::new();
         // Nothing's built on the floating islands of the sky isles, nor cut into them: only what
-        // grows there
-        if land_of(seed) != Land::Sky {
+        // grows there. No one lives in the dreaming realm: there are ruins and the dead there, but
+        // no towns, castles or bandits.
+        let land = land_of(seed);
+        let peopled = land != Land::Dream;
+        if land != Land::Sky {
             // Buildings go first, as where they overlap other things they win. None stands over a
             // dungeon, whose halls go before the caves so no cave breaks into them.
             let dungeons = self.dungeons(rivers);
             // Towns keep clear of dungeons, rivers, ravines and caves themselves, see towns.rs, and
             // no ruins stand in them
-            let (in_towns, towns) = self.towns(rivers, &mut features);
+            let (in_towns, towns) = if peopled { self.towns(rivers, &mut features) } else { (Vec::new(), Vec::new()) };
             objects.extend(in_towns);
             // Royal castles keep clear of all those and of caves themselves, see castles.rs
-            let (castles, royal) = self.castles(rivers, &mut features);
+            let (castles, royal) = if peopled { self.castles(rivers, &mut features) } else { (Vec::new(), Vec::new()) };
             objects.extend(castles);
             // Fallen cities deep under the land keep clear of all those themselves, and no cave or
             // ravine breaks into them, see undercity.rs
@@ -4002,8 +4083,10 @@ impl Terrain {
             objects.extend(self.caves(&mut features, &royal, &cities));
             objects.extend(self.waterfall_caves(&mut features));
             objects.extend(self.ravines(&mut features, &shut));
-            let camps = self.camps(heights, &mut features, &keep_out, &objects);
-            objects.extend(camps);
+            if peopled {
+                let camps = self.camps(heights, &mut features, &keep_out, &objects);
+                objects.extend(camps);
+            }
         }
         let footprints = std::mem::take(&mut features.footprints);
         let (own_lo, own_hi) = (self.own_lo, self.own_hi);
@@ -4183,6 +4266,58 @@ impl Terrain {
             };
             Some(Object::new(shapes, rng.0))
         });
+
+        // The dreaming realm's own: in its soft half mushrooms as tall as trees, their caps broad
+        // enough to stand on, and orbs of crystal hanging in the air over the meadows; in its
+        // bleeding half thorns of bone jutting from the torn ground
+        if land == Land::Dream {
+            scatter(30.0, 0xd4ea, 9.0, &mut |x, y, ground, _, r| {
+                (dream_blood(x, y) < 0.2 && ground > sea_level + 1.0 && unit(r) < 0.5).then(|| {
+                    let mut rng = Rng(hash(r));
+                    Object::new(self.giant_mushroom(x, y, ground, &mut rng), rng.0)
+                })
+            });
+            scatter(26.0, 0xd4eb, 4.0, &mut |x, y, ground, _, r| {
+                (dream_blood(x, y) < 0.4 && unit(r) < 0.35).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let size = rng.range(1.2, 2.8);
+                    let up = ground.max(sea_level) + rng.range(9.0, 16.0);
+                    Object::new(vec![Shape::sphere([x, y, up], size, CRYSTAL, CRYSTAL, false)], rng.0)
+                })
+            });
+            scatter(12.0, 0xb100, 5.0, &mut |x, y, ground, _, r| {
+                (dream_blood(x, y) > 0.7 && ground > sea_level + 0.5 && unit(r) < 0.55).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let mut shapes = Vec::new();
+                    for _ in 0..1 + (rng.next() * 2.99) as usize {
+                        let foot = [x + rng.range(-1.5, 1.5), y + rng.range(-1.5, 1.5), ground - 0.5];
+                        let tall = rng.range(3.0, 9.0);
+                        let lean = [rng.range(-0.35, 0.35) * tall, rng.range(-0.35, 0.35) * tall, tall];
+                        shapes.push(Shape::capsule(foot, add(foot, lean), rng.range(0.35, 0.7), 0.05, BONE, BONE, false));
+                    }
+                    Object::new(shapes, rng.0)
+                })
+            });
+        }
+        // The frozen realm's own: clusters of spires of ice jutting up leaning out of the snow,
+        // shorter ones out of the frozen sea and rivers, their points clear as crystal
+        if land == Land::Ice {
+            scatter(22.0, 0x1ce5, 6.0, &mut |x, y, ground, column, r| {
+                (unit(r) < 0.45).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let tallest = if column.top == ICE { 4.5 } else { 8.5 };
+                    let shapes = (0..2 + (rng.next() * 3.99) as usize)
+                        .map(|_| {
+                            let foot = [x + rng.range(-2.0, 2.0), y + rng.range(-2.0, 2.0), ground - 0.6];
+                            let tall = rng.range(2.0, tallest);
+                            let tip = add(foot, [rng.range(-0.25, 0.25) * tall, rng.range(-0.25, 0.25) * tall, tall]);
+                            Shape::capsule(foot, tip, rng.range(0.45, 1.0), 0.04, ICE, CRYSTAL, false)
+                        })
+                        .collect();
+                    Object::new(shapes, rng.0)
+                })
+            });
+        }
 
         features.footprints = footprints;
         (objects, features)
@@ -6046,6 +6181,21 @@ impl Terrain {
             shapes.push(Shape::leaf(add(at, [lean[0] * 0.15, lean[1] * 0.15, 0.4]), add(lean, [0.0, 0.0, 2.0]), lean, 0.7, 0.04, REED, AIR));
         }
         shapes
+    }
+
+    /// A mushroom of the dreaming realm, as tall as a tree: a pale stem swelling at its foot, under a
+    /// broad rosy cap flecked with white, flat enough on top to stand on
+    fn giant_mushroom(&self, x: f32, y: f32, ground: f32, rng: &mut Rng) -> Vec<Shape> {
+        let tall = rng.range(6.0, 11.0);
+        let cap = rng.range(3.0, 6.0);
+        let stem = rng.range(0.6, 1.1);
+        let lean = [rng.range(-0.15, 0.15) * tall, rng.range(-0.15, 0.15) * tall, tall];
+        let foot = [x, y, ground - 0.4];
+        let top = add(foot, lean);
+        vec![
+            Shape::ellipsoid(add(top, [0.0, 0.0, cap * 0.18]), [cap, cap, cap * 0.42], NOSE, BONE),
+            Shape::capsule(foot, top, stem * 1.5, stem, LINEN, LINEN, false),
+        ]
     }
 
     // A few red mushrooms with white spots

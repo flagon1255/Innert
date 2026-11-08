@@ -70,6 +70,7 @@ mod building;
 mod bosses;
 mod camera;
 mod combat;
+mod compass;
 mod daynight;
 mod effects;
 mod game;
@@ -765,10 +766,12 @@ struct View {
     moon: [f32; 4],
     key_light: [f32; 4],
     cache_level: [f32; 4],
+    /// The look of the realm the world is, see App::realm_look()
+    realm: [f32; 4],
 }
 
 impl View {
-    fn new(pixel_to_ray: Matrix4<f32>, previous_world_to_pixel: Matrix4<f32>, sky: &daynight::Sky) -> Self {
+    fn new(pixel_to_ray: Matrix4<f32>, previous_world_to_pixel: Matrix4<f32>, sky: &daynight::Sky, realm: [f32; 4]) -> Self {
         let v = |v: Vector3<f64>, w: f64| [v.x as f32, v.y as f32, v.z as f32, w as f32];
         let c = |c: [f64; 3], w: f64| [c[0] as f32, c[1] as f32, c[2] as f32, w as f32];
         View {
@@ -779,6 +782,7 @@ impl View {
             moon: v(sky.moon, sky.moon_shine),
             key_light: c(sky.key_light, sky.moon_phase),
             cache_level: c(sky.cache_level, 0.0),
+            realm,
         }
     }
 }
@@ -1358,6 +1362,8 @@ struct App {
     /// isles, see rope.rs
     hook: Option<rope::Hook>,
     fall_back: Option<rope::FallBack>,
+    /// The map on M, see compass.rs
+    map: compass::Map,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -1459,6 +1465,9 @@ struct Capture {
     /// `--set nowait=1` doesn't wait for each frame to finish before starting the next, as in
     /// play, where the frames being drawn overlap: then frame times are what a player sees
     nowait: bool,
+    /// The frame times said at the end are those from this frame on: from when the world's there
+    /// to play in, with `--set time_from_ready=1`, rather than while it's still being built
+    stats_from: usize,
 }
 
 impl Capture {
@@ -1485,6 +1494,7 @@ impl Capture {
             seconds: value("--seconds").and_then(|n| n.parse().ok()),
             started: Instant::now(),
             nowait: settings_from_args().iter().any(|(k, v)| k == "nowait" && (v == "1" || v == "true")),
+            stats_from: 0,
         })
     }
 }
@@ -2593,6 +2603,7 @@ impl App {
             new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
             hook: None,
             fall_back: None,
+            map: compass::Map::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -3743,6 +3754,8 @@ impl App {
         if interactive && self.input.key_pressed(KeyCode::Escape) {
             if self.session.gate_open {
                 self.session.gate_action = Some(session::GateAction::Close);
+            } else if self.map.open {
+                self.toggle_map();
             } else if self.game.shopping() {
                 self.game.close_shop();
                 if !self.inventory_open {
@@ -3768,6 +3781,9 @@ impl App {
         }
         if playing && self.input.key_pressed(KeyCode::F1) {
             self.show_settings = !self.show_settings;
+        }
+        if playing && self.input.key_pressed(KeyCode::KeyM) {
+            self.toggle_map();
         }
 
         let eye = camera_to_voxels(self.camera.position, self.world.size);
@@ -3946,6 +3962,8 @@ impl App {
         if let Some(player) = &mut self.player {
             player.gliding = gliding;
         }
+        // Both hands on the wings' struts while gliding, see rope.rs
+        self.game.set_hands_busy(gliding && self.player.as_ref().is_some_and(|p| !p.on_ground()));
 
         // The dead don't walk
         let alive = !self.game.dead();
@@ -4825,15 +4843,21 @@ impl App {
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
         // A grappling hook's rope, and wings spread to glide, see rope.rs
-        let rope = if self.hook.is_some() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        let rope = if self.hook.is_some() || self.game.holding_hook() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        let rope_lights = self.rope_lights(&view);
         // How white the screen is as the winds bring the player back up, see rope.rs, and whether
         // they're gliding
         let fallen = self.fall_dark();
+        // The look of the realm the world is, see session.rs
+        let realm_look = self.realm_look();
         let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
         let raid_note = self.raid_note();
+        // The compass in Realms, and the map, see compass.rs
+        let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
+        let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4948,7 +4972,7 @@ impl App {
                     painter.text(ctx.screen_rect().center(), Align2::CENTER_CENTER, "The world takes shape...", egui::FontId::proportional(22.0), Color32::from_gray(shade));
                 }
             }
-            // Wings spread, out of sight behind: said under the crosshair instead
+            // Wings spread, said under the crosshair too
             if gliding_now && !self.menu_open {
                 ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gliding"))).text(
                     ctx.screen_rect().center() + egui::vec2(0.0, 42.0),
@@ -4957,6 +4981,12 @@ impl App {
                     egui::FontId::proportional(16.0),
                     Color32::from_rgba_unmultiplied(235, 240, 255, 200),
                 );
+            }
+            if let Some(bearing) = &bearing {
+                compass::draw_compass(&ctx, bearing);
+            }
+            if let Some(marks) = &map_marks {
+                compass::draw_map(&ctx, &mut self.map, marks);
             }
             // Brought back up after a fall below the sky isles, see rope.rs
             if fallen > 0.0 {
@@ -5000,8 +5030,9 @@ impl App {
                                              Click swing or cast · bow: hold right click, click to shoot\n\
                                              Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
-                                             Number keys pick what's in hand · I inventory\n\
+                                             Number keys pick what's in hand · I inventory · M map\n\
                                              G gather wood, stone, clay · B build · E opens doors\n\
+                                             Hold Space in the air to glide, with wings\n\
                                              F1 settings · Esc menu",
                                         )
                                         .size(13.0)
@@ -5378,7 +5409,8 @@ impl App {
             .filter(|(d, _)| *d < 0.0)
             .collect();
         lights.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let fighting = if playing { self.game.lights(&view) } else { Vec::new() };
+        let mut fighting = if playing { self.game.lights(&view) } else { Vec::new() };
+        fighting.extend(rope_lights);
         let lights: Vec<[f32; 8]> = fighting.into_iter().chain(lights.into_iter().map(|(_, l)| l)).take(MAX_LIGHTS).collect();
         let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();
         light_buffer.write().unwrap()[..lights.len()].copy_from_slice(&lights);
@@ -5389,7 +5421,7 @@ impl App {
             .as_ref()
             .map_or(Matrix4::identity(), |last| world_to_pixel(&last.pixel_to_ray.cast()));
         let view_buffer = self.instance_allocator.allocate_sized::<View>().unwrap();
-        *view_buffer.write().unwrap() = View::new(pixel_to_ray.cast(), previous_world_to_pixel.cast(), &sky);
+        *view_buffer.write().unwrap() = View::new(pixel_to_ray.cast(), previous_world_to_pixel.cast(), &sky, realm_look);
 
         let animal_set = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
@@ -5929,7 +5961,10 @@ impl App {
             if capture_done && let Some(mut capture) = self.capture.take() {
                 save_screenshot(&buffer, resample_extent, encoded, &capture.path);
 
-                let mut times: Vec<f64> = capture.frame_times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
+                if capture.stats_from > 0 {
+                    println!("Frame times from frame {} on, once the world's there", capture.stats_from);
+                }
+                let mut times: Vec<f64> = capture.frame_times.iter().skip(capture.stats_from).map(|t| t.as_secs_f64() * 1000.0).collect();
                 times.sort_by(f64::total_cmp);
                 if !times.is_empty() {
                     let average = times.iter().sum::<f64>() / times.len() as f64;
@@ -5943,7 +5978,7 @@ impl App {
                         times[times.len() - 1]
                     );
                     // Hitches, leaving out the first frames while the world settles in
-                    let mut later: Vec<f64> = capture.frame_times.iter().skip(10).map(|t| t.as_secs_f64() * 1000.0).collect();
+                    let mut later: Vec<f64> = capture.frame_times.iter().skip(capture.stats_from + 10).map(|t| t.as_secs_f64() * 1000.0).collect();
                     later.sort_by(f64::total_cmp);
                     if !later.is_empty() {
                         let worst = later.len() - 1;
@@ -5954,7 +5989,7 @@ impl App {
                             later.iter().filter(|&&t| t > 25.0).count(),
                             later.iter().filter(|&&t| t > 20.0).count()
                         );
-                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
+                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(capture.stats_from + 10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
                         println!("long frames: {}", long.join(", "));
                     }
                 }
