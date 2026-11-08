@@ -70,6 +70,7 @@ mod bosses;
 mod camera;
 mod combat;
 mod compass;
+mod crash;
 mod daynight;
 mod dragons;
 mod effects;
@@ -6110,6 +6111,22 @@ impl App {
         let gui_future = rcx
             .gui
             .draw_on_image(render_future, rcx.image_views[image_index as usize].clone());
+
+        let submitting = Instant::now();
+        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
+        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
+        // its images without having taken it and stopped the game ("Image was not locked for GPU
+        // write"), on AVI as it was too, a few hundred frames into a run.
+        // And before a shot's copy of the screen goes behind it, with `--set gui=1`: sent together
+        // with that, vulkano checked what the frame's commands use against the GUI's commands they
+        // were chained behind, which answer only for what they use themselves, so all the rest was
+        // checked against who holds it, and found still held by the frame before whenever the GPU
+        // wasn't done with that yet, as with `nowait`. That stopped the game ("the resource is
+        // already in use, and there is no tracking of concurrent usages"). Sent on their own, the
+        // frame's commands are checked against themselves, as on every other frame.
+        if let Err(e) = gui_future.flush() {
+            println!("Sending the frame to the GPU went wrong: {e}");
+        }
         // With `--set gui=1`, shots are of the whole screen once the GUI's drawn over the game
         let screen = rcx.image_views[image_index as usize].image().clone();
         let screen_buffer = (capture_shot.is_some() && self.capture.as_ref().is_some_and(|c| c.gui)).then(|| {
@@ -6125,19 +6142,14 @@ impl App {
             Some(buffer) => {
                 let mut copy = AutoCommandBufferBuilder::primary(self.command_buffer_allocator.clone(), self.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
                 copy.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(screen.clone(), buffer.clone())).unwrap();
-                gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap().boxed()
+                let copied = gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap();
+                if let Err(e) = copied.flush() {
+                    println!("Sending the shot's copy of the screen to the GPU went wrong: {e}");
+                }
+                copied.boxed()
             }
             None => gui_future,
         };
-
-        let submitting = Instant::now();
-        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
-        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
-        // its images without having taken it and stopped the game ("Image was not locked for GPU
-        // write"), on AVI as it was too, a few hundred frames into a run
-        if let Err(e) = gui_future.flush() {
-            println!("Sending the frame to the GPU went wrong: {e}");
-        }
         // Shown once it's drawn, see loading::Drawn
         let drawn = loading::Drawn::after(gui_future);
         let semaphore = drawn.semaphore();
@@ -6384,6 +6396,15 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Another thread's gone wrong, and the game ends as soon as that's been said: saved first,
+        // it goes no further meanwhile, see crash.rs
+        if crash::round(|| self.emergency_save()) {
+            std::thread::sleep(Duration::from_millis(50));
+            return;
+        }
+        if let Some(capture) = &self.capture {
+            crash::test(capture.frame_times.len());
+        }
         self.input.end_step();
         let start = Instant::now();
         self.update(event_loop);
@@ -6406,11 +6427,16 @@ fn show_error(text: &str) {
         #[link(name = "user32")]
         unsafe extern "system" {
             fn MessageBoxW(window: *mut std::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+            fn ClipCursor(rect: *const std::ffi::c_void) -> i32;
         }
         const MB_ICONERROR: u32 = 0x10;
+        // Over the game, from whichever thread went wrong, with the mouse free to click it away
+        const MB_SETFOREGROUND: u32 = 0x10000;
+        const MB_TOPMOST: u32 = 0x40000;
         let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
         unsafe {
-            MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Innert").as_ptr(), MB_ICONERROR);
+            ClipCursor(std::ptr::null());
+            MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Innert").as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
         }
     }
 }
@@ -6432,6 +6458,7 @@ fn fail(text: &str) -> ! {
 mod background_printing {
     use std::ffi::c_void;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::JoinHandle;
 
     #[link(name = "kernel32")]
@@ -6442,21 +6469,21 @@ mod background_printing {
         fn ReadFile(file: *mut c_void, buffer: *mut u8, len: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
         fn WriteFile(file: *mut c_void, buffer: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
         fn CloseHandle(handle: *mut c_void) -> i32;
-        fn PeekNamedPipe(pipe: *mut c_void, buffer: *mut c_void, len: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
     }
     const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
     /// Room in the pipe for what's printed while the file can't keep up
     const PIPE_BYTES: u32 = 8 << 20;
 
-    /// The file's handle and the pipe's ends, as numbers so they can be shared, and the thread
+    /// The file's handle and the pipe's write end, as numbers so they can be shared, and the thread
     /// writing to the file
     struct Printing {
         file: usize,
         write: usize,
-        read: usize,
         writer: JoinHandle<()>,
     }
     static STATE: Mutex<Option<Printing>> = Mutex::new(None);
+    /// Whether that thread is waiting for more to be printed, having written out all there was
+    static WAITING: AtomicBool = AtomicBool::new(false);
 
     /// From here on, what's printed goes to the file through the pipe
     pub fn start() {
@@ -6479,7 +6506,10 @@ mod background_printing {
             let mut buffer = vec![0u8; 1 << 16];
             loop {
                 let mut got = 0u32;
-                if unsafe { ReadFile(read as *mut c_void, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, std::ptr::null_mut()) } == 0 || got == 0 {
+                WAITING.store(true, Ordering::SeqCst);
+                let read_ok = unsafe { ReadFile(read as *mut c_void, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, std::ptr::null_mut()) };
+                WAITING.store(false, Ordering::SeqCst);
+                if read_ok == 0 || got == 0 {
                     break;
                 }
                 let mut sent = 0;
@@ -6495,7 +6525,7 @@ mod background_printing {
         });
         unsafe { SetStdHandle(STD_OUTPUT_HANDLE, write) };
         drop(printing);
-        *state = Some(Printing { file, write: write as usize, read, writer });
+        *state = Some(Printing { file, write: write as usize, writer });
     }
 
     /// Puts printing back the way it was and waits for everything printed to reach the file
@@ -6517,21 +6547,23 @@ mod background_printing {
     }
 
     /// Gives what's been printed a moment to reach the file, without taking hold of stdout, which
-    /// whatever panicked may have been in the middle of printing to
+    /// whatever panicked may have been in the middle of printing to: till the thread writing it
+    /// has been waiting for more a little while, or a second at most. Not by peeking into the pipe,
+    /// which waited for ever behind that thread's own wait for more, and the game with it.
     pub fn drain() {
-        let Some(read) = STATE.try_lock().ok().and_then(|state| state.as_ref().map(|p| p.read)) else {
+        if !STATE.try_lock().ok().is_some_and(|state| state.is_some()) {
             return;
-        };
-        for _ in 0..100 {
-            let mut waiting = 0u32;
-            let peeked = unsafe { PeekNamedPipe(read as *mut c_void, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut waiting, std::ptr::null_mut()) };
-            if peeked == 0 || waiting == 0 {
+        }
+        let since = std::time::Instant::now();
+        let mut idle = None;
+        while since.elapsed() < std::time::Duration::from_secs(1) {
+            if !WAITING.load(Ordering::SeqCst) {
+                idle = None;
+            } else if idle.get_or_insert_with(std::time::Instant::now).elapsed() > std::time::Duration::from_millis(30) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        // The last of it on its way to the file
-        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -6566,21 +6598,8 @@ fn main() {
     }
     // Decoding the sounds on a thread of their own, done long before anything's heard
     audio::preload();
-    std::panic::set_hook(Box::new(|info| {
-        let place = info.location().map_or(String::new(), |l| format!(" ({}:{})", l.file(), l.line()));
-        let what = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_default();
-        // Which thread, and with RUST_BACKTRACE set where it was, for screenshot runs' logs
-        let thread = std::thread::current().name().map_or(String::new(), |n| format!(" on the {n} thread"));
-        let trace = std::backtrace::Backtrace::capture();
-        let trace = if trace.status() == std::backtrace::BacktraceStatus::Captured { format!("\n\n{trace}") } else { String::new() };
-        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}{thread}{trace}"));
-        background_printing::drain();
-    }));
+    // A panic anywhere is said and ends the game, see crash.rs
+    crash::install();
     if std::env::args().any(|a| a == "--screenshot") {
         background_printing::start();
     }

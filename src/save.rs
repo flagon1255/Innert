@@ -1,6 +1,7 @@
 //! Saving the game, so it goes on where it was left: one file a mode, Free Roam and Realms, in
 //! %LOCALAPPDATA%\Innert\saves\, as JSON. Written after what matters, like a boss beaten or
-//! something bought, every minute or so, and on the way out, see App::save_game().
+//! something bought, every minute or so, and on the way out, see App::save_game(), as well as
+//! before the game ends when one of its other threads has gone wrong, see crash.rs.
 //!
 //! Each file is written to one beside it first and then put in its place, so a game stopped
 //! partway through writing never leaves half a save. One that can't be read, or is from an older
@@ -472,9 +473,29 @@ pub fn read(path: &Path, mode: Mode) -> Slot {
     }
 }
 
+/// How many saves are being written to their files just now, see wait_for_writing()
+static WRITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Waits up to `limit` for any save being written to get to its file, as when the game's to end
+/// straight away, see crash.rs
+pub fn wait_for_writing(limit: std::time::Duration) {
+    let since = std::time::Instant::now();
+    while WRITING.load(std::sync::atomic::Ordering::SeqCst) > 0 && since.elapsed() < limit {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Writes `bytes` to a file beside `path`, then puts it in place of whatever's there, so there's
 /// always either the old save or the new one whole
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    struct Writing;
+    impl Drop for Writing {
+        fn drop(&mut self) {
+            WRITING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    WRITING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _writing = Writing;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

@@ -954,6 +954,16 @@ impl App {
         self.session.due = false;
     }
 
+    /// Saves straight away before the game ends because another of its threads went wrong, see
+    /// crash.rs: between frames, as the autosave would, and like it, not while the world's being
+    /// built afresh round the player or they're yet to be stood on the ground
+    pub(super) fn emergency_save(&mut self) {
+        if self.session.saves.enabled() && self.session.mode.is_some() && !self.held_still() && !self.session.find_ground {
+            self.save_game(true);
+            println!("Saved before closing, as another thread went wrong");
+        }
+    }
+
     /// Called every frame: stands the player on the ground once the world's built round them,
     /// counts the time played, and saves after what matters and every minute or so
     pub(super) fn update_session(&mut self, dt: f64) {
