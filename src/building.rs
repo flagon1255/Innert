@@ -7,7 +7,7 @@
 
 use egui_winit_vulkano::egui::{Align2, Color32, FontId, Pos2, Stroke, pos2, vec2};
 
-use crate::bases::{self, BLOCK, Bases, Kind, Piece};
+use crate::bases::{self, BLOCK, Bases, Kind, Materials, Piece};
 use crate::gather::{self, Yield};
 
 use super::*;
@@ -55,8 +55,11 @@ pub struct Building {
     /// For screenshot scripts: the corner of the hut built, see App::bases_script(), how far
     /// through it is, and since which frame
     hut: Option<[i64; 3]>,
-    phase: u8,
-    mark: usize,
+    pub(super) phase: u8,
+    pub(super) mark: usize,
+    /// And for the gate's: where it's built, and the realm to come back to
+    pub(super) spot: Option<Vector3<f64>>,
+    pub(super) back_to: usize,
 }
 
 /// Has to match the push constants in shaders\builds.comp
@@ -70,10 +73,19 @@ struct ReskipConstants {
     wrap: [i32; 4],
 }
 
-/// What a piece would be built as where the player's looking, and whether it can be
-pub struct Ghost {
-    pub piece: Piece,
-    pub ok: Result<(), String>,
+/// What would be built where the player's looking, and whether it can be: a piece, or the Innert
+/// Gate or a portal home, `home`, with its foot at `at` in voxels of the world, see gates.rs
+pub enum Ghost {
+    Piece { piece: Piece, ok: Result<(), String> },
+    Gate { at: Vector3<f64>, facing: f64, home: bool, ok: Result<(), String> },
+}
+
+impl Ghost {
+    pub fn ok(&self) -> &Result<(), String> {
+        match self {
+            Ghost::Piece { ok, .. } | Ghost::Gate { ok, .. } => ok,
+        }
+    }
 }
 
 /// Quarter turns round from +x of the way `look` goes, flat
@@ -84,7 +96,7 @@ fn snapped(look: Vector3<f64>) -> u8 {
 
 impl App {
     /// The eye and which way it looks, in voxels of the world
-    fn eye_look(&self) -> (Vector3<f64>, Vector3<f64>) {
+    pub(super) fn eye_look(&self) -> (Vector3<f64>, Vector3<f64>) {
         let eye = camera_to_voxels(self.camera.position, self.world.size);
         let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
         (eye, look)
@@ -93,11 +105,6 @@ impl App {
     /// The block of the whole landscape voxel `v` of the world is in
     fn block_of(&self, v: [i64; 3]) -> [i64; 3] {
         [(v[0] + self.world.origin[0]).div_euclid(BLOCK), (v[1] + self.world.origin[1]).div_euclid(BLOCK), (v[2] + self.world.origin[2]).div_euclid(BLOCK)]
-    }
-
-    /// Whether voxel `v` of the world is of something built
-    fn is_built(&self, v: [i64; 3]) -> bool {
-        self.bases.piece_at(self.block_of(v)).is_some()
     }
 
     /// Reads the keys for gathering and building, called each frame while playing. Returns whether
@@ -121,8 +128,9 @@ impl App {
         if !self.building.on {
             return false;
         }
-        let kinds = Kind::ALL.len();
-        let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8];
+        // The pieces, and the gate or a portal home after them where they can be built
+        let kinds = Kind::ALL.len() + self.gate_choice().is_some() as usize;
+        let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
         if let Some(k) = digits.iter().position(|&k| self.input.key_pressed(k)) {
             self.building.picked = k.min(kinds - 1);
         }
@@ -144,6 +152,9 @@ impl App {
 
     /// The piece picked, put where the player's looking, and whether it can go there
     pub(super) fn ghost(&self) -> Option<Ghost> {
+        if self.building.picked >= Kind::ALL.len() {
+            return self.gate_ghost();
+        }
         let (eye, look) = self.eye_look();
         let vpm = self.world.voxels_per_meter as f64;
         let (hit, normal) = gather::raycast(&self.world, eye, look, REACH_M * vpm)?;
@@ -158,7 +169,7 @@ impl App {
         };
         let piece = Piece::new(0, kind, self.block_of(front), auto + self.building.turn);
         let ok = self.can_build(&piece);
-        Some(Ghost { piece, ok })
+        Some(Ghost::Piece { piece, ok })
     }
 
     /// Whether `piece` can be built: nothing built there, room for it, something under it or beside
@@ -212,14 +223,13 @@ impl App {
 
     /// Builds the piece picked where the outline shows, if it can be
     fn build_here(&mut self) {
-        let Some(ghost) = self.ghost() else {
-            return;
+        let piece = match self.ghost() {
+            None => return,
+            Some(Ghost::Gate { .. }) => return self.build_gate_here(),
+            Some(Ghost::Piece { ok: Err(why), .. }) => return self.game.say(why),
+            Some(Ghost::Piece { piece, .. }) => piece,
         };
-        if let Err(why) = ghost.ok {
-            self.game.say(why);
-            return;
-        }
-        let Piece { kind, at, turn, .. } = ghost.piece;
+        let Piece { kind, at, turn, .. } = piece;
         if self.bases.build(kind, at, turn).is_ok() {
             self.refresh_bases();
             let middle = self.bases.piece_at(at).map(|p| p.middle());
@@ -238,10 +248,14 @@ impl App {
             return;
         };
         let block = self.block_of(hit);
-        let Some(id) = self.bases.piece_at(block).map(|p| p.id) else {
+        let Some((id, kind)) = self.bases.piece_at(block).map(|p| (p.id, p.kind)) else {
             self.game.say("Only what you've built can be taken down.");
             return;
         };
+        if !kind.player_built() {
+            self.game.say("The gate's old foundation stones won't budge.");
+            return;
+        }
         if let Some((piece, _)) = self.bases.remove(id, true) {
             self.refresh_bases();
             let back = piece.refund();
@@ -358,8 +372,8 @@ impl App {
             self.building.gathering = None;
             return;
         };
-        if self.is_built(hit) {
-            self.game.say("That's built: take it down while building (B).");
+        if let Some(piece) = self.bases.piece_at(self.block_of(hit)) {
+            self.game.say(if piece.kind.player_built() { "That's built: take it down while building (B)." } else { "The gate's old foundation stones won't budge." });
             return;
         }
         let material = self.world.material_at(hit[0], hit[1], hit[2]);
@@ -612,7 +626,7 @@ pub fn base_lights(bases: &Bases, world: &World) -> Vec<[f32; 8]> {
 
 /// What's carried to build with, under the clock; in building, the pieces to pick from and the
 /// outline of `ghost`, where the one picked would go; the blows struck at what's being gathered
-pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, world: &World, ctx: &egui::Context, view: &combat::View) {
+pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Option<bool>, world: &World, ctx: &egui::Context, view: &combat::View) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("building")));
     let screen = ctx.screen_rect();
     // What's carried
@@ -640,21 +654,29 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, world: &Wo
     if !building.on {
         return;
     }
-    // The pieces, down the right side
-    let x = screen.right() - 236.0;
+    // The pieces, down the right side, and the gate or a portal home after them where they can be
+    // built, see gates.rs
+    let mut entries: Vec<(&str, Materials)> = Kind::ALL.iter().map(|k| (k.name(), k.cost())).collect();
+    match gate {
+        Some(false) => entries.push(("Innert Gate", crate::gates::GATE_COST)),
+        Some(true) => entries.push(("Portal Home", crate::gates::PORTAL_COST)),
+        None => {}
+    }
+    let x = screen.right() - 290.0;
     let mut y = screen.center().y - 110.0;
-    painter.rect_filled(egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(230.0, 34.0 + Kind::ALL.len() as f32 * 26.0 + 58.0)), 10.0, Color32::from_black_alpha(140));
+    painter.rect_filled(egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(284.0, 34.0 + entries.len() as f32 * 26.0 + 58.0)), 10.0, Color32::from_black_alpha(140));
     painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "BUILDING  (B)", FontId::proportional(15.0), Color32::from_rgb(255, 215, 130));
-    for (k, kind) in Kind::ALL.iter().enumerate() {
+    for (k, (name, cost)) in entries.iter().enumerate() {
         let picked = k == building.picked;
-        let cost = kind.cost();
-        let afford = bases.materials.covers(cost);
+        let afford = bases.materials.covers(*cost);
         if picked {
-            painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(222.0, 24.0)), 6.0, Color32::from_white_alpha(28));
+            painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(276.0, 24.0)), 6.0, Color32::from_white_alpha(28));
         }
         let color = if afford { Color32::from_gray(if picked { 255 } else { 205 }) } else { Color32::from_rgb(200, 110, 100) };
-        painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{} {}", k + 1, kind.name()), FontId::proportional(14.0), color);
-        painter.text(pos2(x + 210.0, y + 14.0), Align2::RIGHT_CENTER, cost.describe(), FontId::proportional(12.0), color.gamma_multiply(0.85));
+        // The gate in gold, being what all of it's for
+        let color = if k >= Kind::ALL.len() && afford { Color32::from_rgb(255, 215, 130) } else { color };
+        painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{} {}", k + 1, name), FontId::proportional(14.0), color);
+        painter.text(pos2(x + 264.0, y + 14.0), Align2::RIGHT_CENTER, cost.describe(), FontId::proportional(12.0), color.gamma_multiply(0.85));
         y += 26.0;
     }
     painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, "Click build, right click take down", FontId::proportional(12.0), Color32::from_gray(185));
@@ -665,26 +687,45 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, world: &Wo
         return;
     };
     let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
-    let blocks = ghost.piece.blocks();
-    let min = |i: usize| blocks.iter().map(|b| b[i]).min().unwrap_or(0);
-    let max = |i: usize| blocks.iter().map(|b| b[i]).max().unwrap_or(0) + 1;
-    let lo = Vector3::new(min(0), min(1), min(2)).cast::<f64>() * BLOCK as f64 - origin;
-    let hi = Vector3::new(max(0), max(1), max(2)).cast::<f64>() * BLOCK as f64 - origin;
-    let lo = if ghost.piece.kind == Kind::Floor { Vector3::new(lo.x, lo.y, lo.z + 4.0) } else { lo };
-    let corner = |k: usize| Vector3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
     let on_screen = |p: Vector3<f64>| view.project(p).map(|[u, v]| pos2(screen.left() + u as f32 * screen.width(), screen.top() + v as f32 * screen.height()));
-    let corners: Vec<Option<Pos2>> = (0..8).map(|k| on_screen(corner(k))).collect();
-    let color = if ghost.ok.is_ok() { Color32::from_rgb(110, 240, 140) } else { Color32::from_rgb(250, 90, 80) };
-    for face in [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]] {
-        let points: Option<Vec<Pos2>> = face.iter().map(|&k| corners[k]).collect();
-        if let Some(points) = points {
-            painter.add(egui::Shape::convex_polygon(points.clone(), color.gamma_multiply(0.08), Stroke::NONE));
-            for i in 0..4 {
-                painter.line_segment([points[i], points[(i + 1) % 4]], Stroke::new(1.5f32, color.gamma_multiply(0.9)));
+    let color = if ghost.ok().is_ok() { Color32::from_rgb(110, 240, 140) } else { Color32::from_rgb(250, 90, 80) };
+    // A box by its eight corners, faint over its faces and drawn round their edges
+    let draw_box = |corner: &dyn Fn(usize) -> Vector3<f64>| {
+        let corners: Vec<Option<Pos2>> = (0..8).map(|k| on_screen(corner(k))).collect();
+        for face in [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]] {
+            let points: Option<Vec<Pos2>> = face.iter().map(|&k| corners[k]).collect();
+            if let Some(points) = points {
+                painter.add(egui::Shape::convex_polygon(points.clone(), color.gamma_multiply(0.08), Stroke::NONE));
+                for i in 0..4 {
+                    painter.line_segment([points[i], points[(i + 1) % 4]], Stroke::new(1.5f32, color.gamma_multiply(0.9)));
+                }
             }
         }
+    };
+    match ghost {
+        Ghost::Piece { piece, .. } => {
+            let blocks = piece.blocks();
+            let min = |i: usize| blocks.iter().map(|b| b[i]).min().unwrap_or(0);
+            let max = |i: usize| blocks.iter().map(|b| b[i]).max().unwrap_or(0) + 1;
+            let lo = Vector3::new(min(0), min(1), min(2)).cast::<f64>() * BLOCK as f64 - origin;
+            let hi = Vector3::new(max(0), max(1), max(2)).cast::<f64>() * BLOCK as f64 - origin;
+            let lo = if piece.kind == Kind::Floor { Vector3::new(lo.x, lo.y, lo.z + 4.0) } else { lo };
+            draw_box(&|k: usize| Vector3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z }));
+        }
+        // Its dais on the ground, the arch standing on it, and a step out in front of it
+        &Ghost::Gate { at, facing, home, .. } => {
+            let vpm = world.voxels_per_meter as f64;
+            let (c, s) = (facing.cos(), facing.sin());
+            let turned = |x: f64, y: f64, z: f64| at + Vector3::new(x * c - y * s, x * s + y * c, z) * vpm;
+            let shape = |lo: [f64; 3], hi: [f64; 3]| move |k: usize| turned(if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] });
+            let [fx, fy] = crate::gates::FOOT;
+            let (arch, high) = if home { (1.5, 5.6) } else { (1.75, 6.6) };
+            draw_box(&shape([-fx, -fy, 0.0], [fx, fy, 0.3]));
+            draw_box(&shape([-0.45, -arch, 0.3], [0.45, arch, high]));
+            draw_box(&shape([fx, -0.9, 0.0], [fx + 0.6, 0.9, 0.15]));
+        }
     }
-    if let Err(why) = &ghost.ok {
+    if let Err(why) = ghost.ok() {
         painter.text(screen.center() + vec2(0.0, 36.0), Align2::CENTER_CENTER, why, FontId::proportional(14.0), color);
     }
 }
@@ -695,12 +736,12 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 8] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay"];
+pub const SCRIPTS: [&str; 10] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
     /// over it: the block of the whole landscape at its corner, just over the ground
-    fn open_ground(&self, near: Vector3<f64>, across: i64) -> Option<[i64; 3]> {
+    pub(super) fn open_ground(&self, near: Vector3<f64>, across: i64) -> Option<[i64; 3]> {
         let vpm = self.world.voxels_per_meter as i64;
         let ground = |x: i64, y: i64| -> Option<i64> {
             let top = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(x, y, z)))?;
@@ -1066,6 +1107,8 @@ impl App {
                     _ => {}
                 }
             }
+            // Building the gate and a portal home, see gates.rs
+            ("gate" | "portal", f) => self.gate_script(name, f),
             _ => {}
         }
         if frame % 120 == 0 && matches!(name, "hut" | "away") {
@@ -1075,7 +1118,7 @@ impl App {
     }
 
     /// Takes a shot in a moment, in a screenshot run, saying so
-    fn shoot_soon(&mut self, what: &str) {
+    pub(super) fn shoot_soon(&mut self, what: &str) {
         if let Some(capture) = &mut self.capture {
             let frame = capture.frame_times.len() + 2;
             capture.shots.push(frame);

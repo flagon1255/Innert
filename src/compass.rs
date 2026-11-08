@@ -87,6 +87,14 @@ impl App {
         let at = self.feet_m();
         let far = |p: [f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);
         let realm = &REALMS[places.realm];
+        // Before all else, while there's no gate, to the old foundations where it stood, to build
+        // it again, see gates.rs
+        if !self.session.standing {
+            let heading = self.heading();
+            let spot = places.gate;
+            let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
+            return Some(Bearing { label: "Build the Innert Gate".to_owned(), distance: far(spot), turn: wrapped(heading - toward), heading });
+        }
         // Then, once they're all beaten, the realm's finale where it's risen, see on_raids_beaten()
         let finale = places.finale.zip(places.finale_key()).zip(realm.finale).filter(|((_, key), _)| !self.game.is_defeated(key)).map(|((spot, _), (look, _, at))| (spot, format!("{}, {at}", look.name())));
         let (spot, label) = (0..realms::RAIDS)
@@ -111,7 +119,7 @@ impl App {
             title,
             player: self.feet_m(),
             heading: self.heading(),
-            gate: places.map(|p| (p.gate, if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
+            gate: places.map(|p| (p.gate, if !self.session.standing { "Old foundations" } else if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
             lairs: places.map_or(Vec::new(), |p| {
                 let mut lairs: Vec<([f64; 2], &'static str, bool)> = (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect();
                 // The finale too, once it's risen

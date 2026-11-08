@@ -73,6 +73,7 @@ mod compass;
 mod daynight;
 mod effects;
 mod game;
+mod gates;
 mod gather;
 mod gpu_timing;
 mod hot_reload;
@@ -3910,6 +3911,8 @@ impl App {
             let start = Instant::now();
             self.update_raid(delta_time.min(0.1));
             self.slow("the night's raid", start);
+            // The old foundations of the gate in a new game of Realms, see gates.rs
+            self.lay_ruins();
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -4921,6 +4924,7 @@ impl App {
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        let gate_choice = self.gate_choice();
         let raid_note = self.raid_note();
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
@@ -5118,7 +5122,7 @@ impl App {
                     self.cycle.hud(&ctx, raid_note.as_deref());
                 }
                 night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
-                building::hud(&self.building, &self.bases, ghost.as_ref(), &self.world, &ctx, &view);
+                building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
