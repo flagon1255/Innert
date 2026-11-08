@@ -25,6 +25,7 @@ use crate::worldgen::{World, is_passable};
 
 /// The signature special attacks giving families an identity of their own, see signatures.rs
 mod signatures;
+use signatures::powers::PowerState;
 use signatures::{Sig, SigAct, SigZone, signature_move, signature_release};
 
 pub const MAX_MANA: f64 = 100.0;
@@ -177,6 +178,9 @@ pub struct Controls {
     pub aiming: bool,
     /// R or the middle button pressed this frame: the weapon's special attack
     pub special: bool,
+    /// Q pressed this frame: a crossbow or gun loaded early, as right click does one with no power
+    /// on it, see powers.rs
+    pub reload: bool,
 }
 
 /// What a fight happens in
@@ -235,6 +239,9 @@ enum Action {
     Special { t: f64, length: f64, special: Special },
     /// A bomb drawn back and lobbed, `length` seconds in all, and whether it's left the hand yet
     Throw { t: f64, length: f64, thrown: bool },
+    /// A legendary or mythic weapon's power on right click being shot, thrown or cast, `length`
+    /// seconds in all, see powers.rs
+    Power { t: f64, length: f64 },
 }
 
 /// One hit landing
@@ -2060,6 +2067,9 @@ pub struct Combat {
     blood_timer: f64,
     /// How charged the special attack is, 0-1
     pub charge: f64,
+    /// A legendary or mythic weapon's power on right click: how long till it's ready again, see
+    /// powers.rs
+    power: PowerState,
     /// Health a special attack gives back, and how it throws the player, for game.rs to see to
     pub heal: f64,
     pub dash: Vector3<f64>,
@@ -2501,7 +2511,8 @@ fn new_move(before: Action, now: Action) -> bool {
         | (Action::Channel { t: a }, Action::Channel { t: b })
         | (Action::Charge { t: a }, Action::Charge { t: b })
         | (Action::Loose { t: a }, Action::Loose { t: b })
-        | (Action::Throw { t: a, .. }, Action::Throw { t: b, .. }) => b < a,
+        | (Action::Throw { t: a, .. }, Action::Throw { t: b, .. })
+        | (Action::Power { t: a, .. }, Action::Power { t: b, .. }) => b < a,
         _ => true,
     }
 }
@@ -4994,6 +5005,7 @@ impl Combat {
             close: false,
             blood_timer: 0.0,
             charge: 0.0,
+            power: PowerState::default(),
             heal: 0.0,
             dash: Vector3::zeros(),
             hunt: 0.0,
@@ -5326,9 +5338,15 @@ impl Combat {
             }
         }
         self.raise = (self.raise + dt / 0.3).min(1.0);
+        self.power.cooldown = (self.power.cooldown - dt).max(0.0);
 
         if let Some((index, weapon)) = weapon {
-            self.wield(arena, index, weapon, loaded, controls, dt);
+            // A legendary or mythic weapon's power on right click first, see powers.rs: what it
+            // takes of the controls is left out of the rest, and nothing else while it's going
+            let mut controls = controls;
+            if !self.wield_power(arena, index, weapon, &mut controls, dt) {
+                self.wield(arena, index, weapon, loaded, controls, dt);
+            }
             // At rest a while, standing about, it's given a flourish now and then; one started
             // is let finish even if the player moves off, but anything done with it stops it
             let flourishing = self.idle > IDLE_AFTER;
@@ -14607,6 +14625,11 @@ impl Combat {
                 }
             }
         };
+        // A legendary or mythic weapon's power being shot, thrown or cast, its move out of where
+        // it's held at rest, see powers.rs
+        if let Action::Power { t, length } = self.action {
+            p = self.power_pose(weapon, &p, t / length);
+        }
         // A flourish now and then, standing about with it
         if self.action == Action::Idle && self.idle > IDLE_AFTER {
             let f = ((self.idle - IDLE_AFTER) / FLOURISH_SECONDS).min(1.0);

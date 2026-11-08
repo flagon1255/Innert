@@ -3855,6 +3855,7 @@ impl App {
                     heavy: self.input.mouse_pressed(MouseButton::Right),
                     aiming: self.input.mouse_held(MouseButton::Right),
                     special: self.input.key_pressed(KeyCode::KeyR) || self.input.mouse_pressed(MouseButton::Middle),
+                    reload: self.input.key_pressed(KeyCode::KeyQ),
                 };
             } else if self.input.mouse_pressed(MouseButton::Left) {
                 if bucket {
@@ -4330,7 +4331,12 @@ impl App {
                         None => {}
                     }
                 }
-                self.script_controls = combat::Controls { special: f == when, ..Default::default() };
+                // `--set special_key=right` uses its power on right click instead, as a player would
+                self.script_controls = if settings_from_args().iter().any(|(k, v)| k == "special_key" && v == "right") {
+                    self.game.power_controls((f as f64 - when as f64) / 60.0, 1.0 / 60.0)
+                } else {
+                    combat::Controls { special: f == when, ..Default::default() }
+                };
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
@@ -5150,8 +5156,9 @@ impl App {
                                         RichText::new(
                                             "WASD move · Space jump · Shift run · F fly\n\
                                              Click swing or cast · bow: hold right click, click to shoot\n\
-                                             Crossbow, gun: click to shoot, right click reloads · T ammo\n\
+                                             Crossbow, gun: click to shoot, Q or right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
+                                             Legendary: R special · right click its power, Q reloads\n\
                                              Number keys pick what's in hand · I inventory · M map\n\
                                              G gather wood, stone, clay · B build · E opens doors\n\
                                              Hold Space in the air to glide, with wings\n\
