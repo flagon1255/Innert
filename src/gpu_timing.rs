@@ -118,6 +118,15 @@ impl GpuTimer {
         self.waits += 1;
     }
 
+    /// Starts adding up afresh, from the next frame finished: from when the world's there to play in,
+    /// as for the frame times with `--set time_from_ready=1`, see session.rs
+    pub fn restart(&mut self) {
+        self.totals.clear();
+        self.frames = 0;
+        self.waited = 0.0;
+        self.waits = 0;
+    }
+
     /// The average milliseconds per frame on each part, and in all, the last frames' too
     pub fn report(&mut self) -> String {
         for k in 0..POOLS {

@@ -77,6 +77,9 @@ mod gather;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
+mod serpent_lairs;
+mod serpent_trials;
+mod serpents;
 mod limits;
 mod loading;
 mod memory;
@@ -2894,7 +2897,7 @@ impl App {
         // In Realms, the realm's own three raid bosses too, and the Innert Gate or its portal home,
         // see session.rs
         let (raids, shrines) = self.realm_sites();
-        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).collect();
+        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).chain(self.serpent_sites()).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
         // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
@@ -2983,6 +2986,7 @@ impl App {
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
         self.game.set_shrines(&self.world, shrines);
+        self.place_omens();
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props.iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -6438,6 +6442,10 @@ fn main() {
     // that, in MB, as a smaller card would
     if let Some(megabytes) = settings_from_args().iter().find(|(k, _)| k == "vram_budget").and_then(|(_, v)| v.parse().ok()) {
         perf::cap_vram(megabytes);
+    }
+    // `--set no_arena=1` builds the land without the Drowned Ring, to measure what it costs
+    if settings_from_args().iter().any(|(k, v)| k == "no_arena" && v == "1") {
+        worldgen::leave_out_arenas();
     }
     // Decoding the sounds on a thread of their own, done long before anything's heard
     audio::preload();

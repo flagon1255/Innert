@@ -1467,6 +1467,14 @@ vec3 realmAlbedo(Hit hit, uint material) {
 vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     if (hit.level != ANIMAL)
     return vec3(0);
+    // A skin taken on, the whole of it turned towards one colour, light and dark as it was: the
+    // Coil Unending's body taking on each element in turn. Red, green, blue and how far, a byte each.
+    uint skin = animals[hit.instance].info.w;
+    if (skin != 0u) {
+        vec4 to = unpackUnorm4x8(skin);
+        float light = dot(albedo, vec3(0.299, 0.587, 0.114));
+        albedo = mix(albedo, to.rgb * (0.35 + 1.3 * light), to.a);
+    }
     uint tint = animals[hit.instance].info.z;
     // Struck: flashing white for a moment
     if (tint == TINT_HIT) {

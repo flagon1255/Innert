@@ -183,6 +183,10 @@ pub struct WeaponSave {
     pub family: String,
     pub parts: Vec<String>,
     pub seed: u32,
+    /// What a weapon like no other is called, as the Coil Unending's fang, see
+    /// serpents::FANG: the rest are called what their parts make them
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// What's been done in one world that stays done, each by where it is in the whole landscape, as
@@ -475,7 +479,7 @@ mod tests {
                 cleared: vec![[7, 8, 9], [-1, -2, -3]],
                 stocks: vec![StockSave {
                     key: [5, 5, 12],
-                    wares: vec![WareSave::Weapon(WeaponSave { family: "sword".into(), parts: vec!["a".into(), "b".into()], seed: 99 }), WareSave::Goods { item: ItemSave::Bread, left: 4 }],
+                    wares: vec![WareSave::Weapon(WeaponSave { family: "sword".into(), parts: vec!["a".into(), "b".into()], seed: 99, name: None }), WareSave::Goods { item: ItemSave::Bread, left: 4 }],
                 }],
                 craters: vec![([10.0, 20.5, 30.25], 2.5)],
                 stains: vec![([1.0, 2.0, 3.0], 1.5, 7, true)],
@@ -495,7 +499,7 @@ mod tests {
                 selected: 2,
                 bucket: 0.5,
                 slots: vec![
-                    SlotSave { item: ItemSave::Weapon(WeaponSave { family: "bow".into(), parts: vec!["x".into()], seed: 7 }), count: 1 },
+                    SlotSave { item: ItemSave::Weapon(WeaponSave { family: "bow".into(), parts: vec!["x".into()], seed: 7, name: Some("Fang of Ysveth".into()) }), count: 1 },
                     SlotSave { item: ItemSave::Ammo { id: "broadhead_arrows".into(), rounds: 12 }, count: 1 },
                     SlotSave { item: ItemSave::Apple, count: 3 },
                     SlotSave { item: ItemSave::Bucket, count: 1 },

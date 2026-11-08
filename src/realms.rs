@@ -10,6 +10,7 @@
 //! are in the realm they're in is worked out from the landscape, see Places.
 
 use crate::animals::Look;
+use crate::serpents;
 use crate::worldgen::material::{GLOW_BLOOD, GLOW_FIRE, GLOW_FROST, GLOW_HOLY, GLOW_POISON, GLOW_STORM};
 use crate::worldgen::{self, Landmark, TerrainSettings};
 
@@ -30,6 +31,9 @@ pub struct Realm {
     /// The realm's finale, if it has one: who rises once its three raid bosses are beaten, about
     /// where from where the realm's come to, and where that's said to be, see on_raids_beaten()
     pub finale: Option<(Look, [f32; 2], &'static str)>,
+    /// And what its lair's by: in the middle of the arena it's fought in, as the Sunken Reach's
+    /// Drowned Ring, if it's Landmark::Arena, else on the nearest dry land to that, as for a lair
+    pub finale_mark: Landmark,
     /// The monsters that roam it, a pack at a time. Each works on any land, the normal world's
     /// too: those that fly come down to fight, for night raids from one realm into another.
     pub monsters: &'static [Pack],
@@ -111,11 +115,14 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         lair_names: ["the high meadows", "the old burn", "the barrows"],
         lair_marks: [Landmark::Anywhere; 3],
         finale: None,
+        finale_mark: Landmark::Anywhere,
         monsters: &[
             Pack { looks: &[Look::Wolf, Look::Wolf, Look::Wolf], most: 3 },
             Pack { looks: &[Look::Bandit, Look::Crossbowman, Look::Shieldbearer, Look::BanditBrute], most: 2 },
             Pack { looks: &[Look::Skeleton, Look::Zombie, Look::ArmoredSkeleton], most: 2 },
             Pack { looks: &[Look::Tusker, Look::Tusker], most: 1 },
+            Pack { looks: &[Look::ReedViper, Look::ReedViper], most: 2 },
+            Pack { looks: &[Look::SiltCoiler, Look::SiltCoiler], most: 1 },
         ],
         scaling: Scaling::NONE,
         color: [255, 214, 120],
@@ -129,10 +136,12 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         lair_names: ["the storm isle", "the great isle", "the far isle"],
         lair_marks: [Landmark::Anywhere; 3],
         finale: None,
+        finale_mark: Landmark::Anywhere,
         monsters: &[
             Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 3 },
             Pack { looks: &[Look::Crossbowman, Look::Crossbowman, Look::Shieldbearer], most: 2 },
             Pack { looks: &[Look::BoneArcher, Look::ArmoredSkeleton, Look::ArmoredSkeleton], most: 1 },
+            Pack { looks: &[Look::GaleSerpent, Look::GaleSerpent, Look::GaleSerpent], most: 2 },
         ],
         scaling: Scaling { toughness: 1.6, damage: 1.35, luck: 1.8 },
         color: [140, 200, 255],
@@ -146,11 +155,13 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         lair_names: ["the bleeding fields", "the soft hollows", "the dreaming wood"],
         lair_marks: [Landmark::Anywhere; 3],
         finale: None,
+        finale_mark: Landmark::Anywhere,
         monsters: &[
             Pack { looks: &[Look::Ghoul, Look::Ghoul, Look::Bloater], most: 2 },
             Pack { looks: &[Look::Necromancer, Look::Zombie, Look::ArmoredZombie], most: 2 },
             Pack { looks: &[Look::GraveBrute, Look::BoneArcher, Look::BoneArcher], most: 1 },
             Pack { looks: &[Look::MireLurker, Look::MireLurker], most: 1 },
+            Pack { looks: &[Look::BloodAdder, Look::BloodAdder], most: 2 },
         ],
         scaling: Scaling { toughness: 2.4, damage: 1.75, luck: 2.8 },
         color: [235, 60, 70],
@@ -164,10 +175,12 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         lair_names: ["the frozen heights", "the glacier", "the white woods"],
         lair_marks: [Landmark::Anywhere; 3],
         finale: None,
+        finale_mark: Landmark::Anywhere,
         monsters: &[
             Pack { looks: &[Look::RimeWraith, Look::RimeWraith, Look::RimeWraith], most: 3 },
             Pack { looks: &[Look::Wolf, Look::Wolf, Look::Wolf, Look::Wolf], most: 2 },
             Pack { looks: &[Look::ArmoredSkeleton, Look::BoneArcher, Look::Skeleton], most: 1 },
+            Pack { looks: &[Look::DriftSerpent, Look::DriftSerpent], most: 2 },
         ],
         scaling: Scaling { toughness: 3.4, damage: 2.2, luck: 4.0 },
         color: [150, 235, 255],
@@ -177,17 +190,23 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "water",
         name: "The Sunken Reach",
         seed: WATER_SEED,
-        // Stand-ins for the serpents' own raid bosses, which take their places when they're in
-        raid_bosses: [(Look::VenomDrake, [270.0, 90.0]), (Look::Ironhide, [-150.0, 260.0]), (Look::Direwolf, [-210.0, -220.0])],
+        // Three great serpents, each in a lair of its own kind, see serpents::WATER_RAID_BOSSES:
+        // Hollowtide lurking deep in the sea cave, Reefcoil on the reef and Gyremaw circling in the
+        // whirlpool
+        raid_bosses: [(Look::Hollowtide, [270.0, 90.0]), (Look::Reefcoil, [-150.0, 260.0]), (Look::Gyremaw, [-210.0, -220.0])],
         lair_names: ["the sea cave", "the reef", "the whirlpool"],
         lair_marks: [Landmark::Anywhere; 3],
-        // And for the serpent that rises from the deep once they're beaten
-        finale: Some((Look::ElderWyrm, [60.0, -330.0], "the deep")),
+        // And the Coil Unending, rising from the deep of the Drowned Ring once they're beaten, see
+        // worldgen::Arena
+        finale: Some((Look::Ysveth, [60.0, -330.0], "the Drowned Ring")),
+        finale_mark: Landmark::Arena,
         monsters: &[
             Pack { looks: &[Look::MireLurker, Look::MireLurker, Look::MireLurker], most: 3 },
             Pack { looks: &[Look::Crossbowman, Look::Shieldbearer, Look::BanditBrute], most: 2 },
             Pack { looks: &[Look::Zombie, Look::ArmoredZombie, Look::Bloater], most: 2 },
             Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 1 },
+            Pack { looks: &[Look::SiltCoiler, Look::SiltCoiler, Look::SiltCoiler], most: 2 },
+            Pack { looks: &[Look::ReedViper, Look::ReedViper], most: 1 },
         ],
         scaling: Scaling { toughness: 4.6, damage: 2.7, luck: 5.2 },
         color: [70, 215, 200],
@@ -203,6 +222,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         lair_marks: [Landmark::Roost, Landmark::Caldera, Landmark::BoneCave],
         // And for the dragon that comes down once they're beaten
         finale: Some((Look::ElderWyrm, [40.0, 340.0], "the heart of the mountain")),
+        finale_mark: Landmark::Anywhere,
         // Stand-ins too, till the dragons' fire beasts and drakes come: burrowers in the ash,
         // gloomwings on the wing, the dead of the bone fields and tuskers
         monsters: &[
@@ -261,6 +281,9 @@ pub struct Places {
     pub lairs: [[f64; 2]; RAIDS],
     /// Where the realm's finale rises, if it has one, see on_raids_beaten()
     pub finale: Option<[f64; 2]>,
+    /// The realm's great serpent and where its lair is, if it has one there, see
+    /// serpents::realm_serpent()
+    pub serpent: Option<(Look, [f64; 2])>,
 }
 
 impl Places {
@@ -293,8 +316,16 @@ impl Places {
             let by = worldgen::landmark_near(settings, r.lair_marks[k], near.map(|v| v as f32), &rivers);
             dry(by.map_or(near, |p| p.map(f64::from)), 160.0, 7.0)
         });
-        let finale = on_raids_beaten(realm).map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 200.0, 9.0));
-        Places { realm, arrival, gate, facing, lairs, finale }
+        // The finale's in the middle of its arena if it's fought in one, else on dry land
+        let finale = on_raids_beaten(realm).map(|(_, off)| {
+            let near = [gate[0] + off[0] as f64, gate[1] + off[1] as f64];
+            match worldgen::landmark_near(settings, r.finale_mark, near.map(|v| v as f32), &rivers) {
+                Some(at) if r.finale_mark == Landmark::Arena => at.map(f64::from),
+                by => dry(by.map_or(near, |p| p.map(f64::from)), 200.0, 9.0),
+            }
+        });
+        let serpent = serpents::realm_serpent(r.id).and_then(|(look, off)| Some((look, serpents::lair_spot(look, settings, [gate[0] + off[0], gate[1] + off[1]])?)));
+        Places { realm, arrival, gate, facing, lairs, finale, serpent }
     }
 
     /// What raid boss `slot`'s lair is called, to remember it's beaten: where it is in the
@@ -302,6 +333,11 @@ impl Places {
     pub fn lair_key(&self, slot: usize) -> [i64; 3] {
         let [x, y] = self.lairs[slot];
         [(x * 10.0).round() as i64, (y * 10.0).round() as i64, LAIR_KEY - slot as i64]
+    }
+
+    /// What the realm's great serpent's lair is called, the same way
+    pub fn serpent_key(&self) -> Option<[i64; 3]> {
+        self.serpent.map(|(_, [x, y])| [(x * 10.0).round() as i64, (y * 10.0).round() as i64, serpents::LAIR_KEY])
     }
 
     /// The same for the realm's finale's lair, if it has one, see is_finale_key()
@@ -438,16 +474,21 @@ mod tests {
     }
 
     /// The sunken reach is islands in deep water, joined up by shallows, so all of them can be got to
-    /// from the portal on foot, wading no deeper than a meter: its gate, the raid bosses' lairs and
-    /// its finale's on dry land
+    /// from the portal on foot, wading no deeper than a meter: its gate and the raid bosses' lairs on
+    /// dry land, and its finale out in the middle of the Drowned Ring, where it rises from the deep
     #[test]
     fn the_sunken_reach_can_be_crossed_on_foot() {
         let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: WATER_SEED, grass_tufts: true };
         let p = Places::find(4, &settings, [200.0, 180.0], [0.0, 1.0]);
         assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0), "the portal's on an island");
-        for lair in p.lairs.iter().chain(p.finale.as_ref()) {
+        for lair in &p.lairs {
             assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
         }
+        let arena = worldgen::arena_of(&settings).expect("the Drowned Ring");
+        let finale = p.finale.expect("its finale");
+        assert!((finale[0] - arena.middle[0] as f64).hypot(finale[1] - arena.middle[1] as f64) < 1.0, "{finale:?} isn't in the middle of {arena:?}");
+        let off = (finale[0] - p.gate[0] - 60.0).hypot(finale[1] - p.gate[1] + 330.0);
+        assert!(off < 300.0, "the Drowned Ring's {off} m from where the finale's said to be");
         // Over a square 600 m across round the portal, every bit of dry land that can be walked to
         // without wading deeper than a meter, from the portal
         const N: usize = 300;

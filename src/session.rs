@@ -621,6 +621,33 @@ impl App {
             self.session.arriving = true;
             self.rebuild_world();
         }
+        // `arena=entrance` stands the player on the Drowned Ring's causeway, out past its gate,
+        // looking in at its basin, `arena=walk` on the walk at the water's edge where the passage
+        // comes out on it, and `arena=stands` up its stands to one side, see worldgen::Arena
+        let terrain = self.terrain_settings();
+        if let Some((spot, arena)) = setting("arena").zip(worldgen::arena_site_of(&terrain)) {
+            let (out, turn) = match spot {
+                "walk" => (worldgen::ARENA_BASIN + 1.5, 0.0),
+                "stands" => (worldgen::ARENA_STANDS - 2.0, 1.2),
+                _ => (worldgen::ARENA_STANDS + 14.0, 0.0),
+            };
+            let a = arena.facing + turn;
+            let spot = [arena.middle[0] + a.cos() * out, arena.middle[1] + a.sin() * out];
+            let vpm = self.world.voxels_per_meter as f64;
+            let at = Vector3::new(spot[0] as f64 * vpm - self.world.origin[0] as f64, spot[1] as f64 * vpm - self.world.origin[1] as f64, self.world.size[2] as f64 - 2.0 * vpm);
+            let mut player = Player::new(at, &self.world);
+            player.position = at;
+            self.player = Some(player);
+            self.camera.position = voxels_to_camera(at, self.world.size);
+            // Looking in at the middle of its basin
+            let (dx, dy) = ((spot[0] - arena.middle[0]) as f64, (spot[1] - arena.middle[1]) as f64);
+            self.camera.rotation.z = dx.atan2(-dy);
+            self.camera.rotation.x = -0.12;
+            self.session.find_ground = true;
+            self.session.arriving = true;
+            self.rebuild_world();
+            println!("ARENA at {:.0}, {:.0}, facing {:.2}, causeway {:.0} m: standing at {spot:?}", arena.middle[0], arena.middle[1], arena.facing, arena.causeway);
+        }
         self.session.trial = Trial {
             slay_raid_at: number("slay_raid_at"),
             set_in_at: number("set_in_at"),
@@ -673,6 +700,10 @@ impl App {
             if let Some(capture) = &mut self.capture {
                 if first && settings_from_args().iter().any(|(k, v)| k == "time_from_ready" && v == "1") {
                     capture.stats_from = frame;
+                    // The GPU's times too, see gpu_timing.rs
+                    if let Some(timer) = &mut capture.gpu {
+                        timer.restart();
+                    }
                 }
                 capture.shots.extend(trial.shots_after.iter().map(|k| frame + k));
                 if let Some(end) = trial.end_after {
@@ -941,6 +972,12 @@ impl App {
         }
         if let Some(frame) = self.capture.as_ref().map(|c| c.frame_times.len()) {
             self.trial_step(frame);
+            self.serpent_trial(frame, self.session.trial.ready);
+        }
+        // The great serpents' lairs come across, now and then, see serpent_lairs.rs
+        if self.frame % 30 == 0 {
+            self.find_serpent_lairs();
+            self.darken_sky();
         }
         if self.session.mode.is_none() || self.menu_open {
             return;
