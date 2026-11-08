@@ -3090,6 +3090,14 @@ impl AnimalInstance {
         self.info[2] = tint;
         self
     }
+
+    /// Where it is and how far it reaches from there, in voxels of the main world, for tests
+    /// seeing whether it can be seen
+    #[cfg(test)]
+    pub fn sphere(&self) -> (Vector3<f64>, f64) {
+        let [x, y, z, reach] = self.position.map(f64::from);
+        (Vector3::new(x, y, z), reach)
+    }
 }
 
 fn facing(heading: f64) -> UnitQuaternion<f64> {

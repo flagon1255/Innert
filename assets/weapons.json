@@ -357,7 +357,7 @@
       "description": "Shots splash onto everything within 1.8 m of what they hit, for 40%, without blowing holes.",
       "params": { "radius": 1.8, "power": 0.4 } },
     { "id": "pool", "displayName": "Lingering Pool", "synergyTags": ["area", "ground"],
-      "description": "Hits leave a pool of their element 1.5 m round for 4 s: fire burns, frost chills and freezes, venom poisons whatever stands in it.",
+      "description": "Hits leave a pool of their element 1.5 m round for 4 s: fire burns, frost chills and freezes, venom poisons whatever stands in it. Without an element they churn up the ground, which grinds at and slows what's in it.",
       "params": { "radius": 1.5, "duration": 4.0, "power": 0.2 } },
     { "id": "miasma", "displayName": "Miasma", "synergyTags": ["area", "cloud"],
       "description": "What it kills bursts into a cloud of its element 2.5 m round that hangs for 4 s, hurting what's in it.",

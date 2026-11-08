@@ -4142,6 +4142,42 @@ impl App {
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
             }
+            // A pool of each element and one of churned earth laid out over the ground ahead, all
+            // at once, to watch them spread out, go on, die down and leave their marks, and laid
+            // out again every 250 frames, for timing them
+            ("pools", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.62;
+                }
+                if f >= 20 && (f - 20) % 250 == 0 {
+                    let water = &self.water;
+                    let middle = self.game.lay_pools(&self.world, &|x, y| water.surface_at(x, y), eye, look);
+                    // Looking down at the middle of them, the first time
+                    if f == 20 {
+                        self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    }
+                }
+            }
+            // One spell cast up over the land ahead, the view narrowed to follow it a long way
+            // off, to see it fly on and on
+            ("far", f) => {
+                // `--set far_turn=2` turns round that many radians first, away from what's near
+                if f == 1 {
+                    let turn = settings_from_args().into_iter().find(|(k, _)| k == "far_turn").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    self.camera.rotation.z += turn;
+                    self.camera.rotation.x = 0.22;
+                    self.camera.fov = 30.0;
+                }
+                // Nothing near for it to home in on
+                if f <= 30 {
+                    self.game.shoo_animals(eye, 80.0);
+                }
+                let cast = (30..33).contains(&f);
+                self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+                if f % 15 == 0 || (30..42).contains(&f) {
+                    println!("frame {frame}: {}", self.game.in_flight(eye));
+                }
+            }
             // One spell cast at the ground a few meters ahead, to watch it go off and what it leaves
             ("spells", f) => {
                 if f == 1 {

@@ -5093,11 +5093,17 @@ pub const SLOT_BOMB: usize = SLOT_SMOKE + 1;
 /// Great billows of cloud, well over a meter across, each element's color: what a censer leaves
 /// hanging, a storm's thunderheads, a mire's haze
 pub const SLOT_CLOUD: usize = SLOT_BOMB + 1;
-/// Puddles a meter round lying flat on the ground round 0, of what each element leaves: mud
-/// without one, embers, ice, venom and the rest. Pools are drawn with these, never painted on.
+/// Pools a meter round lying flat on the ground round 0, of what each element leaves, see pool():
+/// churned earth without one, smouldering embers, a sheet of ice, bubbling venom, ground scorched
+/// by lightning, a sigil of light, a swirl of darkness, blood, runes. Pools are drawn with these,
+/// never painted on.
 pub const SLOT_PUDDLE: usize = SLOT_CLOUD + 1;
+/// The same pools dying down: embers burnt out to ash, ice melting apart, venom drying, the
+/// lightning's forks gone dark, the sigil and runes dim, the swirl drawn in, blood crusting over,
+/// the earth settling
+pub const SLOT_POOL_SPENT: usize = SLOT_PUDDLE + 1;
 /// After the sets: the right arm, the left arm, a boulder, then spikes of ice bursting up
-pub const ARMS: usize = (SLOT_PUDDLE + 1) * ELEMENT_LOOKS;
+pub const ARMS: usize = (SLOT_POOL_SPENT + 1) * ELEMENT_LOOKS;
 pub const BOULDER: usize = ARMS + 2;
 pub const ICE_BURST: usize = BOULDER + 1;
 /// A pillar of light, standing on 0
@@ -5340,38 +5346,252 @@ fn flying_bomb(element: Option<Element>) -> Vec<Part> {
     p
 }
 
-/// A puddle a meter round lying flat round 0, lumpy at its edge, of what `element` leaves on the
-/// ground: glowing spots of it on what it lies on, charred ground with embers for fire, ice with
-/// frost round it, venom on moss, mud without an element
-fn puddle(element: Option<Element>, seed: u32) -> Vec<Part> {
-    use Element::*;
-    let (bed, spots) = match element {
-        None => (BARK_DARK, DIRT),
-        Some(Fire) => (BARK_DARK, GLOW_FIRE),
-        Some(Frost) => (ICE, FOAM),
-        Some(Storm) => (BARK_DARK, GLOW_STORM),
-        Some(Poison) => (MOSS, GLOW_POISON),
-        Some(Arcane) => (CRYSTAL, GLOW_ARCANE),
-        Some(Void) => (OBSIDIAN, GLOW_VOID),
-        Some(Blood) => (CLOTH, GLOW_BLOOD),
-        Some(Holy) => (GOLD, GLOW_HOLY),
-    };
-    let mut seed = seed;
-    let mut p = Vec::new();
-    // Spots of it a little proud of the bed, first so they show
-    for _ in 0..9 {
-        let a = random(&mut seed) * TAU;
-        let r = random(&mut seed).sqrt() * 0.75;
-        let s = 0.08 + 0.1 * random(&mut seed);
-        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.02], [s, s * (0.6 + 0.4 * random(&mut seed)), 0.035], spots));
-    }
+/// A lumpy disc about `radius` round lying flat round 0, `thick` either side of it, of
+/// `material`: lobes round a middle, so its edge is ragged
+fn bed(p: &mut Vec<Part>, radius: f64, thick: f64, material: u8, seed: &mut u32) {
     for k in 0..7 {
-        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.5;
-        let r = 0.45 + 0.15 * random(&mut seed);
-        let s = 0.35 + 0.15 * random(&mut seed);
-        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [s, s, 0.03], bed));
+        let a = k as f64 / 7.0 * TAU + random(seed) * 0.5;
+        let r = radius * (0.5 + 0.15 * random(seed));
+        let s = radius * (0.36 + 0.15 * random(seed));
+        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [s, s, thick], material));
     }
-    p.push(ellipsoid([0.0, 0.0, 0.0], [0.6, 0.6, 0.035], bed));
+    p.push(ellipsoid([0.0, 0.0, 0.0], [radius * 0.63, radius * 0.63, thick], material));
+}
+
+/// A jagged line over the ground from `from` to `to`, `z` up, wandering up to `wander` either side
+/// as it goes, `r` thick and thinning: a crack, or a fork of lightning burnt in. Gives back the
+/// points it bends at.
+#[allow(clippy::too_many_arguments)]
+fn jagged(p: &mut Vec<Part>, from: [f64; 2], to: [f64; 2], z: f64, wander: f64, r: f64, material: u8, seed: &mut u32) -> Vec<[f64; 3]> {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let length = (dx * dx + dy * dy).sqrt().max(1e-6);
+    let (nx, ny) = (-dy / length, dx / length);
+    let steps = 5;
+    let points: Vec<[f64; 3]> = (0..=steps)
+        .map(|k| {
+            let t = k as f64 / steps as f64;
+            let off = if k == 0 || k == steps { 0.0 } else { (random(seed) * 2.0 - 1.0) * wander };
+            [from[0] + dx * t + nx * off, from[1] + dy * t + ny * off, z]
+        })
+        .collect();
+    curve(p, &points, r, r * 0.6, material);
+    points
+}
+
+/// A pool a meter round lying flat round 0, of what `element` leaves on the ground, fresh or with
+/// `spent` dying down, laid out the same either way so one gives way to the other. Without an
+/// element, churned earth, cracked, clods and stones thrown up over it, settling flatter as it's
+/// spent. Fire leaves smouldering embers, coals and cracks of fire through charred ground, burning
+/// out to grey ash; frost a sheet of ice, spikes of it standing up and frost feathering over it,
+/// melting into plates in slush; venom bubbling ooze, drying to a crust; lightning its forks burnt
+/// into scorched ground, going dark; holy light a sigil, a star in two rings, dimming; the void a
+/// swirl of darkness winding in to a black heart; blood a dark pool, gleaming, crusting over; and
+/// arcane magic a ring of runes round a crystal.
+fn pool(element: Option<Element>, spent: bool, key: u32) -> Vec<Part> {
+    use Element::*;
+    let mut seed = key;
+    let s = &mut seed;
+    let mut p = Vec::new();
+    let flat = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let round = |s: &mut u32, most: f64| {
+        let a = random(s) * TAU;
+        let r = random(s).sqrt() * most;
+        (a.cos() * r, a.sin() * r)
+    };
+    match element {
+        None => {
+            // Clods of earth and stones thrown up over it, fewer and smaller once it's settled
+            for k in 0..12 {
+                let (x, y) = round(s, 0.85);
+                let r = (0.04 + 0.06 * random(s)) * if spent { 0.6 } else { 1.0 };
+                if !spent || k % 2 == 0 {
+                    p.push(ball([x, y, 0.02], r, [DIRT, GRAVEL, ROCK, BARK_DARK][k % 4]));
+                }
+            }
+            for k in 0..6 {
+                let a = k as f64 / 6.0 * TAU + random(s) * 0.7;
+                let (r0, r1) = (0.1 + 0.1 * random(s), 0.7 + 0.25 * random(s));
+                jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.012, 0.08, 0.02, BARK_DARK, s);
+            }
+            // Turned over, darker in patches
+            for _ in 0..5 {
+                let (x, y) = round(s, 0.6);
+                p.push(ellipsoid([x, y, 0.005], [0.2, 0.14, 0.032], FUR_BROWN));
+            }
+            bed(&mut p, 0.95, 0.03, DIRT, s);
+        }
+        Some(Fire) => {
+            let (coal, crack) = if spent { (BARK_DARK, MORTAR) } else { (GLOW_FIRE, GLOW_FIRE) };
+            for k in 0..16 {
+                let (x, y) = round(s, 0.8);
+                let r = 0.035 + 0.04 * random(s);
+                // A few still glowing as it burns out
+                let m = if spent && k % 4 == 0 { GLOW_FIRE } else if k % 3 == 0 && !spent { FLAME } else { coal };
+                p.push(ball([x, y, 0.025], if spent { r * 0.7 } else { r }, m));
+            }
+            for k in 0..6 {
+                let a = k as f64 / 6.0 * TAU + random(s) * 0.6;
+                let (r0, r1) = (0.08, 0.6 + 0.3 * random(s));
+                jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.012, 0.07, 0.018, crack, s);
+            }
+            // Ash lying flat at its edge, all over it once it's burnt out
+            for k in 0..9 {
+                let a = k as f64 / 9.0 * TAU + random(s) * 0.5;
+                let r = if spent { 0.2 + 0.6 * random(s) } else { 0.72 + 0.2 * random(s) };
+                p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [0.2, 0.13, 0.031], if spent && k % 2 == 0 { FUR_GRAY } else { MORTAR }));
+            }
+            bed(&mut p, 0.95, 0.03, BARK_DARK, s);
+        }
+        Some(Frost) => {
+            if !spent {
+                // Spikes of ice standing up out of it, leaning out
+                for k in 0..7 {
+                    let a = k as f64 / 7.0 * TAU + random(s) * 0.7;
+                    let r = 0.25 + 0.55 * random(s);
+                    let (h, lean) = (0.12 + 0.18 * random(s), 0.04 + 0.06 * random(s));
+                    let base = [a.cos() * r, a.sin() * r, 0.0];
+                    p.push(ball(base, 0.02, GLOW_FROST));
+                    p.push(limb(base, [base[0] + a.cos() * lean, base[1] + a.sin() * lean, h], 0.045 + 0.02 * random(s), 0.004, ICE));
+                }
+                // Frost feathering out over it
+                for k in 0..10 {
+                    let a = k as f64 / 10.0 * TAU + random(s) * 0.5;
+                    let (r0, r1) = (0.2 + 0.2 * random(s), 0.75 + 0.15 * random(s));
+                    jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.03, 0.04, 0.012, FOAM, s);
+                }
+                ring(&mut p, [0.0, 0.0, 0.0], flat.0, flat.1, 0.9, 0.05, SNOW);
+                bed(&mut p, 0.95, 0.03, ICE, s);
+            } else {
+                // Plates of it drifting apart in slush as it melts
+                for k in 0..8 {
+                    let a = k as f64 / 8.0 * TAU + random(s) * 0.4;
+                    let r = 0.35 + 0.3 * random(s);
+                    p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.006], [0.2, 0.14, 0.026], ICE));
+                }
+                p.push(ellipsoid([0.0, 0.0, 0.006], [0.2, 0.2, 0.026], ICE));
+                bed(&mut p, 0.8, 0.018, FOAM, s);
+            }
+        }
+        Some(Poison) => {
+            let (ooze, rim) = if spent { (DRY_GRASS, MOSS) } else { (GLOW_POISON, MOSS) };
+            // Bubbles swelling up out of it, gone once it's dried
+            for k in 0..9 {
+                let (x, y) = round(s, 0.7);
+                let r = 0.05 + 0.07 * random(s);
+                if !spent {
+                    p.push(ball([x, y, 0.01], r, if k % 3 == 0 { LEAVES_LIME } else { GLOW_POISON }));
+                } else if k % 3 == 0 {
+                    p.push(ball([x, y, 0.0], r * 0.4, GLOW_POISON));
+                }
+            }
+            for _ in 0..4 {
+                let (x, y) = round(s, 0.5);
+                p.push(ellipsoid([x, y, 0.006], [0.22, 0.16, 0.032], if spent { CLAY } else { LEAVES_LIME }));
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.004], [0.66, 0.62, 0.034], ooze));
+            bed(&mut p, 0.95, 0.03, rim, s);
+        }
+        Some(Storm) => {
+            let fork = if spent { OBSIDIAN } else { GLOW_STORM };
+            // Forks burnt out over it from where it struck, each branching
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU + random(s) * 0.5;
+                let points = jagged(&mut p, [0.0, 0.0], [a.cos() * 0.9, a.sin() * 0.9], 0.015, 0.1, 0.02, fork, s);
+                let mid = points[2 + (random(s) * 2.0) as usize];
+                let b = a + (random(s) - 0.5) * 1.6;
+                jagged(&mut p, [mid[0], mid[1]], [mid[0] + b.cos() * 0.35, mid[1] + b.sin() * 0.35], 0.015, 0.05, 0.013, fork, s);
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.01], [0.1, 0.1, 0.035], if spent { GRAVEL } else { GLOW_STORM }));
+            for _ in 0..5 {
+                let (x, y) = round(s, 0.8);
+                p.push(ball([x, y, 0.01], 0.04, GRAVEL));
+            }
+            bed(&mut p, 0.9, 0.03, BARK_DARK, s);
+        }
+        Some(Holy) => {
+            let (light, gold) = if spent { (GOLD, BRONZE) } else { (GLOW_HOLY, GOLD) };
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.92, 0.03, gold);
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.66, 0.024, light);
+            // A star of two triangles within the rings
+            for tri in 0..2 {
+                for k in 0..3 {
+                    let a0 = tri as f64 * PI / 3.0 + k as f64 * TAU / 3.0 + PI / 2.0;
+                    let a1 = a0 + TAU / 3.0;
+                    p.push(limb([a0.cos() * 0.62, a0.sin() * 0.62, 0.02], [a1.cos() * 0.62, a1.sin() * 0.62, 0.02], 0.018, 0.018, light));
+                }
+            }
+            // Marks round between the rings, as on a dial
+            for k in 0..12 {
+                let a = k as f64 / 12.0 * TAU;
+                if k % 3 == 0 {
+                    p.push(limb([a.cos() * 0.73, a.sin() * 0.73, 0.02], [a.cos() * 0.85, a.sin() * 0.85, 0.02], 0.02, 0.02, gold));
+                } else {
+                    p.push(ball([a.cos() * 0.79, a.sin() * 0.79, 0.02], 0.025, light));
+                }
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.01], [0.1, 0.1, 0.03], light));
+            // Burnt into the ground, so the light shows against it
+            bed(&mut p, 0.95, 0.016, BRONZE, s);
+        }
+        Some(Void) => {
+            // Arms of it winding in to the middle, drawn in tighter once it's spent
+            let reach = if spent { 0.55 } else { 0.95 };
+            for arm in 0..3 {
+                let a0 = arm as f64 / 3.0 * TAU + random(s) * 0.3;
+                let points: Vec<[f64; 3]> = (0..=14)
+                    .map(|j| {
+                        let t = j as f64 / 14.0;
+                        let (r, a) = (reach * (1.0 - t) + 0.06, a0 + t * 1.3 * TAU);
+                        [a.cos() * r, a.sin() * r, 0.02]
+                    })
+                    .collect();
+                curve(&mut p, &points, 0.05 * reach, 0.012, if spent { FUR_DARK } else { GLOW_VOID });
+            }
+            let heart = 0.16 * reach.sqrt();
+            p.push(ellipsoid([0.0, 0.0, 0.0], [heart, heart, 0.034], EYE));
+            bed(&mut p, reach, 0.03, OBSIDIAN, s);
+        }
+        Some(Blood) => {
+            if !spent {
+                // Gleaming
+                for _ in 0..5 {
+                    let (x, y) = round(s, 0.6);
+                    p.push(ellipsoid([x, y, 0.03], [0.08, 0.04, 0.02], GLOW_BLOOD));
+                }
+            }
+            // Splashed round it
+            for _ in 0..9 {
+                let a = random(s) * TAU;
+                let r = 0.95 + 0.2 * random(s);
+                p.push(ball([a.cos() * r, a.sin() * r, 0.0], 0.03 + 0.03 * random(s), CLOTH));
+            }
+            // Darkest where it's deepest
+            p.push(ellipsoid([0.05, 0.03, 0.005], [0.55, 0.5, 0.033], if spent { FUR_DARK } else { LEAVES_CRIMSON }));
+            bed(&mut p, 0.95, 0.03, CLOTH, s);
+        }
+        Some(Arcane) => {
+            let (glow, crystal) = if spent { (FLOWER_PURPLE, STEEL) } else { (GLOW_ARCANE, CRYSTAL) };
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.9, 0.025, crystal);
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.58, 0.02, glow);
+            // Runes between the rings, each its own: a bar out from the middle, strokes off it
+            for k in 0..8 {
+                let a = k as f64 / 8.0 * TAU + 0.2;
+                let (out, across) = ([a.cos(), a.sin()], [-a.sin(), a.cos()]);
+                let at = |r: f64, side: f64| [out[0] * r + across[0] * side, out[1] * r + across[1] * side, 0.02];
+                p.push(limb(at(0.66, 0.0), at(0.82, 0.0), 0.016, 0.016, glow));
+                let strokes = hash(k as u32 * 7919 + key);
+                for j in 0..3 {
+                    if strokes >> j & 1 == 1 {
+                        let r = 0.68 + 0.06 * j as f64;
+                        let side = if strokes >> (j + 4) & 1 == 1 { 0.06 } else { -0.06 };
+                        p.push(limb(at(r, 0.0), at(r + 0.04, side), 0.014, 0.014, glow));
+                    }
+                }
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.02], [0.07, 0.07, 0.045], crystal));
+            bed(&mut p, 0.95, 0.02, DARK_STEEL, s);
+        }
+    }
     p
 }
 
@@ -5462,8 +5682,11 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         let p: Vec<Part> = smoke(element, 0xc10d + k as u32).iter().map(|p| p.scaled(7.5)).collect();
         models.push(voxelize(&p, CLOUD_RES));
     }
-    for (k, &element) in looks.iter().enumerate() {
-        models.push(voxelize(&puddle(element, 0x9dd1 + k as u32), PUDDLE_RES));
+    // Pools, fresh then dying down, each laid out alike, see pool()
+    for spent in [false, true] {
+        for (k, &element) in looks.iter().enumerate() {
+            models.push(voxelize(&pool(element, spent, 0x9dd1 + k as u32), PUDDLE_RES));
+        }
     }
     models.push(voxelize(&arm(false), ARM_RES));
     models.push(voxelize(&arm(true), ARM_RES));
