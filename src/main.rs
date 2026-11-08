@@ -5989,6 +5989,22 @@ impl App {
         let gui_future = rcx
             .gui
             .draw_on_image(render_future, rcx.image_views[image_index as usize].clone());
+
+        let submitting = Instant::now();
+        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
+        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
+        // its images without having taken it and stopped the game ("Image was not locked for GPU
+        // write"), on AVI as it was too, a few hundred frames into a run.
+        // And before a shot's copy of the screen goes behind it, with `--set gui=1`: sent together
+        // with that, vulkano checked what the frame's commands use against the GUI's commands they
+        // were chained behind, which answer only for what they use themselves, so all the rest was
+        // checked against who holds it, and found still held by the frame before whenever the GPU
+        // wasn't done with that yet, as with `nowait`. That stopped the game ("the resource is
+        // already in use, and there is no tracking of concurrent usages"). Sent on their own, the
+        // frame's commands are checked against themselves, as on every other frame.
+        if let Err(e) = gui_future.flush() {
+            println!("Sending the frame to the GPU went wrong: {e}");
+        }
         // With `--set gui=1`, shots are of the whole screen once the GUI's drawn over the game
         let screen = rcx.image_views[image_index as usize].image().clone();
         let screen_buffer = (capture_shot.is_some() && self.capture.as_ref().is_some_and(|c| c.gui)).then(|| {
@@ -6004,19 +6020,14 @@ impl App {
             Some(buffer) => {
                 let mut copy = AutoCommandBufferBuilder::primary(self.command_buffer_allocator.clone(), self.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
                 copy.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(screen.clone(), buffer.clone())).unwrap();
-                gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap().boxed()
+                let copied = gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap();
+                if let Err(e) = copied.flush() {
+                    println!("Sending the shot's copy of the screen to the GPU went wrong: {e}");
+                }
+                copied.boxed()
             }
             None => gui_future,
         };
-
-        let submitting = Instant::now();
-        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
-        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
-        // its images without having taken it and stopped the game ("Image was not locked for GPU
-        // write"), on AVI as it was too, a few hundred frames into a run
-        if let Err(e) = gui_future.flush() {
-            println!("Sending the frame to the GPU went wrong: {e}");
-        }
         // Shown once it's drawn, see loading::Drawn
         let drawn = loading::Drawn::after(gui_future);
         let semaphore = drawn.semaphore();
