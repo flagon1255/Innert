@@ -1274,7 +1274,7 @@ impl App {
                             if !solid(x, y, z) {
                                 let floor = (0..z).rev().find(|&k| solid(x, y, k));
                                 if let Some(k) = floor
-                                    && self.world.material_at(x, y, k) == worldgen::material::CLAY
+                                    && self.world.material_at(x, y, k) == worldgen::material::CLAY_BANK
                                     && (1..(1.4 * vpm) as i64).all(|h| !solid(x, y, k + h))
                                 {
                                     hit = Some(k);
@@ -1309,7 +1309,7 @@ impl App {
                         let patch = [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (0, 0)].iter().all(|&(dx, dy)| rock(x + dx, y + dy));
                         (patch && depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm)))
                     }
-                    _ if self.world.material_at(x, y, z) != worldgen::material::CLAY => None,
+                    _ if self.world.material_at(x, y, z) != worldgen::material::CLAY_BANK => None,
                     "shallows" => (depth > 0.15 * vpm && depth < 0.8 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 3.0 * vpm))),
                     _ => (depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm))),
                 };

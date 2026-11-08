@@ -877,7 +877,7 @@ fn ground_of(material: u8) -> audio::Ground {
         SAND | SANDSTONE | SANDSTONE_DARK => audio::Ground::Sand,
         SNOW => audio::Ground::Snow,
         WATER | FOAM => audio::Ground::Water,
-        STONE | ROCK | GRAVEL | CLAY | TEMPLE_STONE | TEMPLE_DARK | TEMPLE_RED | TEMPLE_TEAL | BRICK_STONE | MORTAR | LIMESTONE | WOOD | DEAD_WOOD | CLAY_POT => audio::Ground::Stone,
+        STONE | ROCK | GRAVEL | CLAY | CLAY_BANK | TEMPLE_STONE | TEMPLE_DARK | TEMPLE_RED | TEMPLE_TEAL | BRICK_STONE | MORTAR | LIMESTONE | WOOD | DEAD_WOOD | CLAY_POT => audio::Ground::Stone,
         _ => audio::Ground::Grass,
     }
 }

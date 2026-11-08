@@ -3518,7 +3518,7 @@ fn surface_at(world: &World, water: WaterLevel, x: f64, y: f64) -> Option<f64> {
 
 /// Whether a material is the ground itself rather than something on it, like a tree or a wall
 fn is_ground(material: u8) -> bool {
-    matches!(material, GRASS | DIRT | SAND | SNOW | STONE | ROCK | GRAVEL | CLAY | MOSS | JUNGLE_GRASS | ICE)
+    matches!(material, GRASS | DIRT | SAND | SNOW | STONE | ROCK | GRAVEL | CLAY | CLAY_BANK | MOSS | JUNGLE_GRASS | ICE)
 }
 
 impl Animal {

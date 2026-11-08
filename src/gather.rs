@@ -27,7 +27,7 @@ pub fn yield_of(material: u8) -> Yield {
     match material {
         WOOD | BARK_DARK | BIRCH_BARK | PALM_WOOD | DEAD_WOOD | MUSHROOM_STEM | CACTUS => Yield::Wood,
         STONE | ROCK | GRAVEL | LIMESTONE | SANDSTONE | SANDSTONE_DARK | BRICK_STONE | MORTAR | TEMPLE_STONE | TEMPLE_DARK | OBSIDIAN | MOSS => Yield::Stone,
-        CLAY | CLAY_POT => Yield::Clay,
+        CLAY | CLAY_BANK | CLAY_POT => Yield::Clay,
         GRASS | DIRT | SAND | SNOW | JUNGLE_GRASS | ICE => Yield::Earth,
         _ => Yield::Nothing,
     }
@@ -394,6 +394,7 @@ mod tests {
         assert!(top.cut.contains_key(&[2, 2, 2]));
         assert!(block_at(&world, [2, 2, 5], &none).is_none(), "nothing in the air");
         assert_eq!(yield_of(CLAY), Yield::Clay);
+        assert_eq!(yield_of(CLAY_BANK), Yield::Clay);
         assert!(blows_for(Yield::Stone) > blows_for(Yield::Clay));
     }
 

@@ -114,6 +114,10 @@ pub mod material {
     // The sunlit tips of fresh green crowns, and the shadowy depths of red ones
     pub const LEAVES_LIME: u8 = 87;
     pub const LEAVES_CRIMSON: u8 = 88;
+    /// Clay as it lies in the ground, in banks by the water and bands in the rock: an earthy
+    /// red-brown, gathered for building, see src\gather.rs. CLAY is the pale grey of plaster and
+    /// smoke.
+    pub const CLAY_BANK: u8 = 89;
 }
 
 use material::*;
@@ -4405,9 +4409,9 @@ impl Terrain {
         // Clay in patches in the shallows at the edges of rivers, and along the shores of lakes and
         // the sea, just above the water and under it: for building with, see src\bases.rs
         let wet_edge = land != Land::Dragon && (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
-        let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
+        let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY_BANK } else { top };
         let below = match top {
-            SAND | STONE | GRAVEL | CLAY | ICE | ROCK | OBSIDIAN => top,
+            SAND | STONE | GRAVEL | CLAY | CLAY_BANK | ICE | ROCK | OBSIDIAN => top,
             GLOW_BLOOD | GLOW_FIRE | GLOW_HOLY => OBSIDIAN,
             _ => DIRT,
         };
@@ -4503,12 +4507,12 @@ impl Terrain {
             return [OBSIDIAN, ROCK, ROCK, STONE, STONE, GRAVEL][pick as usize];
         }
         if column.desert {
-            return [SANDSTONE, SANDSTONE, SANDSTONE, SANDSTONE_DARK, SAND, CLAY][pick as usize];
+            return [SANDSTONE, SANDSTONE, SANDSTONE, SANDSTONE_DARK, SAND, CLAY_BANK][pick as usize];
         }
         match pick {
             0 | 1 | 2 => STONE,
             3 | 4 => ROCK,
-            _ => CLAY,
+            _ => CLAY_BANK,
         }
     }
 
