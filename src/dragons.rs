@@ -1787,7 +1787,10 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
     }
     boss.set_sighted(d.seen && boss.engaged);
     d.unseen = if d.seen || !boss.engaged { 0.0 } else { d.unseen + h.dt };
-    if boss.engaged && !boss.raider && (h.feet.is_none() || distance > give_up || from_home > leash || d.unseen > 12.0) {
+    // Not losing sight of them in its own arena, behind a pillar or under its rim: it knows they're
+    // there, see in_arena()
+    let unseen = d.unseen > 12.0 && !h.feet.is_some_and(|f| in_arena(h, boss, f));
+    if boss.engaged && !boss.raider && (h.feet.is_none() || distance > give_up || from_home > leash || unseen) {
         boss.calm();
     }
     if !boss.engaged && !matches!(d.state, State::Rest | State::Reel(_) | State::Alight(_)) {
@@ -1875,6 +1878,8 @@ fn begin_landing(d: &mut Dragon, h: &Here) {
     // A little way short of the player, far enough its body's clear of them, on open ground,
     // trying round about if it's not there
     let off = if is_drakeling(h.look) { 3.5 + 1.8 * s } else { 4.0 + 2.6 * s } * vpm;
+    // On the ground they're on, not up on a rock or a pillar over it
+    let level = h.feet.and_then(|f| ground_z(h.world, f.x, f.y, f.z + 1.0 * vpm, 30.0));
     let mut spot = None;
     for k in 0..8 {
         let turn = [0.0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, PI][k];
@@ -1883,6 +1888,7 @@ fn begin_landing(d: &mut Dragon, h: &Here) {
         let at = around + way * off;
         if let Some(z) = ground_z(h.world, at.x, at.y, at.z + 6.0 * vpm, 30.0)
             && (h.water)(at.x, at.y) < z + 0.2 * vpm
+            && level.is_none_or(|l| (z - l).abs() < 3.0 * vpm)
         {
             spot = Some(Vector3::new(at.x, at.y, z));
             break;
@@ -1896,6 +1902,12 @@ fn begin_landing(d: &mut Dragon, h: &Here) {
         d.aloft = 0.0;
         d.budget = 5.0;
     }
+}
+
+/// Whether it's the Worldpyre Ancient fighting the player in its arena, see
+/// worldgen\dragonlair.rs: its lair's a finale's, and the player's in it, `feet` being where
+fn in_arena(h: &Here, boss: &Boss, feet: Vector3<f64>) -> bool {
+    h.look == ULTRA && crate::realms::is_finale_key(&boss.key) && flat(feet - boss.home).norm() < (crate::worldgen::ARENA_FLOOR as f64 + 6.0) * h.vpm
 }
 
 /// Where the ground is under the player, or under it, in voxels
@@ -1989,10 +2001,13 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
         State::Hunt => {
             let stage = boss.stage;
             if d.airborne {
-                // Circling over the player, round and round, near enough to see them always
-                d.orbit += d.round * fl.cruise / fl.orbit * h.dt;
-                let round = Vector3::new(d.orbit.cos(), d.orbit.sin(), 0.0) * fl.orbit * vpm;
-                let at = feet + round;
+                // Circling over the player, round and round, near enough to see them always; or
+                // round its arena, over the player in it, see worldgen\dragonlair.rs
+                let arena = crate::worldgen::ARENA_FLOOR as f64;
+                let (middle, orbit) = if in_arena(h, boss, feet) { (Vector3::new(boss.home.x, boss.home.y, feet.z), arena * 0.75) } else { (feet, fl.orbit) };
+                d.orbit += d.round * fl.cruise / orbit * h.dt;
+                let round = Vector3::new(d.orbit.cos(), d.orbit.sin(), 0.0) * orbit * vpm;
+                let at = middle + round;
                 goal.to = Vector3::new(at.x, at.y, ground_of(h, feet).max(ground_here) + fl.altitude * vpm);
                 goal.speed = fl.cruise;
                 if distance > fl.orbit * 2.0 {

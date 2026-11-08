@@ -12,7 +12,7 @@ mod undercity;
 
 pub use camps::{Camp, CampKind, camp_spots};
 #[allow(unused_imports)]
-pub use dragonlair::{FREE_ROAM_START, LairKind, far_lair, lairs_set, set_lairs};
+pub use dragonlair::{ARENA_FLOOR, ARENA_REACH, FREE_ROAM_START, LairKind, arena_way, far_lair, lairs_set, set_lairs};
 #[allow(unused_imports)]
 pub use undercity::Sunken;
 
@@ -7275,6 +7275,10 @@ mod tests {
         }
         if let Some((lip, ..)) = waterfalls_in(&settings, &cache, [-200.0, -200.0], [400.0, 400.0]).first() {
             spots.push(("waterfall".into(), [lip[0], lip[1]]));
+        }
+        // And the Worldpyre Ancient's arena, see dragonlair.rs
+        if let Some(at) = far_lair(&settings) {
+            spots.push(("dragon arena".into(), at));
         }
         let mut failed = Vec::new();
         for (k, (name, at)) in spots.iter().enumerate() {

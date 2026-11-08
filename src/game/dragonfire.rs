@@ -123,7 +123,7 @@ pub struct Fire {
 /// The most a scorch mark's painted round, in meters: painting's paid for by the cube round it,
 /// see World::paint_in(), so a great dragon's stamp scorching six meters round held a frame up a
 /// fifth of a second
-const MOST_SCORCH: f64 = 2.0;
+const MOST_SCORCH: f64 = 1.2;
 /// How many scorch marks can wait to be painted, the oldest let go past it
 const SCORCH_WAITING: usize = 8;
 /// Seconds between lots of the world being scorched and holed

@@ -294,7 +294,16 @@ impl Places {
             let by = worldgen::landmark_near(settings, r.lair_marks[k], near.map(|v| v as f32), &rivers);
             dry(by.map_or(near, |p| p.map(f64::from)), 160.0, 7.0)
         });
-        let finale = on_raids_beaten(realm).map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 200.0, 9.0));
+        // The Cinder Crown's finale fights in an arena of its own, see worldgen\dragonlair.rs: room
+        // for the floor of it, and no river of lava anywhere in it, rim and all
+        let arena = |near: [f64; 2]| {
+            let clear = |at: [f32; 2]| !worldgen::river_near(settings, at, worldgen::ARENA_REACH, &rivers);
+            worldgen::dry_land_near(settings, near.map(|v| v as f32), 260.0, 16.0, &clear).map(|p| p.map(f64::from))
+        };
+        let finale = on_raids_beaten(realm).map(|(_, off)| {
+            let near = [gate[0] + off[0] as f64, gate[1] + off[1] as f64];
+            lava.then(|| arena(near)).flatten().unwrap_or_else(|| dry(near, 200.0, 9.0))
+        });
         Places { realm, arrival, gate, facing, lairs, finale }
     }
 

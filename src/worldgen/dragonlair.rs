@@ -20,8 +20,12 @@ use super::*;
 pub const FREE_ROAM_START: [f32; 2] = [206.08, 179.2];
 /// How far from there the far lair is, at the nearest and furthest, in meters
 const LAIR_FROM: [f32; 2] = [1650.0, 2150.0];
-/// How far round the middle of the far lair its hollow reaches, in meters
-pub const HOLLOW: f32 = 38.0;
+/// How far round its middle the floor of the Worldpyre Ancient's arena reaches, in meters, and the
+/// arena all told, its rim and the stair down into it
+pub const ARENA_FLOOR: f32 = 34.0;
+pub const ARENA_REACH: f32 = 52.0;
+/// How high the Ancient's roost stands over the floor, in meters
+const ROOST_HIGH: f32 = 11.0;
 /// How far out from the far lair the omens of it lie, and how far either side of the way there
 /// from where the journey starts
 const OMENS_OUT: f32 = 950.0;
@@ -51,7 +55,7 @@ impl LairKind {
             LairKind::Peak => 20.0,
             LairKind::Caldera => 24.0,
             LairKind::Hoard => 20.0,
-            LairKind::Ancient => HOLLOW,
+            LairKind::Ancient => ARENA_REACH,
         }
     }
 
@@ -92,12 +96,14 @@ pub fn far_lair(settings: &TerrainSettings) -> Option<[f32; 2]> {
     let toward = unit(r) * TAU;
     let [sx, sy] = FREE_ROAM_START;
     let mut best: Option<([f32; 2], f32)> = None;
+    // Nowhere a river runs through its arena, see ancient_arena()
+    let rivers = RiverCache::default();
     for ring in 0..4 {
         let d = LAIR_FROM[0] + (LAIR_FROM[1] - LAIR_FROM[0]) * ring as f32 / 3.0;
         for k in 0..17 {
             let a = toward + (k as f32 - 8.0) * 0.07;
             let at = [sx + a.cos() * d, sy + a.sin() * d];
-            if !is_dry_land(settings, at, 22.0) {
+            if !is_dry_land(settings, at, 22.0) || river_near(settings, at, ARENA_REACH, &rivers) {
                 continue;
             }
             // High, but above all level enough to fight on: how far the ground round it rises or
@@ -115,7 +121,7 @@ pub fn far_lair(settings: &TerrainSettings) -> Option<[f32; 2]> {
             }
         }
     }
-    let found = best.map(|(at, _)| at).or_else(|| dry_land_near(settings, [sx + toward.cos() * LAIR_FROM[0], sy + toward.sin() * LAIR_FROM[0]], 600.0, 14.0, &|_| true));
+    let found = best.map(|(at, _)| at).or_else(|| dry_land_near(settings, [sx + toward.cos() * LAIR_FROM[0], sy + toward.sin() * LAIR_FROM[0]], 600.0, 14.0, &|at| !river_near(settings, at, ARENA_REACH, &rivers)));
     if let Ok(mut far) = FAR.write() {
         far.push((settings.seed, found));
     }
@@ -246,7 +252,7 @@ impl Terrain {
     pub(super) fn dragon_omen(&self, x: f32, y: f32, ground: f32, column: &Column, r: u32) -> Option<Object> {
         let lair = far_lair(&self.settings)?;
         let to = (x - lair[0]).hypot(y - lair[1]);
-        if !(HOLLOW + 6.0..OMENS_OUT).contains(&to) || (off_the_way([x, y], FREE_ROAM_START, lair) > OMENS_SIDE && to > 320.0) {
+        if !(ARENA_REACH + 6.0..OMENS_OUT).contains(&to) || (off_the_way([x, y], FREE_ROAM_START, lair) > OMENS_SIDE && to > 320.0) {
             return None;
         }
         if ground < sea_level_m(&self.settings) + 0.8 || column.top == WATER {
@@ -284,7 +290,7 @@ impl Terrain {
             let ground_at = |x: f32, y: f32| height_at(&self.settings, x, y);
             let (shapes, top) = match kind {
                 _ if by_landmark(kind, &self.settings) => touched(kind, at, ground, &ground_at, &mut rng),
-                LairKind::Ancient => ancient_hollow(at, ground, &ground_at, &mut rng),
+                LairKind::Ancient => ancient_arena(at, ground, sea_level_m(&self.settings), &ground_at, &mut rng),
                 LairKind::Peak => peak_roost(at, ground, &ground_at, &mut rng),
                 LairKind::Caldera => caldera(at, ground, &ground_at, &mut rng),
                 LairKind::Hoard => hoard_hollow(at, ground, &ground_at, &mut rng),
@@ -468,23 +474,193 @@ fn touched(kind: LairKind, at: [f32; 2], ground: f32, height: &dyn Fn(f32, f32) 
     (shapes, ground)
 }
 
-/// The Worldpyre Ancient's hollow: see the top of this file. Returns its shapes and how high its
-/// dais stands, where it waits.
-fn ancient_hollow(at: [f32; 2], ground: f32, height: &dyn Fn(f32, f32) -> f32, rng: &mut Rng) -> (Vec<Shape>, f32) {
+/// How high the floor of the Worldpyre Ancient's arena at `at` is, on ground `ground` meters high
+/// over the sea or lava at `sea`, and which way its way in faces, in radians: the floor level a
+/// couple of meters under the land round about, never down to the sea or the lava; the way in
+/// facing back the way it's come to from, or as near that as the land outside's near the floor's
+/// height, so the stair down's short and not cut deep into a hillside
+fn arena_plan(at: [f32; 2], ground: f32, sea: f32, height: &dyn Fn(f32, f32) -> f32) -> (f32, f32) {
+    let r = ARENA_FLOOR;
+    let ring = |a: f32, d: f32| [at[0] + a.cos() * d, at[1] + a.sin() * d];
+    let round = (0..12).map(|k| ring(k as f32 * TAU / 12.0, r * 0.75)).map(|p| height(p[0], p[1])).sum::<f32>() / 12.0;
+    let floor = (ground.min(round) - 2.0).max(sea + 2.5);
+    let toward = (FREE_ROAM_START[1] - at[1]).atan2(FREE_ROAM_START[0] - at[0]);
+    let way = (0..24)
+        .map(|k| toward + (k as f32 - 12.0) * TAU / 24.0)
+        .map(|a| {
+            let p = ring(a, r + 14.0);
+            let off = ((a - toward + PI).rem_euclid(TAU) - PI).abs();
+            (a, (height(p[0], p[1]) - floor).abs() + off * 2.0)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(toward, |(a, _)| a);
+    (floor, way)
+}
+
+/// Which way the way into the Worldpyre Ancient's arena at `at` in landscape `settings` faces, in
+/// radians, see arena_plan(): to look in at it from there
+pub fn arena_way(settings: &TerrainSettings, at: [f32; 2]) -> f32 {
+    arena_plan(at, height_at(settings, at[0], at[1]), sea_level_m(settings), &|x, y| height_at(settings, x, y)).1
+}
+
+/// The Worldpyre Ancient's arena, at `at` on ground `ground` meters high, over the sea or lava at
+/// `sea`: a vast caldera, its floor of cracked black glass and cinders level all across, sunk a
+/// little under the land round it, inside a ring of black crags standing high over it, seams of
+/// fire glowing up them. Lava glows in cracks round the edge of the floor, never across it; broken
+/// pillars of basalt stand about it to hide behind from the Ancient's breath, and in its middle a
+/// spire of black rock, its top cut flat, the roost it waits on and takes off from. Across from
+/// the way in, the bones of something huge it brought down long ago, and its hoard heaped by them.
+/// The way in's a stair cut down through the rim, facing the way it's come to from, see
+/// FREE_ROAM_START, wide and clear of fire. Returns its shapes and how high the roost's top is.
+///
+/// What's in the arena is cut out of the ground and built up in it alike, so each shape's placed
+/// to clear the ground, and the first of them to hold a voxel decides it: what stands in the arena
+/// first, then the arena cut out round it, then its floor, then the rim.
+fn ancient_arena(at: [f32; 2], ground: f32, sea: f32, height: &dyn Fn(f32, f32) -> f32, rng: &mut Rng) -> (Vec<Shape>, f32) {
+    let r = ARENA_FLOOR;
+    let ring = |a: f32, d: f32| [at[0] + a.cos() * d, at[1] + a.sin() * d];
+    let clear = |s: Shape| s.placed(Placement::Clear);
+    let (floor, way) = arena_plan(at, ground, sea, height);
+    let roost = floor + ROOST_HIGH;
+    let off_way = |a: f32| ((a - way + PI).rem_euclid(TAU) - PI).abs();
     let mut shapes = Vec::new();
-    // A broad dais of black rock in the middle, where it rests
-    let dais = ground + 0.8;
-    embers(&mut shapes, at, 7, 7.0, HOLLOW - 6.0, height, rng);
-    // The skull of what it brought down long ago, by the dais, and its ribs off to one side
-    let side = rng.range(0.0, TAU);
-    let (sx, sy) = (at[0] + side.cos() * 13.0, at[1] + side.sin() * 13.0);
-    shapes.extend(skull(sx, sy, height(sx, sy), 2.6, rng));
-    let (rx, ry) = (at[0] - side.cos() * 20.0, at[1] - side.sin() * 20.0);
-    shapes.extend(ribs(rx, ry, height(rx, ry), 2.2, rng));
-    hoard(&mut shapes, at, 9, 10.0, height, rng);
-    shapes.push(Shape::ellipsoid([at[0], at[1], ground - 0.4], [8.5, 8.5, 1.2], OBSIDIAN, STONE).placed(Placement::Clear));
-    spires(&mut shapes, at, 18, HOLLOW - 4.0, HOLLOW + 1.0, 7.0, 17.0, (OBSIDIAN, STONE), height, rng, &[]);
-    (shapes, dais)
+
+    // The stair down through the rim to the floor, or up to it: steps no higher than the player
+    // steps up, cut flat and open to the sky, and rock built up under them where the ground falls
+    // away
+    let outer = r + 14.0;
+    let top = ring(way, outer);
+    let top_z = height(top[0], top[1]);
+    let run = (r + 14.0 - (r - 4.0)).max((top_z - floor).abs() * 1.6);
+    let steps = (((top_z - floor).abs() / 0.4).ceil() as usize).clamp(3, 40);
+    let step_long = run / steps as f32;
+    let step_at = |k: usize| {
+        let d = outer - step_long * (k as f32 + 0.5);
+        let z = top_z + (floor - top_z) * (k as f32 + 0.5) / steps as f32;
+        let p = ring(way, d);
+        [p[0], p[1], if k + 1 == steps { floor } else { z }]
+    };
+    let (along_x, along_y) = (way.cos(), way.sin());
+    for k in 0..steps {
+        let [x, y, z] = step_at(k);
+        let half = step_long * 0.5 + 0.2;
+        shapes.push(clear(Shape::capsule([x + along_x * half, y + along_y * half, z + 2.5], [x - along_x * half, y - along_y * half, z + 2.5], 4.8, 4.8, AIR, AIR, false)).roughened(0.12, z));
+    }
+    for k in 0..steps {
+        // Only where the ground's under the step: rock put in the ground, against what it's made
+        // of, makes for bricks of both, each kept whole
+        let [x, y, z] = step_at(k);
+        let under = height(x, y);
+        if under < z + 0.3 {
+            shapes.push(clear(Shape::capsule([x, y, under - 1.5], [x, y, z + 0.4], 3.9, 3.9, OBSIDIAN, AIR, false)));
+        }
+    }
+
+    // The roost in the middle: a spire of black rock, its top cut flat
+    shapes.push(Shape::room([at[0] - 8.0, at[1] - 8.0, roost], [at[0] + 8.0, at[1] + 8.0, roost + 12.0]));
+    for k in 0..5 {
+        // Seams of fire up it
+        let a = k as f32 * TAU / 5.0 + rng.range(-0.3, 0.3);
+        let (lo, hi) = (ring(a, 6.4), ring(a + rng.range(-0.25, 0.25), 5.0));
+        shapes.push(clear(Shape::capsule([lo[0], lo[1], floor + 0.5], [hi[0], hi[1], roost - rng.range(1.5, 4.0)], 0.3, 0.2, GLOW_FIRE, FLAME, false)));
+    }
+    shapes.push(clear(Shape::capsule([at[0], at[1], floor - 0.6], [at[0], at[1], roost + 0.6], 6.6, 5.2, OBSIDIAN, AIR, false)).roughened(0.5, floor - 0.8));
+
+    // Broken pillars of basalt standing about the floor, to hide behind, none on the way in nor
+    // where the bones lie, and a drum of each broken one lying at its foot
+    for k in 0..9 {
+        let a = way + 0.55 + k as f32 * (TAU - 1.1) / 9.0 + rng.range(-0.12, 0.12);
+        if off_way(a) > PI - 0.55 {
+            continue;
+        }
+        let d = rng.range(15.0, 26.0);
+        let p = ring(a, d);
+        let (thick, tall) = (rng.range(1.4, 2.3), rng.range(4.0, 9.0));
+        let lean = rng.range(-0.08, 0.08);
+        let tip = [p[0] + a.cos() * tall * lean, p[1] + a.sin() * tall * lean, floor + tall];
+        shapes.push(clear(Shape::capsule([p[0], p[1], floor - 0.2], tip, thick, thick * 0.8, TEMPLE_DARK, AIR, false)).roughened(0.25, floor - 0.3));
+        if rng.next() < 0.6 {
+            let fall = a + rng.range(0.9, 2.2);
+            let lie = [p[0] + fall.cos() * (thick + 2.5), p[1] + fall.sin() * (thick + 2.5)];
+            let long = rng.range(2.0, 3.5);
+            shapes.push(clear(Shape::capsule([lie[0] - fall.sin() * long, lie[1] + fall.cos() * long, floor + thick * 0.6], [lie[0] + fall.sin() * long, lie[1] - fall.cos() * long, floor + thick * 0.55], thick * 0.75, thick * 0.75, TEMPLE_DARK, AIR, false)));
+        }
+    }
+
+    // Across from the way in, the skull and ribs of what it brought down long ago, and its hoard
+    let far = way + PI;
+    let bones = ring(far + rng.range(-0.25, 0.25), r - 10.0);
+    shapes.extend(skull(bones[0], bones[1], floor, 2.4, rng).into_iter().map(clear));
+    let rib_at = ring(far + 0.55, r - 9.0);
+    shapes.extend(ribs(rib_at[0], rib_at[1], floor, 1.9, rng).into_iter().map(clear));
+    let mut gold = Vec::new();
+    hoard(&mut gold, ring(far - 0.4, r - 11.0), 11, 6.0, &|_, _| floor, rng);
+    shapes.extend(gold.into_iter().map(clear));
+
+    // Lava glowing in cracks round the edge of the floor, out of the way, and none by the stair
+    for k in 0..16 {
+        let a = k as f32 * TAU / 16.0 + rng.range(-0.08, 0.08);
+        if off_way(a) < 0.45 {
+            continue;
+        }
+        let (d0, d1) = (r - rng.range(2.6, 3.4), r - rng.range(0.3, 0.8));
+        let (p, q) = (ring(a, d0), ring(a + rng.range(-0.09, 0.09), d1));
+        // Flush with the floor, so they don't trip anyone
+        let z = floor - 0.3;
+        shapes.push(clear(Shape::capsule([p[0], p[1], z], [q[0], q[1], z], 0.32, 0.38, GLOW_FIRE, FLAME, false)));
+        // And along the foot of the rim
+        let b = a + TAU / 16.0 * rng.range(0.4, 0.8);
+        if off_way(b) > 0.45 {
+            let s = ring(b, r - 0.6);
+            shapes.push(clear(Shape::capsule([q[0], q[1], z], [s[0], s[1], z], 0.38, 0.3, GLOW_FIRE, FLAME, false)));
+        }
+    }
+
+    // The arena itself, cut out of the land, level at its floor and walled by what's left of the
+    // ground round it, roughly: no higher than the ground in it reaches, as every brick it takes
+    // in is worked out a voxel at a time as the land's made
+    let inside: Vec<f32> = (0..48).map(|k| ring(k as f32 * TAU / 12.0, (r + 1.5) * (1 + k / 12) as f32 / 4.0)).map(|p| height(p[0], p[1])).collect();
+    let highest = inside.iter().copied().fold(ground, f32::max);
+    let deep = ((highest - floor) * 1.5 + 3.0).clamp(8.0, 46.0);
+    shapes.push(clear(Shape::ellipsoid([at[0], at[1], floor], [r + 1.5, r + 1.5, deep], AIR, AIR)).roughened(0.35, floor));
+    // Its floor, black glass cracked through with cinders on top, and built up of black glass where
+    // the ground's low, only as deep as it's low: no further out than the arena's cut, so none of
+    // it stands up round the edge of it
+    shapes.push(clear(Shape::ellipsoid([at[0], at[1], floor], [r + 1.0, r + 1.0, 0.22], OBSIDIAN, GRAVEL)));
+    let lowest = inside.iter().copied().fold(ground, f32::min);
+    if lowest < floor - 0.3 {
+        shapes.push(clear(Shape::ellipsoid([at[0], at[1], floor], [r + 1.0, r + 1.0, (floor - lowest + 1.5).min(26.0)], OBSIDIAN, AIR)));
+    }
+
+    // The rim: a ring of great black crags all round, standing tall over the floor and running
+    // together, leaning out, but for the gap the stair comes down through, a taller crag either
+    // side of it, and seams of fire glowing up the inner faces of some. Few and great rather than
+    // many, all of one stone, each standing from just under the ground it's on rather than down
+    // through it: every brick with the face of a rock in it is kept, and those inside are one each.
+    let count = 26;
+    for k in 0..count {
+        let a = k as f32 * TAU / count as f32 + rng.range(-0.04, 0.04);
+        let gate = off_way(a);
+        if gate < 0.2 {
+            continue;
+        }
+        let thick = rng.range(5.0, 6.2);
+        let d = r + 1.5 + thick * 0.6 + rng.range(-0.5, 1.0);
+        let p = ring(a, d);
+        let base = height(p[0], p[1]).max(floor);
+        let flank = gate < 0.36;
+        let tall = if flank { rng.range(16.0, 20.0) } else { rng.range(9.0, 16.0) };
+        let lean = rng.range(0.05, 0.18);
+        let tip = [p[0] + a.cos() * tall * lean + rng.range(-0.8, 0.8), p[1] + a.sin() * tall * lean + rng.range(-0.8, 0.8), base + tall];
+        let foot = height(p[0], p[1]) - 0.6;
+        shapes.push(clear(Shape::capsule([p[0], p[1], foot], tip, thick, thick * 0.4, OBSIDIAN, AIR, false)).roughened(0.45, foot - 0.3));
+        if flank || rng.next() < 0.45 {
+            let face = ring(a, d - thick * 0.85);
+            let up = [face[0] + a.cos() * tall * lean * 0.6, face[1] + a.sin() * tall * lean * 0.6, base + tall * rng.range(0.45, 0.75)];
+            shapes.push(clear(Shape::capsule([face[0], face[1], floor + 0.3], up, 0.32, 0.18, GLOW_FIRE, FLAME, false)));
+        }
+    }
+    (shapes, roost)
 }
 
 /// The Pyre Matriarch's crown of crags on the heights, round a nest of bones and charred branches
@@ -598,24 +774,63 @@ mod tests {
         assert_eq!(far_lair(&sky), None);
     }
 
-    /// The piece of the landscape round the far lair has its site for the Ancient to wait at, and
-    /// is built with the lair in it: black rock and gold where the hollow is
+    /// The far lair's an arena: its site for the Ancient to wait at up on its roost; a floor level
+    /// all across but for what stands on it, with lava only in cracks round its edge; a rim standing
+    /// high round it; and a stair down into it from outside, every step of it no higher than the
+    /// player steps up, with nothing burning on it
     #[test]
-    fn the_far_lair_is_built() {
-        let settings = TerrainSettings { width_m: 96, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+    fn the_far_lair_is_an_arena() {
+        let vpm = 4.0f32;
+        let settings = TerrainSettings { width_m: 128, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
         let at = far_lair(&settings).unwrap();
-        let corner = [((at[0] - 48.0) * 4.0) as i64, ((at[1] - 48.0) * 4.0) as i64];
-        let (terrain, world) = generate_area(&settings, corner, [96 * 4, 96 * 4], &RiverCache::default());
+        let corner = [((at[0] - 64.0) * vpm) as i64, ((at[1] - 64.0) * vpm) as i64];
+        let (terrain, world) = generate_area(&settings, corner, [128 * 4, 128 * 4], &RiverCache::default());
         let site = terrain.sites().iter().find(|s| s.kind == "dragon lair").expect("the lair's site");
         assert!((site.position[0] - at[0]).abs() < 1.0 && (site.position[1] - at[1]).abs() < 1.0);
-        let mut found = [0usize; 256];
-        for y in 0..96 * 4 {
-            for x in 0..96 * 4 {
-                if let Some(z) = (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(x, y, z))) {
-                    found[world.material_at(x, y, z) as usize] += 1;
-                }
+        // The top of what's solid at `p`, in meters, and what it is
+        let top = |p: [f32; 2]| {
+            let (x, y) = (((p[0] * vpm) as i64 - corner[0]), ((p[1] * vpm) as i64 - corner[1]));
+            (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(x, y, z))).map(|z| ((z + 1) as f32 / vpm, world.material_at(x, y, z)))
+        };
+        let ring = |a: f32, d: f32| [at[0] + a.cos() * d, at[1] + a.sin() * d];
+        let (roost, _) = top(at).unwrap();
+        assert!((roost - site.position[2]).abs() < 0.6, "it waits at {} over a roost {roost} high", site.position[2]);
+        // The floor: most of it at one height, below the roost
+        let mut heights: Vec<(f32, u8)> = (0..72).flat_map(|k| [12.0, 18.0, 24.0, 29.0].map(|d| top(ring(k as f32 * TAU / 72.0, d)).unwrap())).collect();
+        heights.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let floor = heights[heights.len() / 3].0;
+        let level = heights.iter().filter(|(h, _)| (h - floor).abs() < 0.6).count();
+        assert!(level * 10 > heights.len() * 6, "only {level} of {} spots on the floor at {floor}", heights.len());
+        assert!(roost > floor + 8.0, "the roost's {roost} over a floor at {floor}");
+        assert!(heights.iter().all(|&(_, m)| !is_lava(m)), "lava out on the floor");
+        // The rim standing high round it all but where the stair comes in
+        let way = arena_way(&settings, at);
+        let high = (0..36)
+            .map(|k| way + 0.5 + k as f32 * (TAU - 1.0) / 36.0)
+            .filter(|&a| (36..46).map(|d| top(ring(a, d as f32)).unwrap().0).fold(f32::MIN, f32::max) > floor + 7.0)
+            .count();
+        assert!(high >= 26, "the rim's high in only {high} of 36 ways round");
+        // Down the stair from outside to the floor in steps no higher than the player steps up
+        let mut last: Option<f32> = None;
+        for k in 0..=200 {
+            let d = ARENA_FLOOR + 13.0 - k as f32 * 0.1;
+            let (h, m) = top(ring(way, d)).unwrap();
+            assert!(!is_lava(m), "lava on the stair {d} m out");
+            if let Some(l) = last {
+                assert!((h - l).abs() <= 0.6, "a step of {:.2} m on the stair {d} m out", h - l);
             }
+            last = Some(h);
         }
-        assert!(found[OBSIDIAN as usize] > 1000 && found[GOLD as usize] > 20, "obsidian {} gold {}", found[OBSIDIAN as usize], found[GOLD as usize]);
+        assert!((last.unwrap() - floor).abs() < 0.6, "the stair ends at {} over a floor at {floor}", last.unwrap());
+    }
+
+    /// The Cinder Crown's finale's arena's on open ground with no river of lava anywhere in it
+    #[test]
+    fn the_cinder_crowns_arena_is_clear_of_lava() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: crate::realms::DRAGON_SEED, grass_tufts: false };
+        let p = crate::realms::Places::find(5, &settings, [200.0, 180.0], [0.0, 1.0]);
+        let finale = p.finale.expect("its finale").map(|v| v as f32);
+        assert!(is_dry_land(&settings, finale, 16.0), "{finale:?}");
+        assert!(!river_near(&settings, finale, ARENA_REACH, &RiverCache::default()), "lava through the arena at {finale:?}");
     }
 }

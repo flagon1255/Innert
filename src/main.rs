@@ -2177,7 +2177,9 @@ impl Placed {
             let vpm = world.voxels_per_meter as f64;
             let middle = Vector3::new(lair[0] as f64 * vpm - origin[0] as f64, lair[1] as f64 * vpm - origin[1] as f64, 0.0);
             let ground = |p: Vector3<f64>| (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(p.x as i64, p.y as i64, z))).unwrap_or(0) as f64;
-            let back = Vector3::new(worldgen::FREE_ROAM_START[0] as f64 - lair[0] as f64, worldgen::FREE_ROAM_START[1] as f64 - lair[1] as f64, 0.0).normalize();
+            // From out past the way into its arena
+            let way = worldgen::arena_way(&terrain, lair) as f64;
+            let back = Vector3::new(way.cos(), way.sin(), 0.0);
             let out = setting("dragon_lair_out").and_then(|v| v.parse::<f64>().ok()).unwrap_or(48.0);
             let eye = middle + back * out * vpm;
             let eye = Vector3::new(eye.x, eye.y, ground(eye) + setting("rise").and_then(|v| v.parse::<f64>().ok()).unwrap_or(16.0) * vpm);
