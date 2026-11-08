@@ -145,9 +145,9 @@ const SKIM_RELEASE: f64 = 0.42;
 const BOWL_RELEASE: f64 = 0.4;
 /// How many charges a scuttling brood cracks into, and how fast they scuttle, in meters a second
 const SCUTTLERS: usize = 6;
-const SCUTTLE_SPEED: f64 = 9.0;
+const SCUTTLE_SPEED: f64 = 10.0;
 /// How big a scuttling charge is drawn, next to a bomb
-const SCUTTLER_SIZE: f64 = 1.5;
+const SCUTTLER_SIZE: f64 = 2.2;
 /// A wickfire volley: how long its move is, when its first arrow's loosed and between each, as
 /// parts of it, and seconds a wick burns down
 const WICK_LENGTH: f64 = 1.15;
@@ -720,16 +720,31 @@ impl Combat {
         if surface.is_finite() && surface > ground.z { Vector3::new(ground.x, ground.y, surface) } else { ground }
     }
 
+    /// A glowing streak of `look`, its head at `at`, pointing `way`, `size` as big as a spell's,
+    /// shrunk away to nothing as it comes up against `eye`, so one passing right by the eye never
+    /// fills the view; None where it's gone
+    fn streak_at(&self, eye: Vector3<f64>, at: Vector3<f64>, way: Vector3<f64>, look: usize, size: f64) -> Option<(Vector3<f64>, AnimalInstance)> {
+        let vpm = self.vpm;
+        let clear = (((at - eye).norm() / vpm - 0.8) / 1.5).clamp(0.0, 1.0);
+        if clear <= 0.0 {
+            return None;
+        }
+        let (model, bolt) = self.effect_model(SLOT_BOLT, look);
+        let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &way).unwrap_or_else(UnitQuaternion::identity);
+        Some((at, place(model, bolt, BOLT_RES, Vector3::zeros(), at, rotation, vpm, size * clear, MOVING)))
+    }
+
     /// A ring of glowing streaks `radius` meters round `center`, lying flat, turned `turn` round,
-    /// each `size` as big as a spell's: a circle of light that reads at any distance
-    fn circle_instances(&self, center: Vector3<f64>, radius: f64, look: usize, size: f64, turn: f64) -> Vec<(Vector3<f64>, AnimalInstance)> {
-        self.ring_instances(center, Vector3::z(), radius, look, size, turn)
+    /// each `size` as big as a spell's: a circle of light that reads at any distance, seen from
+    /// `eye`
+    fn circle_instances(&self, eye: Vector3<f64>, center: Vector3<f64>, radius: f64, look: usize, size: f64, turn: f64) -> Vec<(Vector3<f64>, AnimalInstance)> {
+        self.ring_instances(eye, center, Vector3::z(), radius, look, size, turn)
     }
 
     /// The same, standing square to `normal`
-    fn ring_instances(&self, center: Vector3<f64>, normal: Vector3<f64>, radius: f64, look: usize, size: f64, turn: f64) -> Vec<(Vector3<f64>, AnimalInstance)> {
+    #[allow(clippy::too_many_arguments)]
+    fn ring_instances(&self, eye: Vector3<f64>, center: Vector3<f64>, normal: Vector3<f64>, radius: f64, look: usize, size: f64, turn: f64) -> Vec<(Vector3<f64>, AnimalInstance)> {
         let vpm = self.vpm;
-        let (model, bolt) = self.effect_model(SLOT_BOLT, look);
         let normal = normal.try_normalize(1e-6).unwrap_or_else(Vector3::z);
         let u = normal.cross(&if normal.z.abs() < 0.9 { Vector3::z() } else { Vector3::x() }).normalize();
         let v = normal.cross(&u);
@@ -737,21 +752,21 @@ impl Combat {
         // game::MAX_INSTANCES
         let n = ((TAU * radius / 1.4).ceil() as usize).clamp(10, 28);
         (0..n)
-            .map(|k| {
+            .filter_map(|k| {
                 let a = (k as f64 + 0.5) / n as f64 * TAU + turn;
                 let at = center + (u * a.cos() + v * a.sin()) * radius * vpm;
-                let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &(v * a.cos() - u * a.sin())).unwrap_or_else(UnitQuaternion::identity);
-                (at, place(model, bolt, BOLT_RES, Vector3::zeros(), at, rotation, vpm, size, MOVING))
+                self.streak_at(eye, at, v * a.cos() - u * a.sin(), look, size)
             })
             .collect()
     }
 
     /// A line of glowing streaks from `from` to `to`, end to end, about `spacing` meters each and
     /// `size` as big as a spell's, at most a dozen, so a beam or a strand of lightning costs little
-    /// to draw; with `jag` meters of kinks jumping about from one frame to the next, for lightning
-    fn line_bolts(&self, from: Vector3<f64>, to: Vector3<f64>, look: usize, spacing: f64, size: f64, jag: f64) -> Vec<(Vector3<f64>, AnimalInstance)> {
+    /// to draw; with `jag` meters of kinks jumping about from one frame to the next, for lightning.
+    /// Seen from `eye`.
+    #[allow(clippy::too_many_arguments)]
+    fn line_bolts(&self, eye: Vector3<f64>, from: Vector3<f64>, to: Vector3<f64>, look: usize, spacing: f64, size: f64, jag: f64) -> Vec<(Vector3<f64>, AnimalInstance)> {
         let vpm = self.vpm;
-        let (model, bolt) = self.effect_model(SLOT_BOLT, look);
         let n = (((to - from).norm() / vpm / spacing).ceil() as usize).clamp(1, 12);
         let frame = (self.time * 30.0) as u32;
         let mut last = from;
@@ -763,8 +778,7 @@ impl Combat {
                 let wiggle = Vector3::new((h & 255) as f64 / 127.5 - 1.0, ((h >> 8) & 255) as f64 / 127.5 - 1.0, ((h >> 16) & 255) as f64 / 127.5 - 1.0);
                 at += wiggle * jag * vpm;
             }
-            let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &(at - last)).unwrap_or_else(UnitQuaternion::identity);
-            out.push((at, place(model, bolt, BOLT_RES, Vector3::zeros(), at, rotation, vpm, size, MOVING)));
+            out.extend(self.streak_at(eye, at, at - last, look, size));
             last = at;
         }
         out
@@ -1605,12 +1619,19 @@ impl Combat {
         self.flashes.push(Flash { position: ground + up * 0.5 * vpm, color: Element::Arcane.light(), reach: 5.0, life: 0.25, lifetime: 0.25 });
         self.cues.push(Cue::at(Sound::Clang, ground, 0.7).pitched(1.6));
         self.cues.push(Cue::at(Sound::Skitter, ground, 1.0));
-        let near: Vec<u32> = Combat::foes_round(arena, ground, 18.0).into_iter().take(SCUTTLERS).map(|i| arena.animals[i].id).collect();
+        let near: Vec<(u32, Vector3<f64>)> = Combat::foes_round(arena, ground, 18.0).into_iter().take(SCUTTLERS).map(|i| (arena.animals[i].id, arena.animals[i].position)).collect();
         let turn = random(&mut self.rng) * TAU;
         for k in 0..SCUTTLERS {
-            let a = turn + k as f64 / SCUTTLERS as f64 * TAU;
-            let out = Vector3::new(a.cos(), a.sin(), 0.0);
+            // Off in a fan at what each is after, or scattering all round if there's nothing
             let target = (!near.is_empty()).then(|| near[k % near.len()]);
+            let out = match target {
+                Some((_, at)) => UnitQuaternion::from_axis_angle(&Vector3::z_axis(), (k as f64 - 2.5) * 0.2) * flat_of(at - ground),
+                None => {
+                    let a = turn + k as f64 / SCUTTLERS as f64 * TAU;
+                    Vector3::new(a.cos(), a.sin(), 0.0)
+                }
+            };
+            let target = target.map(|t| t.0);
             let life = if target.is_some() { 3.4 } else { 1.0 + 0.07 * k as f64 };
             self.zone(ZoneKind::Signature(SigZone::Scuttler), &p.profile, ground + out * 0.35 * vpm + up * 0.12 * vpm, out * SCUTTLE_SPEED * vpm, 1.7, life, p.damage * 2.2);
             if let Some(z) = self.zones.last_mut() {
@@ -2418,7 +2439,7 @@ impl Combat {
                     (z.position + up * (self.time * 30.0 + phase).sin().abs() * 0.08 * vpm, SCUTTLER_SIZE)
                 };
                 let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), z.velocity.y.atan2(z.velocity.x) + phase);
-                out.push((at, place(model, bomb, BOMB_RES, Vector3::zeros(), at, turn, vpm, size, MOVING)));
+                out.push((view.eye, place(model, bomb, BOMB_RES, Vector3::zeros(), at, turn, vpm, size, MOVING)));
             }
             // The arrow stuck fast, its head in
             SigZone::Wick { way } => {
@@ -2435,26 +2456,26 @@ impl Combat {
                 let at = z.position + up * (self.time * 2.0).sin() * 0.08 * vpm;
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, holy);
                 out.push((view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), at, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 2.0), vpm, 0.5 * pulse * grow.max(0.05), MOVING)));
-                out.extend(self.circle_instances(at, 0.75 * grow.max(0.05), holy, 0.6, self.time * 2.5).into_iter().map(|(_, i)| (view.eye, i)));
+                out.extend(self.circle_instances(view.eye, at, 0.75 * grow.max(0.05), holy, 0.7, self.time * 2.5).into_iter().map(|(_, i)| (view.eye, i)));
                 if let Some(&ground) = z.path.first() {
-                    out.extend(self.circle_instances(ground + up * 0.15 * vpm, LANTERN_GLOW * grow.max(0.05), holy, 1.6, self.time * 0.3));
+                    out.extend(self.circle_instances(view.eye, ground + up * 0.15 * vpm, LANTERN_GLOW * grow.max(0.05), holy, 2.2, self.time * 0.3));
                 }
                 // Its rays, while they sear
                 for &to in z.path.iter().skip(1) {
-                    out.extend(self.line_bolts(at, to, holy, 1.0, 1.4, 0.0).into_iter().map(|(_, i)| (view.eye, i)));
+                    out.extend(self.line_bolts(view.eye, at, to, holy, 1.4, 2.0, 0.0).into_iter().map(|(_, i)| (view.eye, i)));
                 }
             }
             // The line of frost flying out from the blade and hanging there till it shatters
             SigZone::Severance if z.dwell <= 0.0 => {
                 let grown = smooth(age / SEVER_GROW).max(0.05);
-                out.extend(self.line_bolts(z.position, z.position + z.velocity * grown, Element::look(Some(Element::Frost)), 0.9, 1.3, 0.0).into_iter().map(|(_, i)| (view.eye, i)));
+                out.extend(self.line_bolts(view.eye, z.position, z.position + z.velocity * grown, Element::look(Some(Element::Frost)), 1.3, 2.0, 0.0).into_iter().map(|(_, i)| (view.eye, i)));
             }
             // Lightning running up each stake, and strung between them, jagged, flickering
             SigZone::Stakes => {
                 let look = Element::look(Some(Element::Storm));
                 let tops: Vec<Vector3<f64>> = z.path.iter().map(|p| p + up * vpm).collect();
                 for (k, &top) in tops.iter().enumerate() {
-                    out.extend(self.line_bolts(z.path[k], top, look, 0.5, 0.7, 0.0).into_iter().map(|(_, i)| (view.eye, i)));
+                    out.extend(self.line_bolts(view.eye, z.path[k], top, look, 0.6, 1.0, 0.0).into_iter().map(|(_, i)| (view.eye, i)));
                 }
                 let pairs: &[(usize, usize)] = match tops.len() {
                     0 | 1 => &[],
@@ -2462,7 +2483,7 @@ impl Combat {
                     _ => &[(0, 1), (1, 2), (2, 0)],
                 };
                 for &(m, n) in pairs {
-                    out.extend(self.line_bolts(tops[m], tops[n], look, 1.0, 1.4, 0.25).into_iter().map(|(_, i)| (view.eye, i)));
+                    out.extend(self.line_bolts(view.eye, tops[m], tops[n], look, 1.5, 2.3, 0.3).into_iter().map(|(_, i)| (view.eye, i)));
                 }
             }
             SigZone::Caltrops => {
@@ -2479,7 +2500,7 @@ impl Combat {
                 let churn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 5.0) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.time * 3.0);
                 out.push((z.position, place(model, ball, MODEL_RES, Vector3::zeros(), z.position, churn, vpm, 0.3 * pulse * grow.max(0.05), MOVING)));
                 let facing = view.eye - z.position;
-                out.extend(self.ring_instances(z.position, facing, 0.95 * grow.max(0.05), Element::look(Some(Element::Arcane)), 0.8, self.time * 2.5));
+                out.extend(self.ring_instances(view.eye, z.position, facing, 0.95 * grow.max(0.05), Element::look(Some(Element::Arcane)), 0.9, self.time * 2.5));
             }
             // The knives not loosed yet, blades of shadow hanging in their fan, pointing on ahead,
             // quivering
@@ -2489,7 +2510,10 @@ impl Combat {
                     let at = knife_slot(view, k, age);
                     let quiver = view.rotation * Vector3::new((self.time * 23.0 + k as f64).sin() * 0.03, 0.0, -0.06);
                     let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &(view.forward() + quiver).normalize()).unwrap_or_else(UnitQuaternion::identity);
-                    out.push((view.eye, place(model, knife, BOLT_RES, Vector3::zeros(), at, rotation, vpm, 1.1, MOVING)));
+                    // Small as it comes out of the hand, right in front of the eye, full size out
+                    // in its place
+                    let grown = 0.3 + 0.7 * smooth((age - 0.04 * k as f64) / 0.3);
+                    out.push((view.eye, place(model, knife, BOLT_RES, Vector3::zeros(), at, rotation, vpm, 1.1 * grown, MOVING)));
                 }
             }
             SigZone::Gleaning => {
@@ -2505,7 +2529,7 @@ impl Combat {
                 let fade = (z.life / 0.5).min(1.0);
                 // The circle itself, traced out as the runes are written round it
                 let traced = ((age - 0.05) / (LITANY_BLAZE - 0.3)).clamp(0.0, 1.0);
-                let circle = self.circle_instances(z.position + up * 0.25 * vpm, z.radius, Element::look(Some(Element::Holy)), 1.8 * blaze * fade.max(0.1), self.time * 0.4);
+                let circle = self.circle_instances(view.eye, z.position + up * 0.25 * vpm, z.radius, Element::look(Some(Element::Holy)), 2.4 * blaze * fade.max(0.1), self.time * 0.4);
                 let n = circle.len();
                 out.extend(circle.into_iter().take(((n as f64 * traced).ceil() as usize).max(1)).map(|(_, i)| (view.eye, i)));
                 for k in 0..runes_written(age) {
@@ -2518,7 +2542,7 @@ impl Combat {
             // A ring rolling out, glowing, fading as it gets as far as it goes
             SigZone::Ring(element) => {
                 let fade = (z.life / 0.25).clamp(0.0, 1.0);
-                let ring = self.circle_instances(z.position + up * 0.3 * vpm, ring_reached(age, z.radius), Element::look(Some(element)), 1.8 * fade.max(0.1), age * 0.5);
+                let ring = self.circle_instances(view.eye, z.position + up * 0.3 * vpm, ring_reached(age, z.radius), Element::look(Some(element)), 2.4 * fade.max(0.1), age * 0.5);
                 out.extend(ring.into_iter().map(|(_, i)| (view.eye, i)));
             }
             // Threads of blood from the hex out to each it holds, pulsing along, or feeling about
@@ -2527,7 +2551,7 @@ impl Combat {
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(Element::Blood)));
                 let pulse = 1.0 + 0.15 * (self.time * 7.0).sin();
                 out.push((view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), z.position, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0), vpm, 0.3 * pulse * grow.max(0.05), MOVING)));
-                let (model, bolt) = self.effect_model(SLOT_BOLT, Element::look(Some(Element::Blood)));
+                let blood = Element::look(Some(Element::Blood));
                 let ends: Vec<Vector3<f64>> = if z.hit.is_empty() {
                     (0..4)
                         .map(|k| {
@@ -2540,13 +2564,11 @@ impl Combat {
                     z.path.clone()
                 };
                 for to in ends {
-                    let length = (to - z.position).norm();
-                    let n = ((length / vpm / 1.6).ceil() as usize).clamp(2, 6);
-                    let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &((to - z.position) / length.max(1e-6))).unwrap_or_else(UnitQuaternion::identity);
+                    let n = (((to - z.position).norm() / vpm / 1.6).ceil() as usize).clamp(2, 6);
                     let flow = (self.time * 1.5).fract();
                     for j in 0..n {
                         let at = z.position.lerp(&to, ((j as f64 + flow) / n as f64).min(1.0));
-                        out.push((view.eye, place(model, bolt, BOLT_RES, Vector3::zeros(), at, rotation, vpm, 1.0 * grow.max(0.1), MOVING)));
+                        out.extend(self.streak_at(view.eye, at, to - z.position, blood, 1.5 * grow.max(0.1)).map(|(_, i)| (view.eye, i)));
                     }
                 }
             }
@@ -2685,7 +2707,8 @@ mod tests {
             let water = |_: f64, _: f64| f64::NEG_INFINITY;
             let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
             let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.12), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
-            let mut animals = Vec::new();
+            // With PACK=1, a pack of bandits 10 m ahead
+            let mut animals = if std::env::var("PACK").is_ok() { crate::animals::spawn_pack(&world, &water, &[Look::Bandit; 4], feet + Vector3::new(0.0, 10.0 * vpm, 0.0), crate::animals::PACK_SPREAD, 3) } else { Vec::new() };
             let mut combat = Combat::new(1, 0);
             combat.charge = 1.0;
             let dt = 1.0 / 60.0;
@@ -2700,8 +2723,9 @@ mod tests {
                         .filter_map(|p| if let Trick::Signature(s) = p.trick { Some((s, p)) } else { None })
                         .map(|(s, p)| format!("{s:?} ({:.1}, {:.1}, {:.1})", (p.position.x - feet.x) / vpm, (p.position.y - feet.y) / vpm, (p.position.z - feet.z) / vpm))
                         .collect();
-                    let zones: Vec<String> = combat.zones.iter().map(|z| format!("{:?} ({:.1}, {:.1}, {:.1})", z.kind, (z.position.x - feet.x) / vpm, (z.position.y - feet.y) / vpm, (z.position.z - feet.z) / vpm)).collect();
-                    println!("{:.2} s: shots {shots:?} zones {zones:?} swells {}", (frame - 20) as f64 * dt, combat.swells.len());
+                    let zones: Vec<String> = combat.zones.iter().map(|z| format!("{:?} ({:.1}, {:.1}, {:.1}) {} points", z.kind, (z.position.x - feet.x) / vpm, (z.position.y - feet.y) / vpm, (z.position.z - feet.z) / vpm, z.path.len())).collect();
+                    let drawn = combat.zones.iter().filter_map(|z| if let ZoneKind::Signature(k) = z.kind { Some(combat.signature_zone_instances(z, k, &view).len()) } else { None }).sum::<usize>();
+                    println!("{:.2} s: shots {shots:?} zones {zones:?} swells {} drawn {drawn} of {} sparks {}", (frame - 20) as f64 * dt, combat.swells.len(), combat.flying_instances(&view).len(), combat.sparks.len());
                 }
             }
         }
