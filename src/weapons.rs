@@ -6457,9 +6457,10 @@ mod tests {
                 seen[p] = true;
             }
         }
-        // Tools' parts aside, as tools are only made, see src\tools.rs
+        // Tools' parts aside, as tools are only made, see src\tools.rs, and those of no weight,
+        // which are never rolled but only given, as the Worldpyre Fang
         let weapon_part = |c: &Component| c.compatible_families.iter().any(|f| library.family(f).is_some_and(|i| library.families[i].tool.is_none()));
-        let missing: Vec<&str> = library.components.iter().zip(&seen).filter(|(c, s)| !**s && weapon_part(c)).map(|(c, _)| c.id.as_str()).collect();
+        let missing: Vec<&str> = library.components.iter().zip(&seen).filter(|(c, s)| !**s && weapon_part(c) && c.weight > 0.0).map(|(c, _)| c.id.as_str()).collect();
         assert!(missing.is_empty(), "never rolled: {missing:?}");
         assert!(library.components.iter().zip(&seen).all(|(c, s)| weapon_part(c) || !*s), "a tool's part rolled as loot");
         // The new shapes and patterns are there to be had

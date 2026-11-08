@@ -110,6 +110,17 @@ pub enum Look {
     // glide
     GrappleHook,
     Wings,
+    // Dragons, see src\dragons.rs: drakelings of four elements that fly, swoop, breathe and come
+    // down to fight on foot; the three great dragons of the Dragon realm's lairs; and the
+    // Worldpyre Ancient, its finale
+    Ashwing,
+    Sleetwing,
+    Squallwing,
+    Blightwing,
+    PyreMatriarch,
+    CindermawTyrant,
+    GildscaleHoardwarden,
+    WorldpyreAncient,
     // Serpents, see src\serpents.rs: a viper hidden in the reeds, a coiler swimming the rivers and
     // lakes, a serpent gliding over the sky isles, an adder of the dreaming realm and one swimming
     // through the snow of the frozen one
@@ -155,6 +166,8 @@ pub enum Build {
     Bat,
     /// A great heavy beast on four legs, with tusks
     Boar,
+    /// A dragon: drawn and flown by src\dragons.rs, out of jointed pieces rather than frames
+    Dragon,
     /// A serpent: a long body slithering in S-curves, rearing up coiled to strike, see
     /// src\serpents.rs
     Serpent,
@@ -185,7 +198,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 79] = [
+    pub const ALL: [Look; 87] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -250,6 +263,14 @@ impl Look {
         Look::InnertBlock,
         Look::GrappleHook,
         Look::Wings,
+        Look::Ashwing,
+        Look::Sleetwing,
+        Look::Squallwing,
+        Look::Blightwing,
+        Look::PyreMatriarch,
+        Look::CindermawTyrant,
+        Look::GildscaleHoardwarden,
+        Look::WorldpyreAncient,
         Look::ReedViper,
         Look::SiltCoiler,
         Look::GaleSerpent,
@@ -267,6 +288,11 @@ impl Look {
         Look::SerpentBones,
     ];
 
+    /// One of the dragons, see src\dragons.rs
+    pub fn is_dragon(self) -> bool {
+        crate::dragons::KINDS.contains(&self)
+    }
+
     /// A boss, guarding a lair, rather than a monster or an animal
     pub fn is_boss(self) -> bool {
         self.build().is_some() && !self.is_monster()
@@ -281,12 +307,12 @@ impl Look {
     /// a den: burrowers in the desert, wraiths on the snow, lurkers in the jungle and tuskers in
     /// the woods
     pub fn is_wild(self) -> bool {
-        matches!(self, Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Tusker) || self.is_serpent()
+        matches!(self, Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Tusker) || crate::dragons::is_drakeling(self) || self.is_serpent()
     }
 
     /// A beast rather than a person or the dead, with nothing on it worth taking
     pub fn is_beast(self) -> bool {
-        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker) || self.is_serpent()
+        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker) || crate::dragons::is_drakeling(self) || self.is_serpent()
     }
 
     /// One of the ordinary serpents, see src\serpents.rs
@@ -299,7 +325,8 @@ impl Look {
         matches!(self, Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth)
     }
 
-    /// The ultra boss, far bigger and harder than any raid boss: the Coil Unending
+    /// The ultra boss, far bigger and harder than any raid boss: the Coil Unending. The Worldpyre
+    /// Ancient's the other, see src\dragons.rs, which goes its own way about all this asks after.
     pub fn is_ultra(self) -> bool {
         self == Look::Ysveth
     }
@@ -318,7 +345,7 @@ impl Look {
 
     /// Flying, over water as well as land
     pub fn flies(self) -> bool {
-        matches!(self, Look::Gloomwing | Look::GaleSerpent | Look::Galecoil)
+        matches!(self, Look::Gloomwing | Look::GaleSerpent | Look::Galecoil) || self.is_dragon()
     }
 
     /// Swimming, along the top of deep water, with only its back above it
@@ -340,6 +367,7 @@ impl Look {
     pub fn pack_size(self) -> usize {
         match self {
             Look::Gloomwing => 5,
+            _ if crate::dragons::is_drakeling(self) => 2,
             Look::Spiderling => 4,
             Look::MireLurker | Look::Tusker => 2,
             _ if self.is_serpent() => 2,
@@ -350,7 +378,7 @@ impl Look {
     /// A raid boss: far bigger and tougher than the rest, fought in three phases. The Water
     /// realm's three great serpents are, see serpents::GREATS.
     pub fn is_raid(self) -> bool {
-        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw)
+        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
     }
 
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
@@ -358,6 +386,7 @@ impl Look {
         matches!(self, Look::Wolf | Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::Spiderling | Look::Bandit | Look::BanditBrute)
             || matches!(self, Look::Crossbowman | Look::Shieldbearer | Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Gloomwing | Look::Tusker)
             || self.is_risen()
+            || crate::dragons::is_drakeling(self)
             || self.is_serpent()
     }
 
@@ -400,6 +429,7 @@ impl Look {
             Look::MireLurker => Build::Lurker,
             Look::Gloomwing => Build::Bat,
             Look::Tusker => Build::Boar,
+            _ if self.is_dragon() => Build::Dragon,
             _ if self.is_serpent() || self.is_great_serpent() => Build::Serpent,
             _ => return None,
         })
@@ -434,6 +464,7 @@ impl Look {
         match self {
             Look::Colossus | Look::ElderWyrm => self.scale(),
             Look::CryptTitan => self.scale() / Look::GraveKnight.scale(),
+            _ if self.is_dragon() => crate::dragons::size(self),
             _ => 1.0,
         }
     }
@@ -441,6 +472,7 @@ impl Look {
     /// The monster a boss calls up to help it, if it does
     pub fn brood(self) -> Option<Look> {
         match self {
+            _ if self.is_dragon() => crate::dragons::brood(self),
             Look::Direwolf | Look::WinterAlpha => Some(Look::Wolf),
             Look::GraveKnight => Some(Look::Skeleton),
             Look::Necromancer => Some(Look::Zombie),
@@ -488,6 +520,7 @@ impl Look {
     /// What its attacks are made of: what a drake breathes, what a golem's blows leave behind
     pub fn element(self) -> Option<Element> {
         match self {
+            _ if self.is_dragon() => Some(crate::dragons::element(self)),
             Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
             Look::MagmaGolem | Look::Drake | Look::ElderWyrm => Some(Element::Fire),
             Look::CryptTitan => Some(Element::Void),
@@ -667,6 +700,7 @@ impl Look {
             Look::InnertBlock => 0.28,
             Look::GrappleHook => 0.5,
             Look::Wings => 1.5,
+            Look::Ashwing | Look::Sleetwing | Look::Squallwing | Look::Blightwing | Look::PyreMatriarch | Look::CindermawTyrant | Look::GildscaleHoardwarden | Look::WorldpyreAncient => crate::dragons::reach(self),
             // Its head lunged out ahead of it, see serpents::spine()
             Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => serpents::kind(self).map_or(2.5, serpents::reach),
             // Only its head, as the rest of it's drawn a piece at a time, see serpents::Coils
@@ -717,6 +751,7 @@ impl Look {
             Look::InnertBlock => (0.12, 0.3),
             Look::GrappleHook => (0.1, 0.3),
             Look::Wings => (0.3, 0.6),
+            Look::Ashwing | Look::Sleetwing | Look::Squallwing | Look::Blightwing | Look::PyreMatriarch | Look::CindermawTyrant | Look::GildscaleHoardwarden | Look::WorldpyreAncient => crate::dragons::body(self),
             // Low along the ground, and only as thick as its body, as it's hit wherever along it
             // the blow's aimed, see serpents::focus()
             Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => (0.3, 0.42),
@@ -792,6 +827,7 @@ impl Look {
             Look::InnertBlock => "Innert block",
             Look::GrappleHook => "grappling hook",
             Look::Wings => "wings",
+            Look::Ashwing | Look::Sleetwing | Look::Squallwing | Look::Blightwing | Look::PyreMatriarch | Look::CindermawTyrant | Look::GildscaleHoardwarden | Look::WorldpyreAncient => crate::dragons::name(self),
             Look::ReedViper => "reed viper",
             Look::SiltCoiler => "silt coiler",
             Look::GaleSerpent => "gale serpent",
@@ -870,6 +906,7 @@ impl Look {
             Look::GraveBrute => 520.0,
             Look::BoneArcher => 90.0,
             Look::Necromancer => 190.0,
+            _ if self.is_dragon() => crate::dragons::health(self),
             Look::ReedViper => 110.0,
             Look::SiltCoiler => 200.0,
             Look::GaleSerpent => 90.0,
@@ -897,6 +934,7 @@ impl Look {
             Look::Tusker => 2,
             Look::Squirrel | Look::Wolf | Look::MireLurker => 1,
             Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => 6,
+            _ if crate::dragons::is_drakeling(self) => 1,
             _ => 0,
         }
     }
@@ -904,6 +942,7 @@ impl Look {
     // Speeds in meters per second
     pub fn walk_speed(self) -> f64 {
         match self {
+            _ if self.is_dragon() => return crate::dragons::speeds(self).0,
             Look::Colossus => return 1.8,
             Look::ElderWyrm => return 2.2,
             Look::CryptTitan => return 1.6,
@@ -938,6 +977,7 @@ impl Look {
             Some(Build::Lurker) => 1.0,
             Some(Build::Bat) => 2.5,
             Some(Build::Boar) => 1.3,
+            Some(Build::Dragon) => crate::dragons::speeds(self).0,
             Some(Build::Serpent) => 1.3,
             None => match self {
                 Look::Bear => 1.1,
@@ -952,6 +992,7 @@ impl Look {
 
     pub fn run_speed(self) -> f64 {
         match self {
+            _ if self.is_dragon() => return crate::dragons::speeds(self).1,
             Look::Colossus => return 3.2,
             Look::ElderWyrm => return 5.5,
             Look::CryptTitan => return 3.4,
@@ -1003,6 +1044,7 @@ impl Look {
             Some(Build::Lurker) => 4.4,
             Some(Build::Bat) => 7.5,
             Some(Build::Boar) => 5.2,
+            Some(Build::Dragon) => crate::dragons::speeds(self).1,
             Some(Build::Serpent) => 4.2,
             None => match self {
                 Look::Bear => 3.2,
@@ -1016,6 +1058,7 @@ impl Look {
     /// Meters covered by one cycle of its walk
     pub fn stride(self) -> f64 {
         match self.build() {
+            Some(Build::Dragon) => crate::dragons::stride(self),
             Some(Build::Golem) => 2.4 * self.size(),
             Some(Build::Drake | Build::Bear) => 2.6 * self.size(),
             Some(Build::Spider) => 1.8 * self.scale(),
@@ -1159,6 +1202,8 @@ fn shown(look: Look, frame: usize) -> bool {
         // A great serpent's drawn a piece at a time, with models of its own, see serpents::Coils
         _ if look.is_great_serpent() => false,
         0 => true,
+        // Dragons are drawn out of jointed pieces of their own, see src\dragons.rs
+        _ if look.is_dragon() => false,
         _ if frame <= WALK_FRAMES => look.walks(),
         _ if look.build().is_none() => false,
         _ if frame < POSE_COIL => true,
@@ -2646,6 +2691,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Lurker) => lurker(&mut p, angle, swing, moving, pose, look.skin()),
                 Some(Build::Bat) => gloomwing(&mut p, angle, pose, look.skin()),
                 Some(Build::Boar) => tusker(&mut p, angle, swing, moving, pose, look.skin()),
+                // Its pieces are made in src\dragons.rs
+                Some(Build::Dragon) => {}
                 Some(Build::Serpent) => {
                     if let Some(kind) = serpents::kind(look) {
                         serpents::parts(&mut p, kind, phase, [pose.windup, pose.strike, pose.special]);
@@ -3244,9 +3291,14 @@ fn model_index(look: Look, frame: usize) -> u32 {
     (Look::ALL.iter().position(|&l| l == look).unwrap() * FRAMES + frame) as u32
 }
 
-/// How many models animal_models() makes: every frame of every look, then the great serpents'
-/// pieces, see serpents::part_models(). Other models come after them.
-pub const ANIMAL_MODELS: usize = Look::ALL.len() * FRAMES + serpents::PART_MODELS;
+/// Where the dragons' jointed pieces start among the models animal_models() makes, after every
+/// frame of every look, see src\dragons.rs
+pub const DRAGON_MODELS_AT: usize = Look::ALL.len() * FRAMES;
+
+/// How many models animal_models() makes: every frame of every look, then the dragons' pieces
+/// and what they breathe, then the great serpents' pieces, last, see serpents::part_models().
+/// Other models come after them.
+pub const ANIMAL_MODELS: usize = DRAGON_MODELS_AT + crate::dragons::MODELS + serpents::PART_MODELS;
 
 /// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
 fn frame_model(look: Look, frame: usize) -> Model {
@@ -3282,22 +3334,105 @@ pub fn animal_models() -> Vec<Model> {
     });
     made.sort_unstable_by_key(|&(job, _)| job);
     let mut models: Vec<Model> = made.into_iter().map(|(_, model)| model).collect();
+    // The dragons' pieces, and what they breathe, then the great serpents' pieces, which have to
+    // be the last of them, see serpents::part_models()
+    models.extend(crate::dragons::models());
     models.extend(serpents::part_models());
     models
 }
 
-/// Models packed for shaders\traverse.comp: two header words per model (where its voxels start, and
-/// its size packed x | y << 10 | z << 20), then the voxels, four to a word.
+/// Words in each model's header, see pack_models(). Has to match MODEL_HEADER in
+/// shaders\traverse.comp.
+pub const HEADER_WORDS: usize = 4;
+
+/// Models packed for shaders\traverse.comp: HEADER_WORDS words of header per model, then the voxels,
+/// four to a word. Each header: where its voxels start, its size, and the size of the box round
+/// what's solid in it and where that box is in it, each packed x | y << 10 | z << 20. Only that box's
+/// voxels are kept, the air round it left out, as most of every model's air is; and models alike,
+/// as frames that come out the same, share theirs. Every model reads back exactly as it was, see
+/// packed_voxel().
 pub fn pack_models(models: &[&Model]) -> Vec<u32> {
-    let mut words = vec![0u32; models.len() * 2];
+    let pack = |v: [u32; 3]| v[0] | v[1] << 10 | v[2] << 20;
+    let mut words = vec![0u32; models.len() * HEADER_WORDS];
+    // Where the voxels kept so far start, by a hash of them, and the box they're of
+    let mut stored: std::collections::HashMap<u64, Vec<(usize, u32)>> = std::collections::HashMap::new();
+    let mut kept: Vec<u8> = Vec::new();
     for (i, model) in models.iter().enumerate() {
-        words[i * 2] = words.len() as u32;
-        words[i * 2 + 1] = model.size[0] | model.size[1] << 10 | model.size[2] << 20;
-        for chunk in model.voxels.chunks(4) {
-            words.push(chunk.iter().enumerate().fold(0, |w, (j, &m)| w | (m as u32) << (j * 8)));
+        let (from, size) = solid_box(model);
+        kept.clear();
+        let [sx, sy, _] = model.size.map(|v| v as usize);
+        for z in from[2]..from[2] + size[2] {
+            for y in from[1]..from[1] + size[1] {
+                let row = from[0] as usize + (y as usize + z as usize * sy) * sx;
+                kept.extend_from_slice(&model.voxels[row..row + size[0] as usize]);
+            }
         }
+        let packed = pack_voxels(&kept);
+        let header = i * HEADER_WORDS;
+        words[header + 1] = pack(model.size);
+        words[header + 2] = pack(size);
+        words[header + 3] = pack(from);
+        let key = voxels_hash(size, &kept);
+        let same = stored.get(&key).and_then(|those| those.iter().find(|&&(at, box_size)| box_size == pack(size) && words[at..at + packed.len()] == packed[..]));
+        if let Some(&(at, _)) = same {
+            words[header] = at as u32;
+            continue;
+        }
+        let at = words.len();
+        stored.entry(key).or_default().push((at, pack(size)));
+        words[header] = at as u32;
+        words.extend(packed);
     }
     words
+}
+
+/// Voxels four to a word
+fn pack_voxels(voxels: &[u8]) -> Vec<u32> {
+    voxels.chunks(4).map(|chunk| chunk.iter().enumerate().fold(0, |w, (j, &m)| w | (m as u32) << (j * 8))).collect()
+}
+
+/// Where the box round what's solid in `model` starts in it, and how big it is, in its voxels:
+/// nothing at all for a model that's all air
+fn solid_box(model: &Model) -> ([u32; 3], [u32; 3]) {
+    let [sx, sy, _] = model.size.map(|v| v as usize);
+    let (mut lo, mut hi) = ([u32::MAX; 3], [0u32; 3]);
+    for (i, &v) in model.voxels.iter().enumerate() {
+        if v != AIR {
+            let c = [(i % sx) as u32, (i / sx % sy) as u32, (i / (sx * sy)) as u32];
+            for a in 0..3 {
+                lo[a] = lo[a].min(c[a]);
+                hi[a] = hi[a].max(c[a] + 1);
+            }
+        }
+    }
+    if lo[0] == u32::MAX { ([0; 3], [0; 3]) } else { (lo, [0, 1, 2].map(|a| hi[a] - lo[a])) }
+}
+
+/// A quick hash of a box's size and voxels, eight at a time, to find those alike
+fn voxels_hash(size: [u32; 3], voxels: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ (size[0] as u64 | (size[1] as u64) << 20 | (size[2] as u64) << 40);
+    for chunk in voxels.chunks(8) {
+        let mut w = [0u8; 8];
+        w[..chunk.len()].copy_from_slice(chunk);
+        h = (h ^ u64::from_le_bytes(w)).wrapping_mul(0x0000_0100_0000_01b3);
+        h ^= h >> 31;
+    }
+    h
+}
+
+/// Voxel `c` of model `model` as shaders\traverse.comp reads it from what pack_models() made of
+/// them, see modelVoxel() there: air outside the box round what's solid in it
+#[cfg(test)]
+pub fn packed_voxel(words: &[u32], model: usize, c: [u32; 3]) -> u8 {
+    let unpack = |w: u32| [w & 0x3FF, w >> 10 & 0x3FF, w >> 20 & 0x3FF];
+    let header = model * HEADER_WORDS;
+    let (start, size, from) = (words[header] as usize, unpack(words[header + 2]), unpack(words[header + 3]));
+    let k = [0, 1, 2].map(|a| c[a].wrapping_sub(from[a]));
+    if (0..3).any(|a| k[a] >= size[a]) {
+        return AIR;
+    }
+    let i = (k[0] + (k[1] + k[2] * size[1]) * size[0]) as usize;
+    (words[start + i / 4] >> ((i % 4) * 8) & 0xFF) as u8
 }
 
 // How an instance moves, has to match shaders\traverse.comp
@@ -3409,6 +3544,9 @@ pub struct Animal {
     pub status: Status,
     /// What a boss is up to, see src\bosses.rs
     pub boss: Option<Boss>,
+    /// How a dragon flies, fights and holds itself, see src\dragons.rs: it thinks for itself
+    /// rather than as bosses do, and only takes from `boss` what it shares with them
+    pub dragon: Option<Box<crate::dragons::Dragon>>,
     /// Where in the whole landscape a villager's town square is, in voxels, and how far from it
     /// in meters it strolls
     home: Option<(Vector3<f64>, f64)>,
@@ -3577,6 +3715,7 @@ impl Animal {
             toughened: false,
             status: Status::default(),
             boss: None,
+            dragon: None,
             home: None,
             rng,
             focus: None,
@@ -3594,6 +3733,9 @@ impl Animal {
     pub fn boss(look: Look, home: Vector3<f64>, key: [i64; 3], seed: u32) -> Self {
         let mut animal = Animal::new(look, home, hash(seed ^ 0xb055));
         animal.boss = Some(Boss::new(look, home, key));
+        if look.is_dragon() {
+            animal.dragon = Some(Box::new(crate::dragons::Dragon::new(look, home, animal.heading, hash(seed ^ 0xd4a6))));
+        }
         animal
     }
 
@@ -3614,6 +3756,10 @@ impl Animal {
     /// The middle of its body, to aim at: lower as a flier dives, or under the sand as a burrower
     /// digs in
     pub fn center(&self, world_voxels_per_meter: u32) -> Vector3<f64> {
+        // Whatever part of a dragon the player's striking at, see dragons::Dragon::aim()
+        if let Some(dragon) = &self.dragon {
+            return dragon.focus();
+        }
         // A serpent where the player's aiming at it, along the whole of its long body
         if let Some(focus) = self.focus {
             return self.position + focus;
@@ -3783,6 +3929,12 @@ impl Animal {
                 self.status.push = self.status.push.normalize() * most;
             }
             self.status.limit_for_boss();
+        }
+        // A dragon flies, walks and fights by its own lights
+        if let Some(mut dragon) = self.dragon.take() {
+            crate::dragons::act(self, &mut dragon, world, water, player, dt);
+            self.dragon = Some(dragon);
+            return;
         }
         if self.boss.is_some() {
             bosses::think(self, world, player, dt);
@@ -3987,6 +4139,14 @@ impl Animal {
     }
 
     pub fn instance(&self, world_voxels_per_meter: u32) -> AnimalInstance {
+        // A dragon's drawn in pieces, see dragons::instances(): this is the first of them
+        if let Some(dragon) = &self.dragon {
+            let mut pieces = Vec::new();
+            crate::dragons::instances(self, dragon, world_voxels_per_meter as f64, &mut pieces);
+            if let Some(&first) = pieces.first() {
+                return first;
+            }
+        }
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let radius = (self.look.reach() + on.abs() + up.abs()) * world_voxels_per_meter as f64;
@@ -4363,7 +4523,14 @@ pub fn spawn_wilds(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
             let Some(z) = surface_at(world, water, x, y) else {
                 continue;
             };
-            let (look, at) = match world.material_at(x as i64, y as i64, z as i64 - 1) {
+            // Now and then a pair of drakelings roosting on the high bare rock, see dragons.rs
+            let ground = world.material_at(x as i64, y as i64, z as i64 - 1);
+            if crate::dragons::roost(ground, z, world.size[2] as f64) && random(rng) < 0.2 {
+                let roll = random(rng);
+                packs.extend(crate::dragons::roosting(world, water, Vector3::new(x, y, z), ground, roll, hash(*rng)));
+                break;
+            }
+            let (look, at) = match ground {
                 SAND | SANDSTONE | SANDSTONE_DARK => (Look::DuneBurrower, Vector3::new(x, y, z)),
                 SNOW | ICE => (Look::RimeWraith, Vector3::new(x, y, z)),
                 // Out in the green country, tuskers, or the dead walking in packs of their own
@@ -4466,6 +4633,30 @@ mod tests {
             of(Look::CryptTitan) as f64 / 1e6
         );
         assert!(bytes < 150_000_000, "the models take {bytes} bytes");
+    }
+
+    /// Packed for the shader, every frame of every creature and every dragon's piece reads back
+    /// exactly as it was made, voxel for voxel, though only the box round what's solid in each is
+    /// kept and those alike share theirs
+    #[test]
+    fn every_model_unpacks_as_it_was_made() {
+        let models = animal_models();
+        let words = pack_models(&models.iter().collect::<Vec<_>>());
+        for (i, model) in models.iter().enumerate() {
+            let size = words[i * HEADER_WORDS + 1];
+            assert_eq!([size & 0x3FF, size >> 10 & 0x3FF, size >> 20 & 0x3FF], model.size, "model {i}'s size");
+            let [sx, sy, sz] = model.size;
+            for z in 0..sz {
+                for y in 0..sy {
+                    for x in 0..sx {
+                        let at = (x + (y + z * sy) * sx) as usize;
+                        assert_eq!(packed_voxel(&words, i, [x, y, z]), model.voxels[at], "model {i} at {x}, {y}, {z}");
+                    }
+                }
+            }
+        }
+        let whole: usize = models.iter().map(|m| m.voxels.len().div_ceil(4) * 4 + 8).sum();
+        println!("models {:.1} MB as they were, {:.1} MB packed", whole as f64 / 1e6, words.len() as f64 * 4.0 / 1e6);
     }
 
     /// The Colossus's boulder is gripped low in front of its fists dug into the ground and on top
