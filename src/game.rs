@@ -3045,8 +3045,9 @@ impl Game {
                 let throes = if a.look.is_great_serpent() { serpents::GREAT_THROES } else { serpents::DEATH_THROES };
                 (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
             };
-            // And a dragon falls out of the sky and lies a moment where it fell first
-            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) {
+            // And a dragon falls out of the sky and lies a moment where it fell first, and a jointed
+            // boss falls, see rig::dying()
+            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) || crate::rig::dying(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -4766,7 +4767,8 @@ impl Game {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
                 creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
-            } else if animal.dragon.is_some() {
+            } else if animal.dragon.is_some() || crate::rig::rigged(animal.look) {
+                // A jointed boss too, see rig::instances()
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                     dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
                 }
@@ -4786,13 +4788,15 @@ impl Game {
                 Some(_) => {}
                 None => {
                     let animal = &self.animals[k];
+                    pieces.clear();
                     if let Some(dragon) = &animal.dragon {
-                        pieces.clear();
                         crate::dragons::instances(animal, dragon, vpm, &mut pieces);
-                        if pieces.len() <= room {
-                            room -= pieces.len();
-                            out.extend(pieces.iter().copied());
-                        }
+                    } else {
+                        animal.rig_instances(world.voxels_per_meter, &mut pieces);
+                    }
+                    if pieces.len() <= room {
+                        room -= pieces.len();
+                        out.extend(pieces.iter().copied());
                     }
                 }
             }

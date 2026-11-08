@@ -93,6 +93,7 @@ mod player;
 mod quality;
 mod raids;
 mod realms;
+mod rig;
 mod rope;
 mod save;
 mod session;
@@ -4649,6 +4650,34 @@ impl App {
                 // moment between, to ring a bell or such
                 let pulse = settings_from_args().into_iter().find(|(k, _)| k == "boss_pulse").and_then(|(_, v)| v.parse::<usize>().ok());
                 let pressing = f > 30 && pulse.is_none_or(|n| (f - 31) % (n + 12) < n);
+                self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // The player stands where they started, for the nearest boss to fight, while the camera
+            // watches it from off to one side, to see how it moves, see src\rig.rs: `--set
+            // view_distance=12` that many meters off, `view_from=1.4` that many radians round from
+            // where the player is, `view_up=2` that many meters up, and `view_attack=1` the player
+            // attacking all the while
+            ("rig", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                let feet = self.player.as_ref().map_or(eye, |p| p.position);
+                // Placed once and held still, so what moves is only the boss, unless `view_follow=1`
+                let placing = f <= 20 || number("view_follow", 0.0) > 0.5;
+                if let Some(target) = self.game.nearest_boss(feet).filter(|_| placing) {
+                    let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
+                    let round = number("view_from", 1.4);
+                    let (c, s) = (round.cos(), round.sin());
+                    let way = Vector3::new(back.x * c - back.y * s, back.x * s + back.y * c, 0.0);
+                    let at = target + way * number("view_distance", 12.0) * vpm + Vector3::new(0.0, 0.0, number("view_up", 1.0) * vpm);
+                    self.camera.position = voxels_to_camera(at, self.world.size);
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                let pressing = number("view_attack", 0.0) > 0.5 && f > 30;
                 self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));

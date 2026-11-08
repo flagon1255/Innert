@@ -189,12 +189,12 @@ enum Arms {
 /// The materials a boss is made of: its body, darker parts, things on it, what glows, and one
 /// more, like horns or crystals
 #[derive(Clone, Copy)]
-struct Skin {
-    body: u8,
-    dark: u8,
-    accent: u8,
-    glow: u8,
-    extra: u8,
+pub(crate) struct Skin {
+    pub(crate) body: u8,
+    pub(crate) dark: u8,
+    pub(crate) accent: u8,
+    pub(crate) glow: u8,
+    pub(crate) extra: u8,
 }
 
 impl Look {
@@ -562,7 +562,7 @@ impl Look {
         }
     }
 
-    fn skin(self) -> Skin {
+    pub(crate) fn skin(self) -> Skin {
         let make = |body, dark, accent, glow, extra| Skin { body, dark, accent, glow, extra };
         match self {
             Look::FrostGolem => make(ICE, STONE, SNOW, GLOW_FROST, CRYSTAL),
@@ -1201,6 +1201,8 @@ fn shown(look: Look, frame: usize) -> bool {
     match frame {
         // A great serpent's drawn a piece at a time, with models of its own, see serpents::Coils
         _ if look.is_great_serpent() => false,
+        // And the bosses drawn out of jointed pieces, see src\rig.rs
+        _ if crate::rig::rigged(look) => false,
         0 => true,
         // Dragons are drawn out of jointed pieces of their own, see src\dragons.rs
         _ if look.is_dragon() => false,
@@ -1334,9 +1336,19 @@ pub fn cuboid(lo: Vec3, hi: Vec3, material: u8) -> Part {
 }
 
 impl Part {
-    fn striped(mut self, stripes: u8) -> Self {
+    pub(crate) fn striped(mut self, stripes: u8) -> Self {
         self.stripes = stripes;
         self
+    }
+
+    /// Moved `by` meters, for building a jointed boss's pieces about their joints, see src\rig.rs
+    pub(crate) fn shifted(&self, by: Vec3) -> Part {
+        Part { a: [0, 1, 2].map(|i| self.a[i] + by[i]), b: [0, 1, 2].map(|i| self.b[i] + by[i]), ..*self }
+    }
+
+    /// What it's made of, and the darker bands across it, if any
+    pub(crate) fn materials(&self) -> (u8, u8) {
+        (self.material, self.stripes)
     }
 
     /// `s` times as big, and as far from the origin
@@ -1352,7 +1364,7 @@ impl Part {
 
     /// At least a voxel thick at `res` voxels per meter whichever way it's turned, so nothing
     /// thin falls between the voxels
-    fn thickened(&self, res: f64) -> Part {
+    pub(crate) fn thickened(&self, res: f64) -> Part {
         let (a, b) = (self.a, self.b);
         if self.boxed {
             let half = 0.51 / res;
@@ -1375,7 +1387,7 @@ impl Part {
         Part { a, b, ra, rb, stretch, ..*self }
     }
 
-    fn contains(&self, p: Vec3) -> bool {
+    pub(crate) fn contains(&self, p: Vec3) -> bool {
         if self.boxed {
             return (0..3).all(|i| p[i] >= self.a[i] && p[i] <= self.b[i]);
         }
@@ -1391,7 +1403,7 @@ impl Part {
         d2 <= r * r
     }
 
-    fn reach(&self) -> (Vec3, Vec3) {
+    pub(crate) fn reach(&self) -> (Vec3, Vec3) {
         if self.boxed {
             return (self.a, self.b);
         }
@@ -3291,13 +3303,17 @@ fn model_index(look: Look, frame: usize) -> u32 {
     (Look::ALL.iter().position(|&l| l == look).unwrap() * FRAMES + frame) as u32
 }
 
-/// Where the dragons' jointed pieces start among the models animal_models() makes, after every
-/// frame of every look, see src\dragons.rs
-pub const DRAGON_MODELS_AT: usize = Look::ALL.len() * FRAMES;
+/// Where the jointed bosses' pieces start among the models animal_models() makes, after every
+/// frame of every look, see src\rig.rs
+pub const RIG_MODELS_AT: usize = Look::ALL.len() * FRAMES;
 
-/// How many models animal_models() makes: every frame of every look, then the dragons' pieces
-/// and what they breathe, then the great serpents' pieces, last, see serpents::part_models().
-/// Other models come after them.
+/// Where the dragons' jointed pieces start among the models animal_models() makes, after the
+/// jointed bosses', see src\dragons.rs
+pub const DRAGON_MODELS_AT: usize = RIG_MODELS_AT + crate::rig::MODELS;
+
+/// How many models animal_models() makes: every frame of every look, then the jointed bosses'
+/// pieces, then the dragons' pieces and what they breathe, then the great serpents' pieces, last,
+/// see serpents::part_models(). Other models come after them.
 pub const ANIMAL_MODELS: usize = DRAGON_MODELS_AT + crate::dragons::MODELS + serpents::PART_MODELS;
 
 /// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
@@ -3334,8 +3350,9 @@ pub fn animal_models() -> Vec<Model> {
     });
     made.sort_unstable_by_key(|&(job, _)| job);
     let mut models: Vec<Model> = made.into_iter().map(|(_, model)| model).collect();
-    // The dragons' pieces, and what they breathe, then the great serpents' pieces, which have to
-    // be the last of them, see serpents::part_models()
+    // The jointed bosses' pieces, the dragons' pieces and what they breathe, then the great
+    // serpents' pieces, which have to be the last of them, see serpents::part_models()
+    models.extend(crate::rig::models());
     models.extend(crate::dragons::models());
     models.extend(serpents::part_models());
     models
@@ -3743,6 +3760,43 @@ impl Animal {
         self.heading
     }
 
+    /// Which way it's drawn facing, easing after its heading
+    pub(crate) fn drawn_heading(&self) -> f64 {
+        self.drawn_heading
+    }
+
+    /// Radians a second what's drawn of it is turning, to the left
+    pub(crate) fn turning(&self) -> f64 {
+        let off = (self.heading - self.drawn_heading + PI).rem_euclid(TAU) - PI;
+        (off * TURN_EASE * (1.0 + 2.0 * off.abs())).clamp(-6.0, 6.0)
+    }
+
+    /// Where point `p` of a jointed boss's pose is in the world, in voxels: `p` in meters at its
+    /// build's size from the middle of its feet, +x ahead, see src\rig.rs
+    pub(crate) fn rig_point(&self, p: Vector3<f64>, vpm: f64) -> Vector3<f64> {
+        let (position, turn) = self.rig_placement(vpm);
+        position + turn * p * self.look.scale() * vpm
+    }
+
+    /// Where a jointed boss's feet are in the world, in voxels, and which way it's turned
+    fn rig_placement(&self, vpm: f64) -> (Vector3<f64>, UnitQuaternion<f64>) {
+        let [pitch, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
+        let ahead = Vector3::new(self.drawn_heading.cos(), self.drawn_heading.sin(), 0.0);
+        (self.position + (ahead * on + Vector3::new(0.0, 0.0, up)) * vpm, facing(self.drawn_heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch))
+    }
+
+    /// For a jointed boss, each of its pieces to draw, into `out`, see rig::instances(): false if
+    /// it's not one
+    pub fn rig_instances(&self, world_voxels_per_meter: u32, out: &mut Vec<AnimalInstance>) -> bool {
+        let Some(rig) = self.boss.as_ref().and_then(|b| b.rig.as_deref()) else {
+            return false;
+        };
+        let vpm = world_voxels_per_meter as f64;
+        let (position, turn) = self.rig_placement(vpm);
+        crate::rig::instances(self, rig, position, turn, vpm, out);
+        true
+    }
+
     /// Turned to face `heading`, radians round from +x
     pub fn face(&mut self, heading: f64) {
         (self.heading, self.target_heading, self.drawn_heading) = (heading, heading, heading);
@@ -3773,7 +3827,7 @@ impl Animal {
     pub fn on_model(&self, point: [f64; 3], vpm: f64) -> Vector3<f64> {
         let offset = self.id as f64 * 0.7;
         let (mut scale, mut heading) = (self.look.scale(), self.drawn_heading);
-        if self.look.build().is_some() {
+        if self.look.build().is_some() && !crate::rig::rigged(self.look) {
             scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
             let still = (1.0 - self.speed / 0.4).clamp(0.0, 1.0);
             heading += 0.035 * still * (self.age * 1.3 + offset).sin();
@@ -3791,12 +3845,17 @@ impl Animal {
     pub fn carried(&self, vpm: f64) -> Option<(Vector3<f64>, bosses::Carry)> {
         let boss = self.boss.as_ref()?;
         let carry = boss.carrying()?;
+        // Between its fists as its jointed pose has them, see src\rig.rs
+        let grip = match &boss.rig {
+            Some(rig) => self.rig_point(rig.sockets.grip, vpm),
+            None => self.on_model(golem_grip(boss.pose().unwrap_or(0)), vpm),
+        };
         let at = match carry {
-            bosses::Carry::Held => self.on_model(golem_grip(boss.pose().unwrap_or(0)), vpm),
+            bosses::Carry::Held => grip,
             // From all but buried, its top just under the ground, heaving up out of it as the
             // fists dig in, then more slowly up to where they grip it
             bosses::Carry::Prying(loose) => {
-                let grip = self.on_model(golem_grip(POSE_STRIKE), vpm);
+                let grip = if boss.rig.is_some() { grip } else { self.on_model(golem_grip(POSE_STRIKE), vpm) };
                 let low = self.position.z - bosses::TORN_BOULDER * 1.05 * vpm;
                 let k = 1.0 - (1.0 - loose) * (1.0 - loose);
                 Vector3::new(grip.x, grip.y, low + (grip.z - low) * k)
@@ -3850,8 +3909,16 @@ impl Animal {
     /// whoever did it. Returns whether it died.
     pub fn damage(&mut self, amount: f64, from: Vector3<f64>) -> bool {
         self.health = (self.health - amount).max(0.0);
+        // Which way the blow came from, in its own frame, for a jointed boss to flinch from it
+        let to = from - self.position;
+        let (c, s) = (self.drawn_heading.cos(), self.drawn_heading.sin());
+        let local = Vector3::new(c * to.x + s * to.y, -s * to.x + c * to.y, 0.0);
+        let share = amount / self.max_health.max(1.0);
         match &mut self.boss {
-            Some(boss) => boss.provoke(),
+            Some(boss) => {
+                boss.provoke();
+                boss.struck_by(share, local);
+            }
             None => self.flee(from, 4.0),
         }
         self.health <= 0.0
@@ -4147,6 +4214,13 @@ impl Animal {
                 return first;
             }
         }
+        // And a jointed boss's, see rig::instances()
+        let mut pieces = Vec::new();
+        if self.rig_instances(world_voxels_per_meter, &mut pieces)
+            && let Some(&first) = pieces.first()
+        {
+            return first;
+        }
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let radius = (self.look.reach() + on.abs() + up.abs()) * world_voxels_per_meter as f64;
@@ -4184,8 +4258,9 @@ impl Animal {
         let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
         let mut heading = self.drawn_heading;
         // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
-        // less the faster they go, so they're never still as statues between frames
-        if self.look.build().is_some() {
+        // less the faster they go, so they're never still as statues between frames; a jointed boss
+        // breathes with its own joints
+        if self.look.build().is_some() && !crate::rig::rigged(self.look) {
             let offset = self.id as f64 * 0.7;
             scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
             let still = (1.0 - self.speed / 0.4).clamp(0.0, 1.0);
