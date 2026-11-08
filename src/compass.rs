@@ -86,8 +86,9 @@ impl App {
         self.camera.rotation.z + FRAC_PI_2
     }
 
-    /// What the compass points to, in Realms: while any of the realm's guardians stands, the
-    /// nearest of them, see guardians.rs; then the nearest raid boss of the realm the player's in
+    /// What the compass points to, in Realms: in a game begun, to the gate's old foundations to
+    /// build it, see gates.rs; then while any of the realm's guardians stands, the nearest of
+    /// them, see guardians.rs; then the nearest raid boss of the realm the player's in
     /// still to beat, or with all three beaten, the gate in the normal world, where their blocks are
     /// set in and the way on to the next realm is, or the portal home from a realm past it
     pub(super) fn compass(&self) -> Option<Bearing> {
@@ -105,6 +106,16 @@ impl App {
         let far = |p: [f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);
         let nearest = |a: &([f64; 2], String), b: &([f64; 2], String)| far(a.0).total_cmp(&far(b.0));
         let realm = &REALMS[places.realm];
+        let raised = self.game.boss_bar_up(camera_to_voxels(self.camera.position, self.world.size));
+        // Before all else, while there's no gate, to the old foundations where it stood, to build
+        // it again, see gates.rs
+        if !self.session.standing {
+            let heading = self.heading();
+            let spot = places.gate;
+            let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
+            return Some(Bearing { label: "Build the Innert Gate".to_owned(), distance: far(spot), turn: wrapped(heading - toward), heading, note: None, raised });
+        }
+        // Then while any of the realm's guardians stands, the nearest of them, see guardians.rs
         let guardian = (0..places.guardians.len())
             .filter(|&k| !self.game.is_defeated(&places.guardian_key(k)))
             .map(|k| (places.guardians[k], format!("Guardian: {}", realms::guardian_look(places.realm, k).name())))
@@ -130,7 +141,6 @@ impl App {
         let heading = self.heading();
         let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
         let note = self.guardians_slain().filter(|(slain, of)| slain < of).map(|(slain, of)| format!("Guardians {slain}/{of}  ·  the raid bosses are warded till all are slain"));
-        let raised = self.game.boss_bar_up(camera_to_voxels(self.camera.position, self.world.size));
         Some(Bearing { label, distance: far(spot), turn: wrapped(heading - toward), heading, note, raised })
     }
 
@@ -145,7 +155,7 @@ impl App {
             title,
             player: self.feet_m(),
             heading: self.heading(),
-            gate: places.map(|p| (p.gate, if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
+            gate: places.map(|p| (p.gate, if !self.session.standing { "Old foundations" } else if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
             lairs: places.map_or(Vec::new(), |p| {
                 let mut lairs: Vec<([f64; 2], &'static str, bool)> = (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect();
                 // The finale too, once it's risen

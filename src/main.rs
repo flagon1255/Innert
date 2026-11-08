@@ -73,6 +73,7 @@ mod compass;
 mod daynight;
 mod effects;
 mod game;
+mod gates;
 mod gather;
 mod gpu_timing;
 mod hot_reload;
@@ -97,6 +98,7 @@ mod skips;
 mod staging;
 mod startup;
 mod stream;
+mod tools;
 mod voxelize;
 mod water;
 mod weapons;
@@ -2415,6 +2417,11 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+            // `--set boss_move=throw` has it make only that move, as soon as it's ready, wherever
+            // the player is, for shots of it in a screenshot run
+            if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                game.force_boss_move(m);
+            }
         }
         // `--set enemy=crossbowman`, `shieldbearer`, `burrower`, `wraith`, `lurker`, `gloomwing`,
         // `tusker` or any other monster puts a pack of them a little way ahead, or `gang` a gang of
@@ -3914,10 +3921,14 @@ impl App {
             let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // A tool's blow landing gathers what it struck, see tools.rs
+            self.update_tools();
             // Monsters coming at night, and what's built taking their blows, see night.rs
             let start = Instant::now();
             self.update_raid(delta_time.min(0.1));
             self.slow("the night's raid", start);
+            // The old foundations of the gate in a new game of Realms, see gates.rs
+            self.lay_ruins();
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -4984,10 +4995,13 @@ impl App {
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        let gate_choice = self.gate_choice();
         let raid_note = self.raid_note();
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
         let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
+        // How many of the realm's guardians are slain, for the gate's window, see guardians.rs
+        let guardians = self.guardians_slain();
         // And hints and messages aren't half hidden behind it or any other window
         self.game.set_covered(map_marks.is_some() || self.inventory_open || self.session.gate_open || self.game.shopping());
 
@@ -5181,7 +5195,7 @@ impl App {
                     self.cycle.hud(&ctx, raid_note.as_deref());
                 }
                 night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
-                building::hud(&self.building, &self.bases, ghost.as_ref(), &self.world, &ctx, &view);
+                building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
@@ -5193,13 +5207,16 @@ impl App {
                     && let (Some(progress), Some(places)) = (&self.session.realms, &self.session.places)
                 {
                     let carried = std::array::from_fn(|r| self.game.innert_blocks(r as u8));
-                    if let Some(action) = session::gate_window(&ctx, places.realm, progress, carried) {
+                    if let Some(action) = session::gate_window(&ctx, places.realm, progress, carried, guardians) {
                         self.session.gate_action = Some(action);
                     }
                 }
                 if !shopping && self.inventory_open {
                     let mut open = true;
-                    self.game.inventory(&ctx, &mut open);
+                    // With what's been gathered to make tools from, see tools.rs
+                    let mut crafting = tools::Crafting { open: self.building.craft_open, materials: self.bases.materials };
+                    self.game.inventory(&ctx, &mut open, &mut crafting);
+                    (self.building.craft_open, self.bases.materials) = (crafting.open, crafting.materials);
                     if !open {
                         self.inventory_open = false;
                         focus_change = Some(true);

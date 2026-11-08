@@ -1,9 +1,10 @@
-//! The guardians of the realms, in Realms: lesser bosses at lairs of their own round about the gate
-//! or the portal home, three in the normal world and one more in each realm on, see
-//! realms::guardian_count(). Until every one of a realm's guardians is slain its raid bosses are
-//! warded: rings of runes turn round each of them, and whatever strikes them glances off, see
-//! Combat::glance_off_ward(). The last of them slain, the wards shatter at every raid lair, and the raid
-//! bosses can be fought. What's slain is kept with the rest of what's beaten in each realm.
+//! The guardians of the realms, in Realms: lesser bosses at lairs of their own round about where
+//! the gate or the portal home was found, never moving wherever the player builds them, see
+//! gates.rs, three in the normal world and one more in each realm on, see realms::guardian_count().
+//! Until every one of a realm's guardians is slain its raid bosses are warded: rings of runes turn
+//! round each of them, and whatever strikes them glances off, see Combat::glance_off_ward(). The
+//! last of them slain, the wards shatter at every raid lair, and the raid bosses can be fought.
+//! What's slain is kept with the rest of what's beaten in each realm.
 
 use std::f64::consts::TAU;
 
@@ -80,8 +81,8 @@ struct Shard {
 pub struct Wards {
     /// Seconds gone, for the rings to turn
     time: f64,
-    /// Which realm's guardians were last looked at, by its index and where its gate is, and how
-    /// many of them were slain then
+    /// Which realm's guardians were last looked at, by its index and where its first guardian is,
+    /// and how many of them were slain then
     of: Option<(usize, [i64; 2])>,
     slain: usize,
     shards: Vec<Shard>,
@@ -203,8 +204,10 @@ impl App {
             self.wards.of = None;
             return;
         };
+        // Which realm's, by where its first guardian is, which never moves, wherever the gate's
+        // built, see gates.rs
         let places = self.session.places.as_ref().expect("a realm's places");
-        let here = (places.realm, places.gate.map(|v| (v * 10.0).round() as i64));
+        let here = (places.realm, places.guardians.first().map_or([0; 2], |g| g.map(|v| (v * 10.0).round() as i64)));
         // Come to the realm, or the game loaded: only what's slain from here on is news
         if self.wards.of != Some(here) || slain < self.wards.slain {
             self.wards.of = Some(here);
@@ -300,9 +303,11 @@ impl App {
         let (Some(slain), Some(places)) = (slain, self.session.places.clone()) else {
             return;
         };
+        // From where the gate was found, whether or not it's built there, see gates.rs
+        let gate = self.session.found.as_ref().map_or(places.gate, |f| f.gate);
         let far = |k: &usize| {
             let p = places.guardians[*k];
-            -((p[0] - places.gate[0]).hypot(p[1] - places.gate[1]))
+            -((p[0] - gate[0]).hypot(p[1] - gate[1]))
         };
         let mut order: Vec<usize> = (0..places.guardians.len()).collect();
         order.sort_by(|a, b| far(a).total_cmp(&far(b)));

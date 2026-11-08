@@ -82,6 +82,43 @@ pub enum Move {
 
 const MOVES: usize = 25;
 
+impl Move {
+    /// Every move, in the order they're numbered
+    const ALL: [Move; MOVES] = [
+        Move::Slam,
+        Move::Throw,
+        Move::Breath,
+        Move::Spit,
+        Move::Charge,
+        Move::Roar,
+        Move::Leap,
+        Move::Roots,
+        Move::Volley,
+        Move::Quake,
+        Move::Storm,
+        Move::Maul,
+        Move::Web,
+        Move::RootWave,
+        Move::Summon,
+        Move::Cataclysm,
+        Move::Shoot,
+        Move::Burrow,
+        Move::Erupt,
+        Move::Blink,
+        Move::Lash,
+        Move::Sweep,
+        Move::Spikes,
+        Move::Coil,
+        Move::Tail,
+    ];
+
+    /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
+    /// `--set boss_move=throw`
+    pub fn named(name: &str) -> Option<Move> {
+        Move::ALL.into_iter().find(|m| format!("{m:?}").eq_ignore_ascii_case(name))
+    }
+}
+
 /// Where the rest of a monster's pack is, so it keeps with them: gathered up each frame by
 /// src\game.rs, see Game::gather_packs()
 #[derive(Clone, Copy, Default)]
@@ -175,6 +212,33 @@ pub enum Deed {
     Cataclysm { to: Vector3<f64>, k: usize },
     /// A raid boss going into its `stage`th phase, 1 or 2, here
     Phase { at: Vector3<f64>, stage: u8 },
+    /// The Colossus hurling the boulder it tore up and lifted overhead, from about `from`, at
+    /// `to`: boss `id`'s, so it leaves the hands it's drawn in, see combat::Combat::hurl_boulder()
+    Hurl { id: u32, from: Vector3<f64>, to: Vector3<f64> },
+    /// Slabs of stone heaving up in a ring `radius` meters round `at`, where the Colossus's fists
+    /// came down, and falling back
+    Heave { at: Vector3<f64>, radius: f64 },
+    /// A spike of rock bursting up out of the ground at `at`, `height` meters tall and leaning on
+    /// along `lean`, as the Colossus's quake runs out under it, then crumbling
+    Spire { at: Vector3<f64>, height: f64, lean: Vector3<f64> },
+    /// A pillar of stone erupting out of the ground at `at` as the Colossus calls its cataclysm,
+    /// standing `stand` seconds for it to fling rocks down out of, then crumbling
+    Pillar { at: Vector3<f64>, stand: f64 },
+    /// The `k`th rock of the Colossus's cataclysm flung down on the player at `to`, out of the top
+    /// of one of its pillars, or from `from` over it if none's standing
+    Rockfall { from: Vector3<f64>, to: Vector3<f64>, k: usize },
+    /// Pebbles and dust shaken loose off the Colossus at `from`, falling round `at` on the ground:
+    /// as a foot comes down, or `loud`ly as it stands, its plates grinding
+    Shed { at: Vector3<f64>, from: Vector3<f64>, loud: bool },
+}
+
+/// What the Earthbreaker Colossus has hold of, tearing a boulder up out of the ground to throw
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Carry {
+    /// Its fists dug into the ground, prying it loose, from 0 to 1 as it comes
+    Prying(f64),
+    /// Torn free and in its hands, being lifted overhead
+    Held,
 }
 
 pub struct Boss {
@@ -249,6 +313,14 @@ pub struct Boss {
     /// Where a raider's led instead of straight at the player, in voxels: round walls on its way to
     /// a door, or with `true`, to beat down the door there
     pub lure: Option<(Vector3<f64>, bool)>,
+    /// Made to make only this move, as soon as it's ready, wherever the player is, for shots of
+    /// it: `--set boss_move=throw`
+    pub forced: Option<Move>,
+    /// Where the player was as the Colossus started calling its cataclysm, in voxels, for its
+    /// pillars to erupt round
+    circle: Vector3<f64>,
+    /// Seconds until the Colossus, standing, next shakes pebbles off itself
+    crumble: f64,
     /// Seconds since a serpent was killed, as it thrashes, rolls over and goes still before it's
     /// gone, see serpents::DEATH_THROES
     pub dying: Option<f64>,
@@ -351,6 +423,11 @@ fn windup(look: Look, m: Move) -> f64 {
             Move::Spit => return 0.7,
             _ => {}
         }
+    }
+    // The Colossus digging its fists into the ground to pry a boulder loose, tearing it up and
+    // lifting it high overhead
+    if look == Look::Colossus && m == Move::Throw {
+        return TEAR_PRY + TEAR_LIFT;
     }
     // A great serpent rearing up, coiling back, its head drawn high and its jaw gaping, long enough
     // for whoever it's after to see it coming and get out of the way
@@ -646,6 +723,40 @@ fn quake_reach(look: Look) -> f64 {
     QUAKE_REACH * look.size().sqrt()
 }
 
+/// Where the spikes of rock the Colossus's quake throws up come up as its front runs out from
+/// `from` to `to` meters: how far off straight at the player, in radians, and how far out, in
+/// meters. Three lines of them fanned out, so they're seen coming from in front of it, and five
+/// once it's enraged, those to the sides further apart so they don't crowd.
+fn spires(look: Look, enraged: bool, from: f64, to: f64) -> Vec<(f64, f64)> {
+    let fan: &[f64] = if enraged { &[-2.0 * SPIRE_FAN, -SPIRE_FAN, 0.0, SPIRE_FAN, 2.0 * SPIRE_FAN] } else { &[-SPIRE_FAN, 0.0, SPIRE_FAN] };
+    let end = quake_reach(look).min(to);
+    let mut out = Vec::new();
+    for &turn in fan {
+        let spacing = SPIRE_SPACING * (1.0 + 0.4 * (turn / SPIRE_FAN).abs());
+        let mut d = SPIRE_FIRST;
+        while d < end {
+            if d >= from {
+                out.push((turn, d));
+            }
+            d += spacing;
+        }
+    }
+    out
+}
+
+/// Seconds into winding up its cataclysm the Colossus's `k`th of `count` pillars erupts, `whole`
+/// being how long it winds up
+fn pillar_rises(k: usize, count: usize, whole: f64) -> f64 {
+    k as f64 / count as f64 * whole * PILLARS_RISE
+}
+
+/// Which of a raid boss's cataclysm falls comes in the frame of `dt` seconds up to `t` seconds
+/// into it, if one does
+fn cataclysm_fall(t: f64, dt: f64) -> Option<usize> {
+    let count = |t: f64| if t < CATACLYSM_START { None } else { Some(((t - CATACLYSM_START) / CATACLYSM_EVERY) as usize) };
+    count(t).filter(|&k| count(t - dt) != Some(k) && k < CATACLYSM_FALLS)
+}
+
 /// What a raid boss can do in each phase, from 0 to 2: more and worse as it goes, see Boss::stage
 fn unlocked(look: Look, m: Move, stage: u8) -> bool {
     !look.is_raid()
@@ -695,6 +806,30 @@ const SPIKES_DAMAGE: f64 = 28.0;
 /// How far apart the void a knight flings off its blade lands, either side of the player once
 /// it's angry, in meters
 const SLASH_SPREAD: f64 = 3.4;
+/// The Earthbreaker Colossus tearing a boulder up out of the ground to throw: seconds it spends
+/// with its fists dug into the ground in front of it, prying it loose, then lifting it overhead
+/// and holding it there, straining, before it hurls it, both at its own pace, see Boss::pace()
+pub const TEAR_PRY: f64 = 0.8;
+pub const TEAR_LIFT: f64 = 0.75;
+/// How big round the boulder it tears up is, in meters
+pub const TORN_BOULDER: f64 = 0.9;
+/// How many pillars of stone erupt round the player as it calls its cataclysm, more once it's
+/// enraged, how far out from them in meters, and how much of its winding up they take to all come
+/// up, one after another
+const PILLARS: usize = 6;
+const PILLAR_RING: f64 = 9.5;
+const PILLARS_RISE: f64 = 0.6;
+/// Seconds each pillar takes to burst up out of the ground, see combat::Combat::pillar()
+pub const PILLAR_RISE: f64 = 0.45;
+/// Seconds a rock flung out of a pillar takes at most to come down, see Combat::rockfall(), so
+/// the pillars stand till the last is down
+pub const ROCKFALL_LONGEST: f64 = 1.7;
+/// Spikes of rock its quake throws up along the ground at the player: how far out the first is,
+/// how far apart the rest are along the line straight at them, in meters, and how far apart the
+/// lines fanned out either side of it are, in radians
+const SPIRE_FIRST: f64 = 3.0;
+const SPIRE_SPACING: f64 = 1.8;
+const SPIRE_FAN: f64 = 0.42;
 /// Seconds a great serpent takes to coil round the player and close the ring, and to bring its
 /// raised tail down
 const COIL_SECONDS: f64 = 2.6;
@@ -765,6 +900,9 @@ impl Boss {
             deeds: Vec::new(),
             raider: false,
             lure: None,
+            forced: None,
+            circle: home,
+            crumble: 2.0,
             dying: None,
             coils: serpents::Coils::new(look).map(Box::new),
             ring: (home, 0.0, 1.0),
@@ -856,6 +994,7 @@ impl Boss {
         self.aim -= shift;
         self.leap.0 -= shift;
         self.leap.1 -= shift;
+        self.circle -= shift;
         self.ring.0 -= shift;
         if let Some(coils) = &mut self.coils {
             coils.recenter(shift);
@@ -883,6 +1022,42 @@ impl Boss {
         animals::tween(self.look, before.unwrap_or(0), now.unwrap_or(0), since).or(now)
     }
 
+    /// How much of its usual time it takes over winding up: less once it's angry
+    fn pace(&self) -> f64 {
+        if self.enraged { 0.8 } else { 1.0 }
+    }
+
+    /// Seconds into winding up its throw the Colossus tears its boulder free
+    fn tear_at(&self) -> f64 {
+        TEAR_PRY * self.pace()
+    }
+
+    /// The Colossus with its fists still dug into the ground, prying its boulder loose
+    fn digging(&self) -> bool {
+        matches!(self.phase, Phase::WindUp(Move::Throw, t) if self.look == Look::Colossus && t < self.tear_at())
+    }
+
+    /// What the Colossus has hold of, tearing a boulder up out of the ground to throw, if it's at
+    /// that, see animals::Animal::carried()
+    pub fn carrying(&self) -> Option<Carry> {
+        match self.phase {
+            Phase::WindUp(Move::Throw, t) if self.look == Look::Colossus => Some(if t < self.tear_at() { Carry::Prying((t / self.tear_at()).clamp(0.0, 1.0)) } else { Carry::Held }),
+            _ => None,
+        }
+    }
+
+    /// How hard it's straining, 0 to 1, for the fire in a colossus's seams to blaze up with: as it
+    /// winds up a move, all through it, and dying down after
+    pub fn strain(&self) -> f64 {
+        match self.phase {
+            Phase::WindUp(Move::Roar, _) | Phase::Roam | Phase::Chase | Phase::Stunned(_) => 0.0,
+            Phase::WindUp(m, t) => (t / (windup(self.look, m) * self.pace()).max(0.1)).min(1.0),
+            Phase::Act(Move::Roar, _) => 0.6,
+            Phase::Act(..) => 1.0,
+            Phase::Recover(t) => t.min(1.0) * 0.6,
+        }
+    }
+
     /// How many times round a knight sweeps its greatsword: twice, once it's angry
     fn spins(&self) -> f64 {
         if self.enraged { 2.0 } else { 1.0 }
@@ -894,6 +1069,8 @@ impl Boss {
     pub fn sway(&self) -> [f64; 3] {
         let [pitch, on, up] = self.sway;
         let tremble = match self.phase {
+            // The Colossus straining under the boulder it's lifted overhead
+            Phase::WindUp(Move::Throw, t) if self.look == Look::Colossus && t >= self.tear_at() => 0.009 * (t * 31.0).sin(),
             Phase::WindUp(m, t) if t > windup(self.look, m) => 0.012 * (t * 38.0).sin(),
             Phase::Stunned(t) => 0.03 * (t * 6.0).sin(),
             _ => 0.0,
@@ -959,6 +1136,11 @@ impl Boss {
             Phase::Act(Move::Sweep, _) => ([0.0, 0.0, -0.04], 12.0),
             Phase::WindUp(Move::Spikes, _) => ([-0.04, -0.06, 0.06], 5.0),
             Phase::Act(Move::Spikes, _) => ([0.0, 0.0, 0.0], 25.0),
+            // The Colossus bent low over its fists dug into the ground, heaving at its boulder,
+            // then rearing back with it lifted high
+            Phase::WindUp(Move::Throw, t) if self.look == Look::Colossus => {
+                if t < self.tear_at() { ([0.1, 0.2, -0.1], 4.0) } else { ([-0.1, -0.12, 0.06], 4.0) }
+            }
             Phase::WindUp(m, t) if heavy(m) => {
                 let held = ((t - windup(self.look, m)) / MOST_HOLD).clamp(0.0, 1.0);
                 ([-0.13 - 0.05 * held, -0.18, 0.06], 5.0)
@@ -1069,6 +1251,9 @@ impl Boss {
             // A wolf crouches to spring; howling, the dead raising their arms, calling the rest up
             (Phase::WindUp(Move::Leap, _), Some(Build::Wolf)) => Some(POSE_WINDUP),
             (Phase::WindUp(Move::Summon, _) | Phase::Act(Move::Summon, _), _) => Some(POSE_SPECIAL),
+            // The Colossus bent to dig its fists into the ground in front of it, then raising what
+            // it tore up out of it overhead in both hands, to hurl it down at the player
+            (Phase::WindUp(Move::Throw, t), _) if self.look == Look::Colossus => Some(if t < self.tear_at() { POSE_STRIKE } else { POSE_WINDUP }),
             (Phase::WindUp(Move::Throw | Move::Charge | Move::Leap | Move::Roots | Move::Storm | Move::Maul, _), _) => Some(POSE_SPECIAL),
             (Phase::WindUp(Move::Slam | Move::Breath | Move::Spit | Move::Volley | Move::Quake | Move::Web | Move::RootWave, _), _) => Some(POSE_WINDUP),
             (Phase::Act(Move::Roots | Move::Storm, _), _) => Some(POSE_SPECIAL),
@@ -1083,6 +1268,10 @@ impl Boss {
 
     /// The move it can make from `distance` meters off, if any's ready
     fn choose(&self, distance: f64) -> Option<Move> {
+        // Made to make only the one, for shots of it
+        if let Some(m) = self.forced {
+            return (self.cooldowns[m as usize] <= 0.0).then_some(m);
+        }
         let ready = |m: Move| self.cooldowns[m as usize] <= 0.0 && unlocked(self.look, m, self.stage);
         // A raid boss reaches as far further as it's bigger
         let size = self.look.size();
@@ -1488,6 +1677,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         boss.enraged = boss.stage as usize >= RAID_PHASES.len();
         boss.phase = Phase::Act(Move::Roar, 0.0);
         boss.deeds.push(Deed::Phase { at: a.position, stage: boss.stage });
+        // The ground round the Colossus heaving up in slabs as it roars
+        if look == Look::Colossus {
+            boss.deeds.push(Deed::Heave { at: a.position, radius: 4.2 * look.size() });
+        }
         boss.cooldowns[Move::Cataclysm as usize] = 0.0;
         boss.cooldowns[Move::Summon as usize] = 0.0;
     } else if boss.engaged && look.is_ultra() && !busy && boss.stage < serpents::ultra_stage(vitality) {
@@ -1515,8 +1708,25 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let heavy = matches!(look.build(), Some(Build::Golem | Build::Bear | Build::Treant)) || look.is_knight();
     if heavy && a.speed > 0.3 && (a.phase * 2.0).floor() != (boss.last_step * 2.0).floor() {
         boss.deeds.push(Deed::Stomp(a.position));
+        // Pebbles and dust shaken off the Colossus each time a foot comes down, off the shoulder
+        // over it
+        if look == Look::Colossus {
+            let (s, side) = (look.size(), if (a.phase * 2.0).floor() as i64 % 2 == 0 { 1.0 } else { -1.0 });
+            let at = on_body(a, [0.3 * s, side * 0.42 * s, 0.0], vpm);
+            boss.deeds.push(Deed::Shed { at, from: on_body(a, [0.05 * s, side * 0.98 * s, 2.7 * s], vpm), loud: false });
+        }
     }
     boss.last_step = a.phase;
+    // Standing, now and then its plates grind and shed a trickle of pebbles
+    if look == Look::Colossus && a.speed <= 0.3 {
+        boss.crumble -= dt;
+        if boss.crumble <= 0.0 {
+            boss.crumble = 2.2 + 2.5 * a.roll();
+            let (s, side) = (look.size(), if a.roll() < 0.5 { 1.0 } else { -1.0 });
+            let at = on_body(a, [0.05 * s, side * 1.3 * s, 0.0], vpm);
+            boss.deeds.push(Deed::Shed { at, from: on_body(a, [0.05 * s, side * 1.0 * s, 2.75 * s], vpm), loud: true });
+        }
+    }
 
     boss.phase = match boss.phase {
         Phase::Roam => {
@@ -1602,6 +1812,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         Some(e) if m == Move::Erupt && (p - e).xy().norm() > 2.0 * vpm => e,
                         _ => p,
                     };
+                    boss.circle = p;
                     boss.deeds.push(Deed::WindUp(m, a.position));                    // A heavy blow's sometimes held back, wound up, a moment longer than the last,
                     // and sometimes followed by another, or two from a raid boss
                     let heavy_blow = !monster && matches!(m, Move::Slam | Move::Quake);
@@ -1687,9 +1898,27 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             let settled = matches!(m, Move::Shoot | Move::Lash | Move::Spit) && look.is_monster() && t > windup(look, m) - 0.25;
             if let Some(p) = player.filter(|_| m != Move::Erupt && !settled) {
                 boss.aim = p;
-                // Its head stays where it is as its tail comes round behind it
-                if m != Move::Tail {
+                // Its head stays where it is as its tail comes round behind it; and its fists dug
+                // into the ground, the Colossus doesn't turn till it's torn its boulder free
+                if m != Move::Tail && !boss.digging() {
                     a.target_heading = heading_to(a.position, p);
+                }
+            }
+            // Pillars of stone erupting round the player one after another as the Colossus calls
+            // its cataclysm, standing till the last rock it flings down out of them has landed
+            if look == Look::Colossus && m == Move::Cataclysm {
+                let whole = windup(look, m) * quick.max(0.8);
+                let count = if boss.enraged { PILLARS + 2 } else { PILLARS };
+                let turn = (boss.circle.x * 0.037 + boss.circle.y * 0.011).sin() * PI;
+                for k in 0..count {
+                    let when = pillar_rises(k, count, whole);
+                    if (t..t + dt).contains(&when) {
+                        let round = turn + k as f64 / count as f64 * TAU;
+                        let r = PILLAR_RING * (0.9 + 0.2 * a.roll()) * vpm;
+                        let at = boss.circle + Vector3::new(round.cos() * r, round.sin() * r, 0.0);
+                        let stand = whole - when + duration(look, m) + ROCKFALL_LONGEST;
+                        boss.deeds.push(Deed::Pillar { at, stand });
+                    }
                 }
             }
             // Showing how far its quake will reach
@@ -1762,7 +1991,13 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         let (reach, radius, damage, crater) = slam(look);
                         // Beating on a door, the blow lands on its outside, not through it
                         let reach = if breaking { reach.min(((boss.aim - a.position).xy().norm() / vpm - 0.4).max(0.0)) } else { reach };
-                        boss.deeds.push(Deed::Slam { at: a.position + forward * reach * vpm, radius, damage, crater });
+                        let at = a.position + forward * reach * vpm;
+                        boss.deeds.push(Deed::Slam { at, radius, damage, crater });
+                        // The Colossus's fists driving into the ground heave slabs of it up all
+                        // round where they land
+                        if look == Look::Colossus {
+                            boss.deeds.push(Deed::Heave { at, radius });
+                        }
                         // A bloater's burst is the end of it, see Game::reap() for the cloud it
                         // leaves
                         if look == Look::Bloater {
@@ -1851,6 +2086,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         a.target_heading = a.heading;
                         boss.deeds.push(Deed::Blink { from, to: a.center(world.voxels_per_meter) });
                     }
+                    // The boulder it tore up hurled from overhead, out of its hands
+                    Move::Throw if look == Look::Colossus => boss.deeds.push(Deed::Hurl { id: a.id, from: on_body(a, [0.2, 0.0, 4.1].map(|v| v * look.size()), vpm), to: boss.aim }),
                     Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05].map(|v| v * look.size()), vpm), to: boss.aim }),
                     // The void flung off a knight's blade as it sweeps it out, three of it fanned
                     // out across the player once it's angry
@@ -2051,6 +2288,24 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 Move::Quake => {
                     let to = (t * QUAKE_PACE).min(quake_reach(look));
                     boss.deeds.push(Deed::Quake { at: boss.leap.0, from: (t - dt) * QUAKE_PACE, to, dt });
+                    // Lines of spikes of rock bursting up as the shockwave runs out under them,
+                    // straight at the player and fanned out either side, more once it's enraged
+                    if look == Look::Colossus {
+                        let ahead = (boss.aim - boss.leap.0).xy().try_normalize(1e-6).unwrap_or_else(|| forward.xy());
+                        for (turn, d) in spires(look, boss.enraged, (t - dt) * QUAKE_PACE, to) {
+                            let (c, s) = (turn.cos(), turn.sin());
+                            let lean = Vector3::new(ahead.x * c - ahead.y * s, ahead.x * s + ahead.y * c, 0.0);
+                            let height = 3.0 - 1.2 * d / quake_reach(look);
+                            boss.deeds.push(Deed::Spire { at: boss.leap.0 + lean * d * vpm, height, lean });
+                        }
+                    }
+                }
+                // Rocks flung down out of the pillars it raised round the player, one after another
+                Move::Cataclysm if look == Look::Colossus => {
+                    if let Some(k) = cataclysm_fall(t, dt) {
+                        let from = on_body(a, [0.2, 0.0, 4.4].map(|v| v * look.size()), vpm);
+                        boss.deeds.push(Deed::Rockfall { from, to: player.unwrap_or(boss.aim), k });
+                    }
                 }
                 // Its element raining down all round the player, one after another
                 Move::Cataclysm => {
@@ -2164,4 +2419,117 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
 /// serpents::Coils, or its mouth
 fn spout(a: &Animal, boss: &Boss, vpm: f64) -> Vector3<f64> {
     boss.coils.as_ref().map_or_else(|| mouth(a, vpm), |c| c.snout(vpm))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Colossus's throw plays out slowly enough to be seen coming and got out of the way of,
+    /// angry or not: its fists dug into the ground a good while, prying its boulder loose, then
+    /// the boulder torn free and held up overhead a while before it's hurled. It's drawn bent over
+    /// its fists, then with the boulder raised, then hurling it; and only it tears its boulders up.
+    #[test]
+    fn colossus_throw_is_seen_coming() {
+        for enraged in [false, true] {
+            let mut boss = Boss::new(Look::Colossus, Vector3::zeros(), [0; 3]);
+            boss.enraged = enraged;
+            let whole = windup(Look::Colossus, Move::Throw) * boss.pace();
+            let tear = boss.tear_at();
+            assert!(tear >= 0.6, "pries for {tear} s");
+            assert!(whole - tear >= 0.55, "holds it overhead for {} s", whole - tear);
+            assert!((1.2..=2.0).contains(&whole), "winds up for {whole} s");
+            let (mut loosened, mut strain) = (-1.0, -1.0);
+            let steps = 200;
+            for k in 0..steps {
+                let t = whole * k as f64 / steps as f64;
+                boss.phase = Phase::WindUp(Move::Throw, t);
+                assert!(boss.strain() >= strain, "eases off {t} s in");
+                strain = boss.strain();
+                match boss.carrying() {
+                    Some(Carry::Prying(loose)) => {
+                        assert!(t < tear && loose >= loosened && (0.0..=1.0).contains(&loose), "prying {loose} {t} s in");
+                        loosened = loose;
+                        assert_eq!(boss.target_pose(), Some(POSE_STRIKE));
+                        assert!(boss.digging());
+                    }
+                    Some(Carry::Held) => {
+                        assert!(t >= tear, "torn free {t} s in, before {tear}");
+                        assert_eq!(boss.target_pose(), Some(POSE_WINDUP));
+                        assert!(!boss.digging());
+                    }
+                    None => panic!("holding nothing {t} s into its throw"),
+                }
+            }
+            assert!(loosened > 0.95);
+            boss.phase = Phase::Act(Move::Throw, 0.0);
+            assert_eq!(boss.carrying(), None);
+            assert_eq!(boss.target_pose(), Some(POSE_STRIKE));
+        }
+        let mut warden = Boss::new(Look::Golem, Vector3::zeros(), [0; 3]);
+        warden.phase = Phase::WindUp(Move::Throw, 0.1);
+        assert_eq!(warden.carrying(), None);
+        assert_eq!(warden.target_pose(), Some(POSE_SPECIAL));
+    }
+
+    /// Every pillar of the Colossus's cataclysm is up before the first rock's flung down out of
+    /// them, and they all stand till the last has come down; and every rock's flung just once
+    #[test]
+    fn cataclysm_pillars_stand_through_the_rockfall() {
+        for enraged in [false, true] {
+            let pace = if enraged { 0.8 } else { 1.0 };
+            let whole = windup(Look::Colossus, Move::Cataclysm) * pace;
+            let count = if enraged { PILLARS + 2 } else { PILLARS };
+            let act = duration(Look::Colossus, Move::Cataclysm);
+            let first = whole + CATACLYSM_START;
+            let last = whole + CATACLYSM_START + CATACLYSM_EVERY * (CATACLYSM_FALLS - 1) as f64;
+            for k in 0..count {
+                let when = pillar_rises(k, count, whole);
+                assert!(when + PILLAR_RISE < first, "pillar {k} is still coming up as the rocks start");
+                let stand = whole - when + act + ROCKFALL_LONGEST;
+                assert!(when + stand > last + ROCKFALL_LONGEST, "pillar {k} crumbles before the last rock's down");
+            }
+            let dt = 1.0 / 60.0;
+            let falls: Vec<usize> = (1..(act / dt) as usize + 3).filter_map(|i| cataclysm_fall(i as f64 * dt, dt)).collect();
+            assert_eq!(falls, (0..CATACLYSM_FALLS).collect::<Vec<_>>());
+        }
+    }
+
+    /// The spikes of rock the Colossus's quake throws up come up one after another just as its
+    /// front reaches them, each only once, evenly along each line, from near it out to near the
+    /// end of the quake's reach
+    #[test]
+    fn quake_spires_come_up_with_its_front() {
+        for enraged in [false, true] {
+            let reach = quake_reach(Look::Colossus);
+            let dt = 1.0 / 60.0;
+            let mut all = Vec::new();
+            let mut t = 0.0;
+            while t < duration(Look::Colossus, Move::Quake) {
+                t += dt;
+                let (from, to) = ((t - dt) * QUAKE_PACE, (t * QUAKE_PACE).min(reach));
+                for (turn, d) in spires(Look::Colossus, enraged, from, to) {
+                    assert!(d >= from && d < to, "{d} m out came up as the front went from {from} to {to}");
+                    all.push((turn, d));
+                }
+            }
+            let straight: Vec<f64> = all.iter().filter(|(turn, _)| *turn == 0.0).map(|&(_, d)| d).collect();
+            assert!(straight.len() >= 8, "{straight:?}");
+            assert!((straight[0] - SPIRE_FIRST).abs() < 1e-9);
+            assert!(straight.windows(2).all(|w| (w[1] - w[0] - SPIRE_SPACING).abs() < 1e-9), "{straight:?}");
+            assert!(*straight.last().unwrap() > reach - 2.0 * SPIRE_SPACING);
+            let lines: std::collections::BTreeSet<i64> = all.iter().map(|(turn, _)| (turn * 100.0).round() as i64).collect();
+            assert_eq!(lines.len(), if enraged { 5 } else { 3 });
+        }
+    }
+
+    /// Each move goes by its name, for `--set boss_move=`
+    #[test]
+    fn moves_go_by_their_names() {
+        for (k, m) in Move::ALL.into_iter().enumerate() {
+            assert_eq!(m as usize, k);
+            assert_eq!(Move::named(&format!("{m:?}").to_lowercase()), Some(m));
+        }
+        assert_eq!(Move::named("nothing"), None);
+    }
 }

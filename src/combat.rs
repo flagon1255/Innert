@@ -26,6 +26,7 @@ use crate::worldgen::{World, is_passable};
 /// The signature special attacks giving families an identity of their own, see signatures.rs
 mod signatures;
 use signatures::{Sig, SigAct, SigZone, signature_move, signature_release};
+mod stones;
 
 pub const MAX_MANA: f64 = 100.0;
 /// Mana coming back every second
@@ -1932,6 +1933,8 @@ impl Lash {
 
 pub struct Combat {
     pub mana: f64,
+    /// Melee blows landed, swung at anything or nothing, for a tool's to gather, see tools.rs
+    pub landed: u32,
     action: Action,
     /// Seconds until the weapon in hand can attack again
     cooldown: f64,
@@ -2108,6 +2111,9 @@ pub struct Combat {
     /// How far off anything's seen at all, in voxels, as of the last update, see seen_within()
     seen: f64,
     rng: u32,
+    /// The Earthbreaker Colossus's stone: boulders held and hurled, rocks flying, slabs heaving up
+    /// and chunks thrown about, see stones.rs
+    stones: stones::Stones,
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -4926,6 +4932,7 @@ impl Combat {
     pub fn new(seed: u32, first_model: u32) -> Self {
         Combat {
             mana: MAX_MANA,
+            landed: 0,
             action: Action::Idle,
             cooldown: 0.0,
             frenzy: 0.0,
@@ -5027,6 +5034,7 @@ impl Combat {
             vpm: 8.0,
             seen: f64::INFINITY,
             rng: hash(seed ^ 0xc0b47),
+            stones: stones::Stones::new(),
         }
     }
 
@@ -5180,6 +5188,7 @@ impl Combat {
         for p in &mut self.popups {
             p.position -= shift;
         }
+        self.stones.recenter(shift);
     }
 
     /// Clears everything in flight, for a new world
@@ -5225,6 +5234,7 @@ impl Combat {
         self.lash_aim = None;
         self.binds.clear();
         self.serpents.clear();
+        self.stones.clear();
     }
 
     /// How fast the player can walk, next to as they would: a siege crossbow braced holds them
@@ -5389,6 +5399,7 @@ impl Combat {
             }
         }
         self.fly_hostiles(arena, dt);
+        self.work_stone(arena, dt);
         self.linger(arena, dt);
         // Shockwaves and the special attacks that go on a while hit a lot at once, so what they
         // set off blows no holes and leaves no stains, as changing the world takes a while
@@ -5559,6 +5570,7 @@ impl Combat {
                     let land = !struck && t >= length * lands;
                     self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
                     if land {
+                        self.landed = self.landed.wrapping_add(1);
                         self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
                         // A battle staff's finishing blow, or its heavy one, looses a spell too
                         let cost = profile.stat("manaCost");
@@ -15201,6 +15213,7 @@ impl Combat {
     /// flying_instances()
     fn other_instances(&self, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
         let vpm = view.vpm;
+        self.stone_instances(view, out);
         let mut add = |at: Vector3<f64>, instance: AnimalInstance| out.push(((at - view.eye).norm(), instance));
         for s in &self.stuck {
             // Sinking away into what it's stuck in as it goes, point first, never just gone, and

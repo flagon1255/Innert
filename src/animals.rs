@@ -1373,10 +1373,33 @@ fn rear(v: Vec3, pivot: Vec3, angle: f64) -> Vec3 {
     [pivot[0] + dx * c - dz * s, v[1], pivot[2] + dx * s + dz * c]
 }
 
+/// Where a golem's fists are, the one on its right then the one on its left, in meters at its
+/// build's size: swinging as it walks, raised overhead, brought down to the ground in front, or
+/// one lifting a boulder up behind its head
+fn golem_fists(swing: f64, pose: Pose) -> [Vec3; 2] {
+    [-1.0, 1.0].map(|s: f64| {
+        let special = if s < 0.0 { [-0.45, -0.75, 3.7] } else { [0.95, 0.9, 1.6] };
+        pose.at([0.45 - 0.35 * swing * s, s * 1.12, 0.85], [0.2, s * 0.5, 3.85], [1.45, s * 0.45, 0.4], special)
+    })
+}
+
+/// Where the middle of the boulder the Earthbreaker Colossus tears up is in `frame`, in meters at
+/// its build's size: gripped in front of its fists dug into the ground, and on top of them as
+/// they're raised overhead, partway between in the frames between, see bosses::Carry
+pub fn golem_grip(frame: usize) -> [f64; 3] {
+    let pose = Pose::of(frame);
+    let [a, b] = golem_fists(0.0, pose);
+    let r = bosses::TORN_BOULDER / Look::Colossus.scale();
+    let off = pose.at([0.0, 0.0, r * 0.45], [0.0, 0.0, r * 0.45], [0.22 + r * 0.55, 0.0, r * 0.25], [0.0, 0.0, r * 0.45]);
+    [0, 1, 2].map(|i| (a[i] + b[i]) * 0.5 + off[i])
+}
+
 /// The Stone Warden: a hulking golem of rock, moss on its shoulders, crystals growing from its
 /// back and a cold light glowing in its chest. It raises its fists overhead to slam them down, and
-/// hurls boulders.
-fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
+/// hurls boulders. The Earthbreaker Colossus, `colossus`, is plated in its stone over its chest,
+/// the plates grinding as it walks and forced apart as it strains, the fire in it blazing out
+/// between them; it tears its boulders up out of the ground, so it has none ready.
+fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, colossus: bool) {
     let (rock, dark, glow) = (skin.body, skin.dark, skin.glow);
     // Leaning into a blow, the higher up the further
     let lean = pose.mix(0.0, 0.0, 0.4, 0.0);
@@ -1388,8 +1411,18 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     p.push(ball(up([0.64, -0.15, 2.86]), 0.065, glow));
     p.push(ellipsoid(up([0.6, 0.0, 2.98]), [0.12, 0.32, 0.06], dark));
     p.push(ellipsoid(up([0.38, 0.0, 2.84]), [0.32, 0.32, 0.28], rock));
+    // How far the Colossus's chest plates are forced apart
+    let open = if colossus { pose.mix(0.0, 0.07, 0.04, 0.09) } else { 0.0 };
+    if colossus {
+        for (y, z) in [(0.2, 2.3), (-0.2, 2.3), (0.22, 1.8), (-0.22, 1.8)] {
+            let (side, high) = (f64::signum(y), f64::signum(z - 2.05));
+            let grind = 0.025 * swing * side * high;
+            let at = [0.7 + open * 0.5, y * (1.0 + open * 2.5), z + high * open * 1.5 + grind];
+            p.push(ellipsoid(up(at), [0.07, 0.2, 0.17], rock));
+        }
+    }
     // The core, with light cracking out across its chest
-    p.push(ball(up([0.6, 0.0, 2.05]), 0.17, glow));
+    p.push(ball(up([0.6, 0.0, 2.05]), 0.17 + 0.6 * open, glow));
     p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, 0.38, 2.45]), 0.045, 0.02, glow));
     p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, -0.32, 1.7]), 0.045, 0.02, glow));
     for (y, z, h) in [(0.25, 2.5, 0.55), (-0.22, 2.3, 0.65), (0.05, 2.75, 0.5)] {
@@ -1400,15 +1433,16 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
         p.push(ellipsoid(up([0.0, s * 0.95, 2.88]), [0.32, 0.32, 0.1], skin.accent));
     }
     // A boulder held up behind its head, ready to throw
-    if pose.special > 0.75 {
+    if pose.special > 0.75 && !colossus {
         p.push(ball([-0.55, -0.55, 4.05], 0.45, rock));
     }
+    let fists = golem_fists(swing, pose);
     for s in [-1.0, 1.0] {
         let shoulder = up([0.05, s * 0.98, 2.45]);
         // Swinging as it walks, raised overhead, brought down, or one lifting the boulder
-        let special = if s < 0.0 { ([-0.25, -1.05, 3.1], [-0.45, -0.75, 3.7]) } else { ([0.5, 1.1, 1.9], [0.95, 0.9, 1.6]) };
-        let elbow = pose.at([0.2 - 0.25 * swing * s, s * 1.18, 1.65], [0.0, s * 0.95, 3.15], [0.85, s * 0.85, 1.6], special.0);
-        let fist = pose.at([0.45 - 0.35 * swing * s, s * 1.12, 0.85], [0.2, s * 0.5, 3.85], [1.45, s * 0.45, 0.4], special.1);
+        let special = if s < 0.0 { [-0.25, -1.05, 3.1] } else { [0.5, 1.1, 1.9] };
+        let elbow = pose.at([0.2 - 0.25 * swing * s, s * 1.18, 1.65], [0.0, s * 0.95, 3.15], [0.85, s * 0.85, 1.6], special);
+        let fist = fists[(s > 0.0) as usize];
         p.push(ball(fist, 0.36, dark));
         p.push(limb(elbow, fist, 0.25, 0.3, rock));
         p.push(limb(shoulder, elbow, 0.27, 0.24, rock));
@@ -2595,7 +2629,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         // Bosses and monsters, made at the size of their build, then grown or shrunk to their own
         _ if look.build().is_some() => {
             match look.build() {
-                Some(Build::Golem) => golem(&mut p, swing, pose, look.skin()),
+                Some(Build::Golem) => golem(&mut p, swing, pose, look.skin(), look == Look::Colossus),
                 Some(Build::Drake) => drake(&mut p, angle, swing, moving, pose, look.skin()),
                 Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
@@ -3588,6 +3622,43 @@ impl Animal {
         self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
     }
 
+    /// Where `point` of its model, in meters at its build's size with +x ahead, is in the world as
+    /// it's drawn now, in voxels: turned, tipped and breathing just as instance() draws it
+    pub fn on_model(&self, point: [f64; 3], vpm: f64) -> Vector3<f64> {
+        let offset = self.id as f64 * 0.7;
+        let (mut scale, mut heading) = (self.look.scale(), self.drawn_heading);
+        if self.look.build().is_some() {
+            scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
+            let still = (1.0 - self.speed / 0.4).clamp(0.0, 1.0);
+            heading += 0.035 * still * (self.age * 1.3 + offset).sin();
+        }
+        let [pitch, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
+        let ahead = Vector3::new(self.drawn_heading.cos(), self.drawn_heading.sin(), 0.0);
+        let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up)) * vpm;
+        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch);
+        position + rotation * Vector3::from(point) * scale * vpm
+    }
+
+    /// Where the boulder the Earthbreaker Colossus is tearing up out of the ground is, in voxels,
+    /// and how far it's got with it, while it's at that: coming up out of the ground in front of
+    /// its fists as it pries it loose, then in its hands, see bosses::Carry
+    pub fn carried(&self, vpm: f64) -> Option<(Vector3<f64>, bosses::Carry)> {
+        let boss = self.boss.as_ref()?;
+        let carry = boss.carrying()?;
+        let at = match carry {
+            bosses::Carry::Held => self.on_model(golem_grip(boss.pose().unwrap_or(0)), vpm),
+            // From all but buried, its top just under the ground, heaving up out of it as the
+            // fists dig in, then more slowly up to where they grip it
+            bosses::Carry::Prying(loose) => {
+                let grip = self.on_model(golem_grip(POSE_STRIKE), vpm);
+                let low = self.position.z - bosses::TORN_BOULDER * 1.05 * vpm;
+                let k = 1.0 - (1.0 - loose) * (1.0 - loose);
+                Vector3::new(grip.x, grip.y, low + (grip.z - low) * k)
+            }
+        };
+        Some((at, carry))
+    }
+
     /// How much of a blow from something at `from` gets through to it, 0-1: a shieldbearer facing
     /// it catches most of it on its shield, and a burrower dug in under the sand most of it in that
     pub fn guard(&self, from: Vector3<f64>) -> f64 {
@@ -4395,6 +4466,22 @@ mod tests {
             of(Look::CryptTitan) as f64 / 1e6
         );
         assert!(bytes < 150_000_000, "the models take {bytes} bytes");
+    }
+
+    /// The Colossus's boulder is gripped low in front of its fists dug into the ground and on top
+    /// of them raised overhead, near enough together to hold it, and partway between in the frame
+    /// between, so it goes up with its hands
+    #[test]
+    fn colossus_grips_its_boulder() {
+        let r = bosses::TORN_BOULDER / Look::Colossus.scale();
+        let (low, high) = (golem_grip(POSE_STRIKE), golem_grip(POSE_WINDUP));
+        assert!(low[0] > 1.6 && low[2] < r * 1.5, "{low:?}");
+        assert!(high[2] > 3.9 && high[0].abs() < 0.5, "{high:?}");
+        let [right, left] = golem_fists(0.0, Pose::of(POSE_WINDUP));
+        assert!(right[1] < 0.0 && left[1] > 0.0 && left[1] - right[1] < 2.0 * (r + 0.36), "{right:?} {left:?}");
+        let between = tween(Look::Colossus, POSE_STRIKE, POSE_WINDUP, 0.1).expect("a frame between");
+        let mid = golem_grip(between);
+        assert!(mid[2] > low[2] + 0.5 && mid[2] < high[2] - 0.5, "{mid:?}");
     }
 
     /// The new monsters each have their own name, so they can be told apart in what's said
