@@ -1907,7 +1907,7 @@ fn begin_landing(d: &mut Dragon, h: &Here) {
 /// Whether it's the Worldpyre Ancient fighting the player in its arena, see
 /// worldgen\dragonlair.rs: its lair's a finale's, and the player's in it, `feet` being where
 fn in_arena(h: &Here, boss: &Boss, feet: Vector3<f64>) -> bool {
-    h.look == ULTRA && crate::realms::is_finale_key(&boss.key) && flat(feet - boss.home).norm() < (crate::worldgen::ARENA_FLOOR as f64 + 6.0) * h.vpm
+    h.look == ULTRA && crate::realms::is_finale_key(&boss.key) && flat(feet - boss.home).norm() < (crate::worldgen::DRAGON_ARENA_FLOOR as f64 + 6.0) * h.vpm
 }
 
 /// Where the ground is under the player, or under it, in voxels
@@ -2003,7 +2003,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             if d.airborne {
                 // Circling over the player, round and round, near enough to see them always; or
                 // round its arena, over the player in it, see worldgen\dragonlair.rs
-                let arena = crate::worldgen::ARENA_FLOOR as f64;
+                let arena = crate::worldgen::DRAGON_ARENA_FLOOR as f64;
                 let (middle, orbit) = if in_arena(h, boss, feet) { (Vector3::new(boss.home.x, boss.home.y, feet.z), arena * 0.75) } else { (feet, fl.orbit) };
                 d.orbit += d.round * fl.cruise / orbit * h.dt;
                 let round = Vector3::new(d.orbit.cos(), d.orbit.sin(), 0.0) * orbit * vpm;

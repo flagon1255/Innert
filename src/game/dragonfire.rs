@@ -869,11 +869,29 @@ impl Game {
         let Some(slot) = self.library.families[family].slots.iter().position(|s| s == "blade") else {
             return;
         };
+        // The rest of it as lucky as the Coil Unending's fang, and the first of those that comes out
+        // of the rarest grade with the fang for its blade, as a mythic part alone doesn't make it
+        // so, and with the fang's own Dragon's Breath; or failing that, the best of them
         self.rng = hash(self.rng ^ 0xfa96);
-        let lucky = self.library.generate(self.rng, Some(family), 16.0);
-        let mut parts = lucky.parts.clone();
-        parts[slot] = blade;
-        let weapon = Weapon::assemble(&self.library, family, parts, lucky.seed);
+        let mythic = self.library.rarities.len() - 1;
+        let score = |w: &Weapon| (w.grade, w.profile.special.as_ref().is_some_and(|(s, _)| *s == Special::Breath));
+        let mut best: Option<Weapon> = None;
+        for k in 0..400u32 {
+            let lucky = self.library.generate(hash(self.rng ^ k.wrapping_mul(0x9e37_79b9)), Some(family), FANG_LUCK);
+            let mut parts = lucky.parts.clone();
+            parts[slot] = blade;
+            let weapon = Weapon::assemble(&self.library, family, parts, lucky.seed);
+            let done = score(&weapon) == (mythic, true);
+            if best.as_ref().is_none_or(|b| score(&weapon) > score(b)) {
+                best = Some(weapon);
+            }
+            if done {
+                break;
+            }
+        }
+        let Some(weapon) = best else {
+            return;
+        };
         let name = weapon.name.clone();
         self.weapons.push(weapon);
         self.add_item(Item::Weapon(self.weapons.len() - 1), 1);
@@ -994,6 +1012,7 @@ mod tests {
         let fang = game.slots.iter().find_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w).filter(|&w| is_fang(w)) } else { None });
         let fang = fang.expect("the fang in hand");
         assert_eq!(game.library.rarities[game.weapons[fang].grade].id, "mythic");
+        assert_eq!(game.weapons[fang].profile.special.as_ref().map(|(s, _)| *s), Some(Special::Breath));
         let name = game.weapons[fang].name.clone();
         let carried: crate::save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
         let done: crate::save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();

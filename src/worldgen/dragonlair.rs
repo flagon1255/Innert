@@ -15,15 +15,12 @@ use std::sync::RwLock;
 
 use super::*;
 
-/// Where Free Roam starts, in meters of the landscape: where main.rs puts the player in a new game,
-/// see default_start() there
-pub const FREE_ROAM_START: [f32; 2] = [206.08, 179.2];
-/// How far from there the far lair is, at the nearest and furthest, in meters
+/// How far from where Free Roam starts, see FREE_ROAM_START, the far lair is, at the nearest and furthest, in meters
 const LAIR_FROM: [f32; 2] = [1650.0, 2150.0];
 /// How far round its middle the floor of the Worldpyre Ancient's arena reaches, in meters, and the
 /// arena all told, its rim and the stair down into it
-pub const ARENA_FLOOR: f32 = 34.0;
-pub const ARENA_REACH: f32 = 52.0;
+pub const DRAGON_ARENA_FLOOR: f32 = 34.0;
+pub const DRAGON_ARENA_REACH: f32 = 52.0;
 /// How high the Ancient's roost stands over the floor, in meters
 const ROOST_HIGH: f32 = 11.0;
 /// How far out from the far lair the omens of it lie, and how far either side of the way there
@@ -55,7 +52,7 @@ impl LairKind {
             LairKind::Peak => 20.0,
             LairKind::Caldera => 24.0,
             LairKind::Hoard => 20.0,
-            LairKind::Ancient => ARENA_REACH,
+            LairKind::Ancient => DRAGON_ARENA_REACH,
         }
     }
 
@@ -103,7 +100,7 @@ pub fn far_lair(settings: &TerrainSettings) -> Option<[f32; 2]> {
         for k in 0..17 {
             let a = toward + (k as f32 - 8.0) * 0.07;
             let at = [sx + a.cos() * d, sy + a.sin() * d];
-            if !is_dry_land(settings, at, 22.0) || river_near(settings, at, ARENA_REACH, &rivers) {
+            if !is_dry_land(settings, at, 22.0) || river_near(settings, at, DRAGON_ARENA_REACH, &rivers) {
                 continue;
             }
             // High, but above all level enough to fight on: how far the ground round it rises or
@@ -121,7 +118,7 @@ pub fn far_lair(settings: &TerrainSettings) -> Option<[f32; 2]> {
             }
         }
     }
-    let found = best.map(|(at, _)| at).or_else(|| dry_land_near(settings, [sx + toward.cos() * LAIR_FROM[0], sy + toward.sin() * LAIR_FROM[0]], 600.0, 14.0, &|at| !river_near(settings, at, ARENA_REACH, &rivers)));
+    let found = best.map(|(at, _)| at).or_else(|| dry_land_near(settings, [sx + toward.cos() * LAIR_FROM[0], sy + toward.sin() * LAIR_FROM[0]], 600.0, 14.0, &|at| !river_near(settings, at, DRAGON_ARENA_REACH, &rivers)));
     if let Ok(mut far) = FAR.write() {
         far.push((settings.seed, found));
     }
@@ -252,7 +249,7 @@ impl Terrain {
     pub(super) fn dragon_omen(&self, x: f32, y: f32, ground: f32, column: &Column, r: u32) -> Option<Object> {
         let lair = far_lair(&self.settings)?;
         let to = (x - lair[0]).hypot(y - lair[1]);
-        if !(ARENA_REACH + 6.0..OMENS_OUT).contains(&to) || (off_the_way([x, y], FREE_ROAM_START, lair) > OMENS_SIDE && to > 320.0) {
+        if !(DRAGON_ARENA_REACH + 6.0..OMENS_OUT).contains(&to) || (off_the_way([x, y], FREE_ROAM_START, lair) > OMENS_SIDE && to > 320.0) {
             return None;
         }
         if ground < sea_level_m(&self.settings) + 0.8 || column.top == WATER {
@@ -480,7 +477,7 @@ fn touched(kind: LairKind, at: [f32; 2], ground: f32, height: &dyn Fn(f32, f32) 
 /// facing back the way it's come to from, or as near that as the land outside's near the floor's
 /// height, so the stair down's short and not cut deep into a hillside
 fn arena_plan(at: [f32; 2], ground: f32, sea: f32, height: &dyn Fn(f32, f32) -> f32) -> (f32, f32) {
-    let r = ARENA_FLOOR;
+    let r = DRAGON_ARENA_FLOOR;
     let ring = |a: f32, d: f32| [at[0] + a.cos() * d, at[1] + a.sin() * d];
     let round = (0..12).map(|k| ring(k as f32 * TAU / 12.0, r * 0.75)).map(|p| height(p[0], p[1])).sum::<f32>() / 12.0;
     let floor = (ground.min(round) - 2.0).max(sea + 2.5);
@@ -499,7 +496,7 @@ fn arena_plan(at: [f32; 2], ground: f32, sea: f32, height: &dyn Fn(f32, f32) -> 
 
 /// Which way the way into the Worldpyre Ancient's arena at `at` in landscape `settings` faces, in
 /// radians, see arena_plan(): to look in at it from there
-pub fn arena_way(settings: &TerrainSettings, at: [f32; 2]) -> f32 {
+pub fn dragon_arena_way(settings: &TerrainSettings, at: [f32; 2]) -> f32 {
     arena_plan(at, height_at(settings, at[0], at[1]), sea_level_m(settings), &|x, y| height_at(settings, x, y)).1
 }
 
@@ -517,7 +514,7 @@ pub fn arena_way(settings: &TerrainSettings, at: [f32; 2]) -> f32 {
 /// to clear the ground, and the first of them to hold a voxel decides it: what stands in the arena
 /// first, then the arena cut out round it, then its floor, then the rim.
 fn ancient_arena(at: [f32; 2], ground: f32, sea: f32, height: &dyn Fn(f32, f32) -> f32, rng: &mut Rng) -> (Vec<Shape>, f32) {
-    let r = ARENA_FLOOR;
+    let r = DRAGON_ARENA_FLOOR;
     let ring = |a: f32, d: f32| [at[0] + a.cos() * d, at[1] + a.sin() * d];
     let clear = |s: Shape| s.placed(Placement::Clear);
     let (floor, way) = arena_plan(at, ground, sea, height);
@@ -804,7 +801,7 @@ mod tests {
         assert!(roost > floor + 8.0, "the roost's {roost} over a floor at {floor}");
         assert!(heights.iter().all(|&(_, m)| !is_lava(m)), "lava out on the floor");
         // The rim standing high round it all but where the stair comes in
-        let way = arena_way(&settings, at);
+        let way = dragon_arena_way(&settings, at);
         let high = (0..36)
             .map(|k| way + 0.5 + k as f32 * (TAU - 1.0) / 36.0)
             .filter(|&a| (36..46).map(|d| top(ring(a, d as f32)).unwrap().0).fold(f32::MIN, f32::max) > floor + 7.0)
@@ -813,7 +810,7 @@ mod tests {
         // Down the stair from outside to the floor in steps no higher than the player steps up
         let mut last: Option<f32> = None;
         for k in 0..=200 {
-            let d = ARENA_FLOOR + 13.0 - k as f32 * 0.1;
+            let d = DRAGON_ARENA_FLOOR + 13.0 - k as f32 * 0.1;
             let (h, m) = top(ring(way, d)).unwrap();
             assert!(!is_lava(m), "lava on the stair {d} m out");
             if let Some(l) = last {
@@ -831,6 +828,6 @@ mod tests {
         let p = crate::realms::Places::find(5, &settings, [200.0, 180.0], [0.0, 1.0]);
         let finale = p.finale.expect("its finale").map(|v| v as f32);
         assert!(is_dry_land(&settings, finale, 16.0), "{finale:?}");
-        assert!(!river_near(&settings, finale, ARENA_REACH, &RiverCache::default()), "lava through the arena at {finale:?}");
+        assert!(!river_near(&settings, finale, DRAGON_ARENA_REACH, &RiverCache::default()), "lava through the arena at {finale:?}");
     }
 }

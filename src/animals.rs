@@ -11,9 +11,10 @@ use vulkano::buffer::BufferContents;
 
 use crate::bosses::{self, Boss};
 use crate::combat::Status;
+use crate::serpents;
 use crate::weapons::Element;
 use crate::player::WaterLevel;
-use crate::worldgen::{PropKind, World, is_passable, material::*};
+use crate::worldgen::{Land, PropKind, World, is_passable, material::*};
 
 /// What an animal, or something lying around to pick up, looks like. Each has its own model, in
 /// several frames.
@@ -120,6 +121,28 @@ pub enum Look {
     CindermawTyrant,
     GildscaleHoardwarden,
     WorldpyreAncient,
+    // Serpents, see src\serpents.rs: a viper hidden in the reeds, a coiler swimming the rivers and
+    // lakes, a serpent gliding over the sky isles, an adder of the dreaming realm and one swimming
+    // through the snow of the frozen one
+    ReedViper,
+    SiltCoiler,
+    GaleSerpent,
+    BloodAdder,
+    DriftSerpent,
+    // Great serpents, too long for one model, drawn a piece at a time, see serpents::Coils: each
+    // realm's own lesser boss, the Water realm's three raid bosses, and the ultra boss
+    Meremaw,
+    Galecoil,
+    Veinbinder,
+    Shatterfang,
+    Hollowtide,
+    Reefcoil,
+    Gyremaw,
+    Ysveth,
+    // Omens on the way to the Coil Unending's lair: a serpent's skin shed and left lying, and the
+    // bones of a great serpent it ate
+    ShedSkin,
+    SerpentBones,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -145,6 +168,9 @@ pub enum Build {
     Boar,
     /// A dragon: drawn and flown by src\dragons.rs, out of jointed pieces rather than frames
     Dragon,
+    /// A serpent: a long body slithering in S-curves, rearing up coiled to strike, see
+    /// src\serpents.rs
+    Serpent,
 }
 
 /// What a walking dead or a bandit has in its hands
@@ -172,7 +198,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 72] = [
+    pub const ALL: [Look; 87] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -245,6 +271,21 @@ impl Look {
         Look::CindermawTyrant,
         Look::GildscaleHoardwarden,
         Look::WorldpyreAncient,
+        Look::ReedViper,
+        Look::SiltCoiler,
+        Look::GaleSerpent,
+        Look::BloodAdder,
+        Look::DriftSerpent,
+        Look::Meremaw,
+        Look::Galecoil,
+        Look::Veinbinder,
+        Look::Shatterfang,
+        Look::Hollowtide,
+        Look::Reefcoil,
+        Look::Gyremaw,
+        Look::Ysveth,
+        Look::ShedSkin,
+        Look::SerpentBones,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -266,26 +307,60 @@ impl Look {
     /// a den: burrowers in the desert, wraiths on the snow, lurkers in the jungle and tuskers in
     /// the woods
     pub fn is_wild(self) -> bool {
-        matches!(self, Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Tusker) || crate::dragons::is_drakeling(self)
+        matches!(self, Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Tusker) || crate::dragons::is_drakeling(self) || self.is_serpent()
     }
 
     /// A beast rather than a person or the dead, with nothing on it worth taking
     pub fn is_beast(self) -> bool {
-        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker) || crate::dragons::is_drakeling(self)
+        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker) || crate::dragons::is_drakeling(self) || self.is_serpent()
     }
 
-    /// How deep the water it'll wade through can be, in meters: any for what flies over it
+    /// One of the ordinary serpents, see src\serpents.rs
+    pub fn is_serpent(self) -> bool {
+        matches!(self, Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent)
+    }
+
+    /// One of the great serpents, a boss drawn a piece at a time, see serpents::Coils
+    pub fn is_great_serpent(self) -> bool {
+        matches!(self, Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth)
+    }
+
+    /// The ultra boss, far bigger and harder than any raid boss: the Coil Unending. The Worldpyre
+    /// Ancient's the other, see src\dragons.rs, which goes its own way about all this asks after.
+    pub fn is_ultra(self) -> bool {
+        self == Look::Ysveth
+    }
+
+    /// How deep the water it'll wade through can be, in meters: any for what flies over it or
+    /// swims in it
     pub fn wade(self) -> f64 {
         match self {
             Look::MireLurker => 1.2,
-            _ if self.flies() => 1000.0,
+            // Into the reeds along the water's edge
+            Look::ReedViper => 0.45,
+            _ if self.flies() || self.swims() => 1000.0,
             _ => 0.2,
         }
     }
 
     /// Flying, over water as well as land
     pub fn flies(self) -> bool {
-        self == Look::Gloomwing || self.is_dragon()
+        matches!(self, Look::Gloomwing | Look::GaleSerpent | Look::Galecoil) || self.is_dragon()
+    }
+
+    /// Swimming, along the top of deep water, with only its back above it
+    pub fn swims(self) -> bool {
+        self == Look::SiltCoiler || serpents::great_of(self).is_some_and(|g| g.medium == serpents::Medium::Water)
+    }
+
+    /// Digging along under the sand, the snow or the ice, to come up under the player
+    pub fn burrows(self) -> bool {
+        matches!(self, Look::DuneBurrower | Look::DriftSerpent | Look::Shatterfang | Look::Hollowtide)
+    }
+
+    /// Lying low in wait till something comes near: in the shallows, the reeds or deep water
+    pub fn lurks(self) -> bool {
+        matches!(self, Look::MireLurker | Look::ReedViper | Look::SiltCoiler)
     }
 
     /// How many of it go about together, when it goes about in a pack of its own kind
@@ -295,13 +370,15 @@ impl Look {
             _ if crate::dragons::is_drakeling(self) => 2,
             Look::Spiderling => 4,
             Look::MireLurker | Look::Tusker => 2,
+            _ if self.is_serpent() => 2,
             _ => 3,
         }
     }
 
-    /// A raid boss: far bigger and tougher than the rest, fought in three phases
+    /// A raid boss: far bigger and tougher than the rest, fought in three phases. The Water
+    /// realm's three great serpents are, see serpents::GREATS.
     pub fn is_raid(self) -> bool {
-        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
+        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
     }
 
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
@@ -310,6 +387,7 @@ impl Look {
             || matches!(self, Look::Crossbowman | Look::Shieldbearer | Look::DuneBurrower | Look::RimeWraith | Look::MireLurker | Look::Gloomwing | Look::Tusker)
             || self.is_risen()
             || crate::dragons::is_drakeling(self)
+            || self.is_serpent()
     }
 
     /// One of the dead added for the fallen cities, see Look::Bloater
@@ -352,6 +430,7 @@ impl Look {
             Look::Gloomwing => Build::Bat,
             Look::Tusker => Build::Boar,
             _ if self.is_dragon() => Build::Dragon,
+            _ if self.is_serpent() || self.is_great_serpent() => Build::Serpent,
             _ => return None,
         })
     }
@@ -400,6 +479,10 @@ impl Look {
             Look::CryptTitan => Some(Look::ArmoredSkeleton),
             Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
             Look::Warlord => Some(Look::Bandit),
+            // The Water realm's raid serpents call up serpents of their own
+            Look::Hollowtide => Some(Look::SiltCoiler),
+            Look::Reefcoil => Some(Look::ReedViper),
+            Look::Gyremaw => Some(Look::GaleSerpent),
             _ => None,
         }
     }
@@ -415,7 +498,7 @@ impl Look {
     fn walks(self) -> bool {
         !matches!(
             self,
-            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard
+            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones
         ) && !self.is_shrine()
     }
 
@@ -446,6 +529,15 @@ impl Look {
             Look::RimeWraith => Some(Element::Frost),
             Look::GraveKnight => Some(Element::Void),
             Look::StormDrake => Some(Element::Storm),
+            // A viper's venom, a gale serpent's lightning, an adder's blood and a drift serpent's
+            // frost; a coiler only bites
+            Look::ReedViper | Look::Meremaw | Look::Reefcoil => Some(Element::Poison),
+            Look::GaleSerpent | Look::Galecoil | Look::Gyremaw => Some(Element::Storm),
+            Look::BloodAdder | Look::Veinbinder => Some(Element::Blood),
+            Look::DriftSerpent | Look::Shatterfang => Some(Element::Frost),
+            Look::Hollowtide => Some(Element::Void),
+            // The Coil Unending's changes as it's hurt, see serpents::ULTRA_ELEMENTS
+            Look::Ysveth => Some(Element::Poison),
             _ => None,
         }
     }
@@ -609,6 +701,12 @@ impl Look {
             Look::GrappleHook => 0.5,
             Look::Wings => 1.5,
             Look::Ashwing | Look::Sleetwing | Look::Squallwing | Look::Blightwing | Look::PyreMatriarch | Look::CindermawTyrant | Look::GildscaleHoardwarden | Look::WorldpyreAncient => crate::dragons::reach(self),
+            // Its head lunged out ahead of it, see serpents::spine()
+            Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => serpents::kind(self).map_or(2.5, serpents::reach),
+            // Only its head, as the rest of it's drawn a piece at a time, see serpents::Coils
+            Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => serpents::great_of(self).map_or(4.0, |g| g.head + 2.0 * g.girth),
+            Look::ShedSkin => 2.0,
+            Look::SerpentBones => 3.0,
         }
     }
 
@@ -654,6 +752,15 @@ impl Look {
             Look::GrappleHook => (0.1, 0.3),
             Look::Wings => (0.3, 0.6),
             Look::Ashwing | Look::Sleetwing | Look::Squallwing | Look::Blightwing | Look::PyreMatriarch | Look::CindermawTyrant | Look::GildscaleHoardwarden | Look::WorldpyreAncient => crate::dragons::body(self),
+            // Low along the ground, and only as thick as its body, as it's hit wherever along it
+            // the blow's aimed, see serpents::focus()
+            Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => (0.3, 0.42),
+            // Its head and neck, or wherever along its body the blow's aimed, see serpents::focus()
+            Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => {
+                serpents::great_of(self).map_or((1.0, 1.0), |g| (g.girth + g.hover, g.girth * 1.2))
+            }
+            Look::ShedSkin => (0.05, 0.3),
+            Look::SerpentBones => (0.3, 0.6),
         }
     }
 
@@ -721,6 +828,21 @@ impl Look {
             Look::GrappleHook => "grappling hook",
             Look::Wings => "wings",
             Look::Ashwing | Look::Sleetwing | Look::Squallwing | Look::Blightwing | Look::PyreMatriarch | Look::CindermawTyrant | Look::GildscaleHoardwarden | Look::WorldpyreAncient => crate::dragons::name(self),
+            Look::ReedViper => "reed viper",
+            Look::SiltCoiler => "silt coiler",
+            Look::GaleSerpent => "gale serpent",
+            Look::BloodAdder => "bloodvein adder",
+            Look::DriftSerpent => "drift serpent",
+            Look::Meremaw => "Meremaw",
+            Look::Galecoil => "Galecoil",
+            Look::Veinbinder => "Veinbinder",
+            Look::Shatterfang => "Shatterfang",
+            Look::Hollowtide => "Hollowtide",
+            Look::Reefcoil => "Reefcoil",
+            Look::Gyremaw => "Gyremaw",
+            Look::Ysveth => "Coil Unending",
+            Look::ShedSkin => "shed serpent skin",
+            Look::SerpentBones => "serpent bones",
         }
     }
 
@@ -785,6 +907,21 @@ impl Look {
             Look::BoneArcher => 90.0,
             Look::Necromancer => 190.0,
             _ if self.is_dragon() => crate::dragons::health(self),
+            Look::ReedViper => 110.0,
+            Look::SiltCoiler => 200.0,
+            Look::GaleSerpent => 90.0,
+            Look::BloodAdder => 140.0,
+            Look::DriftSerpent => 170.0,
+            Look::Meremaw => 2700.0,
+            Look::Galecoil => 2400.0,
+            Look::Veinbinder => 3200.0,
+            Look::Shatterfang => 2900.0,
+            Look::Hollowtide => 13500.0,
+            Look::Reefcoil => 14000.0,
+            Look::Gyremaw => 13000.0,
+            // Two and a half raid serpents' worth, and the same again for each realm's toughness
+            // past the normal world's, see serpents::ULTRA_STAGES
+            Look::Ysveth => 32000.0,
             _ => 20.0,
         }
     }
@@ -824,6 +961,8 @@ impl Look {
             // Edging forward behind its shield
             Look::Shieldbearer => return 1.3,
             Look::Warlord => return 1.4,
+            Look::Ysveth => return 2.6,
+            _ if self.is_great_serpent() => return 2.2,
             _ => {}
         }
         match self.build() {
@@ -839,6 +978,7 @@ impl Look {
             Some(Build::Bat) => 2.5,
             Some(Build::Boar) => 1.3,
             Some(Build::Dragon) => crate::dragons::speeds(self).0,
+            Some(Build::Serpent) => 1.3,
             None => match self {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
@@ -876,6 +1016,17 @@ impl Look {
             Look::BanditBrute => return 3.0,
             Look::Shieldbearer => return 2.6,
             Look::Warlord => return 3.4,
+            // Quick, but not so quick it can't be got away from; a coiler's quickest in the water,
+            // and a gale serpent gliding
+            Look::ReedViper => return 4.4,
+            Look::SiltCoiler => return 4.0,
+            Look::GaleSerpent => return 6.2,
+            Look::BloodAdder => return 3.8,
+            Look::DriftSerpent => return 4.2,
+            // A great serpent's head comes on quickly, its body pouring after it
+            Look::Galecoil => return 7.0,
+            Look::Ysveth => return 6.5,
+            _ if self.is_great_serpent() => return 5.5,
             _ => {}
         }
         match self.build() {
@@ -894,6 +1045,7 @@ impl Look {
             Some(Build::Bat) => 7.5,
             Some(Build::Boar) => 5.2,
             Some(Build::Dragon) => crate::dragons::speeds(self).1,
+            Some(Build::Serpent) => 4.2,
             None => match self {
                 Look::Bear => 3.2,
                 Look::Dog => 4.5,
@@ -919,6 +1071,8 @@ impl Look {
             Some(Build::Lurker) => 1.2,
             Some(Build::Bat) => 1.6,
             Some(Build::Boar) => 1.9,
+            // As far as its S-curve's waves are apart, see serpents::stride()
+            Some(Build::Serpent) => serpents::kind(self).map_or(1.7, serpents::stride),
             None => match self {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
@@ -935,8 +1089,10 @@ impl Look {
             Look::Dog => 0.4,
             _ if self.is_boss() => 1.0,
             // Flying, or drifting over it
-            Look::Gloomwing | Look::RimeWraith => 1.0,
+            Look::Gloomwing | Look::RimeWraith | Look::GaleSerpent => 1.0,
             Look::Tusker | Look::DuneBurrower => 0.6,
+            // Pouring itself up over a ledge
+            _ if self.is_serpent() => 0.7,
             _ => 0.5,
         }
     }
@@ -1043,6 +1199,8 @@ pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
 /// Whether `look` is ever drawn in `frame`, so its model's worth making
 fn shown(look: Look, frame: usize) -> bool {
     match frame {
+        // A great serpent's drawn a piece at a time, with models of its own, see serpents::Coils
+        _ if look.is_great_serpent() => false,
         0 => true,
         // Dragons are drawn out of jointed pieces of their own, see src\dragons.rs
         _ if look.is_dragon() => false,
@@ -1125,6 +1283,15 @@ impl Pose {
     fn at(self, rest: Vec3, windup: Vec3, strike: Vec3, special: Vec3) -> Vec3 {
         [0, 1, 2].map(|i| self.mix(rest[i], windup[i], strike[i], special[i]))
     }
+}
+
+/// How far through its walk frame `frame` is, None for none, and how much of the first three
+/// poses it's in, getting ready, striking and its own: what a serpent's body is shaped by, see
+/// serpents::spine()
+pub(crate) fn frame_shape(frame: usize) -> (Option<f64>, [f64; 3]) {
+    let phase = (1..=WALK_FRAMES).contains(&frame).then(|| (frame - 1) as f64 / WALK_FRAMES as f64);
+    let pose = Pose::of(frame);
+    (phase, [pose.windup, pose.strike, pose.special])
 }
 
 /// Voxels per meter of everything drawn like an animal, weapons and leaves too: the same as the
@@ -2492,6 +2659,11 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Boar) => tusker(&mut p, angle, swing, moving, pose, look.skin()),
                 // Its pieces are made in src\dragons.rs
                 Some(Build::Dragon) => {}
+                Some(Build::Serpent) => {
+                    if let Some(kind) = serpents::kind(look) {
+                        serpents::parts(&mut p, kind, phase, [pose.windup, pose.strike, pose.special]);
+                    }
+                }
                 _ => treant(&mut p, swing, pose, look.skin()),
             }
             if look.scale() != 1.0 {
@@ -2749,6 +2921,47 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                     // Grey-tipped flight feathers out at the end
                     let tint = if k >= 5 { FUR_GRAY } else if k % 2 == 0 { LINEN } else { FUR_WHITE };
                     p.push(ellipsoid([x - 0.22, y, z - 0.02], [0.24 - 0.015 * k as f64, 0.1, 0.025], tint));
+                }
+            }
+        }
+        // A serpent's skin, shed whole and left lying in an S, pale and papery, its scales showing
+        // in bands, the eye holes of its head dark
+        Look::ShedSkin => {
+            let at = |u: f64| [1.6 - 3.2 * u, 0.32 * (u * TAU * 1.3).sin() * (u * 4.0).min(1.0), 0.05];
+            for s in [-1.0, 1.0] {
+                p.push(ball([1.72, s * 0.06, 0.08], 0.025, BARK_DARK));
+            }
+            p.push(limb([1.55, 0.0, 0.06], [1.82, 0.0, 0.05], 0.1, 0.06, LINEN).stretched([1.0, 1.0, 0.5]));
+            for k in 0..14 {
+                let (u0, u1) = (k as f64 / 14.0, (k + 1) as f64 / 14.0);
+                let r = 0.11 * (1.0 - 0.75 * u0);
+                p.push(limb(at(u0), at(u1), r, r * 0.95, if k % 3 == 0 { FUR_CREAM } else { LINEN }).stretched([1.0, 1.0, 0.45]));
+            }
+        }
+        // The bones of a great serpent: its backbone lying in a curve, ribs arching up off it, and
+        // its long skull
+        Look::SerpentBones => {
+            let at = |u: f64| [2.6 - 5.2 * u, 0.6 * (u * TAU * 0.8).sin(), 0.14];
+            p.push(ball([2.95, 0.12, 0.3], 0.07, BARK_DARK));
+            p.push(ball([2.95, -0.12, 0.3], 0.07, BARK_DARK));
+            p.push(limb([2.6, 0.0, 0.2], [3.45, 0.0, 0.14], 0.24, 0.1, BONE).stretched([1.0, 1.0, 0.7]));
+            p.push(limb([2.65, 0.0, 0.05], [3.3, 0.0, 0.04], 0.15, 0.06, BONE).stretched([1.0, 1.0, 0.4]));
+            for k in 0..18 {
+                let u = k as f64 / 18.0;
+                let c = at(u);
+                let r = 0.1 * (1.0 - 0.6 * u);
+                p.push(ball(c, r, BONE));
+                // Ribs along the front of it, fewer and shorter towards its tail
+                if u < 0.7 && k % 2 == 0 {
+                    let rib = 0.55 * (1.0 - u);
+                    for s in [-1.0, 1.0] {
+                        let top = [c[0], c[1] + s * rib * 0.6, c[2] + rib * 0.9];
+                        p.push(limb(c, top, 0.03, 0.025, BONE));
+                        p.push(limb(top, [c[0] - 0.05, c[1] + s * rib, 0.03], 0.025, 0.02, BONE));
+                    }
+                }
+                if k > 0 {
+                    p.push(limb(at((k - 1) as f64 / 18.0), c, r * 0.5, r * 0.5, LIMESTONE));
                 }
             }
         }
@@ -3048,8 +3261,10 @@ fn model_index(look: Look, frame: usize) -> u32 {
 /// frame of every look, see src\dragons.rs
 pub const DRAGON_MODELS_AT: usize = Look::ALL.len() * FRAMES;
 
-/// How many models animal_models() makes. Other models come after them.
-pub const ANIMAL_MODELS: usize = DRAGON_MODELS_AT + crate::dragons::MODELS;
+/// How many models animal_models() makes: every frame of every look, then the dragons' pieces
+/// and what they breathe, then the great serpents' pieces, last, see serpents::part_models().
+/// Other models come after them.
+pub const ANIMAL_MODELS: usize = DRAGON_MODELS_AT + crate::dragons::MODELS + serpents::PART_MODELS;
 
 /// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
 fn frame_model(look: Look, frame: usize) -> Model {
@@ -3085,8 +3300,10 @@ pub fn animal_models() -> Vec<Model> {
     });
     made.sort_unstable_by_key(|&(job, _)| job);
     let mut models: Vec<Model> = made.into_iter().map(|(_, model)| model).collect();
-    // The dragons' pieces, and what they breathe
+    // The dragons' pieces, and what they breathe, then the great serpents' pieces, which have to
+    // be the last of them, see serpents::part_models()
     models.extend(crate::dragons::models());
+    models.extend(serpents::part_models());
     models
 }
 
@@ -3199,6 +3416,9 @@ pub const TINT_SHOCKED: u32 = 4;
 pub const TINT_CHILLED: u32 = 5;
 /// Struck a moment ago
 pub const TINT_HIT: u32 = 6;
+/// Lit by its own light, as something hanging in the sky is: as clear by night as by day, and never
+/// faded into the sky with what's on the land as far off, as Blood Moon's moon
+pub const TINT_LIT: u32 = 7;
 
 /// One animal as traverse.comp reads it, see the Animal struct there
 #[derive(BufferContents, Clone, Copy)]
@@ -3227,6 +3447,19 @@ impl AnimalInstance {
     pub fn tinted(mut self, tint: u32) -> Self {
         self.info[2] = tint;
         self
+    }
+
+    /// With all of it turned towards one color, light and dark as it was, as a skin taken on: red,
+    /// green and blue and how far, a byte each, packed little end first; 0 for its own colors. See
+    /// tintAnimal() in shaders\traverse.comp.
+    pub fn skinned(mut self, skin: u32) -> Self {
+        self.info[3] = skin;
+        self
+    }
+
+    /// Where it's put, in voxels of the main world
+    pub fn sphere_center(&self) -> Vector3<f64> {
+        Vector3::new(self.position[0] as f64, self.position[1] as f64, self.position[2] as f64)
     }
 
     /// Where it is and how far it reaches from there, in voxels of the main world, for tests
@@ -3284,6 +3517,9 @@ pub struct Animal {
     /// in meters it strolls
     home: Option<(Vector3<f64>, f64)>,
     rng: u32,
+    /// For a serpent, the part of its long body the player's aiming at, from where it is, in
+    /// voxels: where blows on it land, see center() and serpents::focus()
+    pub focus: Option<Vector3<f64>>,
 }
 
 /// How hard a bare-handed hit is
@@ -3302,6 +3538,9 @@ const SHIELD_THROUGH: f64 = 0.15;
 const SHIELD_ARC: f64 = 0.42;
 /// How much of a blow gets through the sand to a burrower dug in under it
 const BURIED_THROUGH: f64 = 0.3;
+/// How far down what swims feels for the bottom of the water it's swimming over, in meters: deep
+/// enough for the open sea of the Sunken Reach
+const SWIM_DEPTH: f64 = 48.0;
 
 /// Something in the world drawn like an animal that doesn't move, like food lying on the ground.
 /// `position` is in voxels of the main world.
@@ -3388,6 +3627,12 @@ fn shallows_near(world: &World, water: WaterLevel, x: f64, y: f64, within: f64, 
     None
 }
 
+/// Water at least `least` meters deep near `near`, in voxels, within `within` meters of it: the
+/// bottom of it, for a great serpent to rise up out of
+pub fn deep_water_near(world: &World, water: WaterLevel, near: Vector3<f64>, within: f64, least: f64) -> Option<Vector3<f64>> {
+    shallows_near(world, water, near.x, near.y, within, least, 16.0)
+}
+
 /// The highest dry ground in a column with room to stand on it, if it isn't under water: the
 /// ground itself, not a branch up in a tree or the top of a wall
 fn surface_at(world: &World, water: WaterLevel, x: f64, y: f64) -> Option<f64> {
@@ -3439,6 +3684,7 @@ impl Animal {
             dragon: None,
             home: None,
             rng,
+            focus: None,
         }
     }
 
@@ -3479,6 +3725,10 @@ impl Animal {
         // Whatever part of a dragon the player's striking at, see dragons::Dragon::aim()
         if let Some(dragon) = &self.dragon {
             return dragon.focus();
+        }
+        // A serpent where the player's aiming at it, along the whole of its long body
+        if let Some(focus) = self.focus {
+            return self.position + focus;
         }
         let lifted = self.boss.as_ref().map_or(0.0, |b| b.sway()[2]);
         self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
@@ -3561,6 +3811,19 @@ impl Animal {
         let off = (self.heading - self.drawn_heading + PI).rem_euclid(TAU) - PI;
         let rate = TURN_EASE * (1.0 + 2.0 * off.abs());
         self.drawn_heading = (self.drawn_heading + off * (1.0 - (-rate * dt).exp())).rem_euclid(TAU);
+        // A great serpent's long body following its head
+        if let Some(mut coils) = self.boss.as_mut().and_then(|b| b.coils.take()) {
+            let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
+            coils.update(self.position, self.drawn_heading, on, up, world, water, dt);
+            if let Some(boss) = &mut self.boss {
+                boss.coils = Some(coils);
+            }
+        }
+    }
+
+    /// A great serpent's long body, see serpents::Coils
+    pub fn coils(&self) -> Option<&serpents::Coils> {
+        self.boss.as_ref().and_then(|b| b.coils.as_deref())
     }
 
     /// On through its walk cycle as it goes. Slowing to a stop, it finishes the step it's taking,
@@ -3725,12 +3988,30 @@ impl Animal {
             let ahead = Vector2::new(self.heading.cos(), self.heading.sin()) * 0.3 * vpm;
             let (x, y) = (self.position.x + step.x, self.position.y + step.y);
             let climb = look.climb() * vpm;
-            // Over water, what flies looks further down for the bottom of it
-            let down = if look.flies() { 8.0 * vpm } else { climb * 2.0 };
-            let ground = ground_wading(world, water, x, y, self.position.z, climb, down, look.wade());
-            let clear = ground_wading(world, water, x + ahead.x, y + ahead.y, self.position.z, climb, down, look.wade()).is_some();
-            // What flies goes over water, not down to the bottom of it
-            let ground = if look.flies() { ground.map(|z| z.max(water(x, y))) } else { ground };
+            // Over water, what flies looks further down for the bottom of it, and what swims, out
+            // over the deep water of a lake or the sea, much further, to go on over it
+            let z = self.position.z;
+            let down = |x: f64, y: f64| {
+                if look.swims() && water(x, y) > z - climb {
+                    SWIM_DEPTH * vpm
+                } else if look.flies() {
+                    8.0 * vpm
+                } else {
+                    climb * 2.0
+                }
+            };
+            let ground = ground_wading(world, water, x, y, z, climb, down(x, y), look.wade());
+            let (ax, ay) = (x + ahead.x, y + ahead.y);
+            let clear = ground_wading(world, water, ax, ay, z, climb, down(ax, ay), look.wade()).is_some();
+            // What flies goes over water, not down to the bottom of it, and what swims along the top
+            // of it, its back just out of it
+            let ground = if look.flies() {
+                ground.map(|z| z.max(water(x, y)))
+            } else if look.swims() {
+                ground.map(|z| z.max(water(x, y) - serpents::draft(look) * vpm))
+            } else {
+                ground
+            };
             match ground {
                 Some(z) if clear => {
                     self.position.x = x;
@@ -3746,6 +4027,13 @@ impl Animal {
                     }
                     self.speed = 0.0;
                 }
+            }
+        }
+        // Floating up to the top of the water it's in, even lying still
+        if look.swims() {
+            let top = water(self.position.x, self.position.y) - serpents::draft(look) * vpm;
+            if top.is_finite() && self.position.z < top {
+                self.position.z += (top - self.position.z) * (1.0 - (-4.0 * dt).exp());
             }
         }
     }
@@ -3788,6 +4076,24 @@ impl Animal {
                 return first;
             }
         }
+        let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
+        let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
+        let radius = (self.look.reach() + on.abs() + up.abs()) * world_voxels_per_meter as f64;
+        AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint())
+    }
+
+    /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's
+    /// drawn, in voxels: where it can be hit, see serpents::focus()
+    pub fn spine(&self, world_voxels_per_meter: u32) -> Option<Vec<Vector3<f64>>> {
+        let kind = serpents::kind(self.look)?;
+        let (frame, position, rotation, _) = self.placement(world_voxels_per_meter);
+        let (phase, w) = frame_shape(frame);
+        let vpm = world_voxels_per_meter as f64;
+        Some((0..=8).map(|k| position + rotation * Vector3::from(serpents::spine(kind, k as f64 / 8.0, phase, w)) * vpm).collect())
+    }
+
+    /// Which of its frames it's drawn in, where, turned how and how big
+    fn placement(&self, world_voxels_per_meter: u32) -> (usize, Vector3<f64>, UnitQuaternion<f64>, f64) {
         // Wings never stop beating, and a wraith's rags never stop stirring, however it's moving
         let beating = match self.look.build() {
             Some(Build::Bat) => Some((self.age * 3.4 + self.id as f64 * 0.37).fract()),
@@ -3819,10 +4125,12 @@ impl Animal {
         let vpm = world_voxels_per_meter as f64;
         let [pitch, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let ahead = Vector3::new(self.drawn_heading.cos(), self.drawn_heading.sin(), 0.0);
-        let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up)) * vpm;
-        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch);
-        let radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
-        AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint())
+        // A serpent rolled over on its back as it dies, lifted so it's still on the ground
+        let roll = self.boss.as_ref().map_or(0.0, Boss::roll);
+        let lift = serpents::kind(self.look).map_or(0.0, |k| 2.0 * k.girth * (1.0 - roll.cos()) * 0.5);
+        let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up + lift)) * vpm;
+        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), roll);
+        (frame, position, rotation, scale)
     }
 }
 
@@ -4064,6 +4372,68 @@ pub fn spawn_gangs(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
     gangs
 }
 
+/// How many packs of serpents roam the world at once, see spawn_serpents()
+pub const SERPENT_PACKS: usize = 2;
+
+/// `count` nests of the serpents of the land they turn up in, well away from the player at `near`:
+/// in the normal world and Free Roam reed vipers in the grass and reeds, silt coilers in deep
+/// water, drift serpents under the snow and gale serpents up on bare rock; gale serpents all over
+/// the sky isles, bloodvein adders in the dreaming realm and drift serpents in the frozen one
+pub fn spawn_serpents(world: &World, water: WaterLevel, rng: &mut u32, near: Vector3<f64>, land: Land, count: usize) -> Vec<Animal> {
+    let vpm = world.voxels_per_meter as f64;
+    let [sx, sy, _] = world.size.map(f64::from);
+    let mut nests = Vec::new();
+    // Looking for deep water takes a while, so only so many times, not to hold up the game
+    let mut searches = 2;
+    for _ in 0..count {
+        for _ in 0..48 {
+            let (x, y) = (sx * (0.1 + 0.8 * random(rng)), sy * (0.1 + 0.8 * random(rng)));
+            if (Vector2::new(x, y) - near.xy()).norm() < 35.0 * vpm {
+                continue;
+            }
+            let Some(z) = surface_at(world, water, x, y) else {
+                continue;
+            };
+            let ground = world.material_at(x as i64, y as i64, z as i64 - 1);
+            let at = Vector3::new(x, y, z);
+            let (look, at) = match land {
+                Land::Sky => (Look::GaleSerpent, at),
+                Land::Dream => (Look::BloodAdder, at),
+                Land::Ice => (Look::DriftSerpent, at),
+                // The Water realm's coilers in the sea round its islands, and vipers on them
+                Land::Water if searches > 0 && random(rng) < 0.7 => {
+                    searches -= 1;
+                    match shallows_near(world, water, x, y, 30.0, 0.8, 12.0) {
+                        Some(bottom) => (Look::SiltCoiler, bottom),
+                        None => continue,
+                    }
+                }
+                Land::Water => (Look::ReedViper, at),
+                // None on the Cinder Crown's ash: its beasts are the dragons' own
+                Land::Dragon => continue,
+                Land::Normal => match ground {
+                    SNOW | ICE => (Look::DriftSerpent, at),
+                    STONE | ROCK if random(rng) < 0.5 => (Look::GaleSerpent, at),
+                    // Swimming in deep water near the grass, if there's any
+                    GRASS | DIRT | JUNGLE_GRASS | SAND if searches > 0 && random(rng) < 0.45 => {
+                        searches -= 1;
+                        match shallows_near(world, water, x, y, 30.0, 0.8, 12.0) {
+                            Some(bottom) => (Look::SiltCoiler, bottom),
+                            None => continue,
+                        }
+                    }
+                    GRASS | DIRT | JUNGLE_GRASS | DRY_GRASS => (Look::ReedViper, at),
+                    _ => continue,
+                },
+            };
+            let size = look.pack_size() + (random(rng) < 0.35) as usize;
+            nests.extend(spawn_pack(world, water, &vec![look; size], at, PACK_SPREAD + 0.6, hash(*rng)));
+            break;
+        }
+    }
+    nests
+}
+
 /// `count` packs of the monsters of the country they turn up in, well away from the player at
 /// `near`: burrowers on desert sand, wraiths on the snow, tuskers or the walking dead in the green
 /// woods, and lurkers in the shallows of jungle waters
@@ -4125,7 +4495,8 @@ mod tests {
     /// see, small enough for the shader, and inside the reach it's culled by
     #[test]
     fn new_monsters_have_whole_models_in_every_frame() {
-        let looks = [Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::GraveKnight, Look::CryptTitan, Look::Bloater, Look::Ghoul, Look::GraveBrute, Look::BoneArcher, Look::Necromancer];
+        let mut looks = vec![Look::Crossbowman, Look::Shieldbearer, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::GraveKnight, Look::CryptTitan, Look::Bloater, Look::Ghoul, Look::GraveBrute, Look::BoneArcher, Look::Necromancer];
+        looks.extend(serpents::SERPENTS);
         for look in looks {
             assert!(look.build().is_some(), "{look:?} isn't a boss or a monster");
             for frame in (0..FRAMES).filter(|&f| shown(look, f)) {

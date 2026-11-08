@@ -74,10 +74,14 @@ mod daynight;
 mod dragons;
 mod effects;
 mod game;
+mod gates;
 mod gather;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
+mod serpent_lairs;
+mod serpent_trials;
+mod serpents;
 mod limits;
 mod loading;
 mod memory;
@@ -95,6 +99,7 @@ mod skips;
 mod staging;
 mod startup;
 mod stream;
+mod tools;
 mod voxelize;
 mod water;
 mod weapons;
@@ -2178,7 +2183,7 @@ impl Placed {
             let middle = Vector3::new(lair[0] as f64 * vpm - origin[0] as f64, lair[1] as f64 * vpm - origin[1] as f64, 0.0);
             let ground = |p: Vector3<f64>| (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(p.x as i64, p.y as i64, z))).unwrap_or(0) as f64;
             // From out past the way into its arena
-            let way = worldgen::arena_way(&terrain, lair) as f64;
+            let way = worldgen::dragon_arena_way(&terrain, lair) as f64;
             let back = Vector3::new(way.cos(), way.sin(), 0.0);
             let out = setting("dragon_lair_out").and_then(|v| v.parse::<f64>().ok()).unwrap_or(48.0);
             let eye = middle + back * out * vpm;
@@ -2972,7 +2977,7 @@ impl App {
         // In Realms, the realm's own three raid bosses too, and the Innert Gate or its portal home,
         // see session.rs
         let (raids, shrines) = self.realm_sites();
-        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).collect();
+        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).chain(self.serpent_sites()).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
         // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
@@ -3061,6 +3066,7 @@ impl App {
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
         self.game.set_shrines(&self.world, shrines);
+        self.place_omens();
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props.iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -3984,10 +3990,14 @@ impl App {
             let start = Instant::now();
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // A tool's blow landing gathers what it struck, see tools.rs
+            self.update_tools();
             // Monsters coming at night, and what's built taking their blows, see night.rs
             let start = Instant::now();
             self.update_raid(delta_time.min(0.1));
             self.slow("the night's raid", start);
+            // The old foundations of the gate in a new game of Realms, see gates.rs
+            self.lay_ruins();
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -4431,6 +4441,55 @@ impl App {
                 }
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+            }
+            // Blows a hole in the shore nearest, half in the water, to see the water flow into it,
+            // and says how deep it is in the middle of it as it does
+            ("shore", f) => {
+                let vpm = self.world.voxels_per_meter as f64;
+                // Where the nearest water ahead runs up onto the land, from the water back towards
+                // the eye till it's dry, found the first frame and kept
+                static SHORE: std::sync::Mutex<Option<[f64; 3]>> = std::sync::Mutex::new(None);
+                let mut shore: Option<Vector3<f64>> = SHORE.lock().unwrap().map(Vector3::from);
+                'rings: for ring in (4..60).filter(|_| shore.is_none()) {
+                    for k in 0..ring * 6 {
+                        let a = k as f64 / (ring * 6) as f64 * TAU;
+                        let (x, y) = (eye.x + a.cos() * ring as f64 * vpm, eye.y + a.sin() * ring as f64 * vpm);
+                        if self.water.depth_at(x, y) > 0.5 * vpm {
+                            let toward = Vector3::new(eye.x - x, eye.y - y, 0.0).normalize() * 0.25 * vpm;
+                            let mut p = Vector3::new(x, y, 0.0);
+                            while self.water.depth_at(p.x, p.y) > 0.05 * vpm {
+                                p += toward;
+                            }
+                            shore = Some(p);
+                            *SHORE.lock().unwrap() = Some(p.into());
+                            break 'rings;
+                        }
+                    }
+                }
+                match shore {
+                    None if f == 1 => println!("no water near"),
+                    None => {}
+                    Some(at) => {
+                        let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                        if f == 1 {
+                            let back = Vector3::new(at.x - eye.x, at.y - eye.y, 0.0).normalize() * 2.0 * vpm;
+                            self.camera.look_at(voxels_to_camera(Vector3::new(at.x + back.x, at.y + back.y, ground), self.world.size));
+                            println!("frame {frame}: the shore {:.0} m off, its ground {:.1} m up", (at - Vector3::new(eye.x, eye.y, 0.0)).xy().norm() / vpm, ground / vpm);
+                        }
+                        // A frost pool as a frost shot leaves one where it lands, then the hole
+                        // blown where it lies, with `--set shore_pool=1`
+                        if f == 38 && settings_from_args().iter().any(|(k, v)| k == "shore_pool" && v == "1") {
+                            self.game.lay_pool(Vector3::new(at.x, at.y, ground + 0.5), Some(weapons::Element::Frost));
+                        }
+                        if f == 40 {
+                            self.blast(Vector3::new(at.x, at.y, ground), 2.5);
+                        }
+                        if [39, 41, 50, 70, 100, 150, 220, 299].contains(&f) {
+                            let deep = |dx: f64| self.water.depth_at(at.x + dx * vpm, at.y) / vpm;
+                            println!("frame {frame}: the ground {:.2} m up; water deep {:.2} m in the middle, {:.2} m and {:.2} m a meter either way", ground / vpm, deep(0.0), deep(-1.0), deep(1.0));
+                        }
+                    }
+                }
             }
             // A pool of each element and one of churned earth laid out over the ground ahead, all
             // at once, to watch them spread out, go on, die down and leave their marks, and laid
@@ -5018,6 +5077,7 @@ impl App {
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        let gate_choice = self.gate_choice();
         let raid_note = self.raid_note();
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
@@ -5215,7 +5275,7 @@ impl App {
                     self.cycle.hud(&ctx, raid_note.as_deref());
                 }
                 night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
-                building::hud(&self.building, &self.bases, ghost.as_ref(), &self.world, &ctx, &view);
+                building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
@@ -5233,7 +5293,10 @@ impl App {
                 }
                 if !shopping && self.inventory_open {
                     let mut open = true;
-                    self.game.inventory(&ctx, &mut open);
+                    // With what's been gathered to make tools from, see tools.rs
+                    let mut crafting = tools::Crafting { open: self.building.craft_open, materials: self.bases.materials };
+                    self.game.inventory(&ctx, &mut open, &mut crafting);
+                    (self.building.craft_open, self.bases.materials) = (crafting.open, crafting.materials);
                     if !open {
                         self.inventory_open = false;
                         focus_change = Some(true);
@@ -6486,6 +6549,10 @@ fn main() {
     // that, in MB, as a smaller card would
     if let Some(megabytes) = settings_from_args().iter().find(|(k, _)| k == "vram_budget").and_then(|(_, v)| v.parse().ok()) {
         perf::cap_vram(megabytes);
+    }
+    // `--set no_arena=1` builds the land without the Drowned Ring, to measure what it costs
+    if settings_from_args().iter().any(|(k, v)| k == "no_arena" && v == "1") {
+        worldgen::leave_out_arenas();
     }
     // Decoding the sounds on a thread of their own, done long before anything's heard
     audio::preload();

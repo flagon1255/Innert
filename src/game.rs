@@ -19,8 +19,10 @@ use crate::player::WaterLevel;
 use crate::realms::{self, Scaling};
 use crate::wings;
 use crate::save;
-use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
-use crate::worldgen::{World, is_passable, material::*};
+use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
+use crate::worldgen::{self, World, is_passable, material::*};
+use crate::serpents;
+use crate::tools;
 
 /// What dragons breathe and leave burning, see src\dragons.rs
 mod dragonfire;
@@ -336,8 +338,13 @@ pub struct Town {
 /// How many weapons a royal armoury has for sale
 const ROYAL_WEAPONS: usize = 6;
 
+/// How likely each rarity is for each part of the weapons a royal armoury has, from common up, as
+/// Library::odds() gives them: very lucky, the odds it's always had, whatever those of what's
+/// found about the land, so it's the place to buy the best
+const ROYAL_ODDS: [f64; 6] = [0.55, 0.25 * 9.0, 0.13 * 81.0, 0.05 * 729.0, 0.018 * 6561.0, 0.002 * 59049.0];
+
 /// The weapons a royal armoury sells, rolled from `seed`: legendary and mythic ones only, rolled
-/// very lucky, no two of a family
+/// very lucky, no two of a family. Only those it keeps are built.
 fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
     let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(library.rarities.len().saturating_sub(2));
     let mut weapons: Vec<Weapon> = Vec::new();
@@ -347,12 +354,97 @@ fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
         }
         // As random() does, so a seed of 0 doesn't stay 0
         seed = hash(seed.wrapping_add(0x9e37_79b9));
-        let weapon = library.generate(seed, None, 9.0);
-        if weapon.grade >= legendary && weapons.iter().all(|w| w.family != weapon.family) {
-            weapons.push(weapon);
+        let (family, grade, _) = library.preview(seed, None, &ROYAL_ODDS);
+        if grade >= legendary && weapons.iter().all(|w| w.family != family) {
+            weapons.push(library.generate_with(seed, None, &ROYAL_ODDS));
         }
     }
     weapons
+}
+
+/// The families of the weapons the player starts with, one of each, see kit()
+const KIT: [&str; 16] = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
+/// How lucky what a new player starts with is, as for Library::odds(), and the rarest any part of
+/// it, or any weapon of it, can be, of Library::rarities: plain gear, common to rare, nothing
+/// with a special attack, see kit(). Weapons with special attacks are to be found.
+const KIT_LUCK: f64 = 1.0;
+const KIT_RAREST: usize = 2;
+/// How many seeds kit() tries for each weapon no rarer than it's to be
+const KIT_TRIES: usize = 64;
+
+/// The weapons arm() gives the player, one of each of KIT: of which family each is, the seed it's
+/// made from and the odds of each rarity for its parts, as for Library::generate_with(). Rolled
+/// from `seed` with `luck`, and with `rarest`, no part or weapon rarer than that: a synergy or two
+/// can lift a weapon a grade above its parts, so then it's the first seed on whose weapon isn't.
+fn kit(library: &Library, seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
+    let mut odds = library.odds(luck);
+    if let Some(top) = rarest {
+        odds.truncate(top + 1);
+    }
+    KIT.iter()
+        .enumerate()
+        .filter_map(|(k, id)| {
+            let family = library.family(id)?;
+            let first = hash(seed ^ (k as u32 + 1) * 0x51ed);
+            let seed = match rarest {
+                Some(top) => std::iter::successors(Some(first), |&s| Some(hash(s))).take(KIT_TRIES).find(|&s| library.preview(s, Some(family), &odds).1 <= top).unwrap_or(first),
+                None => first,
+            };
+            Some((family, seed, odds.clone()))
+        })
+        .collect()
+}
+
+/// The share of the dead and of bandits who carry a weapon, to drop when they're killed, and how
+/// lucky it is, as for Library::odds(), before a realm's scaling: what they fought with, mostly
+/// common, one in about 200 with a special attack
+const MONSTER_WEAPON: f64 = 0.06;
+const MONSTER_LUCK: f64 = 0.4;
+
+/// How lucky the weapons a merchant has are, as for Library::odds(), before a realm's scaling:
+/// some of them rare, now and then epic, and only one stall in a dozen or so with something with
+/// a special attack
+const MERCHANT_LUCKS: [f64; 5] = [0.5, 0.7, 0.9, 1.1, 1.3];
+
+/// How much of a realm's scaling of luck what's found there has, as Scaling::luck to this power,
+/// see loot_scaling(): enough that the realms further on are richer, not so much that weapons
+/// with special attacks are in every chest there
+const REALM_LOOT: f64 = 0.5;
+
+/// How many times luckier the weapons found are in a realm scaled `scaling`, see REALM_LOOT
+fn loot_scaling(scaling: Scaling) -> f64 {
+    scaling.luck.max(0.0).powf(REALM_LOOT)
+}
+
+/// What sort of boss a hoard is a beaten one's, which decides what's in it, see hoard_rolls()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hoard {
+    /// One of the bosses about the land: in its lair, a dungeon's deepest hall, a great cavern
+    Boss,
+    /// One of a realm's raid bosses that isn't one of the huge ones
+    Raid,
+    /// One of the huge raid bosses, or a realm's finale
+    Huge,
+}
+
+/// How lucky the weapons a boss leaves are, as for Library::odds(), its best first, before a
+/// realm's scaling: a raid boss leaves far more and far better
+const BOSS_LUCKS: [f64; 2] = [8.0, 2.5];
+const RAID_LUCKS: [f64; 5] = [12.0, 5.0, 3.0, 2.5, 2.0];
+/// How likely the best of them is to be one with a special attack, rolled as lucky till it is,
+/// for each sort of Hoard: one of the bosses about the land's only as luck has it, about one in
+/// five; a realm's raid boss's very likely; a huge raid boss's or a finale's always. The rest of
+/// what they leave only now and then has one, so it's the raid bosses that leave them.
+const SURE_SPECIAL: [f64; 3] = [0.0, 0.8, 1.0];
+
+/// How each weapon in the hoard of a beaten boss is rolled, the best first: how lucky, as for
+/// Library::odds(), before a realm's scaling, and whether it's sure to have a special attack,
+/// which `rng` decides where it's not always so
+fn hoard_rolls(hoard: Hoard, rng: &mut u32) -> Vec<(f64, bool)> {
+    let lucks: &[f64] = if hoard == Hoard::Boss { &BOSS_LUCKS } else { &RAID_LUCKS };
+    let chance = SURE_SPECIAL[hoard as usize];
+    let sure = chance >= 1.0 || (chance > 0.0 && random(rng) < chance);
+    lucks.iter().enumerate().map(|(k, &luck)| (luck, k == 0 && sure)).collect()
 }
 
 /// What villagers say when spoken to
@@ -388,6 +480,9 @@ const THORNS: usize = 5;
 /// The fastest bosses and monsters can throw the player, in meters a second, along the ground and
 /// up: a blow knocks them a few steps back, it never flings them across the field
 const THROWN_MOST: f64 = 6.0;
+/// How lucky the roll is that makes the Coil Unending's fang, see Game::fang(): far luckier than
+/// any raid boss's best
+const FANG_LUCK: f64 = 60.0;
 /// How fast the player moves while chilled by frost, and stuck in web, next to usual
 const CHILLED_PACE: f64 = 0.55;
 const SNARED_PACE: f64 = 0.4;
@@ -458,6 +553,36 @@ pub fn ground_top(world: &World, x: f64, y: f64) -> f64 {
             !is_passable(m) && !trunk(m)
         })
         .map_or(0.0, |z| z as f64 + 1.0)
+}
+
+/// How far the water `at` is in goes round it, in meters, if it's a basin of its own no more than
+/// `most` meters out from there every way, as the Drowned Ring's, see worldgen::Arena: out each of
+/// sixteen ways to where the ground comes up out of the water to stay, past any stones standing in
+/// it, the middle one of those. None if it's open water some way.
+fn basin_round(world: &World, water: WaterLevel, at: Vector3<f64>, most: f64) -> Option<f64> {
+    let vpm = world.voxels_per_meter as f64;
+    let mut out = Vec::new();
+    for k in 0..16 {
+        let a = k as f64 * TAU / 16.0;
+        let (mut dry, mut shore) = (0, None);
+        for step in 1..=most as usize {
+            let (x, y) = (at.x + a.cos() * step as f64 * vpm, at.y + a.sin() * step as f64 * vpm);
+            let surface = water(x, y);
+            if !surface.is_finite() || ground_top(world, x, y) >= surface - 0.5 * vpm {
+                dry += 1;
+                // Wider than a stone standing in it
+                if dry >= 7 {
+                    shore = Some((step - dry) as f64);
+                    break;
+                }
+            } else {
+                dry = 0;
+            }
+        }
+        out.push(shore?);
+    }
+    out.sort_by(f64::total_cmp);
+    Some(out[out.len() / 2])
 }
 
 /// The ground under `at`, in voxels, looking down a few meters, or `at` if there's none
@@ -616,6 +741,10 @@ pub struct Game {
     sky_wares: bool,
     /// A window's open over the middle of the view, see set_covered()
     covered: bool,
+    /// Omens of the Coil Unending lying on the way to its lair in Free Roam, see serpents::omens(),
+    /// and how dark the sky's got over it, 0 to 1
+    omens: Vec<(Look, Vector3<f64>, f64)>,
+    gloom: f64,
     /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
     worn: Option<u8>,
     wing_models: Vec<(Model, Vector3<f64>)>,
@@ -781,27 +910,39 @@ impl Game {
             worn: None,
             wing_models: wings::models(),
             dragonfire: Default::default(),
+            omens: Vec::new(),
+            gloom: 0.0,
         };
-        game.arm(seed, 1.0);
+        game.arm_anew(seed);
         game.populate(world, water, seed, near);
         game
     }
 
-    /// What the player starts with: a sword, a bow and a staff, a crossbow and a musket and one of
-    /// every other kind of weapon, rolled from `seed` with `luck`, as for Library::roll_rarity(),
-    /// a few bundles of special ammo, and the bucket. Replaces whatever weapons they had.
+    /// What a new player starts with, see arm(): plain gear, nothing with a special attack
+    fn arm_anew(&mut self, seed: u32) {
+        let kit = kit(&self.library, seed, KIT_LUCK, Some(KIT_RAREST));
+        self.arm_with(&kit);
+    }
+
+    /// For trying them out, as `--set weapon_seed=7 weapon_luck=3` does: what the player starts
+    /// with rolled with `luck`, as for Library::odds(), however rare, see arm_with()
     pub fn arm(&mut self, seed: u32, luck: f64) {
+        let kit = kit(&self.library, seed, luck, None);
+        self.arm_with(&kit);
+    }
+
+    /// The player armed with `kit`, as kit() rolls it: a sword, a bow and a staff, a crossbow and
+    /// a musket and one of every other kind of weapon, a few bundles of special ammo, and the
+    /// bucket. Replaces whatever weapons they had.
+    fn arm_with(&mut self, kit: &[(usize, u32, Vec<f64>)]) {
         self.weapons.clear();
         self.combat.renumber(|_| None);
         self.loaded = None;
         self.slots.retain(|(item, _)| !matches!(item, Item::Weapon(_) | Item::Bucket | Item::Ammo(..)));
         let mut fresh = Vec::new();
-        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
-        for (k, family) in families.into_iter().enumerate() {
-            if let Some(family) = self.library.family(family) {
-                self.weapons.push(self.library.generate(hash(seed ^ (k as u32 + 1) * 0x51ed), Some(family), luck));
-                fresh.push((Item::Weapon(self.weapons.len() - 1), 1));
-            }
+        for (family, seed, odds) in kit {
+            self.weapons.push(self.library.generate_with(*seed, Some(*family), odds));
+            fresh.push((Item::Weapon(self.weapons.len() - 1), 1));
         }
         fresh.push((Item::Bucket, 1));
         for id in ["broadhead_arrows", "incendiary_bolts", "scatter_shot"] {
@@ -818,6 +959,8 @@ impl Game {
     /// Fills a new world with animals and apples. What the player carries stays.
     pub fn populate(&mut self, world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) {
         self.animals = animals::spawn(world, water, seed, near);
+        let mut rng = hash(seed ^ 0x5e4);
+        self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
         self.lairs.clear();
         self.defeated.clear();
         self.dens.clear();
@@ -893,6 +1036,48 @@ impl Game {
 
     pub fn holding_weapon(&self) -> bool {
         self.held().is_some()
+    }
+
+    /// The tool in hand, if it's a tool: which, and how good, see tools.rs
+    pub fn held_tool(&self) -> Option<(tools::Tool, usize)> {
+        self.held().and_then(|(_, w)| tools::of(&self.library, w))
+    }
+
+    /// How good the best `tool` carried is, if one is
+    pub fn best_tool(&self, tool: tools::Tool) -> Option<usize> {
+        self.slots
+            .iter()
+            .filter_map(|&(item, _)| match item {
+                Item::Weapon(w) => tools::of(&self.library, &self.weapons[w]),
+                _ => None,
+            })
+            .filter(|&(t, _)| t == tool)
+            .map(|(_, grade)| grade)
+            .max()
+    }
+
+    /// How many melee blows have landed, for a tool's to gather where they land, see tools.rs
+    pub fn swings_landed(&self) -> u32 {
+        self.combat.landed
+    }
+
+    /// Puts a tool of `grade` in the pack, see tools.rs, if there's one to make
+    pub fn give_tool(&mut self, tool: tools::Tool, grade: usize) -> bool {
+        match tools::make(&self.library, tool, grade) {
+            Some(weapon) => {
+                self.give_weapon(weapon);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Puts `weapon`, made rather than found, in the pack
+    pub fn give_weapon(&mut self, weapon: Weapon) {
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        self.milestone = true;
     }
 
     pub fn holding_bucket(&self) -> bool {
@@ -1172,14 +1357,26 @@ impl Game {
                 continue;
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
-            let look = if lair.raid.is_some() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
-            if let Some(mut boss) = animals::spawn_boss(world, water, look, lair.position, lair.key, seed) {
-                if lair.raid.is_some() && !look.is_raid() {
+            let look = if lair.raid.is_some() || lair.look.is_great_serpent() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
+            // A great serpent that swims lies in the deep water by its lair, out from the shore, the
+            // rest on the ground
+            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, if look.is_ultra() { 2.5 } else { 1.5 })).flatten();
+            let swimming = deep.map(|at| Animal::boss(look, Vector3::new(at.x, at.y, water(at.x, at.y) - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
+            if let Some(mut boss) = swimming.or_else(|| animals::spawn_boss(world, water, look, lair.position, lair.key, seed)) {
+                // The Coil Unending's as hard as it is already, whether it's the Water realm's finale
+                // or in Free Roam, see Look::health()
+                if lair.raid.is_some() && !look.is_raid() && !look.is_ultra() {
                     boss.toughen(realms::RAID_PROMOTION);
                 }
                 // A realm's finale is the hardest of all of it
-                if realms::is_finale_key(&lair.key) {
+                if realms::is_finale_key(&lair.key) && !look.is_ultra() {
                     boss.toughen(realms::FINALE_PROMOTION);
+                }
+                // Risen in a basin of its own, as the Drowned Ring's, the Coil Unending keeps to it
+                if look.is_ultra()
+                    && let Some(state) = &mut boss.boss
+                {
+                    state.basin = basin_round(world, water, boss.position, 40.0);
                 }
                 self.animals.push(boss);
             }
@@ -1403,6 +1600,10 @@ impl Game {
             pickup.position -= shift;
         }
         self.pickups.retain(|p| inside(&p.position));
+        for (_, at, _) in &mut self.omens {
+            *at -= shift;
+        }
+        self.omens.retain(|(_, at, _)| inside(at));
         for chest in &mut self.boss_chests {
             chest.position -= shift;
         }
@@ -1443,6 +1644,14 @@ impl Game {
                     self.animals.push(animal);
                 }
             }
+        }
+        // And serpents of the land it is, a nest or two of them, as those about are left behind
+        let serpents = self.animals.iter().filter(|a| a.look.is_serpent()).count();
+        if serpents < 3 {
+            let vpm = world.voxels_per_meter as f64;
+            let mut rng = hash(self.rng ^ 0x5e4);
+            let nests = animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS);
+            self.animals.extend(nests.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm));
         }
         self.rng = hash(self.rng);
     }
@@ -1551,6 +1760,7 @@ impl Game {
                 dragon.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
             }
         }
+        self.aim_at_serpents(view);
 
         // The dead don't fight
         let held = match self.slots.get(self.selected) {
@@ -1579,16 +1789,21 @@ impl Game {
         // What the bosses did, and what they threw landing
         let mut deeds = Vec::new();
         for animal in &mut self.animals {
+            // What its attacks are made of: the Coil Unending's changes as it goes, see
+            // serpents::ULTRA_ELEMENTS
+            let element = serpents::element_now(animal);
             if let Some(boss) = &mut animal.boss {
-                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, d)));
+                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d)));
             }
         }
-        for (look, deed) in deeds {
-            self.carry_out(look, deed, world, water, player, view);
+        for (look, element, deed) in deeds {
+            self.carry_out(look, element, deed, world, water, player, view);
         }
         self.tend_dragonfire(world, player, view, dt);
         self.watch_for_lairs(player);
         self.grow_roots(world, player, view, dt);
+        self.whirl(world, water, player, dt);
+        self.shove_out_of_serpents(player, world.voxels_per_meter as f64);
         self.spin_webs(player, dt);
         self.reek(world, player, dt);
         for (damage, from, element) in std::mem::take(&mut self.combat.player_hits) {
@@ -1651,8 +1866,88 @@ impl Game {
         self.messages.retain(|(_, at)| at.elapsed().as_secs_f64() < 4.0);
     }
 
+    /// The whirlpool a great serpent keeps its lair in, see serpents::LairKind: the water spinning
+    /// round where it is, spray thrown up off it, and whoever's swimming in it drawn round and in
+    fn whirl(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        let time = self.combat.time();
+        let pools: Vec<Vector3<f64>> = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0 && serpents::lair_kind(a.look) == Some(serpents::LairKind::Whirlpool))
+            .filter_map(|a| a.boss.as_ref().map(|b| b.home))
+            .filter(|home| (home - self.feet.unwrap_or(*home)).norm() < 80.0 * vpm)
+            .collect();
+        for home in pools {
+            let surface = water(home.x, home.y);
+            if !surface.is_finite() || surface <= home.z - vpm {
+                continue;
+            }
+            for k in 0..3 {
+                let round = 3.0 + 3.5 * k as f64;
+                let a = time * (1.6 - 0.35 * k as f64) + k as f64 * 2.1;
+                let at = Vector3::new(home.x + a.cos() * round * vpm, home.y + a.sin() * round * vpm, surface);
+                self.combat.stir(at, 0.5, dt, DROP_WATER);
+            }
+            // Drawn round and in, swimming in it
+            if let Some(feet) = player {
+                let off = (feet - home).xy() / vpm;
+                let d = off.norm();
+                if d > 1.0 && d < 12.0 && water(feet.x, feet.y) > feet.z + 0.3 * vpm {
+                    let round = Vector2::new(-off.y, off.x) / d;
+                    let pull = (round * 1.6 - off / d * 0.9) * (1.0 - d / 12.0);
+                    self.thrown += Vector3::new(pull.x, pull.y, 0.0) * vpm * dt * 4.0;
+                }
+            }
+        }
+    }
+
+    /// Whoever a great serpent's lunged through, come up beside or slithered over shoved out from
+    /// its body, so they're never stood inside it with nothing to see, see serpents::Coils::shove()
+    fn shove_out_of_serpents(&mut self, player: Option<Vector3<f64>>, vpm: f64) {
+        let Some(feet) = player else {
+            return;
+        };
+        let middle = feet + Vector3::new(0.0, 0.0, 0.9 * vpm);
+        let push: Vector3<f64> = self.animals.iter().filter(|a| (a.position - feet).norm() < 80.0 * vpm).filter_map(|a| a.coils()).map(|c| c.shove(middle, 1.8, vpm)).sum();
+        // Out about as far as it's in, as a shove dies away, see player::Player::push()
+        if push.norm() > 0.05 * vpm {
+            self.thrown += push * 9.0;
+        }
+    }
+
+    /// The omens of the Coil Unending lying about in the world as it is, in its voxels, see
+    /// serpents::omens()
+    pub fn set_omens(&mut self, omens: Vec<(Look, Vector3<f64>, f64)>) {
+        self.omens = omens;
+    }
+
+    /// How dark the sky's got over the Coil Unending's lair where the player is, 0 to 1, see
+    /// serpents::gloom()
+    pub fn set_gloom(&mut self, gloom: f64) {
+        self.gloom = gloom;
+    }
+
+    /// Where blows on each serpent near enough to be hit land: the part of its long body the player's
+    /// aiming at, see serpents::focus()
+    fn aim_at_serpents(&mut self, view: &View) {
+        let vpm = view.vpm;
+        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent()) {
+            a.focus = None;
+            let points = match a.coils() {
+                Some(coils) => Some(coils.hit_points(vpm)),
+                None if (a.position - view.eye).norm() < 70.0 * vpm => a.spine(vpm as u32),
+                None => None,
+            };
+            if let Some(points) = points {
+                a.focus = serpents::focus(&points, view.eye, view.forward()).map(|p| p - a.position);
+            }
+        }
+    }
+
     /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
-    fn carry_out(&mut self, look: Look, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
+    #[allow(clippy::too_many_arguments)]
+    fn carry_out(&mut self, look: Look, element: Option<Element>, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
         // What dragons do is their own, see game\dragonfire.rs
         match deed {
@@ -1724,12 +2019,29 @@ impl Game {
                     (Look::Necromancer, Some(Move::Summon)) => Cue::at(Sound::Wail, at, 0.8).pitched(0.5),
                     (Look::Necromancer, Some(Move::Spit)) => Cue::at(Sound::Cast(Element::look(Some(Element::Void)) as u8), at, 0.7).pitched(0.6),
                     (Look::Necromancer, _) => Cue::at(Sound::Wail, at, 0.6).pitched(0.7),
+                    // A serpent's hiss as it rears to strike, deeper as it raises its head to spit
+                    // with its element gathering in its throat, the snow or sand hissing away as it
+                    // dives in, and a loud hiss as it turns on the player or dies
+                    (look, Some(Move::Spit)) if look.is_serpent() => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(look.element()) as u8), at, 0.5).pitched(0.7));
+                        Cue::at(Sound::Hiss, at, 0.8).pitched(serpents::voice(look) * 0.8)
+                    }
+                    (look, Some(Move::Burrow)) if look.is_serpent() => Cue::at(Sound::Slither, at, 0.8).pitched(0.8),
+                    (look, None) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.95).pitched(serpents::voice(look) * vary),
+                    (look, _) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.7).pitched(serpents::voice(look) * vary * 1.1),
                     _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
                 };
                 self.cues.push(cue);
-                // A lurker bursting up out of the water it lay in
-                if look == Look::MireLurker && m.is_none() && water(at.x, at.y) > at.z {
+                // A lurker or a coiler bursting up out of the water it lay in
+                if matches!(look, Look::MireLurker | Look::SiltCoiler) && m.is_none() && water(at.x, at.y) > at.z {
                     self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 0.9);
+                    if look == Look::SiltCoiler {
+                        self.cues.push(Cue::at(Sound::Splash, at, 0.8).pitched(1.1));
+                    }
+                }
+                // A viper rising up out of the grass it lay in, the blades thrown aside
+                if look == Look::ReedViper && m.is_none() {
+                    self.combat.stir(at, 0.9, 0.2, DROP_MUD);
                 }
                 return;
             }
@@ -1739,10 +2051,40 @@ impl Game {
             Some(Build::Drake) => 1.15,
             Some(Build::Spider) => 1.5,
             Some(Build::Treant) => 0.5,
+            _ if look.is_ultra() => 0.5,
             _ => 0.85,
         };
-        let element = look.element();
         match deed {
+            // A great serpent's hiss, deep as its size, and what each move sounds like coming: its
+            // body tightening to coil, its tail swishing up, water or earth churning as it dives,
+            // the ground rumbling where it's coming up, its element gathering in its throat
+            Deed::WindUp(m, at) if look.is_great_serpent() => {
+                let deep = serpents::voice(look);
+                let hiss = Cue::at(Sound::Hiss, at, 1.0).pitched(deep);
+                let cue = match m {
+                    Move::Coil => {
+                        self.cues.push(Cue::at(Sound::Squeeze, at, 0.9).pitched(0.55));
+                        Cue::at(Sound::Slither, at, 1.0).pitched(0.6)
+                    }
+                    Move::Tail => {
+                        self.cues.push(Cue::at(Sound::Slither, at, 0.8).pitched(0.7));
+                        Cue::at(Sound::Swoop, at, 0.9).pitched(0.55)
+                    }
+                    Move::Burrow if serpents::great_of(look).is_some_and(|g| g.medium == serpents::Medium::Water) => Cue::at(Sound::Splash, at, 1.0).pitched(0.6),
+                    Move::Burrow => Cue::at(Sound::Dig, at, 1.0).pitched(0.5),
+                    Move::Erupt => Cue::at(Sound::Rumble, at, 1.0).pitched(0.55),
+                    Move::Spit | Move::Breath | Move::Storm | Move::Cataclysm => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element.unwrap_or(Element::Poison))) as u8), at, 0.8).pitched(0.45));
+                        hiss
+                    }
+                    Move::Charge => {
+                        self.cues.push(Cue::at(Sound::Roar, at, 0.6).pitched(deep * 1.2));
+                        hiss
+                    }
+                    _ => hiss,
+                };
+                self.cues.push(cue);
+            }
             // Each move sounds its own way coming, so it can be told apart
             Deed::WindUp(m, at) => {
                 let cue = match m {
@@ -1770,13 +2112,31 @@ impl Game {
                 self.cues.push(cue);
             }
             Deed::Roar { at, angry } => {
+                // A great serpent's hiss under its roar, water thrown off it as it rears out of it
+                if look.is_great_serpent() {
+                    self.cues.push(Cue::at(Sound::Hiss, at, 1.0).pitched(serpents::voice(look) * 0.85));
+                    if water(at.x, at.y) > at.z - 1.0 * vpm {
+                        self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 1.6);
+                        self.cues.push(Cue::at(Sound::Splash, at, 1.0).pitched(0.5));
+                    }
+                }
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if angry { 1.1 } else { 1.0 }));
                 // A drake spreads its wings as it roars
                 if look.build() == Some(Build::Drake) {
                     self.cues.push(Cue::at(Sound::Flap, at, 0.8).pitched(0.8));
                 }
                 self.shake = self.shake.max(0.6 * felt(at));
-                self.say(if angry { format!("The {} is enraged!", look.name()) } else { format!("The {} turns on you!", look.name()) });
+                self.say(if look.is_ultra() && !angry {
+                    "The water heaves and darkens: Ysveth, the Coil Unending, rises from the deep!".to_owned()
+                } else if angry {
+                    format!("The {} is enraged!", look.name())
+                } else {
+                    format!("The {} turns on you!", look.name())
+                });
+                if look.is_ultra() && !angry {
+                    self.shake = self.shake.max(1.0 * felt(at));
+                    self.cues.push(Cue::at(Sound::Quake, at, 1.0).pitched(0.5));
+                }
             }
             Deed::Slam { at, radius, damage, crater } => {
                 // What's built round it takes the blow too, see raids.rs
@@ -1809,6 +2169,17 @@ impl Game {
                     Look::GraveBrute => {
                         self.shake = self.shake.max(0.35 * felt(at));
                         Cue::at(Sound::Burst, at, 0.8).pitched(0.55)
+                    }
+                    // A serpent's jaws snapping shut where its head lunged to
+                    _ if look.is_serpent() => {
+                        self.cues.push(Cue::at(Sound::Swing, at, 0.5).pitched(1.3));
+                        Cue::at(Sound::Bite, at, 0.9).pitched(serpents::voice(look) * 1.15)
+                    }
+                    // A great serpent's, or its tail or its coils coming down, shaking the ground
+                    _ if look.is_great_serpent() => {
+                        self.shake = self.shake.max(0.5 * felt(at));
+                        self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(0.5));
+                        Cue::at(Sound::Bite, at, 1.0).pitched(serpents::voice(look))
                     }
                     _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
                     _ => {
@@ -1978,8 +2349,20 @@ impl Game {
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * 0.8));
                 self.cues.push(Cue::at(Sound::Quake, at, 0.8).pitched(0.7));
                 self.shake = self.shake.max(0.9 * felt(at));
-                self.combat.craters.push((at, 1.5 * look.size()));
-                self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+                // The Coil Unending sheds its skin for the next realm's element; the ground's left be
+                if look.is_ultra() {
+                    let said = match stage {
+                        1 => "The Coil Unending sheds its skin: storm crackles down its coils, and it rises to strike!",
+                        2 => "The Coil Unending sheds its skin again: blood wells in its scales, and its brood answers its call!",
+                        _ => "The Coil Unending sheds its last skin: frost seizes its coils, and it rages! Its last fury is upon you.",
+                    };
+                    self.cues.push(Cue::at(Sound::Hiss, at, 1.0).pitched(0.3));
+                    self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y).max(at.z)), 1.8);
+                    self.say(said);
+                } else {
+                    self.combat.craters.push((at, 1.5 * look.size()));
+                    self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+                }
             }
             Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
             // A pack answering a howl, the dead clawing up out of the ground, spiderlings swarming
@@ -1989,6 +2372,7 @@ impl Game {
                     Look::Spiderling | Look::Bandit => 4,
                     Look::Skeleton => 3,
                     Look::ArmoredSkeleton | Look::Zombie => 4,
+                    _ if brood.is_serpent() => 3,
                     _ => 2,
                 };
                 let near = self.animals.iter().filter(|a| a.look == brood && a.health > 0.0 && (a.position - at).norm() < 30.0 * vpm).count();
@@ -2000,6 +2384,10 @@ impl Game {
                         if let Some(state) = &mut monster.boss {
                             state.provoke();
                             state.pack = pack;
+                            // A serpent rising up out of the ground or the water it was called from
+                            if brood.is_serpent() {
+                                state.emerge();
+                            }
                         }
                         self.combat.stir(monster.position, 0.8, 0.4, DROP_MUD);
                         self.animals.push(monster);
@@ -2055,17 +2443,23 @@ impl Game {
             }
             // Sand churned up over a burrower tunnelling along, hissing
             Deed::Burrow { at } => {
-                self.combat.stir(at, 0.45, 0.14, DROP_MUD);
+                // Snow thrown up over a drift serpent swimming along under it, or water churned over
+                // a great serpent under it
+                let snow = element == Some(Element::Frost);
+                let kind = if look.swims() && water(at.x, at.y) > at.z { DROP_WATER } else if snow { DROP_ICE } else { DROP_MUD };
+                let size = if look.is_great_serpent() { 1.6 } else { 0.45 };
+                self.combat.stir(at, size, 0.14, kind);
                 self.rng = hash(self.rng);
                 if random(&mut self.rng) < 0.2 {
-                    self.cues.push(Cue::at(Sound::Skitter, at, 0.35).pitched(0.5));
+                    self.cues.push(if look.is_serpent() { Cue::at(Sound::Slither, at, 0.35).pitched(0.9) } else { Cue::at(Sound::Skitter, at, 0.35).pitched(0.5) });
                 }
             }
             // Bursting up out of the sand, throwing whoever's on top of it into the air
             Deed::Erupt { at } => {
-                self.combat.burst_up(at, DROP_MUD);
+                let snow = element == Some(Element::Frost);
+                self.combat.burst_up(at, if snow { DROP_ICE } else { DROP_MUD });
                 self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(1.4));
-                self.cues.push(Cue::at(Sound::Chitter, at, 0.8).pitched(0.8));
+                self.cues.push(if look.is_serpent() { Cue::at(Sound::Hiss, at, 0.9).pitched(serpents::voice(look)) } else { Cue::at(Sound::Chitter, at, 0.8).pitched(0.8) });
                 self.shake = self.shake.max(0.3 * felt(at));
                 if let Some(feet) = player {
                     let off = feet - at;
@@ -2523,8 +2917,14 @@ impl Game {
         let mut cleared = Vec::new();
         let mut k = 0;
         while k < self.animals.len() {
-            // A dragon falls out of the sky and lies a moment where it fell first
-            if self.animals[k].health > 0.0 || crate::dragons::dying(&self.animals[k]) {
+            // A serpent thrashes, rolls over and lies still a moment before it's gone, and a great
+            // serpent crashes down and sinks away
+            let writhing = |a: &Animal| {
+                let throes = if a.look.is_great_serpent() { serpents::GREAT_THROES } else { serpents::DEATH_THROES };
+                (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
+            };
+            // And a dragon falls out of the sky and lies a moment where it fell first
+            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -2537,6 +2937,11 @@ impl Game {
             let burst = animal.health <= animals::BURST * 0.5;
             if look.is_monster() {
                 self.combat.perish(&animal);
+                // A serpent's blood, or the venom it was full of, spilling out along it
+                if look.is_serpent() {
+                    let kind = if look.element() == Some(Element::Poison) { DROP_VENOM } else { DROP_BLOOD };
+                    self.combat.stir(animal.position, 1.2, 0.35, kind);
+                }
                 // A bloater bursts into a cloud of venom, however it died
                 if look == Look::Bloater {
                     self.fumes.push((animal.position, FUMES_SECONDS, 0.3));
@@ -2554,8 +2959,8 @@ impl Game {
                 if !nothing && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
                     loot.push(Item::Gold(if undead { 3 } else { 2 } + (random(&mut self.rng) * if undead { 10.0 } else { 5.0 }) as u32));
                 }
-                if undead && random(&mut self.rng) < 0.06 {
-                    loot.push(self.roll_weapon(1.5));
+                if undead && random(&mut self.rng) < MONSTER_WEAPON {
+                    loot.push(self.roll_weapon(MONSTER_LUCK, false));
                 } else if !nothing && random(&mut self.rng) < 0.1 {
                     loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
                 }
@@ -2597,12 +3002,36 @@ impl Game {
                 }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
-                let raid = look.is_raid() || block.is_some();
-                // Its best weapon's very likely legendary or better, the rest a mix
-                let (lucks, piles, potions): (&[f64], _, _) = if raid { (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3) } else { (&[6.0, 2.5], 1, 1) };
-                let mut loot: Vec<Item> = lucks.iter().map(|&luck| self.roll_weapon(luck)).collect();
+                // Both ultras: the Coil Unending, and the Worldpyre Ancient, see src\dragons.rs
+                let ultra = look.is_ultra() || look == crate::dragons::ULTRA;
+                let raid = look.is_raid() || block.is_some() || ultra;
+                // Its best weapon's the luckiest, a raid boss's very likely with a special attack,
+                // a huge one's, a finale's or an ultra's always, the rest a mix; the Coil Unending
+                // leaves more than any raid boss, and its own fang among it
+                let hoard = if look.is_raid() || ultra || realms::is_finale_key(&boss.key) {
+                    Hoard::Huge
+                } else if raid {
+                    Hoard::Raid
+                } else {
+                    Hoard::Boss
+                };
+                let (piles, potions) = if ultra { (6, 5) } else if raid { (3, 3) } else { (1, 1) };
+                let rolls = hoard_rolls(hoard, &mut self.rng);
+                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon(luck, sure)).collect();
+                // The Coil Unending's fang among it; the Worldpyre Ancient's is put straight into
+                // the player's hands, above
+                if look == Look::Ysveth {
+                    let fang = self.fang();
+                    loot.insert(0, fang);
+                }
                 for _ in 0..piles {
-                    let gold = if raid { 200.0 + 100.0 * random(&mut self.rng) } else { 80.0 + 80.0 * random(&mut self.rng) };
+                    let gold = if ultra {
+                        320.0 + 180.0 * random(&mut self.rng)
+                    } else if raid {
+                        200.0 + 100.0 * random(&mut self.rng)
+                    } else {
+                        80.0 + 80.0 * random(&mut self.rng)
+                    };
                     loot.push(Item::Gold(gold as u32));
                 }
                 loot.extend(std::iter::repeat_n(Item::Potion, potions));
@@ -2610,12 +3039,17 @@ impl Game {
                     Item::Weapon(w) => Some(self.weapons[w].grade),
                     _ => None,
                 }).max().unwrap_or(0);
-                self.scatter(world, middle, animal.position, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
+                // What a serpent that swims leaves is thrown up onto the land round the player,
+                // rather than sinking into the deep water it went down into
+                let around = if look.swims() { self.feet.unwrap_or(animal.position) } else { animal.position };
+                self.scatter(world, middle, around, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
                 self.combat.fell(middle, look.body().1);
                 self.shake = self.shake.max(1.0);
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
-                if let Some(realm) = block {
+                if ultra {
+                    self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
+                } else if let Some(realm) = block {
                     let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
                     self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its hoard spills out, some of it {rarity}!", look.name()));
                 } else if raid {
@@ -2790,11 +3224,41 @@ impl Game {
         self.models_version += 1;
     }
 
-    /// A new weapon rolled with `luck`, as for Library::roll_rarity(), kept among Game::weapons
-    fn roll_weapon(&mut self, luck: f64) -> Item {
+    /// The Coil Unending's own weapon, the one of its kind: a mythic whip whose special is a serpent
+    /// lash or a coil bind if any is, made the same every time, and called by its own name, which
+    /// it keeps in the save, see save::WeaponSave::name
+    fn fang(&mut self) -> Item {
+        let family = self.library.family("whip");
+        let mythic = self.library.rarities.len() - 1;
+        let serpentine = |s: u32| matches!(self.library.special_of(s, family, FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind));
+        // The first seed that makes it of the rarest grade with a serpent's special, or failing
+        // that the first with the special
+        let mut found = None;
+        for seed in (0..20_000u32).map(|k| hash(k ^ 0x7e57_f00d)).filter(|&s| serpentine(s)) {
+            let weapon = self.library.generate(seed, family, FANG_LUCK);
+            let best = weapon.grade == mythic;
+            if best || found.is_none() {
+                found = Some(weapon);
+            }
+            if best {
+                break;
+            }
+        }
+        let mut weapon = found.unwrap_or_else(|| self.library.generate(0x7e57_f00d, family, FANG_LUCK));
+        weapon.name = serpents::FANG.to_owned();
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        Item::Weapon(self.weapons.len() - 1)
+    }
+
+    /// A new weapon rolled with `luck`, as for Library::odds(), kept among Game::weapons: with
+    /// `sure`, one with a special attack
+    fn roll_weapon(&mut self, luck: f64, sure: bool) -> Item {
         self.rng = hash(self.rng ^ 0x1007);
         // Better in the realms further on
-        let weapon = self.library.generate(self.rng, None, luck * self.scaling.luck);
+        let luck = luck * loot_scaling(self.scaling);
+        let seed = if sure { self.library.special_seed(self.rng, None, luck) } else { self.rng };
+        let weapon = self.library.generate(seed, None, luck);
         self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
@@ -3005,7 +3469,7 @@ impl Game {
         let chest = &self.chests[i];
         let key = chest.key;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
-        let weapon = self.library.generate(seed, None, chest.luck * self.scaling.luck);
+        let weapon = self.library.generate(seed, None, chest.luck * loot_scaling(self.scaling));
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
         // A bandits' hoard has what they've taken in it too
         let hoard = chest.hoard;
@@ -3196,9 +3660,15 @@ impl Game {
         }
         let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
         let mut wares = Vec::new();
-        for k in 0..5 {
+        for luck in MERCHANT_LUCKS {
             seed = hash(seed);
-            self.weapons.push(self.library.generate(seed, None, (1.0 + 0.6 * k as f64) * self.scaling.luck));
+            self.weapons.push(self.library.generate(seed, None, luck * loot_scaling(self.scaling)));
+            wares.push(Ware::Weapon(self.weapons.len() - 1));
+        }
+        // And a fine tool, for gathering with, see tools.rs
+        let tool = tools::Tool::ALL[hash(seed ^ 0x7001) as usize % tools::Tool::ALL.len()];
+        if let Some(made) = tools::make(&self.library, tool, tools::FINE) {
+            self.weapons.push(made);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         self.models_version += 1;
@@ -3479,6 +3949,13 @@ impl Game {
         self.combat.lay_pools(world, water, &profile, eye, ahead)
     }
 
+    /// For screenshot runs, `--script shore`: a pool of `element` on the ground at `ground`, as a
+    /// shot of it leaves one, hurting nothing
+    pub fn lay_pool(&mut self, ground: Vector3<f64>, element: Option<Element>) {
+        let profile = self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone();
+        self.combat.lay_pool(ground, element, &profile);
+    }
+
     /// For screenshot runs, `--script far`: every animal within `meters` of `near` gone, so a
     /// spell cast out over the land has nothing to home in on
     pub fn shoo_animals(&mut self, near: Vector3<f64>, meters: f64) {
@@ -3536,7 +4013,9 @@ impl Game {
                 twin => format!("{id}#{twin}"),
             }
         };
-        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed }
+        // The Coil Unending's fang keeps its own name
+        let name = (weapon.name == serpents::FANG).then(|| weapon.name.clone());
+        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed, name }
     }
 
     /// Makes a saved weapon again, kept among Game::weapons: None if the parts it was made of are
@@ -3553,7 +4032,11 @@ impl Game {
         if parts.len() != slots.len() || parts.iter().zip(slots).any(|(&p, slot)| self.library.components[p].slot_type != *slot) {
             return None;
         }
-        self.weapons.push(Weapon::assemble(&self.library, family, parts, saved.seed));
+        let mut weapon = Weapon::assemble(&self.library, family, parts, saved.seed);
+        if let Some(name) = &saved.name {
+            weapon.name = name.clone();
+        }
+        self.weapons.push(weapon);
         Some(self.weapons.len() - 1)
     }
 
@@ -3669,6 +4152,8 @@ impl Game {
         self.raid_lairs.clear();
         self.shrines.clear();
         self.shrine_used = false;
+        self.omens.clear();
+        self.gloom = 0.0;
         self.seed = seed;
     }
 
@@ -3677,7 +4162,7 @@ impl Game {
     pub fn new_character(&mut self, seed: u32) {
         self.slots.clear();
         self.worn = None;
-        self.arm(seed, 1.0);
+        self.arm_anew(seed);
         self.gold = STARTING_GOLD;
         self.bucket = 0.0;
         self.opened.clear();
@@ -3761,6 +4246,8 @@ impl Game {
     pub fn spawn_wildlife(&mut self, world: &World, water: WaterLevel, near: Vector3<f64>) {
         let seed = self.seed;
         self.animals.extend(animals::spawn(world, water, seed, near));
+        let mut rng = hash(seed ^ 0x5e4);
+        self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
         let away = hash(seed ^ 0x3e7) as f64 / u32::MAX as f64 * TAU;
         let stall = near + Vector3::new(away.cos(), away.sin(), 0.0) * 9.0 * world.voxels_per_meter as f64;
         if let Some(merchant) = animals::spawn_merchant(world, water, stall, 4.0, seed ^ 0x3e7) {
@@ -4082,34 +4569,49 @@ impl Game {
         }
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
-        // A dragon's drawn in pieces, all of them or none, see dragons::instances()
-        let mut creatures: Vec<(f64, usize)> = Vec::new();
+        let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
+        let mut pieces = Vec::new();
+        // A dragon's drawn in pieces, all of them or none, see dragons::instances(), as one creature
+        // among the rest, by how near it is
+        let mut dragons: Vec<(f64, usize)> = Vec::new();
         for (k, animal) in self.animals.iter().enumerate() {
             let d = (animal.position - camera).norm();
-            if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, k));
+            // A great serpent's head, jaw and every piece of its long body, see serpents::Coils,
+            // before any but other bosses, the nearest of them first, so however many are about
+            // the one being fought is drawn whole
+            if let Some(coils) = animal.coils() {
+                pieces.clear();
+                coils.instances(vpm, animal.status.tint(), &mut pieces);
+                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+            } else if animal.dragon.is_some() {
+                if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+                    dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
+                }
+            } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
             }
         }
-        creatures.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut order: Vec<(f64, Option<AnimalInstance>, usize)> = creatures.into_iter().map(|(d, i)| (d, Some(i), 0)).chain(dragons.into_iter().map(|(d, k)| (d, None, k))).collect();
+        order.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut room = MAX_INSTANCES / 2;
-        let mut pieces = Vec::new();
-        for (_, k) in creatures {
-            let animal = &self.animals[k];
-            match &animal.dragon {
-                Some(dragon) => {
-                    pieces.clear();
-                    crate::dragons::instances(animal, dragon, vpm, &mut pieces);
-                    if pieces.len() > room {
-                        continue;
-                    }
-                    room -= pieces.len();
-                    out.extend(pieces.iter().copied());
-                }
-                None if room > 0 => {
+        for (_, one, k) in order {
+            match one {
+                Some(instance) if room > 0 => {
                     room -= 1;
-                    out.push(animal.instance(world.voxels_per_meter));
+                    out.push(instance);
                 }
-                None => {}
+                Some(_) => {}
+                None => {
+                    let animal = &self.animals[k];
+                    if let Some(dragon) = &animal.dragon {
+                        pieces.clear();
+                        crate::dragons::instances(animal, dragon, vpm, &mut pieces);
+                        if pieces.len() <= room {
+                            room -= pieces.len();
+                            out.extend(pieces.iter().copied());
+                        }
+                    }
+                }
             }
         }
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
@@ -4139,6 +4641,13 @@ impl Game {
                     near.extend(self.combat.bundle_instances(def.shot(), def.head.unwrap_or(0), def.element, at, pickup.heading).into_iter().map(|i| (d, i)));
                 }
                 _ => {}
+            }
+        }
+        // The Coil Unending's omens, from further off, as they're there to be seen
+        for &(look, position, heading) in &self.omens {
+            let d = (position - camera).norm();
+            if d < 90.0 * vpm {
+                near.push((d, animals::still_instance(look, position, heading, world.voxels_per_meter)));
             }
         }
         // Props are small, so they're only drawn up close
@@ -4221,6 +4730,25 @@ impl Game {
         let shadow = Color32::from_black_alpha(150);
         let faint = Color32::from_white_alpha(140);
         let on_screen = |p: Vector3<f64>| view.project(p).map(|[x, y]| pos2(screen.left() + x as f32 * screen.width(), screen.top() + y as f32 * screen.height()));
+
+        // The sky darkening over the Coil Unending's lair, a bruised gloom closing in from above
+        if self.gloom > 0.01 {
+            let g = self.gloom as f32;
+            let mut mesh = egui::Mesh::default();
+            let bands = [(0.0, 0.62), (0.32, 0.38), (0.62, 0.0)];
+            for pair in bands.windows(2) {
+                let (top, bottom) = (screen.top() + pair[0].0 * screen.height(), screen.top() + pair[1].0 * screen.height());
+                let first = mesh.vertices.len() as u32;
+                let shade = |a: f32| Color32::from_rgba_unmultiplied(18, 10, 28, (a * g * 255.0) as u8);
+                mesh.colored_vertex(pos2(screen.left(), top), shade(pair[0].1));
+                mesh.colored_vertex(pos2(screen.right(), top), shade(pair[0].1));
+                mesh.colored_vertex(pos2(screen.right(), bottom), shade(pair[1].1));
+                mesh.colored_vertex(pos2(screen.left(), bottom), shade(pair[1].1));
+                mesh.add_triangle(first, first + 1, first + 2);
+                mesh.add_triangle(first, first + 2, first + 3);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
 
         // Health bars over animals that were just hurt
         let vpm = view.vpm;
@@ -4449,9 +4977,13 @@ impl Game {
                 painter.text(label + vec2(1.0, 1.0), Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), shadow);
                 painter.text(label, Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), Color32::WHITE);
             }
-            // The Dragon realm's finale has a bar of its own, longer and thicker still
-            let ultra = foe == crate::dragons::ULTRA;
-            let name = if ultra {
+            // An ultra's bar is the biggest of all, across most of the view: the Coil Unending's in
+            // the color of the element its body's taken on, its stages marked across it, and the
+            // Worldpyre Ancient's with its phases
+            let ultra = foe.is_ultra() || foe == crate::dragons::ULTRA;
+            let name = if foe == Look::Ysveth {
+                "ULTRA  ·  YSVETH, THE COIL UNENDING".to_owned()
+            } else if ultra {
                 format!("ULTRA  ·  {}", foe.name())
             } else if foe.is_raid() {
                 format!("RAID  ·  {}", foe.name())
@@ -4459,30 +4991,40 @@ impl Game {
                 foe.name().to_string()
             };
             // A raid boss's bar is longer
-            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 1300.0);
+            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
+            let tall = if ultra { 18.0 } else { 12.0 };
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
             let flash = flash as f32;
             let jolt = (self.combat.time() * 90.0).sin() as f32 * 4.0 * flash;
-            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, if ultra { 20.0 } else { 12.0 }));
+            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, tall));
             let title = if enraged { format!("{name}  —  enraged") } else { name.to_string() };
             let at = pos2(center.x, back.top() - 6.0);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
+            let size = if ultra { 23.0 } else { 19.0 };
+            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(size), shadow);
+            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
             painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
             if flash > 0.0 {
                 painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
             }
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(190), red(40), red(35)));
+            let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
+            let [r, g, b] = element.map_or([190, 40, 35], |e| e.color().map(|c| (c as f32 * 0.85) as u8));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
             // Where a raid boss goes into its next phases, marked across the bar
-            if foe.is_raid() {
-                let marks: &[f64] = if foe.is_dragon() { crate::dragons::phases(foe) } else { &[0.66, 0.33] };
-                for &mark in marks {
-                    let x = back.left() + width * mark as f32;
-                    painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
-                }
+            let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {
+                crate::dragons::phases(foe)
+            } else if ultra {
+                &serpents::ULTRA_STAGES
+            } else if foe.is_raid() {
+                &[0.66, 0.33]
+            } else {
+                &[]
+            };
+            for &mark in marks {
+                let x = back.left() + width * mark as f32;
+                painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
             }
         }
 
@@ -4619,9 +5161,10 @@ impl Game {
 
     /// The inventory: everything carried as a grid of icons, the quick bar along the top, and the
     /// card of what's clicked on, with what can be done with it
-    pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool) {
+    pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool, crafting: &mut tools::Crafting) {
         let mut chosen = None;
         let mut deed = None;
+        let mut made = None;
         egui::Window::new("Inventory")
             .open(open)
             .collapsible(false)
@@ -4629,6 +5172,11 @@ impl Game {
             // Just under the quick bar
             .anchor(Align2::CENTER_TOP, [0.0, 100.0])
             .show(ctx, |ui| {
+                // What's carried, or making tools from what's been gathered, see tools.rs
+                if tools::tabs(ui, crafting) {
+                    made = tools::craft_tab(ui, crafting, &|tool| self.best_tool(tool));
+                    return;
+                }
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong());
                     ui.separator();
@@ -4735,6 +5283,15 @@ impl Game {
             Some(Deal::Wear(slot)) => self.wear(slot),
             Some(Deal::TakeOff) => self.take_off(),
             _ => {}
+        }
+        // A tool made, paid for with what's been gathered
+        if let Some((tool, grade)) = made
+            && let Some(weapon) = tools::make(&self.library, tool, grade)
+            && crafting.materials.take(tools::cost(tool, grade))
+        {
+            self.say(format!("Crafted a {}. Hold it and click at what it's for to gather it.", weapon.name));
+            self.give_weapon(weapon);
+            self.cues.push(Cue::here(Sound::Place, 0.8).pitched(1.2));
         }
     }
 
@@ -5677,6 +6234,245 @@ mod tests {
         }
     }
 
+    /// How rare what each source of weapons gives is, rolled as each rolls it many times over: how
+    /// many of its weapons are epic, legendary and mythic, how many have a special attack, and how
+    /// many special weapons there are to each kill, chest, boss, stall and kit, in the normal world
+    /// and each realm. To look at: cargo test --release loot_odds -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn loot_odds() {
+        let library = Library::load();
+        let at = |id: &str| library.rarities.iter().position(|r| r.id == id).unwrap();
+        let (epic, legendary, mythic) = (at("epic"), at("legendary"), at("mythic"));
+        // What a lot of weapons from one source come to, a lot at a time: a monster's drop, a
+        // chest, a boss's hoard, a stall, a kit. Each weapon is its grade and whether it has a
+        // special attack.
+        #[derive(Default)]
+        struct Tally {
+            weapons: usize,
+            grades: [usize; 6],
+            specials: usize,
+            lots: usize,
+            lots_with: usize,
+        }
+        impl Tally {
+            fn add(&mut self, lot: &[(usize, bool)]) {
+                for &(grade, special) in lot {
+                    self.weapons += 1;
+                    self.grades[grade.min(5)] += 1;
+                    self.specials += special as usize;
+                }
+                self.lots += 1;
+                self.lots_with += lot.iter().any(|w| w.1) as usize;
+            }
+            fn share(&self, n: usize) -> f64 {
+                n as f64 / self.weapons.max(1) as f64
+            }
+            /// Of its weapons, how many have a special attack
+            fn special(&self) -> f64 {
+                self.share(self.specials)
+            }
+            /// Special weapons to each lot
+            fn per_lot(&self) -> f64 {
+                self.specials as f64 / self.lots.max(1) as f64
+            }
+        }
+        let sample = |lots: usize, seed: u32, make: &mut dyn FnMut(&mut u32) -> Vec<(usize, bool)>| {
+            let mut tally = Tally::default();
+            let mut rng = hash(seed ^ 0x1007_0dd5);
+            for _ in 0..lots {
+                tally.add(&make(&mut rng));
+            }
+            tally
+        };
+        // A weapon as Game::roll_weapon() rolls it, `luck` with a realm's scaling
+        let rolled = |rng: &mut u32, luck: f64, sure: bool| {
+            *rng = hash(*rng ^ 0x1007);
+            let seed = if sure { library.special_seed(*rng, None, luck) } else { *rng };
+            let (_, grade, special) = library.preview(seed, None, &library.odds(luck));
+            (grade, special.is_some())
+        };
+        // As Game::open_chest() rolls what's in one with `luck`, its seed where it is
+        let chest = |rng: &mut u32, luck: f64| {
+            *rng = hash(*rng);
+            let (_, grade, special) = library.preview(*rng, None, &library.odds(luck));
+            vec![(grade, special.is_some())]
+        };
+        let pct = |x: f64| format!("{:.2}%", 100.0 * x);
+        let one_in = |x: f64| if x > 0.0 { format!("{:.1}", 1.0 / x) } else { "never".into() };
+        let row = |name: &str, luck: &str, t: &Tally| {
+            println!(
+                "| {name} | {luck} | {} | {} | {} | {} | {} | **{}** | 1 in {} | {:.3} | {} |",
+                t.weapons / t.lots.max(1),
+                pct(t.share(t.grades[epic])),
+                pct(t.share(t.grades[legendary])),
+                pct(t.share(t.grades[mythic])),
+                pct(t.share(t.grades[epic..].iter().sum())),
+                pct(t.special()),
+                one_in(t.special()),
+                t.per_lot(),
+                pct(t.lots_with as f64 / t.lots.max(1) as f64),
+            );
+        };
+        // Chests about the land, the luck worldgen gives them: on top, in the ruins and such, see
+        // worldgen.rs; down in the dungeons and the fallen cities; the crystal chests of caves
+        // behind waterfalls and the hoards of a fallen castle's court and a fallen city's lord;
+        // and the hoards of bandits' camps, as worldgen\camps.rs lucks them by their band
+        let plain: [(&str, f64); 8] = [("pyramid", 2.0), ("pyramid top", 1.4), ("shrine", 1.2), ("castle", 1.3), ("flooded church", 1.6), ("desert ruins", 1.2), ("colonnade", 1.1), ("watchtower", 1.3)];
+        let deep: [(&str, f64); 3] = [("dungeon side hall", 1.7), ("dungeon boss hall", 2.6), ("fallen city house", 2.2)];
+        let lucky: [(&str, f64); 3] = [("crystal cave", 4.0), ("fallen castle court", 4.5), ("fallen city lord", 5.0)];
+        let hoards: [(&str, f64); 3] = [("small band", 3.75), ("usual band", 4.5), ("band with a warlord", 5.5)];
+        let mean = |tallies: &[Tally], f: &dyn Fn(&Tally) -> f64| tallies.iter().map(f).sum::<f64>() / tallies.len() as f64;
+        let header = || {
+            println!("| source | luck | weapons each | epic | legendary | mythic | epic or better | special | special weapons | specials each | with a special |");
+            println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        };
+        println!("\nWhat each source of weapons gives, in the normal world:\n");
+        header();
+        let monster = sample(400_000, 1, &mut |rng| vec![rolled(rng, MONSTER_LUCK, false)]);
+        row("monster drop", &format!("{MONSTER_LUCK}"), &monster);
+        let mut plain_tallies = Vec::new();
+        for (k, (name, luck)) in plain.iter().enumerate() {
+            let t = sample(60_000, 10 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("chest: {name}"), &format!("{luck}"), &t);
+            plain_tallies.push(t);
+        }
+        let mut deep_tallies = Vec::new();
+        for (k, (name, luck)) in deep.iter().enumerate() {
+            let t = sample(60_000, 20 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("deep chest: {name}"), &format!("{luck}"), &t);
+            deep_tallies.push(t);
+        }
+        let mut lucky_tallies = Vec::new();
+        for (k, (name, luck)) in lucky.iter().enumerate() {
+            let t = sample(60_000, 30 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("lucky chest: {name}"), &format!("{luck}"), &t);
+            lucky_tallies.push(t);
+        }
+        let mut hoard_tallies = Vec::new();
+        for (k, (name, luck)) in hoards.iter().enumerate() {
+            let t = sample(60_000, 40 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("bandits' hoard: {name}"), &format!("{luck}"), &t);
+            hoard_tallies.push(t);
+        }
+        let hoard = |of: Hoard, scale: f64, lots: usize, seed: u32| sample(lots, seed, &mut |rng| hoard_rolls(of, rng).into_iter().map(|(luck, sure)| rolled(rng, luck * scale, sure)).collect());
+        let lucks = |l: &[f64]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+        let boss = hoard(Hoard::Boss, 1.0, 40_000, 50);
+        row("lesser boss", &lucks(&BOSS_LUCKS), &boss);
+        let raid = hoard(Hoard::Raid, 1.0, 20_000, 51);
+        row("realm raid boss", &lucks(&RAID_LUCKS), &raid);
+        let huge = hoard(Hoard::Huge, 1.0, 20_000, 52);
+        row("huge raid boss, finale", &lucks(&RAID_LUCKS), &huge);
+        let merchant = |scale: f64, lots: usize| {
+            sample(lots, 60, &mut |rng| {
+                MERCHANT_LUCKS
+                    .iter()
+                    .map(|luck| {
+                        *rng = hash(*rng);
+                        let (_, grade, special) = library.preview(*rng, None, &library.odds(luck * scale));
+                        (grade, special.is_some())
+                    })
+                    .collect()
+            })
+        };
+        let stall = merchant(1.0, 40_000);
+        row("merchant's stall", &lucks(&MERCHANT_LUCKS), &stall);
+        let mut royal = Tally::default();
+        for seed in 0..300u32 {
+            royal.add(&royal_weapons(&library, hash(seed ^ 0x9e11)).iter().map(|w| (w.grade, w.profile.special.is_some())).collect::<Vec<_>>());
+        }
+        row("royal armoury", "its own", &royal);
+        let mut start = Tally::default();
+        for seed in 0..4000u32 {
+            start.add(&kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST)).iter().map(|(family, seed, odds)| library.preview(*seed, Some(*family), odds)).map(|(_, g, s)| (g, s.is_some())).collect::<Vec<_>>());
+        }
+        row("new player's kit", &format!("{KIT_LUCK}, none rarer than {}", library.rarities[KIT_RAREST].id), &start);
+        let worst = (0..4000u32).map(|seed| kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST)).iter().filter(|(f, s, o)| library.preview(*s, Some(*f), o).2.is_some()).count()).max().unwrap_or(0);
+
+        println!("\nSpecial weapons to expect:\n");
+        println!("- per 100 of the dead or bandits killed: {:.2} ({} of them drop a weapon)", 100.0 * MONSTER_WEAPON * monster.special(), pct(MONSTER_WEAPON));
+        println!("- per 10 chests on top: {:.2}; in dungeons and fallen cities: {:.2}; lucky ones: {:.2}; bandits' hoards: {:.2}", 10.0 * mean(&plain_tallies, &Tally::special), 10.0 * mean(&deep_tallies, &Tally::special), 10.0 * mean(&lucky_tallies, &Tally::special), 10.0 * mean(&hoard_tallies, &Tally::special));
+        println!("- per lesser boss: {:.2}; per realm raid boss: {:.2}; per huge raid boss or finale: {:.2}", boss.per_lot(), raid.per_lot(), huge.per_lot());
+        println!("- per merchant: {:.2}; per royal armoury: {:.2}", stall.per_lot(), royal.per_lot());
+        println!("- in a new player's kit of {}: {:.2}, at most {worst}", KIT.len(), start.per_lot());
+
+        println!("\nHow many have a special attack in each realm, its loot luckier by its scaling:\n");
+        println!("| realm | luck | monster drop | chest on top | deep chest | lucky chest | bandits' hoard | lesser boss, specials each | realm raid boss | huge raid boss | merchant's stalls with one |");
+        println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let scale = loot_scaling(realm.scaling);
+            let seed = 100 + 10 * r as u32;
+            let monster = sample(100_000, seed, &mut |rng| vec![rolled(rng, MONSTER_LUCK * scale, false)]);
+            let chests = |set: &[(&str, f64)]| set.iter().enumerate().map(|(k, (_, luck))| sample(20_000, seed + k as u32, &mut |rng| chest(rng, luck * scale))).collect::<Vec<_>>();
+            let (p, d, l, h) = (chests(&plain), chests(&deep), chests(&lucky), chests(&hoards));
+            let stall = merchant(scale, 10_000);
+            println!(
+                "| {} | {scale:.2} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | {:.2} | {:.2} | {:.2} | {} |",
+                realm.name,
+                one_in(monster.special()),
+                one_in(mean(&p, &Tally::special)),
+                one_in(mean(&d, &Tally::special)),
+                one_in(mean(&l, &Tally::special)),
+                one_in(mean(&h, &Tally::special)),
+                hoard(Hoard::Boss, scale, 10_000, seed).per_lot(),
+                hoard(Hoard::Raid, scale, 5_000, seed).per_lot(),
+                hoard(Hoard::Huge, scale, 5_000, seed).per_lot(),
+                pct(stall.lots_with as f64 / stall.lots as f64),
+            );
+        }
+    }
+
+    /// The Coil Unending slain stays slain: its lair's beaten in the save, so it never rises again
+    /// once the world's built afresh round it, and its fang, the one of its kind, keeps its name
+    /// through the save
+    #[test]
+    fn the_coil_unending_stays_beaten() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(32.0, 32.0, 16.0));
+        let ground = Vector3::new(32.0, 32.0, 16.0);
+        let lair = |key: [i64; 3]| Lair { look: Look::Ysveth, position: ground, key, raid: None };
+        let key = [1234, -5678, serpents::ULTRA_KEY];
+        game.set_lairs(&world, &dry, vec![lair(key)]);
+        assert!(game.animals.iter().any(|a| a.look.is_ultra()), "it's there to fight");
+        // Slain, it writhes, then falls
+        for a in game.animals.iter_mut().filter(|a| a.look.is_ultra()) {
+            a.health = 0.0;
+        }
+        game.reap(&world);
+        assert!(game.animals.iter().any(|a| a.look.is_ultra()), "it's still going down");
+        for a in game.animals.iter_mut().filter(|a| a.look.is_ultra()) {
+            a.boss.as_mut().unwrap().dying = Some(serpents::GREAT_THROES);
+        }
+        game.reap(&world);
+        assert!(!game.animals.iter().any(|a| a.look.is_ultra()));
+        assert!(game.is_defeated(&key));
+        let fang = game.pickups.iter().find_map(|p| if let Item::Weapon(w) = p.item { (game.weapons[w].name == serpents::FANG).then_some(w) } else { None }).expect("its fang among its hoard");
+        // A whip of the rarest grade, with a serpent's special
+        let weapon = &game.weapons[fang];
+        assert_eq!(weapon.grade, game.library.rarities.len() - 1, "its fang's mythic");
+        assert_eq!(game.library.families[weapon.family].id, "whip");
+        assert!(matches!(game.library.special_of(weapon.seed, Some(weapon.family), FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind)), "with a serpent's special");
+        game.add_item(Item::Weapon(fang), 1);
+        // Through the file's own form and back, into another game
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, ground);
+        other.restore(&carried, &done, game.vitals());
+        assert!(other.is_defeated(&key));
+        assert!(other.weapons.iter().any(|w| w.name == serpents::FANG), "its fang keeps its name");
+        // The world built afresh round its lair: it doesn't rise again, though another would
+        other.animals.retain(|a| !a.look.is_great_serpent());
+        other.set_lairs(&world, &dry, vec![lair(key)]);
+        assert!(!other.animals.iter().any(|a| a.look.is_ultra()));
+        other.set_lairs(&world, &dry, vec![lair([1, 2, serpents::ULTRA_KEY])]);
+        assert!(other.animals.iter().any(|a| a.look.is_ultra()));
+    }
+
     /// What's carried and what's been done, saved and restored into another game, is all there
     /// again as it was, weapons made of the same parts with the same names
     #[test]
@@ -5728,5 +6524,83 @@ mod tests {
         assert_eq!(other.gold, STARTING_GOLD);
         assert!(other.defeated.is_empty() && other.opened.is_empty() && other.stocks.is_empty());
         assert_eq!(other.health, MAX_HEALTH);
+    }
+
+    /// A saved weapon's made again of the parts it was saved with, never rolled again, so however
+    /// the odds of what rolls change, a save from before keeps every weapon it has just as it was,
+    /// those carried and those on the stalls looked at
+    #[test]
+    fn saved_weapons_stay_the_same_whatever_the_odds() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.arm(31, 60.0);
+        game.stock([10, 11, 12]);
+        let (carried, done) = (game.carried_save(), game.world_save());
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        // Odds nothing like them: every part mythic
+        let top = other.library.rarities.len() - 1;
+        for (k, rarity) in other.library.rarities.iter_mut().enumerate() {
+            rarity.chance = if k == top { 1.0 } else { 0.0 };
+        }
+        other.restore(&carried, &done, game.vitals());
+        assert_eq!(other.carried_save(), carried);
+        assert_eq!(other.world_save(), done);
+        let made = |g: &Game| {
+            let wares = g.stocks.values().flatten().filter_map(|w| if let Ware::Weapon(i) = w { Some(*i) } else { None });
+            let carried = g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w) } else { None });
+            carried.chain(wares).map(|w| &g.weapons[w]).map(|w| (w.name.clone(), w.grade, w.parts.clone(), format!("{:?}", w.profile.stats), w.profile.special.as_ref().map(|s| s.0))).collect::<Vec<_>>()
+        };
+        assert_eq!(made(&other), made(&game));
+        assert!(made(&game).len() >= KIT.len() + MERCHANT_LUCKS.len());
+    }
+
+    /// What a new player starts with is plain: one of each kind of weapon in KIT, common to rare
+    /// and nothing with a special attack, however many kits are rolled
+    #[test]
+    fn new_players_start_with_plain_gear() {
+        let library = Library::load();
+        for seed in 0..300u32 {
+            let kit = kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST));
+            assert_eq!(kit.len(), KIT.len());
+            for (family, seed, odds) in &kit {
+                let (f, grade, special) = library.preview(*seed, Some(*family), odds);
+                assert!(f == *family && grade <= KIT_RAREST && special.is_none(), "{} from {seed}", library.families[f].id);
+            }
+        }
+        // As the game arms them
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 12, Vector3::new(4.0, 4.0, 4.0));
+        let weapons: Vec<&Weapon> = game.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(&game.weapons[*w]) } else { None }).collect();
+        assert_eq!(weapons.len(), KIT.len());
+        assert!(weapons.iter().all(|w| w.grade <= KIT_RAREST && w.profile.special.is_none() && w.parts.iter().all(|&p| library.components[p].tier <= KIT_RAREST)));
+    }
+
+    /// The hoard of every huge raid boss and finale has a weapon with a special attack in it,
+    /// first, most realm raid bosses' do, and a lesser boss's only now and then
+    #[test]
+    fn raid_bosses_leave_special_weapons() {
+        let library = Library::load();
+        let mut rng = 7;
+        let mut sure = [0usize; 3];
+        for hoard in [Hoard::Boss, Hoard::Raid, Hoard::Huge] {
+            for _ in 0..2000 {
+                let rolls = hoard_rolls(hoard, &mut rng);
+                assert_eq!(rolls.len(), if hoard == Hoard::Boss { BOSS_LUCKS.len() } else { RAID_LUCKS.len() });
+                assert!(rolls.iter().skip(1).all(|r| !r.1), "only the best is sure to have one");
+                sure[hoard as usize] += rolls[0].1 as usize;
+            }
+        }
+        assert_eq!(sure[Hoard::Boss as usize], 0);
+        assert!((1400..1800).contains(&sure[Hoard::Raid as usize]), "{sure:?}");
+        assert_eq!(sure[Hoard::Huge as usize], 2000);
+        // And that one has, however lucky it's rolled
+        for seed in 0..200u32 {
+            for luck in [RAID_LUCKS[0], RAID_LUCKS[0] * loot_scaling(realms::REALMS[realms::REALM_COUNT - 1].scaling)] {
+                let s = library.special_seed(hash(seed), None, luck);
+                assert!(library.special_of(s, None, luck).is_some(), "{seed} at {luck}");
+            }
+        }
     }
 }

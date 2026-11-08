@@ -183,6 +183,10 @@ pub struct WeaponSave {
     pub family: String,
     pub parts: Vec<String>,
     pub seed: u32,
+    /// What a weapon like no other is called, as the Coil Unending's fang, see
+    /// serpents::FANG: the rest are called what their parts make them
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// What's been done in one world that stays done, each by where it is in the whole landscape, as
@@ -249,12 +253,48 @@ pub struct RealmsSave {
     pub placed: Vec<u32>,
     /// Times the journey's been made through to the end
     pub completed: u32,
+    /// Where the Innert Gate stands in the normal world. A game from before it was built by the
+    /// player has it standing where it was found.
+    #[serde(default = "GateSave::found")]
+    pub gate: GateSave,
+    /// The portals home the player's built in the realms past the normal world, one a realm
+    pub portals: Vec<PortalSave>,
+    /// Whether the old foundation stones are laid where the gate once stood, see session.rs
+    pub ruins: bool,
 }
 
 impl Default for RealmsSave {
     fn default() -> Self {
-        RealmsSave { realm: 0, unlocked: vec![0], visited: vec![0], placed: Vec::new(), completed: 0 }
+        RealmsSave { realm: 0, unlocked: vec![0], visited: vec![0], placed: Vec::new(), completed: 0, gate: GateSave::Unbuilt, portals: Vec::new(), ruins: false }
     }
+}
+
+/// Where the Innert Gate stands, see realms.rs. What's been set into it is kept with the journey,
+/// not with it, so building it anew elsewhere moves it with all that.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GateSave {
+    /// Not built yet, as in a new game
+    Unbuilt,
+    /// Where it stood when it was found, before the player could build it
+    Found,
+    /// Built by the player: where its foot is, in meters from the corner of the whole landscape,
+    /// and which way its front faces, in radians
+    Built { at: [f64; 2], facing: f64 },
+}
+
+impl GateSave {
+    fn found() -> GateSave {
+        GateSave::Found
+    }
+}
+
+/// A portal home the player's built in realm `realm`, where it is as for GateSave::Built
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct PortalSave {
+    pub realm: u32,
+    pub at: [f64; 2],
+    pub facing: f64,
 }
 
 impl Save {
@@ -475,7 +515,7 @@ mod tests {
                 cleared: vec![[7, 8, 9], [-1, -2, -3]],
                 stocks: vec![StockSave {
                     key: [5, 5, 12],
-                    wares: vec![WareSave::Weapon(WeaponSave { family: "sword".into(), parts: vec!["a".into(), "b".into()], seed: 99 }), WareSave::Goods { item: ItemSave::Bread, left: 4 }],
+                    wares: vec![WareSave::Weapon(WeaponSave { family: "sword".into(), parts: vec!["a".into(), "b".into()], seed: 99, name: None }), WareSave::Goods { item: ItemSave::Bread, left: 4 }],
                 }],
                 craters: vec![([10.0, 20.5, 30.25], 2.5)],
                 stains: vec![([1.0, 2.0, 3.0], 1.5, 7, true)],
@@ -495,7 +535,7 @@ mod tests {
                 selected: 2,
                 bucket: 0.5,
                 slots: vec![
-                    SlotSave { item: ItemSave::Weapon(WeaponSave { family: "bow".into(), parts: vec!["x".into()], seed: 7 }), count: 1 },
+                    SlotSave { item: ItemSave::Weapon(WeaponSave { family: "bow".into(), parts: vec!["x".into()], seed: 7, name: Some("Fang of Ysveth".into()) }), count: 1 },
                     SlotSave { item: ItemSave::Ammo { id: "broadhead_arrows".into(), rounds: 12 }, count: 1 },
                     SlotSave { item: ItemSave::Apple, count: 3 },
                     SlotSave { item: ItemSave::Bucket, count: 1 },
@@ -504,7 +544,7 @@ mod tests {
             },
             world: "normal".into(),
             worlds,
-            realms: Some(RealmsSave { realm: 0, unlocked: vec![0, 1], visited: vec![0, 1], placed: vec![3], completed: 0 }),
+            realms: Some(RealmsSave { realm: 0, unlocked: vec![0, 1], visited: vec![0, 1], placed: vec![3], completed: 0, ..Default::default() }),
             sections: BTreeMap::new(),
         };
         save.set_section("bases", &vec![[1, 2, 3]]);
