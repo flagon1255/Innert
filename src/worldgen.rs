@@ -2739,6 +2739,32 @@ pub fn find_climate(settings: &TerrainSettings, kind: &str, near: [f32; 2]) -> O
     None
 }
 
+/// Whether `at`, in meters, is dry land a few meters round, a little over the sea and not steep:
+/// room for something to stand on, as the gate to the realms or a raid boss's lair, see realms.rs.
+/// Only the land's shape is looked at, not the rivers cut into it, which are narrow.
+pub fn is_dry_land(settings: &TerrainSettings, at: [f32; 2]) -> bool {
+    let sea = sea_level_m(settings);
+    let h = height_at(settings, at[0], at[1]);
+    let round = [[3.0, 0.0], [-3.0, 0.0], [0.0, 3.0], [0.0, -3.0]].map(|[dx, dy]| height_at(settings, at[0] + dx, at[1] + dy));
+    h > sea + 1.5 && round.iter().all(|&r| r > sea + 1.0 && (r - h).abs() < 1.6)
+}
+
+/// The nearest dry land to `near` within `within` meters, see is_dry_land(), looking in rings
+/// four meters apart
+pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32) -> Option<[f32; 2]> {
+    for ring in 0..=(within / 4.0) as usize {
+        let count = (ring * 6).max(1);
+        for i in 0..count {
+            let angle = i as f32 / count as f32 * TAU;
+            let at = [near[0] + angle.cos() * ring as f32 * 4.0, near[1] + angle.sin() * ring as f32 * 4.0];
+            if is_dry_land(settings, at) {
+                return Some(at);
+            }
+        }
+    }
+    None
+}
+
 fn is_grassy(material: u8) -> bool {
     matches!(material, GRASS | JUNGLE_GRASS)
 }

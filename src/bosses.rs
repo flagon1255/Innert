@@ -1126,7 +1126,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         Phase::Roam => {
             // Healing back up, wandering round home, keeping with the rest of its pack. A burrower
             // digs back in, and a lurker sinks back down to wait.
-            a.health = (a.health + look.health() * 0.05 * dt).min(look.health());
+            a.health = (a.health + a.max_health * 0.05 * dt).min(a.max_health);
             if look == Look::DuneBurrower && !boss.buried {
                 boss.buried = true;
                 boss.deeds.push(Deed::Burrow { at: a.position });
