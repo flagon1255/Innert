@@ -65,12 +65,15 @@ use winit_input_helper::WinitInputHelper;
 
 mod animals;
 mod audio;
+mod bases;
+mod building;
 mod bosses;
 mod camera;
 mod combat;
 mod daynight;
 mod effects;
 mod game;
+mod gather;
 mod gpu_timing;
 mod hot_reload;
 mod leaves;
@@ -1194,6 +1197,12 @@ struct App {
     water_pipeline: HotReloadComputePipeline,
     /// Works out again how far empty bricks skip where strips join the world, see skips.rs
     skips_pipeline: HotReloadComputePipeline,
+    /// Makes empty bricks round what's just been built skip no further than it, see building.rs
+    builds_pipeline: HotReloadComputePipeline,
+    /// What's been built and dug, and what's carried to build with, see bases.rs, and the building
+    /// and gathering going on, see building.rs
+    bases: bases::Bases,
+    building: building::Building,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
     sun_map: Arc<ImageView>,
@@ -1703,12 +1712,13 @@ struct Pipelines {
     water: HotReloadComputePipeline,
     shafts: HotReloadComputePipeline,
     skips: HotReloadComputePipeline,
+    builds: HotReloadComputePipeline,
 }
 
 impl Pipelines {
     // Read from where they are while working on them, so they reload when changed. Copies are
     // built in for running elsewhere.
-    const SHADERS: [(&str, &str); 7] = [
+    const SHADERS: [(&str, &str); 8] = [
         ("traverse.comp", include_str!("../shaders/traverse.comp")),
         ("post.comp", include_str!("../shaders/post.comp")),
         ("resample.comp", include_str!("../shaders/resample.comp")),
@@ -1716,6 +1726,7 @@ impl Pipelines {
         ("water.comp", include_str!("../shaders/water.comp")),
         ("shafts.comp", include_str!("../shaders/shafts.comp")),
         ("skips.comp", include_str!("../shaders/skips.comp")),
+        ("builds.comp", include_str!("../shaders/builds.comp")),
     ];
 
     fn path(name: &str) -> PathBuf {
@@ -1734,7 +1745,7 @@ impl Pipelines {
             let device = device.clone();
             std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
         });
-        let [render, post, resample, upscale, water, shafts, skips] = making;
+        let [render, post, resample, upscale, water, shafts, skips, builds] = making;
         Some(Pipelines {
             render: render.join().ok()?,
             post: post.join().ok()?,
@@ -1743,6 +1754,7 @@ impl Pipelines {
             water: water.join().ok()?,
             shafts: shafts.join().ok()?,
             skips: skips.join().ok()?,
+            builds: builds.join().ok()?,
         })
     }
 }
@@ -2244,7 +2256,7 @@ impl App {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
-        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline } = pipelines;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline, builds: builds_pipeline } = pipelines;
         let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory } = placed;
         let stream = scene.is_terrain().then(|| stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, memory_allocator.clone()));
         // The water has what it needs of it now
@@ -2454,6 +2466,9 @@ impl App {
             upscale_pipeline,
             water_pipeline,
             skips_pipeline,
+            builds_pipeline,
+            bases: bases::Bases::new(),
+            building: building::Building::default(),
 
             sun_map,
             sun_map_for: None,
@@ -3738,9 +3753,13 @@ impl App {
         if playing && !self.focused && !self.inventory_open && !self.game.shopping() && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
         } else if playing && self.focused && !self.game.dead() {
+            // Gathering with G, and building with B, which takes the mouse and the keys for picking
+            // what to build, see building.rs
+            let building = self.loaded_scene.is_terrain() && self.update_building(delta_time);
             let bucket = self.game.holding_bucket() && !self.game.has_target();
-            let armed = self.game.holding_weapon();
-            if armed {
+            let armed = self.game.holding_weapon() && !building;
+            if building {
+            } else if armed {
                 controls = combat::Controls {
                     attack: self.input.mouse_pressed(MouseButton::Left),
                     holding: self.input.mouse_held(MouseButton::Left),
@@ -3758,14 +3777,17 @@ impl App {
             if self.input.key_pressed(KeyCode::KeyT) {
                 self.game.switch_ammo();
             }
-            if self.input.key_pressed(KeyCode::KeyE) {
+            // Building, E mends what's damaged
+            if self.input.key_pressed(KeyCode::KeyE) && building {
+                self.mend_here();
+            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
                 if self.game.shopping() {
                     self.set_focus(false);
                 }
             }
-            if self.input.mouse_pressed(MouseButton::Right) && !armed {
+            if self.input.mouse_pressed(MouseButton::Right) && !armed && !building {
                 if self.game.holding_bucket() {
                     self.pour_water(eye, look);
                 } else {
@@ -3776,12 +3798,12 @@ impl App {
                 KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5,
                 KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
             ];
-            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)) {
+            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)).filter(|_| !building) {
                 self.game.select(slot);
             }
             // On foot the wheel goes through what's carried, flying it zooms
             let wheel = self.input.scroll_diff().1;
-            if self.focused && self.player.is_some() && wheel != 0.0 {
+            if self.focused && self.player.is_some() && wheel != 0.0 && !building {
                 self.game.scroll(if wheel < 0.0 { 1 } else { -1 });
             }
         }
@@ -3807,14 +3829,19 @@ impl App {
             // Explosions blowing holes in the world, and splashing stains on it, sent to the GPU
             // all together
             self.batching = true;
+            let mut struck = Vec::new();
             for (center, radius) in self.game.take_craters() {
                 self.blast(center, radius);
+                struck.push((center, radius, true));
             }
             let start = Instant::now();
             for (center, radius, material, burn) in self.game.take_stains() {
                 self.stain(center, radius, material, burn);
+                struck.push((center, radius, false));
             }
             self.slow("splashing stains", start);
+            // What's built is damaged by blasts rather than holed, see building.rs
+            self.blasted(&struck);
             self.batching = false;
             let start = Instant::now();
             self.flush_edits();
@@ -4413,6 +4440,7 @@ impl App {
                 self.camera.position = voxels_to_camera(moved, self.world.size);
                 println!("frame {frame}: hopped {side} m");
             }
+            (name, f) if building::SCRIPTS.contains(&name) => self.bases_script(name, f),
             _ => {}
         }
         if let Some(player) = &self.player
@@ -4704,6 +4732,7 @@ impl App {
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
         self.skips_pipeline.maybe_reload();
+        self.builds_pipeline.maybe_reload();
         if let Some(preset) = self.pending_quality.take() {
             self.apply_quality(preset);
             quality::keep(preset);
@@ -4714,6 +4743,9 @@ impl App {
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
+        // The torches and lamps built, and where what's picked to build would go, see building.rs
+        let base_lights = building::base_lights(&self.bases, &self.world);
+        let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4858,6 +4890,7 @@ impl App {
                                              Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Number keys pick what's in hand · I inventory\n\
+                                             G gather wood, stone, clay · B build · E opens doors\n\
                                              F1 settings · Esc menu",
                                         )
                                         .size(13.0)
@@ -4873,6 +4906,7 @@ impl App {
                 if !self.fixed_sun {
                     self.cycle.hud(&ctx, None);
                 }
+                building::hud(&self.building, &self.bases, ghost.as_ref(), &self.world, &ctx, &view);
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
@@ -5216,6 +5250,7 @@ impl App {
         let mut lights: Vec<(f32, [f32; 8])> = self
             .lights
             .iter()
+            .chain(base_lights.iter())
             .map(|l| ((Vector3::new(l[0], l[1], l[2]) - camera_voxels).norm() - l[3], *l))
             .filter(|(d, _)| *d < 0.0)
             .collect();
@@ -5377,6 +5412,9 @@ impl App {
             stream.record_uploads(&mut builder, &self.voxel_set, &self.water, self.frame, self.frame_ms);
             stream.skips.record(&mut builder, &self.skips_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator);
         }
+        // Empty bricks round what's just been built skip no further than it, see building.rs
+        let busy = self.stream.as_ref().is_some_and(|s| s.skips.busy());
+        building::record_reskips(&mut self.building, &mut builder, &self.builds_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator, &self.world, busy);
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "strips");
         }

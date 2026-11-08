@@ -131,7 +131,11 @@ impl App {
             self.rivers = Arc::new(RiverCache::default());
         }
         let done = save.current_world();
-        let scarred = !self.craters.is_empty() || !self.stains.is_empty() || !done.craters.is_empty() || !done.stains.is_empty();
+        // What's built and dug, see bases.rs: the world's built afresh with it, or without what
+        // was built in the one before
+        let built_before = !self.bases.is_empty();
+        self.load_bases(&save, &done);
+        let scarred = !self.craters.is_empty() || !self.stains.is_empty() || !done.craters.is_empty() || !done.stains.is_empty() || built_before || !self.bases.is_empty();
         self.craters = done.craters.clone();
         self.stains = done.stains.clone();
 
@@ -240,6 +244,7 @@ impl App {
         // Other systems put in what's theirs here, as Save::set_section() and
         // WorldSave::set_section() do
         done.sections = session.world_sections.clone();
+        done.set_section(bases::WORLD_SECTION, &self.bases.world_save());
         let mut worlds = session.others.clone();
         worlds.insert(session.world.clone(), done);
         Some(Save {
@@ -262,8 +267,32 @@ impl App {
             world: session.world.clone(),
             worlds,
             realms: session.realms.clone(),
-            sections: session.sections.clone(),
+            sections: {
+                let mut sections = session.sections.clone();
+                if let Ok(value) = serde_json::to_value(self.bases.game_save(self.cycle.clock)) {
+                    sections.insert(bases::GAME_SECTION.to_owned(), value);
+                }
+                sections
+            },
         })
+    }
+
+    /// Takes up what `save` has of the bases, see bases.rs: what's carried to build with and the
+    /// time of day, and what's built and dug in the world the player's in, `done`. A game without
+    /// them starts with nothing built, at the start of a day.
+    fn load_bases(&mut self, save: &Save, done: &save::WorldSave) {
+        self.bases = bases::Bases::new();
+        if let Some(world) = done.section::<bases::WorldBases>(bases::WORLD_SECTION) {
+            self.bases.load_world(world);
+        }
+        let game = save.section::<bases::GameBases>(bases::GAME_SECTION).unwrap_or_default();
+        self.bases.load_game(&game);
+        let clock = game.clock.unwrap_or_default();
+        let running = self.cycle.clock.running;
+        self.cycle = daynight::DayNight::new(daynight::Clock { running, ..clock });
+        // What's in it goes in as the world's built afresh, see stream.rs
+        self.building = building::Building::default();
+        self.building.applied = self.bases.version;
     }
 
     /// Saves the game being played, in the background, or straight away with `wait`, as on the
@@ -342,7 +371,7 @@ impl App {
         let at = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
         let at = (at + origin) / vpm;
         format!(
-            "mode={} seed={} world={} at={:.2},{:.2},{:.2} walking={} {} craters={} stains={} realms={:?}",
+            "mode={} seed={} world={} at={:.2},{:.2},{:.2} walking={} {} craters={} stains={} realms={:?} built={} carried={:?} time={:.2} day={}",
             self.session.mode.map_or("none", Mode::name),
             self.terrain.seed,
             self.session.world,
@@ -353,7 +382,11 @@ impl App {
             self.game.summary(),
             self.craters.len(),
             self.stains.len(),
-            self.session.realms.as_ref().map(|r| (r.realm, r.unlocked.clone(), r.visited.clone()))
+            self.session.realms.as_ref().map(|r| (r.realm, r.unlocked.clone(), r.visited.clone())),
+            self.bases.pieces().len(),
+            self.bases.materials,
+            self.cycle.hour(),
+            self.cycle.clock.day
         )
     }
 }
