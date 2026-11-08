@@ -1371,6 +1371,38 @@ pub enum Special {
     Firecrackers,
     /// An arrow bursting where it strikes into a ring of thorns flying out all round
     Thornburst,
+    /// A frost bomb skimmed low that skips along the ground, ice bursting up bigger at every skip
+    Rimeskip,
+    /// A bomb cracking open into clockwork charges that scuttle off after what's near and cling on
+    Scuttlers,
+    /// Three arrows with burning wicks, sticking fast in what they strike and blowing up after
+    Wickfire,
+    /// An arrow bursting into a lantern of light that hangs where it struck, searing and healing
+    Lantern,
+    /// Two balls chained together, spinning apart as they fly, scything through a wide swath
+    Chainshot,
+    /// A cone of barbed caltrops blasted across the ground, crippling what walks over them
+    Caltrops,
+    /// A ball of void tearing a rift open where it strikes, the rift spitting shards at what's near
+    Riftshot,
+    /// Knives of shadow fanning out in the air, then flying one after another at what's near
+    GloamingKnives,
+    /// A lunge from a sheathed blade, the cut flying on as a line of frost that shatters a beat later
+    SeveringDraw,
+    /// Jab after jab as fast as the eye can follow, each flinging a venomous fang on ahead
+    ViperThrusts,
+    /// One great sweep, wisps of what it cut streaming back to heal, then flung on at what's left
+    SoulGleaning,
+    /// The weapon raised for lightning to strike it, then slammed down into a rolling ring of it
+    Stormanvil,
+    /// Three stakes loosed into the ground, lightning strung between them a while
+    Stormstakes,
+    /// A circle of glowing script written on the ground rune by rune, blazing up once it's full
+    Litany,
+    /// A knell of fire flung out, rolling out in a ring, everything it reaches ringing out in turn
+    EmberKnell,
+    /// A hex of blood binding everything near what it strikes together, so all suffer what one does
+    Bloodthread,
 }
 
 impl Special {
@@ -1451,6 +1483,22 @@ impl Special {
             Special::ChainSwing => "Chain Swing",
             Special::Firecrackers => "Firecracker String",
             Special::Thornburst => "Thornburst",
+            Special::Rimeskip => "Rimeskip Charge",
+            Special::Scuttlers => "Scuttling Charges",
+            Special::Wickfire => "Wickfire Arrows",
+            Special::Lantern => "Lantern Arrow",
+            Special::Chainshot => "Chainshot",
+            Special::Caltrops => "Caltrop Blast",
+            Special::Riftshot => "Riftshot",
+            Special::GloamingKnives => "Gloaming Knives",
+            Special::SeveringDraw => "Severing Draw",
+            Special::ViperThrusts => "Viper Thrusts",
+            Special::SoulGleaning => "Soul Gleaning",
+            Special::Stormanvil => "Stormanvil",
+            Special::Stormstakes => "Stormstakes",
+            Special::Litany => "Litany Circle",
+            Special::EmberKnell => "Ember Knell",
+            Special::Bloodthread => "Bloodthread Hex",
         }
     }
 
@@ -1531,6 +1579,22 @@ impl Special {
             Special::ChainSwing => "Catch your lash on something high ahead and swing from it, carried on and down; you land with a crack that throws back what's round you.",
             Special::Firecrackers => "Fling a string of eight little charges across the ground ahead; they go off one after another, each throwing what's on it.",
             Special::Thornburst => "Loose an arrow that bursts where it strikes into a ring of thorns flying out all round, through everything near.",
+            Special::Rimeskip => "Skim a frost bomb low across the ground: it skips four times, ice bursting up bigger at every skip, and shatters in a great freezing burst.",
+            Special::Scuttlers => "Roll out a bomb that cracks open into six clockwork charges; they scuttle off after the nearest enemies, cling on, and go off.",
+            Special::Wickfire => "Loose three arrows with burning wicks at the nearest enemies; each sticks fast where it strikes, spitting sparks, and blows up two seconds on.",
+            Special::Lantern => "Loose an arrow that bursts into a lantern of light where it strikes; for 7 s it sears every enemy within 8 meters each second, and heals you in its glow.",
+            Special::Chainshot => "Fire two balls chained together; they spin apart as they fly, scything through everything in a two-meter swath and knocking it off its feet.",
+            Special::Caltrops => "Blast a cone of barbed caltrops across the ground ahead; for 8 s whatever walks over them is slowed and bleeds.",
+            Special::Riftshot => "Fire a ball of void that tears a rift open where it strikes; for 5 s the rift spits shards at whatever's nearest, then snaps shut, dragging everything in.",
+            Special::GloamingKnives => "Six knives of shadow fan out in the air above you, then fly one after another at the nearest enemies, bursting into darkness where they strike.",
+            Special::SeveringDraw => "Draw in a flash with a lunge: the cut flies on 10 meters as a line of frost hanging in the air through all in its way, and a heartbeat later shatters, cutting and freezing all it crossed.",
+            Special::ViperThrusts => "Jab eight times as fast as the eye can follow, each thrust flinging a venomous fang on ahead through what's in front, poisoning it.",
+            Special::SoulGleaning => "Reap through everything in front; each thing cut gives up a wisp that streams back to heal you, then every wisp gleaned is flung on at what's left.",
+            Special::Stormanvil => "Raise your weapon for the lightning to strike it, then slam it down: a ring of lightning rolls out 14 meters, bolts leaping off it into all it passes.",
+            Special::Stormstakes => "Loose three stakes into the ground ahead; for 6 s lightning strings between them, shocking whatever stands inside or crosses it, and they blow at the end.",
+            Special::Litany => "Write a circle of glowing script where you aim, rune by rune, slowing everything inside, until the circle's full and blazes up in a column of light.",
+            Special::EmberKnell => "Ring out a knell of fire where you aim: a ring of flame rolls out 10 meters, and whatever it reaches rings out in turn, its own ring rolling on from it.",
+            Special::Bloodthread => "Fling a hex of blood that binds everything within 12 meters of where it strikes with threads of blood; for 6 s half of what any of them suffers, the rest suffer too.",
         }
     }
 }
