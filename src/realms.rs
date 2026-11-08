@@ -277,6 +277,26 @@ mod tests {
         assert!((0..3).all(|k| a.lair_key(k)[2] < -1000));
     }
 
+    /// The dreaming realm is soft west of its divide and bleeding east of it, its gate on the soft
+    /// side where the player comes to it, its raid bosses' lairs on dry land, and a piece of it
+    /// across the divide builds, with all that grows there
+    #[test]
+    fn the_dreaming_realm_has_two_halves() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: DREAM_SEED, grass_tufts: false };
+        let p = Places::find(2, &settings, [200.0, 180.0], [0.0, 1.0]);
+        assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0));
+        for lair in p.lairs {
+            assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
+        }
+        assert!(worldgen::dream_blood(p.gate[0] as f32, p.gate[1] as f32) < 0.01, "the gate's in the soft half");
+        assert_eq!(worldgen::dream_blood(320.0, 0.0), 1.0);
+        assert_eq!(worldgen::dream_blood(150.0, 0.0), 0.0);
+        let (terrain, world) = worldgen::generate_area(&settings, [200 * 4, 150 * 4], [64 * 4, 64 * 4], &worldgen::RiverCache::default());
+        assert!(world.brick_count() > 0);
+        // No one lives there
+        assert!(terrain.sites().iter().all(|s| !matches!(s.kind, "town" | "royal court" | "bandit camp")));
+    }
+
     /// In the sky isles too: the gate, where the player comes to it and every raid boss's lair are
     /// on a floating island, and from each island there's another within a grappling hook's reach
     #[test]

@@ -18,9 +18,15 @@ const HAUL_SPEED: f64 = 17.0;
 /// lets go, in meters
 const HAUL_MOST: f64 = 3.5;
 const HAUL_NEAR: f64 = 0.9;
-/// How long one length of rope is, see Look::HookRope, in meters, and the most of them drawn
-const ROPE_LENGTH: f64 = 1.5;
-const ROPE_MOST: usize = 30;
+/// How thick the hook's rope is drawn: as thick as a real one in the hand, in meters, out to this
+/// many meters from the eye, and further off as thick as this many meters for every meter it is
+/// from the eye, up to so thick, so it shows as a line a few pixels wide however far it reaches
+const ROPE_THICK: f64 = 0.009;
+const ROPE_NEAR_M: f64 = 4.0;
+const ROPE_SPREAD: f64 = 0.0022;
+const ROPE_THICKEST: f64 = 0.04;
+/// How long the arm takes to swing forward throwing the hook, in seconds
+const THROW_SWING: f64 = 0.22;
 /// How far below the lowest of the sky isles' undersides the player falls before the winds
 /// bring them back, in meters over the sea far below, and how long the fade each way takes
 const SKY_FLOOR_M: f64 = 9.0;
@@ -39,6 +45,8 @@ pub struct Hook {
     hauling: Option<f64>,
     /// Coming back from a throw at nothing, or let go of
     returning: bool,
+    /// When it was thrown, for the arm's swing
+    thrown: Instant,
 }
 
 /// The winds bringing the player back up after a fall below the sky isles, see App::update_fall():
@@ -81,7 +89,7 @@ impl App {
         if let Some(sound) = &mut self.audio {
             sound.play(audio::Cue::here(audio::Sound::Dodge, 0.7).pitched(1.3), &view);
         }
-        self.hook = Some(Hook { dir, out: 0.0, bite, hauling: None, returning: false });
+        self.hook = Some(Hook { dir, out: 0.0, bite, hauling: None, returning: false, thrown: Instant::now() });
     }
 
     /// Where a hook biting at `at`, thrown along `dir`, hauls the player's feet to: up onto the top
@@ -169,50 +177,97 @@ impl App {
         }
     }
 
-    /// The rope from the player's hand to the hook, and the hook's head, and the wings spread on
-    /// their back while they glide
+    /// What the player holds that isn't a weapon, see Game::held_arm(): the grappling hook in hand,
+    /// swung forward as it's thrown, its rope paying out from the hand to its head as it flies and
+    /// hauls, sagging while it's slack; and wings to glide on, held up overhead by the bar under
+    /// them, sweeping down past the edges of the view
     pub(super) fn rope_instances(&self, view: &combat::View) -> Vec<AnimalInstance> {
         let mut out = Vec::new();
         let vpm = self.world.voxels_per_meter;
         let m = vpm as f64;
         let eye = view.eye;
-        let yaw = self.camera.rotation.z;
-        let forward = Vector3::new(-yaw.sin(), yaw.cos(), 0.0);
-        let right = Vector3::new(yaw.cos(), yaw.sin(), 0.0);
-        if let Some(player) = &self.player
-            && player.gliding
-            && !player.on_ground()
-        {
-            let back = player.position + Vector3::new(0.0, 0.0, 0.75 * m) - forward * 0.35 * m;
-            out.push(animals::moving_instance(Look::Wings, back, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), forward.y.atan2(forward.x)), vpm));
+        // Right, ahead and up of the view, in meters, to where that is in the world
+        let at = |v: [f64; 3]| eye + view.rotation * Vector3::new(v[0], v[1], v[2]) * m;
+        let way = |v: [f64; 3]| (view.rotation * Vector3::new(v[0], v[1], v[2])).normalize();
+        // A model's x turned to point along `along`
+        let pointing = |along: Vector3<f64>| UnitQuaternion::rotation_between(&Vector3::x(), &along).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::z_axis(), std::f64::consts::PI));
+        if self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground()) {
+            // The wings over the head facing the way the view does, their bar under them in both
+            // hands low in front, see the Wings model: its bar's middle is 0.22 m back and 0.15 m
+            // up from where it stands
+            let turn = view.rotation * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_2);
+            let bar = at([0.0, 0.55, -0.22]);
+            out.push(animals::held_instance(Look::Wings, bar - turn * Vector3::new(-0.22, 0.0, 0.15) * m, turn, vpm));
+            for (which, side) in [(0, 1.0), (1, -1.0)] {
+                // Each hand on a strut just over the bar, the forearm down and out to the elbow
+                let grip = at([0.25 * side, 0.56, -0.17]);
+                out.push(self.game.held_arm(which, grip, way([-0.13 * side, 0.27, 0.58]), at([0.4 * side, 0.25, -0.47])));
+            }
+            return out;
         }
-        let Some(hook) = &self.hook else {
+        let thrown = self.hook.as_ref();
+        if thrown.is_none() && !self.game.holding_hook() {
+            return out;
+        }
+        // The hand: low at the right holding the hook ready, swung forward and up as it's thrown
+        let swing = thrown.map_or(0.0, |h| (h.thrown.elapsed().as_secs_f64() / THROW_SWING).min(1.0));
+        let eased = swing * swing * (3.0 - 2.0 * swing);
+        let lerp = |a: [f64; 3], b: [f64; 3]| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * eased);
+        let grip = at(lerp([0.3, 0.6, -0.3], [0.2, 0.85, -0.1]));
+        let elbow = at(lerp([0.44, 0.22, -0.5], [0.3, 0.45, -0.32]));
+        let Some(hook) = thrown else {
+            // Ready to throw: the hook held up by its tail, its prongs forward and up, drawn half the
+            // size it's made, which is to be seen flying out a long way off
+            let axis = way([0.05, 0.6, 0.8]);
+            out.push(self.game.held_arm(0, grip, axis, elbow));
+            let turn = pointing(axis);
+            out.push(animals::held_instance(Look::GrappleHook, grip + axis * 0.1 * m - turn * Vector3::new(0.0, 0.0, 0.11 * m), turn, vpm / 2));
             return out;
         };
-        // From the hand held out ahead, far enough from the eye that the rope's no thicker to it
-        // than it is
-        let hand = eye + right * 0.45 * m - Vector3::new(0.0, 0.0, 0.55 * m) + forward * 1.4 * m;
+        // Thrown: the hand holding the rope as it pays out to the hook's head, flying or fast
         let head = match hook.bite {
-            Some((at, ..)) if hook.hauling.is_some() => at,
+            Some((bite, ..)) if hook.hauling.is_some() => bite,
             _ => eye + hook.dir * hook.out,
         };
-        let line = head - hand;
+        let line = head - grip;
         let length = line.norm();
-        if length < 0.3 * m {
-            return out;
+        let along = if length > 1e-6 { line / length } else { hook.dir };
+        out.push(self.game.held_arm(0, grip, along, elbow));
+        if length > 0.2 * m {
+            // Slack while it flies and comes back, nearly taut while it hauls: drawn in stretches
+            // each three times as far from the eye as the last, as thick as the middle of each is
+            // far, so it's a rope in the hand and a line a few pixels wide however far it reaches
+            let sag = if hook.hauling.is_some() { 0.015 } else { 0.05 };
+            let drop = sag * length;
+            let point = |t: f64| grip.lerp(&head, t) - Vector3::new(0.0, 0.0, 4.0 * t * (1.0 - t) * drop);
+            let near = (grip - eye).norm() / m;
+            let (mut t, mut far) = (0.0, ROPE_NEAR_M);
+            while t < 1.0 {
+                let next = ((far - near) * m / length).max(t + 0.05).min(1.0);
+                let (a, b) = (point(t), point(next));
+                let thick = ((far + far / 3.0) / 2.0 * ROPE_SPREAD).clamp(ROPE_THICK, ROPE_THICKEST);
+                // The same curve over this stretch of it as over the whole
+                let stretch = (b - a).norm().max(1e-6);
+                out.extend(self.game.rope_instances(a, b, drop * (next - t).powi(2) / stretch, thick));
+                (t, far) = (next, far * 3.0);
+            }
+            let turn = pointing(if hook.returning { -along } else { along });
+            out.push(animals::moving_instance(Look::GrappleHook, head - turn * Vector3::new(0.0, 0.0, 0.22 * m), turn, vpm));
         }
-        let along = line / length;
-        let turn = UnitQuaternion::rotation_between(&Vector3::x(), &along).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::PI));
-        // The rope's axis is a little over the foot of its model, see Look::HookRope
-        let lift = turn * Vector3::new(0.0, 0.0, 0.03 * m);
-        let pieces = ((length / (ROPE_LENGTH * m)).ceil() as usize).clamp(1, ROPE_MOST);
-        let piece = length / pieces as f64;
-        for k in 0..pieces {
-            let middle = hand + along * piece * (k as f64 + 0.5);
-            out.push(animals::moving_instance(Look::HookRope, middle - lift, turn, vpm));
-        }
-        out.push(animals::moving_instance(Look::GrappleHook, head - turn * Vector3::new(0.0, 0.0, 0.14 * m), turn, vpm));
         out
+    }
+
+    /// The glint of the hook's head as it flies out and bites, for it to be seen a long way off
+    pub(super) fn rope_lights(&self, view: &combat::View) -> Vec<[f32; 8]> {
+        let Some(hook) = &self.hook else {
+            return Vec::new();
+        };
+        let m = self.world.voxels_per_meter as f64;
+        let head = match hook.bite {
+            Some((bite, ..)) if hook.hauling.is_some() => bite,
+            _ => view.eye + hook.dir * hook.out,
+        };
+        vec![[head.x as f32, head.y as f32, head.z as f32, (3.0 * m) as f32, 1.4, 1.25, 0.9, 1.0]]
     }
 
     /// In the sky isles, a fall below the islands brings the player back up to the last island they
@@ -312,6 +367,8 @@ impl App {
         let target = Vector3::new(edge.x, edge.y, top as f64 - 0.3) * vpm - Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         self.camera.look_at(voxels_to_camera(target, self.world.size));
         println!("HOOK thrown at the edge of the island at {:.0}, {:.0}, {:.1} m off", middle[0], middle[1], (edge - feet).xy().norm());
+        // In hand, thrown as a player would
+        self.game.hold_item(Item::Hook);
         self.throw_hook();
     }
 }

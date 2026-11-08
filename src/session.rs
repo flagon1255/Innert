@@ -68,6 +68,11 @@ struct Trial {
     hook_at: Option<usize>,
     glide_at: Option<usize>,
     fall_at: Option<usize>,
+    /// Once the world's first there: the view turned to look that many degrees round from east,
+    /// `face=0`, and lifted that many meters up off the player's feet, flying, to look out over
+    /// it, `overlook=40`
+    face: Option<f64>,
+    overlook: Option<f64>,
     /// Whether they're gliding, and when they started
     glide: Option<usize>,
     /// The frame the world was first there, and whether it's there now
@@ -541,6 +546,8 @@ impl App {
             hook_at: number("hook_at"),
             glide_at: number("glide_at"),
             fall_at: number("fall_at"),
+            face: setting("face").and_then(|v| v.parse().ok()),
+            overlook: setting("overlook").and_then(|v| v.parse().ok()),
             glide: None,
             ready: None,
             there: false,
@@ -553,9 +560,26 @@ impl App {
         let there = !self.session.arriving && !self.session.find_ground && self.session.leaving.is_none();
         let trial = &mut self.session.trial;
         if there && !trial.there {
+            let first = trial.ready.is_none();
             trial.ready.get_or_insert(frame);
             println!("READY at frame {frame}");
+            if first {
+                if let Some(degrees) = trial.face {
+                    self.camera.rotation.z = degrees.to_radians() - FRAC_PI_2;
+                }
+                if let Some(up) = trial.overlook
+                    && let Some(player) = self.player.take()
+                {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    let eye = player.eye(&self.world) + Vector3::new(0.0, 0.0, up * vpm);
+                    self.camera.position = voxels_to_camera(eye, self.world.size);
+                    self.camera.rotation.x = -0.35;
+                }
+            }
             if let Some(capture) = &mut self.capture {
+                if first && settings_from_args().iter().any(|(k, v)| k == "time_from_ready" && v == "1") {
+                    capture.stats_from = frame;
+                }
                 capture.shots.extend(trial.shots_after.iter().map(|k| frame + k));
                 if let Some(end) = trial.end_after {
                     capture.frames = (frame + end) as u32;
@@ -581,6 +605,10 @@ impl App {
             trial.glide = Some(frame);
         }
         let gliding = trial.glide;
+        // The hook taken in hand a moment before it's thrown, to be seen held ready
+        if trial.hook_at.is_some_and(|w| w >= 20 && ready + w - 20 == frame) {
+            self.game.hold_item(Item::Hook);
+        }
         if hook {
             self.hook_nearest_island();
         }
@@ -627,6 +655,31 @@ impl App {
             println!("GATE at frame {frame}: going through to {}", REALMS[to.min(REALMS.len() - 1)].name);
             self.gate_picked(GateAction::Travel(to.min(REALMS.len() - 1)));
         }
+    }
+
+    /// The look of the realm the world is, for shaders\traverse.comp, see View::realm there: which
+    /// realm's, where the dreaming realm's divide is across the world and where the world's corner
+    /// is along it, in voxels, and how much of its blood-red half the camera's in, eased over a
+    /// few tens of meters either side of the divide, so the sky turns as the player crosses it
+    pub(super) fn realm_look(&self) -> [f32; 4] {
+        let land = worldgen::land_of(self.terrain.seed);
+        let which = match land {
+            worldgen::Land::Normal => 0.0,
+            worldgen::Land::Sky => 1.0,
+            worldgen::Land::Dream => 2.0,
+            worldgen::Land::Ice => 3.0,
+        };
+        if land != worldgen::Land::Dream {
+            return [which, 0.0, 0.0, 0.0];
+        }
+        let vpm = self.world.voxels_per_meter as f64;
+        let [at, wander, along, _] = worldgen::DREAM_DIVIDE;
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        let (x, y) = ((eye.x + self.world.origin[0] as f64) / vpm, (eye.y + self.world.origin[1] as f64) / vpm);
+        let line = at as f64 + wander as f64 * (y / along as f64).sin();
+        let t = ((x - line) / 30.0 * 0.5 + 0.5).clamp(0.0, 1.0);
+        let blood = t * t * (3.0 - 2.0 * t);
+        [which, (at as f64 * vpm - self.world.origin[0] as f64) as f32, self.world.origin[1] as f32, blood as f32]
     }
 
     /// The game as it's saved, if a mode's being played

@@ -748,6 +748,8 @@ struct View {
     pixel_to_ray: Matrix4<f32>,
     /// World to last frame's rendered pixel
     previous_world_to_pixel: Matrix4<f32>,
+    /// The look of the realm the world is, see App::realm_look()
+    realm: [f32; 4],
 }
 
 /// The top three rows of `m`, whose last is 0, 0, 0, 1, as upscale.comp takes them
@@ -1408,6 +1410,9 @@ struct Capture {
     /// `--set nowait=1` doesn't wait for each frame to finish before starting the next, as in
     /// play, where the frames being drawn overlap: then frame times are what a player sees
     nowait: bool,
+    /// The frame times said at the end are those from this frame on: from when the world's there
+    /// to play in, with `--set time_from_ready=1`, rather than while it's still being built
+    stats_from: usize,
 }
 
 impl Capture {
@@ -1434,6 +1439,7 @@ impl Capture {
             seconds: value("--seconds").and_then(|n| n.parse().ok()),
             started: Instant::now(),
             nowait: settings_from_args().iter().any(|(k, v)| k == "nowait" && (v == "1" || v == "true")),
+            stats_from: 0,
         })
     }
 }
@@ -3819,6 +3825,8 @@ impl App {
         if let Some(player) = &mut self.player {
             player.gliding = gliding;
         }
+        // Both hands on the wings' struts while gliding, see rope.rs
+        self.game.set_hands_busy(gliding && self.player.as_ref().is_some_and(|p| !p.on_ground()));
 
         // The dead don't walk
         let alive = !self.game.dead();
@@ -4657,10 +4665,13 @@ impl App {
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
         // A grappling hook's rope, and wings spread to glide, see rope.rs
-        let rope = if self.hook.is_some() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        let rope = if self.hook.is_some() || self.game.holding_hook() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        let rope_lights = self.rope_lights(&view);
         // How white the screen is as the winds bring the player back up, see rope.rs, and whether
         // they're gliding
         let fallen = self.fall_dark();
+        // The look of the realm the world is, see session.rs
+        let realm_look = self.realm_look();
         let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
 
         let rcx = self.rcx.as_mut().unwrap();
@@ -4776,7 +4787,7 @@ impl App {
                     painter.text(ctx.screen_rect().center(), Align2::CENTER_CENTER, "The world takes shape...", egui::FontId::proportional(22.0), Color32::from_gray(shade));
                 }
             }
-            // Wings spread, out of sight behind: said under the crosshair instead
+            // Wings spread, said under the crosshair too
             if gliding_now && !self.menu_open {
                 ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gliding"))).text(
                     ctx.screen_rect().center() + egui::vec2(0.0, 42.0),
@@ -4829,6 +4840,7 @@ impl App {
                                              Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Number keys pick what's in hand · I inventory\n\
+                                             Hold Space in the air to glide, with wings\n\
                                              F1 settings · Esc menu",
                                         )
                                         .size(13.0)
@@ -5185,7 +5197,8 @@ impl App {
             .filter(|(d, _)| *d < 0.0)
             .collect();
         lights.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let fighting = if playing { self.game.lights(&view) } else { Vec::new() };
+        let mut fighting = if playing { self.game.lights(&view) } else { Vec::new() };
+        fighting.extend(rope_lights);
         let lights: Vec<[f32; 8]> = fighting.into_iter().chain(lights.into_iter().map(|(_, l)| l)).take(MAX_LIGHTS).collect();
         let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();
         light_buffer.write().unwrap()[..lights.len()].copy_from_slice(&lights);
@@ -5196,7 +5209,7 @@ impl App {
             .as_ref()
             .map_or(Matrix4::identity(), |last| world_to_pixel(&last.pixel_to_ray.cast()));
         let view_buffer = self.instance_allocator.allocate_sized::<View>().unwrap();
-        *view_buffer.write().unwrap() = View { pixel_to_ray: pixel_to_ray.cast(), previous_world_to_pixel: previous_world_to_pixel.cast() };
+        *view_buffer.write().unwrap() = View { pixel_to_ray: pixel_to_ray.cast(), previous_world_to_pixel: previous_world_to_pixel.cast(), realm: realm_look };
 
         let animal_set = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
@@ -5724,7 +5737,10 @@ impl App {
             if capture_done && let Some(capture) = self.capture.take() {
                 save_screenshot(&buffer, resample_extent, encoded, &capture.path);
 
-                let mut times: Vec<f64> = capture.frame_times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
+                if capture.stats_from > 0 {
+                    println!("Frame times from frame {} on, once the world's there", capture.stats_from);
+                }
+                let mut times: Vec<f64> = capture.frame_times.iter().skip(capture.stats_from).map(|t| t.as_secs_f64() * 1000.0).collect();
                 times.sort_by(f64::total_cmp);
                 if !times.is_empty() {
                     let average = times.iter().sum::<f64>() / times.len() as f64;
@@ -5738,7 +5754,7 @@ impl App {
                         times[times.len() - 1]
                     );
                     // Hitches, leaving out the first frames while the world settles in
-                    let mut later: Vec<f64> = capture.frame_times.iter().skip(10).map(|t| t.as_secs_f64() * 1000.0).collect();
+                    let mut later: Vec<f64> = capture.frame_times.iter().skip(capture.stats_from + 10).map(|t| t.as_secs_f64() * 1000.0).collect();
                     later.sort_by(f64::total_cmp);
                     if !later.is_empty() {
                         let worst = later.len() - 1;
@@ -5749,7 +5765,7 @@ impl App {
                             later.iter().filter(|&&t| t > 25.0).count(),
                             later.iter().filter(|&&t| t > 20.0).count()
                         );
-                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
+                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(capture.stats_from + 10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
                         println!("long frames: {}", long.join(", "));
                     }
                 }
