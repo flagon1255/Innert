@@ -67,6 +67,9 @@ struct Trial {
     /// they're put out over the open air to fall, `fall_at=60`, see rope.rs
     hook_at: Option<usize>,
     glide_at: Option<usize>,
+    /// While gliding, a flap of the wings that many frames into it, lap_after=40, see wings.rs
+    flap_after: Option<usize>,
+    flap_now: bool,
     fall_at: Option<usize>,
     /// Once the world's first there: the view turned to look that many degrees round from east,
     /// `face=0`, and lifted that many meters up off the player's feet, flying, to look out over
@@ -149,6 +152,11 @@ impl Session {
     /// Whether a screenshot run's trial has the player gliding, see Trial::glide_at
     pub fn trial_glides(&self) -> bool {
         self.trial.glide.is_some()
+    }
+
+    /// Whether a screenshot run's trial flaps the wings this frame, see Trial::flap_after
+    pub fn trial_flaps(&mut self) -> bool {
+        std::mem::take(&mut self.trial.flap_now)
     }
 
     /// How dark the screen is going through to another realm, 0 to 1
@@ -530,6 +538,13 @@ impl App {
         if let Some(realm) = number("realm") {
             self.set_out_for(realm);
         }
+        // `--set wings=stormcaller` puts on wings of that kind, and `spare_wings=veilmoth` has a
+        // pair in the pack too, see wings::KINDS
+        for key in ["wings", "spare_wings"] {
+            if let Some(kind) = setting(key).and_then(crate::wings::by_id) {
+                self.game.find_once(Item::Wings(kind), "Wings, to try out.");
+            }
+        }
         if let (Some(count), Some(realm)) = (number("blocks"), realm_of(&self.session)) {
             self.game.give_innert_blocks(realm as u8, count as u32);
         }
@@ -563,6 +578,8 @@ impl App {
             end_after: number("end_after"),
             hook_at: number("hook_at"),
             glide_at: number("glide_at"),
+            flap_after: number("flap_after"),
+            flap_now: false,
             fall_at: number("fall_at"),
             face: setting("face").and_then(|v| v.parse().ok()),
             overlook: setting("overlook").and_then(|v| v.parse().ok()),
@@ -654,8 +671,15 @@ impl App {
         let vpm = self.world.voxels_per_meter as f64;
         if glide && let Some(player) = &mut self.player {
             player.position.z += 14.0 * vpm;
-            self.game.find_once(Item::Wings, "Wings, to glide with.");
+            // --set wings=stormcaller for that kind, see wings::KINDS
+            let kind = settings_from_args().iter().find(|(k, _)| k == "wings").and_then(|(_, v)| crate::wings::by_id(v)).unwrap_or(crate::wings::GULL);
+            self.game.find_once(Item::Wings(kind), "Wings, to glide with.");
             self.scripted_walk = true;
+        }
+        if let Some(since) = gliding
+            && self.session.trial.flap_after.is_some_and(|f| frame == since + f)
+        {
+            self.session.trial.flap_now = true;
         }
         if let (Some(since), Some(player)) = (gliding, &self.player) {
             let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);

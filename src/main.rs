@@ -98,6 +98,7 @@ mod stream;
 mod voxelize;
 mod water;
 mod weapons;
+mod wings;
 mod worldgen;
 
 use crate::animals::AnimalInstance;
@@ -1382,6 +1383,8 @@ struct App {
     fall_back: Option<rope::FallBack>,
     /// The map on M, see compass.rs
     map: compass::Map,
+    /// How the wings worn are moving, see wings.rs
+    wings: wings::Flight,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -2622,6 +2625,7 @@ impl App {
             hook: None,
             fall_back: None,
             map: compass::Map::default(),
+            wings: wings::Flight::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -3982,8 +3986,10 @@ impl App {
         if let Some(player) = &mut self.player {
             player.gliding = gliding;
         }
-        // Both hands on the wings' struts while gliding, see rope.rs
-        self.game.set_hands_busy(gliding && self.player.as_ref().is_some_and(|p| !p.on_ground()));
+        // The wings worn spreading and folding, beating on a flap, and what they leave behind, see
+        // wings.rs. Worn on the back, they leave the hands free for what's in them.
+        let flapped = let_go || self.session.trial_flaps();
+        self.update_wings(delta_time.min(0.05), gliding, flapped);
 
         // The dead don't walk
         let alive = !self.game.dead();
@@ -4862,8 +4868,9 @@ impl App {
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
-        // A grappling hook's rope, and wings spread to glide, see rope.rs
-        let rope = if self.hook.is_some() || self.game.holding_hook() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        // A grappling hook's rope, see rope.rs, and the wings worn, see wings.rs
+        let mut rope = if self.hook.is_some() || self.game.holding_hook() { self.rope_instances(&view) } else { Vec::new() };
+        rope.extend(self.wing_instances(&view));
         let rope_lights = self.rope_lights(&view);
         // How white the screen is as the winds bring the player back up, see rope.rs, and whether
         // they're gliding

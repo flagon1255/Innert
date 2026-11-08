@@ -16,9 +16,9 @@ const SPRINT_SPEED: f64 = 9.0;
 const SWIM_SPEED: f64 = 3.0;
 const JUMP_SPEED: f64 = 6.5;
 const GRAVITY: f64 = 22.0;
-/// Gliding on wings: how fast the player sinks, at most, and goes on ahead, in meters a second
-const GLIDE_SINK: f64 = 2.2;
-const GLIDE_SPEED: f64 = 11.0;
+/// Gliding on wings, unless they say otherwise, see Player::glide_feel: how fast the player goes on
+/// ahead and sinks at most, in meters a second, and how quickly they come round to where they steer
+const GLIDE: [f64; 3] = [11.0, 2.2, 4.0];
 
 /// Whether a material stops the player. Plants and water don't.
 fn blocks(material: u8) -> bool {
@@ -53,6 +53,11 @@ pub struct Player {
     hauled: Option<Vector3<f64>>,
     /// Gliding on wings, falling slowly and going on ahead, while it's set and they're in the air
     pub gliding: bool,
+    /// How the wings worn glide: how fast on ahead and how fast they sink at most, in meters a
+    /// second, and how quickly they come round to where the player steers, see wings::WingKind
+    pub glide_feel: [f64; 3],
+    /// How fast they're going along while gliding, in voxels a second, for coming round gradually
+    glide_velocity: Vector2<f64>,
 }
 
 impl Player {
@@ -67,6 +72,8 @@ impl Player {
             shove: Vector2::zeros(),
             hauled: None,
             gliding: false,
+            glide_feel: GLIDE,
+            glide_velocity: Vector2::zeros(),
         };
         while player.collides(world, player.position) && player.position.z < world.size[2] as f64 {
             player.position.z += 1.0;
@@ -108,6 +115,17 @@ impl Player {
     /// the way still stops them
     pub fn haul(&mut self, velocity: Vector3<f64>) {
         self.hauled = Some(velocity);
+    }
+
+    /// How fast they're going, in voxels a second
+    pub fn velocity(&self) -> Vector3<f64> {
+        self.velocity
+    }
+
+    /// A beat of the wings in the air, lifting the player at lift voxels a second
+    pub fn flap(&mut self, lift: f64) {
+        self.velocity.z = self.velocity.z.max(lift);
+        self.on_ground = false;
     }
 
     pub fn eye(&self, world: &World) -> Vector3<f64> {
@@ -156,12 +174,27 @@ impl Player {
             if jump && self.on_ground {
                 self.velocity.z = JUMP_SPEED * vpm;
             }
-            // Wings spread, falling slowly and sailing on ahead, faster than running
-            if self.gliding && !self.on_ground && self.velocity.z < 0.0 {
-                self.velocity.z = self.velocity.z.max(-GLIDE_SINK * vpm);
+            // Wings spread, falling slowly and sailing on ahead, faster than running, from the top
+            // of a jump on, or a flap, coming round to where they steer as quickly as the wings
+            // let them
+            let [glide_speed, sink, turn] = self.glide_feel;
+            let sailing = self.glide_velocity != Vector2::zeros();
+            if self.gliding && !self.on_ground && (self.velocity.z < 0.0 || sailing) {
+                if self.velocity.z < 0.0 {
+                    self.velocity.z = self.velocity.z.max(-sink * vpm);
+                }
+                if !sailing {
+                    self.glide_velocity = self.velocity.xy() - self.shove;
+                }
                 let ahead = if wish.norm() > 0.1 { wish.normalize() } else { wish };
-                self.velocity.x = ahead.x * GLIDE_SPEED * vpm + self.shove.x;
-                self.velocity.y = ahead.y * GLIDE_SPEED * vpm + self.shove.y;
+                self.glide_velocity += (ahead * glide_speed * vpm - self.glide_velocity) * (1.0 - (-turn * dt).exp());
+                if self.glide_velocity == Vector2::zeros() {
+                    self.glide_velocity.x = 1e-9;
+                }
+                self.velocity.x = self.glide_velocity.x + self.shove.x;
+                self.velocity.y = self.glide_velocity.y + self.shove.y;
+            } else {
+                self.glide_velocity = Vector2::zeros();
             }
         }
 

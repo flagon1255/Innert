@@ -2691,9 +2691,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(ball([-0.25, 0.0, z], 0.05, BRONZE));
         }
         Look::Wings => {
-            // Wings of white feathers spread wide either side and sweeping down to their tips, on
-            // a light frame of bone along their leading edges, with a strut down from the middle
-            // of each to the bar they're held by underneath, as when gliding
+            // A pair of wings of white feathers lying spread, sweeping down to their tips, on a
+            // light frame of bone along their leading edges: wings to wear, of any kind, lying about
             for side in [-1.0, 1.0] {
                 let edge = |f: f64| [0.05 - 0.23 * f, side * (0.15 + 1.2 * f), 0.75 - 0.45 * f];
                 p.push(limb(edge(0.0), edge(0.5), 0.035, 0.03, BONE));
@@ -2705,9 +2704,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                     let tint = if k >= 5 { FUR_GRAY } else if k % 2 == 0 { LINEN } else { FUR_WHITE };
                     p.push(ellipsoid([x - 0.22, y, z - 0.02], [0.24 - 0.015 * k as f64, 0.1, 0.025], tint));
                 }
-                p.push(limb([0.03, side * 0.15, 0.73], [-0.22, side * 0.28, 0.15], 0.013, 0.013, BONE));
             }
-            p.push(limb([-0.22, -0.3, 0.15], [-0.22, 0.3, 0.15], 0.014, 0.014, BONE));
         }
         // Bosses, all built above
         _ => {}
