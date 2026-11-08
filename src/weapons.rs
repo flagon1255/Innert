@@ -457,6 +457,10 @@ pub struct Family {
     /// How it swings its heavy blow, if not as its style does, see combat.rs's heavy_keys()
     #[serde(default)]
     pub heavy: Heavy,
+    /// For a tool, what it gathers: "wood", "stone" or "earth", see src\tools.rs. Tools come after
+    /// every weapon in the list, are only ever made, never rolled as loot, and have no specials.
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 /// How a melee weapon's heavy blow goes, if it has one of its own rather than its style's
@@ -912,7 +916,17 @@ impl Library {
                 return Err(format!("{} is built as a crossbow or gun, so it has to be ranged and have a length", family.id));
             }
         }
+        // Tools last, so loot's rolled from the weapons before them as it always was
+        let weapons = self.weapon_families();
+        if let Some(f) = self.families[weapons..].iter().find(|f| f.tool.is_none()) {
+            return Err(format!("{} comes after the tools: tools go last", f.id));
+        }
         Ok(())
+    }
+
+    /// How many families are weapons, the tools coming after them
+    fn weapon_families(&self) -> usize {
+        self.families.iter().position(|f| f.tool.is_some()).unwrap_or(self.families.len())
     }
 
     pub fn family(&self, id: &str) -> Option<usize> {
@@ -944,7 +958,9 @@ impl Library {
     /// Which family and parts generate() makes a weapon of
     fn roll(&self, seed: u32, family: Option<usize>, luck: f64) -> (usize, Vec<usize>) {
         let mut rng = hash(seed ^ 0x3ea9_7c11);
-        let family = family.unwrap_or_else(|| (random(&mut rng) * self.families.len() as f64) as usize % self.families.len());
+        // Any weapon, never a tool
+        let weapons = self.weapon_families().max(1);
+        let family = family.unwrap_or_else(|| (random(&mut rng) * weapons as f64) as usize % weapons);
         let id = &self.families[family].id;
         let mut parts = Vec::new();
         for slot in &self.families[family].slots {
@@ -3095,6 +3111,9 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
         shape if shape.starts_with("halberd") => halberd_head(&mut p, blade, z_top, infuse),
         shape if shape.starts_with("flail") => flail_head(&mut p, blade, z_top, infuse),
         shape if shape.starts_with("maul") => maul_head(&mut p, blade, z_top, infuse),
+        // The tools', see src\tools.rs
+        "pick" => pick_head(&mut p, blade, z_top),
+        "spade" => spade_head(&mut p, blade, z_top),
         // Three prongs, or two, on a crossbar in a socket
         shape @ ("trident" | "fork") => {
             let length = blade.length.unwrap_or(0.4);
@@ -3192,6 +3211,58 @@ fn axe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, double: bool, shape: &str
         p.push(cuboid([-0.05, -half_thick * 1.6, a], [-0.02, half_thick * 1.6, b], body));
     }
     v3(width, 0.0, z0 + length * if shape == "bearded" { 0.4 } else { 0.5 })
+}
+
+/// A pickaxe's head across the top of a haft ending at `z_top`: a point either way, along +x and
+/// -x, each arching up out of the eye and curving down to its tip, the one along +x of the edge's
+/// make, and a band of the accent round the eye. Returns the tip along +x.
+fn pick_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
+    let length = v.length.unwrap_or(0.24);
+    let body = mat(&v.material, DARK_STEEL);
+    let edge = mat(&v.edge, body);
+    let z = z_top - 0.03;
+    for s in [1.0, -1.0] {
+        let points = [[s * 0.02, 0.0, z], [s * length * 0.45, 0.0, z + 0.018], [s * length * 0.8, 0.0, z - 0.012], [s * length, 0.0, z - 0.06]];
+        curve(p, &points, 0.021, 0.004, if s > 0.0 { edge } else { body });
+    }
+    if let Some(band) = v.accent.as_deref().and_then(material) {
+        p.push(cuboid([-0.031, -0.026, z - 0.012], [0.031, 0.026, z + 0.004], band));
+    }
+    p.push(cuboid([-0.027, -0.023, z - 0.045], [0.027, 0.023, z + 0.028], body));
+    v3(length, 0.0, z - 0.06)
+}
+
+/// A spade's blade on the top of a haft ending at `z_top`: flat across x, thin along y, straight
+/// sided and rounding to a blunt point, with treads at its shoulders to stand on, a socket round
+/// the haft under it, and a lip of the edge's make along its end. Returns the middle of its end.
+fn spade_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
+    let length = v.length.unwrap_or(0.28);
+    let width = v.width.unwrap_or(0.2);
+    let body = mat(&v.material, DARK_STEEL);
+    let edge = mat(&v.edge, body);
+    let half = 0.008;
+    let base = z_top + 0.02;
+    let rows = (length * SWORD_RES).ceil() as usize;
+    let (mut edges, mut bodies) = (Vec::new(), Vec::new());
+    for r in 0..rows {
+        let t = (r as f64 + 0.5) / rows as f64;
+        let (za, zb) = (base + r as f64 * length / rows as f64, base + (r + 1) as f64 * length / rows as f64);
+        let w = width * 0.5 * if t < 0.62 { 1.0 } else { (1.0 - ((t - 0.62) / 0.38).powi(2)).max(0.0).sqrt().max(0.18) };
+        if t > 0.86 {
+            edges.push(cuboid([-w, -half * 0.6, za], [w, half * 0.6, zb], edge));
+        } else {
+            bodies.push(cuboid([-w, -half, za], [w, half, zb], body));
+        }
+    }
+    p.extend(edges);
+    p.extend(bodies);
+    if let Some(band) = v.accent.as_deref().and_then(material) {
+        p.push(cuboid([-width * 0.5, -half * 1.3, base + length * 0.3], [width * 0.5, half * 1.3, base + length * 0.34], band));
+    }
+    // Treads either side at its shoulders, and the socket
+    p.push(cuboid([-width * 0.5 - 0.006, -0.018, base - 0.004], [width * 0.5 + 0.006, 0.018, base + 0.016], body));
+    p.push(limb([0.0, 0.0, z_top - 0.09], [0.0, 0.0, base + 0.01], 0.02, 0.017, body));
+    v3(0.0, 0.0, base + length)
 }
 
 /// A scythe's blade out from the top of a haft ending at `z_top`: long, narrowing and curving down

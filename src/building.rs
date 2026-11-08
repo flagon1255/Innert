@@ -9,6 +9,7 @@ use egui_winit_vulkano::egui::{Align2, Color32, FontId, Pos2, Stroke, pos2, vec2
 
 use crate::bases::{self, BLOCK, Bases, Kind, Materials, Piece};
 use crate::gather::{self, Yield};
+use crate::tools::{self, Tool};
 
 use super::*;
 
@@ -18,6 +19,9 @@ const REACH_M: f64 = 5.0;
 const BLOW_SECONDS: f64 = 0.4;
 /// Blows it takes to fell a tree
 const TREE_BLOWS: u32 = 4;
+/// How far a tool in hand reaches to gather what its blow lands on, in meters: less than G's, so a
+/// swing at something nearer doesn't dig the ground far behind it
+const TOOL_REACH_M: f64 = 3.2;
 /// How much a blast a meter round does to what's built right where it is
 const BLAST_DAMAGE: f64 = 70.0;
 
@@ -26,8 +30,10 @@ struct Gathering {
     /// The block of the whole landscape struck, or for a tree its column, z left 0
     key: [i64; 3],
     kind: Yield,
-    blows: u32,
-    wanted: u32,
+    /// How far through it the blows have got, each as much as what struck them's quick, see
+    /// tools::power(), and how far that has to be
+    blows: f64,
+    wanted: f64,
 }
 
 /// The state of building and gathering that isn't saved
@@ -60,6 +66,10 @@ pub struct Building {
     /// And for the gate's: where it's built, and the realm to come back to
     pub(super) spot: Option<Vector3<f64>>,
     pub(super) back_to: usize,
+    /// Whether the inventory's Craft tab is open, see tools.rs, and how many blows the weapon in
+    /// hand had landed when last looked at, a tool's gathering where each lands
+    pub(super) craft_open: bool,
+    landed: u32,
 }
 
 /// Has to match the push constants in shaders\builds.comp
@@ -123,7 +133,7 @@ impl App {
         // Holding G strikes again and again
         if self.input.key_held(KeyCode::KeyG) && self.building.wait <= 0.0 {
             self.building.wait = BLOW_SECONDS;
-            self.gather_blow();
+            self.gather_blow(None);
         }
         if !self.building.on {
             return false;
@@ -364,47 +374,84 @@ impl App {
         }
     }
 
-    /// One blow at what the player's looking at, gathering it once there's been enough of them
-    fn gather_blow(&mut self) {
+    /// A tool in hand gathers where each of its blows lands, if it's at what the tool's for, see
+    /// tools.rs. Called each frame after the fighting's moved on.
+    pub(super) fn update_tools(&mut self) {
+        let landed = self.game.swings_landed();
+        if landed == self.building.landed {
+            return;
+        }
+        self.building.landed = landed;
+        // Not a blow at an animal, which is fought as with any weapon
+        if let Some(tool) = self.game.held_tool()
+            && !self.game.has_target()
+            && !self.building.on
+        {
+            self.gather_blow(Some(tool));
+        }
+    }
+
+    /// One blow at what the player's looking at, gathering it once there's been enough of them:
+    /// with `in_hand`, the tool in hand's, only at what it's for and not so far off; otherwise with
+    /// G, with the best tool carried for what's struck, or bare hands
+    fn gather_blow(&mut self, in_hand: Option<(Tool, usize)>) {
         let (eye, look) = self.eye_look();
         let vpm = self.world.voxels_per_meter as f64;
-        let Some((hit, normal)) = gather::raycast(&self.world, eye, look, REACH_M * vpm) else {
+        let reach = if in_hand.is_some() { TOOL_REACH_M } else { REACH_M };
+        let Some((hit, normal)) = gather::raycast(&self.world, eye, look, reach * vpm) else {
             self.building.gathering = None;
             return;
         };
         if let Some(piece) = self.bases.piece_at(self.block_of(hit)) {
-            self.game.say(if piece.kind.player_built() { "That's built: take it down while building (B)." } else { "The gate's old foundation stones won't budge." });
+            if in_hand.is_none() {
+                self.game.say(if piece.kind.player_built() { "That's built: take it down while building (B)." } else { "The gate's old foundation stones won't budge." });
+            }
             return;
         }
         let material = self.world.material_at(hit[0], hit[1], hit[2]);
         let kind = gather::yield_of(material);
-        if kind == Yield::Nothing {
-            self.game.say("There's nothing to gather there.");
+        // A tool only gathers what it's for; G gathers anything with the best carried for it
+        let tool = match in_hand {
+            Some((t, grade)) if Tool::for_yield(kind) == Some(t) => Some((t, grade)),
+            Some(_) => return,
+            None => Tool::for_yield(kind).and_then(|t| self.game.best_tool(t).map(|grade| (t, grade))),
+        };
+        let Some(power) = tools::power(tool, kind) else {
+            self.game.say(if kind == Yield::Stone { "Stone takes a pickaxe to break. Craft one in the inventory (I), under Craft." } else { "There's nothing to gather there." });
             return;
-        }
+        };
         let block = self.block_of(hit);
         let tree = kind == Yield::Wood && gather::is_trunk(material);
         // A tree's struck anywhere up its trunk
         let key = if tree { [block[0], block[1], 0] } else { block };
-        let wanted = if tree { TREE_BLOWS } else { gather::blows_for(kind) };
+        let wanted = if tree { TREE_BLOWS } else { gather::blows_for(kind) } as f64;
         let same = self.building.gathering.as_ref().is_some_and(|g| g.key == key && g.kind == kind);
         if !same {
-            self.building.gathering = Some(Gathering { key, kind, blows: 0, wanted });
+            self.building.gathering = Some(Gathering { key, kind, blows: 0.0, wanted });
         }
         let gathering = self.building.gathering.as_mut().unwrap();
-        gathering.blows += 1;
-        let done = gathering.blows >= gathering.wanted;
+        gathering.blows += power;
+        let done = gathering.blows >= gathering.wanted - 1e-6;
         self.building.since_blow = 0.0;
-        // Chips flying off where it's struck
+        // Chips flying off where it's struck: more from a tool's blow, with splinters of wood, dust
+        // and grit off stone, and clods of what's dug
         let at = Vector3::new(hit[0] as f64 + 0.5 + normal[0] as f64, hit[1] as f64 + 0.5 + normal[1] as f64, hit[2] as f64 + 0.5 + normal[2] as f64);
-        self.game.debris(at, &[material; 3], vpm);
+        let bits: Vec<u8> = match (in_hand.is_some(), kind) {
+            (false, _) => vec![material; 3],
+            (true, Yield::Wood) => vec![material, material, worldgen::material::DEAD_WOOD, material, worldgen::material::DEAD_WOOD],
+            (true, Yield::Stone) => vec![material, worldgen::material::GRAVEL, material, worldgen::material::GRAVEL, worldgen::material::STONE, material],
+            (true, _) => vec![material; 5],
+        };
+        self.game.debris(at, &bits, vpm);
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         let sound = match kind {
             Yield::Wood => audio::Sound::Chop,
             Yield::Stone => audio::Sound::Mine,
             _ => audio::Sound::Dig,
         };
-        self.play_at(sound, Some((at + origin).into()), 0.8, 1.0);
+        // A better tool rings a little brighter
+        let pitch = 0.94 + 0.06 * tool.map_or(0.0, |(_, grade)| grade as f32);
+        self.play_at(sound, Some((at + origin).into()), if in_hand.is_some() { 0.9 } else { 0.8 }, pitch);
         if !done {
             return;
         }
@@ -646,7 +693,7 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         && building.since_blow < 2.0
     {
         let c = screen.center();
-        let fraction = g.blows as f32 / g.wanted.max(1) as f32;
+        let fraction = (g.blows / g.wanted.max(1.0)).min(1.0) as f32;
         let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * fraction * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2).map(|a| c + vec2(a.cos(), a.sin()) * 16.0).collect();
         painter.circle_stroke(c, 16.0, Stroke::new(3.0f32, Color32::from_black_alpha(100)));
         painter.add(egui::Shape::line(points, Stroke::new(3.0f32, Color32::from_rgb(255, 210, 120))));
@@ -736,7 +783,7 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 10] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal"];
+pub const SCRIPTS: [&str; 11] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal", "tools"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
@@ -970,6 +1017,10 @@ impl App {
                     println!("frame {frame}: raid on: {}, {} about, the door {:?}, the player {} at {:.0} health, {}", self.raid.on, self.raid.about, door_piece.map(|d| (d.0 * 100.0).round()), if self.game.dead() { "down" } else { "standing" }, self.game.vitals().0, self.game.last_message().unwrap_or(""));
                 }
             }
+            // Gathering with tools in hand, see tools.rs: a crude hatchet at a tree, a sturdy
+            // pickaxe at bare rock and a fine spade at clay, each swung till it's gathered, then the
+            // inventory's Craft tab
+            ("tools", f) => self.tools_script(f),
             ("chop", 5) => {
                 let trees = self.trees_near(feet, 30.0);
                 let Some(&(foot, height, _)) = trees.iter().find(|t| t.1 > 3.0) else {
@@ -989,7 +1040,7 @@ impl App {
                 println!("frame {frame}: by a tree {height:.1} m tall at {:.0}, {:.0}, carrying {:?}", (foot.x + origin.x) / vpm, (foot.y + origin.y) / vpm, self.bases.materials);
             }
             ("chop", f) if (30..=30 + 24 * 4).contains(&f) && (f - 30) % 24 == 0 => {
-                self.gather_blow();
+                self.gather_blow(None);
                 println!("frame {frame}: blow, {}, carrying {:?}", self.game.last_message().unwrap_or(""), self.bases.materials);
             }
             ("chop", 200) => {
@@ -1012,7 +1063,11 @@ impl App {
             ("mine", f) if (20..=320).contains(&f) && f % 12 == 0 => {
                 let (eye, look) = self.eye_look();
                 let hit = gather::raycast(&self.world, eye, look, REACH_M * vpm).map(|(v, _)| self.world.material_at(v[0], v[1], v[2]));
-                self.gather_blow();
+                // Stone takes a pickaxe, see tools.rs
+                if f == 20 {
+                    self.game.give_tool(Tool::Pickaxe, tools::CRUDE);
+                }
+                self.gather_blow(None);
                 if f % 48 == 0 {
                     println!("frame {frame}: struck {:?}, {}, carrying {:?}", hit, self.game.last_message().unwrap_or(""), self.bases.materials);
                 }
@@ -1126,6 +1181,69 @@ impl App {
         }
     }
 
+    /// See bases_script(): `tools`, played at `--step 0.0333`
+    fn tools_script(&mut self, frame: usize) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        // Each looked for near where the player first stood
+        let feet = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+        if frame <= 5 {
+            self.building.spot = Some(feet);
+        }
+        let feet = self.building.spot.unwrap_or(feet);
+        // Up close to it, from the way `from` is, and the tool to swing at it in hand
+        let take_up = |app: &mut App, tool: Tool, grade: usize, at: Vector3<f64>, from: Vector3<f64>| {
+            // Ground's looked down on from over it, a trunk from beside it
+            let back = Vector3::new(from.x - at.x, from.y - at.y, 0.0).normalize();
+            let eye = if from.z - at.z > vpm { at + back * 0.5 * vpm + Vector3::new(0.0, 0.0, 1.7 * vpm) } else { at + (from - at).normalize() * 2.3 * vpm };
+            app.look_from(eye, at);
+            app.game.give_tool(tool, grade);
+            app.game.select_family(tool.family());
+            println!("frame {frame}: a {} {} in hand {:?}, at {:.1}, {:.1}, {:.1} m, carrying {:?}", tools::GRADES[grade], tool.name(), app.game.held_tool(), (at.x + origin.x) / vpm, (at.y + origin.y) / vpm, at.z / vpm, app.bases.materials);
+        };
+        let swinging = |f: usize, from: usize, to: usize| f > from + 10 && f < to - 10;
+        match frame {
+            5 => {
+                let trees = self.trees_near(feet, 30.0);
+                let Some(&(foot, height, _)) = trees.iter().find(|t| t.1 > 3.0) else {
+                    println!("frame {frame}: no tree near");
+                    return;
+                };
+                println!("frame {frame}: a tree {height:.1} m tall");
+                let side = (0..8)
+                    .map(|k| k as f64 / 8.0 * TAU)
+                    .find(|a| {
+                        let p = foot + Vector3::new(a.cos(), a.sin(), 0.0) * 2.2 * vpm + Vector3::new(0.0, 0.0, 1.5 * vpm);
+                        worldgen::is_passable(self.world.material_at(p.x as i64, p.y as i64, p.z as i64))
+                    })
+                    .unwrap_or(0.0);
+                let at = foot + Vector3::new(0.0, 0.0, 1.1 * vpm);
+                take_up(self, Tool::Hatchet, tools::CRUDE, at, at + Vector3::new(side.cos(), side.sin(), 0.25) * vpm);
+            }
+            205 => match self.find_clay(feet, "stone") {
+                Some((at, from)) => take_up(self, Tool::Pickaxe, tools::STURDY, at, from),
+                None => println!("frame {frame}: no bare stone near"),
+            },
+            505 => match self.find_clay(feet, "beach") {
+                Some((at, from)) => take_up(self, Tool::Spade, tools::FINE, at, from),
+                None => println!("frame {frame}: no clay near"),
+            },
+            705 => {
+                self.bases.materials.add(bases::Materials::new(30, 30, 12));
+                self.inventory_open = true;
+                self.building.craft_open = true;
+            }
+            f if f == 72 || f == 372 || f == 572 => self.shoot_soon("a tool's blow landing"),
+            745 => self.shoot_soon("the Craft tab"),
+            _ => {}
+        }
+        let swing = swinging(frame, 5, 205) || swinging(frame, 205, 505) || swinging(frame, 505, 705);
+        self.script_controls = combat::Controls { attack: swing, holding: swing, ..Default::default() };
+        if frame % 50 == 0 && frame < 700 {
+            println!("frame {frame}: blows landed {}, carrying {:?}, {}", self.game.swings_landed(), self.bases.materials, self.game.last_message().unwrap_or(""));
+        }
+    }
+
     /// The nearest clay of kind `want` to `near`, as the `clay` script has it, and where to look at
     /// it from, both in voxels of the world
     fn find_clay(&self, near: Vector3<f64>, want: &str) -> Option<(Vector3<f64>, Vector3<f64>)> {
@@ -1183,6 +1301,13 @@ impl App {
                             let (a, far) = (0..16).map(|i| i as f64 * TAU / 16.0).map(|a| (a, open(a))).max_by(|p, q| p.1.total_cmp(&q.1)).unwrap();
                             (clay, Vector3::new(clay.x + a.cos() * far, clay.y + a.sin() * far, eye_z))
                         })
+                    }
+                    // Bare stone or rock on top, dry
+                    "stone" => {
+                        // A patch of it, not a speck in the grass
+                        let rock = |x: i64, y: i64| top(x, y).is_some_and(|z| matches!(self.world.material_at(x, y, z), worldgen::material::STONE | worldgen::material::ROCK) && (1..5).all(|h| self.world.material_at(x, y, z + h) == worldgen::material::AIR));
+                        let patch = [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (0, 0)].iter().all(|&(dx, dy)| rock(x + dx, y + dy));
+                        (patch && depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm)))
                     }
                     _ if self.world.material_at(x, y, z) != worldgen::material::CLAY => None,
                     "shallows" => (depth > 0.15 * vpm && depth < 0.8 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 3.0 * vpm))),
