@@ -148,6 +148,8 @@ pub enum ItemSave {
     Bucket,
     Apple,
     Meat,
+    /// Meat roasted over a fireplace, see hearths.rs
+    RoastMeat,
     Bread,
     Potion,
     Gold {

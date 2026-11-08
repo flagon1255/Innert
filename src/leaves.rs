@@ -30,7 +30,7 @@ const KINDS: [u8; 14] = [
     FLOWER_PINK,
 ];
 /// One model of a single voxel for each material, see Leaves::models: up to the last material
-const MATERIALS: u8 = LEAVES_CRIMSON + 1;
+const MATERIALS: u8 = CLAY_BANK + 1;
 /// Leaves only fall from this many meters up at the least, so not from ferns and flowers
 const LOWEST: f64 = 1.2;
 /// Voxels per meter of a leaf: a single voxel the size of the world's

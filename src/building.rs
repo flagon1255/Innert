@@ -69,6 +69,8 @@ pub struct Building {
     /// Whether the inventory's Craft tab is open, see tools.rs, and how many blows the weapon in
     /// hand had landed when last looked at, a tool's gathering where each lands
     pub(super) craft_open: bool,
+    /// The fires' smoke, embers and crackling, see hearths.rs
+    pub(super) fires: crate::hearths::Fires,
     landed: u32,
 }
 
@@ -140,7 +142,7 @@ impl App {
         }
         // The pieces, and the gate or a portal home after them where they can be built
         let kinds = Kind::ALL.len() + self.gate_choice().is_some() as usize;
-        let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
+        let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9, KeyCode::Digit0, KeyCode::Minus];
         if let Some(k) = digits.iter().position(|&k| self.input.key_pressed(k)) {
             self.building.picked = k.min(kinds - 1);
         }
@@ -173,7 +175,8 @@ impl App {
         // A door faces the player and spans to their right; stairs go up away from them
         let facing = snapped(look);
         let auto = match kind {
-            Kind::Door => facing + 2,
+            // A fireplace and its chimney face the player too
+            Kind::Door | Kind::Hearth | Kind::Chimney => facing + 2,
             Kind::Stairs => facing,
             _ => 0,
         };
@@ -243,7 +246,7 @@ impl App {
         if self.bases.build(kind, at, turn).is_ok() {
             self.refresh_bases();
             let middle = self.bases.piece_at(at).map(|p| p.middle());
-            self.play_at(audio::Sound::Place, middle, 0.8, if kind == Kind::StoneWall || kind == Kind::ClayWall { 0.8 } else { 1.0 });
+            self.play_at(audio::Sound::Place, middle, 0.8, if matches!(kind, Kind::StoneWall | Kind::ClayWall | Kind::Hearth | Kind::Chimney) { 0.8 } else { 1.0 });
             if kind == Kind::Door {
                 self.save_game(false);
             }
@@ -664,11 +667,14 @@ fn merged(boxes: Vec<([i64; 3], [i64; 3])>) -> Vec<([i64; 3], [i64; 3])> {
 pub fn base_lights(bases: &Bases, world: &World) -> Vec<[f32; 8]> {
     let vpm = world.voxels_per_meter as f64;
     let origin = [world.origin[0] as f64, world.origin[1] as f64, 0.0];
-    bases
+    let mut lights: Vec<[f32; 8]> = bases
         .lights(vpm)
         .into_iter()
         .map(|(at, reach, color)| [(at[0] - origin[0]) as f32, (at[1] - origin[1]) as f32, (at[2] - origin[2]) as f32, reach, color[0], color[1], color[2], 0.0])
-        .collect()
+        .collect();
+    // And the fires burning, see hearths.rs
+    lights.extend(crate::hearths::lights(bases, world));
+    lights
 }
 
 /// What's carried to build with, under the clock; in building, the pieces to pick from and the
@@ -722,7 +728,8 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         let color = if afford { Color32::from_gray(if picked { 255 } else { 205 }) } else { Color32::from_rgb(200, 110, 100) };
         // The gate in gold, being what all of it's for
         let color = if k >= Kind::ALL.len() && afford { Color32::from_rgb(255, 215, 130) } else { color };
-        painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{} {}", k + 1, name), FontId::proportional(14.0), color);
+        let key = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-"].get(k).copied().unwrap_or(" ");
+        painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{key} {name}"), FontId::proportional(14.0), color);
         painter.text(pos2(x + 264.0, y + 14.0), Align2::RIGHT_CENTER, cost.describe(), FontId::proportional(12.0), color.gamma_multiply(0.85));
         y += 26.0;
     }
@@ -783,7 +790,7 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 11] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal", "tools"];
+pub const SCRIPTS: [&str; 12] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal", "tools", "hearth"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
@@ -968,6 +975,65 @@ impl App {
             }
             // A raid on a hut with the player shut in it: the camera off to one side of its door,
             // a shot as it's first struck, once it's half broken, and as it gives way
+            // A fireplace in a hut, its chimney up through the roof, stocked with four logs, see
+            // hearths.rs: `--set hearth_view=out` looks at the hut from outside, `in` at the fire
+            // from just inside the door, and `cook` roasts meat over it from there
+            ("hearth", 3) => {
+                self.bases.materials.add(bases::Materials::new(400, 300, 120));
+                let ahead = Vector3::new(-self.camera.rotation.z.sin(), self.camera.rotation.z.cos(), 0.0);
+                let Some(at) = self.open_ground(feet + ahead * 9.0 * vpm, 6) else {
+                    println!("frame {frame}: nowhere open to build");
+                    return;
+                };
+                let count = self.build_hut(at);
+                // The torch inside taken away, so the fire lights the room, and the roof where the
+                // chimney goes up through it
+                for b in [[at[0] + 4, at[1] + 4, at[2] + 1], [at[0] + 2, at[1] + 4, at[2] + 5], [at[0] + 3, at[1] + 4, at[2] + 5]] {
+                    if let Some(id) = self.bases.piece_at(b).map(|p| p.id) {
+                        self.bases.remove(id, false);
+                    }
+                }
+                let hearth = [at[0] + 2, at[1] + 4, at[2] + 1];
+                let built = [self.bases.build(Kind::Hearth, hearth, 3).is_ok(), self.bases.build(Kind::Chimney, [hearth[0], hearth[1], hearth[2] + 2], 3).is_ok(), self.bases.build(Kind::Chimney, [hearth[0], hearth[1], hearth[2] + 4], 3).is_ok()];
+                // `--set hearth_logs=0` leaves it unlit, to see what the fire costs
+                let logs = settings_from_args().into_iter().find(|(k, _)| k == "hearth_logs").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(4.0);
+                if let Some(id) = self.bases.piece_at(hearth).map(|p| p.id).filter(|_| logs > 0.0) {
+                    self.bases.add_fuel(id, logs * crate::hearths::LOG_SECONDS, crate::hearths::MOST_SECONDS);
+                }
+                self.refresh_bases();
+                self.building.hut = Some(at);
+                println!("frame {frame}: a hut of {count} pieces, its fireplace and chimney built {built:?}, burning {:?} s", self.bases.piece_at(hearth).map(|p| p.fuel));
+                let view = settings_from_args().into_iter().find(|(k, _)| k == "hearth_view").map_or("in".to_owned(), |(_, v)| v);
+                if view == "out" {
+                    self.look_at_hut(at, -1.0);
+                } else {
+                    // Just inside the door, looking at the fire
+                    let inside = Vector3::new(((at[0] + 4) * BLOCK) as f64 + 4.0, ((at[1] + 1) * BLOCK) as f64 + 2.0, ((at[2] + 1) * BLOCK) as f64) - origin;
+                    let fire = crate::hearths::fire_at(self.bases.piece_at(hearth).unwrap()) - origin;
+                    self.look_from(inside + Vector3::new(0.0, 0.0, 1.35 * vpm), fire + Vector3::new(0.0, 0.0, 0.45 * vpm));
+                }
+                self.building.phase = 1;
+                self.building.mark = frame;
+            }
+            ("hearth", f) if self.building.phase == 1 => {
+                let since = f - self.building.mark;
+                let cook = settings_from_args().iter().any(|(k, v)| k == "hearth_view" && v == "cook");
+                match since {
+                    40 if cook => {
+                        self.game.hand(crate::game::Item::Meat, 3);
+                    }
+                    70 | 90 if cook => {
+                        self.hearth_here();
+                        println!("frame {frame}: {}", self.game.last_message().unwrap_or(""));
+                    }
+                    120 => {
+                        let fire = self.bases.pieces().iter().find(|p| p.kind == Kind::Hearth).map(|p| p.fuel);
+                        println!("frame {frame}: the fire has {fire:?} s left, the note {:?}", self.hearth_note());
+                        self.shoot_soon(if cook { "roasting over the fire" } else { "the fire burning" });
+                    }
+                    _ => {}
+                }
+            }
             ("raid", 3) => {
                 self.bases.materials.add(bases::Materials::new(400, 300, 120));
                 let ahead = Vector3::new(-self.camera.rotation.z.sin(), self.camera.rotation.z.cos(), 0.0);
@@ -1274,7 +1340,7 @@ impl App {
                             if !solid(x, y, z) {
                                 let floor = (0..z).rev().find(|&k| solid(x, y, k));
                                 if let Some(k) = floor
-                                    && self.world.material_at(x, y, k) == worldgen::material::CLAY
+                                    && self.world.material_at(x, y, k) == worldgen::material::CLAY_BANK
                                     && (1..(1.4 * vpm) as i64).all(|h| !solid(x, y, k + h))
                                 {
                                     hit = Some(k);
@@ -1309,7 +1375,7 @@ impl App {
                         let patch = [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (0, 0)].iter().all(|&(dx, dy)| rock(x + dx, y + dy));
                         (patch && depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm)))
                     }
-                    _ if self.world.material_at(x, y, z) != worldgen::material::CLAY => None,
+                    _ if self.world.material_at(x, y, z) != worldgen::material::CLAY_BANK => None,
                     "shallows" => (depth > 0.15 * vpm && depth < 0.8 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 3.0 * vpm))),
                     _ => (depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm))),
                 };

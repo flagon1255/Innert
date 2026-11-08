@@ -268,7 +268,7 @@ const uint FAR_DIRECT_INTERVAL = 16;
 const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 89;
+const uint PALETTE_SIZE = 90;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
     vec3(0.28, 0.48, 0.17), // grass
@@ -281,7 +281,7 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.27, 0.54, 0.15), // leaves
     vec3(0.92, 0.14, 0.14), // red flower
     vec3(0.98, 0.84, 0.14), // yellow flower
-    vec3(0.58, 0.38, 0.27), // clay
+    vec3(0.80, 0.78, 0.74), // clay
     vec3(0.42, 0.56, 0.22), // grass tip
     vec3(0.10, 0.36, 0.10), // dark leaves
     vec3(0.95, 0.75, 0.12), // yellow leaves
@@ -358,7 +358,8 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.95, 0.08, 0.12), // blood
     vec3(1.00, 0.92, 0.60), // holy
     vec3(0.62, 0.88, 0.16), // lime leaves
-    vec3(0.46, 0.03, 0.06)  // crimson leaves
+    vec3(0.46, 0.03, 0.06), // crimson leaves
+    vec3(0.58, 0.38, 0.27)  // clay bank, as it lies in the ground
 );
 
 // Has to match the material ids in src\worldgen.rs
@@ -1459,8 +1460,8 @@ const uint MAT_GRASS_BLADE = 22;
 // How tall grass grows at most, in meters, for shading its blades from root to tip
 const float BLADE_HEIGHT = 0.45;
 
-// Has to match worldgen::material::CLAY
-const uint MAT_CLAY = 11;
+// Has to match worldgen::material::CLAY_BANK
+const uint MAT_CLAY = 89;
 
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
