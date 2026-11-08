@@ -24,7 +24,6 @@ use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, BlitImageInfo, BufferCopy, BufferImageCopy, ClearColorImageInfo, CommandBufferUsage,
         CopyBufferInfo, CopyBufferToImageInfo, CopyImageToBufferInfo, PrimaryAutoCommandBuffer,
-        PrimaryCommandBufferAbstract,
         allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
@@ -890,7 +889,8 @@ struct GpuWorld {
     bricks: Subbuffer<[u32]>,
     // How many bricks there's room for
     capacity: usize,
-    // What else the set binds, to bind again when there's more room for bricks, see grow()
+    // What else the set binds, to bind again when there's more room for bricks, see
+    // grow_with_frame()
     views: Vec<(u32, Arc<ImageView>)>,
     set_index: usize,
     // The bricks before there was more room for them, to be copied over with the next frame, see
@@ -906,16 +906,10 @@ impl GpuWorld {
         self.bricks.size() + texels(&self.grid) + grass
     }
 
-    /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
-    /// there are copied into on the GPU, which is far quicker than sending the world over again
-    fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
-        self.grow_with_frame(needed, spare_bricks(), memory_allocator, descriptor_set_allocator, render_pipeline);
-        self.settle(command_buffer_allocator, queue);
-    }
-
-    /// The same, `spare` more, but copied over with the next frame, see copy_over(), so no frame
-    /// waits for it: drawn with the new buffer from then on, the old one goes once the frames
-    /// before are done with it
+    /// Makes room for at least `needed` bricks, and `spare` more: a bigger buffer, the bricks there
+    /// are copied into on the GPU, which is far quicker than sending the world over again, with
+    /// the next frame, see copy_over(), so no frame waits for it: drawn with the new buffer from
+    /// then on, the old one goes once the frames before are done with it
     fn grow_with_frame(&mut self, needed: usize, spare: usize, memory_allocator: &Arc<StandardMemoryAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline) {
         // No more than a shader can see, see memory::most_bricks()
         let capacity = (needed + spare).min(memory::most_bricks()).max(needed);
@@ -931,24 +925,42 @@ impl GpuWorld {
     }
 
     /// Copies the bricks over into the bigger buffer with the frame being recorded, if there is one
-    /// since the last, before anything else's sent into it
+    /// since the last, before anything else's sent into it. Nothing's ever sent into them outside
+    /// a frame, see App::flush_edits().
     fn copy_over(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
         if let Some(old) = self.copy_from.take() {
             let len = old.len().min(self.bricks.len());
             builder.copy_buffer(CopyBufferInfo::buffers(old.slice(0..len), self.bricks.clone().slice(0..len))).unwrap();
         }
     }
-
-    /// Copies them over now, waiting for it, before anything's sent into them outside a frame
-    fn settle(&mut self, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>) {
-        if self.copy_from.is_none() {
-            return;
-        }
-        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
-        self.copy_over(&mut builder);
-        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
-    }
 }
+
+/// Holes blown in the world and stains splashed on it, as they're to go over to the GPU with the
+/// next frame, see App::flush_edits() and App::record_edits(): host memory of their own, held by
+/// that frame's commands till it's done, so nothing waits and nothing's written while it's read
+struct EditUpload {
+    /// The cells of the brick grid that changed, then their bricks
+    words: Subbuffer<[u32]>,
+    grid: Vec<BufferImageCopy>,
+    bricks: Vec<BufferCopy>,
+    /// The ground the water lies on where it changed, a piece for each part of the room it's in
+    ground: Vec<(Subbuffer<[u32]>, BufferImageCopy)>,
+}
+
+/// Host memory for `words`, to be copied from with a frame
+fn host_words(memory_allocator: &Arc<StandardMemoryAllocator>, words: Vec<u32>) -> Subbuffer<[u32]> {
+    Buffer::from_iter(
+        memory_allocator.clone(),
+        BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
+        AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
+        words,
+    )
+    .unwrap()
+}
+
+/// Seconds a frame spends blowing holes in the world at the most, past the first, see
+/// App::pending_craters: a burst of them, as a cluster bomb's, goes over the next few frames
+const CARVE_SECONDS: f64 = 0.004;
 
 /// Room for this many more bricks in the main world than it starts with, for holes blown in it.
 /// `--set spare_bricks=100` leaves less, to try out making more room.
@@ -992,7 +1004,7 @@ fn bricks_buffer(memory_allocator: &Arc<StandardMemoryAllocator>, words: u64) ->
     Buffer::new_slice::<u32>(
         memory_allocator.clone(),
         BufferCreateInfo {
-            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
+            // Copied from when there's to be more room for bricks, see GpuWorld::grow_with_frame()
             usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
             ..Default::default()
         },
@@ -1339,6 +1351,13 @@ struct App {
     edited: Vec<usize>,
     edited_ground: Option<([i64; 2], [i64; 2])>,
     batching: bool,
+    /// What flush_edits() made of them, to go over with the next frame, see record_edits()
+    edit_uploads: Vec<EditUpload>,
+    /// Holes still to be blown, a few a frame, see CARVE_SECONDS: where, in voxels of the whole
+    /// landscape, and how big, in meters
+    pending_craters: VecDeque<(Vector3<f64>, f64)>,
+    /// Stains still to be splashed, once the holes before them are blown, the same way
+    pending_stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     // Stains splashed on the ground the same way: where, how big, of what, and whether it burnt
     // the plants there
     stains: Vec<([f64; 3], f64, u8, bool)>,
@@ -2590,6 +2609,9 @@ impl App {
             edited: Vec::new(),
             edited_ground: None,
             batching: false,
+            edit_uploads: Vec::new(),
+            pending_craters: VecDeque::new(),
+            pending_stains: Vec::new(),
             stains: Vec::new(),
             step_distance: 0.0,
             walk_speed: 0.0,
@@ -3010,9 +3032,11 @@ impl App {
         }
     }
 
-    /// Sends what's been carved and painted since last time to the GPU, all at once: each time
-    /// waits for the frame being drawn to finish, so a burst of holes and stains costs one wait
-    /// rather than one each
+    /// Makes ready what's been carved and painted since last time to go over to the GPU with the
+    /// next frame, all at once, see record_edits(). Nothing waits for the frames being drawn: what
+    /// goes over is copied from host memory of its own, and the frame's copies come after
+    /// everything sent to the GPU before, as each command buffer's first use of the world comes
+    /// after all that, so no frame still being drawn sees a brick half written.
     fn flush_edits(&mut self) {
         if self.edited.is_empty() && self.edited_ground.is_none() {
             return;
@@ -3023,85 +3047,74 @@ impl App {
         let mut cells = std::mem::take(&mut self.edited);
         cells.sort_unstable();
         cells.dedup();
-        // The frames still being drawn read what's about to change, so let them finish
-        if let Some(rcx) = &mut self.rcx {
-            wait_for_frames(rcx, &self.device);
+        if grew {
+            // Out of room for more bricks: a bigger buffer, the ones there copied over with the
+            // next frame before what's changed goes in, see grow_with_frame()
+            self.voxel_set.grow_with_frame(needed, spare_bricks(), &self.memory_allocator, &self.descriptor_set_allocator, &self.render_pipeline);
         }
-        // Bricks still to be copied over into more room for them go first, see grow_with_frame()
-        self.voxel_set.settle(&self.command_buffer_allocator, &self.queue);
-        if needed > self.voxel_set.capacity {
-            // Out of room for more bricks: a bigger buffer, the ones there are copied over on the GPU
-            self.voxel_set.grow(needed, &self.memory_allocator, &self.command_buffer_allocator, &self.descriptor_set_allocator, &self.render_pipeline, &self.queue);
-        }
-        if !cells.is_empty() {
-            self.upload_bricks(&cells);
-        }
-        if let Some((lo, hi)) = self.edited_ground.take() {
-            self.water.sync_ground(&self.world, lo, hi, &self.memory_allocator, &self.command_buffer_allocator, &self.queue);
-        }
-        // Screenshot runs say when sending what changed held a frame up
-        if self.capture.is_some() && (grew || start.elapsed().as_secs_f64() > 0.004) {
-            println!("Edits sent in {:.1} ms: {} bricks{}", start.elapsed().as_secs_f64() * 1000.0, cells.len(), if grew { ", after making more room" } else { "" });
-        }
-    }
-
-    /// Sends the brick grid `cells` of the main world to the GPU, along with their bricks
-    fn upload_bricks(&mut self, cells: &[usize]) {
-        let grid = self.voxel_set.grid.clone();
-        let mut data: Vec<u32> = cells.iter().map(|&c| self.world.brick_grid[c]).collect();
-        let grid_regions: Vec<BufferImageCopy> = cells
+        // The cells of the grid that changed, then their bricks, where they're kept in the room
+        // there is, see World::cell()
+        let mut words: Vec<u32> = cells.iter().map(|&c| self.world.brick_grid[c]).collect();
+        let grid = cells
             .iter()
             .enumerate()
-            .map(|(k, &c)| BufferImageCopy {
-                buffer_offset: (k * 4) as u64,
-                image_subresource: grid.subresource_layers(),
-                // Where it's kept in the room there is, see World::cell()
-                image_offset: self.world.cell_at(c),
-                image_extent: [1, 1, 1],
-                ..Default::default()
-            })
+            .map(|(k, &c)| BufferImageCopy { buffer_offset: (k * 4) as u64, image_offset: self.world.cell_at(c), image_extent: [1, 1, 1], ..Default::default() })
             .collect();
-        let mut brick_regions = Vec::new();
-        for &c in cells {
-            if let Some((index, words)) = self.world.brick_words(c) {
-                brick_regions.push(BufferCopy {
-                    src_offset: (data.len() * 4) as u64,
+        let mut bricks = Vec::new();
+        for &c in &cells {
+            if let Some((index, brick)) = self.world.brick_words(c) {
+                bricks.push(BufferCopy {
+                    src_offset: (words.len() * 4) as u64,
                     dst_offset: (index * worldgen::BRICK_WORDS * 4) as u64,
                     size: (worldgen::BRICK_WORDS * 4) as u64,
                     ..Default::default()
                 });
-                data.extend_from_slice(words);
+                words.extend_from_slice(brick);
             }
         }
-        let staging = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            data,
-        )
-        .unwrap();
-        let mut builder = AutoCommandBufferBuilder::primary(self.command_buffer_allocator.clone(), self.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
-        builder
-            .copy_buffer_to_image(CopyBufferToImageInfo {
-                regions: grid_regions.into(),
-                ..CopyBufferToImageInfo::buffer_image(staging.clone(), grid)
-            })
-            .unwrap();
-        if !brick_regions.is_empty() {
-            builder
-                .copy_buffer(CopyBufferInfo {
-                    regions: brick_regions.into(),
-                    ..CopyBufferInfo::buffers(staging, self.voxel_set.bricks.clone())
-                })
-                .unwrap();
+        let ground = match self.edited_ground.take() {
+            Some((lo, hi)) => self
+                .water
+                .take_ground(&self.world, lo, hi)
+                .into_iter()
+                .map(|(at, extent, words)| (host_words(&self.memory_allocator, words), BufferImageCopy { image_offset: [at[0], at[1], 0], image_extent: [extent[0], extent[1], 1], ..Default::default() }))
+                .collect(),
+            None => Vec::new(),
+        };
+        if words.is_empty() && ground.is_empty() {
+            return;
         }
-        builder.build().unwrap().execute(self.queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        // An empty buffer can't be made, so a word for nothing when only the ground changed
+        let words = if words.is_empty() { vec![0] } else { words };
+        self.edit_uploads.push(EditUpload { words: host_words(&self.memory_allocator, words), grid, bricks, ground });
+        // Screenshot runs say when making them ready took a while
+        if self.capture.is_some() && (grew || start.elapsed().as_secs_f64() > 0.004) {
+            println!("Edits made ready in {:.1} ms: {} bricks{}", start.elapsed().as_secs_f64() * 1000.0, cells.len(), if grew { ", after making more room" } else { "" });
+        }
+    }
+
+    /// Copies `edits`, what flush_edits() made ready, over to the GPU with the frame being recorded
+    /// into the world `voxel_set` and the ground of `water`, after the bricks there were if there's
+    /// more room for them now and before anything's drawn
+    fn record_edits(edits: &mut Vec<EditUpload>, voxel_set: &GpuWorld, water: &Water, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
+        if edits.is_empty() {
+            return;
+        }
+        let grid = voxel_set.grid.clone();
+        let ground = water.images().ground;
+        for edit in std::mem::take(edits) {
+            if !edit.grid.is_empty() {
+                let regions: Vec<BufferImageCopy> = edit.grid.into_iter().map(|r| BufferImageCopy { image_subresource: grid.subresource_layers(), ..r }).collect();
+                builder.copy_buffer_to_image(CopyBufferToImageInfo { regions: regions.into(), ..CopyBufferToImageInfo::buffer_image(edit.words.clone(), grid.clone()) }).unwrap();
+            }
+            if !edit.bricks.is_empty() {
+                builder.copy_buffer(CopyBufferInfo { regions: edit.bricks.into(), ..CopyBufferInfo::buffers(edit.words, voxel_set.bricks.clone()) }).unwrap();
+            }
+            for (words, region) in edit.ground {
+                let region = BufferImageCopy { image_subresource: ground.subresource_layers(), ..region };
+                builder.copy_buffer_to_image(CopyBufferToImageInfo { regions: [region].into(), ..CopyBufferToImageInfo::buffer_image(words, ground.clone()) }).unwrap();
+            }
+        }
     }
 
     /// The wind, the water nearby and the birds in the trees, louder or quieter for where the
@@ -3491,10 +3504,15 @@ impl App {
             None => (world, None),
         };
         drop(landscape);
-        // What was there before isn't drawn with any more
+        // What was there before isn't drawn with any more, nor what was still to go over of it
         if let Some(rcx) = &mut self.rcx {
             wait_for_frames(rcx, &self.device);
         }
+        self.edited.clear();
+        self.edited_ground = None;
+        self.edit_uploads.clear();
+        self.pending_craters.clear();
+        self.pending_stains.clear();
         self.voxel_set = get_voxel_set(
             self.memory_allocator.clone(),
             self.command_buffer_allocator.clone(),
@@ -3875,20 +3893,37 @@ impl App {
                     sound.play(cue, &view);
                 }
             }
-            // Explosions blowing holes in the world, and splashing stains on it, sent to the GPU
-            // all together
+            // Explosions blowing holes in the world, a few milliseconds' worth a frame and the rest
+            // left for the frames after, so a burst of them doesn't hold one up, kept by where they
+            // are in the whole landscape meanwhile; then splashing stains on it, which are quick,
+            // once the holes before them are blown, so they're on the ground the holes leave; all
+            // sent to the GPU together
             self.batching = true;
+            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            let craters = self.game.take_craters();
+            self.pending_craters.extend(craters.into_iter().map(|(center, radius)| (center + origin, radius)));
+            let stains = self.game.take_stains();
+            self.pending_stains.extend(stains.into_iter().map(|(center, radius, material, burn)| (center + origin, radius, material, burn)));
+            // What's blown and splashed this frame, for what's built to take the blows, see below
             let mut struck = Vec::new();
-            for (center, radius) in self.game.take_craters() {
-                self.blast(center, radius);
-                struck.push((center, radius, true));
+            // At least a quarter of those waiting, so however many come they never fall far behind
+            let (start, least) = (Instant::now(), 1 + self.pending_craters.len() / 4);
+            let mut blown = 0;
+            while (blown < least || start.elapsed().as_secs_f64() < CARVE_SECONDS)
+                && let Some((at, radius)) = self.pending_craters.pop_front()
+            {
+                self.blast(at - origin, radius);
+                struck.push((at - origin, radius, true));
+                blown += 1;
             }
-            let start = Instant::now();
-            for (center, radius, material, burn) in self.game.take_stains() {
-                self.stain(center, radius, material, burn);
-                struck.push((center, radius, false));
+            if self.pending_craters.is_empty() {
+                let start = Instant::now();
+                for (at, radius, material, burn) in std::mem::take(&mut self.pending_stains) {
+                    self.stain(at - origin, radius, material, burn);
+                    struck.push((at - origin, radius, false));
+                }
+                self.slow("splashing stains", start);
             }
-            self.slow("splashing stains", start);
             // What's built is damaged by blasts rather than holed, see building.rs
             self.blasted(&struck);
             self.batching = false;
@@ -5568,6 +5603,11 @@ impl App {
         self.voxel_set.copy_over(&mut builder);
         if let Some(stream) = &mut self.stream {
             stream.record_uploads(&mut builder, &self.voxel_set, &self.water, self.frame, self.frame_ms);
+        }
+        // Holes blown and stains splashed since the last frame, after what's come of strips, as
+        // they're newer
+        Self::record_edits(&mut self.edit_uploads, &self.voxel_set, &self.water, &mut builder);
+        if let Some(stream) = &mut self.stream {
             stream.skips.record(&mut builder, &self.skips_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator);
         }
         // Empty bricks round what's just been built skip no further than it, see building.rs

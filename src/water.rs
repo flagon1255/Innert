@@ -268,47 +268,9 @@ fn send_rect(
 
 impl Water {
     /// The ground in the columns from `lo` to `hi` changed, like when a hole was blown in it:
-    /// takes the new ground from `world`'s water map, here and on the GPU
-    pub fn sync_ground(
-        &mut self,
-        world: &World,
-        lo: [i64; 2],
-        hi: [i64; 2],
-        memory_allocator: &Arc<StandardMemoryAllocator>,
-        command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
-        queue: &Arc<Queue>,
-    ) {
-        let Some(map) = &world.water else {
-            return;
-        };
-        if map.ground.len() != self.ground.len() {
-            return;
-        }
-        let [sx, sy] = self.size.map(i64::from);
-        let lo = [lo[0].clamp(0, sx) as u32, lo[1].clamp(0, sy) as u32];
-        let hi = [hi[0].clamp(0, sx) as u32, hi[1].clamp(0, sy) as u32];
-        let image = self.ground_view.image().clone();
-        self.ground_changed = true;
-        for (at, from, extent) in kept(lo, hi, self.room, self.wrap) {
-            let width = self.room[0] as usize;
-            for y in 0..extent[1] as usize {
-                let start = at[0] as usize + (at[1] as usize + y) * width;
-                self.ground[start..start + extent[0] as usize].copy_from_slice(&map.ground[start..start + extent[0] as usize]);
-            }
-            let _ = from;
-            let ground = &self.ground;
-            send_rect(memory_allocator, command_buffer_allocator, queue, &image, at, extent, 1, |piece, first| {
-                for (k, word) in piece.iter_mut().enumerate() {
-                    let i = first + k;
-                    let (x, y) = (i % extent[0] as usize, i / extent[0] as usize);
-                    *word = ground[at[0] as usize + x + (at[1] as usize + y) * width].to_bits();
-                }
-            });
-        }
-    }
-
-    /// The same, but rather than sent over now, the ground from `lo` to `hi` that's to go over with
-    /// the next frame, see stream.rs: each part of the room it's in, where, how big, and the words
+    /// takes the new ground from `world`'s water map here, and gives what's to go over to the GPU
+    /// with the next frame, see App::flush_edits() and stream.rs: each part of the room it's in,
+    /// where, how big, and the words
     pub fn take_ground(&mut self, world: &World, lo: [i64; 2], hi: [i64; 2]) -> Vec<([u32; 2], [u32; 2], Vec<u32>)> {
         let Some(map) = &world.water else {
             return Vec::new();
