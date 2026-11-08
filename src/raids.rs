@@ -180,7 +180,7 @@ impl Nav {
                 let i = index(b[0], b[1]);
                 match p.kind {
                     Kind::Door if !p.open => cells[i] = Cell::Door(p.id),
-                    Kind::WoodWall | Kind::ClayWall | Kind::StoneWall => walls[i] += 1,
+                    Kind::WoodWall | Kind::ClayWall | Kind::StoneWall | Kind::Hearth | Kind::Chimney => walls[i] += 1,
                     _ => {}
                 }
             }

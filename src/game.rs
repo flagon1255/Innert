@@ -48,6 +48,8 @@ pub enum Item {
     Bucket,
     Apple,
     Meat,
+    /// Meat roasted over a fireplace: more filling than raw, see src\hearths.rs
+    RoastMeat,
     Bread,
     /// Heals when drunk
     Potion,
@@ -74,7 +76,7 @@ impl Item {
     fn look(self) -> Option<Look> {
         match self {
             Item::Apple => Some(Look::Apple),
-            Item::Meat => Some(Look::Meat),
+            Item::Meat | Item::RoastMeat => Some(Look::Meat),
             Item::Bread => Some(Look::Bread),
             Item::Potion => Some(Look::Potion),
             Item::Gold(_) => Some(Look::Coins),
@@ -95,6 +97,7 @@ impl Item {
             Item::Bucket => "Bucket",
             Item::Apple => "Apple",
             Item::Meat => "Raw Meat",
+            Item::RoastMeat => "Roast Meat",
             Item::Bread => "Bread",
             Item::Potion => "Healing Potion",
             Item::Gold(_) => "Gold",
@@ -120,6 +123,7 @@ impl Item {
         match self {
             Item::Apple => 12.0,
             Item::Meat => 30.0,
+            Item::RoastMeat => 55.0,
             Item::Bread => 22.0,
             _ => 0.0,
         }
@@ -144,6 +148,7 @@ fn food_price(item: Item) -> u32 {
     match item {
         Item::Apple => 4,
         Item::Meat => 6,
+        Item::RoastMeat => 14,
         Item::Bread => 10,
         Item::Potion => 35,
         // Sold in the normal world once the way to the sky isles is open, see Game::sky_wares
@@ -1029,6 +1034,52 @@ impl Game {
 
     pub fn holding_weapon(&self) -> bool {
         self.held().is_some()
+    }
+
+    /// For trying things out: `count` of `item` put first on the quick bar, in hand
+    pub fn hand(&mut self, item: Item, count: u32) {
+        self.slots.insert(0, (item, count));
+        self.selected = 0;
+    }
+
+    /// Whether what's in hand is raw meat, to roast over a fire, see src\hearths.rs
+    pub fn holding_raw_meat(&self) -> bool {
+        self.slots.get(self.selected).is_some_and(|(item, _)| *item == Item::Meat)
+    }
+
+    /// Roasts a piece of the raw meat in hand into roast meat: how many raw are left
+    pub fn cook_selected(&mut self) -> u32 {
+        let Some(&(Item::Meat, count)) = self.slots.get(self.selected) else {
+            return 0;
+        };
+        if count > 1 {
+            self.slots[self.selected].1 -= 1;
+        } else {
+            self.remove_slot(self.selected);
+        }
+        self.add_item(Item::RoastMeat, 1);
+        // The roast meat in hand next, once the raw's all done
+        if count == 1
+            && let Some(at) = self.slots.iter().position(|(item, _)| *item == Item::RoastMeat)
+            && at < HOTBAR
+        {
+            self.selected = at;
+        }
+        self.milestone = true;
+        count - 1
+    }
+
+    /// A fire's smoke or ember, see Combat::wisp()
+    pub fn wisp(&mut self, at: Vector3<f64>, velocity: Vector3<f64>, life: f64, ember: bool) {
+        self.combat.wisp(at, velocity, life, ember);
+    }
+
+    /// Warmed by a fire for `dt` seconds: `rate` health a second back, once `safe` seconds have
+    /// gone by since the player was last hurt
+    pub fn warm(&mut self, dt: f64, rate: f64, safe: f64) {
+        if self.dead.is_none() && self.since_hurt > safe {
+            self.health = (self.health + rate * dt).min(MAX_HEALTH);
+        }
     }
 
     /// The tool in hand, if it's a tool: which, and how good, see tools.rs
@@ -4013,6 +4064,7 @@ impl Game {
             Item::Bucket => S::Bucket,
             Item::Apple => S::Apple,
             Item::Meat => S::Meat,
+            Item::RoastMeat => S::RoastMeat,
             Item::Bread => S::Bread,
             Item::Potion => S::Potion,
             Item::Gold(amount) => S::Gold { amount },
@@ -4031,6 +4083,7 @@ impl Game {
             S::Bucket => Item::Bucket,
             S::Apple => Item::Apple,
             S::Meat => Item::Meat,
+            S::RoastMeat => Item::RoastMeat,
             S::Bread => Item::Bread,
             S::Potion => Item::Potion,
             S::Gold { amount } => Item::Gold(*amount),
@@ -5839,13 +5892,15 @@ impl Game {
                     painter.circle_stroke(at - vec2(0.0, r * 0.06), r * 0.28, Stroke::new(r * 0.07, Color32::from_rgb(220, 165, 40)));
                 }
             }
-            Item::Meat => {
+            Item::Meat | Item::RoastMeat => {
                 let bone = Color32::from_rgb(240, 232, 214);
                 painter.line_segment([center + vec2(-r * 0.85, r * 0.55), center + vec2(-r * 0.1, -r * 0.05)], Stroke::new(r * 0.22, bone));
                 painter.circle_filled(center + vec2(-r * 0.95, r * 0.42), r * 0.16, bone);
                 painter.circle_filled(center + vec2(-r * 0.75, r * 0.72), r * 0.16, bone);
-                painter.circle_filled(center + vec2(r * 0.2, -r * 0.25), r * 0.62, Color32::from_rgb(175, 60, 52));
-                painter.circle_filled(center + vec2(r * 0.05, -r * 0.4), r * 0.22, Color32::from_rgb(215, 110, 100));
+                // Roasted, browned, with a darker crust
+                let (flesh, shine) = if item == Item::RoastMeat { (Color32::from_rgb(120, 62, 30), Color32::from_rgb(170, 100, 50)) } else { (Color32::from_rgb(175, 60, 52), Color32::from_rgb(215, 110, 100)) };
+                painter.circle_filled(center + vec2(r * 0.2, -r * 0.25), r * 0.62, flesh);
+                painter.circle_filled(center + vec2(r * 0.05, -r * 0.4), r * 0.22, shine);
             }
             Item::Weapon(w) => {
                 let weapon = &self.weapons[w];
@@ -6522,5 +6577,39 @@ mod tests {
                 assert!(library.special_of(s, None, luck).is_some(), "{seed} at {luck}");
             }
         }
+    }
+
+    /// Raw meat in hand roasts over a fire into roast meat, more filling, which goes in the save,
+    /// see hearths.rs
+    #[test]
+    fn meat_roasts_over_a_fire() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(32.0, 32.0, 16.0));
+        assert!(Item::RoastMeat.food() > Item::Meat.food());
+        assert!(food_price(Item::RoastMeat) > food_price(Item::Meat));
+        game.add_item(Item::Meat, 2);
+        game.selected = game.slots.iter().position(|(i, _)| *i == Item::Meat).unwrap();
+        assert!(game.holding_raw_meat());
+        assert_eq!(game.cook_selected(), 1);
+        assert!(game.holding_raw_meat());
+        assert_eq!(game.cook_selected(), 0);
+        assert!(!game.slots.iter().any(|(i, _)| *i == Item::Meat));
+        assert_eq!(game.slots.iter().find(|(i, _)| *i == Item::RoastMeat).map(|s| s.1), Some(2));
+        assert!(!game.holding_raw_meat());
+        // Nothing to roast, nothing changes
+        let before = game.slots.clone();
+        game.cook_selected();
+        assert_eq!(game.slots, before);
+        // Through the save
+        let carried = game.carried_save();
+        let text = serde_json::to_string(&carried).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(32.0, 32.0, 16.0));
+        other.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(other.slots.iter().find(|(i, _)| *i == Item::RoastMeat).map(|s| s.1), Some(2));
     }
 }

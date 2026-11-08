@@ -167,6 +167,17 @@ impl App {
         let (here, visited, _) = self.realm_progress();
         let roster = raids::night_roster(here, &visited);
         let count = plan.per_wave.min((plan.most as usize).saturating_sub(self.raid.about) as u32);
+        // A fire burning near the player keeps the beasts wary: one fewer a wave, never none, see
+        // hearths.rs
+        let count = if count > 1 && self.fire_wards() {
+            if !self.building.fires.warded_said {
+                self.building.fires.warded_said = true;
+                self.game.say("The fire's glow keeps them wary: fewer dare come at a time.");
+            }
+            count - 1
+        } else {
+            count
+        };
         if count == 0 || roster.is_empty() {
             return true;
         }

@@ -15666,6 +15666,15 @@ impl Combat {
 
     /// The attack speed bonus from a frenzy, if there is one, and how long it has left
     /// Seconds the fight's been going on for, to pulse things by
+    /// A wisp of smoke, or for `ember` a glowing ember, let loose at `at` drifting off at `velocity`,
+    /// for `life` seconds, rising as it goes: what a fireplace gives off, see src\hearths.rs
+    pub fn wisp(&mut self, at: Vector3<f64>, velocity: Vector3<f64>, life: f64, ember: bool) {
+        // Smoke in billows, rising on the warm air
+        let (look, slot, gravity) = if ember { (Element::look(Some(Element::Fire)), SLOT_SPARK, -0.12) } else { (Element::look(None), SLOT_CLOUD, -0.25) };
+        self.sparks.push(Spark { position: at, velocity, look, life, lifetime: life, gravity, slot });
+        self.cap_sparks();
+    }
+
     pub fn time(&self) -> f64 {
         self.time
     }

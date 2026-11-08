@@ -76,6 +76,7 @@ mod game;
 mod gates;
 mod gather;
 mod gpu_timing;
+mod hearths;
 mod hot_reload;
 mod leaves;
 mod serpent_lairs;
@@ -3874,7 +3875,7 @@ impl App {
             // Building, E mends what's damaged
             if self.input.key_pressed(KeyCode::KeyE) && building {
                 self.mend_here();
-            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() {
+            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() && !self.hearth_here() {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
                 if self.game.shopping() {
@@ -3914,6 +3915,8 @@ impl App {
             self.slow("the fighting, animals and such", start);
             // A tool's blow landing gathers what it struck, see tools.rs
             self.update_tools();
+            // The fires burning down, smoking and warming whoever's by them, see hearths.rs
+            self.update_hearths(delta_time.min(0.1));
             // Monsters coming at night, and what's built taking their blows, see night.rs
             let start = Instant::now();
             self.update_raid(delta_time.min(0.1));
@@ -4981,6 +4984,7 @@ impl App {
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
         let gate_choice = self.gate_choice();
+        let hearth_note = if self.menu_open || self.building.on { None } else { self.hearth_note() };
         let raid_note = self.raid_note();
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
@@ -5179,6 +5183,7 @@ impl App {
                 }
                 night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
                 building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
+                hearths::hud(&ctx, hearth_note.as_deref());
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {

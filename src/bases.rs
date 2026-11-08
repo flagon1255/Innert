@@ -91,6 +91,11 @@ pub enum Kind {
     Torch,
     /// A clay lamp, brighter than a torch
     Lantern,
+    /// A fireplace a meter wide and high, its opening facing the way it's turned: fed logs, it
+    /// burns, lights and warms the room, and cooks, see src\hearths.rs
+    Hearth,
+    /// A meter of stone flue, stacked on a fireplace or another, the smoke rising out of the top
+    Chimney,
     /// One of the weathered stones in a ring where the Innert Gate once stood, laid in a new game
     /// of Realms, see session.rs: never built by the player, nor taken down
     OldStone,
@@ -98,7 +103,7 @@ pub enum Kind {
 
 impl Kind {
     /// In the order they're picked from
-    pub const ALL: [Kind; 8] = [Kind::WoodWall, Kind::ClayWall, Kind::StoneWall, Kind::Floor, Kind::Stairs, Kind::Door, Kind::Torch, Kind::Lantern];
+    pub const ALL: [Kind; 10] = [Kind::WoodWall, Kind::ClayWall, Kind::StoneWall, Kind::Floor, Kind::Stairs, Kind::Door, Kind::Torch, Kind::Lantern, Kind::Hearth, Kind::Chimney];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -110,6 +115,8 @@ impl Kind {
             Kind::Door => "Door",
             Kind::Torch => "Torch",
             Kind::Lantern => "Clay Lantern",
+            Kind::Hearth => "Fireplace",
+            Kind::Chimney => "Chimney",
             Kind::OldStone => "Old Foundation Stone",
         }
     }
@@ -130,6 +137,8 @@ impl Kind {
             Kind::Door => Materials::new(4, 0, 0),
             Kind::Torch => Materials::new(1, 0, 0),
             Kind::Lantern => Materials::new(1, 0, 1),
+            Kind::Hearth => Materials::new(0, 8, 4),
+            Kind::Chimney => Materials::new(0, 3, 1),
             Kind::OldStone => Materials::new(0, 0, 0),
         }
     }
@@ -146,6 +155,8 @@ impl Kind {
             Kind::Door => 160.0,
             Kind::Torch => 40.0,
             Kind::Lantern => 60.0,
+            Kind::Hearth => 900.0,
+            Kind::Chimney => 700.0,
             Kind::OldStone => 2000.0,
         }
     }
@@ -158,7 +169,11 @@ impl Kind {
 
     /// Blocks across and high: a door's two by four, all else one
     pub fn size(self) -> (i64, i64) {
-        if self == Kind::Door { (2, 4) } else { (1, 1) }
+        match self {
+            Kind::Door => (2, 4),
+            Kind::Hearth | Kind::Chimney => (2, 2),
+            _ => (1, 1),
+        }
     }
 
     /// The light it gives off, if any: its color, and how far it reaches in meters
@@ -173,14 +188,14 @@ impl Kind {
     /// Whether it turns, so it matters which way it's put: stairs go up one way, a door spans one.
     /// An old stone's turn is 1 for the top one of its stack, the one worn down.
     pub fn turns(self) -> bool {
-        matches!(self, Kind::Stairs | Kind::Door | Kind::OldStone)
+        matches!(self, Kind::Stairs | Kind::Door | Kind::OldStone | Kind::Hearth | Kind::Chimney)
     }
 
     /// What it's mostly made of, for its debris
     pub fn material(self) -> u8 {
         match self {
             Kind::ClayWall | Kind::Lantern => CLAY_POT,
-            Kind::StoneWall => BRICK_STONE,
+            Kind::StoneWall | Kind::Hearth | Kind::Chimney => BRICK_STONE,
             Kind::OldStone => STONE,
             _ => WOOD,
         }
@@ -202,6 +217,9 @@ pub struct Piece {
     /// For a door, whether it's open
     #[serde(default)]
     pub open: bool,
+    /// For a fireplace, how many seconds more it burns, unlit at none, see src\hearths.rs
+    #[serde(default)]
+    pub fuel: f64,
 }
 
 /// The way a quarter turn faces, along x or y
@@ -221,7 +239,7 @@ fn across(turn: u8) -> [i64; 2] {
 
 impl Piece {
     pub fn new(id: u32, kind: Kind, at: [i64; 3], turn: u8) -> Self {
-        Piece { id, kind, at, turn: if kind.turns() { turn % 4 } else { 0 }, health: kind.health(), open: false }
+        Piece { id, kind, at, turn: if kind.turns() { turn % 4 } else { 0 }, health: kind.health(), open: false, fuel: 0.0 }
     }
 
     /// The blocks it takes up, the first `at`
@@ -387,6 +405,10 @@ impl Piece {
                             }
                         }
                         Kind::OldStone => old_stone_voxel(block, x, y, z, g, self.turn == 1),
+                        // Across its width and up its height in voxels, and from its back to its
+                        // front, see crate::hearths
+                        Kind::Hearth => crate::hearths::hearth_voxel(column * 8 + along(side), row * 8 + z, along(face), crate::hearths::stage(self.fuel), r),
+                        Kind::Chimney => crate::hearths::chimney_voxel(column * 8 + along(side), g[2], along(face), r),
                     };
                     // Cracked as it's damaged: some voxels darkened, the worst knocked out
                     let m = if m != AIR && stage > 0 && self.kind != Kind::Door {
@@ -394,7 +416,7 @@ impl Piece {
                         if crack < stage as u32 * 4 && stage >= 2 && is_surface(x, y, z) {
                             AIR
                         } else if crack < stage as u32 * 12 {
-                            if matches!(self.kind, Kind::StoneWall | Kind::ClayWall | Kind::OldStone) { GRAVEL } else { DEAD_WOOD }
+                            if matches!(self.kind, Kind::StoneWall | Kind::ClayWall | Kind::OldStone | Kind::Hearth | Kind::Chimney) { GRAVEL } else { DEAD_WOOD }
                         } else {
                             m
                         }
@@ -715,6 +737,47 @@ impl Bases {
         let (open, blocks) = (self.pieces[i].open, self.pieces[i].blocks());
         self.retire(&blocks, old);
         Some((open, blocks))
+    }
+
+    /// Feeds fireplace `id` `seconds` more of burning, no more than `most` in all: whether it was
+    /// lit before, and whether its fire changed how it looks
+    pub fn add_fuel(&mut self, id: u32, seconds: f64, most: f64) -> Option<(bool, bool)> {
+        let i = *self.by_id.get(&id)?;
+        if self.pieces[i].kind != Kind::Hearth {
+            return None;
+        }
+        let was = self.pieces[i].fuel;
+        let old = self.looks(i);
+        self.pieces[i].fuel = (was + seconds).min(most).max(was);
+        let changed = crate::hearths::stage(was) != crate::hearths::stage(self.pieces[i].fuel);
+        if changed {
+            let blocks = self.pieces[i].blocks();
+            self.retire(&blocks, old);
+        }
+        Some((was > 0.0, changed))
+    }
+
+    /// The fires burn down `dt` seconds: whether any changed how it looks, as one dies down or goes
+    /// out, which then has to go into the world
+    pub fn burn(&mut self, dt: f64) -> bool {
+        let mut changed = false;
+        for i in 0..self.pieces.len() {
+            let fuel = self.pieces[i].fuel;
+            if self.pieces[i].kind != Kind::Hearth || fuel <= 0.0 {
+                continue;
+            }
+            let after = (fuel - dt).max(0.0);
+            if crate::hearths::stage(after) != crate::hearths::stage(fuel) {
+                let old = self.looks(i);
+                self.pieces[i].fuel = after;
+                let blocks = self.pieces[i].blocks();
+                self.retire(&blocks, old);
+                changed = true;
+            } else {
+                self.pieces[i].fuel = after;
+            }
+        }
+        changed
     }
 
     /// Mends door `id` back to whole if `materials` pay for it: half what it cost
