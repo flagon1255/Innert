@@ -261,6 +261,10 @@ pub struct Boss {
     pub only: Option<Move>,
     /// Seconds a serpent's been getting nowhere, its way blocked, to slither round what's in it
     stuck: f64,
+    /// How far round where it rose the basin it fights in goes, in meters, for the Coil Unending in
+    /// the Drowned Ring, see worldgen::Arena: it keeps to it, sweeping round the side of it the player's
+    /// on and coming up out of it at its edge nearest them, see Game::set_lairs()
+    pub basin: Option<f64>,
 }
 
 /// Seconds a boss goes on after the player once it can't see them, and a monster
@@ -766,6 +770,7 @@ impl Boss {
             ring: (home, 0.0, 1.0),
             only: None,
             stuck: 0.0,
+            basin: None,
         }
     }
 
@@ -1567,8 +1572,21 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             let facing = ((a.target_heading - a.heading + PI).rem_euclid(TAU) - PI).abs() < 0.6;
             let blink = (look == Look::RimeWraith && struck && boss.cooldowns[Move::Blink as usize] <= 0.0).then_some(Move::Blink);
             let backing = boss.retreat > 0.0 && distance > 1.8;
+            // In the Drowned Ring, the Coil Unending keeps to its basin: where its edge comes nearest
+            // the player, or where they are if they're out in it, which it comes up out of the water
+            // at once it's gone under, see Boss::basin
+            let edge = boss.basin.filter(|_| look.is_ultra()).map(|basin| {
+                let off = (p - boss.home).xy();
+                let out = (off.norm() / vpm).min(basin - 3.0);
+                let way = off.try_normalize(1e-6).unwrap_or_else(Vector2::x);
+                Vector3::new(boss.home.x + way.x * out * vpm, boss.home.y + way.y * out * vpm, p.z)
+            });
+            let reach = match edge {
+                Some(e) if boss.buried => (e - a.position).xy().norm() / vpm,
+                _ => distance,
+            };
             // At a door it only beats on it
-            let chosen = boss.choose(distance).filter(|m| !breaking || *m == Move::Slam);
+            let chosen = boss.choose(reach).filter(|m| !breaking || *m == Move::Slam);
             // A great serpent brings its tail down on whoever's got round behind its head
             let rear = boss.coils.as_ref().map(|c| c.points[c.points.len() * 2 / 3]);
             let tail = (look.is_great_serpent() && !boss.buried && boss.cooldowns[Move::Tail as usize] <= 0.0 && distance > 5.0 && boss.only.is_none_or(|o| o == Move::Tail))
@@ -1579,7 +1597,11 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             match blink.filter(|_| !breaking).or(tail.filter(|_| !breaking)).or(chosen.filter(|_| facing && !backing)) {
                 Some(m) => {
                     a.mood = Mood::Idle;
-                    boss.aim = p;
+                    // Coming up out of its basin at the edge of it, if the player's off out of it
+                    boss.aim = match edge {
+                        Some(e) if m == Move::Erupt && (p - e).xy().norm() > 2.0 * vpm => e,
+                        _ => p,
+                    };
                     boss.deeds.push(Deed::WindUp(m, a.position));                    // A heavy blow's sometimes held back, wound up, a moment longer than the last,
                     // and sometimes followed by another, or two from a raid boss
                     let heavy_blow = !monster && matches!(m, Move::Slam | Move::Quake);
@@ -1612,6 +1634,21 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         let way = away + back;
                         a.target_heading = way.y.atan2(way.x);
                         a.mood = Mood::Run;
+                    } else if let (Some(e), Some(basin)) = (edge, boss.basin) {
+                        if boss.buried {
+                            // Under the water to the edge of its basin nearest the player
+                            a.target_heading = heading_to(a.position, e);
+                            a.mood = if (e - a.position).xy().norm() < 2.0 * vpm { Mood::Idle } else { Mood::Run };
+                        } else {
+                            // Sweeping to and fro round its basin on the side the player's on, as
+                            // near them as it reaches, never out of it
+                            let off = (p - boss.home).xy();
+                            let round = (off.norm() / vpm - 6.0).clamp(5.0, basin - 4.0);
+                            let turn = off.y.atan2(off.x) + 0.9 * (boss.clock * 0.4).sin();
+                            let to = boss.home + Vector3::new(turn.cos(), turn.sin(), 0.0) * round * vpm;
+                            a.target_heading = heading_to(a.position, to);
+                            a.mood = if (to - a.position).xy().norm() < 1.5 * vpm { Mood::Walk } else { Mood::Run };
+                        }
                     } else if circles(look, boss.stage) && distance > 7.0 && !boss.buried {
                         // Circling round the player, coming in closer and further out, the Coil
                         // Unending further off than the rest
@@ -1755,7 +1792,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     // there, on the side it came from, so a pack comes up all round them
                     Move::Erupt => {
                         boss.buried = false;
-                        let side = (a.position - boss.aim).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
+                        // In its basin, on the side of it towards its middle, so it rises out of the
+                        // water rather than up on the stands
+                        let from = if boss.basin.is_some() { boss.home } else { a.position };
+                        let side = (from - boss.aim).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
                         // A great serpent's head comes up beside the player, not on top of them
                         let beside = serpents::great_of(look).map_or(1.3, |g| g.girth + 0.6 * g.head + 1.2);
                         let near = boss.aim + Vector3::new(side.x, side.y, 0.0) * beside * vpm;

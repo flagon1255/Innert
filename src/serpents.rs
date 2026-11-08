@@ -613,9 +613,15 @@ fn hash(mut x: u32) -> u32 {
 }
 
 /// Where the Coil Unending keeps its lair in Free Roam's landscape `settings`, about 1.85 km from
-/// `start`, in meters, the way round the landscape's seed says: in deep water near a shore, or on
-/// dry land if there's none that way. Worked out once for each landscape.
+/// `start`, in meters, the way round the landscape's seed says: out in the middle of the Drowned
+/// Ring sunk into a coast there, see worldgen::Arena; or if there's no coast for it anywhere out
+/// there, in deep water near a shore, or on dry land. Worked out once for each landscape.
 pub fn free_roam_ultra(settings: &TerrainSettings, start: [f64; 2]) -> Option<[f64; 2]> {
+    if worldgen::land_of(settings.seed) == worldgen::Land::Normal
+        && let Some(arena) = worldgen::arena_of(settings)
+    {
+        return Some(arena.middle.map(f64::from));
+    }
     static FOUND: std::sync::Mutex<Option<(u32, [i64; 2], Option<[f64; 2]>)>> = std::sync::Mutex::new(None);
     let key = [start[0].round() as i64, start[1].round() as i64];
     if let Some((seed, at, found)) = FOUND.lock().ok().and_then(|f| *f)
@@ -1334,6 +1340,34 @@ mod tests {
         let gone = (serpent.position - start).xy().norm() / vpm;
         assert!(gone > 6.0, "it's swum only {gone:.1} m");
         assert!((serpent.position.z / vpm - afloat).abs() < 0.5, "along the top of the water: {:.2} m", serpent.position.z / vpm);
+    }
+
+    /// In the Drowned Ring the Coil Unending keeps to its basin: with the player up on the stands
+    /// off to one side, it sweeps to and fro round the side of the basin they're on, never out of it
+    #[test]
+    fn the_coil_unending_keeps_to_its_basin() {
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| 14.0 * vpm;
+        let home = Vector3::new(96.0, 96.0, 14.0 - draft(Look::Ysveth)) * vpm;
+        let mut ultra = Animal::boss(Look::Ysveth, home, [0, 0, ULTRA_KEY], 5);
+        let boss = ultra.boss.as_mut().unwrap();
+        boss.provoke();
+        boss.basin = Some(20.0);
+        boss.only = Some(crate::bosses::Move::Spit);
+        let player = Some(home + Vector3::new(30.0, 0.0, 0.0) * vpm);
+        let (mut furthest, mut their_side) = (0.0f64, 0);
+        for k in 0..600 {
+            ultra.update(&world, &water, player, 1.0 / 30.0);
+            ultra.boss.as_mut().unwrap().deeds.clear();
+            let off = (ultra.position - home).xy() / vpm;
+            furthest = furthest.max(off.norm());
+            if k >= 150 && off.x > 4.0 {
+                their_side += 1;
+            }
+        }
+        assert!(furthest < 20.5, "it went {furthest:.1} m out from the middle of its basin");
+        assert!(their_side > 300, "it kept to the player's side for only {their_side} of 450 frames");
     }
 
     /// A great serpent of the sky over a gap between islands, with no ground under it, trails its

@@ -6443,6 +6443,10 @@ fn main() {
     if let Some(megabytes) = settings_from_args().iter().find(|(k, _)| k == "vram_budget").and_then(|(_, v)| v.parse().ok()) {
         perf::cap_vram(megabytes);
     }
+    // `--set no_arena=1` builds the land without the Drowned Ring, to measure what it costs
+    if settings_from_args().iter().any(|(k, v)| k == "no_arena" && v == "1") {
+        worldgen::leave_out_arenas();
+    }
     // Decoding the sounds on a thread of their own, done long before anything's heard
     audio::preload();
     std::panic::set_hook(Box::new(|info| {

@@ -461,6 +461,36 @@ pub fn ground_top(world: &World, x: f64, y: f64) -> f64 {
         .map_or(0.0, |z| z as f64 + 1.0)
 }
 
+/// How far the water `at` is in goes round it, in meters, if it's a basin of its own no more than
+/// `most` meters out from there every way, as the Drowned Ring's, see worldgen::Arena: out each of
+/// sixteen ways to where the ground comes up out of the water to stay, past any stones standing in
+/// it, the middle one of those. None if it's open water some way.
+fn basin_round(world: &World, water: WaterLevel, at: Vector3<f64>, most: f64) -> Option<f64> {
+    let vpm = world.voxels_per_meter as f64;
+    let mut out = Vec::new();
+    for k in 0..16 {
+        let a = k as f64 * TAU / 16.0;
+        let (mut dry, mut shore) = (0, None);
+        for step in 1..=most as usize {
+            let (x, y) = (at.x + a.cos() * step as f64 * vpm, at.y + a.sin() * step as f64 * vpm);
+            let surface = water(x, y);
+            if !surface.is_finite() || ground_top(world, x, y) >= surface - 0.5 * vpm {
+                dry += 1;
+                // Wider than a stone standing in it
+                if dry >= 7 {
+                    shore = Some((step - dry) as f64);
+                    break;
+                }
+            } else {
+                dry = 0;
+            }
+        }
+        out.push(shore?);
+    }
+    out.sort_by(f64::total_cmp);
+    Some(out[out.len() / 2])
+}
+
 /// The ground under `at`, in voxels, looking down a few meters, or `at` if there's none
 fn ground_under(world: &World, at: Vector3<f64>) -> Vector3<f64> {
     let vpm = world.voxels_per_meter as f64;
@@ -1191,6 +1221,12 @@ impl Game {
                 // A realm's finale is the hardest of all of it
                 if realms::is_finale_key(&lair.key) && !look.is_ultra() {
                     boss.toughen(realms::FINALE_PROMOTION);
+                }
+                // Risen in a basin of its own, as the Drowned Ring's, the Coil Unending keeps to it
+                if look.is_ultra()
+                    && let Some(state) = &mut boss.boss
+                {
+                    state.basin = basin_round(world, water, boss.position, 40.0);
                 }
                 self.animals.push(boss);
             }

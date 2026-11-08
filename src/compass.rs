@@ -82,7 +82,14 @@ impl App {
     /// still to beat, or with all three beaten, the gate in the normal world, where their blocks are
     /// set in and the way on to the next realm is, or the portal home from a realm past it
     pub(super) fn compass(&self) -> Option<Bearing> {
-        self.session.realms.as_ref()?;
+        // In Free Roam, the Coil Unending's Drowned Ring once it's been found, see serpent_lairs.rs
+        if self.session.realms.is_none() {
+            let at = self.feet_m();
+            let (spot, label) = self.free_roam_quarry()?;
+            let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
+            let heading = self.heading();
+            return Some(Bearing { label, distance: (spot[0] - at[0]).hypot(spot[1] - at[1]), turn: wrapped(heading - toward), heading });
+        }
         let places = self.session.places.as_ref()?;
         let at = self.feet_m();
         let far = |p: [f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);

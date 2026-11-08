@@ -155,6 +155,18 @@ impl App {
         }
     }
 
+    /// What the compass points to in Free Roam: the Coil Unending's Drowned Ring, once it's been
+    /// found and while it's still to beat, see compass(); where it is in meters and what it's called
+    pub(super) fn free_roam_quarry(&self) -> Option<([f64; 2], String)> {
+        if self.session.mode != Some(save::Mode::FreeRoam) {
+            return None;
+        }
+        let ultra = Look::Ysveth.name();
+        let (_, spot) = self.serpents_save().found.into_iter().find(|(name, _)| name == ultra)?;
+        let key = [(spot[0] * 10.0).round() as i64, (spot[1] * 10.0).round() as i64, serpents::ULTRA_KEY];
+        (!self.game.is_defeated(&key)).then(|| (spot, format!("Ultra: {ultra}, the Drowned Ring")))
+    }
+
     /// Now and then in Free Roam, the great serpents' lairs the player's come near enough to find,
     /// kept to be marked on the map from then on
     pub(super) fn find_serpent_lairs(&mut self) {

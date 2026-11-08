@@ -2519,6 +2519,8 @@ struct Column {
     /// Nothing's under this height in voxels: the open air under a floating island in the sky
     /// isles, or all of it where there's none. 0 elsewhere.
     under: i32,
+    /// Built of courses of stone all the way down, as the Drowned Ring is, see Terrain::masonry()
+    built: bool,
 }
 
 /// The ground under a rectangle of voxel columns, at some resolution. Columns outside it are
@@ -3004,12 +3006,401 @@ fn dragon_height(seed: u32, sea: f32, x: f32, y: f32) -> f32 {
     h
 }
 
+/// The Drowned Ring: a colosseum of an old people sunk into the sea, where the Coil Unending is
+/// fought, see serpents.rs. A deep round basin of open water, drowned statues of serpents coiled on
+/// its mosaic floor, a ring of island stones and stepping stones round its middle to stand on, and
+/// round it a wet walk at the water's edge and four tiers of stands, here and there fallen in or
+/// flooded, ringed by pillars, with a passage through them under a broken arch to a causeway out to
+/// the land. Built into the ground and of world voxels, see arena_ground() and arena_objects(), so
+/// it costs nothing more to draw than the land.
+///
+/// There's one in the Sunken Reach, out in the deep water where its finale is, see realms.rs, and
+/// one in the normal land, on a coast far out from where Free Roam starts. Where each is depends on
+/// the landscape alone, so it's the same however the world's built, a strip at a time or in one go.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arena {
+    /// The middle of its basin, in meters
+    pub middle: [f32; 2],
+    /// Which way its gate faces, out along its causeway to the land, in radians
+    pub facing: f32,
+    /// How long the causeway is, from the foot of the stands to the land, in meters
+    pub causeway: f32,
+}
+
+/// How far the Drowned Ring's open water reaches from its middle, in meters, and its stands, four
+/// tiers of them each TIER deep; how far its outer wall comes down to the sea floor, and how far
+/// beyond that it fades back into the land round it
+pub const ARENA_BASIN: f32 = 24.0;
+const ARENA_TIER: f32 = 2.75;
+pub const ARENA_STANDS: f32 = ARENA_BASIN + 4.0 * ARENA_TIER;
+const ARENA_OUTER: f32 = ARENA_STANDS + 4.0;
+const ARENA_REACH: f32 = ARENA_STANDS + 15.0;
+/// How wide the passage through the stands and the causeway are, from the middle of them to their
+/// edge, in meters
+const ARENA_WAY: f32 = 3.0;
+/// The tops of its tiers, from the walk at the water's edge up, over the sea, in meters: each a
+/// jump up from the one below, see player.rs
+const ARENA_TIERS: [f32; 4] = [0.35, 1.2, 2.05, 2.9];
+/// How deep its basin is in the middle and at its wall's foot, under the sea, in meters
+const ARENA_DEEP: f32 = 11.0;
+/// Its island stones, how far out from its middle and how wide, and the stepping stones between
+/// them and the walk: five of each
+const ARENA_ISLES: (f32, f32) = (12.5, 2.6);
+const ARENA_STEPS: (f32, f32) = (19.0, 1.5);
+/// About where the Sunken Reach's is, in meters: out in the deep water where its finale is, from the
+/// gate it's come to by, see realms::REALMS
+const REACH_DEEP: [f32; 2] = [229.0, -190.0];
+/// Where Free Roam starts, in meters, the same spot on every seed, see session::default_start(), and
+/// about how far out from it the normal land's is
+pub const FREE_ROAM_START: [f32; 2] = [200.0, 180.0];
+const FREE_ROAM_ARENA: f32 = 1850.0;
+
+/// Whether the Drowned Rings are left out of the land, see leave_out_arenas()
+static ARENAS_LEFT_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// For measuring what the Drowned Ring costs to draw, `--set no_arena=1`: the land built as it'd be
+/// without it, though it's still found where it would be, see arena_site_of()
+pub fn leave_out_arenas() {
+    ARENAS_LEFT_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The Drowned Ring in `settings`' landscape, if it has one and it's not left out, see Arena
+pub fn arena_of(settings: &TerrainSettings) -> Option<Arena> {
+    if ARENAS_LEFT_OUT.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    arena_site_of(settings)
+}
+
+/// Where the Drowned Ring is in `settings`' landscape, if it has one, see Arena: worked out once for
+/// each landscape, and kept for each thread too, as the ground everywhere is worked out with it
+pub fn arena_site_of(settings: &TerrainSettings) -> Option<Arena> {
+    let land = land_of(settings.seed);
+    if !matches!(land, Land::Normal | Land::Water) {
+        return None;
+    }
+    type Found = ((u32, u32), Option<Arena>);
+    thread_local! {
+        static LAST: std::cell::Cell<Option<Found>> = const { std::cell::Cell::new(None) };
+    }
+    let key = (settings.seed, settings.height_m);
+    if let Some((k, arena)) = LAST.with(|l| l.get())
+        && k == key
+    {
+        return arena;
+    }
+    static FOUND: Mutex<Vec<Found>> = Mutex::new(Vec::new());
+    let arena = {
+        let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+        match found.iter().find(|(k, _)| *k == key) {
+            Some(&(_, arena)) => arena,
+            None => {
+                let arena = match land {
+                    Land::Water => arena_site(settings, REACH_DEEP, 240.0),
+                    _ => {
+                        let way = unit(hash(settings.seed ^ 0x51e7_c011)) * TAU;
+                        (0..8).find_map(|k| {
+                            let a = way + k as f32 * 0.8;
+                            arena_site(settings, [FREE_ROAM_START[0] + a.cos() * FREE_ROAM_ARENA, FREE_ROAM_START[1] + a.sin() * FREE_ROAM_ARENA], 300.0)
+                        })
+                    }
+                };
+                found.push((key, arena));
+                arena
+            }
+        }
+    };
+    LAST.with(|l| l.set(Some((key, arena))));
+    arena
+}
+
+/// The nearest spot to `near` within `within` meters, looking in rings eight meters apart, for the
+/// Drowned Ring to sink into: open sea all over where it stands, deep enough for its basin, with
+/// land not too far off one way for its causeway to reach, which way being the nearest. Looked for
+/// on the land as it is without it.
+fn arena_site(settings: &TerrainSettings, near: [f32; 2], within: f32) -> Option<Arena> {
+    let sea = sea_level_m(settings);
+    let ground = |p: [f32; 2]| base_height(settings, p[0], p[1]);
+    let out = |at: [f32; 2], a: f32, d: f32| [at[0] + a.cos() * d, at[1] + a.sin() * d];
+    for ring in 0..=(within / 8.0) as usize {
+        let count = (ring * 6).max(1);
+        for i in 0..count {
+            let at = out(near, i as f32 / count as f32 * TAU, ring as f32 * 8.0);
+            let open = ground(at) < sea - 3.0 && (0..12).all(|k| [16.0, ARENA_STANDS - 3.0].iter().all(|&d| ground(out(at, k as f32 * TAU / 12.0, d)) < sea - 1.0));
+            if !open {
+                continue;
+            }
+            // The nearest land, of sixteen ways out, past the stands but not too far
+            let land = (0..16)
+                .filter_map(|k| {
+                    let a = k as f32 * TAU / 16.0;
+                    (0..24).map(|s| ARENA_STANDS + 4.0 + s as f32 * 5.0).find(|&d| ground(out(at, a, d)) > sea + 1.0).map(|d| (d, a))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((d, a)) = land {
+                return Some(Arena { middle: at, facing: a, causeway: d - ARENA_STANDS + 2.0 });
+            }
+        }
+    }
+    None
+}
+
+impl Arena {
+    /// Where `x`, `y` is from its middle, in meters: how far, along the way its gate faces, and
+    /// across that
+    fn local(&self, x: f32, y: f32) -> (f32, f32, f32) {
+        let (dx, dy) = (x - self.middle[0], y - self.middle[1]);
+        let (fx, fy) = (self.facing.cos(), self.facing.sin());
+        (dx.hypot(dy), dx * fx + dy * fy, (dy * fx - dx * fy).abs())
+    }
+
+    /// Whether `x`, `y` is on its passage through the stands or its causeway out to the land
+    fn on_way(&self, x: f32, y: f32) -> bool {
+        let (_, along, across) = self.local(x, y);
+        along > ARENA_BASIN - 0.5 && along < ARENA_STANDS + self.causeway + 4.0 && across < ARENA_WAY
+    }
+
+    /// Whether nothing's to be put at `x`, `y` reaching `reach` meters from there, as it'd be on it
+    fn keeps_clear(&self, x: f32, y: f32, reach: f32) -> bool {
+        let (d, along, across) = self.local(x, y);
+        d < ARENA_OUTER + 2.0 + reach || along > 0.0 && along < ARENA_STANDS + self.causeway + 4.0 && across < ARENA_WAY + 2.0 + reach
+    }
+
+    /// Which of the sixteen sectors of its stands `x`, `y` is in, and whether that one's fallen in,
+    /// and whether its walk at the water's edge is flooded: never by its gate
+    fn sector(&self, seed: u32, x: f32, y: f32) -> (bool, bool) {
+        let (dx, dy) = (x - self.middle[0], y - self.middle[1]);
+        let of = |a: f32| (a / TAU * 16.0).floor().rem_euclid(16.0) as i32;
+        let (sector, gate) = (of(dy.atan2(dx)), of(self.facing));
+        let r = hash3(sector as u32, 0xa2e7, seed);
+        let by_gate = (sector - gate).rem_euclid(16) <= 1 || (gate - sector).rem_euclid(16) <= 1;
+        (!by_gate && unit(r) < 0.28, unit(r >> 16) < 0.35)
+    }
+
+    /// Its island stones and stepping stones: where each is, in meters, how wide, and how high its top
+    /// is over the sea
+    fn stones(&self) -> impl Iterator<Item = ([f32; 2], f32, f32)> + '_ {
+        (0..10).map(|k| {
+            let (out, wide, top) = if k < 5 { (ARENA_ISLES.0, ARENA_ISLES.1, 0.3) } else { (ARENA_STEPS.0, ARENA_STEPS.1, 0.15) };
+            let a = self.facing + (k as f32 + if k < 5 { 0.5 } else { 0.0 }) * TAU / 5.0;
+            ([self.middle[0] + a.cos() * out, self.middle[1] + a.sin() * out], wide, top)
+        })
+    }
+
+    /// What the ground's made of at `x`, `y`, if it's its own: the mosaic of its basin's floor, sand
+    /// drifted over it here and there, the stone of its walls, stands and stones, and rubble where
+    /// they've fallen in
+    fn ground_material(&self, seed: u32, x: f32, y: f32) -> Option<u8> {
+        let (d, ..) = self.local(x, y);
+        if d > ARENA_OUTER && !self.on_way(x, y) {
+            return None;
+        }
+        if self.stones().any(|(at, wide, _)| (x - at[0]).hypot(y - at[1]) < wide + 0.6) {
+            return Some(LIMESTONE);
+        }
+        if d < ARENA_BASIN - 4.5 {
+            // A spiral of three arms winding in to the middle, teal on pale stone, picked out in gold
+            let a = (y - self.middle[1]).atan2(x - self.middle[0]);
+            let t = (a / TAU * 3.0 + d / 7.0).rem_euclid(1.0);
+            return Some(if fbm(x / 6.0, y / 6.0, 2, seed.wrapping_add(71)) > 0.3 {
+                SAND
+            } else if t < 0.14 {
+                TEMPLE_TEAL
+            } else if t < 0.18 {
+                GOLD
+            } else {
+                LIMESTONE
+            });
+        }
+        let (fallen, _) = self.sector(seed, x, y);
+        Some(if self.on_way(x, y) {
+            BRICK_STONE
+        } else if fallen && d > ARENA_BASIN + ARENA_TIER {
+            [GRAVEL, BRICK_STONE, LIMESTONE][(hash3(x as u32, y as u32, seed ^ 0x2b1e) % 3) as usize]
+        } else {
+            LIMESTONE
+        })
+    }
+}
+
+/// The ground at `x`, `y` in meters with the Drowned Ring `arena` sunk into it, the ground being
+/// `natural` there without it, in meters: see Arena
+fn arena_ground(arena: &Arena, seed: u32, sea: f32, x: f32, y: f32, natural: f32) -> f32 {
+    let (d, along, across) = arena.local(x, y);
+    let way = arena.on_way(x, y) || along > ARENA_STANDS && along < ARENA_STANDS + arena.causeway + 4.0 && across < ARENA_WAY + 2.5;
+    if d >= ARENA_REACH && !way {
+        return natural;
+    }
+    let mut g = natural;
+    if d < ARENA_REACH {
+        let (fallen, flooded) = arena.sector(seed, x, y);
+        let rubble = fbm(x / 2.0, y / 2.0, 2, seed.wrapping_add(61)).abs();
+        // A flooded sector's sunk, the walk ankle deep and its stands lower with it, still a jump
+        // up from one tier to the next
+        let sunk = if flooded { 0.55 } else { 0.0 };
+        let built = if d < ARENA_BASIN - 4.5 {
+            // The basin's floor, deepest in the middle
+            sea - ARENA_DEEP + 2.5 * (d / (ARENA_BASIN - 4.5)).powi(2)
+        } else if d < ARENA_BASIN {
+            // Its wall, sheer up to just under the water
+            sea - ARENA_DEEP + 2.5 + ((d - ARENA_BASIN + 4.5) / 4.5).powi(3) * (ARENA_DEEP - 3.0)
+        } else if d < ARENA_STANDS {
+            // The walk at the water's edge and the tiers of the stands
+            let tier = (((d - ARENA_BASIN) / ARENA_TIER) as usize).min(3);
+            if fallen && tier > 0 {
+                sea + 0.9 + rubble * tier as f32 * 0.6 - sunk
+            } else {
+                sea + ARENA_TIERS[tier] - sunk
+            }
+        } else {
+            // Its outer wall down to the sea floor
+            let top = if fallen { sea + 1.2 } else { sea + ARENA_TIERS[3] } - sunk;
+            top + (sea - 3.0 - top) * smoothstep(ARENA_STANDS, ARENA_OUTER, d)
+        };
+        // Its island stones and stepping stones, sheer sided
+        let built = arena.stones().fold(built, |h, (at, wide, top)| {
+            let off = (x - at[0]).hypot(y - at[1]);
+            if off < wide + 2.0 { h.max(sea + top - (off - wide).max(0.0) * 7.0) } else { h }
+        });
+        g = built + (natural - built) * smoothstep(ARENA_OUTER, ARENA_REACH, d);
+    }
+    if way && along > ARENA_BASIN - 0.5 {
+        // The passage through the stands, cut level at the walk's height, and the causeway on out
+        // to the land, its edges falling away into the sea
+        let top = sea + 0.5;
+        if along < ARENA_STANDS + 0.5 && across < ARENA_WAY {
+            g = top;
+        } else {
+            let edge = (across - ARENA_WAY).max(0.0);
+            g = g.max(top - edge * edge * 2.0);
+        }
+    }
+    g
+}
+
+/// What the Drowned Ring `arena` has standing on its ground, in meters: pillars round the top of its
+/// stands, some of them broken off or fallen, a great arch over its passage half fallen, and on its
+/// basin's floor serpents of bronze gone green coiled and rearing, and fallen columns
+fn arena_objects(settings: &TerrainSettings, arena: &Arena) -> Vec<Object> {
+    let seed = settings.seed;
+    let sea = sea_level_m(settings);
+    let ground = |x: f32, y: f32| height_at(settings, x, y);
+    let at = |a: f32, d: f32| [arena.middle[0] + a.cos() * d, arena.middle[1] + a.sin() * d];
+    let mut objects = Vec::new();
+    // The pillars, but where the passage goes through
+    for k in 0..18 {
+        let a = arena.facing + (k as f32 + 0.5) * TAU / 18.0;
+        let [x, y] = at(a, ARENA_STANDS - 1.4);
+        let (_, along, across) = arena.local(x, y);
+        if along > 0.0 && across < ARENA_WAY + 3.5 {
+            continue;
+        }
+        let mut rng = Rng(hash3(k, seed, 0xc01));
+        let (fallen, _) = arena.sector(seed, x, y);
+        let foot = ground(x, y);
+        let mut shapes = vec![Shape::block([x - 0.95, y - 0.95, foot - 1.0], [x + 0.95, y + 0.95, foot + 0.6], LIMESTONE, MOSS)];
+        if fallen {
+            // Broken off, its top lying where it fell, out over the stands
+            let stump = rng.range(1.5, 3.5);
+            shapes.push(Shape::capsule([x, y, foot], [x, y, foot + stump], 0.75, 0.7, LIMESTONE, TEMPLE_TEAL, false).patterned(Pattern::Carved));
+            let b = a + rng.range(-0.5, 0.5);
+            let lie = [x - b.cos() * 1.5, y - b.sin() * 1.5];
+            let end = [x - b.cos() * 7.5, y - b.sin() * 7.5];
+            shapes.push(Shape::capsule([lie[0], lie[1], ground(lie[0], lie[1]) + 0.6], [end[0], end[1], ground(end[0], end[1]) + 0.5], 0.7, 0.7, LIMESTONE, TEMPLE_TEAL, false).patterned(Pattern::Carved));
+        } else {
+            let tall = if rng.next() < 0.3 { rng.range(4.0, 7.0) } else { rng.range(10.0, 12.5) };
+            shapes.push(Shape::capsule([x, y, foot], [x, y, foot + tall], 0.75, 0.68, LIMESTONE, TEMPLE_TEAL, false).patterned(Pattern::Carved));
+            if tall > 9.0 {
+                shapes.push(Shape::block([x - 1.05, y - 1.05, foot + tall - 0.2], [x + 1.05, y + 1.05, foot + tall + 0.6], LIMESTONE, MOSS));
+            }
+        }
+        objects.push(Object::new(shapes, rng.0));
+    }
+    // The gate: two great pillars either side of the passage at the foot of the stands, and an arch
+    // between them, the half of it on one side fallen into the water
+    let (fx, fy) = (arena.facing.cos(), arena.facing.sin());
+    let gate = |along: f32, across: f32| [arena.middle[0] + fx * along - fy * across, arena.middle[1] + fy * along + fx * across];
+    let rng = Rng(hash3(seed, 0x9a7e, 1));
+    let mut shapes = Vec::new();
+    let tall = 15.0;
+    let foot = sea + 0.5;
+    for side in [-1.0f32, 1.0] {
+        let [x, y] = gate(ARENA_STANDS + 1.5, side * (ARENA_WAY + 1.6));
+        shapes.push(Shape::block([x - 1.5, y - 1.5, foot - 3.0], [x + 1.5, y + 1.5, foot + 0.8], BRICK_STONE, MOSS));
+        shapes.push(Shape::capsule([x, y, foot], [x, y, foot + tall], 1.15, 1.0, LIMESTONE, TEMPLE_TEAL, false).patterned(Pattern::Carved));
+    }
+    // Round from one pillar's top over to the other's, the near half of it still standing
+    let span = ARENA_WAY + 1.6;
+    for k in 0..6 {
+        let (t0, t1) = (k as f32 / 12.0, (k + 1) as f32 / 12.0);
+        let p = |t: f32| {
+            let a = t * std::f32::consts::PI;
+            let [x, y] = gate(ARENA_STANDS + 1.5, -a.cos() * span);
+            [x, y, foot + tall + a.sin() * 4.0]
+        };
+        shapes.push(Shape::capsule(p(t0), p(t1), 0.85, 0.85, LIMESTONE, TEMPLE_TEAL, false).patterned(Pattern::Carved));
+    }
+    // Its keystone, a serpent's head with eyes of gold, lying broken in the shallows by the passage
+    let [kx, ky] = gate(ARENA_STANDS - 2.0, ARENA_WAY + 2.6);
+    let kz = ground(kx, ky);
+    shapes.push(Shape::sphere([kx, ky, kz + 0.7], 1.1, BRONZE, TEMPLE_TEAL, false));
+    shapes.push(Shape::capsule([kx, ky, kz + 0.7], [kx + fx * 1.6, ky + fy * 1.6, kz + 0.5], 0.8, 0.45, BRONZE, TEMPLE_TEAL, false));
+    for side in [-1.0f32, 1.0] {
+        shapes.push(Shape::sphere([kx - fy * side * 0.6 + fx * 0.6, ky + fx * side * 0.6 + fy * 0.6, kz + 1.25], 0.22, GOLD, AIR, false));
+    }
+    objects.push(Object::new(shapes, rng.0));
+    // On the basin's floor: three great serpents of bronze gone green, coiled round on themselves
+    // and rearing their heads up nearly to the surface, and fallen columns between them
+    for k in 0..3 {
+        let a = arena.facing + 0.9 + k as f32 * TAU / 3.0;
+        let [x, y] = at(a, 7.5);
+        let floor = ground(x, y);
+        let mut rng = Rng(hash3(k, seed, 0x5e7a));
+        let turn = rng.range(0.0, TAU);
+        let mut shapes = Vec::new();
+        let coil = |t: f32| {
+            let r = 2.6 - t * 0.35;
+            let b = turn + t * TAU;
+            [x + b.cos() * r, y + b.sin() * r, floor + 0.7 + t * 0.9]
+        };
+        for s in 0..18 {
+            let (t0, t1) = (s as f32 / 6.0, (s + 1) as f32 / 6.0);
+            shapes.push(Shape::capsule(coil(t0), coil(t1), 0.75 - t0 * 0.12, 0.75 - t1 * 0.12, BRONZE, TEMPLE_TEAL, false));
+        }
+        // Its neck rearing up out of the middle of its coils, and its head
+        let top = sea - rng.range(1.6, 2.6);
+        let neck = [x + turn.cos() * 0.6, y + turn.sin() * 0.6, top - 0.8];
+        shapes.push(Shape::capsule([x, y, floor + 2.6], neck, 0.62, 0.5, BRONZE, TEMPLE_TEAL, false));
+        let snout = [neck[0] + (a + 3.0).cos() * 1.8, neck[1] + (a + 3.0).sin() * 1.8, top - 0.6];
+        shapes.push(Shape::capsule(neck, snout, 0.7, 0.35, BRONZE, TEMPLE_TEAL, false));
+        shapes.push(Shape::sphere([neck[0], neck[1], neck[2] + 0.35], 0.18, GOLD, AIR, false));
+        objects.push(Object::new(shapes, rng.0));
+        // A column fallen across the floor beside it
+        let b = a + 1.05;
+        let [cx, cy] = at(b, 15.0);
+        let lie = rng.range(0.0, TAU);
+        let (ex, ey) = (cx + lie.cos() * 3.5, cy + lie.sin() * 3.5);
+        let (sx, sy) = (cx - lie.cos() * 3.5, cy - lie.sin() * 3.5);
+        objects.push(Object::new(vec![Shape::capsule([sx, sy, ground(sx, sy) + 0.6], [ex, ey, ground(ex, ey) + 0.6], 0.7, 0.7, LIMESTONE, TEMPLE_TEAL, false).patterned(Pattern::Carved)], rng.0));
+    }
+    objects
+}
+
 /// Where the open sky's ground is said to be in the sky isles, far under everything: nothing's
 /// built there, see Column::under
 const SKY_VOID: f32 = -40.0;
 
 // Terrain shapes are defined in meters, so more voxels per meter means the same landscape with finer voxels
 fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
+    let natural = base_height(settings, x, y);
+    match arena_of(settings) {
+        Some(arena) => arena_ground(&arena, settings.seed, sea_level_m(settings), x, y, natural),
+        None => natural,
+    }
+}
+
+/// The ground as it'd be without the Drowned Ring, see arena_of()
+fn base_height(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     let seed = settings.seed;
     match land_of(seed) {
         Land::Sky => return sky_island(seed, x, y).map_or(SKY_VOID, |(top, _)| top),
@@ -3152,6 +3543,8 @@ pub enum Landmark {
     Roost,
     Caldera,
     BoneCave,
+    /// In the Drowned Ring, out in the middle of its basin, see Arena: for a finale fought there
+    Arena,
 }
 
 /// Where the nearest `mark` to `near` is, in meters, for a lair to be on the nearest dry land to:
@@ -3183,6 +3576,7 @@ pub fn landmark_near(settings: &TerrainSettings, mark: Landmark, near: [f32; 2],
             bone_cave_facing(settings, at[0], at[1], r, cache).map(|facing| (at, facing))
         })
         .map(|(at, facing)| [at[0] + facing.cos() * BONE_CAVE_MOUTH, at[1] + facing.sin() * BONE_CAVE_MOUTH]),
+        Landmark::Arena => arena_of(settings).map(|a| a.middle).filter(|&m| away(m) < 600.0),
     }
 }
 
@@ -3445,6 +3839,8 @@ pub struct Terrain {
     object_cells: Vec<Vec<u32>>,
     cells_across: [usize; 2],
     features: Features,
+    /// The Drowned Ring, if the landscape has one, see arena_of()
+    arena: Option<Arena>,
 }
 
 const OBJECT_CELL: f32 = 8.0;
@@ -3479,6 +3875,7 @@ impl Terrain {
             object_cells: Vec::new(),
             cells_across: [0; 2],
             features: Features::default(),
+            arena: arena_of(settings),
         }
     }
 
@@ -4014,6 +4411,9 @@ impl Terrain {
             GLOW_BLOOD | GLOW_FIRE | GLOW_HOLY => OBSIDIAN,
             _ => DIRT,
         };
+        // The Drowned Ring's own stone, mosaic and rubble, laid in courses all the way down
+        let built = self.arena.and_then(|a| a.ground_material(self.settings.seed, xm, ym));
+        let (top, below) = built.map_or((top, below), |b| (b, BRICK_STONE));
 
         // Flowers on short stems, growing in patches of one color, and tufts of grass a few
         // voxels tall between them, taller in the jungle and dry in the desert. There's also grass
@@ -4062,7 +4462,27 @@ impl Terrain {
             blade_body,
             blade_top,
             under,
+            built: built.is_some(),
         }
+    }
+
+    /// The Drowned Ring's masonry `z` voxels up in `column`, under its top: courses half a meter
+    /// high of blocks a meter long, mortar between them, the blocks of one course over the joints of
+    /// the one below, some of them gone green with the sea, and moss where it laps
+    fn masonry(&self, column: &Column, z: i32) -> u8 {
+        let vpm = self.settings.voxels_per_meter.max(2) as i64;
+        let course = (vpm / 2).max(2) as i32;
+        let row = z.div_euclid(course);
+        let off = if row % 2 == 0 { 0 } else { vpm / 2 };
+        let (bx, by) = (column.x + off, column.y + off);
+        if z.rem_euclid(course) == 0 || bx.rem_euclid(vpm) == 0 || by.rem_euclid(vpm) == 0 {
+            return MORTAR;
+        }
+        let block = hash3(bx.div_euclid(vpm) as u32, by.div_euclid(vpm) as u32, row as u32 ^ self.settings.seed);
+        if (z - column.water_top).abs() < course && unit(block >> 8) < 0.5 {
+            return MOSS;
+        }
+        [BRICK_STONE, BRICK_STONE, BRICK_STONE, LIMESTONE, LIMESTONE, TEMPLE_TEAL][(block % 6) as usize]
     }
 
     /// Bare rock: layers a few tens of centimeters thick, gently wavy, of a few kinds of stone,
@@ -4097,7 +4517,9 @@ impl Terrain {
             AIR
         } else if z <= column.height {
             let depth = column.height - z;
-            if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
+            if column.built && depth > 0 {
+                self.masonry(column, z)
+            } else if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
                 self.rock(column, z, depth)
             } else if depth == 0 {
                 column.top
@@ -4485,6 +4907,15 @@ impl Terrain {
                 objects.extend(camps);
             }
         }
+        // The Drowned Ring's pillars, arch and statues, where they reach this piece
+        let arena = self.arena;
+        if let Some(arena) = &arena {
+            let (lo, hi) = (self.lo, self.hi);
+            let near = |m: usize| arena.middle[m] + ARENA_REACH + arena.causeway > lo[m] && arena.middle[m] - ARENA_REACH - arena.causeway < hi[m];
+            if near(0) && near(1) {
+                objects.extend(arena_objects(&self.settings, arena).into_iter().filter(|o| o.max[0] >= lo[0] && o.min[0] <= hi[0] && o.max[1] >= lo[1] && o.min[1] <= hi[1]));
+            }
+        }
         let footprints = std::mem::take(&mut features.footprints);
         let (own_lo, own_hi) = (self.own_lo, self.own_hi);
 
@@ -4503,6 +4934,10 @@ impl Terrain {
                         continue;
                     }
                     if footprints.iter().any(|f| x > f[0] - 1.5 && y > f[1] - 1.5 && x < f[2] + 1.5 && y < f[3] + 1.5) {
+                        continue;
+                    }
+                    // Nor on the Drowned Ring or its causeway, nor anywhere it'd reach over them
+                    if arena.is_some_and(|a| a.keeps_clear(x, y, reach.min(8.0))) {
                         continue;
                     }
                     let column = self.column(heights, (x * vpm).floor() as i64 - heights.origin[0], (y * vpm).floor() as i64 - heights.origin[1]);
@@ -7237,6 +7672,71 @@ mod tests {
             }
         }
         assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// The Drowned Rings, the Sunken Reach's and the normal land's far out from where Free Roam
+    /// starts: a deep basin with stones standing in it to stand on, a walk all round it at the
+    /// water's edge, stands going up from it a jump at a time, fallen in or not, and a way in from the
+    /// land along the causeway and through the passage without wading deep, built a strip at a time
+    /// just as in one go
+    #[test]
+    fn the_drowned_rings_have_a_deep_basin_stands_and_a_way_in() {
+        for seed in [1, 0xF400_0001] {
+            let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed, grass_tufts: false };
+            let arena = arena_of(&settings).unwrap_or_else(|| panic!("seed {seed:#x} has no Drowned Ring"));
+            let sea = sea_level_m(&settings);
+            let h = |p: [f32; 2]| height_at(&settings, p[0], p[1]);
+            let at = |a: f32, d: f32| [arena.middle[0] + a.cos() * d, arena.middle[1] + a.sin() * d];
+            if seed == 1 {
+                let far = (arena.middle[0] - FREE_ROAM_START[0]).hypot(arena.middle[1] - FREE_ROAM_START[1]);
+                assert!(far >= 1500.0, "only {far} m out from where Free Roam starts");
+            }
+            assert!(h(arena.middle) < sea - 8.0, "seed {seed:#x}: its basin's {} m deep", sea - h(arena.middle));
+            for (p, _, top) in arena.stones() {
+                assert!((h(p) - sea - top).abs() < 0.2, "seed {seed:#x}: a stone's top is {} m over the sea", h(p) - sea);
+            }
+            // Half way between the sixteen ways the stands are split, as where a fallen sector meets
+            // one still standing its side's sheer
+            for k in 0..64 {
+                let a = (k as f32 + 0.5) * TAU / 64.0;
+                let walk = h(at(a, ARENA_BASIN + 1.3));
+                assert!(walk > sea - 0.4 && walk < sea + 0.7, "seed {seed:#x}: the walk's {} m over the sea at {a}", walk - sea);
+                // Up the stands, but for in the passage, whose sides are sheer
+                if ((a - arena.facing + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI).abs() < 0.22 {
+                    continue;
+                }
+                let mut last = walk;
+                for s in 1..40 {
+                    let up = h(at(a, ARENA_BASIN + 1.3 + s as f32 * 0.25));
+                    assert!(up - last < 0.95, "seed {seed:#x}: a step up of {} m at {a}, {} m out", up - last, ARENA_BASIN + 1.3 + s as f32 * 0.25);
+                    last = up;
+                }
+            }
+            // From the walk out through the passage and along the causeway, never wading deep,
+            // to the land at the end of it
+            let (fx, fy) = (arena.facing.cos(), arena.facing.sin());
+            let mut along = ARENA_BASIN + 1.0;
+            let landed = loop {
+                let p = [arena.middle[0] + fx * along, arena.middle[1] + fy * along];
+                let ground = h(p);
+                assert!(ground > sea - 0.5, "seed {seed:#x}: {} m deep {along} m out along the way in", sea - ground);
+                if along > ARENA_STANDS + 4.0 && base_height(&settings, p[0], p[1]) > sea + 1.0 {
+                    break true;
+                }
+                along += 0.5;
+                if along > ARENA_STANDS + arena.causeway + 6.0 {
+                    break false;
+                }
+            };
+            assert!(landed, "seed {seed:#x}: the causeway doesn't reach the land");
+            // Built a strip at a time just as in one go, round its basin and where its causeway
+            // goes through the stands
+            for (k, spot) in [arena.middle, at(arena.facing, ARENA_STANDS)].into_iter().enumerate() {
+                let (origin, size) = around(spot, [64, 64], settings.voxels_per_meter);
+                let problems = seams(&settings, origin, size, 16 * settings.voxels_per_meter, k % 2);
+                assert!(problems.is_empty(), "seed {seed:#x} at {spot:?}:\n  {}", problems.join("\n  "));
+            }
+        }
     }
 
     /// The same in every kind of land, over the widest river about and at a waterfall, in strips as
