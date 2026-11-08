@@ -69,6 +69,59 @@ const SECTION: &str = "serpents";
 const FIND_M: f64 = 120.0;
 
 impl App {
+    /// Where Free Roam starts, in meters: the same spot on every seed, see session::default_start()
+    fn free_roam_start(&self) -> [f64; 2] {
+        let vpm = self.world.voxels_per_meter;
+        let widest = memory::WIDTHS_M[0] * vpm;
+        let at = camera_to_voxels(Scene::Terrain.initial_camera().position, [widest, widest, self.terrain.height_m * vpm]);
+        [at.x / vpm as f64, at.y / vpm as f64]
+    }
+
+    /// The Coil Unending's omens lying about the world where it is now, in Free Roam, while it's
+    /// still to beat, for adopt_features(): shed skins and bones on the dry ground on the way to
+    /// its lair, see serpents::omens()
+    pub(super) fn place_omens(&mut self) {
+        let mut omens = Vec::new();
+        let settings = self.terrain_settings();
+        let start = self.free_roam_start();
+        let lair = (self.session.mode == Some(save::Mode::FreeRoam)).then(|| serpents::free_roam_ultra(&settings, start)).flatten();
+        if let Some(lair) = lair.filter(|spot| !self.game.is_defeated(&[(spot[0] * 10.0).round() as i64, (spot[1] * 10.0).round() as i64, serpents::ULTRA_KEY])) {
+            let vpm = self.world.voxels_per_meter as f64;
+            let [sx, sy, _] = self.world.size.map(f64::from);
+            for (look, spot, heading) in serpents::omens(settings.seed, start, lair) {
+                let (x, y) = (spot[0] * vpm - self.world.origin[0] as f64, spot[1] * vpm - self.world.origin[1] as f64);
+                if x < 2.0 || y < 2.0 || x >= sx - 2.0 || y >= sy - 2.0 {
+                    continue;
+                }
+                let z = game::ground_top(&self.world, x, y);
+                // On dry ground, not under the water
+                if self.water.surface_at(x, y) < z + 0.1 * vpm {
+                    omens.push((look, Vector3::new(x, y, z), heading));
+                }
+            }
+        }
+        self.game.set_omens(omens);
+    }
+
+    /// How dark the sky's got for the player near the Coil Unending's lair in Free Roam, while it's
+    /// still to beat, see serpents::gloom()
+    pub(super) fn darken_sky(&mut self) {
+        let gloom = match (self.session.mode, self.player.as_ref()) {
+            (Some(save::Mode::FreeRoam), Some(player)) => {
+                let settings = self.terrain_settings();
+                let vpm = self.world.voxels_per_meter as f64;
+                serpents::free_roam_ultra(&settings, self.free_roam_start())
+                    .filter(|spot| !self.game.is_defeated(&[(spot[0] * 10.0).round() as i64, (spot[1] * 10.0).round() as i64, serpents::ULTRA_KEY]))
+                    .map_or(0.0, |spot| {
+                        let at = [(player.position.x + self.world.origin[0] as f64) / vpm, (player.position.y + self.world.origin[1] as f64) / vpm];
+                        serpents::gloom((spot[0] - at[0]).hypot(spot[1] - at[1]))
+                    })
+            }
+            _ => 0.0,
+        };
+        self.game.set_gloom(gloom);
+    }
+
     /// What's kept in the save of the great serpents' lairs
     fn serpents_save(&self) -> SerpentsSave {
         self.session.sections.get(SECTION).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
@@ -91,7 +144,11 @@ impl App {
                 .iter()
                 .filter_map(|(name, spot)| {
                     let look = Look::ALL.into_iter().find(|l| l.is_great_serpent() && l.name() == name)?;
-                    Some((*spot, look.name(), self.game.is_defeated(&key_of(*spot))))
+                    let mut key = key_of(*spot);
+                    if look.is_ultra() {
+                        key[2] = serpents::ULTRA_KEY;
+                    }
+                    Some((*spot, look.name(), self.game.is_defeated(&key)))
                 })
                 .collect(),
             _ => Vec::new(),
@@ -141,9 +198,13 @@ impl App {
                     found.push((look, spot, key));
                 }
             }
-            // Here and there in Free Roam, in every square of the landscape the world takes in
+            // Here and there in Free Roam, in every square of the landscape the world takes in, and
+            // the Coil Unending far out from where Free Roam starts
             (_, Some(save::Mode::FreeRoam)) => {
                 let settings = self.terrain_settings();
+                if let Some(spot) = serpents::free_roam_ultra(&settings, self.free_roam_start()) {
+                    found.push((Look::Ysveth, spot, [(spot[0] * 10.0).round() as i64, (spot[1] * 10.0).round() as i64, serpents::ULTRA_KEY]));
+                }
                 let lo = [(origin[0] / FREE_ROAM_CELL).floor() as i64, (origin[1] / FREE_ROAM_CELL).floor() as i64];
                 let hi = [((origin[0] + sx / vpm) / FREE_ROAM_CELL).floor() as i64, ((origin[1] + sy / vpm) / FREE_ROAM_CELL).floor() as i64];
                 for cx in lo[0]..=hi[0] {

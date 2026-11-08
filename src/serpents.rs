@@ -19,9 +19,9 @@
 use std::f64::consts::{PI, TAU};
 use std::sync::OnceLock;
 
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{UnitQuaternion, Vector2, Vector3};
 
-use crate::animals::{AnimalInstance, Look, MOVING, Model, Part, ball, ellipsoid, limb, voxelize};
+use crate::animals::{Animal, AnimalInstance, Look, MOVING, Model, Part, ball, ellipsoid, limb, voxelize};
 use crate::player::WaterLevel;
 use crate::weapons::Element;
 use crate::worldgen::{self, TerrainSettings, World, is_passable, material::*};
@@ -497,7 +497,8 @@ pub const GREATS: [Great; 8] = [
     // whirlpool
     great(Look::Gyremaw, 1.2, 2.7, 20, 1.3, [OBSIDIAN, GLOW_STORM, LINEN, GLOW_STORM, STEEL], Crest::Spines, Medium::Water, 0.0),
     // The Coil Unending: fifty meters long, a crown of gold-tipped horns and bone plates down its
-    // back, its body taking on each realm's element in turn, see ELEMENT_SKINS
+    // back, its body taking on each realm's element in turn, see ELEMENT_SKINS: green and bone at
+    // first, its venom stage, in the colors it's made in
     great(Look::Ysveth, 1.55, 3.6, 28, 1.7, [MOSS, PINE, BONE, GLOW_HOLY, GOLD], Crest::Crown, Medium::Water, 0.0),
 ];
 
@@ -579,19 +580,124 @@ pub fn lair_spot(look: Look, settings: &TerrainSettings, near: [f64; 2]) -> Opti
     }
 }
 
+/// How far through the Coil Unending's health it goes into each of its later stages, taking on
+/// each realm's element in turn, see ULTRA_ELEMENTS: circling half under the water spitting venom,
+/// then coiling and striking under a storm, then calling up its brood and spraying blood, and at the
+/// last bringing frost down out of the sky, enraged
+pub const ULTRA_STAGES: [f64; 3] = [0.75, 0.5, 0.25];
+
+/// Which of its stages the Coil Unending is in, `vitality` of its health left: 0 to 3
+pub fn ultra_stage(vitality: f64) -> u8 {
+    ULTRA_STAGES.iter().filter(|&&s| vitality < s).count() as u8
+}
+
+/// The serpents the Coil Unending calls up in each stage, of that stage's element
+pub const ULTRA_BROOD: [Look; 4] = [Look::ReedViper, Look::GaleSerpent, Look::BloodAdder, Look::DriftSerpent];
+
+/// What the Coil Unending's lair is called in Free Roam, in its key's third number; in the Water
+/// realm it's the realm's finale's, see realms::Places::finale_key()
+pub const ULTRA_KEY: i64 = -8801;
+
+/// What the unique weapon the Coil Unending leaves is called, see Game::fang()
+pub const FANG: &str = "Fang of Ysveth";
+
+/// How far from where Free Roam starts the Coil Unending's lair is, in meters, at least
+pub const ULTRA_FAR: f64 = 1500.0;
+
+fn hash(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846ca68b);
+    x ^ (x >> 16)
+}
+
+/// Where the Coil Unending keeps its lair in Free Roam's landscape `settings`, about 1.85 km from
+/// `start`, in meters, the way round the landscape's seed says: in deep water near a shore, or on
+/// dry land if there's none that way. Worked out once for each landscape.
+pub fn free_roam_ultra(settings: &TerrainSettings, start: [f64; 2]) -> Option<[f64; 2]> {
+    static FOUND: std::sync::Mutex<Option<(u32, [i64; 2], Option<[f64; 2]>)>> = std::sync::Mutex::new(None);
+    let key = [start[0].round() as i64, start[1].round() as i64];
+    if let Some((seed, at, found)) = FOUND.lock().ok().and_then(|f| *f)
+        && seed == settings.seed
+        && at == key
+    {
+        return found;
+    }
+    let way = hash(settings.seed ^ 0x51e7_c011) as f64 / u32::MAX as f64 * TAU;
+    let far = |spot: &[f64; 2]| (spot[0] - start[0]).hypot(spot[1] - start[1]) >= ULTRA_FAR;
+    let found = (0..8)
+        .find_map(|k| {
+            let a = way + k as f64 * 0.8;
+            let near = [start[0] + a.cos() * 1850.0, start[1] + a.sin() * 1850.0];
+            water_near(settings, near, 300.0, 2.5, 40.0).filter(far)
+        })
+        .or_else(|| {
+            let near = [start[0] + way.cos() * 1850.0, start[1] + way.sin() * 1850.0];
+            worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], 300.0, 9.0).map(|p| [p[0] as f64, p[1] as f64]).filter(far)
+        });
+    if let Ok(mut f) = FOUND.lock() {
+        *f = Some((settings.seed, key, found));
+    }
+    found
+}
+
+/// The omens on the way to the Coil Unending's lair at `lair` from `start`, both in meters: shed
+/// skins and the bones of what it ate lying about, more of them nearer it, with which way each lies
+pub fn omens(seed: u32, start: [f64; 2], lair: [f64; 2]) -> Vec<(Look, [f64; 2], f64)> {
+    let (dx, dy) = (lair[0] - start[0], lair[1] - start[1]);
+    let length = dx.hypot(dy).max(1.0);
+    let (ax, ay) = (dx / length, dy / length);
+    let mut out = Vec::new();
+    // From 1.1 km out from where it lies, closer together the nearer they are
+    let mut along = (length - 1100.0).max(200.0);
+    let mut k = 0u32;
+    while along < length - 40.0 {
+        let roll = hash(seed ^ hash(k ^ 0x0e3e));
+        let side = ((roll & 0xff) as f64 / 255.0 - 0.5) * 50.0;
+        let at = [start[0] + ax * along - ay * side, start[1] + ay * along + ax * side];
+        let look = if roll >> 8 & 3 == 0 { Look::SerpentBones } else { Look::ShedSkin };
+        out.push((look, at, (roll >> 16) as f64 / 65535.0 * TAU));
+        let left = length - along;
+        along += 25.0 + 70.0 * (left / 1100.0).min(1.0);
+        k += 1;
+    }
+    out
+}
+
+/// What `a`'s attacks are made of now: the Coil Unending's element of the stage it's in, the rest
+/// their own
+pub fn element_now(a: &Animal) -> Option<Element> {
+    match a.coils() {
+        Some(coils) if a.look.is_ultra() => Some(ULTRA_ELEMENTS[coils.element.min(ULTRA_ELEMENTS.len() - 1)]),
+        _ => a.look.element(),
+    }
+}
+
+/// How dark the sky's getting over the Coil Unending's lair, 0 to 1, for someone `meters` from it:
+/// from 600 m off, darkest within 150
+pub fn gloom(meters: f64) -> f64 {
+    smooth((600.0 - meters) / 450.0)
+}
+
 /// The elements the Coil Unending's body takes on in turn as its health drops, one for each of the
-/// realms the Water realm comes after: venom, storm, blood and frost; and its body's colors in each
+/// realms the Water realm comes after: venom, storm, blood and frost
 pub const ULTRA_ELEMENTS: [Element; 4] = [Element::Poison, Element::Storm, Element::Blood, Element::Frost];
-const ELEMENT_SKINS: [[u8; 5]; 4] = [
-    [MOSS, PINE, BONE, GLOW_POISON, TEMPLE_TEAL],
-    [STEEL, DARK_STEEL, LINEN, GLOW_STORM, LINEN],
-    [OBSIDIAN, TEMPLE_RED, BONE, GLOW_BLOOD, BONE],
-    [DARK_STEEL, ICE, LINEN, GLOW_FROST, ICE],
-];
+/// The skin it takes on for each of them, the color all of it's turned towards, light and dark as
+/// it was, and how far, see AnimalInstance::skinned(): none for venom, the colors it's made in, and
+/// slate blue, deep red and pale ice after. A tint of the same models rather than models of its own
+/// in each, so a body fifty meters long in four elements costs no more of the graphics card's
+/// memory than one.
+const ELEMENT_SKINS: [[u8; 4]; 4] = [[0, 0, 0, 0], [96, 122, 178, 190], [150, 22, 30, 200], [168, 214, 240, 190]];
 
 /// How many models the great serpents add after the animals' own: a head, a jaw and a piece of
-/// body for each, and the Coil Unending's body in each element past its first
-pub const PART_MODELS: usize = GREATS.len() * 3 + ULTRA_ELEMENTS.len() - 1;
+/// body for each
+pub const PART_MODELS: usize = GREATS.len() * 3;
+
+/// The skin of element `element` of ULTRA_ELEMENTS, packed as traverse.comp reads it
+fn skin_of(element: usize) -> u32 {
+    u32::from_le_bytes(ELEMENT_SKINS[element.min(ELEMENT_SKINS.len() - 1)])
+}
 
 /// One of the great serpents' models: where it's put in the world from the point it's made round,
 /// and how far from that point any of it reaches, in meters
@@ -761,10 +867,6 @@ fn parts_made() -> &'static (Vec<Model>, Vec<Shape>) {
             sets.push(jaw(g, skin));
             sets.push(piece(g, skin));
         }
-        let ultra = great_of(Look::Ysveth).expect("the Coil Unending");
-        for skin in &ELEMENT_SKINS[1..] {
-            sets.push(piece(ultra, *skin));
-        }
         let made: Vec<(Model, Vector3<f64>)> = std::thread::scope(|scope| {
             let handles: Vec<_> = sets.iter().map(|parts| scope.spawn(move || voxelize(parts, crate::animals::MODEL_RES))).collect();
             handles.into_iter().map(|h| h.join().expect("making a serpent's model failed")).collect()
@@ -788,9 +890,9 @@ pub fn part_models() -> Vec<Model> {
 }
 
 /// Which of the great serpents' models is a part of great serpent `g`: 0 its head, 1 its jaw, 2 a
-/// piece of its body; and for the Coil Unending 3 to 5 a piece of its body in its later elements
+/// piece of its body
 fn part_index(g: usize, part: usize) -> usize {
-    if part < 3 { g * 3 + part } else { GREATS.len() * 3 + part - 3 }
+    g * 3 + part
 }
 
 /// The instance drawing part `part` of great serpent `g` with the point it's made round at `at`, in
@@ -921,6 +1023,33 @@ impl Coils {
         self.head + self.forward * 0.95 * g.head * vpm - Vector3::new(0.0, 0.0, 0.2 * g.girth * vpm)
     }
 
+    /// Which way and how far whoever's standing `tall` meters tall with their middle at `at`, in
+    /// voxels, has to be shoved out sideways to be out of its head and body, in voxels; nothing if
+    /// they're not in it. Out to its side, if they're right under the middle of it.
+    pub fn shove(&self, at: Vector3<f64>, tall: f64, vpm: f64) -> Vector3<f64> {
+        let g = self.kind();
+        let down = Vector3::new(0.0, 0.0, self.sunk * vpm);
+        let n = self.points.len();
+        // Kept further from its head, so its face doesn't fill the whole view
+        let head = [(self.head + self.forward * 0.45 * g.head * vpm, 1.1 * g.girth, 1.0), (self.head, g.girth, 1.0)];
+        let body = self.points.iter().enumerate().map(|(k, p)| (*p, g.girth * taper(k, n), 0.35));
+        let side = Vector2::new(-self.forward.y, self.forward.x).try_normalize(1e-6).unwrap_or_else(Vector2::x);
+        let mut push = Vector3::zeros();
+        for (p, r, spare) in head.into_iter().chain(body) {
+            let off = at - (p - down);
+            let reach = (r + spare) * vpm;
+            if off.z.abs() > r * vpm + 0.5 * tall * vpm {
+                continue;
+            }
+            let d = off.xy().norm();
+            if d < reach {
+                let away = off.xy().try_normalize(1e-6).unwrap_or(side);
+                push += Vector3::new(away.x, away.y, 0.0) * (reach - d);
+            }
+        }
+        push
+    }
+
     /// Where along it to try hitting, in voxels: its head, and every piece of its body
     pub fn hit_points(&self, vpm: f64) -> Vec<Vector3<f64>> {
         let g = self.kind();
@@ -953,12 +1082,15 @@ impl Coils {
         ease(&mut self.pitch, want, 4.0);
         self.forward = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.pitch) * Vector3::x();
         let n = self.points.len();
-        // Laid out straight behind its head on the ground, the first time
+        // Laid out straight behind its head on the ground the first time, or level with its head in
+        // the air for what flies, so it trails behind it rather than hanging down where there's no
+        // ground under it, between the Sky Isles
         if !self.laid {
             self.laid = true;
             for k in 0..n {
                 let mut p = self.head - flat * (k as f64 + 0.8) * g.spacing * vpm;
-                p.z = rest_height(world, water, g.medium, p.x, p.y, feet.z, g.girth * taper(k, n) * vpm) + g.hover * vpm;
+                let rest = rest_height(world, water, g.medium, p.x, p.y, feet.z, g.girth * taper(k, n) * vpm);
+                p.z = if g.medium == Medium::Air { self.head.z.max(rest) } else { rest + g.hover * vpm };
                 self.points[k] = p;
             }
         }
@@ -1020,26 +1152,23 @@ impl Coils {
         let g = self.kind();
         let turn = along(self.forward);
         let down = Vector3::new(0.0, 0.0, self.sunk * vpm);
-        out.push(place(self.great, 0, self.head - down, turn, 1.0, vpm));
+        // The Coil Unending's skin, its head taking on its new element first and the rest of it
+        // after, rippling down to its tail
+        let ultra = g.look == Look::Ysveth;
+        let skin = |k: f64| if !ultra { 0 } else if k < self.shifted { skin_of(self.element) } else { skin_of(self.was) };
+        out.push(place(self.great, 0, self.head - down, turn, 1.0, vpm).skinned(skin(-1.0)));
         let hinge = self.head - down + turn * Vector3::new(0.0, 0.0, -0.18 * g.girth) * vpm;
-        out.push(place(self.great, 1, hinge, turn * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.75 * self.gape), 1.0, vpm));
+        out.push(place(self.great, 1, hinge, turn * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.75 * self.gape), 1.0, vpm).skinned(skin(-1.0)));
         let n = self.points.len();
         for k in 0..n {
             let ahead = if k == 0 { self.head } else { self.points[k - 1] };
             let behind = if k + 1 < n { self.points[k + 1] } else { self.points[k] * 2.0 - ahead };
-            let part = if g.look == Look::Ysveth {
-                let e = if (k as f64) < self.shifted { self.element } else { self.was };
-                if e == 0 { 2 } else { 2 + e }
-            } else {
-                2
-            };
-            out.push(place(self.great, part, self.points[k] - down, along(ahead - behind), taper(k, n), vpm));
+            out.push(place(self.great, 2, self.points[k] - down, along(ahead - behind), taper(k, n), vpm).skinned(skin(k as f64)));
         }
     }
 
     /// The Coil Unending taking on element `element` of ULTRA_ELEMENTS, rippling down its body from
     /// its head
-    #[allow(dead_code)]
     pub fn shift(&mut self, element: usize) {
         if element != self.element {
             self.was = self.element;
@@ -1087,6 +1216,180 @@ mod tests {
             assert!(head([0.0, 1.0, 0.0])[0] > head([0.0; 3])[0] + 0.1 * k.length);
             assert!(head([0.0, 0.0, 1.0])[2] > reared[2]);
         }
+    }
+
+    /// A flat field of dirt 192 m across at 8 voxels a meter, its ground 4 m up, as combat's tests
+    /// have
+    fn field() -> World {
+        let size = [1536u32, 1536, 128];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 4].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 8;
+        world
+    }
+
+    /// Hurt past each of its stages, the Coil Unending goes into each in turn: rearing up with a
+    /// roar to say so, its body taking on that stage's element from its head to its tail, and at
+    /// the last enraged. Its moves are its stage's.
+    #[test]
+    fn the_coil_unending_goes_through_its_stages() {
+        assert_eq!([1.0, 0.76, 0.74, 0.49, 0.26, 0.24, 0.01].map(ultra_stage), [0, 0, 1, 2, 2, 3, 3]);
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let home = Vector3::new(96.0, 96.0, 4.0) * vpm;
+        let mut ultra = Animal::boss(Look::Ysveth, home, [0, 0, ULTRA_KEY], 7);
+        let player = Some(home + Vector3::new(12.0, 0.0, 0.0) * vpm);
+        let dt = 1.0 / 30.0;
+        for _ in 0..90 {
+            ultra.update(&world, &water, player, dt);
+            ultra.boss.as_mut().unwrap().deeds.clear();
+        }
+        assert!(ultra.boss.as_ref().unwrap().engaged, "it turns on the player");
+        assert_eq!(element_now(&ultra), Some(Element::Poison));
+        for (fraction, stage) in [(0.7, 1u8), (0.45, 2), (0.2, 3)] {
+            ultra.health = ultra.max_health * fraction;
+            let mut said = false;
+            for _ in 0..240 {
+                ultra.update(&world, &water, player, dt);
+                let boss = ultra.boss.as_mut().unwrap();
+                said |= boss.deeds.iter().any(|d| matches!(d, crate::bosses::Deed::Phase { stage: s, .. } if *s == stage));
+                boss.deeds.clear();
+                // It doesn't heal while it's fighting
+                ultra.health = ultra.health.min(ultra.max_health * fraction);
+            }
+            let boss = ultra.boss.as_ref().unwrap();
+            assert!(said, "it roars into stage {stage}");
+            assert_eq!(boss.stage, stage);
+            assert_eq!(element_now(&ultra), Some(ULTRA_ELEMENTS[stage as usize]));
+            let coils = ultra.coils().unwrap();
+            assert!(coils.shifted >= coils.points.len() as f64, "its whole body's taken on its element by now");
+            assert_eq!(boss.enraged, stage == 3);
+        }
+    }
+
+    /// A great serpent's body follows its head: each piece about as far from the one in front as
+    /// it's meant to be, on the ground, and where the head went
+    #[test]
+    fn a_great_serpents_body_follows_its_head() {
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut coils = Coils::new(Look::Veinbinder).unwrap();
+        let g = coils.kind();
+        let start = Vector3::new(40.0, 96.0, 4.0) * vpm;
+        // Slithering east 30 m
+        for k in 0..300 {
+            let feet = start + Vector3::new(0.1 * k as f64, 0.0, 0.0) * vpm;
+            coils.update(feet, 0.0, 0.0, 0.0, &world, &water, 1.0 / 30.0);
+        }
+        let mut ahead = coils.head;
+        for (k, p) in coils.points.iter().enumerate() {
+            let gap = (p - ahead).norm() / vpm;
+            assert!(gap > 0.3 && gap < 1.3 * g.spacing, "piece {k} is {gap:.2} m from the one in front");
+            assert!(p.x < ahead.x + 0.01, "piece {k} is behind the one in front");
+            assert!((p.y - start.y).abs() < 0.5 * vpm, "piece {k} is off the way the head went");
+            assert!((p.z / vpm - 4.0 - g.girth * taper(k, g.pieces)).abs() < 0.3, "piece {k} isn't lying on the ground: {:.2} m", p.z / vpm);
+            ahead = *p;
+        }
+        // Its tail raised and brought down where it's aimed
+        let target = coils.points[coils.points.len() - 1] + Vector3::new(0.0, 3.0, 0.0) * vpm;
+        coils.tail = Some((target, 1.0));
+        coils.update(start + Vector3::new(29.9, 0.0, 0.0) * vpm, 0.0, 0.0, 0.0, &world, &water, 1.0 / 30.0);
+        assert!(coils.points[coils.points.len() - 1].z > target.z + 3.0 * vpm, "its tail's raised high");
+        coils.tail = Some((target, 2.0));
+        coils.update(start + Vector3::new(29.9, 0.0, 0.0) * vpm, 0.0, 0.0, 0.0, &world, &water, 1.0 / 30.0);
+        assert!((coils.points[coils.points.len() - 1] - target).xy().norm() < 1.0 * vpm, "its tail's come down where it was aimed");
+        // Whoever's stood in its body is shoved out of it, to the side they're on, and whoever's
+        // clear of it isn't
+        let piece = coils.points[4];
+        let beside = piece + Vector3::new(0.0, 0.3, 0.0) * vpm;
+        let shove = coils.shove(beside, 1.8, vpm);
+        assert!(shove.y > 0.5 * vpm && shove.z == 0.0, "shoved out to the side it's on: {:.2} m", shove.y / vpm);
+        assert!(coils.shove(piece + Vector3::new(0.0, 4.0, 0.0) * vpm, 1.8, vpm) == Vector3::zeros(), "clear of it, left be");
+        assert!(coils.shove(piece + Vector3::new(0.0, 0.3, 4.0) * vpm, 1.8, vpm) == Vector3::zeros(), "high over it, left be");
+    }
+
+    /// What swims goes on out over deep water, the open sea of the Sunken Reach, rather than being
+    /// stopped where it can't feel the bottom: a raid serpent comes across ten meters of water
+    /// after the player, along the top of it
+    #[test]
+    fn a_great_serpent_swims_across_deep_water() {
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| 14.0 * vpm;
+        let afloat = 14.0 - draft(Look::Reefcoil);
+        let start = Vector3::new(60.0, 96.0, afloat) * vpm;
+        let mut serpent = Animal::boss(Look::Reefcoil, start, [0, 0, -1], 3);
+        let boss = serpent.boss.as_mut().unwrap();
+        boss.provoke();
+        boss.only = Some(crate::bosses::Move::Coil);
+        let player = Some(start + Vector3::new(25.0, 0.0, 0.0) * vpm);
+        for _ in 0..150 {
+            serpent.update(&world, &water, player, 1.0 / 30.0);
+            serpent.boss.as_mut().unwrap().deeds.clear();
+        }
+        let gone = (serpent.position - start).xy().norm() / vpm;
+        assert!(gone > 6.0, "it's swum only {gone:.1} m");
+        assert!((serpent.position.z / vpm - afloat).abs() < 0.5, "along the top of the water: {:.2} m", serpent.position.z / vpm);
+    }
+
+    /// A great serpent of the sky over a gap between islands, with no ground under it, trails its
+    /// body behind it through the air rather than hanging down from its head
+    #[test]
+    fn a_sky_serpents_body_trails_through_the_air() {
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut coils = Coils::new(Look::Galecoil).unwrap();
+        // High over the ground, well out of reach of it
+        let feet = Vector3::new(60.0, 96.0, 40.0) * vpm;
+        for k in 0..60 {
+            coils.update(feet + Vector3::new(0.1 * k as f64, 0.0, 0.0) * vpm, 0.0, 0.0, 0.0, &world, &water, 1.0 / 30.0);
+        }
+        let tail = coils.points[coils.points.len() - 1];
+        assert!((tail.z - coils.head.z).abs() < 1.5 * vpm, "its tail's {:.1} m below its head", (coils.head.z - tail.z) / vpm);
+        assert!(coils.head.x - tail.x > 10.0 * vpm, "its body trails out behind it");
+    }
+
+    /// Serpents turn up in their own land: vipers on the normal world's grass and dirt, gale
+    /// serpents in the sky isles, adders in the dreaming realm and drift serpents in the frozen one,
+    /// a nest of two or three of them together, well away from the player
+    #[test]
+    fn serpents_turn_up_in_their_own_land() {
+        let world = field();
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let near = Vector3::new(96.0, 96.0, 4.0) * 8.0;
+        for (land, look) in [(worldgen::Land::Normal, Look::ReedViper), (worldgen::Land::Sky, Look::GaleSerpent), (worldgen::Land::Dream, Look::BloodAdder), (worldgen::Land::Ice, Look::DriftSerpent)] {
+            let mut rng = 11;
+            let nests = crate::animals::spawn_serpents(&world, &water, &mut rng, near, land, 2);
+            assert!(nests.len() >= 4, "{land:?}: {} serpents", nests.len());
+            assert!(nests.iter().all(|a| a.look == look), "{land:?}: {:?}", nests.iter().map(|a| a.look).collect::<Vec<_>>());
+            assert!(nests.iter().all(|a| (a.position - near).xy().norm() > 30.0 * 8.0));
+        }
+    }
+
+    /// In Free Roam the Coil Unending's lair is far from where it starts, and the way there's
+    /// strewn with omens, more of them nearer it
+    #[test]
+    fn the_coil_unendings_lair_is_far_off_with_omens_on_the_way() {
+        let start = [200.0, 180.0];
+        for seed in [1, 2, 77] {
+            let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed, grass_tufts: true };
+            let lair = free_roam_ultra(&settings, start).expect("a lair");
+            let far = (lair[0] - start[0]).hypot(lair[1] - start[1]);
+            assert!(far >= ULTRA_FAR, "seed {seed}: only {far:.0} m off");
+            let omens = omens(seed, start, lair);
+            assert!(omens.len() >= 10, "seed {seed}: {} omens", omens.len());
+            let off = |p: [f64; 2]| (p[0] - lair[0]).hypot(p[1] - lair[1]);
+            let near = omens.iter().filter(|(_, p, _)| off(*p) < 400.0).count();
+            let further = omens.iter().filter(|(_, p, _)| (400.0..800.0).contains(&off(*p))).count();
+            assert!(near > further, "seed {seed}: {near} near it, {further} further off");
+            assert!(omens.iter().any(|(l, ..)| *l == Look::ShedSkin) && omens.iter().any(|(l, ..)| *l == Look::SerpentBones));
+        }
+        assert!(gloom(1000.0) == 0.0 && gloom(100.0) > 0.99 && gloom(400.0) > 0.0);
     }
 
     /// A blow lands on the part of a long body it's aimed at, not on its middle

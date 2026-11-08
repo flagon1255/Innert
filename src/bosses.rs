@@ -571,7 +571,7 @@ fn closeness(look: Look) -> (f64, f64) {
         // Its head's well ahead of its middle, where it is, so it stops and lands that far off
         _ if look.is_serpent() => (1.8, 1.6),
         // A great serpent's head stops short of the player, its jaws reaching the rest
-        _ if look.is_great_serpent() => (4.0, 3.0),
+        _ if look.is_great_serpent() => serpents::great_of(look).map_or((4.0, 3.0), |g| (g.head + 2.0 + 0.6 * g.girth, g.head + 1.0)),
         _ if look.build() == Some(Build::Drake) => (6.0, look.body().1 + 1.0),
         _ => (3.0, look.body().1 + 1.0),
     }
@@ -716,9 +716,10 @@ fn erupt_radius(look: Look) -> f64 {
 }
 
 /// Whether a great serpent circles round the player while it's not attacking, rather than coming
-/// straight at them: one in the sky, and one that is a whirlpool
-fn circles(look: Look) -> bool {
-    matches!(look, Look::Galecoil | Look::Gyremaw | Look::Ysveth)
+/// straight at them: one in the sky, one that is a whirlpool, and the Coil Unending while it's not
+/// coiling and striking, in its stage `stage`
+fn circles(look: Look, stage: u8) -> bool {
+    matches!(look, Look::Galecoil | Look::Gyremaw) || look == Look::Ysveth && stage % 2 == 0
 }
 
 impl Boss {
@@ -940,8 +941,8 @@ impl Boss {
         match self.phase {
             // A great serpent's head drawn back as it rears, then lunging out after what it bites,
             // its whole neck following
-            Phase::WindUp(Move::Slam, _) if great => ([0.0, -0.9, 0.0], 4.0),
-            Phase::Act(Move::Slam, _) if great => ([0.0, 2.6, 0.0], 16.0),
+            Phase::WindUp(Move::Slam, _) if great => ([0.0, -0.6, 0.0], 4.0),
+            Phase::Act(Move::Slam, _) if great => ([0.0, 1.6, 0.0], 16.0),
             _ if great => ([0.0; 3], 3.0),
             // A serpent drawing back as it coils, then its whole body lunging out after its head
             Phase::WindUp(Move::Slam | Move::Leap, _) if serpent => ([0.0, -0.5, 0.0], 5.0),
@@ -1083,7 +1084,7 @@ impl Boss {
         let within = |m: Move, near: f64, far: f64| (near * size..far * size).contains(&distance) && ready(m);
         let monster = self.look.is_monster();
         let moves: &[(Move, f64, f64)] = match self.look.build() {
-            _ if self.look.is_great_serpent() => great_moves(self.look, self.buried),
+            _ if self.look.is_great_serpent() => great_moves(self.look, self.buried, self.stage),
             // Raid bosses: what their kind does, and bringing the sky down once they're hurt
             _ if self.look == Look::Colossus => &[(Move::Slam, 0.0, 4.6), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
             _ if self.look == Look::ElderWyrm => &[(Move::Slam, 0.0, 4.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 8.0, 30.0), (Move::Spit, 4.0, 35.0)],
@@ -1158,10 +1159,21 @@ impl Boss {
 /// What a great serpent can do and from how far off, in meters from its head, the first of those
 /// ready and in range being what it does, ranges meeting so there's nowhere to stand it won't do
 /// something; a raid boss's Summon and Cataclysm only once it's hurt, see unlocked()
-fn great_moves(look: Look, buried: bool) -> &'static [(Move, f64, f64)] {
+fn great_moves(look: Look, buried: bool, stage: u8) -> &'static [(Move, f64, f64)] {
     match look {
         // Coming up under the player, where it's shown on the ground a moment before
-        Look::Shatterfang | Look::Hollowtide if buried => &[(Move::Erupt, 0.0, 6.5)],
+        Look::Meremaw | Look::Shatterfang | Look::Hollowtide if buried => &[(Move::Erupt, 0.0, 6.5)],
+        Look::Ysveth if buried => &[(Move::Erupt, 0.0, 9.0)],
+        // The Coil Unending, more and worse as it goes: circling half under the water, spitting
+        // venom and diving to come up under the player; then coiling round them and striking,
+        // lunging across, calling the storm down; then calling up its brood and spraying blood; and
+        // at the last bringing frost down out of the sky as well as everything else
+        Look::Ysveth => match stage {
+            0 => &[(Move::Slam, 0.0, 7.5), (Move::Burrow, 14.0, 50.0), (Move::Spit, 8.0, 45.0)],
+            1 => &[(Move::Coil, 0.0, 13.0), (Move::Slam, 0.0, 7.5), (Move::Storm, 9.0, 40.0), (Move::Charge, 12.0, 40.0), (Move::Spit, 8.0, 45.0)],
+            2 => &[(Move::Summon, 0.0, 45.0), (Move::Breath, 3.0, 14.0), (Move::Coil, 0.0, 13.0), (Move::Slam, 0.0, 7.5), (Move::Spit, 8.0, 45.0)],
+            _ => &[(Move::Cataclysm, 0.0, 45.0), (Move::Summon, 0.0, 45.0), (Move::Breath, 3.0, 14.0), (Move::Coil, 0.0, 13.0), (Move::Slam, 0.0, 7.5), (Move::Burrow, 16.0, 50.0), (Move::Storm, 9.0, 40.0), (Move::Spit, 8.0, 45.0)],
+        },
         // The lake serpent: biting, spraying venom, coiling round, diving under to come up under
         // the player, spitting venom from further off
         Look::Meremaw => &[(Move::Slam, 0.0, 5.0), (Move::Coil, 2.0, 9.0), (Move::Breath, 3.0, 11.0), (Move::Burrow, 12.0, 40.0), (Move::Spit, 8.0, 30.0)],
@@ -1177,7 +1189,6 @@ fn great_moves(look: Look, buried: bool) -> &'static [(Move, f64, f64)] {
         Look::Hollowtide => &[(Move::Slam, 0.0, 6.0), (Move::Summon, 0.0, 30.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 3.0, 12.0), (Move::Burrow, 12.0, 45.0), (Move::Spit, 7.0, 32.0)],
         Look::Reefcoil => &[(Move::Coil, 0.0, 10.0), (Move::Slam, 0.0, 6.0), (Move::Summon, 0.0, 30.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 3.0, 12.0), (Move::Spit, 8.0, 32.0)],
         Look::Gyremaw => &[(Move::Slam, 0.0, 6.0), (Move::Coil, 0.0, 10.0), (Move::Cataclysm, 0.0, 30.0), (Move::Storm, 8.0, 30.0), (Move::Charge, 10.0, 32.0), (Move::Spit, 6.0, 30.0)],
-        // The Coil Unending's are its stage's, see serpents::ultra_moves()
         _ => &[(Move::Slam, 0.0, 7.0), (Move::Spit, 8.0, 40.0)],
     }
 }
@@ -1474,7 +1485,20 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
         boss.deeds.push(Deed::Phase { at: a.position, stage: boss.stage });
         boss.cooldowns[Move::Cataclysm as usize] = 0.0;
         boss.cooldowns[Move::Summon as usize] = 0.0;
-    } else if boss.engaged && !boss.enraged && !monster && !look.is_raid() && vitality < 0.5 && !busy {
+    } else if boss.engaged && look.is_ultra() && !busy && boss.stage < serpents::ultra_stage(vitality) {
+        // The Coil Unending going into its next stage: rearing up with a roar as its body takes on
+        // the next realm's element, rippling down it from its head, and at the last enraged
+        boss.stage += 1;
+        boss.enraged = boss.stage as usize >= serpents::ULTRA_STAGES.len();
+        boss.phase = Phase::Act(Move::Roar, 0.0);
+        boss.deeds.push(Deed::Phase { at: a.position, stage: boss.stage });
+        if let Some(coils) = &mut boss.coils {
+            coils.shift(boss.stage as usize);
+        }
+        for m in [Move::Summon, Move::Cataclysm, Move::Storm, Move::Coil] {
+            boss.cooldowns[m as usize] = 0.0;
+        }
+    } else if boss.engaged && !boss.enraged && !monster && !look.is_raid() && !look.is_ultra() && vitality < 0.5 && !busy {
         boss.enraged = true;
         boss.phase = Phase::Act(Move::Roar, 0.0);
         boss.deeds.push(Deed::Roar { at: a.position, angry: true });
@@ -1588,9 +1612,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         let way = away + back;
                         a.target_heading = way.y.atan2(way.x);
                         a.mood = Mood::Run;
-                    } else if circles(look) && distance > 7.0 && !boss.buried {
-                        // Circling round the player, coming in closer and further out
-                        let round = 12.0 + 3.0 * (boss.clock * 0.35).sin();
+                    } else if circles(look, boss.stage) && distance > 7.0 && !boss.buried {
+                        // Circling round the player, coming in closer and further out, the Coil
+                        // Unending further off than the rest
+                        let round = if look.is_ultra() { 17.0 } else { 12.0 } + 3.0 * (boss.clock * 0.35).sin();
                         a.target_heading = orbit(a.position, p, round, if boss.key[0] % 2 == 0 { 1.0 } else { -1.0 }, vpm);
                         a.mood = Mood::Run;
                     } else {
@@ -1710,8 +1735,10 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     // The dead rising, a pack answering a howl, spiderlings swarming out, to fight
                     // round it
                     Move::Summon => {
-                        if let Some(brood) = look.brood() {
-                            let count = if brood == Look::Spiderling || (look.is_knight() && boss.enraged) { 3 } else { 2 };
+                        // The Coil Unending's brood are serpents of its element as it is now
+                        let brood = if look.is_ultra() { Some(serpents::ULTRA_BROOD[(boss.stage as usize).min(3)]) } else { look.brood() };
+                        if let Some(brood) = brood {
+                            let count = if brood == Look::Spiderling || (look.is_knight() && boss.enraged) || look.is_ultra() { 3 } else { 2 };
                             if boss.pack == 0 {
                                 boss.pack = animals::new_pack();
                             }
@@ -1729,7 +1756,9 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     Move::Erupt => {
                         boss.buried = false;
                         let side = (a.position - boss.aim).xy().try_normalize(1e-6).unwrap_or_else(|| -forward.xy());
-                        let near = boss.aim + Vector3::new(side.x, side.y, 0.0) * 1.3 * vpm;
+                        // A great serpent's head comes up beside the player, not on top of them
+                        let beside = serpents::great_of(look).map_or(1.3, |g| g.girth + 0.6 * g.head + 1.2);
+                        let near = boss.aim + Vector3::new(side.x, side.y, 0.0) * beside * vpm;
                         if let Some(at) = ground_under(world, near).or_else(|| ground_under(world, boss.aim)) {
                             a.position = at;
                         }
@@ -2075,11 +2104,14 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     let (lift, gape, dive) = boss.great_pose();
     let engaged = boss.engaged;
     let tailing = matches!(boss.phase, Phase::WindUp(Move::Tail, _) | Phase::Act(Move::Tail, _));
-    // Lying in wait under the ice or deep in the water, the whole of it under
+    // Lying in wait under the ice or deep in the water, the whole of it under; and the Coil Unending
+    // circling half under the water at first
     let waiting = boss.buried && boss.phase == Phase::Roam;
+    let circling = look.is_ultra() && boss.stage == 0 && boss.phase == Phase::Chase;
     if let Some(coils) = &mut boss.coils {
         (coils.lift_to, coils.gape_to, coils.dive_to) = (lift, gape, dive);
-        coils.sunk_to = if waiting { 2.6 * coils.kind().girth + 0.6 } else { 0.0 };
+        let girth = coils.kind().girth;
+        coils.sunk_to = if waiting { 2.6 * girth + 0.6 } else if circling { 0.55 * girth } else { 0.0 };
         coils.look_at = player.filter(|_| engaged).map(|p| p + Vector3::new(0.0, 0.0, 1.0 * vpm));
         if !tailing {
             coils.tail = None;

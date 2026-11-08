@@ -938,6 +938,7 @@ impl App {
         // The great serpents' lairs come across, now and then, see serpent_lairs.rs
         if self.frame % 30 == 0 {
             self.find_serpent_lairs();
+            self.darken_sky();
         }
         if self.session.mode.is_none() || self.menu_open {
             return;

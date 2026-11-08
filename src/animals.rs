@@ -128,6 +128,10 @@ pub enum Look {
     Reefcoil,
     Gyremaw,
     Ysveth,
+    // Omens on the way to the Coil Unending's lair: a serpent's skin shed and left lying, and the
+    // bones of a great serpent it ate
+    ShedSkin,
+    SerpentBones,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -181,7 +185,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 77] = [
+    pub const ALL: [Look; 79] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -259,6 +263,8 @@ impl Look {
         Look::Reefcoil,
         Look::Gyremaw,
         Look::Ysveth,
+        Look::ShedSkin,
+        Look::SerpentBones,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -460,7 +466,7 @@ impl Look {
     fn walks(self) -> bool {
         !matches!(
             self,
-            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard
+            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones
         ) && !self.is_shrine()
     }
 
@@ -665,6 +671,8 @@ impl Look {
             Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => serpents::kind(self).map_or(2.5, serpents::reach),
             // Only its head, as the rest of it's drawn a piece at a time, see serpents::Coils
             Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => serpents::great_of(self).map_or(4.0, |g| g.head + 2.0 * g.girth),
+            Look::ShedSkin => 2.0,
+            Look::SerpentBones => 3.0,
         }
     }
 
@@ -716,6 +724,8 @@ impl Look {
             Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => {
                 serpents::great_of(self).map_or((1.0, 1.0), |g| (g.girth + g.hover, g.girth * 1.2))
             }
+            Look::ShedSkin => (0.05, 0.3),
+            Look::SerpentBones => (0.3, 0.6),
         }
     }
 
@@ -795,6 +805,8 @@ impl Look {
             Look::Reefcoil => "Reefcoil",
             Look::Gyremaw => "Gyremaw",
             Look::Ysveth => "Coil Unending",
+            Look::ShedSkin => "shed serpent skin",
+            Look::SerpentBones => "serpent bones",
         }
     }
 
@@ -870,8 +882,9 @@ impl Look {
             Look::Hollowtide => 13500.0,
             Look::Reefcoil => 14000.0,
             Look::Gyremaw => 13000.0,
-            // Three raid bosses' worth, see serpents::ULTRA_STAGES
-            Look::Ysveth => 42000.0,
+            // Two and a half raid serpents' worth, and the same again for each realm's toughness
+            // past the normal world's, see serpents::ULTRA_STAGES
+            Look::Ysveth => 32000.0,
             _ => 20.0,
         }
     }
@@ -2864,6 +2877,47 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 }
             }
         }
+        // A serpent's skin, shed whole and left lying in an S, pale and papery, its scales showing
+        // in bands, the eye holes of its head dark
+        Look::ShedSkin => {
+            let at = |u: f64| [1.6 - 3.2 * u, 0.32 * (u * TAU * 1.3).sin() * (u * 4.0).min(1.0), 0.05];
+            for s in [-1.0, 1.0] {
+                p.push(ball([1.72, s * 0.06, 0.08], 0.025, BARK_DARK));
+            }
+            p.push(limb([1.55, 0.0, 0.06], [1.82, 0.0, 0.05], 0.1, 0.06, LINEN).stretched([1.0, 1.0, 0.5]));
+            for k in 0..14 {
+                let (u0, u1) = (k as f64 / 14.0, (k + 1) as f64 / 14.0);
+                let r = 0.11 * (1.0 - 0.75 * u0);
+                p.push(limb(at(u0), at(u1), r, r * 0.95, if k % 3 == 0 { FUR_CREAM } else { LINEN }).stretched([1.0, 1.0, 0.45]));
+            }
+        }
+        // The bones of a great serpent: its backbone lying in a curve, ribs arching up off it, and
+        // its long skull
+        Look::SerpentBones => {
+            let at = |u: f64| [2.6 - 5.2 * u, 0.6 * (u * TAU * 0.8).sin(), 0.14];
+            p.push(ball([2.95, 0.12, 0.3], 0.07, BARK_DARK));
+            p.push(ball([2.95, -0.12, 0.3], 0.07, BARK_DARK));
+            p.push(limb([2.6, 0.0, 0.2], [3.45, 0.0, 0.14], 0.24, 0.1, BONE).stretched([1.0, 1.0, 0.7]));
+            p.push(limb([2.65, 0.0, 0.05], [3.3, 0.0, 0.04], 0.15, 0.06, BONE).stretched([1.0, 1.0, 0.4]));
+            for k in 0..18 {
+                let u = k as f64 / 18.0;
+                let c = at(u);
+                let r = 0.1 * (1.0 - 0.6 * u);
+                p.push(ball(c, r, BONE));
+                // Ribs along the front of it, fewer and shorter towards its tail
+                if u < 0.7 && k % 2 == 0 {
+                    let rib = 0.55 * (1.0 - u);
+                    for s in [-1.0, 1.0] {
+                        let top = [c[0], c[1] + s * rib * 0.6, c[2] + rib * 0.9];
+                        p.push(limb(c, top, 0.03, 0.025, BONE));
+                        p.push(limb(top, [c[0] - 0.05, c[1] + s * rib, 0.03], 0.025, 0.02, BONE));
+                    }
+                }
+                if k > 0 {
+                    p.push(limb(at((k - 1) as f64 / 18.0), c, r * 0.5, r * 0.5, LIMESTONE));
+                }
+            }
+        }
         // Bosses, all built above
         _ => {}
     }
@@ -3257,6 +3311,14 @@ impl AnimalInstance {
         self
     }
 
+    /// With all of it turned towards one color, light and dark as it was, as a skin taken on: red,
+    /// green and blue and how far, a byte each, packed little end first; 0 for its own colors. See
+    /// tintAnimal() in shaders\traverse.comp.
+    pub fn skinned(mut self, skin: u32) -> Self {
+        self.info[3] = skin;
+        self
+    }
+
     /// Where it's put, in voxels of the main world
     pub fn sphere_center(&self) -> Vector3<f64> {
         Vector3::new(self.position[0] as f64, self.position[1] as f64, self.position[2] as f64)
@@ -3335,6 +3397,9 @@ const SHIELD_THROUGH: f64 = 0.15;
 const SHIELD_ARC: f64 = 0.42;
 /// How much of a blow gets through the sand to a burrower dug in under it
 const BURIED_THROUGH: f64 = 0.3;
+/// How far down what swims feels for the bottom of the water it's swimming over, in meters: deep
+/// enough for the open sea of the Sunken Reach
+const SWIM_DEPTH: f64 = 48.0;
 
 /// Something in the world drawn like an animal that doesn't move, like food lying on the ground.
 /// `position` is in voxels of the main world.
@@ -3768,10 +3833,21 @@ impl Animal {
             let ahead = Vector2::new(self.heading.cos(), self.heading.sin()) * 0.3 * vpm;
             let (x, y) = (self.position.x + step.x, self.position.y + step.y);
             let climb = look.climb() * vpm;
-            // Over water, what flies looks further down for the bottom of it
-            let down = if look.flies() { 8.0 * vpm } else { climb * 2.0 };
-            let ground = ground_wading(world, water, x, y, self.position.z, climb, down, look.wade());
-            let clear = ground_wading(world, water, x + ahead.x, y + ahead.y, self.position.z, climb, down, look.wade()).is_some();
+            // Over water, what flies looks further down for the bottom of it, and what swims, out
+            // over the deep water of a lake or the sea, much further, to go on over it
+            let z = self.position.z;
+            let down = |x: f64, y: f64| {
+                if look.swims() && water(x, y) > z - climb {
+                    SWIM_DEPTH * vpm
+                } else if look.flies() {
+                    8.0 * vpm
+                } else {
+                    climb * 2.0
+                }
+            };
+            let ground = ground_wading(world, water, x, y, z, climb, down(x, y), look.wade());
+            let (ax, ay) = (x + ahead.x, y + ahead.y);
+            let clear = ground_wading(world, water, ax, ay, z, climb, down(ax, ay), look.wade()).is_some();
             // What flies goes over water, not down to the bottom of it, and what swims along the top
             // of it, its back just out of it
             let ground = if look.flies() {

@@ -6,7 +6,13 @@
 //!   `serpent_calm=1` leaving the player be, and `serpent_pose=windup`, `strike` or `special`
 //!   holding them in that pose to look at; `serpents_at=5` frames after it's ready
 //! - `--set overlook_serpents=3` lifts the view that many meters off the ground there, to see them
-//!   from a little above
+//!   from a little above, the player gone
+//! - `--set serpent_boss=meremaw` puts a great serpent ahead, rising out of the deep water there if
+//!   it swims, `serpent_boss_distance=16`, `serpent_boss_health=0.4`, `serpent_move=coil` making
+//!   only that move; `ultra=1` the same for the Coil Unending, anywhere
+//! - `--set serpent_watch=1` keeps looking at the nearest great serpent's head, `2` half way down it
+//! - and every 30 frames, or `serpent_log_every=10`, the great serpents about say where they are,
+//!   how far the view is from them and what they're doing
 
 use crate::animals::Look;
 
@@ -34,12 +40,16 @@ impl App {
             println!("POSE at frame {frame}: {pose:?}");
         }
         // How the great serpents about are getting on, now and then
-        if frame > at && (frame - at) % 30 == 0 {
+        let every = (number("serpent_log_every", 30.0) as usize).max(1);
+        if frame > at && (frame - at) % every == 0 {
             let vpm = self.world.voxels_per_meter as f64;
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
             for a in self.game.animals_mut().filter(|a| a.look.is_great_serpent()) {
                 let b = a.boss.as_ref();
+                // How far the view is from the middle of the nearest piece of it, in meters
+                let gap = a.coils().map_or(f64::NAN, |c| c.hit_points(vpm).iter().map(|p| (p - eye).norm() / vpm).fold(f64::INFINITY, f64::min));
                 println!(
-                    "GREAT frame {frame}: {} at {:.1}, {:.1}, {:.1} m heading {:.2} to {:.2}, speed {:.2}, health {:.0}, engaged {}, {}",
+                    "GREAT frame {frame}: {} at {:.1}, {:.1}, {:.1} m, the view {gap:.1} m off it, heading {:.2} to {:.2}, speed {:.2}, health {:.0}, engaged {}, {}",
                     a.look.name(),
                     a.position.x / vpm,
                     a.position.y / vpm,
@@ -81,13 +91,36 @@ impl App {
         // `serpent_boss_health=0.4` that hurt, `serpent_move=coil` making only that move, or
         // `tail`, `slam`, `spit`, `breath`, `charge`, `burrow` or `storm`, and `serpent_calm=1`
         // leaving the player be
-        if let Some(name) = setting("serpent_boss") {
+        // `ultra=1` raises the Coil Unending out of the deepest water near ahead, or on the ground
+        // ahead if there's none, to try fighting it anywhere; with the same settings as for
+        // `serpent_boss`
+        let wanted = setting("serpent_boss").or_else(|| (setting("ultra") == Some("1")).then_some("ysveth"));
+        if let Some(name) = wanted {
             let name = name.to_lowercase();
             let named = |l: &Look| [format!("{l:?}").to_lowercase(), l.name().replace(' ', "").to_lowercase()].iter().any(|n| n.contains(&name));
             match Look::ALL.into_iter().find(|l| l.is_great_serpent() && named(l)) {
                 Some(look) => {
                     let water = &self.water;
-                    self.game.summon(&self.world, &|x, y| water.surface_at(x, y), look, feet, ahead, number("serpent_boss_distance", 16.0));
+                    let level = |x: f64, y: f64| water.surface_at(x, y);
+                    let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                    let distance = number("serpent_boss_distance", 16.0);
+                    let deep = look.swims().then(|| animals::deep_water_near(&self.world, &level, feet + flat * distance * vpm, 30.0, 0.8)).flatten();
+                    // One that flies is put up in the air ahead, over the gap between islands if
+                    // that's what's there
+                    let flying = serpents::great_of(look).is_some_and(|g| g.medium == serpents::Medium::Air);
+                    let put = match deep {
+                        Some(bottom) => Some(Vector3::new(bottom.x, bottom.y, level(bottom.x, bottom.y) - serpents::draft(look) * vpm)),
+                        None if flying => Some(feet + flat * distance * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm)),
+                        None => None,
+                    };
+                    match put {
+                        Some(at) => {
+                            let mut serpent = animals::Animal::boss(look, at, [at.x as i64, at.y as i64, -1], frame as u32);
+                            serpent.face((feet - at).y.atan2((feet - at).x));
+                            self.game.add_animal(serpent);
+                        }
+                        None => self.game.summon(&self.world, &level, look, feet, ahead, distance),
+                    }
                     let only = match setting("serpent_move") {
                         Some("coil") => Some(bosses::Move::Coil),
                         Some("tail") => Some(bosses::Move::Tail),

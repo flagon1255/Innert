@@ -386,6 +386,9 @@ const THORNS: usize = 5;
 /// The fastest bosses and monsters can throw the player, in meters a second, along the ground and
 /// up: a blow knocks them a few steps back, it never flings them across the field
 const THROWN_MOST: f64 = 6.0;
+/// How lucky the roll is that makes the Coil Unending's fang, see Game::fang(): far luckier than
+/// any raid boss's best
+const FANG_LUCK: f64 = 60.0;
 /// How fast the player moves while chilled by frost, and stuck in web, next to usual
 const CHILLED_PACE: f64 = 0.55;
 const SNARED_PACE: f64 = 0.4;
@@ -614,6 +617,10 @@ pub struct Game {
     sky_wares: bool,
     /// The map's open over the middle of the view, see set_map_open()
     map_open: bool,
+    /// Omens of the Coil Unending lying on the way to its lair in Free Roam, see serpents::omens(),
+    /// and how dark the sky's got over it, 0 to 1
+    omens: Vec<(Look, Vector3<f64>, f64)>,
+    gloom: f64,
     /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
     worn: Option<u8>,
     wing_models: Vec<(Model, Vector3<f64>)>,
@@ -776,6 +783,8 @@ impl Game {
             map_open: false,
             worn: None,
             wing_models: wings::models(),
+            omens: Vec::new(),
+            gloom: 0.0,
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -1401,6 +1410,10 @@ impl Game {
             pickup.position -= shift;
         }
         self.pickups.retain(|p| inside(&p.position));
+        for (_, at, _) in &mut self.omens {
+            *at -= shift;
+        }
+        self.omens.retain(|(_, at, _)| inside(at));
         for chest in &mut self.boss_chests {
             chest.position -= shift;
         }
@@ -1582,15 +1595,19 @@ impl Game {
         // What the bosses did, and what they threw landing
         let mut deeds = Vec::new();
         for animal in &mut self.animals {
+            // What its attacks are made of: the Coil Unending's changes as it goes, see
+            // serpents::ULTRA_ELEMENTS
+            let element = serpents::element_now(animal);
             if let Some(boss) = &mut animal.boss {
-                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, d)));
+                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d)));
             }
         }
-        for (look, deed) in deeds {
-            self.carry_out(look, deed, world, water, player, view);
+        for (look, element, deed) in deeds {
+            self.carry_out(look, element, deed, world, water, player, view);
         }
         self.grow_roots(world, player, view, dt);
         self.whirl(world, water, player, dt);
+        self.shove_out_of_serpents(player, world.voxels_per_meter as f64);
         self.spin_webs(player, dt);
         self.reek(world, player, dt);
         for (damage, from, element) in std::mem::take(&mut self.combat.player_hits) {
@@ -1689,6 +1706,32 @@ impl Game {
         }
     }
 
+    /// Whoever a great serpent's lunged through, come up beside or slithered over shoved out from
+    /// its body, so they're never stood inside it with nothing to see, see serpents::Coils::shove()
+    fn shove_out_of_serpents(&mut self, player: Option<Vector3<f64>>, vpm: f64) {
+        let Some(feet) = player else {
+            return;
+        };
+        let middle = feet + Vector3::new(0.0, 0.0, 0.9 * vpm);
+        let push: Vector3<f64> = self.animals.iter().filter(|a| (a.position - feet).norm() < 80.0 * vpm).filter_map(|a| a.coils()).map(|c| c.shove(middle, 1.8, vpm)).sum();
+        // Out about as far as it's in, as a shove dies away, see player::Player::push()
+        if push.norm() > 0.05 * vpm {
+            self.thrown += push * 9.0;
+        }
+    }
+
+    /// The omens of the Coil Unending lying about in the world as it is, in its voxels, see
+    /// serpents::omens()
+    pub fn set_omens(&mut self, omens: Vec<(Look, Vector3<f64>, f64)>) {
+        self.omens = omens;
+    }
+
+    /// How dark the sky's got over the Coil Unending's lair where the player is, 0 to 1, see
+    /// serpents::gloom()
+    pub fn set_gloom(&mut self, gloom: f64) {
+        self.gloom = gloom;
+    }
+
     /// Where blows on each serpent near enough to be hit land: the part of its long body the player's
     /// aiming at, see serpents::focus()
     fn aim_at_serpents(&mut self, view: &View) {
@@ -1707,7 +1750,8 @@ impl Game {
     }
 
     /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
-    fn carry_out(&mut self, look: Look, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
+    #[allow(clippy::too_many_arguments)]
+    fn carry_out(&mut self, look: Look, element: Option<Element>, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
         // How much something at `at` is felt, from 1 right there to nothing 40 meters off
         let felt = |at: Vector3<f64>| (1.0 - (at - view.eye).norm() / vpm / 40.0).max(0.0);
@@ -1805,9 +1849,9 @@ impl Game {
             Some(Build::Drake) => 1.15,
             Some(Build::Spider) => 1.5,
             Some(Build::Treant) => 0.5,
+            _ if look.is_ultra() => 0.5,
             _ => 0.85,
         };
-        let element = look.element();
         match deed {
             // A great serpent's hiss, deep as its size, and what each move sounds like coming: its
             // body tightening to coil, its tail swishing up, water or earth churning as it dives,
@@ -1880,7 +1924,17 @@ impl Game {
                     self.cues.push(Cue::at(Sound::Flap, at, 0.8).pitched(0.8));
                 }
                 self.shake = self.shake.max(0.6 * felt(at));
-                self.say(if angry { format!("The {} is enraged!", look.name()) } else { format!("The {} turns on you!", look.name()) });
+                self.say(if look.is_ultra() && !angry {
+                    "The water heaves and darkens: Ysveth, the Coil Unending, rises from the deep!".to_owned()
+                } else if angry {
+                    format!("The {} is enraged!", look.name())
+                } else {
+                    format!("The {} turns on you!", look.name())
+                });
+                if look.is_ultra() && !angry {
+                    self.shake = self.shake.max(1.0 * felt(at));
+                    self.cues.push(Cue::at(Sound::Quake, at, 1.0).pitched(0.5));
+                }
             }
             Deed::Slam { at, radius, damage, crater } => {
                 // What's built round it takes the blow too, see raids.rs
@@ -2093,8 +2147,20 @@ impl Game {
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * 0.8));
                 self.cues.push(Cue::at(Sound::Quake, at, 0.8).pitched(0.7));
                 self.shake = self.shake.max(0.9 * felt(at));
-                self.combat.craters.push((at, 1.5 * look.size()));
-                self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+                // The Coil Unending sheds its skin for the next realm's element; the ground's left be
+                if look.is_ultra() {
+                    let said = match stage {
+                        1 => "The Coil Unending sheds its skin: storm crackles down its coils, and it rises to strike!",
+                        2 => "The Coil Unending sheds its skin again: blood wells in its scales, and its brood answers its call!",
+                        _ => "The Coil Unending sheds its last skin: frost seizes its coils, and it rages! Its last fury is upon you.",
+                    };
+                    self.cues.push(Cue::at(Sound::Hiss, at, 1.0).pitched(0.3));
+                    self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y).max(at.z)), 1.8);
+                    self.say(said);
+                } else {
+                    self.combat.craters.push((at, 1.5 * look.size()));
+                    self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+                }
             }
             Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
             // A pack answering a howl, the dead clawing up out of the ground, spiderlings swarming
@@ -2726,12 +2792,30 @@ impl Game {
                 }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
-                let raid = look.is_raid() || block.is_some();
-                // Its best weapon's very likely legendary or better, the rest a mix
-                let (lucks, piles, potions): (&[f64], _, _) = if raid { (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3) } else { (&[6.0, 2.5], 1, 1) };
+                let raid = look.is_raid() || block.is_some() || look.is_ultra();
+                // Its best weapon's very likely legendary or better, the rest a mix; the Coil
+                // Unending's far more than any raid boss's, and its own fang among them
+                let ultra = look.is_ultra();
+                let (lucks, piles, potions): (&[f64], _, _) = if ultra {
+                    (&[20.0, 14.0, 10.0, 7.0, 5.0, 4.0], 6, 5)
+                } else if raid {
+                    (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3)
+                } else {
+                    (&[6.0, 2.5], 1, 1)
+                };
                 let mut loot: Vec<Item> = lucks.iter().map(|&luck| self.roll_weapon(luck)).collect();
+                if ultra {
+                    let fang = self.fang();
+                    loot.insert(0, fang);
+                }
                 for _ in 0..piles {
-                    let gold = if raid { 200.0 + 100.0 * random(&mut self.rng) } else { 80.0 + 80.0 * random(&mut self.rng) };
+                    let gold = if ultra {
+                        320.0 + 180.0 * random(&mut self.rng)
+                    } else if raid {
+                        200.0 + 100.0 * random(&mut self.rng)
+                    } else {
+                        80.0 + 80.0 * random(&mut self.rng)
+                    };
                     loot.push(Item::Gold(gold as u32));
                 }
                 loot.extend(std::iter::repeat_n(Item::Potion, potions));
@@ -2739,12 +2823,17 @@ impl Game {
                     Item::Weapon(w) => Some(self.weapons[w].grade),
                     _ => None,
                 }).max().unwrap_or(0);
-                self.scatter(world, middle, animal.position, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
+                // What a serpent that swims leaves is thrown up onto the land round the player,
+                // rather than sinking into the deep water it went down into
+                let around = if look.swims() { self.feet.unwrap_or(animal.position) } else { animal.position };
+                self.scatter(world, middle, around, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
                 self.combat.fell(middle, look.body().1);
                 self.shake = self.shake.max(1.0);
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
-                if let Some(realm) = block {
+                if ultra {
+                    self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
+                } else if let Some(realm) = block {
                     let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
                     self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its hoard spills out, some of it {rarity}!", look.name()));
                 } else if raid {
@@ -2917,6 +3006,33 @@ impl Game {
             }
         }
         self.models_version += 1;
+    }
+
+    /// The Coil Unending's own weapon, the one of its kind: a mythic whip whose special is a serpent
+    /// lash or a coil bind if any is, made the same every time, and called by its own name, which
+    /// it keeps in the save, see save::WeaponSave::name
+    fn fang(&mut self) -> Item {
+        let family = self.library.family("whip");
+        let mythic = self.library.rarities.len() - 1;
+        let serpentine = |s: u32| matches!(self.library.special_of(s, family, FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind));
+        // The first seed that makes it of the rarest grade with a serpent's special, or failing
+        // that the first with the special
+        let mut found = None;
+        for seed in (0..20_000u32).map(|k| hash(k ^ 0x7e57_f00d)).filter(|&s| serpentine(s)) {
+            let weapon = self.library.generate(seed, family, FANG_LUCK);
+            let best = weapon.grade == mythic;
+            if best || found.is_none() {
+                found = Some(weapon);
+            }
+            if best {
+                break;
+            }
+        }
+        let mut weapon = found.unwrap_or_else(|| self.library.generate(0x7e57_f00d, family, FANG_LUCK));
+        weapon.name = serpents::FANG.to_owned();
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        Item::Weapon(self.weapons.len() - 1)
     }
 
     /// A new weapon rolled with `luck`, as for Library::roll_rarity(), kept among Game::weapons
@@ -3665,7 +3781,9 @@ impl Game {
                 twin => format!("{id}#{twin}"),
             }
         };
-        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed }
+        // The Coil Unending's fang keeps its own name
+        let name = (weapon.name == serpents::FANG).then(|| weapon.name.clone());
+        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed, name }
     }
 
     /// Makes a saved weapon again, kept among Game::weapons: None if the parts it was made of are
@@ -3682,7 +3800,11 @@ impl Game {
         if parts.len() != slots.len() || parts.iter().zip(slots).any(|(&p, slot)| self.library.components[p].slot_type != *slot) {
             return None;
         }
-        self.weapons.push(Weapon::assemble(&self.library, family, parts, saved.seed));
+        let mut weapon = Weapon::assemble(&self.library, family, parts, saved.seed);
+        if let Some(name) = &saved.name {
+            weapon.name = name.clone();
+        }
+        self.weapons.push(weapon);
         Some(self.weapons.len() - 1)
     }
 
@@ -3795,6 +3917,8 @@ impl Game {
         self.raid_lairs.clear();
         self.shrines.clear();
         self.shrine_used = false;
+        self.omens.clear();
+        self.gloom = 0.0;
         self.seed = seed;
     }
 
@@ -4243,6 +4367,13 @@ impl Game {
                 _ => {}
             }
         }
+        // The Coil Unending's omens, from further off, as they're there to be seen
+        for &(look, position, heading) in &self.omens {
+            let d = (position - camera).norm();
+            if d < 90.0 * vpm {
+                near.push((d, animals::still_instance(look, position, heading, world.voxels_per_meter)));
+            }
+        }
         // Props are small, so they're only drawn up close
         for &(look, position, heading) in &self.props {
             let d = (position - camera).norm();
@@ -4322,6 +4453,25 @@ impl Game {
         let shadow = Color32::from_black_alpha(150);
         let faint = Color32::from_white_alpha(140);
         let on_screen = |p: Vector3<f64>| view.project(p).map(|[x, y]| pos2(screen.left() + x as f32 * screen.width(), screen.top() + y as f32 * screen.height()));
+
+        // The sky darkening over the Coil Unending's lair, a bruised gloom closing in from above
+        if self.gloom > 0.01 {
+            let g = self.gloom as f32;
+            let mut mesh = egui::Mesh::default();
+            let bands = [(0.0, 0.62), (0.32, 0.38), (0.62, 0.0)];
+            for pair in bands.windows(2) {
+                let (top, bottom) = (screen.top() + pair[0].0 * screen.height(), screen.top() + pair[1].0 * screen.height());
+                let first = mesh.vertices.len() as u32;
+                let shade = |a: f32| Color32::from_rgba_unmultiplied(18, 10, 28, (a * g * 255.0) as u8);
+                mesh.colored_vertex(pos2(screen.left(), top), shade(pair[0].1));
+                mesh.colored_vertex(pos2(screen.right(), top), shade(pair[0].1));
+                mesh.colored_vertex(pos2(screen.right(), bottom), shade(pair[1].1));
+                mesh.colored_vertex(pos2(screen.left(), bottom), shade(pair[1].1));
+                mesh.add_triangle(first, first + 1, first + 2);
+                mesh.add_triangle(first, first + 2, first + 3);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
 
         // Health bars over animals that were just hurt
         let vpm = view.vpm;
@@ -4550,31 +4700,43 @@ impl Game {
                 painter.text(label + vec2(1.0, 1.0), Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), shadow);
                 painter.text(label, Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), Color32::WHITE);
             }
-            let name = if foe.is_raid() { format!("RAID  ·  {}", foe.name()) } else { foe.name().to_string() };
+            // The Coil Unending's bar is the biggest of all, across most of the view, in the color
+            // of the element its body's taken on, its stages marked across it
+            let ultra = foe.is_ultra();
+            let name = if ultra {
+                "ULTRA  ·  YSVETH, THE COIL UNENDING".to_owned()
+            } else if foe.is_raid() {
+                format!("RAID  ·  {}", foe.name())
+            } else {
+                foe.name().to_string()
+            };
             // A raid boss's bar is longer
-            let width = (screen.width() * if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 900.0);
+            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
+            let tall = if ultra { 18.0 } else { 12.0 };
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
             let flash = flash as f32;
             let jolt = (self.combat.time() * 90.0).sin() as f32 * 4.0 * flash;
-            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - 54.0), vec2(width, 12.0));
+            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, tall));
             let title = if enraged { format!("{name}  —  enraged") } else { name.to_string() };
             let at = pos2(center.x, back.top() - 6.0);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
+            let size = if ultra { 23.0 } else { 19.0 };
+            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(size), shadow);
+            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
             painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
             if flash > 0.0 {
                 painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
             }
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(190), red(40), red(35)));
+            let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
+            let [r, g, b] = element.map_or([190, 40, 35], |e| e.color().map(|c| (c as f32 * 0.85) as u8));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
             // Where a raid boss goes into its next phases, marked across the bar
-            if foe.is_raid() {
-                for mark in [0.66, 0.33] {
-                    let x = back.left() + width * mark;
-                    painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
-                }
+            let marks: &[f64] = if ultra { &serpents::ULTRA_STAGES } else if foe.is_raid() { &[0.66, 0.33] } else { &[] };
+            for &mark in marks {
+                let x = back.left() + width * mark as f32;
+                painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
             }
         }
 
@@ -5767,6 +5929,57 @@ mod tests {
                 assert!(weapons[i + 1..].iter().all(|b| b.family != a.family));
             }
         }
+    }
+
+    /// The Coil Unending slain stays slain: its lair's beaten in the save, so it never rises again
+    /// once the world's built afresh round it, and its fang, the one of its kind, keeps its name
+    /// through the save
+    #[test]
+    fn the_coil_unending_stays_beaten() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(32.0, 32.0, 16.0));
+        let ground = Vector3::new(32.0, 32.0, 16.0);
+        let lair = |key: [i64; 3]| Lair { look: Look::Ysveth, position: ground, key, raid: None };
+        let key = [1234, -5678, serpents::ULTRA_KEY];
+        game.set_lairs(&world, &dry, vec![lair(key)]);
+        assert!(game.animals.iter().any(|a| a.look.is_ultra()), "it's there to fight");
+        // Slain, it writhes, then falls
+        for a in game.animals.iter_mut().filter(|a| a.look.is_ultra()) {
+            a.health = 0.0;
+        }
+        game.reap(&world);
+        assert!(game.animals.iter().any(|a| a.look.is_ultra()), "it's still going down");
+        for a in game.animals.iter_mut().filter(|a| a.look.is_ultra()) {
+            a.boss.as_mut().unwrap().dying = Some(serpents::GREAT_THROES);
+        }
+        game.reap(&world);
+        assert!(!game.animals.iter().any(|a| a.look.is_ultra()));
+        assert!(game.is_defeated(&key));
+        let fang = game.pickups.iter().find_map(|p| if let Item::Weapon(w) = p.item { (game.weapons[w].name == serpents::FANG).then_some(w) } else { None }).expect("its fang among its hoard");
+        // A whip of the rarest grade, with a serpent's special
+        let weapon = &game.weapons[fang];
+        assert_eq!(weapon.grade, game.library.rarities.len() - 1, "its fang's mythic");
+        assert_eq!(game.library.families[weapon.family].id, "whip");
+        assert!(matches!(game.library.special_of(weapon.seed, Some(weapon.family), FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind)), "with a serpent's special");
+        game.add_item(Item::Weapon(fang), 1);
+        // Through the file's own form and back, into another game
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, ground);
+        other.restore(&carried, &done, game.vitals());
+        assert!(other.is_defeated(&key));
+        assert!(other.weapons.iter().any(|w| w.name == serpents::FANG), "its fang keeps its name");
+        // The world built afresh round its lair: it doesn't rise again, though another would
+        other.animals.retain(|a| !a.look.is_great_serpent());
+        other.set_lairs(&world, &dry, vec![lair(key)]);
+        assert!(!other.animals.iter().any(|a| a.look.is_ultra()));
+        other.set_lairs(&world, &dry, vec![lair([1, 2, serpents::ULTRA_KEY])]);
+        assert!(other.animals.iter().any(|a| a.look.is_ultra()));
     }
 
     /// What's carried and what's been done, saved and restored into another game, is all there
