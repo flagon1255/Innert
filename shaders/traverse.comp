@@ -278,7 +278,7 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.27, 0.54, 0.15), // leaves
     vec3(0.92, 0.14, 0.14), // red flower
     vec3(0.98, 0.84, 0.14), // yellow flower
-    vec3(0.80, 0.78, 0.74), // clay
+    vec3(0.58, 0.38, 0.27), // clay
     vec3(0.42, 0.56, 0.22), // grass tip
     vec3(0.10, 0.36, 0.10), // dark leaves
     vec3(0.95, 0.75, 0.12), // yellow leaves
@@ -1433,9 +1433,22 @@ const uint MAT_GRASS_BLADE = 22;
 // How tall grass grows at most, in meters, for shading its blades from root to tip
 const float BLADE_HEIGHT = 0.45;
 
+// Has to match worldgen::material::CLAY
+const uint MAT_CLAY = 11;
+bool clayWet(vec3 p);
+
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
     vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
+    // Clay lies in faint bands, as it was laid down, a little redder or browner from one to the
+    // next, and darker where it's wet: under water or just over it
+    if (hit.level != ANIMAL && material == MAT_CLAY) {
+        uvec3 at = landscapeCoord(hit.level, hit.coord);
+        float band = float(hash(uvec3(at.x / 23u, at.y / 23u, at.z / 3u) + 3571u) & 0xFFu) / 255.0;
+        albedo *= mix(vec3(0.92, 0.95, 1.0), vec3(1.08, 1.0, 0.9), band);
+        if (clayWet(voxelPoint(hit, vec3(0.5))))
+        albedo *= vec3(0.5, 0.62, 0.4);
+    }
     // Blades of grass dark down among the roots, lighter and yellower up to their tips
     if (hit.level != ANIMAL && (material == MAT_GRASS_BLADE || material == MAT_GRASS_TIP)) {
         vec3 p = voxelPoint(hit, vec3(0.5) - vec3(hit.shift));
@@ -1907,6 +1920,20 @@ bool isWater(vec3 p) {
     return false;
     float bottom, top, foam;
     return waterColumn(c, bottom, top, foam) && p.z < top && p.z > bottom - 1;
+}
+
+// Whether clay at `p`, in voxels of the main world, is wet: at or under the water in its column,
+// or the sea, or a little over either
+bool clayWet(vec3 p) {
+    float vpm = float(max(pc.world_size.w, 1u));
+    float sea_level = pc.sun_direction.w;
+    if (sea_level > 0 && p.z < sea_level + 0.3 * vpm)
+    return true;
+    ivec2 c = ivec2(floor(p.xy));
+    if (!hasWater() || any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, ivec2(pc.world_size.xy))))
+    return false;
+    float bottom, top, foam;
+    return waterColumn(c, bottom, top, foam) && p.z < top + 0.3 * vpm;
 }
 
 struct WaterHit {

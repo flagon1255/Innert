@@ -695,7 +695,7 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 7] = ["chop", "mine", "hut", "away", "moon", "raid", "saved"];
+pub const SCRIPTS: [&str; 8] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
@@ -849,6 +849,33 @@ impl App {
             }
             ("saved", f) if self.building.phase == 1 && f == self.building.mark + 40 => {
                 self.shoot_soon("what was built, back from the save");
+                self.building.phase = 2;
+            }
+            // Clay where it lies, for its colour, the nearest of the kind `--set clay=` says: `beach`
+            // on a shore just over the water, `shallows` under shallow water, `cave` in a cave
+            ("clay", f) if f >= 20 && self.building.phase == 0 => {
+                if self.held_still() {
+                    return;
+                }
+                let want = settings_from_args().into_iter().find(|(k, _)| k == "clay").map_or("beach".to_owned(), |(_, v)| v);
+                match self.find_clay(feet, &want) {
+                    Some((at, from)) => {
+                        println!("frame {frame}: clay ({want}) at {:.1}, {:.1}, {:.1} m, {:.0} m off", (at.x + origin.x) / vpm, (at.y + origin.y) / vpm, at.z / vpm, (at - feet).xy().norm() / vpm);
+                        // A torch stood on it in a cave, as the player would to see by
+                        if want == "cave" {
+                            self.bases.materials.add(bases::Materials::new(2, 0, 0));
+                            let block = self.block_of([at.x as i64, at.y as i64, at.z as i64 + 1]);
+                            self.script_build(Kind::Torch, block, 0);
+                        }
+                        self.look_from(from, at);
+                    }
+                    None => println!("frame {frame}: no clay ({want}) found near"),
+                }
+                self.building.phase = 1;
+                self.building.mark = f;
+            }
+            ("clay", f) if self.building.phase == 1 && f == self.building.mark + 60 => {
+                self.shoot_soon("clay");
                 self.building.phase = 2;
             }
             // A raid on a hut with the player shut in it: the camera off to one side of its door,
@@ -1054,6 +1081,82 @@ impl App {
             capture.shots.push(frame);
             println!("SHOT at frame {frame}: {what}");
         }
+    }
+
+    /// The nearest clay of kind `want` to `near`, as the `clay` script has it, and where to look at
+    /// it from, both in voxels of the world
+    fn find_clay(&self, near: Vector3<f64>, want: &str) -> Option<(Vector3<f64>, Vector3<f64>)> {
+        let vpm = self.world.voxels_per_meter as f64;
+        let [sx, sy, sz] = self.world.size.map(|n| n as i64);
+        let solid = |x: i64, y: i64, z: i64| !worldgen::is_passable(self.world.material_at(x, y, z));
+        let top = |x: i64, y: i64| (0..sz).rev().find(|&z| solid(x, y, z));
+        let mut best: Option<(f64, Vector3<f64>, Vector3<f64>)> = None;
+        let reach = (60.0 * vpm) as i64;
+        let (cx, cy) = (near.x as i64, near.y as i64);
+        let step = 3;
+        for y in ((cy - reach).max(8)..(cy + reach).min(sy - 8)).step_by(step) {
+            for x in ((cx - reach).max(8)..(cx + reach).min(sx - 8)).step_by(step) {
+                let d = ((x - cx) as f64).hypot((y - cy) as f64);
+                if d < 5.0 * vpm || best.as_ref().is_some_and(|b| d >= b.0) {
+                    continue;
+                }
+                let Some(z) = top(x, y) else { continue };
+                let depth = self.water.depth_at(x as f64, y as f64);
+                let at = Vector3::new(x as f64 + 0.5, y as f64 + 0.5, z as f64 + 0.5);
+                let back = (Vector3::new(cx as f64, cy as f64, 0.0) - Vector3::new(x as f64, y as f64, 0.0)).normalize();
+                let found = match want {
+                    "cave" => {
+                        // Under the ground, clay in the floor or walls of a hollow
+                        let mut z = z - 2 * vpm as i64;
+                        let mut hit = None;
+                        while z > 4 && hit.is_none() {
+                            if !solid(x, y, z) {
+                                let floor = (0..z).rev().find(|&k| solid(x, y, k));
+                                if let Some(k) = floor
+                                    && self.world.material_at(x, y, k) == worldgen::material::CLAY
+                                    && (1..(1.4 * vpm) as i64).all(|h| !solid(x, y, k + h))
+                                {
+                                    hit = Some(k);
+                                }
+                                z = floor.unwrap_or(0);
+                            }
+                            z -= 1;
+                        }
+                        // Looked at from as far off across the hollow as it's open, up to 4 m
+                        hit.map(|k| {
+                            let clay = Vector3::new(x as f64 + 0.5, y as f64 + 0.5, k as f64 + 0.5);
+                            let eye_z = k as f64 + 1.3 * vpm;
+                            let open = |a: f64| {
+                                let mut far = 0.0;
+                                while far < 4.0 * vpm {
+                                    let p = clay + Vector3::new(a.cos() * (far + 1.0), a.sin() * (far + 1.0), 0.0);
+                                    if solid(p.x as i64, p.y as i64, eye_z as i64) || solid(p.x as i64, p.y as i64, eye_z as i64 + 4) {
+                                        break;
+                                    }
+                                    far += 1.0;
+                                }
+                                far
+                            };
+                            let (a, far) = (0..16).map(|i| i as f64 * TAU / 16.0).map(|a| (a, open(a))).max_by(|p, q| p.1.total_cmp(&q.1)).unwrap();
+                            (clay, Vector3::new(clay.x + a.cos() * far, clay.y + a.sin() * far, eye_z))
+                        })
+                    }
+                    _ if self.world.material_at(x, y, z) != worldgen::material::CLAY => None,
+                    "shallows" => (depth > 0.15 * vpm && depth < 0.8 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 3.0 * vpm))),
+                    _ => (depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm))),
+                };
+                if let Some((at, from)) = found {
+                    best = Some((d, at, from));
+                }
+            }
+        }
+        // Looking from over the ground, not inside it
+        best.map(|(_, at, mut from)| {
+            if let Some(ground) = top(from.x as i64, from.y as i64).filter(|_| want != "cave") {
+                from.z = from.z.max(ground as f64 + 1.6 * vpm);
+            }
+            (at, from)
+        })
     }
 
     /// Looks at the hut at block `at` from in front of it, `side` -1 for its front and 1 for its back
