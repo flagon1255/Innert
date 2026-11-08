@@ -2758,8 +2758,11 @@ pub fn climate(settings: &TerrainSettings, x: f32, y: f32) -> Climate {
     let seed = settings.seed;
     // The sky isles are all green meadows and woods, and so's the dreaming realm, in colours of its
     // own, see shaders\traverse.comp
-    if matches!(land_of(seed), Land::Sky | Land::Dream) {
-        return Climate::default();
+    match land_of(seed) {
+        Land::Sky | Land::Dream => return Climate::default(),
+        // The frozen realm's snow from end to end
+        Land::Ice => return Climate { snow: 1.0, ..Climate::default() },
+        Land::Normal => {}
     }
     let heat = fbm(x / 900.0, y / 900.0, 3, seed.wrapping_add(31)) * 1.6;
     let wet = fbm(x / 650.0, y / 650.0, 3, seed.wrapping_add(32)) * 1.6;
@@ -2887,6 +2890,9 @@ fn river_springs(rivers: &[Arc<Vec<RiverPoint>>], lo: [f32; 2], hi: [f32; 2]) ->
 /// The same for the world, from `lo` to `hi` in meters, wherever it's moved to: what water it
 /// has flowing in besides the springs of each of its pieces, see Terrain::piece_springs()
 pub fn window_springs(settings: &TerrainSettings, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<[f32; 4]> {
+    if land_of(settings.seed) == Land::Ice {
+        return Vec::new();
+    }
     let terrain = Terrain::around(settings, lo, hi);
     river_springs(&terrain.rivers_near(cache, lo, hi), lo, hi)
 }
@@ -3139,12 +3145,19 @@ impl Terrain {
 
     /// The springs of springs() where rivers start in this piece or flow into it, see river_springs()
     pub fn river_springs(&self) -> Vec<[f32; 4]> {
+        if land_of(self.settings.seed) == Land::Ice {
+            return Vec::new();
+        }
         river_springs(&self.rivers, self.own_lo, self.own_hi)
     }
 
     /// The springs of springs() that belong to this piece wherever the world is, rather than to
-    /// where its edge is: the waterfalls' and the buildings', see river_springs() for the rest
+    /// where its edge is: the waterfalls' and the buildings', see river_springs() for the rest.
+    /// None in the frozen realm, where every river and fall is iced over.
     pub fn piece_springs(&self) -> Vec<[f32; 4]> {
+        if land_of(self.settings.seed) == Land::Ice {
+            return Vec::new();
+        }
         let mut springs: Vec<[f32; 4]> = self
             .waterfalls()
             .into_iter()
@@ -3465,13 +3478,19 @@ impl Terrain {
         let snow_line = (self.settings.height_m as f32 * 0.7 * vpm) as i32;
         let river = (heights.river_m(x, y) * vpm).floor() as i32;
         let water_top = if river > h { river.max(sea_level) } else { sea_level };
+        // In the frozen realm the sea, the lakes and the rivers are iced over: the ground's ice up
+        // to where the water would be, and no water flows there, see Terrain::piece_springs()
+        let land = land_of(self.settings.seed);
+        let frozen = land == Land::Ice && water_top > h;
+        let h = if frozen { water_top } else { h };
         // In the sky isles, the open air under an island, and everywhere between them; nor is
         // there any water, but for the sea far below, seen only past the islands
-        let (under, water_top) = match land_of(self.settings.seed) {
+        let (under, water_top) = match land {
             Land::Sky => match sky_island(self.settings.seed, gx as f32 / vpm, gy as f32 / vpm) {
                 Some((_, under)) => ((under * vpm) as i32, i32::MIN),
                 None => (i32::MAX, i32::MIN),
             },
+            Land::Ice => (0, i32::MIN),
             _ => (0, water_top),
         };
 
@@ -3481,7 +3500,12 @@ impl Terrain {
         let edge = (unit(hash3(gx as u32, gy as u32, self.settings.seed ^ 0xb10e)) - 0.5) * 0.3;
         let (jungle, desert, snowy) = (c.jungle + edge > 0.5, c.desert + edge > 0.5, c.snow + edge > 0.5);
 
-        let top = if h <= sea_level + v {
+        let top = if frozen {
+            ICE
+        } else if land == Land::Ice {
+            // Snow down to the ice's edge, but for bare rock where it's too steep to lie
+            if slope > 1.4 { STONE } else { SNOW }
+        } else if h <= sea_level + v {
             SAND
         } else if river > h {
             GRAVEL
@@ -3497,7 +3521,7 @@ impl Terrain {
             GRASS
         };
         let below = match top {
-            SAND | STONE | GRAVEL => top,
+            SAND | STONE | GRAVEL | ICE => top,
             _ => DIRT,
         };
 
@@ -4175,6 +4199,25 @@ impl Terrain {
                         let lean = [rng.range(-0.35, 0.35) * tall, rng.range(-0.35, 0.35) * tall, tall];
                         shapes.push(Shape::capsule(foot, add(foot, lean), rng.range(0.35, 0.7), 0.05, BONE, BONE, false));
                     }
+                    Object::new(shapes, rng.0)
+                })
+            });
+        }
+        // The frozen realm's own: clusters of spires of ice jutting up leaning out of the snow,
+        // shorter ones out of the frozen sea and rivers, their points clear as crystal
+        if land == Land::Ice {
+            scatter(22.0, 0x1ce5, 6.0, &mut |x, y, ground, column, r| {
+                (unit(r) < 0.45).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let tallest = if column.top == ICE { 4.5 } else { 8.5 };
+                    let shapes = (0..2 + (rng.next() * 3.99) as usize)
+                        .map(|_| {
+                            let foot = [x + rng.range(-2.0, 2.0), y + rng.range(-2.0, 2.0), ground - 0.6];
+                            let tall = rng.range(2.0, tallest);
+                            let tip = add(foot, [rng.range(-0.25, 0.25) * tall, rng.range(-0.25, 0.25) * tall, tall]);
+                            Shape::capsule(foot, tip, rng.range(0.45, 1.0), 0.04, ICE, CRYSTAL, false)
+                        })
+                        .collect();
                     Object::new(shapes, rng.0)
                 })
             });

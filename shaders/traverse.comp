@@ -31,6 +31,7 @@ const uint MAT_GRASS = 1;
 const uint MAT_SAND = 4;
 const uint MAT_WATER = 6;
 const uint MAT_FOAM = 21;
+const uint MAT_ICE = 78;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
@@ -1706,6 +1707,15 @@ vec3 openSeaBelow(vec3 dir) {
 // the water voxel `voxel` is churned up white over that, right through where it's `falling`.
 vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float foam, bool falling) {
     float fresnel = waterFresnel(dir, normal);
+    // The frozen realm's sea is iced over out past the world as it is in it, see Terrain::column()
+    // in src\worldgen.rs: pale ice with the sky's glare on it
+    if (open_sea && uint(view.realm.x) == REALM_ICE) {
+        vec3 up = vec3(0, 0, 1);
+        vec3 ice = pow(PALETTE[MAT_ICE], vec3(2.2));
+        vec3 lit = ice * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up));
+        vec3 glare = reflect(dir, up);
+        return mix(lit, skyColor(glare) + sunDisc(glare), fresnel * 0.5);
+    }
     vec3 mirrored = reflect(dir, normal);
     vec3 reflection = (pc.flags & FLAG_REFLECTIONS) != 0
         ? shadeSecondary(pos + normal * 1e-3, mirrored, true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)))
