@@ -946,9 +946,9 @@ impl App {
 
     /// Sends `cells` of the world's grid, changed by holes blown and stains splashed in a strip
     /// that's just come in, and their bricks, and the ground water lies on from `ground`'s first
-    /// column to its second, over with the frame like the strip was: flush_edits() waits for the
-    /// frames there are first, which held up the frame moving on by 10 to 16 ms. None of the frames
-    /// still being drawn have the strip, and the bricks they go in are new.
+    /// column to its second, over with the frame like the strip was, and ahead of what else of it's
+    /// still to go. None of the frames still being drawn have the strip, and the bricks they go in
+    /// are new.
     pub(super) fn send_edits(&mut self, stream: &mut Stream, mut cells: Vec<usize>, ground: Option<([i64; 2], [i64; 2])>) {
         cells.sort_unstable();
         cells.dedup();
@@ -1246,6 +1246,7 @@ impl App {
         // this one already
         self.edited.clear();
         self.edited_ground = None;
+        self.edit_uploads.clear();
         let shift = [origin[0] - old[0], origin[1] - old[1]];
         self.water.moved(shift, self.world.wrap);
         self.water.take_strip(strip.origin, strip.size, &strip.ground, &strip.surface);
@@ -1320,6 +1321,7 @@ impl App {
         if let Some(hook) = &mut self.hook {
             hook.shift(shift);
         }
+        self.wings.shift(shift);
         if let Some((at, when)) = self.last_camera {
             self.last_camera = Some((at - shift, when));
         }

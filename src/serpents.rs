@@ -524,14 +524,8 @@ pub fn realm_serpent(realm: &str) -> Option<(Look, [f64; 2])> {
     }
 }
 
-/// The Water realm's three raid bosses, each in a lair of its own kind, for realms::REALMS: about
-/// where each is from the portal, in meters east and north, as the other realms' raid bosses
-#[allow(dead_code)]
-pub const WATER_RAID_BOSSES: [(Look, [f32; 2]); 3] = [(Look::Hollowtide, [260.0, 120.0]), (Look::Reefcoil, [-230.0, 230.0]), (Look::Gyremaw, [-80.0, -300.0])];
-
-/// What each of the Water realm's raid bosses' lairs is: a sea cave it lurks deep in, a reef, or a
-/// whirlpool it circles in
-#[allow(dead_code)]
+/// What each of the Water realm's raid bosses' lairs is, see realms::REALMS: a sea cave it lurks
+/// deep in, a reef, or a whirlpool it circles in, the water spinning round it
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LairKind {
     SeaCave,
@@ -539,7 +533,6 @@ pub enum LairKind {
     Whirlpool,
 }
 
-#[allow(dead_code)]
 pub fn lair_kind(look: Look) -> Option<LairKind> {
     match look {
         Look::Hollowtide => Some(LairKind::SeaCave),

@@ -23,6 +23,10 @@ use crate::weapons::{Burst, CRACKER_HOOK};
 use crate::worldgen::material::{BARK_DARK, CLOTH, DIRT, LIMESTONE, MOSS, OBSIDIAN, SNOW, TEMPLE_TEAL};
 use crate::worldgen::{World, is_passable};
 
+/// The signature special attacks giving families an identity of their own, see signatures.rs
+mod signatures;
+use signatures::{Sig, SigAct, SigZone, signature_move, signature_release};
+
 pub const MAX_MANA: f64 = 100.0;
 /// Mana coming back every second
 const MANA_REGEN: f64 = 9.0;
@@ -349,6 +353,8 @@ enum Trick {
     /// where it got to, or with `sky` round `target`, coming down out of the sky. With no special
     /// attack it's only a tracer, showing where one went.
     Carry { special: Option<Special>, aim: Vector3<f64>, target: Vector3<f64>, sky: bool },
+    /// One of the signature special attacks' shots, see signatures.rs
+    Signature(Sig),
 }
 
 impl Projectile {
@@ -471,6 +477,9 @@ enum Flight {
 /// a gun, bombs or a weapon that casts, everything leaves the weapon as the move lets it go:
 /// what's shot or poured out of it, or carried out of it by a shot, see Flight.
 fn release(special: Special, profile: &Profile) -> Release {
+    if let Some(own) = signature_release(special, profile) {
+        return own;
+    }
     // Shot as their own moves let go, see first_release()
     if matches!(special, Special::Shackle | Special::Bloodmoon | Special::ClusterBomb) {
         return Release::AtOnce;
@@ -1402,6 +1411,8 @@ enum ZoneKind {
     /// A burning brand's line of fire along the ground, from where it is along `velocity`, which
     /// isn't a speed here but the line itself
     Brand,
+    /// One of the signature special attacks going on a while, see signatures.rs
+    Signature(SigZone),
 }
 
 /// One of the special attacks that goes on a while somewhere, moving or not, see Combat::zones()
@@ -1527,6 +1538,8 @@ enum Act {
     /// What a special attack's ring, wave, hook, flare or shot does to the animal with id id,
     /// once it's got to it, the `k`th of them, see Combat::reach()
     Reach { special: Special, id: u32, k: u32 },
+    /// Part of one of the signature special attacks, see signatures.rs
+    Signature(SigAct),
 }
 
 /// Standing guard for a riposte: seconds left, and what answers a blow turned aside
@@ -3464,6 +3477,10 @@ fn special_cracks(special: Special) -> Vec<Crack> {
 /// How long a special attack takes with a weapon of `kind` and `style`, and the poses the weapon
 /// goes through, for animate()
 fn special_move(special: Special, kind: Kind, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
+    // The signature special attacks have their own, see signatures.rs
+    if let Some(own) = signature_move(special, kind, style) {
+        return own;
+    }
     // Shackle Chain, Blood Moon and Cluster Volley have their own, see own_move()
     if let Some(own) = own_move(special, kind, style) {
         return own;
@@ -5004,6 +5021,7 @@ impl Combat {
                 | Act::Flay(_)
                 | Act::Quick(_)
                 | Act::Reckon(_) => {}
+                Act::Signature(a) => a.recenter(shift),
             }
         }
         for r in &mut self.ripples {
@@ -6735,6 +6753,7 @@ impl Combat {
                 ZoneKind::Keg => self.keg(arena, &mut z, dt),
                 ZoneKind::Orbit => self.orbit(arena, &mut z, dt),
                 ZoneKind::Brand => self.brand_burn(arena, &mut z, dt),
+                ZoneKind::Signature(k) => self.signature_zone(arena, &mut z, k, dt),
             }
             if z.life > 0.0 {
                 self.zones.push(z);
@@ -7342,6 +7361,7 @@ impl Combat {
                 self.cues.push(Cue::at(Sound::Crack, z.position, 0.7).pitched(0.5));
             }
             ZoneKind::Storm | ZoneKind::Mire | ZoneKind::Swarm | ZoneKind::Brand => {}
+            ZoneKind::Signature(k) => self.signature_zone_ends(arena, z, k),
         }
     }
 
@@ -9593,6 +9613,23 @@ impl Combat {
                 }
                 self.cues.push(Cue::here(Sound::Twang, 0.9).pitched(0.85));
             }
+            // The signature special attacks, see signatures.rs
+            Special::Rimeskip
+            | Special::Scuttlers
+            | Special::Wickfire
+            | Special::Lantern
+            | Special::Chainshot
+            | Special::Caltrops
+            | Special::Riftshot
+            | Special::GloamingKnives
+            | Special::SeveringDraw
+            | Special::ViperThrusts
+            | Special::SoulGleaning
+            | Special::Stormanvil
+            | Special::Stormstakes
+            | Special::Litany
+            | Special::EmberKnell
+            | Special::Bloodthread => self.signature_at(arena, weapon, special, target, base),
         }
     }
 
@@ -10376,6 +10413,7 @@ impl Combat {
                 Act::Brand { from, to, k } => self.brand(arena, &profile, from, to, k, p.damage),
                 Act::Swing { land } => self.chain_swing(arena, &profile, land, p.damage),
                 Act::Reach { special, id, k } => self.reach(arena, &profile, special, id, k, p.damage),
+                Act::Signature(a) => self.signature_act(arena, a, &profile, p.damage),
             }
         }
         self.scarless = false;
@@ -11521,6 +11559,13 @@ impl Combat {
         let mut keep = Vec::new();
         for mut p in projectiles {
             let profile = p.profile.clone();
+            // The signature special attacks' shots, see signatures.rs: what trails off them, what
+            // they do in flight, and coming down where they are rather than ever vanishing
+            if let Trick::Signature(s) = p.trick
+                && self.signature_flight(arena, &mut p, s, dt)
+            {
+                continue;
+            }
             // A splitting bolt bursts apart partway, and a net bursts open nearing where it's
             // aimed, or wherever it comes down short of it
             if let Trick::Split(left) = p.trick {
@@ -11723,6 +11768,10 @@ impl Combat {
                         self.arrive(&p, at);
                         continue;
                     }
+                    if let Trick::Signature(s) = p.trick {
+                        self.signature_lands(arena, &p, s, at);
+                        continue;
+                    }
                     if !p.arrow {
                         self.impact(arena, &p, at);
                         continue;
@@ -11758,6 +11807,14 @@ impl Combat {
                     self.comet_impact(arena, &p, at);
                     gone = true;
                     break;
+                }
+                // A signature special attack's shot does what it does itself, see signatures.rs
+                if let Trick::Signature(s) = p.trick {
+                    if self.signature_hit(arena, &mut p, s, i, at) {
+                        gone = true;
+                        break;
+                    }
+                    continue;
                 }
                 let crit = self.roll_crit(&profile);
                 let damage = p.damage * if crit { profile.stat("critDamage") } else { 1.0 };
@@ -11968,6 +12025,10 @@ impl Combat {
                     // Just short of the wall or the ground, so what it carries isn't in it
                     Trick::Carry { .. } => {
                         self.arrive(&p, at - p.velocity.normalize() * 0.3 * vpm);
+                        continue;
+                    }
+                    Trick::Signature(s) => {
+                        self.signature_lands(arena, &p, s, at - p.velocity.normalize() * 0.15 * vpm);
                         continue;
                     }
                     Trick::None | Trick::Glanced | Trick::Splinter => self.landing(arena, &profile, at, p.damage, None, true),
@@ -14882,6 +14943,15 @@ impl Combat {
         let mut add = |at: Vector3<f64>, instance: AnimalInstance| out.push(((at - view.eye).norm(), instance));
         // Not what's flown on so far off it's faded into the sky
         for p in self.projectiles.iter().filter(|p| (p.position - view.eye).norm() < self.seen) {
+            // The signature special attacks' shots that are drawn their own way, see signatures.rs
+            if let Trick::Signature(s) = p.trick
+                && let Some(drawn) = self.signature_shot_instances(p, s, view)
+            {
+                for (at, instance) in drawn {
+                    add(at, instance);
+                }
+                continue;
+            }
             // A shot carrying a special attack is what shows it's coming, so it's drawn however
             // much else is about, as if it were right at the eye; and any shot's what the eye
             // follows, so it's drawn before props and such lying about nearer, as if it were a
@@ -15283,6 +15353,11 @@ impl Combat {
                     }
                 }
                 ZoneKind::Storm | ZoneKind::Swarm => {}
+                ZoneKind::Signature(k) => {
+                    for (at, instance) in self.signature_zone_instances(z, k, view) {
+                        add(at, instance);
+                    }
+                }
             }
         }
         // Coils of lash wound round what a coil bind holds, turning slowly and squeezing in
@@ -15475,6 +15550,10 @@ impl Combat {
         for m in self.mines.iter().filter(|m| m.arming <= 0.0) {
             lights.push(light(m.position + Vector3::new(0.0, 0.0, 0.3 * vpm), 2.5, Element::Arcane.light(), 0.35));
         }
+        // What the signature special attacks leave glowing, see signatures.rs
+        for (at, reach, color, strength) in self.signature_lights() {
+            lights.push(light(at, reach, color, strength));
+        }
         for f in &self.familiars {
             let color = if f.phantom { Element::Holy.light() } else { f.profile.element.map_or([0.7, 0.5, 1.0], Element::light) };
             lights.push(light(f.position, 3.5, color, 0.6));
@@ -15599,7 +15678,23 @@ mod tests {
         (Style::Smash, Heavy::Heave),
         (Style::Whirl, Heavy::Overhead),
     ];
-    const SPECIALS: [Special; 75] = [
+    const SPECIALS: [Special; 91] = [
+        Special::Rimeskip,
+        Special::Scuttlers,
+        Special::Wickfire,
+        Special::Lantern,
+        Special::Chainshot,
+        Special::Caltrops,
+        Special::Riftshot,
+        Special::GloamingKnives,
+        Special::SeveringDraw,
+        Special::ViperThrusts,
+        Special::SoulGleaning,
+        Special::Stormanvil,
+        Special::Stormstakes,
+        Special::Litany,
+        Special::EmberKnell,
+        Special::Bloodthread,
         Special::LassoPull,
         Special::CoilBind,
         Special::ThunderCrack,

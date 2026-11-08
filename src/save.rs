@@ -124,6 +124,9 @@ pub struct CarriedSave {
     /// Cubic meters of water in the bucket
     pub bucket: f64,
     pub slots: Vec<SlotSave>,
+    /// The wings worn on the back, by their kind's id, see wings::KINDS
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worn: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -160,9 +163,13 @@ pub enum ItemSave {
     InnertBlock {
         realm: u8,
     },
-    /// The grappling hook and wings of the sky isles
+    /// The grappling hook of the sky isles, and wings of kind `of`, by its id in wings::KINDS: the
+    /// plain ones where it's not said, as in saves from before there were kinds of them
     Hook,
-    Wings,
+    Wings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        of: Option<String>,
+    },
     /// Something from a later Innert this one doesn't know: left out
     #[serde(other)]
     Unknown,
@@ -493,6 +500,7 @@ mod tests {
                     SlotSave { item: ItemSave::Apple, count: 3 },
                     SlotSave { item: ItemSave::Bucket, count: 1 },
                 ],
+                worn: Some("gull".into()),
             },
             world: "normal".into(),
             worlds,
@@ -569,6 +577,18 @@ mod tests {
         }
         assert_eq!(again.section::<Bases>("bases").map(|b| b.blocks), Some(12));
         assert!(again.section::<Bases>("doors").is_none());
+    }
+
+    /// Wings saved before there were kinds of them, and before they were worn, still load, as the
+    /// plain ones, and those of a kind come back that kind, worn or not
+    #[test]
+    fn wings_from_before_kinds_still_load() {
+        let old: CarriedSave = serde_json::from_str(r#"{"gold": 5, "slots": [{"item": {"kind": "wings"}}]}"#).unwrap();
+        assert_eq!(old.slots[0].item, ItemSave::Wings { of: None });
+        assert_eq!(old.worn, None);
+        let carried = CarriedSave { worn: Some("rimeglass".into()), slots: vec![SlotSave { item: ItemSave::Wings { of: Some("veilmoth".into()) }, count: 1 }], ..Default::default() };
+        let again: CarriedSave = serde_json::from_slice(&serde_json::to_vec(&carried).unwrap()).unwrap();
+        assert_eq!(again, carried);
     }
 
     #[test]

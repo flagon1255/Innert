@@ -17,6 +17,7 @@ use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
 use crate::realms::{self, Scaling};
+use crate::wings;
 use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{self, World, is_passable, material::*};
@@ -63,7 +64,8 @@ pub enum Item {
     /// bites, see src\rope.rs, and wings, which let the player glide while they hold jump in the
     /// air. Kept for good once found.
     Hook,
-    Wings,
+    /// Wings of kind wings::KINDS[k], worn on the back to glide on, see Game::worn
+    Wings(u8),
 }
 
 impl Item {
@@ -77,14 +79,14 @@ impl Item {
             Item::Gold(_) => Some(Look::Coins),
             Item::InnertBlock(_) => Some(Look::InnertBlock),
             Item::Hook => Some(Look::GrappleHook),
-            Item::Wings => Some(Look::Wings),
+            Item::Wings(_) => Some(Look::Wings),
             Item::Bucket | Item::Weapon(_) | Item::Ammo(..) => None,
         }
     }
 
     /// Something the player keeps whatever happens: it can't be sold, dropped or eaten
     fn kept(self) -> bool {
-        matches!(self, Item::Bucket | Item::InnertBlock(_) | Item::Hook | Item::Wings)
+        matches!(self, Item::Bucket | Item::InnertBlock(_) | Item::Hook | Item::Wings(_))
     }
 
     fn name(self) -> &'static str {
@@ -99,14 +101,14 @@ impl Item {
             Item::Ammo(..) => "Ammo",
             Item::InnertBlock(_) => "Innert Block",
             Item::Hook => "Grappling Hook",
-            Item::Wings => "Wings",
+            Item::Wings(k) => wings::KINDS[k as usize].name,
         }
     }
 
     /// How many there are of it to show on its slot: the rounds in a stack of ammo, or `count`
     fn shown(self, count: u32) -> Option<u32> {
         match self {
-            Item::Bucket | Item::Weapon(_) | Item::Hook | Item::Wings => None,
+            Item::Bucket | Item::Weapon(_) | Item::Hook | Item::Wings(_) => None,
             Item::Ammo(_, n) => Some(n),
             _ => Some(count),
         }
@@ -145,7 +147,7 @@ fn food_price(item: Item) -> u32 {
         Item::Potion => 35,
         // Sold in the normal world once the way to the sky isles is open, see Game::sky_wares
         Item::Hook => 400,
-        Item::Wings => 1200,
+        Item::Wings(k) => wings::KINDS[k as usize].price,
         _ => 0,
     }
 }
@@ -175,6 +177,9 @@ enum Deal {
     Sort,
     Buy(usize),
     Sell(usize),
+    /// Putting on the wings in a slot, and taking off those worn
+    Wear(usize),
+    TakeOff,
 }
 
 /// What was done with a slot in a grid of them: clicked, double or right clicked, or dragged onto
@@ -607,10 +612,11 @@ pub struct Game {
     /// Whether the merchants sell a grappling hook and wings, as they do in the journey through
     /// the realms once the way to the sky isles is open
     sky_wares: bool,
-    /// The player's hands full of something else, see set_hands_busy()
-    hands_busy: bool,
     /// The map's open over the middle of the view, see set_map_open()
     map_open: bool,
+    /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
+    worn: Option<u8>,
+    wing_models: Vec<(Model, Vector3<f64>)>,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -621,7 +627,7 @@ pub struct Shrine {
     pub gate: bool,
     pub position: Vector3<f64>,
     pub facing: f64,
-    pub placed: [u32; 4],
+    pub placed: [u32; realms::REALM_COUNT],
     pub open: bool,
 }
 
@@ -767,8 +773,9 @@ impl Game {
             scaling: Scaling::NONE,
             raid_lairs: HashMap::new(),
             sky_wares: false,
-            hands_busy: false,
             map_open: false,
+            worn: None,
+            wing_models: wings::models(),
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -843,7 +850,7 @@ impl Game {
     /// everything lying around, the arrows, spells and arms, and the falling leaves. The weapons'
     /// come after them, see weapon_model_words().
     pub fn model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.models.iter().chain(self.combat.models.iter().map(|(m, _)| m)).chain(self.leaves.models.iter()).collect();
+        let models: Vec<&Model> = self.models.iter().chain(self.combat.models.iter().map(|(m, _)| m)).chain(self.leaves.models.iter()).chain(self.wing_models.iter().map(|(m, _)| m)).collect();
         pack_models(&models)
     }
 
@@ -869,7 +876,7 @@ impl Game {
     /// Where weapon `index`'s models start among model_words()
     fn weapon_model(&self, index: usize) -> u32 {
         let before: usize = self.weapons[..index].iter().map(|w| w.look.frames.len()).sum();
-        self.leaf_model() + (self.leaves.models.len() + before) as u32
+        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + before) as u32
     }
 
     /// The weapon in hand, with its index
@@ -1140,6 +1147,14 @@ impl Game {
         self.target = None;
     }
 
+    /// One more lair, as when a realm's finale rises, see realms::on_raids_beaten()
+    pub fn add_lair(&mut self, world: &World, water: WaterLevel, lair: Lair) {
+        let mut lairs = std::mem::take(&mut self.lairs);
+        lairs.retain(|l| l.key != lair.key);
+        lairs.push(lair);
+        self.set_lairs(world, water, lairs);
+    }
+
     /// The bosses' lairs in the piece of the world just built, in its voxels: a boss turns up in each
     /// that isn't beaten and doesn't have one already
     pub fn set_lairs(&mut self, world: &World, water: WaterLevel, lairs: Vec<Lair>) {
@@ -1154,12 +1169,19 @@ impl Game {
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
             let look = if lair.raid.is_some() || lair.look.is_great_serpent() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
-            // A great serpent that swims lies in the water of its lair, the rest on the ground
-            let surface = water(lair.position.x, lair.position.y);
-            let swimming = (look.swims() && surface > lair.position.z).then(|| Animal::boss(look, Vector3::new(lair.position.x, lair.position.y, surface - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
+            // A great serpent that swims lies in the deep water by its lair, out from the shore, the
+            // rest on the ground
+            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, if look.is_ultra() { 2.5 } else { 1.5 })).flatten();
+            let swimming = deep.map(|at| Animal::boss(look, Vector3::new(at.x, at.y, water(at.x, at.y) - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
             if let Some(mut boss) = swimming.or_else(|| animals::spawn_boss(world, water, look, lair.position, lair.key, seed)) {
-                if lair.raid.is_some() && !look.is_raid() {
+                // The Coil Unending's as hard as it is already, whether it's the Water realm's finale
+                // or in Free Roam, see Look::health()
+                if lair.raid.is_some() && !look.is_raid() && !look.is_ultra() {
                     boss.toughen(realms::RAID_PROMOTION);
+                }
+                // A realm's finale is the hardest of all of it
+                if realms::is_finale_key(&lair.key) && !look.is_ultra() {
+                    boss.toughen(realms::FINALE_PROMOTION);
                 }
                 self.animals.push(boss);
             }
@@ -1568,6 +1590,7 @@ impl Game {
             self.carry_out(look, deed, world, water, player, view);
         }
         self.grow_roots(world, player, view, dt);
+        self.whirl(world, water, player, dt);
         self.spin_webs(player, dt);
         self.reek(world, player, dt);
         for (damage, from, element) in std::mem::take(&mut self.combat.player_hits) {
@@ -1628,6 +1651,42 @@ impl Game {
 
         self.target = if self.dead.is_some() { None } else { self.find_target(world, view.eye, view.forward()) };
         self.messages.retain(|(_, at)| at.elapsed().as_secs_f64() < 4.0);
+    }
+
+    /// The whirlpool a great serpent keeps its lair in, see serpents::LairKind: the water spinning
+    /// round where it is, spray thrown up off it, and whoever's swimming in it drawn round and in
+    fn whirl(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        let time = self.combat.time();
+        let pools: Vec<Vector3<f64>> = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0 && serpents::lair_kind(a.look) == Some(serpents::LairKind::Whirlpool))
+            .filter_map(|a| a.boss.as_ref().map(|b| b.home))
+            .filter(|home| (home - self.feet.unwrap_or(*home)).norm() < 80.0 * vpm)
+            .collect();
+        for home in pools {
+            let surface = water(home.x, home.y);
+            if !surface.is_finite() || surface <= home.z - vpm {
+                continue;
+            }
+            for k in 0..3 {
+                let round = 3.0 + 3.5 * k as f64;
+                let a = time * (1.6 - 0.35 * k as f64) + k as f64 * 2.1;
+                let at = Vector3::new(home.x + a.cos() * round * vpm, home.y + a.sin() * round * vpm, surface);
+                self.combat.stir(at, 0.5, dt, DROP_WATER);
+            }
+            // Drawn round and in, swimming in it
+            if let Some(feet) = player {
+                let off = (feet - home).xy() / vpm;
+                let d = off.norm();
+                if d > 1.0 && d < 12.0 && water(feet.x, feet.y) > feet.z + 0.3 * vpm {
+                    let round = Vector2::new(-off.y, off.x) / d;
+                    let pull = (round * 1.6 - off / d * 0.9) * (1.0 - d / 12.0);
+                    self.thrown += Vector3::new(pull.x, pull.y, 0.0) * vpm * dt * 4.0;
+                }
+            }
+        }
     }
 
     /// Where blows on each serpent near enough to be hit land: the part of its long body the player's
@@ -2650,14 +2709,20 @@ impl Game {
                 self.milestone = true;
                 // One of a realm's raid bosses leaves its Innert block, straight into the player's
                 // hands, so it can't be left behind and lost as the world moves on
-                let block = self.raid_lairs.get(&boss.key).copied();
+                // A realm's finale leaves no block, see realms::on_raids_beaten()
+                let block = self.raid_lairs.get(&boss.key).copied().filter(|_| !realms::is_finale_key(&boss.key));
                 if let Some(realm) = block {
                     self.add_item(Item::InnertBlock(realm), 1);
                     self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.6));
                 }
-                // The first of the sky isles' raid bosses beaten leaves its wings too
-                if block.is_some_and(|r| r as usize == realms::WINGS_REALM) {
-                    self.find_once(Item::Wings, "Among what it leaves is a pair of wings! Hold jump in the air to glide.");
+                // The first of the sky isles' raid bosses beaten leaves a pair of wings to wear, and
+                // the later realms' raid bosses better ones of their own
+                if let Some(realm) = block.map(|r| r as usize) {
+                    let kind = if realm == realms::WINGS_REALM && !self.carries(Item::Wings(wings::GULL)) { Some(wings::GULL) } else { wings::of_realm(realm) };
+                    if let Some(kind) = kind {
+                        let name = wings::KINDS[kind as usize].name;
+                        self.find_once(Item::Wings(kind), &format!("Among what it leaves are the {name}!"));
+                    }
                 }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
@@ -2945,6 +3010,13 @@ impl Game {
     /// Adds `count` of `item` to what's carried, on its stack if there is one: ammo of the same
     /// kind goes on the one stack however many are in it
     fn add_item(&mut self, item: Item, count: u32) {
+        // The first wings found are put on at once
+        if let Item::Wings(k) = item
+            && self.worn.is_none()
+        {
+            self.worn = Some(k);
+            return;
+        }
         if let Item::Ammo(k, more) = item {
             match self.slots.iter_mut().find(|(i, _)| matches!(i, Item::Ammo(a, _) if *a == k)) {
                 Some((Item::Ammo(_, n), _)) => *n += more * count,
@@ -3078,6 +3150,12 @@ impl Game {
             (k, self.library.ammo[k].bundle)
         });
         let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
+        // Now and then, wings, likelier the luckier the chest, the rarer kinds rarer
+        let pair = (((hash(seed ^ 0x3175) >> 8) as f64 / 16_777_216.0) < (0.025 * chest.luck * self.scaling.luck).min(0.2)).then(|| wings::roll((hash(seed ^ 0x3176) >> 8) as f64 / 16_777_216.0)).filter(|&k| !self.carries(Item::Wings(k)));
+        let extra = match pair {
+            Some(k) => format!("{extra}, the {}", wings::KINDS[k as usize].name),
+            None => extra,
+        };
         let found = if hoard { "In the bandits' hoard you find" } else { "You found" };
         let grade = rarity.display_name.to_lowercase();
         let a = if grade.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
@@ -3086,6 +3164,9 @@ impl Game {
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
         if let Some((k, n)) = ammo {
             self.add_item(Item::Ammo(k, n), 1);
+        }
+        if let Some(k) = pair {
+            self.add_item(Item::Wings(k), 1);
         }
         self.gold += gold;
         self.models_version += 1;
@@ -3155,6 +3236,9 @@ impl Game {
             Ware::Food(..) => 0,
         });
         wares.push(Ware::Food(Item::Potion, 5));
+        // And royal wings, and the cinder wings, for those who can pay
+        wares.push(Ware::Food(Item::Wings(wings::AURELIAN), 1));
+        wares.push(Ware::Food(Item::Wings(wings::CINDERWING), 1));
         self.stocks.insert(key, wares);
     }
 
@@ -3223,7 +3307,7 @@ impl Game {
         }
         // Once the way to the sky isles is open, a hook and wings for whoever hasn't found theirs
         if self.sky_wares && !self.royals.contains(&key) {
-            let missing: Vec<Item> = [Item::Hook, Item::Wings].into_iter().filter(|&i| !self.carries(i)).collect();
+            let missing: Vec<Item> = [Item::Hook, Item::Wings(wings::GULL)].into_iter().filter(|&i| !self.carries(i)).collect();
             if let Some(wares) = self.stocks.get_mut(&key) {
                 for item in missing {
                     if !wares.iter().any(|w| matches!(w, Ware::Food(i, _) if *i == item)) {
@@ -3278,7 +3362,7 @@ impl Game {
             Ware::Food(item, _) => item,
         };
         let cost = self.price(item);
-        if matches!(item, Item::Hook | Item::Wings) && self.carries(item) {
+        if matches!(item, Item::Hook | Item::Wings(_)) && self.carries(item) {
             self.say(format!("You have {} already.", item.name().to_lowercase()));
             return;
         }
@@ -3616,7 +3700,7 @@ impl Game {
             Item::Ammo(k, rounds) => S::Ammo { id: self.library.ammo[k].id.clone(), rounds },
             Item::InnertBlock(realm) => S::InnertBlock { realm },
             Item::Hook => S::Hook,
-            Item::Wings => S::Wings,
+            Item::Wings(k) => S::Wings { of: Some(wings::KINDS[k as usize].id.to_owned()) },
         }
     }
 
@@ -3634,7 +3718,8 @@ impl Game {
             S::Ammo { id, rounds } => Item::Ammo(self.library.ammo.iter().position(|a| a.id == *id)?, *rounds),
             S::InnertBlock { realm } if (*realm as usize) < realms::REALMS.len() => Item::InnertBlock(*realm),
             S::Hook => Item::Hook,
-            S::Wings => Item::Wings,
+            // From before wings were worn: the plain ones
+            S::Wings { of } => Item::Wings(of.as_deref().map_or(Some(wings::GULL), wings::by_id)?),
             S::InnertBlock { .. } | S::Unknown => return None,
         })
     }
@@ -3646,6 +3731,7 @@ impl Game {
             selected: self.selected.min(self.slots.len().saturating_sub(1)),
             bucket: self.bucket,
             slots: self.slots.iter().map(|&(item, count)| save::SlotSave { item: self.item_save(item), count }).collect(),
+            worn: self.worn.map(|k| wings::KINDS[k as usize].id.to_owned()),
         }
     }
 
@@ -3716,6 +3802,7 @@ impl Game {
     /// done anywhere
     pub fn new_character(&mut self, seed: u32) {
         self.slots.clear();
+        self.worn = None;
         self.arm(seed, 1.0);
         self.gold = STARTING_GOLD;
         self.bucket = 0.0;
@@ -3739,6 +3826,15 @@ impl Game {
             if let Some(item) = self.item_from(&slot.item) {
                 self.slots.push((item, slot.count.max(1)));
             }
+        }
+        // Wings saved before they were worn are put on, as all wings now are
+        self.worn = carried.worn.as_deref().and_then(wings::by_id);
+        if self.worn.is_none()
+            && carried.slots.iter().any(|s| s.item == save::ItemSave::Wings { of: None })
+            && let Some(at) = self.slots.iter().position(|&(i, _)| i == Item::Wings(wings::GULL))
+        {
+            self.slots.remove(at);
+            self.worn = Some(wings::GULL);
         }
         self.selected = carried.selected.min(self.slots.len().saturating_sub(1));
         self.gold = carried.gold;
@@ -3876,7 +3972,56 @@ impl Game {
 
     /// Whether `item` is carried
     pub fn carries(&self, item: Item) -> bool {
-        self.slots.iter().any(|(i, _)| *i == item)
+        self.slots.iter().any(|(i, _)| *i == item) || matches!(item, Item::Wings(k) if self.worn == Some(k))
+    }
+
+    /// The kind of wings worn on the back, see wings::KINDS
+    pub fn worn_wings(&self) -> Option<u8> {
+        self.worn.filter(|_| self.dead.is_none())
+    }
+
+    /// Puts on the wings in slot `slot`, those worn till now going into their place
+    fn wear(&mut self, slot: usize) {
+        let Some(&(Item::Wings(k), _)) = self.slots.get(slot) else {
+            return;
+        };
+        match self.worn.replace(k) {
+            Some(old) => self.slots[slot] = (Item::Wings(old), 1),
+            None => {
+                self.slots.remove(slot);
+                if self.selected > slot || self.selected >= self.slots.len() {
+                    self.selected = self.selected.saturating_sub(1);
+                }
+            }
+        }
+        self.inspected = None;
+        self.cues.push(Cue::here(Sound::Equip, 0.8));
+        self.say(format!("You put on the {}. Hold jump in the air to glide.", wings::KINDS[k as usize].name));
+    }
+
+    /// Takes off the wings worn, into the pack
+    fn take_off(&mut self) {
+        if let Some(k) = self.worn.take() {
+            self.slots.push((Item::Wings(k), 1));
+            self.cues.push(Cue::here(Sound::Equip, 0.6));
+            self.say(format!("You take off the {}.", wings::KINDS[k as usize].name));
+        }
+    }
+
+    /// A little health back, as the wings that mend do while gliding
+    pub fn mend(&mut self, health: f64) {
+        if self.dead.is_none() {
+            self.health = (self.health + health).min(MAX_HEALTH);
+        }
+    }
+
+    /// The models of every kind of wings, and where the first is among model_words(), see wings.rs
+    pub fn wing_models(&self) -> &[(Model, Vector3<f64>)] {
+        &self.wing_models
+    }
+
+    pub fn wing_model(&self, k: usize) -> u32 {
+        self.leaf_model() + (self.leaves.models.len() + k) as u32
     }
 
     /// Gives the player `item`, a hook or wings, if they haven't one already, telling them how it
@@ -3885,6 +4030,20 @@ impl Game {
     pub fn find_once(&mut self, item: Item, how: &str) -> bool {
         if self.carries(item) {
             return false;
+        }
+        // The first wings found are put on at once, the rest kept in the pack
+        if let Item::Wings(k) = item {
+            let worn = self.worn.is_none();
+            if worn {
+                self.worn = Some(k);
+            } else {
+                self.slots.push((item, 1));
+            }
+            self.cues.push(Cue::here(Sound::Equip, 0.9));
+            self.cues.push(Cue::here(Sound::Fanfare, 0.5));
+            self.milestone = true;
+            self.say(if worn { format!("{how} You put them on: hold jump in the air to glide.") } else { format!("{how} Wear them from the inventory, I.") });
+            return true;
         }
         let at = self.slots.len().min(HOTBAR - 1);
         self.slots.insert(at, (item, 1));
@@ -3921,12 +4080,6 @@ impl Game {
     /// The player's arm holding something that isn't a weapon, see Combat::held_arm()
     pub fn held_arm(&self, which: usize, grip: Vector3<f64>, axis: Vector3<f64>, elbow: Vector3<f64>) -> AnimalInstance {
         self.combat.held_arm(which, grip, axis, elbow)
-    }
-
-    /// Whether the player's hands are full of something else, like wings spread to glide, so the
-    /// weapon in hand isn't drawn
-    pub fn set_hands_busy(&mut self, busy: bool) {
-        self.hands_busy = busy;
     }
 
     /// Whether the map's open, so what's in hand and the messages aren't shown under the quick bar
@@ -4020,8 +4173,8 @@ impl Game {
     pub fn instances(&self, world: &World, view: &View) -> Vec<AnimalInstance> {
         let vpm = world.voxels_per_meter as f64;
         let camera = view.eye;
-        // Nothing in hand while lying dead, nor while the hands are full of something else
-        let held = self.held().filter(|_| self.dead.is_none() && !self.hands_busy).map(|(i, w)| (w, self.weapon_model(i)));
+        // Nothing in hand while lying dead
+        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
         let mut out = self.combat.held_instances(held, view);
         // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
         // the blocks set in it up close
@@ -4578,6 +4731,32 @@ impl Game {
                     }
                 });
                 ui.separator();
+                // What's worn on the back
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("On your back").weak());
+                    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 40.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 7.0, Color32::from_white_alpha(16));
+                    match self.worn {
+                        Some(k) => {
+                            let kind = &wings::KINDS[k as usize];
+                            let tint = color(self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)].color);
+                            ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.5f32, tint), StrokeKind::Inside);
+                            self.draw_icon(ui.painter(), Item::Wings(k), rect.center(), 24.0);
+                            response.on_hover_ui(|ui| {
+                                ui.set_width(280.0);
+                                self.item_card(ui, Item::Wings(k), 1);
+                            });
+                            ui.label(RichText::new(kind.name).strong().color(tint));
+                            if ui.button("Take off").clicked() {
+                                deed = Some(Deal::TakeOff);
+                            }
+                        }
+                        None => {
+                            ui.label(RichText::new("Nothing. Wings found are worn here.").weak().italics());
+                        }
+                    }
+                });
+                ui.separator();
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Quick bar, keys 1 to 9, then the pack").weak().small());
@@ -4585,7 +4764,11 @@ impl Game {
                             Some(SlotClick::Once(slot)) => chosen = Some(slot),
                             Some(SlotClick::Twice(slot)) => {
                                 chosen = Some(slot);
-                                deed = Some(if self.slots[slot].0.consumable() { Deal::Eat(slot) } else { Deal::Hold(slot) });
+                                deed = Some(match self.slots[slot].0 {
+                                    Item::Wings(_) => Deal::Wear(slot),
+                                    item if item.consumable() => Deal::Eat(slot),
+                                    _ => Deal::Hold(slot),
+                                });
                             }
                             Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),
                             None => {}
@@ -4601,7 +4784,11 @@ impl Game {
                         self.item_card(ui, item, count);
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if let Item::Ammo(..) = item {
+                            if let Item::Wings(_) = item {
+                                if ui.button(if self.worn.is_some() { "Wear instead" } else { "Wear" }).on_hover_text("Put them on your back, to glide on with jump held in the air").clicked() {
+                                    deed = Some(Deal::Wear(slot));
+                                }
+                            } else if let Item::Ammo(..) = item {
                                 if ui.button("Load").on_hover_text("Shoot these from now on. T switches ammo too.").clicked() {
                                     deed = Some(Deal::Hold(slot));
                                 }
@@ -4637,6 +4824,8 @@ impl Game {
             Some(Deal::Drop(slot)) => self.drop_slot(slot),
             Some(Deal::Move(a, b)) => self.move_slot(a, b),
             Some(Deal::Sort) => self.sort(),
+            Some(Deal::Wear(slot)) => self.wear(slot),
+            Some(Deal::TakeOff) => self.take_off(),
             _ => {}
         }
     }
@@ -4868,7 +5057,24 @@ impl Game {
                 ui.label(RichText::new("Never lost, sold or dropped.").weak().italics());
                 return;
             }
-            Item::Hook | Item::Wings => {
+            Item::Wings(k) => {
+                let kind = &wings::KINDS[k as usize];
+                let rarity = &self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)];
+                ui.label(RichText::new(kind.name).size(19.0).strong().color(color(rarity.color)));
+                ui.label(RichText::new(format!("{} wings, worn on the back", rarity.display_name)).weak());
+                ui.separator();
+                ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
+                ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
+                if let Some((lift, wait)) = kind.flap {
+                    ui.label(RichText::new(format!("Jump in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s")).color(good));
+                }
+                ui.label(RichText::new(kind.about).italics());
+                ui.separator();
+                ui.label(RichText::new("Hold jump in the air to glide. Kept for good once found.").weak());
+                ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
+                return;
+            }
+            Item::Hook => {
                 ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
                 ui.label(RichText::new("For getting about the sky isles").weak());
                 ui.separator();
@@ -5230,13 +5436,15 @@ impl Game {
                 painter.line_segment([center + vec2(0.0, -r * 0.45), center + vec2(0.0, -r * 0.95)], Stroke::new(r * 0.12, iron));
             }
             // A pair of white wings spread wide
-            Item::Wings => {
-                let feather = Color32::from_rgb(244, 240, 228);
+            Item::Wings(k) => {
+                let ([vr, vg, vb], [tr, tg, tb]) = wings::icon_colors(k);
+                let (vane, tip_color) = (Color32::from_rgb(vr, vg, vb), Color32::from_rgb(tr, tg, tb));
                 for side in [-1.0f32, 1.0] {
                     let tip = center + vec2(side * r * 0.95, -r * 0.6);
-                    painter.add(egui::Shape::convex_polygon(vec![center + vec2(side * r * 0.1, -r * 0.1), tip, center + vec2(side * r * 0.75, r * 0.15), center + vec2(side * r * 0.2, r * 0.35)], feather, Stroke::new(r * 0.05, Color32::from_gray(170))));
+                    painter.add(egui::Shape::convex_polygon(vec![center + vec2(side * r * 0.1, -r * 0.1), tip, center + vec2(side * r * 0.75, r * 0.15), center + vec2(side * r * 0.2, r * 0.35)], vane, Stroke::new(r * 0.05, tip_color)));
+                    painter.circle_filled(tip, r * 0.1, tip_color);
                 }
-                painter.circle_filled(center, r * 0.14, Color32::from_rgb(200, 190, 170));
+                painter.circle_filled(center, r * 0.14, tip_color);
             }
             Item::Gold(_) => {
                 for (dx, dy) in [(-0.35, 0.35), (0.35, 0.3), (0.0, -0.05)] {
