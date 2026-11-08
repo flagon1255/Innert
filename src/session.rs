@@ -67,6 +67,9 @@ struct Trial {
     /// they're put out over the open air to fall, `fall_at=60`, see rope.rs
     hook_at: Option<usize>,
     glide_at: Option<usize>,
+    /// While gliding, a flap of the wings that many frames into it, lap_after=40, see wings.rs
+    flap_after: Option<usize>,
+    flap_now: bool,
     fall_at: Option<usize>,
     /// Once the world's first there: the view turned to look that many degrees round from east,
     /// `face=0`, and lifted that many meters up off the player's feet, flying, to look out over
@@ -116,6 +119,8 @@ pub struct Session {
     pub gate_action: Option<GateAction>,
     /// Going through to another realm: which, and since when, as the screen darkens
     pub leaving: Option<(usize, Instant)>,
+    /// Whether the realm's three raid bosses are beaten, and its finale's risen if it has one
+    finale_risen: bool,
     trial: Trial,
 }
 
@@ -142,6 +147,7 @@ impl Session {
             gate_open: false,
             gate_action: None,
             leaving: None,
+            finale_risen: false,
             trial: Trial::default(),
         }
     }
@@ -149,6 +155,11 @@ impl Session {
     /// Whether a screenshot run's trial has the player gliding, see Trial::glide_at
     pub fn trial_glides(&self) -> bool {
         self.trial.glide.is_some()
+    }
+
+    /// Whether a screenshot run's trial flaps the wings this frame, see Trial::flap_after
+    pub fn trial_flaps(&mut self) -> bool {
+        std::mem::take(&mut self.trial.flap_now)
     }
 
     /// How dark the screen is going through to another realm, 0 to 1
@@ -345,10 +356,12 @@ impl App {
                     places.lairs.iter().zip(&REALMS[realm].raid_bosses).map(|(p, (look, _))| format!("{} {:.0}, {:.0}", look.name(), p[0], p[1])).collect::<Vec<_>>().join("; ")
                 );
                 self.session.places = Some(places);
+                self.session.finale_risen = false;
             }
             _ => {
                 self.game.set_scaling(realms::Scaling::NONE);
-                self.game.set_sky_wares(false);
+                // Free Roam's merchants have hooks and wings to sell from the first
+                self.game.set_sky_wares(self.session.mode == Some(Mode::FreeRoam));
                 self.session.places = None;
             }
         }
@@ -373,6 +386,10 @@ impl App {
                 lairs.push(game::Lair { look: realm.raid_bosses[slot].0, position: at, key: places.lair_key(slot), raid: Some(places.realm as u8) });
             }
         }
+        // The realm's finale, once its three raid bosses are beaten, see realms::on_raids_beaten()
+        if let Some(lair) = self.finale_lair() {
+            lairs.push(lair);
+        }
         let gate = local(places.gate);
         let placed = std::array::from_fn(|r| progress.placed.get(r).copied().unwrap_or(0));
         let shrines = if inside(&gate) {
@@ -382,6 +399,48 @@ impl App {
             Vec::new()
         };
         (lairs, shrines)
+    }
+
+    /// The lair of the realm's finale, if it has one and its three raid bosses are beaten, and it's
+    /// in the world where it is now, in its voxels
+    fn finale_lair(&self) -> Option<game::Lair> {
+        let places = self.session.places.as_ref()?;
+        let (look, _) = realms::on_raids_beaten(places.realm)?;
+        let (spot, key) = (places.finale?, places.finale_key()?);
+        if !(0..realms::RAIDS).all(|k| self.game.is_defeated(&places.lair_key(k))) {
+            return None;
+        }
+        let vpm = self.world.voxels_per_meter as f64;
+        let mut at = Vector3::new(spot[0] * vpm - self.world.origin[0] as f64, spot[1] * vpm - self.world.origin[1] as f64, 0.0);
+        let [sx, sy, _] = self.world.size.map(f64::from);
+        if at.x < 2.0 || at.y < 2.0 || at.x >= sx - 2.0 || at.y >= sy - 2.0 {
+            return None;
+        }
+        at.z = game::ground_top(&self.world, at.x, at.y);
+        Some(game::Lair { look, position: at, key, raid: Some(places.realm as u8) })
+    }
+
+    /// The realm's finale rising the moment its third raid boss falls, see realms::on_raids_beaten()
+    fn raise_finale(&mut self) {
+        let Some(places) = &self.session.places else {
+            return;
+        };
+        let risen = (0..realms::RAIDS).all(|k| self.game.is_defeated(&places.lair_key(k)));
+        if risen == self.session.finale_risen {
+            return;
+        }
+        self.session.finale_risen = risen;
+        let beaten = places.finale_key().is_some_and(|key| self.game.is_defeated(&key));
+        let Some((look, _)) = realms::on_raids_beaten(places.realm).filter(|_| risen && !beaten) else {
+            return;
+        };
+        let at = REALMS[places.realm].finale.map_or("", |(_, _, at)| at);
+        self.game.say(format!("The ground shakes. Out of {at} rises the {}!", look.name()));
+        println!("FINALE rises in {}: the {} at {at}", REALMS[places.realm].name, look.name());
+        if let Some(lair) = self.finale_lair() {
+            let water = &self.water;
+            self.game.add_lair(&self.world, &|x, y| water.surface_at(x, y), lair);
+        }
     }
 
     /// The gate or portal as it is now, after blocks are set in it
@@ -420,7 +479,7 @@ impl App {
                 progress.unlocked.sort_unstable();
                 let message = if restored && !restored_before {
                     progress.completed += 1;
-                    "All four realms are restored! The gate blazes with their light, and the way to every realm stands open. Foes grow stronger from here on.".to_owned()
+                    format!("All {} realms are restored! The gate blazes with their light, and the way to every realm stands open. Foes grow stronger from here on.", ["", "one", "two", "three", "four", "five", "six", "seven", "eight"].get(REALMS.len()).copied().unwrap_or("the"))
                 } else if let Some(&r) = newly.last() {
                     format!("The gate wakes: the way to {} is open!", REALMS[r as usize].name)
                 } else {
@@ -530,6 +589,13 @@ impl App {
         if let Some(realm) = number("realm") {
             self.set_out_for(realm);
         }
+        // `--set wings=stormcaller` puts on wings of that kind, and `spare_wings=veilmoth` has a
+        // pair in the pack too, see wings::KINDS
+        for key in ["wings", "spare_wings"] {
+            if let Some(kind) = setting(key).and_then(crate::wings::by_id) {
+                self.game.find_once(Item::Wings(kind), "Wings, to try out.");
+            }
+        }
         if let (Some(count), Some(realm)) = (number("blocks"), realm_of(&self.session)) {
             self.game.give_innert_blocks(realm as u8, count as u32);
         }
@@ -563,6 +629,8 @@ impl App {
             end_after: number("end_after"),
             hook_at: number("hook_at"),
             glide_at: number("glide_at"),
+            flap_after: number("flap_after"),
+            flap_now: false,
             fall_at: number("fall_at"),
             face: setting("face").and_then(|v| v.parse().ok()),
             overlook: setting("overlook").and_then(|v| v.parse().ok()),
@@ -654,8 +722,15 @@ impl App {
         let vpm = self.world.voxels_per_meter as f64;
         if glide && let Some(player) = &mut self.player {
             player.position.z += 14.0 * vpm;
-            self.game.find_once(Item::Wings, "Wings, to glide with.");
+            // --set wings=stormcaller for that kind, see wings::KINDS
+            let kind = settings_from_args().iter().find(|(k, _)| k == "wings").and_then(|(_, v)| crate::wings::by_id(v)).unwrap_or(crate::wings::GULL);
+            self.game.find_once(Item::Wings(kind), "Wings, to glide with.");
             self.scripted_walk = true;
+        }
+        if let Some(since) = gliding
+            && self.session.trial.flap_after.is_some_and(|f| frame == since + f)
+        {
+            self.session.trial.flap_now = true;
         }
         if let (Some(since), Some(player)) = (gliding, &self.player) {
             let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
@@ -706,6 +781,7 @@ impl App {
             worldgen::Land::Sky => 1.0,
             worldgen::Land::Dream => 2.0,
             worldgen::Land::Ice => 3.0,
+            worldgen::Land::Water => 4.0,
         };
         if land != worldgen::Land::Dream {
             return [which, 0.0, 0.0, 0.0];
@@ -837,6 +913,9 @@ impl App {
                 self.game.find_once(Item::Hook, "At the portal's foot lies a grappling hook, its rope coiled beside it. Take it in hand and click to throw it at an island's edge.");
             }
         }
+        if !held {
+            self.raise_finale();
+        }
         // At the gate or a portal: its window opens, freeing the mouse for it
         if self.game.take_shrine() && self.session.places.is_some() && self.session.leaving.is_none() {
             self.session.gate_open = true;
@@ -923,7 +1002,7 @@ impl App {
 /// each realm's three sockets, how many of its blocks are set in and how many carried, with
 /// setting them in and going through to the realms open at the gate, or going home at a portal.
 /// What's picked is given back.
-pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave, carried: [u32; 4]) -> Option<GateAction> {
+pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave, carried: [u32; realms::REALM_COUNT]) -> Option<GateAction> {
     let mut picked = None;
     let gray = Color32::from_gray(185);
     let (_, restored) = realms::opened(&progress.placed);

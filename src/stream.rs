@@ -1321,6 +1321,7 @@ impl App {
         if let Some(hook) = &mut self.hook {
             hook.shift(shift);
         }
+        self.wings.shift(shift);
         if let Some((at, when)) = self.last_camera {
             self.last_camera = Some((at - shift, when));
         }

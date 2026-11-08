@@ -97,6 +97,7 @@ mod stream;
 mod voxelize;
 mod water;
 mod weapons;
+mod wings;
 mod worldgen;
 
 use crate::animals::AnimalInstance;
@@ -765,8 +766,10 @@ struct View {
     moon: [f32; 4],
     key_light: [f32; 4],
     cache_level: [f32; 4],
-    /// The look of the realm the world is, see App::realm_look()
+    /// The look of the realm the world is, see App::realm_look(), and the colours its sky's tinted
+    /// towards, straight up and round the horizon, with how far, see sky_tint()
     realm: [f32; 4],
+    realm_sky: [[f32; 4]; 2],
 }
 
 impl View {
@@ -782,7 +785,26 @@ impl View {
             key_light: c(sky.key_light, sky.moon_phase),
             cache_level: c(sky.cache_level, 0.0),
             realm,
+            realm_sky: sky_tint(realm),
         }
+    }
+}
+
+/// The colours the sky of the realm with look `realm` is tinted towards straight up and round the
+/// horizon, and how far, see App::realm_look(): the dreaming realm's lilac over a rosy horizon, deep
+/// red over its bleeding half, the frozen realm's pale and cold, the sunken reach's clear, and no
+/// tint for the normal world's and the sky isles'. Worked
+/// out here once a frame rather than for every ray that looks at the sky in traverse.comp.
+fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t);
+    let with = |c: [f32; 3], w: f32| [c[0], c[1], c[2], w];
+    let blood = realm[3];
+    match realm[0].round() as u32 {
+        2 => [with(mix([0.42, 0.3, 0.85], [0.45, 0.04, 0.05], blood), 0.85), with(mix([1.0, 0.68, 0.8], [0.95, 0.28, 0.16], blood), 0.85)],
+        3 => [with([0.32, 0.5, 0.82], 0.6), with([0.82, 0.9, 1.0], 0.6)],
+        // The sunken reach's a clear sea blue over a pale green-blue horizon
+        4 => [with([0.06, 0.4, 0.82], 0.4), with([0.6, 0.88, 0.9], 0.45)],
+        _ => [[0.0; 4]; 2],
     }
 }
 
@@ -1383,6 +1405,8 @@ struct App {
     fall_back: Option<rope::FallBack>,
     /// The map on M, see compass.rs
     map: compass::Map,
+    /// How the wings worn are moving, see wings.rs
+    wings: wings::Flight,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -2626,6 +2650,7 @@ impl App {
             hook: None,
             fall_back: None,
             map: compass::Map::default(),
+            wings: wings::Flight::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -3999,8 +4024,10 @@ impl App {
         if let Some(player) = &mut self.player {
             player.gliding = gliding;
         }
-        // Both hands on the wings' struts while gliding, see rope.rs
-        self.game.set_hands_busy(gliding && self.player.as_ref().is_some_and(|p| !p.on_ground()));
+        // The wings worn spreading and folding, beating on a flap, and what they leave behind, see
+        // wings.rs. Worn on the back, they leave the hands free for what's in them.
+        let flapped = let_go || self.session.trial_flaps();
+        self.update_wings(delta_time.min(0.05), gliding, flapped);
 
         // The dead don't walk
         let alive = !self.game.dead();
@@ -4879,8 +4906,9 @@ impl App {
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
-        // A grappling hook's rope, and wings spread to glide, see rope.rs
-        let rope = if self.hook.is_some() || self.game.holding_hook() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        // A grappling hook's rope, see rope.rs, and the wings worn, see wings.rs
+        let mut rope = if self.hook.is_some() || self.game.holding_hook() { self.rope_instances(&view) } else { Vec::new() };
+        rope.extend(self.wing_instances(&view));
         let rope_lights = self.rope_lights(&view);
         // How white the screen is as the winds bring the player back up, see rope.rs, and whether
         // they're gliding
