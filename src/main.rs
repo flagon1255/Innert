@@ -2441,6 +2441,11 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+            // `--set boss_move=throw` has it make only that move, as soon as it's ready, wherever
+            // the player is, for shots of it in a screenshot run
+            if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                game.force_boss_move(m);
+            }
         }
         // Dragons, see dragons.rs: `--set spawn=dragon:0`, `1` or `2` puts the Dragon realm's raid
         // boss of that lair a little way ahead, `spawn=dragon:ashwing` or another drakeling a pair

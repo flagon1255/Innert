@@ -2504,6 +2504,40 @@ impl Game {
             }
             // Seen to above
             Deed::Dragon(_) => {}
+            // The Colossus working stone, see combat/stones.rs: the boulder it tore up and lifted
+            // hurled out of its hands, with a grunt
+            Deed::Hurl { id, from, to } => {
+                let time = ((to - from).norm() / vpm / 16.0).clamp(0.9, 1.7);
+                self.combat.hurl_boulder(id, from, to, time, 28.0, 2.4);
+                self.cues.push(Cue::at(Sound::HeavySwing, from, 1.0).pitched(0.4));
+                self.cues.push(Cue::at(Sound::Roar, from, 0.5).pitched(voice * 1.3));
+                self.shake = self.shake.max(0.3 * felt(from));
+            }
+            Deed::Heave { at, radius } => {
+                self.combat.heave(world, at, radius);
+                self.shake = self.shake.max(0.3 * felt(at));
+            }
+            Deed::Spire { at, height, lean } => self.combat.spire(world, at, height, lean),
+            Deed::Pillar { at, stand } => {
+                self.combat.pillar(world, at, player.unwrap_or(at), stand);
+                self.shake = self.shake.max(0.3 * felt(at));
+            }
+            // A rock flung down out of one of its pillars: the first right on the player, the rest
+            // anywhere round them, as the sky comes down for the other raid bosses
+            Deed::Rockfall { from, to, k } => {
+                let mut to = to;
+                if k > 0 {
+                    let a = random(&mut self.rng) * TAU;
+                    let r = (2.0 + 9.0 * random(&mut self.rng).sqrt()) * vpm;
+                    to += Vector3::new(a.cos() * r, a.sin() * r, 0.0);
+                }
+                let to = ground_under(world, to + Vector3::new(0.0, 0.0, 2.0 * vpm));
+                self.combat.rockfall(from, to, k, 18.0, 2.4);
+                if k % 3 == 0 {
+                    self.cues.push(Cue::at(Sound::Whistle, to, 0.6).pitched(0.6 + 0.15 * random(&mut self.rng) as f32));
+                }
+            }
+            Deed::Shed { at, from, loud } => self.combat.shed(at, from, loud),
         }
     }
 
@@ -2844,6 +2878,13 @@ impl Game {
     pub fn hurt_bosses(&mut self, fraction: f64) {
         for animal in self.animals.iter_mut().filter(|a| a.look.is_boss()) {
             animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
+        }
+    }
+
+    /// Every boss about made to make only `m`, as soon as it's ready, for shots of it
+    pub fn force_boss_move(&mut self, m: Move) {
+        for boss in self.animals.iter_mut().filter_map(|a| a.boss.as_mut()) {
+            boss.forced = Some(m);
         }
     }
 
