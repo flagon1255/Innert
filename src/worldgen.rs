@@ -2188,7 +2188,7 @@ fn skull(features: &mut Features, at: Vec3, rng: &mut Rng) {
 }
 
 /// A chest at `at` with its lock facing `heading`, holding a weapon. The deeper in the wilds, the
-/// better what's in it is likely to be: `luck` as for Library::roll_rarity().
+/// better what's in it is likely to be: `luck` as for Library::odds().
 fn chest(features: &mut Features, at: Vec3, heading: f32, luck: f32) {
     features.props.push(Prop { kind: PropKind::Chest, position: at, heading, luck });
 }
@@ -3372,7 +3372,7 @@ pub struct Prop {
     pub kind: PropKind,
     pub position: [f32; 3],
     pub heading: f32,
-    /// For chests, how much rarer what's in it is likely to be, see Library::roll_rarity()
+    /// For chests, how much rarer what's in it is likely to be, see Library::odds()
     pub luck: f32,
 }
 

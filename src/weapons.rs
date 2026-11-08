@@ -376,8 +376,8 @@ pub struct Rarity {
     pub id: String,
     pub display_name: String,
     pub color: [u8; 3],
-    /// How likely a part is to roll this rarity, see roll_rarity()
-    chance: f64,
+    /// How likely a part is to roll this rarity, see Library::odds()
+    pub chance: f64,
     /// How much a part of this rarity adds to the weapon's grade
     power: f64,
     /// How much harder, and how much quicker, a part of this rarity makes the weapon, for its
@@ -817,6 +817,10 @@ impl AmmoDef {
 #[serde(rename_all = "camelCase")]
 pub struct Library {
     pub rarities: Vec<Rarity>,
+    /// How much more likely luck makes each rarer rarity than the one below it, see odds(): 1
+    /// makes luck 2 twice as likely to roll each next rarity up again, less is gentler
+    #[serde(default = "one")]
+    luck_curve: f64,
     /// The power a weapon needs for each rarity as its grade
     grade_power: Vec<f64>,
     /// What each synergy on a weapon adds to its power
@@ -831,6 +835,10 @@ pub struct Library {
 }
 
 const BUILT_IN: &str = include_str!("../assets/weapons.json");
+
+/// How many seeds Library::special_seed() tries for a weapon with a special attack: a few dozen
+/// at most as lucky as loot sure to have one is, so never all of them
+const SPECIAL_TRIES: usize = 2000;
 
 impl Library {
     /// Reads assets\weapons.json, so it can be changed without building again, or if that's
@@ -919,13 +927,20 @@ impl Library {
         self.families.iter().position(|f| f.id == id)
     }
 
-    /// A rarity, more likely the rarer ones the luckier: `luck` 1 is the chances as they are, more
-    /// makes each rarer tier that much more likely again
-    fn roll_rarity(&self, luck: f64, rng: &mut u32) -> usize {
-        let weights: Vec<f64> = self.rarities.iter().enumerate().map(|(i, r)| r.chance * luck.max(0.0).powi(i as i32)).collect();
-        let total: f64 = weights.iter().sum();
+    /// How likely each rarity is to roll for a part, from common up, the more likely the rarer
+    /// ones the luckier: `luck` 1 is the chances as they are, more makes each rarer one more
+    /// likely again by `luck` to the power of luckCurve, less than 1 less likely, and none at all
+    /// rolls only common parts
+    pub fn odds(&self, luck: f64) -> Vec<f64> {
+        let luck = luck.max(0.0);
+        self.rarities.iter().enumerate().map(|(i, r)| r.chance * luck.powf(i as f64 * self.luck_curve)).collect()
+    }
+
+    /// A rarity picked by `odds`, as odds() gives them: none rarer than there are odds for
+    fn roll_rarity(odds: &[f64], rng: &mut u32) -> usize {
+        let total: f64 = odds.iter().sum();
         let mut pick = random(rng) * total;
-        for (i, w) in weights.iter().enumerate() {
+        for (i, w) in odds.iter().enumerate() {
             if pick < *w {
                 return i;
             }
@@ -935,20 +950,54 @@ impl Library {
     }
 
     /// Rolls a weapon from `seed`: of `family`, or any family for None. `luck` is as for
-    /// roll_rarity(), from where it was found.
+    /// odds(), from where it was found.
     pub fn generate(&self, seed: u32, family: Option<usize>, luck: f64) -> Weapon {
-        let (family, parts) = self.roll(seed, family, luck);
+        self.generate_with(seed, family, &self.odds(luck))
+    }
+
+    /// The same, each part's rarity rolled by `odds`, see odds()
+    pub fn generate_with(&self, seed: u32, family: Option<usize>, odds: &[f64]) -> Weapon {
+        let (family, parts) = self.roll_with(seed, family, odds);
         Weapon::assemble(self, family, parts, seed)
+    }
+
+    /// What generate_with() would make from `seed`, worked out from its parts alone, quickly,
+    /// without building it: its family, its grade, and its special attack if it has one
+    pub fn preview(&self, seed: u32, family: Option<usize>, odds: &[f64]) -> (usize, usize, Option<Special>) {
+        let (family, parts) = self.roll_with(seed, family, odds);
+        let components: Vec<&Component> = parts.iter().map(|&p| &self.components[p]).collect();
+        let (profile, _, grade) = Weapon::work_out(self, family, &components, roll_size(seed), seed);
+        (family, grade, profile.special.map(|(s, _)| s))
+    }
+
+    /// `seed`, or if the weapon generate() makes from it with `luck` has no special attack, the
+    /// first seed after it, as hash() leads on from it, whose weapon has: for loot that's sure to
+    /// have one. As lucky as it's rolled, the rarer specials are as much rarer than the rest.
+    pub fn special_seed(&self, seed: u32, family: Option<usize>, luck: f64) -> u32 {
+        let odds = self.odds(luck);
+        let mut next = seed;
+        for _ in 0..SPECIAL_TRIES {
+            if self.special_in(&self.roll_with(next, family, &odds).1).is_some() {
+                return next;
+            }
+            next = hash(next ^ 0x5bec_1a1);
+        }
+        seed
     }
 
     /// Which family and parts generate() makes a weapon of
     fn roll(&self, seed: u32, family: Option<usize>, luck: f64) -> (usize, Vec<usize>) {
+        self.roll_with(seed, family, &self.odds(luck))
+    }
+
+    /// The same, by `odds`, see odds()
+    fn roll_with(&self, seed: u32, family: Option<usize>, odds: &[f64]) -> (usize, Vec<usize>) {
         let mut rng = hash(seed ^ 0x3ea9_7c11);
         let family = family.unwrap_or_else(|| (random(&mut rng) * self.families.len() as f64) as usize % self.families.len());
         let id = &self.families[family].id;
         let mut parts = Vec::new();
         for slot in &self.families[family].slots {
-            let tier = self.roll_rarity(luck, &mut rng);
+            let tier = Library::roll_rarity(odds, &mut rng);
             let fits = |c: &&Component| c.slot_type == *slot && c.compatible_families.contains(id);
             // The rarity rolled, or if nothing fits that the next rarity down
             let pool = (0..=tier).rev().map(|t| self.components.iter().enumerate().filter(|(_, c)| fits(c) && c.tier == t).collect::<Vec<_>>()).find(|pool| !pool.is_empty());
@@ -968,7 +1017,11 @@ impl Library {
     /// its parts alone, without building it: as work_out() picks it, the rarest part's that has one.
     /// Of family `family` if that's given, otherwise whichever the seed rolls.
     pub fn special_of(&self, seed: u32, family: Option<usize>, luck: f64) -> Option<Special> {
-        let (_, parts) = self.roll(seed, family, luck);
+        self.special_in(&self.roll(seed, family, luck).1)
+    }
+
+    /// The special attack a weapon made of `parts` has, as work_out() picks it
+    fn special_in(&self, parts: &[usize]) -> Option<Special> {
         parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some()).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
     }
 
@@ -6014,8 +6067,9 @@ mod tests {
         let mut counts = vec![0usize; library.rarities.len()];
         let mut rng = 1;
         let rolls = 200_000;
+        let odds = library.odds(1.0);
         for _ in 0..rolls {
-            counts[library.roll_rarity(1.0, &mut rng)] += 1;
+            counts[Library::roll_rarity(&odds, &mut rng)] += 1;
         }
         for (rarity, count) in library.rarities.iter().zip(counts) {
             let seen = count as f64 / rolls as f64;

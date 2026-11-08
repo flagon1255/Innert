@@ -50,7 +50,7 @@ pub struct Pack {
 
 /// How much harder a realm is than the normal world: how many times the health its bosses and
 /// monsters have, how much harder they hit, and how much luckier the weapons found are, as for
-/// Library::roll_rarity()
+/// Library::odds()
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Scaling {
     pub toughness: f64,

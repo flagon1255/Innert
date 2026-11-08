@@ -333,8 +333,13 @@ pub struct Town {
 /// How many weapons a royal armoury has for sale
 const ROYAL_WEAPONS: usize = 6;
 
+/// How likely each rarity is for each part of the weapons a royal armoury has, from common up, as
+/// Library::odds() gives them: very lucky, the odds it's always had, whatever those of what's
+/// found about the land, so it's the place to buy the best
+const ROYAL_ODDS: [f64; 6] = [0.55, 0.25 * 9.0, 0.13 * 81.0, 0.05 * 729.0, 0.018 * 6561.0, 0.002 * 59049.0];
+
 /// The weapons a royal armoury sells, rolled from `seed`: legendary and mythic ones only, rolled
-/// very lucky, no two of a family
+/// very lucky, no two of a family. Only those it keeps are built.
 fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
     let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(library.rarities.len().saturating_sub(2));
     let mut weapons: Vec<Weapon> = Vec::new();
@@ -344,12 +349,82 @@ fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
         }
         // As random() does, so a seed of 0 doesn't stay 0
         seed = hash(seed.wrapping_add(0x9e37_79b9));
-        let weapon = library.generate(seed, None, 9.0);
-        if weapon.grade >= legendary && weapons.iter().all(|w| w.family != weapon.family) {
-            weapons.push(weapon);
+        let (family, grade, _) = library.preview(seed, None, &ROYAL_ODDS);
+        if grade >= legendary && weapons.iter().all(|w| w.family != family) {
+            weapons.push(library.generate_with(seed, None, &ROYAL_ODDS));
         }
     }
     weapons
+}
+
+/// The families of the weapons the player starts with, one of each, see kit()
+const KIT: [&str; 16] = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
+/// How lucky what a new player starts with is, as for Library::odds(), and the rarest any part of
+/// it, or any weapon of it, can be, of Library::rarities: plain gear, nothing with a special
+/// attack, see kit()
+const KIT_LUCK: f64 = 1.0;
+const KIT_RAREST: usize = 5;
+/// How many seeds kit() tries for each weapon no rarer than it's to be
+const KIT_TRIES: usize = 64;
+
+/// The weapons arm() gives the player, one of each of KIT: of which family each is, the seed it's
+/// made from and the odds of each rarity for its parts, as for Library::generate_with(). Rolled
+/// from `seed` with `luck`, and with `rarest`, no part or weapon rarer than that: a synergy or two
+/// can lift a weapon a grade above its parts, so then it's the first seed on whose weapon isn't.
+fn kit(library: &Library, seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
+    let mut odds = library.odds(luck);
+    if let Some(top) = rarest {
+        odds.truncate(top + 1);
+    }
+    KIT.iter()
+        .enumerate()
+        .filter_map(|(k, id)| {
+            let family = library.family(id)?;
+            let first = hash(seed ^ (k as u32 + 1) * 0x51ed);
+            let seed = match rarest {
+                Some(top) => std::iter::successors(Some(first), |&s| Some(hash(s))).take(KIT_TRIES).find(|&s| library.preview(s, Some(family), &odds).1 <= top).unwrap_or(first),
+                None => first,
+            };
+            Some((family, seed, odds.clone()))
+        })
+        .collect()
+}
+
+/// The share of the dead and of bandits who carry a weapon, to drop when they're killed, and how
+/// lucky it is, as for Library::odds(), before a realm's scaling
+const MONSTER_WEAPON: f64 = 0.06;
+const MONSTER_LUCK: f64 = 1.5;
+
+/// How lucky the weapons a merchant has are, as for Library::odds(), before a realm's scaling
+const MERCHANT_LUCKS: [f64; 5] = [1.0, 1.6, 2.2, 2.8, 3.4];
+
+/// What sort of boss a hoard is a beaten one's, which decides what's in it, see hoard_rolls()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hoard {
+    /// One of the bosses about the land: in its lair, a dungeon's deepest hall, a great cavern
+    Boss,
+    /// One of a realm's raid bosses that isn't one of the huge ones
+    Raid,
+    /// One of the huge raid bosses, or a realm's finale
+    Huge,
+}
+
+/// How lucky the weapons a boss leaves are, as for Library::odds(), its best first, before a
+/// realm's scaling: a raid boss leaves far more and far better
+const BOSS_LUCKS: [f64; 2] = [6.0, 2.5];
+const RAID_LUCKS: [f64; 5] = [12.0, 5.0, 3.0, 2.5, 2.0];
+/// How likely the best of them is to be one with a special attack, rolled as lucky till it is,
+/// for each sort of Hoard: one of the bosses about the land's only as luck has it
+const SURE_SPECIAL: [f64; 3] = [0.0, 0.0, 0.0];
+
+/// How each weapon in the hoard of a beaten boss is rolled, the best first: how lucky, as for
+/// Library::odds(), before a realm's scaling, and whether it's sure to have a special attack,
+/// which `rng` decides where it's not always so
+fn hoard_rolls(hoard: Hoard, rng: &mut u32) -> Vec<(f64, bool)> {
+    let lucks: &[f64] = if hoard == Hoard::Boss { &BOSS_LUCKS } else { &RAID_LUCKS };
+    let chance = SURE_SPECIAL[hoard as usize];
+    let sure = chance >= 1.0 || (chance > 0.0 && random(rng) < chance);
+    lucks.iter().enumerate().map(|(k, &luck)| (luck, k == 0 && sure)).collect()
 }
 
 /// What villagers say when spoken to
@@ -776,26 +851,36 @@ impl Game {
             worn: None,
             wing_models: wings::models(),
         };
-        game.arm(seed, 1.0);
+        game.arm_anew(seed);
         game.populate(world, water, seed, near);
         game
     }
 
-    /// What the player starts with: a sword, a bow and a staff, a crossbow and a musket and one of
-    /// every other kind of weapon, rolled from `seed` with `luck`, as for Library::roll_rarity(),
-    /// a few bundles of special ammo, and the bucket. Replaces whatever weapons they had.
+    /// What a new player starts with, see arm(): plain gear, nothing with a special attack
+    fn arm_anew(&mut self, seed: u32) {
+        let kit = kit(&self.library, seed, KIT_LUCK, Some(KIT_RAREST));
+        self.arm_with(&kit);
+    }
+
+    /// For trying them out, as `--set weapon_seed=7 weapon_luck=3` does: what the player starts
+    /// with rolled with `luck`, as for Library::odds(), however rare, see arm_with()
     pub fn arm(&mut self, seed: u32, luck: f64) {
+        let kit = kit(&self.library, seed, luck, None);
+        self.arm_with(&kit);
+    }
+
+    /// The player armed with `kit`, as kit() rolls it: a sword, a bow and a staff, a crossbow and
+    /// a musket and one of every other kind of weapon, a few bundles of special ammo, and the
+    /// bucket. Replaces whatever weapons they had.
+    fn arm_with(&mut self, kit: &[(usize, u32, Vec<f64>)]) {
         self.weapons.clear();
         self.combat.renumber(|_| None);
         self.loaded = None;
         self.slots.retain(|(item, _)| !matches!(item, Item::Weapon(_) | Item::Bucket | Item::Ammo(..)));
         let mut fresh = Vec::new();
-        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
-        for (k, family) in families.into_iter().enumerate() {
-            if let Some(family) = self.library.family(family) {
-                self.weapons.push(self.library.generate(hash(seed ^ (k as u32 + 1) * 0x51ed), Some(family), luck));
-                fresh.push((Item::Weapon(self.weapons.len() - 1), 1));
-            }
+        for (family, seed, odds) in kit {
+            self.weapons.push(self.library.generate_with(*seed, Some(*family), odds));
+            fresh.push((Item::Weapon(self.weapons.len() - 1), 1));
         }
         fresh.push((Item::Bucket, 1));
         for id in ["broadhead_arrows", "incendiary_bolts", "scatter_shot"] {
@@ -2527,8 +2612,8 @@ impl Game {
                 if !nothing && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
                     loot.push(Item::Gold(if undead { 3 } else { 2 } + (random(&mut self.rng) * if undead { 10.0 } else { 5.0 }) as u32));
                 }
-                if undead && random(&mut self.rng) < 0.06 {
-                    loot.push(self.roll_weapon(1.5));
+                if undead && random(&mut self.rng) < MONSTER_WEAPON {
+                    loot.push(self.roll_weapon(MONSTER_LUCK, false));
                 } else if !nothing && random(&mut self.rng) < 0.1 {
                     loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
                 }
@@ -2567,9 +2652,18 @@ impl Game {
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
                 let raid = look.is_raid() || block.is_some();
-                // Its best weapon's very likely legendary or better, the rest a mix
-                let (lucks, piles, potions): (&[f64], _, _) = if raid { (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3) } else { (&[6.0, 2.5], 1, 1) };
-                let mut loot: Vec<Item> = lucks.iter().map(|&luck| self.roll_weapon(luck)).collect();
+                // Its best weapon's the luckiest, a raid boss's very likely with a special attack,
+                // a huge one's or a finale's always, the rest a mix
+                let hoard = if look.is_raid() || realms::is_finale_key(&boss.key) {
+                    Hoard::Huge
+                } else if raid {
+                    Hoard::Raid
+                } else {
+                    Hoard::Boss
+                };
+                let (piles, potions) = if raid { (3, 3) } else { (1, 1) };
+                let rolls = hoard_rolls(hoard, &mut self.rng);
+                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon(luck, sure)).collect();
                 for _ in 0..piles {
                     let gold = if raid { 200.0 + 100.0 * random(&mut self.rng) } else { 80.0 + 80.0 * random(&mut self.rng) };
                     loot.push(Item::Gold(gold as u32));
@@ -2759,11 +2853,14 @@ impl Game {
         self.models_version += 1;
     }
 
-    /// A new weapon rolled with `luck`, as for Library::roll_rarity(), kept among Game::weapons
-    fn roll_weapon(&mut self, luck: f64) -> Item {
+    /// A new weapon rolled with `luck`, as for Library::odds(), kept among Game::weapons: with
+    /// `sure`, one with a special attack
+    fn roll_weapon(&mut self, luck: f64, sure: bool) -> Item {
         self.rng = hash(self.rng ^ 0x1007);
         // Better in the realms further on
-        let weapon = self.library.generate(self.rng, None, luck * self.scaling.luck);
+        let luck = luck * self.scaling.luck;
+        let seed = if sure { self.library.special_seed(self.rng, None, luck) } else { self.rng };
+        let weapon = self.library.generate(seed, None, luck);
         self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
@@ -3165,9 +3262,9 @@ impl Game {
         }
         let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
         let mut wares = Vec::new();
-        for k in 0..5 {
+        for luck in MERCHANT_LUCKS {
             seed = hash(seed);
-            self.weapons.push(self.library.generate(seed, None, (1.0 + 0.6 * k as f64) * self.scaling.luck));
+            self.weapons.push(self.library.generate(seed, None, luck * self.scaling.luck));
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         self.models_version += 1;
@@ -3643,7 +3740,7 @@ impl Game {
     pub fn new_character(&mut self, seed: u32) {
         self.slots.clear();
         self.worn = None;
-        self.arm(seed, 1.0);
+        self.arm_anew(seed);
         self.gold = STARTING_GOLD;
         self.bucket = 0.0;
         self.opened.clear();
@@ -5606,6 +5703,194 @@ mod tests {
             for (i, a) in weapons.iter().enumerate() {
                 assert!(weapons[i + 1..].iter().all(|b| b.family != a.family));
             }
+        }
+    }
+
+    /// How rare what each source of weapons gives is, rolled as each rolls it many times over: how
+    /// many of its weapons are epic, legendary and mythic, how many have a special attack, and how
+    /// many special weapons there are to each kill, chest, boss, stall and kit, in the normal world
+    /// and each realm. To look at: cargo test --release loot_odds -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn loot_odds() {
+        let library = Library::load();
+        let at = |id: &str| library.rarities.iter().position(|r| r.id == id).unwrap();
+        let (epic, legendary, mythic) = (at("epic"), at("legendary"), at("mythic"));
+        // What a lot of weapons from one source come to, a lot at a time: a monster's drop, a
+        // chest, a boss's hoard, a stall, a kit. Each weapon is its grade and whether it has a
+        // special attack.
+        #[derive(Default)]
+        struct Tally {
+            weapons: usize,
+            grades: [usize; 6],
+            specials: usize,
+            lots: usize,
+            lots_with: usize,
+        }
+        impl Tally {
+            fn add(&mut self, lot: &[(usize, bool)]) {
+                for &(grade, special) in lot {
+                    self.weapons += 1;
+                    self.grades[grade.min(5)] += 1;
+                    self.specials += special as usize;
+                }
+                self.lots += 1;
+                self.lots_with += lot.iter().any(|w| w.1) as usize;
+            }
+            fn share(&self, n: usize) -> f64 {
+                n as f64 / self.weapons.max(1) as f64
+            }
+            /// Of its weapons, how many have a special attack
+            fn special(&self) -> f64 {
+                self.share(self.specials)
+            }
+            /// Special weapons to each lot
+            fn per_lot(&self) -> f64 {
+                self.specials as f64 / self.lots.max(1) as f64
+            }
+        }
+        let sample = |lots: usize, seed: u32, make: &mut dyn FnMut(&mut u32) -> Vec<(usize, bool)>| {
+            let mut tally = Tally::default();
+            let mut rng = hash(seed ^ 0x1007_0dd5);
+            for _ in 0..lots {
+                tally.add(&make(&mut rng));
+            }
+            tally
+        };
+        // A weapon as Game::roll_weapon() rolls it, `luck` with a realm's scaling
+        let rolled = |rng: &mut u32, luck: f64, sure: bool| {
+            *rng = hash(*rng ^ 0x1007);
+            let seed = if sure { library.special_seed(*rng, None, luck) } else { *rng };
+            let (_, grade, special) = library.preview(seed, None, &library.odds(luck));
+            (grade, special.is_some())
+        };
+        // As Game::open_chest() rolls what's in one with `luck`, its seed where it is
+        let chest = |rng: &mut u32, luck: f64| {
+            *rng = hash(*rng);
+            let (_, grade, special) = library.preview(*rng, None, &library.odds(luck));
+            vec![(grade, special.is_some())]
+        };
+        let pct = |x: f64| format!("{:.2}%", 100.0 * x);
+        let one_in = |x: f64| if x > 0.0 { format!("{:.1}", 1.0 / x) } else { "never".into() };
+        let row = |name: &str, luck: &str, t: &Tally| {
+            println!(
+                "| {name} | {luck} | {} | {} | {} | {} | {} | **{}** | 1 in {} | {:.3} | {} |",
+                t.weapons / t.lots.max(1),
+                pct(t.share(t.grades[epic])),
+                pct(t.share(t.grades[legendary])),
+                pct(t.share(t.grades[mythic])),
+                pct(t.share(t.grades[epic..].iter().sum())),
+                pct(t.special()),
+                one_in(t.special()),
+                t.per_lot(),
+                pct(t.lots_with as f64 / t.lots.max(1) as f64),
+            );
+        };
+        // Chests about the land, the luck worldgen gives them: on top, in the ruins and such, see
+        // worldgen.rs; down in the dungeons and the fallen cities; the crystal chests of caves
+        // behind waterfalls and the hoards of a fallen castle's court and a fallen city's lord;
+        // and the hoards of bandits' camps, as worldgen\camps.rs lucks them by their band
+        let plain: [(&str, f64); 8] = [("pyramid", 2.0), ("pyramid top", 1.4), ("shrine", 1.2), ("castle", 1.3), ("flooded church", 1.6), ("desert ruins", 1.2), ("colonnade", 1.1), ("watchtower", 1.3)];
+        let deep: [(&str, f64); 3] = [("dungeon side hall", 1.7), ("dungeon boss hall", 2.6), ("fallen city house", 2.2)];
+        let lucky: [(&str, f64); 3] = [("crystal cave", 4.0), ("fallen castle court", 4.5), ("fallen city lord", 5.0)];
+        let hoards: [(&str, f64); 3] = [("small band", 3.75), ("usual band", 4.5), ("band with a warlord", 5.5)];
+        let mean = |tallies: &[Tally], f: &dyn Fn(&Tally) -> f64| tallies.iter().map(f).sum::<f64>() / tallies.len() as f64;
+        let header = || {
+            println!("| source | luck | weapons each | epic | legendary | mythic | epic or better | special | special weapons | specials each | with a special |");
+            println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        };
+        println!("\nWhat each source of weapons gives, in the normal world:\n");
+        header();
+        let monster = sample(400_000, 1, &mut |rng| vec![rolled(rng, MONSTER_LUCK, false)]);
+        row("monster drop", &format!("{MONSTER_LUCK}"), &monster);
+        let mut plain_tallies = Vec::new();
+        for (k, (name, luck)) in plain.iter().enumerate() {
+            let t = sample(60_000, 10 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("chest: {name}"), &format!("{luck}"), &t);
+            plain_tallies.push(t);
+        }
+        let mut deep_tallies = Vec::new();
+        for (k, (name, luck)) in deep.iter().enumerate() {
+            let t = sample(60_000, 20 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("deep chest: {name}"), &format!("{luck}"), &t);
+            deep_tallies.push(t);
+        }
+        let mut lucky_tallies = Vec::new();
+        for (k, (name, luck)) in lucky.iter().enumerate() {
+            let t = sample(60_000, 30 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("lucky chest: {name}"), &format!("{luck}"), &t);
+            lucky_tallies.push(t);
+        }
+        let mut hoard_tallies = Vec::new();
+        for (k, (name, luck)) in hoards.iter().enumerate() {
+            let t = sample(60_000, 40 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("bandits' hoard: {name}"), &format!("{luck}"), &t);
+            hoard_tallies.push(t);
+        }
+        let hoard = |of: Hoard, scale: f64, lots: usize, seed: u32| sample(lots, seed, &mut |rng| hoard_rolls(of, rng).into_iter().map(|(luck, sure)| rolled(rng, luck * scale, sure)).collect());
+        let lucks = |l: &[f64]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+        let boss = hoard(Hoard::Boss, 1.0, 40_000, 50);
+        row("lesser boss", &lucks(&BOSS_LUCKS), &boss);
+        let raid = hoard(Hoard::Raid, 1.0, 20_000, 51);
+        row("realm raid boss", &lucks(&RAID_LUCKS), &raid);
+        let huge = hoard(Hoard::Huge, 1.0, 20_000, 52);
+        row("huge raid boss, finale", &lucks(&RAID_LUCKS), &huge);
+        let merchant = |scale: f64, lots: usize| {
+            sample(lots, 60, &mut |rng| {
+                MERCHANT_LUCKS
+                    .iter()
+                    .map(|luck| {
+                        *rng = hash(*rng);
+                        let (_, grade, special) = library.preview(*rng, None, &library.odds(luck * scale));
+                        (grade, special.is_some())
+                    })
+                    .collect()
+            })
+        };
+        let stall = merchant(1.0, 40_000);
+        row("merchant's stall", &lucks(&MERCHANT_LUCKS), &stall);
+        let mut royal = Tally::default();
+        for seed in 0..300u32 {
+            royal.add(&royal_weapons(&library, hash(seed ^ 0x9e11)).iter().map(|w| (w.grade, w.profile.special.is_some())).collect::<Vec<_>>());
+        }
+        row("royal armoury", "its own", &royal);
+        let mut start = Tally::default();
+        for seed in 0..4000u32 {
+            start.add(&kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST)).iter().map(|(family, seed, odds)| library.preview(*seed, Some(*family), odds)).map(|(_, g, s)| (g, s.is_some())).collect::<Vec<_>>());
+        }
+        row("new player's kit", &format!("{KIT_LUCK}, none rarer than {}", library.rarities[KIT_RAREST].id), &start);
+        let worst = (0..4000u32).map(|seed| kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST)).iter().filter(|(f, s, o)| library.preview(*s, Some(*f), o).2.is_some()).count()).max().unwrap_or(0);
+
+        println!("\nSpecial weapons to expect:\n");
+        println!("- per 100 of the dead or bandits killed: {:.2} ({} of them drop a weapon)", 100.0 * MONSTER_WEAPON * monster.special(), pct(MONSTER_WEAPON));
+        println!("- per 10 chests on top: {:.2}; in dungeons and fallen cities: {:.2}; lucky ones: {:.2}; bandits' hoards: {:.2}", 10.0 * mean(&plain_tallies, &Tally::special), 10.0 * mean(&deep_tallies, &Tally::special), 10.0 * mean(&lucky_tallies, &Tally::special), 10.0 * mean(&hoard_tallies, &Tally::special));
+        println!("- per lesser boss: {:.2}; per realm raid boss: {:.2}; per huge raid boss or finale: {:.2}", boss.per_lot(), raid.per_lot(), huge.per_lot());
+        println!("- per merchant: {:.2}; per royal armoury: {:.2}", stall.per_lot(), royal.per_lot());
+        println!("- in a new player's kit of {}: {:.2}, at most {worst}", KIT.len(), start.per_lot());
+
+        println!("\nHow many have a special attack in each realm, its loot luckier by its scaling:\n");
+        println!("| realm | luck | monster drop | chest on top | deep chest | lucky chest | bandits' hoard | lesser boss, specials each | realm raid boss | huge raid boss | merchant's stalls with one |");
+        println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let scale = realm.scaling.luck;
+            let seed = 100 + 10 * r as u32;
+            let monster = sample(100_000, seed, &mut |rng| vec![rolled(rng, MONSTER_LUCK * scale, false)]);
+            let chests = |set: &[(&str, f64)]| set.iter().enumerate().map(|(k, (_, luck))| sample(20_000, seed + k as u32, &mut |rng| chest(rng, luck * scale))).collect::<Vec<_>>();
+            let (p, d, l, h) = (chests(&plain), chests(&deep), chests(&lucky), chests(&hoards));
+            let stall = merchant(scale, 10_000);
+            println!(
+                "| {} | {scale} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | {:.2} | {:.2} | {:.2} | {} |",
+                realm.name,
+                one_in(monster.special()),
+                one_in(mean(&p, &Tally::special)),
+                one_in(mean(&d, &Tally::special)),
+                one_in(mean(&l, &Tally::special)),
+                one_in(mean(&h, &Tally::special)),
+                hoard(Hoard::Boss, scale, 10_000, seed).per_lot(),
+                hoard(Hoard::Raid, scale, 5_000, seed).per_lot(),
+                hoard(Hoard::Huge, scale, 5_000, seed).per_lot(),
+                pct(stall.lots_with as f64 / stall.lots as f64),
+            );
         }
     }
 
