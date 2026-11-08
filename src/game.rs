@@ -753,6 +753,10 @@ pub struct Game {
     /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
     worn: Option<u8>,
     wing_models: Vec<(Model, Vector3<f64>)>,
+    /// The models of the wards round raid bosses, see guardians.rs
+    ward_models: Vec<(Model, Vector3<f64>)>,
+    /// How many more monsters than usual each den's pack has, see realms::crowd()
+    crowd: usize,
     /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
     dragonfire: dragonfire::Fire,
 }
@@ -917,6 +921,8 @@ impl Game {
             dragonfire: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
+            ward_models: crate::guardians::models(),
+            crowd: 0,
         };
         game.arm_anew(seed);
         game.populate(world, water, seed, near);
@@ -1002,7 +1008,14 @@ impl Game {
     /// everything lying around, the arrows, spells and arms, and the falling leaves. The weapons'
     /// come after them, see weapon_model_words().
     pub fn model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.models.iter().chain(self.combat.models.iter().map(|(m, _)| m)).chain(self.leaves.models.iter()).chain(self.wing_models.iter().map(|(m, _)| m)).collect();
+        let models: Vec<&Model> = self
+            .models
+            .iter()
+            .chain(self.combat.models.iter().map(|(m, _)| m))
+            .chain(self.leaves.models.iter())
+            .chain(self.wing_models.iter().map(|(m, _)| m))
+            .chain(self.ward_models.iter().map(|(m, _)| m))
+            .collect();
         pack_models(&models)
     }
 
@@ -1028,7 +1041,7 @@ impl Game {
     /// Where weapon `index`'s models start among model_words()
     fn weapon_model(&self, index: usize) -> u32 {
         let before: usize = self.weapons[..index].iter().map(|w| w.look.frames.len()).sum();
-        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + before) as u32
+        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + self.ward_models.len() + before) as u32
     }
 
     /// The weapon in hand, with its index
@@ -1408,7 +1421,8 @@ impl Game {
                 continue;
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
-            let look = if lair.raid.is_some() || lair.look.is_great_serpent() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
+            // A raid boss is that boss whatever the land, and so's a realm's guardian, see guardians.rs
+            let look = if lair.raid.is_some() || lair.look.is_great_serpent() || realms::is_guardian_key(&lair.key) { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
             // A great serpent that swims lies in the deep water by its lair, out from the shore, the
             // rest on the ground
             let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, if look.is_ultra() { 2.5 } else { 1.5 })).flatten();
@@ -1504,7 +1518,11 @@ impl Game {
                 None if den.kind == DenKind::Camp => animals::PACK_SPREAD + 0.7,
                 None => animals::PACK_SPREAD + 0.4,
             };
-            for mut monster in animals::spawn_pack(world, water, haunted, den.position, spread, hash(seed)) {
+            // More of them the further on in the realms, see realms::crowd(), but for a camp's
+            // band, as many as its camp has room for
+            let extra = if den.kind == DenKind::Camp { 0 } else { self.crowd };
+            let haunted: Vec<Look> = haunted.iter().copied().chain(haunted.iter().copied().cycle().take(extra)).collect();
+            for mut monster in animals::spawn_pack(world, water, &haunted, den.position, spread, hash(seed)) {
                 if let Some(state) = &mut monster.boss {
                     state.key = den.key;
                 }
@@ -2911,13 +2929,18 @@ impl Game {
 
     /// The boss fighting the player, if any, nearest first: which it is, how much health it has
     /// left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>)> {
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>)> {
         let vpm = self.combat.vpm() as u32;
         self.animals
             .iter()
             .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm)))
+            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded))
+    }
+
+    /// Whether a boss being fought has its bar up along the bottom of the view, see hud()
+    pub fn boss_bar_up(&self, near: Vector3<f64>) -> bool {
+        self.foe(near).is_some()
     }
 
     /// For trying out dying: the player down to `health`
@@ -3466,6 +3489,12 @@ impl Game {
                 let look = self.animals[i].look;
                 if look.is_pet() {
                     self.interact(eye);
+                    return;
+                }
+                // Warded by its realm's guardians, see guardians.rs
+                if let Some((slain, of)) = self.animals[i].status.warded {
+                    self.cues.push(Cue::at(Sound::Clang, self.animals[i].position, 0.7).pitched(1.5));
+                    self.say(format!("Immune: slay the guardians ({slain}/{of})"));
                     return;
                 }
                 self.cues.push(Cue::at(Sound::Hit, self.animals[i].position, 0.7));
@@ -4367,6 +4396,11 @@ impl Game {
         self.scaling = scaling;
     }
 
+    /// And how many more monsters than usual go about together there, see realms::crowd()
+    pub fn set_crowd(&mut self, extra: usize) {
+        self.crowd = extra;
+    }
+
     /// Whether the boss whose lair's at `key` has been beaten in the world the player's in
     pub fn is_defeated(&self, key: &[i64; 3]) -> bool {
         self.defeated.contains(key)
@@ -4484,6 +4518,16 @@ impl Game {
         self.leaf_model() + (self.leaves.models.len() + k) as u32
     }
 
+    /// The models of the wards round raid bosses, and where the first is among model_words(), see
+    /// guardians.rs
+    pub fn ward_models(&self) -> &[(Model, Vector3<f64>)] {
+        &self.ward_models
+    }
+
+    pub fn ward_model(&self, k: usize) -> u32 {
+        self.wing_model(self.wing_models.len() + k)
+    }
+
     /// Gives the player `item`, a hook or wings, if they haven't one already, telling them how it
     /// came to them: whether it was given. It goes on the quick bar's last slot, to take in hand
     /// with a number key, what was there moving along into the pack.
@@ -4572,6 +4616,44 @@ impl Game {
             return false;
         };
         raid.health = 0.0;
+        self.reap(world);
+        true
+    }
+
+    /// Whether the realm's raid bosses are warded, and if they are how many of its guardians are
+    /// slain and how many there are, see guardians.rs: every one of them about, but not its finale
+    pub fn set_wards(&mut self, ward: Option<(u8, u8)>) {
+        for animal in &mut self.animals {
+            if animal.boss.as_ref().is_some_and(|b| self.raid_lairs.contains_key(&b.key) && !realms::is_finale_key(&b.key)) {
+                animal.status.warded = ward;
+            }
+        }
+    }
+
+    /// The warded raid bosses about: the middle of each, in voxels, and who it is
+    pub fn warded_bosses(&self) -> Vec<(Vector3<f64>, Look)> {
+        let vpm = self.combat.vpm() as u32;
+        self.animals.iter().filter(|a| a.health > 0.0 && a.status.warded.is_some()).map(|a| (a.center(vpm), a.look)).collect()
+    }
+
+    /// Where the realm's raid bosses' lairs in the world are, in voxels, on the ground
+    pub fn raid_lair_spots(&self) -> Vec<Vector3<f64>> {
+        self.lairs.iter().filter(|l| self.raid_lairs.contains_key(&l.key) && !realms::is_finale_key(&l.key)).map(|l| l.position).collect()
+    }
+
+    /// The boss of the lair `key` counted as beaten without being fought, as a realm's guardians
+    /// are in a game saved before there were any, see realms::guardians_owed()
+    pub fn count_as_defeated(&mut self, key: [i64; 3]) {
+        self.defeated.insert(key);
+    }
+
+    /// For trying it out: the boss of the lair `key` falls dead if it's about, as if beaten.
+    /// Returns whether it was.
+    pub fn slay_boss_of(&mut self, world: &World, key: [i64; 3]) -> bool {
+        let Some(boss) = self.animals.iter_mut().find(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.key == key)) else {
+            return false;
+        };
+        boss.health = 0.0;
         self.reap(world);
         true
     }
@@ -5052,7 +5134,7 @@ impl Game {
         }
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((foe, vitality, enraged, middle)) = self.foe(view.eye) {
+        if let Some((foe, vitality, enraged, middle, ward)) = self.foe(view.eye) {
             // Off the edge of the screen or behind, an arrow round the edge points the way to it,
             // with how far
             let inner = screen.shrink(50.0);
@@ -5092,12 +5174,22 @@ impl Game {
             let flash = flash as f32;
             let jolt = (self.combat.time() * 90.0).sin() as f32 * 4.0 * flash;
             let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, tall));
-            let title = if enraged { format!("{name}  —  enraged") } else { name.to_string() };
+            // Warded by its realm's guardians, see guardians.rs: its bar ringed in the ward's light
+            let warded = Color32::from_rgb(205, 165, 255);
+            let title = match ward {
+                Some((slain, of)) => format!("{name}  —  warded: slay the guardians ({slain}/{of})"),
+                None if enraged => format!("{name}  —  enraged"),
+                None => name.to_string(),
+            };
             let at = pos2(center.x, back.top() - 6.0);
             let size = if ultra { 23.0 } else { 19.0 };
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(size), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
+            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
             painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
+            if ward.is_some() {
+                let pulse = 0.6 + 0.4 * (self.combat.time() * 3.0).sin() as f32;
+                painter.rect_stroke(back.expand(4.0), 7.0, Stroke::new(2.0f32, warded.gamma_multiply(pulse)), StrokeKind::Outside);
+            }
             if flash > 0.0 {
                 painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
             }
@@ -6620,6 +6712,96 @@ mod tests {
         assert_eq!(other.gold, STARTING_GOLD);
         assert!(other.defeated.is_empty() && other.opened.is_empty() && other.stocks.is_empty());
         assert_eq!(other.health, MAX_HEALTH);
+    }
+
+    /// How each realm in turn stands against what the player's found by the time they're through
+    /// it: what its monsters can take and hit for, and the best weapon from the hoards of every
+    /// realm's guardians and raid bosses so far, how many seconds that takes to kill one. Run it
+    /// with `cargo test --release realm_balance -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn realm_balance() {
+        let library = Library::load();
+        let dps = |w: &Weapon| {
+            let p = &w.profile;
+            let speed = ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"].iter().map(|k| p.stat(k)).find(|&v| v > 0.0).unwrap_or(0.0);
+            let damage: f64 = ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum();
+            damage * speed
+        };
+        let trials = 60;
+        println!("realm  toughness damage luck | monster health  hits to die | best weapon dps (median) | seconds to kill a monster");
+        let mut best_by_trial = vec![0.0f64; trials];
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let scaling = realms::scaling_in(r, r, 0);
+            let luck = loot_scaling(scaling);
+            for (t, best) in best_by_trial.iter_mut().enumerate() {
+                let mut rng = hash(0xba1a ^ (t as u32 * 7919) ^ (r as u32 * 104_729));
+                let hoards = std::iter::repeat_n(Hoard::Boss, realms::guardian_count(r)).chain(std::iter::repeat_n(Hoard::Raid, realms::RAIDS));
+                for hoard in hoards {
+                    for (l, sure) in hoard_rolls(hoard, &mut rng) {
+                        rng = hash(rng ^ 0x1007);
+                        let seed = if sure { library.special_seed(rng, None, l * luck) } else { rng };
+                        *best = best.max(dps(&library.generate(seed, None, l * luck)));
+                    }
+                }
+            }
+            let mut sorted = best_by_trial.clone();
+            sorted.sort_by(f64::total_cmp);
+            let median = sorted[trials / 2];
+            let looks: Vec<Look> = realm.monsters.iter().flat_map(|p| p.looks.iter().copied()).collect();
+            let health = looks.iter().map(|l| l.health()).sum::<f64>() / looks.len() as f64 * scaling.toughness;
+            let pack = realm.monsters.iter().map(|p| p.looks.len()).sum::<usize>() as f64 / realm.monsters.len() as f64 + realms::crowd(r, r) as f64;
+            println!(
+                "{r} {:<16} {:>5.2} {:>5.2} {:>5.2} | {:>8.0} {:>8.1} | {:>8.1} | {:>6.2}  ({:.1} to a pack, {:.1} s to clear one)",
+                realm.name,
+                scaling.toughness,
+                scaling.damage,
+                scaling.luck,
+                health,
+                MAX_HEALTH / (10.0 * scaling.damage),
+                median,
+                health / median.max(1e-6),
+                pack,
+                pack * health / median.max(1e-6)
+            );
+        }
+        println!("More in each pack: {:?}", (0..realms::REALMS.len()).map(|r| realms::crowd(r, r)).collect::<Vec<_>>());
+        println!("Back in the normal world with each realm reached:");
+        for reached in 0..realms::REALMS.len() {
+            let s = realms::scaling_in(0, reached, 0);
+            println!("  reached {reached}: toughness {:.2} damage {:.2} luck {:.2}, {} more a pack", s.toughness, s.damage, s.luck, realms::crowd(0, reached));
+        }
+    }
+
+    /// While a realm's guardians stand its raid bosses are warded, but not its finale, its
+    /// guardians nor anything else; the last slain, none are. The guardians slain are kept with
+    /// the realm's save, and come back with it.
+    #[test]
+    fn raid_bosses_are_warded_and_guardians_slain_are_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let (raid, finale, guardian) = ([10, 20, -9001], [30, 40, -9003], [50, 60, -9102]);
+        assert!(realms::is_finale_key(&finale) && realms::is_guardian_key(&guardian) && !realms::is_guardian_key(&raid));
+        game.raid_lairs.insert(raid, 1);
+        game.raid_lairs.insert(finale, 1);
+        let at = Vector3::new(4.0, 4.0, 4.0);
+        game.animals.clear();
+        for (look, key) in [(Look::StormDrake, raid), (Look::ElderWyrm, finale), (Look::Golem, guardian), (Look::Direwolf, [1, 2, 3])] {
+            game.animals.push(Animal::boss(look, at, key, 9));
+        }
+        let warded = |game: &Game| game.animals.iter().map(|a| a.status.warded).collect::<Vec<_>>();
+        game.set_wards(Some((2, 4)));
+        assert_eq!(warded(&game), vec![Some((2, 4)), None, None, None]);
+        assert_eq!(game.warded_bosses().len(), 1);
+        game.set_wards(None);
+        assert!(warded(&game).iter().all(Option::is_none));
+        // Slain, saved and back
+        game.count_as_defeated(guardian);
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore_world(&done);
+        assert!(other.is_defeated(&guardian) && !other.is_defeated(&raid));
     }
 
     /// A saved weapon's made again of the parts it was saved with, never rolled again, so however

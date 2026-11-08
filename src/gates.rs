@@ -436,7 +436,7 @@ mod tests {
     use crate::save;
 
     fn found(realm: usize) -> Places {
-        Places { realm, arrival: [100.0, 90.0], gate: [100.0, 100.0], facing: -FRAC_PI_2, lairs: [[0.0; 2]; crate::realms::RAIDS], finale: None, serpent: None }
+        Places { realm, arrival: [100.0, 90.0], gate: [100.0, 100.0], facing: -FRAC_PI_2, lairs: [[0.0; 2]; crate::realms::RAIDS], finale: None, serpent: None, guardians: vec![[200.0, 100.0]; crate::realms::guardian_count(realm)] }
     }
 
     #[test]
@@ -454,8 +454,9 @@ mod tests {
         assert!(standing);
         assert_eq!(places.gate, [140.0, 120.0]);
         assert!((places.arrival[0] - 144.5).abs() < 1e-9 && (places.arrival[1] - 120.0).abs() < 1e-9);
-        // The raid bosses' lairs stay where they were found
+        // The raid bosses' lairs stay where they were found, and the guardians' too
         assert_eq!(places.lairs, found(0).lairs);
+        assert_eq!(places.guardians, found(0).guardians);
         // Built again elsewhere, it moves, and what's set into it goes with it
         assert!(build_in(&mut progress, false, [60.0, 70.0], PI));
         let (places, _) = stand(&found(0), &progress);

@@ -1322,6 +1322,7 @@ impl App {
             hook.shift(shift);
         }
         self.wings.shift(shift);
+        self.wards.shift(shift);
         if let Some((at, when)) = self.last_camera {
             self.last_camera = Some((at - shift, when));
         }

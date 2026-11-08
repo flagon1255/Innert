@@ -355,7 +355,10 @@ impl App {
                 self.session.found = Some(found);
                 self.session.standing = standing;
                 let journeys = self.session.realms.as_ref().map_or(0, |r| r.completed);
-                self.game.set_scaling(REALMS[realm].scaling.after(journeys));
+                // Harder too the further on the journey's been, see realms::scaling_in()
+                let reached = self.session.realms.as_ref().and_then(|r| r.visited.iter().max()).map_or(realm, |&r| (r as usize).max(realm));
+                self.game.set_scaling(realms::scaling_in(realm, reached, journeys));
+                self.game.set_crowd(realms::crowd(realm, reached));
                 // Hooks and wings on sale once the way to the sky isles is open
                 self.game.set_sky_wares(self.session.realms.as_ref().is_some_and(|r| r.unlocked.contains(&(realms::HOOK_REALM as u32))));
                 println!(
@@ -381,9 +384,11 @@ impl App {
                 }
                 self.session.places = Some(places);
                 self.session.finale_risen = false;
+                self.grandfather_guardians();
             }
             _ => {
                 self.game.set_scaling(realms::Scaling::NONE);
+                self.game.set_crowd(0);
                 // Free Roam's merchants have hooks and wings to sell from the first
                 self.game.set_sky_wares(self.session.mode == Some(Mode::FreeRoam));
                 self.session.places = None;
@@ -416,6 +421,8 @@ impl App {
         if let Some(lair) = self.finale_lair() {
             lairs.push(lair);
         }
+        // And its guardians, see guardians.rs
+        lairs.extend(self.guardian_lairs());
         let gate = local(places.gate);
         let placed = std::array::from_fn(|r| progress.placed.get(r).copied().unwrap_or(0));
         let shrines = if inside(&gate) && self.session.standing {
@@ -617,6 +624,7 @@ impl App {
         if let Some(realm) = number("realm") {
             self.set_out_for(realm);
         }
+        self.try_guardians(settings);
         // `--set wings=stormcaller` puts on wings of that kind, and `spare_wings=veilmoth` has a
         // pair in the pack too, see wings::KINDS
         for key in ["wings", "spare_wings"] {
@@ -637,7 +645,9 @@ impl App {
             let (dx, dy) = (places.gate[0] - lair[0], places.gate[1] - lair[1]);
             let d = dx.hypot(dy).max(1.0);
             let vpm = self.world.voxels_per_meter as f64;
-            let spot = [lair[0] + dx / d * 30.0, lair[1] + dy / d * 30.0];
+            // `near_m=6` that far off instead
+            let off = number("near_m").unwrap_or(30) as f64;
+            let spot = [lair[0] + dx / d * off, lair[1] + dy / d * off];
             let at = Vector3::new(spot[0] * vpm - self.world.origin[0] as f64, spot[1] * vpm - self.world.origin[1] as f64, self.world.size[2] as f64 - 2.0 * vpm);
             let mut player = Player::new(at, &self.world);
             player.position = at;
@@ -828,6 +838,7 @@ impl App {
             println!("GATE at frame {frame}: going through to {}", REALMS[to.min(REALMS.len() - 1)].name);
             self.gate_picked(GateAction::Travel(to.min(REALMS.len() - 1)));
         }
+        self.guardian_trial(frame - ready);
     }
 
     /// The look of the realm the world is, for shaders\traverse.comp, see View::realm there: which
@@ -1086,9 +1097,10 @@ impl App {
 
 /// The window of the Innert Gate, or of the portal home in realm `here` past the normal world:
 /// each realm's three sockets, how many of its blocks are set in and how many carried, with
-/// setting them in and going through to the realms open at the gate, or going home at a portal.
-/// What's picked is given back.
-pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave, carried: [u32; realms::REALM_COUNT]) -> Option<GateAction> {
+/// setting them in and going through to the realms open at the gate, or going home at a portal,
+/// and how many of the guardians of the realm `here` are slain and how many it has, see
+/// guardians.rs. What's picked is given back.
+pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave, carried: [u32; realms::REALM_COUNT], guardians: Option<(usize, usize)>) -> Option<GateAction> {
     let mut picked = None;
     let gray = Color32::from_gray(185);
     let (_, restored) = realms::opened(&progress.placed);
@@ -1119,6 +1131,11 @@ pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave
                     (true, true) => "its blocks all set in".to_owned(),
                     (true, false) if r == here => format!("here · {placed} of {} set in", realms::RAIDS),
                     (true, false) => format!("{placed} of {} set in", realms::RAIDS),
+                };
+                // Here, how many of its guardians are slain while its raid bosses are warded
+                let state = match guardians.filter(|&(slain, of)| r == here && open && slain < of) {
+                    Some((slain, of)) => format!("{state} · guardians {slain}/{of}"),
+                    None => state,
                 };
                 ui.label(RichText::new(state).size(13.0).color(gray));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

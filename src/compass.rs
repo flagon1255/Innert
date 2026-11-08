@@ -1,5 +1,6 @@
 //! Finding the way: in Realms the compass at the foot of the view, pointing to the nearest of the
-//! realm's raid bosses still to beat, or once they're all beaten to the Innert Gate, where their
+//! realm's guardians still standing, see guardians.rs, then to the nearest of its raid bosses
+//! still to beat, or once they're all beaten to the Innert Gate, where their
 //! blocks are set in, or from a realm past the normal world to the portal home; and in either mode
 //! the map on M, of the land round about seen from high above, with the gate or the portal, the
 //! raid bosses' lairs and the player on it.
@@ -22,6 +23,10 @@ pub struct Bearing {
     pub distance: f64,
     pub turn: f64,
     pub heading: f64,
+    /// A word under it, as how many of the realm's guardians are slain, see guardians.rs
+    pub note: Option<String>,
+    /// Whether a boss's bar is up along the bottom, so it's lifted clear of it
+    pub raised: bool,
 }
 
 /// How far round from straight ahead the compass shows either side, in radians
@@ -57,6 +62,9 @@ pub struct Marks {
     pub heading: f64,
     pub gate: Option<([f64; 2], &'static str)>,
     pub lairs: Vec<([f64; 2], &'static str, bool)>,
+    /// The realm's guardians the same, and whether the raid bosses are warded yet, see guardians.rs
+    pub guardians: Vec<([f64; 2], &'static str, bool)>,
+    pub warded: bool,
     pub settings: TerrainSettings,
 }
 
@@ -78,7 +86,9 @@ impl App {
         self.camera.rotation.z + FRAC_PI_2
     }
 
-    /// What the compass points to, in Realms: the nearest raid boss of the realm the player's in
+    /// What the compass points to, in Realms: in a game begun, to the gate's old foundations to
+    /// build it, see gates.rs; then while any of the realm's guardians stands, the nearest of
+    /// them, see guardians.rs; then the nearest raid boss of the realm the player's in
     /// still to beat, or with all three beaten, the gate in the normal world, where their blocks are
     /// set in and the way on to the next realm is, or the portal home from a realm past it
     pub(super) fn compass(&self) -> Option<Bearing> {
@@ -88,26 +98,37 @@ impl App {
             let (spot, label) = self.free_roam_quarry()?;
             let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
             let heading = self.heading();
-            return Some(Bearing { label, distance: (spot[0] - at[0]).hypot(spot[1] - at[1]), turn: wrapped(heading - toward), heading });
+            let raised = self.game.boss_bar_up(camera_to_voxels(self.camera.position, self.world.size));
+            return Some(Bearing { label, distance: (spot[0] - at[0]).hypot(spot[1] - at[1]), turn: wrapped(heading - toward), heading, note: None, raised });
         }
         let places = self.session.places.as_ref()?;
         let at = self.feet_m();
         let far = |p: [f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);
+        let nearest = |a: &([f64; 2], String), b: &([f64; 2], String)| far(a.0).total_cmp(&far(b.0));
         let realm = &REALMS[places.realm];
+        let raised = self.game.boss_bar_up(camera_to_voxels(self.camera.position, self.world.size));
         // Before all else, while there's no gate, to the old foundations where it stood, to build
         // it again, see gates.rs
         if !self.session.standing {
             let heading = self.heading();
             let spot = places.gate;
             let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
-            return Some(Bearing { label: "Build the Innert Gate".to_owned(), distance: far(spot), turn: wrapped(heading - toward), heading });
+            return Some(Bearing { label: "Build the Innert Gate".to_owned(), distance: far(spot), turn: wrapped(heading - toward), heading, note: None, raised });
         }
+        // Then while any of the realm's guardians stands, the nearest of them, see guardians.rs
+        let guardian = (0..places.guardians.len())
+            .filter(|&k| !self.game.is_defeated(&places.guardian_key(k)))
+            .map(|k| (places.guardians[k], format!("Guardian: {}", realms::guardian_look(places.realm, k).name())))
+            .min_by(nearest);
         // Then, once they're all beaten, the realm's finale where it's risen, see on_raids_beaten()
         let finale = places.finale.zip(places.finale_key()).zip(realm.finale).filter(|((_, key), _)| !self.game.is_defeated(key)).map(|((spot, _), (look, _, at))| (spot, format!("{}, {at}", look.name())));
-        let (spot, label) = (0..realms::RAIDS)
-            .filter(|&k| !self.game.is_defeated(&places.lair_key(k)))
-            .map(|k| (places.lairs[k], format!("Raid boss: {}, {}", realm.raid_bosses[k].0.name(), realm.lair_names[k])))
-            .min_by(|a, b| far(a.0).total_cmp(&far(b.0)))
+        let (spot, label) = guardian
+            .or_else(|| {
+                (0..realms::RAIDS)
+                    .filter(|&k| !self.game.is_defeated(&places.lair_key(k)))
+                    .map(|k| (places.lairs[k], format!("Raid boss: {}, {}", realm.raid_bosses[k].0.name(), realm.lair_names[k])))
+                    .min_by(nearest)
+            })
             .or(finale)
             .unwrap_or_else(|| (places.gate, if places.realm == 0 { "The Innert Gate" } else { "The portal home" }.to_owned()));
         // The realm's great serpent's lair instead, while it's still to beat and nearer, within a
@@ -119,7 +140,8 @@ impl App {
         };
         let heading = self.heading();
         let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
-        Some(Bearing { label, distance: far(spot), turn: wrapped(heading - toward), heading })
+        let note = self.guardians_slain().filter(|(slain, of)| slain < of).map(|(slain, of)| format!("Guardians {slain}/{of}  ·  the raid bosses are warded till all are slain"));
+        Some(Bearing { label, distance: far(spot), turn: wrapped(heading - toward), heading, note, raised })
     }
 
     /// What's marked on the map
@@ -155,6 +177,8 @@ impl App {
             heading: self.heading(),
             gate: places.map(|p| (p.gate, if !self.session.standing { "Old foundations" } else if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
             lairs,
+            guardians: places.map_or(Vec::new(), |p| (0..p.guardians.len()).map(|k| (p.guardians[k], realms::guardian_look(p.realm, k).name(), self.game.is_defeated(&p.guardian_key(k)))).collect()),
+            warded: self.guardians_slain().is_some_and(|(slain, of)| slain < of),
             settings: self.terrain_settings(),
         }
     }
@@ -278,7 +302,9 @@ pub fn draw_compass(ctx: &egui::Context, bearing: &Bearing) {
     let screen = ctx.screen_rect();
     let painter = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("compass")));
     let width = 440.0f32;
-    let middle = pos2(screen.center().x, screen.bottom() - 74.0);
+    // Lifted clear of a boss's bar and its name while one's up along the bottom
+    let lift = if bearing.raised { 82.0 } else { 0.0 };
+    let middle = pos2(screen.center().x, screen.bottom() - 74.0 - lift);
     let strip = Rect::from_center_size(middle, vec2(width, 24.0));
     painter.rect_filled(strip, 12.0, Color32::from_black_alpha(120));
     let x_of = |turn: f64| middle.x + (turn / COMPASS_SPAN) as f32 * width * 0.5;
@@ -311,7 +337,15 @@ pub fn draw_compass(ctx: &egui::Context, bearing: &Bearing) {
     };
     painter.add(Shape::convex_polygon(mark, gold, Stroke::new(1.5f32, Color32::from_black_alpha(170))));
     painter.text(pos2(middle.x, strip.bottom() + 13.0), Align2::CENTER_CENTER, format!("{}  ·  {:.0} m", bearing.label, bearing.distance), FontId::proportional(14.0), Color32::from_rgba_unmultiplied(255, 236, 200, 230));
+    if let Some(note) = &bearing.note {
+        let at = pos2(middle.x, strip.bottom() + 31.0);
+        painter.text(at + vec2(1.0, 1.0), Align2::CENTER_CENTER, note, FontId::proportional(13.0), Color32::from_black_alpha(170));
+        painter.text(at, Align2::CENTER_CENTER, note, FontId::proportional(13.0), WARD_COLOR);
+    }
 }
+
+/// The violet of the wards round raid bosses, for the guardians and wards marked, see guardians.rs
+const WARD_COLOR: Color32 = Color32::from_rgb(205, 165, 255);
 
 /// The map, over the middle of the view: the land round about, north up, with the gate or the
 /// portal, the raid bosses' lairs, beaten or not, and the player and which way they face on it
@@ -368,7 +402,29 @@ pub fn draw_map(ctx: &egui::Context, map: &mut Map, marks: &Marks) {
             painter.circle_filled(at, 7.0, Color32::from_rgb(230, 40, 40));
             painter.circle_filled(at, 2.5, Color32::WHITE);
             painter.circle_stroke(at, 9.0, Stroke::new(1.5f32, Color32::from_rgb(255, 210, 110)));
+            // Ringed by its ward while the guardians stand
+            if marks.warded {
+                painter.circle_stroke(at, 13.5, Stroke::new(2.0f32, WARD_COLOR));
+            }
             label(at, name, Color32::from_rgb(255, 210, 110));
+        }
+    }
+    // The guardians, violet diamonds, crossed out once slain
+    for &(spot, name, slain) in &marks.guardians {
+        let at = to_screen(spot);
+        if !inside(at) {
+            continue;
+        }
+        if slain {
+            for d in [vec2(5.0, 5.0), vec2(5.0, -5.0)] {
+                painter.line_segment([at - d, at + d], Stroke::new(2.0f32, Color32::from_gray(140)));
+            }
+            label(at, name, Color32::from_gray(160));
+        } else {
+            let diamond = |r: f32| vec![at + vec2(0.0, -r), at + vec2(r, 0.0), at + vec2(0.0, r), at + vec2(-r, 0.0)];
+            painter.add(Shape::convex_polygon(diamond(9.0), Color32::from_black_alpha(170), Stroke::NONE));
+            painter.add(Shape::convex_polygon(diamond(6.5), Color32::from_rgb(150, 90, 230), Stroke::new(1.5f32, WARD_COLOR)));
+            label(at, name, WARD_COLOR);
         }
     }
     // The player, an arrow the way they face
