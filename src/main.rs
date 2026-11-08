@@ -79,6 +79,7 @@ mod memory;
 mod perf;
 mod player;
 mod quality;
+mod realms;
 mod save;
 mod session;
 mod shafts;
@@ -2560,8 +2561,12 @@ impl App {
             if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
                 app.game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));
             }
+            // And `realm=1`, `blocks=3` and the like to try out the journey through the realms
+            app.try_journey(&settings);
             println!("STATE at the start: {}", app.state_line());
         }
+        // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
+        app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -2742,9 +2747,13 @@ impl App {
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
-                Some(game::Lair { look, position: to_voxels(at), key })
+                Some(game::Lair { look, position: to_voxels(at), key, raid: None })
             })
             .collect();
+        // In Realms, the realm's own three raid bosses too, and the Innert Gate or its portal home,
+        // see session.rs
+        let (raids, shrines) = self.realm_sites();
+        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
         // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
@@ -2832,6 +2841,7 @@ impl App {
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
+        self.game.set_shrines(&self.world, shrines);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props.iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -3623,7 +3633,9 @@ impl App {
         let interactive = self.capture.is_none();
 
         if interactive && self.input.key_pressed(KeyCode::Escape) {
-            if self.game.shopping() {
+            if self.session.gate_open {
+                self.session.gate_action = Some(session::GateAction::Close);
+            } else if self.game.shopping() {
                 self.game.close_shop();
                 if !self.inventory_open {
                     self.set_focus(true);
@@ -3654,7 +3666,7 @@ impl App {
         let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
         // Scripts fight by themselves, see run_script()
         let mut controls = std::mem::take(&mut self.script_controls);
-        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && self.input.mouse_pressed(MouseButton::Left) {
+        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && !self.session.gate_open && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
         } else if playing && self.focused && !self.game.dead() {
             let bucket = self.game.holding_bucket() && !self.game.has_target();
@@ -4736,6 +4748,14 @@ impl App {
                     painter.text(ctx.screen_rect().center(), Align2::CENTER_CENTER, "The world takes shape...", egui::FontId::proportional(22.0), Color32::from_gray(shade));
                 }
             }
+            // Going through the gate or a portal: the light of its veil, then the dark
+            let leaving = self.session.leaving_dark();
+            if leaving > 0.0 {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("going through")));
+                let violet = (1.0 - (leaving * 2.0 - 1.0).abs()) * 140.0;
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_rgba_unmultiplied(150, 110, 255, violet as u8));
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((leaving * leaving * 255.0) as u8));
+            }
 
             if self.menu_open {
                 // Dim the world behind the menu a little
@@ -4784,6 +4804,15 @@ impl App {
                     focus_change = Some(true);
                 }
                 self.shopping = shopping;
+                // The Innert Gate's window, or a portal's, see session.rs
+                if self.session.gate_open
+                    && let (Some(progress), Some(places)) = (&self.session.realms, &self.session.places)
+                {
+                    let carried = std::array::from_fn(|r| self.game.innert_blocks(r as u8));
+                    if let Some(action) = session::gate_window(&ctx, places.realm, progress, carried) {
+                        self.session.gate_action = Some(action);
+                    }
+                }
                 if !shopping && self.inventory_open {
                     let mut open = true;
                     self.game.inventory(&ctx, &mut open);

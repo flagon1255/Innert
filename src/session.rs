@@ -4,14 +4,13 @@
 
 use std::collections::BTreeMap;
 
+use crate::realms::{self, REALMS};
 use crate::save::{self, Mode, Save};
 
 use super::*;
 
 /// Seconds between saves while playing, besides those after what matters, see Game::take_milestone()
 const AUTOSAVE_SECONDS: u64 = 60;
-/// The normal world of the realms, which they set out from: the landscape Innert starts in
-pub const REALMS_SEED: u32 = INITIAL_TERRAIN.seed;
 /// What the world the player's in is called in a save, for those with only the one
 const NORMAL_WORLD: &str = "normal";
 
@@ -28,8 +27,43 @@ pub enum MenuAction {
 /// What the menu remembers between frames
 #[derive(Default)]
 pub struct ModeMenu {
-    /// A new game asked for that would take the place of a saved one, waiting to be said yes to
-    confirm: Option<Mode>,
+    /// A new game asked for that would take the place of a saved one, waiting to be said yes to.
+    /// `--set confirm=freeroam` asks straight away, to see it in a screenshot.
+    pub confirm: Option<Mode>,
+}
+
+/// What's picked at the Innert Gate or a portal home, done at the start of the next frame
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GateAction {
+    /// Setting the Innert blocks of this realm carried into the gate
+    SetIn(usize),
+    /// Going through to this realm
+    Travel(usize),
+    Close,
+}
+
+/// How long the screen takes to darken going through the gate or a portal, in seconds, before the
+/// realm gone to is built behind the dark
+const LEAVING_SECONDS: f32 = 0.7;
+
+/// For trying out the journey in screenshot runs, from `--set` settings, see App::try_journey().
+/// Frames are counted from when the world's first there to play in, as building it afresh takes a
+/// while, behind the dark.
+#[derive(Default)]
+struct Trial {
+    /// When the nearest raid boss falls as if beaten, `slay_raid_at=200`
+    slay_raid_at: Option<usize>,
+    /// When the blocks carried are set into the gate, `set_in_at=230`
+    set_in_at: Option<usize>,
+    /// When to go through to which realm, `travel_at=260:1`
+    travel_at: Option<(usize, usize)>,
+    /// Shots taken so many frames after each time the world's there, `shots_after=5,120`, and
+    /// the run ends so many after the last time, `end_after=200`
+    shots_after: Vec<usize>,
+    end_after: Option<usize>,
+    /// The frame the world was first there, and whether it's there now
+    ready: Option<usize>,
+    there: bool,
 }
 
 /// What's kept of a game being played for its save, besides what Game has: see App::gather_save()
@@ -61,6 +95,14 @@ pub struct Session {
     pub menu: ModeMenu,
     /// Picked from the menu this frame
     pub action: Option<MenuAction>,
+    /// Where things are in the realm the player's in, in Realms, see realms.rs
+    pub places: Option<realms::Places>,
+    /// Whether the window of the gate or the portal is open, and what was picked in it
+    pub gate_open: bool,
+    pub gate_action: Option<GateAction>,
+    /// Going through to another realm: which, and since when, as the screen darkens
+    pub leaving: Option<(usize, Instant)>,
+    trial: Trial,
 }
 
 impl Session {
@@ -82,8 +124,23 @@ impl Session {
             arriving: false,
             menu: ModeMenu::default(),
             action: None,
+            places: None,
+            gate_open: false,
+            gate_action: None,
+            leaving: None,
+            trial: Trial::default(),
         }
     }
+
+    /// How dark the screen is going through to another realm, 0 to 1
+    pub fn leaving_dark(&self) -> f32 {
+        self.leaving.map_or(0.0, |(_, since)| (since.elapsed().as_secs_f32() / LEAVING_SECONDS).min(1.0))
+    }
+}
+
+/// The realm being played in Realms, and whether that's so
+fn realm_of(session: &Session) -> Option<usize> {
+    session.realms.as_ref().map(|r| (r.realm as usize).min(realms::REALMS.len() - 1))
 }
 
 /// Where Innert starts, the lake shore on the default seed, in voxels from the corner of the
@@ -108,20 +165,35 @@ impl App {
         }
         let vpm = self.world.voxels_per_meter as f64;
         let fresh = save.is_none();
-        let save = save.unwrap_or_else(|| {
-            let seed = if mode == Mode::Realms { REALMS_SEED } else { self.new_seed };
+        let mut save = save.unwrap_or_else(|| {
             let start = default_start(&self.terrain, self.world.voxels_per_meter) / vpm;
             let look = Scene::Terrain.initial_camera();
+            let mut player = save::PlayerSave { position: start.into(), find_ground: true, yaw: look.rotation.z, pitch: look.rotation.x, ..Default::default() };
+            // The journey through the realms starts in front of the Innert Gate, looking at it
+            if mode == Mode::Realms {
+                let places = self.places_in(0);
+                player.position = [places.arrival[0], places.arrival[1], 0.0];
+                player.yaw = places.facing + FRAC_PI_2;
+                player.pitch = 0.12;
+            }
             Save {
                 version: save::VERSION,
                 mode,
-                seed,
-                player: save::PlayerSave { position: start.into(), find_ground: true, yaw: look.rotation.z, pitch: look.rotation.x, ..Default::default() },
+                seed: if mode == Mode::Realms { REALMS[0].seed } else { self.new_seed.min(realms::FREE_ROAM_SEEDS) },
+                player,
                 world: NORMAL_WORLD.to_owned(),
                 realms: (mode == Mode::Realms).then(save::RealmsSave::default),
                 ..Default::default()
             }
         });
+        // In Realms, the realm the journey's got to is the world and the landscape
+        if let Some(progress) = &save.realms
+            && mode == Mode::Realms
+        {
+            let realm = &REALMS[(progress.realm as usize).min(REALMS.len() - 1)];
+            save.seed = realm.seed;
+            save.world = realm.id.to_owned();
+        }
         println!("Playing {}{}, seed {}", mode.name(), if fresh { " afresh" } else { " from its save" }, save.seed);
 
         // The landscape, and what's been done to it
@@ -147,6 +219,8 @@ impl App {
         session.world_sections = done.sections.clone();
         session.played = save.played;
         session.due = false;
+        session.gate_open = false;
+        session.leaving = None;
 
         // What the player carries and how they are
         self.game.leave_world(save.seed);
@@ -156,6 +230,8 @@ impl App {
             let p = &save.player;
             self.game.restore(&save.carried, &done, (p.health, p.hunger, p.mana));
         }
+        // Where the gate, the portal and the raid bosses are in the realm, and how hard it is
+        self.enter_realm();
 
         // Where they are, in the world as it is
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
@@ -212,6 +288,283 @@ impl App {
         self.session.last_saved = Instant::now();
         if !self.session.find_ground {
             self.save_game(false);
+        }
+    }
+
+    /// Where things are in realm `realm`: as for Places::find(), round where Innert starts, looking
+    /// the way it starts looking
+    fn places_in(&self, realm: usize) -> realms::Places {
+        let vpm = self.world.voxels_per_meter;
+        let settings = TerrainSettings { seed: REALMS[realm].seed, ..self.terrain_settings() };
+        let start = default_start(&self.terrain, vpm) / vpm as f64;
+        let yaw = Scene::Terrain.initial_camera().rotation.z;
+        realms::Places::find(realm, &settings, [start.x, start.y], [-yaw.sin(), yaw.cos()])
+    }
+
+    /// Takes up the realm the player's in, in Realms: where its gate or portal and its raid bosses
+    /// are, and how much harder it is. In Free Roam, none of that.
+    fn enter_realm(&mut self) {
+        match (self.session.mode, realm_of(&self.session)) {
+            (Some(Mode::Realms), Some(realm)) => {
+                let places = self.places_in(realm);
+                let journeys = self.session.realms.as_ref().map_or(0, |r| r.completed);
+                self.game.set_scaling(REALMS[realm].scaling.after(journeys));
+                println!(
+                    "REALM {} ({}): gate at {:.0}, {:.0}, arrival {:.0}, {:.0}, raid bosses at {}",
+                    realm,
+                    REALMS[realm].name,
+                    places.gate[0],
+                    places.gate[1],
+                    places.arrival[0],
+                    places.arrival[1],
+                    places.lairs.iter().zip(&REALMS[realm].raid_bosses).map(|(p, (look, _))| format!("{} {:.0}, {:.0}", look.name(), p[0], p[1])).collect::<Vec<_>>().join("; ")
+                );
+                self.session.places = Some(places);
+            }
+            _ => {
+                self.game.set_scaling(realms::Scaling::NONE);
+                self.session.places = None;
+            }
+        }
+    }
+
+    /// The realm's raid bosses' lairs and its gate or portal home, those in the world where it is
+    /// now, in its voxels, for adopt_features()
+    pub(super) fn realm_sites(&self) -> (Vec<game::Lair>, Vec<game::Shrine>) {
+        let (Some(places), Some(progress)) = (&self.session.places, &self.session.realms) else {
+            return (Vec::new(), Vec::new());
+        };
+        let vpm = self.world.voxels_per_meter as f64;
+        let [sx, sy, _] = self.world.size.map(f64::from);
+        let local = |p: [f64; 2]| Vector3::new(p[0] * vpm - self.world.origin[0] as f64, p[1] * vpm - self.world.origin[1] as f64, 0.0);
+        let inside = |p: &Vector3<f64>| p.x >= 2.0 && p.y >= 2.0 && p.x < sx - 2.0 && p.y < sy - 2.0;
+        let realm = &REALMS[places.realm];
+        let mut lairs = Vec::new();
+        for slot in 0..realms::RAIDS {
+            let mut at = local(places.lairs[slot]);
+            if inside(&at) {
+                at.z = game::ground_top(&self.world, at.x, at.y);
+                lairs.push(game::Lair { look: realm.raid_bosses[slot].0, position: at, key: places.lair_key(slot), raid: Some(places.realm as u8) });
+            }
+        }
+        let gate = local(places.gate);
+        let placed = std::array::from_fn(|r| progress.placed.get(r).copied().unwrap_or(0));
+        let shrines = if inside(&gate) {
+            // The gate's veil is lit once it leads anywhere; a portal always leads home
+            vec![game::Shrine { gate: places.realm == 0, position: gate, facing: places.facing, placed, open: places.realm != 0 || progress.unlocked.len() > 1 }]
+        } else {
+            Vec::new()
+        };
+        (lairs, shrines)
+    }
+
+    /// The gate or portal as it is now, after blocks are set in it
+    fn refresh_shrines(&mut self) {
+        let (_, shrines) = self.realm_sites();
+        self.game.set_shrines(&self.world, shrines);
+    }
+
+    /// Does what was picked at the gate or a portal
+    fn gate_picked(&mut self, action: GateAction) {
+        match action {
+            GateAction::Close => {
+                self.session.gate_open = false;
+                self.set_focus(true);
+            }
+            GateAction::Travel(to) => {
+                self.session.gate_open = false;
+                self.session.leaving = Some((to, Instant::now()));
+                self.set_focus(true);
+            }
+            GateAction::SetIn(realm) => {
+                let Some(progress) = &mut self.session.realms else {
+                    return;
+                };
+                if progress.placed.len() < REALMS.len() {
+                    progress.placed.resize(REALMS.len(), 0);
+                }
+                let (_, restored_before) = realms::opened(&progress.placed);
+                let wanted = (realms::RAIDS as u32).saturating_sub(progress.placed[realm]);
+                let taken = self.game.take_innert_blocks(realm as u8, wanted);
+                let progress = self.session.realms.as_mut().unwrap();
+                progress.placed[realm] += taken;
+                let (open, restored) = realms::opened(&progress.placed);
+                let newly: Vec<u32> = open.iter().copied().filter(|r| !progress.unlocked.contains(r)).collect();
+                progress.unlocked.extend(&newly);
+                progress.unlocked.sort_unstable();
+                let message = if restored && !restored_before {
+                    progress.completed += 1;
+                    "All four realms are restored! The gate blazes with their light, and the way to every realm stands open. Foes grow stronger from here on.".to_owned()
+                } else if let Some(&r) = newly.last() {
+                    format!("The gate wakes: the way to {} is open!", REALMS[r as usize].name)
+                } else {
+                    format!("{taken} Innert block{} set into the gate.", if taken == 1 { "" } else { "s" })
+                };
+                println!("GATE: {message} placed {:?}, unlocked {:?}", progress.placed, progress.unlocked);
+                if restored && !restored_before {
+                    // Harder from here on, in the normal world too
+                    self.enter_realm();
+                }
+                self.game.say(message);
+                self.refresh_shrines();
+                self.save_game(false);
+            }
+        }
+    }
+
+    /// Goes through to realm `to`: what's been done in the realm left is kept, and the one gone to
+    /// is built afresh round its gate or portal, behind the dark, with the player in front of it
+    /// looking out
+    pub(super) fn travel(&mut self, to: usize) {
+        if self.session.realms.is_none() {
+            return;
+        }
+        let realm = &REALMS[to];
+        // What's been done in the realm left, kept for coming back
+        let mut left = self.game.world_save();
+        left.craters = std::mem::take(&mut self.craters);
+        left.stains = std::mem::take(&mut self.stains);
+        left.sections = std::mem::take(&mut self.session.world_sections);
+        let from = std::mem::replace(&mut self.session.world, realm.id.to_owned());
+        self.session.others.insert(from, left);
+        let there = self.session.others.remove(realm.id).unwrap_or_default();
+        if let Some(progress) = &mut self.session.realms {
+            progress.realm = to as u32;
+            if !progress.visited.contains(&(to as u32)) {
+                progress.visited.push(to as u32);
+            }
+        }
+        // Its landscape and what's been done to it
+        self.terrain.seed = realm.seed;
+        self.rivers = Arc::new(RiverCache::default());
+        self.craters = there.craters.clone();
+        self.stains = there.stains.clone();
+        self.session.world_sections = there.sections.clone();
+        self.game.leave_world(realm.seed);
+        self.game.restore_world(&there);
+        self.enter_realm();
+        // In front of the gate or the portal, looking out from it, stood on the ground once the
+        // realm's built round them
+        let places = self.session.places.clone().expect("a realm's places");
+        let vpm = self.world.voxels_per_meter as f64;
+        let at = Vector3::new(places.arrival[0] * vpm - self.world.origin[0] as f64, places.arrival[1] * vpm - self.world.origin[1] as f64, self.world.size[2] as f64 - 2.0 * vpm);
+        let eye = Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let mut player = Player::new(at + eye, &self.world);
+        player.position = at;
+        self.player = Some(player);
+        self.camera.position = voxels_to_camera(at + eye, self.world.size);
+        self.camera.rotation.z = places.facing - FRAC_PI_2;
+        self.camera.rotation.x = -0.05;
+        self.last_feet = None;
+        self.wake = None;
+        self.session.find_ground = true;
+        self.session.arriving = true;
+        self.session.gate_open = false;
+        self.rebuild_world();
+        self.game.say(if to == 0 { "You step back through to the Innert Gate.".to_owned() } else { format!("You step through into {}.", realm.name) });
+    }
+
+    /// For trying out the journey: as if it had got as far as realm `realm`, each realm before it
+    /// opened with all its blocks set in, the player there
+    fn set_out_for(&mut self, realm: usize) {
+        let realm = realm.min(REALMS.len() - 1);
+        if let Some(progress) = &mut self.session.realms {
+            progress.placed = (0..REALMS.len()).map(|r| if r < realm { realms::RAIDS as u32 } else { 0 }).collect();
+            progress.unlocked = (0..=realm as u32).collect();
+            progress.visited = progress.unlocked.clone();
+        }
+        if realm > 0 {
+            self.travel(realm);
+        }
+    }
+
+    /// For trying the journey out in screenshot runs, see Trial: `realm=2` sets out there, with
+    /// each realm before it opened, `blocks=3` gives that many of the realm's Innert blocks,
+    /// `gate_window=1` opens the gate's window, `near_raid=0` stands the player 30 m from that
+    /// raid boss's lair, and `slay_raid_at`, `set_in_at` and `travel_at` do those at those frames
+    pub(super) fn try_journey(&mut self, settings: &[(String, String)]) {
+        let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        let number = |key: &str| setting(key).and_then(|v| v.parse::<usize>().ok());
+        if let Some(realm) = number("realm") {
+            self.set_out_for(realm);
+        }
+        if let (Some(count), Some(realm)) = (number("blocks"), realm_of(&self.session)) {
+            self.game.give_innert_blocks(realm as u8, count as u32);
+        }
+        if setting("gate_window").is_some_and(|v| v == "1") {
+            self.session.gate_open = true;
+        }
+        if let (Some(slot), Some(places)) = (number("near_raid"), self.session.places.clone()) {
+            // On the near side of it, from the gate, stood on the ground once it's built round them
+            let lair = places.lairs[slot.min(realms::RAIDS - 1)];
+            let (dx, dy) = (places.gate[0] - lair[0], places.gate[1] - lair[1]);
+            let d = dx.hypot(dy).max(1.0);
+            let vpm = self.world.voxels_per_meter as f64;
+            let spot = [lair[0] + dx / d * 30.0, lair[1] + dy / d * 30.0];
+            let at = Vector3::new(spot[0] * vpm - self.world.origin[0] as f64, spot[1] * vpm - self.world.origin[1] as f64, self.world.size[2] as f64 - 2.0 * vpm);
+            let mut player = Player::new(at, &self.world);
+            player.position = at;
+            self.player = Some(player);
+            self.camera.position = voxels_to_camera(at, self.world.size);
+            // Looking along -dx, -dy, at the lair
+            self.camera.rotation.z = dx.atan2(-dy);
+            self.camera.rotation.x = 0.1;
+            self.session.find_ground = true;
+            self.session.arriving = true;
+            self.rebuild_world();
+        }
+        self.session.trial = Trial {
+            slay_raid_at: number("slay_raid_at"),
+            set_in_at: number("set_in_at"),
+            travel_at: setting("travel_at").and_then(|v| v.split_once(':')).and_then(|(f, r)| Some((f.parse().ok()?, r.parse().ok()?))),
+            shots_after: setting("shots_after").map_or(Vec::new(), |v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect()),
+            end_after: number("end_after"),
+            ready: None,
+            there: false,
+        };
+    }
+
+    /// What the trial does at frame `frame` of a screenshot run
+    fn trial_step(&mut self, frame: usize) {
+        // The world's there to play in once it's built and they're stood on it
+        let there = !self.session.arriving && !self.session.find_ground && self.session.leaving.is_none();
+        let trial = &mut self.session.trial;
+        if there && !trial.there {
+            trial.ready.get_or_insert(frame);
+            println!("READY at frame {frame}");
+            if let Some(capture) = &mut self.capture {
+                capture.shots.extend(trial.shots_after.iter().map(|k| frame + k));
+                if let Some(end) = trial.end_after {
+                    capture.frames = (frame + end) as u32;
+                }
+            }
+        }
+        // Gone through to another realm meanwhile: the run goes on till it's there too
+        if !there
+            && trial.there
+            && trial.end_after.is_some()
+            && let Some(capture) = &mut self.capture
+        {
+            capture.frames = u32::MAX;
+        }
+        trial.there = there;
+        let Some(ready) = trial.ready else {
+            return;
+        };
+        let at = |when: Option<usize>| when.is_some_and(|w| ready + w == frame);
+        let (slay, set_in, travel) = (at(trial.slay_raid_at), at(trial.set_in_at), trial.travel_at.filter(|(f, _)| ready + *f == frame));
+        if slay {
+            let near = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+            let raids = self.game.raid_bosses();
+            let slain = self.game.slay_raid_boss(&self.world, near);
+            println!("BLOCK at frame {frame}: raid bosses about {:?}, one slain: {slain}; {}", raids.iter().map(|(l, _, h)| format!("{} {h:.0} health", l.name())).collect::<Vec<_>>(), self.game.last_message().unwrap_or(""));
+        }
+        if set_in && let Some(realm) = realm_of(&self.session) {
+            self.gate_picked(GateAction::SetIn(realm));
+        }
+        if let Some((_, to)) = travel {
+            println!("GATE at frame {frame}: going through to {}", REALMS[to.min(REALMS.len() - 1)].name);
+            self.gate_picked(GateAction::Travel(to.min(REALMS.len() - 1)));
         }
     }
 
@@ -300,6 +653,24 @@ impl App {
             }
             self.session.due = true;
         }
+        // At the gate or a portal: its window opens, freeing the mouse for it
+        if self.game.take_shrine() && self.session.places.is_some() && self.session.leaving.is_none() {
+            self.session.gate_open = true;
+            self.set_focus(false);
+        }
+        if let Some(action) = self.session.gate_action.take() {
+            self.gate_picked(action);
+        }
+        // Gone through once the screen's dark
+        if let Some((to, _)) = self.session.leaving
+            && self.session.leaving_dark() >= 1.0
+        {
+            self.session.leaving = None;
+            self.travel(to);
+        }
+        if let Some(frame) = self.capture.as_ref().map(|c| c.frame_times.len()) {
+            self.trial_step(frame);
+        }
         if self.session.mode.is_none() || self.menu_open {
             return;
         }
@@ -341,8 +712,10 @@ impl App {
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         let at = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
         let at = (at + origin) / vpm;
+        // Which of the realm's raid bosses are beaten
+        let raids: Vec<bool> = self.session.places.as_ref().map_or(Vec::new(), |p| (0..realms::RAIDS).map(|k| self.game.is_defeated(&p.lair_key(k))).collect());
         format!(
-            "mode={} seed={} world={} at={:.2},{:.2},{:.2} walking={} {} craters={} stains={} realms={:?}",
+            "mode={} seed={} world={} at={:.2},{:.2},{:.2} walking={} {} craters={} stains={} raids_beaten={raids:?} realms={:?}",
             self.session.mode.map_or("none", Mode::name),
             self.terrain.seed,
             self.session.world,
@@ -356,6 +729,75 @@ impl App {
             self.session.realms.as_ref().map(|r| (r.realm, r.unlocked.clone(), r.visited.clone()))
         )
     }
+}
+
+/// The window of the Innert Gate, or of the portal home in realm `here` past the normal world:
+/// each realm's three sockets, how many of its blocks are set in and how many carried, with
+/// setting them in and going through to the realms open at the gate, or going home at a portal.
+/// What's picked is given back.
+pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave, carried: [u32; 4]) -> Option<GateAction> {
+    let mut picked = None;
+    let gray = Color32::from_gray(185);
+    let (_, restored) = realms::opened(&progress.placed);
+    let title = if here == 0 { "The Innert Gate" } else { "Portal Home" };
+    egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).fixed_size([560.0, 0.0]).show(ctx, |ui| {
+        if here == 0 {
+            ui.label(RichText::new("An ancient gate of dark stone, older than any realm's kings. Each realm's three raid bosses guard an Innert block. Set a realm's three into the gate's sockets, and the way to the next realm opens.").size(14.0).color(gray));
+        } else {
+            ui.label(RichText::new(format!("The way home from {}, back to the Innert Gate in the normal world. Bring this realm's blocks to the gate.", REALMS[here].name)).size(14.0).color(gray));
+        }
+        ui.add_space(10.0);
+        for (r, realm) in REALMS.iter().enumerate() {
+            let placed = progress.placed.get(r).copied().unwrap_or(0) as usize;
+            let open = progress.unlocked.contains(&(r as u32));
+            let [cr, cg, cb] = realm.color;
+            let color = Color32::from_rgb(cr, cg, cb);
+            ui.horizontal(|ui| {
+                // Its three sockets, lit where a block's set in
+                for k in 0..realms::RAIDS {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, Color32::from_gray(40));
+                    ui.painter().rect_filled(rect.shrink(if k < placed { 2.0 } else { 6.0 }), 2.0, if k < placed { color } else { color.gamma_multiply(0.25) });
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new(realm.name).size(17.0).strong().color(if open { color } else { Color32::from_gray(120) }));
+                let state = match (open, placed >= realms::RAIDS) {
+                    (false, _) => "sealed".to_owned(),
+                    (true, true) => "its blocks all set in".to_owned(),
+                    (true, false) if r == here => format!("here · {placed} of {} set in", realms::RAIDS),
+                    (true, false) => format!("{placed} of {} set in", realms::RAIDS),
+                };
+                ui.label(RichText::new(state).size(13.0).color(gray));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if here == 0 && open && r != 0 && ui.button(RichText::new("Travel").size(15.0)).clicked() {
+                        picked = Some(GateAction::Travel(r));
+                    }
+                    let can = carried[r].min((realms::RAIDS - placed.min(realms::RAIDS)) as u32);
+                    if here == 0 && can > 0 && ui.button(RichText::new(format!("Set in {can}")).size(15.0)).clicked() {
+                        picked = Some(GateAction::SetIn(r));
+                    }
+                    if carried[r] > 0 {
+                        ui.label(RichText::new(format!("{} carried", carried[r])).size(13.0).color(color));
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+        if restored {
+            ui.add_space(6.0);
+            ui.label(RichText::new("All realms restored. The gate burns with the light of every one of them.").size(16.0).strong().color(Color32::from_rgb(255, 220, 140)));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if here != 0 && ui.button(RichText::new("Return to the gate").size(16.0)).clicked() {
+                picked = Some(GateAction::Travel(0));
+            }
+            if ui.button(RichText::new("Close").size(16.0)).clicked() {
+                picked = Some(GateAction::Close);
+            }
+        });
+    });
+    picked
 }
 
 /// The main menu: Resume while playing, each mode with Continue if it has a save and New, asking

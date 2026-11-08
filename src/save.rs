@@ -156,6 +156,10 @@ pub enum ItemSave {
         id: String,
         rounds: u32,
     },
+    /// An Innert block a raid boss of realm `realm` left, see realms.rs
+    InnertBlock {
+        realm: u8,
+    },
     /// Something from a later Innert this one doesn't know: left out
     #[serde(other)]
     Unknown,
