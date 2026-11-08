@@ -1523,8 +1523,10 @@ pub fn hurry(on: bool) {
 /// took over 20 ms. It still has all the time they leave, which on two cores, the game drawing as
 /// fast as it can, wasn't enough to keep up: so not while it's hurried, see hurry(). Each thread
 /// building the world calls this as it starts on each step, and now and then along the longest, so
-/// a hurry's taken up straight away. Only a load of an atomic unless it's to change.
+/// a hurry's taken up straight away. Only a load of an atomic unless it's to change, and one more
+/// for `--set crash_thread`, see crash.rs.
 pub fn give_way() {
+    crate::crash::worker();
     if !BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
