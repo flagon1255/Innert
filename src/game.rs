@@ -1291,11 +1291,18 @@ impl Game {
         self.weapons.iter().map(|w| self.describe(w)).collect::<Vec<_>>().join("\n")
     }
 
+    /// What a player does with the mouse to use the power on right click of the weapon in hand,
+    /// `t` seconds after starting to, for scripts, see Combat::power_controls()
+    pub fn power_controls(&self, t: f64, step: f64) -> crate::combat::Controls {
+        self.held().map_or_else(Default::default, |(_, w)| self.combat.power_controls(w, t, step))
+    }
+
     /// The weapon in hand, as describe_weapons() puts it, with its special attack
     pub fn describe_held(&self) -> String {
         self.held().map_or("nothing".into(), |(_, w)| {
             let special = w.profile.special.as_ref().map_or(String::new(), |(s, part)| format!(" Special: {} from {}.", s.name(), part));
-            format!("{}{}", self.describe(w), special)
+            let power = w.profile.power.map_or(String::new(), |p| format!(" Right click: {}.", p.name(w.profile.element)));
+            format!("{}{}{}", self.describe(w), special, power)
         })
     }
 
@@ -5332,6 +5339,19 @@ impl Game {
                 painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * charge, 5.0)), 2.5, color(rarity.color));
                 below += 32.0;
             }
+            // Its power on right click, filling as it comes ready again
+            if let Some(power) = weapon.profile.power {
+                let ready = (1.0 - self.combat.power_cooldown() / power.cooldown()).clamp(0.0, 1.0) as f32;
+                let name = power.name(weapon.profile.element);
+                let label = if ready >= 1.0 { format!("Right click — {name} ready") } else { format!("Right click — {name}") };
+                let tint = if ready >= 1.0 { weapon.profile.element.map_or(color(rarity.color), |e| color(e.color())) } else { faint };
+                painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(13.0), shadow);
+                painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(13.0), tint);
+                let back = Rect::from_center_size(pos2(center.x, below + 20.0), vec2(150.0, 4.0));
+                painter.rect_filled(back, 2.0, Color32::from_white_alpha(30));
+                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * ready, 4.0)), 2.0, tint);
+                below += 28.0;
+            }
         }
 
         // Messages under that, newest first, fading out, and with no weapon in hand still under
@@ -5848,6 +5868,12 @@ impl Game {
             ui.add_space(4.0);
             ui.label(RichText::new(format!("R — {}", special.name())).color(color(rarity.color)).strong());
             ui.label(RichText::new(format!("{} From its {}.", special.description(), part)).weak());
+        }
+        if let Some(power) = profile.power {
+            ui.add_space(4.0);
+            let tint = profile.element.map_or(color(rarity.color), |e| color(e.color()));
+            ui.label(RichText::new(format!("Right click — {}", power.name(profile.element))).color(tint).strong());
+            ui.label(RichText::new(format!("{}. {}", power.how(profile.build), power.description(profile.element))).weak());
         }
         if !profile.effects.is_empty() {
             ui.add_space(4.0);

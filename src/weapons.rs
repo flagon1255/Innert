@@ -1256,6 +1256,8 @@ pub struct Profile {
     pub synergies: Vec<ActiveSynergy>,
     /// Its special attack, if one of its parts gives it one, and which part
     pub special: Option<(Special, String)>,
+    /// Its power on right click, if it's legendary or mythic or has a part that is, see Power
+    pub power: Option<Power>,
     /// Its overall rarity, as Weapon::grade: what a whip can do grows with it
     pub grade: usize,
     /// How a crossbow or gun is built, and so loaded
@@ -1669,6 +1671,207 @@ impl Special {
     }
 }
 
+/// What a legendary or mythic weapon does on right click: a power of its family's, in its element,
+/// its own besides its special attack on R. Where right click already does something, a heavy
+/// blow or a bow's draw, that carries it; a crossbow or gun shoots it, bombs throw it and a weapon
+/// that casts casts it. See combat/signatures/powers.rs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Power {
+    /// A sword's: a crescent of its element flying on from the heavy blow, through all it meets
+    Crescent,
+    /// A greatsword's: a broad, slow wave of it, throwing back what it cuts
+    Rending,
+    /// A katana's: a thin cut flying far and fast
+    WindCut,
+    /// A dagger's: three small crescents in a fan
+    BladeFan,
+    /// A whip's: its crack running on low over the ground as a wave
+    LashWave,
+    /// An axe's, halberd's, scythe's or battle staff's: a spinning wheel of its element hurled out
+    /// and coming back, cutting both ways
+    Wheel,
+    /// A spear's: a spear of its element hurled through everything in a line
+    Javelin,
+    /// A hammer's, maul's or flail's: the ground split open in a line ahead, erupting step by step
+    Fissure,
+    /// A bow's drawn full: an arrow like a comet, through everything, bursting at the end
+    CometArrow,
+    /// A crossbow's: a bolt that sticks where it strikes and bursts apart into shards
+    BurstBolt,
+    /// A pistol's: a glowing slug glancing from one enemy on to the next
+    Ricochet,
+    /// A musket's: a lance of its element through everything in a line, bursting along it after
+    LanceShot,
+    /// A blunderbuss's: a cone of its element's embers breathed out
+    Breath,
+    /// A hand cannon's: a shell lobbed high onto the crosshair, bursting wide
+    Mortar,
+    /// Bombs': a charge dragging everything round it in, then bursting
+    Vortex,
+    /// A staff's, scepter's or lightning rod's: a great slow orb, bursting wide where it lands
+    Comet,
+    /// A wand's, tome's or totem's: motes seeking out what's near
+    Seekers,
+    /// An orb's, bell's or censer's: a ring of its element rolling out all round
+    Nova,
+}
+
+impl Power {
+    /// Every one of them
+    #[cfg(test)]
+    pub const ALL: [Power; 18] = [
+        Power::Crescent,
+        Power::Rending,
+        Power::WindCut,
+        Power::BladeFan,
+        Power::LashWave,
+        Power::Wheel,
+        Power::Javelin,
+        Power::Fissure,
+        Power::CometArrow,
+        Power::BurstBolt,
+        Power::Ricochet,
+        Power::LanceShot,
+        Power::Breath,
+        Power::Mortar,
+        Power::Vortex,
+        Power::Comet,
+        Power::Seekers,
+        Power::Nova,
+    ];
+
+    /// The one a family's legendary and mythic weapons have, by its id
+    pub fn of(family: &str) -> Option<Power> {
+        Some(match family {
+            "sword" => Power::Crescent,
+            "greatsword" => Power::Rending,
+            "katana" => Power::WindCut,
+            "dagger" => Power::BladeFan,
+            "whip" => Power::LashWave,
+            "axe" | "halberd" | "scythe" | "battlestaff" => Power::Wheel,
+            "spear" => Power::Javelin,
+            "hammer" | "maul" | "flail" => Power::Fissure,
+            "bow" => Power::CometArrow,
+            "crossbow" | "arbalest" | "repeater" | "handcrossbow" | "twinprod" | "siegecrossbow" | "harpoon" | "boltthrower" => Power::BurstBolt,
+            "pistol" => Power::Ricochet,
+            "musket" => Power::LanceShot,
+            "blunderbuss" => Power::Breath,
+            "handcannon" => Power::Mortar,
+            "bombs" => Power::Vortex,
+            "staff" | "scepter" | "rod" => Power::Comet,
+            "wand" | "tome" | "totem" => Power::Seekers,
+            "orb" | "bell" | "censer" => Power::Nova,
+            _ => return None,
+        })
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Power::Crescent => "Crescent",
+            Power::Rending => "Rending Wave",
+            Power::WindCut => "Wind Cut",
+            Power::BladeFan => "Blade Fan",
+            Power::LashWave => "Lash Wave",
+            Power::Wheel => "Wheel",
+            Power::Javelin => "Javelin",
+            Power::Fissure => "Fissure",
+            Power::CometArrow => "Comet Arrow",
+            Power::BurstBolt => "Burst Bolt",
+            Power::Ricochet => "Ricochet",
+            Power::LanceShot => "Lance Shot",
+            Power::Breath => "Breath",
+            Power::Mortar => "Mortar",
+            Power::Vortex => "Vortex",
+            Power::Comet => "Comet",
+            Power::Seekers => "Seekers",
+            Power::Nova => "Nova",
+        }
+    }
+
+    /// What it's called, in `element`: a searing crescent, a rime wheel
+    pub fn name(self, element: Option<Element>) -> String {
+        let adjective = match element {
+            Some(Element::Fire) => "Searing",
+            Some(Element::Frost) => "Rime",
+            Some(Element::Storm) => "Thunder",
+            Some(Element::Poison) => "Venom",
+            Some(Element::Arcane) => "Arcane",
+            Some(Element::Void) => "Void",
+            Some(Element::Blood) => "Blood",
+            Some(Element::Holy) => "Radiant",
+            None => "Keen",
+        };
+        format!("{adjective} {}", self.noun())
+    }
+
+    /// Seconds before it can be used again
+    pub fn cooldown(self) -> f64 {
+        match self {
+            Power::Comet | Power::Seekers | Power::Nova => 6.0,
+            Power::CometArrow | Power::Ricochet => 7.0,
+            Power::Vortex | Power::Mortar => 9.0,
+            _ => 8.0,
+        }
+    }
+
+    /// How many times its spell's mana it costs, for a weapon that casts
+    pub fn mana(self) -> f64 {
+        match self {
+            Power::Comet | Power::Seekers | Power::Nova => 2.0,
+            _ => 0.0,
+        }
+    }
+
+    /// How it's used, on a weapon built `build`
+    pub fn how(self, build: Build) -> &'static str {
+        match self {
+            Power::Crescent | Power::Rending | Power::WindCut | Power::BladeFan | Power::LashWave | Power::Wheel | Power::Javelin | Power::Fissure => "Right click: the heavy blow carries it",
+            Power::CometArrow => "Right click to draw, and loose drawn full",
+            Power::BurstBolt if build == Build::Siege => "Right click to brace: the first bolt loosed braced is it",
+            Power::Vortex => "Hold right click to aim, let go to throw it",
+            _ => "Right click",
+        }
+    }
+
+    /// What it does, in `element`
+    pub fn description(self, element: Option<Element>) -> String {
+        let what = match self {
+            Power::Crescent => "A crescent of {e} flies 14 meters on from the heavy blow, cutting through everything in its way.",
+            Power::Rending => "A broad, slow wave of {e} rolls 16 meters on from the heavy blow, cutting through everything and throwing it back.",
+            Power::WindCut => "A thin cut of {e} flies 22 meters on from the heavy blow, fast, through everything in its way.",
+            Power::BladeFan => "Three small crescents of {e} fan out 11 meters from the heavy blow, through everything they meet.",
+            Power::LashWave => "The crack runs on 14 meters low over the ground as a wave of {e}, through everything in its way.",
+            Power::Wheel => "A spinning wheel of {e} is hurled 13 meters out from the heavy blow and comes back, cutting everything both ways.",
+            Power::Javelin => "A spear of {e} is hurled from the heavy thrust, through everything in a line 26 meters on, bursting at the end.",
+            Power::Fissure => "The heavy blow splits the ground open in a line 12 meters ahead, {e} erupting from it step by step, throwing up what stands on it.",
+            Power::CometArrow => "An arrow like a comet of {e}, through everything it meets, bursting where it comes down.",
+            Power::BurstBolt => "A bolt of {e} that sticks where it strikes and a moment later bursts apart, shards of it flying all round.",
+            Power::Ricochet => "A glowing slug of {e} that glances off what it hits on to the next enemy near, four times.",
+            Power::LanceShot => "A lance of {e} through everything in a line, the line it leaves bursting a moment later.",
+            Power::Breath => "Seven embers of {e} breathed out in a cone, bursting where they strike.",
+            Power::Mortar => "A shell of {e} lobbed high onto the crosshair, bursting wide where it comes down.",
+            Power::Vortex => "A charge of {e} that drags everything within 6 meters in to where it lands, then bursts.",
+            Power::Comet => "A great slow orb of {e} that bursts wide where it lands.",
+            Power::Seekers => "Five motes of {e} that each seek out something near, bursting on it.",
+            Power::Nova => "A ring of {e} rolling out 9 meters all round you, through everything it reaches.",
+        };
+        let rider = match element {
+            Some(Element::Fire) => "What it hits is set burning.",
+            Some(Element::Frost) => "What it hits is chilled, frozen if it's chilled already.",
+            Some(Element::Storm) => "Lightning leaps from what it hits to the next.",
+            Some(Element::Poison) => "What it hits is poisoned.",
+            Some(Element::Arcane) => "What it hits is thrown back.",
+            Some(Element::Void) => "What it hits is dragged in.",
+            Some(Element::Blood) => "What it hits bleeds, and you heal.",
+            Some(Element::Holy) => "What it hits is staggered, and you heal a little.",
+            None => "What it hits is staggered.",
+        };
+        let stuff = element.map_or("steel".to_string(), |e| e.name().to_lowercase());
+        let cost = if self.mana() > 0.0 { format!(" Costs twice a spell's mana; every {:.0} s.", self.cooldown()) } else { format!(" Every {:.0} s.", self.cooldown()) };
+        format!("{} {rider}{cost}", what.replace("{e}", &stuff))
+    }
+}
+
 impl Profile {
     pub fn stat(&self, name: &str) -> f64 {
         self.stats.get(name).copied().unwrap_or(0.0)
@@ -1887,6 +2090,9 @@ impl Weapon {
         }
         // The rarest part with a special attack gives it its own
         let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
+        // A power on right click for a legendary or mythic weapon, or one with a part that is
+        let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(4);
+        let power = if grade >= legendary || special.is_some() || best >= legendary { Power::of(&fam.id) } else { None };
         let (build, caliber, cycle, bolt) = (fam.build, fam.caliber, fam.cycle, fam.bolt);
         let (heavy, finish) = moves_from_parts(fam, components);
         let casting = casting_of(fam, components, &stats, element);
@@ -1901,6 +2107,7 @@ impl Weapon {
             effects,
             synergies,
             special,
+            power,
             grade,
             build,
             caliber,
@@ -2168,20 +2375,56 @@ fn weapon_name(library: &Library, family: usize, components: &[&Component], syne
     // Its size goes before what it is, unless that says it already: no Great Greatblade
     let word = fam.size_word(size);
     let core = if word.is_empty() || core.to_lowercase().contains(&word.to_lowercase()) { core } else { format!("{word} {core}") };
-    let suffix = by_rarity.iter().find_map(|c| c.naming.suffix.clone());
-    let signature = synergies
-        .iter()
-        .find_map(|s| library.synergies[s.def].title.clone())
-        .or_else(|| by_rarity.iter().filter(|c| c.tier >= 4).find_map(|c| c.naming.signature.clone()));
-    if let Some(signature) = signature {
-        return match (by_rarity.iter().find_map(|c| c.naming.epithet.clone()), suffix) {
-            (Some(epithet), _) => format!("{signature}, {epithet}"),
-            (None, Some(suffix)) => format!("{signature} {suffix}"),
-            (None, None) => format!("{signature}, the {core}"),
-        };
+    // Each word only once: an affix that says again what's said already, as a Crescent Crescentaxe
+    // or a Moonsabre of the Moon would, is passed over for the next part's
+    let suffixes: Vec<String> = by_rarity.iter().filter_map(|c| c.naming.suffix.clone()).collect();
+    let epithets: Vec<String> = by_rarity.iter().filter_map(|c| c.naming.epithet.clone()).collect();
+    let signatures = synergies.iter().filter_map(|s| library.synergies[s.def].title.clone()).chain(by_rarity.iter().filter(|c| c.tier >= 4).filter_map(|c| c.naming.signature.clone()));
+    for signature in signatures {
+        let fresh = |s: &&String| !name_clash(s, &signature);
+        if let Some(epithet) = epithets.iter().find(fresh) {
+            return format!("{signature}, {epithet}");
+        }
+        if let Some(suffix) = suffixes.iter().find(fresh) {
+            return format!("{signature} {suffix}");
+        }
+        if !name_clash(&signature, &core) {
+            return format!("{signature}, the {core}");
+        }
     }
-    let prefix = by_rarity.iter().find_map(|c| c.naming.prefix.clone());
+    let prefix = by_rarity.iter().filter_map(|c| c.naming.prefix.clone()).find(|p| !name_clash(p, &core));
+    let suffix = suffixes.into_iter().find(|s| !name_clash(s, &core) && prefix.as_ref().is_none_or(|p| !name_clash(s, p)));
     [prefix, Some(core), suffix].into_iter().flatten().collect::<Vec<_>>().join(" ")
+}
+
+/// The words of a weapon's name that say what it is, lower case, without the little ones
+fn name_words(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_alphabetic()).map(str::to_lowercase).filter(|w| w.len() >= 3 && !matches!(w.as_str(), "the" | "and" | "who" | "whose")).collect()
+}
+
+/// A word with its endings taken off, as ashen to ash, thorns to thorn and stormy to storm
+fn word_stem(word: &str) -> &str {
+    for ending in ["ing", "en", "ed", "es", "s", "y"] {
+        if let Some(stem) = word.strip_suffix(ending)
+            && stem.len() >= 3
+        {
+            return stem;
+        }
+    }
+    word
+}
+
+/// Whether two parts of a name say the same thing over: a word of one the same as one of the
+/// other, or one starting or, if it's long enough to tell, containing the other, as Crescent and
+/// Crescentaxe do
+fn name_clash(a: &str, b: &str) -> bool {
+    let (a, b) = (name_words(a), name_words(b));
+    a.iter().any(|x| {
+        b.iter().any(|y| {
+            let (sx, sy) = (word_stem(x), word_stem(y));
+            sx == sy || x.starts_with(sy) || y.starts_with(sx) || (sx.len() >= 5 && y.contains(sx)) || (sy.len() >= 5 && x.contains(sy))
+        })
+    })
 }
 
 /// A weapon's model, in frames: one for swords, staves and whips, three for a bow being drawn.
@@ -6104,6 +6347,37 @@ fn arm(left: bool) -> Vec<Part> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No weapon's name says a word twice, as Crescent Crescentaxe did: rolled for every family,
+    /// with every luck, named as Weapon::assemble() names it
+    #[test]
+    fn names_never_say_a_word_twice() {
+        let library = Library::load();
+        assert!(name_clash("Crescent", "Crescentaxe") && name_clash("Ashen", "Ashblade") && name_clash("of Thorns", "Thornblade"));
+        assert!(!name_clash("Ashen", "Moonsabre") && !name_clash("of the Deep", "Long Glaive"));
+        let mut repeats = Vec::new();
+        let mut named = 0;
+        for family in 0..library.families.len() {
+            for luck in [0.0, 1.0, 3.0, 8.0, 30.0] {
+                for k in 0..800u32 {
+                    let seed = hash(k ^ (family as u32) << 16 ^ (luck as u32) << 24);
+                    let (family, parts) = library.roll(seed, Some(family), luck);
+                    let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+                    let size = roll_size(seed);
+                    let (profile, _, _) = Weapon::work_out(&library, family, &components, size, seed);
+                    let name = weapon_name(&library, family, &components, &profile.synergies, seed, size);
+                    named += 1;
+                    let words = name_words(&name);
+                    let twice = (0..words.len()).any(|i| (i + 1..words.len()).any(|j| name_clash(&words[i], &words[j])));
+                    if twice && !repeats.contains(&name) {
+                        repeats.push(name);
+                    }
+                }
+            }
+        }
+        println!("{named} names, {} saying a word twice", repeats.len());
+        assert!(repeats.is_empty(), "{} names say a word twice:\n{}", repeats.len(), repeats.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    }
 
     /// Luck so great the rarest parts roll more often than common ones, see Library::odds(): for
     /// seeing what can turn up at all, not how often

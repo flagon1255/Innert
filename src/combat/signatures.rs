@@ -8,6 +8,9 @@
 
 use super::*;
 
+pub(super) mod powers;
+use powers::{Lasting, Shape};
+
 /// Every one of them
 pub(super) const SIGNATURES: [Special; 16] = [
     Special::Rimeskip,
@@ -61,6 +64,8 @@ pub(super) enum Sig {
     Knell,
     /// A hex of blood, binding what's round where it strikes together
     Thread,
+    /// What a legendary or mythic weapon's power on right click shoots, see powers.rs
+    Power(Shape),
 }
 
 /// Parts of them still to come
@@ -132,6 +137,8 @@ pub(super) enum SigZone {
     Ring(Element),
     /// A hex of blood binding what's in `hit` together, and what health each had last frame
     Bloodthread { last: [f32; THREADS] },
+    /// What a legendary or mythic weapon's power on right click leaves going, see powers.rs
+    Power(Lasting),
 }
 
 /// How many skips a rimeskip charge makes, how far apart, in meters, how long each takes, and how
@@ -1260,6 +1267,9 @@ impl Combat {
     /// through what's either side. True if it's gone. Coming to the end of its time, it comes
     /// down where it is, so nothing ever just vanishes.
     pub(super) fn signature_flight(&mut self, arena: &mut Arena, p: &mut Projectile, sig: Sig, dt: f64) -> bool {
+        if let Sig::Power(shape) = sig {
+            return self.power_flight(arena, p, shape, dt);
+        }
         let vpm = arena.view.vpm;
         let at = p.position;
         // Shots from guns and crossbows, and knives of shadow, leave a glowing streak behind them, so
@@ -1455,6 +1465,7 @@ impl Combat {
                 hit(self, arena, p.damage, Some(Element::Blood));
                 self.bind_threads(arena, p, center);
             }
+            Sig::Power(shape) => return self.power_strikes(arena, p, shape, i, at),
         }
         true
     }
@@ -1530,6 +1541,7 @@ impl Combat {
                 self.knell(arena, p, ground);
             }
             Sig::Thread => self.bind_threads(arena, p, at + up * 0.8 * vpm),
+            Sig::Power(shape) => self.power_lands(arena, p, shape, at),
         }
     }
 
@@ -1792,6 +1804,7 @@ impl Combat {
                 }
             }
             SigZone::Bloodthread { last } => self.threads(arena, z, last, dt),
+            SigZone::Power(lasting) => self.power_zone(arena, z, lasting, dt),
         }
     }
 
@@ -2344,6 +2357,7 @@ impl Combat {
                 self.sparks(z.position, 14, 3.0, Element::look(Some(Element::Blood)), 1.0, 0.5);
                 self.cues.push(Cue::at(Sound::Squelch, z.position, 0.7).pitched(0.8));
             }
+            SigZone::Power(lasting) => self.power_zone_ends(arena, z, lasting),
             SigZone::Caltrops | SigZone::Knives | SigZone::Severance | SigZone::Gleaning | SigZone::Anvil | SigZone::Litany | SigZone::Knell | SigZone::Ring(_) => {}
         }
         self.scarless = false;
@@ -2362,6 +2376,7 @@ impl Combat {
         // never lost to the eye
         let far = ((p.position - view.eye).norm() / vpm / 15.0).max(1.0).sqrt();
         Some(match sig {
+            Sig::Power(shape) => self.power_shot_instances(p, shape, view),
             Sig::Skip(_) | Sig::Brood => {
                 let (model, bomb) = self.effect_model(SLOT_BOMB, look);
                 vec![(view.eye, place(model, bomb, BOMB_RES, Vector3::zeros(), p.position, spin, vpm, p.size * far, MOVING))]
@@ -2582,6 +2597,7 @@ impl Combat {
                     out.extend(self.line_bolts(view.eye, z.position, to, look, 0.35, 0.7, 0.12).into_iter().map(|(_, i)| (view.eye, i)));
                 }
             }
+            SigZone::Power(lasting) => out.extend(self.power_zone_instances(z, lasting, view)),
             SigZone::Severance | SigZone::Knell => {}
         }
         out
@@ -2607,6 +2623,7 @@ impl Combat {
                     out.push((z.position + Vector3::new(0.0, 0.0, 0.5 * vpm), LITANY_RADIUS + 2.0, Element::Holy.light(), (0.15 + 0.06 * written) * fade));
                 }
                 SigZone::Bloodthread { .. } => out.push((z.position, 5.0, Element::Blood.light(), 0.7 * fade)),
+                SigZone::Power(lasting) => out.extend(self.power_light(z, lasting)),
                 _ => {}
             }
         }
