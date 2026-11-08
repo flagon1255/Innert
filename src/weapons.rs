@@ -817,8 +817,9 @@ impl AmmoDef {
 #[serde(rename_all = "camelCase")]
 pub struct Library {
     pub rarities: Vec<Rarity>,
-    /// How much more likely luck makes each rarer rarity than the one below it, see odds(): 1
-    /// makes luck 2 twice as likely to roll each next rarity up again, less is gentler
+    /// How much luck lifts the rarer rarities, see odds(): each is `luck` to the power of this
+    /// more likely again than the one below it, so 1 makes luck 2 double each next one up, and
+    /// less is gentler
     #[serde(default = "one")]
     luck_curve: f64,
     /// The power a weapon needs for each rarity as its grade
@@ -836,8 +837,8 @@ pub struct Library {
 
 const BUILT_IN: &str = include_str!("../assets/weapons.json");
 
-/// How many seeds Library::special_seed() tries for a weapon with a special attack: a few dozen
-/// at most as lucky as loot sure to have one is, so never all of them
+/// The most seeds Library::special_seed() tries for a weapon with a special attack: as lucky as
+/// loot that's sure to have one is rolled, it's found in a few
 const SPECIAL_TRIES: usize = 2000;
 
 impl Library {
@@ -6033,6 +6034,10 @@ fn arm(left: bool) -> Vec<Part> {
 mod tests {
     use super::*;
 
+    /// Luck so great the rarest parts roll more often than common ones, see Library::odds(): for
+    /// seeing what can turn up at all, not how often
+    const LUCKIEST: f64 = 100.0;
+
     #[test]
     fn same_seed_same_weapon() {
         let library = Library::parse(BUILT_IN).unwrap();
@@ -6375,7 +6380,7 @@ mod tests {
         let library = Library::parse(BUILT_IN).unwrap();
         let mut seen = vec![false; library.components.len()];
         for seed in 0..90_000u32 {
-            let luck = [1.0, 3.0, 8.0][seed as usize % 3];
+            let luck = [1.0, 8.0, LUCKIEST][seed as usize % 3];
             let (_, parts) = library.roll(hash(seed), None, luck);
             for p in parts {
                 seen[p] = true;
@@ -6465,10 +6470,13 @@ mod tests {
         // A matchlock's loaded heavily, a wheel-lock with a flourish
         assert_eq!(made("musket", "lock", "gilded_matchlock").knack, Knack::Heavy);
         assert_eq!(made("pistol", "lock", "copper_wheel_lock").knack, Knack::Showy);
-        // Across everything that rolls, every way of finishing, casting and drawing turns up
+        // Across everything that rolls, every way of finishing, casting and drawing turns up, the
+        // rare ones in lucky loot
         let (mut finishes, mut castings, mut knacks) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-        for seed in 0..6000 {
-            let p = library.generate(seed, None, 2.0).profile;
+        for seed in 0..30_000u32 {
+            let (family, parts) = library.roll(seed, None, [1.0, 3.0, 8.0, LUCKIEST][seed as usize % 4]);
+            let cs: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+            let p = Weapon::work_out(&library, family, &cs, roll_size(seed), seed).0;
             finishes.insert(format!("{:?}", p.finish));
             castings.insert(format!("{:?}", p.casting));
             knacks.insert(format!("{:?}", p.knack));

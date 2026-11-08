@@ -360,10 +360,10 @@ fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
 /// The families of the weapons the player starts with, one of each, see kit()
 const KIT: [&str; 16] = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
 /// How lucky what a new player starts with is, as for Library::odds(), and the rarest any part of
-/// it, or any weapon of it, can be, of Library::rarities: plain gear, nothing with a special
-/// attack, see kit()
+/// it, or any weapon of it, can be, of Library::rarities: plain gear, common to rare, nothing
+/// with a special attack, see kit(). Weapons with special attacks are to be found.
 const KIT_LUCK: f64 = 1.0;
-const KIT_RAREST: usize = 5;
+const KIT_RAREST: usize = 2;
 /// How many seeds kit() tries for each weapon no rarer than it's to be
 const KIT_TRIES: usize = 64;
 
@@ -391,12 +391,25 @@ fn kit(library: &Library, seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(u
 }
 
 /// The share of the dead and of bandits who carry a weapon, to drop when they're killed, and how
-/// lucky it is, as for Library::odds(), before a realm's scaling
+/// lucky it is, as for Library::odds(), before a realm's scaling: what they fought with, mostly
+/// common, one in about 200 with a special attack
 const MONSTER_WEAPON: f64 = 0.06;
-const MONSTER_LUCK: f64 = 1.5;
+const MONSTER_LUCK: f64 = 0.4;
 
-/// How lucky the weapons a merchant has are, as for Library::odds(), before a realm's scaling
-const MERCHANT_LUCKS: [f64; 5] = [1.0, 1.6, 2.2, 2.8, 3.4];
+/// How lucky the weapons a merchant has are, as for Library::odds(), before a realm's scaling:
+/// some of them rare, now and then epic, and only one stall in a dozen or so with something with
+/// a special attack
+const MERCHANT_LUCKS: [f64; 5] = [0.5, 0.7, 0.9, 1.1, 1.3];
+
+/// How much of a realm's scaling of luck what's found there has, as Scaling::luck to this power,
+/// see loot_scaling(): enough that the realms further on are richer, not so much that weapons
+/// with special attacks are in every chest there
+const REALM_LOOT: f64 = 0.5;
+
+/// How many times luckier the weapons found are in a realm scaled `scaling`, see REALM_LOOT
+fn loot_scaling(scaling: Scaling) -> f64 {
+    scaling.luck.max(0.0).powf(REALM_LOOT)
+}
 
 /// What sort of boss a hoard is a beaten one's, which decides what's in it, see hoard_rolls()
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -411,11 +424,13 @@ enum Hoard {
 
 /// How lucky the weapons a boss leaves are, as for Library::odds(), its best first, before a
 /// realm's scaling: a raid boss leaves far more and far better
-const BOSS_LUCKS: [f64; 2] = [6.0, 2.5];
+const BOSS_LUCKS: [f64; 2] = [8.0, 2.5];
 const RAID_LUCKS: [f64; 5] = [12.0, 5.0, 3.0, 2.5, 2.0];
 /// How likely the best of them is to be one with a special attack, rolled as lucky till it is,
-/// for each sort of Hoard: one of the bosses about the land's only as luck has it
-const SURE_SPECIAL: [f64; 3] = [0.0, 0.0, 0.0];
+/// for each sort of Hoard: one of the bosses about the land's only as luck has it, about one in
+/// five; a realm's raid boss's very likely; a huge raid boss's or a finale's always. The rest of
+/// what they leave only now and then has one, so it's the raid bosses that leave them.
+const SURE_SPECIAL: [f64; 3] = [0.0, 0.8, 1.0];
 
 /// How each weapon in the hoard of a beaten boss is rolled, the best first: how lucky, as for
 /// Library::odds(), before a realm's scaling, and whether it's sure to have a special attack,
@@ -2858,7 +2873,7 @@ impl Game {
     fn roll_weapon(&mut self, luck: f64, sure: bool) -> Item {
         self.rng = hash(self.rng ^ 0x1007);
         // Better in the realms further on
-        let luck = luck * self.scaling.luck;
+        let luck = luck * loot_scaling(self.scaling);
         let seed = if sure { self.library.special_seed(self.rng, None, luck) } else { self.rng };
         let weapon = self.library.generate(seed, None, luck);
         self.weapons.push(weapon);
@@ -3071,7 +3086,7 @@ impl Game {
         let chest = &self.chests[i];
         let key = chest.key;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
-        let weapon = self.library.generate(seed, None, chest.luck * self.scaling.luck);
+        let weapon = self.library.generate(seed, None, chest.luck * loot_scaling(self.scaling));
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
         // A bandits' hoard has what they've taken in it too
         let hoard = chest.hoard;
@@ -3264,7 +3279,7 @@ impl Game {
         let mut wares = Vec::new();
         for luck in MERCHANT_LUCKS {
             seed = hash(seed);
-            self.weapons.push(self.library.generate(seed, None, luck * self.scaling.luck));
+            self.weapons.push(self.library.generate(seed, None, luck * loot_scaling(self.scaling)));
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         self.models_version += 1;
@@ -5872,14 +5887,14 @@ mod tests {
         println!("| realm | luck | monster drop | chest on top | deep chest | lucky chest | bandits' hoard | lesser boss, specials each | realm raid boss | huge raid boss | merchant's stalls with one |");
         println!("|---|---|---|---|---|---|---|---|---|---|---|");
         for (r, realm) in realms::REALMS.iter().enumerate() {
-            let scale = realm.scaling.luck;
+            let scale = loot_scaling(realm.scaling);
             let seed = 100 + 10 * r as u32;
             let monster = sample(100_000, seed, &mut |rng| vec![rolled(rng, MONSTER_LUCK * scale, false)]);
             let chests = |set: &[(&str, f64)]| set.iter().enumerate().map(|(k, (_, luck))| sample(20_000, seed + k as u32, &mut |rng| chest(rng, luck * scale))).collect::<Vec<_>>();
             let (p, d, l, h) = (chests(&plain), chests(&deep), chests(&lucky), chests(&hoards));
             let stall = merchant(scale, 10_000);
             println!(
-                "| {} | {scale} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | {:.2} | {:.2} | {:.2} | {} |",
+                "| {} | {scale:.2} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | {:.2} | {:.2} | {:.2} | {} |",
                 realm.name,
                 one_in(monster.special()),
                 one_in(mean(&p, &Tally::special)),
@@ -5945,5 +5960,83 @@ mod tests {
         assert_eq!(other.gold, STARTING_GOLD);
         assert!(other.defeated.is_empty() && other.opened.is_empty() && other.stocks.is_empty());
         assert_eq!(other.health, MAX_HEALTH);
+    }
+
+    /// A saved weapon's made again of the parts it was saved with, never rolled again, so however
+    /// the odds of what rolls change, a save from before keeps every weapon it has just as it was,
+    /// those carried and those on the stalls looked at
+    #[test]
+    fn saved_weapons_stay_the_same_whatever_the_odds() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.arm(31, 60.0);
+        game.stock([10, 11, 12]);
+        let (carried, done) = (game.carried_save(), game.world_save());
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        // Odds nothing like them: every part mythic
+        let top = other.library.rarities.len() - 1;
+        for (k, rarity) in other.library.rarities.iter_mut().enumerate() {
+            rarity.chance = if k == top { 1.0 } else { 0.0 };
+        }
+        other.restore(&carried, &done, game.vitals());
+        assert_eq!(other.carried_save(), carried);
+        assert_eq!(other.world_save(), done);
+        let made = |g: &Game| {
+            let wares = g.stocks.values().flatten().filter_map(|w| if let Ware::Weapon(i) = w { Some(*i) } else { None });
+            let carried = g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w) } else { None });
+            carried.chain(wares).map(|w| &g.weapons[w]).map(|w| (w.name.clone(), w.grade, w.parts.clone(), format!("{:?}", w.profile.stats), w.profile.special.as_ref().map(|s| s.0))).collect::<Vec<_>>()
+        };
+        assert_eq!(made(&other), made(&game));
+        assert!(made(&game).len() >= KIT.len() + MERCHANT_LUCKS.len());
+    }
+
+    /// What a new player starts with is plain: one of each kind of weapon in KIT, common to rare
+    /// and nothing with a special attack, however many kits are rolled
+    #[test]
+    fn new_players_start_with_plain_gear() {
+        let library = Library::load();
+        for seed in 0..300u32 {
+            let kit = kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST));
+            assert_eq!(kit.len(), KIT.len());
+            for (family, seed, odds) in &kit {
+                let (f, grade, special) = library.preview(*seed, Some(*family), odds);
+                assert!(f == *family && grade <= KIT_RAREST && special.is_none(), "{} from {seed}", library.families[f].id);
+            }
+        }
+        // As the game arms them
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 12, Vector3::new(4.0, 4.0, 4.0));
+        let weapons: Vec<&Weapon> = game.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(&game.weapons[*w]) } else { None }).collect();
+        assert_eq!(weapons.len(), KIT.len());
+        assert!(weapons.iter().all(|w| w.grade <= KIT_RAREST && w.profile.special.is_none() && w.parts.iter().all(|&p| library.components[p].tier <= KIT_RAREST)));
+    }
+
+    /// The hoard of every huge raid boss and finale has a weapon with a special attack in it,
+    /// first, most realm raid bosses' do, and a lesser boss's only now and then
+    #[test]
+    fn raid_bosses_leave_special_weapons() {
+        let library = Library::load();
+        let mut rng = 7;
+        let mut sure = [0usize; 3];
+        for hoard in [Hoard::Boss, Hoard::Raid, Hoard::Huge] {
+            for _ in 0..2000 {
+                let rolls = hoard_rolls(hoard, &mut rng);
+                assert_eq!(rolls.len(), if hoard == Hoard::Boss { BOSS_LUCKS.len() } else { RAID_LUCKS.len() });
+                assert!(rolls.iter().skip(1).all(|r| !r.1), "only the best is sure to have one");
+                sure[hoard as usize] += rolls[0].1 as usize;
+            }
+        }
+        assert_eq!(sure[Hoard::Boss as usize], 0);
+        assert!((1400..1800).contains(&sure[Hoard::Raid as usize]), "{sure:?}");
+        assert_eq!(sure[Hoard::Huge as usize], 2000);
+        // And that one has, however lucky it's rolled
+        for seed in 0..200u32 {
+            for luck in [RAID_LUCKS[0], RAID_LUCKS[0] * loot_scaling(realms::REALMS[realms::REALM_COUNT - 1].scaling)] {
+                let s = library.special_seed(hash(seed), None, luck);
+                assert!(library.special_of(s, None, luck).is_some(), "{seed} at {luck}");
+            }
+        }
     }
 }

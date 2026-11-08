@@ -49,8 +49,8 @@ pub struct Pack {
 }
 
 /// How much harder a realm is than the normal world: how many times the health its bosses and
-/// monsters have, how much harder they hit, and how much luckier the weapons found are, as for
-/// Library::odds()
+/// monsters have, how much harder they hit, and how much luckier what's found is: the wings in
+/// chests by this much, the weapons by less, see game::loot_scaling()
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Scaling {
     pub toughness: f64,
