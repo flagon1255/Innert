@@ -766,8 +766,10 @@ struct View {
     moon: [f32; 4],
     key_light: [f32; 4],
     cache_level: [f32; 4],
-    /// The look of the realm the world is, see App::realm_look()
+    /// The look of the realm the world is, see App::realm_look(), and the colours its sky's tinted
+    /// towards, straight up and round the horizon, with how far, see sky_tint()
     realm: [f32; 4],
+    realm_sky: [[f32; 4]; 2],
 }
 
 impl View {
@@ -783,7 +785,23 @@ impl View {
             key_light: c(sky.key_light, sky.moon_phase),
             cache_level: c(sky.cache_level, 0.0),
             realm,
+            realm_sky: sky_tint(realm),
         }
+    }
+}
+
+/// The colours the sky of the realm with look `realm` is tinted towards straight up and round the
+/// horizon, and how far, see App::realm_look(): the dreaming realm's lilac over a rosy horizon, deep
+/// red over its bleeding half, the frozen realm's pale and cold, and no tint for the rest. Worked
+/// out here once a frame rather than for every ray that looks at the sky in traverse.comp.
+fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t);
+    let with = |c: [f32; 3], w: f32| [c[0], c[1], c[2], w];
+    let blood = realm[3];
+    match realm[0].round() as u32 {
+        2 => [with(mix([0.42, 0.3, 0.85], [0.45, 0.04, 0.05], blood), 0.85), with(mix([1.0, 0.68, 0.8], [0.95, 0.28, 0.16], blood), 0.85)],
+        3 => [with([0.32, 0.5, 0.82], 0.6), with([0.82, 0.9, 1.0], 0.6)],
+        _ => [[0.0; 4]; 2],
     }
 }
 

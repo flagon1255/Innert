@@ -98,6 +98,9 @@ layout(set = 3, binding = 8) uniform View {
     // corner is in the whole landscape, in voxels along it, w: how much of the blood-red half the
     // camera's in, 0 to 1
     vec4 realm;
+    // The colours the realm's sky is tinted towards, straight up and round the horizon, and how far,
+    // see sky_tint() in src\main.rs
+    vec4 realmSky[2];
 } view;
 
 // No more than 128 bytes, see View
@@ -1093,6 +1096,12 @@ vec3 sunColor() {
     return view.keyLight.rgb;
 }
 
+// The night sky's own colour, darker below the horizon
+vec3 nightSky(vec3 dir) {
+    vec3 night = mix(vec3(0.022, 0.028, 0.050), vec3(0.008, 0.014, 0.040), sqrt(clamp(dir.z, 0, 1)));
+    return mix(night, night * 0.5, clamp(-dir.z * 4.0, 0, 1));
+}
+
 vec3 skyColor(vec3 dir) {
     // A deep, saturated blue
     vec3 zenith = vec3(0.08, 0.3, 0.92);
@@ -1100,16 +1109,9 @@ vec3 skyColor(vec3 dir) {
     vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, view.sun.z));
     // The dreaming realm's sky soft lilac over a rosy horizon, bleeding to deep red over its other
     // half, and the frozen realm's pale and cold
-    uint realm = uint(view.realm.x);
-    if (realm == REALM_DREAM) {
-        vec3 dream_zenith = mix(vec3(0.42, 0.3, 0.85), vec3(0.45, 0.04, 0.05), view.realm.w);
-        vec3 dream_horizon = mix(vec3(1.0, 0.68, 0.8), vec3(0.95, 0.28, 0.16), view.realm.w);
-        zenith = mix(zenith, dream_zenith, 0.85);
-        horizon = mix(horizon, dream_horizon, 0.85);
-    } else if (realm == REALM_ICE) {
-        zenith = mix(zenith, vec3(0.32, 0.5, 0.82), 0.6);
-        horizon = mix(horizon, vec3(0.82, 0.9, 1.0), 0.6);
-    }
+    // Worked out once a frame for all the rays that look at the sky, see sky_tint() in src\main.rs
+    zenith = mix(zenith, view.realmSky[0].rgb, view.realmSky[0].a);
+    horizon = mix(horizon, view.realmSky[1].rgb, view.realmSky[1].a);
     vec3 sky = mix(horizon, zenith, sqrt(clamp(dir.z, 0, 1)));
     sky = mix(sky, horizon * 0.4, clamp(-dir.z * 4.0, 0, 1));
     float low = 1 - smoothstep(0.0, 0.22, abs(view.sun.z + 0.02));
@@ -1120,24 +1122,35 @@ vec3 skyColor(vec3 dir) {
         sky += vec3(1.0, 0.42, 0.16) * toward * low * 0.7;
     }
     // The night sky, a little lighter round the moon. Has to match zenith() in src\daynight.rs.
-    vec3 night = mix(vec3(0.022, 0.028, 0.050), vec3(0.008, 0.014, 0.040), sqrt(clamp(dir.z, 0, 1)));
-    night = mix(night, night * 0.5, clamp(-dir.z * 4.0, 0, 1));
+    vec3 night = nightSky(dir);
     night += vec3(0.045, 0.055, 0.08) * view.moon.w * (0.5 - 0.5 * cos(view.keyLight.w)) * pow(max(dot(dir, view.moon.xyz), 0), 8);
-    // The realms' own nights, about as dark: the dreaming realm's violet, deep red over its bleeding
-    // half, and over the frozen realm curtains of pale green light rippling round the sky
-    if (realm == REALM_DREAM) {
-        vec3 dream_night = mix(vec3(0.030, 0.016, 0.052), vec3(0.046, 0.007, 0.012), view.realm.w);
-        night = mix(night, dream_night * (0.6 + 0.4 * sqrt(clamp(1 - dir.z, 0, 1))), 0.75);
-    } else if (realm == REALM_ICE && dir.z > 0.04) {
-        // Brightest along their wavering lower edge, fading away upwards, in fine folds
-        float around = atan(dir.y, dir.x);
-        float above = dir.z - (0.34 + 0.06 * sin(around * 3.0 + 1.0) + 0.025 * sin(around * 7.0));
-        float band = above < 0 ? exp(-pow(above / 0.03, 2.0)) : exp(-above / 0.13);
-        float folds = 0.55 + 0.45 * sin(around * 43.0 + 3.0 * sin(around * 6.0));
-        night += vec3(0.016, 0.085, 0.05) * band * folds * smoothstep(0.04, 0.15, dir.z);
-    }
     float day = daylight();
     return sky * day + night * (1 - day);
+}
+
+// What the realms make of the night sky where it's seen straight on, added to skyColor() there
+// alone, as it lights nothing, so the many other places the sky's looked at don't pay for it: the
+// dreaming realm's night violet, deep red over its bleeding half, and over the frozen realm
+// curtains of pale green light rippling round the sky, about as dark as the normal world's
+vec3 realmNight(vec3 dir) {
+    uint realm = uint(view.realm.x);
+    float dark = 1 - daylight();
+    if (dark <= 0 || realm < REALM_DREAM) {
+        return vec3(0);
+    }
+    if (realm == REALM_DREAM) {
+        vec3 dream_night = mix(vec3(0.030, 0.016, 0.052), vec3(0.046, 0.007, 0.012), view.realm.w);
+        return (dream_night * (0.6 + 0.4 * sqrt(clamp(1 - dir.z, 0, 1))) - nightSky(dir)) * 0.75 * dark;
+    }
+    if (realm != REALM_ICE || dir.z <= 0.04) {
+        return vec3(0);
+    }
+    // Brightest along their wavering lower edge, fading away upwards, in fine folds
+    float around = atan(dir.y, dir.x);
+    float above = dir.z - (0.34 + 0.06 * sin(around * 3.0 + 1.0) + 0.025 * sin(around * 7.0));
+    float band = above < 0 ? exp(-pow(above / 0.03, 2.0)) : exp(-above / 0.13);
+    float folds = 0.55 + 0.45 * sin(around * 43.0 + 3.0 * sin(around * 6.0));
+    return vec3(0.016, 0.085, 0.05) * band * folds * smoothstep(0.04, 0.15, dir.z) * dark;
 }
 
 // The sun and the moon in the sky, and the stars, seen straight on or mirrored, not lighting
@@ -1424,7 +1437,14 @@ vec3 hitAlbedo(Hit hit, uint material) {
         albedo *= mix(0.4, 1.3, sqrt(h));
         albedo = mix(albedo, albedo * vec3(1.2, 1.12, 0.62), h * h);
     }
-    // In the colours of the realm, for the land, not what moves about on it
+    return albedo;
+}
+
+// The same in the colours of the realm, for the land, not what moves about on it: only for what's
+// seen straight on or from under water, not in reflections, so the many rays that aren't don't
+// pay for it, see realmGrade()
+vec3 realmAlbedo(Hit hit, uint material) {
+    vec3 albedo = hitAlbedo(hit, material);
     if (hit.level != ANIMAL && view.realm.x > 0.5)
     albedo = realmGrade(albedo, voxelPoint(hit, vec3(0.5) - vec3(hit.shift)));
     return albedo;
@@ -1762,12 +1782,14 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
 // How much light survives travelling this many voxels through water
 vec3 waterTransmittance(float distance) {
     float meters = distance / float(max(pc.world_size.w, 1u));
-    return exp(-meters * vec3(0.45, 0.10, 0.08));
+    // Blood rather than water where the camera's in the dreaming realm's red half, see View::realm:
+    // dark and thick, all but the red soaked up
+    return exp(-meters * mix(vec3(0.45, 0.10, 0.08), vec3(0.3, 1.8, 1.6), view.realm.w));
 }
 
 // Light scattered back out by deep water
 vec3 waterScatter() {
-    return vec3(0.02, 0.14, 0.15) * (sunColor() * 0.5 + ambientLight(vec3(0, 0, 1)));
+    return mix(vec3(0.02, 0.14, 0.15), vec3(0.08, 0.004, 0.006), view.realm.w) * (sunColor() * 0.5 + ambientLight(vec3(0, 0, 1)));
 }
 
 float waterFresnel(vec3 dir, vec3 normal) {
@@ -1780,7 +1802,10 @@ vec3 openSeaBelow(vec3 dir) {
     vec3 refracted = refract(dir, up, 1 / 1.33);
     float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
     vec3 transmittance = waterTransmittance(depth / max(-refracted.z, 0.05));
-    vec3 sand = pow(PALETTE[MAT_SAND], vec3(2.2));
+    // In the frozen realm, pale ice right at the top, see Terrain::column() in src\worldgen.rs
+    bool ice = uint(view.realm.x) == REALM_ICE;
+    transmittance = ice ? vec3(1) : transmittance;
+    vec3 sand = ice ? pow(PALETTE[MAT_ICE], vec3(2.2)) : pow(PALETTE[MAT_SAND], vec3(2.2));
     vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6) * transmittance;
     return seabed * transmittance + waterScatter() * (1 - transmittance);
 }
@@ -1791,15 +1816,9 @@ vec3 openSeaBelow(vec3 dir) {
 // the water voxel `voxel` is churned up white over that, right through where it's `falling`.
 vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float foam, bool falling) {
     float fresnel = waterFresnel(dir, normal);
-    // The frozen realm's sea is iced over out past the world as it is in it, see Terrain::column()
-    // in src\worldgen.rs: pale ice with the sky's glare on it
-    if (open_sea && uint(view.realm.x) == REALM_ICE) {
-        vec3 up = vec3(0, 0, 1);
-        vec3 ice = pow(PALETTE[MAT_ICE], vec3(2.2));
-        vec3 lit = ice * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up));
-        vec3 glare = reflect(dir, up);
-        return mix(lit, skyColor(glare) + sunDisc(glare), fresnel * 0.5);
-    }
+    // The frozen realm's sea is iced over out past the world as it is in it, see openSeaBelow(): only
+    // half the sky's glare on it
+    fresnel *= open_sea && uint(view.realm.x) == REALM_ICE ? 0.5 : 1.0;
     vec3 mirrored = reflect(dir, normal);
     vec3 reflection = (pc.flags & FLAG_REFLECTIONS) != 0
         ? shadeSecondary(pos + normal * 1e-3, mirrored, true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)))
@@ -1850,13 +1869,6 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float
         // Falling water is churned white right through. Fast water on the surface just has white
         // on top, with the clear water showing through.
         color = mix(color, lit, falling ? 1.0 : foam * 0.75);
-    }
-    // Blood rather than water in the dreaming realm's red half: dark and thick, its sheen red, a
-    // little red even where little light's on it by day, but not glowing in the dark
-    float blood = bloodAt(pos.xy);
-    if (blood > 0) {
-        float lum = dot(color, vec3(0.3, 0.55, 0.15));
-        color = mix(color, vec3(lum * 1.5 + 0.02 * daylight(), lum * 0.08, lum * 0.1), blood * 0.9);
     }
     return color;
 }
@@ -2330,6 +2342,7 @@ vec3 shadeGrass(vec3 origin, vec3 dir, GrassHit grass, inout vec4 guide) {
     // Dark at the root, lighter and yellower towards the tip, a little different blade to blade
     vec3 tip_color = mix(vec3(0.11, 0.29, 0.04), vec3(0.25, 0.34, 0.06), random(seed));
     vec3 albedo = mix(vec3(0.02, 0.06, 0.01), tip_color, smoothstep(0.0, 0.9, h)) * mix(0.8, 1.15, random(seed));
+    if (view.realm.x > 0.5)
     albedo = realmGrade(albedo, pos);
     // Less light gets down between the blades
     float occlusion = mix(0.2, 1.0, h);
@@ -2358,7 +2371,7 @@ vec3 shadeUnderwater(vec3 origin, vec3 dir, inout uint steps, out float distance
     vec3 color;
     float path;
     if (trace(origin, dir, true, FLT_MAX, hit, steps)) {
-        vec3 albedo = hitAlbedo(hit, hitMaterial(hit));
+        vec3 albedo = realmAlbedo(hit, hitMaterial(hit));
         color = albedo * (sunColor() * sunLight(faceCenter(hit), hit.normal) + ambientLight(hit.normal) * 0.6);
         path = hit.t;
         distance = hit.t;
@@ -2466,7 +2479,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         } else {
             distance = -1;
             guide.w = 6;
-            return skyColor(dir) + sunDisc(dir);
+            return skyColor(dir) + sunDisc(dir) + realmNight(dir);
         }
     } else {
         distance = hit.t;
@@ -2560,7 +2573,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             through = new_through;
         }
 
-        vec3 albedo = hitAlbedo(hit, material);
+        vec3 albedo = realmAlbedo(hit, material);
         vec3 glow = tintAnimal(hit, albedo) + emission(material);
         if (material == MAT_FOAM && hit.level != ANIMAL) {
             albedo *= foamFlow(hit);
