@@ -160,6 +160,9 @@ pub enum ItemSave {
     InnertBlock {
         realm: u8,
     },
+    /// The grappling hook and wings of the sky isles
+    Hook,
+    Wings,
     /// Something from a later Innert this one doesn't know: left out
     #[serde(other)]
     Unknown,

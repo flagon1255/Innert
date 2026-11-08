@@ -58,6 +58,11 @@ pub enum Item {
     /// What one of a realm's raid bosses leaves, of realm number this of realms::REALMS: three of
     /// a realm's set into the Innert Gate open the way to the next. Never sold, dropped or lost.
     InnertBlock(u8),
+    /// A grappling hook, thrown with a click while it's in hand to pull the player to where it
+    /// bites, see src\rope.rs, and wings, which let the player glide while they hold jump in the
+    /// air. Kept for good once found.
+    Hook,
+    Wings,
 }
 
 impl Item {
@@ -70,13 +75,15 @@ impl Item {
             Item::Potion => Some(Look::Potion),
             Item::Gold(_) => Some(Look::Coins),
             Item::InnertBlock(_) => Some(Look::InnertBlock),
+            Item::Hook => Some(Look::GrappleHook),
+            Item::Wings => Some(Look::Wings),
             Item::Bucket | Item::Weapon(_) | Item::Ammo(..) => None,
         }
     }
 
     /// Something the player keeps whatever happens: it can't be sold, dropped or eaten
     fn kept(self) -> bool {
-        matches!(self, Item::Bucket | Item::InnertBlock(_))
+        matches!(self, Item::Bucket | Item::InnertBlock(_) | Item::Hook | Item::Wings)
     }
 
     fn name(self) -> &'static str {
@@ -90,13 +97,15 @@ impl Item {
             Item::Weapon(_) => "Weapon",
             Item::Ammo(..) => "Ammo",
             Item::InnertBlock(_) => "Innert Block",
+            Item::Hook => "Grappling Hook",
+            Item::Wings => "Wings",
         }
     }
 
     /// How many there are of it to show on its slot: the rounds in a stack of ammo, or `count`
     fn shown(self, count: u32) -> Option<u32> {
         match self {
-            Item::Bucket | Item::Weapon(_) => None,
+            Item::Bucket | Item::Weapon(_) | Item::Hook | Item::Wings => None,
             Item::Ammo(_, n) => Some(n),
             _ => Some(count),
         }
@@ -133,6 +142,9 @@ fn food_price(item: Item) -> u32 {
         Item::Meat => 6,
         Item::Bread => 10,
         Item::Potion => 35,
+        // Sold in the normal world once the way to the sky isles is open, see Game::sky_wares
+        Item::Hook => 400,
+        Item::Wings => 1200,
         _ => 0,
     }
 }
@@ -566,6 +578,9 @@ pub struct Game {
     /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
     /// with which realm's each leaves
     raid_lairs: HashMap<[i64; 3], u8>,
+    /// Whether the merchants sell a grappling hook and wings, as they do in the journey through
+    /// the realms once the way to the sky isles is open
+    sky_wares: bool,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -720,6 +735,7 @@ impl Game {
             shrine_used: false,
             scaling: Scaling::NONE,
             raid_lairs: HashMap::new(),
+            sky_wares: false,
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -2469,6 +2485,10 @@ impl Game {
                     self.add_item(Item::InnertBlock(realm), 1);
                     self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.6));
                 }
+                // The first of the sky isles' raid bosses beaten leaves its wings too
+                if block.is_some_and(|r| r as usize == realms::WINGS_REALM) {
+                    self.find_once(Item::Wings, "Among what it leaves is a pair of wings! Hold jump in the air to glide.");
+                }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
                 let raid = look.is_raid() || block.is_some();
@@ -3028,9 +3048,24 @@ impl Game {
     /// What merchant `key` has to sell, rolled from where it stands the first time it's looked at:
     /// weapons, a few of them rare, and food and potions
     fn stock(&mut self, key: [i64; 3]) {
-        if self.stocks.contains_key(&key) {
-            return;
+        if !self.stocks.contains_key(&key) {
+            self.roll_stock(key);
         }
+        // Once the way to the sky isles is open, a hook and wings for whoever hasn't found theirs
+        if self.sky_wares && !self.royals.contains(&key) {
+            let missing: Vec<Item> = [Item::Hook, Item::Wings].into_iter().filter(|&i| !self.carries(i)).collect();
+            if let Some(wares) = self.stocks.get_mut(&key) {
+                for item in missing {
+                    if !wares.iter().any(|w| matches!(w, Ware::Food(i, _) if *i == item)) {
+                        wares.push(Ware::Food(item, 1));
+                    }
+                }
+            }
+        }
+    }
+
+    /// What merchant `key` has to sell the first time it's looked at, see stock()
+    fn roll_stock(&mut self, key: [i64; 3]) {
         if self.royals.contains(&key) {
             return self.royal_stock(key);
         }
@@ -3073,6 +3108,10 @@ impl Game {
             Ware::Food(item, _) => item,
         };
         let cost = self.price(item);
+        if matches!(item, Item::Hook | Item::Wings) && self.carries(item) {
+            self.say(format!("You have {} already.", item.name().to_lowercase()));
+            return;
+        }
         if cost > self.gold {
             self.say(format!("You need {} more gold for that.", cost - self.gold));
             return;
@@ -3383,6 +3422,8 @@ impl Game {
             Item::Weapon(w) => S::Weapon(self.weapon_save(w)),
             Item::Ammo(k, rounds) => S::Ammo { id: self.library.ammo[k].id.clone(), rounds },
             Item::InnertBlock(realm) => S::InnertBlock { realm },
+            Item::Hook => S::Hook,
+            Item::Wings => S::Wings,
         }
     }
 
@@ -3399,6 +3440,8 @@ impl Game {
             S::Weapon(w) => Item::Weapon(self.weapon_from(w)?),
             S::Ammo { id, rounds } => Item::Ammo(self.library.ammo.iter().position(|a| a.id == *id)?, *rounds),
             S::InnertBlock { realm } if (*realm as usize) < realms::REALMS.len() => Item::InnertBlock(*realm),
+            S::Hook => Item::Hook,
+            S::Wings => Item::Wings,
             S::InnertBlock { .. } | S::Unknown => return None,
         })
     }
@@ -3629,6 +3672,35 @@ impl Game {
             self.cues.push(Cue::here(Sound::Fanfare, 0.6));
         }
         taken
+    }
+
+    /// Whether the grappling hook's in hand, to throw with a click
+    pub fn holding_hook(&self) -> bool {
+        self.dead.is_none() && self.slots.get(self.selected).is_some_and(|(item, _)| *item == Item::Hook)
+    }
+
+    /// Whether `item` is carried
+    pub fn carries(&self, item: Item) -> bool {
+        self.slots.iter().any(|(i, _)| *i == item)
+    }
+
+    /// Gives the player `item`, a hook or wings, if they haven't one already, telling them how it
+    /// came to them: whether it was given
+    pub fn find_once(&mut self, item: Item, how: &str) -> bool {
+        if self.carries(item) {
+            return false;
+        }
+        self.add_item(item, 1);
+        self.cues.push(Cue::here(Sound::Equip, 0.9));
+        self.cues.push(Cue::here(Sound::Fanfare, 0.5));
+        self.milestone = true;
+        self.say(how);
+        true
+    }
+
+    /// Whether the merchants sell the grappling hook and wings, see Game::sky_wares
+    pub fn set_sky_wares(&mut self, sold: bool) {
+        self.sky_wares = sold;
     }
 
     /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
@@ -4553,6 +4625,18 @@ impl Game {
                 ui.label(RichText::new("Never lost, sold or dropped.").weak().italics());
                 return;
             }
+            Item::Hook | Item::Wings => {
+                ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+                ui.label(RichText::new("For getting about the sky isles").weak());
+                ui.separator();
+                ui.label(if item == Item::Hook {
+                    format!("With it in hand, click to throw it up to {:.0} m. Where it bites into rock or earth, its rope hauls you there, up over the edge if it's an edge. Jump to let go.", realms::HOOK_REACH_M)
+                } else {
+                    "Hold jump in the air to spread them and glide, sinking slowly, going on ahead the way you look.".to_owned()
+                });
+                ui.label(RichText::new("Kept for good once found.").weak().italics());
+                return;
+            }
             _ => {}
         }
         ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
@@ -4889,6 +4973,27 @@ impl Game {
                 for edge in [[top, right], [right, low_right], [low_right, bottom], [bottom, low_left], [low_left, left], [left, top], [left, mid], [mid, right], [mid, bottom]] {
                     painter.line_segment(edge, Stroke::new(r * 0.07, GOLD));
                 }
+            }
+            // An iron shank with three prongs curling up from its head, and its coil of rope
+            Item::Hook => {
+                let iron = Color32::from_rgb(170, 176, 186);
+                let rope = Color32::from_rgb(150, 110, 70);
+                painter.circle_stroke(center + vec2(-r * 0.3, r * 0.35), r * 0.42, Stroke::new(r * 0.13, rope));
+                painter.line_segment([center + vec2(0.0, r * 0.75), center + vec2(0.0, -r * 0.45)], Stroke::new(r * 0.14, iron));
+                for dx in [-0.45, 0.45] {
+                    painter.line_segment([center + vec2(0.0, -r * 0.45), center + vec2(r * dx, -r * 0.8)], Stroke::new(r * 0.12, iron));
+                    painter.line_segment([center + vec2(r * dx, -r * 0.8), center + vec2(r * dx * 1.2, -r * 0.5)], Stroke::new(r * 0.1, iron));
+                }
+                painter.line_segment([center + vec2(0.0, -r * 0.45), center + vec2(0.0, -r * 0.95)], Stroke::new(r * 0.12, iron));
+            }
+            // A pair of white wings spread wide
+            Item::Wings => {
+                let feather = Color32::from_rgb(244, 240, 228);
+                for side in [-1.0f32, 1.0] {
+                    let tip = center + vec2(side * r * 0.95, -r * 0.6);
+                    painter.add(egui::Shape::convex_polygon(vec![center + vec2(side * r * 0.1, -r * 0.1), tip, center + vec2(side * r * 0.75, r * 0.15), center + vec2(side * r * 0.2, r * 0.35)], feather, Stroke::new(r * 0.05, Color32::from_gray(170))));
+                }
+                painter.circle_filled(center, r * 0.14, Color32::from_rgb(200, 190, 170));
             }
             Item::Gold(_) => {
                 for (dx, dy) in [(-0.35, 0.35), (0.35, 0.3), (0.0, -0.05)] {

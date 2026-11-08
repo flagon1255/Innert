@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::game::Item;
 use crate::realms::{self, REALMS};
 use crate::save::{self, Mode, Save};
 
@@ -61,6 +62,14 @@ struct Trial {
     /// the run ends so many after the last time, `end_after=200`
     shots_after: Vec<usize>,
     end_after: Option<usize>,
+    /// In the sky isles: when the grappling hook's thrown at the nearest other island,
+    /// `hook_at=60`, when the player's lifted high and glides on ahead, `glide_at=60`, and when
+    /// they're put out over the open air to fall, `fall_at=60`, see rope.rs
+    hook_at: Option<usize>,
+    glide_at: Option<usize>,
+    fall_at: Option<usize>,
+    /// Whether they're gliding, and when they started
+    glide: Option<usize>,
     /// The frame the world was first there, and whether it's there now
     ready: Option<usize>,
     there: bool,
@@ -130,6 +139,11 @@ impl Session {
             leaving: None,
             trial: Trial::default(),
         }
+    }
+
+    /// Whether a screenshot run's trial has the player gliding, see Trial::glide_at
+    pub fn trial_glides(&self) -> bool {
+        self.trial.glide.is_some()
     }
 
     /// How dark the screen is going through to another realm, 0 to 1
@@ -309,6 +323,8 @@ impl App {
                 let places = self.places_in(realm);
                 let journeys = self.session.realms.as_ref().map_or(0, |r| r.completed);
                 self.game.set_scaling(REALMS[realm].scaling.after(journeys));
+                // Hooks and wings on sale once the way to the sky isles is open
+                self.game.set_sky_wares(self.session.realms.as_ref().is_some_and(|r| r.unlocked.contains(&(realms::HOOK_REALM as u32))));
                 println!(
                     "REALM {} ({}): gate at {:.0}, {:.0}, arrival {:.0}, {:.0}, raid bosses at {}",
                     realm,
@@ -323,6 +339,7 @@ impl App {
             }
             _ => {
                 self.game.set_scaling(realms::Scaling::NONE);
+                self.game.set_sky_wares(false);
                 self.session.places = None;
             }
         }
@@ -401,6 +418,8 @@ impl App {
                     format!("{taken} Innert block{} set into the gate.", if taken == 1 { "" } else { "s" })
                 };
                 println!("GATE: {message} placed {:?}, unlocked {:?}", progress.placed, progress.unlocked);
+                let sky_open = progress.unlocked.contains(&(realms::HOOK_REALM as u32));
+                self.game.set_sky_wares(sky_open);
                 if restored && !restored_before {
                     // Harder from here on, in the normal world too
                     self.enter_realm();
@@ -519,6 +538,10 @@ impl App {
             travel_at: setting("travel_at").and_then(|v| v.split_once(':')).and_then(|(f, r)| Some((f.parse().ok()?, r.parse().ok()?))),
             shots_after: setting("shots_after").map_or(Vec::new(), |v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect()),
             end_after: number("end_after"),
+            hook_at: number("hook_at"),
+            glide_at: number("glide_at"),
+            fall_at: number("fall_at"),
+            glide: None,
             ready: None,
             there: false,
         };
@@ -553,6 +576,44 @@ impl App {
         };
         let at = |when: Option<usize>| when.is_some_and(|w| ready + w == frame);
         let (slay, set_in, travel) = (at(trial.slay_raid_at), at(trial.set_in_at), trial.travel_at.filter(|(f, _)| ready + *f == frame));
+        let (hook, glide, fall) = (at(trial.hook_at), at(trial.glide_at), at(trial.fall_at));
+        if glide {
+            trial.glide = Some(frame);
+        }
+        let gliding = trial.glide;
+        if hook {
+            self.hook_nearest_island();
+        }
+        // Lifted high over the island, wings spread, gliding on ahead for a while
+        let vpm = self.world.voxels_per_meter as f64;
+        if glide && let Some(player) = &mut self.player {
+            player.position.z += 14.0 * vpm;
+            self.game.find_once(Item::Wings, "Wings, to glide with.");
+            self.scripted_walk = true;
+        }
+        if let (Some(since), Some(player)) = (gliding, &self.player) {
+            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            if (frame - since) % 20 == 0 {
+                let at = (player.position + origin) / vpm;
+                println!("GLIDE frame {}: at {:.1}, {:.1}, {:.1} m, gliding {}, on the ground {}", frame - since, at.x, at.y, at.z, player.gliding, player.on_ground());
+            }
+            if frame - since >= 160 || frame - since > 10 && player.on_ground() {
+                self.session.trial.glide = None;
+                self.scripted_walk = false;
+            }
+        }
+        // Out over the open air, just past the island's edge the way the player looks
+        if fall && let Some(player) = &mut self.player {
+            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            let yaw = self.camera.rotation.z;
+            let ahead = Vector3::new(-yaw.sin(), yaw.cos(), 0.0);
+            let seed = self.terrain.seed;
+            let feet = (player.position + origin) / vpm;
+            if let Some(out) = (1..200).map(|k| feet + ahead * (k as f64 * 0.5)).find(|p| worldgen::sky_island(seed, p.x as f32, p.y as f32).is_none()) {
+                player.position = (out + ahead * 2.0) * vpm - origin;
+                println!("FALL off the edge at frame {frame}, at {:.1}, {:.1}, {:.1} m", out.x, out.y, feet.z);
+            }
+        }
         if slay {
             let near = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
             let raids = self.game.raid_bosses();
@@ -652,6 +713,11 @@ impl App {
                 self.player = Some(placed);
             }
             self.session.due = true;
+            // Come to the sky isles, a grappling hook lies by the portal home, so every island's
+            // within reach from the first
+            if self.session.places.as_ref().is_some_and(|p| p.realm == realms::HOOK_REALM) {
+                self.game.find_once(Item::Hook, "At the portal's foot lies a grappling hook, its rope coiled beside it. Take it in hand and click to throw it at an island's edge.");
+            }
         }
         // At the gate or a portal: its window opens, freeing the mouse for it
         if self.game.take_shrine() && self.session.places.is_some() && self.session.leaving.is_none() {
