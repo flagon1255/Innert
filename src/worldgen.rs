@@ -5,11 +5,14 @@ use std::thread;
 
 mod camps;
 mod castles;
+mod dragonlair;
 mod towns;
 mod trees;
 mod undercity;
 
 pub use camps::{Camp, CampKind, camp_spots};
+#[allow(unused_imports)]
+pub use dragonlair::{FREE_ROAM_START, LairKind, lairs_set, set_lairs};
 #[allow(unused_imports)]
 pub use undercity::Sunken;
 
@@ -3622,6 +3625,11 @@ impl Terrain {
         // the sea, just above the water and under it: for building with, see src\bases.rs
         let wet_edge = (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
         let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
+        // Burnt black where a dragon keeps its lair, see dragonlair.rs
+        let top = match dragonlair::scorch(&self.settings, xm, ym) {
+            Some(burnt) if !frozen && river <= h && h > sea_level + v => burnt,
+            _ => top,
+        };
         let below = match top {
             SAND | STONE | GRAVEL | CLAY | ICE => top,
             _ => DIRT,
@@ -4080,7 +4088,9 @@ impl Terrain {
             // ravine breaks into them, see undercity.rs
             let (sunken, cities, shafts) = self.undercities(rivers, &mut features);
             objects.extend(sunken);
-            let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).collect();
+            // Nor in a dragon's lair, see dragonlair.rs
+            let lairs = self.dragon_footprints().into_iter().map(|f| [f[0], f[1], f[2], f[3]]);
+            let keep_out: Vec<[f32; 4]> = dungeons.iter().flat_map(|d| d.world_rects()).chain(towns).chain(royal.iter().copied()).chain(shafts).chain(lairs).collect();
             objects.extend(self.buildings(heights, &mut features, &keep_out));
             for dungeon in &dungeons {
                 objects.push(self.dungeon(dungeon, &mut features));
@@ -4094,6 +4104,8 @@ impl Terrain {
                 objects.extend(camps);
             }
         }
+        // Nothing grows in a dragon's lair, see dragonlair.rs
+        features.footprints.extend(self.dragon_footprints());
         let footprints = std::mem::take(&mut features.footprints);
         let (own_lo, own_hi) = (self.own_lo, self.own_hi);
 
@@ -4324,6 +4336,8 @@ impl Terrain {
                 })
             });
         }
+        // The lairs of the dragons, see dragonlair.rs
+        objects.extend(self.dragon_lairs(&mut features));
 
         features.footprints = footprints;
         (objects, features)

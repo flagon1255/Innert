@@ -38,6 +38,8 @@ struct Ball {
     look: Look,
     trail: f64,
     seed: u32,
+    /// Spat at the player, rather than one of many rained down
+    spat: bool,
 }
 
 /// The ground burning where breath fell or a ball burst: how far round, for how long, how much it
@@ -98,8 +100,22 @@ pub struct Fire {
     dose_element: Option<Element>,
     dose_by: &'static str,
     beat_wait: f64,
+    /// Ground to be scorched, and little holes to be blown in it, not yet sent to the world: a few
+    /// at a time, as each lot sent holds a frame up waiting on the GPU, see App::flush_edits()
+    scorch: Vec<(Vector3<f64>, f64, u8, bool)>,
+    holes: Vec<(Vector3<f64>, f64)>,
+    edit_wait: f64,
     rng: u32,
 }
+
+/// The most a scorch mark's painted round, in meters: painting's paid for by the cube round it,
+/// see World::paint_in(), so a great dragon's stamp scorching six meters round held a frame up a
+/// fifth of a second
+const MOST_SCORCH: f64 = 2.0;
+/// How many scorch marks can wait to be painted, the oldest let go past it
+const SCORCH_WAITING: usize = 8;
+/// Seconds between lots of the world being scorched and holed
+const EDIT_EVERY: f64 = 0.5;
 
 fn fx_random(rng: &mut u32) -> f64 {
     *rng = hash(rng.wrapping_add(0x9e37_79b9));
@@ -122,6 +138,12 @@ impl Fire {
         }
         for p in &mut self.patches {
             p.at -= shift;
+        }
+        for s in &mut self.scorch {
+            s.0 -= shift;
+        }
+        for h in &mut self.holes {
+            h.0 -= shift;
         }
         for c in &mut self.cracks {
             c.from -= shift;
@@ -167,6 +189,39 @@ impl Fire {
             self.patches.remove(0);
         }
         true
+    }
+
+    /// The ground at `at` to be stained by `element`, `radius` meters round, before long
+    fn scorch(&mut self, at: Vector3<f64>, radius: f64, element: Element, vpm: f64) {
+        let (material, burn) = match element {
+            Element::Fire => (BARK_DARK, true),
+            Element::Frost => (SNOW, false),
+            Element::Poison => (MOSS, false),
+            _ => return,
+        };
+        let radius = radius.min(MOST_SCORCH);
+        // Not where it's to be stained already
+        if self.scorch.iter().any(|s| (s.0 - at).norm() < s.1 * 0.5 * vpm) {
+            return;
+        }
+        self.scorch.push((at, radius, material, burn));
+        if self.scorch.len() > SCORCH_WAITING {
+            self.scorch.remove(0);
+        }
+    }
+
+    /// A few of the stains and holes waiting sent to the world, every so often: one stain and all
+    /// the little holes together, costing one wait on the GPU
+    fn send_edits(&mut self, dt: f64, stains: &mut Vec<(Vector3<f64>, f64, u8, bool)>, craters: &mut Vec<(Vector3<f64>, f64)>) {
+        self.edit_wait -= dt;
+        if self.edit_wait > 0.0 || (self.scorch.is_empty() && self.holes.is_empty()) {
+            return;
+        }
+        self.edit_wait = EDIT_EVERY;
+        if !self.scorch.is_empty() {
+            stains.push(self.scorch.remove(0));
+        }
+        craters.append(&mut self.holes);
     }
 }
 
@@ -228,13 +283,13 @@ impl Game {
                 };
                 self.cues.push(cue);
             }
-            Act::Roar { at, stage, brood } => {
+            Act::Roar { at, brood, first } => {
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if big { 0.75 } else { 1.1 }));
                 if !big {
                     self.cues.push(Cue::at(Sound::Screech, at, 0.7).pitched(voice * 0.5));
                 }
                 self.shake = self.shake.max(if big { 0.7 } else { 0.2 } * felt(at));
-                if big && stage == 0 && brood.is_none() {
+                if big && first {
                     self.say(format!("The {} turns on you!", look.name()));
                 }
                 if let Some((kind, count)) = brood {
@@ -295,7 +350,7 @@ impl Game {
                 let velocity = (to - from) / time + Vector3::new(0.0, 0.0, 0.5 * gravity * vpm * time);
                 let seed = hash(self.rng ^ 0xba11);
                 self.rng = seed;
-                self.dragonfire.balls.push(Ball { at: from, velocity, age: 0.0, flight: time, target: to, element, damage, radius, gravity, look, trail: 0.0, seed });
+                self.dragonfire.balls.push(Ball { at: from, velocity, age: 0.0, flight: time, target: to, element, damage, radius, gravity, look, trail: 0.0, seed, spat: true });
                 if self.dragonfire.balls.len() > MOST_BALLS {
                     self.dragonfire.balls.remove(0);
                 }
@@ -307,7 +362,7 @@ impl Game {
                 let time = 1.3;
                 let seed = hash(self.rng ^ 0x4a17);
                 self.rng = seed;
-                self.dragonfire.balls.push(Ball { at: from, velocity: (to - from) / time, age: 0.0, flight: time, target: to, element, damage, radius, gravity: 0.0, look, trail: 0.0, seed });
+                self.dragonfire.balls.push(Ball { at: from, velocity: (to - from) / time, age: 0.0, flight: time, target: to, element, damage, radius, gravity: 0.0, look, trail: 0.0, seed, spat: false });
                 if self.dragonfire.balls.len() > MOST_BALLS {
                     self.dragonfire.balls.remove(0);
                 }
@@ -337,12 +392,9 @@ impl Game {
             }
             Act::Stomp { at, radius, damage, cracks, length, crack } => {
                 self.blows.push(Blow { at, radius, damage, look });
-                self.combat.craters.push((at, (radius * 0.3).min(2.5)));
-                match element {
-                    Element::Frost => self.combat.stains.push((at, radius, SNOW, false)),
-                    Element::Fire => self.combat.stains.push((at, radius * 0.9, BARK_DARK, true)),
-                    _ => {}
-                }
+                // Blown in now, as it comes down, the scorch round it a moment after
+                self.combat.craters.push((at, (radius * 0.3).min(1.8)));
+                self.dragonfire.scorch(at, radius, element, vpm);
                 self.cues.push(Cue::at(Sound::Quake, at, 1.0).pitched(0.8));
                 self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.45));
                 self.shake = self.shake.max(0.9 * felt(at));
@@ -390,7 +442,7 @@ impl Game {
                 if crash {
                     self.cues.push(Cue::at(Sound::Burst, at, 0.9).pitched(0.5));
                     if size > 2.0 {
-                        self.combat.craters.push((at, (0.6 * size.sqrt()).min(2.0)));
+                        self.combat.craters.push((at, (0.6 * size.sqrt()).min(1.6)));
                     }
                 }
             }
@@ -476,6 +528,7 @@ impl Game {
         let burning_long = self.animals.iter().any(|a| a.look == dragons::ULTRA && a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.stage >= 1));
         let mut fire = std::mem::take(&mut self.dragonfire);
         fire.beat_wait -= dt;
+        fire.send_edits(dt, &mut self.combat.stains, &mut self.combat.craters);
         // The hottest thing on the player this frame, how hot, and what it was
         let mut worst: Option<(f64, Element, Look)> = None;
         let mut catch = |dps: f64, element: Element, look: Look| {
@@ -518,16 +571,11 @@ impl Game {
         for (at, radius, element, dps) in lit {
             let life = if burning_long { 8.0 } else { 3.5 };
             if fire.ignite(at, radius.max(0.8), life, element, dps, vpm) && random(&mut self.rng) < 0.5 {
-                match element {
-                    Element::Fire => self.combat.stains.push((at, radius * 0.8, BARK_DARK, true)),
-                    Element::Frost => self.combat.stains.push((at, radius * 0.8, SNOW, false)),
-                    Element::Poison => self.combat.stains.push((at, radius * 0.6, MOSS, false)),
-                    _ => {}
-                }
+                fire.scorch(at, radius * 0.8, element, vpm);
             }
         }
         // Balls flying and falling, trailing their element, bursting where they come down
-        let mut burst: Vec<(Vector3<f64>, Element, f64, f64, Look)> = Vec::new();
+        let mut burst: Vec<(Vector3<f64>, Element, f64, f64, Look, bool)> = Vec::new();
         let mut trails: Vec<(Vector3<f64>, Element, f64)> = Vec::new();
         for b in &mut fire.balls {
             b.age += dt;
@@ -543,7 +591,7 @@ impl Game {
             let hit_player = chest.is_some_and(|c| (b.at - c).norm() < (0.6 + PLAYER_GIRTH) * vpm);
             let hit_ground = !is_passable(world.material_at(next.x.floor() as i64, next.y.floor() as i64, next.z.floor() as i64));
             if hit_player || hit_ground || b.age >= b.flight + 1.5 {
-                burst.push((b.at, b.element, b.damage, b.radius, b.look));
+                burst.push((b.at, b.element, b.damage, b.radius, b.look, b.spat));
                 b.age = f64::MAX;
             } else {
                 b.at = next;
@@ -619,8 +667,8 @@ impl Game {
                 }
             }
         }
-        for (at, element, damage, radius, look) in burst {
-            self.ball_bursts(at, element, damage, radius, look, world, player, view);
+        for (at, element, damage, radius, look, spat) in burst {
+            self.ball_bursts(at, element, damage, radius, look, spat, world, player, view);
         }
         // What's caught the player burning them, a few times a second
         let fire = &mut self.dragonfire;
@@ -644,15 +692,19 @@ impl Game {
 
     /// A ball of `element` bursting at `at`: hurting what's near, setting the ground alight
     #[allow(clippy::too_many_arguments)]
-    fn ball_bursts(&mut self, at: Vector3<f64>, element: Element, damage: f64, radius: f64, look: Look, world: &World, player: Option<Vector3<f64>>, view: &View) {
+    fn ball_bursts(&mut self, at: Vector3<f64>, element: Element, damage: f64, radius: f64, look: Look, spat: bool, world: &World, player: Option<Vector3<f64>>, view: &View) {
         let vpm = world.voxels_per_meter as f64;
         let felt = (1.0 - (at - view.eye).norm() / vpm / 50.0).max(0.0);
         let ground = ground_top_near(world, at.x, at.y, at.z);
         let on = Vector3::new(at.x, at.y, ground.min(at.z + 1.0 * vpm));
-        self.combat.craters.push((on, (radius * 0.3).min(1.0)));
+        // A hole blown where a ball spat at the player bursts; not for each of the many it rains
+        // down, each lot of holes holding a frame up, see Fire::send_edits()
+        if spat {
+            self.dragonfire.holes.push((on, (radius * 0.3).min(1.0)));
+        }
         let life = if self.animals.iter().any(|a| a.look == dragons::ULTRA && a.boss.as_ref().is_some_and(|b| b.stage >= 1)) { 7.0 } else { 3.0 };
         if self.dragonfire.ignite(on, radius * 0.7, life, element, 9.0, vpm) && element == Element::Fire {
-            self.combat.stains.push((on, radius * 0.8, BARK_DARK, true));
+            self.dragonfire.scorch(on, radius * 0.8, element, vpm);
         }
         for _ in 0..9 {
             let out = self.dragonfire.any_way() + Vector3::new(0.0, 0.0, 0.6);
@@ -691,10 +743,17 @@ impl Game {
         };
         let spin = |seed: u32, rate: f64| UnitQuaternion::from_axis_angle(&Vector3::z_axis(), (seed % 628) as f64 * 0.01 + time * rate) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), ((seed >> 10) % 314) as f64 * 0.01 + time * rate * 0.7);
         let key = |at: Vector3<f64>| (at - view.eye).norm() * 0.2;
+        // What's breathed right over the eye is drawn smaller the nearer it is, and not at all
+        // once the eye's inside it, so it never fills the view: being caught in it shows round
+        // the edges of the view instead, see Game::hud()
+        let near_eye = |at: Vector3<f64>, size: f64| {
+            let d = (at - view.eye).norm() / vpm;
+            if d < size * 0.55 + 0.5 { 0.0 } else { (d / (size * 2.2)).clamp(0.2, 1.0) }
+        };
         for p in &fire.puffs {
             let size = puff_size(p.size, p.age, p.life) * far_scale(p.at, view);
-            // Not right up against the eye, where it'd fill the view
-            if (p.at - view.eye).norm() < 0.8 * vpm {
+            let size = size * near_eye(p.at, size);
+            if size <= 0.0 {
                 continue;
             }
             let fx = FX_PUFF + element_slot(p.element) * 2 + (p.seed % 2) as usize;
@@ -710,7 +769,11 @@ impl Game {
             let flicker = 1.0 + 0.08 * (time * 13.0 + p.seed as f64).sin();
             let fx = FX_FLAME + element_slot(p.element) * 2 + ((time * 6.0) as u32 + p.seed) as usize % 2;
             let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), (p.seed % 628) as f64 * 0.01 + time * 0.6);
-            out.push((key(p.at), place(fx, p.at, Vector3::zeros(), turn, p.radius * 1.2 * fade * flicker)));
+            // Flames knee high on a little patch, waist high at the most on a great one, and low
+            // round the player's feet when they're standing in it, so they can see out
+            let size = (p.radius * 1.1).min(1.5) * fade * flicker;
+            let size = size * near_eye(p.at + Vector3::new(0.0, 0.0, 0.6 * size * vpm), size).max(0.35);
+            out.push((key(p.at), place(fx, p.at, Vector3::zeros(), turn, size)));
         }
         for c in &fire.cracks {
             let reach = (c.age / c.spread).min(1.0) * c.length;
@@ -733,6 +796,17 @@ impl Game {
             }
         }
         out
+    }
+
+    /// The middle of the body of the dragon nearest `near`, in voxels, and how far its wings reach
+    /// in meters, to look at it, see the "dragon" script in main.rs
+    pub fn nearest_dragon(&self, near: Vector3<f64>) -> Option<(Vector3<f64>, f64)> {
+        let vpm = self.combat.vpm();
+        self.animals
+            .iter()
+            .filter(|a| a.dragon.is_some() && a.health > 0.0)
+            .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
+            .map(|a| (a.position + Vector3::new(0.0, 0.0, a.look.body().0 * vpm), a.look.reach()))
     }
 
     /// The light of what dragons breathed and left burning: the brightest few, nearest first
@@ -769,4 +843,65 @@ fn ground_top_near(world: &World, x: f64, y: f64, z: f64) -> f64 {
     let (xi, yi) = (x.floor() as i64, y.floor() as i64);
     let top = (z + 3.0 * vpm) as i64;
     (top - (30.0 * vpm) as i64..=top).rev().find(|&k| !is_passable(world.material_at(xi, yi, k))).map_or(z, |k| k as f64 + 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How wide something has to look to the eye to be seen, in radians, as for shots, see the
+    /// tests in combat.rs
+    const SEEN_ANGLE: f64 = 0.004;
+
+    fn open_ground(meters: u32, vpm: u32) -> World {
+        let size = [meters * vpm, meters * vpm, 64 * vpm];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * (4 * vpm as usize / 8)].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, STONE);
+        world.voxels_per_meter = vpm;
+        world
+    }
+
+    /// Everything a dragon breathes or spits at the player, from near or far, is drawn on screen
+    /// and big enough to be followed by eye all the way, every frame, never gone in mid-air
+    #[test]
+    fn every_breath_and_fireball_can_be_followed() {
+        let vpm = 4u32;
+        let v = vpm as f64;
+        let world = open_ground(200, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(100.0, 40.0, 4.0) * v;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * v);
+        // Looking out along y, a little up, at what's coming
+        let view = View { eye, rotation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.15), tan: [1.2445, 0.7002], vpm: v, speed: 0.0, stride: 0.0 };
+        for look in dragons::KINDS {
+            for meters in [12.0, 35.0, 70.0] {
+                let mut game = Game::new(&world, &water, 3, feet);
+                let from = feet + Vector3::new(0.0, meters, 10.0) * v;
+                let dt = 1.0 / 60.0;
+                game.dragon_act(look, Act::Fireball { from, to: feet, speed: 16.0, damage: 1.0, radius: 1.6, lob: false }, &world, &water, None, &view);
+                for k in 0..30 {
+                    // Breathing all the while, down towards the player
+                    let dir = (feet - from).normalize();
+                    game.dragon_act(look, Act::Breath { from, dir, dt, dps: 1.0, size: 1.2 * dragons::size(look).powf(0.6), speed: 10.0, spread: 0.0 }, &world, &water, None, &view);
+                    game.tend_dragonfire(&world, None, &view, dt);
+                    let drawn = game.dragonfire_instances(&view);
+                    if k > 2 {
+                        assert!(!drawn.is_empty(), "{look:?} at {meters} m: nothing drawn");
+                    }
+                    for (_, instance) in drawn {
+                        let (at, reach) = instance.sphere();
+                        let d = (at - eye).norm();
+                        if d < 2.0 * v {
+                            continue;
+                        }
+                        assert!(reach / d > SEEN_ANGLE, "{look:?} at {meters} m: something {:.1} m off only {:.4} rad across", d / v, reach / d);
+                    }
+                }
+                // The ball's still there, flying, or it's burst where it came down
+                assert!(!game.dragonfire.balls.is_empty() || !game.dragonfire.patches.is_empty(), "{look:?}'s fireball from {meters} m vanished");
+            }
+        }
+    }
 }

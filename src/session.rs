@@ -344,6 +344,11 @@ impl App {
                     places.arrival[1],
                     places.lairs.iter().zip(&REALMS[realm].raid_bosses).map(|(p, (look, _))| format!("{} {:.0}, {:.0}", look.name(), p[0], p[1])).collect::<Vec<_>>().join("; ")
                 );
+                // The great dragons' lairs built into the land, see dragons.rs
+                let lairs: Vec<(worldgen::LairKind, [f32; 2])> = places.lairs.iter().zip(&REALMS[realm].raid_bosses).filter_map(|(at, (look, _))| Some((dragons::lair_kind(*look)?, [at[0] as f32, at[1] as f32]))).collect();
+                if !lairs.is_empty() {
+                    worldgen::set_lairs(REALMS[realm].seed, lairs);
+                }
                 self.session.places = Some(places);
             }
             _ => {

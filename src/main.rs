@@ -1886,6 +1886,16 @@ impl Placed {
                 landscape.bandit_camps().iter().filter(|c| c.kind == kind).min_by(|a, b| off(a).total_cmp(&off(b))).map(|c| [c.fire[0], c.fire[1]])
             })
         });
+        // `--set dragon_lairs=1` builds the three great dragons' lairs round where the game starts,
+        // as the Dragon realm has them, for `--set spawn=dragon:0` and so on to wait in
+        if setting("dragon_lairs").is_some() {
+            let [x, y] = worldgen::FREE_ROAM_START;
+            let lairs: Vec<(worldgen::LairKind, [f32; 2])> = [(worldgen::LairKind::Peak, [x - 55.0, y + 45.0]), (worldgen::LairKind::Caldera, [x + 62.0, y + 30.0]), (worldgen::LairKind::Hoard, [x + 5.0, y - 64.0])]
+                .into_iter()
+                .map(|(kind, at)| (kind, worldgen::dry_land_near(&terrain, at, 80.0, 10.0).unwrap_or(at)))
+                .collect();
+            worldgen::set_lairs(terrain.seed, lairs);
+        }
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = camp_at
             .or(dungeon.map(|d| [d[0], d[1]]))
@@ -2374,7 +2384,16 @@ impl App {
             match which.parse::<usize>() {
                 Ok(n) => {
                     let look = dragons::RAID_DRAGONS[n.min(2)];
-                    game.summon(&world, &water_level, look, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(32.0));
+                    // In its lair, if the lairs are built, see `--set dragon_lairs`
+                    let kind = dragons::lair_kind(look);
+                    match worldgen::lairs_set(terrain.seed).into_iter().find(|(k, _)| Some(*k) == kind) {
+                        Some((_, lair)) => {
+                            let vpm = world.voxels_per_meter as f64;
+                            let at = Vector3::new(lair[0] as f64 * vpm - world.origin[0] as f64, lair[1] as f64 * vpm - world.origin[1] as f64, start.z);
+                            game.summon(&world, &water_level, look, at, ahead, 0.0);
+                        }
+                        None => game.summon(&world, &water_level, look, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(32.0)),
+                    }
                     println!("dragon: {}", look.name());
                 }
                 Err(_) => {
@@ -2388,6 +2407,11 @@ impl App {
                 game.hurt_bosses(fraction);
             }
         }
+        // `--set dragon_show=1`: with nobody about, as with the camera flying, they fight as if
+        // someone stood where they were put, to be seen at it, see the "dragon" script
+        dragons::SHOW.store(flag("dragon_show", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set dragon_trace=1` says what each dragon's doing, twice a second
+        dragons::TRACE.store(flag("dragon_trace", false), std::sync::atomic::Ordering::Relaxed);
         if flag("dragon_ultra", false) {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             game.summon(&world, &water_level, dragons::ULTRA, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(55.0));
@@ -4459,6 +4483,25 @@ impl App {
                 let pulse = settings_from_args().into_iter().find(|(k, _)| k == "boss_pulse").and_then(|(_, v)| v.parse::<usize>().ok());
                 let pressing = f > 30 && pulse.is_none_or(|n| (f - 31) % (n + 12) < n);
                 self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // Circles round the nearest dragon, looking at it, to see it from every side as it goes
+            // about: `--set view_distance=20` that many meters off rather than as far as its wings
+            // reach twice over, `--set view_turn=0.01` radians round a frame, and `--set
+            // view_up=0.3` that much of the way up
+            ("dragon", f) => {
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                if let Some((target, reach)) = self.game.nearest_dragon(eye) {
+                    let distance = number("view_distance", reach * 2.1) * vpm;
+                    let round = number("view_turn", 0.008) * f as f64 + number("view_from", 0.6);
+                    let up = number("view_up", 0.3);
+                    let at = target + Vector3::new(round.cos(), round.sin(), up) * distance;
+                    let floor = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.5 * vpm;
+                    self.camera.position = voxels_to_camera(Vector3::new(at.x, at.y, at.z.max(floor)), self.world.size);
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }

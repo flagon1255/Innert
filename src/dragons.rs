@@ -439,9 +439,9 @@ fn torso(p: &mut Vec<Part>, sp: &Spec) {
         }
         p.push(ball([-0.36, side * 0.22 * g, -0.08 * g], 0.15 * g, h.scale));
     }
-    p.push(ellipsoid([0.34, 0.0, 0.03 * g], [0.38, 0.33 * g, 0.36 * g], h.scale));
-    p.push(ellipsoid([0.0, 0.0, 0.0], [0.72, 0.31 * g, 0.33 * g], h.scale));
-    p.push(ellipsoid([-0.46, 0.0, -0.02 * g], [0.32, 0.28 * g, 0.29 * g], h.scale));
+    p.push(ellipsoid([0.34, 0.0, 0.03 * g], [0.4, 0.37 * g, 0.38 * g], h.scale));
+    p.push(ellipsoid([0.0, 0.0, 0.0], [0.74, 0.34 * g, 0.35 * g], h.scale));
+    p.push(ellipsoid([-0.46, 0.0, -0.02 * g], [0.34, 0.3 * g, 0.3 * g], h.scale));
 }
 
 /// How thick its neck is `f` of the way up it, 0 at the chest
@@ -845,8 +845,10 @@ struct Rig {
     legs: [LegPose; 4],
 }
 
-/// Wings folded at its sides, standing
-const FOLDED: WingPose = WingPose { flap: 1.2, sweep: 1.3, twist: -0.35, fold: 2.75, bend: -0.25 };
+/// Wings folded at its sides, standing: the arm swept back from the shoulder, the skin hanging
+/// down the flank from it, the fingers folded over at the wrist like a book shut, back along it
+/// towards the chest
+const FOLDED: WingPose = WingPose { flap: 0.1, sweep: 1.5, twist: -1.35, fold: 0.1, bend: -2.9 };
 /// Wings spread, gliding
 const SPREAD: WingPose = WingPose { flap: 0.1, sweep: 0.12, twist: 0.0, fold: 0.06, bend: 0.06 };
 
@@ -854,11 +856,13 @@ impl Rig {
     /// Standing on the ground as it does when nothing's the matter
     fn standing(sp: &Spec) -> Rig {
         let mut r = Rig { pitch: if sp.four { 0.0 } else { 0.12 }, ..Default::default() };
-        r.neck[0] = [0.0, 0.75];
+        // The neck rising in a curve, the head held level at its end
+        let n = sp.necks as f64;
+        r.neck[0] = [0.0, 0.62];
         for k in 1..3 {
-            r.neck[k] = [0.0, -0.3];
+            r.neck[k] = [0.0, -0.32 / n.max(1.0) * 2.0];
         }
-        r.head = [0.0, -0.45];
+        r.head = [0.0, -0.3];
         r.tail[0] = [0.0, -0.22];
         for k in 1..4 {
             r.tail[k] = [0.0, 0.07];
@@ -1300,9 +1304,9 @@ fn senses(look: Look) -> (f64, f64, f64) {
 pub enum Act {
     /// Getting ready to make move `m`, heard as it does, its head at `at`
     Warn { m: Move, at: Vector3<f64> },
-    /// A roar: on first turning on the player, going into phase `stage` of its fight, or calling
+    /// A roar: on `first` turning on the player, going into the next phase of its fight, or calling
     /// down `brood`, so many of them
-    Roar { at: Vector3<f64>, stage: u8, brood: Option<(Look, usize)> },
+    Roar { at: Vector3<f64>, brood: Option<(Look, usize)>, first: bool },
     /// Jaws snapping shut on `at`, claws raking it as it swoops low, or its tail sweeping round it,
     /// hurting what's within `radius` meters for `damage`
     Bite { at: Vector3<f64>, radius: f64, damage: f64 },
@@ -1650,6 +1654,10 @@ struct Here<'a> {
     stand: f64,
 }
 
+/// For looking at them, see `--set dragon_show=1` in main.rs: with nobody about, dragons fight as if
+/// someone stood where they were put, to be seen flying and fighting
+pub static SHOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// What a dragon does this frame, see the top of this file
 pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
     let vpm = world.voxels_per_meter as f64;
@@ -1658,6 +1666,7 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
     let Some(mut boss) = a.boss.take() else {
         return;
     };
+    let player = player.or_else(|| SHOW.load(std::sync::atomic::Ordering::Relaxed).then_some(boss.home + Vector3::new(16.0 * vpm, 0.0, 0.0)));
     let pace = a.status.pace();
     let enraged = boss.enraged;
     let here = Here { world, water, feet: player, vpm, dt: dt * pace.max(0.0), sp, look, quick: if enraged { 0.75 } else { 1.0 }, stand: stand_height(&sp) * vpm };
@@ -1716,8 +1725,28 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
     a.target_heading = d.yaw;
     a.speed = 0.0;
     a.mood = animals::Mood::Idle;
+    if TRACE.load(std::sync::atomic::Ordering::Relaxed) && (d.clock * 2.0).floor() != ((d.clock - dt) * 2.0).floor() {
+        let feet = here.feet.unwrap_or(boss.home);
+        println!(
+            "dragon {look:?}: {:?} {} engaged {} stage {} {:.1} m off, feet {:.1} m over its ground, next {:.1}, aloft {:.1} of {:.1}, blocked {:.1}, health {:.0}",
+            d.state,
+            if d.airborne { "flying" } else { "on foot" },
+            boss.engaged,
+            boss.stage,
+            flat(feet - d.center).norm() / vpm,
+            (feet.z - ground_z(world, d.center.x, d.center.y, d.center.z, 40.0).unwrap_or(d.center.z)) / vpm,
+            d.next,
+            d.aloft,
+            d.budget,
+            d.blocked,
+            a.health
+        );
+    }
     a.boss = Some(boss);
 }
+
+/// `--set dragon_trace=1`: what each dragon's doing, twice a second
+pub static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Noticing the player, going after them, giving up on them, and going into the next phase of its
 /// fight as it's hurt
@@ -1736,8 +1765,12 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
     let alarmed = boss.flock.size > 1 && boss.flock.alarmed && distance < give_up && !sparing;
     if !boss.engaged && !sparing && h.feet.is_some() && (boss.raider || (distance < sense && d.seen) || alarmed) {
         boss.engaged = true;
+    }
+    // Turning on the player, having noticed them, or been struck by them or sent after them as it
+    // rested, see Boss::provoke()
+    if boss.engaged && d.state == State::Rest && h.feet.is_some() && (boss.raider || distance < give_up) {
         d.next = 0.8 + d.roll() * 1.2;
-        let roar = Act::Roar { at: d.mouth, stage: 0, brood: None };
+        let roar = Act::Roar { at: d.mouth, brood: None, first: true };
         boss.deeds.push(Deed::Dragon(roar));
         // A drakeling on the ground takes off unless they're right by it; a great one roars first
         d.state = if d.airborne || (is_drakeling(h.look) && distance < 5.0) {
@@ -1837,8 +1870,9 @@ fn begin_landing(d: &mut Dragon, h: &Here) {
     let s = h.sp.s;
     let around = h.feet.unwrap_or(d.center);
     let away = flat(d.center - around).try_normalize(1e-6).unwrap_or_else(Vector3::x);
-    // A little way short of the player, on open ground, trying round about if it's not there
-    let off = (3.5 + 1.8 * s) * vpm;
+    // A little way short of the player, far enough its body's clear of them, on open ground,
+    // trying round about if it's not there
+    let off = if is_drakeling(h.look) { 3.5 + 1.8 * s } else { 4.0 + 2.6 * s } * vpm;
     let mut spot = None;
     for k in 0..8 {
         let turn = [0.0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, PI][k];
@@ -1942,6 +1976,10 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     goal.to = d.wander;
                     goal.speed = speeds(h.look).0;
                 }
+                // Left somewhere it can't walk home from, in water or hemmed in: it flies home
+                if d.blocked > 3.0 && flat(d.center - boss.home).norm() > 6.0 * k * vpm {
+                    d.state = State::Rise(0.0);
+                }
                 want.head[0] += 0.5 * (d.clock * 0.37 + a.id as f64).sin();
                 want.neck[0][1] += 0.06 * (d.clock * 1.1).sin();
             }
@@ -2004,6 +2042,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             } else {
                 if !d.airborne {
                     d.airborne = true;
+                    d.blocked = 0.0;
                     d.velocity = Vector3::new(forward.x, forward.y, 0.0) * 2.0 * vpm + Vector3::new(0.0, 0.0, 6.5 * k.powf(0.4) * vpm);
                     act_out(boss, Act::TakeOff { at: d.center - Vector3::new(0.0, 0.0, h.stand), size: s });
                 }
@@ -2349,7 +2388,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     if !d.struck {
                         d.struck = true;
                         let brood = brood(h.look).filter(|_| d.stage >= if h.look == ULTRA { 2 } else { 1 }).map(|b| (b, if h.look == ULTRA { 3 } else { 2 }));
-                        act_out(boss, Act::Roar { at: d.mouth, stage: d.stage, brood });
+                        act_out(boss, Act::Roar { at: d.mouth, brood, first: false });
                     }
                     done = t >= length;
                 }
@@ -2827,6 +2866,34 @@ pub fn roosting(world: &World, water: WaterLevel, near: Vector3<f64>, ground: u8
     animals::spawn_pack(world, water, &vec![look; count], near, 3.0, seed)
 }
 
+// Where the great ones keep their lairs
+
+/// The Dragon realm's monsters, for its entry in realms::REALMS: ashwings above all, and the rest
+/// now and then. Once it's been come to, they come in the night raids of the others too.
+#[allow(dead_code)]
+pub const REALM_MONSTERS: &[crate::realms::Pack] = &[
+    crate::realms::Pack { looks: &[Look::Ashwing, Look::Ashwing, Look::Ashwing], most: 3 },
+    crate::realms::Pack { looks: &[Look::Ashwing, Look::Squallwing], most: 2 },
+    crate::realms::Pack { looks: &[Look::Sleetwing, Look::Sleetwing], most: 1 },
+    crate::realms::Pack { looks: &[Look::Blightwing, Look::Ashwing], most: 1 },
+];
+
+/// Its three raid bosses, and about where their lairs are from where it's come to, in meters east
+/// and north, for its entry in realms::REALMS
+#[allow(dead_code)]
+pub const REALM_RAIDS: [(Look, [f32; 2]); 3] = [(Look::PyreMatriarch, [260.0, 130.0]), (Look::CindermawTyrant, [-240.0, 200.0]), (Look::GildscaleHoardwarden, [-40.0, -300.0])];
+
+/// The kind of lair each great dragon keeps, see worldgen\dragonlair.rs
+pub fn lair_kind(look: Look) -> Option<crate::worldgen::LairKind> {
+    use crate::worldgen::LairKind;
+    match look {
+        Look::PyreMatriarch => Some(LairKind::Peak),
+        Look::CindermawTyrant => Some(LairKind::Caldera),
+        Look::GildscaleHoardwarden => Some(LairKind::Hoard),
+        _ => None,
+    }
+}
+
 /// Whether ground of `material` at `z` voxels up a world `height` voxels high is the high bare rock
 /// drakelings roost on
 pub fn roost(material: u8, z: f64, height: f64) -> bool {
@@ -2917,6 +2984,27 @@ mod tests {
                 }
                 let last = bones[NECK + sp.necks - 1];
                 assert!((last.at + last.turn * Vector3::new(sp.neck, 0.0, 0.0) * m - bones[HEAD].at).norm() < 1e-6 * m);
+            }
+        }
+    }
+
+    /// Folded, a dragon's wings lie along its sides, their skin hanging down its flanks, nothing of
+    /// them standing up over its back
+    #[test]
+    fn folded_wings_lie_along_its_sides() {
+        for look in KINDS {
+            let sp = spec(look);
+            let mut bones = [Bone::default(); BONES];
+            pose(&sp, Vector3::zeros(), 0.0, &Rig::standing(&sp), 1.0, &mut bones);
+            let m = sp.s;
+            for side in 0..2 {
+                let (inner, outer) = (bones[WING + side * 2], bones[WING + side * 2 + 1]);
+                let y = if side == 0 { 1.0 } else { -1.0 };
+                let top = 0.7 * sp.girth * m;
+                for (b, p) in [(outer, Vector3::new(-0.32, y * WING_OUT * sp.span, 0.03)), (outer, Vector3::new(-0.78, y * 0.32 * WING_OUT * sp.span, 0.0)), (inner, Vector3::new(-0.82, y * 0.04, 0.0))] {
+                    let at = b.at + b.turn * p * m;
+                    assert!(at.z < top, "{look:?}'s folded wing stands {:.2} m up", at.z);
+                }
             }
         }
     }
@@ -3024,6 +3112,36 @@ mod tests {
                 assert!(down > 200, "{look:?} kept to the air after its first phase");
             }
         }
+    }
+
+    /// Struck as it rests, as by the player rising again beside it where they fell, it turns on them
+    /// rather than lying there healing whatever they do to it
+    #[test]
+    fn a_resting_dragon_struck_turns_on_the_player() {
+        let vpm = 4u32;
+        let world = open_ground(240, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let v = vpm as f64;
+        let feet = Vector3::new(120.0, 120.0, 4.0) * v;
+        let mut a = Animal::boss(Look::PyreMatriarch, feet + Vector3::new(6.0, 0.0, 0.0) * v, [1, 2, -1], 11);
+        let dt = 1.0 / 30.0;
+        for _ in 0..30 {
+            a.update(&world, &water, None, dt);
+        }
+        // Sparing them, as after beating them, and resting beside them
+        a.boss.as_mut().unwrap().spare();
+        for _ in 0..30 {
+            a.update(&world, &water, Some(feet), dt);
+        }
+        assert_eq!(a.dragon.as_ref().unwrap().state, State::Rest);
+        a.boss.as_mut().unwrap().provoke();
+        let mut struck = false;
+        for _ in 0..(15.0 / dt) as usize {
+            a.update(&world, &water, Some(feet), dt);
+            let blows = a.boss.as_mut().unwrap().deeds.drain(..).filter(|d| matches!(d, Deed::Dragon(Act::Bite { .. } | Act::Claw { .. } | Act::Sweep { .. } | Act::Gust { .. } | Act::Breath { .. } | Act::Stomp { .. } | Act::Fireball { .. } | Act::Rain { .. }))).count();
+            struck |= blows > 0;
+        }
+        assert!(struck, "it lay there struck, {:?}", a.dragon.as_ref().unwrap().state);
     }
 
     /// Killed in the air, a drakeling falls out of it to the ground and lies there a moment before
