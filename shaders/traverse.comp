@@ -500,6 +500,7 @@ bool insideNear(vec3 p) {
 // The realms' own looks, see View::realm. Has to match App::realm_look() in src\session.rs.
 const uint REALM_DREAM = 2;
 const uint REALM_ICE = 3;
+const uint REALM_EMBER = 5;
 // The dreaming realm's divide wanders this many meters either side of its line, over this many
 // meters along it, and its halves give way to each other over this many meters either side of it.
 // Has to match DREAM_DIVIDE in src\worldgen.rs.
@@ -518,7 +519,8 @@ float bloodAt(vec2 p) {
 }
 
 // The colours of the land in the realms that have their own: the dreaming realm's soft half washed
-// pale, lilac and rose, its other half bled crimson, the frozen realm a little frosted
+// pale, lilac and rose, its other half bled crimson, the frozen realm a little frosted, the Cinder
+// Crown ashen
 vec3 realmGrade(vec3 albedo, vec3 p) {
     uint realm = uint(view.realm.x);
     if (realm == REALM_DREAM) {
@@ -534,9 +536,11 @@ vec3 realmGrade(vec3 albedo, vec3 p) {
         vec3 blood = vec3(lum * 1.7 + 0.025, lum * 0.16, lum * 0.2);
         return mix(dream, blood, bloodAt(p.xy));
     }
-    if (realm == REALM_ICE) {
+    // The frozen realm a little frosted, and the Cinder Crown's ground grey with ash
+    if (realm == REALM_ICE || realm == REALM_EMBER) {
+        bool ash = realm == REALM_EMBER;
         float lum = dot(albedo, vec3(0.3, 0.55, 0.15));
-        return mix(albedo, lum * vec3(0.92, 1.0, 1.12), 0.35);
+        return mix(albedo, lum * (ash ? vec3(0.74, 0.72, 0.74) : vec3(0.92, 1.0, 1.12)), ash ? 0.65 : 0.35);
     }
     return albedo;
 }
@@ -1138,6 +1142,10 @@ vec3 realmNight(vec3 dir) {
     if (dark <= 0 || realm < REALM_DREAM) {
         return vec3(0);
     }
+    // The Cinder Crown's horizon glowing with its lava all night
+    if (realm == REALM_EMBER) {
+        return vec3(0.07, 0.016, 0.003) * (1 - smoothstep(0.0, 0.35, dir.z)) * dark;
+    }
     if (realm == REALM_DREAM) {
         vec3 dream_night = mix(vec3(0.030, 0.016, 0.052), vec3(0.046, 0.007, 0.012), view.realm.w);
         return (dream_night * (0.6 + 0.4 * sqrt(clamp(1 - dir.z, 0, 1))) - nightSky(dir)) * 0.75 * dark;
@@ -1445,7 +1453,8 @@ vec3 hitAlbedo(Hit hit, uint material) {
 // pay for it, see realmGrade()
 vec3 realmAlbedo(Hit hit, uint material) {
     vec3 albedo = hitAlbedo(hit, material);
-    if (hit.level != ANIMAL && view.realm.x > 0.5)
+    // Not what glows, as the Cinder Crown's lava, which would wash out pale
+    if (hit.level != ANIMAL && view.realm.x > 0.5 && (material < MAT_GLOW_FIRE || material > MAT_GLOW_HOLY))
     albedo = realmGrade(albedo, voxelPoint(hit, vec3(0.5) - vec3(hit.shift)));
     return albedo;
 }
@@ -1802,11 +1811,13 @@ vec3 openSeaBelow(vec3 dir) {
     vec3 refracted = refract(dir, up, 1 / 1.33);
     float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
     vec3 transmittance = waterTransmittance(depth / max(-refracted.z, 0.05));
-    // In the frozen realm, pale ice right at the top, see Terrain::column() in src\worldgen.rs
+    // In the frozen realm, pale ice right at the top, see Terrain::column() in src\worldgen.rs, and
+    // in the Cinder Crown, glowing lava
     bool ice = uint(view.realm.x) == REALM_ICE;
-    transmittance = ice ? vec3(1) : transmittance;
-    vec3 sand = ice ? pow(PALETTE[MAT_ICE], vec3(2.2)) : pow(PALETTE[MAT_SAND], vec3(2.2));
-    vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6) * transmittance;
+    bool lava = uint(view.realm.x) == REALM_EMBER;
+    transmittance = ice || lava ? vec3(1) : transmittance;
+    vec3 sand = ice ? pow(PALETTE[MAT_ICE], vec3(2.2)) : lava ? vec3(0.9, 0.3, 0.05) : pow(PALETTE[MAT_SAND], vec3(2.2));
+    vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6 + (lava ? vec3(1.2) : vec3(0))) * transmittance;
     return seabed * transmittance + waterScatter() * (1 - transmittance);
 }
 
@@ -1818,7 +1829,7 @@ vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float
     float fresnel = waterFresnel(dir, normal);
     // The frozen realm's sea is iced over out past the world as it is in it, see openSeaBelow(): only
     // half the sky's glare on it
-    fresnel *= open_sea && uint(view.realm.x) == REALM_ICE ? 0.5 : 1.0;
+    fresnel *= open_sea && (uint(view.realm.x) == REALM_ICE || uint(view.realm.x) == REALM_EMBER) ? 0.5 : 1.0;
     vec3 mirrored = reflect(dir, normal);
     vec3 reflection = (pc.flags & FLAG_REFLECTIONS) != 0
         ? shadeSecondary(pos + normal * 1e-3, mirrored, true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)))

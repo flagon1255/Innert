@@ -792,8 +792,8 @@ impl View {
 
 /// The colours the sky of the realm with look `realm` is tinted towards straight up and round the
 /// horizon, and how far, see App::realm_look(): the dreaming realm's lilac over a rosy horizon, deep
-/// red over its bleeding half, the frozen realm's pale and cold, the sunken reach's clear, and no
-/// tint for the normal world's and the sky isles'. Worked
+/// red over its bleeding half, the frozen realm's pale and cold, the sunken reach's clear, the
+/// Cinder Crown's smoky over embers, and no tint for the normal world's and the sky isles'. Worked
 /// out here once a frame rather than for every ray that looks at the sky in traverse.comp.
 fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
     let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t);
@@ -804,6 +804,8 @@ fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
         3 => [with([0.32, 0.5, 0.82], 0.6), with([0.82, 0.9, 1.0], 0.6)],
         // The sunken reach's a clear sea blue over a pale green-blue horizon
         4 => [with([0.06, 0.4, 0.82], 0.4), with([0.6, 0.88, 0.9], 0.45)],
+        // The Cinder Crown's dark and smoky over an ember horizon
+        5 => [with([0.36, 0.15, 0.1], 0.9), with([0.98, 0.5, 0.24], 0.85)],
         _ => [[0.0; 4]; 2],
     }
 }

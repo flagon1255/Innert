@@ -3846,6 +3846,11 @@ impl Game {
         }
     }
 
+    /// Standing in lava, as in the Cinder Crown: set burning, see afflict()
+    pub fn scorch(&mut self) {
+        self.afflict(Some(Element::Fire));
+    }
+
     /// A little health back, as the wings that mend do while gliding
     pub fn mend(&mut self, health: f64) {
         if self.dead.is_none() {

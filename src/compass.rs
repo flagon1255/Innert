@@ -186,6 +186,9 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
                 Some(over) if over < 0.0 => {
                     if land == Land::Ice {
                         [0.78, 0.88, 0.95]
+                    } else if land == Land::Dragon {
+                        // Lava
+                        [1.0, 0.42, 0.08]
                     } else {
                         let deep = (-over / 8.0).min(1.0);
                         let water = [0.18 - 0.08 * deep, 0.45 - 0.15 * deep, 0.7 - 0.15 * deep];
@@ -196,6 +199,8 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
                 }
                 Some(over) => {
                     let base = match land {
+                        // Ash, darker up the peaks
+                        Land::Dragon => [0.36, 0.33, 0.32],
                         Land::Dream => {
                             let blood = worldgen::dream_blood(x, y);
                             [0.78 - 0.2 * blood, 0.7 - 0.58 * blood, 0.9 - 0.72 * blood]
@@ -211,7 +216,7 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
                     };
                     // Sand along the shore, rock and then snow up high, but on the sky isles, high
                     // over the sea and all of them green
-                    let grounded = !matches!(land, Land::Sky | Land::Ice);
+                    let grounded = !matches!(land, Land::Sky | Land::Ice | Land::Dragon);
                     let shore = if grounded && over < 1.0 { 0.6 } else { 0.0 };
                     let high = if land == Land::Sky { 0.0 } else { ((over - settings.height_m as f32 * 0.25) / (settings.height_m as f32 * 0.3)).clamp(0.0, 1.0) };
                     let b = [0, 1, 2].map(|k| base[k] + ([0.85, 0.8, 0.6][k] - base[k]) * shore);
