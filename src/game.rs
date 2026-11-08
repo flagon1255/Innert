@@ -3448,6 +3448,13 @@ impl Game {
         self.combat.lay_pools(world, water, &profile, eye, ahead)
     }
 
+    /// For screenshot runs, `--script shore`: a pool of `element` on the ground at `ground`, as a
+    /// shot of it leaves one, hurting nothing
+    pub fn lay_pool(&mut self, ground: Vector3<f64>, element: Option<Element>) {
+        let profile = self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone();
+        self.combat.lay_pool(ground, element, &profile);
+    }
+
     /// For screenshot runs, `--script far`: every animal within `meters` of `near` gone, so a
     /// spell cast out over the land has nothing to home in on
     pub fn shoo_animals(&mut self, near: Vector3<f64>, meters: f64) {

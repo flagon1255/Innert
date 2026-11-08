@@ -4354,6 +4354,55 @@ impl App {
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
             }
+            // Blows a hole in the shore nearest, half in the water, to see the water flow into it,
+            // and says how deep it is in the middle of it as it does
+            ("shore", f) => {
+                let vpm = self.world.voxels_per_meter as f64;
+                // Where the nearest water ahead runs up onto the land, from the water back towards
+                // the eye till it's dry, found the first frame and kept
+                static SHORE: std::sync::Mutex<Option<[f64; 3]>> = std::sync::Mutex::new(None);
+                let mut shore: Option<Vector3<f64>> = SHORE.lock().unwrap().map(Vector3::from);
+                'rings: for ring in (4..60).filter(|_| shore.is_none()) {
+                    for k in 0..ring * 6 {
+                        let a = k as f64 / (ring * 6) as f64 * TAU;
+                        let (x, y) = (eye.x + a.cos() * ring as f64 * vpm, eye.y + a.sin() * ring as f64 * vpm);
+                        if self.water.depth_at(x, y) > 0.5 * vpm {
+                            let toward = Vector3::new(eye.x - x, eye.y - y, 0.0).normalize() * 0.25 * vpm;
+                            let mut p = Vector3::new(x, y, 0.0);
+                            while self.water.depth_at(p.x, p.y) > 0.05 * vpm {
+                                p += toward;
+                            }
+                            shore = Some(p);
+                            *SHORE.lock().unwrap() = Some(p.into());
+                            break 'rings;
+                        }
+                    }
+                }
+                match shore {
+                    None if f == 1 => println!("no water near"),
+                    None => {}
+                    Some(at) => {
+                        let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                        if f == 1 {
+                            let back = Vector3::new(at.x - eye.x, at.y - eye.y, 0.0).normalize() * 2.0 * vpm;
+                            self.camera.look_at(voxels_to_camera(Vector3::new(at.x + back.x, at.y + back.y, ground), self.world.size));
+                            println!("frame {frame}: the shore {:.0} m off, its ground {:.1} m up", (at - Vector3::new(eye.x, eye.y, 0.0)).xy().norm() / vpm, ground / vpm);
+                        }
+                        // A frost pool as a frost shot leaves one where it lands, then the hole
+                        // blown where it lies, with `--set shore_pool=1`
+                        if f == 38 && settings_from_args().iter().any(|(k, v)| k == "shore_pool" && v == "1") {
+                            self.game.lay_pool(Vector3::new(at.x, at.y, ground + 0.5), Some(weapons::Element::Frost));
+                        }
+                        if f == 40 {
+                            self.blast(Vector3::new(at.x, at.y, ground), 2.5);
+                        }
+                        if [39, 41, 50, 70, 100, 150, 220, 299].contains(&f) {
+                            let deep = |dx: f64| self.water.depth_at(at.x + dx * vpm, at.y) / vpm;
+                            println!("frame {frame}: the ground {:.2} m up; water deep {:.2} m in the middle, {:.2} m and {:.2} m a meter either way", ground / vpm, deep(0.0), deep(-1.0), deep(1.0));
+                        }
+                    }
+                }
+            }
             // A pool of each element and one of churned earth laid out over the ground ahead, all
             // at once, to watch them spread out, go on, die down and leave their marks, and laid
             // out again every 250 frames, for timing them
