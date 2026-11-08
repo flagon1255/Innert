@@ -97,6 +97,19 @@ pub enum Look {
     GraveBrute,
     BoneArcher,
     Necromancer,
+    // The way through the realms, see src\realms.rs: the Innert Gate standing near where the
+    // journey starts, with sockets for the blocks the realms' raid bosses leave, the portal back
+    // to it in each realm, the glowing veil across the opening of either once it's open, and an
+    // Innert block itself
+    Teleporter,
+    RealmPortal,
+    PortalVeil,
+    InnertBlock,
+    // Getting about the sky isles, see src\rope.rs: a grappling hook's head, a length of its rope,
+    // and wings spread to glide
+    GrappleHook,
+    HookRope,
+    Wings,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -147,7 +160,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 58] = [
+    pub const ALL: [Look; 65] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -206,6 +219,13 @@ impl Look {
         Look::GraveBrute,
         Look::BoneArcher,
         Look::Necromancer,
+        Look::Teleporter,
+        Look::RealmPortal,
+        Look::PortalVeil,
+        Look::InnertBlock,
+        Look::GrappleHook,
+        Look::HookRope,
+        Look::Wings,
     ];
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -367,7 +387,12 @@ impl Look {
         !matches!(
             self,
             Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard
-        )
+        ) && !self.is_shrine()
+    }
+
+    /// Part of the way through the realms, which stands where it is, see src\realms.rs
+    pub fn is_shrine(self) -> bool {
+        matches!(self, Look::Teleporter | Look::RealmPortal | Look::PortalVeil | Look::InnertBlock | Look::GrappleHook | Look::HookRope | Look::Wings)
     }
 
     /// Bones rather than rotting flesh, for the walking dead
@@ -541,6 +566,15 @@ impl Look {
             // Flying, its wings up
             Look::Gloomwing => 2.4,
             Look::Tusker => 1.95,
+            // Up to the stone on top of its lintel, and out to the corners of its dais
+            Look::Teleporter => 8.3,
+            Look::RealmPortal => 7.9,
+            Look::PortalVeil => 6.6,
+            Look::InnertBlock => 0.28,
+            Look::GrappleHook => 0.3,
+            // Half its length, lying along x
+            Look::HookRope => 0.8,
+            Look::Wings => 1.5,
         }
     }
 
@@ -579,6 +613,13 @@ impl Look {
             // Up where it flies
             Look::Gloomwing => (1.65, 0.34),
             Look::Tusker => (0.85, 0.74),
+            Look::Teleporter => (2.6, 2.3),
+            Look::RealmPortal => (2.6, 2.1),
+            Look::PortalVeil => (2.7, 1.2),
+            Look::InnertBlock => (0.12, 0.3),
+            Look::GrappleHook => (0.1, 0.3),
+            Look::HookRope => (0.03, 0.1),
+            Look::Wings => (0.3, 0.6),
         }
     }
 
@@ -639,6 +680,13 @@ impl Look {
             Look::GraveBrute => "grave brute",
             Look::BoneArcher => "skeleton archer",
             Look::Necromancer => "necromancer",
+            Look::Teleporter => "Innert Gate",
+            Look::RealmPortal => "portal home",
+            Look::PortalVeil => "portal",
+            Look::InnertBlock => "Innert block",
+            Look::GrappleHook => "grappling hook",
+            Look::HookRope => "rope",
+            Look::Wings => "wings",
         }
     }
 
@@ -2604,10 +2652,127 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             lid(&mut p, [-0.22, -0.35, 0.28], [0.22, 0.35, 0.36]);
             lid(&mut p, [-0.17, -0.35, 0.36], [0.17, 0.35, 0.4]);
         }
+        Look::Teleporter | Look::RealmPortal => gate(&mut p, look == Look::Teleporter),
+        // A pane of light across the opening of either
+        Look::PortalVeil => p.push(cuboid([-0.03, -GATE_OPENING[0], GATE_OPENING[1]], [0.03, GATE_OPENING[0], GATE_OPENING[2]], GLOW_ARCANE)),
+        Look::InnertBlock => {
+            // A block a hand across, light burning all through it, its edges bound in crystal and
+            // its corners in gold
+            let h = 0.12;
+            for x in [-h, h] {
+                for y in [-h, h] {
+                    for z in [0.0, 2.0 * h] {
+                        p.push(ball([x, y, 0.02 + z], 0.032, GOLD));
+                    }
+                    p.push(limb([x, y, 0.02], [x, y, 0.02 + 2.0 * h], 0.022, 0.022, CRYSTAL));
+                }
+            }
+            for z in [0.02, 0.02 + 2.0 * h] {
+                for s in [-h, h] {
+                    p.push(limb([-h, s, z], [h, s, z], 0.022, 0.022, CRYSTAL));
+                    p.push(limb([s, -h, z], [s, h, z], 0.022, 0.022, CRYSTAL));
+                }
+            }
+            p.push(cuboid([-h, -h, 0.02], [h, h, 0.02 + 2.0 * h], GLOW_ARCANE));
+        }
+        Look::GrappleHook => {
+            // Three barbed prongs curving back from the head of an iron shank, a ring at its tail
+            // for the rope
+            let z = 0.14;
+            for k in 0..3 {
+                let a = k as f64 * TAU / 3.0;
+                let (c, s) = (a.cos(), a.sin());
+                p.push(limb([0.13, 0.0, z], [0.07, 0.1 * c, z + 0.1 * s], 0.016, 0.012, STEEL));
+                p.push(limb([0.07, 0.1 * c, z + 0.1 * s], [0.1, 0.12 * c, z + 0.12 * s], 0.012, 0.004, STEEL));
+            }
+            p.push(ball([0.14, 0.0, z], 0.024, DARK_STEEL));
+            p.push(limb([-0.12, 0.0, z], [0.13, 0.0, z], 0.018, 0.018, DARK_STEEL));
+            p.push(ball([-0.15, 0.0, z], 0.032, BRONZE));
+        }
+        // A length of plaited rope lying along x, a grappling hook's, many of them making the line
+        Look::HookRope => p.push(limb([-0.75, 0.0, 0.03], [0.75, 0.0, 0.03], 0.008, 0.008, LEATHER)),
+        Look::Wings => {
+            // Wings of white feathers spread wide either side, on a light frame of bone along
+            // their leading edges, as when gliding
+            for side in [-1.0, 1.0] {
+                p.push(limb([0.0, side * 0.18, 0.65], [-0.05, side * 0.8, 0.82], 0.035, 0.03, BONE));
+                p.push(limb([-0.05, side * 0.8, 0.82], [-0.2, side * 1.35, 0.78], 0.03, 0.015, BONE));
+                for k in 0..6 {
+                    let out = 0.25 + 0.2 * k as f64;
+                    let tint = if k % 2 == 0 { LINEN } else { FUR_WHITE };
+                    p.push(ellipsoid([-0.2 - 0.03 * k as f64, side * out, 0.66 - 0.03 * k as f64], [0.24 - 0.02 * k as f64, 0.11, 0.025], tint));
+                }
+            }
+        }
         // Bosses, all built above
         _ => {}
     }
     p
+}
+
+/// The opening of the Innert Gate and the portals home, between their pillars: half as wide, and
+/// from and to how high, in meters
+pub const GATE_OPENING: [f64; 3] = [1.12, 0.52 + GATE_SINK, 4.98 + GATE_SINK];
+
+/// How far down into the ground the Innert Gate and the portals go, in meters, so on a slope their
+/// foundation's in the ground all round rather than their dais standing out over it: the models
+/// stand that much lower than the ground they're on, and all of them's that much higher up in them
+pub const GATE_SINK: f64 = 1.5;
+
+/// Where the bottom middle of the socket for realm `realm`'s Innert block `slot` of three is on the
+/// Innert Gate, in meters from the middle of its foot, facing along x: down the front of its
+/// pillars, the first two realms' on the left one, the other two's on the right
+pub fn socket(realm: usize, slot: usize) -> [f64; 3] {
+    let y = if realm < 2 { -1.6 } else { 1.6 };
+    let k = (realm % 2) * 3 + slot;
+    [0.36, y, GATE_SINK + 1.25 + k as f64 * 0.6 + if realm % 2 == 1 { 0.25 } else { 0.0 }]
+}
+
+/// The Innert Gate, or with `gate` false a portal home in a realm: two square pillars banded in
+/// obsidian, a heavy lintel across them crowned with a stone of glowing crystal, on a stepped dais.
+/// The gate's of carved temple stone, with three sockets down the front of its pillars for each
+/// realm's Innert blocks, each realm's three marked by a rune in its own color beside them; a
+/// portal's of rough rock.
+fn gate(p: &mut Vec<Part>, gate: bool) {
+    let (stone, pillar, band) = if gate { (TEMPLE_STONE, TEMPLE_DARK, OBSIDIAN) } else { (ROCK, OBSIDIAN, TEMPLE_DARK) };
+    if gate {
+        for realm in 0..4 {
+            for slot in 0..3 {
+                let [x, y, z] = socket(realm, slot);
+                // Hollowed out of the pillar, so it's left before the pillar's laid
+                p.push(cuboid([x - 0.16, y - 0.17, z - 0.03], [x + 0.2, y + 0.17, z + 0.31], AIR));
+            }
+            let rune = [GLOW_HOLY, GLOW_STORM, GLOW_BLOOD, GLOW_FROST][realm];
+            let ([x, y, low], top) = (socket(realm, 0), socket(realm, 2)[2] + 0.28);
+            let outer = y + y.signum() * 0.32;
+            p.push(cuboid([x + 0.04, outer - 0.035, low], [x + 0.11, outer + 0.035, top], rune));
+        }
+    }
+    // What's below is built from the foot of it, and raised by GATE_SINK after, see below
+    let first = p.len();
+    let [half, _, high] = GATE_OPENING;
+    let high = high - GATE_SINK;
+    // The stone on top, the crest it sits in and the lintel under that
+    p.push(ball([0.0, 0.0, 6.35], 0.3, GLOW_ARCANE));
+    p.push(cuboid([-0.4, -1.0, high + 0.72], [0.4, 1.0, high + 1.07], pillar));
+    p.push(cuboid([-0.6, -2.3, high + 0.02], [0.6, 2.3, high + 0.72], band));
+    for side in [-1.0, 1.0] {
+        let y = side * (half + 0.48);
+        for z in [0.88, 3.02, 4.8] {
+            p.push(cuboid([-0.5, y - 0.5, z], [0.5, y + 0.5, z + 0.16], band));
+        }
+        p.push(cuboid([-0.45, y - 0.45, 0.5], [0.45, y + 0.45, high + 0.02], pillar));
+        p.push(cuboid([-0.62, y - 0.62, 0.5], [0.62, y + 0.62, 0.86], stone));
+    }
+    // The dais, in two steps
+    p.push(cuboid([-1.8, -2.5, 0.25], [1.8, 2.5, 0.52], stone));
+    p.push(cuboid([-2.4, -3.0, 0.0], [2.4, 3.0, 0.25], if gate { LIMESTONE } else { STONE }));
+    // All of it up on the foundation going down into the ground under it
+    for part in &mut p[first..] {
+        part.a[2] += GATE_SINK;
+        part.b[2] += GATE_SINK;
+    }
+    p.push(cuboid([-2.3, -2.9, 0.0], [2.3, 2.9, GATE_SINK], stone));
 }
 
 /// One of the folk of a town, about 1.75 meters tall in plain clothes, arms swinging as they walk:
@@ -2925,6 +3090,14 @@ impl AnimalInstance {
         self.info[2] = tint;
         self
     }
+
+    /// Where it is and how far it reaches from there, in voxels of the main world, for tests
+    /// seeing whether it can be seen
+    #[cfg(test)]
+    pub fn sphere(&self) -> (Vector3<f64>, f64) {
+        let [x, y, z, reach] = self.position.map(f64::from);
+        (Vector3::new(x, y, z), reach)
+    }
 }
 
 fn facing(heading: f64) -> UnitQuaternion<f64> {
@@ -2957,6 +3130,11 @@ pub struct Animal {
     /// Seconds it's been about, for it to breathe and sway as it stands
     age: f64,
     pub health: f64,
+    /// Its health when it's whole: its kind's, see Look::health(), made more in the realms further
+    /// on and for their raid bosses, see Game::toughen()
+    pub max_health: f64,
+    /// Whether that's been done to it
+    pub toughened: bool,
     /// Burning, poisoned, frozen and such, see src\combat.rs
     pub status: Status,
     /// What a boss is up to, see src\bosses.rs
@@ -2989,6 +3167,12 @@ const BURIED_THROUGH: f64 = 0.3;
 pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_voxels_per_meter: u32) -> AnimalInstance {
     let vpm = world_voxels_per_meter as f64;
     AnimalInstance::new(model_index(look, 0), position, facing(heading), vpm / look.resolution(), look.reach() * vpm, STILL)
+}
+
+/// The same for something moving with the player, turned any way, like a grappling hook's rope
+pub fn moving_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, world_voxels_per_meter: u32) -> AnimalInstance {
+    let vpm = world_voxels_per_meter as f64;
+    AnimalInstance::new(model_index(look, 0), position, rotation, vpm / look.resolution(), look.reach() * vpm, MOVING)
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -3101,6 +3285,8 @@ impl Animal {
             phase: 0.0,
             age: random(&mut rng) * 10.0,
             health: look.health(),
+            max_health: look.health(),
+            toughened: false,
             status: Status::default(),
             boss: None,
             home: None,
@@ -3169,7 +3355,13 @@ impl Animal {
 
     /// How much health it has left, 0-1
     pub fn vitality(&self) -> f64 {
-        self.health / self.look.health()
+        self.health / self.max_health
+    }
+
+    /// Made `by` times as hard to kill, as hurt as it was
+    pub fn toughen(&mut self, by: f64) {
+        self.health *= by;
+        self.max_health *= by;
     }
 
     /// Hit bare-handed by the player standing at `from`. Runs off, and returns whether that was

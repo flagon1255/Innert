@@ -159,11 +159,10 @@ const LANTERN_SECONDS: f64 = 7.0;
 const LANTERN_REACH: f64 = 8.0;
 const LANTERN_GLOW: f64 = 6.0;
 /// Chainshot: how fast it flies, in meters a second, how far its balls spin apart either side,
-/// in meters, how fast they spin round, in radians a second, and how long it can fly
+/// in meters, and how fast they spin round, in radians a second
 const CHAIN_SPEED: f64 = 32.0;
 const CHAIN_HALF: f64 = 1.0;
 const CHAIN_SPIN: f64 = 14.0;
-const CHAIN_LIFE: f64 = 9.0;
 /// How many caltrops are blasted out, seconds they lie, and how big each of a caltrop's spikes is
 /// drawn, next to a thorn as long as an arrow
 const CALTROPS: usize = 14;
@@ -638,7 +637,7 @@ fn chain_half(age: f64) -> f64 {
 
 /// Where a chainshot's two balls are now
 fn chain_balls(p: &Projectile, vpm: f64) -> (Vector3<f64>, Vector3<f64>) {
-    let age = CHAIN_LIFE - p.life;
+    let age = p.flown / (CHAIN_SPEED * vpm);
     let way = p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
     let across = way.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::y);
     let over = across.cross(&way);
@@ -664,11 +663,11 @@ fn runes_written(age: f64) -> usize {
 }
 
 impl Combat {
-    /// The last projectile set off given `sig`, flying for `life` seconds at most
-    fn signed(&mut self, sig: Sig, life: f64) {
+    /// The last projectile set off given `sig`. Like anything in flight it flies on till it
+    /// strikes something or leaves the world.
+    fn signed(&mut self, sig: Sig) {
         if let Some(p) = self.projectiles.last_mut() {
             p.trick = Trick::Signature(sig);
-            p.life = life;
         }
     }
 
@@ -800,22 +799,6 @@ impl Combat {
             .max(0.0)
     }
 
-    /// A gun going off with a shot of its own: its flash, smoke rolling out of the muzzle, the
-    /// view kicked up and shaken, `kick` 1 for an ordinary hard shot
-    fn muzzle_blast(&mut self, from: Vector3<f64>, way: Vector3<f64>, kick: f64, color: [f32; 3]) {
-        let vpm = self.vpm;
-        self.flare = FLARE * (1.0 + 0.6 * kick);
-        self.flare_roll = random(&mut self.rng) * TAU;
-        self.kick += 0.04 * kick;
-        self.shake = self.shake.max(0.35 * kick);
-        self.flashes.push(Flash { position: from, color, reach: 6.0 + 3.0 * kick, life: 0.2, lifetime: 0.2 });
-        for _ in 0..(4.0 * kick) as usize {
-            let v = (way * (1.5 + 2.5 * random(&mut self.rng)) + self.any_direction() * 0.6) * vpm;
-            self.sparks.push(Spark { position: from, velocity: v, look: 0, life: 1.0, lifetime: 1.0, gravity: -0.05, slot: SLOT_SMOKE });
-        }
-        self.cap_sparks();
-    }
-
     /// What `special` does, let go of with `weapon` aimed at `target`, doing `base` damage, see
     /// unleash_at()
     pub(super) fn signature_at(&mut self, arena: &mut Arena, weapon: &Weapon, special: Special, target: Vector3<f64>, base: f64) {
@@ -835,7 +818,7 @@ impl Combat {
                 let from = self.held_point(weapon, view, false);
                 let first = Combat::floor_at(arena, feet + flat * 4.5 * vpm + up * 0.6 * vpm) + up * 0.2 * vpm;
                 self.launch(&frost, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.6 }), Form::Bolt, from, thrown(from, first, 0.34, BOMB_GRAVITY, vpm), base * 0.9, BOMB_GRAVITY);
-                self.signed(Sig::Skip(SKIPS), 8.0);
+                self.signed(Sig::Skip(SKIPS));
                 self.cues.push(Cue::here(Sound::Swoop, 0.9).pitched(1.35));
                 self.cues.push(Cue::here(Sound::Crack, 0.35).pitched(1.7));
             }
@@ -845,7 +828,7 @@ impl Combat {
                 let from = self.held_point(weapon, view, false);
                 let to = Combat::floor_at(arena, feet + flat * 5.5 * vpm + up * 0.6 * vpm) + up * 0.2 * vpm;
                 self.launch(&arcane, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.6 }), Form::Bolt, from, thrown(from, to, 0.55, BOMB_GRAVITY, vpm), base * 0.5, BOMB_GRAVITY);
-                self.signed(Sig::Brood, 8.0);
+                self.signed(Sig::Brood);
                 self.cues.push(Cue::here(Sound::Swoop, 0.8));
                 self.cues.push(Cue::here(Sound::Skitter, 0.3).pitched(1.3));
             }
@@ -864,7 +847,7 @@ impl Combat {
                 let from = self.held_point(weapon, view, true);
                 let to = self.ground_aim(arena, target, 30.0);
                 self.launch(&holy, Some(Missile::arrow(weapon.arrowhead(), true)), Form::Bolt, from, lead(from, to, 55.0, ARROW_GRAVITY * 0.4, vpm) * 55.0 * vpm, base * 0.8, ARROW_GRAVITY * 0.4);
-                self.signed(Sig::Lantern, 6.0);
+                self.signed(Sig::Lantern);
                 self.cues.push(Cue::here(Sound::Twang, 0.9).pitched(1.15));
                 self.cues.push(Cue::here(Sound::Chime, 0.5).pitched(1.7));
             }
@@ -872,9 +855,10 @@ impl Combat {
                 let from = self.held_point(weapon, view, false);
                 let way = lead(from, target, CHAIN_SPEED, BALL_GRAVITY * 0.6, vpm);
                 self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: true, size: 2.0 }), Form::Bolt, from, way * CHAIN_SPEED * vpm, base * 1.5, BALL_GRAVITY * 0.6);
-                self.signed(Sig::Chain, CHAIN_LIFE);
-                self.muzzle_blast(from, way, 1.6, [1.0, 0.75, 0.4]);
-                self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(0.62));
+                self.signed(Sig::Chain);
+                // Going off as a gun's shot does, see gun_report(), but harder
+                self.gun_report(weapon, view, &profile, from, way, 1.6);
+                self.kick += 0.06;
                 self.cues.push(Cue::here(Sound::Chain, 0.9).pitched(0.75));
                 self.cues.push(Cue::here(Sound::Whirr, 0.7).pitched(1.4));
             }
@@ -892,10 +876,10 @@ impl Combat {
                     let out = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), a) * flat;
                     let to = ground_under(arena.world, feet + out * d * vpm + up * 1.5 * vpm, vpm) + up * 0.1 * vpm;
                     self.launch(&iron, Some(Missile { shot: Shot::Ball, head: 0, power: false, size: 1.5 }), Form::Bolt, from, thrown(from, to, 0.22 + 0.03 * d, BOMB_GRAVITY, vpm), base * 0.35, BOMB_GRAVITY);
-                    self.signed(Sig::Caltrop, 6.0);
+                    self.signed(Sig::Caltrop);
                 }
-                self.muzzle_blast(from, forward, 1.8, Element::Blood.light());
-                self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(0.68));
+                self.gun_report(weapon, view, &profile, from, forward, 1.8);
+                self.kick += 0.07;
                 self.cues.push(Cue::here(Sound::Coins, 0.9).pitched(1.35));
             }
             Special::Riftshot => {
@@ -903,9 +887,9 @@ impl Combat {
                 let from = self.held_point(weapon, view, false);
                 let way = lead(from, target, 48.0, BALL_GRAVITY * 0.4, vpm);
                 self.launch(&void, Some(Missile { shot: Shot::Ball, head: 0, power: true, size: 2.2 }), Form::Bolt, from, way * 48.0 * vpm, base * 1.2, BALL_GRAVITY * 0.4);
-                self.signed(Sig::Rift, 9.0);
-                self.muzzle_blast(from, way, 1.3, Element::Void.light());
-                self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(0.72));
+                self.signed(Sig::Rift);
+                self.gun_report(weapon, view, &profile, from, way, 1.3);
+                self.kick += 0.05;
                 self.cues.push(Cue::here(Sound::Hex, 0.8).pitched(0.6));
                 self.cues.push(Cue::here(Sound::Wail, 0.25).pitched(1.8));
             }
@@ -960,7 +944,7 @@ impl Combat {
                 let from = self.held_point(weapon, view, false);
                 let to = self.ground_aim(arena, target, 24.0);
                 self.launch(&holy, None, Form::Bolt, from, (to - from).try_normalize(1e-6).unwrap_or(forward) * 30.0 * vpm, base * 0.5, 0.0);
-                self.signed(Sig::Script, 5.0);
+                self.signed(Sig::Script);
                 if let Some(p) = self.projectiles.last_mut() {
                     p.size = 1.9;
                 }
@@ -974,7 +958,7 @@ impl Combat {
                 let to = self.ground_aim(arena, target, 18.0);
                 let time = 0.45 + 0.025 * (to - from).norm() / vpm;
                 self.launch(&fire, None, Form::Fireball, from, thrown(from, to, time, 1.0, vpm), base * 0.8, 1.0);
-                self.signed(Sig::Knell, 6.0);
+                self.signed(Sig::Knell);
                 if let Some(p) = self.projectiles.last_mut() {
                     p.size = 1.7;
                 }
@@ -988,7 +972,7 @@ impl Combat {
                 let aimed = Combat::aimed_foe(arena, target, 30.0).map(|i| arena.animals[i].center(vpm as u32));
                 let to = aimed.unwrap_or_else(|| self.ground_aim(arena, target, 22.0));
                 self.launch(&blood, None, Form::Lance, from, (to - from).try_normalize(1e-6).unwrap_or(forward) * 26.0 * vpm, base * 0.8, 0.0);
-                self.signed(Sig::Thread, 5.0);
+                self.signed(Sig::Thread);
                 if let Some(p) = self.projectiles.last_mut() {
                     p.size = 1.4;
                     p.seek = if aimed.is_some() { 2.5 } else { 0.0 };
@@ -1015,7 +999,7 @@ impl Combat {
         };
         let way = lead(from, to, 52.0, ARROW_GRAVITY * 0.35, vpm);
         self.launch(profile, Some(Missile::arrow(head, true)), Form::Bolt, from, way * 52.0 * vpm, damage, ARROW_GRAVITY * 0.35);
-        self.signed(Sig::Wick, 6.0);
+        self.signed(Sig::Wick);
         self.cues.push(Cue::here(Sound::Twang, 0.9).pitched(0.95 + 0.07 * k as f32));
         self.cues.push(Cue::here(Sound::Fuse, 0.35).pitched(1.5));
     }
@@ -1038,7 +1022,7 @@ impl Combat {
         let spot = ground_under(arena.world, feet + (flat * on + side * across) * vpm + up * 1.5 * vpm, vpm) + up * 0.05 * vpm;
         let way = lead(from, spot, 62.0, QUARREL_GRAVITY * 0.3, vpm);
         self.launch(profile, Some(Missile { shot: Shot::Quarrel, head: 0, power: true, size: 1.6 }), Form::Bolt, from, way * 62.0 * vpm, damage, QUARREL_GRAVITY * 0.3);
-        self.signed(Sig::Stake, 6.0);
+        self.signed(Sig::Stake);
         self.flashes.push(Flash { position: from, color: Element::Storm.light(), reach: 5.0, life: 0.15, lifetime: 0.15 });
         self.cues.push(Cue::here(Sound::Release, 1.0).pitched(0.85 + 0.08 * k as f32));
         self.cues.push(Cue::here(Sound::Zap, 0.5).pitched(1.3));
@@ -1097,7 +1081,7 @@ impl Combat {
                 let out = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), side) * flat;
                 let to = ground_under(arena.world, feet + out * 13.0 * vpm + up * 1.5 * vpm, vpm) + up * 0.5 * vpm;
                 self.launch(profile, None, Form::Bolt, tip, (to - tip).try_normalize(1e-6).unwrap_or(forward) * 32.0 * vpm, damage, 0.0);
-                self.signed(Sig::Fang(0), 2.5);
+                self.signed(Sig::Fang(0));
                 if let Some(p) = self.projectiles.last_mut() {
                     p.size = 1.4;
                 }
@@ -1159,7 +1143,7 @@ impl Combat {
                     let out = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), a) * flat;
                     let to = ground_under(arena.world, feet + out * 12.0 * vpm + up * vpm, vpm) + up * 0.6 * vpm;
                     self.launch(profile, None, Form::Missile, from, (to - from).try_normalize(1e-6).unwrap_or(forward) * 24.0 * vpm, damage, 0.0);
-                    self.signed(Sig::Wisp, 3.0);
+                    self.signed(Sig::Wisp);
                     if let Some(p) = self.projectiles.last_mut() {
                         p.size = 1.3;
                     }
@@ -1266,25 +1250,21 @@ impl Combat {
     /// down where it is, so nothing ever just vanishes.
     pub(super) fn signature_flight(&mut self, arena: &mut Arena, p: &mut Projectile, sig: Sig, dt: f64) -> bool {
         let vpm = arena.view.vpm;
-        if p.life <= dt {
-            self.signature_lands(arena, p, sig, p.position);
-            return true;
-        }
         let at = p.position;
         // Shots from guns and crossbows, and knives of shadow, leave a glowing streak behind them, so
         // they're seen whatever's behind, sky or ground, never reaching back past the muzzle
-        let tracer: Option<(Element, f64, f64)> = match sig {
-            Sig::Caltrop => Some((Element::Blood, 0.03, 6.0)),
-            Sig::Rift => Some((Element::Arcane, 0.05, 9.0)),
-            Sig::Stake => Some((Element::Storm, 0.05, 6.0)),
-            Sig::Knife => Some((Element::Void, 0.03, 3.0)),
+        let tracer: Option<(Element, f64)> = match sig {
+            Sig::Caltrop => Some((Element::Blood, 0.03)),
+            Sig::Rift => Some((Element::Arcane, 0.05)),
+            Sig::Stake => Some((Element::Storm, 0.05)),
+            Sig::Knife => Some((Element::Void, 0.03)),
             _ => None,
         };
-        if let Some((element, seconds, life)) = tracer {
-            let flown = (life - p.life).max(0.0);
-            if flown > 0.02 {
-                self.rays.push((at - p.velocity * seconds.min(flown), at, Element::look(Some(element))));
-            }
+        if let Some((element, seconds)) = tracer
+            && p.flown > 0.4 * vpm
+        {
+            let back = (p.velocity.norm() * seconds).min(p.flown);
+            self.rays.push((at - p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x) * back, at, Element::look(Some(element))));
         }
         match sig {
             Sig::Chain => return self.chain_flight(arena, p, dt),
@@ -1319,7 +1299,7 @@ impl Combat {
         let (a, b) = chain_balls(p, vpm);
         let way = p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
         let look = Element::look(p.profile.element.or(Some(Element::Fire)));
-        let age = CHAIN_LIFE - p.life;
+        let age = p.flown / (CHAIN_SPEED * vpm);
         for ball in [a, b] {
             // A streak of glowing tracer behind each ball as it goes round
             if age > 0.02 {
@@ -1335,7 +1315,7 @@ impl Combat {
             self.sparks.push(Spark { position: p.position, velocity: v, look: 0, life: 0.9, lifetime: 0.9, gravity: -0.04, slot: SLOT_SMOKE });
         }
         self.cap_sparks();
-        let half = chain_half(CHAIN_LIFE - p.life);
+        let half = chain_half(age);
         let step = p.velocity.norm() * dt;
         let caught: Vec<usize> = (0..arena.animals.len())
             .filter(|&i| {
@@ -1516,9 +1496,7 @@ impl Combat {
                 self.blasts.push(Blast { position: at, look: Element::look(Some(Element::Void)), radius: 0.45, life: 0.35, lifetime: 0.35 });
                 let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &way).unwrap_or_else(UnitQuaternion::identity);
                 self.stuck.push(Stuck { position: at + way * 0.1 * vpm, rotation, look: Element::look(Some(Element::Void)), head: Some(0), quarrel: true, element: Some(Element::Void), life: 2.0, glowing: 1.5 });
-                if self.stuck.len() > 40 {
-                    self.stuck.remove(0);
-                }
+                self.keep_stuck_few();
                 self.cues.push(Cue::at(Sound::ArrowHit, at, 0.5).pitched(1.3));
             }
             // A splash of venom where it goes into the ground
@@ -1602,7 +1580,6 @@ impl Combat {
         let mut hop = self.offshoot(p, from, thrown(from, next, SKIP_TIME, SKIP_GRAVITY, vpm), p.damage, Trick::Signature(Sig::Skip(left - 1)));
         hop.size = p.size;
         hop.gravity = SKIP_GRAVITY;
-        hop.life = 8.0;
         hop.hit.extend(caught.iter().map(|&i| arena.animals[i].id));
         self.projectiles.push(hop);
     }
@@ -1712,9 +1689,7 @@ impl Combat {
         let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &way).unwrap_or_else(UnitQuaternion::identity);
         let look = Element::look(Some(Element::Storm));
         self.stuck.push(Stuck { position: at + way * 0.12 * vpm, rotation, look, head: Some(0), quarrel: true, element: Some(Element::Storm), life: STAKE_SECONDS + 0.4, glowing: STAKE_SECONDS });
-        if self.stuck.len() > 40 {
-            self.stuck.remove(0);
-        }
+        self.keep_stuck_few();
         if let Some(z) = self.zones.iter_mut().rev().find(|z| z.kind == ZoneKind::Signature(SigZone::Stakes))
             && z.path.len() < STAKES as usize
         {
@@ -2021,7 +1996,7 @@ impl Combat {
         };
         let way = (to - z.position).try_normalize(1e-6).unwrap_or(-Vector3::z());
         self.launch(&z.profile, None, Form::Bolt, z.position + way * 0.4 * vpm, way * 30.0 * vpm, z.damage, 0.0);
-        self.signed(Sig::RiftShard, 3.0);
+        self.signed(Sig::RiftShard);
         if let Some(p) = self.projectiles.last_mut() {
             p.size = 1.5;
         }
@@ -2048,7 +2023,7 @@ impl Combat {
             };
             let way = (to - from).try_normalize(1e-6).unwrap_or(view.forward());
             self.launch(&z.profile, None, Form::Bolt, from, way * 40.0 * vpm, z.damage, 0.0);
-            self.signed(Sig::Knife, 3.0);
+            self.signed(Sig::Knife);
             if let Some(p) = self.projectiles.last_mut() {
                 p.size = 1.4;
             }
@@ -2370,35 +2345,38 @@ impl Combat {
         let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &direction).unwrap_or_else(UnitQuaternion::identity);
         let look = Element::look(p.profile.element);
         let spin = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 7.0) * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), p.position.x * 0.3);
+        // Drawn a little bigger the further off it is past 15 m, as other shots are, so it's
+        // never lost to the eye
+        let far = ((p.position - view.eye).norm() / vpm / 15.0).max(1.0).sqrt();
         Some(match sig {
             Sig::Skip(_) | Sig::Brood => {
                 let (model, bomb) = self.effect_model(SLOT_BOMB, look);
-                vec![(view.eye, place(model, bomb, BOMB_RES, Vector3::zeros(), p.position, spin, vpm, p.size, MOVING))]
+                vec![(view.eye, place(model, bomb, BOMB_RES, Vector3::zeros(), p.position, spin, vpm, p.size * far, MOVING))]
             }
             // Iron balls heated red-hot, churning, the chain between
             Sig::Chain => {
                 let (a, b) = chain_balls(p, vpm);
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(p.profile.element.or(Some(Element::Fire))));
-                let mut out = vec![(view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), a, spin, vpm, CHAINSHOT_BALL, MOVING)), (view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), b, spin, vpm, CHAINSHOT_BALL, MOVING))];
+                let mut out = vec![(view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), a, spin, vpm, CHAINSHOT_BALL * far, MOVING)), (view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), b, spin, vpm, CHAINSHOT_BALL * far, MOVING))];
                 out.extend(self.line_instances(a, b, 0.0, LASH_CHAIN, 0.05).into_iter().map(|(_, i)| (view.eye, i)));
                 out
             }
             // A barbed caltrop glowing red, tumbling
-            Sig::Caltrop => self.caltrop_instances(p.position, spin, 1.2),
+            Sig::Caltrop => self.caltrop_instances(p.position, spin, 1.2 * far),
             Sig::Rift | Sig::Thread => {
                 let element = if sig == Sig::Rift { Element::Void } else { Element::Blood };
                 let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(element)));
                 let churn = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 6.0) * rotation;
-                vec![(view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, churn, vpm, 0.09 * p.size, MOVING))]
+                vec![(view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, churn, vpm, 0.09 * p.size * far, MOVING))]
             }
             // As the arrows and bolts they are, but shown however much else is about
             Sig::Stake | Sig::Lantern | Sig::Wick if p.arrow => {
                 let instance = if p.shot == Shot::Quarrel {
                     let (model, quarrel) = self.effect_model(SLOT_QUARREL + p.head.min(QUARREL_HEADS - 1), look);
-                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), p.position, rotation, vpm, p.size, MOVING)
+                    place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), p.position, rotation, vpm, p.size * far, MOVING)
                 } else {
                     let (model, arrow) = self.effect_model(SLOT_ARROW + p.head.min(ARROW_HEADS - 1), look);
-                    place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING)
+                    place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, far, MOVING)
                 };
                 vec![(view.eye, instance)]
             }

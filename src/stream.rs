@@ -1141,6 +1141,21 @@ impl App {
         stream.teleport = Some(Teleport { job, pool, origin, arrival: None, dark: if outside { 1.0 } else { 0.0 }, lighter: false, last: Instant::now() });
     }
 
+    /// Builds the whole world afresh round where the player or the camera is now, from the dark at
+    /// once, as when a saved game goes on somewhere else, or on another landscape: whatever was
+    /// being built before, even of the world built afresh, is let go
+    pub(super) fn rebuild_world(&mut self) {
+        let Some(mut stream) = self.stream.take() else {
+            return;
+        };
+        stream.teleport = None;
+        self.start_teleport(&mut stream);
+        if let Some(teleport) = &mut stream.teleport {
+            teleport.dark = 1.0;
+        }
+        self.stream = Some(stream);
+    }
+
     /// Moving the world on all at once, see start_teleport(): the screen goes dark, the world
     /// built round where the camera is is sent over once nothing can be seen, put in, moved on to,
     /// and the screen comes back

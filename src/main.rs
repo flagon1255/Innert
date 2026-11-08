@@ -79,6 +79,10 @@ mod memory;
 mod perf;
 mod player;
 mod quality;
+mod realms;
+mod rope;
+mod save;
+mod session;
 mod shafts;
 mod skips;
 mod staging;
@@ -1295,6 +1299,14 @@ struct App {
     menu_open: bool,
     // Whether the game has started, so the menu says Resume instead of Play
     started: bool,
+    /// The mode being played, Free Roam or Realms, and its save, see session.rs
+    session: session::Session,
+    /// The seed a new Free Roam game's landscape is to have, picked in the menu
+    new_seed: u32,
+    /// A grappling hook thrown, and the winds bringing the player back after a fall below the sky
+    /// isles, see rope.rs
+    hook: Option<rope::Hook>,
+    fall_back: Option<rope::FallBack>,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -2378,8 +2390,12 @@ impl App {
                 ..Default::default()
             },
         );
-        // A preview of the loading screen shows it fade into the menu, as it does in play
-        let menu_open = (capture.is_none() || loading::previewing()) && flag("menu", true);
+        // A preview of the loading screen shows it fade into the menu, as it does in play, and
+        // `--set menu=1` shows it in a screenshot run, to see it with `gui=1`
+        let menu_open = flag("menu", capture.is_none() || loading::previewing());
+        // Saves go where they're kept, except in screenshot runs, which save only with `--set
+        // saves=<folder>`, so trying things out never touches the player's own
+        let session = session::Session::new(setting("saves").map(PathBuf::from), capture.is_none());
         // `--set waterfall=2` starts looking at the second waterfall
         let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
         // `--set sun_shafts=off`, `low` or `high`, and `sun_shafts_strength=1.5` for thicker air
@@ -2498,6 +2514,11 @@ impl App {
 
             menu_open,
             started: !menu_open,
+            session,
+            // `--set new_seed=42` for a new Free Roam game on that seed
+            new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
+            hook: None,
+            fall_back: None,
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -2531,6 +2552,28 @@ impl App {
         };
         let pieces = app.stream.as_ref().map_or(Vec::new(), |s| s.pieces.clone());
         app.adopt_pieces(&pieces);
+        // `--set mode=freeroam` or `realms` starts playing that mode straight away, going on from
+        // its save if there is one, or afresh with `--set new=1`, as picking it from the menu
+        // does. Then `health=37`, `gold=900` and `weapon_seed=7` change the player, to see it all
+        // come back from the save next time.
+        if let Some(mode) = setting("mode").and_then(save::Mode::parse) {
+            let saved = if flag("new", false) { None } else { app.session.saves.saved(mode).cloned() };
+            app.begin(mode, saved);
+            if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
+                app.game.set_health(health);
+            }
+            if let Some(gold) = setting("gold").and_then(|v| v.parse().ok()) {
+                app.game.set_gold(gold);
+            }
+            if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
+                app.game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));
+            }
+            // And `realm=1`, `blocks=3` and the like to try out the journey through the realms
+            app.try_journey(&settings);
+            println!("STATE at the start: {}", app.state_line());
+        }
+        // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
+        app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -2711,9 +2754,13 @@ impl App {
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
-                Some(game::Lair { look, position: to_voxels(at), key })
+                Some(game::Lair { look, position: to_voxels(at), key, raid: None })
             })
             .collect();
+        // In Realms, the realm's own three raid bosses too, and the Innert Gate or its portal home,
+        // see session.rs
+        let (raids, shrines) = self.realm_sites();
+        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
         // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
@@ -2801,6 +2848,7 @@ impl App {
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
+        self.game.set_shrines(&self.world, shrines);
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props.iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -3569,15 +3617,32 @@ impl App {
         let delta_time = self.capture.as_ref().and_then(|c| c.step).unwrap_or(delta_time);
 
         if self.input.close_requested() {
+            self.save_game(true);
             event_loop.exit();
             return;
+        }
+        // What was picked from the menu last frame, and saving as the game goes on
+        if let Some(action) = self.session.action.take() {
+            self.menu_picked(action, event_loop);
+        }
+        self.update_session(delta_time.min(0.25));
+        // `--set save_at=300` saves at that frame of a screenshot run, saying what it saved
+        static SAVE_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        let save_at = *SAVE_AT.get_or_init(|| settings_from_args().into_iter().find(|(k, _)| k == "save_at").and_then(|(_, v)| v.parse().ok()));
+        if let Some(frame) = self.capture.as_ref().map(|c| c.frame_times.len())
+            && save_at == Some(frame)
+        {
+            self.save_game(true);
+            println!("STATE saved at frame {frame}: {}", self.state_line());
         }
 
         // Screenshot runs from the command line ignore input, so they always show the same view
         let interactive = self.capture.is_none();
 
         if interactive && self.input.key_pressed(KeyCode::Escape) {
-            if self.game.shopping() {
+            if self.session.gate_open {
+                self.session.gate_action = Some(session::GateAction::Close);
+            } else if self.game.shopping() {
                 self.game.close_shop();
                 if !self.inventory_open {
                     self.set_focus(true);
@@ -3591,6 +3656,8 @@ impl App {
             } else {
                 self.menu_open = true;
                 self.set_focus(false);
+                // Saved whenever the menu's opened, should the game be left from it
+                self.save_game(false);
             }
         }
         let playing = interactive && !self.menu_open;
@@ -3606,7 +3673,7 @@ impl App {
         let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
         // Scripts fight by themselves, see run_script()
         let mut controls = std::mem::take(&mut self.script_controls);
-        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && self.input.mouse_pressed(MouseButton::Left) {
+        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && !self.session.gate_open && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
         } else if playing && self.focused && !self.game.dead() {
             let bucket = self.game.holding_bucket() && !self.game.has_target();
@@ -3622,6 +3689,9 @@ impl App {
             } else if self.input.mouse_pressed(MouseButton::Left) {
                 if bucket {
                     self.scoop_water(eye, look);
+                } else if self.game.holding_hook() && !self.game.has_target() {
+                    // The grappling hook thrown, see rope.rs
+                    self.throw_hook();
                 } else {
                     self.game.primary(eye);
                 }
@@ -3736,6 +3806,18 @@ impl App {
                 Some(_) => None,
                 None => Some(Player::new(camera_to_voxels(self.camera.position, self.world.size), &self.world)),
             };
+        }
+
+        // The grappling hook hauling the player along its rope, which jump lets go of, wings
+        // spread while jump's held in the air, and the winds bringing the player back after a
+        // fall below the sky isles, see rope.rs
+        let jump_held = self.focused && interactive && !self.game.dead() && self.input.key_held(KeyCode::Space);
+        let let_go = self.focused && interactive && self.input.key_pressed(KeyCode::Space);
+        self.update_hook(delta_time.min(0.05), let_go);
+        self.update_fall();
+        let gliding = self.gliding(jump_held || self.session.trial_glides());
+        if let Some(player) = &mut self.player {
+            player.gliding = gliding;
         }
 
         // The dead don't walk
@@ -4059,6 +4141,42 @@ impl App {
                 }
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+            }
+            // A pool of each element and one of churned earth laid out over the ground ahead, all
+            // at once, to watch them spread out, go on, die down and leave their marks, and laid
+            // out again every 250 frames, for timing them
+            ("pools", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.62;
+                }
+                if f >= 20 && (f - 20) % 250 == 0 {
+                    let water = &self.water;
+                    let middle = self.game.lay_pools(&self.world, &|x, y| water.surface_at(x, y), eye, look);
+                    // Looking down at the middle of them, the first time
+                    if f == 20 {
+                        self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    }
+                }
+            }
+            // One spell cast up over the land ahead, the view narrowed to follow it a long way
+            // off, to see it fly on and on
+            ("far", f) => {
+                // `--set far_turn=2` turns round that many radians first, away from what's near
+                if f == 1 {
+                    let turn = settings_from_args().into_iter().find(|(k, _)| k == "far_turn").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    self.camera.rotation.z += turn;
+                    self.camera.rotation.x = 0.22;
+                    self.camera.fov = 30.0;
+                }
+                // Nothing near for it to home in on
+                if f <= 30 {
+                    self.game.shoo_animals(eye, 80.0);
+                }
+                let cast = (30..33).contains(&f);
+                self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+                if f % 15 == 0 || (30..42).contains(&f) {
+                    println!("frame {frame}: {}", self.game.in_flight(eye));
+                }
             }
             // One spell cast at the ground a few meters ahead, to watch it go off and what it leaves
             ("spells", f) => {
@@ -4576,6 +4694,12 @@ impl App {
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
+        // A grappling hook's rope, and wings spread to glide, see rope.rs
+        let rope = if self.hook.is_some() || self.player.as_ref().is_some_and(|p| p.gliding) { self.rope_instances(&view) } else { Vec::new() };
+        // How white the screen is as the winds bring the player back up, see rope.rs, and whether
+        // they're gliding
+        let fallen = self.fall_dark();
+        let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4649,7 +4773,6 @@ impl App {
 
         // What the menu and inventory ask for, done once the GUI is drawn
         let mut focus_change = None;
-        let mut quit = false;
         // Under the render scale sliders: what that comes to
         let render_note = self.show_settings.then(|| {
             let [w, h, _] = rcx.images.render_image.extent();
@@ -4682,8 +4805,37 @@ impl App {
             if let Some(dark) = self.stream.as_ref().and_then(|s| s.teleport.as_ref()).map(|t| t.dark)
                 && dark > 0.0
             {
-                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("moving on")))
-                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark.clamp(0.0, 1.0) * 255.0) as u8));
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("moving on")));
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark.clamp(0.0, 1.0) * 255.0) as u8));
+                // Going on with a game somewhere the world wasn't, it says so, as that takes a
+                // moment or two
+                if self.session.arriving {
+                    let shade = (dark.clamp(0.0, 1.0) * 200.0) as u8;
+                    painter.text(ctx.screen_rect().center(), Align2::CENTER_CENTER, "The world takes shape...", egui::FontId::proportional(22.0), Color32::from_gray(shade));
+                }
+            }
+            // Wings spread, out of sight behind: said under the crosshair instead
+            if gliding_now && !self.menu_open {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gliding"))).text(
+                    ctx.screen_rect().center() + egui::vec2(0.0, 42.0),
+                    Align2::CENTER_CENTER,
+                    "Gliding",
+                    egui::FontId::proportional(16.0),
+                    Color32::from_rgba_unmultiplied(235, 240, 255, 200),
+                );
+            }
+            // Brought back up after a fall below the sky isles, see rope.rs
+            if fallen > 0.0 {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("fallen")))
+                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_rgba_unmultiplied(225, 235, 250, (fallen * 255.0) as u8));
+            }
+            // Going through the gate or a portal: the light of its veil, then the dark
+            let leaving = self.session.leaving_dark();
+            if leaving > 0.0 {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("going through")));
+                let violet = (1.0 - (leaving * 2.0 - 1.0).abs()) * 140.0;
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_rgba_unmultiplied(150, 110, 255, violet as u8));
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((leaving * leaving * 255.0) as u8));
             }
 
             if self.menu_open {
@@ -4700,44 +4852,14 @@ impl App {
                             .show(ui, |ui| {
                                 ui.set_width(340.0);
                                 ui.vertical_centered(|ui| {
-                                    ui.label(RichText::new("INNERT").size(60.0).strong().color(Color32::WHITE));
-                                    ui.add_space(26.0);
-
-                                    let button = |ui: &mut egui::Ui, text: &str| {
-                                        ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).size(20.0)))
-                                    };
-                                    if button(ui, if self.started { "Resume" } else { "Play" }).clicked() {
-                                        self.menu_open = false;
-                                        self.started = true;
-                                        focus_change = Some(true);
+                                    // Resume, each mode with Continue and New, Settings and Quit,
+                                    // done at the start of the next frame, see menu_picked()
+                                    let session = &mut self.session;
+                                    let picked = session::menu(&mut session.menu, ui, self.started, session.mode, &session.saves, &mut self.new_seed, self.show_settings);
+                                    if picked.is_some() {
+                                        session.action = picked;
                                     }
-                                    ui.add_space(8.0);
-                                    if button(ui, "New World").clicked() {
-                                        self.scene = Scene::Terrain;
-                                        self.generate_requested = true;
-                                        self.menu_open = false;
-                                        self.started = true;
-                                        focus_change = Some(true);
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(70.0);
-                                        ui.add(egui::DragValue::new(&mut self.terrain.seed).prefix("Seed: "));
-                                        if ui.button("Random").clicked() {
-                                            let nanos = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .map_or(0, |d| d.subsec_nanos());
-                                            self.terrain.seed = nanos % 100_000;
-                                        }
-                                    });
-                                    ui.add_space(8.0);
-                                    if button(ui, if self.show_settings { "Hide Settings" } else { "Settings" }).clicked() {
-                                        self.show_settings = !self.show_settings;
-                                    }
-                                    ui.add_space(8.0);
-                                    if button(ui, "Quit").clicked() {
-                                        quit = true;
-                                    }
-                                    ui.add_space(22.0);
+                                    ui.add_space(18.0);
                                     ui.label(
                                         RichText::new(
                                             "WASD move · Space jump · Shift run · F fly\n\
@@ -4763,6 +4885,15 @@ impl App {
                     focus_change = Some(true);
                 }
                 self.shopping = shopping;
+                // The Innert Gate's window, or a portal's, see session.rs
+                if self.session.gate_open
+                    && let (Some(progress), Some(places)) = (&self.session.realms, &self.session.places)
+                {
+                    let carried = std::array::from_fn(|r| self.game.innert_blocks(r as u8));
+                    if let Some(action) = session::gate_window(&ctx, places.realm, progress, carried) {
+                        self.session.gate_action = Some(action);
+                    }
+                }
                 if !shopping && self.inventory_open {
                     let mut open = true;
                     self.game.inventory(&ctx, &mut open);
@@ -4974,10 +5105,6 @@ impl App {
             self.focused = focused;
             grab_cursor(&rcx.window, focused);
         }
-        if quit {
-            event_loop.exit();
-        }
-
         let render_extent = rcx.images.render_image.extent();
         let resample_extent = rcx.images.resample_image.extent();
         self.camera.extent = [render_extent[0] as f64, render_extent[1] as f64];
@@ -5074,7 +5201,9 @@ impl App {
         // The weapon in hand, and the animals, food and things flying near the camera, for the
         // shader to trace
         let playing = self.loaded_scene.is_terrain() && self.animals_on;
-        let instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        let mut instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        // A grappling hook's rope, and wings spread to glide, see rope.rs
+        instances.extend(rope);
         if let Some(perf) = &mut self.perf {
             perf.instances = perf.instances.max(instances.len());
         }
@@ -5664,6 +5793,11 @@ impl App {
                 }
                 if let Some(timer) = &mut capture.gpu {
                     println!("{}", timer.report());
+                }
+                // A mode being played is saved on the way out, as in play
+                if self.session.mode.is_some() {
+                    self.save_game(true);
+                    println!("STATE at the end: {}", self.state_line());
                 }
                 event_loop.exit();
             } else if let Some(path) = capture_shot {

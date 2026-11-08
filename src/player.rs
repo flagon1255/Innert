@@ -16,6 +16,9 @@ const SPRINT_SPEED: f64 = 9.0;
 const SWIM_SPEED: f64 = 3.0;
 const JUMP_SPEED: f64 = 6.5;
 const GRAVITY: f64 = 22.0;
+/// Gliding on wings: how fast the player sinks, at most, and goes on ahead, in meters a second
+const GLIDE_SINK: f64 = 2.2;
+const GLIDE_SPEED: f64 = 11.0;
 
 /// Whether a material stops the player. Plants and water don't.
 fn blocks(material: u8) -> bool {
@@ -46,6 +49,10 @@ pub struct Player {
     /// How fast blows and dashes are throwing the player sideways, in voxels a second, on top of
     /// walking, dying away quickly on the ground and slowly in the air
     shove: Vector2<f64>,
+    /// Pulled along a grappling hook's rope this frame, this fast in voxels a second, see haul()
+    hauled: Option<Vector3<f64>>,
+    /// Gliding on wings, falling slowly and going on ahead, while it's set and they're in the air
+    pub gliding: bool,
 }
 
 impl Player {
@@ -58,6 +65,8 @@ impl Player {
             on_ground: false,
             eye_offset: 0.0,
             shove: Vector2::zeros(),
+            hauled: None,
+            gliding: false,
         };
         while player.collides(world, player.position) && player.position.z < world.size[2] as f64 {
             player.position.z += 1.0;
@@ -95,6 +104,12 @@ impl Player {
         }
     }
 
+    /// Pulled along by a rope this frame at `velocity` voxels a second, gravity let be: what's in
+    /// the way still stops them
+    pub fn haul(&mut self, velocity: Vector3<f64>) {
+        self.hauled = Some(velocity);
+    }
+
     pub fn eye(&self, world: &World) -> Vector3<f64> {
         let vpm = world.voxels_per_meter as f64;
         self.position + Vector3::new(0.0, 0.0, EYE_HEIGHT * vpm + self.eye_offset)
@@ -103,6 +118,18 @@ impl Player {
     /// `wish` is the direction to walk in on the ground, up to length 1.
     pub fn update(&mut self, world: &World, water: WaterLevel, wish: Vector2<f64>, jump: bool, sprint: bool, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
+        // Hauled along a rope, as fast as it pulls, going nowhere else
+        if let Some(velocity) = self.hauled.take() {
+            self.velocity = velocity;
+            self.shove = Vector2::zeros();
+            self.move_horizontally(world, 0, velocity.x * dt, (STEP_HEIGHT * vpm).ceil() as i32);
+            self.move_horizontally(world, 1, velocity.y * dt, (STEP_HEIGHT * vpm).ceil() as i32);
+            if self.move_vertically(world, velocity.z * dt) {
+                self.velocity.z = 0.0;
+            }
+            self.on_ground = false;
+            return;
+        }
         let chest = self.position + Vector3::new(0.0, 0.0, CHEST_HEIGHT * vpm);
         let swimming = chest.z < water(chest.x, chest.y);
 
@@ -128,6 +155,13 @@ impl Player {
             self.velocity.z -= GRAVITY * vpm * dt;
             if jump && self.on_ground {
                 self.velocity.z = JUMP_SPEED * vpm;
+            }
+            // Wings spread, falling slowly and sailing on ahead, faster than running
+            if self.gliding && !self.on_ground && self.velocity.z < 0.0 {
+                self.velocity.z = self.velocity.z.max(-GLIDE_SINK * vpm);
+                let ahead = if wish.norm() > 0.1 { wish.normalize() } else { wish };
+                self.velocity.x = ahead.x * GLIDE_SPEED * vpm + self.shove.x;
+                self.velocity.y = ahead.y * GLIDE_SPEED * vpm + self.shove.y;
             }
         }
 
