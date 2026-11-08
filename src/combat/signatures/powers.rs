@@ -1225,6 +1225,12 @@ mod tests {
         world
     }
 
+    /// Whether `family` is one of the gathering tools, see tools.rs: they're never legendary, never
+    /// rolled as loot, and have no power
+    fn is_tool(family: &str) -> bool {
+        crate::tools::Tool::ALL.iter().any(|t| t.family() == family)
+    }
+
     /// A legendary or mythic weapon of `family`, as one would drop
     fn legendary(library: &Library, family: usize) -> Weapon {
         (0..40_000u32)
@@ -1304,7 +1310,7 @@ mod tests {
     fn every_legendary_family_has_a_power() {
         let library = Library::load();
         let mut seen = Vec::new();
-        for (family, f) in library.families.iter().enumerate() {
+        for (family, f) in library.families.iter().enumerate().filter(|(_, f)| !is_tool(&f.id)) {
             let power = Power::of(&f.id).unwrap_or_else(|| panic!("{} has no power", f.id));
             let weapon = legendary(&library, family);
             assert_eq!(weapon.profile.power, Some(power), "{}", f.id);
@@ -1330,7 +1336,7 @@ mod tests {
         let library = Library::load();
         let world = field();
         let mut broken = Vec::new();
-        for (family, f) in library.families.iter().enumerate() {
+        for (family, f) in library.families.iter().enumerate().filter(|(_, f)| !is_tool(&f.id)) {
             let weapon = legendary(&library, family);
             let name = format!("{} on a {}", weapon.profile.power.unwrap().name(weapon.profile.element), f.id);
             for foes in [false, true] {
@@ -1370,7 +1376,7 @@ mod tests {
         let water = |_: f64, _: f64| f64::NEG_INFINITY;
         let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
         let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.12), tan: [1.2445, 0.7002], vpm, speed: 0.0, stride: 0.0 };
-        for (family, f) in library.families.iter().enumerate() {
+        for (family, f) in library.families.iter().enumerate().filter(|(_, f)| !is_tool(&f.id)) {
             if !only.is_empty() && f.id != only {
                 continue;
             }
