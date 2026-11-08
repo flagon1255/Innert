@@ -36,9 +36,19 @@ pub const PILLAR_STAGE_COUNT: usize = 2;
 pub const MOON: usize = PILLAR_STAGES + PILLAR_STAGE_COUNT;
 /// A spark as a streak along -x behind its hot head at 0, for each look
 pub const STREAKS: usize = MOON + 1;
+/// A boulder of the Earthbreaker Colossus's stone, its middle at 0, STONE_ROUND meters round at
+/// size 1: dark and lumpy, fire glowing in the cracks over it, earth still clinging to its
+/// underside where it was torn up out of the ground. Drawn big for the boulders it hurls, small for
+/// the chunks of stone thrown about.
+pub const STONE_BOULDER: usize = STREAKS + ELEMENT_LOOKS;
+/// A slab of the same stone standing on 0, SLAB_HEIGHT tall, broad along x and thin along y, broken
+/// off jagged at its top, earth clinging to its foot and fire in its seams
+pub const STONE_SLAB: usize = STONE_BOULDER + 1;
 /// How many effect models there are in all
 #[cfg(test)]
-pub const EFFECT_MODELS: usize = STREAKS + ELEMENT_LOOKS;
+pub const EFFECT_MODELS: usize = STONE_SLAB + 1;
+pub const STONE_ROUND: f64 = 0.5;
+pub const SLAB_HEIGHT: f64 = 1.6;
 
 /// Voxels per meter of each
 pub const BLAST_RES: f64 = MODEL_RES;
@@ -1100,6 +1110,78 @@ pub fn bolt(element: Option<Element>) -> (Model, Vector3<f64>) {
     voxelize(&p, MODEL_RES)
 }
 
+/// The Colossus's boulder, see STONE_BOULDER: lumpy and broken, flattened here and there where
+/// it split off, cracks running over it where a noise crosses nought with fire glowing in them,
+/// patches of darker stone, and earth, gravel and moss clinging underneath
+fn stone_boulder() -> (Model, Vector3<f64>) {
+    let seed = 0x570e;
+    let mut g = Grid::round(STONE_ROUND * 1.35, MODEL_RES);
+    g.fill(|p, h| {
+        let r = length(p);
+        let n = if r > 1e-6 { scale(p, 1.0 / r) } else { [0.0, 0.0, 1.0] };
+        let surface = STONE_ROUND * (1.0 + 0.2 * fbm(scale(n, 1.7), seed) + 0.07 * fbm(scale(n, 4.5), seed ^ 0x3b));
+        if r > surface {
+            return AIR;
+        }
+        // Only its skin's ever seen
+        if r < surface - 2.0 / MODEL_RES {
+            return OBSIDIAN;
+        }
+        if fbm(scale(p, 3.4), seed ^ 0xc4ac).abs() < 0.05 {
+            return GLOW_FIRE;
+        }
+        if n[2] < -0.45 + 0.2 * fbm(scale(n, 3.0), seed ^ 0xd17) {
+            let pick = unit(h);
+            return if pick < 0.2 { GRAVEL } else if pick < 0.3 { MOSS } else { DIRT };
+        }
+        let patch = fbm(scale(p, 2.2), seed ^ 0x0b5);
+        if patch > 0.3 {
+            OBSIDIAN
+        } else if patch < -0.25 {
+            GRAVEL
+        } else if unit(h) < 0.1 {
+            STONE
+        } else {
+            MORTAR
+        }
+    });
+    g.model()
+}
+
+/// A slab of the Colossus's stone, see STONE_SLAB: broad at its foot and narrowing a little, its
+/// edges broken, to a jagged top, earth clinging to its foot and fire in the seams across it
+fn stone_slab() -> (Model, Vector3<f64>) {
+    let seed = 0x51ab;
+    let mut g = Grid::span([-0.7, -0.3, -0.15], [0.7, 0.3, SLAB_HEIGHT + 0.15], MODEL_RES);
+    g.fill(|p, h| {
+        let [x, y, z] = p;
+        let rough = fbm(scale(p, 2.6), seed);
+        let up = (z / SLAB_HEIGHT).clamp(0.0, 1.0);
+        let half = 0.55 - 0.15 * up + 0.08 * rough;
+        let thick = 0.2 - 0.06 * up + 0.04 * fbm(scale(p, 4.0), seed ^ 0x7f);
+        let top = SLAB_HEIGHT - 0.12 + 0.2 * fbm([x * 3.5, 0.3, 0.0], seed ^ 0x70b) - 0.15 * (x / 0.55).abs();
+        if x.abs() > half || y.abs() > thick || z > top || z < -0.15 {
+            return AIR;
+        }
+        if z < 0.25 + 0.1 * rough {
+            return if unit(h) < 0.25 { GRAVEL } else { DIRT };
+        }
+        if fbm(scale(p, 3.0), seed ^ 0x5ea).abs() < 0.05 {
+            return GLOW_FIRE;
+        }
+        if rough > 0.3 {
+            OBSIDIAN
+        } else if rough < -0.25 {
+            GRAVEL
+        } else if unit(h) < 0.1 {
+            STONE
+        } else {
+            MORTAR
+        }
+    });
+    g.model()
+}
+
 type Job = Box<dyn Fn() -> (Model, Vector3<f64>) + Sync>;
 
 /// The models from BLASTS on, made on every core at once
@@ -1123,6 +1205,8 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
     for look in 0..ELEMENT_LOOKS {
         jobs.push(Box::new(move || streak(look)));
     }
+    jobs.push(Box::new(stone_boulder));
+    jobs.push(Box::new(stone_slab));
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let mut made: Vec<(usize, (Model, Vector3<f64>))> = std::thread::scope(|scope| {
@@ -1227,7 +1311,7 @@ mod tests {
     /// sRGB colors of the materials, as in the palette in shaders\traverse.comp
     const PALETTE: [[f64; 3]; 89] = [
         [0.00, 0.00, 0.00], [0.28, 0.48, 0.17], [0.50, 0.35, 0.22], [0.58, 0.56, 0.55], [0.86, 0.74, 0.50], [0.95, 0.97, 1.00], [0.10, 0.30, 0.45], [0.45, 0.29, 0.17],
-        [0.27, 0.54, 0.15], [0.92, 0.14, 0.14], [0.98, 0.84, 0.14], [0.80, 0.78, 0.74], [0.42, 0.56, 0.22], [0.10, 0.36, 0.10], [0.95, 0.75, 0.12], [0.95, 0.42, 0.06],
+        [0.27, 0.54, 0.15], [0.92, 0.14, 0.14], [0.98, 0.84, 0.14], [0.58, 0.38, 0.27], [0.42, 0.56, 0.22], [0.10, 0.36, 0.10], [0.95, 0.75, 0.12], [0.95, 0.42, 0.06],
         [0.78, 0.08, 0.06], [0.58, 0.28, 0.85], [0.96, 0.96, 0.92], [0.68, 0.60, 0.54], [0.32, 0.48, 0.14], [0.90, 0.96, 0.98], [0.38, 0.63, 0.20], [0.10, 0.32, 0.20],
         [0.56, 0.53, 0.48], [0.15, 0.45, 0.95], [0.95, 0.45, 0.70], [0.40, 0.75, 0.20], [0.90, 0.88, 0.82], [0.98, 0.70, 0.80], [0.55, 0.75, 0.25], [0.85, 0.12, 0.10],
         [0.92, 0.88, 0.78], [0.55, 0.65, 0.30], [0.40, 0.25, 0.12], [0.30, 0.68, 0.15], [0.55, 0.42, 0.28], [0.45, 0.40, 0.36], [0.15, 0.12, 0.10], [0.36, 0.22, 0.12],

@@ -26,6 +26,7 @@ use crate::worldgen::{World, is_passable};
 /// The signature special attacks giving families an identity of their own, see signatures.rs
 mod signatures;
 use signatures::{Sig, SigAct, SigZone, signature_move, signature_release};
+mod stones;
 
 pub const MAX_MANA: f64 = 100.0;
 /// Mana coming back every second
@@ -1929,6 +1930,8 @@ impl Lash {
 
 pub struct Combat {
     pub mana: f64,
+    /// Melee blows landed, swung at anything or nothing, for a tool's to gather, see tools.rs
+    pub landed: u32,
     action: Action,
     /// Seconds until the weapon in hand can attack again
     cooldown: f64,
@@ -2103,6 +2106,9 @@ pub struct Combat {
     /// How far off anything's seen at all, in voxels, as of the last update, see seen_within()
     seen: f64,
     rng: u32,
+    /// The Earthbreaker Colossus's stone: boulders held and hurled, rocks flying, slabs heaving up
+    /// and chunks thrown about, see stones.rs
+    stones: stones::Stones,
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -4921,6 +4927,7 @@ impl Combat {
     pub fn new(seed: u32, first_model: u32) -> Self {
         Combat {
             mana: MAX_MANA,
+            landed: 0,
             action: Action::Idle,
             cooldown: 0.0,
             frenzy: 0.0,
@@ -5021,6 +5028,7 @@ impl Combat {
             vpm: 8.0,
             seen: f64::INFINITY,
             rng: hash(seed ^ 0xc0b47),
+            stones: stones::Stones::new(),
         }
     }
 
@@ -5174,6 +5182,7 @@ impl Combat {
         for p in &mut self.popups {
             p.position -= shift;
         }
+        self.stones.recenter(shift);
     }
 
     /// Clears everything in flight, for a new world
@@ -5219,6 +5228,7 @@ impl Combat {
         self.lash_aim = None;
         self.binds.clear();
         self.serpents.clear();
+        self.stones.clear();
     }
 
     /// How fast the player can walk, next to as they would: a siege crossbow braced holds them
@@ -5382,6 +5392,7 @@ impl Combat {
             }
         }
         self.fly_hostiles(arena, dt);
+        self.work_stone(arena, dt);
         self.linger(arena, dt);
         // Shockwaves and the special attacks that go on a while hit a lot at once, so what they
         // set off blows no holes and leaves no stains, as changing the world takes a while
@@ -5552,6 +5563,7 @@ impl Combat {
                     let land = !struck && t >= length * lands;
                     self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
                     if land {
+                        self.landed = self.landed.wrapping_add(1);
                         self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
                         // A battle staff's finishing blow, or its heavy one, looses a spell too
                         let cost = profile.stat("manaCost");
@@ -15157,6 +15169,7 @@ impl Combat {
     /// flying_instances()
     fn other_instances(&self, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
         let vpm = view.vpm;
+        self.stone_instances(view, out);
         let mut add = |at: Vector3<f64>, instance: AnimalInstance| out.push(((at - view.eye).norm(), instance));
         for s in &self.stuck {
             // Sinking away into what it's stuck in as it goes, point first, never just gone, and
@@ -15193,9 +15206,12 @@ impl Combat {
                     let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(e)));
                     place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.5, MOVING)
                 }
+                // A little bigger the further off it is past 15 m, so a serpent's glob of venom or
+                // a boss's ball of fire is never lost to the eye, as a shot isn't
                 HostileKind::Spell(e) => {
+                    let far = ((h.position - view.eye).norm() / vpm / 15.0).max(1.0).sqrt();
                     let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(e)));
-                    place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.35, MOVING)
+                    place(model, ball, MODEL_RES, Vector3::zeros(), h.position, spin, vpm, 0.35 * far, MOVING)
                 }
                 HostileKind::Web => {
                     let (model, web) = self.model_at(WEB);
@@ -15213,7 +15229,9 @@ impl Combat {
                     place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), h.position, rotation, vpm, 1.0, MOVING)
                 }
             };
-            add(h.position, instance);
+            // What's coming at the player is what the eye follows, so it's drawn before props and
+            // such lying about nearer, as if it were a tenth as far off, as a shot is
+            add(view.eye + (h.position - view.eye) * 0.1, instance);
         }
         // Familiars, glowing orbs bobbing where they hang, and phantoms, pillars of light
         for f in &self.familiars {
@@ -17100,6 +17118,53 @@ mod tests {
                 seen += (on_screen && !hidden_behind_smoke(&combat, &view, at) && reach / (at - eye).norm() > SEEN_ANGLE) as usize;
             }
             assert!(frames > 3 && seen == frames, "{shot:?} {size} {form:?}: seen in {seen} of {frames} frames out to 40 m");
+        }
+    }
+
+    /// What a serpent spits, a glob of venom lobbed or a ball of storm, blood, frost or the void
+    /// flying straight, as game.rs throws it, is seen coming all the way from 60 m off till it
+    /// lands: drawn every frame, on screen and big enough, and sorted with what the eye follows
+    #[test]
+    fn a_serpents_spit_can_be_followed() {
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(96.0, 40.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        for element in [Element::Poison, Element::Storm, Element::Blood, Element::Frost, Element::Void] {
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            let mut animals = Vec::new();
+            let from = eye + Vector3::new(1.0, 60.0, 0.0) * vpm;
+            let to = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
+            let pace = if element == Element::Poison { 15.0 } else { 22.0 };
+            combat.hurl(HostileKind::Spell(element), from, to, (to - from).norm() / vpm / pace, 11.0, 1.6);
+            let (mut frames, mut seen) = (0, 0);
+            for _ in 0..1200 {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.update(&mut arena, None, None, Controls::default(), 1.0 / 120.0);
+                let Some(h) = combat.hostiles.first() else {
+                    break;
+                };
+                let d = (h.position - eye).norm();
+                if d < 3.0 * vpm {
+                    continue;
+                }
+                frames += 1;
+                let mut drawn = Vec::new();
+                combat.other_instances(&view, &mut drawn);
+                // Of what's drawn as the eye follows it, the nearest to where it is: the ball itself
+                let near = drawn.iter().filter(|(key, _)| *key < d * 0.2).map(|(_, i)| i.sphere()).min_by(|a, b| (a.0 - h.position).norm().total_cmp(&(b.0 - h.position).norm()));
+                let Some((at, reach)) = near else {
+                    continue;
+                };
+                // Wherever it is, high in its arc or not: the eye goes after it
+                let big = reach / (at - eye).norm() > SEEN_ANGLE;
+                let there = (at - h.position).norm() < 1.0 * vpm;
+                seen += (big && there) as usize;
+            }
+            assert!(frames > 20 && seen == frames, "{element:?}: seen in {seen} of {frames} frames from 60 m");
         }
     }
 

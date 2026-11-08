@@ -82,11 +82,26 @@ impl App {
     /// still to beat, or with all three beaten, the gate in the normal world, where their blocks are
     /// set in and the way on to the next realm is, or the portal home from a realm past it
     pub(super) fn compass(&self) -> Option<Bearing> {
-        self.session.realms.as_ref()?;
+        // In Free Roam, the Coil Unending's Drowned Ring once it's been found, see serpent_lairs.rs
+        if self.session.realms.is_none() {
+            let at = self.feet_m();
+            let (spot, label) = self.free_roam_quarry()?;
+            let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
+            let heading = self.heading();
+            return Some(Bearing { label, distance: (spot[0] - at[0]).hypot(spot[1] - at[1]), turn: wrapped(heading - toward), heading });
+        }
         let places = self.session.places.as_ref()?;
         let at = self.feet_m();
         let far = |p: [f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);
         let realm = &REALMS[places.realm];
+        // Before all else, while there's no gate, to the old foundations where it stood, to build
+        // it again, see gates.rs
+        if !self.session.standing {
+            let heading = self.heading();
+            let spot = places.gate;
+            let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
+            return Some(Bearing { label: "Build the Innert Gate".to_owned(), distance: far(spot), turn: wrapped(heading - toward), heading });
+        }
         // Then, once they're all beaten, the realm's finale where it's risen, see on_raids_beaten()
         let finale = places.finale.zip(places.finale_key()).zip(realm.finale).filter(|((_, key), _)| !self.game.is_defeated(key)).map(|((spot, _), (look, _, at))| (spot, format!("{}, {at}", look.name())));
         let (spot, label) = (0..realms::RAIDS)
@@ -95,6 +110,13 @@ impl App {
             .min_by(|a, b| far(a.0).total_cmp(&far(b.0)))
             .or(finale)
             .unwrap_or_else(|| (places.gate, if places.realm == 0 { "The Innert Gate" } else { "The portal home" }.to_owned()));
+        // The realm's great serpent's lair instead, while it's still to beat and nearer, within a
+        // couple of hundred meters, see serpents::realm_serpent()
+        let serpent = places.serpent.zip(places.serpent_key()).filter(|(_, key)| !self.game.is_defeated(key)).map(|((look, spot), _)| (spot, format!("Serpent: {}", look.name())));
+        let (spot, label) = match serpent {
+            Some((lair, name)) if far(lair) < 200.0 && far(lair) < far(spot) => (lair, name),
+            _ => (spot, label),
+        };
         let heading = self.heading();
         let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
         Some(Bearing { label, distance: far(spot), turn: wrapped(heading - toward), heading })
@@ -111,7 +133,7 @@ impl App {
             title,
             player: self.feet_m(),
             heading: self.heading(),
-            gate: places.map(|p| (p.gate, if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
+            gate: places.map(|p| (p.gate, if !self.session.standing { "Old foundations" } else if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
             lairs: places.map_or(Vec::new(), |p| {
                 let mut lairs: Vec<([f64; 2], &'static str, bool)> = (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect();
                 // The finale too, once it's risen
@@ -121,7 +143,11 @@ impl App {
                     lairs.push((spot, look.name(), self.game.is_defeated(&key)));
                 }
                 lairs
-            }),
+            })
+            .into_iter()
+            // The great serpents' lairs, see serpent_lairs.rs
+            .chain(self.serpent_marks())
+            .collect(),
             settings: self.terrain_settings(),
         }
     }
