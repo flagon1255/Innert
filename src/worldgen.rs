@@ -2815,6 +2815,14 @@ pub fn is_dry_land(settings: &TerrainSettings, at: [f32; 2], room: f32) -> bool 
     h > sea + 1.5 && near.iter().all(|&r| r > sea + 1.0 && (r - h).abs() < 1.6) && far.into_iter().all(|r| r > sea + 1.0 && (r - h).abs() < room * 0.5)
 }
 
+/// How a spot looks from high above, for the map, see src\compass.rs: how high its ground is over
+/// the sea, in meters, under it if that's less than nothing, or None in the open air between the
+/// sky isles. Only the land's shape, not the rivers cut into it.
+pub fn seen_from_above(settings: &TerrainSettings, x: f32, y: f32) -> Option<f32> {
+    let h = height_at(settings, x, y);
+    (h > SKY_VOID).then(|| h - sea_level_m(settings))
+}
+
 /// The nearest dry land to `near` within `within` meters with `room` round it, see is_dry_land(),
 /// looking in rings four meters apart
 pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32, room: f32) -> Option<[f32; 2]> {

@@ -564,6 +564,10 @@ impl App {
             trial.ready.get_or_insert(frame);
             println!("READY at frame {frame}");
             if first {
+                // `--set map=1` opens the map, see compass.rs
+                if settings_from_args().iter().any(|(k, v)| k == "map" && v == "1") {
+                    self.map.open = true;
+                }
                 if let Some(degrees) = trial.face {
                     self.camera.rotation.z = degrees.to_radians() - FRAC_PI_2;
                 }

@@ -68,6 +68,7 @@ mod audio;
 mod bosses;
 mod camera;
 mod combat;
+mod compass;
 mod effects;
 mod game;
 mod gpu_timing;
@@ -1309,6 +1310,8 @@ struct App {
     /// isles, see rope.rs
     hook: Option<rope::Hook>,
     fall_back: Option<rope::FallBack>,
+    /// The map on M, see compass.rs
+    map: compass::Map,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -2525,6 +2528,7 @@ impl App {
             new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
             hook: None,
             fall_back: None,
+            map: compass::Map::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -3648,6 +3652,8 @@ impl App {
         if interactive && self.input.key_pressed(KeyCode::Escape) {
             if self.session.gate_open {
                 self.session.gate_action = Some(session::GateAction::Close);
+            } else if self.map.open {
+                self.toggle_map();
             } else if self.game.shopping() {
                 self.game.close_shop();
                 if !self.inventory_open {
@@ -3673,6 +3679,9 @@ impl App {
         }
         if playing && self.input.key_pressed(KeyCode::F1) {
             self.show_settings = !self.show_settings;
+        }
+        if playing && self.input.key_pressed(KeyCode::KeyM) {
+            self.toggle_map();
         }
 
         let eye = camera_to_voxels(self.camera.position, self.world.size);
@@ -4673,6 +4682,9 @@ impl App {
         // The look of the realm the world is, see session.rs
         let realm_look = self.realm_look();
         let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
+        // The compass in Realms, and the map, see compass.rs
+        let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
+        let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4797,6 +4809,12 @@ impl App {
                     Color32::from_rgba_unmultiplied(235, 240, 255, 200),
                 );
             }
+            if let Some(bearing) = &bearing {
+                compass::draw_compass(&ctx, bearing);
+            }
+            if let Some(marks) = &map_marks {
+                compass::draw_map(&ctx, &mut self.map, marks);
+            }
             // Brought back up after a fall below the sky isles, see rope.rs
             if fallen > 0.0 {
                 ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("fallen")))
@@ -4839,7 +4857,7 @@ impl App {
                                              Click swing or cast · bow: hold right click, click to shoot\n\
                                              Crossbow, gun: click to shoot, right click reloads · T ammo\n\
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
-                                             Number keys pick what's in hand · I inventory\n\
+                                             Number keys pick what's in hand · I inventory · M map\n\
                                              Hold Space in the air to glide, with wings\n\
                                              F1 settings · Esc menu",
                                         )
