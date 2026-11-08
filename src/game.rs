@@ -16,6 +16,7 @@ use crate::bosses::{self, Deed, Flock, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
+use crate::realms::{self, Scaling};
 use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{World, is_passable, material::*};
@@ -54,6 +55,9 @@ pub enum Item {
     /// Special ammo, of Library::ammo, and how many: carried as one stack of each kind, used up a
     /// shot at a time
     Ammo(usize, u32),
+    /// What one of a realm's raid bosses leaves, of realm number this of realms::REALMS: three of
+    /// a realm's set into the Innert Gate open the way to the next. Never sold, dropped or lost.
+    InnertBlock(u8),
 }
 
 impl Item {
@@ -65,8 +69,14 @@ impl Item {
             Item::Bread => Some(Look::Bread),
             Item::Potion => Some(Look::Potion),
             Item::Gold(_) => Some(Look::Coins),
+            Item::InnertBlock(_) => Some(Look::InnertBlock),
             Item::Bucket | Item::Weapon(_) | Item::Ammo(..) => None,
         }
+    }
+
+    /// Something the player keeps whatever happens: it can't be sold, dropped or eaten
+    fn kept(self) -> bool {
+        matches!(self, Item::Bucket | Item::InnertBlock(_))
     }
 
     fn name(self) -> &'static str {
@@ -79,6 +89,7 @@ impl Item {
             Item::Gold(_) => "Gold",
             Item::Weapon(_) => "Weapon",
             Item::Ammo(..) => "Ammo",
+            Item::InnertBlock(_) => "Innert Block",
         }
     }
 
@@ -342,6 +353,9 @@ pub struct Lair {
     pub look: Look,
     pub position: Vector3<f64>,
     pub key: [i64; 3],
+    /// For one of a realm's raid bosses, which realm's Innert block it leaves, see realms.rs: it's
+    /// that boss whatever the land round it, and as hard to beat as the huge raid bosses
+    pub raid: Option<u8>,
 }
 
 /// How much health the player has at full
@@ -397,6 +411,20 @@ struct Root {
     damage: f64,
     drag: Vector3<f64>,
     element: Option<Element>,
+}
+
+/// The top of the ground at `x`, `y`, in voxels: the highest of what's solid there that isn't a
+/// tree's trunk
+pub fn ground_top(world: &World, x: f64, y: f64) -> f64 {
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
+    let trunk = |m: u8| matches!(m, WOOD | BARK_DARK | BIRCH_BARK | PALM_WOOD | DEAD_WOOD | CACTUS);
+    (0..world.size[2] as i64)
+        .rev()
+        .find(|&z| {
+            let m = world.material_at(xi, yi, z);
+            !is_passable(m) && !trunk(m)
+        })
+        .map_or(0.0, |z| z as f64 + 1.0)
 }
 
 /// The ground under `at`, in voxels, looking down a few meters, or `at` if there's none
@@ -529,7 +557,31 @@ pub struct Game {
     rng: u32,
     /// Something worth saving the game for straight away has happened, see take_milestone()
     milestone: bool,
+    /// The Innert Gate or a realm's portal home, if it's in this piece of the world, see realms.rs,
+    /// and whether the player's just pressed E at it, see take_shrine()
+    shrines: Vec<Shrine>,
+    shrine_used: bool,
+    /// How much harder the realm the player's in is, see realms::Scaling
+    scaling: Scaling,
+    /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
+    /// with which realm's each leaves
+    raid_lairs: HashMap<[i64; 3], u8>,
 }
+
+/// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
+/// its front faces, for the gate how many of each realm's Innert blocks are set in it, and whether
+/// light fills its opening, as it does once it leads somewhere
+#[derive(Clone, PartialEq, Debug)]
+pub struct Shrine {
+    pub gate: bool,
+    pub position: Vector3<f64>,
+    pub facing: f64,
+    pub placed: [u32; 4],
+    pub open: bool,
+}
+
+/// How near the gate or a portal the player has to be to use it, in meters from its foot
+const SHRINE_REACH: f64 = 6.0;
 
 fn hash(mut x: u32) -> u32 {
     x ^= x >> 16;
@@ -664,6 +716,10 @@ impl Game {
             seed,
             rng: hash(seed ^ 0x9a3e),
             milestone: false,
+            shrines: Vec::new(),
+            shrine_used: false,
+            scaling: Scaling::NONE,
+            raid_lairs: HashMap::new(),
         };
         game.arm(seed, 1.0);
         game.populate(world, water, seed, near);
@@ -972,7 +1028,7 @@ impl Game {
     /// hunted, and the mana left
     pub fn report(&self, near: Vector3<f64>) -> String {
         let nearest = self.animals.iter().filter(|a| !a.look.is_pet()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
-        let animal = nearest.map_or("no animals".to_owned(), |a| format!("nearest {} at {:.0}/{:.0} health, tint {}", a.look.name(), a.health, a.look.health(), a.status.tint()));
+        let animal = nearest.map_or("no animals".to_owned(), |a| format!("nearest {} at {:.0}/{:.0} health, tint {}", a.look.name(), a.health, a.max_health, a.status.tint()));
         let held = self.held().map_or("nothing".to_owned(), |(_, w)| w.name.clone());
         let bosses = self.animals.iter().filter(|a| a.look.is_boss()).count();
         let boss = self.animals.iter().filter(|a| a.look.is_boss()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
@@ -982,7 +1038,7 @@ impl Game {
                 b.look.name(),
                 (b.position - near).norm() / self.combat.vpm(),
                 b.health,
-                b.look.health(),
+                b.max_health,
                 if b.boss.as_ref().is_some_and(|s| s.engaged) { " fighting" } else { "" }
             ),
             None => animal,
@@ -1037,14 +1093,20 @@ impl Game {
     /// that isn't beaten and doesn't have one already
     pub fn set_lairs(&mut self, world: &World, water: WaterLevel, lairs: Vec<Lair>) {
         for lair in &lairs {
+            if let Some(realm) = lair.raid {
+                self.raid_lairs.insert(lair.key, realm);
+            }
             // Not the monsters of a den at the same spot, like a warlord's bandits
             let here = self.animals.iter().any(|a| a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.key == lair.key));
             if here || self.defeated.contains(&lair.key) {
                 continue;
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
-            let look = lair.look.for_ground(ground_round(world, water, lair.position));
-            if let Some(boss) = animals::spawn_boss(world, water, look, lair.position, lair.key, seed) {
+            let look = if lair.raid.is_some() { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
+            if let Some(mut boss) = animals::spawn_boss(world, water, look, lair.position, lair.key, seed) {
+                if lair.raid.is_some() && !look.is_raid() {
+                    boss.toughen(realms::RAID_PROMOTION);
+                }
                 self.animals.push(boss);
             }
         }
@@ -1382,7 +1444,14 @@ impl Game {
     /// which way it looks, and `controls` what the mouse buttons do with a weapon in hand.
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View, controls: Controls, dt: f64) {
         self.gather_packs();
+        // Bosses and monsters as tough as the realm makes them, however they turned up: in their
+        // lairs and dens, wandering in, or called up by a boss
+        let toughness = self.scaling.toughness;
         for animal in &mut self.animals {
+            if !animal.toughened && animal.look.build().is_some() {
+                animal.toughened = true;
+                animal.toughen(toughness);
+            }
             animal.update(world, water, player, dt);
         }
 
@@ -2052,6 +2121,8 @@ impl Game {
         if self.combat.parry(from, feet) {
             return;
         }
+        // Harder in the realms further on
+        let damage = damage * self.scaling.damage;
         let vpm = world.voxels_per_meter as f64;
         self.health -= damage;
         self.since_hurt = 0.0;
@@ -2111,7 +2182,7 @@ impl Game {
             if let Some(boss) = &mut animal.boss {
                 boss.spare();
                 boss.stage = 0;
-                animal.health = animal.look.health();
+                animal.health = animal.max_health;
                 // Burning or bleeding from the fight would turn it on them again
                 animal.status = Default::default();
             }
@@ -2267,7 +2338,7 @@ impl Game {
     /// For trying them out: every boss about down to `fraction` of its health
     pub fn hurt_bosses(&mut self, fraction: f64) {
         for animal in self.animals.iter_mut().filter(|a| a.look.is_boss()) {
-            animal.health = animal.look.health() * fraction.clamp(0.01, 1.0);
+            animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
         }
     }
 
@@ -2391,9 +2462,16 @@ impl Game {
             if let Some(boss) = animal.boss.as_ref().filter(|_| look.is_boss()) {
                 self.defeated.insert(boss.key);
                 self.milestone = true;
+                // One of a realm's raid bosses leaves its Innert block, straight into the player's
+                // hands, so it can't be left behind and lost as the world moves on
+                let block = self.raid_lairs.get(&boss.key).copied();
+                if let Some(realm) = block {
+                    self.add_item(Item::InnertBlock(realm), 1);
+                    self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.6));
+                }
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
-                let raid = look.is_raid();
+                let raid = look.is_raid() || block.is_some();
                 // Its best weapon's very likely legendary or better, the rest a mix
                 let (lucks, piles, potions): (&[f64], _, _) = if raid { (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3) } else { (&[6.0, 2.5], 1, 1) };
                 let mut loot: Vec<Item> = lucks.iter().map(|&luck| self.roll_weapon(luck)).collect();
@@ -2411,7 +2489,10 @@ impl Game {
                 self.shake = self.shake.max(1.0);
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
-                if raid {
+                if let Some(realm) = block {
+                    let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
+                    self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its hoard spills out, some of it {rarity}!", look.name()));
+                } else if raid {
                     self.say(format!("Raid boss slain! The {} falls, and its hoard spills out. Some of it's {rarity}!", look.name()));
                 } else {
                     self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
@@ -2586,7 +2667,8 @@ impl Game {
     /// A new weapon rolled with `luck`, as for Library::roll_rarity(), kept among Game::weapons
     fn roll_weapon(&mut self, luck: f64) -> Item {
         self.rng = hash(self.rng ^ 0x1007);
-        let weapon = self.library.generate(self.rng, None, luck);
+        // Better in the realms further on
+        let weapon = self.library.generate(self.rng, None, luck * self.scaling.luck);
         self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
@@ -2747,6 +2829,11 @@ impl Game {
                     self.say(format!("The {} won't let you near. Click to hunt it.", look.name()));
                 }
             }
+            // At the Innert Gate or a portal home, see realms.rs
+            None if self.shrine_near(eye).is_some() => {
+                self.shrine_used = true;
+                self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(0.7));
+            }
             None => {}
         }
     }
@@ -2785,7 +2872,7 @@ impl Game {
         let chest = &self.chests[i];
         let key = chest.key;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
-        let weapon = self.library.generate(seed, None, chest.luck);
+        let weapon = self.library.generate(seed, None, chest.luck * self.scaling.luck);
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
         // A bandits' hoard has what they've taken in it too
         let hoard = chest.hoard;
@@ -2951,7 +3038,7 @@ impl Game {
         let mut wares = Vec::new();
         for k in 0..5 {
             seed = hash(seed);
-            self.weapons.push(self.library.generate(seed, None, 1.0 + 0.6 * k as f64));
+            self.weapons.push(self.library.generate(seed, None, (1.0 + 0.6 * k as f64) * self.scaling.luck));
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         self.models_version += 1;
@@ -3016,7 +3103,7 @@ impl Game {
         let Some(&(item, count)) = self.slots.get(slot) else {
             return;
         };
-        if item == Item::Bucket {
+        if item.kept() {
             return;
         }
         let paid = self.sell_price(item);
@@ -3049,7 +3136,7 @@ impl Game {
         let (Some(&(item, count)), Some(feet)) = (self.slots.get(slot), self.feet) else {
             return;
         };
-        if item == Item::Bucket {
+        if item.kept() {
             return;
         }
         self.remove_slot(slot);
@@ -3295,6 +3382,7 @@ impl Game {
             Item::Gold(amount) => S::Gold { amount },
             Item::Weapon(w) => S::Weapon(self.weapon_save(w)),
             Item::Ammo(k, rounds) => S::Ammo { id: self.library.ammo[k].id.clone(), rounds },
+            Item::InnertBlock(realm) => S::InnertBlock { realm },
         }
     }
 
@@ -3310,7 +3398,8 @@ impl Game {
             S::Gold { amount } => Item::Gold(*amount),
             S::Weapon(w) => Item::Weapon(self.weapon_from(w)?),
             S::Ammo { id, rounds } => Item::Ammo(self.library.ammo.iter().position(|a| a.id == *id)?, *rounds),
-            S::Unknown => return None,
+            S::InnertBlock { realm } if (*realm as usize) < realms::REALMS.len() => Item::InnertBlock(*realm),
+            S::InnertBlock { .. } | S::Unknown => return None,
         })
     }
 
@@ -3381,6 +3470,9 @@ impl Game {
         self.safe_for = 0.0;
         self.knockback = Vector3::zeros();
         self.thrown = Vector3::zeros();
+        self.raid_lairs.clear();
+        self.shrines.clear();
+        self.shrine_used = false;
         self.seed = seed;
     }
 
@@ -3480,6 +3572,93 @@ impl Game {
         self.gold = gold;
     }
 
+    /// How much harder the realm the player's in is, see realms::Scaling: its bosses' and
+    /// monsters' health, how hard they hit and how lucky what's found is
+    pub fn set_scaling(&mut self, scaling: Scaling) {
+        self.scaling = scaling;
+    }
+
+    /// Whether the boss whose lair's at `key` has been beaten in the world the player's in
+    pub fn is_defeated(&self, key: &[i64; 3]) -> bool {
+        self.defeated.contains(key)
+    }
+
+    /// The Innert Gate or the realm's portal home, if it's in this piece of the world, standing on
+    /// the ground where it is
+    pub fn set_shrines(&mut self, world: &World, shrines: Vec<Shrine>) {
+        self.shrines = shrines
+            .into_iter()
+            .map(|mut s| {
+                s.position.z = ground_top(world, s.position.x, s.position.y);
+                s
+            })
+            .collect();
+    }
+
+    /// Whether the player pressed E at the gate or the portal since last asked
+    pub fn take_shrine(&mut self) -> bool {
+        std::mem::take(&mut self.shrine_used)
+    }
+
+    /// The gate or portal near enough `eye`, in voxels, to use
+    fn shrine_near(&self, eye: Vector3<f64>) -> Option<&Shrine> {
+        let vpm = self.combat.vpm();
+        self.shrines.iter().find(|s| (s.position - eye).xy().norm() < SHRINE_REACH * vpm && (eye.z - s.position.z).abs() < 8.0 * vpm)
+    }
+
+    /// How many Innert blocks of realm `realm` are carried
+    pub fn innert_blocks(&self, realm: u8) -> u32 {
+        self.slots.iter().filter(|(item, _)| *item == Item::InnertBlock(realm)).map(|&(_, n)| n).sum()
+    }
+
+    /// Takes as many as `most` of realm `realm`'s Innert blocks out of what's carried, to set in
+    /// the gate: how many were taken
+    pub fn take_innert_blocks(&mut self, realm: u8, most: u32) -> u32 {
+        let Some(slot) = self.slots.iter().position(|(item, _)| *item == Item::InnertBlock(realm)) else {
+            return 0;
+        };
+        let taken = self.slots[slot].1.min(most);
+        if taken >= self.slots[slot].1 {
+            self.remove_slot(slot);
+        } else {
+            self.slots[slot].1 -= taken;
+        }
+        if taken > 0 {
+            self.milestone = true;
+            self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.5));
+            self.cues.push(Cue::here(Sound::Fanfare, 0.6));
+        }
+        taken
+    }
+
+    /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
+    pub fn give_innert_blocks(&mut self, realm: u8, count: u32) {
+        if count > 0 {
+            self.add_item(Item::InnertBlock(realm), count);
+        }
+    }
+
+    /// For trying it out: the realm's raid boss nearest `near`, in voxels, beaten as if by the
+    /// player, so it leaves its block. Whether there was one.
+    pub fn slay_raid_boss(&mut self, world: &World, near: Vector3<f64>) -> bool {
+        let raid = self
+            .animals
+            .iter_mut()
+            .filter(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| self.raid_lairs.contains_key(&b.key)))
+            .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
+        let Some(raid) = raid else {
+            return false;
+        };
+        raid.health = 0.0;
+        self.reap(world);
+        true
+    }
+
+    /// Where each of the realm's raid bosses about is, in voxels, and which: for screenshot runs
+    pub fn raid_bosses(&self) -> Vec<(Look, Vector3<f64>, f64)> {
+        self.animals.iter().filter(|a| a.boss.as_ref().is_some_and(|b| self.raid_lairs.contains_key(&b.key))).map(|a| (a.look, a.position, a.max_health)).collect()
+    }
+
     /// For checking a game saved comes back the same: the player's state in a line
     pub fn summary(&self) -> String {
         let weapons: Vec<String> = self.slots.iter().filter_map(|(item, _)| match item {
@@ -3540,6 +3719,26 @@ impl Game {
         // Nothing in hand while lying dead
         let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
         let mut out = self.combat.held_instances(held, view);
+        // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
+        // the blocks set in it up close
+        for shrine in &self.shrines {
+            // Its foundation down in the ground, see animals::GATE_SINK
+            let (at, facing) = (shrine.position - Vector3::new(0.0, 0.0, animals::GATE_SINK * vpm), shrine.facing);
+            out.push(animals::still_instance(if shrine.gate { Look::Teleporter } else { Look::RealmPortal }, at, facing, world.voxels_per_meter));
+            if shrine.open {
+                out.push(animals::still_instance(Look::PortalVeil, at, facing, world.voxels_per_meter));
+            }
+            if shrine.gate && (at - camera).norm() < 60.0 * vpm {
+                let (c, s) = (facing.cos(), facing.sin());
+                for (realm, &placed) in shrine.placed.iter().enumerate() {
+                    for slot in 0..(placed as usize).min(realms::RAIDS) {
+                        let [x, y, z] = animals::socket(realm, slot);
+                        let block = at + Vector3::new(x * c - y * s, x * s + y * c, z) * vpm;
+                        out.push(animals::still_instance(Look::InnertBlock, block, facing, world.voxels_per_meter));
+                    }
+                }
+            }
+        }
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
         let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
@@ -3607,12 +3806,25 @@ impl Game {
 
     /// Lights from the fighting, in the form main.rs keeps the world's lights in
     pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
-        self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view)
+        let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view);
+        // The veil of the gate or a portal glows, breathing slowly
+        let vpm = view.vpm;
+        let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
+        for shrine in self.shrines.iter().filter(|s| s.open) {
+            let p = shrine.position + Vector3::new(0.0, 0.0, 2.8 * vpm);
+            let strength = (1.5 * breath) as f32;
+            lights.push([p.x as f32, p.y as f32, p.z as f32, (14.0 * vpm) as f32, 0.72 * strength, 0.5 * strength, 1.0 * strength, 1.0]);
+        }
+        lights
     }
 
     /// What to do with what the crosshair is on. What's lying about has a card of its own instead.
     fn target_hint(&self) -> Option<String> {
-        match self.target? {
+        let Some(target) = self.target else {
+            let shrine = self.feet.and_then(|feet| self.shrine_near(feet))?;
+            return Some(if shrine.gate { "E  the Innert Gate" } else { "E  the portal home" }.into());
+        };
+        match target {
             Target::Pickup(_) => None,
             Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
             Target::Animal(i) => {
@@ -4330,6 +4542,17 @@ impl Game {
                 ui.label(RichText::new("Click on water to fill it, right click to pour it out.").weak());
                 return;
             }
+            Item::InnertBlock(realm) => {
+                let r = &realms::REALMS[realm as usize % realms::REALMS.len()];
+                let [cr, cg, cb] = r.color;
+                ui.label(RichText::new(format!("Innert Block of {}", r.name.trim_start_matches("The "))).size(19.0).strong().color(Color32::from_rgb(cr, cg, cb)));
+                ui.label(RichText::new("Left by one of the realm's raid bosses").weak());
+                ui.separator();
+                ui.label(format!("{count} of {} carried", realms::RAIDS));
+                ui.label(RichText::new("Set all three into the Innert Gate in the normal world to open the way to the next realm.").weak());
+                ui.label(RichText::new("Never lost, sold or dropped.").weak().italics());
+                return;
+            }
             _ => {}
         }
         ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
@@ -4652,6 +4875,20 @@ impl Game {
                 painter.circle_filled(center + vec2(-r * 0.25, r * 0.1), r * 0.15, Color32::from_rgb(255, 140, 150));
                 painter.rect_filled(Rect::from_center_size(center - vec2(0.0, r * 0.55), vec2(r * 0.42, r * 0.5)), r * 0.06, glass);
                 painter.rect_filled(Rect::from_center_size(center - vec2(0.0, r * 0.85), vec2(r * 0.5, r * 0.22)), r * 0.05, Color32::from_rgb(140, 95, 55));
+            }
+            // A glowing block seen corner on, in its realm's color, bound in gold
+            Item::InnertBlock(realm) => {
+                let [cr, cg, cb] = realms::REALMS[realm as usize % realms::REALMS.len()].color;
+                let glow = Color32::from_rgb(cr, cg, cb);
+                let (top, left, right) = (center - vec2(0.0, r * 0.75), center - vec2(r * 0.68, r * 0.38), center + vec2(r * 0.68, -r * 0.38));
+                let (mid, low_left, low_right, bottom) = (center, center + vec2(-r * 0.68, r * 0.42), center + vec2(r * 0.68, r * 0.42), center + vec2(0.0, r * 0.8));
+                painter.circle_filled(center, r * 0.95, glow.gamma_multiply(0.18));
+                painter.add(egui::Shape::convex_polygon(vec![top, right, mid, left], glow, Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(vec![left, mid, bottom, low_left], glow.gamma_multiply(0.75), Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(vec![mid, right, low_right, bottom], glow.gamma_multiply(0.55), Stroke::NONE));
+                for edge in [[top, right], [right, low_right], [low_right, bottom], [bottom, low_left], [low_left, left], [left, top], [left, mid], [mid, right], [mid, bottom]] {
+                    painter.line_segment(edge, Stroke::new(r * 0.07, GOLD));
+                }
             }
             Item::Gold(_) => {
                 for (dx, dy) in [(-0.35, 0.35), (0.35, 0.3), (0.0, -0.05)] {
