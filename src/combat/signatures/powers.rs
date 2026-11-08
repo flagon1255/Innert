@@ -650,6 +650,24 @@ impl Combat {
         }
     }
 
+    /// A little pop of the power's element `radius` meters round `at` for `damage`, for the many
+    /// small shots a power looses at once, embers, motes and shards: a puff and a spatter of sparks,
+    /// what's in it struck and its element doing what it does, but none of an explosion's lightning
+    /// out of the sky, ice, pools and the rest, which a handful going off together would cost too
+    /// much to draw
+    fn power_pop(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, skip: Option<usize>) {
+        let vpm = arena.view.vpm;
+        let look = Element::look(profile.element);
+        self.blasts.push(Blast { position: at, look, radius: radius * 0.6, life: 0.25, lifetime: 0.25 });
+        self.sparks(at, 6, 3.0, look, 0.4, 0.3);
+        self.cues.push(Cue::at(Sound::Burst, at, 0.35).pitched(1.5));
+        for i in Combat::foes_round(arena, at, radius).into_iter().filter(|&i| Some(i) != skip) {
+            let center = arena.animals[i].center(vpm as u32);
+            self.strike(arena, profile, i, Blow { damage, crit: false, heavy: false, from: at, depth: 1, element: profile.element });
+            self.empower(arena, profile, i, center, damage * 0.6, at);
+        }
+    }
+
     /// One of their shots in flight: what's in a crescent's or a wheel's swath cut as it passes, a
     /// wheel turning back once it's as far as it goes and caught again at the hand, tracers, and
     /// coming down where it's flown as far as it goes. True if it's gone.
@@ -783,7 +801,7 @@ impl Combat {
             }
             Shape::Ember | Shape::Mote => {
                 self.power_hit(arena, &profile, i, at, p.damage, from);
-                self.power_burst(arena, &profile, at, 1.1, p.damage * 0.4, Some(i));
+                self.power_pop(arena, &profile, at, 1.1, p.damage * 0.4, Some(i));
                 true
             }
             Shape::Shell | Shape::Charge | Shape::Orb => {
@@ -853,7 +871,7 @@ impl Combat {
                 }
                 self.power_burst(arena, &profile, at, 1.5, p.damage * 0.4, None);
             }
-            Shape::Ember | Shape::Mote => self.power_burst(arena, &profile, at, 1.1, p.damage * 0.5, None),
+            Shape::Ember | Shape::Mote => self.power_pop(arena, &profile, at, 1.1, p.damage * 0.5, None),
             Shape::Shell => {
                 self.power_burst(arena, &profile, at, 3.5, p.damage, None);
                 for _ in 0..10 {
