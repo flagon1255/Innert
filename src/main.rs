@@ -5287,7 +5287,8 @@ impl App {
                                              Legendary: R special · right click its power, Q reloads\n\
                                              Number keys pick what's in hand · I inventory · M map\n\
                                              G gather wood, stone, clay · B build · E opens doors\n\
-                                             Hold Space in the air to glide, with wings\n\
+                                             Wings: jump, then hold Space in the air to glide\n\
+                                             Merchants sell wings; bosses and chests leave them\n\
                                              F1 settings · Esc menu",
                                         )
                                         .size(13.0)
@@ -5345,7 +5346,7 @@ impl App {
                     }
                 });
                 ui.label(if self.player.is_some() {
-                    "Walking: WASD to move, Space to jump or swim up, Shift to run, F to fly"
+                    "Walking: WASD to move, Space to jump or swim up, Shift to run, F to fly. With wings on, hold Space in the air to glide."
                 } else {
                     "Flying: WASDQE to move, Shift to go faster, F to walk"
                 });

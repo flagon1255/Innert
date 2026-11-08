@@ -154,7 +154,8 @@ fn food_price(item: Item) -> u32 {
         Item::RoastMeat => 14,
         Item::Bread => 10,
         Item::Potion => 35,
-        // Sold in the normal world once the way to the sky isles is open, see Game::sky_wares
+        // The hook's sold in the normal world once the way to the sky isles is open, see
+        // Game::sky_wares, and wings by every travelling merchant, see Game::stock()
         Item::Hook => 400,
         Item::Wings(k) => wings::KINDS[k as usize].price,
         _ => 0,
@@ -163,6 +164,11 @@ fn food_price(item: Item) -> u32 {
 
 /// How much of what a merchant asks it pays for what the player sells it
 const SELL_SHARE: f64 = 0.35;
+
+/// Where a stall's goods start, after its weapons: where wings go, to be seen at the top of them
+fn goods_start(wares: &[Ware]) -> usize {
+    wares.iter().position(|w| matches!(w, Ware::Food(..))).unwrap_or(wares.len())
+}
 /// Slots on the quick bar; the rest of what's carried is only in the inventory
 pub const HOTBAR: usize = 9;
 /// Gold the player starts with
@@ -741,8 +747,8 @@ pub struct Game {
     /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
     /// with which realm's each leaves
     raid_lairs: HashMap<[i64; 3], u8>,
-    /// Whether the merchants sell a grappling hook and wings, as they do in the journey through
-    /// the realms once the way to the sky isles is open
+    /// Whether the merchants sell a grappling hook, as they do in the journey through the realms
+    /// once the way to the sky isles is open
     sky_wares: bool,
     /// A window's open over the middle of the view, see set_covered()
     covered: bool,
@@ -753,6 +759,11 @@ pub struct Game {
     /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
     worn: Option<u8>,
     wing_models: Vec<(Model, Vector3<f64>)>,
+    /// How the wings worn are flying, for the HUD, see wings.rs; whether the player's ever glided
+    /// on wings, till when how to is shown by them, and whether they've been told about wings
+    aloft: Option<Aloft>,
+    glided: bool,
+    wings_told: bool,
     /// The models of the wards round raid bosses, see guardians.rs
     ward_models: Vec<(Model, Vector3<f64>)>,
     /// How many more monsters than usual each den's pack has, see realms::crowd()
@@ -760,6 +771,32 @@ pub struct Game {
     /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
     dragonfire: dragonfire::Fire,
 }
+
+/// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
+/// whether they're gliding, and have been for a moment, how ready their move in the air is, from
+/// 0 to 1, with how it's done, and what their perk's doing, if it's worth saying
+#[derive(Clone, Copy, Default)]
+pub struct Aloft {
+    pub gliding: bool,
+    pub glided: bool,
+    pub ready: Option<(f32, &'static str)>,
+    pub note: Option<&'static str>,
+}
+
+/// The chance a boss that isn't a raid boss leaves a pair of wings besides its hoard: a raid
+/// boss always does
+const BOSS_WINGS: f64 = 0.3;
+/// How lucky the wings a boss leaves are, a raid boss's, and an ultra's or a finale's, as for
+/// wings::pick(), before the realm's luck
+const BOSS_WING_LUCK: [f64; 3] = [1.6, 3.5, 8.0];
+/// The chance a chest has wings in, and how much more for each point of its luck, at most
+/// CHEST_WINGS_MOST
+const CHEST_WINGS: f64 = 0.06;
+const CHEST_WINGS_LUCK: f64 = 0.03;
+const CHEST_WINGS_MOST: f64 = 0.4;
+/// The chance a travelling merchant has a rarer pair besides the plain one, and how lucky it is
+const MERCHANT_RARE_WINGS: f64 = 0.4;
+const MERCHANT_WING_LUCK: f64 = 2.5;
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
 /// its front faces, for the gate how many of each realm's Innert blocks are set in it, and whether
@@ -918,6 +955,9 @@ impl Game {
             covered: false,
             worn: None,
             wing_models: wings::models(),
+            aloft: None,
+            glided: false,
+            wings_told: false,
             dragonfire: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
@@ -3109,15 +3149,6 @@ impl Game {
                     self.add_item(Item::InnertBlock(realm), 1);
                     self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.6));
                 }
-                // The first of the sky isles' raid bosses beaten leaves a pair of wings to wear, and
-                // the later realms' raid bosses better ones of their own
-                if let Some(realm) = block.map(|r| r as usize) {
-                    let kind = if realm == realms::WINGS_REALM && !self.carries(Item::Wings(wings::GULL)) { Some(wings::GULL) } else { wings::of_realm(realm) };
-                    if let Some(kind) = kind {
-                        let name = wings::KINDS[kind as usize].name;
-                        self.find_once(Item::Wings(kind), &format!("Among what it leaves are the {name}!"));
-                    }
-                }
                 // The Worldpyre Ancient leaves its fang, see game\dragonfire.rs
                 if look == crate::dragons::ULTRA {
                     self.claim_worldpyre();
@@ -3178,6 +3209,17 @@ impl Game {
                     self.say(format!("Raid boss slain! The {} falls, and its hoard spills out. Some of it's {rarity}!", look.name()));
                 } else {
                     self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
+                }
+                // And a pair of wings, said after: a raid boss always leaves one, a realm's of the
+                // realm's own kind first, and any other boss now and then, each a kind the player
+                // hasn't yet, the luckier the bigger the boss
+                let own = block.map(|r| r as usize).and_then(wings::of_realm).filter(|&k| !self.carries(Item::Wings(k)));
+                let luck = BOSS_WING_LUCK[if hoard == Hoard::Huge { 2 } else if raid { 1 } else { 0 }] * self.scaling.luck;
+                let chance = if raid { 1.0 } else { BOSS_WINGS };
+                let pair = own.or_else(|| (random(&mut self.rng) < chance).then(|| random(&mut self.rng)).and_then(|roll| wings::pick(roll, luck, |k| self.carries(Item::Wings(k)))));
+                if let Some(k) = pair {
+                    let name = wings::KINDS[k as usize].name;
+                    self.find_once(Item::Wings(k), &format!("Among what it leaves are the {name}!"));
                 }
             }
             for m in 0..look.meat() {
@@ -3535,8 +3577,13 @@ impl Game {
                         self.say(if look == Look::Princess {
                             "\"Welcome to the royal armoury. Only blades fit for a legend, and they're priced like it.\""
                         } else {
-                            "\"Have a look. Good steel, fresh bread, potions that work.\""
+                            "\"Have a look. Good steel, fresh bread, potions that work. Wings, too.\""
                         });
+                        // The first wings seen for sale, how they're worn
+                        if !self.wings_told && self.sells_wings(key) {
+                            self.wings_told = true;
+                            self.say("Wings for sale! Bought, they're put on your back: jump, then hold Space in the air to glide.");
+                        }
                     }
                 } else if look == Look::RoyalGuard {
                     self.say("\"Her Highness receives travellers in the throne room. Mind your manners.\"");
@@ -3613,8 +3660,11 @@ impl Game {
             (k, self.library.ammo[k].bundle)
         });
         let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
-        // Now and then, wings, likelier the luckier the chest, the rarer kinds rarer
-        let pair = (((hash(seed ^ 0x3175) >> 8) as f64 / 16_777_216.0) < (0.025 * chest.luck * self.scaling.luck).min(0.2)).then(|| wings::roll((hash(seed ^ 0x3176) >> 8) as f64 / 16_777_216.0)).filter(|&k| !self.carries(Item::Wings(k)));
+        // Now and then, wings, likelier the luckier the chest, the rarer kinds rarer, and never a
+        // kind the player has already
+        let luck = chest.luck * self.scaling.luck;
+        let chance = (CHEST_WINGS + CHEST_WINGS_LUCK * luck).min(CHEST_WINGS_MOST);
+        let pair = (((hash(seed ^ 0x3175) >> 8) as f64 / 16_777_216.0) < chance).then(|| (hash(seed ^ 0x3176) >> 8) as f64 / 16_777_216.0).and_then(|roll| wings::pick(roll, luck, |k| self.carries(Item::Wings(k))));
         let extra = match pair {
             Some(k) => format!("{extra}, the {}", wings::KINDS[k as usize].name),
             None => extra,
@@ -3628,13 +3678,30 @@ impl Game {
         if let Some((k, n)) = ammo {
             self.add_item(Item::Ammo(k, n), 1);
         }
-        if let Some(k) = pair {
-            self.add_item(Item::Wings(k), 1);
-        }
         self.gold += gold;
         self.models_version += 1;
         self.cues.push(Cue::here(Sound::Chest, 0.8));
         self.say(message);
+        // Said after, how to wear them
+        if let Some(k) = pair {
+            self.gain_wings(k);
+        }
+    }
+
+    /// Wings of kind `k` come to the player: put on at once if they wear none, else into the pack,
+    /// and told which and how to glide on them, or to wear them
+    fn gain_wings(&mut self, k: u8) {
+        let worn = self.worn.is_none();
+        if worn {
+            self.worn = Some(k);
+        } else {
+            self.slots.push((Item::Wings(k), 1));
+        }
+        self.cues.push(Cue::here(Sound::Equip, 0.9));
+        self.milestone = true;
+        self.wings_told = true;
+        let name = wings::KINDS[k as usize].name;
+        self.say(if worn { format!("You put on the {name}: jump, then hold Space in the air to glide.") } else { format!("The {name} are in your pack: press I and Wear them to change wings.") });
     }
 
     /// Whether the player's trading with a merchant
@@ -3768,17 +3835,28 @@ impl Game {
         if !self.stocks.contains_key(&key) {
             self.roll_stock(key);
         }
-        // Once the way to the sky isles is open, a hook and wings for whoever hasn't found theirs
-        if self.sky_wares && !self.royals.contains(&key) {
-            let missing: Vec<Item> = [Item::Hook, Item::Wings(wings::GULL)].into_iter().filter(|&i| !self.carries(i)).collect();
-            if let Some(wares) = self.stocks.get_mut(&key) {
-                for item in missing {
-                    if !wares.iter().any(|w| matches!(w, Ware::Food(i, _) if *i == item)) {
-                        wares.push(Ware::Food(item, 1));
-                    }
+        if self.royals.contains(&key) {
+            return;
+        }
+        // Every travelling merchant has a pair of wings the player hasn't, the plainest there's
+        // left, even on a stall rolled before they sold any or once its pair's been bought
+        let has = |k: u8| self.carries(Item::Wings(k));
+        let sells_new = self.stocks.get(&key).is_some_and(|wares| wares.iter().any(|w| matches!(*w, Ware::Food(Item::Wings(k), _) if !has(k))));
+        let plain = (!sells_new).then(|| wings::plainest(has)).flatten();
+        // And once the way to the sky isles is open, a hook for whoever hasn't found theirs
+        let hook = (self.sky_wares && !self.carries(Item::Hook)).then_some(Item::Hook);
+        if let Some(wares) = self.stocks.get_mut(&key) {
+            for item in plain.map(Item::Wings).into_iter().chain(hook) {
+                if !wares.iter().any(|w| matches!(w, Ware::Food(i, _) if *i == item)) {
+                    wares.insert(goods_start(wares), Ware::Food(item, 1));
                 }
             }
         }
+    }
+
+    /// Whether merchant `key` has wings for sale
+    fn sells_wings(&self, key: [i64; 3]) -> bool {
+        self.stocks.get(&key).is_some_and(|wares| wares.iter().any(|w| matches!(w, Ware::Food(Item::Wings(_), _))))
     }
 
     /// What merchant `key` has to sell the first time it's looked at, see stock()
@@ -3815,6 +3893,16 @@ impl Game {
                 wares.push(Ware::Food(Item::Ammo(k, self.library.ammo[k].bundle), 3));
             }
         }
+        // A pair of wings, the plainest the player hasn't, priced for early gold, and now and then
+        // a rarer pair besides, see stock()
+        let has = |k: u8| self.carries(Item::Wings(k));
+        let plain = wings::plainest(has);
+        seed = hash(seed ^ 0x3177);
+        let rarer = ((seed >> 8) as f64 / 16_777_216.0 < MERCHANT_RARE_WINGS)
+            .then(|| (hash(seed) >> 8) as f64 / 16_777_216.0)
+            .and_then(|roll| wings::pick(roll, MERCHANT_WING_LUCK * loot_scaling(self.scaling), |k| has(k) || Some(k) == plain || wings::KINDS[k as usize].rarity < 2));
+        let at = goods_start(&wares);
+        wares.splice(at..at, plain.into_iter().chain(rarer).map(|k| Ware::Food(Item::Wings(k), 1)));
         self.stocks.insert(key, wares);
     }
 
@@ -3847,13 +3935,15 @@ impl Game {
                 stock.remove(k);
             }
         }
-        match item {
-            Item::Weapon(_) => self.slots.push((item, 1)),
-            _ => self.add_item(item, 1),
-        }
         self.cues.push(Cue::here(Sound::Coins, 0.8));
         self.milestone = true;
         self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
+        match item {
+            Item::Weapon(_) => self.slots.push((item, 1)),
+            // Put on at once if none are worn, and told how to glide on them
+            Item::Wings(k) => self.gain_wings(k),
+            _ => self.add_item(item, 1),
+        }
     }
 
     /// Sells one of what's in slot `slot` to the merchant being traded with. A weapon goes on
@@ -3917,9 +4007,13 @@ impl Game {
         if slot >= self.slots.len() {
             return;
         }
-        // Ammo isn't held, it's loaded into what shoots it
+        // Ammo isn't held, it's loaded into what shoots it, and wings are worn
         if let Item::Ammo(k, _) = self.slots[slot].0 {
             self.load_ammo(k);
+            return;
+        }
+        if let Item::Wings(_) = self.slots[slot].0 {
+            self.wear(slot);
             return;
         }
         let to = if slot < HOTBAR {
@@ -3956,6 +4050,11 @@ impl Game {
 
     /// Right click without a weapon: eats or drinks one of what's selected in the quick bar
     pub fn eat_selected(&mut self) {
+        // Wings picked on the quick bar are put on
+        if let Some(&(Item::Wings(_), _)) = self.slots.get(self.selected) {
+            self.wear(self.selected);
+            return;
+        }
         if !self.slots.iter().any(|(item, _)| item.consumable()) {
             self.say("You have nothing to eat. Look for apples under leafy trees, or buy some bread.");
             return;
@@ -4216,6 +4315,8 @@ impl Game {
             bucket: self.bucket,
             slots: self.slots.iter().map(|&(item, count)| save::SlotSave { item: self.item_save(item), count }).collect(),
             worn: self.worn.map(|k| wings::KINDS[k as usize].id.to_owned()),
+            glided: self.glided,
+            wings_told: self.wings_told,
         }
     }
 
@@ -4292,6 +4393,8 @@ impl Game {
     pub fn new_character(&mut self, seed: u32) {
         self.slots.clear();
         self.worn = None;
+        self.glided = false;
+        self.wings_told = false;
         self.arm_anew(seed);
         self.gold = STARTING_GOLD;
         self.bucket = 0.0;
@@ -4326,6 +4429,7 @@ impl Game {
             self.slots.remove(at);
             self.worn = Some(wings::GULL);
         }
+        (self.glided, self.wings_told) = (carried.glided, carried.wings_told);
         self.selected = carried.selected.min(self.slots.len().saturating_sub(1));
         self.gold = carried.gold;
         self.bucket = carried.bucket.clamp(0.0, BUCKET_CAPACITY);
@@ -4476,6 +4580,22 @@ impl Game {
         self.worn.filter(|_| self.dead.is_none())
     }
 
+    /// The colour of the rarity of wings of kind `k`
+    fn wings_color(&self, k: u8) -> Color32 {
+        let rarity = wings::KINDS[k as usize % wings::KINDS.len()].rarity;
+        color(self.library.rarities[rarity.min(self.library.rarities.len() - 1)].color)
+    }
+
+    /// How the wings worn are flying, for the HUD, see App::update_wings(): once the player's
+    /// glided a moment, how to glide isn't shown by them any more
+    pub fn set_aloft(&mut self, aloft: Option<Aloft>) {
+        if aloft.is_some_and(|a| a.glided) && !self.glided {
+            self.glided = true;
+            self.milestone = true;
+        }
+        self.aloft = aloft;
+    }
+
     /// Puts on the wings in slot `slot`, those worn till now going into their place
     fn wear(&mut self, slot: usize) {
         let Some(&(Item::Wings(k), _)) = self.slots.get(slot) else {
@@ -4492,7 +4612,7 @@ impl Game {
         }
         self.inspected = None;
         self.cues.push(Cue::here(Sound::Equip, 0.8));
-        self.say(format!("You put on the {}. Hold jump in the air to glide.", wings::KINDS[k as usize].name));
+        self.say(format!("You put on the {}: jump, then hold Space in the air to glide.", wings::KINDS[k as usize].name));
     }
 
     /// Takes off the wings worn, into the pack
@@ -4544,16 +4664,9 @@ impl Game {
         }
         // The first wings found are put on at once, the rest kept in the pack
         if let Item::Wings(k) = item {
-            let worn = self.worn.is_none();
-            if worn {
-                self.worn = Some(k);
-            } else {
-                self.slots.push((item, 1));
-            }
-            self.cues.push(Cue::here(Sound::Equip, 0.9));
             self.cues.push(Cue::here(Sound::Fanfare, 0.5));
-            self.milestone = true;
-            self.say(if worn { format!("{how} You put them on: hold jump in the air to glide.") } else { format!("{how} Wear them from the inventory, I.") });
+            self.say(how);
+            self.gain_wings(k);
             return true;
         }
         let at = self.slots.len().min(HOTBAR - 1);
@@ -4568,7 +4681,7 @@ impl Game {
         true
     }
 
-    /// Whether the merchants sell the grappling hook and wings, see Game::sky_wares
+    /// Whether the merchants sell the grappling hook, see Game::sky_wares
     pub fn set_sky_wares(&mut self, sold: bool) {
         self.sky_wares = sold;
     }
@@ -4904,6 +5017,53 @@ impl Game {
         }
     }
 
+    /// The wings worn, in a slot of their own left of the quick bar's panel `panel`, of slots
+    /// `slot` across: in the colour of their rarity, lit up while gliding, how ready their move in
+    /// the air is under it and what their perk's doing, and till the player's first glided, how to.
+    /// Spare wings in the pack and none worn, how to put them on.
+    fn wings_hud(&self, painter: &egui::Painter, panel: Rect, slot: f32, pad: f32) {
+        let faint = Color32::from_white_alpha(150);
+        let shadow = Color32::from_black_alpha(160);
+        let rect = Rect::from_min_size(pos2(panel.left() - slot - 2.0 * pad - 8.0, panel.top() + pad), vec2(slot, slot));
+        let pulse = 0.7 + 0.3 * (self.combat.time() * 3.0).sin() as f32;
+        // Said under the slot, clear of the screen's left edge
+        let say = |y: f32, text: &str, size: f32, tint: Color32| {
+            let x = rect.right().max(painter.clip_rect().left() + galley_width(painter, text, size) + 10.0);
+            painter.text(pos2(x, y) + vec2(1.0, 1.0), Align2::RIGHT_TOP, text, FontId::proportional(size), shadow);
+            painter.text(pos2(x, y), Align2::RIGHT_TOP, text, FontId::proportional(size), tint);
+        };
+        let Some(k) = self.worn_wings() else {
+            if self.dead.is_none() && self.slots.iter().any(|(i, _)| matches!(i, Item::Wings(_))) {
+                say(panel.bottom() + 6.0, "Wings in your pack: I, then Wear", 13.0, GOLD.gamma_multiply(pulse));
+            }
+            return;
+        };
+        let aloft = self.aloft.unwrap_or_default();
+        let tint = self.wings_color(k);
+        painter.rect_filled(rect.expand(pad), 12.0, Color32::from_black_alpha(120));
+        painter.rect_filled(rect, 8.0, tint.gamma_multiply(if aloft.gliding { 0.5 } else { 0.18 }));
+        painter.rect_stroke(rect, 8.0, Stroke::new(if aloft.gliding { 2.5f32 } else { 1.5 }, tint), StrokeKind::Inside);
+        self.draw_icon(painter, Item::Wings(k), rect.center() + vec2(0.0, 2.0), slot * 0.62);
+        painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, "Back", FontId::proportional(10.0), faint);
+        let mut under = rect.bottom() + pad + 5.0;
+        // How ready a flap or a dash is, filling, and how it's done
+        if let Some((ready, how)) = aloft.ready {
+            let back = Rect::from_min_size(pos2(rect.left(), under), vec2(slot, 4.0));
+            painter.rect_filled(back, 2.0, Color32::from_white_alpha(30));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(slot * ready, 4.0)), 2.0, if ready >= 1.0 { tint } else { faint });
+            say(under + 7.0, how, 11.0, if ready >= 1.0 { Color32::WHITE } else { faint });
+            under += 22.0;
+        }
+        if let Some(note) = aloft.note {
+            say(under, note, 12.0, tint);
+            under += 16.0;
+        }
+        // Till they've glided once, how to
+        if !self.glided && !self.covered {
+            say(under, "Jump, then hold Space in the air to glide", 14.0, GOLD.gamma_multiply(pulse));
+        }
+    }
+
     /// Crosshair, and along the top the quick bar, hunger, mana and messages, drawn over the game.
     /// Damage numbers and health bars float over what was hit.
     pub fn hud(&self, ctx: &egui::Context, view: &View) {
@@ -5094,6 +5254,7 @@ impl Game {
                     let [r, g, b] = self.library.rarities[self.weapons[w].grade].color;
                     Color32::from_rgba_unmultiplied(r, g, b, if selected { 70 } else { 34 })
                 }
+                Item::Wings(k) => self.wings_color(k).gamma_multiply(if selected { 0.3 } else { 0.15 }),
                 _ => Color32::from_white_alpha(if selected { 40 } else { 14 }),
             };
             painter.rect_filled(rect, 8.0, fill);
@@ -5139,6 +5300,7 @@ impl Game {
             let more = format!("+{} in the pack  ·  I", self.slots.len() - HOTBAR);
             painter.text(pos2(panel.left() + 12.0, panel.bottom() + 6.0), Align2::LEFT_TOP, more, FontId::proportional(12.0), faint);
         }
+        self.wings_hud(&painter, panel, slot, pad);
 
         // The boss being fought, its name over a long bar along the bottom
         if let Some((foe, vitality, enraged, middle, ward)) = self.foe(view.eye) {
@@ -5414,7 +5576,8 @@ impl Game {
                             }
                         }
                         None => {
-                            ui.label(RichText::new("Nothing. Wings found are worn here.").weak().italics());
+                            let spare = self.slots.iter().any(|(i, _)| matches!(i, Item::Wings(_)));
+                            ui.label(RichText::new(if spare { "Nothing: click your wings below and Wear them." } else { "No wings yet. Merchants sell them; bosses and chests leave them." }).weak().italics());
                         }
                     }
                 });
@@ -5472,6 +5635,7 @@ impl Game {
                 ui.separator();
                 ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
+                ui.label(RichText::new("Wings go on your back, above: jump, then hold Space in the air to glide; some flap with Space, some dash with Shift. Every merchant sells a pair, and bosses and chests leave them.").weak().small());
             });
         // The quick bar along the top takes what's dragged onto it too
         if let Some(SlotClick::Moved(a, b)) = self.quick_bar_targets(ctx) {
@@ -5518,6 +5682,7 @@ impl Game {
                 let painter = ui.painter();
                 let tint = match item {
                     Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
+                    Item::Wings(k) => Some(self.wings_color(k)),
                     _ => None,
                 };
                 let fill = tint.map_or(Color32::from_white_alpha(if i < HOTBAR { 22 } else { 12 }), |c| c.gamma_multiply(if i < HOTBAR { 0.3 } else { 0.2 }));
@@ -5737,11 +5902,15 @@ impl Game {
                 ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
                 ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
                 if let Some((lift, wait)) = kind.flap {
-                    ui.label(RichText::new(format!("Jump in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s")).color(good));
+                    ui.label(RichText::new(format!("Press Space in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s")).color(good));
+                }
+                if let Some((perk, [r, g, b])) = wings::perk_text(kind.perk) {
+                    ui.label(RichText::new(perk).color(Color32::from_rgb(r, g, b)));
                 }
                 ui.label(RichText::new(kind.about).italics());
                 ui.separator();
-                ui.label(RichText::new("Hold jump in the air to glide. Kept for good once found.").weak());
+                let worn = self.worn == Some(k);
+                ui.label(RichText::new(if worn { "Worn on your back. Jump, then hold Space in the air to glide." } else { "Worn on the back: jump, then hold Space in the air to glide. Kept for good once found." }).weak());
                 ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
                 return;
             }
@@ -5984,6 +6153,10 @@ impl Game {
                                     self.draw_icon(ui.painter(), item, rect.center(), 26.0);
                                     let name = match item {
                                         Item::Weapon(w) => RichText::new(&self.weapons[w].name).color(color(self.library.rarities[self.weapons[w].grade].color)).strong(),
+                                        // Wings in the colour of their rarity, and whether they're
+                                        // had already
+                                        Item::Wings(k) if self.carries(item) => RichText::new(format!("{}  (yours)", self.item_name(item))).color(self.wings_color(k).gamma_multiply(0.6)),
+                                        Item::Wings(k) => RichText::new(self.item_name(item)).color(self.wings_color(k)).strong(),
                                         _ => RichText::new(format!("{}  ×{left}", self.item_name(item))),
                                     };
                                     ui.label(name);
@@ -6940,5 +7113,80 @@ mod tests {
         let mut other = Game::new(&world, &dry, 9, Vector3::new(32.0, 32.0, 16.0));
         other.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
         assert_eq!(other.slots.iter().find(|(i, _)| *i == Item::RoastMeat).map(|s| s.1), Some(2));
+    }
+
+    /// Every travelling merchant sells a pair of wings priced for what a few fights bring in, a
+    /// stall saved before they did too, and the next plainest once it's bought; wings bought are
+    /// put on at once, and how to glide on them is said
+    #[test]
+    fn every_merchant_sells_wings() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let sells = |game: &Game, key: [i64; 3], kind: Option<u8>| game.stocks[&key].iter().any(|w| matches!(*w, Ware::Food(Item::Wings(k), 1) if kind.is_none_or(|kind| k == kind)));
+        let mut rarer = 0;
+        for n in 0..40 {
+            let key = [n, 3 * n, 7];
+            game.stock(key);
+            assert!(sells(&game, key, Some(wings::GULL)), "merchant {n}");
+            rarer += game.stocks[&key].iter().filter(|w| matches!(w, Ware::Food(Item::Wings(_), _))).count() - 1;
+        }
+        assert!((5..35).contains(&rarer), "{rarer} of 40 have a rarer pair too");
+        assert!(wings::KINDS[wings::GULL as usize].price <= 200);
+        let key = [0, 0, 7];
+        game.shop = Some(key);
+        game.set_gold(1000);
+        let k = game.stocks[&key].iter().position(|w| matches!(w, Ware::Food(Item::Wings(wings::GULL), _))).unwrap();
+        game.buy(k);
+        assert_eq!(game.worn_wings(), Some(wings::GULL));
+        assert_eq!(game.gold, 1000 - wings::KINDS[wings::GULL as usize].price);
+        assert!(game.messages.iter().any(|(m, _)| m.contains("hold Space in the air to glide")));
+        game.stock(key);
+        assert!(game.stocks[&key].iter().any(|w| matches!(*w, Ware::Food(Item::Wings(k), _) if k != wings::GULL)), "the next plainest");
+        // A stall saved before merchants sold wings has a pair as soon as it's looked at
+        let mut done = game.world_save();
+        for stock in &mut done.stocks {
+            stock.wares.retain(|w| !matches!(w, save::WareSave::Goods { item: save::ItemSave::Wings { .. }, .. }));
+        }
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore_world(&done);
+        assert!(!sells(&other, key, None));
+        other.stock(key);
+        assert!(sells(&other, key, Some(wings::GULL)));
+        // Nor does the royal armoury sell the plain ones
+        other.royals.insert([1, 1, 1]);
+        other.stock([1, 1, 1]);
+        assert!(!sells(&other, [1, 1, 1], Some(wings::GULL)));
+    }
+
+    /// Chests hold wings now and then, more often the luckier, and never a kind already had
+    #[test]
+    fn chests_hold_wings_now_and_then() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        // How many pairs 200 chests hold, the player's taken off them after each if not `kept`
+        let found = |luck: f64, kept: bool| {
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            let mut pairs = 0;
+            for n in 0..200 {
+                game.chests.push(Chest { position: Vector3::zeros(), heading: 0.0, key: [n, -n, 11], luck, hoard: false });
+                game.open_chest(game.chests.len() - 1);
+                let kinds: Vec<u8> = game.worn.into_iter().chain(game.slots.iter().filter_map(|(i, _)| if let Item::Wings(k) = i { Some(*k) } else { None })).collect();
+                let mut unlike = kinds.clone();
+                unlike.sort_unstable();
+                unlike.dedup();
+                assert_eq!(unlike.len(), kinds.len(), "no kind twice: {kinds:?}");
+                if !kept {
+                    pairs += kinds.len();
+                    game.worn = None;
+                    game.slots.retain(|(i, _)| !matches!(i, Item::Wings(_)));
+                }
+            }
+            pairs
+        };
+        found(3.0, true);
+        let (plain, lucky) = (found(1.2, false), found(4.5, false));
+        assert!((8..40).contains(&plain), "{plain} of 200 plain chests");
+        assert!(lucky > plain, "{lucky} of 200 lucky ones");
     }
 }
