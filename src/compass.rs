@@ -86,10 +86,14 @@ impl App {
         let places = self.session.places.as_ref()?;
         let at = self.feet_m();
         let far = |p: [f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);
+        let realm = &REALMS[places.realm];
+        // Then, once they're all beaten, the realm's finale where it's risen, see on_raids_beaten()
+        let finale = places.finale.zip(places.finale_key()).zip(realm.finale).filter(|((_, key), _)| !self.game.is_defeated(key)).map(|((spot, _), (look, _, at))| (spot, format!("{}, {at}", look.name())));
         let (spot, label) = (0..realms::RAIDS)
             .filter(|&k| !self.game.is_defeated(&places.lair_key(k)))
-            .map(|k| (places.lairs[k], format!("Raid boss: {}", REALMS[places.realm].raid_bosses[k].0.name())))
+            .map(|k| (places.lairs[k], format!("Raid boss: {}, {}", realm.raid_bosses[k].0.name(), realm.lair_names[k])))
             .min_by(|a, b| far(a.0).total_cmp(&far(b.0)))
+            .or(finale)
             .unwrap_or_else(|| (places.gate, if places.realm == 0 { "The Innert Gate" } else { "The portal home" }.to_owned()));
         let heading = self.heading();
         let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
@@ -108,7 +112,16 @@ impl App {
             player: self.feet_m(),
             heading: self.heading(),
             gate: places.map(|p| (p.gate, if p.realm == 0 { "Innert Gate" } else { "Portal home" })),
-            lairs: places.map_or(Vec::new(), |p| (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect()),
+            lairs: places.map_or(Vec::new(), |p| {
+                let mut lairs: Vec<([f64; 2], &'static str, bool)> = (0..realms::RAIDS).map(|k| (p.lairs[k], REALMS[p.realm].raid_bosses[k].0.name(), self.game.is_defeated(&p.lair_key(k)))).collect();
+                // The finale too, once it's risen
+                if let (Some(spot), Some(key), Some((look, ..))) = (p.finale, p.finale_key(), REALMS[p.realm].finale)
+                    && lairs.iter().all(|&(_, _, beaten)| beaten)
+                {
+                    lairs.push((spot, look.name(), self.game.is_defeated(&key)));
+                }
+                lairs
+            }),
             settings: self.terrain_settings(),
         }
     }
@@ -173,6 +186,9 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
                 Some(over) if over < 0.0 => {
                     if land == Land::Ice {
                         [0.78, 0.88, 0.95]
+                    } else if land == Land::Dragon {
+                        // Lava
+                        [1.0, 0.42, 0.08]
                     } else {
                         let deep = (-over / 8.0).min(1.0);
                         let water = [0.18 - 0.08 * deep, 0.45 - 0.15 * deep, 0.7 - 0.15 * deep];
@@ -183,6 +199,8 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
                 }
                 Some(over) => {
                     let base = match land {
+                        // Ash, darker up the peaks
+                        Land::Dragon => [0.36, 0.33, 0.32],
                         Land::Dream => {
                             let blood = worldgen::dream_blood(x, y);
                             [0.78 - 0.2 * blood, 0.7 - 0.58 * blood, 0.9 - 0.72 * blood]
@@ -198,7 +216,7 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
                     };
                     // Sand along the shore, rock and then snow up high, but on the sky isles, high
                     // over the sea and all of them green
-                    let grounded = !matches!(land, Land::Sky | Land::Ice);
+                    let grounded = !matches!(land, Land::Sky | Land::Ice | Land::Dragon);
                     let shore = if grounded && over < 1.0 { 0.6 } else { 0.0 };
                     let high = if land == Land::Sky { 0.0 } else { ((over - settings.height_m as f32 * 0.25) / (settings.height_m as f32 * 0.3)).clamp(0.0, 1.0) };
                     let b = [0, 1, 2].map(|k| base[k] + ([0.85, 0.8, 0.6][k] - base[k]) * shore);

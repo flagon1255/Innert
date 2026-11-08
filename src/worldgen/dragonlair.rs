@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn a_great_dragons_lair_is_built() {
         let settings = TerrainSettings { width_m: 96, height_m: 64, voxels_per_meter: 4, seed: 0x00d7_a90c, grass_tufts: false };
-        let at = dry_land_near(&settings, [300.0, 300.0], 600.0, 14.0).expect("open ground");
+        let at = dry_land_near(&settings, [300.0, 300.0], 600.0, 14.0, &|_| true).expect("open ground");
         set_lairs(settings.seed, vec![(LairKind::Caldera, at)]);
         let corner = [((at[0] - 48.0) * 4.0) as i64, ((at[1] - 48.0) * 4.0) as i64];
         let (terrain, world) = generate_area(&settings, corner, [96 * 4, 96 * 4], &RiverCache::default());

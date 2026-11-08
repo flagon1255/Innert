@@ -198,8 +198,7 @@ impl App {
 
     /// What the player holds that isn't a weapon, see Game::held_arm(): the grappling hook in hand,
     /// swung forward as it's thrown, its rope paying out from the hand to its head as it flies and
-    /// hauls, sagging while it's slack; and wings to glide on, held up overhead by the bar under
-    /// them, sweeping down past the edges of the view
+    /// hauls, sagging while it's slack. Wings are worn on the back, see wings.rs.
     pub(super) fn rope_instances(&self, view: &combat::View) -> Vec<AnimalInstance> {
         let mut out = Vec::new();
         let vpm = self.world.voxels_per_meter;
@@ -210,20 +209,6 @@ impl App {
         let way = |v: [f64; 3]| (view.rotation * Vector3::new(v[0], v[1], v[2])).normalize();
         // A model's x turned to point along `along`
         let pointing = |along: Vector3<f64>| UnitQuaternion::rotation_between(&Vector3::x(), &along).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::z_axis(), std::f64::consts::PI));
-        if self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground()) {
-            // The wings over the head facing the way the view does, their bar under them in both
-            // hands low in front, see the Wings model: its bar's middle is 0.22 m back and 0.15 m
-            // up from where it stands
-            let turn = view.rotation * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_2);
-            let bar = at([0.0, 0.55, -0.22]);
-            out.push(animals::held_instance(Look::Wings, bar - turn * Vector3::new(-0.22, 0.0, 0.15) * m, turn, vpm));
-            for (which, side) in [(0, 1.0), (1, -1.0)] {
-                // Each hand on a strut just over the bar, the forearm down and out to the elbow
-                let grip = at([0.25 * side, 0.56, -0.17]);
-                out.push(self.game.held_arm(which, grip, way([-0.13 * side, 0.27, 0.58]), at([0.4 * side, 0.25, -0.47])));
-            }
-            return out;
-        }
         let thrown = self.hook.as_ref();
         if thrown.is_none() && !self.game.holding_hook() {
             return out;
@@ -340,9 +325,9 @@ impl App {
         })
     }
 
-    /// Whether the player's gliding: wings carried, jump held in the air
+    /// Whether the player's gliding: wings worn, jump held in the air
     pub(super) fn gliding(&self, jump: bool) -> bool {
-        jump && self.player.as_ref().is_some_and(|p| !p.on_ground()) && self.game.carries(Item::Wings)
+        jump && self.player.as_ref().is_some_and(|p| !p.on_ground()) && self.game.worn_wings().is_some()
     }
 
     /// For trying the hook out: the camera turned to the edge of the nearest other sky isle, as

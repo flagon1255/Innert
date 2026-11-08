@@ -156,6 +156,10 @@ pub fn is_passable(material: u8) -> bool {
     )
 }
 
+/// Whether a material's the Cinder Crown's lava, dull red to white hot, see Terrain::column()
+pub fn is_lava(material: u8) -> bool {
+    matches!(material, GLOW_BLOOD | GLOW_FIRE | GLOW_HOLY)
+}
 
 // The world is split into 8x8x8 bricks. Bricks that are empty or filled with a
 // single material only take up one grid cell, the rest store every voxel.
@@ -684,14 +688,7 @@ impl World {
         pages.carving = Some((page, used + 1));
         pages.live[page as usize] += 1;
         let index = page as usize * PAGE_BRICKS + used as usize;
-        let brick = self.brick_mut(index);
-        brick.fill(0);
-        for (i, &m) in materials.iter().enumerate() {
-            if m != AIR {
-                brick[i / 32] |= 1 << (i % 32);
-            }
-            brick[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
-        }
+        pack_brick(materials, self.brick_mut(index));
         let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
         (index as u32 + 1) | foliage
     }
@@ -894,10 +891,7 @@ impl World {
             if value & SOLID_BRICK != 0 {
                 materials = [value as u8; BRICK_VOXELS];
             } else {
-                let words = world.brick(((value & BRICK_INDEX) - 1) as usize);
-                for (i, m) in materials.iter_mut().enumerate() {
-                    *m = (words[16 + i / 4] >> ((i % 4) * 8)) as u8;
-                }
+                unpack_brick(world.brick(((value & BRICK_INDEX) - 1) as usize), &mut materials);
             }
             dirty.push((cell, materials));
             found.insert(at, cell, Some(dirty.len() - 1));
@@ -907,37 +901,78 @@ impl World {
         // The columns a hole was blown in, for what's loose above to fall into, by where they are
         // in the square round it
         let side = 2 * r + 1;
-        let mut holed_at = vec![false; (side * side) as usize];
         let (inner, outer) = ((radius * 0.82).powi(2), (radius * 1.12).powi(2));
         // What flies out is picked from all through the hole, so from the top of the ground as
         // much as from deep down: about one in so many of the voxels, about half of it solid
         let stride = ((2.1 * radius.powi(3) / 60.0) as u32).max(1);
+        // Whether a hash is a whole number of strides, without dividing, as it's asked of nearly
+        // every voxel: see Lemire, Kaser and Kurz, "Faster remainder by direct computation"
+        let per = (u64::MAX / stride as u64).wrapping_add(1);
+        let picked = |h: u32| stride == 1 || (h as u64).wrapping_mul(per) <= per - 1;
+        // The bricks of the layer of them the voxels are in, by where they are across it, each
+        // looked up once for the 64 rows through it
+        let (bx0, by0) = ((cx - r).div_euclid(8), (cy - r).div_euclid(8));
+        let across = (cx + r).div_euclid(8) - bx0 + 1;
+        let mut layer: Vec<Option<Option<usize>>> = vec![None; (across * ((cy + r).div_euclid(8) - by0 + 1)) as usize];
+        let mut layer_z = i64::MIN;
+        let mut holed_at = vec![false; (side * side) as usize];
         for z in cz - r..=cz + r {
+            if z.div_euclid(8) != layer_z {
+                layer_z = z.div_euclid(8);
+                layer.fill(None);
+            }
+            let dz2 = (z as f64 + 0.5 - center[2]).powi(2);
+            let (hz, hz_blown) = (hash((z + o[2]) as u32), hash((z + o[2]) as u32 ^ 0xb1));
             for y in cy - r..=cy + r {
-                for x in cx - r..=cx + r {
-                    let d2 = (x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2);
-                    if d2 > outer {
-                        continue;
-                    }
-                    // Ragged at the edge: only there does each voxel get a say
-                    if d2 > inner {
-                        let ragged = 0.82 + 0.3 * unit(hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32)) as f64;
-                        if d2 > (radius * ragged).powi(2) {
+                let dy2 = (y as f64 + 0.5 - center[1]).powi(2);
+                // The voxels' hashes, hash3() of where each is, all but the last step worked out
+                // once for the row
+                let (hy, hy_blown) = (hash((y + o[1]) as u32 ^ hz), hash((y + o[1]) as u32 ^ hz_blown));
+                // Only along the row as far as it reaches, and a voxel past that each way, as each
+                // voxel's still looked at just as it always was
+                let rest = outer - dy2 - dz2;
+                if rest < -1.0 {
+                    continue;
+                }
+                let reach = rest.max(0.0).sqrt();
+                let (x0, x1) = (((center[0] - 0.5 - reach).floor() as i64 - 1).max(cx - r), ((center[0] - 0.5 + reach).ceil() as i64 + 1).min(cx + r));
+                // A brick's run of the row at a time, the brick looked up once, at the first voxel
+                // of it that goes
+                let mut from = x0;
+                while from <= x1 {
+                    let to = ((from.div_euclid(8) + 1) * 8 - 1).min(x1);
+                    let looked = &mut layer[((from.div_euclid(8) - bx0) + (y.div_euclid(8) - by0) * across) as usize];
+                    for x in from..=to {
+                        let d2 = (x as f64 + 0.5 - center[0]).powi(2) + dy2 + dz2;
+                        if d2 > outer {
                             continue;
                         }
+                        // Ragged at the edge: only there does each voxel get a say
+                        if d2 > inner {
+                            let ragged = 0.82 + 0.3 * unit(hash((x + o[0]) as u32 ^ hy)) as f64;
+                            if d2 > (radius * ragged).powi(2) {
+                                continue;
+                            }
+                        }
+                        let k = match *looked {
+                            Some(k) => k,
+                            None => *looked.insert(brick(self, &mut dirty, &mut found, x, y, z)),
+                        };
+                        // Nothing stored there: nothing in the rest of the run either
+                        let Some(k) = k else {
+                            break;
+                        };
+                        let i = local(x, y, z);
+                        if dirty[k].1[i] == AIR {
+                            continue;
+                        }
+                        if blown.len() < 80 && picked(hash((x + o[0]) as u32 ^ hy_blown)) {
+                            blown.push(dirty[k].1[i]);
+                        }
+                        dirty[k].1[i] = AIR;
+                        holed_at[((x - cx + r) + (y - cy + r) * side) as usize] = true;
                     }
-                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
-                        continue;
-                    };
-                    let i = local(x, y, z);
-                    if dirty[k].1[i] == AIR {
-                        continue;
-                    }
-                    if blown.len() < 80 && hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32 ^ 0xb1) % stride == 0 {
-                        blown.push(dirty[k].1[i]);
-                    }
-                    dirty[k].1[i] = AIR;
-                    holed_at[((x - cx + r) + (y - cy + r) * side) as usize] = true;
+                    from = to + 1;
                 }
             }
         }
@@ -974,8 +1009,14 @@ impl World {
                 let mut rest: Option<i64> = None;
                 let mut open = 0;
                 let mut z = cz - r - 1;
+                // The brick the last voxel up the column was in, so it's looked up once
+                let mut last: Option<(i64, Option<usize>)> = None;
                 while z < sz && (z <= cz + r || open < 16) {
-                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
+                    let here = match last {
+                        Some((b, k)) if b == z.div_euclid(8) => k,
+                        _ => last.insert((z.div_euclid(8), brick(self, &mut dirty, &mut found, x, y, z))).1,
+                    };
+                    let Some(k) = here else {
                         // Nothing stored here: nothing to fall, nowhere to fall to
                         rest = None;
                         open += 8;
@@ -1011,30 +1052,76 @@ impl World {
 
         // Grass and flowers with nothing under them any more fall in: only round where the hole is
         let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL);
-        let mut near: Vec<(i64, i64)> = holed.iter().flat_map(|&(x, y)| [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]).collect();
-        // Grass only grows on the top of the ground, so only where the hole broke through to the
-        // open air above does anything need to fall
-        near.retain(|&(x, y)| self.material_at(x, y, cz + r + 1) == AIR);
-        near.sort_unstable();
-        near.dedup();
-        for (x, y) in near {
-            {
-                for z in cz - r..=cz + r + 12 {
-                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
-                        continue;
-                    };
-                    if !plant(dirty[k].1[local(x, y, z)]) {
-                        continue;
-                    }
-                    let below = match brick(self, &mut dirty, &mut found, x, y, z - 1) {
-                        Some(b) => dirty[b].1[local(x, y, z - 1)],
-                        None => AIR,
-                    };
-                    if below == AIR {
-                        dirty[k].1[local(x, y, z)] = AIR;
+        // The columns holed and those beside them, marked in the square round the hole and a
+        // column more each way, then a brick's worth of columns together
+        let (nx, ny, nside) = (cx - r - 1, cy - r - 1, side + 2);
+        let mut marked = vec![false; (nside * nside) as usize];
+        for &(x, y) in &holed {
+            for (a, b) in [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                marked[((a - nx) + (b - ny) * nside) as usize] = true;
+            }
+        }
+        let mut near: Vec<(i64, i64)> = Vec::new();
+        for gy in ny.div_euclid(8)..=(ny + nside - 1).div_euclid(8) {
+            for gx in nx.div_euclid(8)..=(nx + nside - 1).div_euclid(8) {
+                for y in (gy * 8).max(ny)..(gy * 8 + 8).min(ny + nside) {
+                    for x in (gx * 8).max(nx)..(gx * 8 + 8).min(nx + nside) {
+                        if marked[((x - nx) + (y - ny) * nside) as usize] {
+                            near.push((x, y));
+                        }
                     }
                 }
             }
+        }
+        // Grass only grows on the top of the ground, so only where the hole broke through to the
+        // open air above does anything need to fall
+        near.retain(|&(x, y)| self.material_at(x, y, cz + r + 1) == AIR);
+        // Up through the bricks a brick's worth of columns share, each looked up once and passed
+        // over if nothing grows anywhere in it: worked out once for each brick, and nothing more
+        // grows as plants fall. Each column only hangs on what's under it in the same column, so
+        // the columns go up together a brick at a time.
+        let top = cz + r + 12;
+        let mut grown: Vec<Option<bool>> = Vec::new();
+        let mut first = 0;
+        while first < near.len() {
+            let (gx, gy) = (near[first].0.div_euclid(8), near[first].1.div_euclid(8));
+            let end = first + near[first..].iter().take_while(|&&(x, y)| x.div_euclid(8) == gx && y.div_euclid(8) == gy).count();
+            let (bx8, by8) = (gx * 8, gy * 8);
+            for bz in (cz - r).div_euclid(8)..=top.div_euclid(8) {
+                let (from, to) = ((bz * 8).max(cz - r), (bz * 8 + 7).min(top));
+                let Some(k) = brick(self, &mut dirty, &mut found, bx8, by8, from) else {
+                    continue;
+                };
+                if grown.len() <= k {
+                    grown.resize(k + 1, None);
+                }
+                if !*grown[k].get_or_insert_with(|| dirty[k].1.iter().any(|&m| plant(m))) {
+                    continue;
+                }
+                // The brick under, looked up if anything at the bottom of this one needs it
+                let mut under: Option<Option<usize>> = None;
+                for &(x, y) in &near[first..end] {
+                    for z in from..=to {
+                        if !plant(dirty[k].1[local(x, y, z)]) {
+                            continue;
+                        }
+                        // What's under it, in the same brick unless it's the bottom of it
+                        let below = if z.rem_euclid(8) != 0 {
+                            dirty[k].1[local(x, y, z - 1)]
+                        } else {
+                            let b = match under {
+                                Some(b) => b,
+                                None => *under.insert(brick(self, &mut dirty, &mut found, bx8, by8, z - 1)),
+                            };
+                            b.map_or(AIR, |b| dirty[b].1[local(x, y, z - 1)])
+                        };
+                        if below == AIR {
+                            dirty[k].1[local(x, y, z)] = AIR;
+                        }
+                    }
+                }
+            }
+            first = end;
         }
 
         let dirty = self.clipped(dirty, clip);
@@ -1097,14 +1184,7 @@ impl World {
                 if first == AIR { EMPTY_BRICK | 1 } else { SOLID_BRICK | first as u32 }
             } else if stored {
                 let index = ((old & BRICK_INDEX) - 1) as usize;
-                let words = self.brick_mut(index);
-                words.fill(0);
-                for (i, &m) in materials.iter().enumerate() {
-                    if m != AIR {
-                        words[i / 32] |= 1 << (i % 32);
-                    }
-                    words[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
-                }
+                pack_brick(&materials, self.brick_mut(index));
                 let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
                 (index as u32 + 1) | foliage
             } else {
@@ -1180,10 +1260,7 @@ impl World {
                     if value & SOLID_BRICK != 0 {
                         materials = [value as u8; BRICK_VOXELS];
                     } else {
-                        let words = self.brick(((value & BRICK_INDEX) - 1) as usize);
-                        for (i, v) in materials.iter_mut().enumerate() {
-                            *v = (words[16 + i / 4] >> ((i % 4) * 8)) as u8;
-                        }
+                        unpack_brick(self.brick(((value & BRICK_INDEX) - 1) as usize), &mut materials);
                     }
                     dirty.push((cell, materials));
                     found.insert(cell, dirty.len() - 1);
@@ -1359,6 +1436,24 @@ fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
     }
     let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
     (index as u32 + 1) | foliage
+}
+
+/// Packs a brick's `materials` into its BRICK_WORDS `words`, as push_brick() does: a bit for each
+/// voxel that isn't air, then the materials four to a word, the first in the lowest byte
+fn pack_brick(materials: &[u8; BRICK_VOXELS], words: &mut [u32]) {
+    for (word, voxels) in words[..16].iter_mut().zip(materials.chunks_exact(32)) {
+        *word = voxels.iter().enumerate().fold(0, |bits, (j, &m)| bits | ((m != AIR) as u32) << j);
+    }
+    for (word, four) in words[16..BRICK_WORDS].iter_mut().zip(materials.chunks_exact(4)) {
+        *word = u32::from_le_bytes([four[0], four[1], four[2], four[3]]);
+    }
+}
+
+/// The materials of a brick stored as `words`, see pack_brick()
+fn unpack_brick(words: &[u32], materials: &mut [u8; BRICK_VOXELS]) {
+    for (four, word) in materials.chunks_exact_mut(4).zip(&words[16..BRICK_WORDS]) {
+        four.copy_from_slice(&word.to_le_bytes());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2699,6 +2794,10 @@ pub enum Land {
     Sky,
     Dream,
     Ice,
+    /// Open sea with islands strung across it on sandbars and reefs, see water_height()
+    Water,
+    /// Volcanic highlands, calderas, lava and the bones of dragons, see dragon_height()
+    Dragon,
 }
 
 pub fn land_of(seed: u32) -> Land {
@@ -2706,6 +2805,8 @@ pub fn land_of(seed: u32) -> Land {
         0xF1 => Land::Sky,
         0xF2 => Land::Dream,
         0xF3 => Land::Ice,
+        0xF4 => Land::Water,
+        0xF5 => Land::Dragon,
         _ => Land::Normal,
     }
 }
@@ -2805,6 +2906,107 @@ fn dream_height(seed: u32, x: f32, y: f32) -> f32 {
     soft + (torn - soft) * blood
 }
 
+/// How far apart the sunken reach's islands are, in meters: each WATER_CELL square has one
+const WATER_CELL: f32 = 92.0;
+
+/// The island of the WATER_CELL square `i`, `j` in the sunken reach: its middle and how far out its
+/// shore is, in meters, how high its top is over the sea, and whether it's a ring of land round a
+/// lagoon
+fn water_isle(seed: u32, i: i32, j: i32) -> ([f32; 2], f32, f32, bool) {
+    let r = hash3(i as u32, j as u32, seed ^ 0x5ea);
+    let middle = [(i as f32 + 0.5 + 0.4 * (unit(r) - 0.5)) * WATER_CELL, (j as f32 + 0.5 + 0.4 * (unit(r >> 16) - 0.5)) * WATER_CELL];
+    let radius = 15.0 + 15.0 * unit(r >> 8);
+    let top = 2.0 + 7.0 * unit(hash(r));
+    (middle, radius, top, unit(hash(r ^ 0xa70)) < 0.2)
+}
+
+/// Whether the island of square `i`, `j` is joined to the one north of it by a sandbar, as it
+/// always is to the one east of it, so every island can be walked to, wading
+fn water_bar_north(seed: u32, i: i32, j: i32) -> bool {
+    unit(hash3(i as u32, j as u32, seed ^ 0xba5)) < 0.55
+}
+
+/// The ground of the sunken reach, in meters: deep water, `sea` meters up being where the sea is,
+/// islands rising out of it, some of them rings round a shallow lagoon, reefs round some just under
+/// the surface, and sandbars joining them up, a little under it, to wade across
+fn water_height(seed: u32, sea: f32, x: f32, y: f32) -> f32 {
+    let mut h = sea - 7.0 + fbm(x / 60.0, y / 60.0, 3, seed.wrapping_add(5)) * 2.0;
+    let (cx, cy) = ((x / WATER_CELL).floor() as i32, (y / WATER_CELL).floor() as i32);
+    let wobble = fbm(x / 11.0, y / 11.0, 3, seed.wrapping_add(6));
+    for j in cy - 1..=cy + 1 {
+        for i in cx - 1..=cx + 1 {
+            let (middle, radius, top, atoll) = water_isle(seed, i, j);
+            let d = (x - middle[0]).hypot(y - middle[1]) / (radius * (1.0 + 0.22 * wobble));
+            if d < 1.7 {
+                // Up out of the deep to the shore, then gently up to the island's top
+                let land = if d < 1.0 {
+                    sea + 0.6 + top * (1.0 - d * d).powf(0.8) + fbm(x / 9.0, y / 9.0, 2, seed.wrapping_add(7)) * 0.8
+                } else {
+                    sea + 0.6 - (d - 1.0) / 0.7 * 7.0
+                };
+                let land = if atoll && d < 0.55 { land.min(sea - 1.4 - (0.55 - d) * 2.0) } else { land };
+                h = h.max(land);
+                // A reef ringing some, just under the surface
+                if unit(hash3(i as u32, j as u32, seed ^ 0x2eef)) < 0.4 {
+                    h = h.max(sea - 0.5 - ((d - 1.4).abs() / 0.08).powi(2));
+                }
+            }
+            // Sandbars to the neighbours, a little under the surface, a few meters wide
+            for (di, dj, bar) in [(1, 0, true), (0, 1, water_bar_north(seed, i, j))] {
+                if !bar {
+                    continue;
+                }
+                let (other, ..) = water_isle(seed, i + di, j + dj);
+                let (ax, ay, bx, by) = (middle[0], middle[1], other[0], other[1]);
+                let (vx, vy) = (bx - ax, by - ay);
+                let t = (((x - ax) * vx + (y - ay) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+                let off = (x - ax - vx * t).hypot(y - ay - vy * t) + wobble * 1.2;
+                if off < 4.0 {
+                    h = h.max(sea - 0.25 - (off / 2.6).powi(2) * 1.6);
+                }
+            }
+        }
+    }
+    h
+}
+
+/// How far apart the Cinder Crown's calderas may be, in meters: each CALDERA_CELL square may have one
+const CALDERA_CELL: f32 = 250.0;
+
+/// The caldera in the CALDERA_CELL square `i`, `j`, if there's one: its middle and the radius of its
+/// rim, in meters
+fn caldera_in(seed: u32, i: i32, j: i32) -> Option<([f32; 2], f32)> {
+    let r = hash3(i as u32, j as u32, seed ^ 0xca1d);
+    (unit(r) <= 0.6).then(|| ([(i as f32 + 0.3 + 0.4 * unit(r >> 4)) * CALDERA_CELL, (j as f32 + 0.3 + 0.4 * unit(r >> 12)) * CALDERA_CELL], 30.0 + 26.0 * unit(r >> 20)))
+}
+
+/// The ground of the Cinder Crown, in meters, `sea` being where lava lies: highlands of ash, peaks
+/// rising sharp out of them, and calderas, a ring of rim round a bowl sinking down to a lake of
+/// lava, which its rivers run down into
+fn dragon_height(seed: u32, sea: f32, x: f32, y: f32) -> f32 {
+    let base = 26.0 + fbm(x / 150.0, y / 150.0, 3, seed) * 6.0 + fbm(x / 38.0, y / 38.0, 2, seed.wrapping_add(1)) * 1.5;
+    let mask = smoothstep(-0.15, 0.35, fbm(x / 210.0, y / 210.0, 2, seed.wrapping_add(2)));
+    let mut h = base + ridged(x / 85.0, y / 85.0, 5, seed.wrapping_add(3)) * mask * 28.0;
+    let (cx, cy) = ((x / CALDERA_CELL).floor() as i32, (y / CALDERA_CELL).floor() as i32);
+    for j in cy - 1..=cy + 1 {
+        for i in cx - 1..=cx + 1 {
+            let Some((middle, radius)) = caldera_in(seed, i, j) else {
+                continue;
+            };
+            let d = (x - middle[0]).hypot(y - middle[1]) / radius;
+            if d > 2.0 {
+                continue;
+            }
+            h += 9.0 * (-((d - 1.0) / 0.22).powi(2)).exp();
+            if d < 1.0 {
+                let floor = sea - 2.0 + d * d * 6.0;
+                h += (floor - h) * smoothstep(1.0, 0.72, d);
+            }
+        }
+    }
+    h
+}
+
 /// Where the open sky's ground is said to be in the sky isles, far under everything: nothing's
 /// built there, see Column::under
 const SKY_VOID: f32 = -40.0;
@@ -2815,6 +3017,8 @@ fn height_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     match land_of(seed) {
         Land::Sky => return sky_island(seed, x, y).map_or(SKY_VOID, |(top, _)| top),
         Land::Dream => return dream_height(seed, x, y),
+        Land::Water => return water_height(seed, sea_level_m(settings), x, y),
+        Land::Dragon => return dragon_height(seed, sea_level_m(settings), x, y),
         _ => {}
     }
     let height_m = settings.height_m as f32;
@@ -2847,6 +3051,10 @@ pub fn climate(settings: &TerrainSettings, x: f32, y: f32) -> Climate {
         Land::Sky | Land::Dream => return Climate::default(),
         // The frozen realm's snow from end to end
         Land::Ice => return Climate { snow: 1.0, ..Climate::default() },
+        // The sunken reach's islands green, sandy at their shores
+        Land::Water => return Climate::default(),
+        // Ash and rock, nothing growing, see Terrain::column()
+        Land::Dragon => return Climate::default(),
         Land::Normal => {}
     }
     let heat = fbm(x / 900.0, y / 900.0, 3, seed.wrapping_add(31)) * 1.6;
@@ -2915,19 +3123,165 @@ pub fn land_height_m(settings: &TerrainSettings, x: f32, y: f32) -> Option<f32> 
 }
 
 /// The nearest dry land to `near` within `within` meters with `room` round it, see is_dry_land(),
-/// looking in rings four meters apart
-pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32, room: f32) -> Option<[f32; 2]> {
+/// that's `also` fine, looking in rings four meters apart
+pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32, room: f32, also: &dyn Fn([f32; 2]) -> bool) -> Option<[f32; 2]> {
     for ring in 0..=(within / 4.0) as usize {
         let count = (ring * 6).max(1);
         for i in 0..count {
             let angle = i as f32 / count as f32 * TAU;
             let at = [near[0] + angle.cos() * ring as f32 * 4.0, near[1] + angle.sin() * ring as f32 * 4.0];
-            if is_dry_land(settings, at, room) {
+            if is_dry_land(settings, at, room) && also(at) {
                 return Some(at);
             }
         }
     }
     None
+}
+
+/// Whether a river runs within `margin` meters of `at`, its banks and all, in meters: as is_dry_land()
+/// doesn't look, for where rivers mustn't be, as the Cinder Crown's of lava
+pub fn river_near(settings: &TerrainSettings, at: [f32; 2], margin: f32, cache: &RiverCache) -> bool {
+    let terrain = Terrain::around(settings, at, at);
+    let (lo, hi) = (at.map(|v| v - margin), at.map(|v| v + margin));
+    terrain.rivers_near(cache, lo, hi).iter().any(|river| river.iter().any(|p| (p.x - at[0]).hypot(p.y - at[1]) < p.half_width + margin))
+}
+
+/// What a raid boss's lair is by, in a realm that says, see realms.rs: anywhere there's room, or as
+/// in the Cinder Crown, by a dragons' roost high on a peak, on the rim of a caldera, or at the mouth
+/// of a bone cave
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Landmark {
+    Anywhere,
+    Roost,
+    Caldera,
+    BoneCave,
+}
+
+/// Where the nearest `mark` to `near` is, in meters, for a lair to be on the nearest dry land to:
+/// a roost itself, a caldera's rim on the side towards `near`, out in front of a bone cave's great
+/// skull. None for Anywhere, or if there's none of them anywhere near.
+pub fn landmark_near(settings: &TerrainSettings, mark: Landmark, near: [f32; 2], cache: &RiverCache) -> Option<[f32; 2]> {
+    let seed = settings.seed;
+    let away = |p: [f32; 2]| (p[0] - near[0]).hypot(p[1] - near[1]);
+    // Of the squares `cell` meters on a side out to `reach` of them round `near`, the nearest spot
+    // `spot` finds in one
+    let nearest = |cell: f32, reach: i32, spot: &dyn Fn(i32, i32) -> Option<([f32; 2], f32)>| {
+        let (ci, cj) = ((near[0] / cell).floor() as i32, (near[1] / cell).floor() as i32);
+        (cj - reach..=cj + reach).flat_map(|j| (ci - reach..=ci + reach).map(move |i| (i, j))).filter_map(|(i, j)| spot(i, j)).min_by(|a, b| away(a.0).total_cmp(&away(b.0)))
+    };
+    match mark {
+        Landmark::Anywhere => None,
+        Landmark::Roost => nearest(ROOST_CELL, 5, &|i, j| {
+            let (at, r) = scatter_spot(seed, ROOST_CELL, ROOST_SALT, i, j);
+            has_roost(settings, at[0], at[1], r).then_some((at, 0.0))
+        })
+        .map(|(at, _)| at),
+        Landmark::Caldera => nearest(CALDERA_CELL, 2, &|i, j| caldera_in(seed, i, j)).map(|(middle, radius)| {
+            let (dx, dy) = (near[0] - middle[0], near[1] - middle[1]);
+            let length = dx.hypot(dy).max(1e-3);
+            [middle[0] + dx / length * radius * 1.45, middle[1] + dy / length * radius * 1.45]
+        }),
+        Landmark::BoneCave => nearest(BONE_CAVE_CELL, 2, &|i, j| {
+            let (at, r) = scatter_spot(seed, BONE_CAVE_CELL, BONE_CAVE_SALT, i, j);
+            bone_cave_facing(settings, at[0], at[1], r, cache).map(|facing| (at, facing))
+        })
+        .map(|(at, facing)| [at[0] + facing.cos() * BONE_CAVE_MOUTH, at[1] + facing.sin() * BONE_CAVE_MOUTH]),
+    }
+}
+
+/// The one spot Terrain::features() scatters something on in the `cell` meter square `i`, `j` with
+/// `salt`, and the hash it hands on for what's put there, the same whatever piece is built
+fn scatter_spot(seed: u32, cell: f32, salt: u32, i: i32, j: i32) -> ([f32; 2], u32) {
+    let r = hash3(i as u32, j as u32, seed ^ salt);
+    ([(i as f32 + unit(r)) * cell, (j as f32 + unit(r >> 16)) * cell], hash(r))
+}
+
+/// The Cinder Crown's dragons' roosts, at most one in each ROOST_CELL meter square, see has_roost()
+const ROOST_CELL: f32 = 48.0;
+const ROOST_SALT: u32 = 0x2005;
+
+/// Whether the spot scattered on at `x`, `y` with hash `r` has a roost on it: high on a peak
+fn has_roost(settings: &TerrainSettings, x: f32, y: f32, r: u32) -> bool {
+    unit(r) < 0.55 && height_at(settings, x, y) > sea_level_m(settings) + 34.0
+}
+
+/// The Cinder Crown's great skeletons, at most one in each BONE_CAVE_CELL meter square, see
+/// bone_cave(), and how far in front of the middle of one its mouth is, past its skull
+const BONE_CAVE_CELL: f32 = 260.0;
+const BONE_CAVE_SALT: u32 = 0xb0ca;
+const BONE_CAVE_MOUTH: f32 = 26.0;
+
+/// Which way the great skeleton at the spot scattered on at `x`, `y` with hash `r` faces, if
+/// there's one there: on dry, level ash with room all round it and no river of lava near
+fn bone_cave_facing(settings: &TerrainSettings, x: f32, y: f32, r: u32, cache: &RiverCache) -> Option<f32> {
+    if unit(r) > 0.85 || !is_dry_land(settings, [x, y], 8.0) {
+        return None;
+    }
+    let h = height_at(settings, x, y);
+    let level = (0..8).all(|k| {
+        let a = k as f32 * TAU / 8.0;
+        (height_at(settings, x + a.cos() * 13.0, y + a.sin() * 13.0) - h).abs() < 3.0
+    });
+    (level && !river_near(settings, [x, y], BONE_CAVE_MOUTH + 4.0, cache)).then(|| unit(r >> 8) * TAU)
+}
+
+/// A bone cave: a dragon's skeleton far greater than the rest, lying on its belly facing `facing`,
+/// its spine arched high and its ribs curving down either side into the ash, with room to walk in
+/// under them, its skull at the mouth, horns swept back
+fn bone_cave(settings: &TerrainSettings, at: [f32; 2], facing: f32, r: u32) -> Object {
+    let mut rng = Rng(hash(r ^ 0xb0ca));
+    let (dx, dy) = (facing.cos(), facing.sin());
+    // `t` meters along it from its middle and `side` meters off to its left, `up` over the ground
+    // there, or over its middle's for the spine
+    let ground = |p: [f32; 2]| height_at(settings, p[0], p[1]);
+    let flat = |t: f32, side: f32| [at[0] + dx * t - dy * side, at[1] + dy * t + dx * side];
+    let base = ground(at);
+    let on = |t: f32, side: f32, up: f32| {
+        let p = flat(t, side);
+        [p[0], p[1], ground(p) + up]
+    };
+    let over = |t: f32, side: f32, up: f32| {
+        let p = flat(t, side);
+        [p[0], p[1], base + up]
+    };
+    // From the tail lying in the ash up over the back and down the neck, how high along it
+    const SPINE: [(f32, f32); 5] = [(-15.0, 0.6), (-8.0, 5.6), (0.0, 8.2), (6.0, 7.4), (11.0, 3.8)];
+    let spine_at = |t: f32| {
+        let k = SPINE.windows(2).position(|w| t <= w[1].0).unwrap_or(SPINE.len() - 2);
+        let (a, b) = (SPINE[k], SPINE[k + 1]);
+        a.1 + (b.1 - a.1) * ((t - a.0) / (b.0 - a.0)).clamp(0.0, 1.0)
+    };
+    let mut shapes: Vec<Shape> = SPINE.windows(2).map(|w| Shape::capsule(over(w[0].0, 0.0, w[0].1), over(w[1].0, 0.0, w[1].1), 0.5 + w[0].1 * 0.05, 0.5 + w[1].1 * 0.05, BONE, FUR_CREAM, false)).collect();
+    // Knobs of its backbone
+    for k in 0..12 {
+        let t = -12.0 + k as f32 * 2.0;
+        shapes.push(Shape::sphere(over(t, 0.0, spine_at(t) + 0.55), 0.55, BONE, FUR_CREAM, false));
+    }
+    // Its ribs, longest in the middle, from the back out and down into the ground
+    for k in 0..7 {
+        let t = -7.0 + k as f32 * 2.0;
+        let top = spine_at(t);
+        let spread = 6.0 - ((t + 1.0) / 6.0).powi(2) * 1.2 + rng.range(-0.2, 0.2);
+        for side in [-1.0f32, 1.0] {
+            let p0 = over(t, 0.0, top - 0.2);
+            let p1 = over(t + 0.3, side * spread * 0.62, top * 0.86);
+            let p2 = over(t + 0.6, side * spread, top * 0.42);
+            let foot = on(t + 0.8, side * spread * 1.04, -0.8);
+            shapes.push(Shape::capsule(p0, p1, 0.46, 0.4, BONE, FUR_CREAM, false));
+            shapes.push(Shape::capsule(p1, p2, 0.4, 0.33, BONE, FUR_CREAM, false));
+            shapes.push(Shape::capsule(p2, foot, 0.33, 0.26, BONE, FUR_CREAM, false));
+        }
+    }
+    // Its skull at the end of its neck, the long snout and jaw lying on the ash, empty black eyes
+    // and horns swept back
+    shapes.push(Shape::sphere(on(13.6, 0.0, 2.6), 2.6, BONE, FUR_CREAM, false));
+    shapes.push(Shape::capsule(on(15.0, 0.0, 2.4), on(19.4, 0.0, 1.3), 1.7, 0.9, BONE, FUR_CREAM, false));
+    shapes.push(Shape::capsule(on(14.4, 0.0, 0.7), on(19.0, 0.0, 0.4), 1.1, 0.6, BONE, FUR_CREAM, false));
+    for side in [-1.0f32, 1.0] {
+        shapes.push(Shape::sphere(on(15.4, side * 1.45, 3.1), 0.6, OBSIDIAN, AIR, false));
+        shapes.push(Shape::capsule(on(12.6, side * 1.5, 4.2), on(8.8, side * 3.4, 6.6), 0.62, 0.12, BONE, OBSIDIAN, false));
+    }
+    Object::new(shapes, rng.0)
 }
 
 fn is_grassy(material: u8) -> bool {
@@ -2938,6 +3292,8 @@ fn sea_level_m(settings: &TerrainSettings) -> f32 {
     match land_of(settings.seed) {
         // Far down under the floating islands, seen only beyond them, see sky_island()
         Land::Sky => 3.0,
+        // Lava down in the calderas, and the rivers of it run down into them
+        Land::Dragon => 6.0,
         _ => settings.height_m as f32 * 0.3,
     }
 }
@@ -2989,7 +3345,7 @@ fn river_springs(rivers: &[Arc<Vec<RiverPoint>>], lo: [f32; 2], hi: [f32; 2]) ->
 /// The same for the world, from `lo` to `hi` in meters, wherever it's moved to: what water it
 /// has flowing in besides the springs of each of its pieces, see Terrain::piece_springs()
 pub fn window_springs(settings: &TerrainSettings, cache: &RiverCache, lo: [f32; 2], hi: [f32; 2]) -> Vec<[f32; 4]> {
-    if land_of(settings.seed) == Land::Ice {
+    if matches!(land_of(settings.seed), Land::Ice | Land::Dragon) {
         return Vec::new();
     }
     let terrain = Terrain::around(settings, lo, hi);
@@ -3244,7 +3600,7 @@ impl Terrain {
 
     /// The springs of springs() where rivers start in this piece or flow into it, see river_springs()
     pub fn river_springs(&self) -> Vec<[f32; 4]> {
-        if land_of(self.settings.seed) == Land::Ice {
+        if matches!(land_of(self.settings.seed), Land::Ice | Land::Dragon) {
             return Vec::new();
         }
         river_springs(&self.rivers, self.own_lo, self.own_hi)
@@ -3252,9 +3608,9 @@ impl Terrain {
 
     /// The springs of springs() that belong to this piece wherever the world is, rather than to
     /// where its edge is: the waterfalls' and the buildings', see river_springs() for the rest.
-    /// None in the frozen realm, where every river and fall is iced over.
+    /// None in the frozen realm, where every river and fall is iced over, nor where they're lava.
     pub fn piece_springs(&self) -> Vec<[f32; 4]> {
-        if land_of(self.settings.seed) == Land::Ice {
+        if matches!(land_of(self.settings.seed), Land::Ice | Land::Dragon) {
             return Vec::new();
         }
         let mut springs: Vec<[f32; 4]> = self
@@ -3583,7 +3939,9 @@ impl Terrain {
         // to where the water would be, and no water flows there, see Terrain::piece_springs()
         let land = land_of(self.settings.seed);
         let frozen = land == Land::Ice && water_top > h;
-        let h = if frozen { water_top } else { h };
+        // And in the Cinder Crown they're lava, molten and glowing
+        let molten = land == Land::Dragon && water_top > h;
+        let (bed, h) = (h, if frozen || molten { water_top } else { h });
         // In the sky isles, the open air under an island, and everywhere between them; nor is
         // there any water, but for the sea far below, seen only past the islands
         let (under, water_top) = match land {
@@ -3591,7 +3949,7 @@ impl Terrain {
                 Some((_, under)) => ((under * vpm) as i32, i32::MIN),
                 None => (i32::MAX, i32::MIN),
             },
-            Land::Ice => (0, i32::MIN),
+            Land::Ice | Land::Dragon => (0, i32::MIN),
             _ => (0, water_top),
         };
 
@@ -3603,6 +3961,35 @@ impl Terrain {
 
         let top = if frozen {
             ICE
+        } else if molten {
+            // Dull red where it's shallow, cooling at its edges, glowing hotter the deeper it is,
+            // with veins of brighter fire wandering through it, and here and there a plate of
+            // black crust afloat on the cooler shallows
+            let deep = (h - bed) as f32 / vpm;
+            let jitter = (unit(hash3(gx as u32, gy as u32, self.settings.seed ^ 0x1a7a)) - 0.5) * 0.3;
+            let hot = smoothstep(0.4, 2.4, deep) + jitter > 0.5;
+            let vein = fbm(xm / 4.0, ym / 4.0, 2, self.settings.seed.wrapping_add(41)).abs() < 0.035;
+            let crust = !hot && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(43)) > 0.32;
+            if crust && !vein {
+                OBSIDIAN
+            } else {
+                [GLOW_BLOOD, GLOW_FIRE, GLOW_HOLY][hot as usize + vein as usize]
+            }
+        } else if land == Land::Dragon {
+            // Black glass where lava's cooled at its edges, bare rock up the steeps, ash the rest,
+            // scorched darker in patches and strewn with grey cinders, now and then of black glass
+            let cinder = unit(hash3(gx as u32, gy as u32, self.settings.seed ^ 0xc1d3));
+            if h <= water_top.max(sea_level) + 2 * v || cinder < 0.012 {
+                OBSIDIAN
+            } else if cinder < 0.05 {
+                MORTAR
+            } else if slope > 1.4 {
+                ROCK
+            } else if fbm(xm / 11.0, ym / 11.0, 2, self.settings.seed.wrapping_add(44)) > 0.18 {
+                DIRT
+            } else {
+                GRAVEL
+            }
         } else if land == Land::Ice {
             // Snow down to the ice's edge, but for bare rock where it's too steep to lie
             if slope > 1.4 { STONE } else { SNOW }
@@ -3623,7 +4010,7 @@ impl Terrain {
         };
         // Clay in patches in the shallows at the edges of rivers, and along the shores of lakes and
         // the sea, just above the water and under it: for building with, see src\bases.rs
-        let wet_edge = (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
+        let wet_edge = land != Land::Dragon && (river > h && river - h < v / 2) || (top == SAND && !desert && (h - sea_level).abs() <= v / 2);
         let top = if wet_edge && fbm(xm / 2.5, ym / 2.5, 2, self.settings.seed.wrapping_add(31)) > 0.22 { CLAY } else { top };
         // Burnt black where a dragon keeps its lair, see dragonlair.rs
         let top = match dragonlair::scorch(&self.settings, xm, ym) {
@@ -3631,7 +4018,8 @@ impl Terrain {
             _ => top,
         };
         let below = match top {
-            SAND | STONE | GRAVEL | CLAY | ICE => top,
+            SAND | STONE | GRAVEL | CLAY | ICE | ROCK | OBSIDIAN => top,
+            GLOW_BLOOD | GLOW_FIRE | GLOW_HOLY => OBSIDIAN,
             _ => DIRT,
         };
 
@@ -3665,7 +4053,7 @@ impl Terrain {
 
         let strata = (fbm(xm / 7.0, ym / 7.0, 2, self.settings.seed.wrapping_add(23)) * 0.8 * vpm) as i32;
         // None in the desert, nor under the snow
-        let bare = desert || snowy || h >= snow_line + snow_jitter;
+        let bare = desert || snowy || h >= snow_line + snow_jitter || land == Land::Dragon;
         let moss = smoothstep(0.0, 0.5, fbm(xm / 3.0, ym / 3.0, 2, self.settings.seed.wrapping_add(24))) * if bare { 0.0 } else { 0.6 };
 
         Column {
@@ -3699,6 +4087,9 @@ impl Terrain {
             return MOSS;
         }
         let pick = hash3(layer as u32, self.settings.seed, 0x57a7a) % 6;
+        if land_of(self.settings.seed) == Land::Dragon {
+            return [OBSIDIAN, ROCK, ROCK, STONE, STONE, GRAVEL][pick as usize];
+        }
         if column.desert {
             return [SANDSTONE, SANDSTONE, SANDSTONE, SANDSTONE_DARK, SAND, CLAY][pick as usize];
         }
@@ -4072,8 +4463,8 @@ impl Terrain {
         // grows there. No one lives in the dreaming realm: there are ruins and the dead there, but
         // no towns, castles or bandits.
         let land = land_of(seed);
-        let peopled = land != Land::Dream;
-        if land != Land::Sky {
+        let peopled = !matches!(land, Land::Dream | Land::Water | Land::Dragon);
+        if !matches!(land, Land::Sky | Land::Water | Land::Dragon) {
             // Buildings go first, as where they overlap other things they win. None stands over a
             // dungeon, whose halls go before the caves so no cave breaks into them.
             let dungeons = self.dungeons(rivers);
@@ -4119,9 +4510,7 @@ impl Terrain {
             let last = [(hi[0] / cell).ceil() as i32, (hi[1] / cell).ceil() as i32];
             for cy in first[1]..last[1] {
                 for cx in first[0]..last[0] {
-                    let r = hash3(cx as u32, cy as u32, seed ^ salt);
-                    let x = (cx as f32 + unit(r)) * cell;
-                    let y = (cy as f32 + unit(r >> 16)) * cell;
+                    let ([x, y], r) = scatter_spot(seed, cell, salt, cx, cy);
                     if x < lo[0] || y < lo[1] || x >= hi[0] || y >= hi[1] {
                         continue;
                     }
@@ -4134,7 +4523,7 @@ impl Terrain {
                         continue;
                     }
                     let ground = (column.height + 1) as f32 / vpm;
-                    if let Some(object) = place(x, y, ground, &column, hash(r)) {
+                    if let Some(object) = place(x, y, ground, &column, r) {
                         // Anything reaching further than `reach` would be missing where it does
                         #[cfg(test)]
                         assert!(
@@ -4316,6 +4705,114 @@ impl Terrain {
                     Object::new(shapes, rng.0)
                 })
             });
+        }
+        // The sunken reach's own: stacks of rock standing up out of the sea, the ruins of a city
+        // drowned long ago under the water, to be seen down through it, and pillars of it fallen
+        // across the shallows
+        if land == Land::Water {
+            scatter(58.0, 0x5eac, 9.0, &mut |x, y, ground, _, r| {
+                (ground < sea_level - 2.0 && unit(r) < 0.4).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let tall = sea_level - ground + rng.range(5.0, 15.0);
+                    let wide = rng.range(1.8, 3.4);
+                    let top = [x + rng.range(-1.0, 1.0), y + rng.range(-1.0, 1.0), ground + tall];
+                    let shapes = vec![
+                        Shape::capsule([x, y, ground - 1.0], top, wide, wide * 0.55, ROCK, STONE, true),
+                        Shape::sphere([top[0], top[1], top[2] + 0.2], wide * 0.5, GRASS, MOSS, true),
+                    ];
+                    Object::new(shapes, rng.0)
+                })
+            });
+            scatter(34.0, 0x5e1c, 8.0, &mut |x, y, ground, _, r| {
+                (ground < sea_level - 1.6 && ground > sea_level - 7.5 && unit(r) < 0.5).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let mut shapes = Vec::new();
+                    // A ring of columns, some broken off short, round a fallen one
+                    let turn = rng.range(0.0, TAU);
+                    let ring = rng.range(3.0, 5.0);
+                    for k in 0..6 {
+                        let a = turn + k as f32 * TAU / 6.0;
+                        let foot = [x + a.cos() * ring, y + a.sin() * ring, ground - 0.4];
+                        let tall = if rng.next() < 0.4 { rng.range(0.6, 1.6) } else { rng.range(2.5, 4.5) };
+                        shapes.push(Shape::capsule(foot, add(foot, [0.0, 0.0, tall]), 0.42, 0.38, LIMESTONE, TEMPLE_STONE, false));
+                    }
+                    let lie = [turn.cos() * 2.5, turn.sin() * 2.5, 0.0];
+                    shapes.push(Shape::capsule([x - lie[0], y - lie[1], ground + 0.2], [x + lie[0], y + lie[1], ground + 0.3], 0.45, 0.45, LIMESTONE, TEMPLE_STONE, false));
+                    Object::new(shapes, rng.0)
+                })
+            });
+            scatter(46.0, 0xfa11, 7.0, &mut |x, y, ground, _, r| {
+                (ground < sea_level - 0.4 && ground > sea_level - 3.5 && unit(r) < 0.35).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let a = rng.range(0.0, TAU);
+                    let half = rng.range(4.0, 6.0);
+                    let (dx, dy) = (a.cos() * half, a.sin() * half);
+                    let z = sea_level + 0.15;
+                    Object::new(vec![Shape::capsule([x - dx, y - dy, z], [x + dx, y + dy, z], 0.65, 0.6, LIMESTONE, TEMPLE_STONE, false)], rng.0)
+                })
+            });
+        }
+        // The Cinder Crown's own: the bones of great dragons lying out on the ash, spikes of black
+        // glass jutting from it, and on the peaks the dragons' roosts, rings of bones and dead wood
+        // with eggs in them
+        if land == Land::Dragon {
+            scatter(80.0, 0xb07e, 14.0, &mut |x, y, ground, column, r| {
+                (matches!(column.top, GRAVEL | DIRT) && ground > sea_level + 3.0 && unit(r) < 0.35).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let a = rng.range(0.0, TAU);
+                    let (dx, dy) = (a.cos(), a.sin());
+                    let long = rng.range(5.0, 7.0);
+                    let mut shapes = vec![Shape::capsule([x - dx * long, y - dy * long, ground + 0.3], [x + dx * long, y + dy * long, ground + 0.9], 0.45, 0.65, BONE, FUR_CREAM, false)];
+                    // A skull at the head end, and ribs arching up off the spine
+                    shapes.push(Shape::sphere([x + dx * (long + 1.4), y + dy * (long + 1.4), ground + 1.0], 1.3, BONE, FUR_CREAM, false));
+                    for k in 0..7 {
+                        let along = -long * 0.7 + k as f32 * long * 0.22;
+                        let at = [x + dx * along, y + dy * along, ground + 0.7];
+                        let tall = rng.range(2.6, 4.2) * (1.0 - (k as f32 - 3.0).abs() * 0.12);
+                        for side in [-1.0f32, 1.0] {
+                            let out = [-dy * side, dx * side];
+                            let elbow = [at[0] + out[0] * 1.8, at[1] + out[1] * 1.8, at[2] + tall * 0.6];
+                            let tip = [at[0] + out[0] * 1.3, at[1] + out[1] * 1.3, at[2] + tall];
+                            shapes.push(Shape::capsule(at, elbow, 0.22, 0.18, BONE, FUR_CREAM, false));
+                            shapes.push(Shape::capsule(elbow, tip, 0.18, 0.08, BONE, FUR_CREAM, false));
+                        }
+                    }
+                    Object::new(shapes, rng.0)
+                })
+            });
+            scatter(26.0, 0x0b51, 6.0, &mut |x, y, ground, _, r| {
+                (ground > sea_level + 1.0 && unit(r) < 0.3).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let shapes = (0..2 + (rng.next() * 2.99) as usize)
+                        .map(|_| {
+                            let foot = [x + rng.range(-1.6, 1.6), y + rng.range(-1.6, 1.6), ground - 0.5];
+                            let tall = rng.range(1.5, 5.0);
+                            Shape::capsule(foot, add(foot, [rng.range(-0.3, 0.3) * tall, rng.range(-0.3, 0.3) * tall, tall]), rng.range(0.35, 0.8), 0.04, OBSIDIAN, OBSIDIAN, false)
+                        })
+                        .collect();
+                    Object::new(shapes, rng.0)
+                })
+            });
+            scatter(ROOST_CELL, ROOST_SALT, 6.0, &mut |x, y, ground, _, r| {
+                has_roost(&self.settings, x, y, r).then(|| {
+                    let mut rng = Rng(hash(r));
+                    let mut shapes = Vec::new();
+                    let ring = rng.range(2.6, 3.6);
+                    for k in 0..12 {
+                        let (a, b) = (k as f32 * TAU / 12.0, (k as f32 + 1.3) * TAU / 12.0);
+                        let p = |t: f32, up: f32| [x + t.cos() * ring, y + t.sin() * ring, ground + up];
+                        let stuff = if k % 3 == 0 { BONE } else { DEAD_WOOD };
+                        shapes.push(Shape::capsule(p(a, 0.4), p(b, 0.9), 0.3, 0.25, stuff, BARK_DARK, false));
+                    }
+                    for k in 0..1 + (rng.next() * 2.99) as usize {
+                        let a = k as f32 * 2.1 + rng.range(0.0, 1.0);
+                        shapes.push(Shape::sphere([x + a.cos() * 0.9, y + a.sin() * 0.9, ground + 0.6], 0.55, if k == 0 { GOLD } else { OBSIDIAN }, GLOW_FIRE, false));
+                    }
+                    Object::new(shapes, rng.0)
+                })
+            });
+            // Far fewer and far greater, the bone caves
+            scatter(BONE_CAVE_CELL, BONE_CAVE_SALT, 23.0, &mut |x, y, _, _, r| bone_cave_facing(&self.settings, x, y, r, rivers).map(|facing| bone_cave(&self.settings, [x, y], facing, r)));
         }
         // The frozen realm's own: clusters of spires of ice jutting up leaning out of the snow,
         // shorter ones out of the frozen sea and rivers, their points clear as crystal
@@ -6901,6 +7398,57 @@ mod tests {
             }
             println!("Strips {} m across: {:?} ms", strip / 16, took.iter().map(|t| t.round()).collect::<Vec<_>>());
         }
+    }
+
+    /// How long holes blown in the ground and stains splashed on it take, as big as a fight's and
+    /// as detailed as the game's world: `cargo test --release carving_takes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn carving_takes() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
+        let (_, mut world) = generate_terrain(&settings, [0, 0], &RiverCache::default());
+        let vpm = 16.0;
+        let ground = |world: &World, x: f64, y: f64| (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(x as i64, y as i64, z))).unwrap_or(0) as f64;
+        let mut took = Vec::new();
+        let mut painted = Vec::new();
+        // What came of it all, to see a quicker way of doing it comes to the same
+        let mut sum = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |v: u64| sum = (sum ^ v).wrapping_mul(0x100_0000_01b3);
+        let mut boxes = Vec::new();
+        for k in 0..24 {
+            let (x, y) = ((12.0 + (k % 6) as f64 * 7.0) * vpm, (12.0 + (k / 6) as f64 * 9.0) * vpm);
+            let radius = 1.2 + 1.3 * ((k * 7) % 10) as f64 / 10.0;
+            let z = ground(&world, x, y);
+            let start = std::time::Instant::now();
+            let (changed, blown) = world.carve([x, y, z], radius * vpm);
+            took.push((start.elapsed().as_secs_f64() * 1000.0, radius, changed.len()));
+            blown.iter().for_each(|&m| mix(m as u64));
+            mix(changed.len() as u64);
+            let start = std::time::Instant::now();
+            let changed = world.paint([x + 3.0 * vpm, y, ground(&world, x + 3.0 * vpm, y)], 0.6 * vpm, DIRT, true);
+            painted.push((start.elapsed().as_secs_f64() * 1000.0, changed.len()));
+            boxes.push(([x, y, z].map(|v| v as i64), (radius * vpm) as i64 + 4 + 3 * vpm as i64));
+        }
+        for (ms, radius, bricks) in &took {
+            println!("hole {radius:.2} m: {ms:.1} ms, {bricks} bricks");
+        }
+        for ([x, y, z], r) in boxes {
+            for zz in z - r..z + r + 48 {
+                for yy in y - r..y + r {
+                    for xx in x - r..x + r {
+                        mix(world.material_at(xx, yy, zz) as u64);
+                    }
+                }
+            }
+        }
+        if let Some(water) = &world.water {
+            water.ground.iter().for_each(|g| mix(g.to_bits() as u64));
+        }
+        println!("what came of it: {sum:016x}");
+        let worst = took.iter().map(|t| t.0).fold(0.0, f64::max);
+        let mean = took.iter().map(|t| t.0).sum::<f64>() / took.len() as f64;
+        let stain = painted.iter().map(|t| t.0).fold(0.0, f64::max);
+        println!("holes: mean {mean:.1} ms, worst {worst:.1} ms; stains: worst {stain:.2} ms");
     }
 
     /// How long pieces of the world take to build, as big and as detailed as the game builds them:

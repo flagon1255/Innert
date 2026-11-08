@@ -1,8 +1,8 @@
 //! The realms of the journey played in Realms: the normal world it sets out from, the sky isles,
-//! the dreaming realm half drowned in red, and the frozen realm. Each has three raid bosses, each of
-//! whom leaves an Innert block when beaten. Set into the Innert Gate in the normal world, a realm's
-//! three open the way to the next; all four realms' together restore them all. A portal at the
-//! arrival point of each realm leads back to the gate.
+//! the dreaming realm half drowned in red, the frozen realm, the sunken reach and the Cinder Crown.
+//! Each has three raid bosses, each of whom leaves an Innert block when beaten. Set into the Innert
+//! Gate in the normal world, a realm's three open the way to the next; every realm's together
+//! restore them all. A portal at the arrival point of each realm leads back to the gate.
 //!
 //! What each realm is, kept apart from how its land is made, as plain data: its raid bosses, the
 //! monsters that roam it, how much tougher its foes are and how much better its loot, see Realm.
@@ -10,7 +10,8 @@
 //! are in the realm they're in is worked out from the landscape, see Places.
 
 use crate::animals::Look;
-use crate::worldgen::{self, TerrainSettings};
+use crate::worldgen::material::{GLOW_BLOOD, GLOW_FIRE, GLOW_FROST, GLOW_HOLY, GLOW_POISON, GLOW_STORM};
+use crate::worldgen::{self, Landmark, TerrainSettings};
 
 /// One of the realms
 pub struct Realm {
@@ -22,12 +23,21 @@ pub struct Realm {
     /// The three who each leave an Innert block, and about where their lairs are from where the
     /// realm's come to, in meters east and north: on the nearest dry land to there
     pub raid_bosses: [(Look, [f32; 2]); 3],
+    /// Where each of them is said to be, for the compass and the map: "a sea cave" and the like
+    pub lair_names: [&'static str; 3],
+    /// And what each lair's by, so it's where it's said to be: the nearest such to where it'd be
+    pub lair_marks: [Landmark; 3],
+    /// The realm's finale, if it has one: who rises once its three raid bosses are beaten, about
+    /// where from where the realm's come to, and where that's said to be, see on_raids_beaten()
+    pub finale: Option<(Look, [f32; 2], &'static str)>,
     /// The monsters that roam it, a pack at a time. Each works on any land, the normal world's
     /// too: those that fly come down to fight, for night raids from one realm into another.
     pub monsters: &'static [Pack],
     pub scaling: Scaling,
-    /// The color of its rune on the gate, and its Innert blocks', in the HUD
+    /// The color of its rune on the gate, and its Innert blocks', in the HUD, and what the rune's
+    /// made of
     pub color: [u8; 3],
+    pub rune: u8,
 }
 
 /// Monsters going about together: which, and how many such packs there are about at most. For
@@ -66,12 +76,16 @@ pub const NORMAL_SEED: u32 = 1;
 pub const SKY_SEED: u32 = 0xF100_0001;
 pub const DREAM_SEED: u32 = 0xF200_0001;
 pub const ICE_SEED: u32 = 0xF300_0001;
+pub const WATER_SEED: u32 = 0xF400_0001;
+pub const DRAGON_SEED: u32 = 0xF500_0001;
 /// The most a Free Roam seed can be
 pub const FREE_ROAM_SEEDS: u32 = 0xEFFF_FFFF;
 
 /// How many times the health of a raid boss a realm's three of has, when it's not one of the huge
 /// raid bosses already: as hard to beat as one of those
 pub const RAID_PROMOTION: f64 = 5.0;
+/// And how many times that again a realm's finale has, see on_raids_beaten()
+pub const FINALE_PROMOTION: f64 = 2.5;
 
 /// How far the grappling hook throws, in meters, in the sky isles and anywhere else: every island
 /// there has neighbours across gaps well within it, see worldgen::sky_island()
@@ -83,12 +97,20 @@ pub const HOOK_REACH_M: f32 = 40.0;
 pub const HOOK_REALM: usize = 1;
 pub const WINGS_REALM: usize = 1;
 
-pub const REALMS: [Realm; 4] = [
+/// How many realms there are, the normal world among them
+pub const REALM_COUNT: usize = 6;
+
+/// The realms in the order the journey goes through them: each opened by the one before's three
+/// Innert blocks set into the gate. To change the order, move them about here.
+pub const REALMS: [Realm; REALM_COUNT] = [
     Realm {
         id: "normal",
         name: "The Normal World",
         seed: NORMAL_SEED,
         raid_bosses: [(Look::Colossus, [260.0, 140.0]), (Look::ElderWyrm, [-220.0, 280.0]), (Look::CryptTitan, [-140.0, -300.0])],
+        lair_names: ["the high meadows", "the old burn", "the barrows"],
+        lair_marks: [Landmark::Anywhere; 3],
+        finale: None,
         monsters: &[
             Pack { looks: &[Look::Wolf, Look::Wolf, Look::Wolf], most: 3 },
             Pack { looks: &[Look::Bandit, Look::Crossbowman, Look::Shieldbearer, Look::BanditBrute], most: 2 },
@@ -97,12 +119,16 @@ pub const REALMS: [Realm; 4] = [
         ],
         scaling: Scaling::NONE,
         color: [255, 214, 120],
+        rune: GLOW_HOLY,
     },
     Realm {
         id: "sky",
         name: "The Sky Isles",
         seed: SKY_SEED,
         raid_bosses: [(Look::StormDrake, [240.0, 60.0]), (Look::Golem, [-60.0, 300.0]), (Look::Drake, [-260.0, -160.0])],
+        lair_names: ["the storm isle", "the great isle", "the far isle"],
+        lair_marks: [Landmark::Anywhere; 3],
+        finale: None,
         monsters: &[
             Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 3 },
             Pack { looks: &[Look::Crossbowman, Look::Crossbowman, Look::Shieldbearer], most: 2 },
@@ -110,12 +136,16 @@ pub const REALMS: [Realm; 4] = [
         ],
         scaling: Scaling { toughness: 1.6, damage: 1.35, luck: 1.8 },
         color: [140, 200, 255],
+        rune: GLOW_STORM,
     },
     Realm {
         id: "dream",
         name: "The Dreaming Red",
         seed: DREAM_SEED,
         raid_bosses: [(Look::GraveKnight, [280.0, -40.0]), (Look::Spider, [-120.0, 280.0]), (Look::Treant, [-200.0, -240.0])],
+        lair_names: ["the bleeding fields", "the soft hollows", "the dreaming wood"],
+        lair_marks: [Landmark::Anywhere; 3],
+        finale: None,
         monsters: &[
             Pack { looks: &[Look::Ghoul, Look::Ghoul, Look::Bloater], most: 2 },
             Pack { looks: &[Look::Necromancer, Look::Zombie, Look::ArmoredZombie], most: 2 },
@@ -124,12 +154,16 @@ pub const REALMS: [Realm; 4] = [
         ],
         scaling: Scaling { toughness: 2.4, damage: 1.75, luck: 2.8 },
         color: [235, 60, 70],
+        rune: GLOW_BLOOD,
     },
     Realm {
         id: "ice",
         name: "The Rimelands",
         seed: ICE_SEED,
         raid_bosses: [(Look::FrostWyrm, [250.0, 180.0]), (Look::FrostGolem, [-240.0, 160.0]), (Look::WinterAlpha, [40.0, -310.0])],
+        lair_names: ["the frozen heights", "the glacier", "the white woods"],
+        lair_marks: [Landmark::Anywhere; 3],
+        finale: None,
         monsters: &[
             Pack { looks: &[Look::RimeWraith, Look::RimeWraith, Look::RimeWraith], most: 3 },
             Pack { looks: &[Look::Wolf, Look::Wolf, Look::Wolf, Look::Wolf], most: 2 },
@@ -137,8 +171,57 @@ pub const REALMS: [Realm; 4] = [
         ],
         scaling: Scaling { toughness: 3.4, damage: 2.2, luck: 4.0 },
         color: [150, 235, 255],
+        rune: GLOW_FROST,
+    },
+    Realm {
+        id: "water",
+        name: "The Sunken Reach",
+        seed: WATER_SEED,
+        // Stand-ins for the serpents' own raid bosses, which take their places when they're in
+        raid_bosses: [(Look::VenomDrake, [270.0, 90.0]), (Look::Ironhide, [-150.0, 260.0]), (Look::Direwolf, [-210.0, -220.0])],
+        lair_names: ["the sea cave", "the reef", "the whirlpool"],
+        lair_marks: [Landmark::Anywhere; 3],
+        // And for the serpent that rises from the deep once they're beaten
+        finale: Some((Look::ElderWyrm, [60.0, -330.0], "the deep")),
+        monsters: &[
+            Pack { looks: &[Look::MireLurker, Look::MireLurker, Look::MireLurker], most: 3 },
+            Pack { looks: &[Look::Crossbowman, Look::Shieldbearer, Look::BanditBrute], most: 2 },
+            Pack { looks: &[Look::Zombie, Look::ArmoredZombie, Look::Bloater], most: 2 },
+            Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 1 },
+        ],
+        scaling: Scaling { toughness: 4.6, damage: 2.7, luck: 5.2 },
+        color: [70, 215, 200],
+        rune: GLOW_POISON,
+    },
+    Realm {
+        id: "dragon",
+        name: "The Cinder Crown",
+        seed: DRAGON_SEED,
+        // Stand-ins for the dragons' own raid bosses, which take their places when they're in
+        raid_bosses: [(Look::Drake, [240.0, 170.0]), (Look::MagmaGolem, [-250.0, 110.0]), (Look::Colossus, [-60.0, -300.0])],
+        lair_names: ["the peak roost", "the caldera", "the bone cave"],
+        lair_marks: [Landmark::Roost, Landmark::Caldera, Landmark::BoneCave],
+        // And for the dragon that comes down once they're beaten
+        finale: Some((Look::ElderWyrm, [40.0, 340.0], "the heart of the mountain")),
+        // Stand-ins too, till the dragons' fire beasts and drakes come: burrowers in the ash,
+        // gloomwings on the wing, the dead of the bone fields and tuskers
+        monsters: &[
+            Pack { looks: &[Look::DuneBurrower, Look::DuneBurrower], most: 2 },
+            Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 2 },
+            Pack { looks: &[Look::ArmoredSkeleton, Look::BoneArcher, Look::GraveBrute], most: 2 },
+            Pack { looks: &[Look::Tusker, Look::Tusker], most: 1 },
+        ],
+        scaling: Scaling { toughness: 6.2, damage: 3.3, luck: 7.0 },
+        color: [255, 120, 50],
+        rune: GLOW_FIRE,
     },
 ];
+
+/// What rises once the three raid bosses of realm `realm` are beaten, if anything, and about where
+/// from where the realm's come to, in meters: a hook for the realms' finales, see Realm::finale
+pub fn on_raids_beaten(realm: usize) -> Option<(Look, [f32; 2])> {
+    REALMS.get(realm)?.finale.map(|(look, off, _)| (look, off))
+}
 
 /// Raid bosses a realm has, and Innert blocks a realm's raid bosses leave
 pub const RAIDS: usize = 3;
@@ -176,16 +259,24 @@ pub struct Places {
     pub gate: [f64; 2],
     pub facing: f64,
     pub lairs: [[f64; 2]; RAIDS],
+    /// Where the realm's finale rises, if it has one, see on_raids_beaten()
+    pub finale: Option<[f64; 2]>,
 }
 
 impl Places {
     /// Where things are in realm `realm`, made of `settings`' landscape, which is come to round
     /// `start`, in meters, looking along `ahead`: the gate's just ahead there, on the nearest
     /// level dry land, facing back the way it's looked at from, and the raid bosses' lairs on
-    /// the nearest dry land to where the realm says
+    /// the nearest dry land to where the realm says, or to what it says they're by
     pub fn find(realm: usize, settings: &TerrainSettings, start: [f64; 2], ahead: [f64; 2]) -> Places {
         let r = &REALMS[realm];
-        let dry = |near: [f64; 2], within: f32, room: f32| worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], within, room).map_or(near, |p| [p[0] as f64, p[1] as f64]);
+        // Nor by a river in the Cinder Crown, where they run with lava
+        let rivers = worldgen::RiverCache::default();
+        let lava = worldgen::land_of(settings.seed) == worldgen::Land::Dragon;
+        let dry = |near: [f64; 2], within: f32, room: f32| {
+            let clear = |at: [f32; 2]| !lava || !worldgen::river_near(settings, at, room + 3.0, &rivers);
+            worldgen::dry_land_near(settings, [near[0] as f32, near[1] as f32], within, room, &clear).map_or(near, |p| [p[0] as f64, p[1] as f64])
+        };
         // Room for the gate's dais all round it, and for a raid boss to fight in
         let gate = dry([start[0] + ahead[0] * 14.0, start[1] + ahead[1] * 14.0], 80.0, 4.0);
         let back = [start[0] - gate[0], start[1] - gate[1]];
@@ -195,8 +286,15 @@ impl Places {
         let out = |d: f64| [gate[0] + back[0] / length * d, gate[1] + back[1] / length * d];
         let stand = (0..16).map(|k| ARRIVAL_M - k as f64 * 0.5).find(|&d| worldgen::is_dry_land(settings, out(d).map(|v| v as f32), 1.0)).unwrap_or(ARRIVAL_M);
         let arrival = out(stand);
-        let lairs = r.raid_bosses.map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 160.0, 7.0));
-        Places { realm, arrival, gate, facing, lairs }
+        // By what they're said to be by, if the realm says
+        let lairs = std::array::from_fn(|k| {
+            let off = r.raid_bosses[k].1;
+            let near = [gate[0] + off[0] as f64, gate[1] + off[1] as f64];
+            let by = worldgen::landmark_near(settings, r.lair_marks[k], near.map(|v| v as f32), &rivers);
+            dry(by.map_or(near, |p| p.map(f64::from)), 160.0, 7.0)
+        });
+        let finale = on_raids_beaten(realm).map(|(_, off)| dry([gate[0] + off[0] as f64, gate[1] + off[1] as f64], 200.0, 9.0));
+        Places { realm, arrival, gate, facing, lairs, finale }
     }
 
     /// What raid boss `slot`'s lair is called, to remember it's beaten: where it is in the
@@ -205,6 +303,17 @@ impl Places {
         let [x, y] = self.lairs[slot];
         [(x * 10.0).round() as i64, (y * 10.0).round() as i64, LAIR_KEY - slot as i64]
     }
+
+    /// The same for the realm's finale's lair, if it has one, see is_finale_key()
+    pub fn finale_key(&self) -> Option<[i64; 3]> {
+        let [x, y] = self.finale?;
+        Some([(x * 10.0).round() as i64, (y * 10.0).round() as i64, LAIR_KEY - RAIDS as i64])
+    }
+}
+
+/// Whether `key` is a realm's finale's lair's, see Places::finale_key()
+pub fn is_finale_key(key: &[i64; 3]) -> bool {
+    key[2] == LAIR_KEY - RAIDS as i64
 }
 
 /// How far along the journey's got, from the blocks set into the gate, `placed` for each realm:
@@ -236,7 +345,10 @@ mod tests {
         // Blocks set in further on don't open what's past a realm still sealed
         assert_eq!(opened(&[3, 0, 3, 3]), (vec![0, 1], false));
         assert_eq!(opened(&[3, 3, 3]), (vec![0, 1, 2, 3], false));
-        assert_eq!(opened(&[3, 3, 3, 3]), (vec![0, 1, 2, 3], true));
+        // The last realm's blocks set in restore them all
+        let all = [3; REALM_COUNT];
+        assert_eq!(opened(&all[..REALM_COUNT - 1]), ((0..REALM_COUNT as u32).collect(), false));
+        assert_eq!(opened(&all), ((0..REALM_COUNT as u32).collect(), true));
     }
 
     #[test]
@@ -323,6 +435,87 @@ mod tests {
         }
         assert!(tops[ICE as usize] > 0 && tops[SNOW as usize] > 0, "ice {} snow {}", tops[ICE as usize], tops[SNOW as usize]);
         assert_eq!([GRASS, JUNGLE_GRASS, SAND].map(|m| tops[m as usize]), [0; 3], "no grass or sand");
+    }
+
+    /// The sunken reach is islands in deep water, joined up by shallows, so all of them can be got to
+    /// from the portal on foot, wading no deeper than a meter: its gate, the raid bosses' lairs and
+    /// its finale's on dry land
+    #[test]
+    fn the_sunken_reach_can_be_crossed_on_foot() {
+        let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 16, seed: WATER_SEED, grass_tufts: true };
+        let p = Places::find(4, &settings, [200.0, 180.0], [0.0, 1.0]);
+        assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0), "the portal's on an island");
+        for lair in p.lairs.iter().chain(p.finale.as_ref()) {
+            assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
+        }
+        // Over a square 600 m across round the portal, every bit of dry land that can be walked to
+        // without wading deeper than a meter, from the portal
+        const N: usize = 300;
+        let step = 2.0;
+        let corner = [p.gate[0] as f32 - N as f32, p.gate[1] as f32 - N as f32];
+        let over: Vec<f32> = (0..N * N).map(|k| worldgen::seen_from_above(&settings, corner[0] + (k % N) as f32 * step, corner[1] + (k / N) as f32 * step).unwrap()).collect();
+        let mut reached = vec![false; N * N];
+        let mut todo = vec![N / 2 + N / 2 * N];
+        reached[todo[0]] = true;
+        while let Some(k) = todo.pop() {
+            let (x, y) = (k % N, k / N);
+            for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+                if nx < N && ny < N && !reached[nx + ny * N] && over[nx + ny * N] > -1.0 {
+                    reached[nx + ny * N] = true;
+                    todo.push(nx + ny * N);
+                }
+            }
+        }
+        let dry = (0..N * N).filter(|&k| over[k] > 0.5).count();
+        let got = (0..N * N).filter(|&k| over[k] > 0.5 && reached[k]).count();
+        let deep = (0..N * N).filter(|&k| over[k] < -3.0).count();
+        assert!(got as f32 > dry as f32 * 0.95, "only {got} of {dry} dry spots reached on foot");
+        assert!(deep as f32 > (N * N) as f32 * 0.3, "it's mostly sea: {deep} of {} deep", N * N);
+    }
+
+    /// The Cinder Crown is highlands to walk, with lava lying in its calderas and running in its
+    /// rivers, glowing, and nothing flowing as water; its gate, lairs and finale on dry land, the
+    /// lairs by what they're called after
+    #[test]
+    fn the_cinder_crown_has_lava_and_ground_to_walk() {
+        use crate::worldgen::material::{BONE, GLOW_BLOOD, GLOW_FIRE};
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: DRAGON_SEED, grass_tufts: false };
+        let p = Places::find(5, &settings, [200.0, 180.0], [0.0, 1.0]);
+        assert!(worldgen::is_dry_land(&settings, [p.gate[0] as f32, p.gate[1] as f32], 4.0));
+        for lair in p.lairs.iter().chain(p.finale.as_ref()) {
+            assert!(worldgen::is_dry_land(&settings, [lair[0] as f32, lair[1] as f32], 7.0), "{lair:?}");
+        }
+        // Each lair's by what it's called after, a roost up a peak, a caldera, a bone cave, and none
+        // of them, nor the gate, by a river of lava
+        let rivers = worldgen::RiverCache::default();
+        for (k, mark) in REALMS[5].lair_marks.into_iter().enumerate() {
+            let lair = p.lairs[k].map(|v| v as f32);
+            let by = worldgen::landmark_near(&settings, mark, lair, &rivers).expect("one near");
+            let away = (by[0] - lair[0]).hypot(by[1] - lair[1]);
+            assert!(away < 60.0, "{} is {away} m from it", REALMS[5].lair_names[k]);
+        }
+        for spot in p.lairs.iter().chain(p.finale.as_ref()).chain([&p.gate]) {
+            assert!(!worldgen::river_near(&settings, spot.map(|v| v as f32), 7.0, &rivers), "a river of lava by {spot:?}");
+        }
+        // Mostly ground, a little of it lava
+        let spots: Vec<[f32; 2]> = (0..900).map(|k| [(k % 30) as f32 * 20.0 - 300.0 + p.gate[0] as f32, (k / 30) as f32 * 20.0 - 300.0 + p.gate[1] as f32]).collect();
+        let low: Vec<[f32; 2]> = spots.iter().copied().filter(|&[x, y]| worldgen::seen_from_above(&settings, x, y).is_some_and(|o| o < 0.0)).collect();
+        assert!(!low.is_empty() && low.len() < spots.len() / 6, "{} of {} spots under the lava", low.len(), spots.len());
+        // Lava in a piece of it round a caldera, and nothing flowing
+        let corner = [(low[0][0] as i64 - 32) * 4, (low[0][1] as i64 - 32) * 4];
+        let (terrain, world) = worldgen::generate_area(&settings, corner, [64 * 4, 64 * 4], &worldgen::RiverCache::default());
+        assert!(terrain.springs().is_empty(), "nothing flows");
+        let tops: Vec<u8> = (0..256).flat_map(|y| (0..256).map(move |x| (x, y))).filter_map(|(x, y)| (0..256).rev().map(|z| world.material_at(x, y, z)).find(|&m| !worldgen::is_passable(m))).collect();
+        let lava = tops.iter().filter(|&&m| worldgen::is_lava(m)).count();
+        assert!(lava > 50, "only {lava} columns of lava");
+        // Dull red and hotter, not all one glow
+        assert!(tops.contains(&GLOW_BLOOD) && tops.contains(&GLOW_FIRE), "lava all of one heat");
+        // And the bone cave's great skeleton lies there by its lair
+        let cave = p.lairs[2];
+        let corner = [(cave[0] as i64 - 32) * 4, (cave[1] as i64 - 32) * 4];
+        let (_, world) = worldgen::generate_area(&settings, corner, [64 * 4, 64 * 4], &worldgen::RiverCache::default());
+        let bones = (0..256).flat_map(|z| (0..256).flat_map(move |y| (0..256).map(move |x| (x, y, z)))).filter(|&(x, y, z)| world.material_at(x, y, z) == BONE).count();
+        assert!(bones > 4000, "only {bones} voxels of bone round the bone cave");
     }
 
     /// In the sky isles too: the gate, where the player comes to it and every raid boss's lair are
