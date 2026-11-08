@@ -918,6 +918,10 @@ fn host_words(memory_allocator: &Arc<StandardMemoryAllocator>, words: Vec<u32>) 
     .unwrap()
 }
 
+/// Seconds a frame spends blowing holes in the world at the most, past the first, see
+/// App::pending_craters: a burst of them, as a cluster bomb's, goes over the next few frames
+const CARVE_SECONDS: f64 = 0.004;
+
 /// Room for this many more bricks in the main world than it starts with, for holes blown in it.
 /// `--set spare_bricks=100` leaves less, to try out making more room.
 fn spare_bricks() -> usize {
@@ -1294,6 +1298,11 @@ struct App {
     batching: bool,
     /// What flush_edits() made of them, to go over with the next frame, see record_edits()
     edit_uploads: Vec<EditUpload>,
+    /// Holes still to be blown, a few a frame, see CARVE_SECONDS: where, in voxels of the whole
+    /// landscape, and how big, in meters
+    pending_craters: VecDeque<(Vector3<f64>, f64)>,
+    /// Stains still to be splashed, once the holes before them are blown, the same way
+    pending_stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     // Stains splashed on the ground the same way: where, how big, of what, and whether it burnt
     // the plants there
     stains: Vec<([f64; 3], f64, u8, bool)>,
@@ -2517,6 +2526,8 @@ impl App {
             edited_ground: None,
             batching: false,
             edit_uploads: Vec::new(),
+            pending_craters: VecDeque::new(),
+            pending_stains: Vec::new(),
             stains: Vec::new(),
             step_distance: 0.0,
             walk_speed: 0.0,
@@ -3389,6 +3400,8 @@ impl App {
         self.edited.clear();
         self.edited_ground = None;
         self.edit_uploads.clear();
+        self.pending_craters.clear();
+        self.pending_stains.clear();
         self.voxel_set = get_voxel_set(
             self.memory_allocator.clone(),
             self.command_buffer_allocator.clone(),
@@ -3750,17 +3763,30 @@ impl App {
                     sound.play(cue, &view);
                 }
             }
-            // Explosions blowing holes in the world, and splashing stains on it, sent to the GPU
-            // all together
+            // Explosions blowing holes in the world, a few milliseconds' worth a frame and the rest
+            // left for the frames after, so a burst of them doesn't hold one up, kept by where they
+            // are in the whole landscape meanwhile; then splashing stains on it, which are quick,
+            // once the holes before them are blown, so they're on the ground the holes leave; all
+            // sent to the GPU together
             self.batching = true;
-            for (center, radius) in self.game.take_craters() {
-                self.blast(center, radius);
-            }
+            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            let craters = self.game.take_craters();
+            self.pending_craters.extend(craters.into_iter().map(|(center, radius)| (center + origin, radius)));
+            let stains = self.game.take_stains();
+            self.pending_stains.extend(stains.into_iter().map(|(center, radius, material, burn)| (center + origin, radius, material, burn)));
             let start = Instant::now();
-            for (center, radius, material, burn) in self.game.take_stains() {
-                self.stain(center, radius, material, burn);
+            while start.elapsed().as_secs_f64() < CARVE_SECONDS
+                && let Some((at, radius)) = self.pending_craters.pop_front()
+            {
+                self.blast(at - origin, radius);
             }
-            self.slow("splashing stains", start);
+            if self.pending_craters.is_empty() {
+                let start = Instant::now();
+                for (at, radius, material, burn) in std::mem::take(&mut self.pending_stains) {
+                    self.stain(at - origin, radius, material, burn);
+                }
+                self.slow("splashing stains", start);
+            }
             self.batching = false;
             let start = Instant::now();
             self.flush_edits();

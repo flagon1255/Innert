@@ -681,14 +681,7 @@ impl World {
         pages.carving = Some((page, used + 1));
         pages.live[page as usize] += 1;
         let index = page as usize * PAGE_BRICKS + used as usize;
-        let brick = self.brick_mut(index);
-        brick.fill(0);
-        for (i, &m) in materials.iter().enumerate() {
-            if m != AIR {
-                brick[i / 32] |= 1 << (i % 32);
-            }
-            brick[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
-        }
+        pack_brick(materials, self.brick_mut(index));
         let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
         (index as u32 + 1) | foliage
     }
@@ -891,10 +884,7 @@ impl World {
             if value & SOLID_BRICK != 0 {
                 materials = [value as u8; BRICK_VOXELS];
             } else {
-                let words = world.brick(((value & BRICK_INDEX) - 1) as usize);
-                for (i, m) in materials.iter_mut().enumerate() {
-                    *m = (words[16 + i / 4] >> ((i % 4) * 8)) as u8;
-                }
+                unpack_brick(world.brick(((value & BRICK_INDEX) - 1) as usize), &mut materials);
             }
             dirty.push((cell, materials));
             found.insert(at, cell, Some(dirty.len() - 1));
@@ -904,37 +894,78 @@ impl World {
         // The columns a hole was blown in, for what's loose above to fall into, by where they are
         // in the square round it
         let side = 2 * r + 1;
-        let mut holed_at = vec![false; (side * side) as usize];
         let (inner, outer) = ((radius * 0.82).powi(2), (radius * 1.12).powi(2));
         // What flies out is picked from all through the hole, so from the top of the ground as
         // much as from deep down: about one in so many of the voxels, about half of it solid
         let stride = ((2.1 * radius.powi(3) / 60.0) as u32).max(1);
+        // Whether a hash is a whole number of strides, without dividing, as it's asked of nearly
+        // every voxel: see Lemire, Kaser and Kurz, "Faster remainder by direct computation"
+        let per = (u64::MAX / stride as u64).wrapping_add(1);
+        let picked = |h: u32| stride == 1 || (h as u64).wrapping_mul(per) <= per - 1;
+        // The bricks of the layer of them the voxels are in, by where they are across it, each
+        // looked up once for the 64 rows through it
+        let (bx0, by0) = ((cx - r).div_euclid(8), (cy - r).div_euclid(8));
+        let across = (cx + r).div_euclid(8) - bx0 + 1;
+        let mut layer: Vec<Option<Option<usize>>> = vec![None; (across * ((cy + r).div_euclid(8) - by0 + 1)) as usize];
+        let mut layer_z = i64::MIN;
+        let mut holed_at = vec![false; (side * side) as usize];
         for z in cz - r..=cz + r {
+            if z.div_euclid(8) != layer_z {
+                layer_z = z.div_euclid(8);
+                layer.fill(None);
+            }
+            let dz2 = (z as f64 + 0.5 - center[2]).powi(2);
+            let (hz, hz_blown) = (hash((z + o[2]) as u32), hash((z + o[2]) as u32 ^ 0xb1));
             for y in cy - r..=cy + r {
-                for x in cx - r..=cx + r {
-                    let d2 = (x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2);
-                    if d2 > outer {
-                        continue;
-                    }
-                    // Ragged at the edge: only there does each voxel get a say
-                    if d2 > inner {
-                        let ragged = 0.82 + 0.3 * unit(hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32)) as f64;
-                        if d2 > (radius * ragged).powi(2) {
+                let dy2 = (y as f64 + 0.5 - center[1]).powi(2);
+                // The voxels' hashes, hash3() of where each is, all but the last step worked out
+                // once for the row
+                let (hy, hy_blown) = (hash((y + o[1]) as u32 ^ hz), hash((y + o[1]) as u32 ^ hz_blown));
+                // Only along the row as far as it reaches, and a voxel past that each way, as each
+                // voxel's still looked at just as it always was
+                let rest = outer - dy2 - dz2;
+                if rest < -1.0 {
+                    continue;
+                }
+                let reach = rest.max(0.0).sqrt();
+                let (x0, x1) = (((center[0] - 0.5 - reach).floor() as i64 - 1).max(cx - r), ((center[0] - 0.5 + reach).ceil() as i64 + 1).min(cx + r));
+                // A brick's run of the row at a time, the brick looked up once, at the first voxel
+                // of it that goes
+                let mut from = x0;
+                while from <= x1 {
+                    let to = ((from.div_euclid(8) + 1) * 8 - 1).min(x1);
+                    let looked = &mut layer[((from.div_euclid(8) - bx0) + (y.div_euclid(8) - by0) * across) as usize];
+                    for x in from..=to {
+                        let d2 = (x as f64 + 0.5 - center[0]).powi(2) + dy2 + dz2;
+                        if d2 > outer {
                             continue;
                         }
+                        // Ragged at the edge: only there does each voxel get a say
+                        if d2 > inner {
+                            let ragged = 0.82 + 0.3 * unit(hash((x + o[0]) as u32 ^ hy)) as f64;
+                            if d2 > (radius * ragged).powi(2) {
+                                continue;
+                            }
+                        }
+                        let k = match *looked {
+                            Some(k) => k,
+                            None => *looked.insert(brick(self, &mut dirty, &mut found, x, y, z)),
+                        };
+                        // Nothing stored there: nothing in the rest of the run either
+                        let Some(k) = k else {
+                            break;
+                        };
+                        let i = local(x, y, z);
+                        if dirty[k].1[i] == AIR {
+                            continue;
+                        }
+                        if blown.len() < 80 && picked(hash((x + o[0]) as u32 ^ hy_blown)) {
+                            blown.push(dirty[k].1[i]);
+                        }
+                        dirty[k].1[i] = AIR;
+                        holed_at[((x - cx + r) + (y - cy + r) * side) as usize] = true;
                     }
-                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
-                        continue;
-                    };
-                    let i = local(x, y, z);
-                    if dirty[k].1[i] == AIR {
-                        continue;
-                    }
-                    if blown.len() < 80 && hash3((x + o[0]) as u32, (y + o[1]) as u32, (z + o[2]) as u32 ^ 0xb1) % stride == 0 {
-                        blown.push(dirty[k].1[i]);
-                    }
-                    dirty[k].1[i] = AIR;
-                    holed_at[((x - cx + r) + (y - cy + r) * side) as usize] = true;
+                    from = to + 1;
                 }
             }
         }
@@ -971,8 +1002,14 @@ impl World {
                 let mut rest: Option<i64> = None;
                 let mut open = 0;
                 let mut z = cz - r - 1;
+                // The brick the last voxel up the column was in, so it's looked up once
+                let mut last: Option<(i64, Option<usize>)> = None;
                 while z < sz && (z <= cz + r || open < 16) {
-                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
+                    let here = match last {
+                        Some((b, k)) if b == z.div_euclid(8) => k,
+                        _ => last.insert((z.div_euclid(8), brick(self, &mut dirty, &mut found, x, y, z))).1,
+                    };
+                    let Some(k) = here else {
                         // Nothing stored here: nothing to fall, nowhere to fall to
                         rest = None;
                         open += 8;
@@ -1008,30 +1045,76 @@ impl World {
 
         // Grass and flowers with nothing under them any more fall in: only round where the hole is
         let plant = |m: u8| matches!(m, GRASS_BLADE | GRASS_TIP | DRY_GRASS | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | REED | CATTAIL);
-        let mut near: Vec<(i64, i64)> = holed.iter().flat_map(|&(x, y)| [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]).collect();
-        // Grass only grows on the top of the ground, so only where the hole broke through to the
-        // open air above does anything need to fall
-        near.retain(|&(x, y)| self.material_at(x, y, cz + r + 1) == AIR);
-        near.sort_unstable();
-        near.dedup();
-        for (x, y) in near {
-            {
-                for z in cz - r..=cz + r + 12 {
-                    let Some(k) = brick(self, &mut dirty, &mut found, x, y, z) else {
-                        continue;
-                    };
-                    if !plant(dirty[k].1[local(x, y, z)]) {
-                        continue;
-                    }
-                    let below = match brick(self, &mut dirty, &mut found, x, y, z - 1) {
-                        Some(b) => dirty[b].1[local(x, y, z - 1)],
-                        None => AIR,
-                    };
-                    if below == AIR {
-                        dirty[k].1[local(x, y, z)] = AIR;
+        // The columns holed and those beside them, marked in the square round the hole and a
+        // column more each way, then a brick's worth of columns together
+        let (nx, ny, nside) = (cx - r - 1, cy - r - 1, side + 2);
+        let mut marked = vec![false; (nside * nside) as usize];
+        for &(x, y) in &holed {
+            for (a, b) in [(x, y), (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                marked[((a - nx) + (b - ny) * nside) as usize] = true;
+            }
+        }
+        let mut near: Vec<(i64, i64)> = Vec::new();
+        for gy in ny.div_euclid(8)..=(ny + nside - 1).div_euclid(8) {
+            for gx in nx.div_euclid(8)..=(nx + nside - 1).div_euclid(8) {
+                for y in (gy * 8).max(ny)..(gy * 8 + 8).min(ny + nside) {
+                    for x in (gx * 8).max(nx)..(gx * 8 + 8).min(nx + nside) {
+                        if marked[((x - nx) + (y - ny) * nside) as usize] {
+                            near.push((x, y));
+                        }
                     }
                 }
             }
+        }
+        // Grass only grows on the top of the ground, so only where the hole broke through to the
+        // open air above does anything need to fall
+        near.retain(|&(x, y)| self.material_at(x, y, cz + r + 1) == AIR);
+        // Up through the bricks a brick's worth of columns share, each looked up once and passed
+        // over if nothing grows anywhere in it: worked out once for each brick, and nothing more
+        // grows as plants fall. Each column only hangs on what's under it in the same column, so
+        // the columns go up together a brick at a time.
+        let top = cz + r + 12;
+        let mut grown: Vec<Option<bool>> = Vec::new();
+        let mut first = 0;
+        while first < near.len() {
+            let (gx, gy) = (near[first].0.div_euclid(8), near[first].1.div_euclid(8));
+            let end = first + near[first..].iter().take_while(|&&(x, y)| x.div_euclid(8) == gx && y.div_euclid(8) == gy).count();
+            let (bx8, by8) = (gx * 8, gy * 8);
+            for bz in (cz - r).div_euclid(8)..=top.div_euclid(8) {
+                let (from, to) = ((bz * 8).max(cz - r), (bz * 8 + 7).min(top));
+                let Some(k) = brick(self, &mut dirty, &mut found, bx8, by8, from) else {
+                    continue;
+                };
+                if grown.len() <= k {
+                    grown.resize(k + 1, None);
+                }
+                if !*grown[k].get_or_insert_with(|| dirty[k].1.iter().any(|&m| plant(m))) {
+                    continue;
+                }
+                // The brick under, looked up if anything at the bottom of this one needs it
+                let mut under: Option<Option<usize>> = None;
+                for &(x, y) in &near[first..end] {
+                    for z in from..=to {
+                        if !plant(dirty[k].1[local(x, y, z)]) {
+                            continue;
+                        }
+                        // What's under it, in the same brick unless it's the bottom of it
+                        let below = if z.rem_euclid(8) != 0 {
+                            dirty[k].1[local(x, y, z - 1)]
+                        } else {
+                            let b = match under {
+                                Some(b) => b,
+                                None => *under.insert(brick(self, &mut dirty, &mut found, bx8, by8, z - 1)),
+                            };
+                            b.map_or(AIR, |b| dirty[b].1[local(x, y, z - 1)])
+                        };
+                        if below == AIR {
+                            dirty[k].1[local(x, y, z)] = AIR;
+                        }
+                    }
+                }
+            }
+            first = end;
         }
 
         let dirty = self.clipped(dirty, clip);
@@ -1094,14 +1177,7 @@ impl World {
                 if first == AIR { EMPTY_BRICK | 1 } else { SOLID_BRICK | first as u32 }
             } else if stored {
                 let index = ((old & BRICK_INDEX) - 1) as usize;
-                let words = self.brick_mut(index);
-                words.fill(0);
-                for (i, &m) in materials.iter().enumerate() {
-                    if m != AIR {
-                        words[i / 32] |= 1 << (i % 32);
-                    }
-                    words[16 + i / 4] |= (m as u32) << ((i % 4) * 8);
-                }
+                pack_brick(&materials, self.brick_mut(index));
                 let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
                 (index as u32 + 1) | foliage
             } else {
@@ -1177,10 +1253,7 @@ impl World {
                     if value & SOLID_BRICK != 0 {
                         materials = [value as u8; BRICK_VOXELS];
                     } else {
-                        let words = self.brick(((value & BRICK_INDEX) - 1) as usize);
-                        for (i, v) in materials.iter_mut().enumerate() {
-                            *v = (words[16 + i / 4] >> ((i % 4) * 8)) as u8;
-                        }
+                        unpack_brick(self.brick(((value & BRICK_INDEX) - 1) as usize), &mut materials);
                     }
                     dirty.push((cell, materials));
                     found.insert(cell, dirty.len() - 1);
@@ -1348,6 +1421,24 @@ fn push_brick(materials: &[u8; BRICK_VOXELS], bricks: &mut Vec<u32>) -> u32 {
     }
     let foliage = if materials.iter().any(|&m| sways(m)) { FOLIAGE_BRICK } else { 0 };
     (index as u32 + 1) | foliage
+}
+
+/// Packs a brick's `materials` into its BRICK_WORDS `words`, as push_brick() does: a bit for each
+/// voxel that isn't air, then the materials four to a word, the first in the lowest byte
+fn pack_brick(materials: &[u8; BRICK_VOXELS], words: &mut [u32]) {
+    for (word, voxels) in words[..16].iter_mut().zip(materials.chunks_exact(32)) {
+        *word = voxels.iter().enumerate().fold(0, |bits, (j, &m)| bits | ((m != AIR) as u32) << j);
+    }
+    for (word, four) in words[16..BRICK_WORDS].iter_mut().zip(materials.chunks_exact(4)) {
+        *word = u32::from_le_bytes([four[0], four[1], four[2], four[3]]);
+    }
+}
+
+/// The materials of a brick stored as `words`, see pack_brick()
+fn unpack_brick(words: &[u32], materials: &mut [u8; BRICK_VOXELS]) {
+    for (four, word) in materials.chunks_exact_mut(4).zip(&words[16..BRICK_WORDS]) {
+        four.copy_from_slice(&word.to_le_bytes());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6719,6 +6810,57 @@ mod tests {
             }
             println!("Strips {} m across: {:?} ms", strip / 16, took.iter().map(|t| t.round()).collect::<Vec<_>>());
         }
+    }
+
+    /// How long holes blown in the ground and stains splashed on it take, as big as a fight's and
+    /// as detailed as the game's world: `cargo test --release carving_takes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn carving_takes() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: true };
+        let (_, mut world) = generate_terrain(&settings, [0, 0], &RiverCache::default());
+        let vpm = 16.0;
+        let ground = |world: &World, x: f64, y: f64| (0..world.size[2] as i64).rev().find(|&z| !is_passable(world.material_at(x as i64, y as i64, z))).unwrap_or(0) as f64;
+        let mut took = Vec::new();
+        let mut painted = Vec::new();
+        // What came of it all, to see a quicker way of doing it comes to the same
+        let mut sum = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |v: u64| sum = (sum ^ v).wrapping_mul(0x100_0000_01b3);
+        let mut boxes = Vec::new();
+        for k in 0..24 {
+            let (x, y) = ((12.0 + (k % 6) as f64 * 7.0) * vpm, (12.0 + (k / 6) as f64 * 9.0) * vpm);
+            let radius = 1.2 + 1.3 * ((k * 7) % 10) as f64 / 10.0;
+            let z = ground(&world, x, y);
+            let start = std::time::Instant::now();
+            let (changed, blown) = world.carve([x, y, z], radius * vpm);
+            took.push((start.elapsed().as_secs_f64() * 1000.0, radius, changed.len()));
+            blown.iter().for_each(|&m| mix(m as u64));
+            mix(changed.len() as u64);
+            let start = std::time::Instant::now();
+            let changed = world.paint([x + 3.0 * vpm, y, ground(&world, x + 3.0 * vpm, y)], 0.6 * vpm, DIRT, true);
+            painted.push((start.elapsed().as_secs_f64() * 1000.0, changed.len()));
+            boxes.push(([x, y, z].map(|v| v as i64), (radius * vpm) as i64 + 4 + 3 * vpm as i64));
+        }
+        for (ms, radius, bricks) in &took {
+            println!("hole {radius:.2} m: {ms:.1} ms, {bricks} bricks");
+        }
+        for ([x, y, z], r) in boxes {
+            for zz in z - r..z + r + 48 {
+                for yy in y - r..y + r {
+                    for xx in x - r..x + r {
+                        mix(world.material_at(xx, yy, zz) as u64);
+                    }
+                }
+            }
+        }
+        if let Some(water) = &world.water {
+            water.ground.iter().for_each(|g| mix(g.to_bits() as u64));
+        }
+        println!("what came of it: {sum:016x}");
+        let worst = took.iter().map(|t| t.0).fold(0.0, f64::max);
+        let mean = took.iter().map(|t| t.0).sum::<f64>() / took.len() as f64;
+        let stain = painted.iter().map(|t| t.0).fold(0.0, f64::max);
+        println!("holes: mean {mean:.1} ms, worst {worst:.1} ms; stains: worst {stain:.2} ms");
     }
 
     /// How long pieces of the world take to build, as big and as detailed as the game builds them:
