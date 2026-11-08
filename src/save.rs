@@ -128,6 +128,16 @@ pub struct CarriedSave {
     /// The wings worn on the back, by their kind's id, see wings::KINDS
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worn: Option<String>,
+    /// Whether the player's ever glided on wings, and been told how wings are worn, so how isn't
+    /// shown them again
+    #[serde(skip_serializing_if = "is_false")]
+    pub glided: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub wings_told: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -564,6 +574,8 @@ mod tests {
                     SlotSave { item: ItemSave::Bucket, count: 1 },
                 ],
                 worn: Some("gull".into()),
+                glided: true,
+                wings_told: false,
             },
             world: "normal".into(),
             worlds,

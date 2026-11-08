@@ -46,6 +46,9 @@ pub struct WingKind {
     /// Gold a merchant asks
     pub price: u32,
     pub about: &'static str,
+    /// Whether they're ever found in chests, left by bosses or sold by travelling merchants: all
+    /// but the royal ones, which only royal armouries sell
+    pub found: bool,
     /// What they're made of: the bone or frame along the leading edge, the feathers or the
     /// membrane, and their tips or the veins through them, and whether it's a membrane
     frame: u8,
@@ -57,6 +60,10 @@ pub struct WingKind {
 /// How much health Perk::Mending gives back a second while gliding
 const MENDING: f64 = 2.5;
 
+/// What merchants and chests ask for each rarity of wings, common to mythic: plain ones for what
+/// a few fights bring in, the rarest for a fortune
+const PRICES: [u32; 6] = [120, 450, 1100, 2600, 6500, 14000];
+
 pub static KINDS: [WingKind; 6] = [
     WingKind {
         id: "gull",
@@ -67,7 +74,8 @@ pub static KINDS: [WingKind; 6] = [
         turn: 4.0,
         flap: None,
         perk: Perk::None,
-        price: 1200,
+        price: PRICES[0],
+        found: true,
         about: "Plain white wings on a bone frame. They glide well and ask nothing.",
         frame: BONE,
         vane: FUR_WHITE,
@@ -83,7 +91,8 @@ pub static KINDS: [WingKind; 6] = [
         turn: 6.0,
         flap: None,
         perk: Perk::Sparks,
-        price: 4200,
+        price: PRICES[2],
+        found: true,
         about: "Slate feathers tipped with lightning: fast and nimble, sparks crackling off behind.",
         frame: DARK_STEEL,
         vane: FUR_DARK,
@@ -93,13 +102,14 @@ pub static KINDS: [WingKind; 6] = [
     WingKind {
         id: "rimeglass",
         name: "Rimeglass Wings",
-        rarity: 2,
+        rarity: 3,
         speed: 10.0,
         sink: 1.2,
         turn: 2.5,
         flap: None,
         perk: Perk::Frost,
-        price: 4200,
+        price: PRICES[3],
+        found: true,
         about: "Feathers of clear ice on a steel frame. Slow and steady, they sink hardly at all, frost drifting off them.",
         frame: STEEL,
         vane: ICE,
@@ -115,7 +125,8 @@ pub static KINDS: [WingKind; 6] = [
         turn: 4.5,
         flap: None,
         perk: Perk::Mending,
-        price: 6500,
+        price: PRICES[3],
+        found: true,
         about: "A lilac membrane from the dreaming realm, shedding pale motes. Gliding on them mends the wearer.",
         frame: BONE,
         vane: FLOWER_PURPLE,
@@ -131,7 +142,8 @@ pub static KINDS: [WingKind; 6] = [
         turn: 5.0,
         flap: Some((7.0, 3.0)),
         perk: Perk::Embers,
-        price: 6500,
+        price: PRICES[3],
+        found: true,
         about: "A membrane of black glass veined with fire. Jump in the air to beat them once for height, throwing off embers.",
         frame: DARK_STEEL,
         vane: OBSIDIAN,
@@ -147,7 +159,8 @@ pub static KINDS: [WingKind; 6] = [
         turn: 5.5,
         flap: Some((6.0, 2.2)),
         perk: Perk::Gilded,
-        price: 16000,
+        price: 9000,
+        found: false,
         about: "Royal wings of white and gold, fast, steady and quick to beat, gold glittering behind.",
         frame: GOLD,
         vane: LINEN,
@@ -168,11 +181,11 @@ pub fn by_id(id: &str) -> Option<u8> {
     KINDS.iter().position(|k| k.id == id).map(|k| k as u8)
 }
 
-/// The kind a raid boss of realm `realm` leaves beyond the first pair, if any: the sky isles'
-/// stormy ones, the dreaming realm's moth wings, the frozen realm's ice
+/// The kind of its own a raid boss of realm `realm` leaves, if it has one: the sky isles' stormy
+/// ones, the dreaming realm's moth wings, the frozen realm's ice, the Cinder Crown's
 pub fn of_realm(realm: usize) -> Option<u8> {
     match realm {
-        1 => Some(STORMCALLER),
+        crate::realms::WINGS_REALM => Some(STORMCALLER),
         2 => Some(VEILMOTH),
         3 => Some(RIMEGLASS),
         5 => Some(CINDERWING),
@@ -180,16 +193,48 @@ pub fn of_realm(realm: usize) -> Option<u8> {
     }
 }
 
-/// A kind found in a chest, for `roll` from 0 to 1: the plain ones most often, the rarer kinds
-/// less, the royal ones never
-pub fn roll(roll: f64) -> u8 {
-    match roll {
-        r if r < 0.5 => GULL,
-        r if r < 0.68 => STORMCALLER,
-        r if r < 0.86 => RIMEGLASS,
-        r if r < 0.93 => VEILMOTH,
-        _ => CINDERWING,
+/// How likely wings of each rarity are to turn up next to the plain ones, before luck
+const RARITY_ODDS: [f64; 6] = [1.0, 0.75, 0.5, 0.25, 0.09, 0.025];
+
+/// A kind of wings found, for `roll` from 0 to 1, as chests and bosses roll their weapons: the
+/// plainer kinds most often, the rarer ones the more often the luckier it is. What `has` says the
+/// player has already is left out, and so are the royal ones, so each pair found is new. None
+/// once there's nothing left to find.
+pub fn pick(roll: f64, luck: f64, has: impl Fn(u8) -> bool) -> Option<u8> {
+    let luck = luck.max(0.25);
+    let mut odds: Vec<(u8, f64)> = Vec::new();
+    for (rarity, base) in RARITY_ODDS.iter().enumerate() {
+        let kinds: Vec<u8> = (0..KINDS.len() as u8).filter(|&k| KINDS[k as usize].rarity == rarity && KINDS[k as usize].found && !has(k)).collect();
+        let share = base * luck.powf(0.6 * rarity as f64) / kinds.len().max(1) as f64;
+        odds.extend(kinds.into_iter().map(|k| (k, share)));
     }
+    let total: f64 = odds.iter().map(|&(_, w)| w).sum();
+    let mut left = roll.clamp(0.0, 0.999_999) * total;
+    for &(k, w) in &odds {
+        if left < w {
+            return Some(k);
+        }
+        left -= w;
+    }
+    odds.last().map(|&(k, _)| k)
+}
+
+/// The plainest wings a travelling merchant sells that the player hasn't: the gull's first, priced
+/// for what a few fights bring in, then the next cheapest
+pub fn plainest(has: impl Fn(u8) -> bool) -> Option<u8> {
+    (0..KINDS.len() as u8).filter(|&k| KINDS[k as usize].found && !has(k)).min_by_key(|&k| (KINDS[k as usize].price, k))
+}
+
+/// What a perk does, for the card of the wings with it, and the colour it's told in
+pub fn perk_text(perk: Perk) -> Option<(&'static str, [u8; 3])> {
+    Some(match perk {
+        Perk::None => return None,
+        Perk::Sparks => ("Sparks of lightning crackle off behind", [120, 200, 255]),
+        Perk::Frost => ("Frost drifts off behind", [190, 230, 255]),
+        Perk::Mending => ("Mends you while you glide", [120, 230, 120]),
+        Perk::Embers => ("Each flap throws off a burst of embers", [255, 150, 60]),
+        Perk::Gilded => ("Gold glitters behind", [255, 205, 70]),
+    })
 }
 
 /// The colours of kind `k`'s icon: its feathers or membrane, and its tips or veins
@@ -340,6 +385,7 @@ impl App {
         let Some(k) = self.game.worn_wings() else {
             self.wings.spread = 0.0;
             self.wings.motes.clear();
+            self.game.set_aloft(None);
             return;
         };
         let kind = &KINDS[k as usize];
@@ -412,6 +458,10 @@ impl App {
             let extra = flight.motes.len() - 80;
             flight.motes.drain(..extra);
         }
+        // What's shown of them by the quick bar: whether they're gliding, and how ready a flap is
+        let ready = kind.flap.map(|(_, wait)| ((1.0 - flight.flap_wait / wait).clamp(0.0, 1.0) as f32, "Space  flap"));
+        let glided = flying && flight.time > 1.0;
+        self.game.set_aloft(Some(game::Aloft { gliding: flying, glided, ready, note: None }));
     }
     /// Where each wing's root is and how it's turned, by the way the body faces rather than the
     /// view, as worn on the back: spread `spread` of the way from folded down the back to out
@@ -500,6 +550,24 @@ mod tests {
             assert_eq!(by_id(kind.id), Some(k as u8));
             assert!((8.0..=16.0).contains(&kind.speed) && (1.0..=3.0).contains(&kind.sink) && kind.turn > 1.0, "{}", kind.name);
             assert!(kind.rarity <= 5 && kind.price > 0);
+        }
+    }
+
+    /// Those found come plainest first, never one already had nor a royal one, the rarer the
+    /// luckier
+    #[test]
+    fn wings_are_found_new_and_the_luckier_the_rarer() {
+        assert_eq!(plainest(|_| false), Some(GULL));
+        assert_eq!(KINDS[GULL as usize].price, PRICES[0]);
+        assert_eq!(plainest(|_| true), None);
+        assert_eq!(pick(0.5, 1.0, |_| true), None);
+        let rarity = |luck: f64| (0..400).map(|n| KINDS[pick(n as f64 / 400.0, luck, |_| false).unwrap() as usize].rarity as f64).sum::<f64>() / 400.0;
+        assert!(rarity(6.0) > rarity(1.0) + 0.5, "{} {}", rarity(1.0), rarity(6.0));
+        for n in 0..200 {
+            let roll = n as f64 / 200.0;
+            let k = pick(roll, 2.0, |k| k % 3 == 0).unwrap();
+            assert!(k % 3 != 0 && KINDS[k as usize].found);
+            assert_ne!(pick(roll, 9.0, |_| false), Some(AURELIAN));
         }
     }
 }
