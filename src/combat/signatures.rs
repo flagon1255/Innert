@@ -187,7 +187,7 @@ const SEVER_DELAY: f64 = 0.45;
 /// How far it lunges on at most, how far the cut reaches on ahead, and how long the line takes to
 /// fly out there, in meters and seconds
 const SEVER_LUNGE: f64 = 2.0;
-const SEVER_REACH: f64 = 11.0;
+const SEVER_REACH: f64 = 14.0;
 const SEVER_GROW: f64 = 0.12;
 /// Viper thrusts: how many, how long the move is, and when the first lands and between each, as
 /// parts of it
@@ -431,8 +431,8 @@ fn draw_move() -> SpecialMove {
     (
         DRAW_LENGTH,
         vec![
-            (0.1, pose([-0.12, 0.42, -0.34], [-0.6, -0.25, -0.76], hip), false),
-            (0.3, pose([-0.14, 0.4, -0.37], [-0.62, -0.27, -0.74], hip), false),
+            (0.1, pose([-0.1, 0.46, -0.27], [-0.6, -0.25, -0.76], hip), false),
+            (0.3, pose([-0.12, 0.44, -0.3], [-0.62, -0.27, -0.74], hip), false),
             (0.37, pose([-0.18, 0.46, -0.3], [-0.85, 0.35, -0.38], hip), false),
             (DRAW_AT, pose([0.24, 0.64, -0.14], [0.85, 0.5, 0.15], flat), true),
             (0.56, pose([0.42, 0.48, 0.02], [0.75, 0.15, 0.64], flat), false),
@@ -466,8 +466,8 @@ fn gleaning_move(style: Style) -> SpecialMove {
     (
         GLEAN_LENGTH,
         vec![
-            (0.12, pose([0.5, 0.36, -0.22 + low], [0.85, 0.45, 0.25], flat), false),
-            (0.26, pose([0.56, 0.3, -0.26 + low], [0.9, 0.3, 0.3], flat), false),
+            (0.12, pose([0.42, 0.42, -0.18 + low], [0.85, 0.45, 0.25], flat), false),
+            (0.26, pose([0.47, 0.38, -0.21 + low], [0.9, 0.3, 0.3], flat), false),
             (GLEAN_REAP, pose([0.0, 0.66, -0.3 + low], [0.05, 0.99, 0.05], flat), true),
             (0.46, pose([-0.42, 0.44, -0.32 + low], [-0.9, 0.32, 0.1], flat), false),
             (0.62, pose([0.3, 0.46, -0.06], [0.15, 0.5, 0.85], edge), false),
@@ -1052,8 +1052,19 @@ impl Combat {
             SigAct::Draw => {
                 let lunge = Combat::room_ahead(arena, feet, flat).min(SEVER_LUNGE);
                 self.dash = flat * (lunge / 0.31) * vpm + up * 1.0 * vpm;
-                let from = feet + up * 1.1 * vpm + flat * 1.0 * vpm;
-                let mut to = feet + flat * SEVER_REACH * vpm + up * 1.1 * vpm;
+                // Out from the chest straight through the nearest thing in front, if there's one
+                // in reach, or else on along where it's looked, though never much up or down, so
+                // it cuts what's down a slope or up one as well as what's level
+                let chest = feet + up * 1.1 * vpm;
+                let way = match Combat::foes_ahead(arena, chest, flat, SEVER_REACH, 0.9).first() {
+                    Some(&i) => (arena.animals[i].center(vpm as u32) - chest).try_normalize(1e-6).unwrap_or(flat),
+                    None => {
+                        let pitch = forward.z.clamp(-0.14, 0.1);
+                        flat * (1.0 - pitch * pitch).sqrt() + up * pitch
+                    }
+                };
+                let from = chest + way * 1.0 * vpm;
+                let mut to = chest + way * SEVER_REACH * vpm;
                 if let Some(t) = solid_along(arena.world, from, to) {
                     to = from + (to - from) * t;
                 }
@@ -1298,7 +1309,7 @@ impl Combat {
         let vpm = arena.view.vpm;
         let (a, b) = chain_balls(p, vpm);
         let way = p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
-        let look = Element::look(p.profile.element.or(Some(Element::Fire)));
+        let look = Element::look(Some(Element::Fire));
         let age = p.flown / (CHAIN_SPEED * vpm);
         for ball in [a, b] {
             // A streak of glowing tracer behind each ball as it goes round
@@ -1597,19 +1608,17 @@ impl Combat {
         self.cues.push(Cue::at(Sound::Clang, ground, 0.7).pitched(1.6));
         self.cues.push(Cue::at(Sound::Skitter, ground, 1.0));
         let near: Vec<(u32, Vector3<f64>)> = Combat::foes_round(arena, ground, 18.0).into_iter().take(SCUTTLERS).map(|i| (arena.animals[i].id, arena.animals[i].position)).collect();
-        let turn = random(&mut self.rng) * TAU;
+        let away = flat_of(ground - arena.view.eye);
         for k in 0..SCUTTLERS {
-            // Off in a fan at what each is after, or scattering all round if there's nothing
+            // Off in a fan at what each is after, or if there's nothing, scattering in a wide fan
+            // on away from the thrower, going off one after another where they're to be seen
             let target = (!near.is_empty()).then(|| near[k % near.len()]);
             let out = match target {
                 Some((_, at)) => UnitQuaternion::from_axis_angle(&Vector3::z_axis(), (k as f64 - 2.5) * 0.2) * flat_of(at - ground),
-                None => {
-                    let a = turn + k as f64 / SCUTTLERS as f64 * TAU;
-                    Vector3::new(a.cos(), a.sin(), 0.0)
-                }
+                None => UnitQuaternion::from_axis_angle(&Vector3::z_axis(), (k as f64 / (SCUTTLERS - 1) as f64 - 0.5) * 1.5) * away,
             };
             let target = target.map(|t| t.0);
-            let life = if target.is_some() { 3.4 } else { 1.0 + 0.07 * k as f64 };
+            let life = if target.is_some() { 3.4 } else { 0.45 + 0.07 * k as f64 };
             self.zone(ZoneKind::Signature(SigZone::Scuttler), &p.profile, ground + out * 0.35 * vpm + up * 0.12 * vpm, out * SCUTTLE_SPEED * vpm, 1.7, life, p.damage * 2.2);
             if let Some(z) = self.zones.last_mut() {
                 z.target = target;
@@ -2081,12 +2090,16 @@ impl Combat {
                 }
             }
         }
-        // Spikes of ice bursting out along it where it shatters, from a few meters on so none of
-        // them fills the view
+        // Spikes of ice bursting out along it where it shatters, none within a few meters of the
+        // eye so none of them fills the view, wherever the lunge has carried it to by now
         let length = (b - a).norm() / vpm;
+        let eye = arena.view.eye;
         let mut on = 2.5;
         while on < length {
-            self.swells.push(Swell { model: ICE_BURST, position: a.lerp(&b, on / length), radius: 0.8, life: 0.8, lifetime: 0.8 });
+            let at = a.lerp(&b, on / length);
+            if (at - eye).norm() > 4.5 * vpm {
+                self.swells.push(Swell { model: ICE_BURST, position: at, radius: 0.8, life: 0.8, lifetime: 0.8 });
+            }
             on += 2.2;
         }
         for j in 0..16 {
@@ -2356,7 +2369,7 @@ impl Combat {
             // Iron balls heated red-hot, churning, the chain between
             Sig::Chain => {
                 let (a, b) = chain_balls(p, vpm);
-                let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(p.profile.element.or(Some(Element::Fire))));
+                let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(Element::Fire)));
                 let mut out = vec![(view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), a, spin, vpm, CHAINSHOT_BALL * far, MOVING)), (view.eye, place(model, ball, MODEL_RES, Vector3::zeros(), b, spin, vpm, CHAINSHOT_BALL * far, MOVING))];
                 out.extend(self.line_instances(a, b, 0.0, LASH_CHAIN, 0.05).into_iter().map(|(_, i)| (view.eye, i)));
                 out
@@ -2409,15 +2422,22 @@ impl Combat {
         match kind {
             // A little clockwork bomb pattering along, bobbing, or clung on and swelling
             SigZone::Scuttler => {
-                let (model, bomb) = self.effect_model(SLOT_BOMB, Element::look(Some(Element::Arcane)));
+                let arcane = Element::look(Some(Element::Arcane));
+                let (model, bomb) = self.effect_model(SLOT_BOMB, arcane);
                 let phase = z.position.x * 0.7 + z.position.y * 0.3;
+                // Drawn a little bigger the further off it runs past 6 m, so it's never lost
+                // against the ground
+                let far = ((z.position - view.eye).norm() / vpm / 6.0).max(1.0).sqrt();
                 let (at, size) = if z.dwell > 0.0 {
-                    (z.position, SCUTTLER_SIZE * (1.0 + 0.2 * (self.time * 25.0).sin()))
+                    (z.position, SCUTTLER_SIZE * far * (1.0 + 0.2 * (self.time * 25.0).sin()))
                 } else {
-                    (z.position + up * (self.time * 30.0 + phase).sin().abs() * 0.08 * vpm, SCUTTLER_SIZE)
+                    (z.position + up * (self.time * 30.0 + phase).sin().abs() * 0.08 * vpm, SCUTTLER_SIZE * far)
                 };
                 let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), z.velocity.y.atan2(z.velocity.x) + phase);
                 out.push((view.eye, place(model, bomb, BOMB_RES, Vector3::zeros(), at, turn, vpm, size, MOVING)));
+                // Its fuse glowing, a spark standing up off its back, flickering, to pick it out
+                let flicker = 0.85 + 0.15 * (self.time * 40.0 + phase).sin();
+                out.extend(self.streak_at(view.eye, at + up * 0.3 * far * vpm, up, arcane, 0.9 * far * flicker).map(|(_, i)| (view.eye, i)));
             }
             // The arrow stuck fast, its head in
             SigZone::Wick { way } => {
@@ -2546,11 +2566,23 @@ impl Combat {
                     let flow = (self.time * 1.5).fract();
                     for j in 0..n {
                         let at = z.position.lerp(&to, ((j as f64 + flow) / n as f64).min(1.0));
-                        out.extend(self.streak_at(view.eye, at, to - z.position, blood, 1.5 * grow.max(0.1)).map(|(_, i)| (view.eye, i)));
+                        // A little thicker the further off, so the threads still read across a field
+                        let far = ((at - view.eye).norm() / vpm / 8.0).max(1.0).sqrt();
+                        out.extend(self.streak_at(view.eye, at, to - z.position, blood, 1.5 * far * grow.max(0.1)).map(|(_, i)| (view.eye, i)));
                     }
                 }
             }
-            SigZone::Severance | SigZone::Anvil | SigZone::Knell => {}
+            // Lightning crackling all round the raised head once it's been struck, as long as it's
+            // held up, jumping about from one frame to the next
+            SigZone::Anvil => {
+                let look = Element::look(Some(Element::Storm));
+                for k in 0..3 {
+                    let a = self.time * 7.0 + k as f64 * TAU / 3.0;
+                    let to = z.position + view.rotation * Vector3::new(a.cos() * 0.9, 0.35, 0.35 + a.sin() * 0.55) * vpm;
+                    out.extend(self.line_bolts(view.eye, z.position, to, look, 0.35, 0.7, 0.12).into_iter().map(|(_, i)| (view.eye, i)));
+                }
+            }
+            SigZone::Severance | SigZone::Knell => {}
         }
         out
     }
@@ -2704,6 +2736,15 @@ mod tests {
                     let zones: Vec<String> = combat.zones.iter().map(|z| format!("{:?} ({:.1}, {:.1}, {:.1}) {} points", z.kind, (z.position.x - feet.x) / vpm, (z.position.y - feet.y) / vpm, (z.position.z - feet.z) / vpm, z.path.len())).collect();
                     let drawn = combat.zones.iter().filter_map(|z| if let ZoneKind::Signature(k) = z.kind { Some(combat.signature_zone_instances(z, k, &view).len()) } else { None }).sum::<usize>();
                     println!("{:.2} s: shots {shots:?} zones {zones:?} swells {} drawn {drawn} of {} sparks {}", (frame - 20) as f64 * dt, combat.swells.len(), combat.flying_instances(&view).len(), combat.sparks.len());
+                    // With SPHERES=1, where what's drawn for their zones is, off the eye in meters
+                    if std::env::var("SPHERES").is_ok() {
+                        for z in &combat.zones {
+                            if let ZoneKind::Signature(k) = z.kind {
+                                let at: Vec<String> = combat.signature_zone_instances(z, k, &view).iter().map(|(_, i)| i.sphere()).map(|(c, r)| format!("({:.1}, {:.1}, {:.1}) r {:.2}", (c.x - view.eye.x) / vpm, (c.y - view.eye.y) / vpm, (c.z - view.eye.z) / vpm, r / vpm)).collect();
+                                println!("    {k:?}: {}", at.join(" "));
+                            }
+                        }
+                    }
                 }
             }
         }

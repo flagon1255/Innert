@@ -1587,7 +1587,7 @@ impl Special {
             Special::Caltrops => "Blast a cone of barbed caltrops across the ground ahead; for 8 s whatever walks over them is slowed and bleeds.",
             Special::Riftshot => "Fire a ball of void that tears a rift open where it strikes; for 5 s the rift spits shards at whatever's nearest, then snaps shut, dragging everything in.",
             Special::GloamingKnives => "Six knives of shadow fan out in the air above you, then fly one after another at the nearest enemies, bursting into darkness where they strike.",
-            Special::SeveringDraw => "Draw in a flash with a lunge: the cut flies on 10 meters as a line of frost hanging in the air through all in its way, and a heartbeat later shatters, cutting and freezing all it crossed.",
+            Special::SeveringDraw => "Draw in a flash with a lunge: the cut flies on 13 meters at what's in front as a line of frost hanging in the air through all in its way, and a heartbeat later shatters, cutting and freezing all it crossed.",
             Special::ViperThrusts => "Jab eight times as fast as the eye can follow, each thrust flinging a venomous fang on ahead through what's in front, poisoning it.",
             Special::SoulGleaning => "Reap through everything in front; each thing cut gives up a wisp that streams back to heal you, then every wisp gleaned is flung on at what's left.",
             Special::Stormanvil => "Raise your weapon for the lightning to strike it, then slam it down: a ring of lightning rolls out 14 meters, bolts leaping off it into all it passes.",
