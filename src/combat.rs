@@ -89,6 +89,9 @@ pub struct Status {
     /// every blow and shot while it is
     marked: f64,
     mark_bonus: f64,
+    /// Warded while its realm's guardians aren't all slain, with how many of them are and how many
+    /// there are: nothing touches it, see Combat::glance_off_ward() and Game::set_wards()
+    pub warded: Option<(u8, u8)>,
 }
 
 impl Status {
@@ -2098,6 +2101,8 @@ pub struct Combat {
     first_model: u32,
     time: f64,
     mana_warning: f64,
+    /// Seconds till word's given again of what it takes to break a ward, see glance_off_ward()
+    ward_warning: f64,
     /// Voxels per meter of the world, as of the last update
     vpm: f64,
     /// How far off anything's seen at all, in voxels, as of the last update, see seen_within()
@@ -5018,6 +5023,7 @@ impl Combat {
             first_model,
             time: 0.0,
             mana_warning: 0.0,
+            ward_warning: 0.0,
             vpm: 8.0,
             seen: f64::INFINITY,
             rng: hash(seed ^ 0xc0b47),
@@ -5271,6 +5277,7 @@ impl Combat {
             self.marked_at.extend(arena.animals.iter().filter(|a| a.health > 0.0 && (marked.contains(&a.id) || a.status.marked > 0.0)).take(12).map(over));
         }
         self.mana_warning -= dt;
+        self.ward_warning -= dt;
         self.hitstop -= dt;
         self.recoil = (self.recoil - dt * 5.0).max(0.0);
         self.shake *= (-7.0 * dt).exp();
@@ -12921,6 +12928,12 @@ impl Combat {
         if arena.animals[i].health <= 0.0 || arena.animals[i].look.is_pet() || blow.depth > MAX_DEPTH {
             return;
         }
+        // A raid boss warded by its realm's guardians: the blow glances off, doing nothing
+        if let Some((slain, of)) = arena.animals[i].status.warded {
+            arena.animals[i].status.shown = 4.0;
+            self.glance_off_ward(arena, i, blow.from, blow.depth, slain, of);
+            return;
+        }
         let center = arena.animals[i].center(vpm as u32);
         let mut damage = blow.damage;
 
@@ -13288,6 +13301,13 @@ impl Combat {
             if arena.animals[i].health <= 0.0 {
                 continue;
             }
+            // Nothing set on what's warded takes, see glance_off_ward(): not burning, bleeding, frozen
+            // nor anything else
+            if let Some(ward) = arena.animals[i].status.warded {
+                let s = &mut arena.animals[i].status;
+                *s = Status { warded: Some(ward), shown: s.shown - dt, flash: s.flash - dt, ..Status::default() };
+                continue;
+            }
             let center = arena.animals[i].center(vpm as u32);
             let s = &mut arena.animals[i].status;
             let mut dot = 0.0;
@@ -13525,6 +13545,30 @@ impl Combat {
 
     /// A blow from `from` caught on animal `i`'s shield, sparks flying off it and steel ringing,
     /// or on the sand over a burrower, kicking it up
+    /// A blow from `from` glancing off the ward round animal `i`, a raid boss whose realm's
+    /// guardians aren't all slain, `slain` of `of`: the ward flaring where it's struck, sparks of it
+    /// and a ring of metal, "Immune" over it, and now and then word of what it takes, see
+    /// guardians.rs. Blows set off by others are only shown now and then.
+    fn glance_off_ward(&mut self, arena: &Arena, i: usize, from: Vector3<f64>, depth: u32, slain: u8, of: u8) {
+        let vpm = self.vpm;
+        let a = &arena.animals[i];
+        let center = a.center(vpm as u32);
+        let toward = (from - center).try_normalize(1e-6).unwrap_or_else(Vector3::z);
+        let at = center + toward * crate::guardians::ward_radius(a.look) * vpm;
+        if depth == 0 || random(&mut self.rng) < 0.2 {
+            self.sparks(at, 16, 4.5, Element::look(Some(Element::Arcane)), 0.5, 0.5);
+            self.sparks(at, 6, 2.5, Element::look(Some(Element::Holy)), 0.3, 0.4);
+            self.flashes.push(Flash { position: at, color: Element::Arcane.light(), reach: 6.0, life: 0.18, lifetime: 0.18 });
+            self.cues.push(Cue::at(Sound::Clang, at, 0.75).pitched(1.45 + 0.2 * random(&mut self.rng) as f32));
+            self.popups.push(Popup { position: at + Vector3::new(0.0, 0.0, 0.5 * vpm), text: "Immune".into(), color: [205, 165, 255], size: 19.0, age: 0.0 });
+        }
+        if self.ward_warning <= 0.0 {
+            self.messages.push(format!("Immune: slay the guardians ({slain}/{of})"));
+            self.cues.push(Cue::at(Sound::Summon, at, 0.55).pitched(0.75));
+            self.ward_warning = 3.0;
+        }
+    }
+
     fn guarded(&mut self, arena: &Arena, i: usize, from: Vector3<f64>) {
         let vpm = self.vpm;
         let a = &arena.animals[i];
@@ -17508,5 +17552,45 @@ mod tests {
             let mine = spell_rest(style);
             assert!((rest.hand - mine.hand).norm() < 1e-9 && rest.turn.angle_to(&mine.turn) < 1e-9, "{}: {:?} rests at {:?}, not {:?}", f.id, style, rest.hand, mine.hand);
         }
+    }
+
+    /// A raid boss warded by its realm's guardians takes nothing from a blow, however hard, nor
+    /// does what was set on it take, nor does it charge the special attack; the blow glances off
+    /// for all to see and hear, with word of what it takes. Its ward broken, it's hurt as usual.
+    #[test]
+    fn warded_raid_bosses_take_nothing_till_their_wards_break() {
+        let vpm = 8.0;
+        let world = field();
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: [0.75, 0.42], vpm, speed: 0.0, stride: 0.0 };
+        let profile = plain_profile();
+        let ground = feet + Vector3::new(0.0, 8.0 * vpm, 0.0);
+        let mut animals = vec![crate::animals::spawn_boss(&world, &water, Look::Golem, ground, [1, 2, -9000], 7).expect("room for a boss")];
+        animals[0].status.warded = Some((1, 3));
+        let whole = animals[0].health;
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        let blow = || Blow { damage: 60.0, crit: true, heavy: true, from: feet, depth: 0, element: Some(Element::Fire) };
+        for _ in 0..3 {
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.strike(&mut arena, &profile, 0, blow());
+        }
+        animals[0].status.ignite(5.0, 40.0);
+        for _ in 0..90 {
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.afflict(&mut arena, 1.0 / 60.0);
+        }
+        assert_eq!(animals[0].health, whole, "hurt through its ward");
+        assert_eq!(animals[0].status.burn, 0.0, "set burning through it");
+        assert_eq!(combat.charge, 0.0, "a blow glancing off charged the special attack");
+        assert_eq!(combat.popups.iter().filter(|p| p.text == "Immune").count(), 3);
+        assert_eq!(combat.messages, vec!["Immune: slay the guardians (1/3)".to_string()], "said once, not for every blow");
+        assert!(combat.cues.iter().any(|c| c.sound == Sound::Clang) && !combat.sparks.is_empty());
+        // The guardians slain, the ward's gone and it's hurt
+        animals[0].status.warded = None;
+        let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+        combat.strike(&mut arena, &profile, 0, blow());
+        assert!(animals[0].health < whole && combat.charge > 0.0);
     }
 }

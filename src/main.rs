@@ -102,6 +102,7 @@ mod water;
 mod weapons;
 mod wings;
 mod worldgen;
+mod guardians;
 
 use crate::animals::AnimalInstance;
 use crate::camera::Camera;
@@ -1412,6 +1413,8 @@ struct App {
     map: compass::Map,
     /// How the wings worn are moving, see wings.rs
     wings: wings::Flight,
+    /// The wards round raid bosses breaking, see guardians.rs
+    wards: guardians::Wards,
     show_settings: bool,
     inventory_open: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
@@ -2656,6 +2659,7 @@ impl App {
             fall_back: None,
             map: compass::Map::default(),
             wings: wings::Flight::default(),
+            wards: guardians::Wards::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
@@ -4034,6 +4038,8 @@ impl App {
         // wings.rs. Worn on the back, they leave the hands free for what's in them.
         let flapped = let_go || self.session.trial_flaps();
         self.update_wings(delta_time.min(0.05), gliding, flapped);
+        // The realm's raid bosses warded while its guardians stand, see guardians.rs
+        self.update_guardians(delta_time.min(0.05));
 
         // The dead don't walk
         let alive = !self.game.dead();
@@ -4964,7 +4970,11 @@ impl App {
         // A grappling hook's rope, see rope.rs, and the wings worn, see wings.rs
         let mut rope = if self.hook.is_some() || self.game.holding_hook() { self.rope_instances(&view) } else { Vec::new() };
         rope.extend(self.wing_instances(&view));
-        let rope_lights = self.rope_lights(&view);
+        // The wards round raid bosses, see guardians.rs
+        rope.extend(self.ward_instances());
+        let mut rope_lights = self.rope_lights(&view);
+        // And wards breaking, see guardians.rs
+        rope_lights.extend(self.ward_lights());
         // How white the screen is as the winds bring the player back up, see rope.rs, and whether
         // they're gliding
         let fallen = self.fall_dark();

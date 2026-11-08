@@ -78,26 +78,31 @@ pub fn night_roster(here: RealmId, visited: &[RealmId]) -> Vec<(Look, f64, f64)>
             (Look::GraveBrute, 0.5, 1.0),
         ]
     } else {
-        realm_monsters(here, 12.0)
+        realm_monsters(here, here, 12.0)
     };
     let mut others: Vec<RealmId> = visited.iter().copied().filter(|&r| r != here && (r as usize) < REALMS.len()).collect();
     others.sort_unstable();
     others.dedup();
     for r in others {
-        roster.extend(realm_monsters(r, VISITORS));
+        roster.extend(realm_monsters(r, here, VISITORS));
     }
     roster.retain(|(_, w, _)| *w > 0.0);
     roster
 }
 
-/// The monsters of realm `realm`, `weight` in all spread over them by how many of each go about
-fn realm_monsters(realm: RealmId, weight: f64) -> Vec<(Look, f64, f64)> {
+/// The monsters of realm `realm` come to realm `here`, `weight` in all spread over them by how
+/// many of each go about, and how much tougher than here's own: as everything is, they're as tough
+/// as realm `here` is, see Game::set_scaling() and realms::scaling_in(), or as their own realm is
+/// where that's tougher
+fn realm_monsters(realm: RealmId, here: RealmId, weight: f64) -> Vec<(Look, f64, f64)> {
     let (packs, scaling) = monsters_of(realm as usize);
+    let (_, home) = monsters_of(here as usize);
+    let tougher = (scaling.toughness / home.toughness).max(1.0);
     let count: usize = packs.iter().map(|p| p.looks.len() * p.most).sum();
     packs
         .iter()
         .flat_map(|p| p.looks.iter().map(move |&l| (l, p.most)))
-        .map(|(look, most)| (look, weight * most as f64 / count.max(1) as f64, scaling.toughness))
+        .map(|(look, most)| (look, weight * most as f64 / count.max(1) as f64, tougher))
         .collect()
 }
 
@@ -437,8 +442,10 @@ mod tests {
         assert!(own > all * 0.5, "the normal world's own come the most");
         // Not visited, none of them
         assert!(!home.iter().any(|(l, ..)| *l == Look::Gloomwing || *l == Look::RimeWraith));
-        // A realm's raid has its own monsters
+        // A realm's raid has its own monsters, as tough as everything there is already, not tougher
+        // again, and those of realms before it no less tough
         let ice = night_roster(3, &[0, 3]);
         assert!(ice.iter().any(|(l, ..)| *l == Look::RimeWraith));
+        assert!(ice.iter().all(|&(_, _, t)| t == 1.0), "{ice:?}");
     }
 }
