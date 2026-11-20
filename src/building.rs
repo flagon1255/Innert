@@ -1752,7 +1752,7 @@ impl App {
                 self.shoot_soon("the hint about wood");
             }
             // Bare rock with a pickaxe carried
-            210 => match self.find_clay(feet, "stone") {
+            210 => match self.find_clay(feet, "bare").or_else(|| self.find_clay(feet, "stone")) {
                 Some((at, from)) => {
                     self.game.give_tool(Tool::Pickaxe, tools::CRUDE);
                     self.look_close(at, from);
@@ -1861,6 +1861,15 @@ impl App {
                         // A patch of it, not a speck in the grass
                         let rock = |x: i64, y: i64| top(x, y).is_some_and(|z| matches!(self.world.material_at(x, y, z), worldgen::material::STONE | worldgen::material::ROCK) && (1..5).all(|h| self.world.material_at(x, y, z + h) == worldgen::material::AIR));
                         let patch = [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (0, 0)].iter().all(|&(dx, dy)| rock(x + dx, y + dy));
+                        (patch && depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm)))
+                    }
+                    // Bare rock with nothing growing on it for a meter round, not even the shader's
+                    // grass, open to the sky
+                    "bare" => {
+                        let grassless = |x: i64, y: i64| x >= 0 && y >= 0 && x < sx && y < sy && self.world.grass.as_ref().is_none_or(|g| (g[self.world.column(x, y)] >> 16) & 0xff == 0);
+                        let rock = |x: i64, y: i64| grassless(x, y) && top(x, y).is_some_and(|z| matches!(self.world.material_at(x, y, z), worldgen::material::STONE | worldgen::material::ROCK) && (1..32).all(|h| self.world.material_at(x, y, z + h) == worldgen::material::AIR));
+                        let r = vpm as i64;
+                        let patch = (-2..=2).all(|j| (-2..=2).all(|i| rock(x + i * r / 2, y + j * r / 2)));
                         (patch && depth < 0.02 * vpm).then(|| (at, at + back * 5.0 * vpm + Vector3::new(0.0, 0.0, 2.5 * vpm)))
                     }
                     _ if self.world.material_at(x, y, z) != worldgen::material::CLAY_BANK => None,
