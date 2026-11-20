@@ -41,6 +41,8 @@ pub enum Subject {
     Look(Look),
     /// A dragon, drawn out of jointed pieces
     Dragon(Look),
+    /// A boss drawn out of jointed pieces, see src\rig.rs
+    Boss(Look),
     /// A great serpent's head, jaw and a piece of its body, by serpents::GREATS
     Serpent(usize),
     /// A kind of wings, by wings::KINDS
@@ -242,6 +244,7 @@ impl Editor {
     fn rig(&self) -> Option<Box<dyn Rig>> {
         match self.subject()? {
             Subject::Dragon(look) => Some(Box::new(crate::dragons::EditorRig(look))),
+            Subject::Boss(look) => Some(Box::new(crate::rig::edit::EditorRig(look))),
             _ => None,
         }
     }
@@ -249,7 +252,7 @@ impl Editor {
     /// How far out a subject reaches, in meters, to see all of it
     fn reach(&self) -> f64 {
         match self.subject() {
-            Some(Subject::Look(l)) | Some(Subject::Dragon(l)) => look_reach(l),
+            Some(Subject::Look(l)) | Some(Subject::Dragon(l)) | Some(Subject::Boss(l)) => look_reach(l),
             Some(Subject::Serpent(g)) => crate::serpents::GREATS[g].head * 2.0 + 2.0,
             Some(Subject::Wings(_)) => 1.0,
             Some(Subject::Weapon(_)) => 1.0,
@@ -282,7 +285,7 @@ impl Editor {
     fn timelines(&self) -> Vec<Timeline> {
         match self.subject() {
             Some(Subject::Look(look)) => look_timelines(look),
-            Some(Subject::Dragon(_)) => self.rig().map_or(Vec::new(), |r| r.clips().into_iter().map(|c| Timeline { name: c.name, length: c.length, frames: Vec::new() }).collect()),
+            Some(Subject::Dragon(_)) | Some(Subject::Boss(_)) => self.rig().map_or(Vec::new(), |r| r.clips().into_iter().map(|c| Timeline { name: c.name, length: c.length, frames: Vec::new() }).collect()),
             Some(Subject::Weapon(_)) => {
                 let n = self.built.as_ref().map_or(1, |_| self.preview_frames());
                 vec![Timeline { name: "frames".into(), length: n as f64 * 0.5, frames: (0..n).map(|k| (k as f64 * 0.5, k)).collect() }]
@@ -368,7 +371,7 @@ impl Editor {
                 self.yaw = 2.3;
             }
             72 => {
-                pick(self, "Pyre Matriarch", game);
+                pick(self, "Ember Drake", game);
                 self.clip = 2;
                 self.load_clip();
                 self.time = 0.2;
@@ -532,6 +535,10 @@ impl Editor {
                 let b = self.piece.unwrap_or(0);
                 format!("dragon/{}/{}", assets::snake(&format!("{look:?}")), assets::dragon_piece_name(dragon_piece(b)))
             }
+            Subject::Boss(look) => {
+                let k = crate::rig::kind(look)?;
+                assets::boss_file(k * crate::rig::PIECES + self.piece.unwrap_or(0))?
+            }
             Subject::Serpent(g) => format!("serpent/{}/{}", assets::snake(&format!("{:?}", crate::serpents::GREATS[g].look)), ["head", "jaw", "body"][self.piece.unwrap_or(0).min(2)]),
             Subject::Wings(k) => format!("wings/{}", crate::wings::KINDS[k].id),
             Subject::Weapon(f) => {
@@ -561,6 +568,11 @@ impl Editor {
                 let i = k * assets::dragon_pieces() + dragon_piece(self.piece.unwrap_or(0));
                 let m = game.base_model(animals::DRAGON_MODELS_AT + i);
                 assets::write_model(&dir, &name, m, MODEL_RES, crate::dragons::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
+            }
+            Subject::Boss(look) => {
+                let i = crate::rig::kind(look).unwrap_or(0) * crate::rig::PIECES + self.piece.unwrap_or(0);
+                let m = game.base_model(animals::RIG_MODELS_AT + i);
+                assets::write_model(&dir, &name, m, MODEL_RES, crate::rig::edit::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
             }
             Subject::Serpent(g) => {
                 let i = g * 3 + self.piece.unwrap_or(0).min(2);
@@ -616,6 +628,13 @@ impl Editor {
                     // Its middle over the floor as it stands
                     let feet = joints.iter().map(|j| j.at.z).fold(0.0f64, f64::min);
                     rig.draw(&joints, at + Vector3::new(0.0, 0.0, (-feet).max(0.0) * vpm + 0.6 * vpm), 0.0, vpm, self.piece, &mut out);
+                }
+            }
+            Some(Subject::Boss(_)) => {
+                // Its joints are from the middle of its feet
+                if let Some(rig) = self.rig() {
+                    let joints = self.posed(rig.as_ref());
+                    rig.draw(&joints, at, 0.0, vpm, self.piece, &mut out);
                 }
             }
             Some(Subject::Serpent(g)) => {
@@ -760,7 +779,7 @@ impl Editor {
                 }
                 ui.label(RichText::new("Baked frames: changes to the standing frame are made in every frame.").small());
             }
-            Subject::Dragon(_) => {
+            Subject::Dragon(_) | Subject::Boss(_) => {
                 if let Some(rig) = self.rig() {
                     ui.label("Bones");
                     egui::ScrollArea::vertical().id_salt("bones").max_height(260.0).show(ui, |ui| {
@@ -886,7 +905,7 @@ impl Editor {
             if ui.button("Revert").clicked() {
                 self.load_clip();
             }
-            ui.checkbox(&mut self.for_kind, "for every dragon");
+            ui.checkbox(&mut self.for_kind, "for all of its kind");
         });
     }
 
@@ -970,6 +989,7 @@ fn entries(game: &Game, library: &Library) -> Vec<Entry> {
     let order = ["Bosses", "Monsters", "Animals and people", "Things"];
     looks.sort_by_key(|e| order.iter().position(|g| *g == e.group));
     out.extend(looks);
+    out.extend(crate::rig::KINDS.iter().map(|&l| Entry { subject: Subject::Boss(l), title: assets::look_title(l), group: "Jointed bosses" }));
     out.extend(crate::dragons::KINDS.iter().map(|&l| Entry { subject: Subject::Dragon(l), title: assets::look_title(l), group: "Dragons" }));
     out.extend(crate::serpents::GREATS.iter().enumerate().map(|(g, s)| Entry { subject: Subject::Serpent(g), title: assets::look_title(s.look), group: "Great serpents" }));
     out.extend(crate::wings::KINDS.iter().enumerate().map(|(k, w)| Entry { subject: Subject::Wings(k), title: w.name.to_string(), group: "Wings" }));

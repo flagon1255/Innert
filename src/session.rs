@@ -663,6 +663,29 @@ impl App {
             self.session.arriving = true;
             self.rebuild_world();
         }
+        // `near_shrine=40` stands the player that many meters down the way up to the nearest wing
+        // shrine, looking up at it, see worldgen\aeries.rs
+        if let Some(off) = setting("near_shrine").and_then(|v| v.parse::<f32>().ok()) {
+            let terrain = self.terrain_settings();
+            let [sx, sy] = worldgen::FREE_ROAM_START;
+            let nearest = worldgen::aeries(&terrain, [sx - 1500.0, sy - 1500.0], [sx + 1500.0, sy + 1500.0]).into_iter().min_by(|a, b| (a[0] - sx).hypot(a[1] - sy).total_cmp(&(b[0] - sx).hypot(b[1] - sy)));
+            if let Some(shrine) = nearest {
+                let d = worldgen::way_up_to_shrine(&terrain, [shrine[0], shrine[1]]).unwrap_or([1.0, 0.0]);
+                let spot = [shrine[0] + d[0] * off, shrine[1] + d[1] * off];
+                let vpm = self.world.voxels_per_meter as f64;
+                let at = Vector3::new(spot[0] as f64 * vpm - self.world.origin[0] as f64, spot[1] as f64 * vpm - self.world.origin[1] as f64, self.world.size[2] as f64 - 2.0 * vpm);
+                let mut player = Player::new(at, &self.world);
+                player.position = at;
+                self.player = Some(player);
+                self.camera.position = voxels_to_camera(at, self.world.size);
+                self.camera.rotation.z = (d[0] as f64).atan2(-d[1] as f64);
+                self.camera.rotation.x = if off > 15.0 { 0.18 } else { -0.15 };
+                self.session.find_ground = true;
+                self.session.arriving = true;
+                self.rebuild_world();
+                println!("SHRINE at {:.0}, {:.0}, {:.1}: standing {off} m down the way up", shrine[0], shrine[1], shrine[2]);
+            }
+        }
         // `arena=entrance` stands the player on the Drowned Ring's causeway, out past its gate,
         // looking in at its basin, `arena=walk` on the walk at the water's edge where the passage
         // comes out on it, and `arena=stands` up its stands to one side, see worldgen::Arena

@@ -96,6 +96,7 @@ mod player;
 mod quality;
 mod raids;
 mod realms;
+mod rig;
 mod rope;
 mod save;
 mod session;
@@ -2973,6 +2974,14 @@ impl App {
                     "undercity heart" => animals::Look::GraveKnight,
                     "castle" if pick % 5 == 0 => animals::Look::Colossus,
                     "pyramid" if pick % 5 == 0 => animals::Look::ElderWyrm,
+                    // A pharaoh sunk in the desert's ruins and pyramids; an ogre in the old castles,
+                    // towers and caverns, a jotun where it's cold and a thunderborn giant on the high
+                    // stone; an elderhorn at the woods' shrines, a mire crone at the jungle's, see
+                    // Look::for_ground and srcig.rs
+                    "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
+                    "castle" | "watchtower" if pick % 4 == 3 => animals::Look::Ogre,
+                    "cavern" if pick % 4 == 3 => animals::Look::Ogre,
+                    "shrine" if pick % 2 == 0 => animals::Look::Elderhorn,
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
                     // A castle fallen to the dead has one on its throne
                     "dungeon" | "fallen throne" => animals::Look::GraveKnight,
@@ -3111,6 +3120,10 @@ impl App {
                 })
                 .collect(),
         );
+        // The wing shrines on the peaks, a pair of wings in each one's nest, see worldgen\aeries.rs
+        let shrines = landscape.sites.iter().filter(|s| s.kind == worldgen::SHRINE);
+        let key = |p: [f32; 3]| [(p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64, worldgen::SHRINE_KEY];
+        self.game.set_aeries(shrines.map(|s| (key(s.position), to_voxels(s.position))).collect(), self.world.voxels_per_meter as f64);
     }
 
     /// Blows a hole in the world `radius` meters round `center`, in voxels of it: the voxels go,
@@ -4722,6 +4735,55 @@ impl App {
                 // moment between, to ring a bell or such
                 let pulse = settings_from_args().into_iter().find(|(k, _)| k == "boss_pulse").and_then(|(_, v)| v.parse::<usize>().ok());
                 let pressing = f > 30 && pulse.is_none_or(|n| (f - 31) % (n + 12) < n);
+                self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // The player stands where they started, for the nearest boss to fight, while the camera
+            // watches it from off to one side, to see how it moves, see src\rig.rs: `--set
+            // view_distance=12` that many meters off, `view_from=1.4` that many radians round from
+            // where the player is, `view_up=2` that many meters up, and `view_attack=1` the player
+            // attacking all the while
+            ("rig", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                let feet = self.player.as_ref().map_or(eye, |p| p.position);
+                // Placed once and held still, so what moves is only the boss, unless `view_follow=1`;
+                // and the player's kept on their feet, so the boss goes on fighting them
+                static HELD: std::sync::Mutex<Option<(Vector3<f64>, Vector3<f64>)>> = std::sync::Mutex::new(None);
+                let placing = f <= 20 || number("view_follow", 0.0) > 0.5;
+                let mut held = HELD.lock().unwrap();
+                if let Some(target) = self.game.nearest_boss(feet).filter(|_| placing) {
+                    let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
+                    let from = number("view_from", 1.4);
+                    let distance = number("view_distance", 12.0);
+                    // Somewhere with nothing in the way, not in a tree: round one way and the other
+                    // from where it's asked for, and nearer
+                    let spot = |round: f64, d: f64| {
+                        let (c, s) = (round.cos(), round.sin());
+                        let way = Vector3::new(back.x * c - back.y * s, back.x * s + back.y * c, 0.0);
+                        target + way * d * vpm + Vector3::new(0.0, 0.0, number("view_up", 1.0) * vpm)
+                    };
+                    let clear = |at: Vector3<f64>| {
+                        let steps = ((at - target).norm() / (0.5 * vpm)) as usize;
+                        (0..steps.saturating_sub(5)).all(|k| {
+                            let p = at + (target - at) * (k as f64 / steps.max(1) as f64);
+                            self.world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64) == worldgen::material::AIR
+                        })
+                    };
+                    let tries = [0.0, -2.0 * from, 0.5, -2.0 * from - 0.5, -0.5, -2.0 * from + 0.5, 1.0, -2.0 * from - 1.0];
+                    let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
+                    *held = Some((at, target));
+                }
+                if let Some((at, target)) = *held {
+                    self.camera.position = voxels_to_camera(at, self.world.size);
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                self.game.set_health(100.0);
+                let pressing = number("view_attack", 0.0) > 0.5 && f > 30;
                 self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));

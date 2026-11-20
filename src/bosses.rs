@@ -78,9 +78,28 @@ pub enum Move {
     Coil,
     /// A great serpent's tail raised high and brought down on whoever's behind it
     Tail,
+    // The moves of the bosses with builds of their own, see src\rig.rs
+    /// A giant's weapon swung backhanded across in front of it, knocking whoever it catches flying
+    Swat,
+    /// The Rime Jotun's maul smashed into the ground, boulders of ice bursting up out of it and
+    /// flying at the player
+    Avalanche,
+    /// The Hollow Mother raising her arms and weeping blood, which rains down all round the player
+    Weep,
+    /// The Mire Crone stirring up venom between her hands and flinging it out across the player
+    Hex,
+    /// The Sunken Pharaoh sweeping its sceptre round, swarm after swarm of scarabs flying off it
+    Scarabs,
+    /// A stag charging with its antlers lowered, brambles bursting up in its wake
+    Trample,
+    /// The Thunderborn Giant clapping its hands overhead: thunder runs out across the ground and
+    /// lightning comes down on the player
+    Thunderclap,
+    /// The Elderhorn bellowing, the ground shaking out from under its hooves
+    Bellow,
 }
 
-const MOVES: usize = 25;
+const MOVES: usize = 33;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -110,6 +129,14 @@ impl Move {
         Move::Spikes,
         Move::Coil,
         Move::Tail,
+        Move::Swat,
+        Move::Avalanche,
+        Move::Weep,
+        Move::Hex,
+        Move::Scarabs,
+        Move::Trample,
+        Move::Thunderclap,
+        Move::Bellow,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -157,6 +184,9 @@ enum Phase {
     Recover(f64),
     /// Dazed from running into something
     Stunned(f64),
+    /// Reeling from the blows it's taken, knocked out of whatever it was getting ready to do, for
+    /// a jointed boss, see src\rig.rs
+    Reel(f64),
 }
 
 /// What a boss did this frame, for src\game.rs to see to. Positions are in voxels.
@@ -308,6 +338,12 @@ pub struct Boss {
     spun_from: f64,
     /// For looking at them: the frame it's held in, see animals::POSE_WINDUP, whatever it's doing
     pub fixed_pose: Option<usize>,
+    /// How a boss drawn out of jointed pieces is posed, see src\rig.rs; None for one drawn in frames
+    pub rig: Option<Box<crate::rig::Rig>>,
+    /// Seconds getting over its last move takes all told, for posing it partway through
+    recover_len: f64,
+    /// Seconds till a jointed boss can be made to reel again, so it can't be kept reeling
+    reel_wait: f64,
     pub deeds: Vec<Deed>,
     /// Come in a night raid, see raids.rs: it hunts the player down however far it has to go, and
     /// never gives up or goes home
@@ -468,6 +504,14 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Shoot | Move::Lash) => 0.8,
         (_, Move::Burrow | Move::Erupt) => 0.6,
         (_, Move::Blink) => 0.3,
+        (_, Move::Swat) => 0.75,
+        (_, Move::Avalanche) => 1.2,
+        (_, Move::Weep) => 1.0,
+        (_, Move::Hex) => 0.8,
+        (_, Move::Scarabs) => 0.85,
+        (_, Move::Trample) => 1.0,
+        (_, Move::Thunderclap) => 1.1,
+        (_, Move::Bellow) => 0.8,
     }
 }
 
@@ -503,6 +547,14 @@ fn duration(look: Look, m: Move) -> f64 {
         Move::Maul => MAUL_SWIPE * 3.0,
         Move::Web => 0.4,
         Move::RootWave => 0.6,
+        Move::Swat => 0.35,
+        Move::Avalanche => 0.5,
+        Move::Weep => WEEP_SECONDS,
+        Move::Hex => 0.4,
+        Move::Scarabs => 0.8,
+        Move::Trample => 2.4,
+        Move::Thunderclap => quake_reach(look) / QUAKE_PACE,
+        Move::Bellow => BELLOW_REACH / QUAKE_PACE,
     }
 }
 
@@ -555,6 +607,14 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Maul => 1.2,
         Move::Web => 0.6,
         Move::RootWave => 0.8,
+        Move::Swat => 0.8,
+        Move::Avalanche => 1.1,
+        Move::Weep => 1.0,
+        Move::Hex => 0.7,
+        Move::Scarabs => 0.6,
+        Move::Trample => 0.9,
+        Move::Thunderclap => 1.0,
+        Move::Bellow => 0.7,
     }
 }
 
@@ -610,6 +670,14 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Storm => 9.0,
         Move::Maul => 7.0,
         Move::Web => 10.0,
+        Move::Swat => 4.5,
+        Move::Avalanche => 9.0,
+        Move::Weep => 11.0,
+        Move::Hex => 4.5,
+        Move::Scarabs => 6.5,
+        Move::Trample => 7.0,
+        Move::Thunderclap => 9.0,
+        Move::Bellow => 8.0,
     }
 }
 
@@ -700,6 +768,16 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::Necromancer => (1.2, 1.3, 9.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
         Look::Warlord => (2.2, 2.9, 30.0, 0.5),
+        // A giant's weapon, a pharaoh's sceptre, a crone's staff, a stag's forehooves, and the raid
+        // bosses of the Dreaming Red
+        Look::Ogre => (2.4, 2.8, 30.0, 0.7),
+        Look::RimeJotun => (2.6, 3.0, 32.0, 0.9),
+        Look::StormGiant => (2.5, 2.9, 30.0, 0.7),
+        Look::SandPharaoh => (1.8, 2.2, 22.0, 0.0),
+        Look::BogHag => (1.6, 2.0, 18.0, 0.0),
+        Look::Elderhorn => (2.4, 2.6, 26.0, 0.5),
+        Look::HollowMother => (3.4, 3.8, 36.0, 0.0),
+        Look::BleedingHart => (3.4, 3.6, 36.0, 0.9),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
         _ if look.is_raid() => {
             let base = if look == Look::CryptTitan { Look::GraveKnight } else if look.build() == Some(Build::Golem) { Look::Golem } else { Look::Drake };
@@ -837,6 +915,74 @@ const TAIL_SLAM: f64 = 0.3;
 /// How far round a great serpent's tail coming down hurts, in meters
 const TAIL_RADIUS: f64 = 2.8;
 
+/// Seconds the Hollow Mother weeps blood, and between each drop of it
+const WEEP_SECONDS: f64 = 1.8;
+const WEEP_EVERY: f64 = 0.11;
+/// How far the Elderhorn's bellow shakes the ground, in meters
+const BELLOW_REACH: f64 = 8.0;
+/// How far a giant's swat reaches, in meters at its build's size, and how far it knocks whoever it
+/// catches
+const SWAT_REACH: f64 = 2.6;
+
+/// Seconds a boss is left dazed after charging into something
+const STUN_SECONDS: f64 = 2.0;
+/// Seconds a jointed boss reels from the blows it's taken, knocked out of what it was getting
+/// ready to do, and seconds before it can be made to again, see src\rig.rs
+pub const REEL_SECONDS: f64 = 0.9;
+const REEL_EVERY: f64 = 7.0;
+
+/// How much of its health a jointed boss has to lose in blows close together to reel from them:
+/// less for a raid boss, as there's so much more of it
+fn reel_at(look: Look) -> f64 {
+    if look.is_raid() { 0.035 } else { 0.07 }
+}
+
+/// Seconds `look` takes to get ready for move `m`, to make it and to get over it, as it does
+/// when it's not angry, for posing it
+pub fn timing(look: Look, m: Move) -> (f64, f64, f64) {
+    (windup(look, m), duration(look, m), recovery(look, m))
+}
+
+/// The kinds of weapon a boss of `look` leaves most of the time, as weapon families' ids, and the
+/// element it leans to: what suits it, a giant's mauls and hammers, a crone's staffs and wands
+/// of venom, the Hollow Mother's scythes and whips of blood
+pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
+    let families: &'static [&'static str] = match look {
+        Look::Ogre => &["maul", "hammer", "flail", "axe"],
+        Look::RimeJotun => &["maul", "axe", "greatsword", "halberd"],
+        Look::StormGiant => &["hammer", "spear", "halberd", "rod"],
+        Look::SandPharaoh => &["scepter", "staff", "orb", "sword"],
+        Look::BogHag => &["staff", "wand", "totem", "censer"],
+        Look::Elderhorn => &["bow", "spear", "dagger"],
+        Look::HollowMother => &["scythe", "whip", "tome", "dagger"],
+        Look::BleedingHart => &["spear", "bow", "halberd", "whip"],
+        _ => match look.build() {
+            Some(Build::Golem) => &["hammer", "maul", "flail"],
+            Some(Build::Bear) => &["axe", "hammer", "maul"],
+            Some(Build::Spider) => &["dagger", "bow", "whip"],
+            Some(Build::Treant) => &["staff", "bow", "totem"],
+            Some(Build::Wolf) => &["axe", "spear", "dagger"],
+            Some(Build::Undead) if look.is_knight() => &["greatsword", "sword", "scythe"],
+            Some(Build::Undead) if look == Look::Warlord => &["sword", "musket", "pistol", "crossbow"],
+            _ => &[],
+        },
+    };
+    (families, look.element())
+}
+
+/// The moves `look` makes in a fight, for trying each of them out
+pub fn repertoire(look: Look) -> Vec<Move> {
+    let boss = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
+    let mut moves: Vec<Move> = boss.menu().iter().map(|&(m, _, _)| m).collect();
+    if look.is_raid() {
+        let mut later = boss;
+        later.stage = 2;
+        moves.extend(later.menu().iter().map(|&(m, _, _)| m).filter(|m| !moves.contains(m)).collect::<Vec<_>>());
+    }
+    moves.push(Move::Roar);
+    moves
+}
+
 /// How far from the player a great serpent starts coiling round them and closes the ring to, in
 /// meters: whoever's still inside it then is crushed
 fn coil_reach(look: Look) -> (f64, f64) {
@@ -897,6 +1043,9 @@ impl Boss {
             last: None,
             spun_from: 0.0,
             fixed_pose: None,
+            rig: crate::rig::Rig::new(look, (key[0] as u32).wrapping_mul(0x9e37_79b9) ^ (key[1] as u32)).map(Box::new),
+            recover_len: 1.0,
+            reel_wait: 0.0,
             deeds: Vec::new(),
             raider: false,
             lure: None,
@@ -961,6 +1110,7 @@ impl Boss {
     pub fn haste(&self) -> f64 {
         match self.phase {
             Phase::Act(Move::Charge, _) if self.look == Look::Tusker => 1.7,
+            Phase::Act(Move::Trample, _) => 1.15,
             // A great serpent darting across at the player, or round them to coil
             Phase::Act(Move::Charge, _) if self.look.is_great_serpent() => 2.3,
             Phase::Act(Move::Coil, _) => 2.1,
@@ -978,6 +1128,7 @@ impl Boss {
             Phase::Act(m, t) => format!("doing {m:?} {t:.2}"),
             Phase::Recover(t) => format!("recovering {t:.2}"),
             Phase::Stunned(t) => format!("stunned {t:.2}"),
+            Phase::Reel(t) => format!("reeling {t:.2}"),
         };
         let coils = self.coils.as_ref().map_or(String::new(), |c| format!(", lift {:.1} gape {:.1} dive {:.1} sunk {:.1}", c.lift, c.gape, c.dive, c.sunk));
         format!("{phase}, stage {}, buried {}{coils}", self.stage, self.buried)
@@ -1034,6 +1185,114 @@ impl Boss {
         animals::tween(self.look, before.unwrap_or(0), now.unwrap_or(0), since).or(now)
     }
 
+    /// The move it's making and how far into which part of it, for posing a jointed boss, see
+    /// src\rig.rs: None roaming or chasing
+    pub fn doing(&self) -> Option<crate::rig::Doing> {
+        use crate::rig::{Doing, Stage};
+        let wound = |m: Move| windup(self.look, m) * if self.enraged { 0.8 } else { 1.0 };
+        match self.phase {
+            Phase::WindUp(m, t) => Some(Doing { m, stage: Stage::Wind, t, len: (wound(m) + self.hold).max(t), held: self.hold }),
+            Phase::Act(m, t) => Some(Doing { m, stage: Stage::Act, t, len: duration(self.look, m), held: 0.0 }),
+            Phase::Recover(left) => Some(Doing { m: self.last.unwrap_or(Move::Roar), stage: Stage::Recover, t: (self.recover_len - left).max(0.0), len: self.recover_len, held: 0.0 }),
+            Phase::Stunned(left) => Some(Doing { m: Move::Charge, stage: Stage::Stun, t: (STUN_SECONDS - left).max(0.0), len: STUN_SECONDS, held: 0.0 }),
+            Phase::Reel(left) => Some(Doing { m: self.last.unwrap_or(Move::Roar), stage: Stage::Reel, t: (REEL_SECONDS - left).max(0.0), len: REEL_SECONDS, held: 0.0 }),
+            Phase::Roam | Phase::Chase => None,
+        }
+    }
+
+    /// Struck by a blow taking `share` of its health, coming from `from` in its own frame, +x
+    /// ahead: a jointed boss flinches from it, see rig::Rig::hit()
+    pub fn struck_by(&mut self, share: f64, from: Vector3<f64>) {
+        if let Some(rig) = &mut self.rig {
+            rig.hit(share, from);
+        }
+    }
+
+    /// The moves it makes in a fight, near and far, for trying each of them out
+    fn menu(&self) -> &'static [(Move, f64, f64)] {
+        let monster = self.look.is_monster();
+        match self.look.build() {
+            _ if self.look.is_great_serpent() => great_moves(self.look, self.buried, self.stage),
+            // Raid bosses: what their kind does, and bringing the sky down once they're hurt
+            _ if self.look == Look::Colossus => &[(Move::Slam, 0.0, 4.6), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
+            _ if self.look == Look::ElderWyrm => &[(Move::Slam, 0.0, 4.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 8.0, 30.0), (Move::Spit, 4.0, 35.0)],
+            _ if self.look == Look::CryptTitan => &[
+                (Move::Spikes, 0.0, 3.0),
+                (Move::Sweep, 0.0, 3.0),
+                (Move::Slam, 0.0, 4.6),
+                (Move::Summon, 0.0, 30.0),
+                (Move::Cataclysm, 0.0, 30.0),
+                (Move::Quake, 3.0, 12.0),
+                (Move::Spit, 4.6, 30.0),
+            ],
+            // The Grave Knight: bone spikes for whoever crowds it, its greatsword swept round or
+            // brought down on them; the dead raised to fight for it; and from further off a leap
+            // to cleave down on the player, or the void flung off its blade at them
+            _ if self.look == Look::GraveKnight => &[(Move::Spikes, 0.0, 3.0), (Move::Sweep, 0.0, 3.0), (Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Leap, 7.0, 20.0), (Move::Spit, 4.6, 30.0)],
+            // The bosses with builds of their own, see src\rig.rs: their own moves first, so they
+            // make them whenever they're ready
+            _ if self.look == Look::Ogre => &[(Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.4), (Move::Throw, 5.0, 30.0)],
+            _ if self.look == Look::RimeJotun => &[(Move::Avalanche, 6.0, 30.0), (Move::Slam, 0.0, 4.6), (Move::Breath, 0.0, 7.0), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0)],
+            _ if self.look == Look::StormGiant => &[(Move::Thunderclap, 0.0, 9.0), (Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.6), (Move::Storm, 9.0, 30.0), (Move::Throw, 5.0, 28.0)],
+            _ if self.look == Look::SandPharaoh => &[(Move::Summon, 0.0, 30.0), (Move::Scarabs, 5.0, 28.0), (Move::Slam, 0.0, 3.4), (Move::Storm, 8.0, 30.0), (Move::Spit, 3.5, 30.0)],
+            _ if self.look == Look::BogHag => &[(Move::Summon, 0.0, 30.0), (Move::Hex, 3.5, 24.0), (Move::Roots, 3.0, 26.0), (Move::Slam, 0.0, 3.2), (Move::Lash, 2.5, 10.0)],
+            // Raid bosses, their ranges in meters at their build's size, as they're so much bigger
+            _ if self.look == Look::HollowMother => &[(Move::Summon, 0.0, 14.0), (Move::Cataclysm, 0.0, 14.0), (Move::Weep, 0.0, 12.0), (Move::Slam, 0.0, 2.2), (Move::Lash, 2.0, 6.0), (Move::Spit, 2.5, 14.0)],
+            _ if self.look == Look::BleedingHart => &[(Move::Cataclysm, 0.0, 15.0), (Move::Slam, 0.0, 2.4), (Move::Maul, 1.2, 3.8), (Move::Trample, 3.5, 16.0), (Move::RootWave, 3.0, 11.0), (Move::Volley, 4.0, 17.0)],
+            _ if self.look == Look::Elderhorn => &[(Move::Bellow, 0.0, 6.0), (Move::Slam, 0.0, 4.2), (Move::Maul, 2.5, 7.0), (Move::Trample, 7.0, 30.0), (Move::Volley, 8.0, 30.0)],
+            // Monsters bite or swing at what's in reach, and some pounce
+            Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
+            Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
+            _ if matches!(self.look, Look::Skeleton | Look::ArmoredSkeleton | Look::BanditBrute) => &[(Move::Slam, 0.0, 2.8)],
+            // A bandit lunges in from a few steps off
+            _ if self.look == Look::Bandit => &[(Move::Slam, 0.0, 2.6), (Move::Leap, 3.5, 8.0)],
+            // The warlord charges, throws firebombs and calls the gang
+            _ if self.look == Look::Warlord => &[(Move::Slam, 0.0, 3.8), (Move::Summon, 0.0, 30.0), (Move::Charge, 4.5, 22.0), (Move::Spit, 4.0, 26.0)],
+            // A crossbowman shoots from well back, and clubs whatever gets right up to it
+            _ if self.look == Look::Crossbowman => &[(Move::Slam, 0.0, 1.8), (Move::Shoot, 3.0, 28.0)],
+            _ if self.look == Look::Shieldbearer => &[(Move::Slam, 0.0, 2.5)],
+            // A burrower comes up under the player, and digs back in once they've got away from it
+            _ if self.look == Look::DuneBurrower && self.buried => &[(Move::Erupt, 0.0, 2.0)],
+            _ if self.look == Look::DuneBurrower => &[(Move::Slam, 0.0, 2.3), (Move::Burrow, 5.0, 40.0)],
+            // A wraith vanishes from under the player's nose, claws them if it can't, and throws
+            // frost from further off
+            _ if self.look == Look::RimeWraith => &[(Move::Blink, 0.0, 3.0), (Move::Slam, 0.0, 2.1), (Move::Spit, 4.5, 24.0)],
+            _ if self.look == Look::MireLurker => &[(Move::Slam, 0.0, 2.3), (Move::Lash, 3.0, 9.0)],
+            _ if self.look == Look::Gloomwing => &[(Move::Slam, 0.0, 1.4), (Move::Leap, 3.0, 7.5)],
+            _ if self.look == Look::Tusker => &[(Move::Slam, 0.0, 2.5), (Move::Charge, 5.0, 18.0)],
+            // A bloater bursts once it's close; a ghoul claws, or leaps on the player from a few
+            // steps off; a brute brings its gravestone down; an archer shoots from well back;
+            // a necromancer raises the dead and hurls the void from behind them
+            // Serpents bite what's close, lunge at what's a few steps off, and spit at what's
+            // further; a drift serpent comes up under the player out of the snow, and dives back
+            // in once they've got away from it
+            Some(Build::Serpent) => match self.look {
+                Look::DriftSerpent if self.buried => &[(Move::Erupt, 0.0, 2.2)],
+                Look::DriftSerpent => &[(Move::Slam, 0.0, 2.6), (Move::Spit, 4.5, 16.0), (Move::Burrow, 7.0, 40.0)],
+                Look::ReedViper => &[(Move::Slam, 0.0, 2.6), (Move::Leap, 3.6, 6.5), (Move::Spit, 6.5, 15.0)],
+                Look::SiltCoiler => &[(Move::Slam, 0.0, 2.8), (Move::Leap, 3.6, 7.5)],
+                Look::GaleSerpent => &[(Move::Slam, 0.0, 2.4), (Move::Leap, 3.2, 8.5), (Move::Spit, 7.0, 20.0)],
+                _ => &[(Move::Slam, 0.0, 2.4), (Move::Spit, 4.0, 17.0), (Move::Leap, 3.4, 6.0)],
+            },
+            _ if self.look == Look::Bloater => &[(Move::Slam, 0.0, 1.9)],
+            _ if self.look == Look::Ghoul => &[(Move::Slam, 0.0, 1.8), (Move::Leap, 3.5, 10.0)],
+            _ if self.look == Look::GraveBrute => &[(Move::Slam, 0.0, 2.9)],
+            _ if self.look == Look::BoneArcher => &[(Move::Slam, 0.0, 1.6), (Move::Shoot, 3.0, 30.0)],
+            _ if self.look == Look::Necromancer => &[(Move::Slam, 0.0, 1.7), (Move::Summon, 0.0, 22.0), (Move::Spit, 3.5, 22.0)],
+            Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
+            // Ranges meeting, so there's nowhere to stand it won't do something
+            Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
+            Some(Build::Bear) => &[(Move::Slam, 0.0, 4.0), (Move::Maul, 2.5, 8.0), (Move::Charge, 4.0, 32.0)],
+            Some(Build::Spider) => &[(Move::Slam, 0.0, 3.5), (Move::Summon, 0.0, 30.0), (Move::Web, 6.0, 20.0), (Move::Leap, 7.0, 22.0), (Move::Spit, 3.5, 25.0)],
+            Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],
+            Some(Build::Wolf) => &[(Move::Slam, 0.0, 3.2), (Move::Summon, 0.0, 30.0), (Move::Maul, 2.5, 8.0), (Move::Leap, 7.0, 22.0)],
+            Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
+            // Only ever monsters, all seen to above; and dragons, which think for themselves, see
+            // src\dragons.rs
+            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon) | None => &[],
+        }
+    }
+
     /// How much of its usual time it takes over winding up: less once it's angry
     fn pace(&self) -> f64 {
         if self.enraged { 0.8 } else { 1.0 }
@@ -1062,7 +1321,7 @@ impl Boss {
     /// winds up a move, all through it, and dying down after
     pub fn strain(&self) -> f64 {
         match self.phase {
-            Phase::WindUp(Move::Roar, _) | Phase::Roam | Phase::Chase | Phase::Stunned(_) => 0.0,
+            Phase::WindUp(Move::Roar, _) | Phase::Roam | Phase::Chase | Phase::Stunned(_) | Phase::Reel(_) => 0.0,
             Phase::WindUp(m, t) => (t / (windup(self.look, m) * self.pace()).max(0.1)).min(1.0),
             Phase::Act(Move::Roar, _) => 0.6,
             Phase::Act(..) => 1.0,
@@ -1079,6 +1338,10 @@ impl Boss {
     /// moved on and up, for drawing. It leans back into a heavy blow as it winds up, trembling the
     /// longer it holds it back, lunges into it, and settles slowly after, so the blow has weight.
     pub fn sway(&self) -> [f64; 3] {
+        // A jointed boss leans into its blows and settles after them with its own joints
+        if self.rig.is_some() {
+            return [0.0, 0.0, -self.sink];
+        }
         let [pitch, on, up] = self.sway;
         let tremble = match self.phase {
             // The Colossus straining under the boulder it's lifted overhead
@@ -1287,75 +1550,7 @@ impl Boss {
         // A raid boss reaches as far further as it's bigger
         let size = self.look.size();
         let within = |m: Move, near: f64, far: f64| (near * size..far * size).contains(&distance) && ready(m);
-        let monster = self.look.is_monster();
-        let moves: &[(Move, f64, f64)] = match self.look.build() {
-            _ if self.look.is_great_serpent() => great_moves(self.look, self.buried, self.stage),
-            // Raid bosses: what their kind does, and bringing the sky down once they're hurt
-            _ if self.look == Look::Colossus => &[(Move::Slam, 0.0, 4.6), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
-            _ if self.look == Look::CryptTitan => &[
-                (Move::Spikes, 0.0, 3.0),
-                (Move::Sweep, 0.0, 3.0),
-                (Move::Slam, 0.0, 4.6),
-                (Move::Summon, 0.0, 30.0),
-                (Move::Cataclysm, 0.0, 30.0),
-                (Move::Quake, 3.0, 12.0),
-                (Move::Spit, 4.6, 30.0),
-            ],
-            // The Grave Knight: bone spikes for whoever crowds it, its greatsword swept round or
-            // brought down on them; the dead raised to fight for it; and from further off a leap
-            // to cleave down on the player, or the void flung off its blade at them
-            _ if self.look == Look::GraveKnight => &[(Move::Spikes, 0.0, 3.0), (Move::Sweep, 0.0, 3.0), (Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Leap, 7.0, 20.0), (Move::Spit, 4.6, 30.0)],
-            // Monsters bite or swing at what's in reach, and some pounce
-            Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
-            Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
-            _ if matches!(self.look, Look::Skeleton | Look::ArmoredSkeleton | Look::BanditBrute) => &[(Move::Slam, 0.0, 2.8)],
-            // A bandit lunges in from a few steps off
-            _ if self.look == Look::Bandit => &[(Move::Slam, 0.0, 2.6), (Move::Leap, 3.5, 8.0)],
-            // The warlord charges, throws firebombs and calls the gang
-            _ if self.look == Look::Warlord => &[(Move::Slam, 0.0, 3.8), (Move::Summon, 0.0, 30.0), (Move::Charge, 4.5, 22.0), (Move::Spit, 4.0, 26.0)],
-            // A crossbowman shoots from well back, and clubs whatever gets right up to it
-            _ if self.look == Look::Crossbowman => &[(Move::Slam, 0.0, 1.8), (Move::Shoot, 3.0, 28.0)],
-            _ if self.look == Look::Shieldbearer => &[(Move::Slam, 0.0, 2.5)],
-            // A burrower comes up under the player, and digs back in once they've got away from it
-            _ if self.look == Look::DuneBurrower && self.buried => &[(Move::Erupt, 0.0, 2.0)],
-            _ if self.look == Look::DuneBurrower => &[(Move::Slam, 0.0, 2.3), (Move::Burrow, 5.0, 40.0)],
-            // A wraith vanishes from under the player's nose, claws them if it can't, and throws
-            // frost from further off
-            _ if self.look == Look::RimeWraith => &[(Move::Blink, 0.0, 3.0), (Move::Slam, 0.0, 2.1), (Move::Spit, 4.5, 24.0)],
-            _ if self.look == Look::MireLurker => &[(Move::Slam, 0.0, 2.3), (Move::Lash, 3.0, 9.0)],
-            _ if self.look == Look::Gloomwing => &[(Move::Slam, 0.0, 1.4), (Move::Leap, 3.0, 7.5)],
-            _ if self.look == Look::Tusker => &[(Move::Slam, 0.0, 2.5), (Move::Charge, 5.0, 18.0)],
-            // A bloater bursts once it's close; a ghoul claws, or leaps on the player from a few
-            // steps off; a brute brings its gravestone down; an archer shoots from well back;
-            // a necromancer raises the dead and hurls the void from behind them
-            // Serpents bite what's close, lunge at what's a few steps off, and spit at what's
-            // further; a drift serpent comes up under the player out of the snow, and dives back
-            // in once they've got away from it
-            Some(Build::Serpent) => match self.look {
-                Look::DriftSerpent if self.buried => &[(Move::Erupt, 0.0, 2.2)],
-                Look::DriftSerpent => &[(Move::Slam, 0.0, 2.6), (Move::Spit, 4.5, 16.0), (Move::Burrow, 7.0, 40.0)],
-                Look::ReedViper => &[(Move::Slam, 0.0, 2.6), (Move::Leap, 3.6, 6.5), (Move::Spit, 6.5, 15.0)],
-                Look::SiltCoiler => &[(Move::Slam, 0.0, 2.8), (Move::Leap, 3.6, 7.5)],
-                Look::GaleSerpent => &[(Move::Slam, 0.0, 2.4), (Move::Leap, 3.2, 8.5), (Move::Spit, 7.0, 20.0)],
-                _ => &[(Move::Slam, 0.0, 2.4), (Move::Spit, 4.0, 17.0), (Move::Leap, 3.4, 6.0)],
-            },
-            _ if self.look == Look::Bloater => &[(Move::Slam, 0.0, 1.9)],
-            _ if self.look == Look::Ghoul => &[(Move::Slam, 0.0, 1.8), (Move::Leap, 3.5, 10.0)],
-            _ if self.look == Look::GraveBrute => &[(Move::Slam, 0.0, 2.9)],
-            _ if self.look == Look::BoneArcher => &[(Move::Slam, 0.0, 1.6), (Move::Shoot, 3.0, 30.0)],
-            _ if self.look == Look::Necromancer => &[(Move::Slam, 0.0, 1.7), (Move::Summon, 0.0, 22.0), (Move::Spit, 3.5, 22.0)],
-            Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
-            // Ranges meeting, so there's nowhere to stand it won't do something
-            Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
-            Some(Build::Bear) => &[(Move::Slam, 0.0, 4.0), (Move::Maul, 2.5, 8.0), (Move::Charge, 4.0, 32.0)],
-            Some(Build::Spider) => &[(Move::Slam, 0.0, 3.5), (Move::Summon, 0.0, 30.0), (Move::Web, 6.0, 20.0), (Move::Leap, 7.0, 22.0), (Move::Spit, 3.5, 25.0)],
-            Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],
-            Some(Build::Wolf) => &[(Move::Slam, 0.0, 3.2), (Move::Summon, 0.0, 30.0), (Move::Maul, 2.5, 8.0), (Move::Leap, 7.0, 22.0)],
-            Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
-            // Only ever monsters, all seen to above; and dragons, which think for themselves, see
-            // src\dragons.rs
-            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon) | None => &[],
-        };
+        let moves = self.menu();
         moves.iter().filter(|&&(m, _, _)| self.only.is_none_or(|o| o == m || m == Move::Erupt)).find(|&&(m, near, far)| within(m, near, far)).map(|&(m, _, _)| m)
     }
 }
@@ -1542,14 +1737,96 @@ fn orbit(from: Vector3<f64>, middle: Vector3<f64>, round: f64, sign: f64, vpm: f
 }
 
 /// What boss `a` does this frame: noticing the player at `player`, their feet in voxels, going after
-/// them, and attacking. What its attacks do goes in its deeds.
+/// them, and attacking. What its attacks do goes in its deeds. A jointed boss is then posed for it,
+/// see src\rig.rs.
 pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) {
+    decide(a, world, player, dt);
+    let vpm = world.voxels_per_meter as f64;
+    if let Some(mut boss) = a.boss.take() {
+        if let Some(mut rig) = boss.rig.take() {
+            rig.step(&moment(a, &boss, player, vpm, dt));
+            boss.rig = Some(rig);
+        }
+        a.boss = Some(boss);
+    }
+}
+
+/// What jointed boss `a` is up to this frame, for posing it
+fn moment(a: &Animal, boss: &Boss, player: Option<Vector3<f64>>, vpm: f64, dt: f64) -> crate::rig::Moment {
+    let look = a.look;
+    let s = look.scale();
+    // Its own frame, at its build's size, +x ahead
+    let heading = a.drawn_heading();
+    let local = |p: Vector3<f64>| {
+        let off = (p - a.position) / vpm;
+        let (c, sn) = (heading.cos(), heading.sin());
+        Vector3::new(c * off.x + sn * off.y, -sn * off.x + c * off.y, off.z) / s
+    };
+    // Frozen solid or held fast it stays as it is; slowed it moves slowly
+    let pace = a.status.pace();
+    let held = pace <= 0.0 && a.health > 0.0;
+    crate::rig::Moment {
+        dt: if held { 0.0 } else { dt * if a.health > 0.0 { pace.max(0.2) } else { 1.0 } },
+        phase: a.phase,
+        speed: a.speed,
+        walk: look.walk_speed(),
+        run: look.run_speed(),
+        stride: look.stride() / s,
+        turning: a.turning(),
+        doing: if a.health > 0.0 { boss.doing() } else { None },
+        target: player.map(|p| local(p + Vector3::new(0.0, 0.0, 1.5 * vpm))),
+        engaged: boss.engaged,
+        enraged: boss.enraged,
+        stage: boss.stage,
+        dying: boss.dying.filter(|_| a.health <= 0.0),
+        carry: boss.carrying(),
+    }
+}
+
+/// Where point `p` of jointed boss `a`'s pose is in the world, in voxels: `p` in meters at its
+/// build's size from the middle of its feet, +x ahead
+fn posed_at(a: &Animal, p: Vector3<f64>, vpm: f64) -> Vector3<f64> {
+    a.rig_point(p, vpm)
+}
+
+/// Where what boss `a` casts, spits or throws comes from: out of its jointed pose where it has one,
+/// see rig::Sockets, else its mouth
+fn emit(a: &Animal, boss: &Boss, vpm: f64) -> Vector3<f64> {
+    match &boss.rig {
+        Some(rig) => posed_at(a, rig.sockets.cast, vpm),
+        None => spout(a, boss, vpm),
+    }
+}
+
+fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) {
     let vpm = world.voxels_per_meter as f64;
     let look = a.look;
     let vitality = a.vitality();
     let Some(mut boss) = a.boss.take() else {
         return;
     };
+    // A jointed boss falling as it dies: a last groan, its knees hitting the ground and the rest of
+    // it after, see src\rig.rs and Game::reap()
+    if a.health <= 0.0 && boss.rig.is_some() {
+        let t = boss.dying.map_or(0.0, |t| t + dt);
+        if boss.dying.is_none() {
+            boss.deeds.push(Deed::WindUp(Move::Roar, a.position));
+        }
+        for &beat in crate::rig::thuds(look) {
+            if t >= beat && t - dt < beat {
+                boss.deeds.push(Deed::Stomp(a.position));
+                boss.deeds.push(Deed::Slam { at: a.position, radius: 0.0, damage: 0.0, crater: 0.0 });
+            }
+        }
+        boss.dying = Some(t);
+        boss.phase = Phase::Recover(1.0);
+        boss.buried = false;
+        a.mood = Mood::Idle;
+        a.speed = 0.0;
+        a.target_heading = a.heading;
+        a.boss = Some(boss);
+        return;
+    }
     // A serpent's death throes: thrashing, rearing up and falling back, rolling over and going
     // still, before it's gone, see Game::reap()
     if a.health <= 0.0 && look.is_serpent() {
@@ -1605,6 +1882,18 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
     }
     for c in &mut boss.cooldowns {
         *c -= dt;
+    }
+    // A jointed boss that's taken blows enough close together reels from them, knocked out of what
+    // it was getting ready to do, see src\rig.rs; and can't be made to again for a while
+    boss.reel_wait -= dt;
+    let shaken = boss.rig.as_ref().is_some_and(|r| r.poise > reel_at(look));
+    if shaken && boss.reel_wait <= 0.0 && boss.engaged && matches!(boss.phase, Phase::Chase | Phase::WindUp(..) | Phase::Recover(_)) {
+        boss.phase = Phase::Reel(REEL_SECONDS);
+        boss.reel_wait = REEL_EVERY;
+        if let Some(rig) = &mut boss.rig {
+            rig.poise = 0.0;
+        }
+        boss.deeds.push(Deed::Stomp(a.position));
     }
     // A raider led round walls or to a door goes there rather than straight at the player
     let lure = boss.lure;
@@ -1939,7 +2228,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             // as it comes: in front of it, all round it, or where it'll leap to
             if look.is_knight() {
                 let closing = (1.0 - t / (windup(look, m) * quick.max(0.8) + boss.hold)).clamp(0.0, 1.0);
-                let (sweep, spikes, _) = animals::knight_reach(look);
+                let (sweep, spikes, _) = crate::rig::knight_reach(look);
                 let ring = match m {
                     Move::Slam => {
                         let (reach, radius, _, _) = slam(look);
@@ -2027,8 +2316,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                             boss.deeds.push(Deed::Summon { at: a.position, look: brood, count, pack: boss.pack });
                         }
                     }
-                    Move::Shoot => boss.deeds.push(Deed::Bolt { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.1 * vpm) }),
-                    Move::Lash => boss.deeds.push(Deed::Lash { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    Move::Shoot => boss.deeds.push(Deed::Bolt { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.1 * vpm) }),
+                    Move::Lash => boss.deeds.push(Deed::Lash { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
                     Move::Burrow => {
                         boss.buried = true;
                         boss.deeds.push(Deed::Burrow { at: a.position });
@@ -2098,11 +2387,15 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     }
                     // The boulder it tore up hurled from overhead, out of its hands
                     Move::Throw if look == Look::Colossus => boss.deeds.push(Deed::Hurl { id: a.id, from: on_body(a, [0.2, 0.0, 4.1].map(|v| v * look.size()), vpm), to: boss.aim }),
-                    Move::Throw => boss.deeds.push(Deed::Throw { from: on_body(a, [-0.55, -0.55, 4.05].map(|v| v * look.size()), vpm), to: boss.aim }),
+                    Move::Throw => {
+                        // Out of its hand, where its jointed pose has it, or from up behind its head
+                        let from = boss.rig.as_ref().map_or_else(|| on_body(a, [-0.55, -0.55, 4.05].map(|v| v * look.size()), vpm), |r| posed_at(a, r.sockets.grip, vpm));
+                        boss.deeds.push(Deed::Throw { from, to: boss.aim })
+                    }
                     // The void flung off a knight's blade as it sweeps it out, three of it fanned
                     // out across the player once it's angry
                     Move::Spit if look.is_knight() => {
-                        let from = on_body(a, animals::knight_reach(look).2, vpm);
+                        let from = on_body(a, crate::rig::knight_reach(look).2, vpm);
                         let to = boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm);
                         let across = Vector3::new(-(to - from).y, (to - from).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
                         let fan: &[f64] = if boss.enraged { &[-1.0, 0.0, 1.0] } else { &[0.0] };
@@ -2112,13 +2405,13 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     }
                     // An adder's blood, three globs fanned out across the player
                     Move::Spit if look == Look::BloodAdder => {
-                        let (from, to) = (mouth(a, vpm), boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm));
+                        let (from, to) = (emit(a, &boss, vpm), boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm));
                         let across = Vector3::new(-(to - from).y, (to - from).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
                         for k in [-1.0, 0.0, 1.0] {
                             boss.deeds.push(Deed::Spit { from, to: to + across * k * 2.2 * vpm });
                         }
                     }
-                    Move::Spit => boss.deeds.push(Deed::Spit { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    Move::Spit => boss.deeds.push(Deed::Spit { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
                     // Planting its feet to sweep its greatsword round, the sword hissing out low
                     Move::Sweep => {
                         boss.spun_from = a.heading;
@@ -2129,7 +2422,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     // Its greatsword driven into the ground, and bone spikes bursting up all round
                     // it, hurting whoever's still within them
                     Move::Spikes => {
-                        let (_, spikes, _) = animals::knight_reach(look);
+                        let (_, spikes, _) = crate::rig::knight_reach(look);
                         let damage = if look.is_raid() { SPIKES_DAMAGE * 1.3 } else { SPIKES_DAMAGE };
                         boss.deeds.push(Deed::Slam { at: a.position, radius: spikes, damage, crater: 0.0 });
                         boss.deeds.push(Deed::Stomp(a.position));
@@ -2163,7 +2456,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         boss.deeds.push(Deed::Stomp(a.position));
                     }
                     Move::Roots => boss.deeds.push(Deed::Roots { at: boss.aim }),
-                    Move::Volley => boss.deeds.push(Deed::Volley { from: mouth(a, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    Move::Volley => boss.deeds.push(Deed::Volley { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
                     // The shockwave runs out from where it stands as it pounds the ground
                     Move::Quake => {
                         boss.leap.0 = a.position;
@@ -2172,12 +2465,64 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     Move::Maul => boss.deeds.push(Deed::Stomp(a.position)),
                     // Web, then a pounce on whoever's stuck in it
                     Move::Web => {
-                        boss.deeds.push(Deed::Web { from: mouth(a, vpm), to: boss.aim });
+                        boss.deeds.push(Deed::Web { from: emit(a, &boss, vpm), to: boss.aim });
                         boss.cooldowns[Move::Leap as usize] = boss.cooldowns[Move::Leap as usize].min(1.2);
                     }
                     // Angry, it sends three lines fanned out
-                    Move::RootWave => boss.deeds.push(Deed::RootWave { from: a.position, to: boss.aim, lanes: if boss.enraged { 3 } else { 1 } }),
-                    Move::Breath | Move::Roar | Move::Storm | Move::Cataclysm => {}
+                    Move::RootWave => boss.deeds.push(Deed::RootWave { from: a.position, to: boss.aim, lanes: if boss.enraged || look.is_raid() { 3 } else { 1 } }),
+                    Move::Breath | Move::Roar | Move::Storm | Move::Cataclysm | Move::Weep => {}
+                    // Swung across from its right to its left: whoever's within reach in front of it
+                    // is struck and thrown off to its left
+                    Move::Swat => {
+                        let left = Vector3::new(-forward.y, forward.x, 0.0);
+                        let reach = SWAT_REACH * look.scale();
+                        boss.deeds.push(Deed::Slam { at: a.position + (forward + left * 0.4) * reach * 0.7 * vpm, radius: 0.0, damage: 0.0, crater: 0.0 });
+                        boss.deeds.push(Deed::Swipe(a.position, 2));
+                        if let Some(p) = player {
+                            let off = p - a.position;
+                            if distance < reach + 0.8 && off.xy().dot(&forward.xy()) > -0.2 * off.xy().norm() && (off.z / vpm).abs() < 3.0 {
+                                boss.deeds.push(Deed::Ram { damage: if look.is_raid() { 30.0 } else { 24.0 }, direction: (left * 1.2 + forward * 0.5).normalize() });
+                            }
+                        }
+                    }
+                    // Its maul smashed into the ground in front of it, and boulders of ice bursting
+                    // up out of it and flying at the player, fanned out across them
+                    Move::Avalanche => {
+                        let (reach, radius, damage, crater) = slam(look);
+                        let at = a.position + forward * reach * vpm;
+                        boss.deeds.push(Deed::Slam { at, radius, damage, crater });
+                        let to = boss.aim;
+                        let across = Vector3::new(-(to - at).y, (to - at).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        let spread: &[f64] = if boss.enraged { &[-2.0, -1.0, 0.0, 1.0, 2.0] } else { &[-1.0, 0.0, 1.0] };
+                        for &k in spread {
+                            boss.deeds.push(Deed::Throw { from: at + Vector3::new(0.0, 0.0, 1.2 * vpm) + across * k * 0.8 * vpm, to: to + across * k * 3.0 * vpm });
+                        }
+                    }
+                    // Venom flung out across the player, fanned wide
+                    Move::Hex => {
+                        let (from, to) = (emit(a, &boss, vpm), boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm));
+                        let across = Vector3::new(-(to - from).y, (to - from).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        for k in [-2.0, -1.0, 0.0, 1.0, 2.0] {
+                            boss.deeds.push(Deed::Spit { from, to: to + across * k * 2.0 * vpm });
+                        }
+                    }
+                    Move::Scarabs => boss.deeds.push(Deed::Volley { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    Move::Trample => {
+                        boss.rammed = false;
+                        a.target_heading = heading_to(a.position, boss.aim);
+                        a.heading = a.target_heading;
+                        boss.trail = 0.0;
+                    }
+                    // The shockwave runs out from where it stands; lightning comes down on the player
+                    Move::Thunderclap | Move::Bellow => {
+                        boss.leap.0 = a.position;
+                        boss.deeds.push(Deed::Stomp(a.position));
+                        if m == Move::Thunderclap {
+                            boss.deeds.push(Deed::Storm { to: boss.aim, k: 0 });
+                        } else {
+                            boss.deeds.push(Deed::Roar { at: a.position, angry: boss.enraged });
+                        }
+                    }
                 }
                 Phase::Act(m, 0.0)
             }
@@ -2194,7 +2539,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         let turn = (heading_to(a.position, p) - a.heading + PI).rem_euclid(TAU) - PI;
                         a.target_heading = a.heading + turn.clamp(-BREATH_TURN * dt, BREATH_TURN * dt);
                     }
-                    let from = spout(a, &boss, vpm);
+                    let from = emit(a, &boss, vpm);
                     let to = player.map_or(from + forward * 8.0 * vpm, |p| p + Vector3::new(0.0, 0.0, 1.0 * vpm));
                     let ahead = (to - from).xy().norm().max(1.0);
                     let direction = Vector3::new(forward.x * ahead, forward.y * ahead, to.z - from.z).normalize();
@@ -2226,8 +2571,16 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                         boss.deeds.push(Deed::Stomp(boss.aim));
                     }
                 }
-                Move::Charge => {
+                Move::Charge | Move::Trample => {
                     a.mood = Mood::Run;
+                    // Brambles bursting up in a stag's wake
+                    if m == Move::Trample {
+                        boss.trail -= dt;
+                        if boss.trail <= 0.0 && t > 0.3 {
+                            boss.trail = 0.35;
+                            boss.deeds.push(Deed::Roots { at: a.position - forward * 1.5 * look.scale() * vpm });
+                        }
+                    }
                     let reach = if look.is_great_serpent() { 3.8 } else { 2.8 };
                     if !boss.rammed && distance < reach {
                         boss.rammed = true;
@@ -2237,7 +2590,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     if t > 0.35 && a.speed < 1.0 {
                         boss.deeds.push(Deed::Stomp(a.position));
                         boss.deeds.push(Deed::Slam { at: a.position + forward * 2.0 * vpm, radius: 0.0, damage: 0.0, crater: 0.6 });
-                        boss.phase = Phase::Stunned(2.0);
+                        boss.phase = Phase::Stunned(STUN_SECONDS);
                         a.boss = Some(boss);
                         return;
                     }
@@ -2274,7 +2627,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     let blade = |t: f64| from + turned(t) + COILED + (SWEPT - COILED) * (t / SWING).min(1.0);
                     a.heading = (from + turned(t)).rem_euclid(TAU);
                     a.target_heading = a.heading;
-                    let (reach, _, _) = animals::knight_reach(look);
+                    let (reach, _, _) = crate::rig::knight_reach(look);
                     if let Some(p) = player {
                         let bearing = heading_to(a.position, p);
                         let passes = |t: f64| ((blade(t) - bearing) / TAU).floor();
@@ -2294,9 +2647,18 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                     }
                     over = t >= swinging + SPIN_SETTLE;
                 }
-                // The shockwave running out across the ground
-                Move::Quake => {
-                    let to = (t * QUAKE_PACE).min(quake_reach(look));
+                // The shockwave running out across the ground, and for a thunderclap lightning coming
+                // down after the first bolt
+                Move::Quake | Move::Thunderclap | Move::Bellow => {
+                    let reach = if m == Move::Bellow { BELLOW_REACH } else { quake_reach(look) };
+                    let to = (t * QUAKE_PACE).min(reach);
+                    if m == Move::Thunderclap {
+                        for (k, at) in [(1, 0.35), (2, 0.7), (3, 1.05)] {
+                            if t >= at && t - dt < at {
+                                boss.deeds.push(Deed::Storm { to: player.unwrap_or(boss.aim), k });
+                            }
+                        }
+                    }
                     boss.deeds.push(Deed::Quake { at: boss.leap.0, from: (t - dt) * QUAKE_PACE, to, dt });
                     // Lines of spikes of rock bursting up as the shockwave runs out under them,
                     // straight at the player and fanned out either side, more once it's enraged
@@ -2307,6 +2669,26 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                             let lean = Vector3::new(ahead.x * c - ahead.y * s, ahead.x * s + ahead.y * c, 0.0);
                             let height = 3.0 - 1.2 * d / quake_reach(look);
                             boss.deeds.push(Deed::Spire { at: boss.leap.0 + lean * d * vpm, height, lean });
+                        }
+                    }
+                }
+                // Blood weeping down all round the player, a drop at a time, arcing out of her
+                Move::Weep => {
+                    let count = |t: f64| (t / WEEP_EVERY) as usize;
+                    if t - dt <= 0.0 || count(t) != count(t - dt) {
+                        let k = count(t);
+                        let p = player.unwrap_or(boss.aim);
+                        let round = k as f64 * 2.4 + boss.clock;
+                        let r = if k % 5 == 0 { 0.0 } else { (2.0 + (k % 4) as f64 * 1.4) * vpm };
+                        boss.deeds.push(Deed::Spit { from: emit(a, &boss, vpm), to: p + Vector3::new(round.cos() * r, round.sin() * r, 0.3 * vpm) });
+                    }
+                }
+                // Another swarm flung off its sceptre as it sweeps it back and forth
+                Move::Scarabs => {
+                    for at in [0.3, 0.6] {
+                        if t >= at && t - dt < at {
+                            let to = player.unwrap_or(boss.aim) + Vector3::new(0.0, 0.0, 1.0 * vpm);
+                            boss.deeds.push(Deed::Volley { from: emit(a, &boss, vpm), to });
                         }
                     }
                 }
@@ -2327,7 +2709,7 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 // Breathing up into the sky, then its element raining down round the player
                 Move::Storm => {
                     if t < 0.5 {
-                        let from = spout(a, &boss, vpm);
+                        let from = emit(a, &boss, vpm);
                         boss.deeds.push(Deed::Breath { from, direction: (forward * 0.3 + Vector3::z()).normalize(), dt });
                     }
                     let count = |t: f64| if t < STORM_START { None } else { Some(((t - STORM_START) / STORM_EVERY) as usize) };
@@ -2376,7 +2758,8 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
                 }
                 (true, _) => {
                     boss.last = Some(m);
-                    Phase::Recover(recovery(look, m) * quick)
+                    boss.recover_len = recovery(look, m) * quick;
+                    Phase::Recover(boss.recover_len)
                 }
                 _ => Phase::Act(m, t),
             }
@@ -2389,6 +2772,11 @@ pub fn think(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f6
             a.mood = Mood::Idle;
             a.speed = 0.0;
             if t - dt > 0.0 { Phase::Stunned(t - dt) } else { Phase::Chase }
+        }
+        Phase::Reel(t) => {
+            a.mood = Mood::Idle;
+            a.speed *= (-8.0 * dt).exp();
+            if t - dt > 0.0 { Phase::Reel(t - dt) } else { Phase::Chase }
         }
     };
     if !boss.engaged && boss.phase != Phase::Roam && !matches!(boss.phase, Phase::Act(..)) {

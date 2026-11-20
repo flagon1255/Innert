@@ -746,6 +746,11 @@ fn dragon_file(i: usize) -> Option<String> {
     Some(format!("dragon/{}/{}", snake(&format!("{kind:?}")), dragon_piece_name(i % pieces)))
 }
 
+pub fn boss_file(i: usize) -> Option<String> {
+    let look = *crate::rig::KINDS.get(i / crate::rig::PIECES)?;
+    Some(format!("boss/{}/{}", snake(&format!("{look:?}")), crate::rig::edit::piece_name(look, i % crate::rig::PIECES)))
+}
+
 fn serpent_file(i: usize) -> Option<String> {
     let g = crate::serpents::GREATS.get(i / 3)?;
     Some(format!("serpent/{}/{}", snake(&format!("{:?}", g.look)), SERPENT_PARTS[i % 3]))
@@ -759,11 +764,23 @@ fn wing_file(i: usize) -> Option<String> {
 /// dragons::build_models(). Dragons drawn alike but for their colours share their files, see
 /// skin_map().
 pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
-    if !enabled() || !edited(&root()).iter().any(|f| f.starts_with("dragon/")) {
+    let kinds = crate::dragons::KINDS.len();
+    jointed(made, kinds, dragon_pieces(), "dragon/", &dragon_file, "dragon pieces");
+}
+
+/// Every jointed boss's pieces, with the files read in, see rig::build_models(). Bosses drawn
+/// alike but for their colours, as the golems are, share their files.
+pub fn bosses(made: &mut [(Model, Vector3<f64>)]) {
+    jointed(made, crate::rig::KINDS.len(), crate::rig::PIECES, "boss/", &boss_file, "boss pieces");
+}
+
+/// The pieces of `kinds` kinds of jointed things, `pieces` each, with the files read in: `file`
+/// gives a piece's file, all under `prefix`. A kind with no files of its own that's another drawn
+/// in other colours is drawn from that one's files, recoloured, see skin_map().
+fn jointed(made: &mut [(Model, Vector3<f64>)], kinds: usize, pieces: usize, prefix: &str, file: &dyn Fn(usize) -> Option<String>, what: &str) {
+    if !enabled() || !edited(&root()).iter().any(|f| f.starts_with(prefix)) {
         return;
     }
-    let pieces = dragon_pieces();
-    let kinds = crate::dragons::KINDS.len();
     // Which kind each shares its files with, worked out on the code's models
     let shares: Vec<Option<(usize, [u8; 256])>> = (0..kinds)
         .map(|k| {
@@ -775,8 +792,8 @@ pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
         })
         .collect();
     let files = edited(&root());
-    let owns = |k: usize| (0..pieces).any(|p| dragon_file(k * pieces + p).is_some_and(|f| files.contains(&f)));
-    let changed = apply_anchored(&mut made[..kinds * pieces], MODEL_RES, &|i| dragon_file(i).filter(|_| shares[i / pieces].is_none_or(|_| owns(i / pieces))));
+    let owns = |k: usize| (0..pieces).any(|p| file(k * pieces + p).is_some_and(|f| files.contains(&f)));
+    let changed = apply_anchored(&mut made[..kinds * pieces], MODEL_RES, &|i| file(i).filter(|_| shares[i / pieces].is_none_or(|_| owns(i / pieces))));
     for (k, share) in shares.iter().enumerate() {
         if let Some((j, map)) = share
             && !owns(k)
@@ -789,7 +806,7 @@ pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
         }
     }
     if changed > 0 {
-        log(format!("Model files: {changed} dragon pieces read"));
+        log(format!("Model files: {changed} {what} read"));
     }
 }
 
@@ -925,30 +942,11 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
         let json = serde_json::to_string_pretty(members).map_err(|e| e.to_string())?;
         std::fs::write(dir.join(folder).join("skins.json"), json).map_err(|e| e.to_string())?;
     }
-    // Dragons' pieces, those alike but for colour once
-    let pieces = dragon_pieces();
-    let base = animals::DRAGON_MODELS_AT;
-    let anchors: Vec<Vector3<f64>> = crate::dragons::anchors();
-    for (k, kind) in crate::dragons::KINDS.iter().enumerate() {
-        let mine: Vec<&Model> = (0..pieces).map(|p| &models[base + k * pieces + p]).collect();
-        let shared = (0..k).find(|&j| {
-            let theirs: Vec<&Model> = (0..pieces).map(|p| &models[base + j * pieces + p]).collect();
-            skin_map(&theirs, &mine).is_some()
-        });
-        if let Some(j) = shared {
-            lines.push(format!("dragon/{}: drawn from dragon/{}'s files in its own colours", snake(&format!("{kind:?}")), snake(&format!("{:?}", crate::dragons::KINDS[j]))));
-            continue;
-        }
-        for (p, m) in mine.iter().enumerate() {
-            if is_empty(m) {
-                continue;
-            }
-            let name = dragon_file(k * pieces + p).unwrap();
-            let what = format!("{}, {}", crate::dragons::name(*kind), dragon_piece_name(p).replace('_', " "));
-            write_model(dir, &name, m, MODEL_RES, Some(anchors[k * pieces + p]), &what, "A jointed piece: the pivot is its joint.")?;
-            lines.push(format!("{name}.vox: {what}"));
-        }
-    }
+    // Dragons' and jointed bosses' pieces, those alike but for colour once
+    let dragon_name = |k: usize, p: usize| format!("{}, {}", crate::dragons::name(crate::dragons::KINDS[k]), dragon_piece_name(p).replace('_', " "));
+    export_jointed(dir, &models, animals::DRAGON_MODELS_AT, &crate::dragons::KINDS, dragon_pieces(), &crate::dragons::anchors(), &dragon_file, &dragon_name, &mut lines)?;
+    let boss_name = |k: usize, p: usize| format!("{}, {}", look_title(crate::rig::KINDS[k]), crate::rig::edit::piece_name(crate::rig::KINDS[k], p).replace('_', " "));
+    export_jointed(dir, &models, animals::RIG_MODELS_AT, &crate::rig::KINDS, crate::rig::PIECES, &crate::rig::edit::anchors(), &boss_file, &boss_name, &mut lines)?;
     // Great serpents' pieces
     let first = animals::ANIMAL_MODELS - crate::serpents::PART_MODELS;
     let serpent_anchors = crate::serpents::anchors();
@@ -970,6 +968,44 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
     let index = lines.join("\n") + "\n";
     std::fs::write(dir.join("exported.txt"), &index).map_err(|e| e.to_string())?;
     Ok(Exported { lines })
+}
+
+/// Writes the pieces of jointed things, `pieces` to each of `kinds`, their models from `first`
+/// among `models`: those drawn alike but for their colours once
+#[allow(clippy::too_many_arguments)]
+fn export_jointed(
+    dir: &Path,
+    models: &[Model],
+    first: usize,
+    kinds: &[Look],
+    pieces: usize,
+    anchors: &[Vector3<f64>],
+    file: &dyn Fn(usize) -> Option<String>,
+    what: &dyn Fn(usize, usize) -> String,
+    lines: &mut Vec<String>,
+) -> Result<(), String> {
+    for k in 0..kinds.len() {
+        let mine: Vec<&Model> = (0..pieces).map(|p| &models[first + k * pieces + p]).collect();
+        let shared = (0..k).find(|&j| {
+            let theirs: Vec<&Model> = (0..pieces).map(|p| &models[first + j * pieces + p]).collect();
+            skin_map(&theirs, &mine).is_some()
+        });
+        if let Some(j) = shared {
+            let folder = |k: usize| file(k * pieces).and_then(|f| f.rsplit_once('/').map(|(d, _)| d.to_string())).unwrap_or_default();
+            lines.push(format!("{}: drawn from {}'s files in its own colours", folder(k), folder(j)));
+            continue;
+        }
+        for (p, m) in mine.iter().enumerate() {
+            if is_empty(m) {
+                continue;
+            }
+            let name = file(k * pieces + p).unwrap();
+            let what = what(k, p);
+            write_model(dir, &name, m, MODEL_RES, Some(anchors[k * pieces + p]), &what, "A jointed piece: the pivot is its joint.")?;
+            lines.push(format!("{name}.vox: {what}"));
+        }
+    }
+    Ok(())
 }
 
 fn name_of(m: u8) -> String {
@@ -1206,8 +1242,17 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     let pieces = dragon_pieces();
     let first_dragon = animals::DRAGON_MODELS_AT;
     let first_serpent = animals::ANIMAL_MODELS - crate::serpents::PART_MODELS;
-    let (dragon_anchors, serpent_anchors) = (crate::dragons::anchors(), crate::serpents::anchors());
-    let anchor_of = |i: usize| if i >= first_serpent { serpent_anchors.get(i - first_serpent).copied() } else { dragon_anchors.get(i - first_dragon).copied() };
+    let first_boss = animals::RIG_MODELS_AT;
+    let (dragon_anchors, serpent_anchors, boss_anchors) = (crate::dragons::anchors(), crate::serpents::anchors(), crate::rig::edit::anchors());
+    let anchor_of = |i: usize| {
+        if i >= first_serpent {
+            serpent_anchors.get(i - first_serpent).copied()
+        } else if i >= first_dragon {
+            dragon_anchors.get(i - first_dragon).copied()
+        } else {
+            boss_anchors.get(i - first_boss).copied()
+        }
+    };
     let whole = |i: usize, name: Option<String>, s: &State, new: &mut Vec<(usize, Model)>| {
         let Some(name) = name.filter(|n| names.contains(n)) else { return };
         let code = code_of(i, s);
@@ -1227,6 +1272,9 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     };
     for i in 0..crate::dragons::KINDS.len() * pieces {
         whole(first_dragon + i, dragon_file(i), &s, &mut new);
+    }
+    for i in 0..crate::rig::MODELS {
+        whole(first_boss + i, boss_file(i), &s, &mut new);
     }
     for i in 0..crate::serpents::PART_MODELS {
         whole(first_serpent + i, serpent_file(i), &s, &mut new);
@@ -1370,8 +1418,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("innert-export-test-{}", std::process::id()));
         export_all(&dir, false).unwrap();
         let files = scan(&dir);
-        assert!(files.contains("golem/base"), "the golem's standing frame");
-        assert!(!files.contains("frost_golem/base"), "the frost golem's drawn from the golem's");
+        assert!(files.contains("wolf/base"), "the wolf's standing frame");
         assert!(files.contains("dragon/ashwing/head"));
         assert!(files.contains("wings/gull"));
         CODE_ONLY.store(true, Ordering::Relaxed);
@@ -1392,10 +1439,13 @@ mod tests {
                 assert!(back[f].voxels == code[f].voxels, "{look:?} frame {f}");
             }
         }
-        let anchors = crate::dragons::anchors();
-        let base = animals::DRAGON_MODELS_AT;
-        for i in 0..crate::dragons::KINDS.len() * dragon_pieces() {
-            let name = dragon_file(i).unwrap();
+        let anchors: Vec<Vector3<f64>> = crate::rig::edit::anchors().into_iter().chain(crate::dragons::anchors()).collect();
+        let base = animals::RIG_MODELS_AT;
+        let names: Vec<Option<String>> = (0..crate::rig::MODELS).map(boss_file).chain((0..crate::dragons::KINDS.len() * dragon_pieces()).map(dragon_file)).collect();
+        assert!(files.contains("boss/golem/chest") && files.contains("dragon/drake/head"), "the bosses' and drakes' pieces");
+        assert!(!files.iter().any(|f| f.starts_with("boss/frost_golem/")), "the frost golem's drawn from the golem's");
+        for (i, name) in names.into_iter().enumerate() {
+            let name = name.unwrap();
             if !files.contains(&name) {
                 continue;
             }
@@ -1424,9 +1474,22 @@ mod tests {
             let k = look_model(l, 0);
             models[k..k + n].iter().collect()
         };
-        assert_eq!(skin_of(Look::FrostGolem, &frames_of).map(|(l, _)| l), Some(Look::Golem));
-        assert_eq!(skin_of(Look::MagmaGolem, &frames_of).map(|(l, _)| l), Some(Look::Golem));
-        assert!(skin_of(Look::Golem, &frames_of).is_none());
+        // A look drawn from another's is that one's frames with its materials swapped
+        for &l in &Look::ALL {
+            if let Some((from, map)) = skin_of(l, &frames_of) {
+                for (a, b) in frames_of(from).iter().zip(frames_of(l)) {
+                    assert!(recolor(a, &map).voxels == b.voxels, "{l:?} from {from:?}");
+                }
+            }
+        }
+        // The golems are jointed now: each one's pieces are the stone golem's in other colours
+        let p = crate::rig::PIECES;
+        let pieces = |l: Look| -> Vec<&Model> {
+            let k = crate::rig::kind(l).unwrap();
+            models[animals::RIG_MODELS_AT + k * p..animals::RIG_MODELS_AT + (k + 1) * p].iter().collect()
+        };
+        assert!(skin_map(&pieces(Look::Golem), &pieces(Look::FrostGolem)).is_some());
+        assert!(skin_map(&pieces(Look::Golem), &pieces(Look::MagmaGolem)).is_some());
     }
 
     #[test]
