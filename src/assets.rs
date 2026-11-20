@@ -267,12 +267,16 @@ pub struct Sidecar {
     pub points: BTreeMap<String, [f64; 3]>,
     #[serde(default)]
     pub note: String,
+    /// How long the file was as it was written and a hash of it: a file still the same was never
+    /// edited, so the code's model is used, as it may have changed since, see unchanged()
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<(u64, String)>,
 }
 
 impl Sidecar {
     fn new(what: String, res: f64, size: [u32; 3], anchor: Option<Vector3<f64>>, note: &str) -> Self {
         let pivot = pivot_of(size, anchor, res);
-        Sidecar { what, voxels_per_meter: res, size, pivot, anchor: anchor.map(|a| [a.x, a.y, a.z]), origin: origin_of(pivot), points: BTreeMap::new(), note: note.into() }
+        Sidecar { what, voxels_per_meter: res, size, pivot, anchor: anchor.map(|a| [a.x, a.y, a.z]), origin: origin_of(pivot), points: BTreeMap::new(), note: note.into(), written: None }
     }
 }
 
@@ -510,6 +514,40 @@ pub(crate) fn scan(dir: &Path) -> HashSet<String> {
     out
 }
 
+fn hash_of(bytes: &[u8]) -> String {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Whether the file at `path` is just as it was exported, so never edited: then the code's model
+/// is drawn, as it was, or as it's become since
+pub(crate) fn unchanged(path: &Path) -> bool {
+    let Some((len, hash)) = std::fs::read_to_string(path.with_extension("json")).ok().and_then(|t| serde_json::from_str::<Sidecar>(&t).ok()).and_then(|s| s.written) else {
+        return false;
+    };
+    std::fs::metadata(path).is_ok_and(|m| m.len() == len) && std::fs::read(path).is_ok_and(|b| hash_of(&b) == hash)
+}
+
+/// The files under `dir` that have been edited since they were exported, see scan() and
+/// unchanged(); the weapons' parts' all, as they're looked at only as they're needed
+pub(crate) fn edited(dir: &Path) -> HashSet<String> {
+    let mut known = EDITED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((d, files)) = known.as_ref()
+        && d == dir
+    {
+        return files.clone();
+    }
+    let files: HashSet<String> = scan(dir).into_iter().filter(|f| f.starts_with("weapons/") || !unchanged(&file_of(dir, f))).collect();
+    *known = Some((dir.to_path_buf(), files.clone()));
+    files
+}
+
+/// The files edited, as edited() last found them, till they change
+static EDITED: Mutex<Option<(PathBuf, HashSet<String>)>> = Mutex::new(None);
+
 pub fn file_of(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.vox"))
 }
@@ -517,15 +555,21 @@ pub fn file_of(dir: &Path, name: &str) -> PathBuf {
 /// What's said of what was read, kept for the editor to show, newest last
 pub fn log(line: String) {
     eprintln!("{line}");
-    let mut s = state();
-    s.log.push(line);
-    if s.log.len() > 40 {
-        s.log.remove(0);
+    let mut log = lines();
+    log.push(line);
+    if log.len() > 40 {
+        log.remove(0);
     }
 }
 
 pub fn recent_log() -> Vec<String> {
-    state().log.clone()
+    lines().clone()
+}
+
+/// What's been said, apart from State so it can be said while that's held
+fn lines() -> std::sync::MutexGuard<'static, Vec<String>> {
+    static LINES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    LINES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// What's kept between reading files and reading them again
@@ -536,7 +580,6 @@ struct State {
     code: HashMap<usize, Model>,
     /// The code's wings, and whether they've been replaced
     code_wings: Option<Vec<(Model, Vector3<f64>)>>,
-    log: Vec<String>,
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -622,7 +665,7 @@ pub fn apply_looks(mut models: Vec<Model>) -> Vec<Model> {
         return models;
     }
     let dir = root();
-    let files = scan(&dir);
+    let files = edited(&dir);
     if files.is_empty() {
         return models;
     }
@@ -677,7 +720,7 @@ fn apply_anchored(made: &mut [(Model, Vector3<f64>)], res: f64, name: &dyn Fn(us
         return 0;
     }
     let dir = root();
-    let files = scan(&dir);
+    let files = edited(&dir);
     let mut changed = 0;
     for (i, (model, anchor)) in made.iter_mut().enumerate() {
         let Some(name) = name(i).filter(|n| files.contains(n)) else { continue };
@@ -716,7 +759,7 @@ fn wing_file(i: usize) -> Option<String> {
 /// dragons::build_models(). Dragons drawn alike but for their colours share their files, see
 /// skin_map().
 pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
-    if !enabled() || !root().exists() {
+    if !enabled() || !edited(&root()).iter().any(|f| f.starts_with("dragon/")) {
         return;
     }
     let pieces = dragon_pieces();
@@ -731,7 +774,7 @@ pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
             })
         })
         .collect();
-    let files = scan(&root());
+    let files = edited(&root());
     let owns = |k: usize| (0..pieces).any(|p| dragon_file(k * pieces + p).is_some_and(|f| files.contains(&f)));
     let changed = apply_anchored(&mut made[..kinds * pieces], MODEL_RES, &|i| dragon_file(i).filter(|_| shares[i / pieces].is_none_or(|_| owns(i / pieces))));
     for (k, share) in shares.iter().enumerate() {
@@ -761,7 +804,7 @@ pub fn serpents(made: &mut [(Model, Vector3<f64>)]) {
 
 /// Every kind of wings, then the motes of their trails, with the files read in, see wings::models()
 pub fn wings(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)> {
-    if enabled() && root().exists() {
+    if enabled() && edited(&root()).iter().any(|f| f.starts_with("wings/")) {
         let code: Vec<(Model, Vector3<f64>)> = made.iter().map(|(m, a)| (copy(m), *a)).collect();
         let changed = apply_anchored(&mut made, WING_RES, &wing_file);
         if changed > 0 {
@@ -781,13 +824,15 @@ pub fn write_model(dir: &Path, name: &str, model: &Model, res: f64, anchor: Opti
 
 /// Writes `model` to `name`.vox under `dir`, placed in MagicaVoxel's scene as `sidecar` says, and
 /// `sidecar` as its .json beside it
-pub fn write_sidecar(dir: &Path, name: &str, model: &Model, sidecar: Sidecar) -> Result<PathBuf, String> {
+pub fn write_sidecar(dir: &Path, name: &str, model: &Model, mut sidecar: Sidecar) -> Result<PathBuf, String> {
     let path = file_of(dir, name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     let grid = Grid { size: model.size, voxels: model.voxels.clone(), origin: sidecar.origin };
-    std::fs::write(&path, vox::write(&grid, &palette())).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = vox::write(&grid, &palette());
+    sidecar.written = Some((bytes.len() as u64, hash_of(&bytes)));
+    std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     let json = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
     std::fs::write(path.with_extension("json"), json).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
@@ -1114,7 +1159,8 @@ struct Reread {
 /// Works out again the models the files at `paths` are of, into `over`
 fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>) -> Reread {
     let dir = root();
-    let files = scan(&dir);
+    *EDITED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let files = edited(&dir);
     // The files changed, by name; the whole folder for all of them
     let names: HashSet<String> = paths
         .iter()

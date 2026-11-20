@@ -270,6 +270,7 @@ pub fn export_part(dir: &Path, library: &Library, f: usize, s: usize, c: usize) 
             anchor: None,
             origin: assets::origin_of(pivot),
             points: points(&look),
+            written: None,
             note: "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's \
                    reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are \
                    the code's, and stay as they are whatever the part's shape."
@@ -342,7 +343,10 @@ fn solid(m: &Model) -> Vec<([i32; 3], u8)> {
 fn read_part(dir: &Path, files: &HashSet<String>, library: &Library, f: usize, s: usize, c: usize) -> Option<PartEdit> {
     let (fam, comp) = (&library.families[f].id, &part_name(library, c));
     let base = part_file(fam, comp, 0);
-    if !files.contains(&base) && !files.iter().any(|n| n.starts_with(&format!("{base}_frame_"))) {
+    // Only files edited since they were exported, see assets::unchanged()
+    let frame_files = format!("{base}_frame_");
+    let ours: Vec<&String> = files.iter().filter(|n| **n == base || n.starts_with(&frame_files)).collect();
+    if ours.iter().all(|n| assets::unchanged(&assets::file_of(dir, n))) {
         return None;
     }
     let mut parts = library.reference_parts(f);

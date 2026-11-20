@@ -353,6 +353,12 @@ impl Editor {
             }
         };
         let bone = |e: &Editor, name: &str| e.rig().and_then(|r| r.bones().iter().position(|b| b.name == name));
+        // `--set editor_hold=1` stays on the first, a shot every 150 frames, to see a file saved
+        // meanwhile come in
+        let hold = std::env::args().any(|a| a == "editor_hold=1");
+        if hold && frame > 12 {
+            return frame % 150 == 0;
+        }
         match frame {
             12 => {
                 pick(self, "Stone Warden", game);
