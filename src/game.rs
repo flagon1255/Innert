@@ -26,6 +26,8 @@ use crate::tools;
 
 /// What dragons breathe and leave burning, see src\dragons.rs
 mod dragonfire;
+/// What avians and gargoyles throw, call down and break into, see src\avians.rs
+mod aerie;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -39,6 +41,9 @@ const PROP_RANGE: f64 = 30.0;
 const MAX_INSTANCES: usize = 140;
 /// About this many animals live around the player
 const ANIMALS: usize = 38;
+/// How many flocks and perches of what flies are about the player at once, see
+/// avians::spawn_wilds()
+const WINGED_PACKS: usize = 2;
 /// How fast a crossbowman's bolts fly, in meters a second
 const BOLT_PACE: f64 = 32.0;
 /// Apples keep growing back near the player up to this many
@@ -319,6 +324,9 @@ pub enum DenKind {
     /// A city fallen under the land, overrun by the dead: its gate, streets, canal, square and the
     /// way into its temple, see src\worldgen\undercity.rs
     Sunken,
+    /// A perch on a castle's walls, a ruin's tower or before a fallen city's temple, a gargoyle
+    /// asleep on it in stone, see src\gargoyles.rs
+    Perch,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -759,6 +767,8 @@ pub struct Game {
     crowd: usize,
     /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
     dragonfire: dragonfire::Fire,
+    /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
+    aerie: aerie::Sky,
 }
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
@@ -919,6 +929,7 @@ impl Game {
             worn: None,
             wing_models: wings::models(),
             dragonfire: Default::default(),
+            aerie: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
             ward_models: crate::guardians::models(),
@@ -972,6 +983,8 @@ impl Game {
         self.animals = animals::spawn(world, water, seed, near);
         let mut rng = hash(seed ^ 0x5e4);
         self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
+        self.animals.extend(crate::avians::spawn_wilds(world, water, &mut rng, near, worldgen::land_of(seed), WINGED_PACKS));
+        self.aerie.clear();
         self.lairs.clear();
         self.defeated.clear();
         self.dens.clear();
@@ -1519,15 +1532,21 @@ impl Game {
                     2 => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
                     _ => &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Skeleton],
                 },
+                // A gargoyle of the land's own stone, alone on its perch
+                DenKind::Perch => {
+                    band = vec![crate::gargoyles::of_land(worldgen::land_of(self.seed))];
+                    &band
+                }
             };
             let spread = match &den.band {
                 Some(b) => b.within,
                 None if den.kind == DenKind::Camp => animals::PACK_SPREAD + 0.7,
+                None if den.kind == DenKind::Perch => 0.2,
                 None => animals::PACK_SPREAD + 0.4,
             };
             // More of them the further on in the realms, see realms::crowd(), but for a camp's
             // band, as many as its camp has room for
-            let extra = if den.kind == DenKind::Camp { 0 } else { self.crowd };
+            let extra = if matches!(den.kind, DenKind::Camp | DenKind::Perch) { 0 } else { self.crowd };
             let haunted: Vec<Look> = haunted.iter().copied().chain(haunted.iter().copied().cycle().take(extra)).collect();
             for mut monster in animals::spawn_pack(world, water, &haunted, den.position, spread, hash(seed)) {
                 if let Some(state) = &mut monster.boss {
@@ -1661,8 +1680,12 @@ impl Game {
             if let Some(dragon) = &mut animal.dragon {
                 dragon.recenter(shift);
             }
+            if let Some(winged) = &mut animal.winged {
+                winged.recenter(shift);
+            }
         }
         self.dragonfire.recenter(shift);
+        self.aerie.recenter(shift);
         for root in &mut self.roots {
             root.at -= shift;
         }
@@ -1728,6 +1751,14 @@ impl Game {
             let mut rng = hash(self.rng ^ 0x5e4);
             let nests = animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS);
             self.animals.extend(nests.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm));
+        }
+        // And what flies in the land it is, as those about are left behind, see avians.rs
+        let fliers = self.animals.iter().filter(|a| a.look.is_winged() && a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key[2] == -2)).count();
+        if fliers < 4 {
+            let vpm = world.voxels_per_meter as f64;
+            let mut rng = hash(self.rng ^ 0xa71a);
+            let flocks = crate::avians::spawn_wilds(world, water, &mut rng, near, worldgen::land_of(seed), WINGED_PACKS);
+            self.animals.extend(flocks.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm));
         }
         self.rng = hash(self.rng);
     }
@@ -1835,6 +1866,9 @@ impl Game {
             if let Some(dragon) = &mut animal.dragon {
                 dragon.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
             }
+            if let Some(winged) = &mut animal.winged {
+                winged.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
+            }
         }
         self.aim_at_serpents(view);
 
@@ -1876,6 +1910,7 @@ impl Game {
             self.carry_out(look, element, deed, world, water, player, view);
         }
         self.tend_dragonfire(world, player, view, dt);
+        self.tend_aerie(world, player, view, dt);
         self.watch_for_lairs(player);
         self.grow_roots(world, player, view, dt);
         self.whirl(world, water, player, dt);
@@ -2029,6 +2064,9 @@ impl Game {
         match deed {
             Deed::Dragon(act) => return self.dragon_act(look, act, world, water, player, view),
             Deed::Phase { at, stage } if look.is_dragon() => return self.dragon_phase(look, at, stage, view),
+            // And what avians and gargoyles do, see game\aerie.rs
+            Deed::Aerie(act) => return self.aerie_act(look, act, world, player, view),
+            Deed::Phase { at, stage } if look.is_winged() => return self.aerie_phase(look, at, stage, view),
             _ => {}
         }
         // How much something at `at` is felt, from 1 right there to nothing 40 meters off
@@ -2579,7 +2617,7 @@ impl Game {
                 }
             }
             // Seen to above
-            Deed::Dragon(_) => {}
+            Deed::Dragon(_) | Deed::Aerie(_) => {}
             // The Colossus working stone, see combat/stones.rs: the boulder it tore up and lifted
             // hurled out of its hands, with a grunt
             Deed::Hurl { id, from, to } => {
@@ -2803,6 +2841,7 @@ impl Game {
         }
         self.combat.clear();
         self.dragonfire.clear();
+        self.aerie.clear();
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
@@ -3046,7 +3085,7 @@ impl Game {
                 (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
             };
             // And a dragon falls out of the sky and lies a moment where it fell first
-            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) {
+            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) || crate::avians::dying(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -3122,6 +3161,8 @@ impl Game {
                 if look == crate::dragons::ULTRA {
                     self.claim_worldpyre();
                 }
+                // And a winged boss its wings, see game\aerie.rs
+                self.winged_spoils(look);
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
                 // Both ultras: the Coil Unending, and the Worldpyre Ancient, see src\dragons.rs
@@ -4766,7 +4807,7 @@ impl Game {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
                 creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
-            } else if animal.dragon.is_some() {
+            } else if animal.dragon.is_some() || animal.winged.is_some() {
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                     dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
                 }
@@ -4786,19 +4827,23 @@ impl Game {
                 Some(_) => {}
                 None => {
                     let animal = &self.animals[k];
+                    pieces.clear();
                     if let Some(dragon) = &animal.dragon {
-                        pieces.clear();
                         crate::dragons::instances(animal, dragon, vpm, &mut pieces);
-                        if pieces.len() <= room {
-                            room -= pieces.len();
-                            out.extend(pieces.iter().copied());
-                        }
+                    }
+                    if let Some(winged) = &animal.winged {
+                        crate::avians::instances(animal, winged, vpm, &mut pieces);
+                    }
+                    if pieces.len() <= room {
+                        room -= pieces.len();
+                        out.extend(pieces.iter().copied());
                     }
                 }
             }
         }
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
         near.extend(self.dragonfire_instances(view));
+        near.extend(self.aerie_instances(view));
         let time = self.combat.time();
         for pickup in &self.pickups {
             let at = pickup.at(vpm);
@@ -4863,6 +4908,7 @@ impl Game {
     pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
         let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view);
         self.dragonfire_lights(view, &mut lights);
+        self.aerie_lights(view, &mut lights);
         // The veil of the gate or a portal glows, breathing slowly
         let vpm = view.vpm;
         let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
@@ -5185,6 +5231,8 @@ impl Game {
             let warded = Color32::from_rgb(205, 165, 255);
             let title = match ward {
                 Some((slain, of)) => format!("{name}  —  warded: slay the guardians ({slain}/{of})"),
+                // A gargoyle turned to stone, shrugging off blows, see src\gargoyles.rs
+                None if self.foe_hardened(foe) => format!("{name}  —  turned to stone"),
                 None if enraged => format!("{name}  —  enraged"),
                 None => name.to_string(),
             };

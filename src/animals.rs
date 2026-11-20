@@ -143,6 +143,24 @@ pub enum Look {
     // bones of a great serpent it ate
     ShedSkin,
     SerpentBones,
+    // Avians and gargoyles, drawn out of jointed pieces and flown by src\avians.rs, see also
+    // src\gargoyles.rs: harpies and skyhunters, the sky isles' guardians and their three raid
+    // bosses; gargoyles of each land's stone, the castles' grotesque and the dreaming realm's
+    // bloodwake
+    Harpy,
+    Skyhunter,
+    Stormtalon,
+    Harridan,
+    Roc,
+    Thunderbird,
+    HarpyQueen,
+    Gargoyle,
+    BloodGargoyle,
+    RimeGargoyle,
+    CinderGargoyle,
+    MossGargoyle,
+    Grotesque,
+    BloodwakeGargoyle,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -171,6 +189,8 @@ pub enum Build {
     /// A serpent: a long body slithering in S-curves, rearing up coiled to strike, see
     /// src\serpents.rs
     Serpent,
+    /// An avian or a gargoyle: drawn and flown by src\avians.rs, out of jointed pieces
+    Winged,
 }
 
 /// What a walking dead or a bandit has in its hands
@@ -198,7 +218,7 @@ struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 87] = [
+    pub const ALL: [Look; 101] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -286,11 +306,30 @@ impl Look {
         Look::Ysveth,
         Look::ShedSkin,
         Look::SerpentBones,
+        Look::Harpy,
+        Look::Skyhunter,
+        Look::Stormtalon,
+        Look::Harridan,
+        Look::Roc,
+        Look::Thunderbird,
+        Look::HarpyQueen,
+        Look::Gargoyle,
+        Look::BloodGargoyle,
+        Look::RimeGargoyle,
+        Look::CinderGargoyle,
+        Look::MossGargoyle,
+        Look::Grotesque,
+        Look::BloodwakeGargoyle,
     ];
 
     /// One of the dragons, see src\dragons.rs
     pub fn is_dragon(self) -> bool {
         crate::dragons::KINDS.contains(&self)
+    }
+
+    /// An avian or a gargoyle, see src\avians.rs
+    pub fn is_winged(self) -> bool {
+        crate::avians::is_winged(self)
     }
 
     /// A boss, guarding a lair, rather than a monster or an animal
@@ -312,7 +351,7 @@ impl Look {
 
     /// A beast rather than a person or the dead, with nothing on it worth taking
     pub fn is_beast(self) -> bool {
-        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker) || crate::dragons::is_drakeling(self) || self.is_serpent()
+        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker | Look::Skyhunter) || crate::dragons::is_drakeling(self) || self.is_serpent()
     }
 
     /// One of the ordinary serpents, see src\serpents.rs
@@ -345,7 +384,7 @@ impl Look {
 
     /// Flying, over water as well as land
     pub fn flies(self) -> bool {
-        matches!(self, Look::Gloomwing | Look::GaleSerpent | Look::Galecoil) || self.is_dragon()
+        matches!(self, Look::Gloomwing | Look::GaleSerpent | Look::Galecoil) || self.is_dragon() || self.is_winged()
     }
 
     /// Swimming, along the top of deep water, with only its back above it
@@ -371,6 +410,8 @@ impl Look {
             Look::Spiderling => 4,
             Look::MireLurker | Look::Tusker => 2,
             _ if self.is_serpent() => 2,
+            Look::Skyhunter => 2,
+            _ if crate::gargoyles::is_lesser(self) => 2,
             _ => 3,
         }
     }
@@ -378,7 +419,7 @@ impl Look {
     /// A raid boss: far bigger and tougher than the rest, fought in three phases. The Water
     /// realm's three great serpents are, see serpents::GREATS.
     pub fn is_raid(self) -> bool {
-        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
+        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self)) || crate::avians::is_raid(self)
     }
 
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
@@ -388,6 +429,7 @@ impl Look {
             || self.is_risen()
             || crate::dragons::is_drakeling(self)
             || self.is_serpent()
+            || crate::avians::is_monster(self)
     }
 
     /// One of the dead added for the fallen cities, see Look::Bloater
@@ -431,6 +473,7 @@ impl Look {
             Look::Tusker => Build::Boar,
             _ if self.is_dragon() => Build::Dragon,
             _ if self.is_serpent() || self.is_great_serpent() => Build::Serpent,
+            _ if self.is_winged() => Build::Winged,
             _ => return None,
         })
     }
@@ -465,6 +508,7 @@ impl Look {
             Look::Colossus | Look::ElderWyrm => self.scale(),
             Look::CryptTitan => self.scale() / Look::GraveKnight.scale(),
             _ if self.is_dragon() => crate::dragons::size(self),
+            _ if self.is_winged() => crate::avians::size(self),
             _ => 1.0,
         }
     }
@@ -473,6 +517,7 @@ impl Look {
     pub fn brood(self) -> Option<Look> {
         match self {
             _ if self.is_dragon() => crate::dragons::brood(self),
+            _ if self.is_winged() => crate::avians::brood(self),
             Look::Direwolf | Look::WinterAlpha => Some(Look::Wolf),
             Look::GraveKnight => Some(Look::Skeleton),
             Look::Necromancer => Some(Look::Zombie),
@@ -521,6 +566,7 @@ impl Look {
     pub fn element(self) -> Option<Element> {
         match self {
             _ if self.is_dragon() => Some(crate::dragons::element(self)),
+            _ if self.is_winged() => crate::avians::element(self),
             Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
             Look::MagmaGolem | Look::Drake | Look::ElderWyrm => Some(Element::Fire),
             Look::CryptTitan => Some(Element::Void),
@@ -707,6 +753,9 @@ impl Look {
             Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => serpents::great_of(self).map_or(4.0, |g| g.head + 2.0 * g.girth),
             Look::ShedSkin => 2.0,
             Look::SerpentBones => 3.0,
+            // Its wings spread, see src\avians.rs
+            Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
+            Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
         }
     }
 
@@ -761,6 +810,9 @@ impl Look {
             }
             Look::ShedSkin => (0.05, 0.3),
             Look::SerpentBones => (0.3, 0.6),
+            // Wherever on it the blow's aimed, see avians::Flier::aim()
+            Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
+            Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
         }
     }
 
@@ -843,6 +895,8 @@ impl Look {
             Look::Ysveth => "Coil Unending",
             Look::ShedSkin => "shed serpent skin",
             Look::SerpentBones => "serpent bones",
+            Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
+            Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
         }
     }
 
@@ -907,6 +961,7 @@ impl Look {
             Look::BoneArcher => 90.0,
             Look::Necromancer => 190.0,
             _ if self.is_dragon() => crate::dragons::health(self),
+            _ if self.is_winged() => crate::avians::health(self),
             Look::ReedViper => 110.0,
             Look::SiltCoiler => 200.0,
             Look::GaleSerpent => 90.0,
@@ -979,6 +1034,7 @@ impl Look {
             Some(Build::Boar) => 1.3,
             Some(Build::Dragon) => crate::dragons::speeds(self).0,
             Some(Build::Serpent) => 1.3,
+            Some(Build::Winged) => crate::avians::speeds(self).0,
             None => match self {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
@@ -1046,6 +1102,7 @@ impl Look {
             Some(Build::Boar) => 5.2,
             Some(Build::Dragon) => crate::dragons::speeds(self).1,
             Some(Build::Serpent) => 4.2,
+            Some(Build::Winged) => crate::avians::speeds(self).1,
             None => match self {
                 Look::Bear => 3.2,
                 Look::Dog => 4.5,
@@ -1073,6 +1130,7 @@ impl Look {
             Some(Build::Boar) => 1.9,
             // As far as its S-curve's waves are apart, see serpents::stride()
             Some(Build::Serpent) => serpents::kind(self).map_or(1.7, serpents::stride),
+            Some(Build::Winged) => crate::avians::stride(self),
             None => match self {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
@@ -1202,8 +1260,9 @@ fn shown(look: Look, frame: usize) -> bool {
         // A great serpent's drawn a piece at a time, with models of its own, see serpents::Coils
         _ if look.is_great_serpent() => false,
         0 => true,
-        // Dragons are drawn out of jointed pieces of their own, see src\dragons.rs
-        _ if look.is_dragon() => false,
+        // Dragons are drawn out of jointed pieces of their own, see src\dragons.rs, and so are
+        // avians and gargoyles, see src\avians.rs
+        _ if look.is_dragon() || look.is_winged() => false,
         _ if frame <= WALK_FRAMES => look.walks(),
         _ if look.build().is_none() => false,
         _ if frame < POSE_COIL => true,
@@ -2691,8 +2750,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Lurker) => lurker(&mut p, angle, swing, moving, pose, look.skin()),
                 Some(Build::Bat) => gloomwing(&mut p, angle, pose, look.skin()),
                 Some(Build::Boar) => tusker(&mut p, angle, swing, moving, pose, look.skin()),
-                // Its pieces are made in src\dragons.rs
-                Some(Build::Dragon) => {}
+                // Its pieces are made in src\dragons.rs, or src\avians.rs
+                Some(Build::Dragon | Build::Winged) => {}
                 Some(Build::Serpent) => {
                     if let Some(kind) = serpents::kind(look) {
                         serpents::parts(&mut p, kind, phase, [pose.windup, pose.strike, pose.special]);
@@ -3295,10 +3354,13 @@ fn model_index(look: Look, frame: usize) -> u32 {
 /// frame of every look, see src\dragons.rs
 pub const DRAGON_MODELS_AT: usize = Look::ALL.len() * FRAMES;
 
+/// Where the avians' and gargoyles' jointed pieces start, after the dragons', see src\avians.rs
+pub const WINGED_MODELS_AT: usize = DRAGON_MODELS_AT + crate::dragons::MODELS;
+
 /// How many models animal_models() makes: every frame of every look, then the dragons' pieces
-/// and what they breathe, then the great serpents' pieces, last, see serpents::part_models().
-/// Other models come after them.
-pub const ANIMAL_MODELS: usize = DRAGON_MODELS_AT + crate::dragons::MODELS + serpents::PART_MODELS;
+/// and what they breathe, the avians' and gargoyles' and what they throw, then the great
+/// serpents' pieces, last, see serpents::part_models(). Other models come after them.
+pub const ANIMAL_MODELS: usize = WINGED_MODELS_AT + crate::avians::MODELS + serpents::PART_MODELS;
 
 /// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
 fn frame_model(look: Look, frame: usize) -> Model {
@@ -3337,6 +3399,7 @@ pub fn animal_models() -> Vec<Model> {
     // The dragons' pieces, and what they breathe, then the great serpents' pieces, which have to
     // be the last of them, see serpents::part_models()
     models.extend(crate::dragons::models());
+    models.extend(crate::avians::models());
     models.extend(serpents::part_models());
     models
 }
@@ -3547,6 +3610,8 @@ pub struct Animal {
     /// How a dragon flies, fights and holds itself, see src\dragons.rs: it thinks for itself
     /// rather than as bosses do, and only takes from `boss` what it shares with them
     pub dragon: Option<Box<crate::dragons::Dragon>>,
+    /// The same for an avian or a gargoyle, see src\avians.rs
+    pub winged: Option<Box<crate::avians::Flier>>,
     /// Where in the whole landscape a villager's town square is, in voxels, and how far from it
     /// in meters it strolls
     home: Option<(Vector3<f64>, f64)>,
@@ -3572,6 +3637,8 @@ const SHIELD_THROUGH: f64 = 0.15;
 const SHIELD_ARC: f64 = 0.42;
 /// How much of a blow gets through the sand to a burrower dug in under it
 const BURIED_THROUGH: f64 = 0.3;
+/// And through a gargoyle's stone, asleep or hardened
+const STONE_THROUGH: f64 = 0.12;
 /// How far down what swims feels for the bottom of the water it's swimming over, in meters: deep
 /// enough for the open sea of the Sunken Reach
 const SWIM_DEPTH: f64 = 48.0;
@@ -3716,6 +3783,7 @@ impl Animal {
             status: Status::default(),
             boss: None,
             dragon: None,
+            winged: None,
             home: None,
             rng,
             focus: None,
@@ -3735,6 +3803,9 @@ impl Animal {
         animal.boss = Some(Boss::new(look, home, key));
         if look.is_dragon() {
             animal.dragon = Some(Box::new(crate::dragons::Dragon::new(look, home, animal.heading, hash(seed ^ 0xd4a6))));
+        }
+        if look.is_winged() {
+            animal.winged = Some(Box::new(crate::avians::Flier::new(look, home, animal.heading, hash(seed ^ 0xa71a))));
         }
         animal
     }
@@ -3759,6 +3830,9 @@ impl Animal {
         // Whatever part of a dragon the player's striking at, see dragons::Dragon::aim()
         if let Some(dragon) = &self.dragon {
             return dragon.focus();
+        }
+        if let Some(winged) = &self.winged {
+            return winged.focus();
         }
         // A serpent where the player's aiming at it, along the whole of its long body
         if let Some(focus) = self.focus {
@@ -3811,6 +3885,10 @@ impl Animal {
         let Some(boss) = &self.boss else {
             return 1.0;
         };
+        // A gargoyle turned to stone shrugs off most of a blow, see src\gargoyles.rs
+        if self.winged.as_ref().is_some_and(|w| w.hardened()) {
+            return STONE_THROUGH;
+        }
         if self.look == Look::Shieldbearer && boss.guarding() {
             let to = (from - self.position).xy();
             let facing = Vector2::new(self.heading.cos(), self.heading.sin());
@@ -3934,6 +4012,12 @@ impl Animal {
         if let Some(mut dragon) = self.dragon.take() {
             crate::dragons::act(self, &mut dragon, world, water, player, dt);
             self.dragon = Some(dragon);
+            return;
+        }
+        // And so does what flies on wings of feathers or of stone, see src\avians.rs
+        if let Some(mut winged) = self.winged.take() {
+            crate::avians::act(self, &mut winged, world, water, player, dt);
+            self.winged = Some(winged);
             return;
         }
         if self.boss.is_some() {
@@ -4143,6 +4227,13 @@ impl Animal {
         if let Some(dragon) = &self.dragon {
             let mut pieces = Vec::new();
             crate::dragons::instances(self, dragon, world_voxels_per_meter as f64, &mut pieces);
+            if let Some(&first) = pieces.first() {
+                return first;
+            }
+        }
+        if let Some(winged) = &self.winged {
+            let mut pieces = Vec::new();
+            crate::avians::instances(self, winged, world_voxels_per_meter as f64, &mut pieces);
             if let Some(&first) = pieces.first() {
                 return first;
             }

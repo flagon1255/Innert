@@ -163,14 +163,20 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "sky",
         name: "The Sky Isles",
         seed: SKY_SEED,
-        raid_bosses: [(Look::StormDrake, [240.0, 60.0]), (Look::Golem, [-60.0, 300.0]), (Look::Drake, [-260.0, -160.0])],
-        lair_names: ["the storm isle", "the great isle", "the far isle"],
+        // Its own three, see avians.rs: the Cloudreaver Roc in its eyrie, the Thunderbird on the
+        // isle the storms break over, and the Harpy Queen holding court on the highest
+        raid_bosses: [(Look::Roc, [240.0, 60.0]), (Look::Thunderbird, [-60.0, 300.0]), (Look::HarpyQueen, [-260.0, -160.0])],
+        lair_names: ["the roc's eyrie", "the thunder isle", "the harpies' court"],
         lair_marks: [Landmark::Anywhere; 3],
-        guardians: &[Look::Ironhide, Look::Direwolf, Look::Treant, Look::Spider],
+        // Its guardians the Stormtalon and the Harridan, and two from the land below
+        guardians: &[Look::Stormtalon, Look::Harridan, Look::Ironhide, Look::Treant],
         finale: None,
         finale_mark: Landmark::Anywhere,
+        // Flocks of harpies and skyhunters above all, and those come up from below
         monsters: &[
-            Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 3 },
+            Pack { looks: &[Look::Harpy, Look::Harpy, Look::Harpy], most: 2 },
+            Pack { looks: &[Look::Skyhunter, Look::Skyhunter], most: 2 },
+            Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 1 },
             Pack { looks: &[Look::Crossbowman, Look::Crossbowman, Look::Shieldbearer], most: 2 },
             Pack { looks: &[Look::BoneArcher, Look::ArmoredSkeleton, Look::ArmoredSkeleton], most: 1 },
             Pack { looks: &[Look::GaleSerpent, Look::GaleSerpent, Look::GaleSerpent], most: 2 },
@@ -183,8 +189,10 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "dream",
         name: "The Dreaming Red",
         seed: DREAM_SEED,
-        raid_bosses: [(Look::GraveKnight, [280.0, -40.0]), (Look::Spider, [-120.0, 280.0]), (Look::Treant, [-200.0, -240.0])],
-        lair_names: ["the bleeding fields", "the soft hollows", "the dreaming wood"],
+        // The first of them the Bloodwake Gargoyle, holding its vigil over the red, see
+        // gargoyles.rs
+        raid_bosses: [(Look::BloodwakeGargoyle, [280.0, -40.0]), (Look::Spider, [-120.0, 280.0]), (Look::Treant, [-200.0, -240.0])],
+        lair_names: ["the red vigil", "the soft hollows", "the dreaming wood"],
         lair_marks: [Landmark::Anywhere; 3],
         guardians: &[Look::Direwolf, Look::Ironhide, Look::VenomDrake, Look::Golem, Look::Drake],
         finale: None,
@@ -195,6 +203,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::GraveBrute, Look::BoneArcher, Look::BoneArcher], most: 1 },
             Pack { looks: &[Look::MireLurker, Look::MireLurker], most: 1 },
             Pack { looks: &[Look::BloodAdder, Look::BloodAdder], most: 2 },
+            Pack { looks: &[Look::BloodGargoyle, Look::BloodGargoyle], most: 1 },
         ],
         scaling: Scaling { toughness: 2.8, damage: 1.9, luck: 3.2 },
         color: [235, 60, 70],
@@ -215,6 +224,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::Wolf, Look::Wolf, Look::Wolf, Look::Wolf], most: 2 },
             Pack { looks: &[Look::ArmoredSkeleton, Look::BoneArcher, Look::Skeleton], most: 1 },
             Pack { looks: &[Look::DriftSerpent, Look::DriftSerpent], most: 2 },
+            Pack { looks: &[Look::RimeGargoyle, Look::RimeGargoyle], most: 1 },
         ],
         scaling: Scaling { toughness: 4.8, damage: 2.4, luck: 4.8 },
         color: [150, 235, 255],
@@ -245,6 +255,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing], most: 1 },
             Pack { looks: &[Look::SiltCoiler, Look::SiltCoiler, Look::SiltCoiler], most: 2 },
             Pack { looks: &[Look::ReedViper, Look::ReedViper], most: 1 },
+            Pack { looks: &[Look::MossGargoyle, Look::MossGargoyle], most: 1 },
         ],
         scaling: Scaling { toughness: 5.6, damage: 2.9, luck: 6.5 },
         color: [70, 215, 200],
