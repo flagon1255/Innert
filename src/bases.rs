@@ -576,6 +576,9 @@ pub struct GameBases {
     pub materials: Materials,
     pub clock: Option<crate::daynight::Clock>,
     pub nights_survived: u32,
+    /// The first-time hints about gathering and building already shown, a bit each, see
+    /// building::Hint: none in a save from before them, so they're shown once there too
+    pub hints: u32,
 }
 
 /// The save's names for them, see save.rs
@@ -599,6 +602,8 @@ pub struct Bases {
     /// Kept till the next change
     snapshot: RefCell<Option<Edits>>,
     pub nights_survived: u32,
+    /// The first-time hints already shown, see GameBases
+    pub hints: u32,
 }
 
 impl Bases {
@@ -868,12 +873,13 @@ impl Bases {
 
     /// The same for the whole game
     pub fn game_save(&self, clock: crate::daynight::Clock) -> GameBases {
-        GameBases { materials: self.materials, clock: Some(clock), nights_survived: self.nights_survived }
+        GameBases { materials: self.materials, clock: Some(clock), nights_survived: self.nights_survived, hints: self.hints }
     }
 
     pub fn load_game(&mut self, saved: &GameBases) {
         self.materials = saved.materials;
         self.nights_survived = saved.nights_survived;
+        self.hints = saved.hints;
     }
 }
 
@@ -1123,6 +1129,7 @@ mod tests {
         bases.damage(door, 20.0);
         bases.clear_voxels([3, 3, 2], &[5, 6, 7]);
         bases.nights_survived = 4;
+        bases.hints = 0b1011;
         let mut clock = crate::daynight::Clock::default();
         clock.seconds = 1000.0;
         clock.day = 6;
@@ -1142,6 +1149,7 @@ mod tests {
         assert_eq!(again.pieces(), bases.pieces());
         assert_eq!(again.materials, bases.materials);
         assert_eq!(again.nights_survived, 4);
+        assert_eq!(again.hints, 0b1011, "the hints shown stay shown");
         assert_eq!(game.clock, Some(clock));
         let door_back = again.piece(door).unwrap();
         assert!(door_back.open && door_back.health < Kind::Door.health());
@@ -1156,6 +1164,9 @@ mod tests {
         let back = save::parse(&serde_json::to_vec(&old).unwrap(), Mode::Realms).unwrap();
         assert!(back.worlds["normal"].section::<WorldBases>(WORLD_SECTION).is_none());
         assert_eq!(back.section::<GameBases>(GAME_SECTION).unwrap_or_default().materials, Materials::default());
+        // A save of the bases from before the hints: everything else in it, and no hint shown yet
+        let older: GameBases = serde_json::from_str(r#"{"materials":{"wood":5,"stone":2,"clay":1},"nights_survived":3}"#).unwrap();
+        assert_eq!((older.materials, older.nights_survived, older.hints), (Materials::new(5, 2, 1), 3, 0));
     }
 
     // Empty bricks round what's built stop short of it, near and far
