@@ -4681,10 +4681,24 @@ impl App {
                 let mut held = HELD.lock().unwrap();
                 if let Some(target) = self.game.nearest_boss(feet).filter(|_| placing) {
                     let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
-                    let round = number("view_from", 1.4);
-                    let (c, s) = (round.cos(), round.sin());
-                    let way = Vector3::new(back.x * c - back.y * s, back.x * s + back.y * c, 0.0);
-                    let at = target + way * number("view_distance", 12.0) * vpm + Vector3::new(0.0, 0.0, number("view_up", 1.0) * vpm);
+                    let from = number("view_from", 1.4);
+                    let distance = number("view_distance", 12.0);
+                    // Somewhere with nothing in the way, not in a tree: round one way and the other
+                    // from where it's asked for, and nearer
+                    let spot = |round: f64, d: f64| {
+                        let (c, s) = (round.cos(), round.sin());
+                        let way = Vector3::new(back.x * c - back.y * s, back.x * s + back.y * c, 0.0);
+                        target + way * d * vpm + Vector3::new(0.0, 0.0, number("view_up", 1.0) * vpm)
+                    };
+                    let clear = |at: Vector3<f64>| {
+                        let steps = ((at - target).norm() / (0.5 * vpm)) as usize;
+                        (0..steps.saturating_sub(5)).all(|k| {
+                            let p = at + (target - at) * (k as f64 / steps.max(1) as f64);
+                            self.world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64) == worldgen::material::AIR
+                        })
+                    };
+                    let tries = [0.0, -2.0 * from, 0.5, -2.0 * from - 0.5, -0.5, -2.0 * from + 0.5, 1.0, -2.0 * from - 1.0];
+                    let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
                     *held = Some((at, target));
                 }
                 if let Some((at, target)) = *held {

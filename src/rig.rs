@@ -303,8 +303,6 @@ pub struct Moment {
     pub dying: Option<f64>,
     /// What the Colossus has hold of, tearing up a boulder
     pub carry: Option<Carry>,
-    /// Meters it's off the ground, leaping
-    pub air: f64,
 }
 
 impl Moment {
@@ -325,7 +323,6 @@ impl Moment {
             stage: 0,
             dying: None,
             carry: None,
-            air: 0.0,
         }
     }
 
@@ -761,6 +758,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The Colossus's boulder is gripped low in front of its fists dug into the ground as it pries
+    /// it loose, and high over its head between its fists as it lifts it, going up with its hands
+    #[test]
+    fn colossus_grips_its_boulder() {
+        let mut rig = Rig::new(Look::Colossus, 1).unwrap();
+        let (wind, _, _) = crate::bosses::timing(Look::Colossus, Move::Throw);
+        let tear = crate::bosses::TEAR_PRY;
+        let mut grips = Vec::new();
+        for f in 0..=60 {
+            let t = f as f64 / 60.0 * wind;
+            let mut m = Moment::still(Look::Colossus);
+            m.dt = wind / 60.0;
+            m.engaged = true;
+            m.doing = Some(Doing { m: Move::Throw, stage: Stage::Wind, t, len: wind, held: 0.0 });
+            m.carry = Some(if t < tear { Carry::Prying(t / tear) } else { Carry::Held });
+            rig.step(&m);
+            grips.push(rig.sockets.grip);
+        }
+        let r = crate::bosses::TORN_BOULDER / Look::Colossus.scale();
+        let low = grips[(tear / wind * 50.0) as usize];
+        assert!(low.x > 1.4 && low.z < r * 2.5, "pried at {low:?}");
+        let high = grips[57];
+        assert!(high.z > 3.6 && high.x.abs() < 0.8, "held up at {high:?}");
+        let [right, left] = rig.sockets.hands;
+        assert!((left - right).norm() < 2.0 * (r + 0.36) + 0.3, "its fists are {:.2} apart", (left - right).norm());
+        let between = grips[((tear / wind + 1.0) * 30.0) as usize];
+        assert!(between.z > low.z + 0.3 && between.z < high.z, "{between:?}");
     }
 
     /// The moves each boss makes and the parts of them, to try every pose

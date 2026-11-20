@@ -1383,11 +1383,6 @@ impl Pose {
         }
     }
 
-    /// How much of each pose there is in this one, standing aside, in the order of Stance::KEYS
-    fn weights(self) -> [f64; 7] {
-        [self.windup, self.strike, self.special, self.coil, self.sweep, self.raise, self.spikes]
-    }
-
     /// What's `rest` standing, `windup`, `strike` and `special` in each pose, in this one
     fn mix(self, rest: f64, windup: f64, strike: f64, special: f64) -> f64 {
         rest + self.windup * (windup - rest) + self.strike * (strike - rest) + self.special * (special - rest)
@@ -1451,11 +1446,6 @@ impl Part {
     pub(crate) fn striped(mut self, stripes: u8) -> Self {
         self.stripes = stripes;
         self
-    }
-
-    /// Moved `by` meters, for building a jointed boss's pieces about their joints, see src\rig.rs
-    pub(crate) fn shifted(&self, by: Vec3) -> Part {
-        Part { a: [0, 1, 2].map(|i| self.a[i] + by[i]), b: [0, 1, 2].map(|i| self.b[i] + by[i]), ..*self }
     }
 
     /// What it's made of, and the darker bands across it, if any
@@ -1542,88 +1532,6 @@ fn rear(v: Vec3, pivot: Vec3, angle: f64) -> Vec3 {
     [pivot[0] + dx * c - dz * s, v[1], pivot[2] + dx * s + dz * c]
 }
 
-/// Where a golem's fists are, the one on its right then the one on its left, in meters at its
-/// build's size: swinging as it walks, raised overhead, brought down to the ground in front, or
-/// one lifting a boulder up behind its head
-fn golem_fists(swing: f64, pose: Pose) -> [Vec3; 2] {
-    [-1.0, 1.0].map(|s: f64| {
-        let special = if s < 0.0 { [-0.45, -0.75, 3.7] } else { [0.95, 0.9, 1.6] };
-        pose.at([0.45 - 0.35 * swing * s, s * 1.12, 0.85], [0.2, s * 0.5, 3.85], [1.45, s * 0.45, 0.4], special)
-    })
-}
-
-/// Where the middle of the boulder the Earthbreaker Colossus tears up is in `frame`, in meters at
-/// its build's size: gripped in front of its fists dug into the ground, and on top of them as
-/// they're raised overhead, partway between in the frames between, see bosses::Carry
-pub fn golem_grip(frame: usize) -> [f64; 3] {
-    let pose = Pose::of(frame);
-    let [a, b] = golem_fists(0.0, pose);
-    let r = bosses::TORN_BOULDER / Look::Colossus.scale();
-    let off = pose.at([0.0, 0.0, r * 0.45], [0.0, 0.0, r * 0.45], [0.22 + r * 0.55, 0.0, r * 0.25], [0.0, 0.0, r * 0.45]);
-    [0, 1, 2].map(|i| (a[i] + b[i]) * 0.5 + off[i])
-}
-
-/// The Stone Warden: a hulking golem of rock, moss on its shoulders, crystals growing from its
-/// back and a cold light glowing in its chest. It raises its fists overhead to slam them down, and
-/// hurls boulders. The Earthbreaker Colossus, `colossus`, is plated in its stone over its chest,
-/// the plates grinding as it walks and forced apart as it strains, the fire in it blazing out
-/// between them; it tears its boulders up out of the ground, so it has none ready.
-fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, colossus: bool) {
-    let (rock, dark, glow) = (skin.body, skin.dark, skin.glow);
-    // Leaning into a blow, the higher up the further
-    let lean = pose.mix(0.0, 0.0, 0.4, 0.0);
-    let up = |v: Vec3| {
-        let k = (v[2] - 1.2).max(0.0) / 2.0;
-        [v[0] + lean * k, v[1], v[2] - lean * 0.4 * k]
-    };
-    p.push(ball(up([0.64, 0.15, 2.86]), 0.065, glow));
-    p.push(ball(up([0.64, -0.15, 2.86]), 0.065, glow));
-    p.push(ellipsoid(up([0.6, 0.0, 2.98]), [0.12, 0.32, 0.06], dark));
-    p.push(ellipsoid(up([0.38, 0.0, 2.84]), [0.32, 0.32, 0.28], rock));
-    // How far the Colossus's chest plates are forced apart
-    let open = if colossus { pose.mix(0.0, 0.07, 0.04, 0.09) } else { 0.0 };
-    if colossus {
-        for (y, z) in [(0.2, 2.3), (-0.2, 2.3), (0.22, 1.8), (-0.22, 1.8)] {
-            let (side, high) = (f64::signum(y), f64::signum(z - 2.05));
-            let grind = 0.025 * swing * side * high;
-            let at = [0.7 + open * 0.5, y * (1.0 + open * 2.5), z + high * open * 1.5 + grind];
-            p.push(ellipsoid(up(at), [0.07, 0.2, 0.17], rock));
-        }
-    }
-    // The core, with light cracking out across its chest
-    p.push(ball(up([0.6, 0.0, 2.05]), 0.17 + 0.6 * open, glow));
-    p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, 0.38, 2.45]), 0.045, 0.02, glow));
-    p.push(limb(up([0.66, 0.0, 2.05]), up([0.62, -0.32, 1.7]), 0.045, 0.02, glow));
-    for (y, z, h) in [(0.25, 2.5, 0.55), (-0.22, 2.3, 0.65), (0.05, 2.75, 0.5)] {
-        p.push(limb(up([-0.45, y, z]), up([-0.82, y * 1.3, z + h]), 0.1, 0.02, skin.extra));
-    }
-    p.push(ellipsoid(up([0.35, 0.0, 3.1]), [0.26, 0.26, 0.08], skin.accent));
-    for s in [-1.0, 1.0] {
-        p.push(ellipsoid(up([0.0, s * 0.95, 2.88]), [0.32, 0.32, 0.1], skin.accent));
-    }
-    // A boulder held up behind its head, ready to throw
-    if pose.special > 0.75 && !colossus {
-        p.push(ball([-0.55, -0.55, 4.05], 0.45, rock));
-    }
-    let fists = golem_fists(swing, pose);
-    for s in [-1.0, 1.0] {
-        let shoulder = up([0.05, s * 0.98, 2.45]);
-        // Swinging as it walks, raised overhead, brought down, or one lifting the boulder
-        let special = if s < 0.0 { [-0.25, -1.05, 3.1] } else { [0.5, 1.1, 1.9] };
-        let elbow = pose.at([0.2 - 0.25 * swing * s, s * 1.18, 1.65], [0.0, s * 0.95, 3.15], [0.85, s * 0.85, 1.6], special);
-        let fist = fists[(s > 0.0) as usize];
-        p.push(ball(fist, 0.36, dark));
-        p.push(limb(elbow, fist, 0.25, 0.3, rock));
-        p.push(limb(shoulder, elbow, 0.27, 0.24, rock));
-        p.push(ball(shoulder, 0.42, dark));
-    }
-    p.push(ellipsoid(up([0.1, 0.0, 2.05]), [0.62, 0.85, 0.75], rock));
-    p.push(ellipsoid([0.0, 0.0, 1.2], [0.45, 0.6, 0.35], dark));
-    for (y, s) in [(0.42, 1.0), (-0.42, -1.0)] {
-        leg(p, [0.0, y, 1.15], 1.15, 0.27, 0.3 * swing * s, rock, dark);
-    }
-}
-
 /// The Ember Drake: a red-scaled dragon with fire glowing through its belly, its wings folded.
 /// It rears its head back, then breathes fire or spits it, and spreads its wings to roar.
 fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
@@ -1678,46 +1586,6 @@ fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
     }
 }
 
-/// Ironhide: a huge old bear in plates of armor, tusked, with red eyes. It rears up on its hind
-/// legs to bring its paws crashing down, and lowers its head to charge.
-fn ironhide(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
-    let (fur, dark, armor) = (skin.body, skin.dark, skin.accent);
-    // Reared up, or its head lowered
-    let raised = pose.mix(0.0, 0.75, 0.0, 0.0);
-    let low = pose.mix(0.0, 0.0, 0.15, 0.3);
-    let pivot = [-0.75, 0.0, 1.0];
-    let r = |v: Vec3| rear([v[0], v[1], v[2] - low * (v[0] + 0.75).max(0.0) / 2.25], pivot, raised);
-    for s in [-1.0, 1.0] {
-        p.push(ball(r([1.82, s * 0.22, 1.98]), 0.065, skin.glow));
-        p.push(limb(r([2.0, s * 0.14, 1.52]), r([2.3, s * 0.2, 1.22]), 0.05, 0.015, skin.extra));
-        p.push(ball(r([1.3, s * 0.33, 2.27]), 0.12, fur));
-    }
-    p.push(ball(r([2.2, 0.0, 1.7]), 0.07, EYE));
-    if pose.windup + pose.special > 0.4 {
-        // Roaring
-        p.push(ball(r([2.06, 0.0, 1.5]), 0.11, EYE));
-    }
-    p.push(ellipsoid(r([1.92, 0.0, 1.68]), [0.32, 0.22, 0.2], dark));
-    p.push(ellipsoid(r([1.62, 0.0, 2.14]), [0.32, 0.3, 0.1], armor));
-    p.push(ball(r([1.5, 0.0, 1.85]), 0.48, fur));
-    for k in 0..4 {
-        let x = 0.8 - k as f64 * 0.5;
-        let z = 2.5 - k as f64 * 0.07;
-        p.push(limb(r([x, 0.0, z + 0.08]), r([x - 0.15, 0.0, z + 0.45]), 0.08, 0.012, skin.extra));
-        p.push(ellipsoid(r([x, 0.0, z]), [0.3, 0.55, 0.12], armor));
-    }
-    p.push(ball(r([0.4, 0.0, 2.05]), 0.62, fur));
-    p.push(limb(r([-0.85, 0.0, 1.55]), r([0.75, 0.0, 1.7]), 0.8, 0.85, fur));
-    // Its front legs reach forward as it rears and slams, its hind legs stay planted
-    let reach = pose.mix(0.0, 0.9, 0.7, 0.0);
-    for (x, y, s) in [(0.75, 0.45, 1.0), (0.75, -0.45, -1.0)] {
-        leg(p, r([x, y, 1.35]), 1.35, 0.28, reach + 0.35 * swing * s, fur, dark);
-    }
-    for (x, y, s) in [(-0.75, 0.45, -1.0), (-0.75, -0.45, 1.0)] {
-        leg(p, [x, y, 1.35], 1.35, 0.3, 0.35 * swing * s, fur, dark);
-    }
-}
-
 /// The Broodmother: a giant spider, dark and hairy, venom glowing in the markings on its back and
 /// a cluster of red eyes. It rears up to bite, and crouches to leap.
 fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
@@ -1758,38 +1626,6 @@ fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
             p.push(limb(hip, knee, 0.1, 0.08, skin.dark));
             p.push(limb(knee, foot, 0.08, 0.03, skin.dark));
         }
-    }
-}
-
-/// The Ancient Treant: an old tree walking on its roots, moss on its bark, a crown of leaves and
-/// eyes glowing deep in its trunk. It swings its branches round, and calls roots up from below.
-fn treant(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
-    let (bark, wood, moss, glow, leaves) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
-    p.push(ball([0.48, 0.17, 3.0], 0.08, glow));
-    p.push(ball([0.48, -0.17, 3.0], 0.08, glow));
-    p.push(ellipsoid([0.5, 0.0, 2.84], [0.06, 0.2, 0.05], BARK_DARK));
-    // The crown
-    for (c, r) in [([0.0, 0.0, 4.4], 0.95), ([0.5, 0.6, 4.1], 0.6), ([-0.4, -0.6, 4.2], 0.65), ([0.3, -0.5, 4.6], 0.55), ([-0.3, 0.5, 4.7], 0.55)] {
-        p.push(ball(c, r, if r > 0.9 { LEAVES_DARK } else { leaves }));
-    }
-    // Moss on its trunk
-    p.push(ellipsoid([0.38, 0.0, 2.2], [0.12, 0.38, 0.5], moss));
-    p.push(limb([0.0, 0.0, 1.0], [0.0, 0.0, 3.7], 0.58, 0.45, bark));
-    // Branches for arms, raised wide to sweep, swept down, or swaying as it walks
-    for side in [-1.0, 1.0] {
-        let shoulder = [0.0, side * 0.45, 3.2];
-        let elbow = pose.at([0.2 - 0.2 * swing * side, side * 1.15, 2.6], [0.1, side * 1.3, 3.9], [0.9, side * 1.0, 2.2], [0.3, side * 1.1, 2.6]);
-        let hand = pose.at([0.45 - 0.3 * swing * side, side * 1.35, 1.6], [0.4, side * 2.0, 4.4], [1.8, side * 0.4, 0.9], [0.2, side * 1.4, 1.2]);
-        p.push(ball(hand, 0.32, leaves));
-        p.push(limb(hand, [hand[0] + 0.3, hand[1] + side * 0.2, hand[2] - 0.35], 0.08, 0.02, wood));
-        p.push(limb(elbow, hand, 0.17, 0.09, wood));
-        p.push(limb(shoulder, elbow, 0.24, 0.17, bark));
-    }
-    // Roots for legs, spreading out from its foot
-    for k in 0..5 {
-        let a = k as f64 / 5.0 * TAU + 0.3;
-        let lift = 0.35 * (swing * if k % 2 == 0 { 1.0 } else { -1.0 }).max(0.0);
-        p.push(limb([a.cos() * 0.35, a.sin() * 0.35, 1.0], [a.cos() * 1.2, a.sin() * 1.2, lift], 0.3, 0.08, bark));
     }
 }
 
@@ -2162,362 +1998,6 @@ fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
     }
 }
 
-/// A necromancer: a tall skeleton in a long black robe trimmed with bronze, its hood up over its
-/// skull and the void burning in its eyes, a staff of dead wood in its hand with an orb of the void
-/// caught in bone at its top. It keeps back from the fight, thrusting the staff out to hurl the
-/// void, and raises both arms high to call the dead up out of the ground.
-fn necromancer(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
-    let (bone, robe, trim, glow, wood) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
-    let lean = pose.mix(0.02, -0.04, 0.12, -0.08);
-    let up = |v: Vec3| [v[0] + lean * (v[2] - 0.8).max(0.0), v[1], v[2]];
-    // The skull in the shadow of its hood, the void in its eyes
-    let head = up([0.03, 0.0, 1.72]);
-    for s in [-1.0, 1.0] {
-        p.push(ball([head[0] + 0.1, s * 0.045, head[2] + 0.02], 0.03, glow));
-    }
-    p.push(ellipsoid([head[0] + 0.06, 0.0, head[2] - 0.08], [0.07, 0.075, 0.045], bone));
-    p.push(ball(head, 0.12, bone));
-    p.push(ellipsoid(up([-0.04, 0.0, 1.76]), [0.16, 0.17, 0.18], robe));
-    p.push(limb(up([-0.1, 0.0, 1.82]), up([-0.22, 0.0, 1.6]), 0.08, 0.03, robe));
-    // A collar of bronze, and the robe falling to the ground, swaying as it walks, bronze at its hem
-    p.push(ellipsoid(up([0.0, 0.0, 1.47]), [0.17, 0.24, 0.05], trim));
-    let hem = [0.03 * swing, 0.0, 0.06];
-    p.push(ellipsoid([hem[0], 0.0, 0.07], [0.33, 0.34, 0.05], trim));
-    p.push(limb(up([0.0, 0.0, 1.45]), hem, 0.19, 0.33, robe));
-    // Its arms in their sleeves: the staff hand, and the other, raised as it calls the dead up
-    let staff_hand = up(pose.at([0.25, -0.3, 1.05], [0.45, -0.22, 1.35], [0.6, -0.16, 1.4], [0.15, -0.36, 1.95]));
-    let other = up(pose.at([0.15 + 0.06 * swing, 0.3, 1.0], [0.3, 0.32, 1.25], [-0.05, 0.3, 1.05], [0.12, 0.38, 2.0]));
-    for (s, hand) in [(-1.0, staff_hand), (1.0, other)] {
-        let shoulder = up([0.0, s * 0.22, 1.42]);
-        let elbow = [(shoulder[0] + hand[0]) * 0.5 - 0.05, (shoulder[1] + hand[1]) * 0.5 + s * 0.07, (shoulder[2] + hand[2]) * 0.5 - 0.06];
-        // Bony fingers out of a wide sleeve
-        p.push(ball(hand, 0.045, bone));
-        p.push(limb(elbow, hand, 0.05, 0.085, robe));
-        p.push(limb(shoulder, elbow, 0.07, 0.06, robe));
-    }
-    // The staff, upright in its hand, thrust out, or raised high; the orb caught at its top
-    let tilt = pose.at([0.05, 0.0, 1.0], [0.45, 0.0, 0.9], [0.75, 0.0, 0.66], [0.0, -0.1, 1.0]);
-    let n = (tilt[0] * tilt[0] + tilt[1] * tilt[1] + tilt[2] * tilt[2]).sqrt().max(0.1);
-    let along = |k: f64| [staff_hand[0] + tilt[0] / n * k, staff_hand[1] + tilt[1] / n * k, staff_hand[2] + tilt[2] / n * k];
-    let orb = along(0.62);
-    p.push(ball(orb, 0.085, glow));
-    for k in 0..3 {
-        let a = k as f64 * TAU / 3.0;
-        let side = [orb[0] + a.cos() * 0.1, orb[1] + a.sin() * 0.1, orb[2]];
-        p.push(limb(along(0.48), side, 0.02, 0.012, bone));
-        p.push(limb(side, [side[0] * 0.6 + orb[0] * 0.4, side[1] * 0.6 + orb[1] * 0.4, orb[2] + 0.12], 0.012, 0.006, bone));
-    }
-    p.push(limb(along(-1.0), along(0.5), 0.025, 0.022, wood));
-}
-
-/// How a knight holds itself in one of its poses, see knight(). Angles are in radians, lengths in
-/// meters of its build.
-#[derive(Clone, Copy)]
-struct Stance {
-    /// Leaning forward from the hips, turned left at the waist, and its head tipped back
-    lean: f64,
-    twist: f64,
-    nod: f64,
-    /// How far its hips sink as it bends its knees, how far down onto its left knee it goes, 0 to
-    /// 1, and how wide it plants its feet, 0 to 1
-    crouch: f64,
-    kneel: f64,
-    wide: f64,
-    /// Which way its sword hand is from its shoulder, round to the left from ahead and up from
-    /// level, and how far
-    hand: [f64; 3],
-    /// The same for its left hand when it's off the hilt, and how far it's on the hilt instead
-    off: [f64; 3],
-    grip: f64,
-    /// Which way the blade points from the hand, round and up, and how far its edges are turned
-    /// from leading up and down, 0, as it sweeps, to leading sideways, 1, its flat to the front
-    /// so it's seen broad
-    blade: [f64; 2],
-    flat: f64,
-    /// Its cape streaming out behind it, 0 to 1
-    flare: f64,
-}
-
-impl Stance {
-    const fn new(lean: f64, twist: f64, nod: f64, crouch: f64, kneel: f64, wide: f64, hand: [f64; 3], off: [f64; 3], grip: f64, blade: [f64; 2], flat: f64, flare: f64) -> Stance {
-        Stance { lean, twist, nod, crouch, kneel, wide, hand, off, grip, blade, flat, flare }
-    }
-
-    /// Standing, then each pose in the order of Pose::weights(): the greatsword raised overhead
-    /// behind it, brought down in front, planted as it kneels with its left hand raised to call
-    /// the dead, drawn back low to sweep, swept out flat to the left, raised in both hands point
-    /// down, and driven into the ground
-    const KEYS: [Stance; 8] = [
-        Stance::new(0.04, 0.0, 0.0, 0.02, 0.0, 0.0, [-0.5, -1.0, 0.64], [0.45, -1.25, 0.66], 0.0, [-0.1, -1.2], 1.0, 0.0),
-        Stance::new(-0.12, -0.15, 0.1, 0.05, 0.0, 0.3, [-0.2, 1.68, 0.6], [0.3, 1.5, 0.6], 1.0, [0.0, 2.43], 1.0, 0.2),
-        Stance::new(0.38, 0.1, -0.15, 0.16, 0.0, 0.5, [0.1, -0.25, 0.66], [0.2, -0.3, 0.6], 1.0, [0.0, -0.42], 1.0, 0.35),
-        Stance::new(0.12, 0.2, 0.45, 0.32, 1.0, 0.0, [0.05, -0.75, 0.55], [0.5, 1.35, 0.68], 0.0, [0.0, -1.35], 1.0, 0.1),
-        Stance::new(0.22, -0.75, -0.05, 0.22, 0.0, 1.0, [-1.5, -0.95, 0.62], [-0.6, -0.8, 0.6], 1.0, [-1.95, -0.32], 0.0, 0.3),
-        Stance::new(0.18, 0.65, 0.0, 0.3, 0.0, 1.0, [1.0, -0.95, 0.66], [2.4, -0.4, 0.62], 0.0, [0.9, -0.3], 0.0, 0.7),
-        Stance::new(-0.05, 0.0, 0.15, 0.0, 0.0, 0.4, [0.6, 1.0, 0.62], [-0.4, 1.0, 0.62], 1.0, [0.0, -1.5], 1.0, 0.15),
-        Stance::new(0.45, 0.0, -0.25, 0.3, 0.35, 0.6, [0.55, -0.6, 0.6], [-0.5, -0.6, 0.6], 1.0, [0.0, -1.1], 1.0, 0.4),
-    ];
-
-    fn numbers(&self) -> [f64; 17] {
-        let s = self;
-        [s.lean, s.twist, s.nod, s.crouch, s.kneel, s.wide, s.hand[0], s.hand[1], s.hand[2], s.off[0], s.off[1], s.off[2], s.grip, s.blade[0], s.blade[1], s.flat, s.flare]
-    }
-
-    fn from_numbers(n: [f64; 17]) -> Stance {
-        Stance::new(n[0], n[1], n[2], n[3], n[4], n[5], [n[6], n[7], n[8]], [n[9], n[10], n[11]], n[12], [n[13], n[14]], n[15], n[16])
-    }
-
-    /// Partway into each of its poses as much as `pose` says. The angles are blended, not the
-    /// places, so a blade swung from one pose to the next goes round in an arc.
-    fn of(pose: Pose) -> Stance {
-        let rest = Stance::KEYS[0].numbers();
-        let mut out = rest;
-        for (w, key) in pose.weights().into_iter().zip(&Stance::KEYS[1..]) {
-            if w != 0.0 {
-                let key = key.numbers();
-                for i in 0..out.len() {
-                    out[i] += w * (key[i] - rest[i]);
-                }
-            }
-        }
-        Stance::from_numbers(out)
-    }
-}
-
-/// Where the middle joint goes of a limb from `root` reaching for `target`, `upper` and `lower`
-/// long, bending towards `pole`, and where its end gets to, which is short of `target` if it's
-/// out of reach
-fn bend(root: Vector3<f64>, target: Vector3<f64>, upper: f64, lower: f64, pole: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    let to = target - root;
-    let d = to.norm().clamp(1e-4, (upper + lower) * 0.999);
-    let dir = to.try_normalize(1e-9).unwrap_or_else(|| -Vector3::z());
-    let along = (upper * upper - lower * lower + d * d) / (2.0 * d);
-    let out = (upper * upper - along * along).max(0.0).sqrt();
-    let side = (pole - dir * pole.dot(&dir)).try_normalize(1e-9).unwrap_or_else(|| dir.cross(&Vector3::y()).try_normalize(1e-9).unwrap_or_else(Vector3::x));
-    (root + dir * along + side * out, root + dir * d)
-}
-
-/// How long a knight's blade is past its crossguard, in meters of its build
-const KNIGHT_BLADE: f64 = 1.25;
-
-/// The Grave Knight, a fallen king of the dead, about two meters tall at the size of its build
-/// and gaunt: a skeleton with void burning in its eye sockets and in the heart behind its bare
-/// ribs, a crown with one point snapped off set askew on a broken helm, spiked pauldrons, a long
-/// cape hanging from its shoulders in tatters and a tabard over its hips, armored forearms and
-/// shins, and a huge notched greatsword, void glowing down its fuller, which it drags along with
-/// its point by the ground as it walks. Its poses are blended from its Stance in each, see
-/// Stance::KEYS; driving the sword into the ground, bone spikes burst up all round it, nearest
-/// first. A `titan` wears black armor and a black cape, chased with gold. Returns where its sword
-/// hand is and the tip of its blade.
-fn knight(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin, titan: bool) -> (Vector3<f64>, Vector3<f64>) {
-    type V = Vector3<f64>;
-    let (bone, dark, armor, glow, trim) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
-    let cape = if titan { OBSIDIAN } else { TEMPLE_RED };
-    let mut s = Stance::of(pose);
-    // Walking, its arms swing, the sword arm hardly under the weight of it, and its cape streams
-    // out behind
-    let swing = angle.sin() * moving;
-    s.hand[1] += 0.12 * swing;
-    s.off[1] -= 0.35 * swing;
-    s.flare += 0.15 * moving;
-    const HIP: f64 = 1.0;
-    // Its hips sinking as it crouches, and a little at each footfall
-    let hip = V::new(0.0, 0.0, HIP - s.crouch - 0.025 * swing * swing);
-    let (lc, ls, tc, ts) = (s.lean.cos(), s.lean.sin(), s.twist.cos(), s.twist.sin());
-    // A way in its upper body, leaning and turned with it, and where a point of it is
-    let rotate = |d: V| {
-        let (x, z) = (d.x * lc + d.z * ls, -d.x * ls + d.z * lc);
-        V::new(x * tc - d.y * ts, x * ts + d.y * tc, z)
-    };
-    let body = |q: Vec3| hip + rotate(V::new(q[0], q[1], q[2] - HIP));
-    let ahead = |round: f64, up: f64| V::new(up.cos() * round.cos(), up.cos() * round.sin(), up.sin());
-    // Its head, tipped back about its neck
-    let neck = [0.01, 0.0, 1.69];
-    let (nc, ns) = (s.nod.cos(), s.nod.sin());
-    let head = |q: Vec3| -> Vec3 {
-        let (x, z) = (q[0] - neck[0], q[2] - neck[2]);
-        body([neck[0] + x * nc - z * ns, q[1], neck[2] + x * ns + z * nc]).into()
-    };
-
-    // Void burning in its eye sockets, a crown askew with one point snapped off, on a helm
-    // broken open at one side
-    for side in [-1.0, 1.0] {
-        p.push(ball(head([0.105, side * 0.045, 1.8]), 0.022, glow));
-        p.push(ball(head([0.094, side * 0.045, 1.8]), 0.034, dark));
-    }
-    p.push(ball(head([0.118, 0.0, 1.755]), 0.016, dark));
-    p.push(ball(head([0.112, 0.0, 1.875]), 0.02, glow));
-    let askew = |y: f64| 0.25 * y;
-    for k in 0..7 {
-        let a = k as f64 / 7.0 * TAU;
-        let (c, sn) = (a.cos(), a.sin());
-        let foot = [0.005 + 0.105 * c, 0.11 * sn, 1.865 + askew(0.11 * sn)];
-        let (tall, out) = if k == 2 { (0.035, 0.03) } else { (0.095, 0.012) };
-        p.push(limb(head(foot), head([foot[0] + out * c, foot[1] + out * sn, foot[2] + tall]), 0.022, 0.006, trim));
-    }
-    p.push(ellipsoid(head([0.005, 0.0, 1.865]), [0.116, 0.122, 0.022], trim));
-    p.push(ball(head([0.02, 0.0, 1.79]), 0.112, bone));
-    p.push(ellipsoid(head([0.07, 0.0, 1.715]), [0.065, 0.072, 0.035], bone));
-    p.push(ball(head([-0.05, 0.1, 1.9]), 0.055, AIR));
-    p.push(ellipsoid(head([-0.035, 0.0, 1.82]), [0.12, 0.128, 0.115], armor));
-    p.push(limb(body([0.0, 0.0, 1.54]).into(), head([0.01, 0.0, 1.7]), 0.03, 0.028, bone));
-
-    // The void in its heart, seen between its bare ribs, its breastbone and spine
-    p.push(ball(body([0.01, 0.0, 1.33]).into(), 0.06, glow));
-    p.push(limb(body([0.118, 0.0, 1.47]).into(), body([0.126, 0.0, 1.25]).into(), 0.02, 0.016, bone));
-    for k in 0..4 {
-        let z = 1.21 + 0.078 * k as f64;
-        let wider = (k as f64).min(2.0);
-        let (rx, ry) = (0.112 + 0.01 * wider, 0.128 + 0.014 * wider);
-        for side in [-1.0, 1.0] {
-            // From the spine round its side, sloping down to the front
-            let at = |u: f64| -> Vec3 {
-                let f = (PI - u) / (PI - 0.35);
-                body([rx * u.cos() - 0.01, side * ry * u.sin(), z - 0.05 * f]).into()
-            };
-            for j in 0..4 {
-                let (u0, u1) = (PI - (PI - 0.35) * j as f64 / 4.0, PI - (PI - 0.35) * (j + 1) as f64 / 4.0);
-                p.push(limb(at(u0), at(u1), 0.017, 0.017, bone));
-            }
-        }
-    }
-    for k in 0..8 {
-        p.push(ball(body([-0.105, 0.0, 1.04 + 0.065 * k as f64]).into(), 0.034, bone));
-    }
-    p.push(limb(body([-0.1, 0.0, 1.0]).into(), body([-0.11, 0.0, 1.54]).into(), 0.024, 0.028, bone));
-    // Its collarbones, a gorget, and pauldrons spiked and rimmed with trim
-    for side in [-1.0, 1.0] {
-        p.push(limb(body([0.1, 0.0, 1.5]).into(), body([0.0, side * 0.24, 1.55]).into(), 0.02, 0.02, bone));
-    }
-    p.push(ellipsoid(body([0.0, 0.0, 1.56]).into(), [0.09, 0.13, 0.035], armor));
-    for side in [-1.0, 1.0] {
-        p.push(limb(body([-0.02, side * 0.3, 1.64]).into(), body([-0.07, side * 0.43, 1.79]).into(), 0.035, 0.005, armor));
-        p.push(ellipsoid(body([0.0, side * 0.28, 1.6]).into(), [0.15, 0.13, 0.085], armor));
-        p.push(ellipsoid(body([0.0, side * 0.28, 1.585]).into(), [0.165, 0.145, 0.07], trim));
-        p.push(ellipsoid(body([0.0, side * 0.31, 1.5]).into(), [0.12, 0.1, 0.05], armor));
-    }
-    // A clasp either side, holding its cape
-    for side in [-1.0, 1.0] {
-        p.push(ball(body([0.03, side * 0.19, 1.555]).into(), 0.026, trim));
-    }
-
-    // Its arms: bone above the elbow, armored below, the sword in its right hand and its left on
-    // the hilt below it or free
-    let (shoulder_r, shoulder_l) = (V::new(0.0, -0.26, 1.56), V::new(0.0, 0.26, 1.56));
-    let hand = body((shoulder_r + ahead(s.hand[0], s.hand[1]) * s.hand[2]).into());
-    let d = rotate(ahead(s.blade[0], s.blade[1]));
-    let free = body((shoulder_l + ahead(s.off[0], s.off[1]) * s.off[2]).into());
-    let off = free.lerp(&(hand - d * 0.12), s.grip.clamp(0.0, 1.0));
-    for (shoulder, target, side) in [(shoulder_r, hand, -1.0), (shoulder_l, off, 1.0)] {
-        let shoulder = body(shoulder.into());
-        let (elbow, at) = bend(shoulder, target, 0.36, 0.34, rotate(V::new(-0.35, side * 0.85, -0.4)));
-        p.push(ball(at.into(), 0.05, armor));
-        p.push(limb(elbow.into(), at.into(), 0.042, 0.036, armor));
-        p.push(ball(elbow.into(), 0.045, armor));
-        p.push(limb(shoulder.into(), elbow.into(), 0.028, 0.026, bone));
-    }
-
-    // Its belt, and a tabard hanging in strips from it, trimmed at the top
-    p.push(ball(body([0.112, 0.0, 1.05]).into(), 0.025, trim));
-    p.push(ellipsoid(body([0.0, 0.0, 1.05]).into(), [0.11, 0.17, 0.035], armor));
-    p.push(ellipsoid(body([0.106, 0.0, 1.0]).into(), [0.035, 0.12, 0.02], trim));
-    for (y, long) in [(-0.07, 0.4), (0.0, 0.48), (0.07, 0.36)] {
-        let top = body([0.1, y, 1.0]);
-        p.push(limb(top.into(), (top + V::new(0.04, 0.0, -long)).into(), 0.04, 0.046, cape).stretched([0.45, 1.0, 1.0]));
-    }
-    p.push(ellipsoid(body([0.0, 0.0, 1.0]).into(), [0.09, 0.16, 0.07], bone));
-
-    // Its legs, the knees bending as its hips sink, striding along, or down on one knee
-    for side in [-1.0, 1.0] {
-        let step = angle + if side > 0.0 { 0.0 } else { PI };
-        let joint = hip + V::new(0.0, side * 0.11, -0.02);
-        let mut foot = V::new(0.12 * s.wide * side, side * (0.13 + 0.08 * s.wide), 0.06);
-        foot.x += 0.32 * step.sin() * moving;
-        foot.z += 0.07 * step.cos().max(0.0) * moving;
-        foot.x += if side > 0.0 { -0.42 * s.kneel } else { 0.3 * s.kneel };
-        let (knee, foot) = bend(joint, foot, 0.53, 0.5, V::new(1.0, 0.0, 0.25));
-        p.push(ellipsoid([foot.x + 0.05, foot.y, (foot.z - 0.02).max(0.04)], [0.1, 0.05, 0.04], armor));
-        p.push(limb(knee.into(), foot.into(), 0.048, 0.04, armor));
-        p.push(ball(knee.into(), 0.052, armor));
-        p.push(limb(joint.into(), knee.into(), 0.032, 0.03, bone));
-    }
-
-    // Its cape: a mantle over its shoulders, and strips torn to different lengths hanging from
-    // it, blown out behind as it lunges and sweeps
-    p.push(ellipsoid(body([-0.09, 0.0, 1.56]).into(), [0.07, 0.21, 0.045], cape));
-    let (fc, fs) = ((s.twist * 0.6).cos(), (s.twist * 0.6).sin());
-    for (i, hem) in [0.34, 0.47, 0.27, 0.52, 0.31, 0.44, 0.29].into_iter().enumerate() {
-        let y = -0.21 + 0.07 * i as f64;
-        let top = body([-0.13, y, 1.52]);
-        let (bx, by) = (-(0.08 + 0.4 * s.flare), y * 0.35);
-        let low = (hem + 0.3 * s.flare).min(top.z - 0.2);
-        let bottom = V::new(top.x + bx * fc - by * fs, top.y + bx * fs + by * fc, low);
-        p.push(limb(top.into(), bottom.into(), 0.04, 0.05, cape).stretched([0.5, 1.0, 1.0]));
-    }
-
-    // The greatsword: its pommel and grip, a crossguard swept towards the blade, notches hacked
-    // out of its edges, void glowing down its fuller, and the blade, broad at the guard and
-    // narrowing to its point, its edges bright
-    let up = V::z();
-    let edge_up = (up - d * d.dot(&up)).try_normalize(1e-6).unwrap_or_else(V::x);
-    let edge_side = up.cross(&d).try_normalize(1e-6).unwrap_or_else(V::y);
-    let e = (edge_up * (1.0 - s.flat) + edge_side * s.flat).try_normalize(1e-6).unwrap_or(edge_side);
-    let guard = hand + d * 0.06;
-    let tip = guard + d * KNIGHT_BLADE;
-    p.push(ball((hand - d * 0.25).into(), 0.04, trim));
-    p.push(limb((hand - d * 0.24).into(), guard.into(), 0.026, 0.026, LEATHER));
-    for side in [-1.0, 1.0] {
-        p.push(limb(guard.into(), (guard + e * side * 0.17 + d * 0.045).into(), 0.03, 0.018, trim));
-    }
-    for (f, side) in [(0.33, 1.0), (0.47, -1.0), (0.62, 1.0)] {
-        p.push(ball((guard + d * KNIGHT_BLADE * f + e * side * 0.068).into(), 0.028, AIR));
-    }
-    p.push(limb((guard + d * 0.08).into(), (guard + d * KNIGHT_BLADE * 0.8).into(), 0.03, 0.016, glow));
-    for (o, metal) in [(-0.06, STEEL), (-0.02, DARK_STEEL), (0.02, DARK_STEEL), (0.06, STEEL)] {
-        p.push(limb((guard + e * o).into(), tip.into(), 0.022, 0.006, metal));
-    }
-
-    // Bone spikes bursting up all round where its sword went in, the nearest first, the ground
-    // cracked open round the blade with void glowing up through it
-    let g = pose.spikes;
-    if g > 0.15 {
-        p.push(ellipsoid([tip.x, tip.y, 0.015], [0.24 * g, 0.24 * g, 0.015], glow));
-    }
-    let mut seed = 0x5b1e_u32;
-    for (ring, (r, count, high)) in [(0.5, 7, 0.5), (0.85, 11, 0.62), (1.2, 15, 0.52)].into_iter().enumerate() {
-        let grow = ((g - 0.15 * ring as f64) / 0.7).clamp(0.0, 1.0);
-        for k in 0..count {
-            let a = (k as f64 + 0.5 * ring as f64) / count as f64 * TAU + 0.3 * random(&mut seed);
-            let r = r + 0.08 * (random(&mut seed) - 0.5);
-            let high = high * (0.7 + 0.6 * random(&mut seed));
-            let out = 0.12 + 0.1 * random(&mut seed);
-            if grow > 0.05 {
-                let (c, sn) = (a.cos(), a.sin());
-                let foot = [r * c, r * sn, 0.0];
-                p.push(limb(foot, [(r + out * grow) * c, (r + out * grow) * sn, high * grow], 0.055, 0.006, bone));
-                p.push(ellipsoid(foot, [0.07, 0.07, 0.025], DIRT));
-            }
-        }
-    }
-    (hand, tip)
-}
-
-/// How far out a knight's bone spikes burst up, in meters of its build, see knight()
-const KNIGHT_SPIKES: f64 = 1.45;
-
-/// How far round a knight's greatsword reaches as it sweeps it round low, how far round its bone
-/// spikes burst up, in meters, and where on it, +x ahead, its blade is as it's swept out, for
-/// what flies off it
-pub fn knight_reach(look: Look) -> (f64, f64, [f64; 3]) {
-    static SWEPT: std::sync::OnceLock<(f64, [f64; 3])> = std::sync::OnceLock::new();
-    let (reach, blade) = *SWEPT.get_or_init(|| {
-        let (hand, tip) = knight(&mut Vec::new(), 0.0, 0.0, Pose::of(POSE_SWEEP), Look::GraveKnight.skin(), false);
-        (tip.xy().norm(), hand.lerp(&tip, 0.5).into())
-    });
-    let s = look.scale();
-    (reach * s, KNIGHT_SPIKES * s, blade.map(|v| v * s))
-}
-
 /// A dune burrower, about two meters from its pincers to the root of its tail: a low, broad crawler
 /// of sand-colored plates banded darker, a shovel-lipped shield over its head for digging, a row
 /// of spines down its back, two heavy pincers, six legs, and a jointed tail arched up over its
@@ -2798,17 +2278,11 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         // Bosses and monsters, made at the size of their build, then grown or shrunk to their own
         _ if look.build().is_some() => {
             match look.build() {
-                Some(Build::Golem) => golem(&mut p, swing, pose, look.skin(), look == Look::Colossus),
                 Some(Build::Drake) => drake(&mut p, angle, swing, moving, pose, look.skin()),
-                Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
-                Some(Build::Undead) if look.is_knight() => {
-                    knight(&mut p, angle, moving, pose, look.skin(), look == Look::CryptTitan);
-                }
                 Some(Build::Undead) if look == Look::Bloater => bloater(&mut p, swing, pose, look.skin()),
                 Some(Build::Undead) if look == Look::Ghoul => ghoul(&mut p, angle, swing, moving, pose, look.skin()),
-                Some(Build::Undead) if look == Look::Necromancer => necromancer(&mut p, swing, pose, look.skin()),
                 Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living(), look.arms()),
                 Some(Build::Burrower) => burrower(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wraith) => wraith(&mut p, angle, moving, pose, look.skin()),
@@ -2822,7 +2296,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                         serpents::parts(&mut p, kind, phase, [pose.windup, pose.strike, pose.special]);
                     }
                 }
-                _ => treant(&mut p, swing, pose, look.skin()),
+                // The rest are drawn out of jointed pieces, see src\rig.rs
+                _ => {}
             }
             if look.scale() != 1.0 {
                 p = p.iter().map(|part| part.scaled(look.scale())).collect();
@@ -3934,23 +3409,6 @@ impl Animal {
         self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
     }
 
-    /// Where `point` of its model, in meters at its build's size with +x ahead, is in the world as
-    /// it's drawn now, in voxels: turned, tipped and breathing just as instance() draws it
-    pub fn on_model(&self, point: [f64; 3], vpm: f64) -> Vector3<f64> {
-        let offset = self.id as f64 * 0.7;
-        let (mut scale, mut heading) = (self.look.scale(), self.drawn_heading);
-        if self.look.build().is_some() && !crate::rig::rigged(self.look) {
-            scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
-            let still = (1.0 - self.speed / 0.4).clamp(0.0, 1.0);
-            heading += 0.035 * still * (self.age * 1.3 + offset).sin();
-        }
-        let [pitch, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
-        let ahead = Vector3::new(self.drawn_heading.cos(), self.drawn_heading.sin(), 0.0);
-        let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up)) * vpm;
-        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch);
-        position + rotation * Vector3::from(point) * scale * vpm
-    }
-
     /// Where the boulder the Earthbreaker Colossus is tearing up out of the ground is, in voxels,
     /// and how far it's got with it, while it's at that: coming up out of the ground in front of
     /// its fists as it pries it loose, then in its hands, see bosses::Carry
@@ -3958,16 +3416,12 @@ impl Animal {
         let boss = self.boss.as_ref()?;
         let carry = boss.carrying()?;
         // Between its fists as its jointed pose has them, see src\rig.rs
-        let grip = match &boss.rig {
-            Some(rig) => self.rig_point(rig.sockets.grip, vpm),
-            None => self.on_model(golem_grip(boss.pose().unwrap_or(0)), vpm),
-        };
+        let grip = self.rig_point(boss.rig.as_ref()?.sockets.grip, vpm);
         let at = match carry {
             bosses::Carry::Held => grip,
             // From all but buried, its top just under the ground, heaving up out of it as the
             // fists dig in, then more slowly up to where they grip it
             bosses::Carry::Prying(loose) => {
-                let grip = if boss.rig.is_some() { grip } else { self.on_model(golem_grip(POSE_STRIKE), vpm) };
                 let low = self.position.z - bosses::TORN_BOULDER * 1.05 * vpm;
                 let k = 1.0 - (1.0 - loose) * (1.0 - loose);
                 Vector3::new(grip.x, grip.y, low + (grip.z - low) * k)
@@ -4844,22 +4298,6 @@ mod tests {
         }
         let whole: usize = models.iter().map(|m| m.voxels.len().div_ceil(4) * 4 + 8).sum();
         println!("models {:.1} MB as they were, {:.1} MB packed", whole as f64 / 1e6, words.len() as f64 * 4.0 / 1e6);
-    }
-
-    /// The Colossus's boulder is gripped low in front of its fists dug into the ground and on top
-    /// of them raised overhead, near enough together to hold it, and partway between in the frame
-    /// between, so it goes up with its hands
-    #[test]
-    fn colossus_grips_its_boulder() {
-        let r = bosses::TORN_BOULDER / Look::Colossus.scale();
-        let (low, high) = (golem_grip(POSE_STRIKE), golem_grip(POSE_WINDUP));
-        assert!(low[0] > 1.6 && low[2] < r * 1.5, "{low:?}");
-        assert!(high[2] > 3.9 && high[0].abs() < 0.5, "{high:?}");
-        let [right, left] = golem_fists(0.0, Pose::of(POSE_WINDUP));
-        assert!(right[1] < 0.0 && left[1] > 0.0 && left[1] - right[1] < 2.0 * (r + 0.36), "{right:?} {left:?}");
-        let between = tween(Look::Colossus, POSE_STRIKE, POSE_WINDUP, 0.1).expect("a frame between");
-        let mid = golem_grip(between);
-        assert!(mid[2] > low[2] + 0.5 && mid[2] < high[2] - 0.5, "{mid:?}");
     }
 
     /// The new monsters each have their own name, so they can be told apart in what's said

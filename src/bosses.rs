@@ -941,6 +941,7 @@ fn reel_at(look: Look) -> f64 {
 
 /// Seconds `look` takes to get ready for move `m`, to make it and to get over it, as it does
 /// when it's not angry, for posing it
+#[cfg(test)]
 pub fn timing(look: Look, m: Move) -> (f64, f64, f64) {
     (windup(look, m), duration(look, m), recovery(look, m))
 }
@@ -973,6 +974,7 @@ pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
 }
 
 /// The moves `look` makes in a fight, for trying each of them out
+#[cfg(test)]
 pub fn repertoire(look: Look) -> Vec<Move> {
     let boss = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
     let mut moves: Vec<Move> = boss.menu().iter().map(|&(m, _, _)| m).collect();
@@ -1769,10 +1771,6 @@ fn moment(a: &Animal, boss: &Boss, player: Option<Vector3<f64>>, vpm: f64, dt: f
     // Frozen solid or held fast it stays as it is; slowed it moves slowly
     let pace = a.status.pace();
     let held = pace <= 0.0 && a.health > 0.0;
-    let air = match boss.phase {
-        Phase::Act(Move::Leap, t) => leap(look).1 * (PI * (t / leap(look).0).min(1.0)).sin(),
-        _ => 0.0,
-    };
     crate::rig::Moment {
         dt: if held { 0.0 } else { dt * if a.health > 0.0 { pace.max(0.2) } else { 1.0 } },
         phase: a.phase,
@@ -1788,7 +1786,6 @@ fn moment(a: &Animal, boss: &Boss, player: Option<Vector3<f64>>, vpm: f64, dt: f
         stage: boss.stage,
         dying: boss.dying.filter(|_| a.health <= 0.0),
         carry: boss.carrying(),
-        air,
     }
 }
 

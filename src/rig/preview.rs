@@ -83,9 +83,6 @@ fn the_move(rig: &mut Rig, m: Move, frames: usize) -> Vec<Frame> {
             let tear = bosses::TEAR_PRY;
             moment.carry = Some(if t < tear { Carry::Prying(t / tear) } else { Carry::Held });
         }
-        if m == Move::Leap && (wind..wind + act).contains(&t) {
-            moment.air = 3.0 * (PI * (t - wind) / act).sin();
-        }
     })
 }
 

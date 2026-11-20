@@ -83,12 +83,6 @@ impl Frame {
     pub fn rest(&self, hands: [[f64; 3]; 2]) -> Stance {
         Stance { hands, feet: [[0.0, -self.hip_w, self.ankle], [0.0, self.hip_w, self.ankle]], tool: [0.25, 0.0, -1.0], ..Default::default() }
     }
-
-    /// Where its right shoulder or left, `k`, is standing straight, for poses reaching from it
-    pub fn shoulder_at(&self, k: usize) -> V {
-        let s = V::new(0.0, 0.0, self.waist) + self.shoulder;
-        if k == 0 { s } else { flip(s) }
-    }
 }
 
 /// Where each of its pieces goes in `stance`, into `bones`, and where things come out of it into
