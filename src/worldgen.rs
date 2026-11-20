@@ -3,12 +3,15 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+mod aeries;
 mod camps;
 mod castles;
 mod dragonlair;
 mod towns;
 mod trees;
 mod undercity;
+
+pub use aeries::{SHRINE, SHRINE_KEY, aeries, way_up as way_up_to_shrine};
 
 pub use camps::{Camp, CampKind, camp_spots};
 #[allow(unused_imports)]
@@ -5280,6 +5283,8 @@ impl Terrain {
             scatter(dragonlair::OMEN_CELL, 0xd7a9, dragonlair::OMEN_REACH, &mut |x, y, ground, column, r| self.dragon_omen(x, y, ground, column, r));
         }
         objects.extend(self.dragon_lairs(&mut features));
+        // The wing shrines on the peaks, see aeries.rs
+        objects.extend(self.wing_shrines(&mut features));
 
         features.footprints = footprints;
         (objects, features)
