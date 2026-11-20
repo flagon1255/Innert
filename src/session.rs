@@ -710,10 +710,37 @@ impl App {
         };
     }
 
+    /// For trying them out in a realm, which is built after `--set enemy=` and `boss=` have put
+    /// theirs in the world first seen: `--set arrive_enemy=harpy` puts a pack of them
+    /// `enemy_distance=` ahead once the realm's there, `enemy_count=` of them, and
+    /// `arrive_boss=roc` that boss `boss_distance=` ahead
+    fn arrive_summons(&mut self) {
+        let settings = settings_from_args();
+        let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let named = |name: String| animals::Look::ALL.into_iter().find(|l| l.build().is_some() && (format!("{l:?}").eq_ignore_ascii_case(&name) || l.name().replace(' ', "").eq_ignore_ascii_case(&name)));
+        let feet = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+        let yaw = self.camera.rotation.z;
+        let ahead = Vector3::new(-yaw.sin(), yaw.cos(), 0.0);
+        let water = &self.water;
+        let level = |x: f64, y: f64| water.surface_at(x, y);
+        if let Some(look) = setting("arrive_enemy").and_then(named) {
+            let count = setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(look.pack_size());
+            let distance = setting("enemy_distance").and_then(|v| v.parse().ok()).unwrap_or(10.0);
+            self.game.summon_pack(&self.world, &level, &vec![look; count], feet, ahead, distance, 0.0, false, None);
+        }
+        if let Some(look) = setting("arrive_boss").and_then(named) {
+            let distance = setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(16.0);
+            self.game.summon(&self.world, &level, look, feet, ahead, distance);
+        }
+    }
+
     /// What the trial does at frame `frame` of a screenshot run
     fn trial_step(&mut self, frame: usize) {
         // The world's there to play in once it's built and they're stood on it
         let there = !self.session.arriving && !self.session.find_ground && self.session.leaving.is_none();
+        if there && !self.session.trial.there && self.session.trial.ready.is_none() {
+            self.arrive_summons();
+        }
         let trial = &mut self.session.trial;
         if there && !trial.there {
             let first = trial.ready.is_none();

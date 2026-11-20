@@ -1865,7 +1865,7 @@ pub fn act(a: &mut Animal, d: &mut Flier, world: &World, water: WaterLevel, play
     let Some(mut boss) = a.boss.take() else {
         return;
     };
-    let player = player.or_else(|| SHOW.load(Ordering::Relaxed).then_some(boss.home + V3::new(14.0 * vpm, 0.0, 0.0)));
+    let player = player.or_else(|| SHOW.load(Ordering::Relaxed).then_some(boss.home + V3::new(9.0 * vpm, 0.0, 0.0)));
     let pace = a.status.pace();
     let here = Here { world, water, feet: player, vpm, dt: dt * pace.max(0.0), sp, look, quick: if boss.enraged { 0.75 } else { 1.0 }, stand: d.stand * vpm };
     if !d.placed {
@@ -3826,6 +3826,32 @@ mod tests {
             t += dt;
         }
         (deeds, track, a)
+    }
+
+    /// How long a flock of a dozen harpies and two raid bosses take to think and be posed a frame,
+    /// all fighting: `cargo test --release avians::tests::cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn cost() {
+        let vpm = 16u32;
+        let world = open_ground(120, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let v = vpm as f64;
+        let feet = V3::new(60.0, 60.0, 4.0) * v;
+        let mut flock: Vec<Animal> = (0..12).map(|k| Animal::boss(Look::Harpy, feet + V3::new(10.0 + k as f64, 5.0, 0.0) * v, [k, 2, -2], k as u32)).collect();
+        flock.push(Animal::boss(Look::Roc, feet + V3::new(-20.0, 0.0, 0.0) * v, [1, 9, -1], 3));
+        flock.push(Animal::boss(Look::BloodwakeGargoyle, feet + V3::new(0.0, -20.0, 0.0) * v, [2, 9, -1], 4));
+        let start = std::time::Instant::now();
+        let mut pieces = Vec::new();
+        for _ in 0..600 {
+            for a in &mut flock {
+                a.update(&world, &water, Some(feet), 1.0 / 60.0);
+                a.boss.as_mut().unwrap().deeds.clear();
+                pieces.clear();
+                instances(a, a.winged.as_ref().unwrap(), v, &mut pieces);
+            }
+        }
+        println!("{:.3} ms a frame for 14", start.elapsed().as_secs_f64() * 1000.0 / 600.0);
     }
 
     /// What one of `AERIE_TRACE=Harpy` does, twice a second, to look at it
