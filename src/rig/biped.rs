@@ -251,6 +251,39 @@ pub fn flinch(s: &mut Stance, f: [f64; 3]) {
     }
 }
 
+/// Biped `r` posed: eased towards `want` as quickly as `rate` says, its walk laid over that as
+/// `free` lets it, its breath, `deep` as idle() has it, and its flinching, unless it's dying; then
+/// worked out into its pieces. Returns the pose it's in.
+pub fn pose(r: &mut Rig, m: &Moment, f: &Frame, gait: &Gait, (want, rate, free): (Stance, f64, f64), deep: f64) -> Stance {
+    if !r.posed {
+        *r.biped() = want;
+    }
+    ease(r.biped(), &want, rate, m.dt);
+    let mut s = *r.biped();
+    if m.dying.is_none() {
+        walk(&mut s, gait, m, r.shuffle, if m.doing.is_none() { 1.0 } else { free });
+        idle(&mut s, m, r.clock, [r.glance[0], r.glance[1]], deep);
+        flinch(&mut s, r.flinched());
+    }
+    solve(f, &s, &mut r.bones, &mut r.sockets);
+    s
+}
+
+/// Its pieces falling apart into a heap once it's `from` seconds into dying, done by `until`
+pub fn fall_apart(r: &mut Rig, m: &Moment, from: f64, until: f64) {
+    match m.dying {
+        Some(t) if t >= from => {
+            if r.fallen.is_none() {
+                r.fallen = Some(r.bones);
+            }
+            let was = r.fallen.unwrap();
+            crumble(&mut r.bones, &was, (t - from) / (until - from), r.seed);
+        }
+        Some(_) => {}
+        None => r.fallen = None,
+    }
+}
+
 /// A limb's piece in its own frame: from its joint straight down `length`, `ra` round at the
 /// joint to `rb` at its end
 pub fn bone(length: f64, ra: f64, rb: f64, material: u8) -> Part {

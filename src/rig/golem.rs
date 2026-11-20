@@ -317,21 +317,11 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
     let look = r.look;
     let f = frame();
     let rest = rest(look);
-    let (want, rate, free) = match m.dying {
+    let want = match m.dying {
         Some(t) => death(&rest, t),
         None => fight(look, &rest, m),
     };
-    if !r.posed {
-        *r.biped() = want;
-    }
-    ease(r.biped(), &want, rate, m.dt);
-    let mut s = *r.biped();
-    if m.dying.is_none() {
-        biped::walk(&mut s, &GAIT, m, r.shuffle, if m.doing.is_none() { 1.0 } else { free });
-        biped::idle(&mut s, m, r.clock, [r.glance[0], r.glance[1]], 1.6 * look.size().sqrt());
-        biped::flinch(&mut s, r.flinched());
-    }
-    biped::solve(&f, &s, &mut r.bones, &mut r.sockets);
+    let s = biped::pose(r, m, &f, &GAIT, want, 1.6 * look.size().sqrt());
     let chest = r.bones[CHEST];
     if look == Look::Colossus {
         // Its plates grinding as it walks, and forced apart as it strains, the fire blazing out
@@ -359,15 +349,5 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
         let ahead = rz(s.yaw) * V::x();
         r.sockets.grip = mid + V::new(0.0, 0.0, round * (0.25 + 0.4 * high)) + ahead * (0.22 + round * 0.55) * (1.0 - high);
     }
-    if let Some(t) = m.dying {
-        if t >= CRUMBLE {
-            if r.fallen.is_none() {
-                r.fallen = Some(r.bones);
-            }
-            let from = r.fallen.unwrap();
-            crumble(&mut r.bones, &from, (t - CRUMBLE) / (DEATH - CRUMBLE), r.seed);
-        }
-    } else {
-        r.fallen = None;
-    }
+    biped::fall_apart(r, m, CRUMBLE, DEATH);
 }

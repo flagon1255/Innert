@@ -2120,7 +2120,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             // as it comes: in front of it, all round it, or where it'll leap to
             if look.is_knight() {
                 let closing = (1.0 - t / (windup(look, m) * quick.max(0.8) + boss.hold)).clamp(0.0, 1.0);
-                let (sweep, spikes, _) = animals::knight_reach(look);
+                let (sweep, spikes, _) = crate::rig::knight_reach(look);
                 let ring = match m {
                     Move::Slam => {
                         let (reach, radius, _, _) = slam(look);
@@ -2287,7 +2287,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     // The void flung off a knight's blade as it sweeps it out, three of it fanned
                     // out across the player once it's angry
                     Move::Spit if look.is_knight() => {
-                        let from = on_body(a, animals::knight_reach(look).2, vpm);
+                        let from = on_body(a, crate::rig::knight_reach(look).2, vpm);
                         let to = boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm);
                         let across = Vector3::new(-(to - from).y, (to - from).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
                         let fan: &[f64] = if boss.enraged { &[-1.0, 0.0, 1.0] } else { &[0.0] };
@@ -2314,7 +2314,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     // Its greatsword driven into the ground, and bone spikes bursting up all round
                     // it, hurting whoever's still within them
                     Move::Spikes => {
-                        let (_, spikes, _) = animals::knight_reach(look);
+                        let (_, spikes, _) = crate::rig::knight_reach(look);
                         let damage = if look.is_raid() { SPIKES_DAMAGE * 1.3 } else { SPIKES_DAMAGE };
                         boss.deeds.push(Deed::Slam { at: a.position, radius: spikes, damage, crater: 0.0 });
                         boss.deeds.push(Deed::Stomp(a.position));
@@ -2459,7 +2459,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     let blade = |t: f64| from + turned(t) + COILED + (SWEPT - COILED) * (t / SWING).min(1.0);
                     a.heading = (from + turned(t)).rem_euclid(TAU);
                     a.target_heading = a.heading;
-                    let (reach, _, _) = animals::knight_reach(look);
+                    let (reach, _, _) = crate::rig::knight_reach(look);
                     if let Some(p) = player {
                         let bearing = heading_to(a.position, p);
                         let passes = |t: f64| ((blade(t) - bearing) / TAU).floor();

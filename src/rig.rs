@@ -26,12 +26,13 @@ use crate::worldgen::material::AIR;
 
 mod biped;
 mod golem;
+mod knight;
 
 pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 4] = [Look::Golem, Look::FrostGolem, Look::MagmaGolem, Look::Colossus];
+pub const KINDS: [Look; 6] = [Look::Golem, Look::FrostGolem, Look::MagmaGolem, Look::Colossus, Look::GraveKnight, Look::CryptTitan];
 
 /// Pieces each has room for among the models, those it doesn't have left empty
 pub const PIECES: usize = 24;
@@ -54,10 +55,12 @@ pub fn rigged(look: Look) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Family {
     Golem,
+    Knight,
 }
 
 fn family(look: Look) -> Family {
     match look {
+        Look::GraveKnight | Look::CryptTitan => Family::Knight,
         _ => Family::Golem,
     }
 }
@@ -382,6 +385,7 @@ impl Rig {
         let k = kind(look)?;
         let pose = match family(look) {
             Family::Golem => Pose::Biped(golem::rest(look)),
+            Family::Knight => Pose::Biped(knight::rest(look)),
         };
         let mut start = hash(seed);
         let mut rig = Rig {
@@ -461,6 +465,7 @@ impl Rig {
         self.shuffle = (self.shuffle + m.turning.abs() * dt / 1.4).fract();
         match family(self.look) {
             Family::Golem => golem::animate(self, m),
+            Family::Knight => knight::animate(self, m),
         }
         self.posed = true;
     }
@@ -476,6 +481,7 @@ impl Rig {
 fn pieces(look: Look) -> Vec<Vec<Part>> {
     match family(look) {
         Family::Golem => golem::pieces(look),
+        Family::Knight => knight::pieces(look),
     }
 }
 
@@ -593,13 +599,22 @@ pub fn instances(a: &Animal, rig: &Rig, position: V, turn: Q, vpm: f64, out: &mu
 pub fn death_seconds(look: Look) -> f64 {
     match family(look) {
         Family::Golem => golem::DEATH,
+        Family::Knight => knight::DEATH,
     }
+}
+
+/// How far a knight's greatsword reaches as it sweeps it round, how far round its bone spikes
+/// burst up, in meters, and where on it, +x ahead, its blade is as it's swept out, for what flies
+/// off it
+pub fn knight_reach(look: Look) -> (f64, f64, [f64; 3]) {
+    knight::reach(look)
 }
 
 /// Seconds into dying a jointed boss of `look` hits the ground, for the ground to shake
 pub fn thuds(look: Look) -> &'static [f64] {
     match family(look) {
         Family::Golem => &golem::THUDS,
+        Family::Knight => &knight::THUDS,
     }
 }
 
