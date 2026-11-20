@@ -55,6 +55,8 @@ pub fn rest(look: Look) -> Stance {
     };
     s.tool = [0.05, 0.0, -1.0];
     match look {
+        // Its sword hanging point down at its side
+        Look::Warlord => s.tool = [0.3, -0.05, -0.95],
         // Hunched over her staff
         Look::BogHag => {
             s.lean = 0.12;
@@ -101,6 +103,68 @@ pub fn pieces(look: Look) -> Vec<Vec<Part>> {
                 ellipsoid([0.0, 0.0, TOP], [0.03, 0.13, 0.13], accent),
                 limb([0.0, 0.0, TOP - 0.1], [0.0, 0.0, -0.92], 0.025, 0.025, extra).striped(accent),
             ];
+        }
+        Look::Necromancer => {
+            // A long black robe falling to the ground, trimmed with bronze at its collar and hem; its
+            // skull in the shadow of its hood with the void in its eyes; a staff of dead wood with an
+            // orb of the void caught in bone at its top
+            out[PELVIS] = vec![ellipsoid([0.03, 0.0, -0.88], [0.32, 0.33, 0.05], accent), limb([0.0, 0.0, 0.05], [0.03, 0.0, -0.88], 0.19, 0.32, dark)];
+            out[CHEST] = vec![ellipsoid([0.0, 0.0, 0.42], [0.17, 0.24, 0.05], accent), ellipsoid([0.0, 0.0, 0.2], [0.14, 0.2, 0.26], dark)];
+            let h = &mut out[HEAD];
+            for s in [-1.0, 1.0] {
+                h.push(ball([0.1, s * 0.045, 0.05], 0.03, glow));
+            }
+            h.push(ellipsoid([0.06, 0.0, -0.05], [0.07, 0.075, 0.045], body));
+            h.push(ball([0.0, 0.0, 0.03], 0.12, body));
+            h.push(ellipsoid([-0.07, 0.0, 0.07], [0.16, 0.17, 0.18], dark));
+            h.push(limb([-0.13, 0.0, 0.13], [-0.25, 0.0, -0.09], 0.08, 0.03, dark));
+            let mut staff = vec![ball([0.0, 0.0, TOP], 0.085, glow)];
+            for k in 0..3 {
+                let a = k as f64 * TAU / 3.0;
+                let side = [a.cos() * 0.1, a.sin() * 0.1, TOP];
+                staff.push(limb([0.0, 0.0, TOP - 0.14], side, 0.02, 0.012, body));
+                staff.push(limb(side, [side[0] * 0.4, side[1] * 0.4, TOP + 0.12], 0.012, 0.006, body));
+            }
+            staff.push(limb([0.0, 0.0, TOP - 0.12], [0.0, 0.0, -0.92], 0.025, 0.022, extra));
+            out[TOOL] = staff;
+            for k in 0..2 {
+                out[ARM[k]] = vec![bone(0.32, 0.07, 0.06, dark)];
+                out[FORE[k]] = vec![ball([0.0, 0.0, -0.32], 0.045, body), bone(0.3, 0.06, 0.085, dark)];
+            }
+            return out;
+        }
+        Look::Warlord => {
+            // A bandit lord in bronze: a crested helm open at the face, a breastplate, pauldrons and
+            // greaves, a red cloak down its back, and a heavy sword
+            out[PELVIS] = vec![ellipsoid([0.0, 0.0, 0.0], [0.13, 0.17, 0.09], accent), ellipsoid([0.0, 0.0, -0.1], [0.12, 0.16, 0.08], dark)];
+            let c = &mut out[CHEST];
+            for s in [-1.0, 1.0] {
+                c.push(ellipsoid([0.0, s * 0.24, 0.39], [0.12, 0.12, 0.08], accent));
+            }
+            c.push(limb([-0.17, 0.0, 0.4], [-0.24, 0.0, -0.55], 0.12, 0.2, dark).stretched([0.35, 1.0, 1.0]));
+            c.push(ellipsoid([0.0, 0.0, 0.2], [0.15, 0.22, 0.22], accent));
+            c.push(ellipsoid([0.0, 0.0, 0.08], [0.15, 0.2, 0.28], skin.accent));
+            let h = &mut out[HEAD];
+            for s in [-1.0, 1.0] {
+                h.push(ball([0.135, s * 0.045, 0.06], 0.02, glow));
+            }
+            h.push(limb([-0.09, 0.0, 0.15], [0.08, 0.0, 0.23], 0.03, 0.02, dark));
+            h.push(ellipsoid([-0.01, 0.0, 0.08], [0.15, 0.15, 0.15], accent));
+            h.push(ellipsoid([0.09, 0.0, -0.03], [0.07, 0.1, 0.05], skin.accent));
+            h.push(ball([0.05, 0.0, 0.03], 0.12, body));
+            out[TOOL] = vec![
+                limb([0.0, -0.1, -0.05], [0.0, 0.1, -0.05], 0.025, 0.025, extra),
+                limb([0.0, 0.0, -0.05], [0.0, 0.0, -0.95], 0.035, 0.012, extra),
+                limb([0.0, 0.0, 0.1], [0.0, 0.0, -0.05], 0.022, 0.022, crate::worldgen::material::LEATHER),
+            ];
+            for k in 0..2 {
+                out[ARM[k]] = vec![bone(0.32, 0.075, 0.065, accent)];
+                out[FORE[k]] = vec![ball([0.0, 0.0, -0.3], 0.075, body), bone(0.3, 0.065, 0.055, body)];
+                out[THIGH[k]] = vec![bone(0.48, 0.08, 0.07, dark)];
+                out[SHIN[k]] = vec![ball([0.0, 0.0, 0.0], 0.07, accent), bone(0.45, 0.07, 0.06, accent)];
+                out[FOOT[k]] = vec![cuboid([-0.2, -0.15, -0.3], [0.25, 0.15, -ANKLE], AIR), ellipsoid([0.05, 0.0, -0.02], [0.11, 0.06, 0.05], dark)];
+            }
+            return out;
         }
         Look::BogHag => {
             // Rags to the ground, a shawl, a hump, a long crooked nose and wild hair under a hood
@@ -193,6 +257,7 @@ pub fn pieces(look: Look) -> Vec<Vec<Part>> {
 
 fn guard(look: Look, rest: &Stance) -> Stance {
     match look {
+        Look::Warlord => Stance { hips: [0.0, 0.0, -0.05], lean: 0.08, hands: [[0.35, -0.2, 1.1], [0.25, 0.3, 1.05]], tool: [0.7, 0.0, 0.7], feet: [[0.12, -0.15, ANKLE], [-0.12, 0.15, ANKLE]], ..*rest },
         Look::HollowMother => Stance { hands: [[0.35, -0.55, 1.45], [0.35, 0.55, 1.45]], more: [0.4, -0.3, 1.05, 0.4, 0.3, 1.05], ..*rest },
         Look::BogHag => Stance { hands: [[0.42, -0.24, 0.9], [0.4, 0.2, 0.95]], nod: -0.4, ..*rest },
         _ => Stance { hands: [[0.32, -0.26, 1.05], [0.25, 0.3, 1.1]], tool: [0.1, 0.0, -1.0], ..*rest },
@@ -215,6 +280,26 @@ fn fight(look: Look, rest: &Stance, m: &Moment) -> (Stance, f64, f64) {
     // Swept low to its right, then round to its left, flinging what's in it
     let swept_from = Stance { twist: -0.7, lean: 0.1, hands: [[0.0, -0.6, 1.15], [0.3, 0.2, 1.25]], tool: [0.3, 0.9, -0.3], ..guard };
     let swept_to = Stance { twist: 0.6, lean: 0.12, hands: [[0.5, 0.35, 1.25], [-0.1, 0.45, 1.2]], tool: [0.3, -0.9, -0.3], ..guard };
+    if look == Look::Warlord {
+        // Its sword raised high behind it, then cleaving down; held out ahead as it charges; and a
+        // firebomb drawn back in its left hand and flung
+        let raised = Stance { lean: -0.12, twist: -0.2, hands: [[-0.05, -0.2, 1.9], [0.0, 0.05, 1.85]], tool: [-0.75, 0.0, 0.65], grip: 0.0, feet: [[0.15, -0.16, ANKLE], [-0.15, 0.16, ANKLE]], ..guard };
+        let cleave = Stance { lean: 0.35, bend: 0.15, twist: 0.15, hips: [0.15, 0.0, -0.15], hands: [[0.75, -0.1, 0.95], [0.3, 0.3, 1.0]], tool: [0.9, 0.0, -0.42], feet: [[0.32, -0.16, ANKLE], [-0.28, 0.16, ANKLE]], ..guard };
+        let charge = Stance { lean: 0.3, hands: [[0.55, -0.2, 1.2], [0.2, 0.3, 1.1]], tool: [0.95, 0.0, 0.25], ..guard };
+        let drawn = Stance { twist: -0.4, hands: [[0.3, -0.35, 1.1], [-0.3, 0.35, 1.65]], ..guard };
+        let flung = Stance { twist: 0.35, lean: 0.15, hands: [[0.2, -0.35, 1.05], [0.6, 0.15, 1.5]], ..guard };
+        let pick = |(s, quick): (Stance, bool), slow: f64| (s, if quick { 40.0 } else { slow }, 0.0);
+        match (d.m, d.stage) {
+            (Move::Slam, Stage::Wind) => return pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), raised, Ease::Gather), (d.len, cleave, Ease::Snap)]), 10.0),
+            (Move::Slam, Stage::Act) => return pick((cleave, false), 25.0),
+            (Move::Charge, Stage::Wind) => return pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len, charge, Ease::Gather)]), 10.0),
+            (Move::Charge, Stage::Act) => return (charge, 10.0, 1.0),
+            (Move::Spit, Stage::Wind) => return pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), drawn, Ease::Gather), (d.len, flung, Ease::Snap)]), 10.0),
+            (Move::Spit, Stage::Act) => return pick((flung, false), 20.0),
+            (_, Stage::Recover) => return pick(along(d.t, &[(0.0, cleave, Ease::Linear), (d.len, guard, Ease::Smooth)]), 6.0),
+            _ => {}
+        }
+    }
     match (d.m, d.stage) {
         (Move::Spit | Move::Hex | Move::Lash, Stage::Wind) => {
             let mut wind = drawn;
@@ -325,7 +410,10 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
             }
         }
     }
-    if look == Look::SandPharaoh {
+    if look == Look::Warlord {
+        r.sockets.cast = r.sockets.hands[1];
+    }
+    if matches!(look, Look::SandPharaoh | Look::Necromancer) {
         biped::fall_apart(r, m, CRUMBLE, DEATH);
     }
 }

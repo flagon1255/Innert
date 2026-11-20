@@ -35,7 +35,9 @@ pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 18] = [
+pub const KINDS: [Look; 20] = [
+    Look::Warlord,
+    Look::Necromancer,
     Look::Ironhide,
     Look::Frostfang,
     Look::Direwolf,
@@ -87,7 +89,7 @@ fn family(look: Look) -> Family {
     match look {
         Look::GraveKnight | Look::CryptTitan => Family::Knight,
         Look::Ogre | Look::RimeJotun | Look::StormGiant => Family::Giant,
-        Look::SandPharaoh | Look::BogHag | Look::HollowMother => Family::Caster,
+        Look::SandPharaoh | Look::BogHag | Look::HollowMother | Look::Warlord | Look::Necromancer => Family::Caster,
         Look::Elderhorn | Look::BleedingHart | Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => Family::Beast,
         _ => Family::Golem,
     }
