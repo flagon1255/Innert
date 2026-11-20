@@ -3096,8 +3096,9 @@ impl Game {
                 let throes = if a.look.is_great_serpent() { serpents::GREAT_THROES } else { serpents::DEATH_THROES };
                 (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
             };
-            // And a dragon falls out of the sky and lies a moment where it fell first
-            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) {
+            // And a dragon falls out of the sky and lies a moment where it fell first, and a jointed
+            // boss falls, see rig::dying()
+            if self.animals[k].health > 0.0 || writhing(&self.animals[k]) || crate::dragons::dying(&self.animals[k]) || crate::rig::dying(&self.animals[k]) {
                 k += 1;
                 continue;
             }
@@ -3189,7 +3190,8 @@ impl Game {
                 };
                 let (piles, potions) = if ultra { (6, 5) } else if raid { (3, 3) } else { (1, 1) };
                 let rolls = hoard_rolls(hoard, &mut self.rng);
-                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon(luck, sure)).collect();
+                // Leaning to what suits it, see bosses::taste()
+                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon_for(look, luck, sure)).collect();
                 // The Coil Unending's fang among it; the Worldpyre Ancient's is put straight into
                 // the player's hands, above
                 if look == Look::Ysveth {
@@ -3443,6 +3445,37 @@ impl Game {
         let seed = if sure { self.library.special_seed(self.rng, None, luck) } else { self.rng };
         let weapon = self.library.generate(seed, None, luck);
         self.weapons.push(weapon);
+        self.models_version += 1;
+        Item::Weapon(self.weapons.len() - 1)
+    }
+
+    /// A weapon a boss of `look` leaves: most of the time of one of the families that suit it, and
+    /// of its element if one of a few rolls comes up with it, see bosses::taste(); otherwise any
+    fn roll_weapon_for(&mut self, look: Look, luck: f64, sure: bool) -> Item {
+        let (families, element) = bosses::taste(look);
+        self.rng = hash(self.rng ^ 0x7a57e);
+        if families.is_empty() || random(&mut self.rng) > 0.75 {
+            return self.roll_weapon(luck, sure);
+        }
+        let pick = families[(random(&mut self.rng) * families.len() as f64) as usize % families.len()];
+        let Some(family) = self.library.families.iter().position(|f| f.id == pick) else {
+            return self.roll_weapon(luck, sure);
+        };
+        let luck = luck * loot_scaling(self.scaling);
+        let mut chosen = None;
+        for _ in 0..8 {
+            self.rng = hash(self.rng ^ 0x1007);
+            let seed = if sure { self.library.special_seed(self.rng, Some(family), luck) } else { self.rng };
+            let weapon = self.library.generate(seed, Some(family), luck);
+            let suits = element.is_none() || weapon.profile.element == element;
+            if suits || chosen.is_none() {
+                chosen = Some(weapon);
+            }
+            if suits {
+                break;
+            }
+        }
+        self.weapons.push(chosen.expect("rolled at least once"));
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
     }
@@ -4962,7 +4995,8 @@ impl Game {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
                 creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
-            } else if animal.dragon.is_some() {
+            } else if animal.dragon.is_some() || crate::rig::rigged(animal.look) {
+                // A jointed boss too, see rig::instances()
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                     dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
                 }
@@ -4982,13 +5016,15 @@ impl Game {
                 Some(_) => {}
                 None => {
                     let animal = &self.animals[k];
+                    pieces.clear();
                     if let Some(dragon) = &animal.dragon {
-                        pieces.clear();
                         crate::dragons::instances(animal, dragon, vpm, &mut pieces);
-                        if pieces.len() <= room {
-                            room -= pieces.len();
-                            out.extend(pieces.iter().copied());
-                        }
+                    } else {
+                        animal.rig_instances(world.voxels_per_meter, &mut pieces);
+                    }
+                    if pieces.len() <= room {
+                        room -= pieces.len();
+                        out.extend(pieces.iter().copied());
                     }
                 }
             }

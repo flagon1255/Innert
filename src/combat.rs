@@ -2168,6 +2168,10 @@ fn ichor(look: Look) -> (usize, Option<u8>) {
         Look::FrostGolem => (DROP_ICE, None),
         Look::MagmaGolem => (DROP_EMBER, None),
         Look::Treant => (DROP_ASH, None),
+        // Shards of ice off a jotun, dust out of a pharaoh's wrappings, venom out of a crone
+        Look::RimeJotun => (DROP_ICE, None),
+        Look::SandPharaoh => (DROP_ASH, None),
+        Look::BogHag => (DROP_VENOM, Some(MOSS)),
         Look::Spider | Look::Spiderling | Look::Rimeweaver | Look::DuneBurrower => (DROP_VENOM, Some(MOSS)),
         // Shards of frost off a wraith, and the swamp water a lurker's full of
         Look::RimeWraith => (DROP_ICE, None),

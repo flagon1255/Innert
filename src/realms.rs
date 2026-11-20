@@ -183,7 +183,9 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "dream",
         name: "The Dreaming Red",
         seed: DREAM_SEED,
-        raid_bosses: [(Look::GraveKnight, [280.0, -40.0]), (Look::Spider, [-120.0, 280.0]), (Look::Treant, [-200.0, -240.0])],
+        // Its own raid bosses but the first: the Hollow Mother, weeping blood in her soft hollows,
+        // and the Bleeding Hart, trampling brambles through its dreaming wood, see srcig.rs
+        raid_bosses: [(Look::GraveKnight, [280.0, -40.0]), (Look::HollowMother, [-120.0, 280.0]), (Look::BleedingHart, [-200.0, -240.0])],
         lair_names: ["the bleeding fields", "the soft hollows", "the dreaming wood"],
         lair_marks: [Landmark::Anywhere; 3],
         guardians: &[Look::Direwolf, Look::Ironhide, Look::VenomDrake, Look::Golem, Look::Drake],
@@ -204,10 +206,12 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "ice",
         name: "The Rimelands",
         seed: ICE_SEED,
-        raid_bosses: [(Look::FrostWyrm, [250.0, 180.0]), (Look::FrostGolem, [-240.0, 160.0]), (Look::WinterAlpha, [40.0, -310.0])],
+        // A rime jotun on the glacier rather than a golem of ice, and a thunderborn giant among its
+        // guardians
+        raid_bosses: [(Look::FrostWyrm, [250.0, 180.0]), (Look::RimeJotun, [-240.0, 160.0]), (Look::WinterAlpha, [40.0, -310.0])],
         lair_names: ["the frozen heights", "the glacier", "the white woods"],
         lair_marks: [Landmark::Anywhere; 3],
-        guardians: &[Look::Frostfang, Look::Rimeweaver, Look::GraveKnight],
+        guardians: &[Look::Frostfang, Look::Rimeweaver, Look::StormGiant, Look::GraveKnight],
         finale: None,
         finale_mark: Landmark::Anywhere,
         monsters: &[
