@@ -764,6 +764,8 @@ pub struct Game {
     aloft: Option<Aloft>,
     glided: bool,
     wings_told: bool,
+    /// When fire last didn't take hold of the player for their drakeskin wings, to say so
+    fire_shrugged: f64,
     /// The models of the wards round raid bosses, see guardians.rs
     ward_models: Vec<(Model, Vector3<f64>)>,
     /// How many more monsters than usual each den's pack has, see realms::crowd()
@@ -958,6 +960,7 @@ impl Game {
             aloft: None,
             glided: false,
             wings_told: false,
+            fire_shrugged: f64::NEG_INFINITY,
             dragonfire: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
@@ -2673,6 +2676,15 @@ impl Game {
             return;
         }
         match element {
+            // Drakeskin wings never let it take hold, saying so now and then
+            Some(Element::Fire) if self.worn_perk() == Some(wings::Perk::Fireproof) => {
+                let now = self.combat.time();
+                if let Some(feet) = self.feet.filter(|_| now - self.fire_shrugged > 2.0) {
+                    self.fire_shrugged = now;
+                    let vpm = self.combat.vpm();
+                    self.combat.popups.push(crate::combat::Popup { position: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), text: "Fireproof".into(), color: [255, 150, 60], size: 17.0, age: 0.0 });
+                }
+            }
             Some(Element::Fire) => self.burning = self.burning.max(2.0),
             Some(Element::Poison) => self.poisoned = self.poisoned.max(4.0),
             Some(Element::Frost) => self.chilled = self.chilled.max(2.5),
@@ -2774,6 +2786,10 @@ impl Game {
         // Turned aside by a riposte
         if self.combat.parry(from, feet) {
             return;
+        }
+        // Pricked back by thorned wings, as hard as the realm makes what's there tough
+        if self.worn_perk() == Some(wings::Perk::Thorns) {
+            self.prick(from, damage * wings::THORNS * self.scaling.toughness);
         }
         // Harder in the realms further on
         let damage = damage * self.scaling.damage;
@@ -3093,6 +3109,14 @@ impl Game {
             let animal = self.animals.remove(k);
             let look = animal.look;
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
+            // Bloodmoth wings give back a little health for each monster or boss slain, more for a
+            // boss, the blood of it rising off it
+            if (look.is_monster() || look.is_boss()) && self.worn_perk() == Some(wings::Perk::Leech) {
+                let back = if look.is_boss() { wings::LEECH_BOSS } else { wings::LEECH };
+                self.mend(back);
+                self.combat.stir(animal.position, 0.6, 0.3, DROP_BLOOD);
+                self.combat.popups.push(crate::combat::Popup { position: middle + Vector3::new(0.0, 0.0, 0.8 * vpm), text: format!("+{back:.0} health"), color: [235, 60, 70], size: 18.0, age: 0.0 });
+            }
             // A monster bursts apart its own way. The dead and spiders' victims had a little gold on
             // them, now and then a weapon.
             // A bloater that burst by itself, rather than being killed, leaves nothing but its venom
@@ -4578,6 +4602,70 @@ impl Game {
     /// The kind of wings worn on the back, see wings::KINDS
     pub fn worn_wings(&self) -> Option<u8> {
         self.worn.filter(|_| self.dead.is_none())
+    }
+
+    /// What the wings worn do besides gliding, see wings::Perk
+    pub fn worn_perk(&self) -> Option<wings::Perk> {
+        self.worn_wings().map(|k| wings::KINDS[k as usize].perk)
+    }
+
+    /// A little mana back, as the prism wings give while gliding
+    pub fn fill_mana(&mut self, mana: f64) {
+        if self.dead.is_none() {
+            self.combat.mana = (self.combat.mana + mana).min(MAX_MANA);
+        }
+    }
+
+    /// A blow of the wings worn round `at`, in voxels, `reach` meters round: a gargoyle's landing
+    /// like falling stone if `slam`, shaking the ground and throwing up dust, or else a seraph's
+    /// ring of holy light. Every monster and boss within it's hurt, `damage` as hard as the realm
+    /// makes them tough, but none warded by its guardians: how many were.
+    pub fn wing_blast(&mut self, at: Vector3<f64>, reach: f64, damage: f64, slam: bool) -> usize {
+        let vpm = self.combat.vpm();
+        let damage = damage * self.scaling.toughness;
+        let color = if slam { [225, 205, 165] } else { [255, 236, 150] };
+        let mut hit = 0;
+        for animal in &mut self.animals {
+            let look = animal.look;
+            if animal.health <= 0.0 || look.build().is_none() || look.is_pet() || animal.status.warded.is_some() {
+                continue;
+            }
+            let middle = animal.center(vpm as u32);
+            if (middle - at).norm() > (reach + look.body().1) * vpm {
+                continue;
+            }
+            animal.damage(damage, at);
+            animal.status.shown = 2.0;
+            self.combat.popups.push(crate::combat::Popup { position: middle + Vector3::new(0.0, 0.0, 0.6 * vpm), text: format!("{damage:.0}"), color, size: 20.0, age: 0.0 });
+            hit += 1;
+        }
+        if slam {
+            self.combat.stir(at, reach * 0.5, 0.4, DROP_MUD);
+            self.cues.push(Cue::here(Sound::Quake, 0.55).pitched(1.4));
+            self.shake = self.shake.max(0.6);
+        } else {
+            self.cues.push(Cue::here(Sound::Summon, 0.8).pitched(1.3));
+        }
+        hit
+    }
+
+    /// What struck the player from `from`, in voxels, pricked back by thorned wings, `damage` of
+    /// it, if it's near enough to have struck in close
+    fn prick(&mut self, from: Vector3<f64>, damage: f64) {
+        let vpm = self.combat.vpm();
+        let near = self
+            .animals
+            .iter_mut()
+            .filter(|a| a.health > 0.0 && a.look.build().is_some() && a.status.warded.is_none())
+            .map(|a| ((a.center(vpm as u32) - from).norm() - a.look.body().1 * vpm, a))
+            .filter(|(d, _)| *d < 2.0 * vpm)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, animal)) = near {
+            let middle = animal.center(vpm as u32);
+            animal.damage(damage, from);
+            animal.status.shown = 2.0;
+            self.combat.popups.push(crate::combat::Popup { position: middle + Vector3::new(0.0, 0.0, 0.6 * vpm), text: format!("Thorns {damage:.0}"), color: [150, 220, 90], size: 18.0, age: 0.0 });
+        }
     }
 
     /// The colour of the rarity of wings of kind `k`
@@ -7157,6 +7245,36 @@ mod tests {
         other.royals.insert([1, 1, 1]);
         other.stock([1, 1, 1]);
         assert!(!sells(&other, [1, 1, 1], Some(wings::GULL)));
+    }
+
+    /// Every kind of wings, the new ones too, comes back from a save as it went in: worn, in the
+    /// pack and on a merchant's stall, and a kind a later Innert has that this one doesn't is left
+    /// out rather than spoiling the save
+    #[test]
+    fn every_kind_of_wings_is_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        for (k, kind) in wings::KINDS.iter().enumerate() {
+            let k = k as u8;
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            let spare = (k + 1) % wings::KINDS.len() as u8;
+            game.gain_wings(k);
+            game.gain_wings(spare);
+            game.stocks.insert([1, 2, 3], vec![Ware::Food(Item::Wings(k), 1)]);
+            let text = serde_json::to_string(&game.carried_save()).unwrap();
+            assert!(text.contains(kind.id), "{text}");
+            let (carried, done) = (serde_json::from_str(&text).unwrap(), game.world_save());
+            let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+            other.restore(&carried, &done, game.vitals());
+            assert_eq!(other.worn_wings(), Some(k), "{}", kind.name);
+            assert!(other.slots.contains(&(Item::Wings(spare), 1)));
+            assert!(matches!(other.stocks[&[1, 2, 3]][..], [Ware::Food(Item::Wings(s), 1)] if s == k));
+        }
+        let later: save::CarriedSave = serde_json::from_str(r#"{"worn": "phoenix", "slots": [{"item": {"kind": "wings", "of": "phoenix"}}, {"item": {"kind": "wings", "of": "roc"}}]}"#).unwrap();
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.restore(&later, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(game.worn_wings(), None);
+        assert_eq!(game.slots, vec![(Item::Wings(wings::by_id("roc").unwrap()), 1)]);
     }
 
     /// Chests hold wings now and then, more often the luckier, and never a kind already had
