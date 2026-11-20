@@ -4674,17 +4674,24 @@ impl App {
                 }
                 let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
                 let feet = self.player.as_ref().map_or(eye, |p| p.position);
-                // Placed once and held still, so what moves is only the boss, unless `view_follow=1`
+                // Placed once and held still, so what moves is only the boss, unless `view_follow=1`;
+                // and the player's kept on their feet, so the boss goes on fighting them
+                static HELD: std::sync::Mutex<Option<(Vector3<f64>, Vector3<f64>)>> = std::sync::Mutex::new(None);
                 let placing = f <= 20 || number("view_follow", 0.0) > 0.5;
+                let mut held = HELD.lock().unwrap();
                 if let Some(target) = self.game.nearest_boss(feet).filter(|_| placing) {
                     let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
                     let round = number("view_from", 1.4);
                     let (c, s) = (round.cos(), round.sin());
                     let way = Vector3::new(back.x * c - back.y * s, back.x * s + back.y * c, 0.0);
                     let at = target + way * number("view_distance", 12.0) * vpm + Vector3::new(0.0, 0.0, number("view_up", 1.0) * vpm);
+                    *held = Some((at, target));
+                }
+                if let Some((at, target)) = *held {
                     self.camera.position = voxels_to_camera(at, self.world.size);
                     self.camera.look_at(voxels_to_camera(target, self.world.size));
                 }
+                self.game.set_health(100.0);
                 let pressing = number("view_attack", 0.0) > 0.5 && f > 30;
                 self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
                 if f % 60 == 0 {

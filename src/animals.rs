@@ -730,7 +730,7 @@ impl Look {
             Look::Skull => 0.2,
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => 4.4 * self.size(),
             Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => 3.4 * self.size(),
-            Look::Ironhide | Look::Frostfang => 3.4,
+            Look::Ironhide | Look::Frostfang => 4.0,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => 3.1 * self.scale(),
             Look::Treant => 5.5,
             // Their arms or clubs raised high overhead, or antlers reared up
@@ -738,7 +738,8 @@ impl Look {
             Look::SandPharaoh | Look::BogHag => 3.0 * self.scale(),
             Look::HollowMother => 3.6 * self.scale(),
             Look::Elderhorn | Look::BleedingHart => 4.0 * self.scale(),
-            Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
+            Look::Wolf => 1.2 * self.scale(),
+            Look::Direwolf | Look::WinterAlpha => 1.5 * self.scale(),
             // A greatsword raised high overhead, or swept out to its side
             Look::GraveKnight | Look::CryptTitan => 3.45 * self.scale(),
             // A blade raised overhead

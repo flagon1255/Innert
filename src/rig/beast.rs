@@ -55,10 +55,51 @@ const STAG: Shape = Shape {
     cast: [0.0, 0.0, 0.9],
 };
 
+/// A great bear's, bending at its elbows and knees as a man does
+const BEAR: Shape = Shape {
+    high: 1.6,
+    joints: [[0.75, -0.45, -0.25], [0.75, 0.45, -0.25], [-0.75, -0.45, -0.25], [-0.75, 0.45, -0.25]],
+    legs: [[0.7, 0.7], [0.72, 0.7]],
+    bends: [-1.0, 1.0],
+    neck_at: [0.8, 0.0, 0.2],
+    neck_long: [0.6, 0.0, 0.05],
+    tail_at: [-1.6, 0.0, 0.0],
+    mouth: [0.8, 0.0, -0.15],
+    cast: [0.8, 0.0, -0.15],
+};
+
+/// An alpha wolf's
+const WOLF: Shape = Shape {
+    high: 0.6,
+    joints: [[0.3, -0.12, -0.08], [0.3, 0.12, -0.08], [-0.32, -0.12, -0.08], [-0.32, 0.12, -0.08]],
+    legs: [[0.27, 0.27], [0.28, 0.28]],
+    bends: [1.0, -1.0],
+    neck_at: [0.42, 0.0, 0.02],
+    neck_long: [0.3, 0.0, 0.16],
+    tail_at: [-0.45, 0.0, 0.02],
+    mouth: [0.24, 0.0, -0.06],
+    cast: [0.24, 0.0, -0.06],
+};
+
 fn shape(look: Look) -> Shape {
     match look {
+        Look::Ironhide | Look::Frostfang => BEAR,
+        Look::Direwolf | Look::WinterAlpha => WOLF,
         _ => STAG,
     }
+}
+
+/// A pose made for a stag's size, for a beast of `b`'s: its body moved and its feet moved from
+/// where they stand as much less as it's lower
+fn fitted(b: &Shape, s: &Stance) -> Stance {
+    let k = b.high / STAG.high;
+    let mut out = *s;
+    out.body = s.body.map(|v| v * k);
+    for f in 0..4 {
+        let (stag, own) = (STAG.joints[f], b.joints[f]);
+        out.feet[f] = [own[0] + (s.feet[f][0] - stag[0]) * k, own[1] * 1.05 + (s.feet[f][1] - stag[1] * 1.05) * k, s.feet[f][2] * k];
+    }
+    out
 }
 
 /// How a beast holds itself: its body moved from where it stands and tipped forward, left side up
@@ -89,6 +130,11 @@ pub fn rest(look: Look) -> Stance {
 }
 
 pub fn pieces(look: Look) -> Vec<Vec<Part>> {
+    match look {
+        Look::Ironhide | Look::Frostfang => return bear(look),
+        Look::Direwolf | Look::WinterAlpha => return wolf(look),
+        _ => {}
+    }
     let skin = look.skin();
     let (body, dark, accent, glow, extra) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
     let hart = look == Look::BleedingHart;
@@ -140,6 +186,73 @@ pub fn pieces(look: Look) -> Vec<Vec<Part>> {
         let [upper, lower] = STAG.legs[hind as usize];
         out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], if hind { 0.17 } else { 0.13 }, 0.075, body)];
         out[LOWER[k]] = vec![cuboid([-0.2, -0.2, -lower - 0.3], [0.2, 0.2, -lower], AIR), ellipsoid([0.03, 0.0, -lower + 0.04], [0.08, 0.06, 0.07], dark), ball([0.0, 0.0, 0.0], 0.07, body), limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.06], 0.06, 0.045, dark)];
+    }
+    out
+}
+
+/// Ironhide and Frostfang: a huge old bear in plates of armor down its back, spiked, tusked, its
+/// eyes glowing, its shoulders humped high
+fn bear(look: Look) -> Vec<Vec<Part>> {
+    let skin = look.skin();
+    let (fur, dark, armor, glow, extra) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let b = BEAR;
+    let mut out = vec![Vec::new(); PIECES];
+    let body = &mut out[BODY];
+    for k in 0..4 {
+        let x = 0.8 - k as f64 * 0.5;
+        let z = 2.5 - k as f64 * 0.07 - b.high;
+        body.push(limb([x, 0.0, z + 0.08], [x - 0.15, 0.0, z + 0.45], 0.08, 0.012, extra));
+        body.push(ellipsoid([x, 0.0, z], [0.3, 0.55, 0.12], armor));
+    }
+    body.push(ball([0.4, 0.0, 0.45], 0.62, fur));
+    body.push(limb([-0.85, 0.0, -0.05], [0.75, 0.0, 0.1], 0.8, 0.85, fur));
+    out[NECK] = vec![limb([0.0, 0.0, 0.0], b.neck_long, 0.55, 0.45, fur)];
+    let h0 = [b.neck_at[0] + b.neck_long[0], 0.0, b.high + b.neck_at[2] + b.neck_long[2]];
+    let h = |v: [f64; 3]| [v[0] - h0[0], v[1], v[2] - h0[2]];
+    let head = &mut out[HEAD];
+    for s in [-1.0, 1.0] {
+        head.push(ball(h([1.82, s * 0.22, 1.98]), 0.065, glow));
+        head.push(limb(h([2.0, s * 0.14, 1.52]), h([2.3, s * 0.2, 1.22]), 0.05, 0.015, extra));
+        head.push(ball(h([1.3, s * 0.33, 2.27]), 0.12, fur));
+    }
+    head.push(ball(h([2.2, 0.0, 1.7]), 0.07, crate::worldgen::material::EYE));
+    head.push(ellipsoid(h([1.92, 0.0, 1.68]), [0.32, 0.22, 0.2], dark));
+    head.push(ellipsoid(h([1.62, 0.0, 2.14]), [0.32, 0.3, 0.1], armor));
+    head.push(ball(h([1.5, 0.0, 1.85]), 0.48, fur));
+    out[TAIL] = vec![ball([0.0, 0.0, 0.0], 0.15, fur)];
+    for k in 0..4 {
+        let hind = k >= 2;
+        let [upper, lower] = b.legs[hind as usize];
+        let r = if hind { 0.3 } else { 0.28 };
+        out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], r * 1.2, r, fur)];
+        out[LOWER[k]] = vec![cuboid([-0.5, -0.5, -lower - 0.6], [0.5, 0.5, -lower], AIR), ball([0.08, 0.0, -lower + 0.2], r * 1.1, dark), ball([0.0, 0.0, 0.0], r, fur), limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.2], r, r * 0.9, fur)];
+    }
+    out
+}
+
+/// The Alpha Direwolf and the Winter Alpha: a wolf twice a man's height, lean, its eyes glowing
+fn wolf(look: Look) -> Vec<Vec<Part>> {
+    let skin = look.skin();
+    let (fur, dark, accent, glow) = (skin.body, skin.dark, skin.accent, skin.glow);
+    let b = WOLF;
+    let mut out = vec![Vec::new(); PIECES];
+    out[BODY] = vec![ellipsoid([0.28, 0.0, -0.05], [0.22, 0.17, 0.18], accent), ellipsoid([0.0, 0.0, 0.0], [0.5, 0.18, 0.19], fur)];
+    out[NECK] = vec![limb([0.0, 0.0, 0.0], b.neck_long, 0.12, 0.1, fur)];
+    let head = &mut out[HEAD];
+    for s in [-1.0, 1.0] {
+        head.push(ball([0.09, s * 0.07, 0.05], 0.025, glow));
+        head.push(limb([-0.03, s * 0.07, 0.1], [-0.05, s * 0.09, 0.24], 0.04, 0.01, dark));
+    }
+    head.push(ball([0.2, 0.0, -0.04], 0.03, crate::worldgen::material::EYE));
+    head.push(limb([0.0, 0.0, 0.0], [0.2, 0.0, -0.04], 0.075, 0.05, fur));
+    head.push(limb([0.05, 0.0, -0.08], [0.18, 0.0, -0.1], 0.04, 0.025, dark));
+    head.push(ball([0.0, 0.0, 0.0], 0.13, fur));
+    out[TAIL] = vec![limb([0.0, 0.0, 0.0], [-0.37, 0.0, -0.17], 0.06, 0.035, dark)];
+    for k in 0..4 {
+        let hind = k >= 2;
+        let [upper, lower] = b.legs[hind as usize];
+        out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], if hind { 0.075 } else { 0.065 }, 0.05, fur)];
+        out[LOWER[k]] = vec![cuboid([-0.2, -0.2, -lower - 0.3], [0.2, 0.2, -lower], AIR), ball([0.03, 0.0, -lower + 0.04], 0.055, dark), limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.04], 0.05, 0.04, fur)];
     }
     out
 }
@@ -231,7 +344,40 @@ fn fight(look: Look, rest: &Stance, m: &Moment) -> (Stance, f64, f64) {
     // Head thrown back, bellowing
     let mut bellow = Stance { body: [-0.15, 0.0, 0.1], pitch: -0.18, neck: [0.75, 0.0], head: [-0.65, 0.0], jaw: 1.0, tail: [0.5, 0.0], ..guard };
     bellow.feet[0][0] += 0.15;
+    let wolf = matches!(look, Look::Direwolf | Look::WinterAlpha);
+    let bear = matches!(look, Look::Ironhide | Look::Frostfang);
+    // Crouched low to spring, then lunging out with its head and jaws
+    let mut crouched = Stance { body: [-0.3, 0.0, -0.35], pitch: 0.08, neck: [-0.35, 0.0], head: [0.4, 0.0], tail: [-0.2, 0.0], ..guard };
+    crouched.feet[2][0] -= 0.15;
+    crouched.feet[3][0] -= 0.15;
+    let mut lunged = Stance { body: [0.55, 0.0, -0.1], pitch: 0.12, neck: [-0.15, 0.0], head: [0.2, 0.0], jaw: 1.0, tail: [0.3, 0.0], ..guard };
+    lunged.feet[0][0] += 0.7;
+    lunged.feet[1][0] += 0.6;
     match (d.m, d.stage) {
+        (Move::Slam, Stage::Wind) if wolf => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), crouched, Ease::Gather), (d.len, lunged, Ease::Snap)]), 10.0),
+        (Move::Slam, Stage::Act) if wolf => pick((lunged, false), 25.0),
+        (Move::Leap, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len, crouched, Ease::Gather)]), 10.0),
+        (Move::Leap, Stage::Act) => {
+            // Stretched out through the air, forelegs reaching, then landing
+            let mut flying = Stance { body: [0.0, 0.0, 0.2], pitch: -0.15, neck: [0.0, 0.0], head: [0.2, 0.0], jaw: 1.0, tail: [0.2, 0.0], ..guard };
+            flying.feet[0] = [f[0][0] + 0.7, f[0][1], 0.9];
+            flying.feet[1] = [f[1][0] + 0.6, f[1][1], 0.8];
+            flying.feet[2] = [f[2][0] - 0.6, f[2][1], 0.7];
+            flying.feet[3] = [f[3][0] - 0.5, f[3][1], 0.6];
+            pick(along(d.t, &[(0.0, flying, Ease::Linear), (d.len * 0.75, flying, Ease::Linear), (d.len, stamped, Ease::Snap)]), 18.0)
+        }
+        // A bear swiping with one forepaw then the other, reared half up
+        (Move::Maul, Stage::Wind | Stage::Act) if bear => {
+            let k = if d.stage == Stage::Act { (d.t / 0.65) as usize } else { 0 };
+            let local = if d.stage == Stage::Act { d.t % 0.65 } else { d.t };
+            let side = k % 2;
+            let mut up = Stance { body: [-0.1, 0.0, 0.2], pitch: -0.25, neck: [0.2, 0.0], head: [0.1, 0.0], jaw: 1.0, ..guard };
+            up.feet[side] = [f[side][0] + 0.3, f[side][1] * 1.6, 1.3];
+            let mut down = Stance { body: [0.3, 0.0, -0.05], pitch: 0.1, ..up };
+            down.feet[side] = [f[side][0] + 1.0, -f[side][1] * 0.3, 0.1];
+            let (s, quick) = if d.stage == Stage::Wind { along(d.t, &[(0.0, guard, Ease::Linear), (d.len, up, Ease::Gather)]) } else { along(local, &[(0.0, up, Ease::Linear), (0.38, up, Ease::Gather), (0.5, down, Ease::Snap), (0.65, down, Ease::Linear)]) };
+            (s, if quick { 40.0 } else { 14.0 }, if d.stage == Stage::Act { 1.0 } else { 0.0 })
+        }
         (Move::Slam, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), reared, Ease::Gather), (d.len, stamped, Ease::Snap)]), 9.0),
         (Move::Slam, Stage::Act) => pick((stamped, false), 25.0),
         (Move::Charge | Move::Trample, Stage::Wind) => {
@@ -306,11 +452,14 @@ fn death(rest: &Stance, t: f64) -> (Stance, f64, f64) {
 
 pub(super) fn animate(r: &mut Rig, m: &Moment) {
     let look = r.look;
-    let rest = rest(look);
+    // Its poses are made at a stag's size, and fitted to its own
+    let stag = rest(Look::Elderhorn);
+    let b = shape(look);
     let (want, rate, free) = match m.dying {
-        Some(t) => death(&rest, t),
-        None => fight(look, &rest, m),
+        Some(t) => death(&stag, t),
+        None => fight(look, &stag, m),
     };
+    let want = fitted(&b, &want);
     if !r.posed {
         *r.beast() = want;
     }
