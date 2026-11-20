@@ -4130,8 +4130,10 @@ impl App {
         }
         // The wings worn spreading and folding, beating on a flap, and what they leave behind, see
         // wings.rs. Worn on the back, they leave the hands free for what's in them.
-        let flapped = let_go || self.session.trial_flaps();
-        self.update_wings(delta_time.min(0.05), gliding, flapped);
+        // A flap is jump pressed in the air, a dash Shift, for wings that do
+        let tried = self.session.trial_flaps();
+        let shift = self.focused && interactive && (self.input.key_pressed(KeyCode::ShiftLeft) || self.input.key_pressed(KeyCode::ShiftRight));
+        self.update_wings(delta_time.min(0.05), gliding, let_go || tried, shift || tried);
         // The realm's raid bosses warded while its guardians stand, see guardians.rs
         self.update_guardians(delta_time.min(0.05));
 
