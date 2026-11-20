@@ -29,7 +29,7 @@ use crate::weapons::Element;
 use crate::worldgen::{World, is_passable, material::*};
 
 /// Every dragon there is
-pub const KINDS: [Look; 8] = [
+pub const KINDS: [Look; 13] = [
     Look::Ashwing,
     Look::Sleetwing,
     Look::Squallwing,
@@ -38,10 +38,31 @@ pub const KINDS: [Look; 8] = [
     Look::CindermawTyrant,
     Look::GildscaleHoardwarden,
     Look::WorldpyreAncient,
+    Look::Drake,
+    Look::VenomDrake,
+    Look::FrostWyrm,
+    Look::StormDrake,
+    Look::ElderWyrm,
 ];
 
 /// The small ones, monsters going about in pairs and threes, an element each
 pub const DRAKELINGS: [Look; 4] = [Look::Ashwing, Look::Sleetwing, Look::Squallwing, Look::Blightwing];
+
+/// The drakes, bosses keeping lairs of their own in the normal world and Free Roam, and guarding
+/// and raiding in the realms: the Ember Drake and its kin of the cold, the jungle and the high
+/// rock, and the Elder Cinder Wyrm, a raid boss of the normal world. Smaller than the great dragons
+/// of the Cinder Crown, they fight mostly on the ground, and take to the air to swoop and strafe.
+pub const DRAKES: [Look; 5] = [Look::Drake, Look::VenomDrake, Look::FrostWyrm, Look::StormDrake, Look::ElderWyrm];
+
+pub fn is_drake(look: Look) -> bool {
+    DRAKES.contains(&look)
+}
+
+/// One of the great dragons: the Cinder Crown's three raid bosses and its finale, each fought in
+/// phases, as raid bosses are
+pub fn is_great(look: Look) -> bool {
+    RAID_DRAGONS.contains(&look) || look == ULTRA
+}
 
 /// The Dragon realm's three raid bosses, in the order of its lairs: the peak roost, the caldera,
 /// and the hollow of bones and hoard
@@ -61,9 +82,9 @@ fn kind(look: Look) -> usize {
 /// What a dragon breathes
 pub fn element(look: Look) -> Element {
     match look {
-        Look::Sleetwing => Element::Frost,
-        Look::Squallwing | Look::GildscaleHoardwarden => Element::Storm,
-        Look::Blightwing => Element::Poison,
+        Look::Sleetwing | Look::FrostWyrm => Element::Frost,
+        Look::Squallwing | Look::GildscaleHoardwarden | Look::StormDrake => Element::Storm,
+        Look::Blightwing | Look::VenomDrake => Element::Poison,
         _ => Element::Fire,
     }
 }
@@ -77,6 +98,11 @@ pub fn name(look: Look) -> &'static str {
         Look::PyreMatriarch => "Pyre Matriarch",
         Look::CindermawTyrant => "Cindermaw Tyrant",
         Look::GildscaleHoardwarden => "Gildscale Hoardwarden",
+        Look::Drake => "Ember Drake",
+        Look::VenomDrake => "Venom Drake",
+        Look::FrostWyrm => "Frost Wyrm",
+        Look::StormDrake => "Thunder Drake",
+        Look::ElderWyrm => "Elder Cinder Wyrm",
         _ => "Worldpyre Ancient",
     }
 }
@@ -92,6 +118,11 @@ pub fn lore(look: Look) -> &'static str {
         Look::PyreMatriarch => "Mother of the ashwings, she nests where the peak is hottest and drops on what climbs to her like a falling star.",
         Look::CindermawTyrant => "Too heavy to fly far, it lies in the caldera with its belly to the magma, and the ground cracks open where it stamps.",
         Look::GildscaleHoardwarden => "It has lain on its hoard so long the gold has grown into its scales. Lightning plays over it when it wakes.",
+        Look::Drake => "Red as a forge and horned like a ram, it keeps to the old ruins, and it breathes fire on whatever comes up the stairs.",
+        Look::VenomDrake => "It spreads its frill and spits, and the jungle round its lair has rotted black.",
+        Look::FrostWyrm => "Long and pale, crowned with ice, it coils on the high snows and breathes the cold of the deep winter.",
+        Look::StormDrake => "Two legs and wings far too long for them: it rides the thunderheads over the high rock and calls them down.",
+        Look::ElderWyrm => "Old as the burn it lies in, black as soot with embers in its scales, its wings in tatters and its horns gone to gold.",
         _ => "The first fire took wing, and it is still burning. Every dragon there is was hatched from the embers it shed.",
     }
 }
@@ -106,6 +137,8 @@ pub fn health(look: Look) -> f64 {
         Look::PyreMatriarch => 15500.0,
         Look::CindermawTyrant => 17500.0,
         Look::GildscaleHoardwarden => 16000.0,
+        // The drakes are as hard to kill as they always were, see Look::health()
+        Look::Drake | Look::VenomDrake | Look::FrostWyrm | Look::StormDrake | Look::ElderWyrm => look.health(),
         // The Worldpyre Ancient, a finale wherever it is, raised to 46000 as one, see
         // realms::FINALE_PROMOTION
         _ => 18400.0,
@@ -175,6 +208,32 @@ enum Crown {
     Gilded,
     /// A crown of four great horns and frills at the cheeks, the oldest of all
     Ancient,
+    /// A horn on its snout and two swept back over its brow, spikes at its cheeks: the Ember
+    /// Drake's
+    Horned,
+    /// A crown of ice, spikes of it fanned back from its brow
+    Frost,
+    /// A fan of skin on spines behind its head, spotted with venom, spread as it spits
+    Frill,
+    /// Horns forked like lightning, glowing at their tips
+    Forked,
+    /// Horns curled round like a ram's, gone to gold with age, embers in its scales
+    Elder,
+}
+
+/// How the edge of a wing's skin runs between its fingers
+#[derive(Clone, Copy, PartialEq)]
+enum WingShape {
+    /// Scalloped between long fingers, as most have
+    Scalloped,
+    /// Broad and rounded, the skin full between its fingers
+    Broad,
+    /// Long and narrow, swept back to a point, for riding the storm
+    Long,
+    /// Torn and holed with age
+    Tattered,
+    /// The fingers spiked out past the skin
+    Barbed,
 }
 
 /// How a dragon's built, in units of a drakeling's meters
@@ -192,17 +251,17 @@ struct Spec {
     /// How bulky, and how long in the wing, next to a drakeling
     girth: f64,
     span: f64,
-    /// Its legs each a single piece, bent as they always are
-    stiff: bool,
     hide: Hide,
     crown: Crown,
+    wing: WingShape,
     /// A spiked club at the end of its tail rather than a spade
     club: bool,
 }
 
 fn spec(look: Look) -> Spec {
     let hide = |scale, dark, belly, wing, horn, glow, eye| Hide { scale, dark, belly, wing, horn, glow, eye };
-    let small = |s: f64, hide: Hide| Spec { s, four: false, necks: 1, tails: 2, neck: 0.75, tail: 0.9, girth: 1.0, span: 1.0, stiff: true, hide, crown: Crown::Swept, club: false };
+    let small = |s: f64, hide: Hide| Spec { s, four: false, necks: 2, tails: 3, neck: 0.38, tail: 0.6, girth: 1.0, span: 1.0, hide, crown: Crown::Swept, wing: WingShape::Scalloped, club: false };
+    let drake = |s: f64, hide: Hide, crown: Crown, wing: WingShape| Spec { s, four: true, necks: 3, tails: 4, neck: 0.3, tail: 0.5, girth: 1.1, span: 0.95, hide, crown, wing, club: false };
     match look {
         // Ash-grey, its wings the red of embers, fire glowing through its belly
         Look::Ashwing => small(1.0, hide(MORTAR, OBSIDIAN, FUR_TAN, CLOTH, BONE, GLOW_FIRE, GLOW_FIRE)),
@@ -222,9 +281,9 @@ fn spec(look: Look) -> Spec {
             tail: 0.56,
             girth: 1.05,
             span: 1.18,
-            stiff: false,
             hide: hide(CLOTH, OBSIDIAN, BRONZE, TEMPLE_RED, BONE, GLOW_FIRE, FLAME),
             crown: Crown::Crest,
+            wing: WingShape::Scalloped,
             club: false,
         },
         // Black as cooled lava, its belly molten, short in the wing and heavy, a club on its tail
@@ -237,9 +296,9 @@ fn spec(look: Look) -> Spec {
             tail: 0.55,
             girth: 1.38,
             span: 0.82,
-            stiff: false,
             hide: hide(OBSIDIAN, BARK_DARK, GLOW_FIRE, LEATHER, STONE, GLOW_FIRE, FLAME),
             crown: Crown::Swept,
+            wing: WingShape::Broad,
             club: true,
         },
         // Plated with the gold it's lain on, steel-grey wings, lightning in its eyes and seams
@@ -252,11 +311,26 @@ fn spec(look: Look) -> Spec {
             tail: 0.55,
             girth: 1.12,
             span: 1.0,
-            stiff: false,
             hide: hide(GOLD, BRONZE, LINEN, DARK_STEEL, BONE, GLOW_STORM, GLOW_STORM),
             crown: Crown::Gilded,
+            wing: WingShape::Scalloped,
             club: false,
         },
+        // The drakes. The Ember Drake brick-red, its wings dark leather, a horn on its snout, fire
+        // in its eyes and its belly
+        Look::Drake => drake(1.3, hide(TEMPLE_RED, OBSIDIAN, SANDSTONE, LEATHER, BONE, GLOW_FIRE, FLAME), Crown::Horned, WingShape::Scalloped),
+        // Deep green, stocky and short in the wing, its wings barbed and a frill spotted with venom
+        // round its head
+        Look::VenomDrake => Spec { girth: 1.22, span: 0.84, ..drake(1.3, hide(PINE, OBSIDIAN, MOSS, CACTUS, BONE, GLOW_POISON, GLOW_POISON), Crown::Frill, WingShape::Barbed) },
+        // Pale and long, a wyrm of the snows: a long neck and tail, broad teal wings, crowned with
+        // ice
+        Look::FrostWyrm => Spec { neck: 0.36, tail: 0.62, girth: 0.92, span: 1.08, ..drake(1.35, hide(ICE, STEEL, FUR_WHITE, TEMPLE_TEAL, CRYSTAL, GLOW_FROST, GLOW_FROST), Crown::Frost, WingShape::Broad) },
+        // Steel-grey, a wyvern of two legs and long narrow wings, lightning in its fingers, its
+        // horns forked
+        Look::StormDrake => Spec { four: false, girth: 1.0, span: 1.3, tail: 0.56, ..drake(1.3, hide(STEEL, OBSIDIAN, LINEN, MORTAR, BONE, GLOW_STORM, GLOW_STORM), Crown::Forked, WingShape::Long) },
+        // The Elder Cinder Wyrm, black as soot and huge, embers in its scales, its wings in tatters
+        // and its curled horns gone to gold
+        Look::ElderWyrm => Spec { girth: 1.3, span: 1.05, neck: 0.36, tail: 0.56, ..drake(2.4, hide(OBSIDIAN, BARK_DARK, TEMPLE_RED, LEATHER, GOLD, GLOW_FIRE, FLAME), Crown::Elder, WingShape::Tattered) },
         // Ash-grey as its brood, veined with fire, crowned with bone, wings of deep ember
         _ => Spec {
             s: 5.0,
@@ -267,9 +341,9 @@ fn spec(look: Look) -> Spec {
             tail: 0.6,
             girth: 1.2,
             span: 1.2,
-            stiff: false,
             hide: hide(MORTAR, OBSIDIAN, BRONZE, CLOTH, BONE, GLOW_FIRE, FLAME),
             crown: Crown::Ancient,
+            wing: WingShape::Scalloped,
             club: false,
         },
     }
@@ -324,11 +398,39 @@ const STAND_FORE: (f64, f64) = (0.2, 0.45);
 fn stand_height(sp: &Spec) -> f64 {
     let drop = |hind: bool, (swing, knee): (f64, f64)| {
         let (thigh, shin) = leg_lengths(hind);
-        -hip(sp, hind).z + thigh * swing.cos() + shin * (swing - knee).cos() + 0.05
+        -hip(sp, hind).z + thigh * swing.cos() + shin * (swing - knee).cos() + ANKLE
     };
     let hind = drop(true, STAND_HIND);
     let h = if sp.four { (hind + drop(false, STAND_FORE)) * 0.5 } else { hind };
     h * sp.s
+}
+
+/// How high its ankle is over the ground, standing, in units
+const ANKLE: f64 = 0.05;
+/// How far forward of straight down from the hip its knee's set, in units
+const KNEE_AHEAD: f64 = 0.04;
+
+/// Where the ankle of a leg with its thigh swung `swing` forward and its knee bent `knee` is, from
+/// its hip, in units of its body's frame: how far ahead, and up
+fn ankle_at(hind: bool, swing: f64, knee: f64) -> (f64, f64) {
+    let (lt, ls) = leg_lengths(hind);
+    let (kx, kz) = (KNEE_AHEAD * swing.cos() + lt * swing.sin(), KNEE_AHEAD * swing.sin() - lt * swing.cos());
+    (kx + ls * (swing - knee).sin(), kz - ls * (swing - knee).cos())
+}
+
+/// How far forward a leg's thigh has to swing and its knee bend for its ankle to be at `x` ahead of
+/// its hip and `z` up, in units of its body's frame, its knee forward of the line down to it; as
+/// near as it reaches, if it doesn't
+fn reach_to(hind: bool, x: f64, z: f64) -> (f64, f64) {
+    let (lt, ls) = leg_lengths(hind);
+    let thigh = (lt * lt + KNEE_AHEAD * KNEE_AHEAD).sqrt();
+    let offset = KNEE_AHEAD.atan2(lt);
+    let d = (x * x + z * z).sqrt().clamp((thigh - ls).abs() + 1e-3, thigh + ls - 1e-3);
+    let down = x.atan2(-z);
+    let at_hip = ((thigh * thigh + d * d - ls * ls) / (2.0 * thigh * d)).clamp(-1.0, 1.0).acos();
+    let at_knee = ((thigh * thigh + ls * ls - d * d) / (2.0 * thigh * ls)).clamp(-1.0, 1.0).acos();
+    let toward_knee = down + at_hip;
+    (toward_knee - offset, PI - at_knee - offset)
 }
 
 /// The pieces each dragon is made of, its models in this order, see model_of()
@@ -398,11 +500,18 @@ fn torso(p: &mut Vec<Part>, sp: &Spec) {
         p.push(limb([0.5, side * 0.24 * g, -0.16 * g], [-0.55, side * 0.21 * g, -0.12 * g], 0.024, 0.018, h.glow));
     }
     match sp.crown {
-        // Molten veins over the flanks of the oldest and of the tyrant
-        Crown::Ancient => {
+        // Molten veins over the flanks of the oldest, and embers in an elder wyrm's scales
+        Crown::Ancient | Crown::Elder => {
             for (k, side) in [(0, 1.0), (1, -1.0), (2, 1.0), (3, -1.0)] {
                 let x = 0.45 - k as f64 * 0.3;
                 p.push(limb([x, side * 0.3 * g, 0.12 * g], [x - 0.22, side * 0.33 * g, -0.06 * g], 0.022, 0.016, h.glow));
+            }
+            if sp.crown == Crown::Elder {
+                for k in 0..10 {
+                    let x = 0.55 - k as f64 * 0.12;
+                    let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+                    p.push(ball([x, side * (0.2 + 0.04 * (k % 3) as f64) * g, (0.24 - 0.03 * (k % 2) as f64) * g], 0.028, h.glow));
+                }
             }
         }
         Crown::Gilded => {
@@ -411,6 +520,25 @@ fn torso(p: &mut Vec<Part>, sp: &Spec) {
                 let x = 0.5 - k as f64 * 0.13;
                 let side = if k % 2 == 0 { 1.0 } else { -1.0 };
                 p.push(ellipsoid([x, side * 0.16 * g, 0.29 * g], [0.06, 0.06, 0.03], if k % 3 == 0 { CRYSTAL } else { GOLD }));
+            }
+        }
+        // Lightning forking down its flanks
+        Crown::Forked => {
+            for side in [-1.0, 1.0] {
+                let zig = [[0.5, 0.3, 0.14], [0.32, 0.33, 0.02], [0.18, 0.31, 0.12], [-0.02, 0.34, -0.02], [-0.2, 0.31, 0.1], [-0.42, 0.29, -0.03]];
+                for pair in zig.windows(2) {
+                    let (a, b) = (pair[0], pair[1]);
+                    p.push(limb([a[0], side * a[1] * g, a[2] * g], [b[0], side * b[1] * g, b[2] * g], 0.02, 0.016, h.glow));
+                }
+            }
+        }
+        // Venom welling in spots along its back
+        Crown::Frill => {
+            for k in 0..8 {
+                let x = 0.5 - k as f64 * 0.15;
+                for side in [-1.0, 1.0] {
+                    p.push(ball([x, side * 0.2 * g, 0.24 * g], 0.032, h.glow));
+                }
             }
         }
         _ => {}
@@ -426,8 +554,12 @@ fn torso(p: &mut Vec<Part>, sp: &Spec) {
         let x = 0.5 - k as f64 * 0.17;
         p.push(ellipsoid([x, 0.0, -0.25 * g], [0.075, 0.22 * g, 0.08 * g], h.belly));
     }
-    // Spines down its back, tallest over the shoulders, a crest's taller still
-    let tall = if sp.crown == Crown::Crest { 1.5 } else { 1.0 };
+    // Spines down its back, tallest over the shoulders, a crest's taller still, and an old wyrm's
+    let tall = match sp.crown {
+        Crown::Crest => 1.5,
+        Crown::Elder | Crown::Frost => 1.3,
+        _ => 1.0,
+    };
     for k in 0..8 {
         let x = 0.55 - k as f64 * 0.16;
         let up = (0.1 + 0.08 * (1.0 - ((x - 0.25) / 0.7).abs()).max(0.0)) * tall;
@@ -456,11 +588,30 @@ fn neck(p: &mut Vec<Part>, sp: &Spec, k: usize) {
     let n = sp.necks as f64;
     let (r0, r1) = (neck_radius(sp, k as f64 / n), neck_radius(sp, (k + 1) as f64 / n));
     let l = sp.neck;
-    let tall = if sp.crown == Crown::Crest { 1.6 } else { 1.0 };
+    let tall = match sp.crown {
+        Crown::Crest => 1.6,
+        Crown::Elder | Crown::Frost => 1.3,
+        _ => 1.0,
+    };
     for j in 0..2 {
         let x = l * (0.25 + 0.45 * j as f64);
         let r = r0 + (r1 - r0) * x / l;
         p.push(limb([x, 0.0, r * 0.8], [x - 0.07, 0.0, r * 0.8 + 0.09 * tall], 0.035, 0.007, h.horn));
+    }
+    // Lightning down a storm drake's neck, and venom spots down a venom drake's
+    match sp.crown {
+        Crown::Forked => {
+            for side in [-1.0, 1.0] {
+                p.push(limb([0.0, side * r0 * 0.8, 0.0], [l * 0.5, side * r0 * 0.85, r0 * 0.3], 0.018, 0.015, h.glow));
+                p.push(limb([l * 0.5, side * r0 * 0.85, r0 * 0.3], [l, side * r1 * 0.8, -r1 * 0.1], 0.015, 0.014, h.glow));
+            }
+        }
+        Crown::Frill => {
+            for side in [-1.0, 1.0] {
+                p.push(ball([l * 0.5, side * r0 * 0.6, r0 * 0.6], 0.03, h.glow));
+            }
+        }
+        _ => {}
     }
     p.push(limb([0.0, 0.0, -r0 * 0.45], [l, 0.0, -r1 * 0.45], r0 * 0.7, r1 * 0.7, h.belly));
     p.push(limb([0.0, 0.0, 0.0], [l, 0.0, 0.0], r0, r1, h.scale));
@@ -504,10 +655,62 @@ fn head(p: &mut Vec<Part>, sp: &Spec) {
                 p.push(limb([0.05, side * 0.13, -0.02], [-0.15, side * 0.24, 0.06], 0.02, 0.008, h.horn));
                 p.push(ellipsoid([-0.04, side * 0.17, 0.02], [0.1, 0.03, 0.07], h.wing));
             }
+            Crown::Horned => {
+                // Swept back over its brow, heavier than a drakeling's, and spikes at its cheeks
+                p.push(limb([0.06, side * 0.09, 0.1], [-0.22, side * 0.16, 0.18], 0.058, 0.032, h.horn));
+                p.push(limb([-0.22, side * 0.16, 0.18], [-0.36, side * 0.13, 0.31], 0.032, 0.008, h.horn));
+                for k in 0..2 {
+                    let x = 0.14 - k as f64 * 0.12;
+                    p.push(limb([x, side * 0.12, -0.03], [x - 0.15, side * 0.21, -0.07 - k as f64 * 0.02], 0.026, 0.006, h.horn));
+                }
+            }
+            Crown::Frost => {
+                // Spikes of ice fanned back from its brow, longer the further round
+                for k in 0..4 {
+                    let f = k as f64;
+                    p.push(limb([0.08 - 0.06 * f, side * (0.07 + 0.025 * f), 0.11], [-0.2 - 0.07 * f, side * (0.12 + 0.07 * f), 0.24 - 0.04 * f], 0.03, 0.006, h.horn));
+                }
+                p.push(limb([0.1, side * 0.12, -0.03], [-0.12, side * 0.22, -0.06], 0.022, 0.005, h.horn));
+            }
+            Crown::Frill => {
+                // A fan of skin on spines behind its head, venom spotted on it, and short horns
+                p.push(limb([0.04, side * 0.08, 0.1], [-0.12, side * 0.12, 0.18], 0.04, 0.012, h.horn));
+                for k in 0..4 {
+                    let a = 0.35 + k as f64 * 0.38;
+                    let tip = [-0.12 - 0.08 * a.cos().abs(), side * (0.1 + 0.26 * a.sin()), 0.04 + 0.26 * a.cos()];
+                    p.push(limb([0.0, side * 0.09, 0.04], tip, 0.02, 0.006, h.horn));
+                    p.push(ball([tip[0] * 0.75, tip[1] * 0.8, tip[2] * 0.8], 0.026, h.glow));
+                }
+                p.push(ellipsoid([-0.08, side * 0.2, 0.08], [0.05, 0.13, 0.15], h.wing));
+            }
+            Crown::Forked => {
+                // Antlered like lightning, glowing at each tip
+                p.push(limb([0.04, side * 0.09, 0.1], [-0.22, side * 0.15, 0.27], 0.048, 0.02, h.horn));
+                p.push(limb([-0.22, side * 0.15, 0.27], [-0.36, side * 0.12, 0.42], 0.02, 0.008, h.horn));
+                p.push(limb([-0.1, side * 0.12, 0.19], [-0.04, side * 0.22, 0.34], 0.02, 0.007, h.horn));
+                p.push(ball([-0.36, side * 0.12, 0.42], 0.025, h.glow));
+                p.push(ball([-0.04, side * 0.22, 0.34], 0.022, h.glow));
+            }
+            Crown::Elder => {
+                // Curled right round like a ram's, thick at the root, and its brow heavy over them
+                let curl = [[0.02, 0.1, 0.11], [-0.14, 0.17, 0.17], [-0.27, 0.23, 0.1], [-0.3, 0.27, -0.04], [-0.2, 0.29, -0.14], [-0.06, 0.26, -0.15]];
+                let n = curl.len() - 1;
+                for (k, pair) in curl.windows(2).enumerate() {
+                    let (a, b) = (pair[0], pair[1]);
+                    let r = 0.07 - 0.05 * k as f64 / n as f64;
+                    p.push(limb([a[0], side * a[1], a[2]], [b[0], side * b[1], b[2]], r, r - 0.01, h.horn));
+                }
+                p.push(limb([0.1, side * 0.12, -0.04], [-0.1, side * 0.2, -0.1], 0.03, 0.008, h.dark));
+            }
         }
     }
-    if sp.crown == Crown::Ancient {
-        p.push(limb([0.1, 0.0, 0.12], [-0.25, 0.0, 0.3], 0.04, 0.01, h.horn));
+    match sp.crown {
+        Crown::Ancient => p.push(limb([0.1, 0.0, 0.12], [-0.25, 0.0, 0.3], 0.04, 0.01, h.horn)),
+        // The horn on an Ember Drake's snout
+        Crown::Horned => p.push(limb([0.38, 0.0, 0.05], [0.45, 0.0, 0.2], 0.04, 0.008, h.horn)),
+        // A spike of ice down the middle of the frost wyrm's crown
+        Crown::Frost => p.push(limb([0.12, 0.0, 0.12], [-0.22, 0.0, 0.3], 0.035, 0.006, h.horn)),
+        _ => {}
     }
     p.push(ellipsoid([0.1, 0.0, 0.02], [0.2, 0.15, 0.13], h.scale));
     p.push(limb([0.18, 0.0, 0.0], [0.5, 0.0, -0.03], 0.1, 0.066, h.scale));
@@ -582,20 +785,33 @@ fn wing_in(p: &mut Vec<Part>, sp: &Spec, side: f64) {
     // A rib of the arm's tendons back across the skin
     let reach = w[1].abs();
     p.push(limb([0.05, side * reach * 0.55, 0.02], [-0.6, side * reach * 0.55, 0.0], 0.016, 0.012, h.dark));
+    // How far back its skin runs to the body, a long wing's narrower
+    let chord = match sp.wing {
+        WingShape::Long => 0.68,
+        WingShape::Broad => 0.9,
+        _ => 0.82,
+    };
     let strips = 9;
     for i in 0..strips {
         let f = (i as f64 + 0.5) / strips as f64;
         let y = side * (0.04 + (reach - 0.04) * f);
         let lead = [0.1 * f, y, 0.03 * f];
-        let trail = [-0.82 + 0.3 * f - 0.05 * (PI * f).sin(), y, 0.0];
+        // An old wing's torn at the edge
+        let torn = if sp.wing == WingShape::Tattered && i % 3 == 1 { 0.16 } else { 0.0 };
+        let trail = [-chord + 0.3 * f - 0.05 * (PI * f).sin() + torn, y, 0.0];
         p.push(skin(lead, trail, (reach - 0.04) / strips as f64, h.wing));
     }
 }
 
-/// The trailing edge of a wing's outer piece, `y` out along it from the wrist, in units: in
-/// between the fingers it's drawn in towards the leading edge
-fn trailing(y: f64, l: f64) -> f64 {
-    let points = [(0.0, -0.62), (0.16, -0.52), (0.32, -0.78), (0.47, -0.6), (0.62, -0.72), (0.74, -0.5), (0.86, -0.6), (1.0, -0.32)];
+/// The trailing edge of a wing's outer piece of `shape`, `y` out along it from the wrist, in units:
+/// in between the fingers it's drawn in towards the leading edge
+fn trailing(y: f64, l: f64, shape: WingShape) -> f64 {
+    let points: &[(f64, f64)] = match shape {
+        WingShape::Broad => &[(0.0, -0.76), (0.18, -0.7), (0.35, -0.86), (0.52, -0.78), (0.68, -0.84), (0.8, -0.7), (0.92, -0.6), (1.0, -0.36)],
+        WingShape::Long => &[(0.0, -0.5), (0.2, -0.42), (0.38, -0.56), (0.55, -0.42), (0.7, -0.47), (0.84, -0.32), (0.93, -0.32), (1.0, -0.2)],
+        WingShape::Tattered => &[(0.0, -0.6), (0.12, -0.36), (0.2, -0.66), (0.3, -0.44), (0.4, -0.8), (0.5, -0.4), (0.62, -0.7), (0.71, -0.34), (0.8, -0.62), (0.9, -0.3), (1.0, -0.3)],
+        _ => &[(0.0, -0.62), (0.16, -0.52), (0.32, -0.78), (0.47, -0.6), (0.62, -0.72), (0.74, -0.5), (0.86, -0.6), (1.0, -0.32)],
+    };
     let f = (y / l).clamp(0.0, 1.0);
     for pair in points.windows(2) {
         let ((f0, x0), (f1, x1)) = (pair[0], pair[1]);
@@ -603,7 +819,18 @@ fn trailing(y: f64, l: f64) -> f64 {
             return x0 + (x1 - x0) * (f - f0) / (f1 - f0);
         }
     }
-    -0.32
+    points[points.len() - 1].1
+}
+
+/// Where a wing's fingers end, as far out along it and how far back, in units of its length and
+/// units: at the points of its trailing edge
+fn fingers(shape: WingShape) -> [(f64, f64); 3] {
+    match shape {
+        WingShape::Broad => [(0.35, -0.86), (0.68, -0.84), (0.92, -0.6)],
+        WingShape::Long => [(0.38, -0.56), (0.7, -0.47), (0.93, -0.32)],
+        WingShape::Tattered => [(0.4, -0.8), (0.62, -0.7), (0.8, -0.62)],
+        _ => [(0.32, -0.78), (0.62, -0.72), (0.86, -0.6)],
+    }
 }
 
 /// The outer piece, from the wrist out to the tip: the long bones of its fingers and the skin
@@ -613,42 +840,40 @@ fn wing_out(p: &mut Vec<Part>, sp: &Spec, side: f64) {
     let l = WING_OUT * sp.span;
     let tip = [-0.32, side * l, 0.03];
     let mid = [tip[0] * 0.5, tip[1] * 0.5, tip[2] * 0.5];
+    // A storm drake's fingers crackle with lightning
+    let bone = if sp.crown == Crown::Forked { h.glow } else { h.dark };
     p.push(limb([0.0, 0.0, 0.0], mid, 0.045, 0.032, h.dark));
     p.push(limb(mid, tip, 0.032, 0.008, h.dark));
-    for (f, x) in [(0.32, -0.78), (0.62, -0.72), (0.86, -0.6)] {
-        p.push(limb([0.0, 0.0, 0.0], [x, side * f * l, 0.0], 0.026, 0.008, h.dark));
+    for (f, x) in fingers(sp.wing) {
+        p.push(limb([0.0, 0.0, 0.0], [x, side * f * l, 0.0], 0.026, 0.008, bone));
+        // Barbs of bone out past the skin
+        if sp.wing == WingShape::Barbed {
+            p.push(limb([x * 0.95, side * f * l, 0.0], [x - 0.14, side * (f * l + 0.04), -0.01], 0.02, 0.005, h.horn));
+        }
     }
     let strips = 13;
     for i in 0..strips {
         // Starting a little inside the wrist, so there's no gap there as the wing bends
         let y = -0.04 + (l + 0.04) * (i as f64 + 0.5) / strips as f64;
         let lead = [-0.32 * (y / l).max(0.0), side * y, 0.03 * (y / l).max(0.0)];
-        let trail = [trailing(y, l), side * y, 0.0];
-        if lead[0] - trail[0] > 0.03 {
+        let trail = [trailing(y, l, sp.wing), side * y, 0.0];
+        // Holed here and there with age, the skin between its fingers torn through
+        if sp.wing == WingShape::Tattered && (i == 4 || i == 9) {
+            let gap = (lead[0] - trail[0]) * 0.4;
+            p.push(skin(lead, [lead[0] - gap, trail[1], 0.0], (l + 0.04) / strips as f64, h.wing));
+            p.push(skin([trail[0] + gap * 0.5, trail[1], 0.0], trail, (l + 0.04) / strips as f64, h.wing));
+        } else if lead[0] - trail[0] > 0.03 {
             p.push(skin(lead, trail, (l + 0.04) / strips as f64, h.wing));
         }
     }
 }
 
-/// A thigh, from the hip down to the knee, and for a drakeling's stiff legs the rest of the leg
-/// too, bent as it stands
+/// A thigh, from the hip down to the knee
 fn thigh(p: &mut Vec<Part>, sp: &Spec, hind: bool) {
     let (h, g) = (sp.hide, sp.girth);
     let (lt, _) = leg_lengths(hind);
-    if sp.stiff {
-        // The knee bent back as it stands, the shin and foot under the hip, the foot flat
-        let (swing, knee) = if hind { STAND_HIND } else { STAND_FORE };
-        let knee_at = [lt * swing.sin(), 0.0, -lt * swing.cos()];
-        shin_and_foot(p, sp, hind, knee_at, swing - knee, 0.0);
-    }
     p.push(ellipsoid([0.03, 0.0, -lt * 0.35], [0.13 * g, 0.11 * g, 0.2], h.scale));
-    let end = if sp.stiff {
-        let (swing, _) = if hind { STAND_HIND } else { STAND_FORE };
-        [lt * swing.sin(), 0.0, -lt * swing.cos()]
-    } else {
-        [0.04, 0.0, -lt]
-    };
-    p.push(limb([0.0, 0.0, 0.0], end, 0.12 * g, 0.085 * g, h.scale));
+    p.push(limb([0.0, 0.0, 0.0], [KNEE_AHEAD, 0.0, -lt], 0.12 * g, 0.085 * g, h.scale));
 }
 
 /// A shin and its foot, from the knee at `knee` angled `lean` radians forward from straight down,
@@ -672,12 +897,10 @@ fn shin_and_foot(p: &mut Vec<Part>, sp: &Spec, hind: bool, knee: Vec3, lean: f64
 }
 
 fn shin(p: &mut Vec<Part>, sp: &Spec, hind: bool) {
-    if !sp.stiff {
-        // Built with the knee at its joint and the shin straight down, the foot turned so it's
-        // flat on the ground as the leg stands
-        let (swing, knee) = if hind { STAND_HIND } else { STAND_FORE };
-        shin_and_foot(p, sp, hind, [0.0, 0.0, 0.0], 0.0, swing - knee);
-    }
+    // Built with the knee at its joint and the shin straight down, the foot turned so it's flat on
+    // the ground as the leg stands
+    let (swing, knee) = if hind { STAND_HIND } else { STAND_FORE };
+    shin_and_foot(p, sp, hind, [0.0, 0.0, 0.0], 0.0, swing - knee);
 }
 
 /// The shapes of piece `piece` of a dragon of kind `k`, in meters
@@ -810,8 +1033,10 @@ pub fn models() -> Vec<Model> {
     made.into_iter().map(|(m, _)| m).collect()
 }
 
-// The rig: how each joint's turned, eased from where it is towards where the dragon's moves want
-// it, so nothing ever snaps from one pose to the next
+// The rig: how each joint's turned. Its body, neck, head, tail and legs are sprung, each joint
+// swinging after where its moves want it and carried on a little past, those out along its neck and
+// tail looser and slower than those by its body, so they lag behind as it turns, bobs and lunges and
+// whip round after; its wings beat and its feet step on top of that.
 
 /// A wing's joints: how far it's raised at the shoulder, swept back, its leading edge tipped down,
 /// how far its outer piece is folded back on the inner at the wrist, and bent up there
@@ -824,21 +1049,28 @@ struct WingPose {
     bend: f64,
 }
 
-/// A leg's joints: how far forward the thigh's swung, and how far the knee's bent
+/// A leg's joints: how far forward the thigh's swung and how far the knee's bent; and how far its
+/// foot's planted on the ground rather than held as those say, 0 to 1, and how far from where it'd
+/// stand it's planted, in units ahead and up
 #[derive(Clone, Copy, Default, Debug)]
 struct LegPose {
     swing: f64,
     knee: f64,
+    plant: f64,
+    foot: [f64; 2],
 }
 
-/// Every joint of a dragon, in radians: its body's pitch, nose up, and roll, left wing up; each
-/// joint of its neck turned to its left and raised; its head the same, and its jaw opened; each
-/// joint of its tail the same; its wings, left then right; and its legs, the hind left and right,
-/// then the fore
+/// Every joint of a dragon, in radians: its body's pitch, nose up, its roll, left wing up, and its
+/// twist, turned to its left, as its hips and shoulders roll; how far its body's moved from where
+/// it'd be, in units ahead, to its left and up; each joint of its neck turned to its left and raised;
+/// its head the same, and its jaw opened; each joint of its tail the same; its wings, left then
+/// right; and its legs, the hind left and right, then the fore
 #[derive(Clone, Copy, Default, Debug)]
 struct Rig {
     pitch: f64,
     roll: f64,
+    twist: f64,
+    shift: [f64; 3],
     neck: [[f64; 2]; 3],
     head: [f64; 2],
     jaw: f64,
@@ -847,30 +1079,40 @@ struct Rig {
     legs: [LegPose; 4],
 }
 
+/// How many of a rig's numbers are sprung, all but its wings', and where in Rig::flat() each lot
+/// starts
+const SPRUNG: usize = 43;
+const AT_SHIFT: usize = 3;
+const AT_NECK: usize = 6;
+const AT_HEAD: usize = 12;
+const AT_JAW: usize = 14;
+const AT_TAIL: usize = 15;
+const AT_LEGS: usize = 23;
+
 /// Wings folded at its sides, standing: the arm swept back from the shoulder, the skin hanging
 /// down the flank from it, the fingers folded over at the wrist like a book shut, back along it
 /// towards the chest
 const FOLDED: WingPose = WingPose { flap: 0.1, sweep: 1.5, twist: -1.35, fold: 0.1, bend: -2.9 };
-/// Wings spread, gliding
-const SPREAD: WingPose = WingPose { flap: 0.1, sweep: 0.12, twist: 0.0, fold: 0.06, bend: 0.06 };
+/// Wings spread, gliding, held a little up
+const SPREAD: WingPose = WingPose { flap: 0.14, sweep: 0.1, twist: 0.0, fold: 0.06, bend: 0.06 };
 
 impl Rig {
     /// Standing on the ground as it does when nothing's the matter
     fn standing(sp: &Spec) -> Rig {
         let mut r = Rig { pitch: if sp.four { 0.0 } else { 0.12 }, ..Default::default() };
-        // The neck rising in a curve, the head held level at its end
+        // The neck rising steeply from the chest, curving over to hold the head out level at its end
         let n = sp.necks as f64;
-        r.neck[0] = [0.0, 0.62];
+        r.neck[0] = [0.0, 0.85];
         for k in 1..3 {
-            r.neck[k] = [0.0, -0.32 / n.max(1.0) * 2.0];
+            r.neck[k] = [0.0, -0.68 / (n - 1.0).max(1.0)];
         }
-        r.head = [0.0, -0.3];
+        r.head = [0.0, -0.22];
         r.tail[0] = [0.0, -0.22];
         for k in 1..4 {
             r.tail[k] = [0.0, 0.07];
         }
         r.wings = [FOLDED; 2];
-        let (hind, fore) = (LegPose { swing: STAND_HIND.0, knee: STAND_HIND.1 }, LegPose { swing: STAND_FORE.0, knee: STAND_FORE.1 });
+        let (hind, fore) = (LegPose { swing: STAND_HIND.0, knee: STAND_HIND.1, plant: 1.0, foot: [0.0; 2] }, LegPose { swing: STAND_FORE.0, knee: STAND_FORE.1, plant: 1.0, foot: [0.0; 2] });
         r.legs = [hind, hind, fore, fore];
         r
     }
@@ -878,44 +1120,80 @@ impl Rig {
     /// Flying: neck stretched out ahead, tail straight behind, legs tucked up
     fn flying() -> Rig {
         let mut r = Rig::default();
-        r.neck[0] = [0.0, 0.18];
-        r.head = [0.0, -0.15];
-        r.tail[0] = [0.0, 0.04];
+        r.neck[0] = [0.0, 0.2];
+        r.neck[1] = [0.0, -0.04];
+        r.head = [0.0, -0.18];
+        r.tail[0] = [0.0, 0.06];
         r.wings = [SPREAD; 2];
-        let (hind, fore) = (LegPose { swing: -0.95, knee: 1.5 }, LegPose { swing: -0.7, knee: 1.3 });
+        let (hind, fore) = (LegPose { swing: -0.95, knee: 1.5, ..Default::default() }, LegPose { swing: -0.7, knee: 1.3, ..Default::default() });
         r.legs = [hind, hind, fore, fore];
         r
     }
 
-    /// Eased towards `to`, as `rate` says, about the fraction of the way a second
-    fn ease(&mut self, to: &Rig, rate: f64, dt: f64) {
-        let k = 1.0 - (-rate * dt).exp();
-        let e = |a: &mut f64, b: f64| *a += (b - *a) * k;
-        e(&mut self.pitch, to.pitch);
-        e(&mut self.roll, to.roll);
-        for j in 0..3 {
-            e(&mut self.neck[j][0], to.neck[j][0]);
-            e(&mut self.neck[j][1], to.neck[j][1]);
+    /// All its sprung numbers in a row, see SPRUNG
+    fn flat(&self) -> [f64; SPRUNG] {
+        let mut v = [0.0; SPRUNG];
+        v[0] = self.pitch;
+        v[1] = self.roll;
+        v[2] = self.twist;
+        v[AT_SHIFT..AT_NECK].copy_from_slice(&self.shift);
+        for k in 0..3 {
+            v[AT_NECK + 2 * k..AT_NECK + 2 * k + 2].copy_from_slice(&self.neck[k]);
         }
-        e(&mut self.head[0], to.head[0]);
-        e(&mut self.head[1], to.head[1]);
-        e(&mut self.jaw, to.jaw);
-        for j in 0..4 {
-            e(&mut self.tail[j][0], to.tail[j][0]);
-            e(&mut self.tail[j][1], to.tail[j][1]);
+        v[AT_HEAD..AT_JAW].copy_from_slice(&self.head);
+        v[AT_JAW] = self.jaw;
+        for k in 0..4 {
+            v[AT_TAIL + 2 * k..AT_TAIL + 2 * k + 2].copy_from_slice(&self.tail[k]);
         }
-        for w in 0..2 {
-            let (a, b) = (&mut self.wings[w], to.wings[w]);
-            e(&mut a.flap, b.flap);
-            e(&mut a.sweep, b.sweep);
-            e(&mut a.twist, b.twist);
-            e(&mut a.fold, b.fold);
-            e(&mut a.bend, b.bend);
+        for (k, l) in self.legs.iter().enumerate() {
+            v[AT_LEGS + 5 * k..AT_LEGS + 5 * k + 5].copy_from_slice(&[l.swing, l.knee, l.plant, l.foot[0], l.foot[1]]);
         }
-        for l in 0..4 {
-            e(&mut self.legs[l].swing, to.legs[l].swing);
-            e(&mut self.legs[l].knee, to.legs[l].knee);
+        v
+    }
+
+    fn set_flat(&mut self, v: &[f64; SPRUNG]) {
+        (self.pitch, self.roll, self.twist) = (v[0], v[1], v[2]);
+        self.shift.copy_from_slice(&v[AT_SHIFT..AT_NECK]);
+        for k in 0..3 {
+            self.neck[k] = [v[AT_NECK + 2 * k], v[AT_NECK + 2 * k + 1]];
         }
+        self.head = [v[AT_HEAD], v[AT_HEAD + 1]];
+        self.jaw = v[AT_JAW];
+        for k in 0..4 {
+            self.tail[k] = [v[AT_TAIL + 2 * k], v[AT_TAIL + 2 * k + 1]];
+        }
+        for (k, l) in self.legs.iter_mut().enumerate() {
+            let at = AT_LEGS + 5 * k;
+            *l = LegPose { swing: v[at], knee: v[at + 1], plant: v[at + 2], foot: [v[at + 3], v[at + 4]] };
+        }
+    }
+}
+
+/// How quickly each of a rig's sprung numbers swings to where it's wanted, in radians a second at
+/// a drakeling's size, and how much it's damped, 1 to come to it without going past: the joints out
+/// along its neck and tail slower and looser than those near its body, so they swing after them
+fn springiness(i: usize) -> (f64, f64) {
+    match i {
+        0 | 1 => (6.5, 0.85),
+        2 => (8.0, 0.9),
+        AT_SHIFT..AT_NECK => (9.0, 0.8),
+        AT_NECK..AT_HEAD => (10.5 - 2.2 * ((i - AT_NECK) / 2) as f64, 0.62),
+        AT_HEAD..AT_JAW => (11.5, 0.72),
+        AT_JAW => (20.0, 1.0),
+        AT_TAIL..AT_LEGS => (7.5 - 1.2 * ((i - AT_TAIL) / 2) as f64, 0.5),
+        _ => (14.0, 1.0),
+    }
+}
+
+/// How much of the turning and heaving of what it hangs from each joint of its neck and tail is
+/// left behind by, swinging after it: none for the rest of it
+fn inertia(i: usize) -> f64 {
+    match i {
+        AT_NECK..AT_HEAD => 0.3 + 0.12 * ((i - AT_NECK) / 2) as f64,
+        AT_HEAD..AT_JAW => 0.35,
+        AT_JAW => 0.0,
+        AT_TAIL..AT_LEGS => 0.45 + 0.12 * ((i - AT_TAIL) / 2) as f64,
+        _ => 0.0,
     }
 }
 
@@ -955,16 +1233,29 @@ fn flip(v: Vector3<f64>) -> Vector3<f64> {
     Vector3::new(v.x, -v.y, v.z)
 }
 
+/// Where the middle of a dragon's body is drawn, its middle at `center` in voxels facing `yaw`, its
+/// body moved and turned as `rig` has it; and how it's turned
+fn body_frame(sp: &Spec, center: Vector3<f64>, yaw: f64, rig: &Rig, vpm: f64) -> (Vector3<f64>, UnitQuaternion<f64>) {
+    (center + rz(yaw) * Vector3::from(rig.shift) * sp.s * vpm, rz(yaw + rig.twist) * ry(-rig.pitch) * rx(rig.roll))
+}
+
+/// Where the hip of leg `leg` is on the body, in units: the hind left and right, then the fore
+fn hip_of(sp: &Spec, leg: usize) -> Vector3<f64> {
+    let joint = hip(sp, leg < 2);
+    if leg % 2 == 0 { joint } else { flip(joint) }
+}
+
 /// Where every piece of a dragon built as `sp` is, its body's middle at `center` in voxels facing
 /// `yaw`, its joints as `rig` has them; and where its mouth is and which way it breathes
 fn pose(sp: &Spec, center: Vector3<f64>, yaw: f64, rig: &Rig, vpm: f64, bones: &mut [Bone; BONES]) -> (Vector3<f64>, Vector3<f64>) {
     let m = sp.s * vpm;
-    let body = rz(yaw) * ry(-rig.pitch) * rx(rig.roll);
+    let (center, body) = body_frame(sp, center, yaw, rig, vpm);
     let world = |local: Vector3<f64>| center + body * local * m;
     bones[TORSO] = Bone { at: center, turn: body, shown: true };
-    // The neck, a joint at a time from the chest, then the head and its jaw
+    // The neck, a joint at a time from the chest, then the head and its jaw: not turned with the
+    // twist of its shoulders, so its head's held steady as it walks
     let mut at = world(neck_root(sp));
-    let mut turn = body;
+    let mut turn = body * rz(-rig.twist);
     for k in 0..3 {
         if k < sp.necks {
             turn *= rz(rig.neck[k][0]) * ry(-rig.neck[k][1]);
@@ -1005,20 +1296,19 @@ fn pose(sp: &Spec, center: Vector3<f64>, yaw: f64, rig: &Rig, vpm: f64, bones: &
         bones[WING + side * 2] = Bone { at: world(joint), turn: body * inner, shown: true };
         bones[WING + side * 2 + 1] = Bone { at: world(wrist_at), turn: body * outer, shown: true };
     }
-    // The legs: a stiff one's piece is the whole leg, made standing, so it turns from there
+    // The legs, each a thigh from the hip and a shin from the knee
     for leg in 0..4 {
         let hind = leg < 2;
         let shown = hind || sp.four;
         let l = rig.legs[leg];
-        let (stand, _) = if hind { STAND_HIND } else { STAND_FORE };
-        let thigh = if sp.stiff { ry(-(l.swing - stand)) } else { ry(-l.swing) };
+        let thigh = ry(-l.swing);
         let joint = hip(sp, hind);
         let (lt, _) = leg_lengths(hind);
-        let knee = joint + thigh * Vector3::new(0.04, 0.0, -lt);
+        let knee = joint + thigh * Vector3::new(KNEE_AHEAD, 0.0, -lt);
         let shin = thigh * ry(l.knee);
         let (thigh, shin, joint, knee) = if leg % 2 == 0 { (thigh, shin, joint, knee) } else { (mirrored(thigh), mirrored(shin), flip(joint), flip(knee)) };
         bones[THIGH + leg] = Bone { at: world(joint), turn: body * thigh, shown };
-        bones[SHIN + leg] = Bone { at: world(knee), turn: body * shin, shown: shown && !sp.stiff };
+        bones[SHIN + leg] = Bone { at: world(knee), turn: body * shin, shown };
     }
     (mouth, breath)
 }
@@ -1052,12 +1342,53 @@ fn limbs(sp: &Spec, bones: &[Bone; BONES], vpm: f64) -> Vec<(Vector3<f64>, Vecto
         if leg >= 2 && !sp.four {
             continue;
         }
-        let (lt, ls) = leg_lengths(leg < 2);
-        let b = bones[THIGH + leg];
-        let foot = if sp.stiff { b.at + b.turn * Vector3::new(0.0, 0.0, -(lt + ls) * 0.8) * m } else { bones[SHIN + leg].at + bones[SHIN + leg].turn * Vector3::new(0.0, 0.0, -ls) * m };
+        let (_, ls) = leg_lengths(leg < 2);
+        let (b, shin) = (bones[THIGH + leg], bones[SHIN + leg]);
+        let foot = shin.at + shin.turn * Vector3::new(0.0, 0.0, -ls) * m;
         out.push((b.at, foot, 0.12 * sp.girth * sp.s));
     }
     out
+}
+
+/// How far through a beat of its wings the downstroke takes, the rest bringing them back up
+const DOWNSTROKE: f64 = 0.42;
+
+/// How far up and down a wing beating is, 1 at the top of its beat and -1 at the bottom, `u` of
+/// the way through it from the top: quickly down, more slowly up
+fn stroke(u: f64) -> f64 {
+    if u < DOWNSTROKE { (PI * u / DOWNSTROKE).cos() } else { -(PI * (u - DOWNSTROKE) / (1.0 - DOWNSTROKE)).cos() }
+}
+
+/// How far through the downstroke a wing is, 0 to 1 and back to 0, and how far folded through the
+/// upstroke, the same, `u` of the way through its beat: folded most a little before half way up,
+/// and open again a moment before the top
+fn strokes(u: f64) -> (f64, f64) {
+    if u < DOWNSTROKE { ((PI * u / DOWNSTROKE).sin(), 0.0) } else { (0.0, (PI * ((u - DOWNSTROKE) / (0.95 - DOWNSTROKE)).min(1.0)).sin()) }
+}
+
+/// A wing held at `base` beating `amp` hard, `u` of the way through a beat from the top of it:
+/// driven down hard and spread wide, its leading edge tipped down into it and its tip lagging up,
+/// then folded at the wrist to bring it back up, the tip trailing down behind, and opened again at
+/// the top. The more `hover`, the further its beat swings forward and back, as it hangs in the air.
+fn beating(base: WingPose, amp: f64, hover: f64, u: f64) -> WingPose {
+    let c = stroke(u);
+    let (down, up) = strokes(u);
+    // Its upstroke's fold at its height in the middle of it, held a little longer than a sine
+    let up = up.powf(0.75);
+    WingPose {
+        flap: base.flap + amp * (0.95 * c + 0.06),
+        sweep: base.sweep + amp * (-0.14 * down + 0.45 * up + 0.5 * hover * c),
+        twist: base.twist + amp * (0.3 * down - 0.35 * up),
+        fold: base.fold + amp * 1.5 * up,
+        bend: base.bend + amp * (0.38 * down - 1.1 * up),
+    }
+}
+
+/// How high its body's carried by its wings, beating, -1 to 1, `u` of the way through a beat:
+/// lifted all through the downstroke, sinking as they come up again, a little behind them
+fn lift(u: f64) -> f64 {
+    let u = (u - 0.08).rem_euclid(1.0);
+    if u < DOWNSTROKE + 0.04 { -(PI * u / (DOWNSTROKE + 0.04)).cos() } else { (PI * (u - DOWNSTROKE - 0.04) / (0.96 - DOWNSTROKE)).cos() }
 }
 
 /// The point of the segment from `a` to `b` nearest the line out from `origin` along `dir`, which
@@ -1208,12 +1539,49 @@ const ANCIENT: [Skill; 13] = [
     skill(Gust, true, 8.0, 26.0, 12.0, 1.0, 0.6, 3, 1.0),
 ];
 
+/// A drake's: what drakes always did, snapping at what's close, breathing, spitting its element and
+/// calling it down out of the sky on whoever keeps their distance; lashing its tail and beating its
+/// wings at whoever crowds it; and now and then taking to the air to swoop, strafe and spit from it
+const DRAKE: [Skill; 10] = [
+    skill(Bite, false, 0.0, 3.6, 2.4, 0.6, 0.8, 0, 3.0),
+    skill(Tail, false, 0.0, 3.9, 6.0, 0.75, 0.9, 0, 1.2),
+    skill(Breath, false, 2.0, 10.0, 6.5, 0.8, 1.0, 0, 2.2),
+    skill(Gust, false, 0.0, 6.5, 10.0, 0.75, 0.6, 0, 0.8),
+    skill(Spit, false, 5.0, 35.0, 3.0, 0.6, 0.5, 0, 1.6),
+    skill(Rain, false, 10.0, 30.0, 9.0, 1.0, 0.9, 0, 1.3),
+    skill(Swoop, true, 6.0, 40.0, 6.0, 0.7, 0.4, 0, 2.0),
+    skill(Strafe, true, 7.0, 45.0, 9.0, 0.8, 0.5, 0, 2.2),
+    skill(Spit, true, 8.0, 40.0, 4.0, 0.7, 0.4, 0, 1.4),
+    skill(Rain, true, 0.0, 40.0, 12.0, 1.0, 0.6, 0, 0.8),
+];
+
+/// The Elder Cinder Wyrm's: a drake's, heavier, and stamping the ground open; once it's hurt
+/// roaring, falling on the player out of the sky and bringing the sky down, its fire falling all
+/// round them
+const ELDER: [Skill; 13] = [
+    skill(Bite, false, 0.0, 6.0, 2.4, 0.65, 0.8, 0, 2.5),
+    skill(Tail, false, 0.0, 7.0, 6.0, 0.85, 1.0, 0, 1.5),
+    skill(Breath, false, 3.0, 14.0, 6.5, 0.9, 1.0, 0, 2.2),
+    skill(Stomp, false, 0.0, 7.5, 7.0, 1.0, 1.2, 0, 2.0),
+    skill(Gust, false, 0.0, 10.0, 10.0, 0.85, 0.7, 0, 1.0),
+    skill(Spit, false, 6.0, 35.0, 3.0, 0.65, 0.5, 0, 1.4),
+    skill(Rain, false, 8.0, 35.0, 9.0, 1.0, 0.9, 0, 1.2),
+    skill(Roar, false, 0.0, 60.0, 24.0, 0.6, 0.4, 1, 1.0),
+    skill(Swoop, true, 8.0, 50.0, 6.0, 0.8, 0.4, 0, 2.0),
+    skill(Strafe, true, 10.0, 55.0, 8.0, 0.85, 0.5, 0, 2.5),
+    skill(Dive, true, 6.0, 50.0, 11.0, 1.2, 0.4, 1, 2.0),
+    skill(Rain, true, 0.0, 55.0, 14.0, 1.0, 0.6, 1, 2.5),
+    skill(Spit, true, 10.0, 50.0, 5.0, 0.75, 0.4, 0, 1.2),
+];
+
 fn skills(look: Look) -> &'static [Skill] {
     match look {
         Look::PyreMatriarch => &MATRIARCH,
         Look::CindermawTyrant => &TYRANT,
         Look::GildscaleHoardwarden => &WARDEN,
         Look::WorldpyreAncient => &ANCIENT,
+        Look::ElderWyrm => &ELDER,
+        _ if is_drake(look) => &DRAKE,
         _ => &DRAKELING,
     }
 }
@@ -1242,6 +1610,11 @@ fn budgets(look: Look, stage: u8) -> ([f64; 2], [f64; 2]) {
             2 => ([11.0, 14.0], [10.0, 12.0]),
             _ => ([9.0, 11.0], [8.0, 10.0]),
         },
+        // The elder wyrm takes to the air longer and more often the more it's hurt
+        Look::ElderWyrm if stage == 0 => ([6.0, 9.0], [12.0, 16.0]),
+        Look::ElderWyrm => ([8.0, 11.0], [10.0, 14.0]),
+        // A drake fights mostly on foot, and flies a while now and then
+        _ if is_drake(look) => ([5.0, 8.0], [12.0, 18.0]),
         _ => ([9.0, 14.0], [5.0, 8.0]),
     }
 }
@@ -1263,6 +1636,10 @@ fn flight(look: Look) -> Flight {
     match look {
         _ if is_drakeling(look) => Flight { cruise: 9.0, dash: 15.0, orbit: 11.0, altitude: 6.5, turn: 2.6, accel: 12.0, beat: 2.2 },
         Look::WorldpyreAncient => Flight { cruise: 15.0, dash: 26.0, orbit: 34.0, altitude: 20.0, turn: 0.8, accel: 8.0, beat: 0.7 },
+        Look::ElderWyrm => Flight { cruise: 12.0, dash: 21.0, orbit: 19.0, altitude: 12.0, turn: 1.3, accel: 9.0, beat: 1.15 },
+        // Long in the wing, quick through the air, its beats slow and deep
+        Look::StormDrake => Flight { cruise: 12.0, dash: 20.0, orbit: 17.0, altitude: 10.0, turn: 2.0, accel: 12.0, beat: 1.35 },
+        _ if is_drake(look) => Flight { cruise: 10.5, dash: 18.0, orbit: 15.0, altitude: 9.0, turn: 1.8, accel: 11.0, beat: 1.6 },
         _ => Flight { cruise: 12.0, dash: 22.0, orbit: 21.0, altitude: 13.0, turn: 1.2, accel: 9.0, beat: 1.1 },
     }
 }
@@ -1286,6 +1663,17 @@ fn power(look: Look) -> Power {
     match look {
         _ if is_drakeling(look) => Power { bite: 9.0, claw: 11.0, tail: 10.0, stomp: 0.0, crack: 0.0, breath: 16.0, ball: 10.0, rain: 0.0, gust: 4.0, push: 7.0 },
         Look::WorldpyreAncient => Power { bite: 34.0, claw: 32.0, tail: 36.0, stomp: 38.0, crack: 22.0, breath: 28.0, ball: 22.0, rain: 20.0, gust: 11.0, push: 12.0 },
+        // A raid boss's blows, a third again as hard as a drake's, as they always were
+        Look::ElderWyrm => Power { bite: 29.0, claw: 29.0, tail: 28.0, stomp: 30.0, crack: 16.0, breath: 24.0, ball: 24.0, rain: 18.0, gust: 9.0, push: 10.0 },
+        // As hard as a drake always hit: its jaws, its breath, frost worst of all, what it spits,
+        // venom the least, and what it calls down
+        _ if is_drake(look) => {
+            let e = element(look);
+            let breath = if e == Element::Frost { 28.0 } else { 22.0 };
+            let ball = if e == Element::Poison { 16.0 } else { 24.0 };
+            let rain = if e == Element::Frost { 13.0 } else { 16.0 };
+            Power { bite: 22.0, claw: 22.0, tail: 20.0, stomp: 0.0, crack: 0.0, breath, ball, rain, gust: 6.0, push: 8.0 }
+        }
         _ => Power { bite: 26.0, claw: 28.0, tail: 30.0, stomp: 32.0, crack: 18.0, breath: 24.0, ball: 18.0, rain: 17.0, gust: 9.0, push: 10.0 },
     }
 }
@@ -1296,7 +1684,32 @@ fn senses(look: Look) -> (f64, f64, f64) {
     match look {
         _ if is_drakeling(look) => (30.0, 60.0, 90.0),
         Look::WorldpyreAncient => (80.0, 180.0, 260.0),
+        Look::ElderWyrm => (34.0, 70.0, 90.0),
+        // A little further than the bosses on foot, as it can fly after them
+        _ if is_drake(look) => (28.0, 58.0, 72.0),
         _ => (55.0, 110.0, 160.0),
+    }
+}
+
+/// How long it goes on breathing, and how long it rains its element down and how often one falls,
+/// in seconds: the elder wyrm's rain once it's hurt is the sky brought down, a cataclysm
+fn breath_length(look: Look) -> f64 {
+    match look {
+        _ if is_drakeling(look) => 1.3,
+        Look::WorldpyreAncient => 2.6,
+        Look::ElderWyrm => 2.2,
+        _ if is_drake(look) => 1.8,
+        _ => 2.1,
+    }
+}
+
+fn rain_of(look: Look, stage: u8) -> (f64, f64) {
+    match look {
+        Look::WorldpyreAncient => (3.0, 0.13),
+        Look::ElderWyrm if stage >= 1 => (2.8, 0.15),
+        // A drake's storm: a few falling on and round the player
+        _ if is_drake(look) => (1.5, 0.22),
+        _ => (3.0, 0.18),
     }
 }
 
@@ -1307,8 +1720,8 @@ pub enum Act {
     /// Getting ready to make move `m`, heard as it does, its head at `at`
     Warn { m: Move, at: Vector3<f64> },
     /// A roar: on `first` turning on the player, going into the next phase of its fight, or calling
-    /// down `brood`, so many of them
-    Roar { at: Vector3<f64>, brood: Option<(Look, usize)>, first: bool },
+    /// down `brood`, so many of them; or a drake's as it's `angry`, hurt badly enough
+    Roar { at: Vector3<f64>, brood: Option<(Look, usize)>, first: bool, angry: bool },
     /// Jaws snapping shut on `at`, claws raking it as it swoops low, or its tail sweeping round it,
     /// hurting what's within `radius` meters for `damage`
     Bite { at: Vector3<f64>, radius: f64, damage: f64 },
@@ -1362,23 +1775,44 @@ enum State {
     Fall,
 }
 
-/// How its wings are going: where they're held between beats, how far they beat either way, and
-/// how many beats a second
+/// How its wings are going: where they're held between beats, how far they beat either way, how
+/// many beats a second, how far their beat swings forward and back as it hangs in the air, and how
+/// much quicker than they would they go from one way of being held to the next
 #[derive(Clone, Copy, Debug)]
 struct WingSet {
     base: WingPose,
     amp: f64,
     rate: f64,
+    hover: f64,
+    quick: f64,
 }
 
-/// Where it means to go this frame: what it's after, how fast, what to face, and whether it may
-/// come right down to the ground
+impl WingSet {
+    fn held(base: WingPose) -> WingSet {
+        WingSet { base, amp: 0.0, rate: 0.0, hover: 0.0, quick: 1.0 }
+    }
+
+    fn beating(base: WingPose, amp: f64, rate: f64) -> WingSet {
+        WingSet { base, amp, rate, hover: 0.0, quick: 1.0 }
+    }
+}
+
+/// Wings half raised off its back, mantled over it: as it rears to breathe, braced
+const MANTLED: WingPose = WingPose { flap: 0.42, sweep: 0.95, twist: -0.7, fold: 0.32, bend: -1.7 };
+/// Spread wide and raised high, as it roars or crouches to leap
+const RAISED: WingPose = WingPose { flap: 0.85, sweep: -0.05, twist: 0.05, fold: 0.05, bend: 0.18 };
+/// Swept back tight along its body, diving
+const TUCKED: WingPose = WingPose { flap: 0.45, sweep: 0.95, twist: 0.1, fold: 0.95, bend: -0.2 };
+
+/// Where it means to go this frame: what it's after, how fast, what to face, whether it may come
+/// right down to the ground, and whether it's only going about and may glide between beats
 #[derive(Clone, Copy)]
 struct Goal {
     to: Vector3<f64>,
     speed: f64,
     face: Option<Vector3<f64>>,
     low: bool,
+    cruise: bool,
 }
 
 pub struct Dragon {
@@ -1430,10 +1864,41 @@ pub struct Dragon {
     wander: Vector3<f64>,
     wander_wait: f64,
     rig: Rig,
+    /// How fast each of its sprung joints is swinging, see Rig::flat()
+    spin: [f64; SPRUNG],
     wings: WingSet,
-    /// How far through a beat of its wings and a stride of its legs it is, 0 to 1
+    /// How far through a beat of its wings and a stride of its legs it is, 0 to 1, and how many
+    /// meters a stride takes it
     beat: f64,
     stride: f64,
+    stride_length: f64,
+    /// How much it's walking, 0 standing to 1, and how fast it's going on the ground, in meters a
+    /// second
+    gait: f64,
+    pace: f64,
+    /// How far through a breath it is, standing about, 0 to 1
+    breathing: f64,
+    /// Where it's looking about, idle, turned to its left and up, and seconds till it looks
+    /// somewhere else
+    gaze: [f64; 2],
+    gaze_wait: f64,
+    /// Seconds it's still flinching from a heavy blow, and till it can again
+    flinch: f64,
+    flinch_wait: f64,
+    /// The move it made last, and how long it's getting over it all told, for how it does
+    last: Option<Move>,
+    spent_for: f64,
+    /// Seconds it's gliding on for before it beats its wings again, and beats it'll make then
+    glide: f64,
+    beats: f64,
+    /// Which side it falls onto as it dies, 1 or -1
+    side: f64,
+    /// The ground under the middle of it, in voxels
+    ground: f64,
+    /// How high its body was drawn last frame in meters, which way it was turned and how far
+    /// pitched, and how fast each was going, a little smoothed: for its neck and tail to swing
+    /// after it, see animate(). None till it's been drawn once where it is.
+    track: Option<([f64; 3], [f64; 3])>,
     bones: [Bone; BONES],
     mouth: Vector3<f64>,
     breath: Vector3<f64>,
@@ -1503,6 +1968,23 @@ fn flat(v: Vector3<f64>) -> Vector3<f64> {
     Vector3::new(v.x, v.y, 0.0)
 }
 
+/// Smoothly from 0 to 1 as `t` goes from 0 to 1, and quickly at first then slowing into it
+fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn ease_out(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
+/// A wing pose `f` of the way from `a` to `b`
+fn blend(a: WingPose, b: WingPose, f: f64) -> WingPose {
+    let m = |x: f64, y: f64| x + (y - x) * f;
+    WingPose { flap: m(a.flap, b.flap), sweep: m(a.sweep, b.sweep), twist: m(a.twist, b.twist), fold: m(a.fold, b.fold), bend: m(a.bend, b.bend) }
+}
+
 impl Dragon {
     /// A dragon standing with its feet at `at`, in voxels, facing `yaw`
     pub fn new(look: Look, at: Vector3<f64>, yaw: f64, seed: u32) -> Self {
@@ -1541,9 +2023,25 @@ impl Dragon {
             wander: at,
             wander_wait: 2.0,
             rig,
-            wings: WingSet { base: FOLDED, amp: 0.0, rate: 0.0 },
+            spin: [0.0; SPRUNG],
+            wings: WingSet::held(FOLDED),
             beat: 0.0,
             stride: 0.0,
+            stride_length: stride(look),
+            gait: 0.0,
+            pace: 0.0,
+            breathing: (seed % 100) as f64 / 100.0,
+            gaze: [0.0; 2],
+            gaze_wait: 1.0,
+            flinch: 0.0,
+            flinch_wait: 0.0,
+            last: None,
+            spent_for: 1.0,
+            glide: 0.0,
+            beats: 2.0,
+            side: if seed % 3 == 0 { 1.0 } else { -1.0 },
+            ground: at.z,
+            track: None,
             bones: [Bone::default(); BONES],
             mouth: at,
             breath: Vector3::x(),
@@ -1575,6 +2073,9 @@ impl Dragon {
         self.wander -= shift;
         self.mouth -= shift;
         self.focus -= shift;
+        self.ground -= shift.z;
+        // Not seen as a leap up or down by its neck and tail
+        self.track = None;
         for b in &mut self.bones {
             b.at -= shift;
         }
@@ -1590,8 +2091,10 @@ impl Dragon {
         let way = flat(toward - at).try_normalize(1e-6).unwrap_or_else(Vector3::x);
         self.yaw = way.y.atan2(way.x);
         self.velocity = way * flight(self.look).cruise * vpm;
-        self.wings = WingSet { base: SPREAD, amp: 0.6, rate: flight(self.look).beat };
+        self.wings = WingSet::beating(SPREAD, 0.72, flight(self.look).beat);
         self.rig = Rig::flying();
+        self.spin = [0.0; SPRUNG];
+        self.track = None;
         self.budget = 10.0;
         self.next = 2.0 + self.roll() * 2.0;
     }
@@ -1632,13 +2135,13 @@ impl Dragon {
     }
 }
 
-/// Whether a dragon that's been killed is still falling out of the sky, or lying where it fell, so
-/// it's not to be taken away yet, see Game::reap()
+/// Whether a dragon that's been killed is still falling out of the sky, or crumpling and lying
+/// where it fell, so it's not to be taken away yet, see Game::reap()
 pub fn dying(a: &Animal) -> bool {
     let Some(d) = &a.dragon else {
         return false;
     };
-    let lie = if is_drakeling(a.look) { 1.4 } else { 2.6 };
+    let lie = if is_drakeling(a.look) { 2.2 } else { 3.6 };
     a.health <= 0.0 && d.dead.is_none_or(|t| t < lie)
 }
 
@@ -1660,6 +2163,25 @@ struct Here<'a> {
 /// someone stood where they were put, to be seen flying and fighting
 pub static SHOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// For looking at them too, see `--set dragon_move=breath` in main.rs: the one move every dragon
+/// makes, as soon as it's ready, from wherever it is; its number among Move::ALL and one, or none
+pub static FORCED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Move {
+    /// Every move, in the order they're numbered
+    pub const ALL: [Move; MOVES] = [Bite, Tail, Breath, Gust, Stomp, Roar, Swoop, Strafe, Hover, Spit, Dive, Rain];
+
+    /// The move called `name`, as it's written here, `breath` or `Swoop`
+    pub fn named(name: &str) -> Option<Move> {
+        Move::ALL.into_iter().find(|m| format!("{m:?}").eq_ignore_ascii_case(name))
+    }
+}
+
+fn forced() -> Option<Move> {
+    let n = FORCED.load(std::sync::atomic::Ordering::Relaxed);
+    (n > 0).then(|| Move::ALL[(n - 1).min(MOVES - 1)])
+}
+
 /// What a dragon does this frame, see the top of this file
 pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
     let vpm = world.voxels_per_meter as f64;
@@ -1676,16 +2198,23 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
         d.placed = true;
         d.center = a.position + Vector3::new(0.0, 0.0, here.stand);
         d.wander = a.position;
+        d.ground = a.position.z;
     }
     d.clock += dt;
     for c in &mut d.cool {
         *c -= here.dt;
     }
     d.reeled -= dt;
-    // How hard it's been hit lately
+    // How hard it's been hit lately, and whether this blow was hard enough to make it flinch
     let lost = (d.health - a.health).max(0.0);
     d.health = a.health;
     d.recent = d.recent * (-dt / 1.5).exp() + lost;
+    d.flinch = (d.flinch - here.dt).max(0.0);
+    d.flinch_wait -= here.dt;
+    let heavy = a.max_health * if is_drakeling(look) { 0.07 } else if is_drake(look) { 0.018 } else { 0.006 };
+    if lost > heavy && a.health > 0.0 && d.flinch_wait <= 0.0 {
+        flinch(d, (lost / heavy).min(3.0));
+    }
     // Thrown back by a blow, sliding to a stop, or knocked about in the air
     let push = a.status.push * dt;
     if push.norm() > 1e-3 {
@@ -1693,9 +2222,9 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
     }
     a.status.push *= (-6.0 * dt).exp();
 
-    let mut goal = Goal { to: d.center, speed: 0.0, face: None, low: false };
+    let mut goal = Goal { to: d.center, speed: 0.0, face: None, low: false, cruise: false };
     let mut want = if d.airborne { Rig::flying() } else { Rig::standing(&sp) };
-    let mut wings = if d.airborne { WingSet { base: SPREAD, amp: 0.55, rate: flight(look).beat } } else { WingSet { base: FOLDED, amp: 0.0, rate: 0.0 } };
+    let mut wings = if d.airborne { WingSet::beating(SPREAD, 0.72, flight(look).beat) } else { WingSet::held(FOLDED) };
 
     // Healed whole again as it was falling, as when the player dies: up again
     if a.health > 0.0 && d.state == State::Fall {
@@ -1713,12 +2242,12 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
         think(a, d, &mut boss, &here, &mut goal, &mut want, &mut wings);
     }
     if pace > 0.0 || a.health <= 0.0 || d.airborne {
-        travel(d, &here, &goal, &mut want);
+        travel(d, &here, &goal, &mut want, &mut wings);
     }
     let beat = d.beat;
     animate(d, &here, &want, &wings, a.health <= 0.0);
     // Each downstroke of its wings heard as it starts
-    if d.airborne && d.wings.amp > 0.3 && beat < 0.25 && d.beat >= 0.25 {
+    if d.airborne && d.wings.amp > 0.3 && beat < 0.06 && d.beat >= 0.06 {
         act_out(&mut boss, Act::Wingbeat { at: d.center, size: sp.s });
     }
     // As an animal: its feet under the middle of its body, facing the way it faces
@@ -1750,6 +2279,25 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
 /// `--set dragon_trace=1`: what each dragon's doing, twice a second
 pub static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Struck hard, `how` many times harder than it takes: its head and neck thrown back and aside, its
+/// body jolted, its jaw thrown open with a cry and its wings jerking half open, for a moment
+fn flinch(d: &mut Dragon, how: f64) {
+    let side = if d.roll() < 0.5 { 1.0 } else { -1.0 };
+    let k = how.sqrt().min(1.6);
+    d.flinch = 0.45;
+    d.flinch_wait = 0.7;
+    d.spin[0] += 1.4 * k;
+    d.spin[1] += side * 1.2 * k;
+    d.spin[AT_SHIFT] -= 0.9 * k;
+    d.spin[AT_NECK] += side * 2.5 * k;
+    d.spin[AT_NECK + 1] += 3.5 * k;
+    d.spin[AT_HEAD] -= side * 3.0 * k;
+    d.spin[AT_HEAD + 1] += 4.0 * k;
+    for j in 0..4 {
+        d.spin[AT_TAIL + 2 * j] += side * (1.5 + j as f64) * k;
+    }
+}
+
 /// Noticing the player, going after them, giving up on them, and going into the next phase of its
 /// fight as it's hurt
 fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
@@ -1772,9 +2320,10 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
     // rested, see Boss::provoke()
     if boss.engaged && d.state == State::Rest && h.feet.is_some() && (boss.raider || distance < give_up) {
         d.next = 0.8 + d.roll() * 1.2;
-        let roar = Act::Roar { at: d.mouth, brood: None, first: true };
+        let roar = Act::Roar { at: d.mouth, brood: None, first: true, angry: false };
         boss.deeds.push(Deed::Dragon(roar));
-        // A drakeling on the ground takes off unless they're right by it; a great one roars first
+        // A drakeling on the ground takes off unless they're right by it; a great one or a drake
+        // rears up and roars first
         d.state = if d.airborne || (is_drakeling(h.look) && distance < 5.0) {
             State::Hunt
         } else if is_drakeling(h.look) {
@@ -1797,10 +2346,14 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
         d.state = State::Rest;
         d.skill = None;
     }
+    let busy = matches!(d.state, State::Do(..) | State::Reel(_) | State::Fall);
     // A great one going into the next phase of its fight: roaring, calling its brood, and in the
-    // last of them quicker about everything
+    // last of them quicker about everything, and still so if it's turned on the player again
     let marks = phases(h.look);
-    if boss.engaged && (boss.stage as usize) < marks.len() && a.vitality() < marks[boss.stage as usize] && !matches!(d.state, State::Do(..) | State::Reel(_) | State::Fall) {
+    if boss.engaged && !marks.is_empty() && boss.stage as usize >= marks.len() {
+        boss.enraged = true;
+    }
+    if boss.engaged && (boss.stage as usize) < marks.len() && a.vitality() < marks[boss.stage as usize] && !busy {
         boss.stage += 1;
         boss.enraged = boss.stage as usize >= marks.len();
         d.stage = boss.stage;
@@ -1816,6 +2369,12 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
         d.aloft = 0.0;
         d.budget = pick_budget(d, h, !d.airborne);
     }
+    // A drake hurt badly enough rears up and roars, enraged, and is quicker about everything after,
+    // as every boss of its kind is
+    if boss.engaged && is_drake(h.look) && marks.is_empty() && !boss.enraged && a.vitality() < 0.5 && !busy {
+        boss.enraged = true;
+        begin(d, h, Roar, true);
+    }
 }
 
 /// How long it means to keep to the air, or the ground, from now
@@ -1827,6 +2386,10 @@ fn pick_budget(d: &mut Dragon, h: &Here, air: bool) -> f64 {
 
 /// What it can do from where it is, if anything's ready, picked by how likely each is
 fn choose(d: &mut Dragon, h: &Here, stage: u8, distance: f64) -> Option<Skill> {
+    // Made to make the one move, for looking at it, wherever the player is
+    if let Some(m) = forced() {
+        return skills(h.look).iter().copied().find(|s| s.m == m && s.air == d.airborne && d.cool[m as usize] <= 0.0);
+    }
     let ready: Vec<Skill> = skills(h.look).iter().copied().filter(|s| s.air == d.airborne && s.stage <= stage && d.cool[s.m as usize] <= 0.0 && (s.near..s.far).contains(&distance)).collect();
     let total: f64 = ready.iter().map(|s| s.weight).sum();
     if total <= 0.0 {
@@ -1904,6 +2467,13 @@ fn begin_landing(d: &mut Dragon, h: &Here) {
     }
 }
 
+/// Whether there's open sky over it to take off into, high enough to fly about in: not under a
+/// roof, a cave's or a ruin's
+fn open_sky(d: &Dragon, h: &Here) -> bool {
+    let up = flight(h.look).altitude * 0.8 * h.vpm;
+    clear_between(h.world, d.center, d.center + Vector3::new(0.0, 0.0, up))
+}
+
 /// Whether it's the Worldpyre Ancient fighting the player in its arena, see
 /// worldgen\dragonlair.rs: its lair's a finale's, and the player's in it, `feet` being where
 fn in_arena(h: &Here, boss: &Boss, feet: Vector3<f64>) -> bool {
@@ -1923,13 +2493,13 @@ fn act_out(boss: &mut Boss, act: Act) {
     boss.deeds.push(Deed::Dragon(act));
 }
 
-/// Its head turned towards `at`, its neck sharing the turn, as far as they go
-fn look_at(d: &Dragon, h: &Here, want: &mut Rig, at: Vector3<f64>) {
+/// Its head turned `how` far towards `at`, its neck sharing the turn, as far as they go
+fn look_at(d: &Dragon, h: &Here, want: &mut Rig, at: Vector3<f64>, how: f64) {
     let neck = d.bones[NECK].at;
     let body = rz(d.yaw);
     let local = body.inverse() * (at - neck);
-    let yaw = local.y.atan2(local.x).clamp(-1.3, 1.3);
-    let pitch = (local.z.atan2(flat(local).norm()) - 0.1).clamp(-0.9, 0.6);
+    let yaw = local.y.atan2(local.x).clamp(-1.3, 1.3) * how;
+    let pitch = (local.z.atan2(flat(local).norm()) - 0.1).clamp(-0.9, 0.6) * how;
     let n = h.sp.necks as f64;
     for k in 0..h.sp.necks {
         want.neck[k][0] += yaw * 0.55 / n;
@@ -1937,6 +2507,60 @@ fn look_at(d: &Dragon, h: &Here, want: &mut Rig, at: Vector3<f64>) {
     want.head[0] += yaw * 0.45;
     want.head[1] += pitch * 0.7;
     want.neck[0][1] += pitch * 0.3;
+}
+
+/// Its neck drawn back into an S, `back` of the way, to strike: its root raised, the rest bent back
+/// down over it, the head drawn in and tipped down at what it'll strike
+fn coil(want: &mut Rig, sp: &Spec, back: f64) {
+    let n = sp.necks;
+    want.neck[0][1] += 0.6 * back;
+    for k in 1..n {
+        want.neck[k][1] -= 1.1 * back / (n - 1) as f64;
+    }
+    if n == 1 {
+        want.head[1] -= 0.4 * back;
+    }
+    want.head[1] -= 0.05 * back;
+    want.shift[0] -= 0.12 * back;
+    want.pitch += 0.06 * back;
+}
+
+/// Its neck thrust straight out ahead and a little down, `out` of the way, as it strikes, its body
+/// lurching after it
+fn thrust(want: &mut Rig, sp: &Spec, out: f64) {
+    let n = sp.necks;
+    want.neck[0][1] -= 0.6 * out;
+    for k in 1..n {
+        want.neck[k][1] += 0.5 * out / (n - 1) as f64;
+    }
+    want.head[1] += 0.18 * out;
+    want.shift[0] += 0.2 * out;
+    want.pitch -= 0.05 * out;
+}
+
+/// Reared up, `up` of the way, as to breathe or roar: its front lifted, its weight back, its neck
+/// raised high and its head tipped back
+fn rear(want: &mut Rig, sp: &Spec, up: f64) {
+    want.pitch += 0.22 * up;
+    want.shift[0] -= 0.08 * up;
+    want.shift[2] += 0.04 * up;
+    want.neck[0][1] += 0.35 * up;
+    for k in 1..sp.necks {
+        want.neck[k][1] += 0.08 * up;
+    }
+    want.head[1] += 0.4 * up;
+    // Its tail lifted as its front comes up, so it's not driven into the ground
+    want.tail[0][1] += 0.2 * up;
+}
+
+/// Its legs as they're held: all four planted, or `fore` lifted off the ground, held as `pose`
+fn lift_fore(want: &mut Rig, how: f64, pose: LegPose) {
+    for leg in 2..4 {
+        let l = &mut want.legs[leg];
+        l.plant *= 1.0 - how;
+        l.swing += (pose.swing - l.swing) * how;
+        l.knee += (pose.knee - l.knee) * how;
+    }
 }
 
 /// The size of its blows, in meters: how far round a bite and a claw hurt, how far its tail
@@ -1956,11 +2580,13 @@ fn bite_reach(sp: &Spec) -> f64 {
 fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut Goal, want: &mut Rig, wings: &mut WingSet) {
     let vpm = h.vpm;
     let s = h.sp.s;
+    let sp = h.sp;
     let fl = flight(h.look);
     let pw = power(h.look);
     let (bite_r, claw_r, tail_r, stomp_r, gust_r) = reaches(&h.sp);
     let feet = h.feet.unwrap_or(boss.home);
     let ground_here = ground_of(h, d.center);
+    d.ground = ground_here;
     let distance = flat(feet - d.center).norm() / vpm;
     let forward = Vector3::new(d.yaw.cos(), d.yaw.sin(), 0.0);
     let k = s.sqrt();
@@ -1971,6 +2597,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 // Back home, and down
                 goal.to = boss.home + Vector3::new(0.0, 0.0, (6.0 * k) * vpm + h.stand);
                 goal.speed = fl.cruise * 0.7;
+                goal.cruise = true;
                 if flat(d.center - boss.home).norm() < 4.0 * k * vpm {
                     d.aim = boss.home;
                     d.state = State::Alight(0.0);
@@ -1991,11 +2618,26 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     goal.speed = speeds(h.look).0;
                 }
                 // Left somewhere it can't walk home from, in water or hemmed in: it flies home
-                if d.blocked > 3.0 && flat(d.center - boss.home).norm() > 6.0 * k * vpm {
+                if d.blocked > 3.0 && flat(d.center - boss.home).norm() > 6.0 * k * vpm && open_sky(d, h) {
                     d.state = State::Rise(0.0);
                 }
-                want.head[0] += 0.5 * (d.clock * 0.37 + a.id as f64).sin();
-                want.neck[0][1] += 0.06 * (d.clock * 1.1).sin();
+                // Looking about, now here, now there; and warily at the player, if they're near
+                d.gaze_wait -= h.dt;
+                if d.gaze_wait <= 0.0 {
+                    d.gaze_wait = 1.8 + 3.5 * d.roll();
+                    d.gaze = [(d.roll() - 0.5) * 1.8, (d.roll() - 0.4) * 0.5];
+                }
+                let near = h.feet.filter(|f| flat(f - d.center).norm() < senses(h.look).0 * 1.5 * vpm);
+                match near {
+                    Some(f) => look_at(d, h, want, f + Vector3::new(0.0, 0.0, 1.2 * vpm), 0.8),
+                    None => {
+                        for j in 0..sp.necks {
+                            want.neck[j][0] += d.gaze[0] * 0.5 / sp.necks as f64;
+                        }
+                        want.head[0] += d.gaze[0] * 0.5;
+                        want.head[1] += d.gaze[1];
+                    }
+                }
             }
         }
         State::Hunt => {
@@ -2005,14 +2647,20 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 // round its arena, over the player in it, see worldgen\dragonlair.rs
                 let arena = crate::worldgen::DRAGON_ARENA_FLOOR as f64;
                 let (middle, orbit) = if in_arena(h, boss, feet) { (Vector3::new(boss.home.x, boss.home.y, feet.z), arena * 0.75) } else { (feet, fl.orbit) };
-                d.orbit += d.round * fl.cruise / orbit * h.dt;
+                // Making for a point a little way on round the circle from where it is, so it flies
+                // round it smoothly at full speed, banked into the turn
+                let from = flat(d.center - middle);
+                d.orbit = from.y.atan2(from.x) + d.round * 0.6;
                 let round = Vector3::new(d.orbit.cos(), d.orbit.sin(), 0.0) * orbit * vpm;
                 let at = middle + round;
                 goal.to = Vector3::new(at.x, at.y, ground_of(h, feet).max(ground_here) + fl.altitude * vpm);
                 goal.speed = fl.cruise;
+                goal.cruise = true;
                 if distance > fl.orbit * 2.0 {
                     goal.to = feet + Vector3::new(0.0, 0.0, fl.altitude * vpm);
                 }
+                // Its head turned to keep the player in sight as it goes round
+                look_at(d, h, want, feet, 0.45);
                 d.next -= h.dt;
                 if d.next <= 0.0 && boss.engaged {
                     if let Some(skill) = choose(d, h, stage, distance) {
@@ -2023,48 +2671,74 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     begin_landing(d, h);
                 }
             } else {
-                // On foot: up to the player, facing them, then whatever's in reach
+                // On foot: up to the player, facing them, low and stalking, then whatever's in reach
                 let close = bite_reach(&h.sp) * 0.85;
                 goal.face = Some(feet);
                 if distance > close {
                     goal.to = feet;
                     goal.speed = if distance > close + 4.0 * k { speeds(h.look).1 } else { speeds(h.look).0 };
                 }
-                look_at(d, h, want, feet + Vector3::new(0.0, 0.0, 1.2 * vpm));
+                look_at(d, h, want, feet + Vector3::new(0.0, 0.0, 1.2 * vpm), 1.0);
+                // Head held low and forward, its wings a little open, menacing
+                want.neck[0][1] -= 0.12;
+                want.head[1] += 0.05;
+                want.shift[2] -= 0.03;
+                *wings = WingSet::held(blend(FOLDED, MANTLED, 0.25));
                 let facing = turn_to(d.yaw, flat(feet - d.center).y.atan2(flat(feet - d.center).x)).abs() < 0.6;
                 d.next -= h.dt;
-                if d.next <= 0.0 && facing && boss.engaged {
+                if d.next <= 0.0 && (facing || forced().is_some()) && boss.engaged {
                     if let Some(skill) = choose(d, h, stage, distance) {
                         begin(d, h, skill.m, false);
                     }
                 }
-                // Up again once it's had enough of the ground, or the player's out of reach
+                // Up again once it's had enough of the ground, or the player's out of reach, if
+                // there's open sky over it
                 let unreachable = (feet.z - ground_here).abs() > 3.5 * vpm || d.blocked > 1.5;
                 if matches!(d.state, State::Hunt) && (d.aloft > d.budget || unreachable || distance > 18.0 * k) {
-                    d.state = State::Rise(0.0);
+                    if open_sky(d, h) {
+                        d.state = State::Rise(0.0);
+                    } else {
+                        d.aloft = 0.0;
+                        d.budget = pick_budget(d, h, false);
+                    }
                 }
             }
         }
         State::Rise(t) => {
-            let crouch = 0.3 * k;
-            // Crouching, wings spread and raised, then springing up into the air beating them hard
-            *wings = WingSet { base: WingPose { flap: 0.9, sweep: -0.1, twist: 0.1, fold: 0.15, bend: 0.2 }, amp: 0.2, rate: 0.6 * fl.beat };
+            // Crouching low, its wings raised high and spread, looking up; then springing up into
+            // the air with a great downstroke, its legs pushing off, and climbing hard
+            let crouch = 0.65 * k.sqrt();
             if t < crouch {
-                for leg in &mut want.legs {
-                    leg.knee += 0.5;
-                    leg.swing += 0.2;
-                }
-                want.pitch += 0.15;
+                // Down into the crouch, and held there a moment, gathering itself
+                let p = ease(t / (crouch * 0.6));
+                want.shift[2] -= 0.24 * p;
+                want.shift[0] -= 0.05 * p;
+                want.pitch += 0.1 * p;
+                want.neck[0][1] -= 0.15 * p;
+                want.head[1] += 0.35 * p;
+                want.tail[0][1] += 0.2 * p;
+                *wings = WingSet { quick: 2.2, ..WingSet::held(WingPose { flap: 1.15, sweep: -0.15, twist: 0.15, fold: 0.05, bend: 0.2 }) };
                 goal.face = h.feet;
             } else {
                 if !d.airborne {
                     d.airborne = true;
                     d.blocked = 0.0;
                     d.velocity = Vector3::new(forward.x, forward.y, 0.0) * 2.0 * vpm + Vector3::new(0.0, 0.0, 6.5 * k.powf(0.4) * vpm);
+                    // Its first downstroke as it leaves the ground, its body flung up out of the
+                    // crouch
+                    d.beat = 0.0;
+                    d.spin[AT_SHIFT + 2] += 3.0;
                     act_out(boss, Act::TakeOff { at: d.center - Vector3::new(0.0, 0.0, h.stand), size: s });
                 }
-                *wings = WingSet { base: WingPose { flap: 0.25, sweep: 0.05, twist: 0.1, fold: 0.05, bend: 0.1 }, amp: 0.85, rate: fl.beat * 1.6 };
-                goal.to = d.center + forward * 3.0 * vpm + Vector3::new(0.0, 0.0, 8.0 * vpm);
+                *wings = WingSet { base: WingPose { flap: 0.25, sweep: 0.05, twist: 0.1, fold: 0.05, bend: 0.1 }, amp: 0.95, rate: fl.beat * 1.5, hover: 0.25, quick: 2.0 };
+                want.pitch += 0.18;
+                // Its legs straight down, pushing off, then drawn up
+                if t < crouch + 0.35 * k.sqrt() {
+                    for leg in &mut want.legs {
+                        *leg = LegPose { swing: 0.15, knee: 0.2, ..Default::default() };
+                    }
+                }
+                goal.to = d.center + forward * 7.0 * vpm + Vector3::new(0.0, 0.0, 6.0 * vpm);
                 goal.speed = fl.cruise * 0.6;
             }
             let height = (d.center.z - ground_here) / vpm;
@@ -2078,23 +2752,28 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             };
         }
         State::Alight(t) => {
-            // Down to the spot picked, flaring its wings to slow itself, legs out to land
+            // Gliding in down to the spot picked, then flaring, its body tipped up and its wings
+            // beating forward to stop it; hanging over the spot a moment, its legs reaching down for
+            // the ground, its tail low; then down
             let spot = d.aim;
             let over = flat(spot - d.center).norm() / vpm;
             let height = (d.center.z - spot.z - h.stand) / vpm;
-            // Gliding down as it comes in, then straight down onto it
             let up = if over > 3.0 * k { height.min(over * 0.5).max(0.0) } else { 0.0 };
             goal.to = Vector3::new(spot.x, spot.y, spot.z + h.stand + up * vpm);
-            goal.speed = if over > 3.0 * k { fl.cruise * 0.75 } else { 3.5 * k };
+            goal.speed = if over > 3.0 * k { fl.cruise * 0.75 } else { (1.2 + 1.2 * height.min(3.0)) * k };
             goal.low = true;
+            goal.cruise = over > 9.0 * k;
             goal.face = Some(h.feet.unwrap_or(spot + forward * vpm));
-            if over < 6.0 * k {
-                // Flaring
-                *wings = WingSet { base: WingPose { flap: 0.35, sweep: -0.35, twist: -0.4, fold: 0.2, bend: 0.25 }, amp: 0.7, rate: fl.beat * 1.4 };
-                want.pitch += 0.35;
+            if over < 7.0 * k {
+                let flare = ease((7.0 * k - over) / (4.0 * k));
+                *wings = WingSet { base: blend(SPREAD, WingPose { flap: 0.35, sweep: -0.3, twist: -0.4, fold: 0.15, bend: 0.25 }, flare), amp: 0.55 + 0.3 * flare, rate: fl.beat * (1.0 + 0.35 * flare), hover: 0.8 * flare, quick: 1.6 };
+                want.pitch += 0.5 * flare;
+                want.tail[0][1] -= 0.35 * flare;
+                want.neck[0][1] += 0.2 * flare;
+                // Its feet reaching for the ground, planting as they find it
+                let reach = ease(1.0 - (height / (1.3 * s)).clamp(0.0, 1.0));
                 for leg in &mut want.legs {
-                    leg.swing = 0.6;
-                    leg.knee = 0.6;
+                    *leg = LegPose { swing: 0.45, knee: 0.35, plant: reach * flare, foot: [0.08, 0.0] };
                 }
             }
             if (over < 1.5 * k && height <= 0.15 * s) || t > 7.0 {
@@ -2102,9 +2781,13 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 d.velocity = Vector3::zeros();
                 d.center.z = spot.z + h.stand;
                 act_out(boss, Act::Land { at: Vector3::new(d.center.x, d.center.y, spot.z), size: s });
+                // Coming down on its legs, its knees giving under it
+                d.spin[AT_SHIFT + 2] -= 1.6;
                 d.aloft = 0.0;
                 d.budget = pick_budget(d, h, false);
-                d.state = if boss.engaged { State::Spent(0.35 * k) } else { State::Rest };
+                d.last = None;
+                d.spent_for = 0.45 * k;
+                d.state = if boss.engaged { State::Spent(0.45 * k) } else { State::Rest };
             } else {
                 d.state = State::Alight(t + h.dt);
             }
@@ -2114,36 +2797,48 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             let wind = skill.wind * k.powf(0.3) * h.quick.max(0.8);
             let toward = flat(feet - d.center).try_normalize(1e-6).unwrap_or(forward);
             let mut t = t;
+            let p = (t / wind).min(1.0);
             match m {
                 Bite => {
                     goal.face = Some(feet);
-                    // Rearing its head back to snap
-                    want.neck[0][1] += 0.3;
-                    want.head[1] += 0.25;
-                    want.jaw = 0.25 * t / wind;
+                    // Its neck drawn back into an S, crouching a little, its jaws parting
+                    look_at(d, h, want, feet + Vector3::new(0.0, 0.0, 0.8 * vpm), 1.0);
+                    coil(want, &sp, ease(p));
+                    want.shift[2] -= 0.04 * p;
+                    want.pitch += 0.04 * p;
+                    want.jaw = 0.15 + 0.2 * p;
                     let at = d.center + forward * bite_reach(&h.sp) * vpm;
                     mark(boss, Vector3::new(at.x, at.y, ground_of(h, at)), bite_r, 1.0 - t / wind);
                 }
                 Tail => {
-                    // Coiling away the way it'll spin, its tail raised, looking back over its
-                    // shoulder; the ring round it where the tail will sweep
+                    // Coiling away the way it'll spin, crouched, its tail raised and curled round
+                    // the other way, looking back over its shoulder; the ring round it where the
+                    // tail will sweep
                     let away = toward.y.atan2(toward.x) - d.sweep * 0.6;
                     goal.face = Some(d.center + Vector3::new(away.cos(), away.sin(), 0.0) * vpm);
-                    want.tail[0][1] += 0.5;
-                    for j in 1..4 {
-                        want.tail[j][1] += 0.12;
-                        want.tail[j][0] += d.sweep * 0.25;
+                    let e = ease(p);
+                    want.shift[2] -= 0.06 * e;
+                    want.roll -= d.sweep * 0.06 * e;
+                    want.tail[0][1] += 0.4 * e;
+                    for j in 0..4 {
+                        want.tail[j][1] += 0.08 * e;
+                        want.tail[j][0] += d.sweep * 0.32 * e;
                     }
-                    want.head[0] -= d.sweep * 0.8;
+                    for j in 0..sp.necks {
+                        want.neck[j][0] -= d.sweep * 0.25 * e;
+                    }
+                    want.head[0] -= d.sweep * 0.7 * e;
                     let ground = Vector3::new(d.center.x, d.center.y, ground_here);
                     mark(boss, ground, tail_r + 0.4, 1.0 - t / wind);
                 }
                 Breath => {
                     goal.face = Some(feet);
-                    // Rearing up, fire gathering in its throat
-                    want.neck[0][1] += 0.35;
-                    want.head[1] += 0.35;
-                    want.jaw = 0.45 * t / wind;
+                    // Rearing up, its weight back and its wings mantled over it, fire gathering in
+                    // its throat as its jaws part
+                    let e = ease(p);
+                    rear(want, &sp, e);
+                    want.jaw = 0.12 + 0.38 * p;
+                    *wings = WingSet::held(blend(FOLDED, MANTLED, e));
                     if (d.clock * 12.0).fract() < h.dt * 12.0 {
                         act_out(boss, Act::Kindle { at: d.mouth, size: s });
                     }
@@ -2158,13 +2853,21 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 }
                 Gust => {
                     goal.face = Some(feet);
-                    // Wings raised high and spread forward, rearing
-                    *wings = WingSet { base: WingPose { flap: 1.25, sweep: -0.3, twist: 0.2, fold: 0.15, bend: 0.35 }, amp: 0.05, rate: 1.0 };
-                    want.pitch += 0.25;
+                    // Rearing up off its forefeet, its wings raised high and spread forward, its
+                    // neck drawn back
+                    let e = ease(p);
+                    *wings = WingSet { base: blend(MANTLED, WingPose { flap: 1.3, sweep: -0.35, twist: 0.25, fold: 0.08, bend: 0.4 }, e), amp: 0.04, rate: 1.0, hover: 0.0, quick: 1.8 };
                     if d.airborne {
                         goal.to = d.center;
                         goal.speed = 2.0;
+                        want.pitch += 0.35 * e;
+                    } else {
+                        want.pitch += (if sp.four { 0.32 } else { 0.18 }) * e;
+                        want.shift[0] -= 0.06 * e;
+                        lift_fore(want, e, LegPose { swing: 0.9, knee: 1.0, ..Default::default() });
                     }
+                    want.neck[0][1] += 0.25 * e;
+                    want.head[1] -= 0.25 * e;
                     let ground = Vector3::new(d.center.x, d.center.y, ground_here);
                     for j in 1..4 {
                         let p = ground + forward * gust_r * (j as f64 / 3.5) * vpm;
@@ -2173,11 +2876,19 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 }
                 Stomp => {
                     goal.face = Some(feet);
-                    // Rearing up on its hind legs, its forefeet raised
-                    want.pitch += 0.45;
-                    want.legs[2] = LegPose { swing: 1.1, knee: 0.4 };
-                    want.legs[3] = LegPose { swing: 1.1, knee: 0.4 };
-                    want.neck[0][1] += 0.2;
+                    // Rearing up high on its hind legs, its forefeet raised and clawing, its wings
+                    // half spread to balance it, its tail down behind, shaking with the strain of
+                    // it at the top
+                    let e = ease(p);
+                    want.pitch += 0.52 * e + 0.02 * (t * 30.0).sin() * p;
+                    want.shift[0] -= 0.12 * e;
+                    want.shift[2] += 0.05 * e;
+                    lift_fore(want, e, LegPose { swing: 1.15 + 0.15 * (t * 7.0).sin(), knee: 0.6, ..Default::default() });
+                    want.neck[0][1] += 0.2 * e;
+                    want.head[1] -= 0.35 * e;
+                    want.tail[0][1] += 0.4 * e;
+                    want.jaw = 0.3 * e;
+                    *wings = WingSet::beating(blend(FOLDED, WingPose { flap: 0.6, sweep: 0.45, twist: 0.0, fold: 0.35, bend: -0.6 }, e), 0.12 * e, 0.9);
                     let at = d.center + forward * 0.7 * s * vpm;
                     let ground = Vector3::new(at.x, at.y, ground_of(h, at));
                     mark(boss, ground, stomp_r, 1.0 - t / wind);
@@ -2191,25 +2902,32 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     }
                 }
                 Roar => {
-                    want.neck[0][1] += 0.5;
-                    want.head[1] += 0.5;
-                    want.jaw = 0.4 * t / wind;
+                    // Rearing up, its neck raised, drawing breath, its wings opening
+                    let e = ease(p);
+                    rear(want, &sp, 1.1 * e);
+                    want.jaw = 0.3 * p;
+                    *wings = if d.airborne { WingSet { hover: 0.7, ..WingSet::beating(SPREAD, 0.7, fl.beat * 1.2) } } else { WingSet::held(blend(MANTLED, RAISED, e)) };
                     if d.airborne {
                         goal.to = d.center;
                         goal.speed = 3.0;
+                        want.pitch += 0.3 * e;
                     }
                 }
                 Spit => {
                     goal.face = Some(feet);
-                    want.neck[0][1] += 0.25;
-                    want.head[1] += 0.3;
-                    want.jaw = 0.5 * t / wind;
+                    // Its head drawn back and up, its element gathering in its throat
+                    let e = ease(p);
+                    coil(want, &sp, 0.6 * e);
+                    want.head[1] += 0.3 * e;
+                    want.jaw = 0.5 * p;
                     if (d.clock * 12.0).fract() < h.dt * 12.0 {
                         act_out(boss, Act::Kindle { at: d.mouth, size: s });
                     }
                     if d.airborne {
                         goal.to = d.center + toward * vpm;
                         goal.speed = 3.0;
+                        *wings = WingSet { hover: 0.6, ..WingSet::beating(SPREAD, 0.7, fl.beat * 1.2) };
+                        want.pitch += 0.3 * e;
                     }
                     // Held where it was aimed for the last of it, so it can be stepped out of
                     if t < wind - 0.3 {
@@ -2227,8 +2945,9 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     goal.to = d.center + Vector3::new(0.0, 0.0, 1.5 * vpm);
                     goal.speed = 4.0;
                     goal.face = Some(feet);
-                    *wings = WingSet { base: WingPose { flap: 0.95, sweep: 0.1, twist: 0.0, fold: 0.1, bend: 0.2 }, amp: 0.15, rate: fl.beat };
-                    look_at(d, h, want, feet);
+                    *wings = WingSet::beating(WingPose { flap: 0.95, sweep: 0.1, twist: 0.0, fold: 0.1, bend: 0.2 }, 0.15 * (1.0 - p), fl.beat);
+                    look_at(d, h, want, feet, 0.7);
+                    want.pitch -= 0.2 * p;
                     let low = d.path[1];
                     mark(boss, Vector3::new(low.x, low.y, ground_of(h, low)), claw_r, 1.0 - 0.6 * t / wind);
                 }
@@ -2239,6 +2958,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     if !d.ready {
                         goal.to = Vector3::new(start.x, start.y, ground_of(h, start).max(feet.z) + height * vpm);
                         goal.speed = fl.cruise;
+                        goal.cruise = true;
                         t = 0.0;
                         if flat(d.center - start).norm() < 3.0 * k * vpm || d.aloft > d.budget + 6.0 {
                             d.ready = true;
@@ -2250,6 +2970,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                         goal.speed = 3.0;
                         goal.face = Some(d.center + d.way * 10.0 * vpm);
                         want.jaw = 0.4 * t / wind;
+                        coil(want, &sp, 0.4 * p);
                         if (d.clock * 12.0).fract() < h.dt * 12.0 {
                             act_out(boss, Act::Kindle { at: d.mouth, size: s });
                         }
@@ -2261,48 +2982,59 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     }
                 }
                 Hover => {
-                    // In beside the player, just over their head, beating its wings hard
+                    // In beside the player, just over their head, hanging in the air on its beating
+                    // wings, its legs dangling and its tail hanging down
                     let side = Vector3::new(-toward.y, toward.x, 0.0) * d.sweep;
                     let at = feet - toward * 1.6 * vpm + side * 1.2 * vpm;
                     goal.to = Vector3::new(at.x, at.y, ground_of(h, feet) + h.stand + 1.4 * vpm);
                     goal.speed = fl.cruise * 0.6;
                     goal.face = Some(feet);
                     goal.low = true;
-                    *wings = WingSet { base: WingPose { flap: 0.3, sweep: -0.2, twist: -0.25, fold: 0.1, bend: 0.2 }, amp: 0.8, rate: fl.beat * 1.5 };
-                    want.pitch += 0.3;
+                    *wings = WingSet { hover: 1.0, ..WingSet::beating(WingPose { flap: 0.3, sweep: -0.2, twist: -0.25, fold: 0.1, bend: 0.2 }, 0.85, fl.beat * 1.5) };
+                    want.pitch += 0.5;
+                    want.tail[0][1] -= 0.35;
+                    for leg in &mut want.legs {
+                        *leg = LegPose { swing: 0.25, knee: 0.8, ..Default::default() };
+                    }
                     if !d.ready {
                         t = 0.0;
                         if (d.center - goal.to).norm() < 1.2 * vpm || d.aloft > d.budget + 6.0 {
                             d.ready = true;
                         }
                     } else {
-                        want.neck[0][1] += 0.4;
-                        want.head[1] += 0.2;
+                        coil(want, &sp, ease(p));
                         want.jaw = 0.3 * t / wind;
                         mark(boss, Vector3::new(feet.x, feet.y, ground_of(h, feet)), bite_r, 1.0 - t / wind);
                     }
                 }
                 Dive => {
-                    // Climbing over where the player stands, which it'll fall on, the ring showing it
+                    // Climbing over where the player stands, which it'll fall on, the ring showing
+                    // it; tipping over at the top, its wings drawn in
                     goal.to = Vector3::new(d.aim.x, d.aim.y, ground_of(h, d.aim) + (fl.altitude + 6.0 * k) * vpm);
                     goal.speed = fl.cruise * 0.8;
                     goal.face = Some(d.aim);
-                    *wings = WingSet { base: WingPose { flap: 0.6, sweep: 0.0, twist: 0.0, fold: 0.1, bend: 0.2 }, amp: 0.7, rate: fl.beat * 1.3 };
+                    let tuck = ease((p - 0.6) / 0.4);
+                    *wings = WingSet::beating(blend(WingPose { flap: 0.6, sweep: 0.0, twist: 0.0, fold: 0.1, bend: 0.2 }, TUCKED, tuck), 0.75 * (1.0 - tuck), fl.beat * 1.3);
+                    want.pitch -= 0.6 * tuck;
+                    want.neck[0][1] -= 0.25 * tuck;
                     if t < wind * 0.5 {
                         d.aim = feet;
                     }
                     mark(boss, Vector3::new(d.aim.x, d.aim.y, ground_of(h, d.aim)), stomp_r * 1.15, 1.0 - 0.7 * t / wind);
                 }
                 Rain => {
-                    // Climbing high, roaring
+                    // Climbing high, rearing back and roaring at the sky
+                    let e = ease(p);
                     goal.to = Vector3::new(feet.x, feet.y, ground_of(h, feet) + (fl.altitude + 8.0 * k) * vpm) + Vector3::new(d.orbit.cos(), d.orbit.sin(), 0.0) * fl.orbit * 0.6 * vpm;
                     goal.speed = fl.cruise * 0.8;
-                    want.neck[0][1] += 0.5;
-                    want.head[1] += 0.4;
-                    want.jaw = 0.5 * t / wind;
+                    want.neck[0][1] += 0.5 * e;
+                    want.head[1] += 0.5 * e;
+                    want.jaw = 0.55 * p;
                     if !d.airborne {
                         goal.to = d.center;
                         goal.face = Some(feet);
+                        rear(want, &sp, e);
+                        *wings = WingSet::held(blend(MANTLED, RAISED, e));
                     }
                 }
             }
@@ -2331,13 +3063,16 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             match m {
                 Bite => {
                     let length = 0.3 * k.powf(0.3);
-                    // Lunging, jaws wide, then snapping shut
+                    let q = t / length;
+                    // Lunging, its neck shooting out straight, jaws wide, then snapping shut on what
+                    // it reached, its body lurching in after
                     goal.to = d.center + forward * 3.0 * vpm;
                     goal.speed = 2.0 * k;
-                    want.neck[0][1] -= 0.25;
-                    want.head[1] -= 0.25;
-                    want.jaw = if t < length * 0.45 { 0.9 } else { 0.0 };
-                    if !d.struck && t >= length * 0.45 {
+                    look_at(d, h, want, feet + Vector3::new(0.0, 0.0, 0.6 * vpm), 1.0);
+                    thrust(want, &sp, if q < 0.45 { ease_out(q / 0.3) } else { 1.0 - 0.4 * (q - 0.45) / 0.55 });
+                    want.shift[2] -= 0.04;
+                    want.jaw = if q < 0.45 { 0.95 } else { 0.0 };
+                    if !d.struck && q >= 0.45 {
                         d.struck = true;
                         let at = d.center + forward * bite_reach(&h.sp) * vpm;
                         act_out(boss, Act::Bite { at: Vector3::new(at.x, at.y, ground_of(h, at)), radius: bite_r, damage: pw.bite });
@@ -2346,12 +3081,14 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 }
                 Tail => {
                     let length = 0.55 * k.powf(0.4);
-                    // Round on the spot, its tail sweeping out low
+                    // Round on the spot, crouched low, its tail sweeping out after it
                     d.yaw += d.sweep * TAU * 0.85 / length * h.dt;
+                    want.shift[2] -= 0.07;
                     want.tail[0][1] -= 0.05;
                     for j in 0..4 {
-                        want.tail[j][0] -= d.sweep * 0.3;
+                        want.tail[j][0] -= d.sweep * 0.12;
                     }
+                    want.head[0] += d.sweep * 0.3;
                     if !d.struck && t >= length * 0.5 {
                         d.struck = true;
                         act_out(boss, Act::Sweep { at: Vector3::new(d.center.x, d.center.y, ground_here), radius: tail_r, damage: pw.tail });
@@ -2359,24 +3096,44 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     done = t >= length;
                 }
                 Breath => {
-                    let length = if is_drakeling(h.look) { 1.3 } else if h.look == ULTRA { 2.6 } else { 2.1 } * if boss.enraged { 1.2 } else { 1.0 };
-                    // Sweeping across the ground ahead, the body turning slowly after the player
+                    let length = breath_length(h.look) * if boss.enraged { 1.2 } else { 1.0 };
+                    // Lunging forward into it, braced, its neck thrust out and its jaws wide,
+                    // sweeping its breath across the ground ahead as it heaves it out, the body
+                    // turning slowly after the player
                     goal.face = Some(feet);
                     let across = d.sweep * (t / length - 0.5) * 1.1;
+                    thrust(want, &sp, 0.7);
+                    want.pitch -= 0.05;
+                    want.shift[2] -= 0.03;
                     want.neck[0][0] += across * 0.4;
                     want.head[0] += across * 0.6;
-                    want.neck[0][1] -= 0.1;
-                    want.head[1] -= 0.45;
-                    want.jaw = 0.8;
+                    want.head[1] -= 0.4 + 0.05 * (t * 17.0).sin();
+                    want.jaw = 0.85 + 0.05 * (t * 23.0).sin();
+                    *wings = WingSet::held(MANTLED);
+                    for leg in 2..4 {
+                        want.legs[leg].foot[0] += 0.06;
+                    }
                     let size = 1.2 * s.powf(0.6);
                     act_out(boss, Act::Breath { from: d.mouth, dir: d.breath, dt: h.dt, dps: pw.breath, size, speed: 10.0 * s.powf(0.3), spread: 0.0 });
                     done = t >= length;
                 }
                 Gust => {
                     let length = 0.45 * k.powf(0.3);
-                    // Beating down hard, the ground blown clear before it
-                    *wings = WingSet { base: WingPose { flap: -0.55, sweep: 0.05, twist: -0.1, fold: 0.05, bend: -0.3 }, amp: 0.05, rate: 1.0 };
-                    if !d.struck && t >= length * 0.3 {
+                    let q = t / length;
+                    // Beating down hard, the whole of it thrown into it, coming down on its forefeet
+                    // as the ground's blown clear before it
+                    let down = ease(q / 0.35);
+                    let top = WingPose { flap: 1.3, sweep: -0.35, twist: 0.25, fold: 0.08, bend: 0.4 };
+                    let bottom = WingPose { flap: -0.6, sweep: 0.05, twist: -0.1, fold: 0.05, bend: -0.35 };
+                    *wings = WingSet { base: blend(top, bottom, down), amp: 0.0, rate: 1.0, hover: 0.0, quick: 6.0 };
+                    if !d.airborne {
+                        want.pitch += (if sp.four { 0.32 } else { 0.18 }) * (1.0 - down) - 0.06 * down;
+                        want.shift[0] += 0.06 * down;
+                        want.shift[2] -= 0.05 * down;
+                        lift_fore(want, 1.0 - down, LegPose { swing: 0.9, knee: 1.0, ..Default::default() });
+                    }
+                    want.head[1] -= 0.2;
+                    if !d.struck && q >= 0.3 {
                         d.struck = true;
                         act_out(boss, Act::Gust { at: Vector3::new(d.center.x, d.center.y, ground_here), dir: forward, reach: gust_r, push: pw.push, damage: pw.gust });
                     }
@@ -2384,9 +3141,20 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 }
                 Stomp => {
                     let length = 0.3 * k.powf(0.3);
-                    want.pitch -= 0.1;
-                    if !d.struck && t >= length * 0.4 {
+                    let q = t / length;
+                    // Coming down on its forefeet with all its weight, roaring, its wings snapping out
+                    let down = ease_out(q / 0.4);
+                    want.pitch += 0.52 * (1.0 - down) - 0.12 * down;
+                    want.shift[0] += -0.12 * (1.0 - down) + 0.06 * down;
+                    want.shift[2] -= 0.06 * down;
+                    lift_fore(want, 1.0 - down, LegPose { swing: 1.0, knee: 0.5, ..Default::default() });
+                    want.neck[0][1] -= 0.2 * down;
+                    want.head[1] -= 0.2;
+                    want.jaw = 0.7;
+                    *wings = WingSet { quick: 3.0, ..WingSet::held(blend(WingPose { flap: 0.6, sweep: 0.45, twist: 0.0, fold: 0.35, bend: -0.6 }, MANTLED, down)) };
+                    if !d.struck && q >= 0.4 {
                         d.struck = true;
+                        d.spin[AT_SHIFT + 2] -= 1.2;
                         let at = d.center + forward * 0.7 * s * vpm;
                         act_out(boss, Act::Stomp { at: Vector3::new(at.x, at.y, ground_of(h, at)), radius: stomp_r, damage: pw.stomp, cracks: d.cracks, length: 8.0 * s.powf(0.5), crack: pw.crack });
                     }
@@ -2394,26 +3162,35 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 }
                 Roar => {
                     let length = 1.3;
-                    want.neck[0][1] += 0.55;
-                    want.head[1] += 0.55;
+                    let q = t / length;
+                    // Its neck thrust out and up, jaws wide, wings spread wide over it, its head
+                    // shaking with the roar
+                    rear(want, &sp, 0.7);
+                    thrust(want, &sp, 0.35);
+                    want.neck[0][1] += 0.25;
+                    want.head[1] += 0.25;
+                    want.head[0] += 0.09 * (t * 21.0).sin() * (1.0 - q);
+                    want.neck[1][0] += 0.04 * (t * 17.0).sin() * (1.0 - q);
                     want.jaw = 1.0;
-                    *wings = if d.airborne { *wings } else { WingSet { base: WingPose { flap: 0.8, sweep: 0.2, twist: 0.0, fold: 0.6, bend: 0.2 }, amp: 0.05, rate: 1.0 } };
+                    *wings = if d.airborne { WingSet { hover: 0.7, ..WingSet::beating(SPREAD, 0.7, fl.beat * 1.2) } } else { WingSet::held(RAISED) };
                     if d.airborne {
                         goal.to = d.center;
                         goal.speed = 2.0;
+                        want.pitch += 0.3;
                     }
                     if !d.struck {
                         d.struck = true;
                         let brood = brood(h.look).filter(|_| d.stage >= if h.look == ULTRA { 2 } else { 1 }).map(|b| (b, if h.look == ULTRA { 3 } else { 2 }));
-                        act_out(boss, Act::Roar { at: d.mouth, brood, first: false });
+                        let angry = is_drake(h.look) && phases(h.look).is_empty() && boss.enraged;
+                        act_out(boss, Act::Roar { at: d.mouth, brood, first: false, angry });
                     }
                     done = t >= length;
                 }
                 Spit => {
                     if !d.struck {
                         d.struck = true;
-                        let lob = h.look == Look::CindermawTyrant;
-                        let count = if is_drakeling(h.look) { 1 } else { 3 };
+                        let lob = matches!(h.look, Look::CindermawTyrant | Look::VenomDrake);
+                        let count = if is_drakeling(h.look) || (is_drake(h.look) && h.look != Look::ElderWyrm) { 1 } else { 3 };
                         let target = d.aim + Vector3::new(0.0, 0.0, 0.8 * vpm);
                         let across = Vector3::new(-toward.y, toward.x, 0.0);
                         for j in 0..count {
@@ -2422,8 +3199,14 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                             act_out(boss, Act::Fireball { from: d.mouth, to: target + across * off, speed, damage: pw.ball, radius: 1.6 * s.powf(0.35), lob });
                         }
                     }
-                    want.jaw = 0.7;
-                    want.head[1] -= 0.2;
+                    // Its head snapping forward and down as it spits
+                    thrust(want, &sp, 0.6);
+                    want.jaw = 0.75;
+                    want.head[1] -= 0.25;
+                    if d.airborne {
+                        *wings = WingSet { hover: 0.6, ..WingSet::beating(SPREAD, 0.7, fl.beat * 1.2) };
+                        want.pitch += 0.2;
+                    }
                     done = t >= 0.25;
                 }
                 Swoop => {
@@ -2440,15 +3223,17 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     goal.to = d.center;
                     goal.speed = -1.0;
                     goal.low = true;
-                    // Wings swept back for the dive, beating for the climb, claws out low down
-                    *wings = if u < 0.45 { WingSet { base: WingPose { flap: 0.35, sweep: 0.75, twist: 0.1, fold: 0.6, bend: 0.0 }, amp: 0.05, rate: 1.0 } } else { WingSet { base: SPREAD, amp: 0.85, rate: fl.beat * 1.4 } };
-                    if (0.3..0.65).contains(&u) {
+                    // Wings swept back for the dive, its head down at them, then flared and
+                    // beating for the climb; claws thrown forward low down
+                    *wings = if u < 0.45 { WingSet { quick: 2.5, ..WingSet::beating(WingPose { flap: 0.35, sweep: 0.75, twist: 0.1, fold: 0.6, bend: 0.0 }, 0.05, 1.0) } } else { WingSet { quick: 2.0, ..WingSet::beating(SPREAD, 0.95, fl.beat * 1.45) } };
+                    if (0.28..0.62).contains(&u) {
                         for leg in &mut want.legs {
-                            leg.swing = 0.9;
-                            leg.knee = 0.3;
+                            *leg = LegPose { swing: 0.95, knee: 0.3, ..Default::default() };
                         }
                         want.head[1] -= 0.3;
                         want.jaw = 0.6;
+                    } else if u < 0.28 {
+                        look_at(d, h, want, low, 1.0);
                     }
                     // Where its claws will come down, closing in as it does
                     if !d.struck {
@@ -2467,10 +3252,11 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     goal.to = Vector3::new(ahead.x, ahead.y, ground_of(h, d.center).max(feet.z) + height * vpm);
                     goal.speed = fl.cruise * 1.15;
                     goal.face = Some(ahead);
-                    want.neck[0][1] -= 0.25;
-                    want.head[1] -= 0.55;
+                    // Its head down, breathing on the ground below as it flies over it
+                    want.neck[0][1] -= 0.3;
+                    want.head[1] -= 0.6;
                     want.jaw = 0.85;
-                    *wings = WingSet { base: SPREAD, amp: 0.4, rate: fl.beat };
+                    *wings = WingSet::beating(SPREAD, 0.35, fl.beat);
                     // Breathing down and ahead, so it falls along the line below
                     let down = (d.way * 0.55 + Vector3::new(0.0, 0.0, -1.0)).normalize();
                     let spread = if h.look == ULTRA { 3.0 } else if is_drakeling(h.look) { 0.0 } else { 1.5 };
@@ -2479,15 +3265,23 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 }
                 Hover => {
                     let length = 0.3;
+                    let q = t / length;
                     goal.to = d.center;
                     goal.speed = 1.0;
                     goal.face = Some(feet);
                     goal.low = true;
-                    *wings = WingSet { base: WingPose { flap: 0.3, sweep: -0.2, twist: -0.25, fold: 0.1, bend: 0.2 }, amp: 0.8, rate: fl.beat * 1.5 };
-                    want.neck[0][1] -= 0.3;
+                    *wings = WingSet { hover: 1.0, ..WingSet::beating(WingPose { flap: 0.3, sweep: -0.2, twist: -0.25, fold: 0.1, bend: 0.2 }, 0.85, fl.beat * 1.5) };
+                    want.pitch += 0.5;
+                    want.tail[0][1] -= 0.35;
+                    for leg in &mut want.legs {
+                        *leg = LegPose { swing: 0.25, knee: 0.8, ..Default::default() };
+                    }
+                    // Striking down at them
+                    thrust(want, &sp, ease_out(q / 0.4));
+                    want.neck[0][1] -= 0.4;
                     want.head[1] -= 0.5;
-                    want.jaw = if t < length * 0.4 { 0.9 } else { 0.0 };
-                    if !d.struck && t >= length * 0.4 {
+                    want.jaw = if q < 0.4 { 0.9 } else { 0.0 };
+                    if !d.struck && q >= 0.4 {
                         d.struck = true;
                         act_out(boss, Act::Bite { at: Vector3::new(feet.x, feet.y, ground_of(h, feet)), radius: bite_r, damage: pw.bite });
                     }
@@ -2501,15 +3295,23 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     }
                 }
                 Dive => {
-                    // Falling on the ring, wings swept tight, and down hard
+                    // Falling on the ring, wings swept tight, nose down, its legs thrown out ahead
+                    // of it as it comes in, and down hard
                     let to = Vector3::new(d.aim.x, d.aim.y, ground_of(h, d.aim) + h.stand);
                     let off = to - d.center;
                     d.velocity = off.try_normalize(1e-6).unwrap_or_else(|| -Vector3::z()) * fl.dash * vpm;
                     goal.to = to;
                     goal.speed = -1.0;
                     d.center += d.velocity * h.dt;
-                    *wings = WingSet { base: WingPose { flap: 0.6, sweep: 0.9, twist: 0.0, fold: 0.9, bend: 0.0 }, amp: 0.0, rate: 1.0 };
-                    want.pitch -= 0.5;
+                    let near = off.norm() < 5.0 * k * vpm;
+                    *wings = if near { WingSet { quick: 3.0, ..WingSet::beating(WingPose { flap: 0.6, sweep: -0.2, twist: -0.3, fold: 0.1, bend: 0.3 }, 0.4, fl.beat * 1.4) } } else { WingSet { quick: 2.0, ..WingSet::held(TUCKED) } };
+                    want.pitch -= if near { 0.0 } else { 0.5 };
+                    if near {
+                        for leg in &mut want.legs {
+                            *leg = LegPose { swing: 0.7, knee: 0.35, ..Default::default() };
+                        }
+                        want.jaw = 0.8;
+                    }
                     mark(boss, Vector3::new(d.aim.x, d.aim.y, ground_of(h, d.aim)), stomp_r * 1.15, (off.norm() / (fl.altitude * vpm * 2.0)).min(0.3));
                     if off.norm() < fl.dash * vpm * h.dt * 1.5 || d.center.z <= to.z || t > 4.0 {
                         d.center = to;
@@ -2517,28 +3319,35 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                         d.velocity = Vector3::zeros();
                         act_out(boss, Act::Stomp { at: Vector3::new(to.x, to.y, to.z - h.stand), radius: stomp_r * 1.15, damage: pw.stomp * 1.1, cracks: d.cracks, length: 8.0 * s.powf(0.5), crack: pw.crack });
                         act_out(boss, Act::Land { at: Vector3::new(to.x, to.y, to.z - h.stand), size: s });
+                        d.spin[AT_SHIFT + 2] -= 3.0;
                         d.aloft = 0.0;
                         d.budget = pick_budget(d, h, false);
                         // Dazed a moment from coming down so hard: the moment to get at it
-                        d.state = State::Spent(2.4 * k.powf(0.3));
+                        d.last = Some(Dive);
+                        d.spent_for = 2.4 * k.powf(0.3);
+                        d.state = State::Spent(d.spent_for);
                         d.skill = None;
                         return;
                     }
                     done = false;
                 }
                 Rain => {
-                    let length = 3.0;
-                    let every = if h.look == ULTRA { 0.13 } else { 0.18 };
-                    let spread = if h.look == ULTRA { 18.0 } else { 13.0 };
+                    let (length, every) = rain_of(h.look, boss.stage);
+                    let spread = if h.look == ULTRA { 18.0 } else if is_drake(h.look) && boss.stage == 0 { 6.0 } else { 13.0 };
                     if d.airborne {
                         d.orbit += d.round * fl.cruise / fl.orbit * h.dt * 0.7;
                         goal.to = Vector3::new(feet.x, feet.y, ground_of(h, feet) + (fl.altitude + 8.0 * k) * vpm) + Vector3::new(d.orbit.cos(), d.orbit.sin(), 0.0) * fl.orbit * 0.6 * vpm;
                         goal.speed = fl.cruise * 0.7;
+                        want.neck[0][1] += 0.4;
+                        want.head[1] += 0.4;
+                        want.jaw = 0.7;
                     } else {
                         goal.face = Some(feet);
-                        want.neck[0][1] += 0.5;
-                        want.head[1] += 0.5;
-                        want.jaw = 0.8;
+                        rear(want, &sp, 1.0);
+                        want.neck[0][1] += 0.25;
+                        want.head[1] += 0.35 + 0.05 * (t * 19.0).sin();
+                        want.jaw = 0.9;
+                        *wings = WingSet::held(RAISED);
                     }
                     let count = |t: f64| (t / every) as usize;
                     if count(t) != count(t - h.dt) {
@@ -2560,6 +3369,8 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             d.state = if done {
                 let rest = d.skill.map_or(0.5, |s| s.rest) * h.quick * k.powf(0.3);
                 d.skill = None;
+                d.last = Some(m);
+                d.spent_for = rest.max(0.05);
                 // A drakeling comes down after a swoop now and then, to fight on foot
                 if m == Swoop && is_drakeling(h.look) && d.roll() < 0.35 && d.aloft > d.budget * 0.4 {
                     begin_landing(d, h);
@@ -2573,11 +3384,59 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
             };
         }
         State::Spent(t) => {
+            // Getting over what it did: how far it's through it, from 1 down to 0
+            let left = (t / d.spent_for.max(1e-3)).clamp(0.0, 1.0);
             if d.airborne {
                 goal.to = d.center + forward * 2.0 * vpm + Vector3::new(0.0, 0.0, 0.5 * vpm);
                 goal.speed = fl.cruise * 0.5;
+                goal.cruise = true;
             } else {
                 goal.face = None;
+                match d.last {
+                    // Its head thrown back and shaken after breathing, smoke coughed up, its
+                    // jaws closing slowly
+                    Some(Breath) => {
+                        want.head[1] += 0.35 * left;
+                        want.neck[0][1] += 0.15 * left;
+                        want.head[0] += 0.14 * (t * 15.0).sin() * left;
+                        want.jaw = 0.35 * left;
+                        *wings = WingSet::held(blend(FOLDED, MANTLED, left));
+                        if left > 0.6 && (d.clock * 8.0).fract() < h.dt * 8.0 {
+                            act_out(boss, Act::Kindle { at: d.mouth, size: s });
+                        }
+                    }
+                    // Settling back after it snapped, its neck drawing in
+                    Some(Bite) | Some(Spit) => coil(want, &sp, 0.25 * left),
+                    // Off balance after spinning, leaning into it
+                    Some(Tail) => {
+                        want.roll -= d.sweep * 0.09 * left;
+                        want.shift[2] -= 0.05 * left;
+                    }
+                    // Low and heaving after stamping, its head down
+                    Some(Stomp) => {
+                        want.pitch -= 0.08 * left;
+                        want.shift[2] -= 0.05 * left;
+                        want.neck[0][1] -= 0.2 * left;
+                        want.jaw = 0.3 * left;
+                    }
+                    // Dazed from coming down so hard: sprawled, its head low and shaking, its
+                    // wings splayed
+                    Some(Dive) => {
+                        want.shift[2] -= 0.12 * left;
+                        want.neck[0][1] -= 0.45 * left;
+                        want.head[0] += 0.2 * (t * 6.0).sin() * left;
+                        want.roll += 0.05 * (t * 4.0).sin() * left;
+                        want.jaw = 0.3 * left;
+                        *wings = WingSet::held(blend(FOLDED, WingPose { flap: 0.0, sweep: 0.6, twist: 0.1, fold: 0.4, bend: -0.5 }, left));
+                        for (j, leg) in want.legs.iter_mut().enumerate() {
+                            leg.foot[0] += if j < 2 { -0.06 } else { 0.08 } * left;
+                        }
+                    }
+                    // Wings folding back slowly after beating them
+                    Some(Gust) => *wings = WingSet::held(blend(FOLDED, MANTLED, left)),
+                    _ => {}
+                }
+                look_at(d, h, want, feet + Vector3::new(0.0, 0.0, 1.0 * vpm), 1.0);
             }
             let t = t - h.dt;
             d.state = if t > 0.0 {
@@ -2586,42 +3445,52 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                 // A pack takes turns, so they don't all come at once
                 let gap = if is_drakeling(h.look) { 2.4 + 1.6 * d.roll() + boss.flock.slot as f64 * 0.9 } else if h.look == ULTRA { 0.9 + 0.7 * d.roll() } else { 1.2 + 0.8 * d.roll() };
                 d.next = gap * h.quick;
+                d.last = None;
                 if boss.engaged { State::Hunt } else { State::Rest }
             };
         }
         State::Reel(t) => {
-            // Falling out of the sky, wings flailing, then lying dazed where it came down
-            *wings = WingSet { base: WingPose { flap: 0.4, sweep: 0.5, twist: 0.3, fold: 1.0, bend: 0.5 }, amp: 0.35, rate: fl.beat * 0.8 };
             if d.airborne {
+                // Falling out of the sky, tumbling, wings flailing
+                *wings = WingSet { base: WingPose { flap: 0.4, sweep: 0.5, twist: 0.3, fold: 0.9, bend: 0.4 }, amp: 0.5, rate: fl.beat * 1.7, hover: 0.3, quick: 2.0 };
                 d.velocity.z -= 14.0 * vpm * h.dt;
                 d.velocity.x *= (-1.5 * h.dt).exp();
                 d.velocity.y *= (-1.5 * h.dt).exp();
-                want.roll += 0.5;
-                want.pitch -= 0.3;
+                want.roll += 0.7 * (d.clock * 2.3).sin();
+                want.pitch -= 0.4;
                 goal.speed = -1.0;
                 d.center += d.velocity * h.dt;
                 if d.center.z <= ground_here + h.stand * 0.8 {
                     d.center.z = ground_here + h.stand * 0.8;
                     d.airborne = false;
                     d.velocity = Vector3::zeros();
+                    d.spin[AT_SHIFT + 2] -= 3.0;
+                    d.spin[1] += 2.0 * d.side;
                     act_out(boss, Act::Crash { at: Vector3::new(d.center.x, d.center.y, ground_here), size: s });
                 }
                 d.state = State::Reel(t);
             } else {
-                *wings = WingSet { base: WingPose { flap: 0.0, sweep: 0.35, twist: 0.2, fold: 0.4, bend: -0.2 }, amp: 0.0, rate: 1.0 };
+                // Down on the ground dazed, sprawled on its side a little, its head low and
+                // shaking, trying to get up
+                *wings = WingSet::held(WingPose { flap: 0.0, sweep: 0.35, twist: 0.2, fold: 0.4, bend: -0.2 });
+                want.roll += 0.25 * d.side;
+                want.shift[2] -= 0.15;
                 want.neck[0][1] -= 0.6;
                 want.head[1] += 0.2;
+                want.head[0] += 0.25 * (t * 5.0).sin();
                 want.jaw = 0.25;
-                for leg in &mut want.legs {
-                    leg.swing += 0.5;
-                    leg.knee -= 0.3;
+                for (j, leg) in want.legs.iter_mut().enumerate() {
+                    leg.foot[0] += if j < 2 { -0.08 } else { 0.1 };
                 }
                 let t = t - h.dt;
                 d.state = if t > 0.0 {
                     State::Reel(t)
-                } else if boss.engaged {
+                } else if boss.engaged && open_sky(d, h) {
                     d.reeled = 12.0;
                     State::Rise(0.0)
+                } else if boss.engaged {
+                    d.reeled = 12.0;
+                    State::Hunt
                 } else {
                     State::Rest
                 };
@@ -2640,59 +3509,106 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
     }
 }
 
-/// Killed: falling out of the sky if it's flying, crashing down, and lying still
+/// How long a dragon killed on the ground rears up with its last roar before it goes down, in
+/// seconds, and how long it takes to come down after
+const LAST_ROAR: f64 = 0.55;
+const COLLAPSE: f64 = 0.8;
+
+/// Killed: falling out of the sky if it's flying, tumbling, its wings crumpled, and crashing down;
+/// or rearing up with a last roar on the ground. Then its legs give under it, it rolls over onto its
+/// side, its neck and head come down after it, and it lies still.
 fn fall(_a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut Goal, want: &mut Rig, wings: &mut WingSet) {
     let vpm = h.vpm;
+    let sp = h.sp;
     if d.state != State::Fall {
         d.state = State::Fall;
+        d.dead = None;
         act_out(boss, Act::Death { at: d.mouth });
     }
     goal.speed = -1.0;
     let ground = ground_of(h, d.center);
+    d.ground = ground;
+    let dt = h.dt.max(1.0 / 120.0);
     if d.airborne {
-        *wings = WingSet { base: WingPose { flap: 0.5, sweep: 0.6, twist: 0.3, fold: 1.2, bend: 0.4 }, amp: 0.2, rate: 1.0 };
-        d.velocity.z -= 12.0 * vpm * h.dt.max(1e-3);
-        d.velocity.x *= (-1.0 * h.dt).exp();
-        d.velocity.y *= (-1.0 * h.dt).exp();
-        d.center += d.velocity * h.dt;
-        want.roll += 0.7;
-        want.pitch -= 0.4;
+        // Its wings crumpled and flailing, tumbling over and over, its head lolling
+        *wings = WingSet { base: WingPose { flap: 0.5, sweep: 0.6, twist: 0.3, fold: 1.1, bend: 0.4 }, amp: 0.3, rate: 1.3, hover: 0.0, quick: 2.0 };
+        d.velocity.z -= 12.0 * vpm * dt;
+        d.velocity.x *= (-1.0 * dt).exp();
+        d.velocity.y *= (-1.0 * dt).exp();
+        d.center += d.velocity * dt;
+        want.roll += d.side * (0.7 + 0.5 * (d.clock * 1.9).sin());
+        want.pitch -= 0.55;
+        want.neck[0][1] -= 0.35;
+        want.head[1] -= 0.3;
+        want.jaw = 0.55;
+        for leg in &mut want.legs {
+            *leg = LegPose { swing: 0.3, knee: 0.7, ..Default::default() };
+        }
         if d.center.z <= ground + h.stand * 0.5 {
             d.center.z = ground + h.stand * 0.5;
             d.airborne = false;
             d.velocity = Vector3::zeros();
-            act_out(boss, Act::Crash { at: Vector3::new(d.center.x, d.center.y, ground), size: h.sp.s });
+            act_out(boss, Act::Crash { at: Vector3::new(d.center.x, d.center.y, ground), size: sp.s });
+            // Slammed into the ground: everything jolting with it. No last roar now.
+            d.spin[AT_SHIFT + 2] -= 3.5;
+            d.spin[1] += 2.5 * d.side;
+            d.dead = Some(LAST_ROAR);
         }
-    } else {
-        d.dead = Some(d.dead.unwrap_or(0.0) + h.dt.max(1.0 / 120.0));
-        d.center.z += (ground + h.stand * 0.45 - d.center.z) * (1.0 - (-4.0 * h.dt).exp());
-        *wings = WingSet { base: WingPose { flap: -0.15, sweep: 0.35, twist: 0.0, fold: 0.35, bend: -0.1 }, amp: 0.0, rate: 1.0 };
-        want.neck[0][1] = -0.15;
-        for j in 1..3 {
-            want.neck[j][1] = 0.05;
-        }
-        want.head[1] = 0.15;
-        want.jaw = 0.35;
-        want.pitch = 0.0;
-        for leg in &mut want.legs {
-            leg.swing = 1.3;
-            leg.knee = 0.2;
-        }
-        for j in 0..4 {
-            want.tail[j] = [0.12, -0.02];
-        }
+        return;
     }
+    let t = d.dead.unwrap_or(0.0) + dt;
+    d.dead = Some(t);
+    if t < LAST_ROAR {
+        // Rearing up, its jaws wide, its wings thrown open
+        let e = ease(t / (LAST_ROAR * 0.5));
+        rear(want, &sp, e);
+        want.neck[0][1] += 0.2 * e;
+        want.head[1] += 0.2 * e + 0.06 * (t * 24.0).sin();
+        want.jaw = 0.95;
+        *wings = WingSet::held(blend(FOLDED, RAISED, 0.8 * e));
+        return;
+    }
+    // Going down: its legs folding under it, rolling onto its side, its neck dropping and its head
+    // laid on the ground, its tail limp, its wings fallen open across the ground
+    let c = ease((t - LAST_ROAR) / COLLAPSE);
+    let low = ground + h.stand * 0.36 * sp.girth.sqrt();
+    let level = d.center.z + (low - d.center.z) * c;
+    d.center.z += (level - d.center.z) * (1.0 - (-6.0 * dt).exp());
+    want.roll += d.side * 1.0 * c;
+    want.pitch = -0.06 * c;
+    want.shift[2] -= 0.04 * c;
+    for (j, leg) in want.legs.iter_mut().enumerate() {
+        let folded = if j < 2 { LegPose { swing: 1.15, knee: 2.5, ..Default::default() } } else { LegPose { swing: 1.25, knee: 2.3, ..Default::default() } };
+        leg.plant *= 1.0 - c;
+        leg.swing += (folded.swing - leg.swing) * c;
+        leg.knee += (folded.knee - leg.knee) * c;
+    }
+    want.neck[0][1] -= 0.75 * c;
+    for j in 1..3 {
+        want.neck[j][1] += 0.12 * c;
+        want.neck[j][0] += d.side * 0.15 * c;
+    }
+    want.head[1] += 0.35 * c;
+    want.head[0] += d.side * 0.2 * c;
+    want.jaw = 0.4 * c;
+    want.tail[0][1] -= 0.2 * c;
+    for j in 0..4 {
+        want.tail[j][1] -= 0.08 * c;
+        want.tail[j][0] -= d.side * 0.16 * c;
+    }
+    *wings = WingSet::held(blend(FOLDED, WingPose { flap: -0.15, sweep: 0.55, twist: 0.2, fold: 0.55, bend: -0.7 }, c));
 }
 
 /// Moving it towards where it means to go: flying, steering and banking as it turns, never into
-/// the ground; or walking on it
-fn travel(d: &mut Dragon, h: &Here, goal: &Goal, want: &mut Rig) {
+/// the ground, gliding between beats as it goes about; or walking on it
+fn travel(d: &mut Dragon, h: &Here, goal: &Goal, want: &mut Rig, wings: &mut WingSet) {
     let vpm = h.vpm;
     let fl = flight(h.look);
     let k = h.sp.s.sqrt();
     let dt = h.dt;
     let before = d.yaw;
     if d.airborne {
+        d.pace = 0.0;
         // goal.speed below 0: where it is has been set already, as it follows a curve
         if goal.speed >= 0.0 {
             let off = goal.to - d.center;
@@ -2729,13 +3645,41 @@ fn travel(d: &mut Dragon, h: &Here, goal: &Goal, want: &mut Rig) {
         };
         let turn = turn_to(d.yaw, heading);
         d.yaw += turn.clamp(-fl.turn * 1.6 * dt, fl.turn * 1.6 * dt);
-        // Banking into its turns, and climbing nose up
+        // Banking into its turns, its tail swung out after it and its head leading into them; and
+        // climbing nose up
         let rate = turn_to(before, d.yaw) / dt.max(1e-6);
-        want.roll += (-rate * speed * 0.06).clamp(-0.8, 0.8);
+        want.roll += (-rate * speed * 0.05).clamp(-0.7, 0.7);
+        for j in 0..4 {
+            want.tail[j][0] += (rate * 0.07).clamp(-0.22, 0.22);
+        }
+        want.neck[0][0] += (rate * 0.15).clamp(-0.35, 0.35);
         let climb = d.velocity.z.atan2(flat(d.velocity).norm().max(1e-6));
         want.pitch += (climb * 0.6).clamp(-0.5, 0.5);
+        // Going about, it glides between a few beats of its wings, beating again whenever it has to
+        // climb or speed up
+        if goal.cruise && matches!(d.state, State::Hunt | State::Rest | State::Spent(_) | State::Alight(_) | State::Wind(Strafe, _)) {
+            let rising = (goal.to.z - d.center.z) / vpm > 1.5 && d.velocity.z / vpm < 1.5;
+            let slow = speed < goal.speed.max(0.0) * 0.75;
+            if rising || slow {
+                d.glide = 0.0;
+                d.beats = d.beats.max(1.0);
+            }
+            if d.glide > 0.0 {
+                d.glide -= dt;
+                *wings = WingSet { base: WingPose { flap: 0.24, sweep: 0.06, twist: -0.04, fold: 0.04, bend: 0.1 }, amp: 0.04, ..*wings };
+            } else {
+                d.beats -= wings.rate * dt;
+                if d.beats <= 0.0 && !(rising || slow) {
+                    d.glide = 1.2 + 1.8 * d.roll();
+                    d.beats = 2.0 + (d.roll() * 2.0).floor();
+                }
+            }
+        } else {
+            d.glide = 0.0;
+        }
     } else if matches!(d.state, State::Fall) {
         // Lying still
+        d.pace = 0.0;
     } else {
         // Walking: up to where it's going, turning towards it, up and down the ground
         let off = flat(goal.to - d.center);
@@ -2756,71 +3700,233 @@ fn travel(d: &mut Dragon, h: &Here, goal: &Goal, want: &mut Rig) {
         let ground_now = ground_z(h.world, d.center.x, d.center.y, d.center.z - stand + 1.0 * vpm, 6.0 * k);
         let ground_next = ground_z(h.world, next.x, next.y, d.center.z - stand + 1.0 * vpm * k, 6.0 * k);
         let climb = 0.7 * k * vpm;
+        let (walk, run) = speeds(h.look);
+        let mut moved = 0.0;
         match (ground_now, ground_next) {
             (_, Some(z)) if speed > 0.0 && (z - (d.center.z - stand)).abs() < climb && (h.water)(next.x, next.y) < z + 0.4 * k * vpm => {
                 d.center.x = next.x;
                 d.center.y = next.y;
                 d.blocked = 0.0;
-                d.stride = (d.stride + speed * dt / stride(h.look)).fract();
+                moved = speed;
             }
             _ if speed > 0.0 => d.blocked += dt,
             _ => {}
         }
+        // Its strides lengthening as it runs, and stepping round as it turns on the spot
+        let quick = ((moved - walk) / (run - walk).max(1e-6)).clamp(0.0, 1.0);
+        d.stride_length = stride(h.look) * (1.0 + 0.55 * quick);
+        let rate = turn_to(before, d.yaw) / dt.max(1e-6);
+        let stepping = if moved < 0.3 && rate.abs() > 0.2 { 0.4 * walk } else { 0.0 };
+        d.pace = moved.max(stepping);
+        d.stride = (d.stride + d.pace * dt / d.stride_length).fract();
         let ground = ground_z(h.world, d.center.x, d.center.y, d.center.z - stand + 1.0 * vpm * k, 8.0 * k).unwrap_or(d.center.z - stand);
+        d.ground = ground;
         let z = ground + stand;
         d.center.z += (z - d.center.z) * (1.0 - (-12.0 * dt).exp());
-        // Its legs going as it walks
-        if speed > 0.05 {
-            let phase = d.stride * TAU;
-            let swing = (0.45 * (speed / speeds(h.look).1).sqrt().min(1.0)).max(0.2);
-            for (leg, offset) in [(0, 0.0), (1, PI), (2, PI), (3, 0.0)] {
-                want.legs[leg].swing += swing * (phase + offset).sin();
-                want.legs[leg].knee += 0.5 * swing * (-(phase + offset).cos()).max(0.0);
-            }
-            want.tail[0][0] += 0.12 * (phase).sin();
-            want.tail[1][0] += 0.12 * (phase - 0.6).sin();
-        }
     }
 }
 
-/// Its joints eased towards where it wants them, its wings beating, and every piece of it put
-/// where they all are now
+/// How it carries itself on top of how its joints are sprung: rising and falling with the beat of
+/// its wings, walking with its hips and shoulders rolling, breathing, standing about; how high its
+/// body's moved, how far it's pitched, rolled and twisted
+fn carriage(d: &mut Dragon, h: &Here, dt: f64, alive: bool) -> [f64; 4] {
+    let k = h.sp.s.sqrt();
+    let mut o = [0.0; 4];
+    // Carried up by each downstroke and sinking between, flying, its body nodding with it
+    if d.airborne {
+        let a = d.wings.amp * (1.0 - 0.4 * d.wings.hover);
+        o[0] += 0.3 * a * lift(d.beat);
+        o[1] += 0.05 * a * stroke(d.beat);
+    }
+    // Walking: its body rising and falling twice a stride, lowest as each foot comes down, its
+    // hips and shoulders rolling with its weight, and it turning a little after each step
+    let moving = if !d.airborne && alive && d.pace > 0.05 { 1.0 } else { 0.0 };
+    d.gait += (moving - d.gait) * (1.0 - (-5.0 * dt).exp());
+    if d.gait > 1e-3 {
+        let (walk, run) = speeds(h.look);
+        let quick = ((d.pace - walk) / (run - walk).max(1e-6)).clamp(0.0, 1.0);
+        let (g, phase) = (d.gait, d.stride * TAU);
+        o[0] -= g * (0.022 + 0.035 * quick) * (2.0 * phase).cos();
+        o[1] += g * (0.012 + 0.02 * quick) * (2.0 * phase + 0.8).sin();
+        o[2] += g * (0.035 + 0.025 * quick) * phase.sin();
+        o[3] += g * 0.045 * (phase + 0.5).sin();
+    }
+    // Breathing slowly, standing about
+    if !d.airborne && alive {
+        d.breathing = (d.breathing + dt / (3.4 * k.sqrt())).fract();
+        let b = (d.breathing * TAU).sin();
+        o[0] += 0.012 * b;
+        o[1] += 0.01 * b;
+    }
+    o
+}
+
+/// Its joints swung after where it wants them, its wings beating, its feet set on the ground, and
+/// every piece of it put where they all are now
 fn animate(d: &mut Dragon, h: &Here, want: &Rig, wings: &WingSet, dead: bool) {
     let dt = h.dt.max(if dead { 1.0 / 120.0 } else { 0.0 });
-    let k = h.sp.s.sqrt();
-    // Its tail swaying, and its breath coming and going standing
+    let sp = h.sp;
+    let k = sp.s.sqrt();
+    let vpm = h.vpm;
+    let m = sp.s * vpm;
     let mut want = *want;
-    let sway = (d.clock * 1.3 / k).sin();
-    for j in 0..h.sp.tails {
-        want.tail[j][0] += 0.08 * sway * (j as f64 + 1.0) / h.sp.tails as f64;
+    // Its tail swaying, a wave running down it, gently in the air
+    let sway = if d.airborne { 0.035 } else if dead { 0.0 } else { 0.07 };
+    for j in 0..sp.tails {
+        want.tail[j][0] += sway * (j as f64 + 1.0) / sp.tails as f64 * (d.clock * 1.15 / k - j as f64 * 0.75).sin();
     }
-    want.neck[0][1] += 0.03 * (d.clock * 1.7 / k).sin();
-    d.rig.ease(&want, 7.0 / k.powf(0.5), dt);
-    // Its wings ease from one way of going to another, and beat on as they go
-    let ease = 1.0 - (-4.5 / k.powf(0.3) * dt).exp();
-    let (w, t) = (&mut d.wings, wings);
-    let e = |a: &mut f64, b: f64| *a += (b - *a) * ease;
-    e(&mut w.base.flap, t.base.flap);
-    e(&mut w.base.sweep, t.base.sweep);
-    e(&mut w.base.twist, t.base.twist);
-    e(&mut w.base.fold, t.base.fold);
-    e(&mut w.base.bend, t.base.bend);
-    e(&mut w.amp, t.amp);
-    e(&mut w.rate, t.rate);
+    // Crying out as it flinches
+    if d.flinch > 0.0 {
+        want.jaw += 0.45 * d.flinch / 0.45;
+    }
+    // Its wings ease from one way of being held to another, beating on as they go: unfurling, its
+    // wrist opens after its arm's out
+    let ease_by = 1.0 - (-4.5 / k.powf(0.3) * wings.quick * dt).exp();
+    {
+        let (w, t) = (&mut d.wings, wings);
+        let e = |a: &mut f64, b: f64, by: f64| *a += (b - *a) * by;
+        let unfurl = if t.base.bend > w.base.bend { 0.55 } else { 1.0 };
+        e(&mut w.base.flap, t.base.flap, ease_by);
+        e(&mut w.base.sweep, t.base.sweep, ease_by);
+        e(&mut w.base.twist, t.base.twist, ease_by);
+        e(&mut w.base.fold, t.base.fold, ease_by);
+        e(&mut w.base.bend, t.base.bend, ease_by * unfurl);
+        e(&mut w.amp, t.amp, ease_by);
+        e(&mut w.rate, t.rate, ease_by);
+        e(&mut w.hover, t.hover, ease_by);
+        w.quick = t.quick;
+    }
     d.beat = (d.beat + d.wings.rate * dt).fract();
-    let phase = d.beat * TAU;
-    let wing = |base: WingPose, amp: f64| WingPose {
-        flap: base.flap + amp * phase.sin(),
-        sweep: base.sweep + 0.12 * amp * phase.cos(),
-        twist: base.twist + 0.18 * amp * phase.cos(),
-        fold: base.fold,
-        bend: base.bend + 0.45 * amp * (phase - 0.9).sin(),
-    };
-    d.rig.wings = [wing(d.wings.base, d.wings.amp), wing(d.wings.base, d.wings.amp)];
-    // Rising and falling with each beat of its wings, flying
-    let bob = if d.airborne { -0.05 * h.sp.s * d.wings.amp * phase.sin() * h.vpm } else { 0.0 };
-    let center = d.center + Vector3::new(0.0, 0.0, bob);
-    let (mouth, breath) = pose(&h.sp, center, d.yaw, &d.rig, h.vpm, &mut d.bones);
+    let carried = carriage(d, h, dt, !dead);
+    if dt > 0.0 {
+        // How its body's moving as it's drawn: up and down, turning and pitching, for its neck and
+        // tail to swing after it
+        let now = [d.center.z / vpm + (d.rig.shift[2] + carried[0]) * sp.s, d.yaw + d.rig.twist + carried[3], d.rig.pitch + carried[1]];
+        let mut push = [0.0; 3];
+        d.track = Some(match d.track {
+            Some((last, was)) => {
+                let moving = [(now[0] - last[0]) / dt, turn_to(last[1], now[1]) / dt, (now[2] - last[2]) / dt];
+                let by = 1.0 - (-dt / 0.06).exp();
+                let v: [f64; 3] = std::array::from_fn(|i| was[i] + (moving[i] - was[i]) * by);
+                push = [((v[0] - was[0]) / dt).clamp(-40.0, 40.0), ((v[1] - was[1]) / dt).clamp(-14.0, 14.0), ((v[2] - was[2]) / dt).clamp(-14.0, 14.0)];
+                (now, v)
+            }
+            None => (now, [0.0; 3]),
+        });
+        let [heave, yawing, pitching] = push;
+        // Each sprung joint swinging after where it's wanted, a few steps a frame so the quick
+        // ones don't fly off; those along its neck and tail swung after the turning and heaving of
+        // the joint before
+        let target = want.flat();
+        let mut x = d.rig.flat();
+        let steps = (dt * 120.0).ceil().max(1.0) as usize;
+        let step = dt / steps as f64;
+        let slower = k.powf(0.5);
+        for _ in 0..steps {
+            let mut a = [0.0; SPRUNG];
+            for i in 0..SPRUNG {
+                let (w, z) = springiness(i);
+                let w = w / slower;
+                a[i] = w * w * (target[i] - x[i]) - 2.0 * z * w * d.spin[i];
+            }
+            // Down the neck to the head: turning its body leaves each joint behind it, and so does
+            // tipping it up, and heaving it up
+            let (mut turning, mut tipping) = (yawing, pitching);
+            for j in 0..=sp.necks {
+                let i = if j < sp.necks { AT_NECK + 2 * j } else { AT_HEAD };
+                let l = inertia(i);
+                a[i] -= l * turning;
+                a[i + 1] -= l * (tipping + heave / (0.7 * sp.s));
+                turning += a[i];
+                tipping += a[i + 1];
+            }
+            // And down the tail, which tipping its body up swings the other way
+            let (mut turning, mut tipping) = (yawing, -pitching);
+            for j in 0..sp.tails {
+                let i = AT_TAIL + 2 * j;
+                let l = inertia(i);
+                a[i] -= l * turning;
+                a[i + 1] -= l * (tipping + heave / (0.9 * sp.s));
+                turning += a[i];
+                tipping += a[i + 1];
+            }
+            for i in 0..SPRUNG {
+                d.spin[i] += a[i] * step;
+                x[i] += d.spin[i] * step;
+            }
+        }
+        for v in &mut x[AT_NECK..AT_LEGS] {
+            *v = v.clamp(-1.8, 1.8);
+        }
+        x[AT_JAW] = x[AT_JAW].clamp(0.0, 1.1);
+        for leg in 0..4 {
+            x[AT_LEGS + 5 * leg + 2] = x[AT_LEGS + 5 * leg + 2].clamp(0.0, 1.0);
+        }
+        d.rig.set_flat(&x);
+    }
+    // Its wings beating about how they're held, half opened a moment as it flinches
+    let mut base = d.wings.base;
+    if d.flinch > 0.0 && !d.airborne && !dead {
+        base = blend(base, MANTLED, 0.6 * d.flinch / 0.45);
+    }
+    let beat = beating(base, d.wings.amp, d.wings.hover, d.beat);
+    d.rig.wings = [beat, beat];
+    // Lying dead on its side, the wing under it lies flat along the ground rather than through
+    // it, and the one over it falls across its body
+    if dead && !d.airborne {
+        let r = d.rig.roll;
+        let (under, over) = if r > 0.0 { (1, 0) } else { (0, 1) };
+        d.rig.wings[under].flap += r.abs() * 0.95;
+        d.rig.wings[over].flap -= r.abs() * 0.3;
+    }
+    // As it's drawn: as it's sprung, carried as it carries itself
+    let mut drawn = d.rig;
+    drawn.shift[2] += carried[0];
+    drawn.pitch += carried[1];
+    drawn.roll += carried[2];
+    drawn.twist += carried[3];
+    if !d.airborne && !dead {
+        let b = (d.breathing * TAU).sin();
+        drawn.neck[0][1] += 0.03 * (d.breathing * TAU - 0.6).sin();
+        for w in &mut drawn.wings {
+            w.flap += 0.025 * b;
+        }
+    }
+    // Its feet: those planted set down on the ground under them, stepping as it walks, the knees
+    // bending to reach them
+    let (center, body) = body_frame(&sp, d.center, d.yaw, &drawn, vpm);
+    let ahead = Vector3::new(d.yaw.cos(), d.yaw.sin(), 0.0);
+    let order = if sp.four { [0.0, 0.5, 0.25, 0.75] } else { [0.0, 0.5, 0.0, 0.5] };
+    let (walk, run) = speeds(h.look);
+    let quick = ((d.pace - walk) / (run - walk).max(1e-6)).clamp(0.0, 1.0);
+    let duty = 0.68 - 0.2 * quick;
+    let length = d.stride_length / sp.s;
+    let raise = 0.1 + 0.08 * quick;
+    for leg in 0..4 {
+        let hind = leg < 2;
+        let l = drawn.legs[leg];
+        if (!hind && !sp.four) || l.plant < 0.01 {
+            continue;
+        }
+        let (swing, knee) = if hind { STAND_HIND } else { STAND_FORE };
+        let (under, _) = ankle_at(hind, swing, knee);
+        let psi = (d.stride - order[leg]).rem_euclid(1.0);
+        let (dx, dz) = if psi < duty {
+            (length * (duty * 0.5 - psi), 0.0)
+        } else {
+            let u = (psi - duty) / (1.0 - duty);
+            (length * duty * (ease(u) - 0.5), raise * (PI * u).sin())
+        };
+        let hip_at = center + body * hip_of(&sp, leg) * m;
+        let foot = hip_at + ahead * (under + dx * d.gait + l.foot[0]) * m;
+        let ground = ground_z(h.world, foot.x, foot.y, hip_at.z - 2.0 * vpm, 3.0 * sp.s + 2.0).unwrap_or(d.ground);
+        let foot = Vector3::new(foot.x, foot.y, ground + (ANKLE + dz * d.gait + l.foot[1]) * m);
+        let local = body.inverse() * (foot - hip_at) / m;
+        let (s, kn) = reach_to(hind, local.x, local.z);
+        drawn.legs[leg].swing = l.swing + (s - l.swing) * l.plant;
+        drawn.legs[leg].knee = l.knee + (kn - l.knee) * l.plant;
+    }
+    let (mouth, breath) = pose(&sp, d.center, d.yaw, &drawn, vpm, &mut d.bones);
     d.mouth = mouth;
     d.breath = breath;
     // Hit in the body, till the player's seen looking at some other part of it, see Dragon::aim()
@@ -2907,6 +4013,9 @@ pub const WORLD_SECTION: &str = "dragons";
 pub fn roost(material: u8, z: f64, height: f64) -> bool {
     matches!(material, STONE | ROCK | GRAVEL | SNOW) && z > height * 0.55
 }
+
+#[cfg(test)]
+mod sheets;
 
 #[cfg(test)]
 mod tests {
@@ -3077,7 +4186,7 @@ mod tests {
     /// before, and where it'll land's been shown on the ground
     #[test]
     fn every_blow_is_seen_coming() {
-        for look in [Look::Ashwing, Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA] {
+        for look in [Look::Ashwing, Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA, Look::Drake, Look::VenomDrake, Look::FrostWyrm, Look::StormDrake, Look::ElderWyrm] {
             let (deeds, ..) = fight(look, 70.0, Some(0.2));
             let mut warned: Option<f64> = None;
             let mut marked: Option<f64> = None;
@@ -3107,12 +4216,13 @@ mod tests {
     /// each, and the oldest comes down to the ground into its second
     #[test]
     fn great_dragons_fight_in_phases() {
-        for look in [Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA] {
+        for look in [Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA, Look::ElderWyrm] {
             let (deeds, track, a) = fight(look, 120.0, Some(0.1));
             let stages: Vec<u8> = deeds.iter().filter_map(|(_, d)| if let Deed::Phase { stage, .. } = d { Some(*stage) } else { None }).collect();
             let all = phases(look).len() as u8;
             assert_eq!(stages, (1..=all).collect::<Vec<_>>(), "{look:?} went through phases {stages:?}");
-            assert!(a.boss.as_ref().unwrap().enraged, "{look:?} isn't enraged at the last");
+            let d = a.dragon.as_ref().unwrap();
+            assert!(a.boss.as_ref().unwrap().enraged, "{look:?} isn't enraged at the last: engaged {}, {:?}, {:.0} m off", a.boss.as_ref().unwrap().engaged, d.state, (d.center - Vector3::new(120.0, 120.0, 4.0) * 4.0).norm() / 4.0);
             if look == ULTRA {
                 // Mostly in the air at first, and on the ground once it's come down
                 let at = deeds.iter().find(|(_, d)| matches!(d, Deed::Phase { stage: 1, .. })).unwrap().0;
@@ -3194,6 +4304,120 @@ mod tests {
         let d = a.dragon.as_ref().unwrap();
         assert!(fell > 1.0 && fell < 10.0, "took {fell:.1} s to be done with");
         assert!(!d.airborne && d.center.z < feet.z + 2.0 * v, "still {:.1} m up", (d.center.z - feet.z) / v);
+    }
+
+    /// The drakes are dragons now, drawn on the jointed rig with no frames of their own, each its
+    /// own look, keeping the names, elements, health and places in the realms they always had: the
+    /// Elder Cinder Wyrm a raid boss in three phases, the rest bosses, none of them a drakeling
+    #[test]
+    fn the_drakes_are_dragons_and_keep_their_roles() {
+        use crate::animals::Build;
+        let elements = [Element::Fire, Element::Poison, Element::Frost, Element::Storm, Element::Fire];
+        let healths = [2200.0, 2200.0, 2400.0, 2300.0, 13000.0];
+        for (k, look) in DRAKES.into_iter().enumerate() {
+            assert_eq!(look.build(), Some(Build::Dragon), "{look:?}");
+            assert!(look.is_dragon() && look.is_boss() && look.flies() && !is_drakeling(look) && !is_great(look));
+            assert_eq!(look.element(), Some(elements[k]), "{look:?}");
+            assert_eq!(look.health(), healths[k], "{look:?}");
+            assert_eq!(name(look), look.name());
+            assert_eq!(look.is_raid(), look == Look::ElderWyrm, "{look:?}");
+            assert_eq!(phases(look).len(), if look == Look::ElderWyrm { 2 } else { 0 });
+            let a = Animal::boss(look, Vector3::zeros(), [0, 0, -1], 1);
+            assert!(a.dragon.is_some(), "{look:?} has no rig");
+        }
+        // Each looks its own: no two the same in hide, crown and wings together
+        for (i, a) in DRAKES.iter().enumerate() {
+            for b in &DRAKES[i + 1..] {
+                let (x, y) = (spec(*a), spec(*b));
+                assert!(x.hide.scale != y.hide.scale || x.crown != y.crown || x.wing != y.wing, "{a:?} and {b:?} look alike");
+            }
+        }
+    }
+
+    /// A leg's ankle put anywhere it reaches is put there by the angles worked out for it, its
+    /// knee forward of it
+    #[test]
+    fn legs_reach_where_they_are_set_down() {
+        for hind in [true, false] {
+            for (x, z) in [(0.0, -0.8), (0.3, -0.7), (-0.25, -0.6), (0.1, -0.45), (0.4, -0.3)] {
+                let (swing, knee) = reach_to(hind, x, z);
+                let (ax, az) = ankle_at(hind, swing, knee);
+                assert!((ax - x).abs() < 1e-6 && (az - z).abs() < 1e-6, "{hind} {x} {z}: got {ax:.3} {az:.3}");
+                assert!(knee > 0.0, "the knee bends backwards");
+            }
+        }
+        // Standing, as the legs stand
+        let (s, k) = reach_to(true, ankle_at(true, STAND_HIND.0, STAND_HIND.1).0, ankle_at(true, STAND_HIND.0, STAND_HIND.1).1);
+        assert!((s - STAND_HIND.0).abs() < 1e-6 && (k - STAND_HIND.1).abs() < 1e-6);
+    }
+
+    /// A wing beats down quickly, spread wide, and comes back up more slowly folded at the wrist,
+    /// opening again at the top, and the body's carried up by the downstroke
+    #[test]
+    fn wings_beat_down_hard_and_fold_coming_up() {
+        assert!(DOWNSTROKE < 0.5);
+        let at = |u: f64| beating(SPREAD, 0.8, 0.0, u);
+        let (top, bottom) = (at(0.0), at(DOWNSTROKE));
+        assert!(top.flap > SPREAD.flap + 0.6 && bottom.flap < SPREAD.flap - 0.5, "{top:?} {bottom:?}");
+        let down = at(DOWNSTROKE * 0.5);
+        let up = at(DOWNSTROKE + (0.95 - DOWNSTROKE) * 0.5);
+        assert!(down.fold < 0.1 && up.fold > 0.9, "folds {:.2} going down and {:.2} coming up", down.fold, up.fold);
+        assert!(up.bend < down.bend - 0.8, "its tip doesn't trail coming up");
+        assert!(at(0.99).fold < 0.15, "it's not open again at the top");
+        assert!(lift(DOWNSTROKE) > lift(0.0) && lift(DOWNSTROKE) > lift(0.9));
+    }
+
+    /// Struck dead on the ground, a drake rears with a last roar, then its legs fold, it rolls
+    /// onto its side and its body comes down low, and it lies there before it's taken away
+    #[test]
+    fn a_dragon_killed_on_the_ground_crumples() {
+        let vpm = 4u32;
+        let world = open_ground(240, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let v = vpm as f64;
+        let feet = Vector3::new(120.0, 120.0, 4.0) * v;
+        let mut a = Animal::boss(Look::Drake, feet + Vector3::new(6.0, 0.0, 0.0) * v, [1, 2, -1], 5);
+        let dt = 1.0 / 30.0;
+        for _ in 0..30 {
+            a.update(&world, &water, Some(feet), dt);
+        }
+        let standing = a.dragon.as_ref().unwrap().center.z;
+        a.damage(1e7, feet);
+        let mut t = 0.0;
+        let mut reared = 0.0f64;
+        while dying(&a) && t < 10.0 {
+            a.update(&world, &water, Some(feet), dt);
+            reared = reared.max(a.dragon.as_ref().unwrap().rig.pitch);
+            t += dt;
+        }
+        let d = a.dragon.as_ref().unwrap();
+        assert!(reared > 0.15, "it never reared with a last roar");
+        assert!(d.rig.roll.abs() > 0.6, "it didn't roll onto its side: {:.2}", d.rig.roll);
+        assert!(d.center.z < standing - 0.3 * stand_height(&spec(Look::Drake)) * v, "its body didn't come down");
+        assert!(t > 2.5 && t < 10.0, "lay {t:.1} s");
+    }
+
+    /// Hit hard, it flinches: its neck thrown about at once
+    #[test]
+    fn a_heavy_blow_makes_it_flinch() {
+        let vpm = 4u32;
+        let world = open_ground(240, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let v = vpm as f64;
+        let feet = Vector3::new(120.0, 120.0, 4.0) * v;
+        let mut a = Animal::boss(Look::FrostWyrm, feet + Vector3::new(30.0, 0.0, 0.0) * v, [1, 2, -1], 5);
+        let dt = 1.0 / 30.0;
+        for _ in 0..20 {
+            a.update(&world, &water, None, dt);
+        }
+        let before = a.dragon.as_ref().unwrap().rig.neck;
+        a.damage(a.max_health * 0.05, feet);
+        for _ in 0..4 {
+            a.update(&world, &water, None, dt);
+        }
+        let d = a.dragon.as_ref().unwrap();
+        let moved: f64 = (0..3).map(|k| (d.rig.neck[k][0] - before[k][0]).abs() + (d.rig.neck[k][1] - before[k][1]).abs()).sum();
+        assert!(d.flinch > 0.0 && moved > 0.15, "its neck moved {moved:.2}");
     }
 }
 

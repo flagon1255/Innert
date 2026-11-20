@@ -452,7 +452,6 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Sweep | Move::Spikes) => 1.0,
         (_, Move::Coil | Move::Tail) => 1.0,
         (Some(Build::Wolf), Move::Slam) => 0.55,
-        (Some(Build::Drake), Move::Slam) => 0.6,
         (Some(Build::Bear), Move::Slam) => 0.8,
         (Some(Build::Spider), Move::Slam) => 0.7,
         (_, Move::Slam | Move::Throw | Move::Charge) => 0.9,
@@ -655,7 +654,6 @@ fn closeness(look: Look) -> (f64, f64) {
         _ if look.is_serpent() => (1.8, 1.6),
         // A great serpent's head stops short of the player, its jaws reaching the rest
         _ if look.is_great_serpent() => serpents::great_of(look).map_or((4.0, 3.0), |g| (g.head + 2.0 + 0.6 * g.girth, g.head + 1.0)),
-        _ if look.build() == Some(Build::Drake) => (6.0, look.body().1 + 1.0),
         _ => (3.0, look.body().1 + 1.0),
     }
 }
@@ -1260,7 +1258,6 @@ impl Boss {
             // A tusker paws the ground before it charges
             (Phase::WindUp(Move::Charge, _), Some(Build::Boar)) => Some(POSE_WINDUP),
             (Phase::Act(Move::Charge, _), Some(Build::Boar)) => Some(POSE_SPECIAL),
-            (Phase::Act(Move::Roar, _), Some(Build::Drake)) => Some(POSE_SPECIAL),
             (Phase::Act(Move::Roar, _), _) => Some(POSE_WINDUP),
             // A wolf crouches to spring; howling, the dead raising their arms, calling the rest up
             (Phase::WindUp(Move::Leap, _), Some(Build::Wolf)) => Some(POSE_WINDUP),
@@ -1295,7 +1292,6 @@ impl Boss {
             _ if self.look.is_great_serpent() => great_moves(self.look, self.buried, self.stage),
             // Raid bosses: what their kind does, and bringing the sky down once they're hurt
             _ if self.look == Look::Colossus => &[(Move::Slam, 0.0, 4.6), (Move::Cataclysm, 0.0, 30.0), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
-            _ if self.look == Look::ElderWyrm => &[(Move::Slam, 0.0, 4.0), (Move::Cataclysm, 0.0, 30.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 8.0, 30.0), (Move::Spit, 4.0, 35.0)],
             _ if self.look == Look::CryptTitan => &[
                 (Move::Spikes, 0.0, 3.0),
                 (Move::Sweep, 0.0, 3.0),
@@ -1351,7 +1347,6 @@ impl Boss {
             Some(_) if monster => &[(Move::Slam, 0.0, 2.4)],
             // Ranges meeting, so there's nowhere to stand it won't do something
             Some(Build::Golem) => &[(Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 13.0), (Move::Throw, 4.6, 32.0)],
-            Some(Build::Drake) => &[(Move::Slam, 0.0, 4.0), (Move::Breath, 0.0, 9.0), (Move::Storm, 10.0, 30.0), (Move::Spit, 4.0, 35.0)],
             Some(Build::Bear) => &[(Move::Slam, 0.0, 4.0), (Move::Maul, 2.5, 8.0), (Move::Charge, 4.0, 32.0)],
             Some(Build::Spider) => &[(Move::Slam, 0.0, 3.5), (Move::Summon, 0.0, 30.0), (Move::Web, 6.0, 20.0), (Move::Leap, 7.0, 22.0), (Move::Spit, 3.5, 25.0)],
             Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],

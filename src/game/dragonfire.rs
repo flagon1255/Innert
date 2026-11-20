@@ -296,14 +296,20 @@ impl Game {
                 };
                 self.cues.push(cue);
             }
-            Act::Roar { at, brood, first } => {
-                self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if big { 0.75 } else { 1.1 }));
+            Act::Roar { at, brood, first, angry } => {
+                self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if big { 0.75 } else { 1.1 } * if angry { 1.1 } else { 1.0 }));
                 if !big {
                     self.cues.push(Cue::at(Sound::Screech, at, 0.7).pitched(voice * 0.5));
+                }
+                // A drake's wings thrown open with a crack as it roars
+                if dragons::is_drake(look) {
+                    self.cues.push(Cue::at(Sound::Flap, at, 0.8).pitched(0.8 * voice));
                 }
                 self.shake = self.shake.max(if big { 0.7 } else { 0.2 } * felt(at));
                 if big && first {
                     self.say(format!("The {} turns on you!", look.name()));
+                } else if angry {
+                    self.say(format!("The {} is enraged!", look.name()));
                 }
                 if let Some((kind, count)) = brood {
                     self.call_brood(look, kind, count, at, world, player);
