@@ -27,15 +27,20 @@ use crate::worldgen::material::AIR;
 mod beast;
 mod biped;
 mod caster;
+mod crawler;
 mod giant;
 mod golem;
 mod knight;
+mod treant;
 
 pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 20] = [
+pub const KINDS: [Look; 23] = [
+    Look::Treant,
+    Look::Spider,
+    Look::Rimeweaver,
     Look::Warlord,
     Look::Necromancer,
     Look::Ironhide,
@@ -83,11 +88,15 @@ enum Family {
     Giant,
     Caster,
     Beast,
+    Treant,
+    Crawler,
 }
 
 fn family(look: Look) -> Family {
     match look {
         Look::GraveKnight | Look::CryptTitan => Family::Knight,
+        Look::Treant => Family::Treant,
+        Look::Spider | Look::Rimeweaver => Family::Crawler,
         Look::Ogre | Look::RimeJotun | Look::StormGiant => Family::Giant,
         Look::SandPharaoh | Look::BogHag | Look::HollowMother | Look::Warlord | Look::Necromancer => Family::Caster,
         Look::Elderhorn | Look::BleedingHart | Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => Family::Beast,
@@ -368,6 +377,7 @@ pub struct Sockets {
 enum Pose {
     Biped(biped::Stance),
     Beast(beast::Stance),
+    Crawler(crawler::Stance),
 }
 
 /// The state of a jointed boss's pose, kept from frame to frame
@@ -420,6 +430,8 @@ impl Rig {
             Family::Giant => Pose::Biped(giant::rest(look)),
             Family::Caster => Pose::Biped(caster::rest(look)),
             Family::Beast => Pose::Beast(beast::rest(look)),
+            Family::Treant => Pose::Biped(treant::rest(look)),
+            Family::Crawler => Pose::Crawler(crawler::rest(look)),
         };
         let mut start = hash(seed);
         let mut rig = Rig {
@@ -447,7 +459,7 @@ impl Rig {
     fn biped(&mut self) -> &mut biped::Stance {
         match &mut self.pose {
             Pose::Biped(s) => s,
-            Pose::Beast(_) => panic!("{:?} isn't a biped", self.look),
+            _ => panic!("{:?} isn't a biped", self.look),
         }
     }
 
@@ -455,7 +467,15 @@ impl Rig {
     fn beast(&mut self) -> &mut beast::Stance {
         match &mut self.pose {
             Pose::Beast(s) => s,
-            Pose::Biped(_) => panic!("{:?} isn't a beast", self.look),
+            _ => panic!("{:?} isn't a beast", self.look),
+        }
+    }
+
+    /// A pose of an eight-legged build's, to ease
+    fn crawler(&mut self) -> &mut crawler::Stance {
+        match &mut self.pose {
+            Pose::Crawler(s) => s,
+            _ => panic!("{:?} isn't a crawler", self.look),
         }
     }
 
@@ -512,6 +532,8 @@ impl Rig {
             Family::Giant => giant::animate(self, m),
             Family::Caster => caster::animate(self, m),
             Family::Beast => beast::animate(self, m),
+            Family::Treant => treant::animate(self, m),
+            Family::Crawler => crawler::animate(self, m),
         }
         self.posed = true;
     }
@@ -531,6 +553,8 @@ fn pieces(look: Look) -> Vec<Vec<Part>> {
         Family::Giant => giant::pieces(look),
         Family::Caster => caster::pieces(look),
         Family::Beast => beast::pieces(look),
+        Family::Treant => treant::pieces(look),
+        Family::Crawler => crawler::pieces(look),
     }
 }
 
@@ -652,6 +676,8 @@ pub fn death_seconds(look: Look) -> f64 {
         Family::Giant => giant::DEATH,
         Family::Caster => caster::DEATH,
         Family::Beast => beast::DEATH,
+        Family::Treant => treant::DEATH,
+        Family::Crawler => crawler::DEATH,
     }
 }
 
@@ -670,6 +696,8 @@ pub fn thuds(look: Look) -> &'static [f64] {
         Family::Giant => &giant::THUDS,
         Family::Caster => &caster::THUDS,
         Family::Beast => &beast::THUDS,
+        Family::Treant => &treant::THUDS,
+        Family::Crawler => &crawler::THUDS,
     }
 }
 
