@@ -71,6 +71,9 @@ struct Trial {
     flap_after: Option<usize>,
     flap_now: bool,
     fall_at: Option<usize>,
+    /// When a merchant's stood just ahead of the player and its stall opened, `shop_at=30`, to see
+    /// its wares
+    shop_at: Option<usize>,
     /// Once the world's first there: the view turned to look that many degrees round from east,
     /// `face=0`, and lifted that many meters up off the player's feet, flying, to look out over
     /// it, `overlook=40`
@@ -698,6 +701,7 @@ impl App {
             flap_after: number("flap_after"),
             flap_now: false,
             fall_at: number("fall_at"),
+            shop_at: number("shop_at"),
             face: setting("face").and_then(|v| v.parse().ok()),
             overlook: setting("overlook").and_then(|v| v.parse().ok()),
             glide: None,
@@ -767,6 +771,16 @@ impl App {
         let (hook, glide, fall) = (at(trial.hook_at), at(trial.glide_at), at(trial.fall_at));
         if glide {
             trial.glide = Some(frame);
+        }
+        if at(trial.shop_at)
+            && let Some(player) = &self.player
+        {
+            let feet = player.position;
+            let yaw = self.camera.rotation.z;
+            let ahead = Vector3::new(-yaw.sin(), yaw.cos(), 0.0);
+            let water = &self.water;
+            self.game.summon_merchant(&self.world, &|x, y| water.surface_at(x, y), feet, ahead, 2.5);
+            self.game.open_nearest_shop(feet);
         }
         let gliding = trial.glide;
         // The hook taken in hand a moment before it's thrown, to be seen held ready
