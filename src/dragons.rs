@@ -3181,7 +3181,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     if !d.struck {
                         d.struck = true;
                         let brood = brood(h.look).filter(|_| d.stage >= if h.look == ULTRA { 2 } else { 1 }).map(|b| (b, if h.look == ULTRA { 3 } else { 2 }));
-                        let angry = is_drake(h.look) && phases(h.look).is_empty();
+                        let angry = is_drake(h.look) && phases(h.look).is_empty() && boss.enraged;
                         act_out(boss, Act::Roar { at: d.mouth, brood, first: false, angry });
                     }
                     done = t >= length;
