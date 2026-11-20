@@ -258,7 +258,7 @@ fn scenes() -> Vec<Scene> {
         out.push(Scene { away: 25.0, ..scene(&format!("{n}_glide"), look, Start::Fly, 2.0, 0.25, 24) });
         // Taking off, and coming down to land
         out.push(Scene { follow: false, zoom: 2.2, ..scene(&format!("{n}_takeoff"), look, Start::Rise, 0.0, 0.075 * k.sqrt(), 24) });
-        out.push(Scene { zoom: 1.2, ..scene(&format!("{n}_landing"), look, Start::Land, 0.5, 0.14 * k.sqrt(), 24) });
+        out.push(Scene { zoom: 1.7, ..scene(&format!("{n}_landing"), look, Start::Land, 2.0, 0.13 * k.sqrt(), 28) });
         // Each of its moves on the ground, from as far off as it makes it from
         for m in [Bite, Tail, Breath, Gust, Stomp, Spit, Rain, Roar] {
             let Some(skill) = skills(look).iter().find(|sk| sk.m == m && !sk.air) else {
@@ -379,7 +379,7 @@ fn shoot(scene: &Scene, models: &[(Model, Vector3<f64>)]) -> Vec<Vec<[u8; 3]>> {
                 );
             }
             let center = d.center / v;
-            let target = if scene.follow { Vector3::new(center.x, center.y, center.z.max(4.0 + 1.0 * sp.s)) } else { *fixed.get_or_insert(center + Vector3::new(0.0, 0.0, 0.4 * sp.s)) };
+            let target = if scene.follow { Vector3::new(center.x, center.y, if scene.start == Start::Land { 4.0 + 1.8 * sp.s } else { center.z.max(4.0 + 1.0 * sp.s) }) } else { *fixed.get_or_insert(center + Vector3::new(0.0, 0.0, 0.4 * sp.s)) };
             let heading = if scene.follow { Vector3::new(d.yaw.cos(), d.yaw.sin(), 0.0) } else { Vector3::x() };
             let dir = match scene.view {
                 // From its left side, square on

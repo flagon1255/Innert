@@ -2348,8 +2348,11 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
     }
     let busy = matches!(d.state, State::Do(..) | State::Reel(_) | State::Fall);
     // A great one going into the next phase of its fight: roaring, calling its brood, and in the
-    // last of them quicker about everything
+    // last of them quicker about everything, and still so if it's turned on the player again
     let marks = phases(h.look);
+    if boss.engaged && !marks.is_empty() && boss.stage as usize >= marks.len() {
+        boss.enraged = true;
+    }
     if boss.engaged && (boss.stage as usize) < marks.len() && a.vitality() < marks[boss.stage as usize] && !busy {
         boss.stage += 1;
         boss.enraged = boss.stage as usize >= marks.len();
@@ -2510,27 +2513,29 @@ fn look_at(d: &Dragon, h: &Here, want: &mut Rig, at: Vector3<f64>, how: f64) {
 /// down over it, the head drawn in and tipped down at what it'll strike
 fn coil(want: &mut Rig, sp: &Spec, back: f64) {
     let n = sp.necks;
-    want.neck[0][1] += 0.5 * back;
+    want.neck[0][1] += 0.6 * back;
     for k in 1..n {
-        want.neck[k][1] -= 0.75 * back / (n - 1) as f64;
+        want.neck[k][1] -= 1.1 * back / (n - 1) as f64;
     }
     if n == 1 {
         want.head[1] -= 0.4 * back;
     }
-    want.head[1] -= 0.12 * back;
-    want.shift[0] -= 0.07 * back;
+    want.head[1] -= 0.05 * back;
+    want.shift[0] -= 0.12 * back;
+    want.pitch += 0.06 * back;
 }
 
 /// Its neck thrust straight out ahead and a little down, `out` of the way, as it strikes, its body
 /// lurching after it
 fn thrust(want: &mut Rig, sp: &Spec, out: f64) {
     let n = sp.necks;
-    want.neck[0][1] -= 0.48 * out;
+    want.neck[0][1] -= 0.6 * out;
     for k in 1..n {
-        want.neck[k][1] += 0.3 * out / (n - 1) as f64;
+        want.neck[k][1] += 0.5 * out / (n - 1) as f64;
     }
-    want.head[1] += 0.22 * out;
-    want.shift[0] += 0.12 * out;
+    want.head[1] += 0.18 * out;
+    want.shift[0] += 0.2 * out;
+    want.pitch -= 0.05 * out;
 }
 
 /// Reared up, `up` of the way, as to breathe or roar: its front lifted, its weight back, its neck
@@ -2544,6 +2549,8 @@ fn rear(want: &mut Rig, sp: &Spec, up: f64) {
         want.neck[k][1] += 0.08 * up;
     }
     want.head[1] += 0.4 * up;
+    // Its tail lifted as its front comes up, so it's not driven into the ground
+    want.tail[0][1] += 0.2 * up;
 }
 
 /// Its legs as they're held: all four planted, or `fore` lifted off the ground, held as `pose`
@@ -2879,7 +2886,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     lift_fore(want, e, LegPose { swing: 1.15 + 0.15 * (t * 7.0).sin(), knee: 0.6, ..Default::default() });
                     want.neck[0][1] += 0.2 * e;
                     want.head[1] -= 0.35 * e;
-                    want.tail[0][1] -= 0.18 * e;
+                    want.tail[0][1] += 0.4 * e;
                     want.jaw = 0.3 * e;
                     *wings = WingSet::beating(blend(FOLDED, WingPose { flap: 0.6, sweep: 0.45, twist: 0.0, fold: 0.35, bend: -0.6 }, e), 0.12 * e, 0.9);
                     let at = d.center + forward * 0.7 * s * vpm;
@@ -3584,9 +3591,9 @@ fn fall(_a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
     want.head[1] += 0.35 * c;
     want.head[0] += d.side * 0.2 * c;
     want.jaw = 0.4 * c;
-    want.tail[0][1] -= 0.12 * c;
+    want.tail[0][1] -= 0.2 * c;
     for j in 0..4 {
-        want.tail[j][1] -= 0.02 * c;
+        want.tail[j][1] -= 0.08 * c;
         want.tail[j][0] -= d.side * 0.16 * c;
     }
     *wings = WingSet::held(blend(FOLDED, WingPose { flap: -0.15, sweep: 0.55, twist: 0.2, fold: 0.55, bend: -0.7 }, c));
@@ -3864,6 +3871,14 @@ fn animate(d: &mut Dragon, h: &Here, want: &Rig, wings: &WingSet, dead: bool) {
     }
     let beat = beating(base, d.wings.amp, d.wings.hover, d.beat);
     d.rig.wings = [beat, beat];
+    // Lying dead on its side, the wing under it lies flat along the ground rather than through
+    // it, and the one over it falls across its body
+    if dead && !d.airborne {
+        let r = d.rig.roll;
+        let (under, over) = if r > 0.0 { (1, 0) } else { (0, 1) };
+        d.rig.wings[under].flap += r.abs() * 0.95;
+        d.rig.wings[over].flap -= r.abs() * 0.3;
+    }
     // As it's drawn: as it's sprung, carried as it carries itself
     let mut drawn = d.rig;
     drawn.shift[2] += carried[0];
@@ -4171,7 +4186,7 @@ mod tests {
     /// before, and where it'll land's been shown on the ground
     #[test]
     fn every_blow_is_seen_coming() {
-        for look in [Look::Ashwing, Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA] {
+        for look in [Look::Ashwing, Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA, Look::Drake, Look::VenomDrake, Look::FrostWyrm, Look::StormDrake, Look::ElderWyrm] {
             let (deeds, ..) = fight(look, 70.0, Some(0.2));
             let mut warned: Option<f64> = None;
             let mut marked: Option<f64> = None;
@@ -4201,12 +4216,13 @@ mod tests {
     /// each, and the oldest comes down to the ground into its second
     #[test]
     fn great_dragons_fight_in_phases() {
-        for look in [Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA] {
+        for look in [Look::PyreMatriarch, Look::CindermawTyrant, Look::GildscaleHoardwarden, ULTRA, Look::ElderWyrm] {
             let (deeds, track, a) = fight(look, 120.0, Some(0.1));
             let stages: Vec<u8> = deeds.iter().filter_map(|(_, d)| if let Deed::Phase { stage, .. } = d { Some(*stage) } else { None }).collect();
             let all = phases(look).len() as u8;
             assert_eq!(stages, (1..=all).collect::<Vec<_>>(), "{look:?} went through phases {stages:?}");
-            assert!(a.boss.as_ref().unwrap().enraged, "{look:?} isn't enraged at the last");
+            let d = a.dragon.as_ref().unwrap();
+            assert!(a.boss.as_ref().unwrap().enraged, "{look:?} isn't enraged at the last: engaged {}, {:?}, {:.0} m off", a.boss.as_ref().unwrap().engaged, d.state, (d.center - Vector3::new(120.0, 120.0, 4.0) * 4.0).norm() / 4.0);
             if look == ULTRA {
                 // Mostly in the air at first, and on the ground once it's come down
                 let at = deeds.iter().find(|(_, d)| matches!(d, Deed::Phase { stage: 1, .. })).unwrap().0;
@@ -4288,6 +4304,120 @@ mod tests {
         let d = a.dragon.as_ref().unwrap();
         assert!(fell > 1.0 && fell < 10.0, "took {fell:.1} s to be done with");
         assert!(!d.airborne && d.center.z < feet.z + 2.0 * v, "still {:.1} m up", (d.center.z - feet.z) / v);
+    }
+
+    /// The drakes are dragons now, drawn on the jointed rig with no frames of their own, each its
+    /// own look, keeping the names, elements, health and places in the realms they always had: the
+    /// Elder Cinder Wyrm a raid boss in three phases, the rest bosses, none of them a drakeling
+    #[test]
+    fn the_drakes_are_dragons_and_keep_their_roles() {
+        use crate::animals::Build;
+        let elements = [Element::Fire, Element::Poison, Element::Frost, Element::Storm, Element::Fire];
+        let healths = [2200.0, 2200.0, 2400.0, 2300.0, 13000.0];
+        for (k, look) in DRAKES.into_iter().enumerate() {
+            assert_eq!(look.build(), Some(Build::Dragon), "{look:?}");
+            assert!(look.is_dragon() && look.is_boss() && look.flies() && !is_drakeling(look) && !is_great(look));
+            assert_eq!(look.element(), Some(elements[k]), "{look:?}");
+            assert_eq!(look.health(), healths[k], "{look:?}");
+            assert_eq!(name(look), look.name());
+            assert_eq!(look.is_raid(), look == Look::ElderWyrm, "{look:?}");
+            assert_eq!(phases(look).len(), if look == Look::ElderWyrm { 2 } else { 0 });
+            let a = Animal::boss(look, Vector3::zeros(), [0, 0, -1], 1);
+            assert!(a.dragon.is_some(), "{look:?} has no rig");
+        }
+        // Each looks its own: no two the same in hide, crown and wings together
+        for (i, a) in DRAKES.iter().enumerate() {
+            for b in &DRAKES[i + 1..] {
+                let (x, y) = (spec(*a), spec(*b));
+                assert!(x.hide.scale != y.hide.scale || x.crown != y.crown || x.wing != y.wing, "{a:?} and {b:?} look alike");
+            }
+        }
+    }
+
+    /// A leg's ankle put anywhere it reaches is put there by the angles worked out for it, its
+    /// knee forward of it
+    #[test]
+    fn legs_reach_where_they_are_set_down() {
+        for hind in [true, false] {
+            for (x, z) in [(0.0, -0.8), (0.3, -0.7), (-0.25, -0.6), (0.1, -0.45), (0.4, -0.3)] {
+                let (swing, knee) = reach_to(hind, x, z);
+                let (ax, az) = ankle_at(hind, swing, knee);
+                assert!((ax - x).abs() < 1e-6 && (az - z).abs() < 1e-6, "{hind} {x} {z}: got {ax:.3} {az:.3}");
+                assert!(knee > 0.0, "the knee bends backwards");
+            }
+        }
+        // Standing, as the legs stand
+        let (s, k) = reach_to(true, ankle_at(true, STAND_HIND.0, STAND_HIND.1).0, ankle_at(true, STAND_HIND.0, STAND_HIND.1).1);
+        assert!((s - STAND_HIND.0).abs() < 1e-6 && (k - STAND_HIND.1).abs() < 1e-6);
+    }
+
+    /// A wing beats down quickly, spread wide, and comes back up more slowly folded at the wrist,
+    /// opening again at the top, and the body's carried up by the downstroke
+    #[test]
+    fn wings_beat_down_hard_and_fold_coming_up() {
+        assert!(DOWNSTROKE < 0.5);
+        let at = |u: f64| beating(SPREAD, 0.8, 0.0, u);
+        let (top, bottom) = (at(0.0), at(DOWNSTROKE));
+        assert!(top.flap > SPREAD.flap + 0.6 && bottom.flap < SPREAD.flap - 0.5, "{top:?} {bottom:?}");
+        let down = at(DOWNSTROKE * 0.5);
+        let up = at(DOWNSTROKE + (0.95 - DOWNSTROKE) * 0.5);
+        assert!(down.fold < 0.1 && up.fold > 0.9, "folds {:.2} going down and {:.2} coming up", down.fold, up.fold);
+        assert!(up.bend < down.bend - 0.8, "its tip doesn't trail coming up");
+        assert!(at(0.99).fold < 0.15, "it's not open again at the top");
+        assert!(lift(DOWNSTROKE) > lift(0.0) && lift(DOWNSTROKE) > lift(0.9));
+    }
+
+    /// Struck dead on the ground, a drake rears with a last roar, then its legs fold, it rolls
+    /// onto its side and its body comes down low, and it lies there before it's taken away
+    #[test]
+    fn a_dragon_killed_on_the_ground_crumples() {
+        let vpm = 4u32;
+        let world = open_ground(240, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let v = vpm as f64;
+        let feet = Vector3::new(120.0, 120.0, 4.0) * v;
+        let mut a = Animal::boss(Look::Drake, feet + Vector3::new(6.0, 0.0, 0.0) * v, [1, 2, -1], 5);
+        let dt = 1.0 / 30.0;
+        for _ in 0..30 {
+            a.update(&world, &water, Some(feet), dt);
+        }
+        let standing = a.dragon.as_ref().unwrap().center.z;
+        a.damage(1e7, feet);
+        let mut t = 0.0;
+        let mut reared = 0.0f64;
+        while dying(&a) && t < 10.0 {
+            a.update(&world, &water, Some(feet), dt);
+            reared = reared.max(a.dragon.as_ref().unwrap().rig.pitch);
+            t += dt;
+        }
+        let d = a.dragon.as_ref().unwrap();
+        assert!(reared > 0.15, "it never reared with a last roar");
+        assert!(d.rig.roll.abs() > 0.6, "it didn't roll onto its side: {:.2}", d.rig.roll);
+        assert!(d.center.z < standing - 0.3 * stand_height(&spec(Look::Drake)) * v, "its body didn't come down");
+        assert!(t > 2.5 && t < 10.0, "lay {t:.1} s");
+    }
+
+    /// Hit hard, it flinches: its neck thrown about at once
+    #[test]
+    fn a_heavy_blow_makes_it_flinch() {
+        let vpm = 4u32;
+        let world = open_ground(240, vpm);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let v = vpm as f64;
+        let feet = Vector3::new(120.0, 120.0, 4.0) * v;
+        let mut a = Animal::boss(Look::FrostWyrm, feet + Vector3::new(30.0, 0.0, 0.0) * v, [1, 2, -1], 5);
+        let dt = 1.0 / 30.0;
+        for _ in 0..20 {
+            a.update(&world, &water, None, dt);
+        }
+        let before = a.dragon.as_ref().unwrap().rig.neck;
+        a.damage(a.max_health * 0.05, feet);
+        for _ in 0..4 {
+            a.update(&world, &water, None, dt);
+        }
+        let d = a.dragon.as_ref().unwrap();
+        let moved: f64 = (0..3).map(|k| (d.rig.neck[k][0] - before[k][0]).abs() + (d.rig.neck[k][1] - before[k][1]).abs()).sum();
+        assert!(d.flinch > 0.0 && moved > 0.15, "its neck moved {moved:.2}");
     }
 }
 
