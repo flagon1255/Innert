@@ -488,8 +488,10 @@ impl Game {
             *t += dt;
             match player {
                 Some(feet) if *t > 0.25 => {
-                    let ground = ground_under(world, feet);
-                    if feet.z - ground.z < 0.15 * vpm {
+                    // On the ground again: something solid just under their feet
+                    let (x, y) = (feet.x.floor() as i64, feet.y.floor() as i64);
+                    let down = (feet.z - 0.15 * vpm).floor() as i64;
+                    if !is_passable(world.material_at(x, y, down)) {
                         let height = (*from - feet.z) / vpm;
                         let free = (2.0 * height.max(0.0) / 22.0).sqrt();
                         if height > 4.0 && *t < free * 1.8 + 0.4 {

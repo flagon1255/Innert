@@ -2434,6 +2434,9 @@ impl App {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
             game.find_weapon("staff", element, 2.0);
         }
+        // Avians and gargoyles made from here on making only `--set boss_move=snatch` or another of
+        // their own moves, in a screenshot run, see avians.rs
+        avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
         // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
         // try fighting it
         let boss = setting("boss").and_then(|name| {
@@ -2454,10 +2457,8 @@ impl App {
                 game.force_boss_move(m);
             }
         }
-        // The same for avians and gargoyles, `--set boss_move=snatch` and the rest, see avians.rs;
-        // `--set aerie_show=1` has them fight with nobody about as if someone were, and
-        // `aerie_trace=1` says what each is doing twice a second
-        avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
+        // `--set aerie_show=1` has avians and gargoyles fight with nobody about as if someone were,
+        // and `aerie_trace=1` says what each is doing twice a second, see avians.rs
         avians::SHOW.store(flag("aerie_show", false), std::sync::atomic::Ordering::Relaxed);
         avians::TRACE.store(flag("aerie_trace", false), std::sync::atomic::Ordering::Relaxed);
         // Dragons, see dragons.rs: `--set spawn=dragon:0`, `1` or `2` puts the Dragon realm's raid

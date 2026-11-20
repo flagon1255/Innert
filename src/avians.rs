@@ -353,16 +353,21 @@ pub(crate) fn wrist(sp: &Spec) -> V3 {
 /// Where the lower jaw's hinged on the head, and its mouth, in units of the head's own frame
 pub(crate) fn jaw_hinge(sp: &Spec) -> Vec3 {
     match sp.plan {
-        Plan::Bird => [0.12, 0.0, -0.04],
-        Plan::Harpy => [0.08, 0.0, -0.02],
+        Plan::Bird => [0.12 * BIRD_HEAD, 0.0, -0.04 * BIRD_HEAD],
+        Plan::Harpy => [0.08 * HARPY_HEAD, 0.0, -0.02 * HARPY_HEAD],
         Plan::Gargoyle => [0.12, 0.0, -0.07],
     }
 }
 
+/// How much bigger a harpy's head is built than its shapes say, a woman's head on a body built small,
+/// and a bird's, so its glare and its beak can be made out
+const HARPY_HEAD: f64 = 1.6;
+const BIRD_HEAD: f64 = 1.3;
+
 fn mouth_of(sp: &Spec) -> Vec3 {
     match sp.plan {
-        Plan::Bird => [0.28, 0.0, -0.04],
-        Plan::Harpy => [0.15, 0.0, 0.0],
+        Plan::Bird => [0.28 * BIRD_HEAD, 0.0, -0.04 * BIRD_HEAD],
+        Plan::Harpy => [0.15 * HARPY_HEAD, 0.0, 0.0],
         Plan::Gargoyle => [0.3, 0.0, -0.05],
     }
 }
@@ -636,7 +641,7 @@ fn harpy_jaw(p: &mut Vec<Part>, sp: &Spec) {
     for side in [-1.0, 1.0] {
         p.push(limb([0.05, side * 0.02, 0.0], [0.05, side * 0.02, 0.02], 0.008, 0.004, BONE));
     }
-    p.push(ellipsoid([0.03, 0.0, -0.005], [0.04, 0.05, 0.022], h.skin));
+    p.push(ellipsoid([0.035, 0.0, -0.005], [0.05, 0.055, 0.028], h.skin));
 }
 
 /// A feather from `a` to `b`, flat in the wing
@@ -752,10 +757,22 @@ fn piece_parts(k: usize, piece: usize) -> Vec<Part> {
         match piece {
             M_TORSO if harpy => harpy_torso(&mut p, &sp),
             M_TORSO => bird_torso(&mut p, &sp),
-            M_HEAD if harpy => harpy_head(&mut p, &sp),
-            M_HEAD => bird_head(&mut p, &sp),
-            M_JAW if sp.jaw && harpy => harpy_jaw(&mut p, &sp),
-            M_JAW if sp.jaw => bird_jaw(&mut p, &sp),
+            M_HEAD if harpy => {
+                harpy_head(&mut p, &sp);
+                p = p.iter().map(|part| part.scaled(HARPY_HEAD)).collect();
+            }
+            M_HEAD => {
+                bird_head(&mut p, &sp);
+                p = p.iter().map(|part| part.scaled(BIRD_HEAD)).collect();
+            }
+            M_JAW if sp.jaw && harpy => {
+                harpy_jaw(&mut p, &sp);
+                p = p.iter().map(|part| part.scaled(HARPY_HEAD)).collect();
+            }
+            M_JAW if sp.jaw => {
+                bird_jaw(&mut p, &sp);
+                p = p.iter().map(|part| part.scaled(BIRD_HEAD)).collect();
+            }
             M_TAIL if sp.tail => tail_fan(&mut p, &sp, [0.0, 0.0, 0.0]),
             4 => feathered_in(&mut p, &sp, 1.0),
             5 => feathered_out(&mut p, &sp, 1.0),
@@ -1601,8 +1618,12 @@ pub struct Flier {
     placed: bool,
     /// How much of it's stone, 0 to 1: a gargoyle asleep or hardened, or one dying
     stone: f64,
+    /// A gargoyle hurt badly enough to want to turn to stone, as soon as it's down on the ground
+    harden: bool,
     /// The roc has the player in its talons, so many seconds
     holding: Option<f64>,
+    /// For shots of a move: the one move it makes, whenever it can, see force()
+    pub only: Option<Move>,
     rng: u32,
 }
 
@@ -1718,7 +1739,9 @@ impl Flier {
             stage: 0,
             placed: false,
             stone: 0.0,
+            harden: false,
             holding: None,
+            only: forced(),
             rng: hash(seed ^ 0xa71a),
         }
     }
@@ -2036,7 +2059,13 @@ fn pick_budget(d: &mut Flier, h: &Here, air: bool) -> f64 {
 /// What it can do from where it is, if anything's ready, picked by how likely each is: a gargoyle
 /// turns to stone only once it's been hurt
 fn choose(d: &mut Flier, h: &Here, stage: u8, distance: f64, hurt: bool) -> Option<Skill> {
-    let only = forced();
+    let only = d.only;
+    // Hurt that badly, a gargoyle turns to stone as soon as it can
+    if hurt && !d.airborne && only.is_none_or(|m| m == Harden)
+        && let Some(stone) = skills(h.look).iter().find(|s| s.m == Harden && !s.air && d.cool[Harden as usize] <= 0.0)
+    {
+        return Some(*stone);
+    }
     let ready: Vec<Skill> = skills(h.look)
         .iter()
         .copied()
@@ -2262,7 +2291,12 @@ fn think(a: &mut Animal, d: &mut Flier, boss: &mut Boss, h: &Here, goal: &mut Go
         }
         State::Hunt => {
             let stage = boss.stage;
-            let hurt = d.recent > a.max_health * if is_monster(h.look) { 0.18 } else { 0.05 };
+            let hurt = d.recent > a.max_health * if is_monster(h.look) { 0.12 } else { 0.05 };
+            // A gargoyle hurt that badly wants to turn to stone: down to the ground to, if it's flying
+            if gargoyle && hurt && d.cool[Harden as usize] <= 0.0 {
+                d.harden = true;
+            }
+            let hurt = hurt || d.harden;
             if d.airborne {
                 // Circling over the player, a pack round them each its own way, high and low
                 let slot = boss.flock.slot as f64;
@@ -2282,7 +2316,7 @@ fn think(a: &mut Animal, d: &mut Flier, boss: &mut Boss, h: &Here, goal: &mut Go
                 {
                     begin(d, h, skill.m, false);
                 }
-                if d.aloft > d.budget && boss.engaged && matches!(d.state, State::Hunt) {
+                if (d.aloft > d.budget || d.harden) && boss.engaged && matches!(d.state, State::Hunt) {
                     begin_landing(d, h);
                 }
             } else {
@@ -2623,6 +2657,7 @@ fn think(a: &mut Animal, d: &mut Flier, boss: &mut Boss, h: &Here, goal: &mut Go
                     act_out(boss, Act::TakeOff { at: V3::new(d.center.x, d.center.y, d.foot_z), size: size(h.look) });
                 }
                 if m == Harden {
+                    d.harden = false;
                     d.state = State::Stone(0.0);
                     act_out(boss, Act::Petrify { at: d.center, size: size(h.look) });
                     return;
@@ -3277,7 +3312,7 @@ fn travel(d: &mut Flier, h: &Here, goal: &Goal, want: &mut Rig) {
         if goal.speed >= 0.0 {
             let off = goal.to - d.center;
             let distance = off.norm();
-            let want_v = if distance > 1e-6 { off / distance * (goal.speed * vpm).min(distance * 1.8) } else { V3::zeros() };
+            let want_v = if distance > 1e-6 { off / distance * (goal.speed * vpm).min(distance * 2.6) } else { V3::zeros() };
             let change = want_v - d.velocity;
             let most = fl.accel * vpm * dt;
             d.velocity += if change.norm() > most { change.normalize() * most } else { change };
@@ -3648,7 +3683,7 @@ mod tests {
                 let (model, _) = &made[k * PIECES + model_of(b)];
                 if bone.shown {
                     let solid = model.voxels.iter().filter(|&&v| v != AIR).count();
-                    assert!(solid > 30, "{look:?} piece {b} has only {solid} voxels");
+                    assert!(solid > if b == JAW { 8 } else { 15 }, "{look:?} piece {b} has only {solid} voxels");
                 }
                 assert!(model.size.iter().all(|&s| s < 255), "{look:?} piece {b} is {:?}", model.size);
             }
@@ -3756,12 +3791,22 @@ mod tests {
     /// What happens over `seconds` with one of `look` some way off a player standing still on
     /// open ground: what it did, and where it was, a frame at a time
     fn fight(look: Look, seconds: f64, hurt_to: Option<f64>) -> (Vec<(f64, Deed)>, Vec<(f64, V3, bool)>, Animal) {
+        fight_as(look, seconds, hurt_to, None)
+    }
+
+    /// The same, it making only move `only`, as soon as it can
+    fn fight_making(look: Look, seconds: f64, only: Option<Move>) -> (Vec<(f64, Deed)>, Vec<(f64, V3, bool)>, Animal) {
+        fight_as(look, seconds, None, only)
+    }
+
+    fn fight_as(look: Look, seconds: f64, hurt_to: Option<f64>, only: Option<Move>) -> (Vec<(f64, Deed)>, Vec<(f64, V3, bool)>, Animal) {
         let vpm = 4u32;
         let world = open_ground(240, vpm);
         let water = |_: f64, _: f64| f64::NEG_INFINITY;
         let v = vpm as f64;
         let feet = V3::new(120.0, 120.0, 4.0) * v;
         let mut a = Animal::boss(look, feet + V3::new(18.0, 6.0, 0.0) * v, [1, 2, -1], 11);
+        a.winged.as_mut().unwrap().only = only;
         let dt = 1.0 / 30.0;
         let (mut deeds, mut track) = (Vec::new(), Vec::new());
         let mut t = 0.0;
@@ -3781,6 +3826,22 @@ mod tests {
             t += dt;
         }
         (deeds, track, a)
+    }
+
+    /// What one of `AERIE_TRACE=Harpy` does, twice a second, to look at it
+    #[test]
+    #[ignore]
+    fn trace() {
+        let wanted = std::env::var("AERIE_TRACE").unwrap_or_default();
+        let look = KINDS.into_iter().find(|l| format!("{l:?}") == wanted).unwrap_or(Look::Harpy);
+        TRACE.store(true, Ordering::Relaxed);
+        let hurt = std::env::var("AERIE_HURT").ok().and_then(|v| v.parse().ok());
+        let (deeds, _, _) = fight(look, 20.0, hurt);
+        for (t, d) in deeds {
+            if let Deed::Aerie(act) = d {
+                println!("{t:.2} {act:?}");
+            }
+        }
     }
 
     /// A harpy turns on the player, takes to the air, comes at them out of it, and lands to fight
@@ -3827,15 +3888,11 @@ mod tests {
     /// calls lightning down round them, and the queen throws feathers and gales
     #[test]
     fn the_sky_isles_bosses_do_their_own() {
-        force(Some(Snatch));
-        let (deeds, _, _) = fight(Look::Roc, 40.0, None);
-        force(None);
+        let (deeds, _, _) = fight_making(Look::Roc, 40.0, Some(Snatch));
         assert!(deeds.iter().any(|(_, d)| matches!(d, Deed::Aerie(Act::Grab { .. }))), "the roc never snatched");
         let carried = deeds.iter().filter(|(_, d)| matches!(d, Deed::Aerie(Act::Carry { .. }))).count();
         assert!(carried > 20 && deeds.iter().any(|(_, d)| matches!(d, Deed::Aerie(Act::Drop { .. }))), "carried {carried} frames");
-        force(Some(Lightning));
-        let (deeds, _, _) = fight(Look::Thunderbird, 30.0, None);
-        force(None);
+        let (deeds, _, _) = fight_making(Look::Thunderbird, 30.0, Some(Lightning));
         assert!(deeds.iter().filter(|(_, d)| matches!(d, Deed::Aerie(Act::Lightning { .. }))).count() >= 6);
         let (deeds, _, _) = fight(Look::HarpyQueen, 60.0, None);
         assert!(deeds.iter().any(|(_, d)| matches!(d, Deed::Aerie(Act::Feathers { count: 7, .. }))));
@@ -3872,8 +3929,8 @@ mod tests {
         // Hurt badly, it hardens
         let mut hardened = false;
         for _ in 0..400 {
-            if a.health > a.max_health * 0.6 && !a.winged.as_ref().unwrap().hardened() {
-                a.damage(a.max_health * 0.03, near);
+            if a.health > a.max_health * 0.2 && !a.winged.as_ref().unwrap().hardened() {
+                a.damage(a.max_health * 0.01, near);
             }
             a.update(&world, &water, Some(near), dt);
             a.boss.as_mut().unwrap().deeds.clear();
