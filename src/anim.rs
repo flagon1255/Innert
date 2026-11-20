@@ -297,6 +297,22 @@ mod tests {
         assert_eq!(c.tracks["head"].len(), 2);
     }
 
+    /// A dragon's head keyed turned carries its jaw with it, and leaves its tail as the code has it
+    #[test]
+    fn a_dragon_takes_its_keys() {
+        let rig = crate::dragons::EditorRig(crate::animals::Look::Ashwing);
+        let bones = rig.bones();
+        let code = rig.pose(0, 0.5);
+        let mut joints = code.clone();
+        let mut c = Clip { length: 4.0, looping: true, ..Default::default() };
+        c.set_key("head", Key { time: 0.0, rotate: [0.0, 40.0, 0.0], offset: [0.0; 3], ease: Ease::Smooth });
+        apply_deltas(&bones, &mut joints, &|b| c.sample(&bones[b].name, 0.5), 1.0);
+        let at = |name: &str| bones.iter().position(|b| b.name == name).unwrap();
+        assert!(joints[at("head")].turn.angle_to(&code[at("head")].turn) > 0.6);
+        assert!((joints[at("jaw")].at - code[at("jaw")].at).norm() > 1e-3, "the jaw goes with the head");
+        assert!((joints[at("tail_2")].at - code[at("tail_2")].at).norm() < 1e-12);
+    }
+
     /// A bone turned carries what hangs from it round with it, about its own joint
     #[test]
     fn children_follow_their_bone() {
