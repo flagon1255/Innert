@@ -3098,6 +3098,10 @@ impl App {
                 })
                 .collect(),
         );
+        // The wing shrines on the peaks, a pair of wings in each one's nest, see worldgen\aeries.rs
+        let shrines = landscape.sites.iter().filter(|s| s.kind == worldgen::SHRINE);
+        let key = |p: [f32; 3]| [(p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64, worldgen::SHRINE_KEY];
+        self.game.set_aeries(shrines.map(|s| (key(s.position), to_voxels(s.position))).collect(), self.world.voxels_per_meter as f64);
     }
 
     /// Blows a hole in the world `radius` meters round `center`, in voxels of it: the voxels go,

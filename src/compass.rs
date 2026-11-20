@@ -66,6 +66,8 @@ pub struct Marks {
     pub guardians: Vec<([f64; 2], &'static str, bool)>,
     pub warded: bool,
     pub settings: TerrainSettings,
+    /// A wing shrine not yet claimed near the player, see worldgen\aeries.rs
+    pub shrine: Option<[f64; 2]>,
 }
 
 /// An angle brought into -PI to PI
@@ -92,6 +94,14 @@ impl App {
     /// still to beat, or with all three beaten, the gate in the normal world, where their blocks are
     /// set in and the way on to the next realm is, or the portal home from a realm past it
     pub(super) fn compass(&self) -> Option<Bearing> {
+        // Before all else, a wing shrine not yet claimed close by, in either mode
+        if let Some(spot) = self.game.wing_shrine_near(self.feet_m(), game::SHRINE_SEEN) {
+            let at = self.feet_m();
+            let heading = self.heading();
+            let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
+            let raised = self.game.boss_bar_up(camera_to_voxels(self.camera.position, self.world.size));
+            return Some(Bearing { label: "Wing shrine: wings in its nest".to_owned(), distance: (spot[0] - at[0]).hypot(spot[1] - at[1]), turn: wrapped(heading - toward), heading, note: None, raised });
+        }
         // In Free Roam, the Coil Unending's Drowned Ring once it's been found, see serpent_lairs.rs
         if self.session.realms.is_none() {
             let at = self.feet_m();
@@ -180,6 +190,7 @@ impl App {
             guardians: places.map_or(Vec::new(), |p| (0..p.guardians.len()).map(|k| (p.guardians[k], realms::guardian_look(p.realm, k).name(), self.game.is_defeated(&p.guardian_key(k)))).collect()),
             warded: self.guardians_slain().is_some_and(|(slain, of)| slain < of),
             settings: self.terrain_settings(),
+            shrine: self.game.wing_shrine_near(self.feet_m(), game::SHRINE_SEEN),
         }
     }
 
@@ -426,6 +437,16 @@ pub fn draw_map(ctx: &egui::Context, map: &mut Map, marks: &Marks) {
             painter.add(Shape::convex_polygon(diamond(6.5), Color32::from_rgb(150, 90, 230), Stroke::new(1.5f32, WARD_COLOR)));
             label(at, name, WARD_COLOR);
         }
+    }
+    // A wing shrine near by, a gold diamond with wings either side
+    if let Some(at) = marks.shrine.map(to_screen).filter(|&at| inside(at)) {
+        let gold = Color32::from_rgb(255, 214, 110);
+        for s in [-1.0f32, 1.0] {
+            painter.add(Shape::convex_polygon(vec![at + vec2(s * 4.0, -1.0), at + vec2(s * 15.0, -8.0), at + vec2(s * 11.0, 3.0)], Color32::from_rgb(250, 246, 232), Stroke::new(1.0f32, Color32::from_black_alpha(160))));
+        }
+        let diamond = vec![at + vec2(0.0, -7.0), at + vec2(6.0, 0.0), at + vec2(0.0, 7.0), at + vec2(-6.0, 0.0)];
+        painter.add(Shape::convex_polygon(diamond, gold, Stroke::new(1.5f32, Color32::from_black_alpha(170))));
+        label(at, "Wing shrine", gold);
     }
     // The player, an arrow the way they face
     let at = to_screen(marks.player);

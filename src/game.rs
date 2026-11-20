@@ -766,6 +766,11 @@ pub struct Game {
     wings_told: bool,
     /// When fire last didn't take hold of the player for their drakeskin wings, to say so
     fire_shrugged: f64,
+    /// The wing shrines in this piece of the world not yet claimed, by their keys, with the kind of
+    /// wings lying in each one's nest and where in voxels, and those the player's been told of, see
+    /// worldgen\aeries.rs
+    aeries: Vec<([i64; 3], u8, Vector3<f64>)>,
+    shrines_seen: HashSet<[i64; 3]>,
     /// The models of the wards round raid bosses, see guardians.rs
     ward_models: Vec<(Model, Vector3<f64>)>,
     /// How many more monsters than usual each den's pack has, see realms::crowd()
@@ -799,6 +804,10 @@ const CHEST_WINGS_MOST: f64 = 0.4;
 /// The chance a travelling merchant has a rarer pair besides the plain one, and how lucky it is
 const MERCHANT_RARE_WINGS: f64 = 0.4;
 const MERCHANT_WING_LUCK: f64 = 2.5;
+/// How lucky the wings lying on a wing shrine are, before the realm's luck, and how near one the
+/// player's told of it and it's marked on the compass, in meters, see worldgen\aeries.rs
+const SHRINE_WING_LUCK: f64 = 3.0;
+pub const SHRINE_SEEN: f64 = 150.0;
 
 /// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
 /// its front faces, for the gate how many of each realm's Innert blocks are set in it, and whether
@@ -961,6 +970,8 @@ impl Game {
             glided: false,
             wings_told: false,
             fire_shrugged: f64::NEG_INFINITY,
+            aeries: Vec::new(),
+            shrines_seen: HashSet::new(),
             dragonfire: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
@@ -1727,6 +1738,9 @@ impl Game {
             chest.position -= shift;
         }
         self.boss_chests.retain(|c| inside(&c.position));
+        for (_, _, at) in &mut self.aeries {
+            *at -= shift;
+        }
         self.knockback = Vector3::zeros();
         self.thrown = Vector3::zeros();
         self.combat.recenter(shift);
@@ -1920,6 +1934,7 @@ impl Game {
         }
         self.tend_dragonfire(world, player, view, dt);
         self.watch_for_lairs(player);
+        self.watch_for_shrines(player);
         self.grow_roots(world, player, view, dt);
         self.whirl(world, water, player, dt);
         self.shove_out_of_serpents(player, world.voxels_per_meter as f64);
@@ -3650,6 +3665,21 @@ impl Game {
                 self.cues.push(Cue::here(Sound::Ratchet, 0.6).pitched(0.7));
                 self.say(format!("+{n} {}", self.library.ammo[k].display_name));
             }
+            // From a wing shrine's nest: claimed for good, never to lie there again
+            Item::Wings(k) => {
+                if let Some(at) = self.aeries.iter().position(|a| a.1 == k) {
+                    let (key, ..) = self.aeries.remove(at);
+                    self.opened.insert(key);
+                    self.milestone = true;
+                }
+                self.cues.push(Cue::here(Sound::Fanfare, 0.6));
+                if self.carries(item) {
+                    self.say(format!("The {} are yours already.", item.name()));
+                } else {
+                    self.say("You claim the wings from the shrine's nest!");
+                    self.gain_wings(k);
+                }
+            }
             _ => {
                 self.add_item(item, 1);
                 self.cues.push(Cue::here(Sound::Pickup, 0.6));
@@ -4403,6 +4433,7 @@ impl Game {
         self.shrines.clear();
         self.shrine_used = false;
         self.omens.clear();
+        self.aeries.clear();
         self.gloom = 0.0;
         self.seed = seed;
     }
@@ -4597,6 +4628,54 @@ impl Game {
     /// The kind of wings worn on the back, see wings::KINDS
     pub fn worn_wings(&self) -> Option<u8> {
         self.worn.filter(|_| self.dead.is_none())
+    }
+
+    /// The wing shrines in the piece of the world just built, by their keys, see
+    /// worldgen::SHRINE_KEY, and where the tops of their platforms are, in voxels: in each one's nest
+    /// not yet claimed lies a pair of wings, a kind the player hasn't, the likelier rare the further
+    /// on the realm, shining so it's seen from afar. `vpm` is the world's voxels per meter.
+    pub fn set_aeries(&mut self, aeries: Vec<([i64; 3], Vector3<f64>)>, vpm: f64) {
+        let old = std::mem::take(&mut self.aeries);
+        for (key, at) in aeries {
+            if self.opened.contains(&key) {
+                continue;
+            }
+            let roll = (hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ 0xae21))) >> 8) as f64 / 16_777_216.0;
+            let offered = old.iter().find(|a| a.0 == key).map(|a| a.1).or_else(|| wings::pick(roll, SHRINE_WING_LUCK * self.scaling.luck, |k| self.carries(Item::Wings(k))));
+            let Some(k) = offered else {
+                continue;
+            };
+            let lying = at + Vector3::new(0.0, 0.0, 0.1 * vpm);
+            if !self.pickups.iter().any(|p| p.item == Item::Wings(k) && (p.position - lying).norm() < 2.0 * vpm) {
+                let heading = (key[0] ^ key[1]) as f64 * 0.37;
+                self.pickups.push(Pickup { item: Item::Wings(k), position: lying, heading, from: lying, flying: 0.0, seen: false, beacon: true });
+            }
+            self.aeries.push((key, k, at));
+        }
+    }
+
+    /// The first time the player at `feet` comes within sight of a wing shrine not yet claimed,
+    /// they're told what's on it
+    fn watch_for_shrines(&mut self, feet: Option<Vector3<f64>>) {
+        let vpm = self.combat.vpm();
+        let Some(feet) = feet.filter(|_| vpm > 0.0) else {
+            return;
+        };
+        if let Some(&(key, k, _)) = self.aeries.iter().find(|a| !self.shrines_seen.contains(&a.0) && (a.2 - feet).xy().norm() < SHRINE_SEEN * vpm) {
+            self.shrines_seen.insert(key);
+            self.cues.push(Cue::here(Sound::Summon, 0.5).pitched(0.8));
+            self.say(format!("A wing shrine stands on the heights, the {} in its nest for whoever climbs to it. It's on your compass.", wings::KINDS[k as usize].name));
+        }
+    }
+
+    /// The nearest wing shrine not yet claimed within `within` meters of `feet`, both in meters of
+    /// the landscape, for the compass and the map
+    pub fn wing_shrine_near(&self, feet: [f64; 2], within: f64) -> Option<[f64; 2]> {
+        self.aeries
+            .iter()
+            .map(|(key, ..)| [key[0] as f64 / 10.0, key[1] as f64 / 10.0])
+            .filter(|s| (s[0] - feet[0]).hypot(s[1] - feet[1]) < within)
+            .min_by(|a, b| (a[0] - feet[0]).hypot(a[1] - feet[1]).total_cmp(&(b[0] - feet[0]).hypot(b[1] - feet[1])))
     }
 
     /// What the wings worn do besides gliding, see wings::Perk
