@@ -639,6 +639,8 @@ const TRAIL_COUNT: usize = TRAILS.len() + 1;
 /// seconds it lasts
 const MOTE: f64 = 0.1;
 const MOTE_LIFE: f64 = 1.0;
+/// The most motes there are at once
+const MOTES: usize = 80;
 
 /// `part` flattened into the wing's plane, `half` meters thick either side of it at its widest
 /// `widest`: a shape of any outline as seen from above, however it's turned in the plane
@@ -862,6 +864,8 @@ struct Mote {
     drift: Vector3<f64>,
     age: f64,
     trail: usize,
+    /// How much bigger than the trail's motes, as a slam's or a halo's are
+    big: f64,
 }
 
 /// How the wings worn are moving, see App::update_wings()
@@ -916,13 +920,18 @@ impl Flight {
         (x >> 8) as f64 / 16_777_216.0
     }
 
-    /// A ring of `count` motes of trail `trail` round `at`, flying out to `reach` voxels as they
-    /// fade, as a slam's dust or a halo's light
-    fn ring(&mut self, at: Vector3<f64>, reach: f64, count: usize, trail: usize) {
+    /// A ring of `count` big motes of trail `trail` round `at`, flying out to `reach` voxels as
+    /// they fade, going on with the wearer at `carry` voxels a second, as a slam's dust or a
+    /// halo's light. Made room for among the trail's motes, the oldest going first.
+    fn ring(&mut self, at: Vector3<f64>, reach: f64, count: usize, trail: usize, carry: Vector3<f64>) {
+        if self.motes.len() + count > MOTES {
+            let extra = (self.motes.len() + count - MOTES).min(self.motes.len());
+            self.motes.drain(..extra);
+        }
         for n in 0..count {
             let a = (n as f64 + 0.5 * self.random()) / count as f64 * TAU;
             let out = Vector3::new(a.cos(), a.sin(), 0.0);
-            self.motes.push(Mote { at: at + out * reach * 0.1, drift: out * reach / MOTE_LIFE, age: 0.0, trail });
+            self.motes.push(Mote { at: at + out * reach * 0.35, drift: carry + out * reach * 0.65 / MOTE_LIFE, age: 0.0, big: 1.6, trail });
         }
     }
 }
@@ -978,7 +987,7 @@ impl App {
             flight.slam_wait = SLAM_WAIT;
             if let Some(feet) = self.player.as_ref().map(|p| p.position) {
                 let hit = self.game.wing_blast(feet + Vector3::new(0.0, 0.0, 0.5 * vpm), SLAM_REACH, SLAM_DAMAGE, true);
-                self.wings.ring(feet + Vector3::new(0.0, 0.0, 0.25 * vpm), SLAM_REACH * vpm, 22, GRIT);
+                self.wings.ring(feet + Vector3::new(0.0, 0.0, 0.3 * vpm), SLAM_REACH * vpm, 28, GRIT, Vector3::zeros());
                 println!("SLAM landing, {hit} hurt");
             }
         }
@@ -1011,7 +1020,7 @@ impl App {
                         let along = flight.random();
                         let scatter = Vector3::new(flight.random() - 0.5, flight.random() - 0.5, flight.random() - 0.8) * 2.5 * vpm;
                         let at = view.eye + (tip - view.eye) * (0.4 + 0.6 * along);
-                        flight.motes.push(Mote { at, drift: carry + scatter, age: 0.0, trail: 3 });
+                        flight.motes.push(Mote { at, drift: carry + scatter, age: 0.0, big: 1.0, trail: 3 });
                     }
                 }
             }
@@ -1020,7 +1029,8 @@ impl App {
             }
             if kind.perk == Perk::Halo {
                 let hit = self.game.wing_blast(feet + Vector3::new(0.0, 0.0, 1.0 * vpm), HALO_REACH, HALO_DAMAGE, false);
-                self.wings.ring(feet + Vector3::new(0.0, 0.0, 0.9 * vpm), HALO_REACH * vpm, 24, HOLY);
+                // At chest height, going out round the wearer below the view's middle
+                self.wings.ring(feet + Vector3::new(0.0, 0.0, 0.8 * vpm), HALO_REACH * vpm, 30, HOLY, carry);
                 println!("HALO flap, {hit} seared");
             }
         }
@@ -1043,7 +1053,7 @@ impl App {
                 for _ in 0..10 {
                     let flight = &mut self.wings;
                     let scatter = Vector3::new(flight.random() - 0.5, flight.random() - 0.5, flight.random() - 0.5) * 1.5 * vpm;
-                    flight.motes.push(Mote { at: tip, drift: carry - ahead * 6.0 * vpm + scatter, age: 0.0, trail: GUST });
+                    flight.motes.push(Mote { at: tip, drift: carry - ahead * 6.0 * vpm + scatter, age: 0.0, big: 1.0, trail: GUST });
                 }
             }
         }
@@ -1104,19 +1114,19 @@ impl App {
                 // sight
                 let carry = velocity * trail_of(trail).2;
                 let drift = carry + Vector3::new(flight.random() - 0.5, flight.random() - 0.5, -0.8) * 0.6 * vpm;
-                flight.motes.push(Mote { at: tip, drift, age: 0.0, trail });
+                flight.motes.push(Mote { at: tip, drift, age: 0.0, big: 1.0, trail });
             }
             if skimming && let Some(feet) = feet {
                 for _ in 0..3 {
                     let flight = &mut self.wings;
                     let up = Vector3::new(flight.random() - 0.5, flight.random() - 0.5, 1.6 + flight.random()) * 1.8 * vpm;
-                    flight.motes.push(Mote { at: feet, drift: velocity * 0.4 + up, age: 0.0, trail: SPRAY });
+                    flight.motes.push(Mote { at: feet, drift: velocity * 0.4 + up, age: 0.0, big: 1.0, trail: SPRAY });
                 }
             }
         }
         let flight = &mut self.wings;
-        if flight.motes.len() > 80 {
-            let extra = flight.motes.len() - 80;
+        if flight.motes.len() > MOTES {
+            let extra = flight.motes.len() - MOTES;
             flight.motes.drain(..extra);
         }
         // What's shown of them by the quick bar: whether they're gliding, how ready their move in
@@ -1206,8 +1216,8 @@ impl App {
             let model = KINDS.len() + mote.trail;
             let (_, anchor) = &models[model];
             // The mote's model's 4 voxels across, see models()
-            let scale = size.max(0.05) * MOTE * RES / 4.0;
-            out.push(AnimalInstance::new(first + model as u32, mote.at + anchor * m * scale, UnitQuaternion::identity(), m / RES * scale, MOTE * m, MOVING));
+            let scale = size.max(0.05) * mote.big * MOTE * RES / 4.0;
+            out.push(AnimalInstance::new(first + model as u32, mote.at + anchor * m * scale, UnitQuaternion::identity(), m / RES * scale, MOTE * mote.big * m, MOVING));
         }
         out
     }
