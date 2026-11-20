@@ -4381,6 +4381,8 @@ impl App {
                 self.game.primary(eye);
                 println!("frame {frame}: carrying {}", self.game.carried());
             }
+            // Every kind of special ammo flying slowly across the view in rows, for a contact sheet
+            ("ammo_sheet", 5) => self.game.ammo_sheet(eye, look),
             ("hunt", 40) => {
                 self.game.interact(eye);
                 println!("frame {frame}: carrying {}", self.game.carried());

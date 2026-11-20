@@ -31,6 +31,8 @@ mod stones;
 /// Aiming at a spot, the ring on the ground showing where it comes down, see aim.rs
 mod aim;
 use aim::{spot_aim, way_to};
+/// Special ammo flying each kind its own way, see ammo.rs
+mod ammo;
 
 pub const MAX_MANA: f64 = 100.0;
 /// Mana coming back every second
@@ -211,6 +213,8 @@ pub struct Loaded {
     pub head: Option<usize>,
     /// How it bursts apart, if it does
     pub burst: Option<Burst>,
+    /// How it looks flying, which of weapons::AMMO_STYLES, if it has a look of its own
+    pub style: Option<usize>,
 }
 
 /// A number or a word floating up from where something was hit
@@ -322,6 +326,8 @@ struct Projectile {
     blast: f64,
     /// What else it does, for a harpoon or a special attack's bolt
     trick: Trick,
+    /// Special ammo's own look, which of weapons::AMMO_STYLES, see ammo.rs
+    ammo: Option<u8>,
 }
 
 /// What a bolt does beyond flying and hitting
@@ -2062,6 +2068,8 @@ pub struct Combat {
     /// Rings kept showing where what's aimed at a spot is coming down, see aim.rs: where, how big
     /// round, and seconds more
     spots: Vec<(Vector3<f64>, f64, f64)>,
+    /// The look of the special ammo what's being shot now is, see ammo.rs
+    loading: Option<u8>,
     /// Where balls of web landed since game.rs last looked
     pub webs: Vec<Vector3<f64>>,
     /// Where what bosses threw only just missed the player, since game.rs last looked
@@ -5017,6 +5025,7 @@ impl Combat {
             swells: Vec::new(),
             marks: Vec::new(),
             spots: Vec::new(),
+            loading: None,
             webs: Vec::new(),
             near_misses: Vec::new(),
             pending: Vec::new(),
@@ -5912,6 +5921,8 @@ impl Combat {
         };
         let missile = Missile { shot, head, power: pellets == 1 && shot == Shot::Ball || base.build == Build::Siege, size };
         let before = self.projectiles.len();
+        // Flying as its kind looks, see ammo.rs
+        self.loading = if harpoon { None } else { loaded.and_then(|l| l.style).map(|s| s as u8) };
         let rails = &weapon.look.rails;
         if shot == Shot::Quarrel && rails.len() > 1 {
             // A twin-prod's two bolts from either prod, meeting where it's aimed, or a
@@ -5946,6 +5957,7 @@ impl Combat {
         } else {
             self.shoot(view, &profile, Some(missile), Form::Bolt, muzzle, ahead, speed, damage);
         }
+        self.loading = None;
         // A blunderbuss's shot only carries so far, dropping short past it
         let range = profile.stat("range");
         if range > 0.0 {
@@ -9796,6 +9808,7 @@ impl Combat {
             seek: 0.0,
             blast: 0.0,
             trick: Trick::None,
+            ammo: None,
         });
     }
 
@@ -11497,7 +11510,9 @@ impl Combat {
         let speed = profile.stat("projectileSpeed") * (0.45 + 0.55 * draw) * if power { 1.1 } else { 1.0 } * vpm;
         let damage = (profile.stat("physicalDamage") + profile.stat("elementalDamage")) * (0.3 + 0.7 * draw * draw) * if power { 1.1 } else { 1.0 };
         let head = loaded.and_then(|l| l.head).unwrap_or_else(|| weapon.arrowhead());
+        self.loading = loaded.and_then(|l| l.style).map(|s| s as u8);
         self.shoot(arena.view, &profile, Some(Missile::arrow(head, power)), Form::Bolt, from, (target - from).normalize(), speed, damage);
+        self.loading = None;
         if let Some(l) = loaded {
             self.spent.push(l.ammo);
         }
@@ -11615,6 +11630,7 @@ impl Combat {
             },
             None => form.flight(),
         };
+        let ammo = self.loading;
         let make = |direction: Vector3<f64>, damage: f64| Projectile {
             arrow: arrow.is_some(),
             shot,
@@ -11637,6 +11653,7 @@ impl Combat {
             seek: 0.0,
             blast: 0.0,
             trick: Trick::None,
+            ammo,
         };
         let mut shots = vec![make(direction, damage)];
         if profile.has(Effect::Multishot) {
@@ -11815,7 +11832,17 @@ impl Combat {
             // where none of it would be seen.
             let shell = p.arrow && p.shot == Shot::Shell;
             let shown = (start - arena.view.eye).norm() < trail_reach;
-            if shown && ((!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power || shell) {
+            // Special ammo trails what it trails, each kind its own, see ammo.rs
+            if let Some(k) = p.ammo.filter(|_| shown && p.trick != Trick::Fragment) {
+                p.trail += dt * if p.shot == Shot::Ball { ammo::AMMO_BALL_TRAIL } else { ammo::AMMO_TRAIL };
+                while p.trail >= 1.0 {
+                    p.trail -= 1.0;
+                    let at = start.lerp(&end, random(&mut self.rng));
+                    if (at - arena.view.eye).norm() >= TRAIL_CLEAR * vpm {
+                        self.ammo_trail(k, at, p.velocity);
+                    }
+                }
+            } else if shown && ((!p.arrow && p.form != Form::Lightning) || profile.element.is_some() || p.power || shell) {
                 // A burst's shards trail less, as there are several at once
                 p.trail += dt * if !p.arrow && p.form == Form::Fireball {
                     150.0
@@ -12260,6 +12287,9 @@ impl Combat {
 
     /// Something in flight landing at `at`
     fn impact(&mut self, arena: &mut Arena, p: &Projectile, at: Vector3<f64>) {
+        if let Some(k) = p.ammo {
+            self.ammo_puff(k, at);
+        }
         let profile = &p.profile;
         let look = Element::look(profile.element);
         // A rocket that runs into something on its way up bursts there
@@ -12337,6 +12367,7 @@ impl Combat {
             seek: 0.0,
             blast: 0.0,
             trick,
+            ammo: p.ammo,
         }
     }
 
@@ -15117,6 +15148,13 @@ impl Combat {
             if let Some(instance) = self.projectile_instance(p, view) {
                 add(key, instance);
             }
+            // A ball of special ammo drawn over its tracer, see ammo.rs
+            if let Some(k) = p.ammo.filter(|_| p.arrow && p.shot == Shot::Ball && !matches!(p.trick, Trick::Burst { .. }))
+                && (p.position - view.eye).norm() > 1.0 * view.vpm
+            {
+                let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &p.velocity).unwrap_or_else(UnitQuaternion::identity);
+                add(key, self.ammo_instance(k, p, view, rotation));
+            }
         }
         self.other_instances(view, &mut out);
         out
@@ -15146,11 +15184,14 @@ impl Combat {
                         place(model, streak, BOLT_RES, Vector3::zeros(), p.position, rotation, vpm, p.size * near, MOVING)
                     }
                     // A bursting grenade, an iron ball with its fuse burning, tumbling
+                    Shot::Ball if matches!(p.trick, Trick::Burst { .. }) && p.ammo.is_some() => self.ammo_instance(p.ammo.unwrap_or(0), p, view, rotation),
                     Shot::Ball if matches!(p.trick, Trick::Burst { .. }) => {
                         let spin = rotation * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 9.0);
                         let (model, shell) = self.model_at(SHELL);
                         place(model, shell, SHOT_RES, Vector3::zeros(), p.position, spin, vpm, p.size.max(0.8), MOVING)
                     }
+                    // Special ammo, its own model, see ammo.rs
+                    Shot::Arrow | Shot::Quarrel if p.ammo.is_some() && matches!(p.trick, Trick::None | Trick::Glanced | Trick::Burst { .. } | Trick::Ricochet(_)) => self.ammo_instance(p.ammo.unwrap_or(0), p, view, rotation),
                     Shot::Arrow => {
                         let (model, arrow) = self.effect_model(SLOT_ARROW + p.head, look);
                         place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.0, MOVING)
@@ -15166,9 +15207,12 @@ impl Combat {
                     // that shows, so it's held as big to the eye a while further off, a glowing
                     // slug never lost however far it goes, see TRACER_HELD.
                     Shot::Ball => {
+                        // Special ammo's in its own glow, its own model drawn over its head, see
+                        // ammo.rs, its streak a little shorter so that shows
+                        let look = p.ammo.map_or(look, |k| Element::look(crate::weapons::AMMO_STYLES[k as usize].glow));
                         let (model, streak) = self.model_at(STREAKS + look.min(ELEMENT_LOOKS - 1));
                         let d = (p.position - view.eye).norm() / vpm;
-                        let scale = (d / 3.0).clamp(0.35, 1.0) * (d / TRACER_HELD).clamp(1.0, 3.0) * far;
+                        let scale = (d / 3.0).clamp(0.35, 1.0) * (d / TRACER_HELD).clamp(1.0, 3.0) * far * if p.ammo.is_some() { 0.8 } else { 1.0 };
                         place(model, streak, STREAK_RES, Vector3::zeros(), p.position, rotation, vpm, TRACER_SIZE * p.size.max(1.0) * scale, MOVING)
                     }
                     // A bomb tumbling as it flies, lying still once it's come to rest, and one
