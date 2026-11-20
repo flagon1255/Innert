@@ -1030,6 +1030,10 @@ impl Game {
 
     /// Fills a new world with animals and apples. What the player carries stays.
     pub fn populate(&mut self, world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) {
+        // Nothing lives in the model editor's studio, see editor.rs
+        if crate::editor::is_app() {
+            return;
+        }
         self.animals = animals::spawn(world, water, seed, near);
         let mut rng = hash(seed ^ 0x5e4);
         self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));

@@ -1,11 +1,12 @@
-//! The model editor, opened with F7: any creature, boss, dragon, great serpent, pair of wings or
+//! The model editor, its own app, innert-editor: any creature, boss, dragon, great serpent, pair of wings or
 //! weapon shown alone on a plain floor high over the world, turned about with the mouse, its
 //! animations played slowly with a bar to scrub through them, its pieces and bones listed, the one
 //! picked lit up, and each piece opened in MagicaVoxel to change its shape, see src\assets.rs. A
 //! jointed rig's animations are changed here too: a bone turned and moved, keyed on a timeline
 //! with easing between keys, and saved to assets\anims, see src\anim.rs.
 //!
-//! While it's open the world stands still and nothing else is drawn but what it shows.
+//! It's the game's renderer on a studio of its own, a floor and nothing else, see Scene::Studio:
+//! no landscape, nothing living, no saves. Files it saves reach a game running beside it at once.
 
 use std::f64::consts::FRAC_PI_2;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,22 @@ use crate::weapon_parts;
 use crate::weapons::Library;
 use crate::worldgen::material::*;
 use crate::worldgen::{World, is_passable};
+
+/// Set in the model editor's own app, see editor_main()
+static APP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this is the model editor's own app, innert-editor, rather than the game
+pub fn is_app() -> bool {
+    APP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Starts this as the model editor's own app, before anything else
+pub fn set_app() {
+    APP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How big the studio is, in voxels: 96 m across and 40 m high, room for the greatest dragon
+pub const STUDIO_SIZE: [u32; 3] = [1536, 1536, 640];
 
 /// The floor: squares this many voxels a side, each this many meters across, two shades of stone
 const FLOOR_SIDE: u32 = 96;
@@ -234,6 +251,10 @@ impl Editor {
         }
         let z = (top as f64 + 3.0 * vpm).min(world.size[2] as f64 - 24.0 * vpm).max(top as f64 + 1.0);
         self.stage = Vector3::new(eye.x, eye.y, z);
+        // In the studio, on its floor in its middle
+        if is_app() {
+            self.stage = Vector3::new(world.size[0] as f64 * 0.5, world.size[1] as f64 * 0.5, 8.0);
+        }
         self.focus_subject(game);
     }
 
@@ -365,8 +386,9 @@ impl Editor {
         match frame {
             12 => {
                 pick(self, "Stone Warden", game);
-                self.clip = self.timelines().iter().position(|t| t.name == "strike").unwrap_or(0);
-                self.time = 0.62;
+                self.clip = self.timelines().iter().position(|t| t.name == "slam").unwrap_or(0);
+                self.load_clip();
+                self.time = 0.9;
                 self.playing = false;
                 self.yaw = 2.3;
             }
@@ -611,7 +633,9 @@ impl Editor {
     pub fn instances(&self, game: &Game, vpm: f64, eye: Vector3<f64>, look_yaw: f64, look_pitch: f64) -> Vec<AnimalInstance> {
         let mut out = Vec::new();
         let floor = FLOOR_SIDE as f64 * FLOOR_CELL;
-        out.push(AnimalInstance::new(game.stage_model(), self.stage - Vector3::new(0.0, 0.0, FLOOR_CELL * vpm), UnitQuaternion::identity(), FLOOR_CELL * vpm, floor * 0.75 * vpm, STILL));
+        if !is_app() {
+            out.push(AnimalInstance::new(game.stage_model(), self.stage - Vector3::new(0.0, 0.0, FLOOR_CELL * vpm), UnitQuaternion::identity(), FLOOR_CELL * vpm, floor * 0.75 * vpm, STILL));
+        }
         let at = self.stage;
         let lit = |i: AnimalInstance, on: bool| if on { i.skinned(0xA0_30_D0_FF) } else { i };
         let timelines = self.timelines();
@@ -704,7 +728,7 @@ impl Editor {
         let frame = egui::Frame::new().fill(Color32::from_black_alpha(200)).inner_margin(8.0);
         egui::SidePanel::left("editor list").frame(frame).default_width(230.0).show(ctx, |ui| {
             ui.heading("Model editor");
-            ui.label(RichText::new("F7 closes · drag to turn · scroll to zoom").small());
+            ui.label(RichText::new("Drag to turn · scroll to zoom").small());
             ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search"));
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let mut group = "";
@@ -979,7 +1003,7 @@ fn entries(game: &Game, library: &Library) -> Vec<Entry> {
     };
     let mut looks: Vec<Entry> = Look::ALL
         .iter()
-        .filter(|l| !l.is_dragon() && !l.is_great_serpent())
+        .filter(|l| !l.is_dragon() && !l.is_great_serpent() && !crate::rig::rigged(**l))
         .filter(|&&l| {
             let m = game.base_model(assets::look_model(l, 0));
             m.size != [1, 1, 1]

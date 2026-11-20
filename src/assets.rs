@@ -1098,6 +1098,11 @@ impl<T: Send + 'static> Reloader<T> {
                 if let Ok(event) = res
                     && (event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove())
                 {
+                    // An animation saved: read again as it's next wanted, see anim.rs
+                    let anims = crate::anim::root();
+                    if event.paths.iter().any(|p| p.starts_with(&anims)) {
+                        crate::anim::forget();
+                    }
                     let mut c = seen.lock().unwrap_or_else(|e| e.into_inner());
                     c.extend(event.paths.into_iter().filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("vox") || x.eq_ignore_ascii_case("json"))));
                 }
