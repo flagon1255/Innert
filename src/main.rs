@@ -64,6 +64,7 @@ use winit_input_helper::WinitInputHelper;
 
 mod animals;
 mod audio;
+mod avians;
 mod bases;
 mod building;
 mod bosses;
@@ -75,6 +76,7 @@ mod daynight;
 mod dragons;
 mod effects;
 mod game;
+mod gargoyles;
 mod gates;
 mod gather;
 mod gpu_timing;
@@ -2433,6 +2435,9 @@ impl App {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
             game.find_weapon("staff", element, 2.0);
         }
+        // Avians and gargoyles made from here on making only `--set boss_move=snatch` or another of
+        // their own moves, in a screenshot run, see avians.rs
+        avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
         // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
         // try fighting it
         let boss = setting("boss").and_then(|name| {
@@ -2453,6 +2458,10 @@ impl App {
                 game.force_boss_move(m);
             }
         }
+        // `--set aerie_show=1` has avians and gargoyles fight with nobody about as if someone were,
+        // and `aerie_trace=1` says what each is doing twice a second, see avians.rs
+        avians::SHOW.store(flag("aerie_show", false), std::sync::atomic::Ordering::Relaxed);
+        avians::TRACE.store(flag("aerie_trace", false), std::sync::atomic::Ordering::Relaxed);
         // Dragons, see dragons.rs: `--set spawn=dragon:0`, `1` or `2` puts the Dragon realm's raid
         // boss of that lair a little way ahead, `spawn=dragon:ashwing` or another drakeling a pair
         // of them, and `--set dragon_ultra=1` the Worldpyre Ancient, its finale
@@ -2974,6 +2983,9 @@ impl App {
                     "dungeon" | "fallen throne" => animals::Look::GraveKnight,
                     "castle" if pick % 3 == 1 => animals::Look::Ironhide,
                     "castle" if pick % 3 == 2 => animals::Look::GraveKnight,
+                    // The great carving over a ruined castle's gate, that the gargoyles on its walls
+                    // answer to, see gargoyles.rs
+                    "castle" if pick % 2 == 0 => animals::Look::Grotesque,
                     "castle" | "desert ruins" => animals::Look::Golem,
                     "watchtower" | "colonnade" if pick % 2 == 1 => animals::Look::Direwolf,
                     "watchtower" | "pyramid" | "flooded church" => animals::Look::Drake,
@@ -3029,6 +3041,9 @@ impl App {
                     // The dead walking the streets, the square, the canal and the temple of a city
                     // fallen under the land
                     "undercity gate" | "undercity street" | "undercity canal" | "undercity plaza" | "undercity hall" => (game::DenKind::Sunken, 0.0, None),
+                    // Gargoyles asleep in stone on a ruin's tower, over a fallen castle's gate and
+                    // before a fallen city's temple, see gargoyles.rs
+                    "gargoyle perch" => (game::DenKind::Perch, 0.0, None),
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
@@ -3052,7 +3067,7 @@ impl App {
                     return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town" | "gargoyle perch") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
@@ -4080,6 +4095,10 @@ impl App {
             let push = self.game.take_knockback();
             if let Some(player) = &mut self.player {
                 player.push(push);
+                // Carried off in the roc's talons, see game\aerie.rs
+                if let Some(haul) = self.game.take_haul() {
+                    player.haul(haul);
+                }
             }
             // Slain, the player lies there until they rise again, at the last place they stood
             // safe. Screenshot runs rise by themselves.
@@ -4735,6 +4754,26 @@ impl App {
                     let at = target + Vector3::new(round.cos(), round.sin(), up) * distance;
                     let floor = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.5 * vpm;
                     self.camera.position = voxels_to_camera(Vector3::new(at.x, at.y, at.z.max(floor)), self.world.size);
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // The same round the nearest avian or gargoyle, see avians.rs, as close as `--set
+            // view_distance=` says or twice as far as its wings reach, as `view_up=` high; or with
+            // `--set view_fixed=1` from where the camera is, only looking at it
+            ("aerie", f) => {
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                if let Some((target, reach)) = self.game.nearest_winged(eye) {
+                    if number("view_fixed", 0.0) == 0.0 {
+                        let distance = number("view_distance", reach * 2.0) * vpm;
+                        let round = number("view_turn", 0.006) * f as f64 + number("view_from", 0.6);
+                        let up = number("view_up", 0.25);
+                        let at = target + Vector3::new(round.cos(), round.sin(), up) * distance;
+                        let floor = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.5 * vpm;
+                        self.camera.position = voxels_to_camera(Vector3::new(at.x, at.y, at.z.max(floor)), self.world.size);
+                    }
                     self.camera.look_at(voxels_to_camera(target, self.world.size));
                 }
                 if f % 60 == 0 {

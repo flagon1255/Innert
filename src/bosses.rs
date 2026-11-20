@@ -244,6 +244,8 @@ pub enum Deed {
     Phase { at: Vector3<f64>, stage: u8 },
     /// What a dragon does that no other boss does, see src\dragons.rs
     Dragon(crate::dragons::Act),
+    /// And an avian or a gargoyle, see src\avians.rs
+    Aerie(crate::avians::Act),
     /// The Colossus hurling the boulder it tore up and lifted overhead, from about `from`, at
     /// `to`: boss `id`'s, so it leaves the hands it's drawn in, see combat::Combat::hurl_boulder()
     Hurl { id: u32, from: Vector3<f64>, to: Vector3<f64> },
@@ -1289,9 +1291,9 @@ impl Boss {
             Some(Build::Treant) => &[(Move::Slam, 0.0, 5.0), (Move::RootWave, 7.0, 22.0), (Move::Roots, 4.0, 28.0), (Move::Volley, 8.0, GIVE_UP)],
             Some(Build::Wolf) => &[(Move::Slam, 0.0, 3.2), (Move::Summon, 0.0, 30.0), (Move::Maul, 2.5, 8.0), (Move::Leap, 7.0, 22.0)],
             Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
-            // Only ever monsters, all seen to above; and dragons, which think for themselves, see
-            // src\dragons.rs
-            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon) | None => &[],
+            // Only ever monsters, all seen to above; and dragons, avians and gargoyles, which think
+            // for themselves, see src\dragons.rs and src\avians.rs
+            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon | Build::Winged) | None => &[],
         }
     }
 

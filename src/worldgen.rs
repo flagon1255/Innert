@@ -5590,6 +5590,9 @@ impl Terrain {
             candle(features, at.point(u, v, base), rng);
         }
         candle(features, at.point(-3.6, 3.0, base + tower - 2.6), rng);
+        // A gargoyle asleep in stone on top of the tall tower, between its battlements, see
+        // src\gargoyles.rs
+        features.sites.push(Site { kind: "gargoyle perch", position: at.point(-2.95, 3.0, base + tower), facing: at.dir([1.0, 0.0]) });
         skull(features, at.point(-0.8, -1.9, base), rng);
         chest(features, at.point(0.6, 2.05, base), at.heading(-FRAC_PI_2), 1.3);
         (s, base + tower + 1.0)
