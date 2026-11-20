@@ -95,7 +95,7 @@ fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
 
 /// How long a power's own move takes, for those shot, thrown or cast with a move of their own, and
 /// when what it lets go leaves the weapon, as part of it
-fn power_timing(power: Power) -> (f64, f64) {
+pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
     match power {
         Power::Mortar => (0.7, 0.4),
         Power::BurstBolt => (0.6, 0.34),
@@ -474,13 +474,11 @@ impl Combat {
                         }
                         self.gun_report(weapon, view, &profile, from, way, 1.6);
                     }
+                    // Onto the ring shown as it was aimed, on the ground, see aim.rs
                     _ => {
-                        let reach = 40.0 * vpm;
-                        let mut aim = target;
-                        if (aim - from).norm() > reach {
-                            aim = ground_under(arena.world, from + (aim - from).normalize() * reach, vpm);
-                        }
+                        let aim = self.power_spot(arena, weapon).unwrap_or(target);
                         let time = 1.1 + 0.015 * (aim - from).norm() / vpm;
+                        self.keep_power_ring(weapon, aim, time);
                         self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.4 }), Form::Bolt, from, thrown(from, aim, time, 1.0, vpm), base * 2.2, 1.0);
                         set(self, Shape::Shell, f64::INFINITY, 1.4);
                         self.gun_report(weapon, view, &profile, from, flat, 1.8);
@@ -488,18 +486,22 @@ impl Combat {
                 }
                 self.kick += 0.06;
             }
-            // A charge lobbed at where the ring was
+            // A charge lobbed at where the ring was, the ring kept showing till it's there
             Power::Vortex => {
-                let (_, from, velocity, _) = self.lob_aim(arena, weapon);
+                let (aim, from, velocity, time) = self.lob_aim(arena, weapon);
+                self.keep_power_ring(weapon, aim, time);
                 self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.2 }), Form::Bolt, from, velocity, base * 2.0, BOMB_GRAVITY);
                 set(self, Shape::Charge, f64::INFINITY, 1.2);
                 self.cues.push(Cue::here(Sound::Swing, 0.7).pitched(0.65));
                 self.cues.push(Cue::here(Sound::Hex, 0.5).pitched(0.7));
             }
+            // Drifting down onto the ring shown as it was aimed, see aim.rs
             Power::Comet => {
                 let from = self.held_point(weapon, view, false);
-                let way = lead(from, target, 15.0, 0.12, vpm);
-                self.launch(&profile, None, Form::Bolt, from, way * 15.0 * vpm, base * 2.4, 0.12);
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let time = ((aim - from).norm() / (15.0 * vpm)).max(0.35);
+                self.keep_power_ring(weapon, aim, time);
+                self.launch(&profile, None, Form::Bolt, from, thrown(from, aim, time, 0.12, vpm), base * 2.4, 0.12);
                 set(self, Shape::Orb, f64::INFINITY, 1.0);
                 self.cues.push(Cue::here(Sound::Summon, 0.9).pitched(0.6));
                 self.flashes.push(Flash { position: from, color: light, reach: 8.0, life: 0.35, lifetime: 0.35 });
