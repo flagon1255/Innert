@@ -63,6 +63,8 @@ use winit::{
 use winit_input_helper::WinitInputHelper;
 
 mod animals;
+mod anim;
+mod assets;
 mod audio;
 mod bases;
 mod building;
@@ -103,7 +105,9 @@ mod startup;
 mod stream;
 mod tools;
 mod voxelize;
+mod vox;
 mod water;
+mod weapon_parts;
 mod weapons;
 mod wings;
 mod worldgen;
@@ -1346,6 +1350,8 @@ struct App {
     // Every animal's model and the rest that never change, see Game::model_words(), and every
     // weapon's, see Game::weapon_model_words()
     animal_models: Subbuffer<[u32]>,
+    /// Model files in assets\models read again as they're saved, see assets.rs
+    model_files: assets::Reloader<Subbuffer<[u32]>>,
     weapon_models: Subbuffer<[u32]>,
     // Which of Game::models_version() the weapons' are
     models_version: u32,
@@ -2702,6 +2708,7 @@ impl App {
             game,
             animals_on: flag("animals", true),
             animal_models,
+            model_files: assets::Reloader::new(),
             weapon_models,
             models_version,
             instance_allocator,
@@ -5633,6 +5640,22 @@ impl App {
             post_flags |= POST_DENOISE;
         }
 
+        // A model file saved: its models worked out again and packed on a thread of their own,
+        // then swapped in here, see assets.rs
+        let allocator = self.memory_allocator.clone();
+        let game = &self.game;
+        if let Some(done) = self.model_files.poll(|| game.model_lists(), move |words| model_buffer(&allocator, words)) {
+            if let Some(buffer) = done.made {
+                self.animal_models = buffer;
+            }
+            if let Some(wings) = done.wings {
+                self.game.set_wing_models(wings);
+            }
+            if let Some(looks) = done.weapons {
+                self.game.set_weapon_looks(looks);
+            }
+        }
+
         // A weapon was found, so there's a new model to draw
         if self.game.models_version() != self.models_version {
             let start = Instant::now();
@@ -6605,6 +6628,10 @@ static ALLOCATOR: perf::Counting = perf::Counting;
 fn main() {
     if std::env::args().any(|a| a == "--screenshot") {
         perf::count_heap();
+    }
+    // `--export-models <dir>` writes every model as a MagicaVoxel file and stops, see assets.rs
+    if let Some(code) = assets::export_from_args() {
+        std::process::exit(code);
     }
     startup::init();
     // `--set vram_budget=2048` takes the graphics card to have no more memory for the game than

@@ -730,8 +730,9 @@ pub struct Game {
     loaded: Option<((usize, usize), Loaded)>,
     combat: Combat,
     leaves: Leaves,
-    /// The models of animals and things lying around, see animals::animal_models()
-    models: Vec<Model>,
+    /// The models of animals and things lying around, see animals::animal_models(), with those
+    /// drawn from files read in, see src\assets.rs: shared with the thread reading them again
+    models: std::sync::Arc<Vec<Model>>,
     /// Changes whenever there are new models to draw, like when a weapon is found
     models_version: u32,
     seed: u32,
@@ -942,7 +943,7 @@ impl Game {
             loaded: None,
             combat: Combat::new(seed, ANIMAL_MODELS as u32),
             leaves: Leaves::new(seed),
-            models: animals::animal_models(),
+            models: std::sync::Arc::new(crate::assets::apply_looks(animals::animal_models())),
             models_version: 0,
             seed,
             rng: hash(seed ^ 0x9a3e),
@@ -954,7 +955,7 @@ impl Game {
             sky_wares: false,
             covered: false,
             worn: None,
-            wing_models: wings::models(),
+            wing_models: crate::assets::wings(wings::models()),
             aloft: None,
             glided: false,
             wings_told: false,
@@ -4643,6 +4644,37 @@ impl Game {
 
     pub fn wing_model(&self, k: usize) -> u32 {
         self.leaf_model() + (self.leaves.models.len() + k) as u32
+    }
+
+    /// The models as model_words() packs them, for the model files to be read again away from
+    /// the game, see assets::Reloader
+    pub fn model_lists(&self) -> crate::assets::Lists {
+        let copy = crate::assets::copy;
+        crate::assets::Lists {
+            base: self.models.clone(),
+            between: self.combat.models.iter().map(|(m, _)| copy(m)).chain(self.leaves.models.iter().map(copy)).collect(),
+            wings: self.wing_models.iter().map(|(m, a)| (copy(m), *a)).collect(),
+            after: self.ward_models.iter().map(|(m, _)| copy(m)).collect(),
+            weapons: self.weapons.iter().map(|w| (w.family, w.parts.clone(), w.seed)).collect(),
+        }
+    }
+
+    /// The wings' models read again from their files, see assets::Reloader
+    pub fn set_wing_models(&mut self, models: Vec<(Model, Vector3<f64>)>) {
+        if models.len() == self.wing_models.len() {
+            self.wing_models = models;
+        }
+    }
+
+    /// The weapons' looks made again, from their parts' files, see assets::Reloader: for the
+    /// weapons model_lists() gave
+    pub fn set_weapon_looks(&mut self, looks: Vec<(usize, Vec<usize>, u32, crate::weapons::WeaponLook)>) {
+        for (w, (family, parts, seed, look)) in self.weapons.iter_mut().zip(looks) {
+            if w.family == family && w.parts == parts && w.seed == seed {
+                w.look = look;
+            }
+        }
+        self.models_version += 1;
     }
 
     /// The models of the wards round raid bosses, and where the first is among model_words(), see
