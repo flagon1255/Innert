@@ -4003,7 +4003,7 @@ impl App {
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
             // A tool's blow landing gathers what it struck, see tools.rs
-            self.update_tools();
+            self.update_tools(delta_time.min(0.1));
             // The fires burning down, smoking and warming whoever's by them, see hearths.rs
             self.update_hearths(delta_time.min(0.1));
             // Monsters coming at night, and what's built taking their blows, see night.rs
@@ -5102,6 +5102,8 @@ impl App {
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        // And what G would gather where the player's looking
+        self.update_prompt(!self.menu_open && !self.inventory_open && !self.game.shopping() && !self.session.gate_open && !self.map.open);
         let gate_choice = self.gate_choice();
         let hearth_note = if self.menu_open || self.building.on { None } else { self.hearth_note() };
         let raid_note = self.raid_note();
@@ -5286,10 +5288,22 @@ impl App {
                                              Right click heavy swing, or eat · E pick up, open, trade, pet\n\
                                              Legendary: R special · right click its power, Q reloads\n\
                                              Number keys pick what's in hand · I inventory · M map\n\
-                                             G gather wood, stone, clay · B build · E opens doors\n\
                                              Wings: jump, then hold Space in the air to glide\n\
                                              Merchants sell wings; bosses and chests leave them\n\
                                              F1 settings · Esc menu",
+                                        )
+                                        .size(13.0)
+                                        .color(Color32::from_gray(190)),
+                                    );
+                                    // Gathering and building, see building.rs
+                                    ui.add_space(10.0);
+                                    ui.label(RichText::new("Gathering and building").size(14.0).strong().color(Color32::from_rgb(255, 215, 130)));
+                                    ui.label(
+                                        RichText::new(
+                                            "Hold G at a tree, rock or clay to gather it\n\
+                                             Bare hands work; tools are 2–4× faster (I › Craft)\n\
+                                             B build · 1–9, 0 pick a piece, its cost beside it\n\
+                                             Click build · right click take down · R turn",
                                         )
                                         .size(13.0)
                                         .color(Color32::from_gray(190)),

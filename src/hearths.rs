@@ -237,7 +237,7 @@ impl App {
             return true;
         }
         if self.bases.materials.wood == 0 {
-            self.game.say(if fuel > 0.0 { "You've no wood to feed the fire. Fell a tree (G, or a hatchet)." } else { "It takes a log to light. Fell a tree for wood (G, or a hatchet)." });
+            self.game.say(if fuel > 0.0 { "You've no wood to feed the fire: hold G at a tree for some." } else { "It takes a log to light: hold G at a tree for wood." });
             return true;
         }
         self.bases.materials.wood -= 1;

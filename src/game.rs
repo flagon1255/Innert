@@ -5659,7 +5659,7 @@ impl Game {
             && let Some(weapon) = tools::make(&self.library, tool, grade)
             && crafting.materials.take(tools::cost(tool, grade))
         {
-            self.say(format!("Crafted a {}. Hold it and click at what it's for to gather it.", weapon.name));
+            self.say(format!("Crafted a {}: G gathers {:.0}× faster with it now.", weapon.name, tools::SPEED[grade.min(tools::FINE)] / tools::BARE_HANDS));
             self.give_weapon(weapon);
             self.cues.push(Cue::here(Sound::Place, 0.8).pitched(1.2));
         }
