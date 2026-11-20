@@ -219,18 +219,24 @@ pub fn tree_at(world: &World, hit: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -
                 if !solid_crown && (cell & FOLIAGE_BRICK == 0 || cell & (crate::worldgen::SOLID_BRICK | crate::worldgen::EMPTY_BRICK) != 0) {
                     continue;
                 }
+                // Gathered for the brick, then put in the cut at once, rather than looked up again
+                // for each voxel; and compared by squared distance
+                let mut here = Vec::new();
                 for k in 0..512i64 {
                     let v = [bx * 8 + k % 8, by * 8 + (k / 8) % 8, bz * 8 + k / 64];
                     let m = world.material_at(v[0], v[1], v[2]);
-                    if !is_crown(m) || built(v) {
+                    if !is_crown(m) {
                         continue;
                     }
-                    let d = ((v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2)).sqrt();
-                    if d > crown || others.iter().any(|o| ((v[0] as f64 - o[0]).powi(2) + (v[1] as f64 - o[1]).powi(2)).sqrt() < d) {
+                    let d = (v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2);
+                    if d > crown * crown || others.iter().any(|o| (v[0] as f64 - o[0]).powi(2) + (v[1] as f64 - o[1]).powi(2) < d) || built(v) {
                         continue;
                     }
-                    add_to(&mut cut, v);
+                    here.push(k as usize);
                     leaf.get_or_insert(m);
+                }
+                if !here.is_empty() {
+                    cut.entry([bx, by, bz]).or_default().extend(here);
                 }
             }
         }

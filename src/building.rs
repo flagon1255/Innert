@@ -690,7 +690,10 @@ impl App {
         let vpm = self.world.voxels_per_meter as f64;
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         let at = Vector3::new(hit[0] as f64 + 0.5 + normal[0] as f64, hit[1] as f64 + 0.5 + normal[1] as f64, hit[2] as f64 + 0.5 + normal[2] as f64);
-        let built = |v: [i64; 3]| self.bases.piece_at([(v[0] + self.world.origin[0]).div_euclid(BLOCK), (v[1] + self.world.origin[1]).div_euclid(BLOCK), v[2].div_euclid(BLOCK)]).is_some();
+        // Nothing built near, as is mostly so, and what's built isn't looked up for every voxel
+        let block = self.block_of(hit);
+        let near = self.bases.pieces().iter().any(|p| (p.at[0] - block[0]).abs() < 40 && (p.at[1] - block[1]).abs() < 40);
+        let built = |v: [i64; 3]| near && self.bases.piece_at([(v[0] + self.world.origin[0]).div_euclid(BLOCK), (v[1] + self.world.origin[1]).div_euclid(BLOCK), v[2].div_euclid(BLOCK)]).is_some();
         let started = Instant::now();
         if tree && let Some(felled) = gather::tree_at(&self.world, hit, &built) {
             self.slow("felling a tree", started);
@@ -1788,6 +1791,9 @@ impl App {
                 say(self, "short");
                 self.shoot_soon("a piece that can't be afforded, and its hint");
             }
+            // And what the menu says of it all
+            455 => self.menu_open = true,
+            470 => self.shoot_soon("the menu, gathering and building in it"),
             _ => {}
         }
     }
