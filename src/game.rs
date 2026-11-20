@@ -2124,7 +2124,6 @@ impl Game {
         }
         let voice = match look.build() {
             Some(Build::Golem) => 0.6,
-            Some(Build::Drake) => 1.15,
             Some(Build::Spider) => 1.5,
             Some(Build::Treant) => 0.5,
             _ if look.is_ultra() => 0.5,
@@ -2197,10 +2196,6 @@ impl Game {
                     }
                 }
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if angry { 1.1 } else { 1.0 }));
-                // A drake spreads its wings as it roars
-                if look.build() == Some(Build::Drake) {
-                    self.cues.push(Cue::at(Sound::Flap, at, 0.8).pitched(0.8));
-                }
                 self.shake = self.shake.max(0.6 * felt(at));
                 self.say(if look.is_ultra() && !angry {
                     "The water heaves and darkens: Ysveth, the Coil Unending, rises from the deep!".to_owned()
