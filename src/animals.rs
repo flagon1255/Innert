@@ -58,6 +58,19 @@ pub enum Look {
     Colossus,
     ElderWyrm,
     CryptTitan,
+    // Bosses of builds of their own, drawn jointed, see src\rig.rs: a cragmaw ogre with its club in
+    // the hills and the old castles, a rime jotun with its frozen maul in the cold, a thunderborn
+    // giant on the high stone, a sunken pharaoh in the desert ruins, a mire crone in the jungle
+    // shrines, an elderhorn stag in the old woods; and the Dreaming Red's own raid bosses, the
+    // Hollow Mother in its soft hollows and the Bleeding Hart in its dreaming wood
+    Ogre,
+    RimeJotun,
+    StormGiant,
+    SandPharaoh,
+    BogHag,
+    Elderhorn,
+    HollowMother,
+    BleedingHart,
     // Monsters: smaller, and many of them, going for the player on sight. Wolves roam the land,
     // the rest haunt dungeons.
     Wolf,
@@ -198,7 +211,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 87] = [
+    pub const ALL: [Look; 95] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -232,6 +245,14 @@ impl Look {
         Look::Colossus,
         Look::ElderWyrm,
         Look::CryptTitan,
+        Look::Ogre,
+        Look::RimeJotun,
+        Look::StormGiant,
+        Look::SandPharaoh,
+        Look::BogHag,
+        Look::Elderhorn,
+        Look::HollowMother,
+        Look::BleedingHart,
         Look::Wolf,
         Look::Skeleton,
         Look::ArmoredSkeleton,
@@ -378,7 +399,7 @@ impl Look {
     /// A raid boss: far bigger and tougher than the rest, fought in three phases. The Water
     /// realm's three great serpents are, see serpents::GREATS.
     pub fn is_raid(self) -> bool {
-        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
+        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::HollowMother | Look::BleedingHart | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
     }
 
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
@@ -415,6 +436,11 @@ impl Look {
     pub fn build(self) -> Option<Build> {
         Some(match self {
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => Build::Golem,
+            // Giants are as heavy as golems; the pharaoh, the crone and the Hollow Mother cast as the
+            // dead do; the stags charge as the great bears do
+            Look::Ogre | Look::RimeJotun | Look::StormGiant => Build::Golem,
+            Look::SandPharaoh | Look::BogHag | Look::HollowMother => Build::Undead,
+            Look::Elderhorn | Look::BleedingHart => Build::Bear,
             Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => Build::Drake,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
@@ -454,6 +480,14 @@ impl Look {
             Look::Colossus => 1.7,
             Look::ElderWyrm => 1.8,
             Look::CryptTitan => 2.75,
+            Look::Ogre => 1.5,
+            Look::RimeJotun => 1.7,
+            Look::StormGiant => 1.65,
+            Look::SandPharaoh => 1.45,
+            Look::BogHag => 1.4,
+            Look::Elderhorn => 1.45,
+            Look::HollowMother => 2.3,
+            Look::BleedingHart => 2.0,
             _ => 1.0,
         }
     }
@@ -462,7 +496,7 @@ impl Look {
     /// numbers, like how far it reaches, are for: 1 for a boss, more for a raid boss
     pub fn size(self) -> f64 {
         match self {
-            Look::Colossus | Look::ElderWyrm => self.scale(),
+            Look::Colossus | Look::ElderWyrm | Look::HollowMother | Look::BleedingHart => self.scale(),
             Look::CryptTitan => self.scale() / Look::GraveKnight.scale(),
             _ if self.is_dragon() => crate::dragons::size(self),
             _ => 1.0,
@@ -479,6 +513,12 @@ impl Look {
             Look::CryptTitan => Some(Look::ArmoredSkeleton),
             Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
             Look::Warlord => Some(Look::Bandit),
+            // The jotun howls up wolves, the pharaoh raises its dead, the crone calls up what lurks
+            // in the mire, and the Hollow Mother calls her children
+            Look::RimeJotun => Some(Look::Wolf),
+            Look::SandPharaoh => Some(Look::Skeleton),
+            Look::BogHag => Some(Look::MireLurker),
+            Look::HollowMother => Some(Look::Ghoul),
             // The Water realm's raid serpents call up serpents of their own
             Look::Hollowtide => Some(Look::SiltCoiler),
             Look::Reefcoil => Some(Look::ReedViper),
@@ -524,6 +564,11 @@ impl Look {
             Look::FrostGolem | Look::FrostWyrm | Look::Frostfang | Look::WinterAlpha | Look::Rimeweaver => Some(Element::Frost),
             Look::MagmaGolem | Look::Drake | Look::ElderWyrm => Some(Element::Fire),
             Look::CryptTitan => Some(Element::Void),
+            Look::RimeJotun => Some(Element::Frost),
+            Look::StormGiant => Some(Element::Storm),
+            Look::SandPharaoh => Some(Element::Fire),
+            Look::BogHag | Look::Elderhorn => Some(Element::Poison),
+            Look::HollowMother | Look::BleedingHart => Some(Element::Blood),
             Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie | Look::DuneBurrower | Look::Bloater => Some(Element::Poison),
             Look::Necromancer => Some(Element::Void),
             Look::RimeWraith => Some(Element::Frost),
@@ -556,6 +601,9 @@ impl Look {
             Look::Drake if jungle => Look::VenomDrake,
             Look::Drake if stony => Look::StormDrake,
             Look::Ironhide if cold => Look::Frostfang,
+            Look::Ogre if cold => Look::RimeJotun,
+            Look::Ogre if stony => Look::StormGiant,
+            Look::Treant | Look::Elderhorn | Look::Golem if jungle => Look::BogHag,
             Look::Direwolf if cold => Look::WinterAlpha,
             Look::Spider if cold => Look::Rimeweaver,
             _ => self,
@@ -590,6 +638,22 @@ impl Look {
             Look::Colossus => make(STONE, OBSIDIAN, GLOW_FIRE, GLOW_FIRE, CRYSTAL),
             Look::ElderWyrm => make(OBSIDIAN, BARK_DARK, TEMPLE_RED, GLOW_FIRE, GOLD),
             Look::CryptTitan => make(BONE, BARK_DARK, OBSIDIAN, GLOW_VOID, GOLD),
+            // An ogre's tan hide, leather, a fur kilt, eyes like embers and tusks; a jotun's skin
+            // blue as ice, steel, white furs, frost in its eyes and icicles; a thunderborn giant grey
+            // as the mountain, bound in bronze, lightning in its eyes and gold; a pharaoh's linen
+            // wrappings, dark sandstone, gold, the sun in its eyes and a teal-striped headdress; a
+            // crone's mossy skin, rags, leather, venom glowing and dead wood; an elderhorn's brown
+            // coat, darker legs, moss on its antlers, eyes of gold and antlers of bone; the Hollow
+            // Mother pale as cream, black hair, a red veil, blood in her heart and a crown of bone;
+            // the Bleeding Hart dark as old blood, crimson brambles for antlers, blood in its eyes
+            Look::Ogre => make(FUR_TAN, LEATHER, FUR_BROWN, GLOW_FIRE, BONE),
+            Look::RimeJotun => make(ICE, STEEL, FUR_WHITE, GLOW_FROST, CRYSTAL),
+            Look::StormGiant => make(STONE, DARK_STEEL, BRONZE, GLOW_STORM, GOLD),
+            Look::SandPharaoh => make(LINEN, SANDSTONE_DARK, GOLD, GLOW_FIRE, TEMPLE_TEAL),
+            Look::BogHag => make(MOSS, BARK_DARK, LEATHER, GLOW_POISON, DEAD_WOOD),
+            Look::Elderhorn => make(FUR_BROWN, FUR_DARK, MOSS, GOLD, BONE),
+            Look::HollowMother => make(FUR_CREAM, OBSIDIAN, TEMPLE_RED, GLOW_BLOOD, BONE),
+            Look::BleedingHart => make(FUR_DARK, OBSIDIAN, LEAVES_CRIMSON, GLOW_BLOOD, BONE),
             Look::Skeleton => make(BONE, BARK_DARK, CLOTH, GLOW_FROST, STEEL),
             Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
             Look::Zombie => make(MOSS, PINE, LINEN, GLOW_POISON, BONE),
@@ -669,6 +733,11 @@ impl Look {
             Look::Ironhide | Look::Frostfang => 3.4,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => 3.1 * self.scale(),
             Look::Treant => 5.5,
+            // Their arms or clubs raised high overhead, or antlers reared up
+            Look::Ogre | Look::RimeJotun | Look::StormGiant => 4.6 * self.scale(),
+            Look::SandPharaoh | Look::BogHag => 3.0 * self.scale(),
+            Look::HollowMother => 3.6 * self.scale(),
+            Look::Elderhorn | Look::BleedingHart => 4.0 * self.scale(),
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => 1.2 * self.scale(),
             // A greatsword raised high overhead, or swept out to its side
             Look::GraveKnight | Look::CryptTitan => 3.45 * self.scale(),
@@ -731,6 +800,12 @@ impl Look {
             Look::Ironhide | Look::Frostfang => (1.6, 1.05),
             Look::Spider | Look::Rimeweaver | Look::Spiderling => (0.9 * self.scale(), 0.95 * self.scale()),
             Look::Treant => (2.4, 1.2),
+            Look::Ogre | Look::RimeJotun | Look::StormGiant => (1.5 * self.scale(), 0.55 * self.scale()),
+            Look::SandPharaoh => (1.0 * self.scale(), 0.36 * self.scale()),
+            Look::BogHag => (0.8 * self.scale(), 0.4 * self.scale()),
+            // Floating over the ground
+            Look::HollowMother => (1.5 * self.scale(), 0.4 * self.scale()),
+            Look::Elderhorn | Look::BleedingHart => (1.2 * self.scale(), 0.55 * self.scale()),
             Look::Wolf | Look::Direwolf | Look::WinterAlpha => (0.55 * self.scale(), 0.42 * self.scale()),
             Look::Skeleton | Look::ArmoredSkeleton | Look::Zombie | Look::ArmoredZombie | Look::GraveKnight | Look::CryptTitan => (1.0 * self.scale(), 0.36 * self.scale()),
             Look::Bandit | Look::BanditBrute | Look::Warlord | Look::Crossbowman | Look::Shieldbearer => (1.0 * self.scale(), 0.36 * self.scale()),
@@ -800,6 +875,14 @@ impl Look {
             Look::Colossus => "Earthbreaker Colossus",
             Look::ElderWyrm => "Elder Cinder Wyrm",
             Look::CryptTitan => "Crypt Titan",
+            Look::Ogre => "Cragmaw Ogre",
+            Look::RimeJotun => "Rime Jotun",
+            Look::StormGiant => "Thunderborn Giant",
+            Look::SandPharaoh => "Sunken Pharaoh",
+            Look::BogHag => "Mire Crone",
+            Look::Elderhorn => "Elderhorn",
+            Look::HollowMother => "Hollow Mother",
+            Look::BleedingHart => "Bleeding Hart",
             Look::Wolf => "wolf",
             Look::Skeleton => "skeleton",
             Look::ArmoredSkeleton => "armoured skeleton",
@@ -885,6 +968,14 @@ impl Look {
             Look::Colossus => 14000.0,
             Look::ElderWyrm => 13000.0,
             Look::CryptTitan => 15000.0,
+            Look::Ogre => 2900.0,
+            Look::RimeJotun => 3300.0,
+            Look::StormGiant => 3100.0,
+            Look::SandPharaoh => 2700.0,
+            Look::BogHag => 2400.0,
+            Look::Elderhorn => 2500.0,
+            Look::HollowMother => 14500.0,
+            Look::BleedingHart => 13500.0,
             Look::Wolf => 70.0,
             Look::Skeleton => 150.0,
             Look::ArmoredSkeleton => 240.0,
@@ -946,6 +1037,12 @@ impl Look {
             Look::Colossus => return 1.8,
             Look::ElderWyrm => return 2.2,
             Look::CryptTitan => return 1.6,
+            Look::Ogre | Look::RimeJotun | Look::StormGiant => return 1.5,
+            Look::SandPharaoh => return 1.2,
+            Look::BogHag => return 1.0,
+            Look::HollowMother => return 1.4,
+            Look::Elderhorn => return 1.8,
+            Look::BleedingHart => return 2.0,
             Look::Wolf => return 1.8,
             Look::Direwolf | Look::WinterAlpha => return 2.2,
             Look::Zombie | Look::ArmoredZombie => return 0.8,
@@ -996,6 +1093,13 @@ impl Look {
             Look::Colossus => return 3.2,
             Look::ElderWyrm => return 5.5,
             Look::CryptTitan => return 3.4,
+            Look::Ogre | Look::RimeJotun | Look::StormGiant => return 3.2,
+            Look::SandPharaoh => return 2.4,
+            Look::BogHag => return 2.2,
+            Look::HollowMother => return 3.0,
+            // Charging, see bosses::Boss::haste()
+            Look::Elderhorn => return 7.5,
+            Look::BleedingHart => return 8.0,
             Look::Wolf => return 6.5,
             Look::Direwolf | Look::WinterAlpha => return 8.0,
             Look::Skeleton => return 3.2,
@@ -1057,6 +1161,13 @@ impl Look {
 
     /// Meters covered by one cycle of its walk
     pub fn stride(self) -> f64 {
+        match self {
+            Look::Ogre | Look::RimeJotun | Look::StormGiant => return 1.7 * self.scale(),
+            Look::SandPharaoh | Look::BogHag => return 1.2 * self.scale(),
+            Look::HollowMother => return 1.6 * self.scale(),
+            Look::Elderhorn | Look::BleedingHart => return 2.4 * self.scale(),
+            _ => {}
+        }
         match self.build() {
             Some(Build::Dragon) => crate::dragons::stride(self),
             Some(Build::Golem) => 2.4 * self.size(),

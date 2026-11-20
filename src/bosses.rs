@@ -78,9 +78,28 @@ pub enum Move {
     Coil,
     /// A great serpent's tail raised high and brought down on whoever's behind it
     Tail,
+    // The moves of the bosses with builds of their own, see src\rig.rs
+    /// A giant's weapon swung backhanded across in front of it, knocking whoever it catches flying
+    Swat,
+    /// The Rime Jotun's maul smashed into the ground, boulders of ice bursting up out of it and
+    /// flying at the player
+    Avalanche,
+    /// The Hollow Mother raising her arms and weeping blood, which rains down all round the player
+    Weep,
+    /// The Mire Crone stirring up venom between her hands and flinging it out across the player
+    Hex,
+    /// The Sunken Pharaoh sweeping its sceptre round, swarm after swarm of scarabs flying off it
+    Scarabs,
+    /// A stag charging with its antlers lowered, brambles bursting up in its wake
+    Trample,
+    /// The Thunderborn Giant clapping its hands overhead: thunder runs out across the ground and
+    /// lightning comes down on the player
+    Thunderclap,
+    /// The Elderhorn bellowing, the ground shaking out from under its hooves
+    Bellow,
 }
 
-const MOVES: usize = 25;
+const MOVES: usize = 33;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -110,6 +129,14 @@ impl Move {
         Move::Spikes,
         Move::Coil,
         Move::Tail,
+        Move::Swat,
+        Move::Avalanche,
+        Move::Weep,
+        Move::Hex,
+        Move::Scarabs,
+        Move::Trample,
+        Move::Thunderclap,
+        Move::Bellow,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -478,6 +505,14 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Shoot | Move::Lash) => 0.8,
         (_, Move::Burrow | Move::Erupt) => 0.6,
         (_, Move::Blink) => 0.3,
+        (_, Move::Swat) => 0.75,
+        (_, Move::Avalanche) => 1.2,
+        (_, Move::Weep) => 1.0,
+        (_, Move::Hex) => 0.8,
+        (_, Move::Scarabs) => 0.85,
+        (_, Move::Trample) => 1.0,
+        (_, Move::Thunderclap) => 1.1,
+        (_, Move::Bellow) => 0.8,
     }
 }
 
@@ -513,6 +548,14 @@ fn duration(look: Look, m: Move) -> f64 {
         Move::Maul => MAUL_SWIPE * 3.0,
         Move::Web => 0.4,
         Move::RootWave => 0.6,
+        Move::Swat => 0.35,
+        Move::Avalanche => 0.5,
+        Move::Weep => WEEP_SECONDS,
+        Move::Hex => 0.4,
+        Move::Scarabs => 0.8,
+        Move::Trample => 2.4,
+        Move::Thunderclap => quake_reach(look) / QUAKE_PACE,
+        Move::Bellow => BELLOW_REACH / QUAKE_PACE,
     }
 }
 
@@ -565,6 +608,14 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Maul => 1.2,
         Move::Web => 0.6,
         Move::RootWave => 0.8,
+        Move::Swat => 0.8,
+        Move::Avalanche => 1.1,
+        Move::Weep => 1.0,
+        Move::Hex => 0.7,
+        Move::Scarabs => 0.6,
+        Move::Trample => 0.9,
+        Move::Thunderclap => 1.0,
+        Move::Bellow => 0.7,
     }
 }
 
@@ -620,6 +671,14 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Storm => 9.0,
         Move::Maul => 7.0,
         Move::Web => 10.0,
+        Move::Swat => 4.5,
+        Move::Avalanche => 9.0,
+        Move::Weep => 11.0,
+        Move::Hex => 4.5,
+        Move::Scarabs => 6.5,
+        Move::Trample => 7.0,
+        Move::Thunderclap => 9.0,
+        Move::Bellow => 8.0,
     }
 }
 
@@ -711,6 +770,16 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::Necromancer => (1.2, 1.3, 9.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
         Look::Warlord => (2.2, 2.9, 30.0, 0.5),
+        // A giant's weapon, a pharaoh's sceptre, a crone's staff, a stag's forehooves, and the raid
+        // bosses of the Dreaming Red
+        Look::Ogre => (2.4, 2.8, 30.0, 0.7),
+        Look::RimeJotun => (2.6, 3.0, 32.0, 0.9),
+        Look::StormGiant => (2.5, 2.9, 30.0, 0.7),
+        Look::SandPharaoh => (1.8, 2.2, 22.0, 0.0),
+        Look::BogHag => (1.6, 2.0, 18.0, 0.0),
+        Look::Elderhorn => (2.4, 2.6, 26.0, 0.5),
+        Look::HollowMother => (3.4, 3.8, 36.0, 0.0),
+        Look::BleedingHart => (3.4, 3.6, 36.0, 0.9),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
         _ if look.is_raid() => {
             let base = if look == Look::CryptTitan { Look::GraveKnight } else if look.build() == Some(Build::Golem) { Look::Golem } else { Look::Drake };
@@ -848,6 +917,15 @@ const TAIL_SLAM: f64 = 0.3;
 /// How far round a great serpent's tail coming down hurts, in meters
 const TAIL_RADIUS: f64 = 2.8;
 
+/// Seconds the Hollow Mother weeps blood, and between each drop of it
+const WEEP_SECONDS: f64 = 1.8;
+const WEEP_EVERY: f64 = 0.11;
+/// How far the Elderhorn's bellow shakes the ground, in meters
+const BELLOW_REACH: f64 = 8.0;
+/// How far a giant's swat reaches, in meters at its build's size, and how far it knocks whoever it
+/// catches
+const SWAT_REACH: f64 = 2.6;
+
 /// Seconds a boss is left dazed after charging into something
 const STUN_SECONDS: f64 = 2.0;
 /// Seconds a jointed boss reels from the blows it's taken, knocked out of what it was getting
@@ -865,6 +943,33 @@ fn reel_at(look: Look) -> f64 {
 /// when it's not angry, for posing it
 pub fn timing(look: Look, m: Move) -> (f64, f64, f64) {
     (windup(look, m), duration(look, m), recovery(look, m))
+}
+
+/// The kinds of weapon a boss of `look` leaves most of the time, as weapon families' ids, and the
+/// element it leans to: what suits it, a giant's mauls and hammers, a crone's staffs and wands
+/// of venom, the Hollow Mother's scythes and whips of blood
+pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
+    let families: &'static [&'static str] = match look {
+        Look::Ogre => &["maul", "hammer", "flail", "axe"],
+        Look::RimeJotun => &["maul", "axe", "greatsword", "halberd"],
+        Look::StormGiant => &["hammer", "spear", "halberd", "rod"],
+        Look::SandPharaoh => &["scepter", "staff", "orb", "sword"],
+        Look::BogHag => &["staff", "wand", "totem", "censer"],
+        Look::Elderhorn => &["bow", "spear", "dagger"],
+        Look::HollowMother => &["scythe", "whip", "tome", "dagger"],
+        Look::BleedingHart => &["spear", "bow", "halberd", "whip"],
+        _ => match look.build() {
+            Some(Build::Golem) => &["hammer", "maul", "flail"],
+            Some(Build::Bear) => &["axe", "hammer", "maul"],
+            Some(Build::Spider) => &["dagger", "bow", "whip"],
+            Some(Build::Treant) => &["staff", "bow", "totem"],
+            Some(Build::Wolf) => &["axe", "spear", "dagger"],
+            Some(Build::Undead) if look.is_knight() => &["greatsword", "sword", "scythe"],
+            Some(Build::Undead) if look == Look::Warlord => &["sword", "musket", "pistol", "crossbow"],
+            _ => &[],
+        },
+    };
+    (families, look.element())
 }
 
 /// The moves `look` makes in a fight, for trying each of them out
@@ -1007,6 +1112,7 @@ impl Boss {
     pub fn haste(&self) -> f64 {
         match self.phase {
             Phase::Act(Move::Charge, _) if self.look == Look::Tusker => 1.7,
+            Phase::Act(Move::Trample, _) => 1.15,
             // A great serpent darting across at the player, or round them to coil
             Phase::Act(Move::Charge, _) if self.look.is_great_serpent() => 2.3,
             Phase::Act(Move::Coil, _) => 2.1,
@@ -1125,6 +1231,17 @@ impl Boss {
             // brought down on them; the dead raised to fight for it; and from further off a leap
             // to cleave down on the player, or the void flung off its blade at them
             _ if self.look == Look::GraveKnight => &[(Move::Spikes, 0.0, 3.0), (Move::Sweep, 0.0, 3.0), (Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Leap, 7.0, 20.0), (Move::Spit, 4.6, 30.0)],
+            // The bosses with builds of their own, see src\rig.rs: their own moves first, so they
+            // make them whenever they're ready
+            _ if self.look == Look::Ogre => &[(Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.4), (Move::Throw, 5.0, 30.0)],
+            _ if self.look == Look::RimeJotun => &[(Move::Avalanche, 6.0, 30.0), (Move::Slam, 0.0, 4.6), (Move::Breath, 0.0, 7.0), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0)],
+            _ if self.look == Look::StormGiant => &[(Move::Thunderclap, 0.0, 9.0), (Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.6), (Move::Storm, 9.0, 30.0), (Move::Throw, 5.0, 28.0)],
+            _ if self.look == Look::SandPharaoh => &[(Move::Summon, 0.0, 30.0), (Move::Scarabs, 5.0, 28.0), (Move::Slam, 0.0, 3.4), (Move::Storm, 8.0, 30.0), (Move::Spit, 3.5, 30.0)],
+            _ if self.look == Look::BogHag => &[(Move::Summon, 0.0, 30.0), (Move::Hex, 3.5, 24.0), (Move::Roots, 3.0, 26.0), (Move::Slam, 0.0, 3.2), (Move::Lash, 2.5, 10.0)],
+            // Raid bosses, their ranges in meters at their build's size, as they're so much bigger
+            _ if self.look == Look::HollowMother => &[(Move::Summon, 0.0, 14.0), (Move::Cataclysm, 0.0, 14.0), (Move::Weep, 0.0, 12.0), (Move::Slam, 0.0, 2.2), (Move::Lash, 2.0, 6.0), (Move::Spit, 2.5, 14.0)],
+            _ if self.look == Look::BleedingHart => &[(Move::Cataclysm, 0.0, 15.0), (Move::Slam, 0.0, 2.4), (Move::Maul, 1.2, 3.8), (Move::Trample, 3.5, 16.0), (Move::RootWave, 3.0, 11.0), (Move::Volley, 4.0, 17.0)],
+            _ if self.look == Look::Elderhorn => &[(Move::Bellow, 0.0, 6.0), (Move::Slam, 0.0, 4.2), (Move::Maul, 2.5, 7.0), (Move::Trample, 7.0, 30.0), (Move::Volley, 8.0, 30.0)],
             // Monsters bite or swing at what's in reach, and some pounce
             Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
             Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
@@ -2361,8 +2478,60 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         boss.cooldowns[Move::Leap as usize] = boss.cooldowns[Move::Leap as usize].min(1.2);
                     }
                     // Angry, it sends three lines fanned out
-                    Move::RootWave => boss.deeds.push(Deed::RootWave { from: a.position, to: boss.aim, lanes: if boss.enraged { 3 } else { 1 } }),
-                    Move::Breath | Move::Roar | Move::Storm | Move::Cataclysm => {}
+                    Move::RootWave => boss.deeds.push(Deed::RootWave { from: a.position, to: boss.aim, lanes: if boss.enraged || look.is_raid() { 3 } else { 1 } }),
+                    Move::Breath | Move::Roar | Move::Storm | Move::Cataclysm | Move::Weep => {}
+                    // Swung across from its right to its left: whoever's within reach in front of it
+                    // is struck and thrown off to its left
+                    Move::Swat => {
+                        let left = Vector3::new(-forward.y, forward.x, 0.0);
+                        let reach = SWAT_REACH * look.scale();
+                        boss.deeds.push(Deed::Slam { at: a.position + (forward + left * 0.4) * reach * 0.7 * vpm, radius: 0.0, damage: 0.0, crater: 0.0 });
+                        boss.deeds.push(Deed::Swipe(a.position, 2));
+                        if let Some(p) = player {
+                            let off = p - a.position;
+                            if distance < reach + 0.8 && off.xy().dot(&forward.xy()) > -0.2 * off.xy().norm() && (off.z / vpm).abs() < 3.0 {
+                                boss.deeds.push(Deed::Ram { damage: if look.is_raid() { 30.0 } else { 24.0 }, direction: (left * 1.2 + forward * 0.5).normalize() });
+                            }
+                        }
+                    }
+                    // Its maul smashed into the ground in front of it, and boulders of ice bursting
+                    // up out of it and flying at the player, fanned out across them
+                    Move::Avalanche => {
+                        let (reach, radius, damage, crater) = slam(look);
+                        let at = a.position + forward * reach * vpm;
+                        boss.deeds.push(Deed::Slam { at, radius, damage, crater });
+                        let to = boss.aim;
+                        let across = Vector3::new(-(to - at).y, (to - at).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        let spread: &[f64] = if boss.enraged { &[-2.0, -1.0, 0.0, 1.0, 2.0] } else { &[-1.0, 0.0, 1.0] };
+                        for &k in spread {
+                            boss.deeds.push(Deed::Throw { from: at + Vector3::new(0.0, 0.0, 1.2 * vpm) + across * k * 0.8 * vpm, to: to + across * k * 3.0 * vpm });
+                        }
+                    }
+                    // Venom flung out across the player, fanned wide
+                    Move::Hex => {
+                        let (from, to) = (emit(a, &boss, vpm), boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm));
+                        let across = Vector3::new(-(to - from).y, (to - from).x, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        for k in [-2.0, -1.0, 0.0, 1.0, 2.0] {
+                            boss.deeds.push(Deed::Spit { from, to: to + across * k * 2.0 * vpm });
+                        }
+                    }
+                    Move::Scarabs => boss.deeds.push(Deed::Volley { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
+                    Move::Trample => {
+                        boss.rammed = false;
+                        a.target_heading = heading_to(a.position, boss.aim);
+                        a.heading = a.target_heading;
+                        boss.trail = 0.0;
+                    }
+                    // The shockwave runs out from where it stands; lightning comes down on the player
+                    Move::Thunderclap | Move::Bellow => {
+                        boss.leap.0 = a.position;
+                        boss.deeds.push(Deed::Stomp(a.position));
+                        if m == Move::Thunderclap {
+                            boss.deeds.push(Deed::Storm { to: boss.aim, k: 0 });
+                        } else {
+                            boss.deeds.push(Deed::Roar { at: a.position, angry: boss.enraged });
+                        }
+                    }
                 }
                 Phase::Act(m, 0.0)
             }
@@ -2411,8 +2580,16 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         boss.deeds.push(Deed::Stomp(boss.aim));
                     }
                 }
-                Move::Charge => {
+                Move::Charge | Move::Trample => {
                     a.mood = Mood::Run;
+                    // Brambles bursting up in a stag's wake
+                    if m == Move::Trample {
+                        boss.trail -= dt;
+                        if boss.trail <= 0.0 && t > 0.3 {
+                            boss.trail = 0.35;
+                            boss.deeds.push(Deed::Roots { at: a.position - forward * 1.5 * look.scale() * vpm });
+                        }
+                    }
                     let reach = if look.is_great_serpent() { 3.8 } else { 2.8 };
                     if !boss.rammed && distance < reach {
                         boss.rammed = true;
@@ -2479,9 +2656,18 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     }
                     over = t >= swinging + SPIN_SETTLE;
                 }
-                // The shockwave running out across the ground
-                Move::Quake => {
-                    let to = (t * QUAKE_PACE).min(quake_reach(look));
+                // The shockwave running out across the ground, and for a thunderclap lightning coming
+                // down after the first bolt
+                Move::Quake | Move::Thunderclap | Move::Bellow => {
+                    let reach = if m == Move::Bellow { BELLOW_REACH } else { quake_reach(look) };
+                    let to = (t * QUAKE_PACE).min(reach);
+                    if m == Move::Thunderclap {
+                        for (k, at) in [(1, 0.35), (2, 0.7), (3, 1.05)] {
+                            if t >= at && t - dt < at {
+                                boss.deeds.push(Deed::Storm { to: player.unwrap_or(boss.aim), k });
+                            }
+                        }
+                    }
                     boss.deeds.push(Deed::Quake { at: boss.leap.0, from: (t - dt) * QUAKE_PACE, to, dt });
                     // Lines of spikes of rock bursting up as the shockwave runs out under them,
                     // straight at the player and fanned out either side, more once it's enraged
@@ -2492,6 +2678,26 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                             let lean = Vector3::new(ahead.x * c - ahead.y * s, ahead.x * s + ahead.y * c, 0.0);
                             let height = 3.0 - 1.2 * d / quake_reach(look);
                             boss.deeds.push(Deed::Spire { at: boss.leap.0 + lean * d * vpm, height, lean });
+                        }
+                    }
+                }
+                // Blood weeping down all round the player, a drop at a time, arcing out of her
+                Move::Weep => {
+                    let count = |t: f64| (t / WEEP_EVERY) as usize;
+                    if t - dt <= 0.0 || count(t) != count(t - dt) {
+                        let k = count(t);
+                        let p = player.unwrap_or(boss.aim);
+                        let round = k as f64 * 2.4 + boss.clock;
+                        let r = if k % 5 == 0 { 0.0 } else { (2.0 + (k % 4) as f64 * 1.4) * vpm };
+                        boss.deeds.push(Deed::Spit { from: emit(a, &boss, vpm), to: p + Vector3::new(round.cos() * r, round.sin() * r, 0.3 * vpm) });
+                    }
+                }
+                // Another swarm flung off its sceptre as it sweeps it back and forth
+                Move::Scarabs => {
+                    for at in [0.3, 0.6] {
+                        if t >= at && t - dt < at {
+                            let to = player.unwrap_or(boss.aim) + Vector3::new(0.0, 0.0, 1.0 * vpm);
+                            boss.deeds.push(Deed::Volley { from: emit(a, &boss, vpm), to });
                         }
                     }
                 }

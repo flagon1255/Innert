@@ -24,7 +24,10 @@ use crate::animals::{self, Animal, AnimalInstance, Look, MODEL_RES, MOVING, Mode
 use crate::bosses::{Carry, Move};
 use crate::worldgen::material::AIR;
 
+mod beast;
 mod biped;
+mod caster;
+mod giant;
 mod golem;
 mod knight;
 
@@ -32,7 +35,22 @@ pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 6] = [Look::Golem, Look::FrostGolem, Look::MagmaGolem, Look::Colossus, Look::GraveKnight, Look::CryptTitan];
+pub const KINDS: [Look; 14] = [
+    Look::Golem,
+    Look::FrostGolem,
+    Look::MagmaGolem,
+    Look::Colossus,
+    Look::GraveKnight,
+    Look::CryptTitan,
+    Look::Ogre,
+    Look::RimeJotun,
+    Look::StormGiant,
+    Look::SandPharaoh,
+    Look::BogHag,
+    Look::HollowMother,
+    Look::Elderhorn,
+    Look::BleedingHart,
+];
 
 /// Pieces each has room for among the models, those it doesn't have left empty
 pub const PIECES: usize = 24;
@@ -56,11 +74,17 @@ pub fn rigged(look: Look) -> bool {
 enum Family {
     Golem,
     Knight,
+    Giant,
+    Caster,
+    Beast,
 }
 
 fn family(look: Look) -> Family {
     match look {
         Look::GraveKnight | Look::CryptTitan => Family::Knight,
+        Look::Ogre | Look::RimeJotun | Look::StormGiant => Family::Giant,
+        Look::SandPharaoh | Look::BogHag | Look::HollowMother => Family::Caster,
+        Look::Elderhorn | Look::BleedingHart => Family::Beast,
         _ => Family::Golem,
     }
 }
@@ -337,6 +361,7 @@ pub struct Sockets {
 #[derive(Clone, Copy)]
 enum Pose {
     Biped(biped::Stance),
+    Beast(beast::Stance),
 }
 
 /// The state of a jointed boss's pose, kept from frame to frame
@@ -386,6 +411,9 @@ impl Rig {
         let pose = match family(look) {
             Family::Golem => Pose::Biped(golem::rest(look)),
             Family::Knight => Pose::Biped(knight::rest(look)),
+            Family::Giant => Pose::Biped(giant::rest(look)),
+            Family::Caster => Pose::Biped(caster::rest(look)),
+            Family::Beast => Pose::Beast(beast::rest(look)),
         };
         let mut start = hash(seed);
         let mut rig = Rig {
@@ -413,6 +441,15 @@ impl Rig {
     fn biped(&mut self) -> &mut biped::Stance {
         match &mut self.pose {
             Pose::Biped(s) => s,
+            Pose::Beast(_) => panic!("{:?} isn't a biped", self.look),
+        }
+    }
+
+    /// A pose of a four-legged build's, to ease
+    fn beast(&mut self) -> &mut beast::Stance {
+        match &mut self.pose {
+            Pose::Beast(s) => s,
+            Pose::Biped(_) => panic!("{:?} isn't a beast", self.look),
         }
     }
 
@@ -466,6 +503,9 @@ impl Rig {
         match family(self.look) {
             Family::Golem => golem::animate(self, m),
             Family::Knight => knight::animate(self, m),
+            Family::Giant => giant::animate(self, m),
+            Family::Caster => caster::animate(self, m),
+            Family::Beast => beast::animate(self, m),
         }
         self.posed = true;
     }
@@ -482,6 +522,9 @@ fn pieces(look: Look) -> Vec<Vec<Part>> {
     match family(look) {
         Family::Golem => golem::pieces(look),
         Family::Knight => knight::pieces(look),
+        Family::Giant => giant::pieces(look),
+        Family::Caster => caster::pieces(look),
+        Family::Beast => beast::pieces(look),
     }
 }
 
@@ -600,6 +643,9 @@ pub fn death_seconds(look: Look) -> f64 {
     match family(look) {
         Family::Golem => golem::DEATH,
         Family::Knight => knight::DEATH,
+        Family::Giant => giant::DEATH,
+        Family::Caster => caster::DEATH,
+        Family::Beast => beast::DEATH,
     }
 }
 
@@ -615,6 +661,9 @@ pub fn thuds(look: Look) -> &'static [f64] {
     match family(look) {
         Family::Golem => &golem::THUDS,
         Family::Knight => &knight::THUDS,
+        Family::Giant => &giant::THUDS,
+        Family::Caster => &caster::THUDS,
+        Family::Beast => &beast::THUDS,
     }
 }
 
@@ -681,9 +730,9 @@ mod tests {
     }
 
     /// The moves each boss makes and the parts of them, to try every pose
-    fn poses(_look: Look) -> Vec<(Move, Stage)> {
+    fn poses(look: Look) -> Vec<(Move, Stage)> {
         let mut out = Vec::new();
-        for m in [Move::Slam, Move::Quake, Move::Throw, Move::Cataclysm, Move::Roar, Move::Summon, Move::Spit, Move::Leap, Move::Sweep, Move::Spikes, Move::Charge, Move::Maul] {
+        for m in crate::bosses::repertoire(look) {
             for stage in [Stage::Wind, Stage::Act, Stage::Recover] {
                 out.push((m, stage));
             }

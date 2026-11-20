@@ -2957,6 +2957,14 @@ impl App {
                     "undercity heart" => animals::Look::GraveKnight,
                     "castle" if pick % 5 == 0 => animals::Look::Colossus,
                     "pyramid" if pick % 5 == 0 => animals::Look::ElderWyrm,
+                    // A pharaoh sunk in the desert's ruins and pyramids; an ogre in the old castles,
+                    // towers and caverns, a jotun where it's cold and a thunderborn giant on the high
+                    // stone; an elderhorn at the woods' shrines, a mire crone at the jungle's, see
+                    // Look::for_ground and srcig.rs
+                    "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
+                    "castle" | "watchtower" if pick % 4 == 3 => animals::Look::Ogre,
+                    "cavern" if pick % 4 == 3 => animals::Look::Ogre,
+                    "shrine" if pick % 2 == 0 => animals::Look::Elderhorn,
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
                     // A castle fallen to the dead has one on its throne
                     "dungeon" | "fallen throne" => animals::Look::GraveKnight,
