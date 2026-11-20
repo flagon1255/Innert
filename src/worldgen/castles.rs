@@ -1442,6 +1442,10 @@ impl Castle {
             site("fallen court", at.point((self.court * 0.5 + 4.5).min(self.court - 1.5), 0.0, self.ward), [1.0, 0.0]);
             site("fallen hall", at.point(self.keep[1] * 0.5, 0.0, self.ward), [1.0, 0.0]);
             site("fallen throne", at.point(tu0 + 4.0, 0.0, self.throne), [1.0, 0.0]);
+            // The gargoyles on the ledges over its gate, see gatehouse()
+            for side in [-1.0, 1.0] {
+                site("gargoyle perch", at.point(self.front + 1.5 + 0.4, side * (4.4 - 0.65), self.wall_top + 3.6), [1.0, 0.0]);
+            }
             let hoard = self.princess();
             if t.inside(hoard[0], hoard[1]) {
                 chest(features, hoard, at.heading(0.0), 4.5);
@@ -2099,6 +2103,14 @@ impl Castle {
         let g = self.gate_floor;
         let (low, _) = self.span([u0, u1], [-gv, gv], 2.5);
         let old = self.old(Worn::Wall, f32::MIN, 1.8);
+        // A fallen castle's gate has a ledge of stone jutting out over it at either corner, a
+        // gargoyle asleep on each, see src\gargoyles.rs
+        if self.fallen {
+            for side in [-1.0, 1.0] {
+                let v = if side < 0.0 { [-gv, -gv + 1.3] } else { [gv - 1.3, gv] };
+                s.push(bl(at, [u1 - 0.3, u1 + 1.0], v, [top - 0.55, top + 0.1], st.trim));
+            }
+        }
         battlements(s, at, [u1 - 0.6, u1], [-gv, gv], top, st.wall, old);
         battlements(s, at, [u0, u0 + 0.6], [-gv, gv], top, st.wall, old);
         if top - 1.0 > g + 8.2 {
