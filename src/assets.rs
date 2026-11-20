@@ -235,7 +235,7 @@ pub fn frame_name(frame: usize) -> String {
 }
 
 /// Voxels a meter of a look's model, see Look::resolution()
-fn look_res(look: Look) -> f64 {
+pub fn look_res(look: Look) -> f64 {
     match look {
         Look::GrappleHook => 3.0 * MODEL_RES,
         Look::Wings => 4.0 * MODEL_RES,
@@ -244,7 +244,7 @@ fn look_res(look: Look) -> f64 {
 }
 
 /// Voxels a meter of the wings' models, see wings::RES
-const WING_RES: f64 = 6.0 * MODEL_RES;
+pub const WING_RES: f64 = 6.0 * MODEL_RES;
 
 /// What's kept beside each file: where its model goes in the game. `pivot` is the voxel the game
 /// holds still, its joint or the middle of its feet, in the file's voxels as written; `origin` is
@@ -592,7 +592,7 @@ fn has_files(files: &HashSet<String>, look: Look) -> bool {
 /// The look whose file `look` is drawn from in other colours, if it shares one, with the
 /// materials swapped: the first in Look::ALL that's the same shape, see skin_map(). `frames_of`
 /// gives the code's frames of a look.
-fn skin_of<'a>(look: Look, frames_of: &dyn Fn(Look) -> Vec<&'a Model>) -> Option<(Look, [u8; 256])> {
+pub fn skin_of<'a>(look: Look, frames_of: &dyn Fn(Look) -> Vec<&'a Model>) -> Option<(Look, [u8; 256])> {
     let mine = frames_of(look);
     if mine.iter().all(|m| is_empty(m)) {
         return None;
@@ -824,7 +824,7 @@ pub fn look_title(look: Look) -> String {
 }
 
 /// What's said in a look's .json about how its frames go
-const LOOK_NOTE: &str = "The standing frame. The game draws this look in baked frames, walking and attacking: what you change \
+pub const LOOK_NOTE: &str = "The standing frame. The game draws this look in baked frames, walking and attacking: what you change \
     here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames \
     for a file per frame, which replaces that frame outright.";
 
@@ -1027,11 +1027,6 @@ impl<T: Send + 'static> Reloader<T> {
             Some(w)
         });
         Reloader { changed, _watcher: watcher.flatten(), job: None, over: Default::default(), last: None }
-    }
-
-    /// Whether models are being worked out again just now
-    pub fn busy(&self) -> bool {
-        self.job.is_some()
     }
 
     /// Reads the files again once they've changed and been quiet a moment: `lists` gives what's

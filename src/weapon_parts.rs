@@ -251,7 +251,7 @@ fn part_frames(library: &Library, f: usize, s: usize, c: usize) -> (WeaponLook, 
     (look, out)
 }
 
-fn export_part(dir: &Path, library: &Library, f: usize, s: usize, c: usize) -> Result<Vec<String>, String> {
+pub fn export_part(dir: &Path, library: &Library, f: usize, s: usize, c: usize) -> Result<Vec<String>, String> {
     let fam = &library.families[f];
     let comp = &library.components[c];
     let (look, frames) = part_frames(library, f, s, c);

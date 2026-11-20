@@ -75,6 +75,7 @@ mod compass;
 mod crash;
 mod daynight;
 mod dragons;
+mod editor;
 mod effects;
 mod game;
 mod gates;
@@ -1352,6 +1353,9 @@ struct App {
     animal_models: Subbuffer<[u32]>,
     /// Model files in assets\models read again as they're saved, see assets.rs
     model_files: assets::Reloader<Subbuffer<[u32]>>,
+    /// The model editor, F7, see editor.rs, and the view to go back to when it's closed
+    editor: editor::Editor,
+    before_editor: Option<(Vector3<f64>, Vector3<f64>, f64)>,
     weapon_models: Subbuffer<[u32]>,
     // Which of Game::models_version() the weapons' are
     models_version: u32,
@@ -2709,6 +2713,8 @@ impl App {
             animals_on: flag("animals", true),
             animal_models,
             model_files: assets::Reloader::new(),
+            editor: Default::default(),
+            before_editor: None,
             weapon_models,
             models_version,
             instance_allocator,
@@ -3926,6 +3932,22 @@ impl App {
             self.inventory_open = !self.inventory_open;
             self.set_focus(!self.inventory_open);
         }
+        // The model editor, see editor.rs
+        if interactive && self.input.key_pressed(KeyCode::F7) && self.loaded_scene.is_terrain() && (self.editor.open || !self.menu_open) {
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
+            self.editor.toggle(&self.world, eye, &mut self.game);
+            if self.editor.open {
+                self.before_editor = Some((self.camera.position, self.camera.rotation, self.camera.fov));
+                self.inventory_open = false;
+                self.set_focus(false);
+            } else {
+                if let Some((position, rotation, fov)) = self.before_editor.take() {
+                    (self.camera.position, self.camera.rotation, self.camera.fov) = (position, rotation, fov);
+                }
+                self.set_focus(true);
+            }
+        }
+        let playing = playing && !self.editor.open;
         if playing && self.input.key_pressed(KeyCode::F1) {
             self.show_settings = !self.show_settings;
         }
@@ -4002,7 +4024,7 @@ impl App {
         // The world stands still while the menu is open, and while it's built afresh round the
         // player behind the dark, as on going through to another realm, so nothing that was about
         // them, a night's raiders least of all, can fall on them unseen meanwhile
-        if !self.menu_open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
+        if !self.menu_open && !self.editor.open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
             let water = &self.water;
@@ -4241,6 +4263,31 @@ impl App {
             }
         }
 
+        // The model editor's view, turned about what it shows
+        if self.editor.open && !interactive {
+            self.editor.update(delta_time, &editor::Controls::default(), &mut self.game);
+        } else if self.editor.open {
+            let (dx, dy) = self.input.mouse_diff();
+            let (left, right) = (self.input.mouse_held(MouseButton::Left), self.input.mouse_held(MouseButton::Right));
+            let keys = [(KeyCode::Space, ' '), (KeyCode::KeyX, 'x'), (KeyCode::KeyY, 'y'), (KeyCode::KeyZ, 'z'), (KeyCode::KeyG, 'g'), (KeyCode::KeyQ, 'q'), (KeyCode::KeyE, 'e'), (KeyCode::KeyK, 'k'), (KeyCode::Delete, 'd')];
+            let controls = editor::Controls {
+                drag: if left { (dx as f64, dy as f64) } else { (0.0, 0.0) },
+                turn: if right { (dx as f64, dy as f64) } else { (0.0, 0.0) },
+                scroll: self.input.scroll_diff().1 as f64,
+                keys: keys.iter().filter(|(k, _)| self.input.key_pressed(*k)).map(|(_, c)| *c).collect(),
+            };
+            self.editor.update(delta_time, &controls, &mut self.game);
+        }
+        if self.editor.open {
+            let vpm = self.world.voxels_per_meter as f64;
+            let (target, yaw, pitch, distance) = self.editor.camera(vpm);
+            self.camera.rotation = Vector3::new(pitch, 0.0, yaw);
+            self.camera.fov = 60.0;
+            let forward = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let mut eye = target - forward * distance;
+            eye.z = eye.z.min(self.world.size[2] as f64 - 2.0 * vpm);
+            self.camera.position = voxels_to_camera(eye, self.world.size);
+        }
         let sky_key = self.sky().key;
         let view = [
             self.camera.position.x,
@@ -4381,6 +4428,19 @@ impl App {
                         self.play.flown,
                         self.stream.as_ref().is_some_and(|s| s.busy())
                     );
+                }
+            }
+            // The model editor, see editor.rs: opened, then a creature in a pose, a dragon's bone
+            // keyed, a weapon held and one part of it, and a pair of wings, a shot of each
+            ("editor", f) => {
+                if f == 10 && !self.editor.open {
+                    self.editor.toggle(&self.world, eye, &mut self.game);
+                    self.set_focus(false);
+                }
+                if self.editor.open && self.editor.scripted(f, &mut self.game)
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.shots.push(f + 2);
                 }
             }
             ("hunt", 20) => {
@@ -5216,8 +5276,12 @@ impl App {
             note
         });
 
+        let mut reread_models = false;
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
+            if self.editor.open {
+                reread_models = self.editor.ui(&ctx, &mut self.game);
+            }
 
             // Dark while the world's built afresh round the camera, gone too fast for the strips to
             // keep up, see stream.rs
@@ -5306,7 +5370,7 @@ impl App {
                     });
             }
 
-            if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
+            if !self.menu_open && !self.editor.open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
                 if !self.fixed_sun {
                     self.cycle.hud(&ctx, raid_note.as_deref());
@@ -5548,6 +5612,12 @@ impl App {
                 }
             });
         });
+        // Asked for in the model editor
+        if reread_models {
+            let allocator = self.memory_allocator.clone();
+            self.model_files.reload_all(self.game.model_lists(), move |words| model_buffer(&allocator, words));
+            anim::forget();
+        }
 
         if let Some(focused) = focus_change {
             self.focused = focused;
@@ -5669,9 +5739,18 @@ impl App {
         // The weapon in hand, and the animals, food and things flying near the camera, for the
         // shader to trace
         let playing = self.loaded_scene.is_terrain() && self.animals_on;
-        let mut instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        let mut instances: Vec<AnimalInstance> = if self.editor.open {
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
+            self.editor.instances(&self.game, self.world.voxels_per_meter as f64, eye, self.camera.rotation.z, self.camera.rotation.x)
+        } else if playing {
+            self.game.instances(&self.world, &view)
+        } else {
+            Vec::new()
+        };
         // A grappling hook's rope, and wings spread to glide, see rope.rs
-        instances.extend(rope);
+        if !self.editor.open {
+            instances.extend(rope);
+        }
         if let Some(perf) = &mut self.perf {
             perf.instances = perf.instances.max(instances.len());
         }
