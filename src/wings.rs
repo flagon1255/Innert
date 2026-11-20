@@ -1277,6 +1277,26 @@ mod tests {
         }
     }
 
+    /// Each kind's wing seen from above, the top voxel of each column and how high it is, written
+    /// to the folder `WINGS_DUMP` names, for a sheet of them all
+    #[test]
+    #[ignore]
+    fn dump_wings_seen_from_above() {
+        let dir = std::env::var("WINGS_DUMP").expect("WINGS_DUMP");
+        for (kind, (model, _)) in KINDS.iter().zip(models()) {
+            let [sx, sy, sz] = model.size.map(|v| v as usize);
+            let mut text = format!("{sx} {sy} {sz}\n");
+            for y in 0..sy {
+                let row: Vec<String> = (0..sx)
+                    .map(|x| (0..sz).rev().find_map(|z| Some(model.voxels[x + (y + z * sy) * sx]).filter(|&m| m != AIR).map(|m| format!("{m}:{z}"))).unwrap_or_else(|| "0:0".into()))
+                    .collect();
+                text += &row.join(" ");
+                text += "\n";
+            }
+            std::fs::write(format!("{dir}\\{}.txt", kind.id), text).unwrap();
+        }
+    }
+
     /// The wings' models together, sent to the graphics card at the start: how big they are.
     /// `cargo test --release wings_fit -- --nocapture`
     #[test]

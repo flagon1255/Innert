@@ -7247,6 +7247,36 @@ mod tests {
         assert!(!sells(&other, [1, 1, 1], Some(wings::GULL)));
     }
 
+    /// Every kind of wings, the new ones too, comes back from a save as it went in: worn, in the
+    /// pack and on a merchant's stall, and a kind a later Innert has that this one doesn't is left
+    /// out rather than spoiling the save
+    #[test]
+    fn every_kind_of_wings_is_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        for (k, kind) in wings::KINDS.iter().enumerate() {
+            let k = k as u8;
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            let spare = (k + 1) % wings::KINDS.len() as u8;
+            game.gain_wings(k);
+            game.gain_wings(spare);
+            game.stocks.insert([1, 2, 3], vec![Ware::Food(Item::Wings(k), 1)]);
+            let text = serde_json::to_string(&game.carried_save()).unwrap();
+            assert!(text.contains(kind.id), "{text}");
+            let (carried, done) = (serde_json::from_str(&text).unwrap(), game.world_save());
+            let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+            other.restore(&carried, &done, game.vitals());
+            assert_eq!(other.worn_wings(), Some(k), "{}", kind.name);
+            assert!(other.slots.contains(&(Item::Wings(spare), 1)));
+            assert!(matches!(other.stocks[&[1, 2, 3]][..], [Ware::Food(Item::Wings(s), 1)] if s == k));
+        }
+        let later: save::CarriedSave = serde_json::from_str(r#"{"worn": "phoenix", "slots": [{"item": {"kind": "wings", "of": "phoenix"}}, {"item": {"kind": "wings", "of": "roc"}}]}"#).unwrap();
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.restore(&later, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(game.worn_wings(), None);
+        assert_eq!(game.slots, vec![(Item::Wings(wings::by_id("roc").unwrap()), 1)]);
+    }
+
     /// Chests hold wings now and then, more often the luckier, and never a kind already had
     #[test]
     fn chests_hold_wings_now_and_then() {
