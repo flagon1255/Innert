@@ -774,6 +774,22 @@ pub fn bosses(made: &mut [(Model, Vector3<f64>)]) {
     jointed(made, crate::rig::KINDS.len(), crate::rig::PIECES, "boss/", &boss_file, "boss pieces");
 }
 
+/// Every avian's and gargoyle's pieces, and after them what they throw, with the files read in,
+/// see avians::build_models()
+pub fn avians(made: &mut [(Model, Vector3<f64>)]) {
+    jointed(made, crate::avians::KINDS.len(), avian_pieces(), "avian/", &avian_file, "avian and gargoyle pieces");
+}
+
+/// How many pieces each avian and gargoyle has, see avians::PIECES
+pub fn avian_pieces() -> usize {
+    crate::avians::PIECE_NAMES.len()
+}
+
+pub fn avian_file(i: usize) -> Option<String> {
+    let look = *crate::avians::KINDS.get(i / avian_pieces())?;
+    Some(format!("avian/{}/{}", snake(&format!("{look:?}")), crate::avians::PIECE_NAMES[i % avian_pieces()]))
+}
+
 /// The pieces of `kinds` kinds of jointed things, `pieces` each, with the files read in: `file`
 /// gives a piece's file, all under `prefix`. A kind with no files of its own that's another drawn
 /// in other colours is drawn from that one's files, recoloured, see skin_map().
@@ -947,6 +963,8 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
     export_jointed(dir, &models, animals::DRAGON_MODELS_AT, &crate::dragons::KINDS, dragon_pieces(), &crate::dragons::anchors(), &dragon_file, &dragon_name, &mut lines)?;
     let boss_name = |k: usize, p: usize| format!("{}, {}", look_title(crate::rig::KINDS[k]), crate::rig::edit::piece_name(crate::rig::KINDS[k], p).replace('_', " "));
     export_jointed(dir, &models, animals::RIG_MODELS_AT, &crate::rig::KINDS, crate::rig::PIECES, &crate::rig::edit::anchors(), &boss_file, &boss_name, &mut lines)?;
+    let avian_name = |k: usize, p: usize| format!("{}, {}", look_title(crate::avians::KINDS[k]), crate::avians::PIECE_NAMES[p].replace('_', " "));
+    export_jointed(dir, &models, animals::WINGED_MODELS_AT, &crate::avians::KINDS, avian_pieces(), &crate::avians::anchors(), &avian_file, &avian_name, &mut lines)?;
     // Great serpents' pieces
     let first = animals::ANIMAL_MODELS - crate::serpents::PART_MODELS;
     let serpent_anchors = crate::serpents::anchors();
@@ -1248,10 +1266,13 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     let first_dragon = animals::DRAGON_MODELS_AT;
     let first_serpent = animals::ANIMAL_MODELS - crate::serpents::PART_MODELS;
     let first_boss = animals::RIG_MODELS_AT;
-    let (dragon_anchors, serpent_anchors, boss_anchors) = (crate::dragons::anchors(), crate::serpents::anchors(), crate::rig::edit::anchors());
+    let first_winged = animals::WINGED_MODELS_AT;
+    let (dragon_anchors, serpent_anchors, boss_anchors, winged_anchors) = (crate::dragons::anchors(), crate::serpents::anchors(), crate::rig::edit::anchors(), crate::avians::anchors());
     let anchor_of = |i: usize| {
         if i >= first_serpent {
             serpent_anchors.get(i - first_serpent).copied()
+        } else if i >= first_winged {
+            winged_anchors.get(i - first_winged).copied()
         } else if i >= first_dragon {
             dragon_anchors.get(i - first_dragon).copied()
         } else {
@@ -1280,6 +1301,9 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     }
     for i in 0..crate::rig::MODELS {
         whole(first_boss + i, boss_file(i), &s, &mut new);
+    }
+    for i in 0..crate::avians::KINDS.len() * avian_pieces() {
+        whole(first_winged + i, avian_file(i), &s, &mut new);
     }
     for i in 0..crate::serpents::PART_MODELS {
         whole(first_serpent + i, serpent_file(i), &s, &mut new);
@@ -1444,13 +1468,25 @@ mod tests {
                 assert!(back[f].voxels == code[f].voxels, "{look:?} frame {f}");
             }
         }
-        let anchors: Vec<Vector3<f64>> = crate::rig::edit::anchors().into_iter().chain(crate::dragons::anchors()).collect();
+        // The jointed bosses', the dragons' and the avians' pieces, one after another among the
+        // models, each with its effects after it, which have no files
+        let dragon_fx = crate::dragons::MODELS - crate::dragons::KINDS.len() * dragon_pieces();
+        let winged_fx = crate::avians::MODELS - crate::avians::KINDS.len() * avian_pieces();
+        let anchors: Vec<Vector3<f64>> = crate::rig::edit::anchors().into_iter().chain(crate::dragons::anchors()).chain(crate::avians::anchors()).collect();
         let base = animals::RIG_MODELS_AT;
-        let names: Vec<Option<String>> = (0..crate::rig::MODELS).map(boss_file).chain((0..crate::dragons::KINDS.len() * dragon_pieces()).map(dragon_file)).collect();
+        let names: Vec<Option<String>> = (0..crate::rig::MODELS)
+            .map(boss_file)
+            .chain((0..crate::dragons::KINDS.len() * dragon_pieces()).map(dragon_file))
+            .chain((0..dragon_fx).map(|_| None))
+            .chain((0..crate::avians::KINDS.len() * avian_pieces()).map(avian_file))
+            .chain((0..winged_fx).map(|_| None))
+            .collect();
+        assert_eq!(names.len(), animals::ANIMAL_MODELS - crate::serpents::PART_MODELS - base);
+        assert!(files.contains("avian/harpy/torso"), "the avians' pieces");
         assert!(files.contains("boss/golem/chest") && files.contains("dragon/drake/head"), "the bosses' and drakes' pieces");
         assert!(!files.iter().any(|f| f.starts_with("boss/frost_golem/")), "the frost golem's drawn from the golem's");
         for (i, name) in names.into_iter().enumerate() {
-            let name = name.unwrap();
+            let Some(name) = name else { continue };
             if !files.contains(&name) {
                 continue;
             }

@@ -1604,6 +1604,14 @@ impl Terrain {
             let q = [rng.range(u0 + 1.5, u1 - 5.0), rng.range(v0 + 1.5, v1 - 1.5)];
             bones(&mut b.solids, &at, q, f, rng);
         }
+        // Plinths either side of the way up to its doorway, a gargoyle asleep on each, see
+        // src\gargoyles.rs
+        for side in [-1.0f32, 1.0] {
+            let q = [u0 - 2.6, side * 5.4];
+            b.solids.push(b.block(around(q, [0.6, 0.6]), [f - 0.3, f + 1.6], c.stone.temple, Pattern::Bricks));
+            b.solids.push(b.block(around(q, [0.75, 0.75]), [f + 1.6, f + 1.85], c.stone.trim, Pattern::Plain));
+            self.site(features, "gargoyle perch", at.point(q[0], q[1], f + 1.85), at.dir([-1.0, 0.0]));
+        }
         // The lord's hoard before the altar, and the lord in the middle of the hall
         let hoard = [dais[0] + 0.9, 0.0];
         self.hoard(features, at.point(hoard[0], hoard[1], f + 0.3), at.heading(std::f32::consts::PI), 5.0);

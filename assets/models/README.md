@@ -66,6 +66,7 @@ grow a model in any direction and it still sits where it did. Keep the `.json` b
 | `<creature>/walk_03.vox`, `strike.vox`, ... | One frame each, written with `--export-models --export-frames`. Each replaces its frame outright. |
 | `dragon/<kind>/<piece>.vox` | A dragon's or drake's jointed pieces, for example `dragon/ashwing/head.vox` or `dragon/drake/wing_left_outer.vox`. |
 | `boss/<kind>/<piece>.vox` | A jointed boss's pieces, for example `boss/golem/chest.vox` or `boss/ironhide/upper_fore_left.vox`. |
+| `avian/<kind>/<piece>.vox` | An avian's or gargoyle's pieces, for example `avian/harpy/wing_left_outer.vox` or `avian/gargoyle/stone_head.vox`. |
 | `serpent/<name>/head.vox`, `jaw.vox`, `body.vox` | A great serpent's head, jaw and the piece its body is made of. |
 | `wings/<kind>.vox` | A pair of wings, for example `wings/gull.vox`. It's the right wing; the left is its mirror. |
 | `weapons/<family>/<part>.vox` | One part of a weapon or tool. See the weapon parts section below. |
@@ -112,7 +113,7 @@ the rest, and the gathering tools too. For example: `weapons/sword/iron_blade.vo
 
 ## Editing an animation
 
-1. In the editor, pick a dragon or drake, or a jointed boss (the golems, the bears, the spiders, the
+1. In the editor, pick a dragon or drake, an avian or gargoyle, or a jointed boss (the golems, the bears, the spiders, the
    knights, the giants and the rest). Jointed rigs can be animated; baked creatures can only be
    played back.
 2. Pick a clip along the bottom.

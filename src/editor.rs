@@ -60,6 +60,8 @@ pub enum Subject {
     Dragon(Look),
     /// A boss drawn out of jointed pieces, see src\rig.rs
     Boss(Look),
+    /// An avian or a gargoyle, on the winged rig, see src\avians.rs
+    Winged(Look),
     /// A great serpent's head, jaw and a piece of its body, by serpents::GREATS
     Serpent(usize),
     /// A kind of wings, by wings::KINDS
@@ -186,6 +188,17 @@ fn dragon_piece(bone: usize) -> usize {
     }
 }
 
+/// The winged rig's bones by the piece each is drawn with, see avians::model_of()
+fn winged_piece(bone: usize) -> usize {
+    match bone {
+        _ if bone < 8 => bone,
+        _ if bone < 10 => 8,
+        _ if bone < 12 => 9,
+        _ if bone < 14 => 10,
+        _ => 11,
+    }
+}
+
 fn look_reach(look: Look) -> f64 {
     look.reach()
 }
@@ -266,6 +279,7 @@ impl Editor {
         match self.subject()? {
             Subject::Dragon(look) => Some(Box::new(crate::dragons::EditorRig(look))),
             Subject::Boss(look) => Some(Box::new(crate::rig::edit::EditorRig(look))),
+            Subject::Winged(look) => Some(Box::new(crate::avians::EditorRig(look))),
             _ => None,
         }
     }
@@ -273,7 +287,7 @@ impl Editor {
     /// How far out a subject reaches, in meters, to see all of it
     fn reach(&self) -> f64 {
         match self.subject() {
-            Some(Subject::Look(l)) | Some(Subject::Dragon(l)) | Some(Subject::Boss(l)) => look_reach(l),
+            Some(Subject::Look(l)) | Some(Subject::Dragon(l)) | Some(Subject::Boss(l)) | Some(Subject::Winged(l)) => look_reach(l),
             Some(Subject::Serpent(g)) => crate::serpents::GREATS[g].head * 2.0 + 2.0,
             Some(Subject::Wings(_)) => 1.0,
             Some(Subject::Weapon(_)) => 1.0,
@@ -306,7 +320,7 @@ impl Editor {
     fn timelines(&self) -> Vec<Timeline> {
         match self.subject() {
             Some(Subject::Look(look)) => look_timelines(look),
-            Some(Subject::Dragon(_)) | Some(Subject::Boss(_)) => self.rig().map_or(Vec::new(), |r| r.clips().into_iter().map(|c| Timeline { name: c.name, length: c.length, frames: Vec::new() }).collect()),
+            Some(Subject::Dragon(_)) | Some(Subject::Boss(_)) | Some(Subject::Winged(_)) => self.rig().map_or(Vec::new(), |r| r.clips().into_iter().map(|c| Timeline { name: c.name, length: c.length, frames: Vec::new() }).collect()),
             Some(Subject::Weapon(_)) => {
                 let n = self.built.as_ref().map_or(1, |_| self.preview_frames());
                 vec![Timeline { name: "frames".into(), length: n as f64 * 0.5, frames: (0..n).map(|k| (k as f64 * 0.5, k)).collect() }]
@@ -561,6 +575,10 @@ impl Editor {
                 let k = crate::rig::kind(look)?;
                 assets::boss_file(k * crate::rig::PIECES + self.piece.unwrap_or(0))?
             }
+            Subject::Winged(look) => {
+                let k = crate::avians::KINDS.iter().position(|&l| l == look)?;
+                assets::avian_file(k * assets::avian_pieces() + winged_piece(self.piece.unwrap_or(0)))?
+            }
             Subject::Serpent(g) => format!("serpent/{}/{}", assets::snake(&format!("{:?}", crate::serpents::GREATS[g].look)), ["head", "jaw", "body"][self.piece.unwrap_or(0).min(2)]),
             Subject::Wings(k) => format!("wings/{}", crate::wings::KINDS[k].id),
             Subject::Weapon(f) => {
@@ -595,6 +613,11 @@ impl Editor {
                 let i = crate::rig::kind(look).unwrap_or(0) * crate::rig::PIECES + self.piece.unwrap_or(0);
                 let m = game.base_model(animals::RIG_MODELS_AT + i);
                 assets::write_model(&dir, &name, m, MODEL_RES, crate::rig::edit::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
+            }
+            Subject::Winged(look) => {
+                let i = crate::avians::KINDS.iter().position(|&l| l == look).unwrap_or(0) * assets::avian_pieces() + winged_piece(self.piece.unwrap_or(0));
+                let m = game.base_model(animals::WINGED_MODELS_AT + i);
+                assets::write_model(&dir, &name, m, MODEL_RES, crate::avians::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
             }
             Subject::Serpent(g) => {
                 let i = g * 3 + self.piece.unwrap_or(0).min(2);
@@ -646,7 +669,7 @@ impl Editor {
                 let i = AnimalInstance::new(assets::look_model(look, frame) as u32, at, UnitQuaternion::identity(), vpm / res, look.reach() * vpm, MOVING);
                 out.push(lit(i, self.piece.is_some()));
             }
-            Some(Subject::Dragon(_)) => {
+            Some(Subject::Dragon(_)) | Some(Subject::Winged(_)) => {
                 if let Some(rig) = self.rig() {
                     let joints = self.posed(rig.as_ref());
                     // Its middle over the floor as it stands
@@ -803,7 +826,7 @@ impl Editor {
                 }
                 ui.label(RichText::new("Baked frames: changes to the standing frame are made in every frame.").small());
             }
-            Subject::Dragon(_) | Subject::Boss(_) => {
+            Subject::Dragon(_) | Subject::Boss(_) | Subject::Winged(_) => {
                 if let Some(rig) = self.rig() {
                     ui.label("Bones");
                     egui::ScrollArea::vertical().id_salt("bones").max_height(260.0).show(ui, |ui| {
@@ -1003,7 +1026,7 @@ fn entries(game: &Game, library: &Library) -> Vec<Entry> {
     };
     let mut looks: Vec<Entry> = Look::ALL
         .iter()
-        .filter(|l| !l.is_dragon() && !l.is_great_serpent() && !crate::rig::rigged(**l))
+        .filter(|l| !l.is_dragon() && !l.is_great_serpent() && !crate::rig::rigged(**l) && !crate::avians::is_winged(**l))
         .filter(|&&l| {
             let m = game.base_model(assets::look_model(l, 0));
             m.size != [1, 1, 1]
@@ -1015,6 +1038,7 @@ fn entries(game: &Game, library: &Library) -> Vec<Entry> {
     out.extend(looks);
     out.extend(crate::rig::KINDS.iter().map(|&l| Entry { subject: Subject::Boss(l), title: assets::look_title(l), group: "Jointed bosses" }));
     out.extend(crate::dragons::KINDS.iter().map(|&l| Entry { subject: Subject::Dragon(l), title: assets::look_title(l), group: "Dragons" }));
+    out.extend(crate::avians::KINDS.iter().map(|&l| Entry { subject: Subject::Winged(l), title: assets::look_title(l), group: "Avians and gargoyles" }));
     out.extend(crate::serpents::GREATS.iter().enumerate().map(|(g, s)| Entry { subject: Subject::Serpent(g), title: assets::look_title(s.look), group: "Great serpents" }));
     out.extend(crate::wings::KINDS.iter().enumerate().map(|(k, w)| Entry { subject: Subject::Wings(k), title: w.name.to_string(), group: "Wings" }));
     out.extend(library.families.iter().enumerate().map(|(f, fam)| Entry { subject: Subject::Weapon(f), title: fam.display_name.clone(), group: if fam.tool.is_some() { "Tools" } else { "Weapons" } }));

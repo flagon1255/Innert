@@ -1,8 +1,9 @@
-//! Gathering what to build with, see bases.rs: felling trees for wood, a few blows at the trunk and
-//! the whole tree comes apart, trunk, branches and leaves, giving wood for how big it was; breaking
-//! stone out of rock, and clay out of the banks of rivers and lakes and the bands of it in the rock,
-//! half a meter at a time; and digging earth out of the way, which gives nothing. Everything here
-//! works in voxels of the world, counted from its first.
+//! Gathering what to build with, see bases.rs: felling trees for wood, a few seconds of holding G
+//! at the trunk and the whole tree comes apart, trunk, branches and leaves, giving wood for how big
+//! it was; breaking stone out of rock, and clay out of the banks of rivers and lakes and the bands of
+//! it in the rock, half a meter at a time; and digging earth out of the way, which gives nothing.
+//! Bare hands do all of it, tools only quicker, see tools.rs. Everything here works in voxels of the
+//! world, counted from its first.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,16 +44,20 @@ pub fn is_crown(material: u8) -> bool {
     matches!(material, LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | LEAVES_LIME | LEAVES_CRIMSON | PINE | WILLOW | PALM_LEAF | BLOSSOM | VINE | MUSHROOM_CAP)
 }
 
-/// Blows it takes to gather a block of what a voxel's made of
-pub fn blows_for(y: Yield) -> u32 {
+/// Seconds of holding G it takes bare hands to gather a block of what a voxel's made of, or with
+/// `tree` a whole tree; a tool for it takes a half, a third or a quarter of it, see tools::SPEED
+pub fn work_seconds(y: Yield, tree: bool) -> f64 {
     match y {
-        Yield::Stone => 4,
-        Yield::Clay => 2,
-        Yield::Wood => 2,
-        Yield::Earth => 1,
-        Yield::Nothing => u32::MAX,
+        Yield::Wood if tree => 3.0,
+        Yield::Stone => 2.4,
+        Yield::Clay | Yield::Wood => 1.6,
+        Yield::Earth => 0.8,
+        Yield::Nothing => f64::INFINITY,
     }
 }
+
+/// How much a whole block of stone or clay gives, half a meter of it
+pub const PER_BLOCK: usize = 4;
 
 /// The first voxel a ray from `from` along `dir` hits, in voxels of `world`, no further than `reach`
 /// voxels, going through what can be walked through, like leaves and grass: the voxel, and the way
@@ -214,18 +219,24 @@ pub fn tree_at(world: &World, hit: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -
                 if !solid_crown && (cell & FOLIAGE_BRICK == 0 || cell & (crate::worldgen::SOLID_BRICK | crate::worldgen::EMPTY_BRICK) != 0) {
                     continue;
                 }
+                // Gathered for the brick, then put in the cut at once, rather than looked up again
+                // for each voxel; and compared by squared distance
+                let mut here = Vec::new();
                 for k in 0..512i64 {
                     let v = [bx * 8 + k % 8, by * 8 + (k / 8) % 8, bz * 8 + k / 64];
                     let m = world.material_at(v[0], v[1], v[2]);
-                    if !is_crown(m) || built(v) {
+                    if !is_crown(m) {
                         continue;
                     }
-                    let d = ((v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2)).sqrt();
-                    if d > crown || others.iter().any(|o| ((v[0] as f64 - o[0]).powi(2) + (v[1] as f64 - o[1]).powi(2)).sqrt() < d) {
+                    let d = (v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2);
+                    if d > crown * crown || others.iter().any(|o| (v[0] as f64 - o[0]).powi(2) + (v[1] as f64 - o[1]).powi(2) < d) || built(v) {
                         continue;
                     }
-                    add_to(&mut cut, v);
+                    here.push(k as usize);
                     leaf.get_or_insert(m);
+                }
+                if !here.is_empty() {
+                    cut.entry([bx, by, bz]).or_default().extend(here);
                 }
             }
         }
@@ -254,7 +265,7 @@ pub struct Block {
 
 /// Breaks the brick of the world `brick` is, counted from its first, out of it: what's solid and
 /// natural in it goes, and the grass and flowers over it with nothing left under them. Stone and
-/// clay give about two of each a whole block, wood the same, earth nothing. None if there's nothing
+/// clay give PER_BLOCK of each a whole block, wood the same, earth nothing. None if there's nothing
 /// in it that can be gathered.
 pub fn block_at(world: &World, brick: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -> Option<Block> {
     let mut cut = Cut::new();
@@ -301,7 +312,7 @@ pub fn block_at(world: &World, brick: [i64; 3], built: &dyn Fn([i64; 3]) -> bool
             add_to(&mut cut, [x, y, z]);
         }
     }
-    let give = |n: usize| ((n * 2 + 256) / 512) as u32;
+    let give = |n: usize| ((n * PER_BLOCK + 256) / 512) as u32;
     let material = most.into_iter().max_by_key(|&(_, n)| n).map_or(DIRT, |(m, _)| m);
     Some(Block { cut, gives: Materials::new(give(counts[0]), give(counts[1]), give(counts[2])), material })
 }
@@ -385,17 +396,24 @@ mod tests {
         let world = grove();
         let none = |_: [i64; 3]| false;
         let stone = block_at(&world, [2, 2, 0], &none).unwrap();
-        assert_eq!(stone.gives, Materials::new(0, 2, 0));
+        assert_eq!(stone.gives, Materials::new(0, PER_BLOCK as u32, 0));
         assert_eq!(stone.cut.values().map(Vec::len).sum::<usize>(), 512);
         let top = block_at(&world, [2, 2, 1], &none).unwrap();
-        assert_eq!(top.gives.stone, 1, "half stone, half earth");
+        assert_eq!(top.gives.stone, PER_BLOCK as u32 / 2, "half stone, half earth");
         assert_eq!(top.gives.clay, 0);
         // The grass blades over it go too
         assert!(top.cut.contains_key(&[2, 2, 2]));
         assert!(block_at(&world, [2, 2, 5], &none).is_none(), "nothing in the air");
         assert_eq!(yield_of(CLAY), Yield::Clay);
         assert_eq!(yield_of(CLAY_BANK), Yield::Clay);
-        assert!(blows_for(Yield::Stone) > blows_for(Yield::Clay));
+        // Bare hands at a fair pace: a few seconds at most, stone the hardest of a block, a whole
+        // tree a little more
+        assert!(work_seconds(Yield::Stone, false) > work_seconds(Yield::Clay, false));
+        assert!(work_seconds(Yield::Wood, true) > work_seconds(Yield::Stone, false));
+        assert!(work_seconds(Yield::Wood, true) <= 3.0 && work_seconds(Yield::Earth, false) < 1.0);
+        assert!(work_seconds(Yield::Nothing, false).is_infinite());
+        // A block of stone pays for at least two stone walls
+        assert!(stone.gives.stone >= 2 * crate::bases::Kind::StoneWall.cost().stone);
     }
 
     #[test]
