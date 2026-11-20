@@ -720,17 +720,33 @@ impl App {
         let named = |name: String| animals::Look::ALL.into_iter().find(|l| l.build().is_some() && (format!("{l:?}").eq_ignore_ascii_case(&name) || l.name().replace(' ', "").eq_ignore_ascii_case(&name)));
         let feet = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
         let yaw = self.camera.rotation.z;
-        let ahead = Vector3::new(-yaw.sin(), yaw.cos(), 0.0);
+        let vpm = self.world.voxels_per_meter as f64;
+        let world = &self.world;
+        // Ahead, or the nearest way round from it with ground that far off about as high as the
+        // player, as on an island in the sky, so what's put there stands on something
+        let ahead = |distance: f64| {
+            (0..16)
+                .map(|k| yaw + [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0, 6.0, -6.0, 7.0, -7.0, 8.0][k] * std::f64::consts::TAU / 16.0)
+                .map(|a| Vector3::new(-a.sin(), a.cos(), 0.0))
+                .find(|way| {
+                    let at = feet + way * distance * vpm;
+                    let (x, y) = (at.x as i64, at.y as i64);
+                    (((feet.z - 4.0 * vpm) as i64)..((feet.z + 4.0 * vpm) as i64)).any(|z| !worldgen::is_passable(world.material_at(x, y, z)) && worldgen::is_passable(world.material_at(x, y, z + 1)))
+                })
+                .unwrap_or(Vector3::new(-yaw.sin(), yaw.cos(), 0.0))
+        };
         let water = &self.water;
         let level = |x: f64, y: f64| water.surface_at(x, y);
         if let Some(look) = setting("arrive_enemy").and_then(named) {
             let count = setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(look.pack_size());
             let distance = setting("enemy_distance").and_then(|v| v.parse().ok()).unwrap_or(10.0);
-            self.game.summon_pack(&self.world, &level, &vec![look; count], feet, ahead, distance, 0.0, false, None);
+            self.game.summon_pack(world, &level, &vec![look; count], feet, ahead(distance), distance, 0.0, false, None);
+            println!("ARRIVE: {count} {} {distance} m off", look.name());
         }
         if let Some(look) = setting("arrive_boss").and_then(named) {
             let distance = setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(16.0);
-            self.game.summon(&self.world, &level, look, feet, ahead, distance);
+            self.game.summon(world, &level, look, feet, ahead(distance), distance);
+            println!("ARRIVE: the {} {distance} m off", look.name());
         }
     }
 
