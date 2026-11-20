@@ -2498,6 +2498,10 @@ impl App {
         dragons::SHOW.store(flag("dragon_show", false), std::sync::atomic::Ordering::Relaxed);
         // `--set dragon_trace=1` says what each dragon's doing, twice a second
         dragons::TRACE.store(flag("dragon_trace", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set dragon_move=breath` has every dragon make only that move, as soon as it's ready,
+        // wherever the player is, for shots of it in a screenshot run
+        let only = setting("dragon_move").filter(|_| capture.is_some()).and_then(dragons::Move::named);
+        dragons::FORCED.store(only.map_or(0, |m| m as usize + 1), std::sync::atomic::Ordering::Relaxed);
         if flag("dragon_ultra", false) {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             game.summon(&world, &water_level, dragons::ULTRA, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(55.0));
@@ -4159,8 +4163,10 @@ impl App {
         }
         // The wings worn spreading and folding, beating on a flap, and what they leave behind, see
         // wings.rs. Worn on the back, they leave the hands free for what's in them.
-        let flapped = let_go || self.session.trial_flaps();
-        self.update_wings(delta_time.min(0.05), gliding, flapped);
+        // A flap is jump pressed in the air, a dash Shift, for wings that do
+        let tried = self.session.trial_flaps();
+        let shift = self.focused && interactive && (self.input.key_pressed(KeyCode::ShiftLeft) || self.input.key_pressed(KeyCode::ShiftRight));
+        self.update_wings(delta_time.min(0.05), gliding, let_go || tried, shift || tried);
         // The realm's raid bosses warded while its guardians stand, see guardians.rs
         self.update_guardians(delta_time.min(0.05));
 

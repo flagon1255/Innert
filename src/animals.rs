@@ -149,7 +149,6 @@ pub enum Look {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Build {
     Golem,
-    Drake,
     Bear,
     Spider,
     Treant,
@@ -378,7 +377,7 @@ impl Look {
     /// A raid boss: far bigger and tougher than the rest, fought in three phases. The Water
     /// realm's three great serpents are, see serpents::GREATS.
     pub fn is_raid(self) -> bool {
-        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || (self.is_dragon() && !crate::dragons::is_drakeling(self))
+        matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw) || crate::dragons::is_great(self)
     }
 
     /// A monster: it fights like a boss, but it's smaller and there are many of them about
@@ -415,7 +414,6 @@ impl Look {
     pub fn build(self) -> Option<Build> {
         Some(match self {
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => Build::Golem,
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => Build::Drake,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
@@ -567,9 +565,6 @@ impl Look {
         match self {
             Look::FrostGolem => make(ICE, STONE, SNOW, GLOW_FROST, CRYSTAL),
             Look::MagmaGolem => make(OBSIDIAN, BARK_DARK, GLOW_FIRE, GLOW_FIRE, GLOW_FIRE),
-            Look::Drake => make(TEMPLE_RED, OBSIDIAN, CLOTH, GLOW_FIRE, BONE),
-            Look::FrostWyrm => make(ICE, STEEL, LINEN, GLOW_FROST, CRYSTAL),
-            Look::VenomDrake => make(PINE, OBSIDIAN, MOSS, GLOW_POISON, BONE),
             Look::Ironhide => make(FUR_DARK, FUR_BROWN, DARK_STEEL, GLOW_BLOOD, BONE),
             Look::Frostfang => make(FUR_WHITE, FUR_GRAY, STEEL, GLOW_FROST, ICE),
             Look::Spider => make(FUR_DARK, BARK_DARK, GLOW_POISON, GLOW_BLOOD, BONE),
@@ -577,7 +572,6 @@ impl Look {
             Look::Rimeweaver => make(STEEL, OBSIDIAN, GLOW_FROST, GLOW_FROST, ICE),
             Look::Spiderling => make(FUR_BROWN, BARK_DARK, GLOW_POISON, GLOW_BLOOD, BONE),
             Look::Treant => make(BARK_DARK, WOOD, MOSS, GLOW_POISON, LEAVES),
-            Look::StormDrake => make(STEEL, DARK_STEEL, LINEN, GLOW_STORM, BONE),
             Look::Direwolf => make(FUR_DARK, FUR_GRAY, FUR_GRAY, GLOW_BLOOD, BONE),
             Look::WinterAlpha => make(FUR_GRAY, FUR_DARK, FUR_WHITE, GLOW_FROST, ICE),
             Look::Wolf => make(FUR_GRAY, FUR_DARK, FUR_CREAM, GLOW_FIRE, BONE),
@@ -585,10 +579,9 @@ impl Look {
             // their blade. A fallen king's bones in black armor, void burning in its eyes and its
             // chest, its crown and trim gone to tarnished bronze; see knight().
             Look::GraveKnight => make(BONE, BARK_DARK, DARK_STEEL, GLOW_VOID, BRONZE),
-            // Raid bosses: a colossus of dark stone veined with fire, an old wyrm black as soot with
-            // embers in its scales, and a titan of the dead in gold-chased black armor
+            // Raid bosses: a colossus of dark stone veined with fire, and a titan of the dead in
+            // gold-chased black armor
             Look::Colossus => make(STONE, OBSIDIAN, GLOW_FIRE, GLOW_FIRE, CRYSTAL),
-            Look::ElderWyrm => make(OBSIDIAN, BARK_DARK, TEMPLE_RED, GLOW_FIRE, GOLD),
             Look::CryptTitan => make(BONE, BARK_DARK, OBSIDIAN, GLOW_VOID, GOLD),
             Look::Skeleton => make(BONE, BARK_DARK, CLOTH, GLOW_FROST, STEEL),
             Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
@@ -665,7 +658,8 @@ impl Look {
             Look::Candle => 0.2,
             Look::Skull => 0.2,
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => 4.4 * self.size(),
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => 3.4 * self.size(),
+            // The drakes are dragons, drawn in jointed pieces, see src\dragons.rs
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => crate::dragons::reach(self),
             Look::Ironhide | Look::Frostfang => 3.4,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => 3.1 * self.scale(),
             Look::Treant => 5.5,
@@ -727,7 +721,7 @@ impl Look {
             Look::RoyalGuard => (1.0, 0.42),
             Look::Coins | Look::Potion | Look::Bread => (0.08, 0.22),
             Look::Golem | Look::FrostGolem | Look::MagmaGolem | Look::Colossus => (2.0 * self.size(), 1.1 * self.size()),
-            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => (1.25 * self.size(), 1.0 * self.size()),
+            Look::Drake | Look::FrostWyrm | Look::VenomDrake | Look::StormDrake | Look::ElderWyrm => crate::dragons::body(self),
             Look::Ironhide | Look::Frostfang => (1.6, 1.05),
             Look::Spider | Look::Rimeweaver | Look::Spiderling => (0.9 * self.scale(), 0.95 * self.scale()),
             Look::Treant => (2.4, 1.2),
@@ -967,7 +961,7 @@ impl Look {
         }
         match self.build() {
             Some(Build::Golem) => 1.3,
-            Some(Build::Drake | Build::Bear) => 1.6,
+            Some(Build::Bear) => 1.6,
             Some(Build::Spider) => 2.4,
             Some(Build::Treant) => 0.9,
             Some(Build::Wolf) => 1.8,
@@ -1031,7 +1025,6 @@ impl Look {
         }
         match self.build() {
             Some(Build::Golem) => 2.4,
-            Some(Build::Drake) => 4.5,
             // Charging
             Some(Build::Bear) => 10.0,
             Some(Build::Spider) => 6.0,
@@ -1060,7 +1053,7 @@ impl Look {
         match self.build() {
             Some(Build::Dragon) => crate::dragons::stride(self),
             Some(Build::Golem) => 2.4 * self.size(),
-            Some(Build::Drake | Build::Bear) => 2.6 * self.size(),
+            Some(Build::Bear) => 2.6 * self.size(),
             Some(Build::Spider) => 1.8 * self.scale(),
             Some(Build::Treant) => 2.8,
             Some(Build::Wolf) => 1.4 * self.scale(),
@@ -1505,60 +1498,6 @@ fn golem(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, colossus: bool) 
     p.push(ellipsoid([0.0, 0.0, 1.2], [0.45, 0.6, 0.35], dark));
     for (y, s) in [(0.42, 1.0), (-0.42, -1.0)] {
         leg(p, [0.0, y, 1.15], 1.15, 0.27, 0.3 * swing * s, rock, dark);
-    }
-}
-
-/// The Ember Drake: a red-scaled dragon with fire glowing through its belly, its wings folded.
-/// It rears its head back, then breathes fire or spits it, and spreads its wings to roar.
-fn drake(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
-    let (scales, dark, glow) = (skin.body, skin.dark, skin.glow);
-    // Its head reared back, thrust out low, or raised to roar
-    let neck_base = pose.at([0.8, 0.0, 1.45], [0.8, 0.0, 1.5], [0.8, 0.0, 1.45], [0.8, 0.0, 1.5]);
-    let neck_top = pose.at([1.45, 0.0, 2.0], [1.15, 0.0, 2.45], [1.6, 0.0, 1.65], [1.35, 0.0, 2.3]);
-    let head = pose.at([1.75, 0.0, 2.05], [1.35, 0.0, 2.75], [1.95, 0.0, 1.6], [1.65, 0.0, 2.55]);
-    let open = pose.strike + pose.special > 0.4;
-    let h = Vector3::from(head);
-    let fwd = (h - Vector3::from(neck_top)).normalize();
-    let upward = Vector3::new(-fwd.z, 0.0, fwd.x);
-    let at = |f: f64, u: f64, side: f64| -> Vec3 { (h + fwd * f + upward * u + Vector3::new(0.0, side, 0.0)).into() };
-    for side in [-0.13, 0.13] {
-        p.push(ball(at(0.16, 0.1, side), 0.045, glow));
-        p.push(limb(at(-0.08, 0.12, side), at(-0.45, 0.38, side * 1.6), 0.05, 0.012, skin.extra));
-    }
-    if open {
-        p.push(ball(at(0.24, -0.06, 0.0), 0.13, glow));
-        p.push(limb(h.into(), at(0.4, 0.04, 0.0), 0.15, 0.08, scales));
-        p.push(limb(at(0.0, -0.14, 0.0), at(0.32, -0.26, 0.0), 0.1, 0.05, scales));
-    } else {
-        p.push(limb(h.into(), at(0.4, 0.0, 0.0), 0.16, 0.09, scales));
-        p.push(limb(at(0.0, -0.09, 0.0), at(0.34, -0.1, 0.0), 0.1, 0.06, scales));
-    }
-    p.push(ball(head, 0.22, scales));
-    p.push(limb(neck_base, neck_top, 0.3, 0.2, scales));
-    // Its wings folded, or spread wide, partway between as it opens them
-    let spread = pose.special;
-    let open_by = |folded: Vec3, wide: Vec3| -> Vec3 { [0, 1, 2].map(|i| folded[i] + (wide[i] - folded[i]) * spread) };
-    for s in [-1.0, 1.0] {
-        let tip = open_by([-0.7, s * 0.62, 2.35], [-0.1, s * 2.3, 2.75]);
-        p.push(limb(open_by([0.45, s * 0.48, 1.75], [0.45, s * 0.45, 1.75]), tip, 0.07, 0.03, dark));
-        if spread > 0.0 {
-            p.push(limb(tip, open_by([-0.7, s * 0.62, 2.35], [-1.1, s * 1.6, 1.6]), 0.03, 0.02, dark));
-        }
-        p.push(ellipsoid(open_by([-0.3, s * 0.6, 1.85], [-0.4, s * 1.35, 2.05]), open_by([0.75, 0.06, 0.38], [0.75, 1.0, 0.05]), skin.accent));
-    }
-    for k in 0..7 {
-        let x = 0.7 - k as f64 * 0.3;
-        p.push(limb([x, 0.0, 1.66], [x - 0.12, 0.0, 1.98 - k as f64 * 0.03], 0.06, 0.01, dark));
-    }
-    p.push(ellipsoid([0.05, 0.0, 0.95], [0.85, 0.38, 0.2], glow));
-    p.push(ellipsoid([0.0, 0.0, 1.25], [1.05, 0.55, 0.5], scales));
-    let sway = 0.25 * (angle + 1.0).sin() * moving;
-    let tail = [[-0.95, 0.0, 1.25], [-1.8, sway, 1.0], [-2.55, sway * 2.0, 0.7], [-3.1, sway * 2.5, 0.55]];
-    p.push(limb(tail[2], tail[3], 0.12, 0.03, dark));
-    p.push(limb(tail[1], tail[2], 0.22, 0.12, scales));
-    p.push(limb(tail[0], tail[1], 0.32, 0.22, scales));
-    for (x, y, s) in [(0.6, 0.38, 1.0), (0.6, -0.38, -1.0), (-0.55, 0.4, -1.0), (-0.55, -0.4, 1.0)] {
-        leg(p, [x, y, 0.95], 0.95, 0.16, 0.4 * swing * s, scales, dark);
     }
 }
 
@@ -2683,7 +2622,6 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         _ if look.build().is_some() => {
             match look.build() {
                 Some(Build::Golem) => golem(&mut p, swing, pose, look.skin(), look == Look::Colossus),
-                Some(Build::Drake) => drake(&mut p, angle, swing, moving, pose, look.skin()),
                 Some(Build::Bear) => ironhide(&mut p, swing, pose, look.skin()),
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
                 Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
