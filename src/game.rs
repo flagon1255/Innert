@@ -8029,11 +8029,11 @@ mod tests {
             damage * speed
         };
         let trials = 60;
-        println!("| realm | level | monster health | hits to die | same-level weapon dps (median best) | seconds to kill | pack, seconds to clear |");
-        println!("|---|---|---|---|---|---|---|");
+        // The median best weapon from the hoards of every realm's guardians and raid bosses so far,
+        // by the time the player's through each realm, at item level 1: its level's worked in below
         let mut best_by_trial = vec![0.0f64; trials];
-        let mut kills = Vec::new();
-        for (r, realm) in realms::REALMS.iter().enumerate() {
+        let mut medians = Vec::new();
+        for r in 0..realms::REALMS.len() {
             let scaling = realms::scaling_in(r, r, 0);
             let luck = loot_scaling(scaling);
             for (t, best) in best_by_trial.iter_mut().enumerate() {
@@ -8043,22 +8043,54 @@ mod tests {
                     for (l, sure) in hoard_rolls(hoard, &mut rng) {
                         rng = hash(rng ^ 0x1007);
                         let seed = if sure { library.special_seed(rng, None, l * luck) } else { rng };
-                        // At item level 1: its level's worked in below
                         *best = best.max(dps(&library.generate(seed, None, l * luck)));
                     }
                 }
             }
             let mut sorted = best_by_trial.clone();
             sorted.sort_by(f64::total_cmp);
-            let median = sorted[trials / 2];
-            let looks: Vec<Look> = realm.monsters.iter().flat_map(|p| p.looks.iter().copied()).collect();
-            let base = looks.iter().map(|l| l.health()).sum::<f64>() / looks.len() as f64;
+            medians.push(sorted[trials / 2]);
+        }
+        // A realm's monsters on the whole, each as often as it goes about there: what they can take
+        // and how hard they hit, before their levels
+        let health_of = |r: usize| realms::monster_mean(r, Look::health);
+        let blow_of = |r: usize| realms::monster_mean(r, bosses::blow);
+
+        // Every monster comes at the player's level wherever it is, so at one level the realms should
+        // stand about even: what their monsters can take, how long the weapon the player'd have by
+        // then, of the same level, takes over one, and how many of their blows fell the player
+        println!("At one level, the player's, in every realm: each realm's monsters on the whole, and against a weapon of that level, the median best from the hoards up to the realm that level's in\n");
+        println!("| level | realm | monster health | seconds to kill | hits to die |");
+        println!("|---|---|---|---|---|");
+        let mut even = Vec::new();
+        for level in [10, 25, 40] {
+            let home = levels::BANDS.iter().position(|b| (b.lo..=b.hi).contains(&level)).unwrap();
+            let weapon = medians[home] * levels::weapon_power(level);
+            let mut healths = Vec::new();
+            for (r, realm) in realms::REALMS.iter().enumerate() {
+                let health = health_of(r) * levels::toughness(level);
+                let seconds = health / weapon.max(1e-6);
+                let hits = levels::max_health(level) / (blow_of(r) * levels::damage(level));
+                println!("| {level} | {} | {health:.0} | {seconds:.2} | {hits:.1} |", realm.name);
+                even.push((level, realm.name, seconds, hits));
+                healths.push(health);
+            }
+            let mean = healths.iter().sum::<f64>() / healths.len() as f64;
+            let spread = healths.iter().map(|h| (h / mean - 1.0).abs()).fold(0.0, f64::max);
+            println!("| {level} | all, weapon {weapon:.1} dps | {mean:.0} | {:.2} | within {:.0}% of each other |", mean / weapon, spread * 100.0);
+        }
+
+        println!("\nEach realm at its own band, the floor and the top, with the median best weapon from the hoards so far:\n");
+        println!("| realm | level | monster health | hits to die | same-level weapon dps (median best) | seconds to kill | pack, seconds to clear |");
+        println!("|---|---|---|---|---|---|---|");
+        let mut kills = Vec::new();
+        for (r, realm) in realms::REALMS.iter().enumerate() {
             let pack = realm.monsters.iter().map(|p| p.looks.len()).sum::<usize>() as f64 / realm.monsters.len() as f64 + realms::crowd(r, r) as f64;
             let band = levels::BANDS[r];
             for (end, level) in [("floor", band.lo), ("top", band.hi)] {
-                let health = base * levels::toughness(level);
-                let hits = levels::max_health(level) / (10.0 * levels::damage(level));
-                let weapon = median * levels::weapon_power(level);
+                let health = health_of(r) * levels::toughness(level);
+                let hits = levels::max_health(level) / (blow_of(r) * levels::damage(level));
+                let weapon = medians[r] * levels::weapon_power(level);
                 let seconds = health / weapon.max(1e-6);
                 kills.push((realm.name, end, seconds, hits));
                 println!("| {} | {end} {level} | {health:.0} | {hits:.1} | {weapon:.1} | {seconds:.2} | {pack:.1}, {:.1} s |", realm.name, pack * seconds);
@@ -8096,7 +8128,13 @@ mod tests {
             println!("| {} | {}-{} | {across:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |", realm.name, band.lo, band.hi, levels::experience(at, levels::Slain::Monster), levels::experience(at, levels::Slain::Boss), levels::experience(at, levels::Slain::Raid), levels::experience(at, levels::Slain::Finale), levels::first_visit(r));
         }
         println!("All of it to level {}: {:.0}", levels::LEVEL_CAP, levels::total_to(levels::LEVEL_CAP));
-        // Each kill in 1.5 to 3.5 seconds, five to ten blows to fell the player, never under four
+        // At one level, each kill in 1.5 to 3.5 seconds and five to ten blows to fell the player,
+        // in every realm
+        for (level, name, seconds, hits) in even {
+            assert!((1.5..=3.5).contains(&seconds), "{name} at {level}: {seconds:.2} s a kill");
+            assert!((5.0..=10.0).contains(&hits), "{name} at {level}: {hits:.1} hits");
+        }
+        // And at its own band about the same, never under four blows
         for (name, end, seconds, hits) in kills {
             assert!((1.0..=4.0).contains(&seconds), "{name} at its {end}: {seconds:.2} s a kill");
             assert!(hits >= 4.0 && hits <= 10.5, "{name} at its {end}: {hits:.1} hits");

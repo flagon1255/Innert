@@ -101,13 +101,13 @@ pub fn lore(look: Look) -> &'static str {
 /// How much damage it takes to kill one
 pub fn health(look: Look) -> f64 {
     match look {
-        Look::Harpy => 85.0,
-        Look::Skyhunter => 75.0,
-        Look::Stormtalon => 2500.0,
-        Look::Harridan => 2300.0,
-        Look::Roc => 15500.0,
-        Look::Thunderbird => 14500.0,
-        Look::HarpyQueen => 14000.0,
+        Look::Harpy => 175.0,
+        Look::Skyhunter => 150.0,
+        Look::Stormtalon => 2350.0,
+        Look::Harridan => 2350.0,
+        Look::Roc => 14500.0,
+        Look::Thunderbird => 13500.0,
+        Look::HarpyQueen => 14500.0,
         _ => gargoyles::health(look),
     }
 }
@@ -1434,10 +1434,17 @@ fn power(look: Look) -> Power {
     let p = |claw, peck, rake, stoop, feather, bolt, shard, gust, push| Power { claw, peck, rake, stoop, feather, bolt, shard, gust, push };
     match look {
         _ if is_monster(look) && gargoyles::is_gargoyle(look) => p(11.0, 10.0, 12.0, 14.0, 0.0, 0.0, 6.0, 0.0, 5.0),
-        _ if is_monster(look) => p(8.0, 9.0, 10.0, 13.0, 6.0, 0.0, 0.0, 2.0, 5.0),
+        _ if is_monster(look) => p(10.0, 11.0, 12.0, 15.0, 7.0, 0.0, 0.0, 2.0, 5.0),
         _ if is_raid(look) => p(26.0, 28.0, 28.0, 34.0, 13.0, 22.0, 16.0, 10.0, 14.0),
         _ => p(18.0, 19.0, 21.0, 26.0, 10.0, 16.0, 12.0, 7.0, 10.0),
     }
+}
+
+/// How hard its everyday blows hit, its claws, beak and a rake as it passes, on the whole, for
+/// bosses::blow()
+pub fn blow(look: Look) -> f64 {
+    let p = power(look);
+    (p.claw + p.peck + p.rake) / 3.0
 }
 
 /// How near the player has to come before it turns on them, how far off they can get before it

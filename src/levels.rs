@@ -69,6 +69,26 @@ pub fn toughness(level: u32) -> f64 {
     y0 + (y1 - y0) * (l - x0) / (x1 - x0)
 }
 
+/// What an ordinary monster has of its own health, before its level's toughness, see
+/// Look::health(): each kind as much as this for what it is, a swarmer's a little under and a
+/// brute's a little over, within MONSTER_SPREAD of it, so monsters of a level are about as hard to
+/// kill whatever realm they're from, see realm_balance in game.rs
+#[allow(dead_code)]
+pub const MONSTER_HEALTH: f64 = 175.0;
+#[allow(dead_code)]
+pub const MONSTER_SPREAD: [f64; 2] = [0.68, 1.4];
+/// The same for a lesser boss, a guardian among them, and for a raid boss; those of a realm's
+/// three that aren't raid bosses already are raised to about as much, see realms::RAID_PROMOTION,
+/// and its finale far past it, see realms::FINALE_PROMOTION
+#[allow(dead_code)]
+pub const BOSS_HEALTH: f64 = 2600.0;
+#[allow(dead_code)]
+pub const BOSS_SPREAD: [f64; 2] = [0.9, 1.16];
+#[allow(dead_code)]
+pub const RAID_HEALTH: f64 = 14500.0;
+#[allow(dead_code)]
+pub const RAID_SPREAD: [f64; 2] = [0.93, 1.07];
+
 /// How many times harder than its own a monster or boss of level `level` hits: a fifth more every
 /// realm's floor on
 pub fn damage(level: u32) -> f64 {
