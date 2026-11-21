@@ -993,7 +993,7 @@ impl Game {
             aerie: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
-            ward_models: crate::guardians::models(),
+            ward_models: crate::assets::wards(crate::guardians::models()),
             crowd: 0,
         };
         game.arm_anew(seed);
@@ -4901,6 +4901,9 @@ impl Game {
         crate::assets::Lists {
             base: self.models.clone(),
             between: self.combat.models.iter().map(|(m, _)| copy(m)).chain(self.leaves.models.iter().map(copy)).collect(),
+            effects: self.combat.models.len(),
+            effect_anchors: self.combat.models.iter().map(|(_, a)| *a).collect(),
+            ward_anchors: self.ward_models.iter().map(|(_, a)| *a).collect(),
             wings: self.wing_models.iter().map(|(m, a)| (copy(m), *a)).collect(),
             after: self.ward_models.iter().map(|(m, _)| copy(m)).chain(self.stage_models.iter().map(copy)).collect(),
             weapons: self.weapons.iter().map(|w| (w.family, w.parts.clone(), w.seed)).collect(),

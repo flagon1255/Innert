@@ -5042,7 +5042,8 @@ impl Combat {
             blasts: Vec::new(),
             blast_floors: Vec::new(),
             remnants: Vec::new(),
-            models: effect_models(),
+            // With any files of them read in, see src\assets.rs
+            models: crate::assets::effects(effect_models()),
             first_model,
             time: 0.0,
             mana_warning: 0.0,

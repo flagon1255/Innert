@@ -580,6 +580,9 @@ struct State {
     code: HashMap<usize, Model>,
     /// The code's wings, and whether they've been replaced
     code_wings: Option<Vec<(Model, Vector3<f64>)>>,
+    /// The code's effects and wards, once any are replaced
+    code_effects: Option<Vec<(Model, Vector3<f64>)>>,
+    code_wards: Option<Vec<(Model, Vector3<f64>)>>,
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -757,7 +760,88 @@ fn serpent_file(i: usize) -> Option<String> {
 }
 
 fn wing_file(i: usize) -> Option<String> {
-    crate::wings::KINDS.get(i).map(|k| format!("wings/{}", k.id))
+    let kinds = crate::wings::KINDS.len();
+    Some(if i < kinds { format!("wings/{}", crate::wings::KINDS[i].id) } else { format!("wings/trail_{}", i - kinds + 1) })
+}
+
+/// What the dragons breathe and leave burning, after their pieces, see dragons::FX_PUFF
+fn dragon_fx_file(fx: usize) -> Option<String> {
+    let element = ["fire", "frost", "storm", "poison"];
+    Some(match fx {
+        _ if fx < crate::dragons::FX_FLAME => format!("dragon/fx/breath_{}_{}", element[fx / 2 % 4], fx % 2 + 1),
+        _ if fx < crate::dragons::FX_CRACK => format!("dragon/fx/flame_{}_{}", element[(fx - crate::dragons::FX_FLAME) / 2 % 4], fx % 2 + 1),
+        _ => format!("dragon/fx/crack_{}", fx - crate::dragons::FX_CRACK + 1),
+    })
+}
+
+/// What avians and gargoyles throw, call down and break into, after their pieces, see
+/// avians::FX_FEATHER
+fn avian_fx_file(fx: usize) -> Option<String> {
+    Some(match fx {
+        _ if fx < crate::avians::FX_BOLT => format!("avian/fx/feather_{}", fx + 1),
+        _ if fx < crate::avians::FX_FORK => "avian/fx/bolt".to_string(),
+        _ if fx < crate::avians::FX_SHARD => "avian/fx/fork".to_string(),
+        _ => format!("avian/fx/shard_{}", fx - crate::avians::FX_SHARD + 1),
+    })
+}
+
+/// The arrows, bolts, shot, spells, sparks, smoke, pools and the player's arms, in the order
+/// weapons::effect_models() makes them
+fn effect_file(i: usize) -> Option<String> {
+    Some(format!("effects/{i:03}"))
+}
+
+/// The wards round raid bosses, in the order guardians::models() makes them
+fn ward_file(i: usize) -> Option<String> {
+    Some(format!("wards/{i:02}"))
+}
+
+/// Models whose anchors stay as the code has them, each read whole from its file if it's been
+/// edited, growing only round its anchor: effects, wards, what dragons breathe. Their voxels a
+/// meter aren't known here, so their files are placed as if 16.
+fn apply_fixed(made: &mut [(Model, Vector3<f64>)], name: &dyn Fn(usize) -> Option<String>) -> usize {
+    if !enabled() {
+        return 0;
+    }
+    let dir = root();
+    let files = edited(&dir);
+    let mut changed = 0;
+    for (i, (model, anchor)) in made.iter_mut().enumerate() {
+        let Some(name) = name(i).filter(|n| files.contains(n)) else { continue };
+        match read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES)) {
+            Ok(edit) => {
+                *model = conform(&edit, model.size, Grow::Fixed { cap: 1023 }).0;
+                changed += 1;
+            }
+            Err(e) => log(format!("{name}.vox: {e}")),
+        }
+    }
+    changed
+}
+
+/// The arrows, spells, sparks and the player's arms and the rest, with the files read in, see
+/// Combat::new()
+pub fn effects(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)> {
+    if enabled() && edited(&root()).iter().any(|f| f.starts_with("effects/")) {
+        let code: Vec<(Model, Vector3<f64>)> = made.iter().map(|(m, a)| (copy(m), *a)).collect();
+        let changed = apply_fixed(&mut made, &effect_file);
+        if changed > 0 {
+            state().code_effects = Some(code);
+            log(format!("Model files: {changed} effects read"));
+        }
+    }
+    made
+}
+
+/// The wards round raid bosses, with the files read in, see guardians::models()
+pub fn wards(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)> {
+    if enabled() && edited(&root()).iter().any(|f| f.starts_with("wards/")) {
+        let code: Vec<(Model, Vector3<f64>)> = made.iter().map(|(m, a)| (copy(m), *a)).collect();
+        if apply_fixed(&mut made, &ward_file) > 0 {
+            state().code_wards = Some(code);
+        }
+    }
+    made
 }
 
 /// Every dragon's pieces, and after them their effects, with the files read in, see
@@ -766,6 +850,7 @@ fn wing_file(i: usize) -> Option<String> {
 pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
     let kinds = crate::dragons::KINDS.len();
     jointed(made, kinds, dragon_pieces(), "dragon/", &dragon_file, "dragon pieces");
+    apply_fixed(&mut made[kinds * dragon_pieces()..], &dragon_fx_file);
 }
 
 /// Every jointed boss's pieces, with the files read in, see rig::build_models(). Bosses drawn
@@ -777,7 +862,9 @@ pub fn bosses(made: &mut [(Model, Vector3<f64>)]) {
 /// Every avian's and gargoyle's pieces, and after them what they throw, with the files read in,
 /// see avians::build_models()
 pub fn avians(made: &mut [(Model, Vector3<f64>)]) {
-    jointed(made, crate::avians::KINDS.len(), avian_pieces(), "avian/", &avian_file, "avian and gargoyle pieces");
+    let kinds = crate::avians::KINDS.len();
+    jointed(made, kinds, avian_pieces(), "avian/", &avian_file, "avian and gargoyle pieces");
+    apply_fixed(&mut made[kinds * avian_pieces()..], &avian_fx_file);
 }
 
 /// How many pieces each avian and gargoyle has, see avians::PIECES
@@ -965,6 +1052,38 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
     export_jointed(dir, &models, animals::RIG_MODELS_AT, &crate::rig::KINDS, crate::rig::PIECES, &crate::rig::edit::anchors(), &boss_file, &boss_name, &mut lines)?;
     let avian_name = |k: usize, p: usize| format!("{}, {}", look_title(crate::avians::KINDS[k]), crate::avians::PIECE_NAMES[p].replace('_', " "));
     export_jointed(dir, &models, animals::WINGED_MODELS_AT, &crate::avians::KINDS, avian_pieces(), &crate::avians::anchors(), &avian_file, &avian_name, &mut lines)?;
+    // What dragons breathe and avians throw, the effects of fighting, the wards and the motes the
+    // wings leave behind
+    let dragon_fx = animals::DRAGON_MODELS_AT + crate::dragons::KINDS.len() * dragon_pieces();
+    for fx in 0..crate::dragons::MODELS - crate::dragons::KINDS.len() * dragon_pieces() {
+        let name = dragon_fx_file(fx).unwrap();
+        write_model(dir, &name, &models[dragon_fx + fx], MODEL_RES, Some(crate::dragons::fx_shape(fx).0), &name, "Placed as the code places it.")?;
+        lines.push(format!("{name}.vox: what dragons breathe and leave burning"));
+    }
+    let avian_fx = animals::WINGED_MODELS_AT + crate::avians::KINDS.len() * avian_pieces();
+    let winged_anchors = crate::avians::anchors();
+    for fx in 0..crate::avians::MODELS - crate::avians::KINDS.len() * avian_pieces() {
+        let name = avian_fx_file(fx).unwrap();
+        let i = crate::avians::KINDS.len() * avian_pieces() + fx;
+        write_model(dir, &name, &models[avian_fx + fx], MODEL_RES, winged_anchors.get(i).copied(), &name, "Placed as the code places it.")?;
+        lines.push(format!("{name}.vox: what avians throw and call down"));
+    }
+    let fixed_note = "Placed by its anchor as the code places it, and grows only round it. Its voxels a meter are the code's, not known here.";
+    for (i, (m, a)) in crate::weapons::effect_models().iter().enumerate() {
+        let name = effect_file(i).unwrap();
+        write_model(dir, &name, m, MODEL_RES, Some(*a), "an arrow, bolt, shot, spell, spark, smoke, pool or the player's arm", fixed_note)?;
+        lines.push(format!("{name}.vox: effect {i}"));
+    }
+    for (i, (m, a)) in crate::guardians::models().iter().enumerate() {
+        let name = ward_file(i).unwrap();
+        write_model(dir, &name, m, MODEL_RES, Some(*a), "a ward round a raid boss", fixed_note)?;
+        lines.push(format!("{name}.vox: ward {i}"));
+    }
+    for (i, (m, a)) in wings.iter().enumerate().skip(crate::wings::KINDS.len()) {
+        let name = wing_file(i).unwrap();
+        write_model(dir, &name, m, WING_RES, Some(*a), "a mote of a wing's trail", "")?;
+        lines.push(format!("{name}.vox: a mote of a wing's trail"));
+    }
     // Great serpents' pieces
     let first = animals::ANIMAL_MODELS - crate::serpents::PART_MODELS;
     let serpent_anchors = crate::serpents::anchors();
@@ -1072,11 +1191,15 @@ fn attach_console() {
 /// packs them, the wings among them
 pub struct Lists {
     pub base: Arc<Vec<Model>>,
-    /// The arrows, spells and leaves, between the base and the wings
+    /// The arrows, spells and leaves, between the base and the wings: the first `effects` of them
+    /// the effects, see weapons::effect_models(), with their anchors
     pub between: Vec<Model>,
+    pub effects: usize,
+    pub effect_anchors: Vec<Vector3<f64>>,
     pub wings: Vec<(Model, Vector3<f64>)>,
-    /// The wards, after the wings
+    /// The wards, after the wings, with their anchors, and anything after them
     pub after: Vec<Model>,
+    pub ward_anchors: Vec<Vector3<f64>>,
     /// The weapons carried: each one's family, parts and seed, to make again
     pub weapons: Vec<(usize, Vec<usize>, u32)>,
 }
@@ -1185,12 +1308,15 @@ impl<T: Send + 'static> Reloader<T> {
                 let over = over.lock().unwrap_or_else(|e| e.into_inner());
                 let wings = result.wings;
                 let wing_list: &Vec<(Model, Vector3<f64>)> = wings.as_ref().unwrap_or(&lists.wings);
-                let made = result.models.then(|| {
+                let between = result.between.as_ref().unwrap_or(&lists.between);
+                let after = result.after.as_ref().unwrap_or(&lists.after);
+                let repack = result.models || wings.is_some() || result.between.is_some() || result.after.is_some();
+                let made = repack.then(|| {
                     let models: Vec<&Model> = (0..lists.base.len())
                         .map(|i| over.get(&i).unwrap_or(&lists.base[i]))
-                        .chain(lists.between.iter())
+                        .chain(between.iter())
                         .chain(wing_list.iter().map(|(m, _)| m))
-                        .chain(lists.after.iter())
+                        .chain(after.iter())
                         .collect();
                     make(animals::pack_models(&models))
                 });
@@ -1212,6 +1338,9 @@ struct Reread {
     /// Whether any of the base models changed
     models: bool,
     wings: Option<Vec<(Model, Vector3<f64>)>>,
+    /// The effects and leaves, and the wards and the rest after the wings, made again
+    between: Option<Vec<Model>>,
+    after: Option<Vec<Model>>,
     weapons: bool,
 }
 
@@ -1231,7 +1360,7 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
             }
         })
         .collect();
-    let mut out = Reread { models: false, wings: None, weapons: false };
+    let mut out = Reread { models: false, wings: None, between: None, after: None, weapons: false };
     if names.is_empty() {
         return out;
     }
@@ -1305,6 +1434,14 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     for i in 0..crate::avians::KINDS.len() * avian_pieces() {
         whole(first_winged + i, avian_file(i), &s, &mut new);
     }
+    let dragon_pieces_all = crate::dragons::KINDS.len() * pieces;
+    for fx in 0..crate::dragons::MODELS - dragon_pieces_all {
+        whole(first_dragon + dragon_pieces_all + fx, dragon_fx_file(fx), &s, &mut new);
+    }
+    let avian_pieces_all = crate::avians::KINDS.len() * avian_pieces();
+    for fx in 0..crate::avians::MODELS - avian_pieces_all {
+        whole(first_winged + avian_pieces_all + fx, avian_fx_file(fx), &s, &mut new);
+    }
     for i in 0..crate::serpents::PART_MODELS {
         whole(first_serpent + i, serpent_file(i), &s, &mut new);
     }
@@ -1332,6 +1469,44 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
         out.wings = Some(made);
     } else {
         drop(s);
+    }
+    // The effects of fighting and the wards, each list read whole again from the code's
+    if names.iter().any(|f| f.starts_with("effects/")) {
+        let mut s = state();
+        let code = s.code_effects.get_or_insert_with(|| lists.between[..lists.effects].iter().map(|m| (copy(m), Vector3::zeros())).collect());
+        let mut made: Vec<(Model, Vector3<f64>)> = code.iter().map(|(m, a)| (copy(m), *a)).collect();
+        let anchors = &lists.effect_anchors;
+        for (k, (_, a)) in made.iter_mut().enumerate() {
+            if let Some(&anchor) = anchors.get(k) {
+                *a = anchor;
+            }
+        }
+        let files = edited(&dir);
+        for (i, (model, anchor)) in made.iter_mut().enumerate() {
+            let name = effect_file(i).unwrap();
+            if files.contains(&name)
+                && let Ok(edit) = read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES))
+            {
+                *model = conform(&edit, model.size, Grow::Fixed { cap: 1023 }).0;
+            }
+        }
+        out.between = Some(made.into_iter().map(|(m, _)| m).chain(lists.between[lists.effects..].iter().map(copy)).collect());
+    }
+    if names.iter().any(|f| f.starts_with("wards/")) {
+        let mut s = state();
+        let code = s.code_wards.get_or_insert_with(|| lists.after.iter().zip(&lists.ward_anchors).map(|(m, a)| (copy(m), *a)).collect());
+        let mut made: Vec<(Model, Vector3<f64>)> = code.iter().map(|(m, a)| (copy(m), *a)).collect();
+        let files = edited(&dir);
+        for (i, (model, anchor)) in made.iter_mut().enumerate() {
+            let name = ward_file(i).unwrap();
+            if files.contains(&name)
+                && let Ok(edit) = read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES))
+            {
+                *model = conform(&edit, model.size, Grow::Fixed { cap: 1023 }).0;
+            }
+        }
+        // The stage's floor after them, as model_lists() gives it
+        out.after = Some(made.into_iter().map(|(m, _)| m).chain(lists.after[lists.ward_anchors.len()..].iter().map(copy)).collect());
     }
     // Weapons: their parts' files read again as they're next made
     if names.iter().any(|f| f.starts_with("weapons/")) {
@@ -1495,7 +1670,22 @@ mod tests {
             let (back, lo) = conform(&edit, m.size, Grow::Free);
             assert!(back.size == m.size && back.voxels == m.voxels && lo == [0, 0, 0], "{name}");
         }
-        for (i, (m, a)) in wings.iter().enumerate().take(crate::wings::KINDS.len()) {
+        let fixed = |name: &str, m: &Model, a: Vector3<f64>| {
+            let edit = read_edit(&file_of(&dir, name), pivot_of(m.size, Some(a), MODEL_RES)).unwrap();
+            let (back, _) = conform(&edit, m.size, Grow::Fixed { cap: 1023 });
+            assert!(back.size == m.size && back.voxels == m.voxels, "{name}");
+        };
+        for (i, (m, a)) in crate::weapons::effect_models().iter().enumerate() {
+            fixed(&effect_file(i).unwrap(), m, *a);
+        }
+        for (i, (m, a)) in crate::guardians::models().iter().enumerate() {
+            fixed(&ward_file(i).unwrap(), m, *a);
+        }
+        let dragon_fx = animals::DRAGON_MODELS_AT + crate::dragons::KINDS.len() * dragon_pieces();
+        for fx in 0..crate::dragons::MODELS - crate::dragons::KINDS.len() * dragon_pieces() {
+            fixed(&dragon_fx_file(fx).unwrap(), &models[dragon_fx + fx], crate::dragons::fx_shape(fx).0);
+        }
+        for (i, (m, a)) in wings.iter().enumerate() {
             let name = wing_file(i).unwrap();
             let edit = read_edit(&file_of(&dir, &name), pivot_of(m.size, Some(*a), WING_RES)).unwrap();
             let (back, _) = conform(&edit, m.size, Grow::Free);
