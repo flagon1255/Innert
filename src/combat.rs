@@ -751,8 +751,9 @@ struct BloodMoon {
     /// Seconds since it was unleashed, and when the shots leave the weapon or the blade comes down
     t: f64,
     release: f64,
-    /// Where the moon hangs in the sky
+    /// Where the moon hangs in the sky, and the spot it was aimed at, in the middle of its ring
     moon: Vector3<f64>,
+    spot: Vector3<f64>,
     /// What's to be drained, by id, nearest first, and the shots flying at each
     targets: Vec<u32>,
     shots: Vec<Bloodshot>,
@@ -823,13 +824,14 @@ struct Stream {
 
 /// How long a Blood Moon hangs at least, how far off it rises, in meters, how high up in the view
 /// it rises, as part of the way from the middle to the top, the least it rises over the horizon
-/// and the most, in radians, and how far round the player it drains, in meters
+/// and the most, in radians, and how far round where it's aimed it drains, in meters: its ring's
+/// size, see aim::spot_aim()
 const MOON_SECONDS: f64 = 2.4;
 const MOON_OFF: f64 = 42.0;
 const MOON_IN_VIEW: f64 = 0.35;
 const MOON_LOWEST: f64 = 0.2;
 const MOON_HIGHEST: f64 = 1.2;
-const MOON_REACH: f64 = 14.0;
+pub(crate) const MOON_RING: f64 = 7.0;
 /// Where Blood Moon's blood pools before the player drinks it, in meters ahead of and under the eye
 const POOL_AHEAD: f64 = 2.2;
 const POOL_LOW: f64 = 0.55;
@@ -2100,6 +2102,13 @@ pub struct Combat {
     marked: Vec<u32>,
     /// Over the heads of what's marked, to draw its marks
     marked_at: Vec<Vector3<f64>>,
+    /// Over the heads of what the power in hand will go for, as it's aimed, and rings where it ends
+    /// in the air, turned to face the eye, see aim.rs
+    aimed_at: Vec<Vector3<f64>>,
+    faced: Vec<(Vector3<f64>, f64)>,
+    /// Where each thing a power let go came down or struck, for tests to see, see Combat::landed()
+    #[cfg(test)]
+    landings: Vec<Vector3<f64>>,
     /// What an impaling charge has skewered, by id, and which way it's charging
     skewered: Vec<u32>,
     charging: Vector3<f64>,
@@ -5045,6 +5054,10 @@ impl Combat {
             hunt: 0.0,
             marked: Vec::new(),
             marked_at: Vec::new(),
+            aimed_at: Vec::new(),
+            faced: Vec::new(),
+            #[cfg(test)]
+            landings: Vec::new(),
             skewered: Vec::new(),
             charging: Vector3::zeros(),
             idle: 0.0,
@@ -5157,6 +5170,7 @@ impl Combat {
         }
         if let Some(m) = &mut self.blood_moon {
             m.moon -= shift;
+            m.spot -= shift;
             for s in &mut m.shots {
                 s.from -= shift;
                 s.to -= shift;
@@ -5299,6 +5313,7 @@ impl Combat {
     /// been done to the animals wearing off
     pub fn update(&mut self, arena: &mut Arena, weapon: Option<(usize, &Weapon)>, loaded: Option<&Loaded>, controls: Controls, dt: f64) {
         self.marks.clear();
+        self.faced.clear();
         self.rays.clear();
         self.vpm = arena.view.vpm;
         self.seen = seen_within(arena.world);
@@ -5318,6 +5333,7 @@ impl Combat {
             self.marked.retain(|&id| animals.iter().any(|a| a.id == id && a.health > 0.0));
         }
         self.marked_at.clear();
+        self.aimed_at.clear();
         {
             // Those a hunter's mark is on, and those a weapon's mark is on, the first dozen
             let vpm = arena.view.vpm;
@@ -8151,8 +8167,18 @@ impl Combat {
                     let ahead = view.rotation * Vector3::new(0.0, 6.0, 0.0) * vpm;
                     self.sparks.push(Spark { position: view.eye + out, velocity: ahead + out * 2.0, look: blood, life: 0.35, lifetime: 0.35, gravity: 0.4, slot: SLOT_SPARK });
                 }
+                // And the ground splitting open in its ring where it was aimed, blood bursting up
+                // out of it, whether anything's there or not
+                for _ in 0..14 {
+                    let out = self.any_direction().component_mul(&Vector3::new(1.0, 1.0, 0.0)) * MOON_RING * 0.6 * random(&mut self.rng) * vpm;
+                    let v = (Vector3::new(0.0, 0.0, 3.5) + self.any_direction()) * vpm;
+                    self.drop(m.spot + out + Vector3::new(0.0, 0.0, 0.2 * vpm), v, DROP_BLOOD, 0.9);
+                }
+                self.sparks(m.spot + Vector3::new(0.0, 0.0, 0.4 * vpm), 12, 3.0, blood, 0.6, 0.5);
+                self.flashes.push(Flash { position: m.spot + Vector3::new(0.0, 0.0, 1.0 * vpm), color: Element::Blood.light(), reach: 10.0, life: 0.35, lifetime: 0.35 });
                 self.cap_sparks();
                 self.cues.push(Cue::here(Sound::HeavySwing, 0.9).pitched(0.8));
+                self.cues.push(Cue::at(Sound::Squelch, m.spot, 0.8).pitched(0.6));
             } else {
                 for (k, &id) in m.targets.iter().enumerate() {
                     if let Some(a) = arena.animals.iter().find(|a| a.id == id && a.health > 0.0) {
@@ -8161,11 +8187,12 @@ impl Combat {
                         m.shots.push(Bloodshot { target: Some(id), from, to, position: from, t: 0.0, arrive });
                     }
                 }
-                // Nothing near: shot up at the moon
+                // Nothing in its ring: shot into the ground where it was aimed, bursting there
                 if m.shots.is_empty() {
                     for k in 0..3 {
-                        let to = m.moon + self.any_direction() * 2.0 * vpm;
-                        m.shots.push(Bloodshot { target: None, from, to, position: from, t: 0.0, arrive: 0.55 + 0.06 * k as f64 });
+                        let to = m.spot + self.any_direction().component_mul(&Vector3::new(1.0, 1.0, 0.0)) * 1.5 * vpm;
+                        let arrive = 0.06 * k as f64 + (to - from).norm() / vpm / BLOODSHOT_PACE;
+                        m.shots.push(Bloodshot { target: None, from, to, position: from, t: 0.0, arrive });
                     }
                 }
                 self.flashes.push(Flash { position: from, color: Element::Blood.light(), reach: 4.0, life: 0.15, lifetime: 0.15 });
@@ -8195,7 +8222,7 @@ impl Combat {
             }
             match shot.target.and_then(|id| arena.animals.iter().position(|a| a.id == id && a.health > 0.0)) {
                 Some(i) => self.tear(arena, &mut m, i),
-                // Gone into the moon, or what it was at is already dead
+                // Into the ground where it was aimed, or what it was at is already dead
                 None => {
                     self.sparks(shot.position, 5, 2.0, blood, 0.2, 0.4);
                     self.flashes.push(Flash { position: shot.position, color: Element::Blood.light(), reach: 6.0, life: 0.2, lifetime: 0.2 });
@@ -8911,26 +8938,29 @@ impl Combat {
                 }
                 self.heal += 30.0;
             }
-            // A red moon rising, then shots let go at what's near, or a blade cutting down, and the
-            // blood torn out of each streaming back, see wax()
+            // A red moon rising over where it's aimed, then shots let go at what's in its ring, or
+            // a blade cutting down, and the blood torn out of each streaming back, see wax()
             Special::Bloodmoon => {
                 let (length, keys) = special_move(special, moves_kind(&profile), profile.style);
                 let mut near: Vec<(f64, u32)> = arena
                     .animals
                     .iter()
                     .filter(|a| a.health > 0.0 && !a.look.is_pet())
-                    .map(|a| ((a.position - feet).norm() / vpm - a.look.body().1, a.id))
-                    .filter(|&(d, _)| d < MOON_REACH)
+                    .map(|a| ((a.position - target).norm() / vpm - a.look.body().1, a.id))
+                    .filter(|&(d, _)| d < MOON_RING)
                     .collect();
                 near.sort_by(|a, b| a.0.total_cmp(&b.0));
                 let blade = moves_kind(&profile) == Kind::Melee && profile.style != Style::Lob;
                 // Bombs flung as orbs of blood, the rest shooting what they shoot
                 let shot = weapon.shot().filter(|&s| s != Shot::Shell);
-                let moon = moon_rise(arena.world, view.eye, forward, view.tan[1], vpm);
+                // Rising on beyond where it's aimed, the way it's aimed
+                let toward = (target - view.eye).try_normalize(1e-6).unwrap_or(forward);
+                let moon = moon_rise(arena.world, view.eye, toward, view.tan[1], vpm);
                 self.blood_moon = Some(BloodMoon {
                     t: 0.0,
                     release: first_release(length, &keys),
                     moon,
+                    spot: target,
                     targets: near.iter().take(8).map(|&(_, id)| id).collect(),
                     shots: Vec::new(),
                     streams: Vec::new(),
@@ -8946,16 +8976,16 @@ impl Combat {
                     damage: base * 1.2,
                     ending: None,
                 });
-                // Blood spurting up out of the ground in a ring round the player as it rises, never
-                // as high as the eye, the light going red
+                // Blood spurting up out of the ground round the edge of its ring as it rises, the
+                // light going red there
                 let blood = Element::look(Some(Element::Blood));
-                for k in 0..16 {
-                    let a = k as f64 / 16.0 * TAU;
+                for k in 0..24 {
+                    let a = k as f64 / 24.0 * TAU;
                     let out = Vector3::new(a.cos(), a.sin(), 0.0);
-                    self.sparks.push(Spark { position: feet + out * 2.4 * vpm + Vector3::new(0.0, 0.0, 0.2 * vpm), velocity: (out * 2.0 + Vector3::new(0.0, 0.0, 3.0)) * vpm, look: blood, life: 0.6, lifetime: 0.6, gravity: 1.0, slot: SLOT_SPARK });
+                    self.sparks.push(Spark { position: target + out * MOON_RING * 0.9 * vpm + Vector3::new(0.0, 0.0, 0.2 * vpm), velocity: (out * -1.0 + Vector3::new(0.0, 0.0, 4.0)) * vpm, look: blood, life: 0.7, lifetime: 0.7, gravity: 1.0, slot: SLOT_SPARK });
                 }
                 self.cap_sparks();
-                self.flashes.push(Flash { position: feet + Vector3::new(0.0, 0.0, 2.0 * vpm), color: Element::Blood.light(), reach: 16.0, life: 0.7, lifetime: 0.7 });
+                self.flashes.push(Flash { position: target + Vector3::new(0.0, 0.0, 2.0 * vpm), color: Element::Blood.light(), reach: 16.0, life: 0.7, lifetime: 0.7 });
                 self.cues.push(Cue::here(Sound::Toll, 0.9).pitched(0.5));
                 self.cues.push(Cue::here(Sound::Wail, 0.45).pitched(0.6));
             }
@@ -11097,6 +11127,14 @@ impl Combat {
         self.messages.push("Parried!".into());
     }
 
+    /// Something a power let go coming down or striking at `at`, noted for tests
+    fn landed(&mut self, at: Vector3<f64>) {
+        #[cfg(test)]
+        self.landings.push(at);
+        #[cfg(not(test))]
+        let _ = at;
+    }
+
     /// Where the crosshair is on: the first animal or solid thing along it
     fn aim(&self, arena: &Arena) -> Vector3<f64> {
         let view = arena.view;
@@ -12228,7 +12266,8 @@ impl Combat {
                 }
                 self.cap_sparks();
             }
-            if p.flown >= p.range {
+            // A power's shot comes down where it's flown as far as it goes, see powers.rs
+            if p.flown >= p.range && !matches!(p.trick, Trick::Signature(Sig::Power(_))) {
                 p.range = f64::INFINITY;
                 if p.trick == Trick::Harpoon {
                     // A harpoon's line played out to its end: let go of, as right click lets go of
@@ -15602,10 +15641,24 @@ impl Combat {
                 add(at, place(model, ring, RING_RES, Vector3::zeros(), at + bob, turn, vpm, 0.45, MOVING));
             }
         }
+        // And over what the power in hand will go for, as it's aimed, see aim.rs
+        if !self.aimed_at.is_empty() {
+            let (model, ring) = self.model_at(RING);
+            let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), -self.time * 3.0);
+            for &at in &self.aimed_at {
+                add(at, place(model, ring, RING_RES, Vector3::zeros(), at, turn, vpm, 0.6, MOVING));
+            }
+        }
         // Where things are coming down
         for &(at, radius) in &self.marks {
             let (model, ring) = self.model_at(RING);
             add(at, place(model, ring, RING_RES, Vector3::zeros(), at, UnitQuaternion::identity(), vpm, radius, MOVING));
+        }
+        // And where what's aimed ends in the air, turned to face the eye so it's seen, see aim.rs
+        for &(at, radius) in &self.faced {
+            let (model, ring) = self.model_at(RING);
+            let facing = UnitQuaternion::rotation_between(&Vector3::z(), &(view.eye - at)).unwrap_or_else(UnitQuaternion::identity);
+            add(at, place(model, ring, RING_RES, Vector3::zeros(), at, facing, vpm, radius, MOVING));
         }
         // Spikes of ice shooting up and pillars of light coming down, then dying away
         for i in &self.swells {
@@ -17005,6 +17058,10 @@ mod tests {
     /// everything it set off came down
     struct Aimed {
         before: Vec<(Vector3<f64>, f64)>,
+        /// What was shown it'd go for, over each, see Combat::aimed_at
+        over: Vec<Vector3<f64>>,
+        /// Where what a power let go came down or struck, in turn, see Combat::landed()
+        landings: Vec<Vector3<f64>>,
         after: Vec<(Vector3<f64>, f64)>,
         /// Where what it set off came down: blasts, flashes, eruptions, clouds, zones, mines,
         /// arrows stuck
@@ -17016,19 +17073,31 @@ mod tests {
     /// `feet` looking along +y pitched `pitch`, right click held to aim it the while, as a player
     /// would, watching what comes of it, `seconds` of it
     fn aimed_trial(world: &World, weapon: &Weapon, feet: Vector3<f64>, pitch: f64, power: bool, seconds: f64) -> Aimed {
+        aimed_trial_at(world, weapon, feet, pitch, power, seconds, Vec::new())
+    }
+
+    /// The same, with `animals` about
+    #[allow(clippy::too_many_arguments)]
+    fn aimed_trial_at(world: &World, weapon: &Weapon, feet: Vector3<f64>, pitch: f64, power: bool, seconds: f64, animals: Vec<Animal>) -> Aimed {
         let vpm = 8.0;
         let water = |_: f64, _: f64| f64::NEG_INFINITY;
         let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), pitch), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
-        let mut animals = Vec::new();
+        let mut animals = animals;
         let mut combat = Combat::new(1, 0);
-        combat.charge = 1.0;
+        // The special attack charged only when it's what's tried, so its ring isn't shown with a
+        // power's
+        combat.charge = if power { 0.0 } else { 1.0 };
+        // And the power not ready when it's the special attack, so its marks aren't shown with it
+        if !power {
+            combat.power.cooldown = 1e9;
+        }
         let dt = 1.0 / 60.0;
         let start = 0.4;
         let crosshair = {
             let arena = Arena { world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
             combat.aim(&arena)
         };
-        let mut out = Aimed { before: Vec::new(), after: Vec::new(), impacts: Vec::new(), crosshair };
+        let mut out = Aimed { before: Vec::new(), over: Vec::new(), after: Vec::new(), impacts: Vec::new(), landings: Vec::new(), crosshair };
         let mut let_go = false;
         // Not what goes off at the weapon itself, a gun's report or a whip's crack
         let close = if weapon.kind() == Kind::Melee { weapon.profile.stat("range") + 1.5 } else { 2.5 };
@@ -17056,10 +17125,14 @@ mod tests {
                     || !combat.zones.is_empty()
                     || !combat.lingering.is_empty()
                     || !combat.stases.is_empty()
-                    || !combat.mines.is_empty();
+                    || !combat.mines.is_empty()
+                    || combat.blood_moon.is_some()
+                    || !combat.landings.is_empty();
             }
-            if !let_go && !combat.marks.is_empty() {
+            if !let_go && (!combat.marks.is_empty() || !combat.aimed_at.is_empty() || !combat.faced.is_empty()) {
                 out.before.clone_from(&combat.marks);
+                out.before.extend(combat.faced.iter().copied());
+                out.over.clone_from(&combat.aimed_at);
             } else if let_go {
                 out.after.extend(combat.marks.iter().copied());
             }
@@ -17075,6 +17148,7 @@ mod tests {
             points.extend(combat.lobs.iter().map(|l| l.to));
             points.extend(combat.shackle.iter().map(|s| s.center));
             points.extend(combat.snared.iter().map(|s| s.0));
+            out.landings.extend(combat.landings.drain(..));
             for p in points {
                 if (p - view.eye).norm() > close * vpm && !out.impacts.iter().any(|q| (q - p).norm() < 0.05 * vpm) {
                     out.impacts.push(p);
@@ -17258,6 +17332,205 @@ mod tests {
                     (middle - case.feet).xy().norm() / vpm,
                     rings,
                     a.after.len()
+                );
+            }
+        }
+    }
+
+    /// A legendary weapon of each family that has a power on right click, the first of each power
+    /// or all of them with `all`, named
+    fn power_weapons(library: &crate::weapons::Library, all: bool) -> Vec<(String, Weapon)> {
+        let mut out: Vec<(String, Weapon)> = Vec::new();
+        for (family, f) in library.families.iter().enumerate() {
+            let Some(power) = crate::weapons::Power::of(&f.id) else {
+                continue;
+            };
+            if crate::tools::Tool::ALL.iter().any(|t| t.family() == f.id) || (!all && out.iter().any(|(_, w)| w.profile.power == Some(power))) {
+                continue;
+            }
+            if let Some(weapon) = (0..40_000u32).map(|seed| library.generate(hash(seed ^ 0x90e7), Some(family), 8.0)).find(|w| w.profile.power.is_some()) {
+                out.push((format!("{power:?} on a {}", f.id), weapon));
+            }
+        }
+        out
+    }
+
+    /// Where a power's aimed: the ground at each of aim_cases(), then a bandit standing 12 m off,
+    /// and one 5 m up in the air there, the crosshair on the middle of it; with how many meters
+    /// up it's lifted
+    fn power_cases() -> Vec<(AimCase, Option<f64>)> {
+        let vpm = 8.0;
+        let feet = Vector3::new(48.0, 16.0, 4.0) * vpm;
+        let mut out: Vec<(AimCase, Option<f64>)> = aim_cases().into_iter().filter(|c| c.name != "far 60 m").map(|c| (c, None)).collect();
+        for (name, lift) in [("a bandit 12 m off", 0.0), ("a flyer 12 m off, 5 m up", 5.0)] {
+            // At its middle, about 1 m over its feet
+            let pitch = ((lift + 1.0 - 1.6) / 12.0f64).atan();
+            out.push((AimCase { name, world: 0, feet, pitch, aimed: Some((12.0, 4.0 + lift)) }, Some(lift)));
+        }
+        let _ = vpm;
+        out
+    }
+
+    /// One bandit 12 m ahead of `feet`, `lift` meters up off the ground, hale enough not to die
+    fn bandit_ahead(world: &World, feet: Vector3<f64>, lift: f64) -> Vec<Animal> {
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut animals = crate::animals::spawn_pack(world, &water, &[Look::Bandit], feet + Vector3::new(0.0, 12.0 * vpm, 0.0), 0.5, 3);
+        for a in &mut animals {
+            a.position = feet + Vector3::new(0.0, 12.0, lift) * vpm;
+            a.health = 1e6;
+            a.max_health = 1e6;
+        }
+        animals
+    }
+
+    /// The rule for every power on right click: while it's aimed, right click held with it ready,
+    /// something shows where it'll go, the bombs' ring on the ground or where it ends, rings along
+    /// the ground it runs along or round the player, or a mark over what it goes for; and it goes
+    /// there, aimed at the ground near and further off, at the sky, up a slope, at a wall, down off a
+    /// ledge, at a bandit and at one up in the air
+    #[test]
+    fn every_power_lands_where_its_marker_says() {
+        use aim::PowerWay;
+        let library = crate::weapons::Library::load();
+        let vpm = 8.0;
+        let worlds = aim_worlds();
+        let mut broken = Vec::new();
+        let mut checked = 0;
+        for (name, weapon) in power_weapons(&library, false) {
+            let power = weapon.profile.power.expect("a power");
+            let way = aim::power_way(power);
+            for (case, lift) in power_cases() {
+                checked += 1;
+                let world = &worlds[case.world];
+                let animals = lift.map_or(Vec::new(), |l| bandit_ahead(world, case.feet, l));
+                let bandit = lift.map(|l| case.feet + Vector3::new(0.0, 12.0, l + 1.0) * vpm);
+                let a = aimed_trial_at(world, &weapon, case.feet, case.pitch, true, 3.0, animals);
+                let mut wrong = |why: String| broken.push(format!("{name}, aimed {}: {why}", case.name));
+                // A shot on and on past what's in sight, aimed at the sky, shows nothing and comes
+                // down nowhere near
+                if case.aimed.is_none() && matches!(way, PowerWay::Ray { reach, .. } if reach >= AIM_RANGE) {
+                    if !a.before.is_empty() || !a.over.is_empty() {
+                        wrong("a ring shows where it'll never come down".into());
+                    }
+                    continue;
+                }
+                let Some(&first) = a.landings.first() else {
+                    wrong("nothing of it came down or struck anything".into());
+                    continue;
+                };
+                let rings: Vec<Vector3<f64>> = a.before.iter().map(|r| r.0).collect();
+                let off = |p: Vector3<f64>, q: Vector3<f64>| (p - q).norm() / vpm;
+                match way {
+                    PowerWay::Ray { reach, fan, .. } => {
+                        // What it's shown going for, or where it's shown ending, and where the
+                        // first of it went
+                        let shown: Vec<Vector3<f64>> = rings.iter().copied().chain(a.over.iter().filter_map(|_| bandit)).collect();
+                        if shown.is_empty() {
+                            // Only a shot on and on past what's in sight shows nothing, aimed at the sky
+                            if !(case.aimed.is_none() && reach >= AIM_RANGE) {
+                                wrong("nothing shows where it'll go".into());
+                            }
+                            continue;
+                        }
+                        let n = fan.len();
+                        let landed = middle_of(&a.landings[..a.landings.len().min(if n > 1 { a.landings.len() } else { 1 })]);
+                        // A little further on the further it goes, as it's going fast
+                        let tolerance = if power == crate::weapons::Power::Breath { 2.5 } else { 1.6 } + 0.03 * (first - case.feet).norm() / vpm;
+                        if off(middle_of(&shown), landed) > tolerance {
+                            wrong(format!("it went {:.1} m from where it was shown going, the first at {:.1} m out", off(middle_of(&shown), landed), (first - case.feet).xy().norm() / vpm));
+                        }
+                        if fan.len() > 1 && rings.len() + a.over.len() < 2 {
+                            wrong("its fan isn't shown".into());
+                        }
+                    }
+                    PowerWay::Line { .. } => {
+                        if rings.len() < 4 {
+                            wrong(format!("only {} rings show the ground it runs along", rings.len()));
+                            continue;
+                        }
+                        // Every step of it on the line of rings, on the ground they're on
+                        for &l in &a.landings {
+                            let near = rings.iter().map(|&r| off(r, l)).fold(f64::MAX, f64::min);
+                            if near > 2.2 {
+                                wrong(format!("a step of it {near:.1} m off its rings"));
+                                break;
+                            }
+                        }
+                    }
+                    PowerWay::Seek { .. } => match bandit {
+                        Some(b) => {
+                            if a.over.is_empty() {
+                                wrong("what it'll go for isn't marked".into());
+                            }
+                            if off(first, b) > 2.0 {
+                                wrong(format!("it struck {:.1} m from the bandit aimed at", off(first, b)));
+                            }
+                        }
+                        None => {
+                            if rings.is_empty() {
+                                wrong("nothing shows where it'll go".into());
+                            } else if off(middle_of(&a.landings), rings[0]) > 2.5 {
+                                wrong(format!("it went {:.1} m from its ring", off(middle_of(&a.landings), rings[0])));
+                            }
+                        }
+                    },
+                    PowerWay::Round { reach } => {
+                        let feet_ring = a.before.iter().find(|r| (r.1 - reach).abs() < 1e-6);
+                        match feet_ring {
+                            Some(r) if (r.0 - case.feet).xy().norm() / vpm < 0.5 && (first - case.feet).xy().norm() / vpm < 0.5 => {}
+                            _ => wrong("its ring isn't round the feet at its full reach".into()),
+                        }
+                    }
+                    PowerWay::Spot => {
+                        if rings.is_empty() {
+                            wrong("no ring shows where it'll come down".into());
+                        } else if (middle_of(&rings) - first).xy().norm() / vpm > 2.5 {
+                            wrong(format!("it came down {:.1} m from its ring", (middle_of(&rings) - first).xy().norm() / vpm));
+                        }
+                    }
+                }
+            }
+        }
+        println!("{checked} powers aimed went where they were shown going");
+        assert!(broken.is_empty(), "{} miss:\n{}", broken.len(), broken.join("\n"));
+    }
+
+    /// Where every family's power on right click goes, aimed at the ground near and further off,
+    /// at the sky, up a slope, at a wall, down off a ledge, at a bandit and at one in the air, and
+    /// what showed where it'd go, to look at: cargo test --release power_audit -- --ignored
+    /// --nocapture, with POWER=crescent for only those whose names have that in them
+    #[test]
+    #[ignore]
+    fn power_audit() {
+        let library = crate::weapons::Library::load();
+        let only = std::env::var("POWER").unwrap_or_default().to_lowercase();
+        let vpm = 8.0;
+        let worlds = aim_worlds();
+        for (name, weapon) in power_weapons(&library, true) {
+            if !only.is_empty() && !name.to_lowercase().contains(&only) {
+                continue;
+            }
+            for (case, lift) in power_cases() {
+                let world = &worlds[case.world];
+                let animals = lift.map_or(Vec::new(), |l| bandit_ahead(world, case.feet, l));
+                let a = aimed_trial_at(world, &weapon, case.feet, case.pitch, true, 3.0, animals);
+                let at = |v: Vector3<f64>| format!("({:.1},{:.1},{:.1})", (v.x - case.feet.x) / vpm, (v.y - case.feet.y) / vpm, (v.z - case.feet.z) / vpm);
+                let first = a.impacts.first().copied().unwrap_or(case.feet);
+                let middle = middle_of(&a.impacts);
+                let rings: Vec<String> = a.before.iter().take(4).map(|&(p, r)| format!("{}r{r:.1}", at(p))).collect();
+                println!(
+                    "POWER|{name}|{}|crosshair {}|impacts {}|first {}|middle {}|{:.1} m off the crosshair|rings {} {:?}|over {}|landings {:?}",
+                    case.name,
+                    at(a.crosshair),
+                    a.impacts.len(),
+                    at(first),
+                    at(middle),
+                    (first - a.crosshair).norm() / vpm,
+                    a.before.len(),
+                    rings,
+                    a.over.len(),
+                    a.landings.iter().take(12).map(|&l| at(l)).collect::<Vec<_>>()
                 );
             }
         }

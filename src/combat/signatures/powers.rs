@@ -10,6 +10,7 @@
 //! machinery: projectiles carrying Sig::Power and zones of SigZone::Power, done here.
 
 use super::*;
+use crate::combat::aim::{PowerWay, power_way};
 use crate::weapons::Power;
 
 /// How long till the power's ready again, and how long right click's been held, for bombs
@@ -22,8 +23,9 @@ pub(in crate::combat) struct PowerState {
 /// What one of their shots is
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(in crate::combat) enum Shape {
-    /// A crescent flying on, `width` meters across, cutting through what's in its swath
-    Wave { width: f32 },
+    /// A crescent flying on, `width` meters across, cutting through what's in its swath, or with
+    /// `low` a whip's running on low over the ground, up slopes and down off ledges
+    Wave { width: f32, low: bool },
     /// A spinning wheel hurled out, and once it's as far as it goes, coming back
     Wheel { back: bool },
     /// A spear of light, through everything in a line
@@ -65,10 +67,20 @@ pub(in crate::combat) enum Lasting {
     Nova,
 }
 
-/// How many steps a fissure takes, how far apart, in meters, and seconds between each
-const FISSURE_STEPS: f64 = 8.0;
-const FISSURE_STEP: f64 = 1.5;
+/// How many steps a fissure takes, how far apart, in meters, and seconds between each, and how far
+/// out its first is, in meters
+pub(in crate::combat) const FISSURE_STEPS: f64 = 8.0;
+pub(in crate::combat) const FISSURE_STEP: f64 = 1.5;
 const FISSURE_GAP: f64 = 0.07;
+pub(in crate::combat) const FISSURE_FROM: f64 = 2.6;
+/// How far out a whip's wave starts, and how high it runs over the ground, in meters
+pub(in crate::combat) const LASH_FROM: f64 = 2.0;
+const LASH_HIGH: f64 = 0.8;
+/// How far a javelin, a lance shot, a breath's embers and seeking motes go, in meters
+pub(in crate::combat) const JAVELIN_REACH: f64 = 26.0;
+pub(in crate::combat) const LANCE_REACH: f64 = 40.0;
+pub(in crate::combat) const BREATH_REACH: f64 = 11.0;
+pub(in crate::combat) const SEEKER_REACH: f64 = 30.0;
 /// Seconds a burst bolt waits before it bursts, a vortex drags things in, and a lance's line hangs
 const STUCK_SECONDS: f64 = 0.7;
 const VORTEX_SECONDS: f64 = 1.4;
@@ -76,14 +88,14 @@ const VORTEX_REACH: f64 = 6.0;
 const LINE_SECONDS: f64 = 0.45;
 /// How fast a nova rolls out, in meters a second, and how far
 const NOVA_SPEED: f64 = 12.0;
-const NOVA_REACH: f64 = 9.0;
+pub(in crate::combat) const NOVA_REACH: f64 = 9.0;
 /// How fast a wheel flies, out and back, and how far out it goes, in meters
 const WHEEL_SPEED: f64 = 18.0;
-const WHEEL_REACH: f64 = 13.0;
+pub(in crate::combat) const WHEEL_REACH: f64 = 13.0;
 
 /// A heavy blow's crescents: how many, how wide, how fast and far they fly, in meters and meters a
 /// second, and how hard each hits next to a blow
-fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
+pub(in crate::combat) fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
     match power {
         Power::Rending => (1, 3.4, 16.0, 16.0, 2.0),
         Power::WindCut => (1, 1.4, 38.0, 22.0, 1.5),
@@ -369,7 +381,9 @@ impl Combat {
         // Along where it's looked, never much up or down, so it runs on over the ground
         let pitch = forward.z.clamp(-0.18, 0.25);
         let level = (flat * (1.0 - pitch * pitch).sqrt() + up * pitch).normalize();
-        let target = self.aim(arena);
+        // What the crosshair's on, or as far as the power reaches along it, see aim.rs
+        let points = self.power_points(arena, power);
+        let target = points.get(points.len() / 2).map_or_else(|| self.aim(arena), |p| p.0);
         let set = |c: &mut Combat, shape: Shape, range: f64, size: f64| {
             c.signed(Sig::Power(shape));
             if let Some(p) = c.projectiles.last_mut() {
@@ -379,16 +393,31 @@ impl Combat {
         };
         match power {
             // Crescents flying on from the blow, out of the chest, or a whip's low over the ground
+            // Each at what the crosshair, or its fan either side, first meets within its reach, or
+            // as far as that, as its rings showed, see aim.rs; a whip's on along the ground
             Power::Crescent | Power::Rending | Power::WindCut | Power::BladeFan | Power::LashWave => {
-                let (count, width, speed, reach, share) = wave_of(power);
+                let (_, width, speed, reach, share) = wave_of(power);
                 let low = power == Power::LashWave;
-                let from = if low { feet + up * 0.8 * vpm + flat * 2.0 * vpm } else { view.eye + view.rotation * Vector3::new(0.05, 0.9, -0.35) * vpm };
-                let way = if low { flat } else { level };
-                for k in 0..count {
-                    let yaw = (k as f64 - (count - 1) as f64 * 0.5) * 0.3;
-                    let along = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), yaw) * way;
-                    self.launch(&profile, None, Form::Bolt, from, along * speed * vpm, base * share, 0.0);
-                    set(self, Shape::Wave { width: width as f32 }, reach, 1.0);
+                let from = if low { ground_under(arena.world, feet + flat * LASH_FROM * vpm + up * vpm, vpm) + up * LASH_HIGH * vpm } else { view.eye + view.rotation * Vector3::new(0.05, 0.9, -0.35) * vpm };
+                if low {
+                    self.launch(&profile, None, Form::Bolt, from, flat * speed * vpm, base * share, 0.0);
+                    set(self, Shape::Wave { width: width as f32, low: true }, reach, 1.0);
+                    let line = match power_way(power) {
+                        PowerWay::Line { from, step, steps } => Combat::power_line(arena, from, step, steps),
+                        _ => Vec::new(),
+                    };
+                    self.keep_power_marks(power, &line, reach / speed);
+                } else {
+                    for (to, who) in self.power_points(arena, power) {
+                        let along = (to - from).try_normalize(1e-6).unwrap_or(level);
+                        // On through what it cuts, or as far as where it meets the ground
+                        let range = (to - from).norm() / vpm + if who.is_some() { 3.0 } else { 0.3 };
+                        self.launch(&profile, None, Form::Bolt, from, along * speed * vpm, base * share, 0.0);
+                        set(self, Shape::Wave { width: width as f32, low: false }, range, 1.0);
+                        if who.is_none() {
+                            self.keep_power_marks(power, &[to], range / speed);
+                        }
+                    }
                 }
                 self.cues.push(Cue::here(Sound::Shing, 0.9).pitched(if power == Power::Rending { 0.7 } else { 1.1 }));
                 self.cues.push(Cue::here(Sound::HeavySwing, 0.6).pitched(0.8));
@@ -398,8 +427,15 @@ impl Combat {
             // A wheel hurled out spinning, to come back
             Power::Wheel => {
                 let from = view.eye + view.rotation * Vector3::new(0.1, 1.0, -0.3) * vpm;
-                self.launch(&profile, None, Form::Bolt, from, level * WHEEL_SPEED * vpm, base * 1.3, 0.0);
-                set(self, Shape::Wheel { back: false }, WHEEL_REACH, 1.0);
+                // Out to what the crosshair first meets, or as far as it goes, and back
+                let (to, who) = self.power_points(arena, power)[0];
+                let along = (to - from).try_normalize(1e-6).unwrap_or(level);
+                let range = ((to - from).norm() / vpm + if who.is_some() { 1.5 } else { 0.0 }).min(WHEEL_REACH);
+                self.launch(&profile, None, Form::Bolt, from, along * WHEEL_SPEED * vpm, base * 1.3, 0.0);
+                set(self, Shape::Wheel { back: false }, range, 1.0);
+                if who.is_none() {
+                    self.keep_power_marks(power, &[to], range / WHEEL_SPEED);
+                }
                 self.cues.push(Cue::here(Sound::Whirr, 0.9).pitched(0.8));
                 self.cues.push(Cue::here(Sound::Shing, 0.6).pitched(0.9));
                 self.flashes.push(Flash { position: from, color: light, reach: 5.0, life: 0.2, lifetime: 0.2 });
@@ -407,16 +443,25 @@ impl Combat {
             // A spear of light hurled at the crosshair
             Power::Javelin => {
                 let from = view.eye + view.rotation * Vector3::new(0.2, 0.7, -0.15) * vpm;
-                let way = lead(from, target, 34.0, 0.15, vpm);
+                // At what the crosshair first meets within its reach, or bursting as far as that
+                let (to, who) = self.power_points(arena, power)[0];
+                let way = lead(from, to, 34.0, 0.15, vpm);
+                let range = (to - from).norm() / vpm * 1.03 + if who.is_some() { 3.0 } else { 0.3 };
                 self.launch(&profile, None, Form::Bolt, from, way * 34.0 * vpm, base * 2.0, 0.15);
-                set(self, Shape::Javelin, 26.0, 1.0);
+                set(self, Shape::Javelin, range, 1.0);
+                if who.is_none() {
+                    self.keep_power_marks(power, &[to], range / 34.0);
+                }
                 self.cues.push(Cue::here(Sound::Shing, 0.8).pitched(0.75));
                 self.cues.push(Cue::here(Sound::Swing, 0.7).pitched(0.6));
                 self.flashes.push(Flash { position: from, color: light, reach: 5.0, life: 0.2, lifetime: 0.2 });
             }
             // The ground split open in a line ahead, step by step
             Power::Fissure => {
-                let start = ground_under(arena.world, feet + flat * 2.6 * vpm + up * vpm, vpm);
+                // Along the ground the way it's aimed, as its rings showed, see aim.rs
+                let start = ground_under(arena.world, feet + flat * FISSURE_FROM * vpm + up * vpm, vpm);
+                let line = Combat::power_line(arena, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS as usize);
+                self.keep_power_marks(power, &line, FISSURE_STEPS * FISSURE_GAP + 0.2);
                 self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Fissure)), &profile, start, flat * FISSURE_STEP * vpm, 1.6, FISSURE_STEPS * FISSURE_GAP + 0.3, base * 1.5);
                 self.cues.push(Cue::here(Sound::Quake, 1.0).pitched(1.1));
                 self.cues.push(Cue::here(Sound::Slam, 0.8).pitched(0.8));
@@ -456,8 +501,8 @@ impl Combat {
                     Power::LanceShot => {
                         let way = lead(from, target, 70.0, 0.0, vpm);
                         self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: true, size: 1.4 }), Form::Bolt, from, way * 70.0 * vpm, base * 2.0, 0.0);
-                        set(self, Shape::Lance, 40.0, 1.4);
-                        self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Line)), &profile, from + way * 1.5 * vpm, way * 38.5 * vpm, 1.4, LINE_SECONDS + 0.2, base * 0.8);
+                        set(self, Shape::Lance, LANCE_REACH, 1.4);
+                        self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Line)), &profile, from + way * 1.5 * vpm, way * (LANCE_REACH - 1.5) * vpm, 1.4, LINE_SECONDS + 0.2, base * 0.8);
                         if let Some(z) = self.zones.last_mut() {
                             z.tick = LINE_SECONDS;
                         }
@@ -466,11 +511,13 @@ impl Combat {
                     Power::Breath => {
                         let way = lead(from, target, 20.0, 0.15, vpm);
                         let across = way.cross(&up).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        // Fanned out across the cone its rings showed, see aim.rs, the outer ones
+                        // as far round as the rings either side
                         for k in 0..7 {
                             let s = (k as f64 - 3.0) / 3.0;
-                            let along = (way + across * s * 0.45 + up * (0.08 * (k % 2) as f64)).normalize();
+                            let along = (way + across * (s * crate::combat::aim::BREATH_FAN[2]).tan() + up * (0.04 * (k % 2) as f64)).normalize();
                             self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: true, size: 1.0 }), Form::Bolt, from, along * (18.0 + 2.0 * (k % 3) as f64) * vpm, base * 0.7, 0.15);
-                            set(self, Shape::Ember, 11.0, 1.0);
+                            set(self, Shape::Ember, BREATH_REACH, 1.0);
                         }
                         self.gun_report(weapon, view, &profile, from, way, 1.6);
                     }
@@ -508,18 +555,29 @@ impl Combat {
                 self.shake = self.shake.max(0.3);
             }
             // Motes fanned out up and round, each then seeking what's near
+            // At what's round what the crosshair's on, as the marks over them showed, each mote in
+            // turn after the next of them; or with nothing there, onto the ring where it's on, see
+            // aim.rs
             Power::Seekers => {
                 let from = self.held_point(weapon, view, false);
-                let way = (target - from).try_normalize(1e-6).unwrap_or(forward);
+                let (targets, at) = Combat::seek_targets(arena, SEEKER_REACH);
+                let way = (at - from).try_normalize(1e-6).unwrap_or(forward);
                 let across = way.cross(&up).try_normalize(1e-6).unwrap_or_else(Vector3::x);
                 for k in 0..5 {
                     let s = (k as f64 - 2.0) / 2.0;
-                    let along = (way + across * s * 0.7 + up * (0.35 - 0.15 * s.abs())).normalize();
+                    let goal = targets.get(k % targets.len().max(1)).map_or(at, |&i| arena.animals[i].center(vpm as u32));
+                    let toward = (goal - from).try_normalize(1e-6).unwrap_or(way);
+                    // Fanned out wide after what they seek, or close round the way onto the ring
+                    let spread = if targets.is_empty() { 0.3 } else { 1.0 };
+                    let along = (toward + (across * s * 0.35 + up * (0.18 - 0.08 * s.abs())) * spread).normalize();
                     self.launch(&profile, None, Form::Bolt, from, along * 16.0 * vpm, base * 0.8, 0.0);
-                    set(self, Shape::Mote, 30.0, 1.0);
+                    set(self, Shape::Mote, if targets.is_empty() { (at - from).norm() / vpm + 0.3 } else { SEEKER_REACH }, 1.0);
                     if let Some(p) = self.projectiles.last_mut() {
-                        p.seek = 6.0;
+                        p.seek = if targets.is_empty() { 0.0 } else { 6.0 };
                     }
+                }
+                if targets.is_empty() {
+                    self.keep_power_marks(power, &[at], (at - from).norm() / (16.0 * vpm));
                 }
                 self.cues.push(Cue::here(Sound::Summon, 0.7).pitched(1.4));
                 self.flashes.push(Flash { position: from, color: light, reach: 5.0, life: 0.25, lifetime: 0.25 });
@@ -527,6 +585,8 @@ impl Combat {
             // A ring rolling out all round
             Power::Nova => {
                 let center = feet + up * 0.3 * vpm;
+                self.keep_power_marks(power, &[feet + up * 0.05 * vpm], NOVA_REACH / NOVA_SPEED);
+                self.landed(center);
                 self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Nova)), &profile, center, Vector3::zeros(), NOVA_REACH, NOVA_REACH / NOVA_SPEED + 0.35, base * 1.5);
                 self.cues.push(Cue::here(Sound::Toll, 1.0).pitched(0.7));
                 self.cues.push(Cue::here(Sound::Burst, 0.6).pitched(0.8));
@@ -690,6 +750,12 @@ impl Combat {
             let back = (p.velocity.norm() * seconds).min(p.flown);
             self.rays.push((p.position - way * back, p.position, look));
         }
+        // A whip's wave running on over the ground, up slopes and down off ledges
+        if let Shape::Wave { low: true, .. } = shape {
+            let ground = ground_under(arena.world, p.position - Vector3::new(0.0, 0.0, LASH_HIGH * vpm), vpm);
+            p.position.z = ground.z + LASH_HIGH * vpm;
+            p.velocity.z = 0.0;
+        }
         match shape {
             Shape::Wheel { back: true } => {
                 // Coming back to the hand, caught there
@@ -703,6 +769,7 @@ impl Combat {
                 p.velocity = to.normalize() * WHEEL_SPEED * 1.25 * vpm;
             }
             Shape::Wheel { back: false } if p.flown >= p.range => {
+                self.landed(p.position);
                 p.trick = Trick::Signature(Sig::Power(Shape::Wheel { back: true }));
                 p.hit.clear();
                 return false;
@@ -716,7 +783,7 @@ impl Combat {
         }
         // What's in its swath, cut once each way
         let half = match shape {
-            Shape::Wave { width } => Some(width as f64 * 0.5),
+            Shape::Wave { width, .. } => Some(width as f64 * 0.5),
             Shape::Wheel { .. } => Some(1.0),
             _ => None,
         };
@@ -737,6 +804,7 @@ impl Combat {
             let profile = p.profile.clone();
             for i in caught {
                 let center = arena.animals[i].center(vpm as u32);
+                self.landed(center);
                 p.hit.push(arena.animals[i].id);
                 self.power_hit(arena, &profile, i, center, p.damage, p.position - way * vpm);
                 // A greatsword's rending wave throws what it cuts back
@@ -758,6 +826,7 @@ impl Combat {
 
     /// One of their shots striking animal `i` at `at`. True if it's gone, false if it goes on.
     pub(super) fn power_strikes(&mut self, arena: &mut Arena, p: &mut Projectile, shape: Shape, i: usize, at: Vector3<f64>) -> bool {
+        self.landed(at);
         let vpm = arena.view.vpm;
         let profile = p.profile.clone();
         let id = arena.animals[i].id;
@@ -816,6 +885,9 @@ impl Combat {
     /// One of their shots coming down at `at`, on the ground, a wall or the water, or as far as
     /// it goes
     pub(super) fn power_lands(&mut self, arena: &mut Arena, p: &Projectile, shape: Shape, at: Vector3<f64>) {
+        if !matches!(shape, Shape::Wheel { back: true }) {
+            self.landed(at);
+        }
         let vpm = arena.view.vpm;
         let up = Vector3::z();
         let profile = p.profile.clone();
@@ -925,6 +997,7 @@ impl Combat {
             Lasting::Fissure => {
                 while z.owed < FISSURE_STEPS && age >= z.owed * FISSURE_GAP {
                     let at = ground_under(arena.world, z.position + z.velocity * z.owed + up * 1.5 * vpm, vpm);
+                    self.landed(at);
                     z.owed += 1.0;
                     let model = match element {
                         Some(Element::Frost) => ICE_BURST,
@@ -1096,7 +1169,7 @@ impl Combat {
         };
         let mut out = Vec::new();
         match shape {
-            Shape::Wave { width } => {
+            Shape::Wave { width, .. } => {
                 let across = way.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::x);
                 let w = width as f64 * vpm;
                 for k in 0..7 {

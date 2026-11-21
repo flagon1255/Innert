@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::weapons::Power;
-use super::signatures::powers::power_timing;
+use super::signatures::powers::{BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, SEEKER_REACH, WHEEL_REACH, power_timing, wave_of};
 
 /// How far a special attack aimed at a spot reaches, in meters out along the ground
 pub(super) const SPOT_REACH: f64 = 30.0;
@@ -61,6 +61,7 @@ pub(super) fn spot_aim(special: Special, profile: &Profile) -> Option<SpotAim> {
         Special::Litany => (LITANY_AIM, 4.5, 0.0),
         Special::EmberKnell => (KNELL_AIM, 2.5, 0.0),
         Special::Bloodthread => (THREAD_AIM, 2.5, 0.0),
+        Special::Bloodmoon => (SPOT_REACH, MOON_RING, 0.0),
         _ => return None,
     };
     let reach = if profile.style == Style::Lob { profile.stat("range").max(6.0) } else { reach };
@@ -281,6 +282,8 @@ impl Combat {
             Special::Skyburst => 0.5 + far / 20.0,
             Special::NetBolt => 0.15 + far / 45.0,
             Special::Firecrackers => 2.0 + 0.025 * far,
+            // Its move, then its shots flying there, see BloodMoon
+            Special::Bloodmoon => 1.4 + far / BLOODSHOT_PACE,
             _ => return crosshair,
         };
         self.keep_rings(arena, &weapon.profile, special, spot, life);
@@ -331,6 +334,19 @@ impl Combat {
             {
                 self.marks.push((spot, aim.radius));
             }
+            // Every other power: while right click's held with it ready, a heavy blow carrying it
+            // is coming down, or its own move's going on, till it's let go
+            if let Some(power) = profile.power
+                && power_way(power) != PowerWay::Spot
+            {
+                let ready = self.power.cooldown <= 0.0 && self.raise >= 1.0;
+                let swinging = ready && matches!(self.action, Action::Swing { heavy: true, struck: false, .. });
+                let moving = matches!(self.action, Action::Power { t, length } if t <= power_timing(power).1 * length);
+                let aiming = ready && controls.aiming && !matches!(self.action, Action::Special { .. });
+                if swinging || moving || aiming {
+                    self.power_marks(arena, power);
+                }
+            }
         }
         // What carries a special attack on its way to where it comes down
         for p in &self.projectiles {
@@ -345,5 +361,174 @@ impl Combat {
         }
         self.spots.retain(|s| s.2 > 0.0);
         self.marks.extend(self.spots.iter().map(|s| (s.0, s.1)));
+    }
+}
+
+/// How a power on right click is aimed, and what shows where it'll go as it's aimed, see
+/// Combat::power_marks()
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum PowerWay {
+    /// Onto a spot on the ground, a ring round it, see power_aim()
+    Spot,
+    /// Along the crosshair to what it first meets within `reach` meters, or as far as that, or
+    /// along each of `fan`'s turns either side of it, in radians: a ring `radius` round where each
+    /// meets the ground or a wall, or ends, or a mark over the animal it meets
+    Ray { reach: f64, fan: &'static [f64], radius: f64 },
+    /// Along the ground the way it's aimed, from `from` meters out, `steps` steps `step` apart, a
+    /// ring at each
+    Line { from: f64, step: f64, steps: usize },
+    /// At what's within SEEK_ROUND of what the crosshair's on within `reach`, marked over each,
+    /// or else onto a ring there
+    Seek { reach: f64 },
+    /// All round the player, a ring `reach` meters round the feet
+    Round { reach: f64 },
+}
+
+/// How far round what the crosshair's on a power's seekers look for what to go for, in meters
+pub(super) const SEEK_ROUND: f64 = 7.0;
+/// A blade fan's crescents and a breath's embers, turned either side of the crosshair, in radians
+pub(super) const FAN: [f64; 3] = [-0.3, 0.0, 0.3];
+pub(super) const BREATH_FAN: [f64; 3] = [-0.42, 0.0, 0.42];
+/// How far apart the rings along a whip's wave are, in meters
+const LASH_STEP: f64 = 2.0;
+
+/// How `power` is aimed
+pub(super) fn power_way(power: Power) -> PowerWay {
+    let wave = |p: Power| wave_of(p).3;
+    match power {
+        Power::Mortar | Power::Comet | Power::Vortex => PowerWay::Spot,
+        Power::Crescent | Power::Rending | Power::WindCut => PowerWay::Ray { reach: wave(power), fan: &[0.0], radius: 1.2 },
+        Power::BladeFan => PowerWay::Ray { reach: wave(power), fan: &FAN, radius: 0.8 },
+        Power::Wheel => PowerWay::Ray { reach: WHEEL_REACH, fan: &[0.0], radius: 1.0 },
+        Power::Javelin => PowerWay::Ray { reach: JAVELIN_REACH, fan: &[0.0], radius: 1.8 },
+        Power::CometArrow | Power::BurstBolt | Power::Ricochet => PowerWay::Ray { reach: AIM_RANGE, fan: &[0.0], radius: 1.5 },
+        Power::LanceShot => PowerWay::Ray { reach: LANCE_REACH, fan: &[0.0], radius: 1.5 },
+        Power::Breath => PowerWay::Ray { reach: BREATH_REACH, fan: &BREATH_FAN, radius: 1.2 },
+        Power::Fissure => PowerWay::Line { from: FISSURE_FROM, step: FISSURE_STEP, steps: FISSURE_STEPS as usize },
+        Power::LashWave => PowerWay::Line { from: LASH_FROM, step: LASH_STEP, steps: (wave(power) / LASH_STEP) as usize + 1 },
+        Power::Seekers => PowerWay::Seek { reach: SEEKER_REACH },
+        Power::Nova => PowerWay::Round { reach: NOVA_REACH },
+    }
+}
+
+impl Combat {
+    /// Where a line from `from` along `way`, `reach` meters long, first meets something: the
+    /// ground, a wall, or an animal, which, or where it ends
+    pub(super) fn ray_point(arena: &Arena, from: Vector3<f64>, way: Vector3<f64>, reach: f64) -> (Vector3<f64>, Option<usize>) {
+        let vpm = arena.view.vpm;
+        let far = from + way * reach * vpm;
+        let mut t = solid_along(arena.world, from, far).unwrap_or(1.0);
+        let mut who = None;
+        for (i, animal) in arena.animals.iter().enumerate().filter(|(_, a)| a.health > 0.0 && !a.look.is_pet()) {
+            if let Some(hit) = sphere_hit(from, far, animal.center(vpm as u32), animal.look.body().1 * vpm)
+                && hit < t
+            {
+                t = hit;
+                who = Some(i);
+            }
+        }
+        (from + (far - from) * t, who)
+    }
+
+    /// Where a power aimed along the crosshair goes, each of its fan's: along the crosshair, or
+    /// turned either side of it, to what it first meets within its reach, or as far as that
+    pub(super) fn power_points(&self, arena: &Arena, power: Power) -> Vec<(Vector3<f64>, Option<usize>)> {
+        let view = arena.view;
+        let PowerWay::Ray { reach, fan, .. } = power_way(power) else {
+            return Vec::new();
+        };
+        fan.iter().map(|&yaw| Combat::ray_point(arena, view.eye, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), yaw) * view.forward(), reach)).collect()
+    }
+
+    /// The ground a power splits or runs along, the way it's aimed: a point every `step` meters
+    /// from `from` meters out, `steps` of them, each on the ground there, up a slope or down off a
+    /// ledge
+    pub(super) fn power_line(arena: &Arena, from: f64, step: f64, steps: usize) -> Vec<Vector3<f64>> {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let up = Vector3::z();
+        let feet = arena.player.unwrap_or(view.eye - up * 1.6 * vpm);
+        let way = flat_way(view.forward());
+        let start = ground_under(arena.world, feet + way * from * vpm + up * vpm, vpm);
+        (0..steps).map(|k| ground_under(arena.world, start + way * step * k as f64 * vpm + up * 1.5 * vpm, vpm)).collect()
+    }
+
+    /// What a power's seekers go for: what's within SEEK_ROUND of what the crosshair's on within
+    /// `reach`, the nearest that first, by index, five at most; and where the crosshair's on
+    pub(super) fn seek_targets(arena: &Arena, reach: f64) -> (Vec<usize>, Vector3<f64>) {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let (at, who) = Combat::ray_point(arena, view.eye, view.forward(), reach);
+        let mut near: Vec<(f64, usize)> = (0..arena.animals.len())
+            .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
+            .map(|i| ((arena.animals[i].center(vpm as u32) - at).norm() / vpm - arena.animals[i].look.body().1, i))
+            .filter(|&(d, i)| d < SEEK_ROUND || Some(i) == who)
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (near.into_iter().map(|(_, i)| i).take(5).collect(), at)
+    }
+
+    /// Over animal `i`, where a mark shows it's what a power goes for
+    pub(super) fn over(arena: &Arena, i: usize) -> Vector3<f64> {
+        let vpm = arena.view.vpm;
+        let a = &arena.animals[i];
+        a.center(vpm as u32) + Vector3::new(0.0, 0.0, (a.look.body().1 + 0.6) * vpm)
+    }
+
+    /// What shows where `power` goes this frame, as it's aimed: rings where it meets the ground or
+    /// ends, along the ground it runs along, round the player, and marks over what it goes for
+    pub(super) fn power_marks(&mut self, arena: &Arena, power: Power) {
+        let vpm = arena.view.vpm;
+        match power_way(power) {
+            PowerWay::Spot => {}
+            PowerWay::Ray { radius, .. } => {
+                let eye = arena.view.eye;
+                let PowerWay::Ray { reach, .. } = power_way(power) else { unreachable!() };
+                for (at, who) in self.power_points(arena, power) {
+                    match who {
+                        Some(i) => self.aimed_at.push(Combat::over(arena, i)),
+                        // Not out past all sight, where a shot that flies on and on never comes down
+                        None if reach >= AIM_RANGE && (at - eye).norm() > 0.99 * reach * vpm => {}
+                        // Ending in the air, as far as it goes: turned to face the eye, so it's seen
+                        None if (at - eye).norm() > 0.99 * reach * vpm => self.faced.push((at, radius)),
+                        None => self.marks.push((at, radius)),
+                    }
+                }
+            }
+            PowerWay::Line { from, step, steps } => {
+                for at in Combat::power_line(arena, from, step, steps) {
+                    self.marks.push((at, 0.8));
+                }
+            }
+            PowerWay::Seek { reach } => {
+                let (targets, at) = Combat::seek_targets(arena, reach);
+                if targets.is_empty() {
+                    self.marks.push((at, 2.0));
+                }
+                for i in targets {
+                    self.aimed_at.push(Combat::over(arena, i));
+                }
+            }
+            PowerWay::Round { reach } => {
+                let view = arena.view;
+                let feet = arena.player.unwrap_or(view.eye - Vector3::z() * 1.6 * vpm);
+                self.marks.push((feet + Vector3::z() * 0.05 * vpm, reach));
+            }
+        }
+    }
+
+    /// The rings for `power` kept showing at each of `at` for `life` seconds after it's let go,
+    /// as what it let go gets there
+    pub(super) fn keep_power_marks(&mut self, power: Power, at: &[Vector3<f64>], life: f64) {
+        let radius = match power_way(power) {
+            PowerWay::Ray { radius, .. } => radius,
+            PowerWay::Line { .. } => 0.8,
+            PowerWay::Seek { .. } => 2.0,
+            PowerWay::Round { reach } => reach,
+            PowerWay::Spot => return,
+        };
+        for &p in at {
+            self.spots.push((p, radius, life));
+        }
     }
 }
