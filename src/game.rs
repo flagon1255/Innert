@@ -4921,11 +4921,11 @@ impl Game {
         ((levels::max_health(self.level) + self.totals.get(Stat::MaxHealth)) * (1.0 + self.totals.share(Stat::MaxHealthPct))).max(10.0)
     }
 
-    /// The level a monster or boss of `look` comes at as the player's level and the band about
-    /// have it, by `roll`, 0-1, and at least `least`, as for night raiders from realms further on
-    pub fn foe_level_at_least(&self, look: Look, least: u32, roll: f64) -> u32 {
+    /// The level a monster or boss of `look` comes at with the player at theirs, by `roll`, 0-1,
+    /// wherever it's from, as for night raiders from realms further on
+    pub fn foe_level_of(&self, look: Look, roll: f64) -> u32 {
         let slain = if look.is_raid() { Slain::Raid } else if look.is_boss() { Slain::Boss } else { Slain::Monster };
-        levels::foe_level(self.band, self.level, slain, roll).max(least)
+        levels::foe_level(self.band, self.level, slain, roll)
     }
 
     /// `amount` of experience gained, shown floating up from `at` if it's given: as many levels
@@ -8175,15 +8175,15 @@ mod tests {
             let Item::Weapon(w) = game.roll_weapon_for(Look::Golem, 1.0, false, (20, Source::Raid)) else { panic!() };
             assert!((20..=23).contains(&game.weapons[w].item_level()));
         }
-        // What's about is at the player's level, never under the band's floor
+        // What's about is at the player's level, whichever realm it is
         game.set_band(levels::BANDS[2]);
         game.set_level(3);
-        assert_eq!(game.area_level(), levels::BANDS[2].lo);
+        assert_eq!(game.area_level(), 3);
         game.set_level(40);
         assert_eq!(game.area_level(), 40);
         assert!(game.foe_damage() > 1.0 && game.foe_toughness() > 1.0);
-        // A night raider from further on comes at least at its own realm's floor
-        assert!(game.foe_level_at_least(Look::Skeleton, 30, 0.5) >= 30);
+        // A night raider from further on comes at the player's level too
+        assert_eq!(game.foe_level_of(Look::Skeleton, 0.5), 40);
     }
 
     /// Every node of the skill web does what it says: each of what it gives, taken alone, moves
