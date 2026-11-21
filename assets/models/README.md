@@ -1,8 +1,12 @@
 # Editing Innert's models and animations
 
-Every model in the game is built by code. Any model can also be a MagicaVoxel `.vox` file in
-this folder. When a file is here, the game draws it instead of the code's model. When it isn't, the
-code's model is used as before.
+Every model in the game is built by code, and every one ships as a MagicaVoxel `.vox` file in
+this folder too.
+
+- **A file you've edited** is drawn instead of the code's model.
+- **A file left as it was exported** is passed over, so the game looks exactly as the code makes
+  it, and changes to the code still show.
+- **Deleting a file** brings back the code's model.
 
 ## The model editor
 
@@ -20,9 +24,10 @@ running beside the editor, or MagicaVoxel, and what you save shows up in the gam
 
 ## Editing a model in MagicaVoxel
 
-1. **Write the files.** Run `innert --export-models` to write every model here, or
-   `innert --export-models <folder>` to write them somewhere else. It takes about 10 seconds and
-   opens no window. `exported.txt` lists what was written.
+1. **Write the files.** They're all here already. Run `innert --export-models` to write them again,
+   for example after the code's changed, or `innert --export-models <folder>` to write them
+   somewhere else. It takes about 10 seconds and opens no window. `exported.txt` lists what was
+   written.
 
    You don't have to export everything. In the editor, pick something and press **Open in
    MagicaVoxel**. That writes just that piece, if it isn't here yet, and opens it.
@@ -30,9 +35,7 @@ running beside the editor, or MagicaVoxel, and what you save shows up in the gam
    moment, with no restart.
 3. **Undo an edit** by deleting the `.vox` file. The code's model comes back.
 
-Files left as they were exported are ignored: the game draws the code's model, so changes to the
-code still show. Only the files you've edited are drawn in its place, and leaving the rest here
-costs little at startup.
+Checking which files have been edited costs about 60 ms at startup.
 
 ### Colours are materials
 
@@ -70,6 +73,14 @@ grow a model in any direction and it still sits where it did. Keep the `.json` b
 | `serpent/<name>/head.vox`, `jaw.vox`, `body.vox` | A great serpent's head, jaw and the piece its body is made of. |
 | `wings/<kind>.vox` | A pair of wings, for example `wings/gull.vox`. It's the right wing; the left is its mirror. |
 | `weapons/<family>/<part>.vox` | One part of a weapon or tool. See the weapon parts section below. |
+| `ammo/<id>.vox` | Each kind of special ammo in flight, by its id in `assets/weapons.json`, for example `ammo/fire_arrows.vox`. |
+| `effects/<number>.vox` | The fighting's effects, numbered in the order the code makes them: arrows, bolts, shot, sparks, fireballs, smoke, pools, rings, the player's arms holding a weapon, and the rest. |
+| `dragon/fx/*.vox`, `avian/fx/*.vox` | What dragons breathe and leave burning, and what avians and gargoyles throw and break into. |
+| `wards/<number>.vox` | The wards round raid bosses. |
+| `wings/trail_<n>.vox` | The motes the elemental wings leave behind. |
+
+**Effects, wards, and the dragons' and avians' effects** keep the code's anchor. They can grow
+round it, but not below their bottom. Their `.json` doesn't know their real voxels per meter.
 
 **Creatures and monsters are baked into frames** (standing, walking, each attack pose), so only
 the standing frame is exported. Whatever you change in it is changed the same way in every other
@@ -82,6 +93,26 @@ other colours, so their pieces come from `boss/golem/`. Edit the golem and all t
 one of them files of its own and it's drawn from those instead. The same goes for dragons and baked
 creatures alike but for colour; for a baked creature, `<creature>/skins.json` lists which material
 becomes which.
+
+### Trees
+
+Trees aren't voxel models. They're shapes the world's generator grows from the world's seed. Two
+things about them can still be changed:
+
+- **`assets/trees.json`** holds the numbers the broad-leaved woods are grown from:
+  - how likely each kind is: broad, upright, spreading, birch, blossom, poplar, willow;
+  - how many are young, and how big young and grown ones are;
+  - each form's trunk height, limb spread and rise, sizes of its masses of leaves, flatness, trunk
+    thickness and taper, limbs, and where they fork;
+  - the crowns' and shrubs' leaf materials;
+  - how often crowns are in flower.
+
+  It ships with the code's numbers, so the world grows exactly as it did. Save it while the game
+  runs and the next strips of the world are grown from the new numbers.
+- **Hand-made trees.** Put `.vox` trees in `assets/models/trees/<land>/`, where `<land>` is `woods`,
+  `jungle`, `desert` or `snow`. Then raise that land's share in `hand_made` in `trees.json`, from
+  0 to 1. Each one stands on its middle, turned a quarter at random, at 16 voxels a meter. Every
+  share is 0 unless you raise it, so nothing changes until you do.
 
 ### Weapon parts
 

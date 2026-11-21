@@ -644,473 +644,511 @@ avian/fx/shard_1.vox: what avians throw and call down
 avian/fx/shard_2.vox: what avians throw and call down
 avian/fx/shard_3.vox: what avians throw and call down
 avian/fx/shard_4.vox: what avians throw and call down
-effects/000.vox: effect 0
-effects/001.vox: effect 1
-effects/002.vox: effect 2
-effects/003.vox: effect 3
-effects/004.vox: effect 4
-effects/005.vox: effect 5
-effects/006.vox: effect 6
-effects/007.vox: effect 7
-effects/008.vox: effect 8
-effects/009.vox: effect 9
-effects/010.vox: effect 10
-effects/011.vox: effect 11
-effects/012.vox: effect 12
-effects/013.vox: effect 13
-effects/014.vox: effect 14
-effects/015.vox: effect 15
-effects/016.vox: effect 16
-effects/017.vox: effect 17
-effects/018.vox: effect 18
-effects/019.vox: effect 19
-effects/020.vox: effect 20
-effects/021.vox: effect 21
-effects/022.vox: effect 22
-effects/023.vox: effect 23
-effects/024.vox: effect 24
-effects/025.vox: effect 25
-effects/026.vox: effect 26
-effects/027.vox: effect 27
-effects/028.vox: effect 28
-effects/029.vox: effect 29
-effects/030.vox: effect 30
-effects/031.vox: effect 31
-effects/032.vox: effect 32
-effects/033.vox: effect 33
-effects/034.vox: effect 34
-effects/035.vox: effect 35
-effects/036.vox: effect 36
-effects/037.vox: effect 37
-effects/038.vox: effect 38
-effects/039.vox: effect 39
-effects/040.vox: effect 40
-effects/041.vox: effect 41
-effects/042.vox: effect 42
-effects/043.vox: effect 43
-effects/044.vox: effect 44
-effects/045.vox: effect 45
-effects/046.vox: effect 46
-effects/047.vox: effect 47
-effects/048.vox: effect 48
-effects/049.vox: effect 49
-effects/050.vox: effect 50
-effects/051.vox: effect 51
-effects/052.vox: effect 52
-effects/053.vox: effect 53
-effects/054.vox: effect 54
-effects/055.vox: effect 55
-effects/056.vox: effect 56
-effects/057.vox: effect 57
-effects/058.vox: effect 58
-effects/059.vox: effect 59
-effects/060.vox: effect 60
-effects/061.vox: effect 61
-effects/062.vox: effect 62
-effects/063.vox: effect 63
-effects/064.vox: effect 64
-effects/065.vox: effect 65
-effects/066.vox: effect 66
-effects/067.vox: effect 67
-effects/068.vox: effect 68
-effects/069.vox: effect 69
-effects/070.vox: effect 70
-effects/071.vox: effect 71
-effects/072.vox: effect 72
-effects/073.vox: effect 73
-effects/074.vox: effect 74
-effects/075.vox: effect 75
-effects/076.vox: effect 76
-effects/077.vox: effect 77
-effects/078.vox: effect 78
-effects/079.vox: effect 79
-effects/080.vox: effect 80
-effects/081.vox: effect 81
-effects/082.vox: effect 82
-effects/083.vox: effect 83
-effects/084.vox: effect 84
-effects/085.vox: effect 85
-effects/086.vox: effect 86
-effects/087.vox: effect 87
-effects/088.vox: effect 88
-effects/089.vox: effect 89
-effects/090.vox: effect 90
-effects/091.vox: effect 91
-effects/092.vox: effect 92
-effects/093.vox: effect 93
-effects/094.vox: effect 94
-effects/095.vox: effect 95
-effects/096.vox: effect 96
-effects/097.vox: effect 97
-effects/098.vox: effect 98
-effects/099.vox: effect 99
-effects/100.vox: effect 100
-effects/101.vox: effect 101
-effects/102.vox: effect 102
-effects/103.vox: effect 103
-effects/104.vox: effect 104
-effects/105.vox: effect 105
-effects/106.vox: effect 106
-effects/107.vox: effect 107
-effects/108.vox: effect 108
-effects/109.vox: effect 109
-effects/110.vox: effect 110
-effects/111.vox: effect 111
-effects/112.vox: effect 112
-effects/113.vox: effect 113
-effects/114.vox: effect 114
-effects/115.vox: effect 115
-effects/116.vox: effect 116
-effects/117.vox: effect 117
-effects/118.vox: effect 118
-effects/119.vox: effect 119
-effects/120.vox: effect 120
-effects/121.vox: effect 121
-effects/122.vox: effect 122
-effects/123.vox: effect 123
-effects/124.vox: effect 124
-effects/125.vox: effect 125
-effects/126.vox: effect 126
-effects/127.vox: effect 127
-effects/128.vox: effect 128
-effects/129.vox: effect 129
-effects/130.vox: effect 130
-effects/131.vox: effect 131
-effects/132.vox: effect 132
-effects/133.vox: effect 133
-effects/134.vox: effect 134
-effects/135.vox: effect 135
-effects/136.vox: effect 136
-effects/137.vox: effect 137
-effects/138.vox: effect 138
-effects/139.vox: effect 139
-effects/140.vox: effect 140
-effects/141.vox: effect 141
-effects/142.vox: effect 142
-effects/143.vox: effect 143
-effects/144.vox: effect 144
-effects/145.vox: effect 145
-effects/146.vox: effect 146
-effects/147.vox: effect 147
-effects/148.vox: effect 148
-effects/149.vox: effect 149
-effects/150.vox: effect 150
-effects/151.vox: effect 151
-effects/152.vox: effect 152
-effects/153.vox: effect 153
-effects/154.vox: effect 154
-effects/155.vox: effect 155
-effects/156.vox: effect 156
-effects/157.vox: effect 157
-effects/158.vox: effect 158
-effects/159.vox: effect 159
-effects/160.vox: effect 160
-effects/161.vox: effect 161
-effects/162.vox: effect 162
-effects/163.vox: effect 163
-effects/164.vox: effect 164
-effects/165.vox: effect 165
-effects/166.vox: effect 166
-effects/167.vox: effect 167
-effects/168.vox: effect 168
-effects/169.vox: effect 169
-effects/170.vox: effect 170
-effects/171.vox: effect 171
-effects/172.vox: effect 172
-effects/173.vox: effect 173
-effects/174.vox: effect 174
-effects/175.vox: effect 175
-effects/176.vox: effect 176
-effects/177.vox: effect 177
-effects/178.vox: effect 178
-effects/179.vox: effect 179
-effects/180.vox: effect 180
-effects/181.vox: effect 181
-effects/182.vox: effect 182
-effects/183.vox: effect 183
-effects/184.vox: effect 184
-effects/185.vox: effect 185
-effects/186.vox: effect 186
-effects/187.vox: effect 187
-effects/188.vox: effect 188
-effects/189.vox: effect 189
-effects/190.vox: effect 190
-effects/191.vox: effect 191
-effects/192.vox: effect 192
-effects/193.vox: effect 193
-effects/194.vox: effect 194
-effects/195.vox: effect 195
-effects/196.vox: effect 196
-effects/197.vox: effect 197
-effects/198.vox: effect 198
-effects/199.vox: effect 199
-effects/200.vox: effect 200
-effects/201.vox: effect 201
-effects/202.vox: effect 202
-effects/203.vox: effect 203
-effects/204.vox: effect 204
-effects/205.vox: effect 205
-effects/206.vox: effect 206
-effects/207.vox: effect 207
-effects/208.vox: effect 208
-effects/209.vox: effect 209
-effects/210.vox: effect 210
-effects/211.vox: effect 211
-effects/212.vox: effect 212
-effects/213.vox: effect 213
-effects/214.vox: effect 214
-effects/215.vox: effect 215
-effects/216.vox: effect 216
-effects/217.vox: effect 217
-effects/218.vox: effect 218
-effects/219.vox: effect 219
-effects/220.vox: effect 220
-effects/221.vox: effect 221
-effects/222.vox: effect 222
-effects/223.vox: effect 223
-effects/224.vox: effect 224
-effects/225.vox: effect 225
-effects/226.vox: effect 226
-effects/227.vox: effect 227
-effects/228.vox: effect 228
-effects/229.vox: effect 229
-effects/230.vox: effect 230
-effects/231.vox: effect 231
-effects/232.vox: effect 232
-effects/233.vox: effect 233
-effects/234.vox: effect 234
-effects/235.vox: effect 235
-effects/236.vox: effect 236
-effects/237.vox: effect 237
-effects/238.vox: effect 238
-effects/239.vox: effect 239
-effects/240.vox: effect 240
-effects/241.vox: effect 241
-effects/242.vox: effect 242
-effects/243.vox: effect 243
-effects/244.vox: effect 244
-effects/245.vox: effect 245
-effects/246.vox: effect 246
-effects/247.vox: effect 247
-effects/248.vox: effect 248
-effects/249.vox: effect 249
-effects/250.vox: effect 250
-effects/251.vox: effect 251
-effects/252.vox: effect 252
-effects/253.vox: effect 253
-effects/254.vox: effect 254
-effects/255.vox: effect 255
-effects/256.vox: effect 256
-effects/257.vox: effect 257
-effects/258.vox: effect 258
-effects/259.vox: effect 259
-effects/260.vox: effect 260
-effects/261.vox: effect 261
-effects/262.vox: effect 262
-effects/263.vox: effect 263
-effects/264.vox: effect 264
-effects/265.vox: effect 265
-effects/266.vox: effect 266
-effects/267.vox: effect 267
-effects/268.vox: effect 268
-effects/269.vox: effect 269
-effects/270.vox: effect 270
-effects/271.vox: effect 271
-effects/272.vox: effect 272
-effects/273.vox: effect 273
-effects/274.vox: effect 274
-effects/275.vox: effect 275
-effects/276.vox: effect 276
-effects/277.vox: effect 277
-effects/278.vox: effect 278
-effects/279.vox: effect 279
-effects/280.vox: effect 280
-effects/281.vox: effect 281
-effects/282.vox: effect 282
-effects/283.vox: effect 283
-effects/284.vox: effect 284
-effects/285.vox: effect 285
-effects/286.vox: effect 286
-effects/287.vox: effect 287
-effects/288.vox: effect 288
-effects/289.vox: effect 289
-effects/290.vox: effect 290
-effects/291.vox: effect 291
-effects/292.vox: effect 292
-effects/293.vox: effect 293
-effects/294.vox: effect 294
-effects/295.vox: effect 295
-effects/296.vox: effect 296
-effects/297.vox: effect 297
-effects/298.vox: effect 298
-effects/299.vox: effect 299
-effects/300.vox: effect 300
-effects/301.vox: effect 301
-effects/302.vox: effect 302
-effects/303.vox: effect 303
-effects/304.vox: effect 304
-effects/305.vox: effect 305
-effects/306.vox: effect 306
-effects/307.vox: effect 307
-effects/308.vox: effect 308
-effects/309.vox: effect 309
-effects/310.vox: effect 310
-effects/311.vox: effect 311
-effects/312.vox: effect 312
-effects/313.vox: effect 313
-effects/314.vox: effect 314
-effects/315.vox: effect 315
-effects/316.vox: effect 316
-effects/317.vox: effect 317
-effects/318.vox: effect 318
-effects/319.vox: effect 319
-effects/320.vox: effect 320
-effects/321.vox: effect 321
-effects/322.vox: effect 322
-effects/323.vox: effect 323
-effects/324.vox: effect 324
-effects/325.vox: effect 325
-effects/326.vox: effect 326
-effects/327.vox: effect 327
-effects/328.vox: effect 328
-effects/329.vox: effect 329
-effects/330.vox: effect 330
-effects/331.vox: effect 331
-effects/332.vox: effect 332
-effects/333.vox: effect 333
-effects/334.vox: effect 334
-effects/335.vox: effect 335
-effects/336.vox: effect 336
-effects/337.vox: effect 337
-effects/338.vox: effect 338
-effects/339.vox: effect 339
-effects/340.vox: effect 340
-effects/341.vox: effect 341
-effects/342.vox: effect 342
-effects/343.vox: effect 343
-effects/344.vox: effect 344
-effects/345.vox: effect 345
-effects/346.vox: effect 346
-effects/347.vox: effect 347
-effects/348.vox: effect 348
-effects/349.vox: effect 349
-effects/350.vox: effect 350
-effects/351.vox: effect 351
-effects/352.vox: effect 352
-effects/353.vox: effect 353
-effects/354.vox: effect 354
-effects/355.vox: effect 355
-effects/356.vox: effect 356
-effects/357.vox: effect 357
-effects/358.vox: effect 358
-effects/359.vox: effect 359
-effects/360.vox: effect 360
-effects/361.vox: effect 361
-effects/362.vox: effect 362
-effects/363.vox: effect 363
-effects/364.vox: effect 364
-effects/365.vox: effect 365
-effects/366.vox: effect 366
-effects/367.vox: effect 367
-effects/368.vox: effect 368
-effects/369.vox: effect 369
-effects/370.vox: effect 370
-effects/371.vox: effect 371
-effects/372.vox: effect 372
-effects/373.vox: effect 373
-effects/374.vox: effect 374
-effects/375.vox: effect 375
-effects/376.vox: effect 376
-effects/377.vox: effect 377
-effects/378.vox: effect 378
-effects/379.vox: effect 379
-effects/380.vox: effect 380
-effects/381.vox: effect 381
-effects/382.vox: effect 382
-effects/383.vox: effect 383
-effects/384.vox: effect 384
-effects/385.vox: effect 385
-effects/386.vox: effect 386
-effects/387.vox: effect 387
-effects/388.vox: effect 388
-effects/389.vox: effect 389
-effects/390.vox: effect 390
-effects/391.vox: effect 391
-effects/392.vox: effect 392
-effects/393.vox: effect 393
-effects/394.vox: effect 394
-effects/395.vox: effect 395
-effects/396.vox: effect 396
-effects/397.vox: effect 397
-effects/398.vox: effect 398
-effects/399.vox: effect 399
-effects/400.vox: effect 400
-effects/401.vox: effect 401
-effects/402.vox: effect 402
-effects/403.vox: effect 403
-effects/404.vox: effect 404
-effects/405.vox: effect 405
-effects/406.vox: effect 406
-effects/407.vox: effect 407
-effects/408.vox: effect 408
-effects/409.vox: effect 409
-effects/410.vox: effect 410
-effects/411.vox: effect 411
-effects/412.vox: effect 412
-effects/413.vox: effect 413
-effects/414.vox: effect 414
-effects/415.vox: effect 415
-effects/416.vox: effect 416
-effects/417.vox: effect 417
-effects/418.vox: effect 418
-effects/419.vox: effect 419
-effects/420.vox: effect 420
-effects/421.vox: effect 421
-effects/422.vox: effect 422
-effects/423.vox: effect 423
-effects/424.vox: effect 424
-effects/425.vox: effect 425
-effects/426.vox: effect 426
-effects/427.vox: effect 427
-effects/428.vox: effect 428
-effects/429.vox: effect 429
-effects/430.vox: effect 430
-effects/431.vox: effect 431
-effects/432.vox: effect 432
-effects/433.vox: effect 433
-effects/434.vox: effect 434
-effects/435.vox: effect 435
-effects/436.vox: effect 436
-effects/437.vox: effect 437
-effects/438.vox: effect 438
-effects/439.vox: effect 439
-effects/440.vox: effect 440
-effects/441.vox: effect 441
-effects/442.vox: effect 442
-effects/443.vox: effect 443
-effects/444.vox: effect 444
-effects/445.vox: effect 445
-effects/446.vox: effect 446
-effects/447.vox: effect 447
-effects/448.vox: effect 448
-effects/449.vox: effect 449
-effects/450.vox: effect 450
-effects/451.vox: effect 451
-effects/452.vox: effect 452
-effects/453.vox: effect 453
-effects/454.vox: effect 454
-effects/455.vox: effect 455
-effects/456.vox: effect 456
-effects/457.vox: effect 457
-effects/458.vox: effect 458
-effects/459.vox: effect 459
-effects/460.vox: effect 460
-effects/461.vox: effect 461
-effects/462.vox: effect 462
-effects/463.vox: effect 463
-effects/464.vox: effect 464
-effects/465.vox: effect 465
-effects/466.vox: effect 466
+effects/000.vox: an effect of fighting
+effects/001.vox: an effect of fighting
+effects/002.vox: an effect of fighting
+effects/003.vox: an effect of fighting
+effects/004.vox: an effect of fighting
+effects/005.vox: an effect of fighting
+effects/006.vox: an effect of fighting
+effects/007.vox: an effect of fighting
+effects/008.vox: an effect of fighting
+effects/009.vox: an effect of fighting
+effects/010.vox: an effect of fighting
+effects/011.vox: an effect of fighting
+effects/012.vox: an effect of fighting
+effects/013.vox: an effect of fighting
+effects/014.vox: an effect of fighting
+effects/015.vox: an effect of fighting
+effects/016.vox: an effect of fighting
+effects/017.vox: an effect of fighting
+effects/018.vox: an effect of fighting
+effects/019.vox: an effect of fighting
+effects/020.vox: an effect of fighting
+effects/021.vox: an effect of fighting
+effects/022.vox: an effect of fighting
+effects/023.vox: an effect of fighting
+effects/024.vox: an effect of fighting
+effects/025.vox: an effect of fighting
+effects/026.vox: an effect of fighting
+effects/027.vox: an effect of fighting
+effects/028.vox: an effect of fighting
+effects/029.vox: an effect of fighting
+effects/030.vox: an effect of fighting
+effects/031.vox: an effect of fighting
+effects/032.vox: an effect of fighting
+effects/033.vox: an effect of fighting
+effects/034.vox: an effect of fighting
+effects/035.vox: an effect of fighting
+effects/036.vox: an effect of fighting
+effects/037.vox: an effect of fighting
+effects/038.vox: an effect of fighting
+effects/039.vox: an effect of fighting
+effects/040.vox: an effect of fighting
+effects/041.vox: an effect of fighting
+effects/042.vox: an effect of fighting
+effects/043.vox: an effect of fighting
+effects/044.vox: an effect of fighting
+effects/045.vox: an effect of fighting
+effects/046.vox: an effect of fighting
+effects/047.vox: an effect of fighting
+effects/048.vox: an effect of fighting
+effects/049.vox: an effect of fighting
+effects/050.vox: an effect of fighting
+effects/051.vox: an effect of fighting
+effects/052.vox: an effect of fighting
+effects/053.vox: an effect of fighting
+effects/054.vox: an effect of fighting
+effects/055.vox: an effect of fighting
+effects/056.vox: an effect of fighting
+effects/057.vox: an effect of fighting
+effects/058.vox: an effect of fighting
+effects/059.vox: an effect of fighting
+effects/060.vox: an effect of fighting
+effects/061.vox: an effect of fighting
+effects/062.vox: an effect of fighting
+effects/063.vox: an effect of fighting
+effects/064.vox: an effect of fighting
+effects/065.vox: an effect of fighting
+effects/066.vox: an effect of fighting
+effects/067.vox: an effect of fighting
+effects/068.vox: an effect of fighting
+effects/069.vox: an effect of fighting
+effects/070.vox: an effect of fighting
+effects/071.vox: an effect of fighting
+effects/072.vox: an effect of fighting
+effects/073.vox: an effect of fighting
+effects/074.vox: an effect of fighting
+effects/075.vox: an effect of fighting
+effects/076.vox: an effect of fighting
+effects/077.vox: an effect of fighting
+effects/078.vox: an effect of fighting
+effects/079.vox: an effect of fighting
+effects/080.vox: an effect of fighting
+effects/081.vox: an effect of fighting
+effects/082.vox: an effect of fighting
+effects/083.vox: an effect of fighting
+effects/084.vox: an effect of fighting
+effects/085.vox: an effect of fighting
+effects/086.vox: an effect of fighting
+effects/087.vox: an effect of fighting
+effects/088.vox: an effect of fighting
+effects/089.vox: an effect of fighting
+effects/090.vox: an effect of fighting
+effects/091.vox: an effect of fighting
+effects/092.vox: an effect of fighting
+effects/093.vox: an effect of fighting
+effects/094.vox: an effect of fighting
+effects/095.vox: an effect of fighting
+effects/096.vox: an effect of fighting
+effects/097.vox: an effect of fighting
+effects/098.vox: an effect of fighting
+effects/099.vox: an effect of fighting
+effects/100.vox: an effect of fighting
+effects/101.vox: an effect of fighting
+effects/102.vox: an effect of fighting
+effects/103.vox: an effect of fighting
+effects/104.vox: an effect of fighting
+effects/105.vox: an effect of fighting
+effects/106.vox: an effect of fighting
+effects/107.vox: an effect of fighting
+effects/108.vox: an effect of fighting
+effects/109.vox: an effect of fighting
+effects/110.vox: an effect of fighting
+effects/111.vox: an effect of fighting
+effects/112.vox: an effect of fighting
+effects/113.vox: an effect of fighting
+effects/114.vox: an effect of fighting
+effects/115.vox: an effect of fighting
+effects/116.vox: an effect of fighting
+effects/117.vox: an effect of fighting
+effects/118.vox: an effect of fighting
+effects/119.vox: an effect of fighting
+effects/120.vox: an effect of fighting
+effects/121.vox: an effect of fighting
+effects/122.vox: an effect of fighting
+effects/123.vox: an effect of fighting
+effects/124.vox: an effect of fighting
+effects/125.vox: an effect of fighting
+effects/126.vox: an effect of fighting
+effects/127.vox: an effect of fighting
+effects/128.vox: an effect of fighting
+effects/129.vox: an effect of fighting
+effects/130.vox: an effect of fighting
+effects/131.vox: an effect of fighting
+effects/132.vox: an effect of fighting
+effects/133.vox: an effect of fighting
+effects/134.vox: an effect of fighting
+effects/135.vox: an effect of fighting
+effects/136.vox: an effect of fighting
+effects/137.vox: an effect of fighting
+effects/138.vox: an effect of fighting
+effects/139.vox: an effect of fighting
+effects/140.vox: an effect of fighting
+effects/141.vox: an effect of fighting
+effects/142.vox: an effect of fighting
+effects/143.vox: an effect of fighting
+effects/144.vox: an effect of fighting
+effects/145.vox: an effect of fighting
+effects/146.vox: an effect of fighting
+effects/147.vox: an effect of fighting
+effects/148.vox: an effect of fighting
+effects/149.vox: an effect of fighting
+effects/150.vox: an effect of fighting
+effects/151.vox: an effect of fighting
+effects/152.vox: an effect of fighting
+effects/153.vox: an effect of fighting
+effects/154.vox: an effect of fighting
+effects/155.vox: an effect of fighting
+effects/156.vox: an effect of fighting
+effects/157.vox: an effect of fighting
+effects/158.vox: an effect of fighting
+effects/159.vox: an effect of fighting
+effects/160.vox: an effect of fighting
+effects/161.vox: an effect of fighting
+effects/162.vox: an effect of fighting
+effects/163.vox: an effect of fighting
+effects/164.vox: an effect of fighting
+effects/165.vox: an effect of fighting
+effects/166.vox: an effect of fighting
+effects/167.vox: an effect of fighting
+effects/168.vox: an effect of fighting
+effects/169.vox: an effect of fighting
+effects/170.vox: an effect of fighting
+effects/171.vox: an effect of fighting
+effects/172.vox: an effect of fighting
+effects/173.vox: an effect of fighting
+effects/174.vox: an effect of fighting
+effects/175.vox: an effect of fighting
+effects/176.vox: an effect of fighting
+effects/177.vox: an effect of fighting
+effects/178.vox: an effect of fighting
+effects/179.vox: an effect of fighting
+effects/180.vox: an effect of fighting
+effects/181.vox: an effect of fighting
+effects/182.vox: an effect of fighting
+effects/183.vox: an effect of fighting
+effects/184.vox: an effect of fighting
+effects/185.vox: an effect of fighting
+effects/186.vox: an effect of fighting
+effects/187.vox: an effect of fighting
+effects/188.vox: an effect of fighting
+effects/189.vox: an effect of fighting
+effects/190.vox: an effect of fighting
+effects/191.vox: an effect of fighting
+effects/192.vox: an effect of fighting
+effects/193.vox: an effect of fighting
+effects/194.vox: an effect of fighting
+effects/195.vox: an effect of fighting
+effects/196.vox: an effect of fighting
+effects/197.vox: an effect of fighting
+effects/198.vox: an effect of fighting
+effects/199.vox: an effect of fighting
+effects/200.vox: an effect of fighting
+effects/201.vox: an effect of fighting
+effects/202.vox: an effect of fighting
+effects/203.vox: an effect of fighting
+effects/204.vox: an effect of fighting
+effects/205.vox: an effect of fighting
+effects/206.vox: an effect of fighting
+effects/207.vox: an effect of fighting
+effects/208.vox: an effect of fighting
+effects/209.vox: an effect of fighting
+effects/210.vox: an effect of fighting
+effects/211.vox: an effect of fighting
+effects/212.vox: an effect of fighting
+effects/213.vox: an effect of fighting
+effects/214.vox: an effect of fighting
+effects/215.vox: an effect of fighting
+effects/216.vox: an effect of fighting
+effects/217.vox: an effect of fighting
+effects/218.vox: an effect of fighting
+effects/219.vox: an effect of fighting
+effects/220.vox: an effect of fighting
+effects/221.vox: an effect of fighting
+effects/222.vox: an effect of fighting
+effects/223.vox: an effect of fighting
+effects/224.vox: an effect of fighting
+effects/225.vox: an effect of fighting
+effects/226.vox: an effect of fighting
+effects/227.vox: an effect of fighting
+effects/228.vox: an effect of fighting
+effects/229.vox: an effect of fighting
+effects/230.vox: an effect of fighting
+effects/231.vox: an effect of fighting
+effects/232.vox: an effect of fighting
+effects/233.vox: an effect of fighting
+effects/234.vox: an effect of fighting
+effects/235.vox: an effect of fighting
+effects/236.vox: an effect of fighting
+effects/237.vox: an effect of fighting
+effects/238.vox: an effect of fighting
+effects/239.vox: an effect of fighting
+effects/240.vox: an effect of fighting
+effects/241.vox: an effect of fighting
+effects/242.vox: an effect of fighting
+effects/243.vox: an effect of fighting
+effects/244.vox: an effect of fighting
+effects/245.vox: an effect of fighting
+effects/246.vox: an effect of fighting
+effects/247.vox: an effect of fighting
+effects/248.vox: an effect of fighting
+effects/249.vox: an effect of fighting
+effects/250.vox: an effect of fighting
+effects/251.vox: an effect of fighting
+effects/252.vox: an effect of fighting
+effects/253.vox: an effect of fighting
+effects/254.vox: an effect of fighting
+effects/255.vox: an effect of fighting
+effects/256.vox: an effect of fighting
+effects/257.vox: an effect of fighting
+effects/258.vox: an effect of fighting
+effects/259.vox: an effect of fighting
+effects/260.vox: an effect of fighting
+effects/261.vox: an effect of fighting
+effects/262.vox: an effect of fighting
+effects/263.vox: an effect of fighting
+effects/264.vox: an effect of fighting
+effects/265.vox: an effect of fighting
+effects/266.vox: an effect of fighting
+effects/267.vox: an effect of fighting
+effects/268.vox: an effect of fighting
+effects/269.vox: an effect of fighting
+effects/270.vox: an effect of fighting
+effects/271.vox: an effect of fighting
+effects/272.vox: an effect of fighting
+effects/273.vox: an effect of fighting
+effects/274.vox: an effect of fighting
+effects/275.vox: an effect of fighting
+effects/276.vox: an effect of fighting
+effects/277.vox: an effect of fighting
+effects/278.vox: an effect of fighting
+effects/279.vox: an effect of fighting
+effects/280.vox: an effect of fighting
+effects/281.vox: an effect of fighting
+effects/282.vox: an effect of fighting
+effects/283.vox: an effect of fighting
+effects/284.vox: an effect of fighting
+effects/285.vox: an effect of fighting
+effects/286.vox: an effect of fighting
+effects/287.vox: an effect of fighting
+effects/288.vox: an effect of fighting
+effects/289.vox: an effect of fighting
+effects/290.vox: an effect of fighting
+effects/291.vox: an effect of fighting
+effects/292.vox: an effect of fighting
+effects/293.vox: an effect of fighting
+effects/294.vox: an effect of fighting
+effects/295.vox: an effect of fighting
+effects/296.vox: an effect of fighting
+effects/297.vox: an effect of fighting
+effects/298.vox: an effect of fighting
+effects/299.vox: an effect of fighting
+effects/300.vox: an effect of fighting
+effects/301.vox: an effect of fighting
+effects/302.vox: an effect of fighting
+effects/303.vox: an effect of fighting
+effects/304.vox: an effect of fighting
+effects/305.vox: an effect of fighting
+effects/306.vox: an effect of fighting
+effects/307.vox: an effect of fighting
+effects/308.vox: an effect of fighting
+effects/309.vox: an effect of fighting
+effects/310.vox: an effect of fighting
+effects/311.vox: an effect of fighting
+effects/312.vox: an effect of fighting
+effects/313.vox: an effect of fighting
+effects/314.vox: an effect of fighting
+effects/315.vox: an effect of fighting
+effects/316.vox: an effect of fighting
+effects/317.vox: an effect of fighting
+effects/318.vox: an effect of fighting
+effects/319.vox: an effect of fighting
+effects/320.vox: an effect of fighting
+effects/321.vox: an effect of fighting
+effects/322.vox: an effect of fighting
+effects/323.vox: an effect of fighting
+effects/324.vox: an effect of fighting
+effects/325.vox: an effect of fighting
+effects/326.vox: an effect of fighting
+effects/327.vox: an effect of fighting
+effects/328.vox: an effect of fighting
+effects/329.vox: an effect of fighting
+effects/330.vox: an effect of fighting
+effects/331.vox: an effect of fighting
+effects/332.vox: an effect of fighting
+effects/333.vox: an effect of fighting
+effects/334.vox: an effect of fighting
+effects/335.vox: an effect of fighting
+effects/336.vox: an effect of fighting
+effects/337.vox: an effect of fighting
+effects/338.vox: an effect of fighting
+effects/339.vox: an effect of fighting
+effects/340.vox: an effect of fighting
+effects/341.vox: an effect of fighting
+effects/342.vox: an effect of fighting
+effects/343.vox: an effect of fighting
+effects/344.vox: an effect of fighting
+effects/345.vox: an effect of fighting
+effects/346.vox: an effect of fighting
+effects/347.vox: an effect of fighting
+effects/348.vox: an effect of fighting
+effects/349.vox: an effect of fighting
+effects/350.vox: an effect of fighting
+effects/351.vox: an effect of fighting
+effects/352.vox: an effect of fighting
+effects/353.vox: an effect of fighting
+effects/354.vox: an effect of fighting
+effects/355.vox: an effect of fighting
+effects/356.vox: an effect of fighting
+effects/357.vox: an effect of fighting
+effects/358.vox: an effect of fighting
+effects/359.vox: an effect of fighting
+effects/360.vox: an effect of fighting
+effects/361.vox: an effect of fighting
+effects/362.vox: an effect of fighting
+effects/363.vox: an effect of fighting
+effects/364.vox: an effect of fighting
+effects/365.vox: an effect of fighting
+effects/366.vox: an effect of fighting
+effects/367.vox: an effect of fighting
+effects/368.vox: an effect of fighting
+effects/369.vox: an effect of fighting
+effects/370.vox: an effect of fighting
+effects/371.vox: an effect of fighting
+effects/372.vox: an effect of fighting
+effects/373.vox: an effect of fighting
+effects/374.vox: an effect of fighting
+effects/375.vox: an effect of fighting
+effects/376.vox: an effect of fighting
+effects/377.vox: an effect of fighting
+effects/378.vox: an effect of fighting
+effects/379.vox: an effect of fighting
+effects/380.vox: an effect of fighting
+effects/381.vox: an effect of fighting
+effects/382.vox: an effect of fighting
+effects/383.vox: an effect of fighting
+effects/384.vox: an effect of fighting
+effects/385.vox: an effect of fighting
+effects/386.vox: an effect of fighting
+effects/387.vox: an effect of fighting
+effects/388.vox: an effect of fighting
+effects/389.vox: an effect of fighting
+effects/390.vox: an effect of fighting
+effects/391.vox: an effect of fighting
+effects/392.vox: an effect of fighting
+effects/393.vox: an effect of fighting
+effects/394.vox: an effect of fighting
+effects/395.vox: an effect of fighting
+effects/396.vox: an effect of fighting
+effects/397.vox: an effect of fighting
+effects/398.vox: an effect of fighting
+effects/399.vox: an effect of fighting
+effects/400.vox: an effect of fighting
+effects/401.vox: an effect of fighting
+effects/402.vox: an effect of fighting
+effects/403.vox: an effect of fighting
+effects/404.vox: an effect of fighting
+effects/405.vox: an effect of fighting
+effects/406.vox: an effect of fighting
+effects/407.vox: an effect of fighting
+effects/408.vox: an effect of fighting
+effects/409.vox: an effect of fighting
+effects/410.vox: an effect of fighting
+effects/411.vox: an effect of fighting
+effects/412.vox: an effect of fighting
+effects/413.vox: an effect of fighting
+effects/414.vox: an effect of fighting
+effects/415.vox: an effect of fighting
+effects/416.vox: an effect of fighting
+effects/417.vox: an effect of fighting
+effects/418.vox: an effect of fighting
+effects/419.vox: an effect of fighting
+effects/420.vox: an effect of fighting
+effects/421.vox: an effect of fighting
+effects/422.vox: an effect of fighting
+effects/423.vox: an effect of fighting
+effects/424.vox: an effect of fighting
+effects/425.vox: an effect of fighting
+effects/426.vox: an effect of fighting
+effects/427.vox: an effect of fighting
+effects/428.vox: an effect of fighting
+effects/429.vox: an effect of fighting
+effects/430.vox: an effect of fighting
+effects/431.vox: an effect of fighting
+effects/432.vox: an effect of fighting
+effects/433.vox: an effect of fighting
+effects/434.vox: an effect of fighting
+effects/435.vox: an effect of fighting
+effects/436.vox: an effect of fighting
+effects/437.vox: an effect of fighting
+effects/438.vox: an effect of fighting
+effects/439.vox: an effect of fighting
+effects/440.vox: an effect of fighting
+effects/441.vox: an effect of fighting
+effects/442.vox: an effect of fighting
+effects/443.vox: an effect of fighting
+effects/444.vox: an effect of fighting
+effects/445.vox: an effect of fighting
+effects/446.vox: an effect of fighting
+effects/447.vox: an effect of fighting
+effects/448.vox: an effect of fighting
+effects/449.vox: an effect of fighting
+effects/450.vox: an effect of fighting
+effects/451.vox: an effect of fighting
+effects/452.vox: an effect of fighting
+effects/453.vox: an effect of fighting
+effects/454.vox: an effect of fighting
+effects/455.vox: an effect of fighting
+effects/456.vox: an effect of fighting
+effects/457.vox: an effect of fighting
+effects/458.vox: an effect of fighting
+effects/459.vox: an effect of fighting
+effects/460.vox: an effect of fighting
+effects/461.vox: an effect of fighting
+effects/462.vox: an effect of fighting
+effects/463.vox: an effect of fighting
+effects/464.vox: an effect of fighting
+effects/465.vox: an effect of fighting
+effects/466.vox: an effect of fighting
+ammo/broadhead_arrows.vox: special ammo in flight
+ammo/fire_arrows.vox: special ammo in flight
+ammo/frost_arrows.vox: special ammo in flight
+ammo/venom_arrows.vox: special ammo in flight
+ammo/blast_arrows.vox: special ammo in flight
+ammo/bodkin_arrows.vox: special ammo in flight
+ammo/seeker_arrows.vox: special ammo in flight
+ammo/splash_arrows.vox: special ammo in flight
+ammo/vortex_arrows.vox: special ammo in flight
+ammo/miasma_arrows.vox: special ammo in flight
+ammo/barbed_bolts.vox: special ammo in flight
+ammo/incendiary_bolts.vox: special ammo in flight
+ammo/rime_bolts.vox: special ammo in flight
+ammo/venom_bolts.vox: special ammo in flight
+ammo/storm_bolts.vox: special ammo in flight
+ammo/bursting_bolts.vox: special ammo in flight
+ammo/piercing_bolts.vox: special ammo in flight
+ammo/blunt_bolts.vox: special ammo in flight
+ammo/crescent_bolts.vox: special ammo in flight
+ammo/net_bolts.vox: special ammo in flight
+ammo/glancing_bolts.vox: special ammo in flight
+ammo/splitting_bolts.vox: special ammo in flight
+ammo/seeker_bolts.vox: special ammo in flight
+ammo/void_bolts.vox: special ammo in flight
+ammo/bloodletter_bolts.vox: special ammo in flight
+ammo/sunsteel_bolts.vox: special ammo in flight
+ammo/brimstone_bolts.vox: special ammo in flight
+ammo/thunderclap_bolts.vox: special ammo in flight
+ammo/scatter_shot.vox: special ammo in flight
+ammo/jagged_shot.vox: special ammo in flight
+ammo/ember_shot.vox: special ammo in flight
+ammo/rime_shot.vox: special ammo in flight
+ammo/venom_shot.vox: special ammo in flight
+ammo/bursting_shot.vox: special ammo in flight
+ammo/steel_slugs.vox: special ammo in flight
+ammo/skipping_shot.vox: special ammo in flight
+ammo/cluster_shot.vox: special ammo in flight
+ammo/miasma_shot.vox: special ammo in flight
 wards/00.vox: ward 0
 wards/01.vox: ward 1
 wings/trail_1.vox: a mote of a wing's trail
