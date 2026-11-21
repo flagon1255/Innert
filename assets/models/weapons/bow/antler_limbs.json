@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Antler Limbs",
+  "voxels_per_meter": 160.0,
+  "size": [
+    23,
+    8,
+    204
+  ],
+  "pivot": [
+    19.316281179138322,
+    3.84,
+    2.0057142857142747
+  ],
+  "anchor": null,
+  "origin": [
+    -19,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.625
+    ],
+    "nock_1": [
+      -0.049999999999999975,
+      0.0,
+      0.655
+    ],
+    "nock_2": [
+      -0.18499999999999997,
+      0.0,
+      0.655
+    ],
+    "nock_3": [
+      -0.31999999999999995,
+      0.0,
+      0.655
+    ],
+    "tip": [
+      -0.049999999999999975,
+      0.0,
+      0.655
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    16962,
+    "7d488ac14b9e8964"
+  ]
+}

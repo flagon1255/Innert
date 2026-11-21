@@ -1577,6 +1577,11 @@ impl Part {
         Part { a: self.a.map(|v| v * s), b: self.b.map(|v| v * s), ra: self.ra * s, rb: self.rb * s, ..*self }
     }
 
+    /// Moved `by`, as it is
+    pub fn moved(&self, by: Vec3) -> Part {
+        Part { a: [0, 1, 2].map(|i| self.a[i] + by[i]), b: [0, 1, 2].map(|i| self.b[i] + by[i]), ..*self }
+    }
+
     /// Squashed or stretched around its middle, `stretch` times as big along each axis
     pub fn stretched(mut self, stretch: Vec3) -> Self {
         self.stretch = [0, 1, 2].map(|i| self.stretch[i] * stretch[i]);

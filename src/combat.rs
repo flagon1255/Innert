@@ -2587,7 +2587,7 @@ fn moves_kind(profile: &Profile) -> Kind {
 /// different way, a whip's, a flail's and a maul's three
 fn finisher(style: Style) -> u8 {
     match style {
-        Style::Slash | Style::Chop | Style::Smash | Style::Stab | Style::Thrust | Style::Reap => FINISHER + 1,
+        Style::Slash | Style::Chop | Style::Smash | Style::Stab | Style::Thrust | Style::Reap | Style::Fan | Style::Punch | Style::Pole => FINISHER + 1,
         _ => FINISHER,
     }
 }
@@ -2640,7 +2640,24 @@ fn finish_timing(finish: Finish) -> (f64, f64) {
         Finish::Rising => (0.34, 0.48),
         Finish::Spin => (0.36, 0.5),
         Finish::Slam | Finish::Style => (0.4, 0.54),
+        Finish::Cross => (0.3, 0.42),
     }
+}
+
+/// When a crossing finisher's second cut lands, as a part of the blow timed as finish_timing()
+/// has it, see Finish::Cross
+const CROSS_SECOND: f64 = 0.62;
+
+/// When the second cut of a blow of the weapon with `profile` lands, as a part of the whole swing,
+/// for a blow that cuts twice: a finisher going Finish::Cross's way, retimed for how heavy it
+/// swings as the rest of the blow is, see weighted_keys()
+fn second_cut(profile: &Profile, heavy: bool, combo: u8) -> Option<f64> {
+    let style = moves_like(profile.style);
+    if profile.finish != Finish::Cross || !finishes_own_way(style, profile.finish, heavy, combo) {
+        return None;
+    }
+    let timing = finish_timing(Finish::Cross);
+    Some(retimed(CROSS_SECOND, timing, weighted(timing, weight(profile))))
 }
 
 /// The poses of a finisher that goes `finish`'s way rather than as its weapon's style has it,
@@ -2686,6 +2703,25 @@ fn finish_keys(finish: Finish) -> Vec<(f64, Pose, bool)> {
                 (lands + 0.12, left, false),
                 (lands + 0.22, pose([-0.68, 0.12, -0.34], [-0.85, -0.45, 0.1], [0.4, -1.0, 0.0]), false),
                 (lands + 0.23, pose([0.36, 0.3, -0.66], [0.0, 0.5, -0.85], [1.0, 0.0, 0.0]), false),
+            ]
+        }
+        // Wound up high on the right and cut down across to low on the left, the wrist turned
+        // there, and cut straight back up across to high on the right, the edge leading both ways
+        Finish::Cross => {
+            let wound = pose([0.3, 0.34, -0.02], [0.45, 0.2, 0.87], [-0.85, 0.2, 0.45]);
+            let down = pose([0.06, 0.58, -0.24], [-0.25, 0.95, 0.05], [-0.72, -0.05, -0.7]);
+            let low = pose([-0.12, 0.5, -0.38], [-0.78, 0.5, -0.32], [0.35, -0.1, -0.93]);
+            let up = pose([0.18, 0.6, -0.14], [0.3, 0.92, 0.25], [0.15, -0.35, 0.92]);
+            vec![
+                (comes * 0.5, pose([0.28, 0.38, -0.12], [0.3, 0.35, 0.88], [-0.9, 0.2, 0.35]), false),
+                (comes, wound.clone(), false),
+                (midway, through(&wound, &down, 0.5, [0.0, 0.06, 0.03]), false),
+                (lands, down, true),
+                (lands + 0.08, low.clone(), false),
+                (CROSS_SECOND - 0.06, through(&low, &up, 0.45, [0.0, 0.05, -0.04]), false),
+                (CROSS_SECOND, up, true),
+                (CROSS_SECOND + 0.12, pose([0.36, 0.48, 0.04], [0.6, 0.4, 0.7], [0.0, -0.85, 0.52]), false),
+                (CROSS_SECOND + 0.24, pose([0.36, 0.46, -0.04], [0.62, 0.34, 0.7], [0.0, -0.9, 0.44]), false),
             ]
         }
         // Raised high and brought straight down, driving on into what it hits
@@ -2967,6 +3003,9 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Stab => (0.28, 0.42),
             Style::Thrust => (0.3, 0.45),
             Style::Smash => (0.34, 0.5),
+            Style::Fan => (0.24, 0.38),
+            Style::Punch => (0.2, 0.32),
+            Style::Pole => (0.28, 0.42),
             _ => (0.32, 0.48),
         };
     }
@@ -2976,6 +3015,9 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Smash => (0.45, 0.6),
             Style::Stab => (0.35, 0.5),
             Style::Thrust => (0.3, 0.47),
+            // A fan's and a naginata's spun right round, as Finish::Spin's, a katar's uppercut
+            Style::Fan | Style::Pole => finish_timing(Finish::Spin),
+            Style::Punch => (0.3, 0.45),
             // Time for the lash to go round in a loop overhead first
             Style::Lash => (0.5, 0.6),
             Style::Whirl => (0.3, 0.5),
@@ -2994,6 +3036,13 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
         (Style::Smash, false) => (0.4, 0.58),
         (Style::Smash, true) => (0.45, 0.6),
         (Style::Chop | Style::Reap, false) => (0.3, 0.47),
+        // A fan snapped out quick, a katar's jab quicker, a naginata's sweep long
+        (Style::Fan, false) => (0.22, 0.36),
+        (Style::Punch, false) => (0.2, 0.32),
+        (Style::Punch, true) => (0.46, 0.55),
+        (Style::Pole, false) => (0.3, 0.46),
+        // As Heavy::Sweep's, which it swings, see newer_swing()
+        (Style::Pole, true) => (0.4, 0.55),
         (_, true) => (0.4, 0.52),
         _ => (0.3, 0.45),
     }
@@ -3008,6 +3057,9 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
     }
     if style == Style::Whirl {
         return whirl_keys(heavy, combo);
+    }
+    if matches!(style, Style::Fan | Style::Punch | Style::Pole) {
+        return newer_swing(style, heavy, combo);
     }
     let (comes, lands) = timing(style, heavy, combo);
     let flip = combo == 1;
@@ -3203,6 +3255,166 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
             keys
         }
         _ => overhead(),
+    }
+}
+
+/// A blow wound up at `wound`, struck through `strike` at `lands` speeding up into it, carried on
+/// to `end` and slowing to `after`: an arc pushed out by `push` on the way in, so it sweeps rather
+/// than cutting straight across, its in-between key reached at `midway`
+fn arc_keys(comes: f64, lands: f64, wound: Pose, push: [f64; 3], strike: Pose, end: Pose, after: Pose) -> Vec<(f64, Pose, bool)> {
+    let midway = comes + 0.55 * (lands - comes);
+    vec![(comes, wound.clone(), false), (midway, through(&wound, &strike, 0.5, push), false), (lands, strike, true), (lands + 0.12, end, false), (lands + 0.24, after, false)]
+}
+
+/// The swings of the second batch's families, for swing(): a war fan's, a katar's and a
+/// naginata's, each its own four-blow chain and heavy blow
+fn newer_swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
+    let (comes, lands) = timing(style, heavy, combo);
+    let last = combo == finisher(style) && !heavy;
+    // The weapon's own way of winding up a moment before each blow, the anticipation, put in
+    // ahead of the wound-up key
+    let gather = |p: &Pose, by: [f64; 3]| {
+        let mut g = p.clone();
+        g.hand += Vector3::from(by);
+        g
+    };
+    match style {
+        // A war fan: held open, flat, swept wide across at the chest one way then back the other,
+        // flicked up from low on the left, then spun right round; its heavy blow raised high and
+        // swept down round in front in a great circle
+        Style::Fan => {
+            if heavy {
+                let raised = pose([0.2, 0.36, 0.04], [0.2, 0.3, 0.93], [-1.0, 0.0, 0.2]);
+                let struck = pose([0.04, 0.62, -0.26], [-0.1, 0.9, -0.4], [-1.0, 0.0, -0.2]);
+                return vec![
+                    (comes * 0.4, pose([0.32, 0.4, -0.18], [0.5, 0.3, 0.8], [-0.8, 0.0, 0.5]), false),
+                    (comes, raised.clone(), false),
+                    (comes + 0.55 * (lands - comes), through(&raised, &struck, 0.5, [0.06, 0.06, 0.06]), false),
+                    (lands, struck, true),
+                    (lands + 0.12, pose([-0.24, 0.48, -0.34], [-0.8, 0.3, -0.5], [-0.5, 0.0, 0.86]), false),
+                    (lands + 0.26, pose([-0.2, 0.46, -0.3], [-0.7, 0.4, 0.2], [-0.3, 0.2, 0.93]), false),
+                ];
+            }
+            if last {
+                return finish_keys(Finish::Spin);
+            }
+            let sweep = |back: bool| {
+                let flip = |p: Pose| if back { mirrored(&p) } else { p };
+                let wound = flip(pose([0.36, 0.42, -0.2], [0.75, 0.55, 0.1], [-0.55, 0.75, 0.0]));
+                let mut keys = vec![(comes * 0.5, flip(gather(&pose([0.36, 0.42, -0.2], [0.75, 0.55, 0.1], [-0.55, 0.75, 0.0]), [0.04, -0.03, 0.02])), false)];
+                keys.extend(arc_keys(
+                    comes,
+                    lands,
+                    wound,
+                    if back { [-0.03, 0.06, 0.0] } else { [0.03, 0.06, 0.0] },
+                    flip(pose([0.08, 0.6, -0.22], [0.05, 1.0, 0.05], [-1.0, 0.05, 0.0])),
+                    flip(pose([-0.25, 0.5, -0.24], [-0.8, 0.55, 0.0], [-0.55, -0.8, 0.0])),
+                    flip(pose([-0.3, 0.45, -0.26], [-0.9, 0.4, -0.1], [-0.4, -0.9, 0.0])),
+                ));
+                keys
+            };
+            match combo {
+                1 => sweep(true),
+                2 => arc_keys(
+                    comes,
+                    lands,
+                    pose([-0.04, 0.38, -0.44], [-0.5, 0.5, -0.7], [0.2, 0.8, -0.5]),
+                    [0.0, 0.06, -0.04],
+                    pose([0.12, 0.62, -0.16], [0.15, 0.85, 0.5], [0.0, -0.5, 0.86]),
+                    pose([0.32, 0.5, 0.02], [0.5, 0.45, 0.74], [0.0, -0.85, 0.52]),
+                    pose([0.34, 0.46, -0.04], [0.55, 0.38, 0.74], [0.0, -0.88, 0.48]),
+                ),
+                _ => sweep(false),
+            }
+        }
+        // A katar: a straight jab from the shoulder, a hook round from the right, a jab low to the
+        // body, and an uppercut driven up from the hip to finish; its heavy blow a lunge, the
+        // family's, see heavy_keys()
+        Style::Punch => {
+            let jab = |chamber: Pose, full: Pose| {
+                let towards = (chamber.hand - full.hand) * 0.12;
+                let mut keys = vec![(comes * 0.5, gather(&chamber, [0.02, -0.04, -0.01]), false), (comes, chamber, false)];
+                keys.extend(lunge_keys(lands, full, 0.12, [towards.x, towards.y, towards.z]));
+                keys
+            };
+            if heavy {
+                return heavy_keys(style, Heavy::Lunge);
+            }
+            if last {
+                let low = pose([0.2, 0.42, -0.46], [0.0, 0.85, -0.5], [1.0, 0.0, 0.0]);
+                let up = pose([0.12, 0.62, -0.12], [-0.05, 0.45, 0.89], [1.0, 0.0, 0.0]);
+                return vec![
+                    (comes * 0.45, pose([0.3, 0.34, -0.4], [0.05, 0.9, -0.2], [1.0, 0.0, 0.0]), false),
+                    (comes, low.clone(), false),
+                    (comes + 0.55 * (lands - comes), through(&low, &up, 0.5, [0.0, 0.05, -0.03]), false),
+                    (lands, up, true),
+                    (lands + 0.1, pose([0.14, 0.58, -0.02], [-0.05, 0.25, 0.97], [1.0, 0.0, 0.0]), false),
+                    (lands + 0.24, pose([0.2, 0.5, -0.12], [0.0, 0.55, 0.83], [1.0, 0.0, 0.0]), false),
+                ];
+            }
+            match combo {
+                1 => arc_keys(
+                    comes,
+                    lands,
+                    pose([0.42, 0.36, -0.22], [0.55, 0.83, 0.05], [0.0, 0.0, 1.0]),
+                    [0.05, 0.08, 0.0],
+                    pose([0.08, 0.62, -0.2], [-0.45, 0.89, 0.0], [0.0, 0.0, 1.0]),
+                    pose([-0.12, 0.55, -0.22], [-0.85, 0.5, 0.0], [0.0, 0.0, 1.0]),
+                    pose([-0.14, 0.5, -0.25], [-0.8, 0.55, -0.1], [0.0, 0.0, 1.0]),
+                ),
+                2 => jab(pose([0.28, 0.28, -0.38], [0.02, 0.97, -0.1], [1.0, 0.0, 0.0]), pose([0.14, 0.7, -0.3], [-0.05, 0.97, -0.22], [1.0, 0.0, 0.0])),
+                _ => jab(pose([0.26, 0.3, -0.28], [0.02, 0.97, 0.24], [1.0, 0.0, 0.0]), pose([0.12, 0.74, -0.18], [-0.06, 0.99, 0.05], [1.0, 0.0, 0.0])),
+            }
+        }
+        // A naginata: swept down across from high on the right, the haft turned over and swept back
+        // up from low on the left, driven out on its point, then spun right round; its heavy blow
+        // the family's, see heavy_keys()
+        _ => {
+            if heavy {
+                return heavy_keys(style, Heavy::Sweep);
+            }
+            if last {
+                return finish_keys(Finish::Spin);
+            }
+            match combo {
+                1 => {
+                    let wound = pose([-0.02, 0.34, -0.42], [-0.6, 0.45, -0.65], [0.6, 0.2, -0.7]);
+                    let mut keys = vec![(comes * 0.5, gather(&wound, [-0.03, -0.03, -0.02]), false)];
+                    keys.extend(arc_keys(
+                        comes,
+                        lands,
+                        wound,
+                        [0.0, 0.07, -0.04],
+                        pose([0.16, 0.6, -0.16], [0.2, 0.94, 0.25], [0.75, -0.1, 0.65]),
+                        pose([0.38, 0.5, -0.02], [0.75, 0.45, 0.48], [0.5, -0.6, 0.6]),
+                        pose([0.4, 0.46, -0.08], [0.8, 0.38, 0.45], [0.45, -0.7, 0.55]),
+                    ));
+                    keys
+                }
+                2 => {
+                    let back = pose([0.3, 0.12, -0.3], [0.0, 0.97, 0.2], [-1.0, 0.0, 0.0]);
+                    let lunge = pose([0.14, 0.74, -0.2], [-0.1, 0.99, 0.03], [-1.0, 0.0, 0.0]);
+                    let towards = (back.hand - lunge.hand) * 0.1;
+                    let mut keys = vec![(comes * 0.5, pose([0.34, 0.24, -0.22], [0.02, 0.95, 0.3], [-1.0, 0.0, 0.0]), false), (comes, back, false)];
+                    keys.extend(lunge_keys(lands, lunge, 0.16, [towards.x, towards.y, towards.z]));
+                    keys
+                }
+                _ => {
+                    let wound = pose([0.32, 0.3, -0.06], [0.55, 0.3, 0.78], [-0.8, 0.3, 0.5]);
+                    let mut keys = vec![(comes * 0.5, gather(&wound, [0.03, -0.03, 0.02]), false)];
+                    keys.extend(arc_keys(
+                        comes,
+                        lands,
+                        wound,
+                        [0.02, 0.07, 0.03],
+                        pose([0.1, 0.6, -0.26], [-0.1, 0.97, 0.1], [-0.85, 0.0, -0.52]),
+                        pose([-0.14, 0.52, -0.38], [-0.75, 0.55, -0.35], [-0.4, -0.1, -0.9]),
+                        pose([-0.18, 0.46, -0.42], [-0.8, 0.45, -0.4], [-0.35, -0.15, -0.92]),
+                    ));
+                    keys
+                }
+            }
+        }
     }
 }
 
@@ -5631,15 +5843,30 @@ impl Combat {
                             // A flail's chain whirring round, its head humming through the air
                             Style::Whirl if heavy => (Sound::HeavySwing, 0.75),
                             Style::Whirl => (Sound::Whirr, if finisher { 0.85 } else { 1.0 }),
+                            // A fan's quick hiss, a katar's punch, a naginata's long whoosh
+                            Style::Fan => (Sound::Swing, if heavy || finisher { 1.1 } else { 1.35 }),
+                            Style::Punch => (Sound::Stab, if heavy || finisher { 0.95 } else { 1.2 }),
+                            Style::Pole => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, 0.8),
                             _ => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, if combo == 1 { 1.08 } else { 1.0 }),
                         };
                         // Lower the heavier it swings
                         let deeper = 1.0 - 0.08 * weight(&profile) as f32;
                         self.cues.push(Cue::here(sound, if finisher { 0.75 } else { 0.6 }).pitched(pitch * deeper * if finisher { 0.9 } else { 1.0 }));
                     }
+                    let before = t;
                     let t = t + dt;
                     let land = !struck && t >= length * lands;
                     self.action = if t >= length { Action::Idle } else { Action::Swing { t, length, heavy, struck: struck || land, combo } };
+                    // A crossing finisher's second cut, back the other way
+                    if let Some(second) = second_cut(&profile, heavy, combo)
+                        && struck
+                        && before < length * second
+                        && t >= length * second
+                    {
+                        self.landed = self.landed.wrapping_add(1);
+                        self.cues.push(Cue::here(Sound::Swing, 0.6).pitched(1.15));
+                        self.melee(arena, &profile, heavy, FINISHER_POWER * 0.8, finisher);
+                    }
                     if land {
                         self.landed = self.landed.wrapping_add(1);
                         self.melee(arena, &profile, heavy, if finisher { FINISHER_POWER } else { 1.0 }, finisher);
@@ -11220,6 +11447,9 @@ impl Combat {
             Style::Thrust => 1.1,
             Style::Whirl => 0.9,
             Style::Quake => 0.6,
+            Style::Fan => 1.2,
+            Style::Punch => 1.3,
+            Style::Pole => 0.95,
             _ => 1.0,
         };
         let mut any_crit = false;
@@ -14549,6 +14779,11 @@ impl Combat {
                     Style::Lash => grip(LASH_REST.0, LASH_REST.1),
                     // A flail held low, its head out ahead on its chain
                     Style::Whirl => pose([0.3, 0.42, -0.32], [-0.1, 0.88, 0.46], [1.0, 0.0, 0.0]),
+                    // A war fan held up open at the side, its leaf to be seen; a katar's fist
+                    // ready, its point on ahead; a naginata levelled as a spear is
+                    Style::Fan => pose([0.3, 0.48, -0.25], [-0.15, 0.45, 0.88], [1.0, 0.0, 0.1]),
+                    Style::Punch => pose([0.26, 0.4, -0.27], [0.0, 0.95, 0.3], [1.0, 0.0, 0.0]),
+                    Style::Pole => pose([0.34, 0.3, -0.33], [0.05, 0.97, 0.2], [-1.0, 0.0, 0.0]),
                     _ => pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]),
                 };
                 match self.action {
@@ -15944,11 +16179,13 @@ impl Combat {
 mod tests {
     use super::*;
 
-    const STYLES: [Style; 8] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash, Style::Whirl];
-    const FINISHES: [Finish; 4] = [Finish::Lunge, Finish::Rising, Finish::Spin, Finish::Slam];
+    const STYLES: [Style; 11] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash, Style::Whirl, Style::Fan, Style::Punch, Style::Pole];
+    const FINISHES: [Finish; 5] = [Finish::Lunge, Finish::Rising, Finish::Spin, Finish::Slam, Finish::Cross];
     const CASTINGS: [Casting; 7] = [Casting::Thrust, Casting::Flick, Casting::Gather, Casting::Overhead, Casting::Sweep, Casting::Scoop, Casting::Present];
     /// Each family's own heavy blow, with the style it's swung in
-    const HEAVIES: [(Style, Heavy); 9] = [
+    const HEAVIES: [(Style, Heavy); 11] = [
+        (Style::Punch, Heavy::Lunge),
+        (Style::Pole, Heavy::Sweep),
         (Style::Thrust, Heavy::Lunge),
         (Style::Slash, Heavy::Draw),
         (Style::Slash, Heavy::Spin),
