@@ -4419,6 +4419,8 @@ impl App {
                 self.game.primary(eye);
                 println!("frame {frame}: carrying {}", self.game.carried());
             }
+            // Every kind of special ammo flying slowly across the view in rows, for a contact sheet
+            ("ammo_sheet", 5) => self.game.ammo_sheet(eye, look),
             ("hunt", 40) => {
                 self.game.interact(eye);
                 println!("frame {frame}: carrying {}", self.game.carried());
@@ -4464,7 +4466,8 @@ impl App {
                 if f == 1 || f <= when {
                     match if pack { self.game.nearest_foe(eye) } else { self.game.nearest_boss(eye) } {
                         Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
-                        None if f == 1 => self.camera.rotation.x = -0.35,
+                        // `--set special_pitch=-0.12` looks further off, at the ground there
+                        None if f == 1 => self.camera.rotation.x = settings_from_args().iter().find(|(k, _)| k == "special_pitch").and_then(|(_, v)| v.parse().ok()).unwrap_or(-0.35),
                         None => {}
                     }
                 }
@@ -4472,7 +4475,9 @@ impl App {
                 self.script_controls = if settings_from_args().iter().any(|(k, v)| k == "special_key" && v == "right") {
                     self.game.power_controls((f as f64 - when as f64) / 60.0, 1.0 / 60.0)
                 } else {
-                    combat::Controls { special: f == when, ..Default::default() }
+                    // `--set special_aim=1` aims it with right click held the while, its ring showing
+                    let aiming = settings_from_args().iter().any(|(k, v)| k == "special_aim" && v == "1");
+                    combat::Controls { special: f == when, aiming, ..Default::default() }
                 };
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));

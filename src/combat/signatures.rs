@@ -74,8 +74,9 @@ pub(super) enum SigAct {
     /// The `k`th wickfire arrow loosed, from where the bow was, `local` meters off the eye in the
     /// view, with arrowhead `head`
     Wick { k: u32, local: Vector3<f64>, head: usize },
-    /// The `k`th stake loosed, from `local` meters off the eye in the view
-    Stake { k: u32, local: Vector3<f64> },
+    /// The `k`th stake loosed, from `local` meters off the eye in the view, into the ground round
+    /// `at`, the way from the player `way`
+    Stake { k: u32, local: Vector3<f64>, at: Vector3<f64>, way: Vector3<f64> },
     /// The katana drawn: the dash, and the line of frost left hanging
     Draw,
     /// The `k`th viper's fang flung on
@@ -96,7 +97,7 @@ pub(super) enum SigAct {
 
 impl SigAct {
     pub(super) fn recenter(&mut self, shift: Vector3<f64>) {
-        if let SigAct::Fork(at) = self {
+        if let SigAct::Fork(at) | SigAct::Stake { at, .. } = self {
             *at -= shift;
         }
     }
@@ -706,16 +707,11 @@ impl Combat {
         near.into_iter().map(|(_, i)| i).collect()
     }
 
-    /// Where something aimed at `target` comes down: there, if it's within `most` meters, or else
-    /// on the ground `most` meters on ahead
+    /// Where something aimed with the crosshair on `target` comes down: on the ground there, or
+    /// under it, if it's within `most` meters, or else as far as that along the ground that way,
+    /// see aim.rs
     fn ground_aim(&self, arena: &Arena, target: Vector3<f64>, most: f64) -> Vector3<f64> {
-        let view = arena.view;
-        let vpm = view.vpm;
-        if (target - view.eye).norm() <= most * vpm {
-            return target;
-        }
-        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
-        ground_under(arena.world, feet + flat_of(view.forward()) * most * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm), vpm)
+        self.spot_from(arena, target, most)
     }
 
     /// What's under `at` to land on or run along: the ground, or the top of the water over it
@@ -829,12 +825,15 @@ impl Combat {
                 self.cues.push(Cue::here(Sound::Swoop, 0.9).pitched(1.35));
                 self.cues.push(Cue::here(Sound::Crack, 0.35).pitched(1.7));
             }
-            // Rolled out onto the ground a few meters ahead, where it cracks open
+            // Bowled out onto the ground where it's aimed, in the ring, where it cracks open
             Special::Scuttlers => {
                 let arcane = tinted(&profile, Element::Arcane);
                 let from = self.held_point(weapon, view, false);
-                let to = Combat::floor_at(arena, feet + flat * 5.5 * vpm + up * 0.6 * vpm) + up * 0.2 * vpm;
-                self.launch(&arcane, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.6 }), Form::Bolt, from, thrown(from, to, 0.55, BOMB_GRAVITY, vpm), base * 0.5, BOMB_GRAVITY);
+                let spot = self.special_spot(arena, weapon, special).unwrap_or_else(|| Combat::floor_at(arena, feet + flat * 5.5 * vpm + up * 0.6 * vpm));
+                let to = spot + up * 0.2 * vpm;
+                let time = 0.45 + 0.02 * (to - from).norm() / vpm;
+                self.keep_rings(arena, &profile, special, spot, time);
+                self.launch(&arcane, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.6 }), Form::Bolt, from, thrown(from, to, time, BOMB_GRAVITY, vpm), base * 0.5, BOMB_GRAVITY);
                 self.signed(Sig::Brood);
                 self.cues.push(Cue::here(Sound::Swoop, 0.8));
                 self.cues.push(Cue::here(Sound::Skitter, 0.3).pitched(1.3));
@@ -852,7 +851,8 @@ impl Combat {
             Special::Lantern => {
                 let holy = tinted(&profile, Element::Holy);
                 let from = self.held_point(weapon, view, true);
-                let to = self.ground_aim(arena, target, 30.0);
+                let to = self.ground_aim(arena, target, aim::LANTERN_AIM);
+                self.keep_rings(arena, &profile, special, to, (to - from).norm() / (55.0 * vpm));
                 self.launch(&holy, Some(Missile::arrow(weapon.arrowhead(), true)), Form::Bolt, from, lead(from, to, 55.0, ARROW_GRAVITY * 0.4, vpm) * 55.0 * vpm, base * 0.8, ARROW_GRAVITY * 0.4);
                 self.signed(Sig::Lantern);
                 self.cues.push(Cue::here(Sound::Twang, 0.9).pitched(1.15));
@@ -941,15 +941,20 @@ impl Combat {
                 self.zones.retain(|z| z.kind != ZoneKind::Signature(SigZone::Stakes));
                 self.zone(ZoneKind::Signature(SigZone::Stakes), &storm, feet, Vector3::zeros(), 0.9, STAKE_SECONDS + 0.6, base * 0.45);
                 let from = self.held_point(weapon, view, false);
-                self.stake(arena, &storm, from, 0, base * 0.8);
+                // Round where it's aimed, as its rings showed
+                let at = self.special_spot(arena, weapon, special).unwrap_or(feet);
+                let way = aim::way_to(arena, at);
+                self.keep_rings(arena, &profile, special, at, STAKE_GAP * STAKES as f64 + 0.3);
+                self.stake(arena, &storm, from, 0, base * 0.8, at, way);
                 for k in 1..STAKES {
-                    later(&mut self.pending, STAKE_GAP * k as f64, SigAct::Stake { k, local: local(from) }, &storm, base * 0.8);
+                    later(&mut self.pending, STAKE_GAP * k as f64, SigAct::Stake { k, local: local(from), at, way }, &storm, base * 0.8);
                 }
             }
             Special::Litany => {
                 let holy = tinted(&profile, Element::Holy);
                 let from = self.held_point(weapon, view, false);
-                let to = self.ground_aim(arena, target, 24.0);
+                let to = self.ground_aim(arena, target, aim::LITANY_AIM);
+                self.keep_rings(arena, &profile, special, to, (to - from).norm() / (30.0 * vpm));
                 self.launch(&holy, None, Form::Bolt, from, (to - from).try_normalize(1e-6).unwrap_or(forward) * 30.0 * vpm, base * 0.5, 0.0);
                 self.signed(Sig::Script);
                 if let Some(p) = self.projectiles.last_mut() {
@@ -962,8 +967,9 @@ impl Combat {
             Special::EmberKnell => {
                 let fire = tinted(&profile, Element::Fire);
                 let from = self.held_point(weapon, view, false);
-                let to = self.ground_aim(arena, target, 18.0);
+                let to = self.ground_aim(arena, target, aim::KNELL_AIM);
                 let time = 0.45 + 0.025 * (to - from).norm() / vpm;
+                self.keep_rings(arena, &profile, special, to, time);
                 self.launch(&fire, None, Form::Fireball, from, thrown(from, to, time, 1.0, vpm), base * 0.8, 1.0);
                 self.signed(Sig::Knell);
                 if let Some(p) = self.projectiles.last_mut() {
@@ -976,8 +982,11 @@ impl Combat {
             Special::Bloodthread => {
                 let blood = tinted(&profile, Element::Blood);
                 let from = self.held_point(weapon, view, false);
-                let aimed = Combat::aimed_foe(arena, target, 30.0).map(|i| arena.animals[i].center(vpm as u32));
-                let to = aimed.unwrap_or_else(|| self.ground_aim(arena, target, 22.0));
+                // What's in its ring, where it's aimed, or else the ground there
+                let spot = self.ground_aim(arena, target, aim::THREAD_AIM);
+                let aimed = Combat::aimed_foe(arena, target, 30.0).filter(|&i| (arena.animals[i].position - spot).xy().norm() < (2.5 + arena.animals[i].look.body().1) * vpm).map(|i| arena.animals[i].center(vpm as u32));
+                let to = aimed.unwrap_or(spot);
+                self.keep_rings(arena, &profile, special, spot, (to - from).norm() / (26.0 * vpm));
                 self.launch(&blood, None, Form::Lance, from, (to - from).try_normalize(1e-6).unwrap_or(forward) * 26.0 * vpm, base * 0.8, 0.0);
                 self.signed(Sig::Thread);
                 if let Some(p) = self.projectiles.last_mut() {
@@ -1011,22 +1020,15 @@ impl Combat {
         self.cues.push(Cue::here(Sound::Fuse, 0.35).pitched(1.5));
     }
 
-    /// The `k`th stake loosed from `from` onto the ground ahead: the middle one furthest on, then
-    /// one to the left, then one to the right
-    fn stake(&mut self, arena: &Arena, profile: &Rc<Profile>, from: Vector3<f64>, k: u32, damage: f64) {
+    /// The `k`th stake loosed from `from` into the ground round `at`, the way on from the player
+    /// `way`: the far one first, then one to the left, then one to the right
+    #[allow(clippy::too_many_arguments)]
+    fn stake(&mut self, arena: &Arena, profile: &Rc<Profile>, from: Vector3<f64>, k: u32, damage: f64, at: Vector3<f64>, way: Vector3<f64>) {
         let view = arena.view;
         let vpm = view.vpm;
         let up = Vector3::z();
-        let feet = arena.player.unwrap_or(view.eye - up * 1.6 * vpm);
-        let flat = flat_of(view.forward());
-        let side = flat.cross(&up);
-        // Far enough on to be seen over the crossbow in hand
-        let (on, across) = match k {
-            0 => (13.0, 0.0),
-            1 => (9.5, -4.5),
-            _ => (9.5, 4.5),
-        };
-        let spot = ground_under(arena.world, feet + (flat * on + side * across) * vpm + up * 1.5 * vpm, vpm) + up * 0.05 * vpm;
+        let (on, across) = aim::STAKE_SPOTS[k.min(2) as usize];
+        let spot = ground_under(arena.world, at + (way * on + way.cross(&up) * across) * vpm, vpm) + up * 0.05 * vpm;
         let way = lead(from, spot, 62.0, QUARREL_GRAVITY * 0.3, vpm);
         self.launch(profile, Some(Missile { shot: Shot::Quarrel, head: 0, power: true, size: 1.6 }), Form::Bolt, from, way * 62.0 * vpm, damage, QUARREL_GRAVITY * 0.3);
         self.signed(Sig::Stake);
@@ -1049,9 +1051,9 @@ impl Combat {
                 let from = view.eye + view.rotation * local * vpm;
                 self.wick_arrow(arena, profile, from, k, damage, head);
             }
-            SigAct::Stake { k, local } => {
+            SigAct::Stake { k, local, at, way } => {
                 let from = view.eye + view.rotation * local * vpm;
-                self.stake(arena, profile, from, k, damage);
+                self.stake(arena, profile, from, k, damage, at, way);
             }
             // A lunge as the blade comes out, and the cut flying on ahead out of it, a line of
             // frost hanging in the air through everything in the way, each thing along it held a

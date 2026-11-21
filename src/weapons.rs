@@ -13,6 +13,10 @@ use nalgebra::Vector3;
 use serde::Deserialize;
 
 use crate::animals::{MODEL_RES, Model, Part, ball, cuboid, ellipsoid, limb, voxelize};
+
+/// What each kind of special ammo looks like in flight, see ammo.rs
+mod ammo;
+pub use ammo::{AMMO_RES, AMMO_SHOT_RES, AMMO_STYLES, Puff, Trail, ammo_style};
 use crate::worldgen::material::*;
 
 /// Stats by name, see STATS
@@ -6294,8 +6298,14 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     // Explosions in stages, their rings, ice, pillars of light, the blood moon and sparks as
     // streaks, see effects::BLASTS and the rest
     models.extend(crate::effects::models());
+    // Every kind of special ammo in flight, see AMMO_MODELS
+    models.extend(ammo::models());
     models
 }
+
+/// Where the models of every kind of special ammo in flight start among effect_models(), in the
+/// order of AMMO_STYLES
+pub const AMMO_MODELS: usize = crate::effects::STONE_SLAB + 1;
 
 /// Where the coil a coil bind winds round what it holds is among effect_models(), and a serpent
 /// lash's serpent's head
@@ -6451,7 +6461,7 @@ mod tests {
 
     #[test]
     fn lash_models_are_where_combat_looks_for_them() {
-        assert_eq!(effect_models().len(), crate::effects::EFFECT_MODELS);
+        assert_eq!(effect_models().len(), crate::effects::EFFECT_MODELS + AMMO_STYLES.len());
         // Elemental lashes glow, the rest are made of what they're made of
         let library = Library::parse(BUILT_IN).unwrap();
         for c in library.components.iter().filter(|c| c.slot_type == "lash") {
