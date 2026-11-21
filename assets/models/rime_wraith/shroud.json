@@ -1,0 +1,29 @@
+{
+  "what": "Rime wraith, shroud",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    10,
+    19
+  ],
+  "pivot": [
+    5.5,
+    5.0,
+    16.2
+  ],
+  "anchor": [
+    -0.0625,
+    0.0,
+    -1.0125
+  ],
+  "origin": [
+    -6,
+    -5,
+    -16
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    4685,
+    "17708ba85a725e38"
+  ]
+}

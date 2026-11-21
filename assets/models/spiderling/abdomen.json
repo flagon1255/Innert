@@ -1,0 +1,29 @@
+{
+  "what": "Cave spider, abdomen",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    12,
+    10
+  ],
+  "pivot": [
+    9.6,
+    6.0,
+    8.2
+  ],
+  "anchor": [
+    -0.16249999999999998,
+    0.0,
+    -0.5125
+  ],
+  "origin": [
+    -10,
+    -6,
+    -8
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    4861,
+    "61c503405bd2adc2"
+  ]
+}

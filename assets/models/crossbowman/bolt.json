@@ -1,0 +1,29 @@
+{
+  "what": "Bandit crossbowman, bolt",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    2,
+    2
+  ],
+  "pivot": [
+    0.5999999999999996,
+    0.3799999999999999,
+    0.5199999999999996
+  ],
+  "anchor": [
+    0.15000000000000002,
+    0.03875000000000001,
+    -0.03249999999999997
+  ],
+  "origin": [
+    -1,
+    0,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1287,
+    "da8691cfdc9572f4"
+  ]
+}

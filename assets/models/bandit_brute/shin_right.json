@@ -1,0 +1,29 @@
+{
+  "what": "Bandit brute, shin right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    10
+  ],
+  "pivot": [
+    1.5,
+    1.2079999999999997,
+    1.544704000000001
+  ],
+  "anchor": [
+    0.0,
+    0.018250000000000016,
+    -0.09654400000000006
+  ],
+  "origin": [
+    -2,
+    -1,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1520,
+    "42e738b969d17f7d"
+  ]
+}

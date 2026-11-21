@@ -1,0 +1,29 @@
+{
+  "what": "Cat (GrayCat), body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    2,
+    2
+  ],
+  "pivot": [
+    3.24,
+    1.0,
+    0.6799999999999997
+  ],
+  "anchor": [
+    -0.015,
+    0.0,
+    -0.04249999999999998
+  ],
+  "origin": [
+    -3,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1347,
+    "87f4470f9f3ec67b"
+  ]
+}

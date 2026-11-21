@@ -1,0 +1,25 @@
+{
+  "what": "Grappling hook, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 48.0,
+  "size": [
+    30,
+    18,
+    17
+  ],
+  "pivot": [
+    15.0,
+    9.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -9,
+    0
+  ],
+  "note": "",
+  "written": [
+    2735,
+    "f90faa58d7b6dcea"
+  ]
+}

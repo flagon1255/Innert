@@ -1,0 +1,29 @@
+{
+  "what": "Zombie, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    7,
+    11
+  ],
+  "pivot": [
+    2.2816,
+    3.5,
+    4.920000000000002
+  ],
+  "anchor": [
+    0.013649999999999992,
+    0.0,
+    -0.3075000000000001
+  ],
+  "origin": [
+    -2,
+    -4,
+    -5
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1940,
+    "eae021854ad2f064"
+  ]
+}

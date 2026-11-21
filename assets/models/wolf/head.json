@@ -1,0 +1,29 @@
+{
+  "what": "Wolf, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    4,
+    7
+  ],
+  "pivot": [
+    2.34,
+    2.0,
+    2.4800000000000004
+  ],
+  "anchor": [
+    -0.02124999999999999,
+    0.0,
+    -0.15500000000000003
+  ],
+  "origin": [
+    -2,
+    -2,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1427,
+    "191f138a9a17925f"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Tusker, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    27,
+    14,
+    17
+  ],
+  "pivot": [
+    13.7,
+    7.0,
+    11.528360000000003
+  ],
+  "anchor": [
+    -0.012500000000000008,
+    0.0,
+    -0.7205225000000002
+  ],
+  "origin": [
+    -14,
+    -7,
+    -12
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    11869,
+    "976a0d39d8f57aa7"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Skeleton, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    5
+  ],
+  "pivot": [
+    1.4,
+    1.3399999999999999,
+    2.5599999999999987
+  ],
+  "anchor": [
+    -0.025,
+    -0.02124999999999999,
+    -0.15999999999999992
+  ],
+  "origin": [
+    -1,
+    -1,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1280,
+    "7f91b003bbfafdef"
+  ]
+}

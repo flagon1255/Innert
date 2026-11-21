@@ -1,0 +1,29 @@
+{
+  "what": "Grave brute, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    5,
+    11
+  ],
+  "pivot": [
+    4.194912,
+    2.5,
+    6.313600000000001
+  ],
+  "anchor": [
+    -0.074682,
+    0.0,
+    -0.39460000000000006
+  ],
+  "origin": [
+    -4,
+    -3,
+    -6
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1726,
+    "fa925b669105622a"
+  ]
+}

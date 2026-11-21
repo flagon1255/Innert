@@ -1,0 +1,29 @@
+{
+  "what": "Rime wraith, rag 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    2,
+    12
+  ],
+  "pivot": [
+    3.54,
+    1.0,
+    10.68
+  ],
+  "anchor": [
+    -0.065,
+    0.0,
+    -0.6675
+  ],
+  "origin": [
+    -4,
+    -1,
+    -11
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1401,
+    "70e2fa63b3b6b92c"
+  ]
+}

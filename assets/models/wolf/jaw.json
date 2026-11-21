@@ -1,0 +1,29 @@
+{
+  "what": "Wolf, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    2,
+    3
+  ],
+  "pivot": [
+    0.16000000000000014,
+    1.0,
+    2.200000000000001
+  ],
+  "anchor": [
+    0.08374999999999999,
+    0.0,
+    -0.13750000000000007
+  ],
+  "origin": [
+    0,
+    -1,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1292,
+    "eabbc88e42563637"
+  ]
+}

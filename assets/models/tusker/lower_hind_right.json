@@ -1,0 +1,29 @@
+{
+  "what": "Tusker, lower hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    8
+  ],
+  "pivot": [
+    1.4000000000000004,
+    1.48,
+    1.056
+  ],
+  "anchor": [
+    0.006249999999999978,
+    0.0012500000000000011,
+    -0.066
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1539,
+    "1b9504e6fdc35186"
+  ]
+}

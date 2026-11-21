@@ -1,0 +1,29 @@
+{
+  "what": "Wolf, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    6
+  ],
+  "pivot": [
+    2.9800000000000004,
+    3.0,
+    2.8000000000000007
+  ],
+  "anchor": [
+    0.0012499999999999734,
+    0.0,
+    -0.17500000000000004
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1699,
+    "78ffd485cfc30f6c"
+  ]
+}

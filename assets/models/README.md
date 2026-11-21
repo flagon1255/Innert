@@ -65,7 +65,8 @@ grow a model in any direction and it still sits where it did. Keep the `.json` b
 
 | File | What it is |
 | --- | --- |
-| `<creature>/base.vox` | A creature's or boss's standing frame, for example `golem/base.vox`. See the note below. |
+| `<creature>/<piece>.vox` | A monster's, animal's or townsperson's pieces, which its frames are baked from, for example `armored_skeleton/blade.vox`, `wolf/upper_fore_left.vox` or `villager/head.vox`. See the note below. |
+| `<thing>/base.vox` | Something that never moves, drawn in one frame: the merchant, the princess and the royal guards, things lying about, chests, the Innert Gate and the portals, for example `chest/base.vox`. |
 | `<creature>/walk_03.vox`, `strike.vox`, ... | One frame each, written with `--export-models --export-frames`. Each replaces its frame outright. |
 | `dragon/<kind>/<piece>.vox` | A dragon's or drake's jointed pieces, for example `dragon/ashwing/head.vox` or `dragon/drake/wing_left_outer.vox`. |
 | `boss/<kind>/<piece>.vox` | A jointed boss's pieces, for example `boss/golem/chest.vox` or `boss/ironhide/upper_fore_left.vox`. |
@@ -82,17 +83,31 @@ grow a model in any direction and it still sits where it did. Keep the `.json` b
 **Effects, wards, and the dragons' and avians' effects** keep the code's anchor. They can grow
 round it, but not below their bottom. Their `.json` doesn't know their real voxels per meter.
 
-**Creatures and monsters are baked into frames** (standing, walking, each attack pose), so only
-the standing frame is exported. Whatever you change in it is changed the same way in every other
-frame. A voxel is only removed or recoloured in a frame where that frame has the same material in
-the same place, so moving parts like legs keep their own shape. Added voxels go where that frame
-has air.
+**Monsters, animals and the townsfolk are drawn in baked frames, baked from pieces.** Each is still
+drawn as one model a frame (standing, walking, each attack pose and the frames between), so dozens
+on screen cost no more than before. But the frames are baked from jointed pieces: a head, a torso,
+upper arms and forearms, thighs and shins, a tail, what's held in a hand. Each piece is its own
+file, `<creature>/<piece>.vox`, with its joint at the scene's middle.
+
+- **Edit a piece** and it goes with that limb in every frame: paint the skeleton's `blade.vox` red
+  and the blade is red in its hand as it walks, raised over its head as it winds up, and swung down
+  as it strikes. The frames are baked again as soon as you save, in the editor and in a game running
+  beside it.
+- **The pieces of the standing frame are cut exactly from it**, so with no files edited every
+  creature's standing frame is exactly as it always was, and its other frames move as they always
+  did.
+- **An old `<creature>/base.vox`** (the standing frame, as files had it before there were pieces) is
+  still read if you edited it. What you changed in it is put on the piece that holds that spot in
+  the standing frame (a voxel added goes on the piece nearest it), so it goes with that limb too.
+  Before, the export put some creatures' frames in other creatures' files: `armored_skeleton/base.vox`
+  held a bandit's walking frame. The game finds which frame the file was written from by the hash in
+  its `.json`, and puts what you changed where you changed it.
 
 **Some creatures share a shape.** The Frost Colossus and the Magma Golem are the Stone Warden in
 other colours, so their pieces come from `boss/golem/`. Edit the golem and all three change. Give
 one of them files of its own and it's drawn from those instead. The same goes for dragons and baked
-creatures alike but for colour; for a baked creature, `<creature>/skins.json` lists which material
-becomes which.
+creatures alike but for colour, such as the ginger cat, drawn from `gray_cat/`; `<creature>/skins.json`
+lists which material becomes which.
 
 ### Trees
 
@@ -144,13 +159,17 @@ the rest, and the gathering tools too. For example: `weapons/sword/iron_blade.vo
 
 ## Editing an animation
 
-1. In the editor, pick a dragon or drake, an avian or gargoyle, or a jointed boss (the golems, the bears, the spiders, the
-   knights, the giants and the rest). Jointed rigs can be animated; baked creatures can only be
-   played back.
+1. In the editor, pick a dragon or drake, an avian or gargoyle, a jointed boss (the golems, the
+   bears, the spiders, the knights, the giants and the rest), or a monster, animal or townsperson
+   (the skeletons, zombies, bandits, wolves, ghouls, bears, cats and the rest). Everything with bones
+   can be animated; only things that never move, like chests, can't.
 2. Pick a clip along the bottom.
    - A dragon's are `stand`, `walk`, `fly`, and its moves.
    - A boss's are `idle`, `walk`, `run`, each of its moves, `reel` and `death`, played as the game
      plays them.
+   - A monster's are `idle`, `walk`, and its three poses, `windup`, `strike` and `special`. An animal
+     or a townsperson has only `idle` and `walk`. A gloomwing's `walk` is its wings beating, and a
+     rime wraith's is its rags stirring.
    - **Play** plays it at the speed slider's pace.
    - Drag on the bar to scrub through it.
 3. Pick a bone on the right. It lights up. Turn it about its x, y or z axis, or move it, with:
@@ -164,11 +183,29 @@ the rest, and the gathering tools too. For example: `weapons/sword/iron_blade.vo
    - **K** keys the bone as it is now; **D** removes the nearest key.
    - The ease box sets how the bone eases from that key to the next: smooth, linear, in, out, or
      step.
-5. **Save** writes `assets/anims/dragon/<kind>/<clip>.json`, or `assets/anims/boss/<kind>/<clip>.json`.
-   - With **for all of its kind** ticked it writes `assets/anims/dragon/<clip>.json` or
-     `assets/anims/boss/<clip>.json` instead. That file is used by every dragon or boss without one
-     of its own.
+5. **Save** writes `assets/anims/dragon/<kind>/<clip>.json`, `assets/anims/boss/<kind>/<clip>.json`,
+   or for a monster, animal or townsperson `assets/anims/<build>/<creature>/<clip>.json`, for example
+   `assets/anims/undead/armored_skeleton/walk.json`.
+   - With **for all of its kind** ticked it writes `assets/anims/dragon/<clip>.json`,
+     `assets/anims/boss/<clip>.json` or `assets/anims/<build>/<clip>.json` instead. That file is used
+     by every dragon, boss, or creature of that build without one of its own: `undead/walk.json`
+     changes the walk of every skeleton, zombie and bandit.
    - A game running beside the editor uses the file at once.
+
+**Monsters, animals and townsfolk are baked into frames, so a clip is baked too.** Their frames are
+baked again from the clip when you save it, and the game draws those frames as it always did:
+
+- `idle` is the standing frame, at the start of the clip.
+- `walk` is the 20 frames of its walk, spread over the clip.
+- `windup`, `strike` and `special` each go from standing, at the start of the clip, into the pose,
+  at its end. The pose is how the bones are at the end; the frames on the way into it are how they
+  are partway along. Key the bone at the start too, or it's moved as much all the way along. The
+  frames between two poses, as a windup goes into its strike, are partway from the one to the other.
+- There's no `run`, `hurt` or `death` of their own: they run in their walking frames, played faster,
+  and they're tipped over whole as they're hit and as they fall.
+
+While a bone's picked, or a clip has changes not saved, the editor shows its pieces where your keys
+put them. Pick no bone once it's saved to see the frames as the game draws them.
 
 An animation file holds only how far each bone is turned and moved from the code's pose. The code's
 own animation always plays underneath, and a clip with no file plays exactly as before. In the game
@@ -178,6 +215,7 @@ the clips follow what it's doing:
   clip, such as `bite` or `breath`, from when it starts getting ready for that move.
 - **Bosses:** `walk` or `run` with its stride, `idle` standing, a move's clip through its windup,
   the blow and getting over it, `reel` when it's reeling, and `death` as it falls.
+- **Monsters, animals and townsfolk:** their frames, baked from the clips as above.
 
 Delete the file to go back to the code's animation.
 

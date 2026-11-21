@@ -1,0 +1,25 @@
+{
+  "what": "Skull, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    3,
+    4
+  ],
+  "pivot": [
+    2.5,
+    1.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -2,
+    0
+  ],
+  "note": "",
+  "written": [
+    1329,
+    "773cf009e3e5fa3d"
+  ]
+}

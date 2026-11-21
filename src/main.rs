@@ -66,6 +66,7 @@ mod anim;
 mod assets;
 mod audio;
 mod avians;
+mod baked;
 mod bases;
 mod building;
 mod bosses;

@@ -1330,7 +1330,7 @@ const fn tween_frames() -> usize {
 
 /// The first of the frames between poses
 const FIRST_TWEEN: usize = POSE_SPIKES + 1;
-const FRAMES: usize = FIRST_TWEEN + tween_frames();
+pub(crate) const FRAMES: usize = FIRST_TWEEN + tween_frames();
 
 /// Which frame to draw `look` in `since` seconds after it went from pose `a` to pose `b`, 0 being
 /// standing, easing in and out: None once it's got there, or if it has no frames between them
@@ -1479,23 +1479,38 @@ pub struct Part {
     stripes: u8,
     /// What it's part of, for telling a weapon's parts apart in its model, see voxelize_tagged()
     tag: u8,
+    /// Which bone of a creature baked from jointed pieces it's part of, see src\baked.rs, 0 for
+    /// none; and the bone its far half is part of instead, past its middle, as a leg's shin, 0 for
+    /// none
+    bone: u8,
+    split: u8,
 }
 
 pub fn ball(c: Vec3, r: f64, material: u8) -> Part {
-    Part { a: c, b: c, ra: r, rb: r, stretch: [1.0; 3], boxed: false, material, stripes: AIR, tag: 0 }
+    Part { a: c, b: c, ra: r, rb: r, stretch: [1.0; 3], boxed: false, material, stripes: AIR, tag: 0, bone: 0, split: 0 }
 }
 
 pub fn ellipsoid(c: Vec3, radii: Vec3, material: u8) -> Part {
     let r = radii[0].min(radii[1]).min(radii[2]);
-    Part { a: c, b: c, ra: r, rb: r, stretch: radii.map(|v| v / r), boxed: false, material, stripes: AIR, tag: 0 }
+    Part { a: c, b: c, ra: r, rb: r, stretch: radii.map(|v| v / r), boxed: false, material, stripes: AIR, tag: 0, bone: 0, split: 0 }
 }
 
 pub fn limb(a: Vec3, b: Vec3, ra: f64, rb: f64, material: u8) -> Part {
-    Part { a, b, ra, rb, stretch: [1.0; 3], boxed: false, material, stripes: AIR, tag: 0 }
+    Part { a, b, ra, rb, stretch: [1.0; 3], boxed: false, material, stripes: AIR, tag: 0, bone: 0, split: 0 }
 }
 
 pub fn cuboid(lo: Vec3, hi: Vec3, material: u8) -> Part {
-    Part { a: lo, b: hi, ra: 0.0, rb: 0.0, stretch: [1.0; 3], boxed: true, material, stripes: AIR, tag: 0 }
+    Part { a: lo, b: hi, ra: 0.0, rb: 0.0, stretch: [1.0; 3], boxed: true, material, stripes: AIR, tag: 0, bone: 0, split: 0 }
+}
+
+/// The shapes from `from` on that aren't part of a bone yet made part of bone `bone`, see
+/// src\baked.rs
+fn tag(p: &mut [Part], from: usize, bone: u8) {
+    for part in &mut p[from..] {
+        if part.bone == 0 {
+            part.bone = bone;
+        }
+    }
 }
 
 impl Part {
@@ -1503,6 +1518,48 @@ impl Part {
     pub fn tagged(mut self, tag: u8) -> Self {
         self.tag = tag;
         self
+    }
+
+    /// Part of bone `bone` of a creature baked from jointed pieces, see src\baked.rs
+    pub(crate) fn on(mut self, bone: u8) -> Self {
+        self.bone = bone;
+        self
+    }
+
+    /// Its far half, past its middle, part of bone `far` instead, as a leg's shin is
+    pub(crate) fn halved(mut self, far: u8) -> Self {
+        self.split = far;
+        self
+    }
+
+    /// The bone it's part of and the bone its far half is, 0 for none, see on() and halved()
+    pub(crate) fn bones(&self) -> (u8, u8) {
+        (self.bone, self.split)
+    }
+
+    /// Its ends, the same for a ball, and whether it's a box with those corners
+    pub(crate) fn ends(&self) -> (Vec3, Vec3, bool) {
+        (self.a, self.b, self.boxed)
+    }
+
+    /// Its radius at either end, before it's stretched
+    pub(crate) fn radii(&self) -> (f64, f64) {
+        (self.ra, self.rb)
+    }
+
+    /// Its radius, the biggest it is round its middle line, stretched
+    pub(crate) fn girth(&self) -> f64 {
+        self.ra.max(self.rb) * self.stretch.iter().copied().fold(0.0, f64::max)
+    }
+
+    /// How far along from its first end to its second `p` is, 0 to 1, for a capsule
+    pub(crate) fn along(&self, p: Vec3) -> f64 {
+        let ab = [0, 1, 2].map(|i| self.b[i] - self.a[i]);
+        let length2: f64 = ab.iter().map(|v| v * v).sum();
+        if length2 <= 0.0 {
+            return 0.0;
+        }
+        ((0..3).map(|i| (p[i] - self.a[i]) * ab[i]).sum::<f64>() / length2).clamp(0.0, 1.0)
     }
 
     pub(crate) fn striped(mut self, stripes: u8) -> Self {
@@ -1580,11 +1637,13 @@ impl Part {
     }
 }
 
-/// A leg hanging from `hip`, swung forwards by `swing` radians, ending in a paw
-fn leg(parts: &mut Vec<Part>, hip: Vec3, length: f64, radius: f64, swing: f64, fur: u8, paw: u8) {
+/// A leg hanging from `hip`, swung forwards by `swing` radians, ending in a paw: its upper half
+/// and its paw parts of `bones`, its thigh and its shin, for a creature baked from jointed pieces
+#[allow(clippy::too_many_arguments)]
+fn leg(parts: &mut Vec<Part>, hip: Vec3, length: f64, radius: f64, swing: f64, fur: u8, paw: u8, bones: [u8; 2]) {
     let foot = [hip[0] + swing.sin() * length, hip[1], hip[2] - swing.cos() * length + radius * 0.6];
-    parts.push(ball(foot, radius * 1.1, paw));
-    parts.push(limb(hip, foot, radius * 1.15, radius, fur));
+    parts.push(ball(foot, radius * 1.1, paw).on(bones[1]));
+    parts.push(limb(hip, foot, radius * 1.15, radius, fur).on(bones[0]).halved(bones[1]));
 }
 
 /// `v` turned up by `angle` radians about `pivot`, round the y axis, so what's in front rises
@@ -1597,6 +1656,8 @@ fn rear(v: Vec3, pivot: Vec3, angle: f64) -> Vec3 {
 /// The Broodmother: a giant spider, dark and hairy, venom glowing in the markings on its back and
 /// a cluster of red eyes. It rears up to bite, and crouches to leap.
 fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
+    use crate::baked::spider::*;
+    let start = p.len();
     // Reared up on its back legs, lunging low, or crouched to spring
     let raise = pose.mix(0.0, 0.5, -0.15, 0.0);
     let drop = pose.mix(0.0, 0.0, 0.25, 0.45);
@@ -1612,12 +1673,13 @@ fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
         p.push(limb(lift([1.22, y, 1.2]), lift([1.38, y * 0.6, 0.92]), 0.05, 0.012, skin.extra));
     }
     p.push(ellipsoid(lift([0.85, 0.0, 1.32]), [0.4, 0.38, 0.32], skin.body));
+    tag(p, start, BODY);
     // The abdomen, with glowing markings down its back
     for k in 0..3 {
         let x = -0.55 - k as f64 * 0.38;
-        p.push(ellipsoid(lift([x, 0.0, 1.9 - k as f64 * 0.05]), [0.14, 0.32, 0.06], skin.accent));
+        p.push(ellipsoid(lift([x, 0.0, 1.9 - k as f64 * 0.05]), [0.14, 0.32, 0.06], skin.accent).on(ABDOMEN));
     }
-    p.push(ellipsoid(lift([-0.85, 0.0, 1.45]), [0.9, 0.75, 0.62], skin.body));
+    p.push(ellipsoid(lift([-0.85, 0.0, 1.45]), [0.9, 0.75, 0.62], skin.body).on(ABDOMEN));
     // Eight legs, in two sets of four lifting by turns, each bent up at the knee
     for side in [-1.0, 1.0] {
         for k in 0..4 {
@@ -1631,8 +1693,9 @@ fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
             let foot_z = 0.15 * step.max(0.0) + 1.4 * front;
             let foot = [foot_x, side * reach, foot_z];
             let knee = [(hip[0] + foot[0]) * 0.5, side * (reach * 0.65), hip[2] + 0.55 - drop * 0.5];
-            p.push(limb(hip, knee, 0.1, 0.08, skin.dark));
-            p.push(limb(knee, foot, 0.08, 0.03, skin.dark));
+            let leg = (side > 0.0) as usize * 4 + k as usize;
+            p.push(limb(hip, knee, 0.1, 0.08, skin.dark).on(FEMUR[leg]));
+            p.push(limb(knee, foot, 0.08, 0.03, skin.dark).on(TIBIA[leg]));
         }
     }
 }
@@ -1648,26 +1711,28 @@ fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin
     let head = [0.74 + lunge - 0.12 * howl, 0.0, 0.78 - crouch + 0.3 * howl];
     // Its muzzle points on ahead, or up at the sky
     let snout = [head[0] + 0.2 - 0.12 * howl, 0.0, head[2] - 0.04 + 0.2 * howl];
+    use crate::baked::wolf::*;
     for s in [-1.0, 1.0] {
-        p.push(ball([head[0] + 0.09, s * 0.07, head[2] + 0.05], 0.025, skin.glow));
-        p.push(limb([head[0] - 0.03, s * 0.07, head[2] + 0.1], [head[0] - 0.05, s * 0.09, head[2] + 0.24], 0.04, 0.01, dark));
+        p.push(ball([head[0] + 0.09, s * 0.07, head[2] + 0.05], 0.025, skin.glow).on(HEAD));
+        p.push(limb([head[0] - 0.03, s * 0.07, head[2] + 0.1], [head[0] - 0.05, s * 0.09, head[2] + 0.24], 0.04, 0.01, dark).on(HEAD));
     }
-    p.push(ball(snout, 0.03, EYE));
+    p.push(ball(snout, 0.03, EYE).on(MUZZLE));
     if open {
-        p.push(limb([head[0] + 0.05, 0.0, head[2] - 0.08], [snout[0], 0.0, snout[2] - 0.12], 0.045, 0.025, dark));
+        p.push(limb([head[0] + 0.05, 0.0, head[2] - 0.08], [snout[0], 0.0, snout[2] - 0.12], 0.045, 0.025, dark).on(JAW));
     }
-    p.push(limb(head, snout, 0.075, 0.05, fur));
-    p.push(ball(head, 0.13, fur));
-    p.push(limb([0.42 + lunge * 0.5, 0.0, 0.62 - crouch], head, 0.12, 0.1, fur));
-    p.push(ellipsoid([0.28 + lunge * 0.5, 0.0, 0.55 - crouch], [0.22, 0.17, 0.18], skin.accent));
-    p.push(ellipsoid([0.0 + lunge * 0.3, 0.0, 0.6 - crouch], [0.5, 0.18, 0.19], fur));
+    p.push(limb(head, snout, 0.075, 0.05, fur).on(MUZZLE));
+    p.push(ball(head, 0.13, fur).on(HEAD));
+    p.push(limb([0.42 + lunge * 0.5, 0.0, 0.62 - crouch], head, 0.12, 0.1, fur).on(NECK));
+    p.push(ellipsoid([0.28 + lunge * 0.5, 0.0, 0.55 - crouch], [0.22, 0.17, 0.18], skin.accent).on(CHEST));
+    p.push(ellipsoid([0.0 + lunge * 0.3, 0.0, 0.6 - crouch], [0.5, 0.18, 0.19], fur).on(BODY));
     // Its tail, low as it creeps, up as it howls
     let sway = 0.08 * (angle + 1.0).sin() * moving;
-    p.push(limb([-0.45, 0.0, 0.62 - crouch], [-0.82, sway, 0.45 - crouch + 0.35 * howl], 0.06, 0.035, dark));
+    p.push(limb([-0.45, 0.0, 0.62 - crouch], [-0.82, sway, 0.45 - crouch + 0.35 * howl], 0.06, 0.035, dark).on(TAIL));
     for (x, y, s) in [(0.3, 0.12, 1.0), (0.3, -0.12, -1.0), (-0.32, 0.12, -1.0), (-0.32, -0.12, 1.0)] {
         // Its hind legs stretched out behind as it lunges
         let reach = if x < 0.0 { -0.4 * pose.strike } else { 0.5 * pose.strike };
-        leg(p, [x + lunge * 0.4, y, 0.52 - crouch], 0.52 - crouch, 0.055, 0.5 * swing * s + reach, fur, dark);
+        let k = crate::baked::leg_of(x, y);
+        leg(p, [x + lunge * 0.4, y, 0.52 - crouch], 0.52 - crouch, 0.055, 0.5 * swing * s + reach, fur, dark, [UPPER[k], LOWER[k]]);
     }
 }
 
@@ -1679,7 +1744,9 @@ fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin
 /// again, or a round shield it holds up in front and a mace it brings down over the top of it.
 #[allow(clippy::too_many_arguments)]
 fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, armored: bool, living: bool, arms: Arms) {
+    use crate::baked::undead::*;
     let (flesh, dark, glow) = (skin.body, skin.dark, skin.glow);
+    let start = p.len();
     // Leaning into a blow, and hunched as zombies are
     let hunch = if bony || living { 0.0 } else { 0.08 };
     let lean = if arms == Arms::Crossbow { pose.mix(0.0, 0.03, -0.02, 0.1) } else { pose.mix(hunch, hunch - 0.05, hunch + 0.22, hunch + 0.05) };
@@ -1719,6 +1786,8 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
         p.push(ball(head, 0.13, flesh));
     }
     p.push(limb(up([0.0, 0.0, 1.3]), head, 0.05, 0.05, flesh));
+    tag(p, start, HEAD);
+    let start = p.len();
     // Its chest: ribs, or rags over flesh, a shirt, maybe a breastplate
     let chest = up([0.0, 0.0, 1.25]);
     if armored {
@@ -1738,24 +1807,27 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
         p.push(ellipsoid(up([0.0, 0.0, 1.12]), [0.15, 0.2, 0.28], skin.accent));
         p.push(ellipsoid(chest, [0.13, 0.2, 0.22], if living { skin.accent } else { flesh }));
     }
-    p.push(ellipsoid([0.0, 0.0, 0.92], [0.1, 0.15, 0.07], if armored { skin.accent } else { dark }));
+    tag(p, start, TORSO);
+    p.push(ellipsoid([0.0, 0.0, 0.92], [0.1, 0.15, 0.07], if armored { skin.accent } else { dark }).on(PELVIS));
     // Sleeves on the living, armor on the armored
     let upper = if armored || living { skin.accent } else { flesh };
-    // An arm from `shoulder` to `hand`, its elbow out to the side and down
-    let arm = |p: &mut Vec<Part>, shoulder: Vec3, hand: Vec3, out: f64| {
+    // An arm from `shoulder` to `hand`, its elbow out to the side and down, on the right or the
+    // left, 0 or 1
+    let arm = |p: &mut Vec<Part>, shoulder: Vec3, hand: Vec3, out: f64, side: usize| {
         let elbow = [(shoulder[0] + hand[0]) * 0.5 - 0.06, (shoulder[1] + hand[1]) * 0.5 + out, (shoulder[2] + hand[2]) * 0.5 - 0.12];
-        p.push(ball(hand, limb_r * 1.1, flesh));
-        p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-        p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+        p.push(ball(hand, limb_r * 1.1, flesh).on(FORE[side]));
+        p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh).on(FORE[side]));
+        p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper).on(ARM[side]));
     };
     if arms == Arms::Bow {
         bow(p, up, &arm, pose, skin);
     } else if arms == Arms::Slab {
         // A brute's shoulders, hunched and heavy, and rags hanging off them
         for s in [-1.0, 1.0] {
-            p.push(ball(up([-0.02, s * 0.25, 1.4]), 0.13, flesh));
+            p.push(ball(up([-0.02, s * 0.25, 1.4]), 0.13, flesh).on(TORSO));
         }
-        p.push(ellipsoid(up([-0.05, 0.0, 1.32]), [0.17, 0.27, 0.2], dark));
+        p.push(ellipsoid(up([-0.05, 0.0, 1.32]), [0.17, 0.27, 0.2], dark).on(TORSO));
+        let start = p.len();
         // The gravestone: carried low in front, raised high behind its head, brought down in
         // front, and lifted as it roars, both hands on its broken end
         let hand = pose.at([0.32, 0.0, 0.92], [-0.12, 0.0, 1.95], [0.62, 0.0, 1.05], [0.15, 0.0, 2.05]);
@@ -1771,11 +1843,13 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
         for y in [-0.15, 0.0, 0.15] {
             p.push(limb(row(0.05, y), row(0.7 - f64::abs(y) * 0.6, y), 0.13, 0.13, skin.extra));
         }
+        tag(p, start, HELD);
         for s in [-1.0, 1.0] {
             let grip = [hand[0], hand[1] + s * 0.07, hand[2]];
-            arm(p, up([0.0, s * 0.24, 1.42]), grip, s * 0.12);
+            arm(p, up([0.0, s * 0.24, 1.42]), grip, s * 0.12, (s > 0.0) as usize);
         }
     } else if arms == Arms::Crossbow {
+        let start = p.len();
         // Held low across it, raised to the shoulder to aim, kicking up as it looses, and pointed
         // at the ground as it's spanned again
         let stock = up(pose.at([0.1, -0.12, 1.0], [0.04, -0.13, 1.42], [0.04, -0.13, 1.44], [0.16, -0.08, 1.02]));
@@ -1793,29 +1867,31 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
             p.push(limb(end, latch, 0.008, 0.008, BOWSTRING));
         }
         if pose.strike < 0.5 {
-            p.push(limb(at(0.5, 0.0, 0.035), at(1.06, 0.0, 0.035), 0.014, 0.012, STEEL));
+            p.push(limb(at(0.5, 0.0, 0.035), at(1.06, 0.0, 0.035), 0.014, 0.012, STEEL).on(BOLT));
         }
         p.push(limb(stock, tip, 0.04, 0.03, skin.extra));
+        tag(p, start, HELD);
         // A quiver of bolts on its back
         for k in 0..3 {
-            p.push(ball(up([-0.2, 0.1 + 0.035 * k as f64, 1.48]), 0.025, LINEN));
+            p.push(ball(up([-0.2, 0.1 + 0.035 * k as f64, 1.48]), 0.025, LINEN).on(TORSO));
         }
-        p.push(limb(up([-0.17, 0.1, 0.92]), up([-0.2, 0.13, 1.44]), 0.05, 0.055, LEATHER));
+        p.push(limb(up([-0.17, 0.1, 0.92]), up([-0.2, 0.13, 1.44]), 0.05, 0.055, LEATHER).on(TORSO));
         // One hand at the trigger, the other holding it up under its middle
-        arm(p, up([0.0, -0.22, 1.42]), at(0.12, -0.02, -0.03), -0.06);
-        arm(p, up([0.0, 0.22, 1.42]), at(0.5, 0.0, -0.05), 0.08);
+        arm(p, up([0.0, -0.22, 1.42]), at(0.12, -0.02, -0.03), -0.06, 0);
+        arm(p, up([0.0, 0.22, 1.42]), at(0.5, 0.0, -0.05), 0.08, 1);
     } else {
         if arms == Arms::Shield {
             // A round shield on its left arm, held up in front, drawn back to brace, shoved out as
             // it strikes over the top of it, and raised high as it calls out: iron at its rim, a
             // red band across it and a boss in its middle
             let c = up(pose.at([0.3, 0.17, 1.1], [0.22, 0.22, 1.14], [0.48, 0.1, 1.08], [0.3, 0.12, 1.32]));
-            p.push(ball([c[0] + 0.04, c[1], c[2]], 0.065, STEEL));
-            p.push(ellipsoid([c[0] + 0.012, c[1], c[2]], [0.03, 0.065, 0.31], TEMPLE_RED));
-            p.push(ellipsoid(c, [0.035, 0.3, 0.36], WOOD));
-            p.push(ellipsoid([c[0] - 0.014, c[1], c[2]], [0.035, 0.33, 0.39], DARK_STEEL));
-            arm(p, up([0.0, 0.22, 1.42]), [c[0] - 0.08, c[1] - 0.04, c[2] - 0.02], 0.1);
+            p.push(ball([c[0] + 0.04, c[1], c[2]], 0.065, STEEL).on(SHIELD));
+            p.push(ellipsoid([c[0] + 0.012, c[1], c[2]], [0.03, 0.065, 0.31], TEMPLE_RED).on(SHIELD));
+            p.push(ellipsoid(c, [0.035, 0.3, 0.36], WOOD).on(SHIELD));
+            p.push(ellipsoid([c[0] - 0.014, c[1], c[2]], [0.035, 0.33, 0.39], DARK_STEEL).on(SHIELD));
+            arm(p, up([0.0, 0.22, 1.42]), [c[0] - 0.08, c[1] - 0.04, c[2] - 0.02], 0.1, 1);
         }
+        let start = p.len();
         // The blade arm: hanging, raised overhead behind, or brought down in front
         let shoulder = up([0.0, -0.22, 1.42]);
         let zombie_reach = if bony || living { 0.0 } else { 0.35 };
@@ -1837,33 +1913,36 @@ fn undead(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin, bony: bool, arm
             p.push(limb(hand, tip, 0.03, 0.012, skin.extra));
             p.push(limb([hand[0] - blade[1] / n * 0.1, hand[1] - 0.09, hand[2]], [hand[0] + blade[1] / n * 0.1, hand[1] + 0.09, hand[2]], 0.025, 0.025, DARK_STEEL));
         }
-        p.push(ball(hand, limb_r * 1.1, flesh));
-        p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-        p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+        tag(p, start, HELD);
+        p.push(ball(hand, limb_r * 1.1, flesh).on(FORE[0]));
+        p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh).on(FORE[0]));
+        p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper).on(ARM[0]));
         // The other arm swinging, reaching out for a zombie, thrown out for balance as it strikes
         if arms == Arms::Blade {
             let shoulder = up([0.0, 0.22, 1.42]);
             let elbow = pose.at([0.05 + zombie_reach + 0.15 * swing, 0.26, 1.15 + zombie_reach * 0.5], [0.2, 0.3, 1.3], [-0.12, 0.3, 1.2], [0.1, 0.32, 1.55]);
             let hand = pose.at([0.15 + zombie_reach * 1.4 + 0.25 * swing, 0.27, 0.95 + zombie_reach], [0.42, 0.26, 1.35], [-0.25, 0.32, 1.0], [0.3, 0.28, 1.9]);
-            p.push(ball(hand, limb_r * 1.1, flesh));
-            p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh));
-            p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper));
+            p.push(ball(hand, limb_r * 1.1, flesh).on(FORE[1]));
+            p.push(limb(elbow, hand, limb_r * 0.9, limb_r * 0.8, flesh).on(FORE[1]));
+            p.push(limb(shoulder, elbow, limb_r, limb_r * 0.9, upper).on(ARM[1]));
         }
     }
     // Its legs, in rags or greaves
     for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
-        leg(p, [0.0, y, 0.92], 0.88, limb_r * 1.1, 0.45 * swing * s, if armored { skin.accent } else if bony { flesh } else { dark }, dark);
+        let side = (y > 0.0) as usize;
+        leg(p, [0.0, y, 0.92], 0.88, limb_r * 1.1, 0.45 * swing * s, if armored { skin.accent } else if bony { flesh } else { dark }, dark, [THIGH[side], SHIN[side]]);
     }
 }
 
 /// A skeleton archer's bow and the arms drawing it, and the hood and quiver it wears: the bow held
 /// low at its side, raised and drawn back to the cheek as it takes aim, the string snapping
 /// straight as it looses, and a hand reaching back over its shoulder for the next arrow
-fn bow(p: &mut Vec<Part>, up: impl Fn(Vec3) -> Vec3, arm: &impl Fn(&mut Vec<Part>, Vec3, Vec3, f64), pose: Pose, skin: Skin) {
+fn bow(p: &mut Vec<Part>, up: impl Fn(Vec3) -> Vec3, arm: &impl Fn(&mut Vec<Part>, Vec3, Vec3, f64, usize), pose: Pose, skin: Skin) {
+    use crate::baked::undead::*;
     let wood = skin.extra;
     // A hood over its skull, open in front
-    p.push(ellipsoid(up([-0.04, 0.0, 1.66]), [0.15, 0.165, 0.16], skin.accent));
-    p.push(ellipsoid(up([-0.08, 0.0, 1.42]), [0.1, 0.22, 0.08], skin.accent));
+    p.push(ellipsoid(up([-0.04, 0.0, 1.66]), [0.15, 0.165, 0.16], skin.accent).on(HEAD));
+    p.push(ellipsoid(up([-0.08, 0.0, 1.42]), [0.1, 0.22, 0.08], skin.accent).on(TORSO));
     let grip = up(pose.at([0.14, 0.27, 0.98], [0.62, 0.1, 1.43], [0.64, 0.08, 1.45], [0.3, 0.22, 1.12]));
     let draw = up(pose.at([0.12, -0.25, 0.95], [0.06, -0.03, 1.52], [0.3, -0.1, 1.44], [-0.16, -0.12, 1.66]));
     // How far it's bent, drawn
@@ -1871,12 +1950,13 @@ fn bow(p: &mut Vec<Part>, up: impl Fn(Vec3) -> Vec3, arm: &impl Fn(&mut Vec<Part
     let tip = |s: f64| [grip[0] - 0.1 - 0.12 * bent, grip[1], grip[2] + s * (0.62 - 0.05 * bent)];
     let mid = |s: f64| [grip[0] + 0.0 - 0.02 * bent, grip[1], grip[2] + s * 0.33];
     for s in [-1.0, 1.0] {
-        p.push(limb(mid(s), tip(s), 0.028, 0.016, wood));
-        p.push(limb(grip, mid(s), 0.032, 0.028, wood));
+        p.push(limb(mid(s), tip(s), 0.028, 0.016, wood).on(HELD));
+        p.push(limb(grip, mid(s), 0.032, 0.028, wood).on(HELD));
     }
-    p.push(ball(grip, 0.04, LEATHER));
+    p.push(ball(grip, 0.04, LEATHER).on(HELD));
     // The string, drawn back to its hand as it aims, and the arrow on it
     if bent > 0.3 {
+        let start = p.len();
         for s in [-1.0, 1.0] {
             p.push(limb(tip(s), draw, 0.008, 0.008, BOWSTRING));
         }
@@ -1884,16 +1964,17 @@ fn bow(p: &mut Vec<Part>, up: impl Fn(Vec3) -> Vec3, arm: &impl Fn(&mut Vec<Part
         p.push(limb(head, [head[0] + 0.07, head[1], head[2]], 0.02, 0.006, STEEL));
         p.push(limb(draw, head, 0.012, 0.012, WOOD));
         p.push(limb(draw, [draw[0] + 0.1, draw[1], draw[2]], 0.025, 0.02, LINEN));
+        tag(p, start, DRAWN);
     } else {
-        p.push(limb(tip(-1.0), tip(1.0), 0.008, 0.008, BOWSTRING));
+        p.push(limb(tip(-1.0), tip(1.0), 0.008, 0.008, BOWSTRING).on(STRING));
     }
     // A quiver of arrows on its back
     for k in 0..3 {
-        p.push(ball(up([-0.2, -0.08 + 0.04 * k as f64, 1.55]), 0.025, LINEN));
+        p.push(ball(up([-0.2, -0.08 + 0.04 * k as f64, 1.55]), 0.025, LINEN).on(TORSO));
     }
-    p.push(limb(up([-0.17, -0.08, 0.95]), up([-0.2, -0.04, 1.5]), 0.05, 0.055, LEATHER));
-    arm(p, up([0.0, 0.22, 1.42]), grip, 0.1);
-    arm(p, up([0.0, -0.22, 1.42]), draw, -0.1);
+    p.push(limb(up([-0.17, -0.08, 0.95]), up([-0.2, -0.04, 1.5]), 0.05, 0.055, LEATHER).on(TORSO));
+    arm(p, up([0.0, 0.22, 1.42]), grip, 0.1, 1);
+    arm(p, up([0.0, -0.22, 1.42]), draw, -0.1, 0);
 }
 
 /// A bloater: a corpse swollen up round as a barrel, too heavy for its stubby legs, its skin
@@ -1901,6 +1982,7 @@ fn bow(p: &mut Vec<Part>, up: impl Fn(Vec3) -> Vec3, arm: &impl Fn(&mut Vec<Part
 /// stretched over it. It waddles, rocking side to side, and swells up fit to burst as it comes
 /// close, its arms flung back, then bursts in a cloud of venom.
 fn bloater(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
+    use crate::baked::bloater::*;
     let (flesh, dark, glow) = (skin.body, skin.dark, skin.glow);
     // Swelling as it gets ready to burst
     let swell = 1.0 + 0.22 * pose.windup.max(pose.strike).max(pose.special);
@@ -1908,11 +1990,14 @@ fn bloater(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     let at = |v: Vec3| [v[0], v[1] + rock * (v[2] - 0.2).max(0.0), v[2]];
     // A small head sunk into its shoulders, eyes glowing, its jaw hanging open
     let head = at([0.26, 0.0, 1.55]);
+    let start = p.len();
     for s in [-1.0, 1.0] {
         p.push(ball([head[0] + 0.1, head[1] + s * 0.05, head[2] + 0.02], 0.03, glow));
     }
     p.push(ellipsoid([head[0] + 0.08, head[1], head[2] - 0.09], [0.06, 0.07, 0.05], dark));
     p.push(ball(head, 0.13, flesh));
+    tag(p, start, HEAD);
+    let start = p.len();
     // Glowing boils and splits all over its belly, and blotches
     let belly = at([0.05, 0.0, 0.95]);
     let r = [0.42 * swell, 0.48 * swell, 0.5 * swell];
@@ -1925,19 +2010,22 @@ fn bloater(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
     // Rags round its middle
     p.push(ellipsoid([belly[0], belly[1], belly[2] - 0.22 * swell], [r[0] * 1.02, r[1] * 1.02, 0.12], skin.accent));
     p.push(ellipsoid(belly, r, flesh).striped(dark));
-    p.push(ellipsoid(at([0.0, 0.0, 1.32]), [0.24, 0.32, 0.18], flesh));
+    tag(p, start, BELLY);
+    p.push(ellipsoid(at([0.0, 0.0, 1.32]), [0.24, 0.32, 0.18], flesh).on(CHEST));
     // Thin arms dangling, flung back as it swells
     for s in [-1.0, 1.0] {
+        let side = (s > 0.0) as usize;
         let shoulder = at([0.02, s * 0.33, 1.32]);
         let hand = pose.at([0.22 + 0.1 * swing * s, s * 0.52, 0.85], [-0.3, s * 0.62, 1.15], [-0.35, s * 0.66, 1.2], [-0.3, s * 0.62, 1.15]);
         let elbow = [(shoulder[0] + hand[0]) * 0.5, (shoulder[1] + hand[1]) * 0.5 + s * 0.06, (shoulder[2] + hand[2]) * 0.5 - 0.08];
-        p.push(ball(hand, 0.06, flesh));
-        p.push(limb(elbow, hand, 0.05, 0.045, flesh));
-        p.push(limb(shoulder, elbow, 0.06, 0.05, flesh));
+        p.push(ball(hand, 0.06, flesh).on(FORE[side]));
+        p.push(limb(elbow, hand, 0.05, 0.045, flesh).on(FORE[side]));
+        p.push(limb(shoulder, elbow, 0.06, 0.05, flesh).on(ARM[side]));
     }
     // Short legs, splayed
     for (y, s) in [(0.2, 1.0), (-0.2, -1.0)] {
-        leg(p, [0.0, y, 0.5], 0.48, 0.1, 0.35 * swing * s, dark, dark);
+        let side = (y > 0.0) as usize;
+        leg(p, [0.0, y, 0.5], 0.48, 0.1, 0.35 * swing * s, dark, dark, [THIGH[side], SHIN[side]]);
     }
 }
 
@@ -1946,6 +2034,7 @@ fn bloater(p: &mut Vec<Part>, swing: f64, pose: Pose, skin: Skin) {
 /// player and leaps on them from a few steps off: crouching lower to spring, lunging with both
 /// claws, and flinging its arms up as it leaps.
 fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+    use crate::baked::ghoul::*;
     let (flesh, dark, glow, claw) = (skin.body, skin.dark, skin.glow, skin.extra);
     // Crouched lower to spring, or reaching forward in the lunge
     let crouch = pose.mix(0.0, 0.18, 0.04, 0.12);
@@ -1955,6 +2044,7 @@ fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
     let hips = [lunge * 0.4, 0.0, 0.82 - crouch + bob];
     let chest = [hips[0] + 0.32 + lunge, 0.0, hips[2] + 0.42 - crouch * 0.5];
     let head = [chest[0] + 0.2, 0.0, chest[2] + 0.12];
+    let start = p.len();
     for s in [-1.0, 1.0] {
         p.push(ball([head[0] + 0.1, s * 0.05, head[2] + 0.02], 0.026, glow));
     }
@@ -1963,6 +2053,8 @@ fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
     p.push(ellipsoid([head[0] + 0.12, 0.0, head[2] - 0.05], [0.05, 0.06, 0.012], claw));
     p.push(ellipsoid(head, [0.13, 0.11, 0.12], flesh));
     p.push(limb(chest, head, 0.06, 0.05, flesh));
+    tag(p, start, HEAD);
+    let start = p.len();
     // A hunched back, the spine standing out along it, and ribs
     for k in 0..4 {
         let f = k as f64 / 3.0;
@@ -1971,10 +2063,13 @@ fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
     }
     p.push(ellipsoid(chest, [0.15, 0.2, 0.15], flesh).striped(dark));
     p.push(limb(hips, chest, 0.12, 0.15, flesh));
+    tag(p, start, TORSO);
     // Rags round its hips
-    p.push(ellipsoid([hips[0], 0.0, hips[2] - 0.05], [0.14, 0.18, 0.1], skin.accent));
+    p.push(ellipsoid([hips[0], 0.0, hips[2] - 0.05], [0.14, 0.18, 0.1], skin.accent).on(PELVIS));
     // Long arms, swinging low as it runs, drawn back to spring, thrust out together, flung up
     for s in [-1.0, 1.0] {
+        let side = (s > 0.0) as usize;
+        let start = p.len();
         let shoulder = [chest[0] + 0.02, s * 0.2, chest[2] + 0.05];
         let hand = pose.at(
             [chest[0] + 0.25 - 0.3 * swing * s, s * 0.28, 0.25 + 0.1 * (swing * s).max(0.0)],
@@ -1991,18 +2086,20 @@ fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
         }
         p.push(ball(hand, 0.045, flesh));
         p.push(limb(elbow, hand, 0.04, 0.035, flesh));
-        p.push(limb(shoulder, elbow, 0.05, 0.04, flesh));
+        tag(p, start, FORE[side]);
+        p.push(limb(shoulder, elbow, 0.05, 0.04, flesh).on(ARM[side]));
     }
     // Legs bent at the knee, its feet planted wide, tucked up as it leaps
     let tuck = pose.special;
     for (y, s) in [(0.13, 1.0), (-0.13, -1.0)] {
+        let side = (y > 0.0) as usize;
         let step = 0.3 * swing * s;
         let hip = [hips[0], y, hips[2]];
         let foot = [hips[0] + step - 0.05, y * 1.4, 0.06 + 0.1 * (swing * s).max(0.0) + tuck * 0.35];
         let knee = [hips[0] + 0.25 + step * 0.5, y * 1.3, (hip[2] + foot[2]) * 0.5 + 0.02];
-        p.push(ellipsoid([foot[0] + 0.07, foot[1], foot[2] - 0.02], [0.11, 0.05, 0.04], dark));
-        p.push(limb(knee, foot, 0.05, 0.04, flesh));
-        p.push(limb(hip, knee, 0.07, 0.055, flesh));
+        p.push(ellipsoid([foot[0] + 0.07, foot[1], foot[2] - 0.02], [0.11, 0.05, 0.04], dark).on(SHIN[side]));
+        p.push(limb(knee, foot, 0.05, 0.04, flesh).on(SHIN[side]));
+        p.push(limb(hip, knee, 0.07, 0.055, flesh).on(THIGH[side]));
     }
 }
 
@@ -2013,10 +2110,12 @@ fn ghoul(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, ski
 /// shut as its tail whips over its head to sting, and noses down with its tail laid out behind to
 /// dig itself in.
 fn burrower(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
+    use crate::baked::burrower::*;
     let (shell, dark, band, glow, black) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
     // Nosing down into the sand, or rearing a little as it strikes
     let dip = pose.mix(0.0, -0.12, 0.04, 0.32);
     let tilt = |v: Vec3| [v[0], v[1], v[2] - dip * (v[0] + 0.3).max(0.0) * 0.5];
+    let start = p.len();
     // Little black eyes on its head shield, and its mandibles under the lip
     for (x, y) in [(0.66, 0.07), (0.66, -0.07), (0.6, 0.15), (0.6, -0.15)] {
         p.push(ball(tilt([x, y, 0.43]), 0.026, black));
@@ -2026,9 +2125,11 @@ fn burrower(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) 
     }
     p.push(ellipsoid(tilt([0.77, 0.0, 0.25]), [0.11, 0.25, 0.04], band));
     p.push(ellipsoid(tilt([0.55, 0.0, 0.33]), [0.25, 0.31, 0.1], dark));
+    tag(p, start, HEAD);
     // Its pincers: raised and opened wide, snapped shut out in front, or tucked in to dig
     let open = pose.windup * 0.9 + pose.special * 0.2;
     for s in [-1.0, 1.0] {
+        let side = (s > 0.0) as usize;
         let shoulder = tilt([0.58, s * 0.22, 0.3]);
         let elbow = pose.at([0.84, s * 0.44, 0.33], [0.8, s * 0.52, 0.62], [1.04, s * 0.32, 0.36], [0.82, s * 0.36, 0.2]);
         let hand = pose.at([1.08, s * 0.32, 0.3], [1.0, s * 0.44, 0.76], [1.34, s * 0.15, 0.33], [1.0, s * 0.26, 0.14]);
@@ -2036,29 +2137,32 @@ fn burrower(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) 
         let out = Vector3::new(-forward.y, forward.x, 0.0) * s;
         let at = |f: f64, o: f64, u: f64| -> Vec3 { (Vector3::from(hand) + forward * f + out * o + Vector3::z() * u).into() };
         // The fixed finger on the inside and the one that closes on it, tipped black
-        p.push(limb(at(0.18, -0.03, 0.0), at(0.27, -0.06, -0.01), 0.025, 0.01, black));
-        p.push(limb(at(0.17, 0.06 + 0.1 * open, 0.02), at(0.25, 0.02 + 0.1 * open, 0.0), 0.025, 0.01, black));
-        p.push(limb(hand, at(0.18, -0.03, 0.0), 0.06, 0.03, shell));
-        p.push(limb(at(0.0, 0.03, 0.01), at(0.17, 0.06 + 0.1 * open, 0.02), 0.045, 0.028, shell));
-        p.push(ellipsoid(hand, [0.11, 0.08, 0.07], shell));
-        p.push(limb(elbow, hand, 0.055, 0.06, shell));
-        p.push(limb(shoulder, elbow, 0.06, 0.055, dark));
+        p.push(limb(at(0.18, -0.03, 0.0), at(0.27, -0.06, -0.01), 0.025, 0.01, black).on(CLAW[side]));
+        p.push(limb(at(0.17, 0.06 + 0.1 * open, 0.02), at(0.25, 0.02 + 0.1 * open, 0.0), 0.025, 0.01, black).on(PINCER[side]));
+        p.push(limb(hand, at(0.18, -0.03, 0.0), 0.06, 0.03, shell).on(CLAW[side]));
+        p.push(limb(at(0.0, 0.03, 0.01), at(0.17, 0.06 + 0.1 * open, 0.02), 0.045, 0.028, shell).on(PINCER[side]));
+        p.push(ellipsoid(hand, [0.11, 0.08, 0.07], shell).on(CLAW[side]));
+        p.push(limb(elbow, hand, 0.055, 0.06, shell).on(CLAW[side]));
+        p.push(limb(shoulder, elbow, 0.06, 0.055, dark).on(ARM[side]));
     }
+    let start = p.len();
     // Its back, in four plates narrowing to the tail, a spine rising from each
     for k in 0..4 {
         let x = 0.3 - k as f64 * 0.24;
         p.push(limb(tilt([x, 0.0, 0.47 - k as f64 * 0.01]), tilt([x - 0.07, 0.0, 0.6 - k as f64 * 0.02]), 0.035, 0.008, dark));
         p.push(ellipsoid(tilt([x, 0.0, 0.35 - k as f64 * 0.01]), [0.15, 0.3 - k as f64 * 0.035, 0.14], shell).striped(band));
     }
+    tag(p, start, BODY);
     // Six legs, in two sets of three stepping by turns, bent up at the knee
     for side in [-1.0, 1.0] {
         for (k, x) in [0.3, 0.05, -0.2].into_iter().enumerate() {
+            let leg = (side > 0.0) as usize * 3 + k;
             let step = (angle + k as f64 * PI * 2.0 / 3.0 + if side > 0.0 { PI } else { 0.0 }).sin() * moving;
             let hip = tilt([x, side * 0.22, 0.3]);
             let foot = [x + 0.12 * step + 0.06 * (1.0 - k as f64), side * 0.6, 0.12 * step.max(0.0)];
             let knee = [(hip[0] + foot[0]) * 0.5, side * 0.46, 0.46];
-            p.push(limb(knee, foot, 0.035, 0.018, dark));
-            p.push(limb(hip, knee, 0.045, 0.035, shell));
+            p.push(limb(knee, foot, 0.035, 0.018, dark).on(SHIN[leg]));
+            p.push(limb(hip, knee, 0.045, 0.035, shell).on(THIGH[leg]));
         }
     }
     // The tail: arched over its back, drawn back higher to sting, whipped forward over its head,
@@ -2074,11 +2178,11 @@ fn burrower(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) 
         pose.at([-0.34, 0.0, 1.12], [-0.36, 0.0, 1.26], [0.46, 0.0, 0.7], [-1.66, 0.0, 0.33]),
     ];
     let joint = |k: usize| -> Vec3 { [joints[k][0], joints[k][1] + sway * k as f64 / 3.0, joints[k][2]] };
-    p.push(limb(joint(5), joint(6), 0.04, 0.008, black));
-    p.push(ball(joint(5), 0.085, glow));
+    p.push(limb(joint(5), joint(6), 0.04, 0.008, black).on(STINGER));
+    p.push(ball(joint(5), 0.085, glow).on(STINGER));
     for k in 0..5 {
         let r = 0.095 - k as f64 * 0.01;
-        p.push(limb(joint(k), joint(k + 1), r, r - 0.008, if k % 2 == 0 { shell } else { band }));
+        p.push(limb(joint(k), joint(k + 1), r, r - 0.008, if k % 2 == 0 { shell } else { band }).on(TAIL[k]));
     }
 }
 
@@ -2089,12 +2193,14 @@ fn burrower(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) 
 /// drifts. It spreads its arms wide to gather the cold, thrusts its claws out together to strike,
 /// and draws in on itself to vanish.
 fn wraith(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
+    use crate::baked::wraith::*;
     let (shroud, shadow, mantle, glow, ice) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
     // Rising and falling as it drifts, and hunched forward as it strikes
     let bob = 0.04 * angle.sin();
     let hunch = pose.mix(0.0, -0.05, 0.12, 0.06);
     let at = |v: Vec3| [v[0] + hunch * (v[2] - 1.0).max(0.0), v[1], v[2] + bob];
     let head = at([0.04, 0.0, 1.93]);
+    let start = p.len();
     for s in [-1.0, 1.0] {
         p.push(ball([head[0] + 0.13, s * 0.05, head[2] + 0.015], 0.024, glow));
     }
@@ -2105,10 +2211,13 @@ fn wraith(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
         p.push(limb(at([-0.02, y, z]), at([-0.1, y * 1.5, z + h]), 0.035, 0.008, ice));
     }
     p.push(ellipsoid([head[0] - 0.03, 0.0, head[2] + 0.02], [0.17, 0.18, 0.2], shroud));
-    p.push(ellipsoid(at([0.16, 0.0, 1.4]), [0.025, 0.05, 0.09], glow));
-    p.push(ellipsoid(at([-0.02, 0.0, 1.68]), [0.17, 0.31, 0.11], mantle));
+    tag(p, start, HEAD);
+    p.push(ellipsoid(at([0.16, 0.0, 1.4]), [0.025, 0.05, 0.09], glow).on(BODY));
+    p.push(ellipsoid(at([-0.02, 0.0, 1.68]), [0.17, 0.31, 0.11], mantle).on(BODY));
     // Its arms: hanging and swaying, raised wide, thrust out together, or drawn in across it
     for s in [-1.0, 1.0] {
+        let side = (s > 0.0) as usize;
+        let start = p.len();
         let shoulder = at([0.0, s * 0.27, 1.65]);
         let swing = 0.06 * (angle + s).sin();
         let elbow = at(pose.at([0.18 + swing, s * 0.36, 1.3], [0.0, s * 0.62, 1.92], [0.48, s * 0.25, 1.56], [0.26, s * 0.16, 1.45]));
@@ -2120,17 +2229,18 @@ fn wraith(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
         }
         p.push(ball(hand, 0.04, shadow));
         p.push(limb(elbow, hand, 0.035, 0.03, shadow));
-        p.push(limb(shoulder, elbow, 0.05, 0.04, shroud));
+        tag(p, start, FORE[side]);
+        p.push(limb(shoulder, elbow, 0.05, 0.04, shroud).on(ARM[side]));
     }
     // The shroud, narrowing then flaring as it hangs, and the rags under it streaming back
     let behind = 0.12 * moving + 0.1 * pose.special;
-    p.push(limb(at([0.0, 0.0, 1.7]), at([-0.06 - behind * 0.5, 0.0, 0.95]), 0.2, 0.29, shroud));
+    p.push(limb(at([0.0, 0.0, 1.7]), at([-0.06 - behind * 0.5, 0.0, 0.95]), 0.2, 0.29, shroud).on(SHROUD));
     for k in 0..7 {
         let across = k as f64 / 6.0 * 2.0 - 1.0;
         let wave = (angle + k as f64 * 1.3).sin();
         let from = at([-0.06 - behind * 0.5, across * 0.22, 0.98]);
         let to = [-0.2 - behind * 2.0 + 0.05 * wave, across * 0.3 + 0.04 * wave, 0.3 + 0.07 * wave + 0.1 * (k % 2) as f64 + bob];
-        p.push(limb(from, to, 0.075, 0.02, if k % 2 == 0 { shroud } else { shadow }));
+        p.push(limb(from, to, 0.075, 0.02, if k % 2 == 0 { shroud } else { shadow }).on(RAG[k]));
     }
 }
 
@@ -2140,6 +2250,7 @@ fn wraith(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
 /// legs and a thick tail. It gapes as it gets ready, lunges and snaps its jaws shut, and flings
 /// its mouth wide as it lashes out its tongue.
 fn lurker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+    use crate::baked::lurker::*;
     let (hide, dark, belly, eye, tongue) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
     let gape = pose.mix(0.0, 0.7, 0.2, 1.0);
     let rear = pose.mix(0.0, 0.06, -0.03, 0.1);
@@ -2147,40 +2258,43 @@ fn lurker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, sk
     let head = [0.62 + lunge, 0.0, 0.42 + rear];
     // Eyes bulging up out of the top of its head, so it can lie with only them above the water
     for s in [-1.0, 1.0] {
-        p.push(ball([head[0] + 0.07, s * 0.19, head[2] + 0.23], 0.045, eye));
-        p.push(ball([head[0] + 0.02, s * 0.19, head[2] + 0.18], 0.085, hide));
-        p.push(ball([head[0] + 0.29, s * 0.07, head[2] + 0.1 + 0.06 * gape], 0.02, dark));
+        p.push(ball([head[0] + 0.07, s * 0.19, head[2] + 0.23], 0.045, eye).on(HEAD));
+        p.push(ball([head[0] + 0.02, s * 0.19, head[2] + 0.18], 0.085, hide).on(HEAD));
+        p.push(ball([head[0] + 0.29, s * 0.07, head[2] + 0.1 + 0.06 * gape], 0.02, dark).on(HEAD));
     }
     if gape > 0.5 {
-        p.push(limb([head[0] + 0.02, 0.0, head[2] - 0.06], [head[0] + 0.26 + 0.12 * pose.special, 0.0, head[2] - 0.03], 0.055, 0.065, tongue));
+        p.push(limb([head[0] + 0.02, 0.0, head[2] - 0.06], [head[0] + 0.26 + 0.12 * pose.special, 0.0, head[2] - 0.03], 0.055, 0.065, tongue).on(TONGUE));
     }
-    p.push(ellipsoid([head[0] + 0.01, 0.0, head[2] - 0.06], [0.24, 0.31, 0.025 + 0.09 * gape], MEAT));
-    p.push(ellipsoid([head[0], 0.0, head[2] + 0.05 + 0.08 * gape], [0.3, 0.37, 0.12], hide));
-    p.push(ellipsoid([head[0] - 0.03, 0.0, head[2] - 0.13 - 0.05 * gape], [0.28, 0.35, 0.08], belly));
+    p.push(ellipsoid([head[0] + 0.01, 0.0, head[2] - 0.06], [0.24, 0.31, 0.025 + 0.09 * gape], MEAT).on(MOUTH));
+    p.push(ellipsoid([head[0], 0.0, head[2] + 0.05 + 0.08 * gape], [0.3, 0.37, 0.12], hide).on(HEAD));
+    p.push(ellipsoid([head[0] - 0.03, 0.0, head[2] - 0.13 - 0.05 * gape], [0.28, 0.35, 0.08], belly).on(JAW));
+    let start = p.len();
     // Lumps down its back, and fronds growing out of them
     for (x, y, r) in [(0.2, 0.18, 0.07), (0.05, -0.2, 0.08), (-0.15, 0.12, 0.07), (-0.3, -0.1, 0.06), (0.25, -0.05, 0.06), (-0.05, 0.25, 0.06)] {
         p.push(ball([x, y, 0.7 - 0.25 * (y * y + x * x * 0.2)], r, dark));
     }
     for (k, (x, y)) in [(0.15, 0.1), (-0.05, -0.15), (-0.25, 0.15), (0.0, 0.02)].into_iter().enumerate() {
         let wave = 0.05 * (angle + k as f64 * 1.7).sin();
-        p.push(limb([x, y, 0.68], [x - 0.3 + wave, y * 1.8, 0.86 + 0.06 * k as f64], 0.035, 0.012, FERN));
+        p.push(limb([x, y, 0.68], [x - 0.3 + wave, y * 1.8, 0.86 + 0.06 * k as f64], 0.035, 0.012, FERN).on(FROND[k]));
     }
     p.push(ellipsoid([0.0, 0.0, 0.27], [0.5, 0.4, 0.15], belly));
     p.push(ellipsoid([-0.05, 0.0, 0.45], [0.55, 0.45, 0.28], hide));
+    tag(p, start, BODY);
     // Splayed legs, front and back, crawling by turns
     for s in [-1.0, 1.0] {
         let step = swing * s;
+        let (fore, hind) = (crate::baked::leg_of(1.0, s), crate::baked::leg_of(-1.0, s));
         let (shoulder, elbow, foot) = ([0.32, s * 0.35, 0.34], [0.4 + 0.08 * step, s * 0.62, 0.3], [0.48 + 0.14 * step, s * 0.6, 0.02]);
-        p.push(ellipsoid(foot, [0.09, 0.1, 0.03], dark));
-        p.push(limb(elbow, foot, 0.07, 0.06, hide));
-        p.push(limb(shoulder, elbow, 0.09, 0.07, hide));
+        p.push(ellipsoid(foot, [0.09, 0.1, 0.03], dark).on(LOWER[fore]));
+        p.push(limb(elbow, foot, 0.07, 0.06, hide).on(LOWER[fore]));
+        p.push(limb(shoulder, elbow, 0.09, 0.07, hide).on(UPPER[fore]));
         let (hip, knee, foot) = ([-0.35, s * 0.37, 0.38], [-0.22, s * 0.68, 0.46], [-0.5 - 0.14 * step, s * 0.66, 0.02]);
-        p.push(ellipsoid(foot, [0.11, 0.1, 0.03], dark));
-        p.push(limb(knee, foot, 0.08, 0.06, hide));
-        p.push(limb(hip, knee, 0.11, 0.08, hide));
+        p.push(ellipsoid(foot, [0.11, 0.1, 0.03], dark).on(LOWER[hind]));
+        p.push(limb(knee, foot, 0.08, 0.06, hide).on(LOWER[hind]));
+        p.push(limb(hip, knee, 0.11, 0.08, hide).on(UPPER[hind]));
     }
     let sway = 0.12 * (angle + 0.5).sin() * moving;
-    p.push(limb([-0.55, 0.0, 0.38], [-1.0, sway, 0.16], 0.17, 0.05, hide));
+    p.push(limb([-0.55, 0.0, 0.38], [-1.0, sway, 0.16], 0.17, 0.05, hide).on(TAIL));
 }
 
 /// A gloomwing, its wings well over a meter across: a cave flier of dark fur with a long pale bony
@@ -2194,6 +2308,8 @@ fn gloomwing(p: &mut Vec<Part>, angle: f64, pose: Pose, skin: Skin) {
     let sweep = pose.mix(0.0, 0.1, 0.4, -0.1);
     let dip = pose.mix(0.0, 0.06, 0.12, -0.08);
     let head = [0.17, 0.0, h + 0.03 - dip];
+    use crate::baked::gloomwing::*;
+    let start = p.len();
     for s in [-1.0, 1.0] {
         p.push(ball([head[0] + 0.07, s * 0.045, head[2] + 0.04], 0.02, eyes));
         p.push(limb([head[0] - 0.02, s * 0.05, head[2] + 0.06], [head[0] - 0.06, s * 0.09, head[2] + 0.19], 0.03, 0.01, membrane));
@@ -2201,10 +2317,12 @@ fn gloomwing(p: &mut Vec<Part>, angle: f64, pose: Pose, skin: Skin) {
     p.push(limb([head[0] + 0.15, 0.0, head[2] - 0.05], [head[0] + 0.12, 0.0, head[2] - 0.09], 0.012, 0.005, LINEN));
     p.push(limb([head[0] + 0.04, 0.0, head[2] - 0.01], [head[0] + 0.18, 0.0, head[2] - 0.04], 0.04, 0.02, skin.extra));
     p.push(ball(head, 0.075, fur));
-    p.push(ellipsoid([0.0, 0.0, h], [0.15, 0.095, 0.085], fur));
+    tag(p, start, HEAD);
+    p.push(ellipsoid([0.0, 0.0, h], [0.15, 0.095, 0.085], fur).on(BODY));
     // Its wings: two bones from the shoulder out to the tip, and the membrane between them and
     // the fingers running back to its trailing edge, filled in with a fan of strips
     for s in [-1.0, 1.0] {
+        let side = (s > 0.0) as usize;
         let shoulder = [0.04, s * 0.07, h + 0.03];
         let elbow = [-0.02 - sweep * 0.25, s * 0.32, h + 0.05 + 0.22 * flap];
         let tip = [-0.1 - sweep * 0.55, s * (0.7 - 0.25 * sweep.max(0.0)), h + 0.02 + 0.42 * flap];
@@ -2213,22 +2331,24 @@ fn gloomwing(p: &mut Vec<Part>, angle: f64, pose: Pose, skin: Skin) {
             [-0.24 - sweep * 0.4, s * 0.36, h + 0.0 + 0.16 * flap],
             [-0.22 - sweep * 0.55, s * 0.55, h + 0.0 + 0.3 * flap],
         ];
-        p.push(limb(shoulder, elbow, 0.022, 0.018, bone));
-        p.push(limb(elbow, tip, 0.018, 0.01, bone));
-        for e in edge {
-            p.push(limb(elbow, e, 0.012, 0.01, bone));
+        p.push(limb(shoulder, elbow, 0.022, 0.018, bone).on(INNER[side]));
+        p.push(limb(elbow, tip, 0.018, 0.01, bone).on(OUTER[side]));
+        for (k, e) in edge.into_iter().enumerate() {
+            p.push(limb(elbow, e, 0.012, 0.01, bone).on(if k == 0 { INNER[side] } else { OUTER[side] }));
         }
         let mid = |a: Vec3, b: Vec3, f: f64| -> Vec3 { [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * f) };
-        for (a, b) in [(shoulder, edge[0]), (mid(shoulder, elbow, 0.5), edge[0]), (elbow, edge[0]), (elbow, edge[1]), (mid(elbow, tip, 0.5), edge[1]), (mid(elbow, tip, 0.5), edge[2]), (tip, edge[2]), (edge[0], edge[1]), (edge[1], edge[2])] {
-            p.push(limb(a, b, 0.04, 0.03, membrane));
-            p.push(limb(mid(a, b, 0.5), mid(elbow, mid(edge[1], tip, 0.5), 0.5), 0.035, 0.03, membrane));
+        // The strips between the shoulder and the elbow go with the inner wing, the rest the outer
+        for (k, (a, b)) in [(shoulder, edge[0]), (mid(shoulder, elbow, 0.5), edge[0]), (elbow, edge[0]), (elbow, edge[1]), (mid(elbow, tip, 0.5), edge[1]), (mid(elbow, tip, 0.5), edge[2]), (tip, edge[2]), (edge[0], edge[1]), (edge[1], edge[2])].into_iter().enumerate() {
+            let wing = if matches!(k, 0 | 1 | 2 | 7) { INNER[side] } else { OUTER[side] };
+            p.push(limb(a, b, 0.04, 0.03, membrane).on(wing));
+            p.push(limb(mid(a, b, 0.5), mid(elbow, mid(edge[1], tip, 0.5), 0.5), 0.035, 0.03, membrane).on(wing));
         }
     }
     // Hind claws dangling, and a little tail
     for s in [-1.0, 1.0] {
-        p.push(limb([-0.08, s * 0.05, h - 0.05], [-0.15, s * 0.06, h - 0.18 + 0.04 * flap.abs()], 0.02, 0.012, bone));
+        p.push(limb([-0.08, s * 0.05, h - 0.05], [-0.15, s * 0.06, h - 0.18 + 0.04 * flap.abs()], 0.02, 0.012, bone).on(BODY));
     }
-    p.push(limb([-0.14, 0.0, h], [-0.26, 0.0, h - 0.05], 0.025, 0.01, fur));
+    p.push(limb([-0.14, 0.0, h], [-0.26, 0.0, h - 0.05], 0.025, 0.01, fur).on(BODY));
 }
 
 /// A tusker, two and a half meters long and as high at its humped shoulders as a man's chest: a
@@ -2242,6 +2362,8 @@ fn tusker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, sk
     let nod = pose.mix(0.0, -0.3, 0.45, -0.38);
     let neck = [0.55, 0.0, 0.95];
     let r = |v: Vec3| rear(v, neck, nod);
+    use crate::baked::beast::*;
+    let start = p.len();
     for s in [-1.0, 1.0] {
         p.push(ball(r([0.99, s * 0.16, 0.86]), 0.03, eye));
         p.push(limb(r([1.12, s * 0.11, 0.6]), r([1.27, s * 0.21, 0.67]), 0.042, 0.032, tusk));
@@ -2253,6 +2375,8 @@ fn tusker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, sk
     p.push(limb(r([0.98, 0.0, 0.72]), r([1.26, 0.0, 0.62]), 0.15, 0.12, snout));
     p.push(ellipsoid(r([0.95, 0.0, 0.6]), [0.22, 0.17, 0.08], hide));
     p.push(ellipsoid(r([0.82, 0.0, 0.82]), [0.3, 0.25, 0.24], hide));
+    tag(p, start, HEAD);
+    let start = p.len();
     // A ridge of bristles down its back, tallest over its shoulders
     for k in 0..7 {
         let x = 0.55 - k as f64 * 0.18;
@@ -2263,14 +2387,16 @@ fn tusker(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, sk
     p.push(ellipsoid([0.5, 0.0, 0.78], [0.3, 0.36, 0.34], dark));
     p.push(ellipsoid([0.25, 0.0, 1.0], [0.45, 0.42, 0.33], hide));
     p.push(ellipsoid([-0.15, 0.0, 0.86], [0.72, 0.4, 0.38], hide));
+    tag(p, start, BODY);
     // A short tufted tail, swishing
     let sway = 0.08 * (angle + 1.0).sin() * moving;
-    p.push(ball([-0.97, sway, 0.72], 0.05, dark));
-    p.push(limb([-0.85, 0.0, 0.95], [-0.97, sway, 0.74], 0.03, 0.02, hide));
+    p.push(ball([-0.97, sway, 0.72], 0.05, dark).on(TAIL));
+    p.push(limb([-0.85, 0.0, 0.95], [-0.97, sway, 0.74], 0.03, 0.02, hide).on(TAIL));
     // A front leg raised to paw the ground as it gets ready
     for (x, y, s) in [(0.5, 0.22, 1.0), (0.5, -0.22, -1.0), (-0.6, 0.22, -1.0), (-0.6, -0.22, 1.0)] {
         let paw = if x > 0.0 && s > 0.0 { 0.7 * pose.windup } else { 0.0 };
-        leg(p, [x, y, 0.74], 0.74, if x > 0.0 { 0.1 } else { 0.11 }, 0.45 * swing * s + paw, hide, dark);
+        let k = crate::baked::leg_of(x, y);
+        leg(p, [x, y, 0.74], 0.74, if x > 0.0 { 0.1 } else { 0.11 }, 0.45 * swing * s + paw, hide, dark, [UPPER[k], LOWER[k]]);
     }
 }
 
@@ -2311,6 +2437,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             }
         }
         Look::Bear => {
+            use crate::baked::beast::*;
             let (fur, dark) = (FUR_BROWN, FUR_DARK);
             p.push(ball([0.98, 0.12, 1.08], 0.035, EYE));
             p.push(ball([0.98, -0.12, 1.08], 0.035, EYE));
@@ -2319,14 +2446,17 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(ball([0.78, 0.19, 1.24], 0.08, dark));
             p.push(ball([0.78, -0.19, 1.24], 0.08, dark));
             p.push(ball([0.84, 0.0, 1.02], 0.27, fur));
-            p.push(ball([0.32, 0.0, 1.06], 0.32, fur));
-            p.push(ellipsoid([0.0, 0.0, 0.88], [0.78, 0.42, 0.42], fur));
-            p.push(ball([-0.78, 0.0, 0.96], 0.08, fur));
+            tag(&mut p, 0, HEAD);
+            p.push(ball([0.32, 0.0, 1.06], 0.32, fur).on(BODY));
+            p.push(ellipsoid([0.0, 0.0, 0.88], [0.78, 0.42, 0.42], fur).on(BODY));
+            p.push(ball([-0.78, 0.0, 0.96], 0.08, fur).on(TAIL));
             for (x, y, s) in [(0.48, 0.24, 1.0), (0.48, -0.24, -1.0), (-0.48, 0.24, -1.0), (-0.48, -0.24, 1.0)] {
-                leg(&mut p, [x, y, 0.66], 0.66, 0.13, 0.35 * swing * s, fur, dark);
+                let k = crate::baked::leg_of(x, y);
+                leg(&mut p, [x, y, 0.66], 0.66, 0.13, 0.35 * swing * s, fur, dark, [UPPER[k], LOWER[k]]);
             }
         }
         Look::Dog => {
+            use crate::baked::beast::*;
             let (fur, white) = (FUR_TAN, FUR_WHITE);
             p.push(ball([0.51, 0.06, 0.75], 0.022, EYE));
             p.push(ball([0.51, -0.06, 0.75], 0.022, EYE));
@@ -2335,17 +2465,20 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(ellipsoid([0.39, 0.115, 0.68], [0.04, 0.025, 0.08], FUR_BROWN));
             p.push(ellipsoid([0.39, -0.115, 0.68], [0.04, 0.025, 0.08], FUR_BROWN));
             p.push(ball([0.42, 0.0, 0.71], 0.115, fur));
-            p.push(limb([0.27, 0.0, 0.5], [0.38, 0.0, 0.66], 0.085, 0.07, fur));
-            p.push(ellipsoid([0.2, 0.0, 0.41], [0.15, 0.12, 0.13], white));
-            p.push(ellipsoid([0.0, 0.0, 0.47], [0.36, 0.15, 0.16], fur));
+            tag(&mut p, 0, HEAD);
+            p.push(limb([0.27, 0.0, 0.5], [0.38, 0.0, 0.66], 0.085, 0.07, fur).on(BODY));
+            p.push(ellipsoid([0.2, 0.0, 0.41], [0.15, 0.12, 0.13], white).on(BODY));
+            p.push(ellipsoid([0.0, 0.0, 0.47], [0.36, 0.15, 0.16], fur).on(BODY));
             // Wags while it walks
             let wag = 0.06 * (angle * 2.0).sin() * moving;
-            p.push(limb([-0.32, 0.0, 0.53], [-0.5, wag, 0.7], 0.035, 0.025, fur));
+            p.push(limb([-0.32, 0.0, 0.53], [-0.5, wag, 0.7], 0.035, 0.025, fur).on(TAIL));
             for (x, y, s) in [(0.22, 0.09, 1.0), (0.22, -0.09, -1.0), (-0.24, 0.09, -1.0), (-0.24, -0.09, 1.0)] {
-                leg(&mut p, [x, y, 0.4], 0.4, 0.042, 0.45 * swing * s, fur, white);
+                let k = crate::baked::leg_of(x, y);
+                leg(&mut p, [x, y, 0.4], 0.4, 0.042, 0.45 * swing * s, fur, white, [UPPER[k], LOWER[k]]);
             }
         }
         Look::GrayCat | Look::GingerCat => {
+            use crate::baked::beast::*;
             let (fur, stripes) = if look == Look::GrayCat { (FUR_GRAY, FUR_DARK) } else { (FUR_GINGER, FUR_RED) };
             let white = FUR_WHITE;
             p.push(ball([0.3, 0.035, 0.38], 0.015, EYE));
@@ -2355,17 +2488,20 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(limb([0.225, 0.045, 0.41], [0.22, 0.052, 0.47], 0.026, 0.006, fur));
             p.push(limb([0.225, -0.045, 0.41], [0.22, -0.052, 0.47], 0.026, 0.006, fur));
             p.push(ball([0.24, 0.0, 0.36], 0.08, fur));
-            p.push(ellipsoid([0.03, 0.0, 0.21], [0.15, 0.06, 0.055], white));
-            p.push(ellipsoid([0.0, 0.0, 0.25], [0.21, 0.085, 0.09], fur).striped(stripes));
+            tag(&mut p, 0, HEAD);
+            p.push(ellipsoid([0.03, 0.0, 0.21], [0.15, 0.06, 0.055], white).on(BODY));
+            p.push(ellipsoid([0.0, 0.0, 0.25], [0.21, 0.085, 0.09], fur).striped(stripes).on(BODY));
             // The tail sways
             let sway = 0.04 * (angle + 1.0).sin() * moving;
-            p.push(limb([-0.19, 0.0, 0.28], [-0.3, sway, 0.42], 0.022, 0.02, fur).striped(stripes));
-            p.push(limb([-0.3, sway, 0.42], [-0.28, sway * 1.5, 0.53], 0.02, 0.016, fur).striped(stripes));
+            p.push(limb([-0.19, 0.0, 0.28], [-0.3, sway, 0.42], 0.022, 0.02, fur).striped(stripes).on(TAIL));
+            p.push(limb([-0.3, sway, 0.42], [-0.28, sway * 1.5, 0.53], 0.02, 0.016, fur).striped(stripes).on(TAIL_TIP));
             for (x, y, s) in [(0.14, 0.05, 1.0), (0.14, -0.05, -1.0), (-0.13, 0.05, -1.0), (-0.13, -0.05, 1.0)] {
-                leg(&mut p, [x, y, 0.21], 0.21, 0.024, 0.45 * swing * s, fur, white);
+                let k = crate::baked::leg_of(x, y);
+                leg(&mut p, [x, y, 0.21], 0.21, 0.024, 0.45 * swing * s, fur, white, [UPPER[k], LOWER[k]]);
             }
         }
         Look::Squirrel => {
+            use crate::baked::beast::*;
             // Squirrels bound along: both pairs of legs together, the body bobbing up between
             let fur = FUR_RED;
             let lift = 0.04 * angle.sin().max(0.0) * moving;
@@ -2376,16 +2512,18 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(limb(up([0.09, 0.022, 0.2]), up([0.088, 0.025, 0.23]), 0.012, 0.004, fur));
             p.push(limb(up([0.09, -0.022, 0.2]), up([0.088, -0.025, 0.23]), 0.012, 0.004, fur));
             p.push(ball(up([0.1, 0.0, 0.16]), 0.045, fur));
-            p.push(ellipsoid(up([0.03, 0.0, 0.085]), [0.07, 0.035, 0.04], FUR_CREAM));
-            p.push(ellipsoid(up([0.0, 0.0, 0.11]), [0.1, 0.05, 0.06], fur));
+            tag(&mut p, 0, HEAD);
+            p.push(ellipsoid(up([0.03, 0.0, 0.085]), [0.07, 0.035, 0.04], FUR_CREAM).on(BODY));
+            p.push(ellipsoid(up([0.0, 0.0, 0.11]), [0.1, 0.05, 0.06], fur).on(BODY));
             // A big bushy tail curling up over its back
             let flick = 0.02 * angle.cos() * moving;
-            for (c, r) in [([-0.1, 0.0, 0.11], 0.045), ([-0.15, 0.0, 0.17], 0.055), ([-0.15 + flick, 0.0, 0.25], 0.06), ([-0.11 + flick, 0.0, 0.31], 0.055)] {
-                p.push(ball(up(c), r, fur));
+            for (k, (c, r)) in [([-0.1, 0.0, 0.11], 0.045), ([-0.15, 0.0, 0.17], 0.055), ([-0.15 + flick, 0.0, 0.25], 0.06), ([-0.11 + flick, 0.0, 0.31], 0.055)].into_iter().enumerate() {
+                p.push(ball(up(c), r, fur).on(if k < 2 { TAIL } else { TAIL_TIP }));
             }
             for (x, y, length) in [(0.06, 0.03, 0.07), (0.06, -0.03, 0.07), (-0.06, 0.04, 0.08), (-0.06, -0.04, 0.08)] {
                 let s = if x > 0.0 { 1.0 } else { -1.0 };
-                leg(&mut p, up([x, y, length]), length, 0.018, 0.5 * swing * s, fur, fur);
+                let k = crate::baked::leg_of(x, y);
+                leg(&mut p, up([x, y, length]), length, 0.018, 0.5 * swing * s, fur, fur, [UPPER[k], LOWER[k]]);
             }
         }
         Look::Apple => {
@@ -2683,6 +2821,7 @@ fn gate(p: &mut Vec<Part>, gate: bool) {
 /// a man in a green tunic, a belt and a straw hat, or a woman in a long red dress and white apron
 /// with a basket of bread on her arm. Nothing in their hands, so they're plainly no threat.
 fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
+    use crate::baked::villager::*;
     let skin = if woman { FUR_CREAM } else { FUR_TAN };
     // A straw hat or a kerchief over the hair, then the head under them. Its face is left plain:
     // at a few voxels across, eyes only make a band across it.
@@ -2697,11 +2836,14 @@ fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
     }
     p.push(ball([0.02, 0.0, 1.6], 0.135, skin));
     p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.05, 0.05, skin));
+    tag(p, 0, HEAD);
 
     // The arms, swinging the other way to the legs on their side. She holds her basket on her
     // hip with one.
     let (body, sleeve) = if woman { (CLOTH, LINEN) } else { (MOSS, LINEN) };
     for s in [-1.0, 1.0] {
+        let side = (s > 0.0) as usize;
+        let start = p.len();
         let shoulder = [0.0, s * 0.2, 1.4];
         let (elbow, hand) = if woman && s < 0.0 {
             p.push(ellipsoid([0.2, -0.32, 1.03], [0.08, 0.05, 0.035], SANDSTONE_DARK));
@@ -2713,26 +2855,29 @@ fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
         };
         p.push(ball(hand, 0.048, skin));
         p.push(limb(elbow, hand, 0.05, 0.045, sleeve));
-        p.push(limb(shoulder, elbow, 0.06, 0.052, sleeve));
+        tag(p, start, FORE[side]);
+        p.push(limb(shoulder, elbow, 0.06, 0.052, sleeve).on(ARM[side]));
     }
 
     if woman {
         // A bodice and apron over a long skirt, flaring out to the ground, her shoes peeping out
         // under it as she walks
-        p.push(ellipsoid([0.0, 0.0, 1.22], [0.12, 0.18, 0.22], body));
-        p.push(ellipsoid([0.19, 0.0, 0.7], [0.07, 0.19, 0.32], LINEN));
-        p.push(ellipsoid([0.0, 0.0, 1.01], [0.135, 0.19, 0.03], LINEN));
-        p.push(limb([0.0, 0.0, 1.02], [0.03 * swing, 0.0, 0.28], 0.16, 0.27, body));
+        p.push(ellipsoid([0.0, 0.0, 1.22], [0.12, 0.18, 0.22], body).on(TORSO));
+        p.push(ellipsoid([0.19, 0.0, 0.7], [0.07, 0.19, 0.32], LINEN).on(SKIRT));
+        p.push(ellipsoid([0.0, 0.0, 1.01], [0.135, 0.19, 0.03], LINEN).on(TORSO));
+        p.push(limb([0.0, 0.0, 1.02], [0.03 * swing, 0.0, 0.28], 0.16, 0.27, body).on(SKIRT));
         for (y, s) in [(0.09, 1.0), (-0.09, -1.0)] {
-            leg(p, [0.0, y, 0.8], 0.76, 0.06, 0.4 * swing * s, body, BARK_DARK);
+            let side = (y > 0.0) as usize;
+            leg(p, [0.0, y, 0.8], 0.76, 0.06, 0.4 * swing * s, body, BARK_DARK, [THIGH[side], SHIN[side]]);
         }
     } else {
         // A tunic belted at the waist, trousers and boots
-        p.push(ellipsoid([0.0, 0.0, 0.99], [0.15, 0.215, 0.045], LEATHER));
-        p.push(ellipsoid([0.0, 0.0, 1.2], [0.14, 0.2, 0.26], body));
-        p.push(limb([0.0, 0.0, 1.0], [0.0, 0.0, 0.8], 0.19, 0.22, body));
+        p.push(ellipsoid([0.0, 0.0, 0.99], [0.15, 0.215, 0.045], LEATHER).on(TORSO));
+        p.push(ellipsoid([0.0, 0.0, 1.2], [0.14, 0.2, 0.26], body).on(TORSO));
+        p.push(limb([0.0, 0.0, 1.0], [0.0, 0.0, 0.8], 0.19, 0.22, body).on(TORSO));
         for (y, s) in [(0.1, 1.0), (-0.1, -1.0)] {
-            leg(p, [0.0, y, 0.9], 0.86, 0.075, 0.45 * swing * s, LEATHER, BARK_DARK);
+            let side = (y > 0.0) as usize;
+            leg(p, [0.0, y, 0.9], 0.86, 0.075, 0.45 * swing * s, LEATHER, BARK_DARK, [THIGH[side], SHIN[side]]);
         }
     }
 }
@@ -2803,11 +2948,12 @@ fn royal_guard(p: &mut Vec<Part>) {
     p.push(ellipsoid([0.035, 0.0, 0.92], [0.13, 0.045, 0.28], GOLD));
     p.push(ellipsoid([0.02, 0.0, 0.92], [0.15, 0.2, 0.3], CLOTH));
     for y in [0.1, -0.1] {
-        leg(p, [0.0, y, 0.88], 0.86, 0.075, 0.0, DARK_STEEL, LEATHER);
+        leg(p, [0.0, y, 0.88], 0.86, 0.075, 0.0, DARK_STEEL, LEATHER, [0, 0]);
     }
 }
 
 /// A model rasterized into voxels: x + (y + z * size.y) * size.x
+#[derive(Clone)]
 pub struct Model {
     pub size: [u32; 3],
     pub voxels: Vec<u8>,
@@ -2859,46 +3005,105 @@ pub fn voxelize_tagged(parts: &[Part], res: f64) -> (Model, Vector3<f64>, Vec<u8
     (Model { size, voxels }, anchor, tags)
 }
 
-fn rasterize(look: Look, phase: Option<f64>, pose: Pose) -> Model {
-    let res = look.resolution();
-    let parts: Vec<Part> = parts(look, phase, pose).iter().map(|p| p.thickened(res)).collect();
-    // Wide enough either side of the middle to hold everything, as the shader puts the middle of
-    // the model where the animal stands
+/// How big a frame made of `parts`, thickened, is at `res` voxels a meter: wide enough either side
+/// of the middle to hold everything, as the shader puts the middle of the model where the animal
+/// stands, and from its feet up
+pub(crate) fn frame_size(parts: &[Part], res: f64) -> [u32; 3] {
     let (mut half_x, mut half_y, mut top) = (0.0f64, 0.0f64, 0.0f64);
-    for part in &parts {
+    for part in parts {
         let (lo, hi) = part.reach();
         half_x = half_x.max(lo[0].abs()).max(hi[0].abs());
         half_y = half_y.max(lo[1].abs()).max(hi[1].abs());
         top = top.max(hi[2]);
     }
-    let size = [
-        ((2.0 * half_x * res).ceil() as u32).clamp(1, 255),
-        ((2.0 * half_y * res).ceil() as u32).clamp(1, 255),
-        ((top * res).ceil() as u32).clamp(1, 255),
-    ];
+    [((2.0 * half_x * res).ceil() as u32).clamp(1, 255), ((2.0 * half_y * res).ceil() as u32).clamp(1, 255), ((top * res).ceil() as u32).clamp(1, 255)]
+}
+
+/// The voxels of a frame `size` big at `res` voxels a meter round its middle that `part`, thickened,
+/// might take: from and to, in each direction
+pub(crate) fn frame_span(part: &Part, size: [u32; 3], res: f64) -> ([u32; 3], [u32; 3]) {
+    let origin = [-(size[0] as f64) * 0.5, -(size[1] as f64) * 0.5, 0.0];
+    let (a, b) = part.reach();
+    let from = [0, 1, 2].map(|i| ((a[i] * res - origin[i] - 0.5).floor().max(0.0) as u32).min(size[i]));
+    let to = [0, 1, 2].map(|i| ((b[i] * res - origin[i] + 0.5).ceil().max(0.0) as u32).min(size[i]));
+    (from, to)
+}
+
+/// The middle of voxel `x`, `y`, `z` of a frame `size` big, in meters from the middle of its feet
+pub(crate) fn frame_voxel(size: [u32; 3], res: f64, x: u32, y: u32, z: u32) -> Vec3 {
+    let origin = [-(size[0] as f64) * 0.5, -(size[1] as f64) * 0.5, 0.0];
+    [(x as f64 + 0.5 + origin[0]) / res, (y as f64 + 0.5 + origin[1]) / res, (z as f64 + 0.5) / res]
+}
+
+/// What `part` makes voxel `x` of a frame: its own material, or a band of its stripes
+pub(crate) fn banded(part: &Part, x: u32) -> u8 {
+    if part.stripes != AIR && (x / 2) % 3 == 0 { part.stripes } else { part.material }
+}
+
+fn rasterize(look: Look, phase: Option<f64>, pose: Pose) -> Model {
+    let res = look.resolution();
+    let parts: Vec<Part> = parts(look, phase, pose).iter().map(|p| p.thickened(res)).collect();
+    let size = frame_size(&parts, res);
     let mut voxels = vec![AIR; (size[0] * size[1] * size[2]) as usize];
     // Each shape only looks at the voxels around it, and takes those no earlier shape took
     let mut taken = vec![false; voxels.len()];
-    let origin = [-(size[0] as f64) * 0.5, -(size[1] as f64) * 0.5, 0.0];
     for part in &parts {
-        let (a, b) = part.reach();
-        let from = [0, 1, 2].map(|i| ((a[i] * res - origin[i] - 0.5).floor().max(0.0) as u32).min(size[i]));
-        let to = [0, 1, 2].map(|i| ((b[i] * res - origin[i] + 0.5).ceil().max(0.0) as u32).min(size[i]));
+        let (from, to) = frame_span(part, size, res);
         for z in from[2]..to[2] {
             for y in from[1]..to[1] {
                 for x in from[0]..to[0] {
                     let i = (x + (y + z * size[1]) * size[0]) as usize;
-                    let p = [(x as f64 + 0.5 + origin[0]) / res, (y as f64 + 0.5 + origin[1]) / res, (z as f64 + 0.5) / res];
-                    if !taken[i] && part.contains(p) {
+                    if !taken[i] && part.contains(frame_voxel(size, res, x, y, z)) {
                         taken[i] = true;
-                        let band = part.stripes != AIR && (x / 2) % 3 == 0;
-                        voxels[i] = if band { part.stripes } else { part.material };
+                        voxels[i] = banded(part, x);
                     }
                 }
             }
         }
     }
     Model { size, voxels }
+}
+
+/// The shapes making up `look` in frame `frame`, see parts() and WALK_FRAMES
+pub(crate) fn frame_parts(look: Look, frame: usize) -> Vec<Part> {
+    let phase = (1..=WALK_FRAMES).contains(&frame).then(|| (frame - 1) as f64 / WALK_FRAMES as f64);
+    parts(look, phase, Pose::of(frame))
+}
+
+/// Whether `look` is ever drawn in `frame`, see shown()
+pub(crate) fn shown_in(look: Look, frame: usize) -> bool {
+    shown(look, frame)
+}
+
+/// For a frame between two poses, see TWEENS: the pose it's from and the one it's going to, 0
+/// being standing, and how far between
+pub(crate) fn tween_ends(frame: usize) -> Option<(usize, usize, f64)> {
+    (FIRST_TWEEN..FRAMES).contains(&frame).then(|| {
+        let (t, f) = tween_at(frame);
+        (t.from, t.to, f)
+    })
+}
+
+/// The frames `look` goes through from standing into pose `pose`, each with how far along it is,
+/// from 0 standing to 1 in the pose
+pub(crate) fn path_to(look: Look, pose: usize) -> Vec<(f64, usize)> {
+    let mut first = FIRST_TWEEN;
+    for t in TWEENS {
+        if (t.from, t.to) == (0, pose) || (t.from, t.to) == (pose, 0) {
+            if t.knights && !look.is_knight() {
+                break;
+            }
+            let mut out: Vec<(f64, usize)> = (1..=t.steps).map(|k| (k as f64 / (t.steps + 1) as f64, first + k - 1)).collect();
+            if t.from == pose {
+                out = out.into_iter().map(|(f, frame)| (1.0 - f, frame)).rev().collect();
+            }
+            out.insert(0, (0.0, 0));
+            out.push((1.0, pose));
+            return out;
+        }
+        first += t.steps;
+    }
+    vec![(0.0, 0), (1.0, pose)]
 }
 
 fn model_index(look: Look, frame: usize) -> u32 {
@@ -2916,14 +3121,20 @@ pub const DRAGON_MODELS_AT: usize = RIG_MODELS_AT + crate::rig::MODELS;
 /// Where the avians' and gargoyles' jointed pieces start, after the dragons', see src\avians.rs
 pub const WINGED_MODELS_AT: usize = DRAGON_MODELS_AT + crate::dragons::MODELS;
 
+/// Where the pieces the monsters' and animals' frames are baked from start, after the avians',
+/// see src\baked.rs: drawn only in the model editor, as the frames are baked from them
+pub const BAKED_MODELS_AT: usize = WINGED_MODELS_AT + crate::avians::MODELS;
+
 /// How many models animal_models() makes: every frame of every look, then the jointed bosses'
 /// pieces, then the dragons' pieces and what they breathe, then the avians' and gargoyles' and
-/// what they throw, then the great serpents' pieces, last, see serpents::part_models(). Other
-/// models come after them.
-pub const ANIMAL_MODELS: usize = WINGED_MODELS_AT + crate::avians::MODELS + serpents::PART_MODELS;
+/// what they throw, then the pieces the baked frames are made of, then the great serpents'
+/// pieces, last, see serpents::part_models(). Other models come after them.
+pub const ANIMAL_MODELS: usize = BAKED_MODELS_AT + crate::baked::MODELS + serpents::PART_MODELS;
 
-/// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
-fn frame_model(look: Look, frame: usize) -> Model {
+/// Frame `frame` of `look` as it was drawn before it was baked from pieces, straight from its
+/// shapes, see WALK_FRAMES: empty if it's never drawn in it. What every look not baked from pieces
+/// is drawn in, see src\baked.rs.
+pub(crate) fn drawn_frame(look: Look, frame: usize) -> Model {
     if !shown(look, frame) {
         return Model { size: [1, 1, 1], voxels: vec![AIR] };
     }
@@ -2931,36 +3142,75 @@ fn frame_model(look: Look, frame: usize) -> Model {
     rasterize(look, phase, Pose::of(frame))
 }
 
+/// Frame `frame` of `look`, see WALK_FRAMES: empty if it's never drawn in it
+#[cfg(test)]
+fn frame_model(look: Look, frame: usize) -> Model {
+    match crate::baked::rig(look) {
+        Some(rig) => crate::assets::copy(&rig.frames[frame]),
+        None => drawn_frame(look, frame),
+    }
+}
+
 /// Every frame of every animal, and of everything else drawn like one: made on every core at once,
-/// a frame at a time, so the big ones don't hold up the rest
+/// a frame at a time, so the big ones don't hold up the rest. The monsters and animals baked from
+/// pieces are each one job, their pieces made and every frame baked from them, see src\baked.rs,
+/// handed out first as they take longest.
 pub fn animal_models() -> Vec<Model> {
-    let jobs = Look::ALL.len() * FRAMES;
+    let rigs_made = crate::baked::made();
+    let rig_jobs = if rigs_made { 0 } else { crate::baked::KINDS.len() };
+    let frame_jobs: Vec<usize> = (0..Look::ALL.len() * FRAMES).filter(|&job| !crate::baked::baked(Look::ALL[job / FRAMES])).collect();
+    let jobs = rig_jobs + frame_jobs.len();
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-    let mut made: Vec<(usize, Model)> = std::thread::scope(|scope| {
+    let (mut made, mut rigs): (Vec<(usize, Model)>, Vec<crate::baked::Rig>) = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut out = Vec::new();
+                    let (mut out, mut rigs) = (Vec::new(), Vec::new());
                     loop {
                         let job = next.fetch_add(1, Ordering::Relaxed);
                         if job >= jobs {
-                            break out;
+                            break (out, rigs);
                         }
-                        out.push((job, frame_model(Look::ALL[job / FRAMES], job % FRAMES)));
+                        if job < rig_jobs {
+                            rigs.push(crate::baked::build(crate::baked::KINDS[job]));
+                        } else {
+                            let j = frame_jobs[job - rig_jobs];
+                            out.push((j, drawn_frame(Look::ALL[j / FRAMES], j % FRAMES)));
+                        }
                     }
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().expect("making a model failed")).collect()
+        let (mut made, mut rigs) = (Vec::new(), Vec::new());
+        for h in handles {
+            let (m, r) = h.join().expect("making a model failed");
+            made.extend(m);
+            rigs.extend(r);
+        }
+        (made, rigs)
     });
+    if !rigs_made {
+        rigs.sort_by_key(|r| crate::baked::kind(r.look));
+        crate::baked::keep(rigs);
+    }
     made.sort_unstable_by_key(|&(job, _)| job);
-    let mut models: Vec<Model> = made.into_iter().map(|(_, model)| model).collect();
-    // The jointed bosses' pieces, the dragons' pieces and what they breathe, then the great
-    // serpents' pieces, which have to be the last of them, see serpents::part_models()
+    let mut made = made.into_iter().peekable();
+    let mut models: Vec<Model> = Vec::with_capacity(ANIMAL_MODELS);
+    for job in 0..Look::ALL.len() * FRAMES {
+        let (look, frame) = (Look::ALL[job / FRAMES], job % FRAMES);
+        match crate::baked::rig(look) {
+            Some(rig) => models.push(crate::assets::copy(&rig.frames[frame])),
+            None => models.push(made.next().filter(|(j, _)| *j == job).expect("a frame for every look").1),
+        }
+    }
+    // The jointed bosses' pieces, the dragons' pieces and what they breathe, the pieces the baked
+    // frames are made of, then the great serpents' pieces, which have to be the last of them, see
+    // serpents::part_models()
     models.extend(crate::rig::models());
     models.extend(crate::dragons::models());
     models.extend(crate::avians::models());
+    models.extend(crate::baked::models());
     models.extend(serpents::part_models());
     models
 }

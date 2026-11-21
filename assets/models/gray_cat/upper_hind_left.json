@@ -1,0 +1,29 @@
+{
+  "what": "Cat (GrayCat), upper hind left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    1,
+    3
+  ],
+  "pivot": [
+    0.9199999999999999,
+    0.8,
+    2.36
+  ],
+  "anchor": [
+    0.0050000000000000044,
+    -0.018750000000000003,
+    -0.1475
+  ],
+  "origin": [
+    -1,
+    -1,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1277,
+    "f29481acdefb66b6"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Wolf, upper fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    5
+  ],
+  "pivot": [
+    1.2999999999999998,
+    1.08,
+    4.32
+  ],
+  "anchor": [
+    -0.01874999999999999,
+    -0.0050000000000000044,
+    -0.27
+  ],
+  "origin": [
+    -1,
+    -1,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1320,
+    "5bd4afd985bc3f72"
+  ]
+}

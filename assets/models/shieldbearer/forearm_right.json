@@ -1,0 +1,29 @@
+{
+  "what": "Bandit shieldbearer, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    2,
+    5
+  ],
+  "pivot": [
+    1.348,
+    1.0903999999999998,
+    4.503999999999998
+  ],
+  "anchor": [
+    0.072,
+    -0.005649999999999988,
+    -0.28149999999999986
+  ],
+  "origin": [
+    -1,
+    -1,
+    -5
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1340,
+    "1a656fe272caaa3d"
+  ]
+}

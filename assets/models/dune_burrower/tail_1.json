@@ -1,0 +1,29 @@
+{
+  "what": "Dune burrower, tail 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    4,
+    6
+  ],
+  "pivot": [
+    4.5920000000000005,
+    2.0,
+    1.2799999999999994
+  ],
+  "anchor": [
+    -0.09950000000000003,
+    0.0,
+    -0.07999999999999996
+  ],
+  "origin": [
+    -5,
+    -2,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1500,
+    "9e1ea0965848a0c2"
+  ]
+}

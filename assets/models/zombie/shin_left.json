@@ -1,0 +1,29 @@
+{
+  "what": "Zombie, shin left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    9
+  ],
+  "pivot": [
+    1.0,
+    1.1,
+    1.3792000000000006
+  ],
+  "anchor": [
+    0.0,
+    -0.0062500000000000056,
+    -0.08620000000000004
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1395,
+    "27f012d7f2ffcfb0"
+  ]
+}

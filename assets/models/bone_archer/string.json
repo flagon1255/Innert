@@ -1,0 +1,29 @@
+{
+  "what": "Skeleton archer, string",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    1,
+    21
+  ],
+  "pivot": [
+    1.1400000000000001,
+    0.8200000000000003,
+    0.7599999999999998
+  ],
+  "anchor": [
+    -0.008750000000000008,
+    -0.020000000000000018,
+    -0.04749999999999999
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1416,
+    "aed1b0a83e9cba48"
+  ]
+}

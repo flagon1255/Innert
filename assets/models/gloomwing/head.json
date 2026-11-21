@@ -1,0 +1,29 @@
+{
+  "what": "Gloomwing, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    4,
+    6
+  ],
+  "pivot": [
+    1.2200000000000002,
+    2.0,
+    1.879999999999999
+  ],
+  "anchor": [
+    0.07999999999999999,
+    0.0,
+    -0.11749999999999994
+  ],
+  "origin": [
+    -1,
+    -2,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1355,
+    "f20d4a970bd5c4c7"
+  ]
+}

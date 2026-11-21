@@ -1,0 +1,29 @@
+{
+  "what": "Bandit shieldbearer, mace",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    3,
+    9
+  ],
+  "pivot": [
+    0.8920000000000003,
+    1.2599999999999998,
+    8.111999999999998
+  ],
+  "anchor": [
+    0.19424999999999998,
+    0.015000000000000013,
+    -0.5069999999999999
+  ],
+  "origin": [
+    -1,
+    -1,
+    -8
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1344,
+    "3ce5c007bff8464e"
+  ]
+}

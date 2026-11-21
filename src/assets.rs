@@ -157,9 +157,11 @@ pub(crate) fn at(m: &Model, p: [i32; 3]) -> u8 {
     m.voxels[(p[0] as u32 + (p[1] as u32 + p[2] as u32 * m.size[1]) * m.size[0]) as usize]
 }
 
-/// How many frames each look has, see animals::FRAMES
+/// How many frames each look has, see animals::FRAMES: what comes before the jointed bosses'
+/// pieces, every frame of every look. Counted once past them, as it was, it put each look's files
+/// on another look's frames, every one but the first look's, see baked::written_from().
 pub fn frames() -> usize {
-    animals::DRAGON_MODELS_AT / Look::ALL.len()
+    animals::RIG_MODELS_AT / Look::ALL.len()
 }
 
 /// Where frame `frame` of `look` is among the models, see animals::model_index()
@@ -532,6 +534,15 @@ fn hash_of(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
+/// How long `model`'s file is, written as a look's frame at `res` voxels a meter, and its hash,
+/// as its .json keeps them: for telling which model a file was written from, see
+/// baked::legacy()
+pub(crate) fn written_as(model: &Model, res: f64) -> (u64, String) {
+    let grid = Grid { size: model.size, voxels: model.voxels.clone(), origin: origin_of(pivot_of(model.size, None, res)) };
+    let bytes = vox::write(&grid, &palette());
+    (bytes.len() as u64, hash_of(&bytes))
+}
+
 /// Whether the file at `path` is just as it was exported, so never edited: then the code's model
 /// is drawn, as it was, or as it's become since
 pub(crate) fn unchanged(path: &Path) -> bool {
@@ -650,19 +661,66 @@ fn look_frames(dir: &Path, files: &HashSet<String>, look: Look, code: &[&Model])
 /// Whether a look has files of its own
 fn has_files(files: &HashSet<String>, look: Look) -> bool {
     let folder = look_folder(look);
-    (0..frames()).any(|f| files.contains(&format!("{folder}/{}", frame_name(f))))
+    (0..frames()).any(|f| files.contains(&format!("{folder}/{}", frame_name(f)))) || !crate::baked::files_of(look, files).is_empty()
+}
+
+/// Where piece `p` of look `look`, baked from pieces, is among the models, see
+/// animals::BAKED_MODELS_AT
+pub fn baked_model(look: Look, p: usize) -> Option<usize> {
+    Some(animals::BAKED_MODELS_AT + crate::baked::kind(look)? * crate::baked::PIECES + p)
+}
+
+/// What's said in a baked look's pieces' .json
+pub const PIECE_NOTE: &str = "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every \
+    frame it's drawn in, walking and attacking.";
+
+/// A look whose frames are baked from pieces, see src\baked.rs, with its files read in: its pieces'
+/// files, an old standing frame's, its animation files, and files replacing frames outright; or, if
+/// it has none of its own and is another look's shape in its own colours, that one's pieces'
+/// files, recoloured. Its frames, every one, and its pieces' models, PIECES of them; None if
+/// nothing of it's changed.
+fn baked_look(dir: &Path, files: &HashSet<String>, look: Look) -> Option<(Vec<Model>, Vec<Model>)> {
+    let rig = crate::baked::rig(look)?;
+    let own = has_files(files, look);
+    let source = crate::baked::skin_of(look).filter(|&(from, _)| !own && !crate::baked::files_of(from, files).is_empty());
+    if !own && source.is_none() && !crate::baked::has_anims(look) {
+        return None;
+    }
+    let pieces: Vec<crate::baked::Piece> = match source {
+        Some((from, map)) => crate::baked::read_pieces(from, dir, files, &look_folder(from)).iter().map(|p| p.recolored(&map)).collect(),
+        None => crate::baked::read_pieces(look, dir, files, &look_folder(look)),
+    };
+    crate::baked::laid_out(look, &pieces);
+    let mut frames = rig.bake(&pieces, None);
+    // Files replacing frames outright
+    let folder = look_folder(look);
+    for (f, frame) in frames.iter_mut().enumerate().skip(1) {
+        let name = format!("{folder}/{}", frame_name(f));
+        if !is_empty(frame) && files.contains(&name) {
+            match read_edit(&file_of(dir, &name), pivot_of(frame.size, None, MODEL_RES)) {
+                Ok(edit) => *frame = conform(&edit, frame.size, Grow::Fixed { cap: 255 }).0,
+                Err(e) => log(format!("{name}.vox: {e}")),
+            }
+        }
+    }
+    let models = (0..crate::baked::PIECES).map(|p| pieces.get(p).map_or_else(|| air([1, 1, 1]), |piece| piece.model.clone())).collect();
+    Some((frames, models))
 }
 
 /// The look whose file `look` is drawn from in other colours, if it shares one, with the
 /// materials swapped: the first in Look::ALL that's the same shape, see skin_map(). `frames_of`
-/// gives the code's frames of a look.
+/// gives the code's frames of a look. Looks baked from pieces share their pieces' files instead,
+/// see baked::skin_of().
 pub fn skin_of<'a>(look: Look, frames_of: &dyn Fn(Look) -> Vec<&'a Model>) -> Option<(Look, [u8; 256])> {
+    if crate::baked::baked(look) {
+        return None;
+    }
     let mine = frames_of(look);
     if mine.iter().all(|m| is_empty(m)) {
         return None;
     }
     for &other in Look::ALL.iter().take_while(|&&l| l != look) {
-        if other.build() != look.build() {
+        if other.build() != look.build() || crate::baked::baked(other) {
             continue;
         }
         let theirs = frames_of(other);
@@ -687,15 +745,28 @@ pub fn apply_looks(mut models: Vec<Model>) -> Vec<Model> {
     }
     let dir = root();
     let files = edited(&dir);
-    if files.is_empty() {
+    if files.is_empty() && !crate::baked::KINDS.iter().any(|&l| crate::baked::has_anims(l)) {
         return models;
     }
     let start = std::time::Instant::now();
     let n = frames();
     let mut done: BTreeMap<usize, Vec<Model>> = BTreeMap::new();
     let index = |l: Look| Look::ALL.iter().position(|&k| k == l).unwrap();
+    // Looks baked from pieces, their pieces' models too
+    let mut s = state();
+    for &look in &crate::baked::KINDS {
+        if let Some((frames, pieces)) = baked_look(&dir, &files, look) {
+            done.insert(index(look), frames);
+            for (p, m) in pieces.into_iter().enumerate() {
+                let i = baked_model(look, p).unwrap();
+                let old = std::mem::replace(&mut models[i], m);
+                s.code.insert(i, old);
+            }
+        }
+    }
+    drop(s);
     for &look in &Look::ALL {
-        if has_files(&files, look) {
+        if !crate::baked::baked(look) && has_files(&files, look) {
             let k = look_model(look, 0);
             let code: Vec<&Model> = models[k..k + n].iter().collect();
             done.insert(index(look), look_frames(&dir, &files, look, &code));
@@ -709,7 +780,7 @@ pub fn apply_looks(mut models: Vec<Model>) -> Vec<Model> {
             models[k..k + n].iter().collect()
         };
         for &look in &Look::ALL {
-            if done.contains_key(&index(look)) {
+            if done.contains_key(&index(look)) || crate::baked::baked(look) {
                 continue;
             }
             if let Some((from, map)) = skin_of(look, &frames_of)
@@ -1055,6 +1126,32 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
             continue;
         }
         let folder = look_folder(look);
+        // Baked from pieces: its pieces, each its own file, and its frames only if asked for
+        if let Some(rig) = crate::baked::rig(look) {
+            if let Some((from, map)) = crate::baked::skin_of(look) {
+                let swaps = (1..256).filter(|&i| map[i] != i as u8).map(|i| (name_of(i as u8), name_of(map[i]))).collect();
+                skins.entry(look_folder(from)).or_default().insert(folder.clone(), swaps);
+                lines.push(format!("{folder}: drawn from {}'s pieces in its own colours, see {}/skins.json", look_folder(from), look_folder(from)));
+                continue;
+            }
+            for (p, piece) in rig.pieces.iter().enumerate() {
+                if piece.is_empty() {
+                    continue;
+                }
+                let name = format!("{folder}/{}", rig.bones[p].name);
+                let what = format!("{}, {}", look_title(look), rig.bones[p].name.replace('_', " "));
+                write_model(dir, &name, &piece.model, MODEL_RES, Some(piece.anchor()), &what, PIECE_NOTE)?;
+                lines.push(format!("{name}.vox: {what}"));
+            }
+            if all_frames {
+                for (f, m) in frames.iter().enumerate().skip(1).filter(|(_, m)| !is_empty(m)) {
+                    let name = format!("{folder}/{}", frame_name(f));
+                    write_model(dir, &name, m, MODEL_RES, None, &format!("{}, frame {f}: {}", look_title(look), frame_name(f)), "Replaces this frame outright.")?;
+                    lines.push(format!("{name}.vox"));
+                }
+            }
+            continue;
+        }
         if let Some((from, map)) = skin_of(look, &frames_of) {
             let swaps = (1..256).filter(|&i| map[i] != i as u8).map(|i| (name_of(i as u8), name_of(map[i]))).collect();
             skins.entry(look_folder(from)).or_default().insert(folder.clone(), swaps);
@@ -1405,8 +1502,12 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
             }
         })
         .collect();
+    // Animation files saved, by their path from assets\anims without .json, see src\anim.rs
+    let anim_root = crate::anim::root();
+    let anims: Vec<String> = paths.iter().filter_map(|p| p.with_extension("").strip_prefix(&anim_root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))).collect();
+    let everything = paths.iter().any(|p| p == &dir);
     let mut out = Reread { models: false, wings: None, between: None, after: None, weapons: false };
-    if names.is_empty() {
+    if names.is_empty() && anims.is_empty() && !everything {
         return out;
     }
     let n = frames();
@@ -1415,8 +1516,28 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     let code_of = |i: usize, s: &State| -> Model { s.code.get(&i).map(copy).unwrap_or_else(|| copy(&base[i])) };
     let mut s = state();
     let mut new: Vec<(usize, Model)> = Vec::new();
+    // Looks baked from pieces, baked again from their pieces' files and their animation files, see
+    // src\baked.rs: any whose files, or the files of the look they share their shape with, or whose
+    // clips, its own or its build's, were saved
+    let in_folder = |l: Look| names.iter().any(|f| f.split('/').next() == Some(look_folder(l).as_str()));
+    for &look in &crate::baked::KINDS {
+        let id = crate::baked::id_of(look);
+        let build = id.split('/').next().unwrap_or_default();
+        let clip = anims.iter().any(|a| a.starts_with(&format!("{id}/")) || a.rsplit_once('/').is_some_and(|(d, _)| d == build));
+        let shared = crate::baked::skin_of(look).is_some_and(|(from, _)| in_folder(from));
+        if !(everything || clip || shared || in_folder(look)) {
+            continue;
+        }
+        let Some(rig) = crate::baked::rig(look) else { continue };
+        let (frames, pieces) = baked_look(&dir, &files, look).unwrap_or_else(|| {
+            crate::baked::laid_out(look, &rig.pieces);
+            (rig.frames.clone(), (0..crate::baked::PIECES).map(|p| rig.pieces.get(p).map_or_else(|| air([1, 1, 1]), |piece| piece.model.clone())).collect())
+        });
+        new.extend(frames.into_iter().enumerate().map(|(f, m)| (look_model(look, f), m)));
+        new.extend(pieces.into_iter().enumerate().filter_map(|(p, m)| Some((baked_model(look, p)?, m))));
+    }
     // Looks, and those drawn from them in their own colours
-    let looks: Vec<Look> = Look::ALL.iter().copied().filter(|&l| names.iter().any(|f| f.split('/').next() == Some(look_folder(l).as_str()))).collect();
+    let looks: Vec<Look> = Look::ALL.iter().copied().filter(|&l| !crate::baked::baked(l) && in_folder(l)).collect();
     if !looks.is_empty() {
         let code: Vec<Vec<Model>> = Look::ALL.iter().map(|&l| (0..n).map(|f| code_of(look_model(l, f), &s)).collect()).collect();
         let frames_of = |l: Look| -> Vec<&Model> { code[Look::ALL.iter().position(|&k| k == l).unwrap()].iter().collect() };
@@ -1667,7 +1788,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("innert-export-test-{}", std::process::id()));
         export_all(&dir, false).unwrap();
         let files = scan(&dir);
-        assert!(files.contains("wolf/base"), "the wolf's standing frame");
+        assert!(files.contains("merchant/base"), "the merchant's standing frame");
+        assert!(!files.contains("wolf/base"), "the wolf's baked from pieces");
         assert!(files.contains("dragon/ashwing/head"));
         assert!(files.contains("wings/gull"));
         CODE_ONLY.store(true, Ordering::Relaxed);
@@ -1677,7 +1799,7 @@ mod tests {
         CODE_ONLY.store(false, Ordering::Relaxed);
         let n = frames();
         for &look in &Look::ALL {
-            if !has_files(&files, look) {
+            if !has_files(&files, look) || crate::baked::baked(look) {
                 continue;
             }
             let k = look_model(look, 0);
@@ -1686,6 +1808,25 @@ mod tests {
             for f in 0..n {
                 assert_eq!(back[f].size, code[f].size, "{look:?} frame {f}");
                 assert!(back[f].voxels == code[f].voxels, "{look:?} frame {f}");
+            }
+        }
+        // The looks baked from pieces: every piece read back as it was, and every frame baked from
+        // them as the code bakes it, but for those drawn from another's pieces, which have none
+        assert!(files.contains("armored_skeleton/blade") && files.contains("wolf/upper_fore_left"), "the baked looks' pieces");
+        assert!(!files.iter().any(|f| f.starts_with("ginger_cat/")), "the ginger cat's drawn from the grey cat's");
+        for &look in &crate::baked::KINDS {
+            let rig = crate::baked::rig(look).unwrap();
+            if crate::baked::skin_of(look).is_some() {
+                continue;
+            }
+            assert!(crate::baked::files_of(look, &files).len() >= 4, "{look:?}'s pieces");
+            let back = crate::baked::read_pieces(look, &dir, &files, &look_folder(look));
+            for (p, (a, b)) in back.iter().zip(&rig.pieces).enumerate() {
+                assert!(a.model.size == b.model.size && a.model.voxels == b.model.voxels && (a.anchor() - b.anchor()).norm() < 1e-9, "{look:?} piece {p}");
+            }
+            let frames = rig.bake(&back, None);
+            for f in 0..n {
+                assert!(frames[f].size == models[look_model(look, f)].size && frames[f].voxels == models[look_model(look, f)].voxels, "{look:?} frame {f}");
             }
         }
         // The jointed bosses', the dragons' and the avians' pieces, one after another among the
@@ -1700,6 +1841,7 @@ mod tests {
             .chain((0..dragon_fx).map(|_| None))
             .chain((0..crate::avians::KINDS.len() * avian_pieces()).map(avian_file))
             .chain((0..winged_fx).map(|_| None))
+            .chain((0..crate::baked::MODELS).map(|_| None))
             .collect();
         assert_eq!(names.len(), animals::ANIMAL_MODELS - crate::serpents::PART_MODELS - base);
         assert!(files.contains("avian/harpy/torso"), "the avians' pieces");

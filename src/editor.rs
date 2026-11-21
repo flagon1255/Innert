@@ -60,6 +60,9 @@ pub enum Subject {
     Dragon(Look),
     /// A boss drawn out of jointed pieces, see src\rig.rs
     Boss(Look),
+    /// A monster, an animal or one of the folk of the towns, drawn in frames baked from jointed
+    /// pieces, see src\baked.rs
+    Baked(Look),
     /// An avian or a gargoyle, on the winged rig, see src\avians.rs
     Winged(Look),
     /// A great serpent's head, jaw and a piece of its body, by serpents::GREATS
@@ -280,6 +283,7 @@ impl Editor {
             Subject::Dragon(look) => Some(Box::new(crate::dragons::EditorRig(look))),
             Subject::Boss(look) => Some(Box::new(crate::rig::edit::EditorRig(look))),
             Subject::Winged(look) => Some(Box::new(crate::avians::EditorRig(look))),
+            Subject::Baked(look) => Some(Box::new(crate::baked::EditorRig(look))),
             _ => None,
         }
     }
@@ -287,7 +291,7 @@ impl Editor {
     /// How far out a subject reaches, in meters, to see all of it
     fn reach(&self) -> f64 {
         match self.subject() {
-            Some(Subject::Look(l)) | Some(Subject::Dragon(l)) | Some(Subject::Boss(l)) | Some(Subject::Winged(l)) => look_reach(l),
+            Some(Subject::Look(l)) | Some(Subject::Dragon(l)) | Some(Subject::Boss(l)) | Some(Subject::Winged(l)) | Some(Subject::Baked(l)) => look_reach(l),
             Some(Subject::Serpent(g)) => crate::serpents::GREATS[g].head * 2.0 + 2.0,
             Some(Subject::Wings(_)) => 1.0,
             Some(Subject::Weapon(_)) => 1.0,
@@ -321,6 +325,11 @@ impl Editor {
         match self.subject() {
             Some(Subject::Look(look)) => look_timelines(look),
             Some(Subject::Dragon(_)) | Some(Subject::Boss(_)) | Some(Subject::Winged(_)) => self.rig().map_or(Vec::new(), |r| r.clips().into_iter().map(|c| Timeline { name: c.name, length: c.length, frames: Vec::new() }).collect()),
+            // Each clip with the frames baked from it, at their moments
+            Some(Subject::Baked(look)) => {
+                let rig = crate::baked::EditorRig(look);
+                rig.clips().into_iter().enumerate().map(|(k, c)| Timeline { name: c.name, length: c.length, frames: rig.frames(k) }).collect()
+            }
             Some(Subject::Weapon(_)) => {
                 let n = self.built.as_ref().map_or(1, |_| self.preview_frames());
                 vec![Timeline { name: "frames".into(), length: n as f64 * 0.5, frames: (0..n).map(|k| (k as f64 * 0.5, k)).collect() }]
@@ -437,9 +446,22 @@ impl Editor {
                 pick(self, "Gullfeather Wings", game);
                 self.piece = Some(0);
             }
+            // A monster baked from pieces, its blade arm picked and keyed raised further, see
+            // src\baked.rs
+            312 => {
+                pick(self, "Armoured skeleton", game);
+                self.clip = self.timelines().iter().position(|t| t.name == "windup").unwrap_or(0);
+                self.load_clip();
+                self.time = 1.0;
+                self.playing = false;
+                self.piece = bone(self, "arm_right");
+                self.key_now(Some(([0.0, -40.0, 0.0], [0.0; 3])));
+                self.yaw = 2.4;
+                self.distance = 4.0;
+            }
             _ => {}
         }
-        matches!(frame, 70 | 130 | 190 | 250 | 310)
+        matches!(frame, 70 | 130 | 190 | 250 | 310 | 370)
     }
 
     /// The bone picked turned or moved a step along the axis picked, keyed where the time is
@@ -575,6 +597,11 @@ impl Editor {
                 let k = crate::rig::kind(look)?;
                 assets::boss_file(k * crate::rig::PIECES + self.piece.unwrap_or(0))?
             }
+            // From the look it shares its shape with, if it does
+            Subject::Baked(look) => {
+                let from = crate::baked::skin_of(look).map_or(look, |(from, _)| from);
+                format!("{}/{}", assets::look_folder(from), crate::baked::piece_name(from, self.piece.unwrap_or(0))?)
+            }
             Subject::Winged(look) => {
                 let k = crate::avians::KINDS.iter().position(|&l| l == look)?;
                 assets::avian_file(k * assets::avian_pieces() + winged_piece(self.piece.unwrap_or(0)))?
@@ -613,6 +640,12 @@ impl Editor {
                 let i = crate::rig::kind(look).unwrap_or(0) * crate::rig::PIECES + self.piece.unwrap_or(0);
                 let m = game.base_model(animals::RIG_MODELS_AT + i);
                 assets::write_model(&dir, &name, m, MODEL_RES, crate::rig::edit::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
+            }
+            Subject::Baked(look) => {
+                let from = crate::baked::skin_of(look).map_or(look, |(from, _)| from);
+                let rig = crate::baked::rig(from).ok_or("not baked from pieces")?;
+                let piece = rig.pieces.get(self.piece.unwrap_or(0)).filter(|p| !p.is_empty()).ok_or("no such piece")?;
+                assets::write_model(&dir, &name, &piece.model, MODEL_RES, Some(piece.anchor()), &name, assets::PIECE_NOTE)?;
             }
             Subject::Winged(look) => {
                 let i = crate::avians::KINDS.iter().position(|&l| l == look).unwrap_or(0) * assets::avian_pieces() + winged_piece(self.piece.unwrap_or(0));
@@ -682,6 +715,20 @@ impl Editor {
                 if let Some(rig) = self.rig() {
                     let joints = self.posed(rig.as_ref());
                     rig.draw(&joints, at, 0.0, vpm, self.piece, &mut out);
+                }
+            }
+            // While a bone's picked or its clip's being changed, its pieces where they go now, as
+            // a jointed boss's are; otherwise the frame baked from them, as the game draws it, baked
+            // again from the clip once it's saved
+            Some(Subject::Baked(look)) => {
+                if self.dirty || self.piece.is_some() {
+                    if let Some(rig) = self.rig() {
+                        let joints = self.posed(rig.as_ref());
+                        rig.draw(&joints, at, 0.0, vpm, self.piece, &mut out);
+                    }
+                } else {
+                    let frame = timelines.get(self.clip).map_or(0, |t| t.frame_at(self.time));
+                    out.push(AnimalInstance::new(assets::look_model(look, frame) as u32, at, UnitQuaternion::identity(), vpm / MODEL_RES, look.reach() * vpm, MOVING));
                 }
             }
             Some(Subject::Serpent(g)) => {
@@ -826,7 +873,13 @@ impl Editor {
                 }
                 ui.label(RichText::new("Baked frames: changes to the standing frame are made in every frame.").small());
             }
-            Subject::Dragon(_) | Subject::Boss(_) | Subject::Winged(_) => {
+            Subject::Dragon(_) | Subject::Boss(_) | Subject::Winged(_) | Subject::Baked(_) => {
+                if let Subject::Baked(look) = subject {
+                    if let Some((from, _)) = crate::baked::skin_of(look) {
+                        ui.label(format!("Shares its pieces with {}, in its own colours.", assets::look_title(from)));
+                    }
+                    ui.label(RichText::new("Its frames are baked from these pieces: a piece changed goes with it in every frame. Pick none to see the frames as the game draws them.").small());
+                }
                 if let Some(rig) = self.rig() {
                     ui.label("Bones");
                     egui::ScrollArea::vertical().id_salt("bones").max_height(260.0).show(ui, |ui| {
@@ -1031,7 +1084,7 @@ fn entries(game: &Game, library: &Library) -> Vec<Entry> {
             let m = game.base_model(assets::look_model(l, 0));
             m.size != [1, 1, 1]
         })
-        .map(|&l| Entry { subject: Subject::Look(l), title: assets::look_title(l), group: group_of(l) })
+        .map(|&l| Entry { subject: if crate::baked::baked(l) { Subject::Baked(l) } else { Subject::Look(l) }, title: assets::look_title(l), group: group_of(l) })
         .collect();
     let order = ["Bosses", "Monsters", "Animals and people", "Things"];
     looks.sort_by_key(|e| order.iter().position(|g| *g == e.group));

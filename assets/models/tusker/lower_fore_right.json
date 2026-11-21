@@ -1,0 +1,29 @@
+{
+  "what": "Tusker, lower fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    3,
+    8
+  ],
+  "pivot": [
+    2.0,
+    1.48,
+    0.96
+  ],
+  "anchor": [
+    0.0,
+    0.0012500000000000011,
+    -0.06
+  ],
+  "origin": [
+    -2,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1499,
+    "67e5f030e1acb9dd"
+  ]
+}

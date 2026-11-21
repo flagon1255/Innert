@@ -1,0 +1,25 @@
+{
+  "what": "Chest (OpenChest), standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    12,
+    12
+  ],
+  "pivot": [
+    6.0,
+    6.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    0
+  ],
+  "note": "",
+  "written": [
+    3011,
+    "b33e3dd1b357c978"
+  ]
+}
