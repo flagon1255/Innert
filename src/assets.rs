@@ -805,8 +805,21 @@ fn avian_fx_file(fx: usize) -> Option<String> {
 
 /// The arrows, bolts, shot, spells, sparks, smoke, pools and the player's arms, in the order
 /// weapons::effect_models() makes them
+/// Where the special ammo's models start among the effects, see weapons::AMMO_STYLES: last among
+/// them, the first of as many as there are effects told here
+static AMMO_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+fn count_effects(n: usize) {
+    AMMO_AT.store(n.saturating_sub(crate::weapons::AMMO_STYLES.len()), Ordering::Relaxed);
+}
+
 fn effect_file(i: usize) -> Option<String> {
-    Some(format!("effects/{i:03}"))
+    // Each kind of special ammo after them, by its id, see weapons::AMMO_STYLES
+    let ammo = AMMO_AT.load(Ordering::Relaxed);
+    Some(match crate::weapons::AMMO_STYLES.get(i.wrapping_sub(ammo)) {
+        Some(style) if i >= ammo => format!("ammo/{}", style.id),
+        _ => format!("effects/{i:03}"),
+    })
 }
 
 /// The wards round raid bosses, in the order guardians::models() makes them
@@ -840,8 +853,10 @@ fn apply_fixed(made: &mut [(Model, Vector3<f64>)], name: &dyn Fn(usize) -> Optio
 /// The arrows, spells, sparks and the player's arms and the rest, with the files read in, see
 /// Combat::new()
 pub fn effects(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)> {
-    if enabled() && edited(&root()).iter().any(|f| f.starts_with("effects/")) {
+    count_effects(made.len());
+    if enabled() && edited(&root()).iter().any(|f| f.starts_with("effects/") || f.starts_with("ammo/")) {
         let code: Vec<(Model, Vector3<f64>)> = made.iter().map(|(m, a)| (copy(m), *a)).collect();
+        count_effects(made.len());
         let changed = apply_fixed(&mut made, &effect_file);
         if changed > 0 {
             state().code_effects = Some(code);
@@ -1087,10 +1102,12 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
         lines.push(format!("{name}.vox: what avians throw and call down"));
     }
     let fixed_note = "Placed by its anchor as the code places it, and grows only round it. Its voxels a meter are the code's, not known here.";
-    for (i, (m, a)) in crate::weapons::effect_models().iter().enumerate() {
+    let effect_list = crate::weapons::effect_models();
+    count_effects(effect_list.len());
+    for (i, (m, a)) in effect_list.iter().enumerate() {
         let name = effect_file(i).unwrap();
         write_model(dir, &name, m, MODEL_RES, Some(*a), "an arrow, bolt, shot, spell, spark, smoke, pool or the player's arm", fixed_note)?;
-        lines.push(format!("{name}.vox: effect {i}"));
+        lines.push(format!("{name}.vox: {}", if name.starts_with("ammo/") { "special ammo in flight" } else { "an effect of fighting" }));
     }
     for (i, (m, a)) in crate::guardians::models().iter().enumerate() {
         let name = ward_file(i).unwrap();
@@ -1499,7 +1516,7 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
         drop(s);
     }
     // The effects of fighting and the wards, each list read whole again from the code's
-    if names.iter().any(|f| f.starts_with("effects/")) {
+    if names.iter().any(|f| f.starts_with("effects/") || f.starts_with("ammo/")) {
         let mut s = state();
         let code = s.code_effects.get_or_insert_with(|| lists.between[..lists.effects].iter().map(|m| (copy(m), Vector3::zeros())).collect());
         let mut made: Vec<(Model, Vector3<f64>)> = code.iter().map(|(m, a)| (copy(m), *a)).collect();
@@ -1703,7 +1720,9 @@ mod tests {
             let (back, _) = conform(&edit, m.size, Grow::Fixed { cap: 1023 });
             assert!(back.size == m.size && back.voxels == m.voxels, "{name}");
         };
-        for (i, (m, a)) in crate::weapons::effect_models().iter().enumerate() {
+        let effect_list = crate::weapons::effect_models();
+        count_effects(effect_list.len());
+        for (i, (m, a)) in effect_list.iter().enumerate() {
             fixed(&effect_file(i).unwrap(), m, *a);
         }
         for (i, (m, a)) in crate::guardians::models().iter().enumerate() {

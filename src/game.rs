@@ -1338,6 +1338,13 @@ impl Game {
     }
 
     /// For trying it out: gives the player a bundle of the special ammo called `id` and loads it
+    /// Every kind of special ammo flying slowly across the view in rows in front of `eye`,
+    /// looking along `forward`, for a contact sheet of them, see Combat::ammo_sheet()
+    pub fn ammo_sheet(&mut self, eye: Vector3<f64>, forward: Vector3<f64>) {
+        let bow = self.library.generate(7, self.library.family("bow"), 0.0);
+        self.combat.ammo_sheet(&self.library, &bow.profile, eye, forward);
+    }
+
     pub fn give_ammo(&mut self, id: &str) {
         if let Some(k) = self.library.ammo.iter().position(|a| a.id == id) {
             self.add_item(Item::Ammo(k, self.library.ammo[k].bundle * 3), 1);
@@ -1952,7 +1959,7 @@ impl Game {
         if self.loaded.as_ref().map(|(key, _)| *key) != wanted {
             self.loaded = wanted.map(|(w, k)| {
                 let profile = Rc::new(self.library.loaded(&self.weapons[w], k));
-                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst })
+                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst, style: crate::weapons::ammo_style(&self.library.ammo[k].id) })
             });
         }
         let weapon = held.map(|i| (i, &self.weapons[i]));
