@@ -86,6 +86,7 @@ mod gpu_timing;
 mod hearths;
 mod hot_reload;
 mod leaves;
+mod levels;
 mod serpent_lairs;
 mod serpent_trials;
 mod serpents;
@@ -2403,6 +2404,23 @@ impl App {
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
+        // For trying out levels: `--set player_level=12` starts the player at that level, before
+        // any monster's given its own, `level_up=1` has them go up one straight away, and
+        // `level_up_hold=1` holds the moment of it on the HUD for a screenshot, see levels.rs
+        if let Some(level) = setting("player_level").and_then(|v| v.parse().ok()) {
+            game.set_level(level);
+        }
+        if let Some(share) = setting("player_xp").and_then(|v| v.parse::<f64>().ok()) {
+            game.gain_experience(crate::levels::needed(game.level().0) * share.clamp(0.0, 0.99), None);
+        }
+        if flag("level_up", false) {
+            game.level_up_now();
+        }
+        // `--set inventory=1 inspect=2` opens the inventory with the card of its third slot showing
+        if let Some(slot) = setting("inspect").and_then(|v| v.parse().ok()) {
+            game.inspect(slot);
+        }
+        game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
         // For trying out weapons: `--set weapon_seed=7 weapon_luck=3` starts with other ones, rarer
         // the luckier, and `--set weapon=bow` with the bow in hand
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
@@ -2565,6 +2583,10 @@ impl App {
             let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
             game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
             println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
+            // `enemy_health=0.6` starts them hurt, their bars and levels showing
+            if let Some(fraction) = setting("enemy_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_monsters(fraction);
+            }
         }
         // `--set health=10` starts the player that hurt, to see them die
         if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
@@ -2816,6 +2838,9 @@ impl App {
             }
             if let Some(gold) = setting("gold").and_then(|v| v.parse().ok()) {
                 app.game.set_gold(gold);
+            }
+            if let Some(level) = setting("player_level").and_then(|v| v.parse().ok()) {
+                app.game.set_level(level);
             }
             if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
                 app.game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));

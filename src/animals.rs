@@ -3414,6 +3414,10 @@ pub struct Animal {
     pub max_health: f64,
     /// Whether that's been done to it
     pub toughened: bool,
+    /// Its level, for a boss or monster, see levels.rs: what it's toughened by and shown with over
+    /// its health bar. 0 till it's given one, as it's toughened, unless it came with one, as night
+    /// raiders do.
+    pub level: u32,
     /// Burning, poisoned, frozen and such, see src\combat.rs
     pub status: Status,
     /// What a boss is up to, see src\bosses.rs
@@ -3591,6 +3595,7 @@ impl Animal {
             health: look.health(),
             max_health: look.health(),
             toughened: false,
+            level: 0,
             status: Status::default(),
             boss: None,
             dragon: None,

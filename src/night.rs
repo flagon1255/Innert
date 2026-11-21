@@ -235,20 +235,23 @@ impl App {
         let mut looks = Vec::new();
         let mut tough = Vec::new();
         for _ in 0..count {
-            let (look, t) = raids::pick(&roster, random(&mut self.raid.rng), plan.brutes);
+            let (look, least) = raids::pick(&roster, random(&mut self.raid.rng), plan.brutes);
             looks.push(look);
-            tough.push(t * plan.toughness);
+            tough.push(least);
         }
         let water = &self.water;
         let seed = self.raid.rng;
         let pack = animals::spawn_pack(&self.world, &|x, y| water.surface_at(x, y), &looks, at, 3.0, seed);
         let came = pack.len();
-        for (mut monster, t) in pack.into_iter().zip(tough) {
+        for (mut monster, least) in pack.into_iter().zip(tough) {
             if let Some(boss) = &mut monster.boss {
                 boss.raider = true;
                 boss.engaged = true;
             }
-            monster.toughen(t);
+            // Of the level of what's here, or of its own realm's floor, see raids::night_roster(),
+            // and tougher again the later the night, see raids::plan()
+            monster.level = self.game.foe_level_at_least(monster.look, least, random(&mut self.raid.rng));
+            monster.toughen(plan.toughness);
             self.game.add_animal(monster);
         }
         self.raid.came += came;

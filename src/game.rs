@@ -16,6 +16,7 @@ use crate::bosses::{self, Deed, Flock, Move};
 use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
+use crate::levels::{self, Slain, Source};
 use crate::realms::{self, Scaling};
 use crate::wings;
 use crate::save;
@@ -216,6 +217,35 @@ const GOLD: Color32 = Color32::from_rgb(255, 205, 70);
 /// How wide `text` is in the HUD at `size`
 fn galley_width(painter: &egui::Painter, text: &str, size: f32) -> f32 {
     painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE).size().x
+}
+
+/// For screenshots of it: the moment of going up a level held on the HUD, see `--set level_up_hold`
+pub static HOLD_LEVEL_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Seconds the moment of going up a level shows for, see Game::level_hud()
+const LEVEL_UP_SECONDS: f32 = 3.2;
+
+/// The color a foe's level is shown in, by how it stands to the player's `player`: red well over,
+/// orange over, white the same, grey under
+fn foe_level_tint(level: u32, player: u32) -> Color32 {
+    if level >= player + 3 {
+        Color32::from_rgb(255, 95, 80)
+    } else if level > player {
+        Color32::from_rgb(255, 190, 90)
+    } else if level == player {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(165)
+    }
+}
+
+/// And a weapon's item level: green over the player's, white the same, grey under
+fn item_level_tint(level: u32, player: u32) -> Color32 {
+    match level.cmp(&player) {
+        std::cmp::Ordering::Greater => Color32::from_rgb(120, 230, 110),
+        std::cmp::Ordering::Equal => Color32::WHITE,
+        std::cmp::Ordering::Less => Color32::from_gray(160),
+    }
 }
 
 /// What a weapon's worth to a merchant, by its rarity, before what its effects and synergies add
@@ -433,6 +463,21 @@ const REALM_LOOT: f64 = 0.5;
 /// How many times luckier the weapons found are in a realm scaled `scaling`, see REALM_LOOT
 fn loot_scaling(scaling: Scaling) -> f64 {
     scaling.luck.max(0.0).powf(REALM_LOOT)
+}
+
+/// What something of `look` slain was, for the experience it gives and how its loot's levelled,
+/// see levels::Slain: a finale or an ultra, a raid boss, a boss or a monster. `key` is its lair's,
+/// for whether it's one of a realm's raid bosses or its finale, see Game::raid_lairs.
+fn slain_of(look: Look, key: Option<[i64; 3]>, raid_lairs: &HashMap<[i64; 3], u8>) -> Slain {
+    if look.is_ultra() || look == crate::dragons::ULTRA || key.is_some_and(|k| realms::is_finale_key(&k)) {
+        Slain::Finale
+    } else if look.is_raid() || key.is_some_and(|k| raid_lairs.contains_key(&k)) {
+        Slain::Raid
+    } else if look.is_boss() {
+        Slain::Boss
+    } else {
+        Slain::Monster
+    }
 }
 
 /// What sort of boss a hoard is a beaten one's, which decides what's in it, see hoard_rolls()
@@ -751,8 +796,18 @@ pub struct Game {
     /// and whether the player's just pressed E at it, see take_shrine()
     shrines: Vec<Shrine>,
     shrine_used: bool,
-    /// How much harder the realm the player's in is, see realms::Scaling
+    /// How much harder the realm the player's in is than its monsters' levels make it, see
+    /// realms::Scaling, and the band of levels they keep to, see levels.rs
     scaling: Scaling,
+    band: levels::Band,
+    /// The player's level, the experience they have towards the next, and seconds since they last
+    /// went up one, for the HUD to show it
+    level: u32,
+    experience: f64,
+    levelled: f64,
+    /// The level the weapons of a save from before there were levels are given, see
+    /// set_legacy_level()
+    legacy_level: u32,
     /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
     /// with which realm's each leaves
     raid_lairs: HashMap<[i64; 3], u8>,
@@ -976,6 +1031,11 @@ impl Game {
             shrines: Vec::new(),
             shrine_used: false,
             scaling: Scaling::NONE,
+            band: levels::Band::ANY,
+            level: 1,
+            experience: 0.0,
+            levelled: f64::INFINITY,
+            legacy_level: 1,
             raid_lairs: HashMap::new(),
             sky_wares: false,
             covered: false,
@@ -1177,7 +1237,7 @@ impl Game {
     /// gone by since the player was last hurt
     pub fn warm(&mut self, dt: f64, rate: f64, safe: f64) {
         if self.dead.is_none() && self.since_hurt > safe {
-            self.health = (self.health + rate * dt).min(MAX_HEALTH);
+            self.health = (self.health + rate * dt).min(self.max_health());
         }
     }
 
@@ -1929,13 +1989,19 @@ impl Game {
     /// which way it looks, and `controls` what the mouse buttons do with a weapon in hand.
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View, controls: Controls, dt: f64) {
         self.gather_packs();
-        // Bosses and monsters as tough as the realm makes them, however they turned up: in their
-        // lairs and dens, wandering in, or called up by a boss
-        let toughness = self.scaling.toughness;
+        // Bosses and monsters as tough as their levels make them, however they turned up: in their
+        // lairs and dens, wandering in, or called up by a boss. Each is given its level here,
+        // unless it came with one, see levels::foe_level().
+        let (band, player_level, journeys) = (self.band, self.level, self.scaling.toughness);
         for animal in &mut self.animals {
             if !animal.toughened && animal.look.build().is_some() {
                 animal.toughened = true;
-                animal.toughen(toughness);
+                if animal.level == 0 {
+                    let slain = slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
+                    let mut roll = hash(animal.id ^ 0x1e7e1);
+                    animal.level = levels::foe_level(band, player_level, slain, random(&mut roll));
+                }
+                animal.toughen(levels::toughness(animal.level) * journeys);
             }
             animal.update(world, water, player, dt);
             // What's struck at a dragon lands on whichever part of it the player's looking at
@@ -2003,7 +2069,7 @@ impl Game {
         // What a special attack did for the player
         let heal = std::mem::take(&mut self.combat.heal);
         if heal > 0.0 && self.health > 0.0 {
-            self.health = (self.health + heal).min(MAX_HEALTH);
+            self.health = (self.health + heal).min(self.max_health());
         }
         self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, water, player, dt);
@@ -2027,6 +2093,7 @@ impl Game {
         self.leaves.update(world, water, view.eye, dt);
         self.look_over_loot(world, player, view, dt);
 
+        self.levelled = if HOLD_LEVEL_UP.load(std::sync::atomic::Ordering::Relaxed) { 0.7 } else { self.levelled + dt };
         if player.is_some() {
             let before = self.hunger;
             self.hunger = (self.hunger - 100.0 * dt / HUNGER_SECONDS).max(0.0);
@@ -2854,12 +2921,12 @@ impl Game {
         if self.combat.parry(from, feet) {
             return;
         }
-        // Pricked back by thorned wings, as hard as the realm makes what's there tough
+        // Pricked back by thorned wings, as hard as the levels about make what's there tough
         if self.worn_perk() == Some(wings::Perk::Thorns) {
-            self.prick(from, damage * wings::THORNS * self.scaling.toughness);
+            self.prick(from, damage * wings::THORNS * self.foe_toughness());
         }
-        // Harder in the realms further on
-        let damage = damage * self.scaling.damage;
+        // Harder the higher the level of what's about, see levels::damage()
+        let damage = damage * self.foe_damage();
         let vpm = world.voxels_per_meter as f64;
         self.health -= damage;
         self.since_hurt = 0.0;
@@ -2967,7 +3034,7 @@ impl Game {
     /// or None for where they fell
     pub fn rise(&mut self) -> Option<Vector3<f64>> {
         self.dead = None;
-        self.health = MAX_HEALTH;
+        self.health = self.max_health();
         self.hunger = self.hunger.max(40.0);
         self.combat.mana = MAX_MANA;
         self.down = 0.0;
@@ -3050,7 +3117,7 @@ impl Game {
             }
         }
         if self.since_hurt > 5.0 {
-            self.health = (self.health + 4.0 * dt).min(MAX_HEALTH);
+            self.health = (self.health + 4.0 * dt).min(self.max_health());
         }
         // Starving wears the player down, though not all the way
         if self.hunger <= 0.0 && self.health > 10.0 {
@@ -3060,13 +3127,13 @@ impl Game {
 
     /// The boss fighting the player, if any, nearest first: which it is, how much health it has
     /// left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>)> {
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>, u32)> {
         let vpm = self.combat.vpm() as u32;
         self.animals
             .iter()
             .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded))
+            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded, a.level))
     }
 
     /// Whether a boss being fought has its bar up along the bottom of the view, see hud()
@@ -3076,7 +3143,7 @@ impl Game {
 
     /// For trying out dying: the player down to `health`
     pub fn set_health(&mut self, health: f64) {
-        self.health = health.clamp(1.0, MAX_HEALTH);
+        self.health = health.clamp(1.0, self.max_health());
     }
 
     /// For trying them out: every boss about down to `fraction` of its health
@@ -3179,6 +3246,16 @@ impl Game {
             let animal = self.animals.remove(k);
             let look = animal.look;
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
+            // Experience for every monster and boss slain, by its level and what it was
+            let slain = slain_of(look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
+            if look.is_monster() || look.is_boss() {
+                self.gain_experience(levels::experience(animal.level.max(1), slain), Some(middle + Vector3::new(0.0, 0.0, 1.2 * vpm)));
+            }
+            let from = (animal.level.max(1), match slain {
+                Slain::Monster => Source::Found,
+                Slain::Boss => Source::Boss,
+                Slain::Raid | Slain::Finale => Source::Raid,
+            });
             // Bloodmoth wings give back a little health for each monster or boss slain, more for a
             // boss, the blood of it rising off it
             if (look.is_monster() || look.is_boss()) && self.worn_perk() == Some(wings::Perk::Leech) {
@@ -3216,7 +3293,7 @@ impl Game {
                     loot.push(Item::Gold(if undead { 3 } else { 2 } + (random(&mut self.rng) * if undead { 10.0 } else { 5.0 }) as u32));
                 }
                 if undead && random(&mut self.rng) < MONSTER_WEAPON {
-                    loot.push(self.roll_weapon(MONSTER_LUCK, false));
+                    loot.push(self.roll_weapon(MONSTER_LUCK, false, from));
                 } else if !nothing && random(&mut self.rng) < 0.1 {
                     loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
                 }
@@ -3267,11 +3344,11 @@ impl Game {
                 let (piles, potions) = if ultra { (6, 5) } else if raid { (3, 3) } else { (1, 1) };
                 let rolls = hoard_rolls(hoard, &mut self.rng);
                 // Leaning to what suits it, see bosses::taste()
-                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon_for(look, luck, sure)).collect();
+                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon_for(look, luck, sure, from)).collect();
                 // The Coil Unending's fang among it; the Worldpyre Ancient's is put straight into
                 // the player's hands, above
                 if look == Look::Ysveth {
-                    let fang = self.fang();
+                    let fang = self.fang(from.0);
                     loot.insert(0, fang);
                 }
                 for _ in 0..piles {
@@ -3488,7 +3565,7 @@ impl Game {
     /// The Coil Unending's own weapon, the one of its kind: a mythic whip whose special is a serpent
     /// lash or a coil bind if any is, made the same every time, and called by its own name, which
     /// it keeps in the save, see save::WeaponSave::name
-    fn fang(&mut self) -> Item {
+    fn fang(&mut self, level: u32) -> Item {
         let family = self.library.family("whip");
         let mythic = self.library.rarities.len() - 1;
         let serpentine = |s: u32| matches!(self.library.special_of(s, family, FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind));
@@ -3507,19 +3584,37 @@ impl Game {
         }
         let mut weapon = found.unwrap_or_else(|| self.library.generate(0x7e57_f00d, family, FANG_LUCK));
         weapon.name = serpents::FANG.to_owned();
+        let weapon = self.levelled(weapon, level, Source::Raid);
         self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
     }
 
+    /// `weapon` given an item level rolled from `level`, that of what gave it, as `source` rolls it,
+    /// see levels::drop_level()
+    fn levelled(&mut self, mut weapon: Weapon, level: u32, source: Source) -> Weapon {
+        weapon.set_level(levels::drop_level(level, source, random(&mut self.rng)), 0);
+        weapon
+    }
+
+    /// The same, rolled from `seed`, for what's the same every time it's looked at, as a chest's
+    /// or a merchant's
+    fn levelled_by(&self, mut weapon: Weapon, level: u32, source: Source, seed: u32) -> Weapon {
+        let mut roll = hash(seed ^ 0x1e7e1);
+        weapon.set_level(levels::drop_level(level, source, random(&mut roll)), 0);
+        weapon
+    }
+
     /// A new weapon rolled with `luck`, as for Library::odds(), kept among Game::weapons: with
-    /// `sure`, one with a special attack
-    fn roll_weapon(&mut self, luck: f64, sure: bool) -> Item {
+    /// `sure`, one with a special attack. Of an item level rolled from `from`, the level of what
+    /// left it and what that was.
+    fn roll_weapon(&mut self, luck: f64, sure: bool, from: (u32, Source)) -> Item {
         self.rng = hash(self.rng ^ 0x1007);
         // Better in the realms further on
         let luck = luck * loot_scaling(self.scaling);
         let seed = if sure { self.library.special_seed(self.rng, None, luck) } else { self.rng };
         let weapon = self.library.generate(seed, None, luck);
+        let weapon = self.levelled(weapon, from.0, from.1);
         self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
@@ -3527,15 +3622,15 @@ impl Game {
 
     /// A weapon a boss of `look` leaves: most of the time of one of the families that suit it, and
     /// of its element if one of a few rolls comes up with it, see bosses::taste(); otherwise any
-    fn roll_weapon_for(&mut self, look: Look, luck: f64, sure: bool) -> Item {
+    fn roll_weapon_for(&mut self, look: Look, luck: f64, sure: bool, from: (u32, Source)) -> Item {
         let (families, element) = bosses::taste(look);
         self.rng = hash(self.rng ^ 0x7a57e);
         if families.is_empty() || random(&mut self.rng) > 0.75 {
-            return self.roll_weapon(luck, sure);
+            return self.roll_weapon(luck, sure, from);
         }
         let pick = families[(random(&mut self.rng) * families.len() as f64) as usize % families.len()];
         let Some(family) = self.library.families.iter().position(|f| f.id == pick) else {
-            return self.roll_weapon(luck, sure);
+            return self.roll_weapon(luck, sure, from);
         };
         let luck = luck * loot_scaling(self.scaling);
         let mut chosen = None;
@@ -3551,7 +3646,8 @@ impl Game {
                 break;
             }
         }
-        self.weapons.push(chosen.expect("rolled at least once"));
+        let weapon = self.levelled(chosen.expect("rolled at least once"), from.0, from.1);
+        self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
     }
@@ -3788,6 +3884,8 @@ impl Game {
         let key = chest.key;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
         let weapon = self.library.generate(seed, None, chest.luck * loot_scaling(self.scaling));
+        // Of the level of where it is, a bandits' hoard's leaning higher, as a boss's does
+        let weapon = self.levelled_by(weapon, self.area_level(), if chest.hoard { Source::Boss } else { Source::Found }, seed);
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
         // A bandits' hoard has what they've taken in it too
         let hoard = chest.hoard;
@@ -3899,7 +3997,8 @@ impl Game {
     fn royal_stock(&mut self, key: [i64; 3]) {
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x9e11))));
         let mut wares = Vec::new();
-        for weapon in royal_weapons(&self.library, seed) {
+        for (k, weapon) in royal_weapons(&self.library, seed).into_iter().enumerate() {
+            let weapon = self.levelled_by(weapon, self.level, Source::Merchant, seed ^ k as u32);
             self.weapons.push(weapon);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
@@ -4011,7 +4110,10 @@ impl Game {
         let mut wares = Vec::new();
         for luck in MERCHANT_LUCKS {
             seed = hash(seed);
-            self.weapons.push(self.library.generate(seed, None, luck * loot_scaling(self.scaling)));
+            // Of about the player's own level
+            let weapon = self.library.generate(seed, None, luck * loot_scaling(self.scaling));
+            let weapon = self.levelled_by(weapon, self.level, Source::Merchant, seed);
+            self.weapons.push(weapon);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         // And a fine tool, for gathering with, see tools.rs
@@ -4385,7 +4487,7 @@ impl Game {
         };
         // The Coil Unending's fang keeps its own name
         let name = (weapon.name == serpents::FANG).then(|| weapon.name.clone());
-        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed, name }
+        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed, name, level: Some(weapon.level), jewels: weapon.jewels }
     }
 
     /// Makes a saved weapon again, kept among Game::weapons: None if the parts it was made of are
@@ -4406,6 +4508,9 @@ impl Game {
         if let Some(name) = &saved.name {
             weapon.name = name.clone();
         }
+        // A weapon from a save from before there were levels is of the level of where the player's
+        // got to, see set_legacy_level()
+        weapon.set_level(saved.level.unwrap_or(self.legacy_level), saved.jewels);
         self.weapons.push(weapon);
         Some(self.weapons.len() - 1)
     }
@@ -4460,6 +4565,8 @@ impl Game {
             worn: self.worn.map(|k| wings::KINDS[k as usize].id.to_owned()),
             glided: self.glided,
             wings_told: self.wings_told,
+            level: Some(self.level),
+            experience: self.experience,
         }
     }
 
@@ -4536,6 +4643,7 @@ impl Game {
     /// done anywhere
     pub fn new_character(&mut self, seed: u32) {
         self.slots.clear();
+        (self.level, self.experience, self.levelled) = (1, 0.0, f64::INFINITY);
         self.worn = None;
         self.glided = false;
         self.wings_told = false;
@@ -4574,6 +4682,10 @@ impl Game {
             self.worn = Some(wings::GULL);
         }
         (self.glided, self.wings_told) = (carried.glided, carried.wings_told);
+        // A save from before there were levels starts at the floor of the furthest realm reached
+        self.level = carried.level.unwrap_or(self.legacy_level).clamp(1, levels::LEVEL_CAP);
+        self.experience = if self.level >= levels::LEVEL_CAP { 0.0 } else { carried.experience.clamp(0.0, levels::needed(self.level)) };
+        self.levelled = f64::INFINITY;
         self.selected = carried.selected.min(self.slots.len().saturating_sub(1));
         self.gold = carried.gold;
         self.bucket = carried.bucket.clamp(0.0, BUCKET_CAPACITY);
@@ -4604,7 +4716,7 @@ impl Game {
     }
 
     fn set_vitals(&mut self, health: f64, hunger: f64, mana: f64) {
-        self.health = health.clamp(1.0, MAX_HEALTH);
+        self.health = health.clamp(1.0, self.max_health());
         self.hunger = hunger.clamp(0.0, 100.0);
         self.combat.mana = mana.clamp(0.0, MAX_MANA);
         self.dead = None;
@@ -4649,6 +4761,105 @@ impl Game {
     /// monsters' health, how hard they hit and how lucky what's found is
     pub fn set_scaling(&mut self, scaling: Scaling) {
         self.scaling = scaling;
+    }
+
+    /// The band of levels the monsters of the realm the player's in keep to, see levels::band_in()
+    pub fn set_band(&mut self, band: levels::Band) {
+        self.band = band;
+    }
+
+    /// The level weapons and the player are given from a save from before there were levels: the
+    /// floor of the furthest realm reached, see levels::legacy_level(). Before restore().
+    pub fn set_legacy_level(&mut self, level: u32) {
+        self.legacy_level = level.clamp(1, levels::LEVEL_CAP);
+    }
+
+    /// The player's level, and how far they are to the next, 0-1
+    pub fn level(&self) -> (u32, f64) {
+        let toward = if self.level >= levels::LEVEL_CAP { 1.0 } else { self.experience / levels::needed(self.level) };
+        (self.level, toward)
+    }
+
+    /// The level of the monsters about with the player at theirs, before each's own roll, see
+    /// levels::foe_level()
+    pub fn area_level(&self) -> u32 {
+        self.band.level_for(self.level)
+    }
+
+    /// How many times their own health the monsters about have, and how much harder they hit, by
+    /// the level of what's about
+    fn foe_toughness(&self) -> f64 {
+        levels::toughness(self.area_level()) * self.scaling.toughness
+    }
+    fn foe_damage(&self) -> f64 {
+        levels::damage(self.area_level()) * self.scaling.damage
+    }
+
+    /// The player's health at full, which their level raises, see levels::max_health()
+    pub fn max_health(&self) -> f64 {
+        levels::max_health(self.level)
+    }
+
+    /// The level a monster or boss of `look` comes at as the player's level and the band about
+    /// have it, by `roll`, 0-1, and at least `least`, as for night raiders from realms further on
+    pub fn foe_level_at_least(&self, look: Look, least: u32, roll: f64) -> u32 {
+        let slain = if look.is_raid() { Slain::Raid } else if look.is_boss() { Slain::Boss } else { Slain::Monster };
+        levels::foe_level(self.band, self.level, slain, roll).max(least)
+    }
+
+    /// `amount` of experience gained, shown floating up from `at` if it's given: as many levels
+    /// gone up as it makes, each giving back a little health and said, see levelled
+    pub fn gain_experience(&mut self, amount: f64, at: Option<Vector3<f64>>) {
+        if amount <= 0.0 || self.level >= levels::LEVEL_CAP {
+            return;
+        }
+        if let Some(position) = at {
+            self.combat.popups.push(crate::combat::Popup { position, text: format!("+{amount:.0} xp"), color: [170, 225, 255], size: 15.0, age: 0.0 });
+        }
+        self.experience += amount;
+        while self.level < levels::LEVEL_CAP && self.experience >= levels::needed(self.level) {
+            self.experience -= levels::needed(self.level);
+            let before = self.max_health();
+            self.level += 1;
+            // What it adds to their health at full, and a fifth of that again, healed straight away
+            let more = self.max_health() - before;
+            if self.health > 0.0 {
+                self.health = (self.health + more + 0.2 * self.max_health()).min(self.max_health());
+            }
+            self.levelled = 0.0;
+            self.milestone = true;
+            self.cues.push(Cue::here(Sound::Fanfare, 0.9).pitched(1.25));
+            self.say(format!("You reached level {}! Health at full {:.0}.", self.level, self.max_health()));
+        }
+        if self.level >= levels::LEVEL_CAP {
+            self.experience = 0.0;
+        }
+    }
+
+    /// For trying it out: the card of slot `slot` showing in the inventory
+    pub fn inspect(&mut self, slot: usize) {
+        self.inspected = Some(slot);
+    }
+
+    /// For trying it out: the player gone up a level straight away, as killing something would
+    pub fn level_up_now(&mut self) {
+        let left = levels::needed(self.level) - self.experience;
+        self.gain_experience(left.max(1.0), None);
+    }
+
+    /// For trying it out: every monster about down to `fraction` of its health, its bar showing
+    pub fn hurt_monsters(&mut self, fraction: f64) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_monster()) {
+            animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
+            animal.status.shown = 1e9;
+        }
+    }
+
+    /// For trying it out: the player at level `level`
+    pub fn set_level(&mut self, level: u32) {
+        self.level = level.clamp(1, levels::LEVEL_CAP);
+        self.experience = 0.0;
+        self.health = self.health.min(self.max_health());
     }
 
     /// And how many more monsters than usual go about together there, see realms::crowd()
@@ -4790,7 +5001,7 @@ impl Game {
     /// makes them tough, but none warded by its guardians: how many were.
     pub fn wing_blast(&mut self, at: Vector3<f64>, reach: f64, damage: f64, slam: bool) -> usize {
         let vpm = self.combat.vpm();
-        let damage = damage * self.scaling.toughness;
+        let damage = damage * self.foe_toughness();
         let color = if slam { [225, 205, 165] } else { [255, 236, 150] };
         let mut hit = 0;
         for animal in &mut self.animals {
@@ -4888,7 +5099,7 @@ impl Game {
     /// A little health back, as the wings that mend do while gliding
     pub fn mend(&mut self, health: f64) {
         if self.dead.is_none() {
-            self.health = (self.health + health).min(MAX_HEALTH);
+            self.health = (self.health + health).min(self.max_health());
         }
     }
 
@@ -5128,17 +5339,17 @@ impl Game {
         if !item.consumable() {
             return;
         }
-        if item.heal() > 0.0 && self.health >= MAX_HEALTH {
+        if item.heal() > 0.0 && self.health >= self.max_health() {
             self.say("You're not hurt.");
             return;
         }
-        if item.food() > 0.0 && self.hunger >= 99.5 && self.health >= MAX_HEALTH {
+        if item.food() > 0.0 && self.hunger >= 99.5 && self.health >= self.max_health() {
             self.say("You're full.");
             return;
         }
         // Food heals a little too
         self.hunger = (self.hunger + item.food()).min(100.0);
-        self.health = (self.health + item.food() * 0.6 + item.heal()).min(MAX_HEALTH);
+        self.health = (self.health + item.food() * 0.6 + item.heal()).min(self.max_health());
         self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if item.heal() > 0.0 { 1.5 } else { 1.0 }));
         if count > 1 {
             self.slots[slot].1 -= 1;
@@ -5341,6 +5552,64 @@ impl Game {
     /// `slot` across: in the colour of their rarity, lit up while gliding, how ready their move in
     /// the air is under it and what their perk's doing, and till the player's first glided, how to.
     /// Spare wings in the pack and none worn, how to put them on.
+    /// The player's level, right of the panel across the top, ringed by how far they are to the
+    /// next, and that again as a thin bar along the panel's foot; and for a few seconds after going
+    /// up a level, the moment it's done: a burst of rings out from it, light round the edges of the
+    /// view and the new level across the top
+    fn level_hud(&self, painter: &egui::Painter, panel: Rect, pad: f32) {
+        let (level, toward) = self.level();
+        let shadow = Color32::from_black_alpha(160);
+        let blue = Color32::from_rgb(120, 200, 255);
+        let middle = pos2(panel.right() + 12.0 + 27.0, panel.center().y);
+        painter.circle_filled(middle, 27.0 + pad * 0.4, Color32::from_black_alpha(120));
+        painter.circle_filled(middle, 22.0, Color32::from_rgba_unmultiplied(40, 60, 90, 200));
+        // How far to the next, round it from the top
+        painter.circle_stroke(middle, 24.5, Stroke::new(3.0f32, Color32::from_white_alpha(28)));
+        if toward > 0.0 {
+            let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * toward as f32 * std::f32::consts::TAU).map(|a| middle + vec2(a.sin(), -a.cos()) * 24.5).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(3.0f32, blue)));
+        }
+        let number = level.to_string();
+        painter.text(middle + vec2(1.0, 4.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), shadow);
+        painter.text(middle + vec2(0.0, 3.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), Color32::WHITE);
+        painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", FontId::proportional(9.0), Color32::from_white_alpha(170));
+        // And along the foot of the panel
+        let bar = Rect::from_min_size(pos2(panel.left() + 12.0, panel.bottom() - 5.0), vec2(panel.width() - 24.0, 3.0));
+        painter.rect_filled(bar, 1.5, Color32::from_white_alpha(22));
+        painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * toward as f32, bar.height())), 1.5, blue.gamma_multiply(0.85));
+
+        // Just gone up a level
+        let t = self.levelled as f32;
+        if t < LEVEL_UP_SECONDS {
+            let gold = Color32::from_rgb(255, 214, 110);
+            for k in 0..3 {
+                let r = (t - k as f32 * 0.18) / 0.9;
+                if (0.0..1.0).contains(&r) {
+                    let fade = (1.0 - r) * (1.0 - r);
+                    painter.circle_stroke(middle, 26.0 + r * 140.0, Stroke::new(4.0 * (1.0 - r) + 1.0, gold.gamma_multiply(fade)));
+                }
+            }
+            let screen = painter.clip_rect();
+            let glow = (1.0 - t / 1.2).max(0.0);
+            if glow > 0.01 {
+                for k in 0..8 {
+                    let fade = 1.0 - k as f32 / 8.0;
+                    painter.rect_stroke(screen.shrink(k as f32 * 8.0), 0.0, Stroke::new(8.0f32, Color32::from_rgba_unmultiplied(255, 205, 90, (glow * fade * fade * 110.0) as u8)), StrokeKind::Inside);
+                }
+            }
+            // The words, popping in and fading out at the end
+            let pop = (t / 0.22).min(1.0);
+            let size = 44.0 * (0.6 + 0.4 * pop + 0.12 * (1.0 - pop) * pop * 4.0);
+            let alpha = ((LEVEL_UP_SECONDS - t) / 0.8).clamp(0.0, 1.0) * pop;
+            let at = pos2(screen.center().x, panel.bottom() + 120.0);
+            painter.text(at + vec2(2.0, 2.0), Align2::CENTER_CENTER, "LEVEL UP", FontId::proportional(size), Color32::from_black_alpha((alpha * 200.0) as u8));
+            painter.text(at, Align2::CENTER_CENTER, "LEVEL UP", FontId::proportional(size), gold.gamma_multiply(alpha));
+            let below = format!("Level {level}  ·  health {:.0}", self.max_health());
+            painter.text(at + vec2(1.0, 37.0), Align2::CENTER_CENTER, &below, FontId::proportional(19.0), Color32::from_black_alpha((alpha * 180.0) as u8));
+            painter.text(at + vec2(0.0, 36.0), Align2::CENTER_CENTER, &below, FontId::proportional(19.0), Color32::WHITE.gamma_multiply(alpha));
+        }
+    }
+
     fn wings_hud(&self, painter: &egui::Painter, panel: Rect, slot: f32, pad: f32) {
         let faint = Color32::from_white_alpha(150);
         let shadow = Color32::from_black_alpha(160);
@@ -5430,6 +5699,14 @@ impl Game {
             painter.rect_filled(bar.expand(1.5), 3.0, Color32::from_black_alpha(alpha / 2));
             let fill = Rect::from_min_size(bar.min, vec2(width * animal.vitality() as f32, 5.0));
             painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, alpha));
+            // Its level just left of the bar, in how it stands to the player's
+            if animal.level > 0 && (animal.look.is_monster() || animal.look.build().is_some()) {
+                let tag = animal.level.to_string();
+                let at = pos2(bar.left() - 4.0, bar.center().y);
+                let font = FontId::proportional(12.0);
+                painter.text(at + vec2(1.0, 1.0), Align2::RIGHT_CENTER, &tag, font.clone(), Color32::from_black_alpha(alpha / 2));
+                painter.text(at, Align2::RIGHT_CENTER, &tag, font, foe_level_tint(animal.level, self.level).gamma_multiply(alpha as f32 / 255.0));
+            }
         }
         // Merchants' names over their heads, so they're easy to find, and smaller ones over the
         // villagers' when near
@@ -5608,7 +5885,7 @@ impl Game {
         } else {
             ("Health", Color32::from_rgb(225, 55, 60))
         };
-        bar(panel.top() + pad - 4.0, label, self.health / MAX_HEALTH, fill);
+        bar(panel.top() + pad - 4.0, label, self.health / self.max_health(), fill);
         bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger);
         bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255));
         // Gold under the bars, and how much more there is in the pack under the quick bar
@@ -5621,9 +5898,10 @@ impl Game {
             painter.text(pos2(panel.left() + 12.0, panel.bottom() + 6.0), Align2::LEFT_TOP, more, FontId::proportional(12.0), faint);
         }
         self.wings_hud(&painter, panel, slot, pad);
+        self.level_hud(&painter, panel, pad);
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((foe, vitality, enraged, middle, ward)) = self.foe(view.eye) {
+        if let Some((foe, vitality, enraged, middle, ward, level)) = self.foe(view.eye) {
             // Off the edge of the screen or behind, an arrow round the edge points the way to it,
             // with how far
             let inner = screen.shrink(50.0);
@@ -5674,6 +5952,13 @@ impl Game {
             };
             let at = pos2(center.x, back.top() - 6.0);
             let size = if ultra { 23.0 } else { 19.0 };
+            // Its level at the left end of the bar, in how it stands to the player's
+            if level > 0 {
+                let tag = format!("Lv {level}");
+                let left = pos2(back.left(), back.top() - 6.0);
+                painter.text(left + vec2(1.0, 1.0), Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), shadow);
+                painter.text(left, Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), foe_level_tint(level, self.level));
+            }
             painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(size), shadow);
             painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
             painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
@@ -6303,6 +6588,19 @@ impl Game {
                 ui.label(RichText::new(format!("·  {}", element.name())).color(color(element.color())));
             }
         });
+        // Its item level, in how it stands to the player's: above it better, below it worse
+        if library.families[weapon.family].tool.is_none() {
+            let level = weapon.item_level();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Item level {level}")).strong().color(item_level_tint(level, self.level)));
+                let how = match level.cmp(&self.level) {
+                    std::cmp::Ordering::Greater => format!("{} over yours", level - self.level),
+                    std::cmp::Ordering::Equal => "your level".to_owned(),
+                    std::cmp::Ordering::Less => format!("{} under yours", self.level - level),
+                };
+                ui.label(RichText::new(format!("·  {how}  ·  {:+.0}% damage", (levels::weapon_power(level) - 1.0) * 100.0)).weak());
+            });
+        }
         // How well it came out of the forge, and what the rarity and weight of its parts make of
         // its blows, so two of the same can be told apart
         let percent = |by: f64| format!("{:+.0}%", (by - 1.0) * 100.0);
@@ -7109,7 +7407,7 @@ mod tests {
         println!("| realm | luck | monster drop | chest on top | deep chest | lucky chest | bandits' hoard | lesser boss, specials each | realm raid boss | huge raid boss | merchant's stalls with one |");
         println!("|---|---|---|---|---|---|---|---|---|---|---|");
         for (r, realm) in realms::REALMS.iter().enumerate() {
-            let scale = loot_scaling(realm.scaling);
+            let scale = loot_scaling(realms::scaling_in(r, r, 0));
             let seed = 100 + 10 * r as u32;
             let monster = sample(100_000, seed, &mut |rng| vec![rolled(rng, MONSTER_LUCK * scale, false)]);
             let chests = |set: &[(&str, f64)]| set.iter().enumerate().map(|(k, (_, luck))| sample(20_000, seed + k as u32, &mut |rng| chest(rng, luck * scale))).collect::<Vec<_>>();
@@ -7236,9 +7534,11 @@ mod tests {
     }
 
     /// How each realm in turn stands against what the player's found by the time they're through
-    /// it: what its monsters can take and hit for, and the best weapon from the hoards of every
-    /// realm's guardians and raid bosses so far, how many seconds that takes to kill one. Run it
-    /// with `cargo test --release realm_balance -- --ignored --nocapture`.
+    /// it, at the floor of its band of levels and at the top: what its monsters can take and how
+    /// many of their blows the player can, and the best weapon from the hoards of every realm's
+    /// guardians and raid bosses so far, of the same level, how many seconds that takes to kill
+    /// one. Then how dropped weapons' item levels are spread, and how the levels come. Run it with
+    /// `cargo test --release realm_balance -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn realm_balance() {
@@ -7250,8 +7550,10 @@ mod tests {
             damage * speed
         };
         let trials = 60;
-        println!("realm  toughness damage luck | monster health  hits to die | best weapon dps (median) | seconds to kill a monster");
+        println!("| realm | level | monster health | hits to die | same-level weapon dps (median best) | seconds to kill | pack, seconds to clear |");
+        println!("|---|---|---|---|---|---|---|");
         let mut best_by_trial = vec![0.0f64; trials];
+        let mut kills = Vec::new();
         for (r, realm) in realms::REALMS.iter().enumerate() {
             let scaling = realms::scaling_in(r, r, 0);
             let luck = loot_scaling(scaling);
@@ -7262,6 +7564,7 @@ mod tests {
                     for (l, sure) in hoard_rolls(hoard, &mut rng) {
                         rng = hash(rng ^ 0x1007);
                         let seed = if sure { library.special_seed(rng, None, l * luck) } else { rng };
+                        // At item level 1: its level's worked in below
                         *best = best.max(dps(&library.generate(seed, None, l * luck)));
                     }
                 }
@@ -7270,28 +7573,138 @@ mod tests {
             sorted.sort_by(f64::total_cmp);
             let median = sorted[trials / 2];
             let looks: Vec<Look> = realm.monsters.iter().flat_map(|p| p.looks.iter().copied()).collect();
-            let health = looks.iter().map(|l| l.health()).sum::<f64>() / looks.len() as f64 * scaling.toughness;
+            let base = looks.iter().map(|l| l.health()).sum::<f64>() / looks.len() as f64;
             let pack = realm.monsters.iter().map(|p| p.looks.len()).sum::<usize>() as f64 / realm.monsters.len() as f64 + realms::crowd(r, r) as f64;
-            println!(
-                "{r} {:<16} {:>5.2} {:>5.2} {:>5.2} | {:>8.0} {:>8.1} | {:>8.1} | {:>6.2}  ({:.1} to a pack, {:.1} s to clear one)",
-                realm.name,
-                scaling.toughness,
-                scaling.damage,
-                scaling.luck,
-                health,
-                MAX_HEALTH / (10.0 * scaling.damage),
-                median,
-                health / median.max(1e-6),
-                pack,
-                pack * health / median.max(1e-6)
-            );
+            let band = levels::BANDS[r];
+            for (end, level) in [("floor", band.lo), ("top", band.hi)] {
+                let health = base * levels::toughness(level);
+                let hits = levels::max_health(level) / (10.0 * levels::damage(level));
+                let weapon = median * levels::weapon_power(level);
+                let seconds = health / weapon.max(1e-6);
+                kills.push((realm.name, end, seconds, hits));
+                println!("| {} | {end} {level} | {health:.0} | {hits:.1} | {weapon:.1} | {seconds:.2} | {pack:.1}, {:.1} s |", realm.name, pack * seconds);
+            }
         }
-        println!("More in each pack: {:?}", (0..realms::REALMS.len()).map(|r| realms::crowd(r, r)).collect::<Vec<_>>());
-        println!("Back in the normal world with each realm reached:");
+        println!("\nMore in each pack: {:?}", (0..realms::REALMS.len()).map(|r| realms::crowd(r, r)).collect::<Vec<_>>());
+        println!("Back in the normal world with each realm reached, its band lifted:");
         for reached in 0..realms::REALMS.len() {
+            let b = levels::band_in(0, reached);
             let s = realms::scaling_in(0, reached, 0);
-            println!("  reached {reached}: toughness {:.2} damage {:.2} luck {:.2}, {} more a pack", s.toughness, s.damage, s.luck, realms::crowd(0, reached));
+            println!("  reached {reached}: levels {}-{}, toughness {:.2}-{:.2}, damage {:.2}-{:.2}, luck {:.2}, {} more a pack", b.lo, b.hi, levels::toughness(b.lo), levels::toughness(b.hi), levels::damage(b.lo), levels::damage(b.hi), s.luck, realms::crowd(0, reached));
         }
+        let again = realms::scaling_in(5, 5, 1);
+        println!("A journey made once already: the Cinder Crown's own band, its monsters {:.2} times as tough again and {:.2} times as hard-hitting", again.toughness, again.damage);
+
+        println!("\nItem levels of dropped weapons, from what's level 20, out of 100 000:\n");
+        println!("| source | -1 | +0 | +1 | +2 | +3 |");
+        println!("|---|---|---|---|---|---|");
+        for (name, source) in [("monster, chest", levels::Source::Found), ("lesser boss", levels::Source::Boss), ("raid boss, finale", levels::Source::Raid), ("merchant", levels::Source::Merchant)] {
+            let mut counts = [0usize; 5];
+            let mut rng = 0x5eed;
+            for _ in 0..100_000 {
+                counts[(levels::drop_level(20, source, random(&mut rng)) as i32 - 19) as usize] += 1;
+            }
+            println!("| {name} | {} |", counts.map(|n| format!("{:.1}%", n as f64 / 1000.0)).join(" | "));
+        }
+
+        println!("\nHow the levels come: experience to go up from each band's floor, and what slaying gives there:\n");
+        println!("| realm | levels | experience across the band | a monster | a boss | a raid boss | a finale | first coming |");
+        println!("|---|---|---|---|---|---|---|---|");
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let band = levels::BANDS[r];
+            let across = levels::total_to(band.hi + 1) - levels::total_to(band.lo);
+            let at = (band.lo + band.hi) / 2;
+            println!("| {} | {}-{} | {across:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |", realm.name, band.lo, band.hi, levels::experience(at, levels::Slain::Monster), levels::experience(at, levels::Slain::Boss), levels::experience(at, levels::Slain::Raid), levels::experience(at, levels::Slain::Finale), levels::first_visit(r));
+        }
+        println!("All of it to level {}: {:.0}", levels::LEVEL_CAP, levels::total_to(levels::LEVEL_CAP));
+        // Each kill in 1.5 to 3.5 seconds, five to ten blows to fell the player, never under four
+        for (name, end, seconds, hits) in kills {
+            assert!((1.0..=4.0).contains(&seconds), "{name} at its {end}: {seconds:.2} s a kill");
+            assert!(hits >= 4.0 && hits <= 10.5, "{name} at its {end}: {hits:.1} hits");
+        }
+    }
+
+    /// Experience gained goes up as many levels as it makes, each raising health at full; the level,
+    /// the experience towards the next and every weapon's item level go in the save and come back;
+    /// and a save from before there were levels has the player and all they carry at the floor of
+    /// the furthest realm reached
+    #[test]
+    fn levels_are_earned_saved_and_come_back() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        assert_eq!(game.level(), (1, 0.0));
+        assert_eq!(game.max_health(), MAX_HEALTH);
+        game.gain_experience(levels::needed(1) + levels::needed(2) + 5.0, None);
+        assert_eq!(game.level, 3);
+        assert!((game.experience - 5.0).abs() < 1e-9 && game.levelled == 0.0);
+        assert!(game.max_health() > MAX_HEALTH);
+        // Never past the cap
+        game.gain_experience(1e9, None);
+        assert_eq!(game.level(), (levels::LEVEL_CAP, 1.0));
+        game.set_level(14);
+        game.experience = 33.0;
+        let w = game.slots.iter().find_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w) } else { None }).unwrap();
+        let before = game.weapons[w].profile.stat("physicalDamage") + game.weapons[w].profile.stat("spellDamage");
+        game.weapons[w].set_level(12, 0);
+        let after = game.weapons[w].profile.stat("physicalDamage") + game.weapons[w].profile.stat("spellDamage");
+        assert!((after / before - levels::weapon_power(12)).abs() < 1e-9, "{before} to {after}");
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &game.world_save(), game.vitals());
+        assert_eq!((other.level, other.experience), (14, 33.0));
+        let levels_of = |g: &Game| g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(g.weapons[*w].item_level()) } else { None }).collect::<Vec<_>>();
+        assert_eq!(levels_of(&other), levels_of(&game));
+        assert!(levels_of(&other).contains(&12));
+        // From before there were levels
+        let mut old = carried.clone();
+        old.level = None;
+        old.experience = 0.0;
+        for slot in &mut old.slots {
+            if let save::ItemSave::Weapon(w) = &mut slot.item {
+                w.level = None;
+            }
+        }
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("\"level\""), "{text}");
+        let mut legacy = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        legacy.set_legacy_level(levels::legacy_level(3));
+        legacy.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(legacy.level, levels::BANDS[3].lo);
+        assert!(levels_of(&legacy).iter().all(|&l| l == levels::BANDS[3].lo));
+        // A new character starts at the first again
+        legacy.new_character(3);
+        assert_eq!(legacy.level(), (1, 0.0));
+    }
+
+    /// What's slain gives experience by its level and what it was, and drops weapons of about its
+    /// level: a monster's within one under to three over, a raid boss's leaning high
+    #[test]
+    fn foes_give_experience_and_weapons_of_their_level() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let raid_key = [10, 20, -9001];
+        game.raid_lairs.insert(raid_key, 1);
+        assert_eq!(slain_of(Look::Skeleton, None, &game.raid_lairs), Slain::Monster);
+        assert_eq!(slain_of(Look::Golem, Some([1, 2, 3]), &game.raid_lairs), Slain::Boss);
+        assert_eq!(slain_of(Look::StormDrake, Some(raid_key), &game.raid_lairs), Slain::Raid);
+        assert_eq!(slain_of(Look::Ysveth, None, &game.raid_lairs), Slain::Finale);
+        for _ in 0..400 {
+            let Item::Weapon(w) = game.roll_weapon(1.0, false, (20, Source::Found)) else { panic!() };
+            assert!((19..=23).contains(&game.weapons[w].item_level()));
+            let Item::Weapon(w) = game.roll_weapon_for(Look::Golem, 1.0, false, (20, Source::Raid)) else { panic!() };
+            assert!((20..=23).contains(&game.weapons[w].item_level()));
+        }
+        // The band holds what's about, whatever the player's level
+        game.set_band(levels::BANDS[2]);
+        game.set_level(3);
+        assert_eq!(game.area_level(), levels::BANDS[2].lo);
+        game.set_level(40);
+        assert_eq!(game.area_level(), levels::BANDS[2].hi);
+        assert!(game.foe_damage() > 1.0 && game.foe_toughness() > 1.0);
+        // A night raider from further on comes at least at its own realm's floor
+        assert!(game.foe_level_at_least(Look::Skeleton, 30, 0.5) >= 30);
     }
 
     /// While a realm's guardians stand its raid bosses are warded, but not its finale, its
@@ -7396,7 +7809,7 @@ mod tests {
         assert_eq!(sure[Hoard::Huge as usize], 2000);
         // And that one has, however lucky it's rolled
         for seed in 0..200u32 {
-            for luck in [RAID_LUCKS[0], RAID_LUCKS[0] * loot_scaling(realms::REALMS[realms::REALM_COUNT - 1].scaling)] {
+            for luck in [RAID_LUCKS[0], RAID_LUCKS[0] * loot_scaling(realms::scaling_in(realms::REALM_COUNT - 1, realms::REALM_COUNT - 1, 0))] {
                 let s = library.special_seed(hash(seed), None, luck);
                 assert!(library.special_of(s, None, luck).is_some(), "{seed} at {luck}");
             }

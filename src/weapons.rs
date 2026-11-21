@@ -1950,8 +1950,14 @@ pub struct Weapon {
     /// How big it was made, of SIZES
     pub size: usize,
     pub profile: Rc<Profile>,
+    /// What its parts make of it at item level 1, before its level's worked in, see set_level()
+    base: Rc<Profile>,
     pub tags: BTreeSet<String>,
     pub look: WeaponLook,
+    /// The item level it dropped at, see levels::drop_level(), and how many jewels are set into
+    /// its sockets, each lifting it a level more, see item_level() and jewels.rs
+    pub level: u32,
+    pub jewels: u32,
 }
 
 impl Weapon {
@@ -1965,7 +1971,37 @@ impl Weapon {
         let look = crate::weapon_parts::build(library, family, &parts, || build_look(fam, &components));
         let scale = held_scale(fam, size, look.longest());
         let look = look.scaled(scale);
-        Weapon { family, parts, seed, name, grade, size, profile: Rc::new(profile), tags, look }
+        let profile = Rc::new(profile);
+        Weapon { family, parts, seed, name, grade, size, base: profile.clone(), profile, tags, look, level: 1, jewels: 0 }
+    }
+
+    /// Its item level: the level it dropped at and one more for each jewel set into it, never over
+    /// levels::ITEM_CAP
+    pub fn item_level(&self) -> u32 {
+        (self.level + self.jewels).clamp(1, crate::levels::ITEM_CAP)
+    }
+
+    /// Made of item level `level` as it dropped, with `jewels` jewels set into it: its blows, its
+    /// special attack and its power on right click harder by levels::weapon_power()
+    pub fn set_level(&mut self, level: u32, jewels: u32) {
+        self.level = level.clamp(1, crate::levels::ITEM_CAP);
+        self.jewels = jewels;
+        let power = crate::levels::weapon_power(self.item_level());
+        let mut profile = (*self.base).clone();
+        for name in ["physicalDamage", "elementalDamage", "spellDamage"] {
+            if let Some(v) = profile.stats.get_mut(name) {
+                *v *= power;
+            }
+        }
+        self.profile = Rc::new(profile);
+    }
+
+    /// The same weapon at another level, for the cards that compare one level with another
+    #[allow(dead_code)]
+    pub fn at_level(mut self, level: u32) -> Weapon {
+        let jewels = self.jewels;
+        self.set_level(level, jewels);
+        self
     }
 
     /// What the rarity and make of a weapon's parts, and the forge, do to it: how many times

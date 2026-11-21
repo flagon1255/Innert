@@ -231,7 +231,7 @@ mod tests {
         let library = Library::load();
         for tool in Tool::ALL {
             let made = make(&library, tool, STURDY).unwrap();
-            let saved = crate::save::WeaponSave { family: library.families[made.family].id.clone(), parts: made.parts.iter().map(|&p| library.components[p].id.clone()).collect(), seed: made.seed, name: None };
+            let saved = crate::save::WeaponSave { family: library.families[made.family].id.clone(), parts: made.parts.iter().map(|&p| library.components[p].id.clone()).collect(), seed: made.seed, name: None, ..Default::default() };
             let text = serde_json::to_string(&crate::save::ItemSave::Weapon(saved)).unwrap();
             let crate::save::ItemSave::Weapon(back) = serde_json::from_str(&text).unwrap() else { panic!("not a weapon") };
             let family = library.family(&back.family).unwrap();
