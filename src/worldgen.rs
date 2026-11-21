@@ -9,6 +9,8 @@ mod castles;
 mod dragonlair;
 mod towns;
 mod trees;
+/// The trees' numbers, see assets	rees.json
+pub use trees::{TreeBook, book_path as trees_path, reload_trees};
 mod undercity;
 
 pub use aeries::{SHRINE, SHRINE_KEY, aeries, way_up as way_up_to_shrine};

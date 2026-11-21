@@ -112,6 +112,11 @@ pub fn palette() -> [[u8; 4]; 256] {
     std::array::from_fn(|i| if i == 0 { [0, 0, 0, 0] } else if i < m.len() { [m[i].rgb[0], m[i].rgb[1], m[i].rgb[2], 255] } else { NOT_A_MATERIAL })
 }
 
+/// Which material each of a file's colour indices is, see material_map()
+pub fn material_map_of(file: &[[u8; 4]; 256]) -> [u8; 256] {
+    material_map(file)
+}
+
 /// Which material each of a file's colour indices is: its own if its colour's still the game's,
 /// otherwise the material nearest its colour
 fn material_map(file: &[[u8; 4]; 256]) -> [u8; 256] {
@@ -502,7 +507,8 @@ pub(crate) fn scan(dir: &Path) -> HashSet<String> {
         let Ok(entries) = std::fs::read_dir(&d) else { continue };
         for e in entries.flatten() {
             let p = e.path();
-            if p.is_dir() {
+            // From the listing itself, rather than asking after each file again
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("vox"))
                 && let Ok(rel) = p.with_extension("").strip_prefix(dir)
@@ -515,9 +521,13 @@ pub(crate) fn scan(dir: &Path) -> HashSet<String> {
 }
 
 fn hash_of(bytes: &[u8]) -> String {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &b in bytes {
-        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    // Eight bytes at a time, as a folder full of files is checked at startup
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ bytes.len() as u64;
+    for chunk in bytes.chunks(8) {
+        let mut w = [0u8; 8];
+        w[..chunk.len()].copy_from_slice(chunk);
+        h = (h ^ u64::from_le_bytes(w)).wrapping_mul(0x0100_0000_01b3);
+        h ^= h >> 29;
     }
     format!("{h:016x}")
 }
@@ -540,7 +550,15 @@ pub(crate) fn edited(dir: &Path) -> HashSet<String> {
     {
         return files.clone();
     }
-    let files: HashSet<String> = scan(dir).into_iter().filter(|f| f.starts_with("weapons/") || !unchanged(&file_of(dir, f))).collect();
+    // Looked over on every core at once, as there are a good many, the weapons' parts aside
+    let (weapons, rest): (Vec<String>, Vec<String>) = scan(dir).into_iter().partition(|f| f.starts_with("weapons/"));
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let chunk = rest.len().div_ceil(workers).max(1);
+    let changed: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = rest.chunks(chunk).map(|names| scope.spawn(move || names.iter().filter(|f| !unchanged(&file_of(dir, f))).cloned().collect::<Vec<_>>())).collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    });
+    let files: HashSet<String> = weapons.into_iter().chain(changed).collect();
     *known = Some((dir.to_path_buf(), files.clone()));
     files
 }
@@ -1102,6 +1120,10 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
     }
     // Weapons' parts
     crate::weapon_parts::export(dir, &library, &mut lines)?;
+    // The trees' numbers, beside assets\models as the game reads them, see worldgen\trees.rs
+    let trees = if dir == root() { crate::worldgen::trees_path() } else { dir.join("trees.json") };
+    std::fs::write(&trees, serde_json::to_string_pretty(&crate::worldgen::TreeBook::default()).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())?;
+    lines.push(format!("{}: the trees' numbers", trees.display()));
     let index = lines.join("\n") + "\n";
     std::fs::write(dir.join("exported.txt"), &index).map_err(|e| e.to_string())?;
     Ok(Exported { lines })
@@ -1239,6 +1261,12 @@ impl<T: Send + 'static> Reloader<T> {
                 if let Ok(event) = res
                     && (event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove())
                 {
+                    // The trees' numbers or hand-made trees saved: the next strips of the world
+                    // grow theirs from them, see worldgen	rees.rs
+                    let trees = root().join("trees");
+                    if event.paths.iter().any(|p| p.ends_with("trees.json") || p.starts_with(&trees)) {
+                        crate::worldgen::reload_trees();
+                    }
                     // An animation saved: read again as it's next wanted, see anim.rs
                     let anims = crate::anim::root();
                     if event.paths.iter().any(|p| p.starts_with(&anims)) {
@@ -1726,5 +1754,63 @@ mod tests {
     #[test]
     fn dragon_pieces_are_named() {
         assert_eq!(dragon_pieces(), DRAGON_PIECES.len());
+    }
+
+    /// With the model files the game ships with in assets\models, every model's just as the code
+    /// makes it: none of them edited, so none of them drawn instead
+    #[test]
+    fn shipped_models_change_nothing() {
+        let files = scan(&root());
+        assert!(files.len() > 1000, "the models ship as files, {} of them", files.len());
+        assert!(edited(&root()).iter().all(|f| f.starts_with("weapons/")), "files edited since they were exported: {:?}", edited(&root()).iter().filter(|f| !f.starts_with("weapons/")).collect::<Vec<_>>());
+        CODE_ONLY.store(true, Ordering::Relaxed);
+        let code = animals::animal_models();
+        let code_wings = crate::wings::models();
+        CODE_ONLY.store(false, Ordering::Relaxed);
+        let shipped = apply_looks(animals::animal_models());
+        assert_eq!(code.len(), shipped.len());
+        assert!(code.iter().zip(&shipped).all(|(a, b)| a.size == b.size && a.voxels == b.voxels));
+        let shipped_wings = wings(crate::wings::models());
+        assert!(code_wings.iter().zip(&shipped_wings).all(|(a, b)| a.0.voxels == b.0.voxels && a.1 == b.1));
+        let effects_code = crate::weapons::effect_models();
+        let effects_shipped = effects(crate::weapons::effect_models());
+        assert!(effects_code.iter().zip(&effects_shipped).all(|(a, b)| a.0.voxels == b.0.voxels && a.1 == b.1));
+        // And every weapon part shipped is the code's, so every weapon's built as it was
+        let library = Library::load();
+        for f in 0..library.families.len() {
+            let parts = library.reference_parts(f);
+            let code = crate::weapons::look_of(&library, f, &parts);
+            let shipped = crate::weapon_parts::build(&library, f, &parts, || crate::weapons::look_of(&library, f, &parts));
+            assert!(code.frames.iter().zip(&shipped.frames).all(|(a, b)| a.0.voxels == b.0.voxels), "{}", library.families[f].id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn how_long_files_take() {
+        let t = std::time::Instant::now();
+        let n = scan(&root()).len();
+        println!("scan {n}: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let e = edited(&root()).len();
+        println!("edited {e}: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let library = Library::load();
+        for f in 0..library.families.len() {
+            let parts = library.reference_parts(f);
+            crate::weapon_parts::build(&library, f, &parts, || crate::weapons::look_of(&library, f, &parts));
+        }
+        println!("weapons with files: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        for f in 0..library.families.len() {
+            let parts = library.reference_parts(f);
+            crate::weapons::look_of(&library, f, &parts);
+        }
+        println!("weapons without: {:?}", t.elapsed());
     }
 }
