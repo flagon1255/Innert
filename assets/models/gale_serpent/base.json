@@ -1,14 +1,14 @@
 {
-  "what": "Gale serpent, standing frame (1 of 36 frames)",
+  "what": "Gale serpent, standing frame (1 of 39 frames)",
   "voxels_per_meter": 16.0,
   "size": [
     72,
-    28,
+    27,
     7
   ],
   "pivot": [
     36.0,
-    14.0,
+    13.5,
     -0.0
   ],
   "anchor": null,
@@ -19,7 +19,7 @@
   ],
   "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
   "written": [
-    3851,
-    "8aa848cbf580375c"
+    3732,
+    "5d0c90b4598e1eae"
   ]
 }

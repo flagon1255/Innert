@@ -174,6 +174,9 @@ pub enum Look {
     MossGargoyle,
     Grotesque,
     BloodwakeGargoyle,
+    // An ordinary serpent's forked tongue, drawn apart from it as it flicks in and out, see
+    // serpents::flick()
+    SerpentTongue,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -230,7 +233,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 109] = [
+    pub const ALL: [Look; 110] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -340,6 +343,7 @@ impl Look {
         Look::MossGargoyle,
         Look::Grotesque,
         Look::BloodwakeGargoyle,
+        Look::SerpentTongue,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -583,7 +587,7 @@ impl Look {
     fn walks(self) -> bool {
         !matches!(
             self,
-            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones
+            Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue
         ) && !self.is_shrine()
     }
 
@@ -819,6 +823,7 @@ impl Look {
             Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => serpents::great_of(self).map_or(4.0, |g| g.head + 2.0 * g.girth),
             Look::ShedSkin => 2.0,
             Look::SerpentBones => 3.0,
+            Look::SerpentTongue => 0.3,
             // Its wings spread, see src\avians.rs
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
@@ -882,6 +887,7 @@ impl Look {
             }
             Look::ShedSkin => (0.05, 0.3),
             Look::SerpentBones => (0.3, 0.6),
+            Look::SerpentTongue => (0.0, 0.05),
             // Wherever on it the blow's aimed, see avians::Flier::aim()
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
@@ -975,6 +981,7 @@ impl Look {
             Look::Ysveth => "Coil Unending",
             Look::ShedSkin => "shed serpent skin",
             Look::SerpentBones => "serpent bones",
+            Look::SerpentTongue => "serpent's tongue",
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
         }
@@ -1275,7 +1282,8 @@ pub const POSE_WINDUP: usize = WALK_FRAMES + 1;
 pub const POSE_STRIKE: usize = WALK_FRAMES + 2;
 /// Something each boss does its own way: throwing, spreading its wings or lowering its head to charge
 pub const POSE_SPECIAL: usize = WALK_FRAMES + 3;
-/// A knight crouched low, its greatsword drawn back behind it to sweep it round, see knight()
+/// A knight crouched low, its greatsword drawn back behind it to sweep it round, see knight(); and
+/// a serpent lying coiled up at rest, see serpents::spine()
 pub const POSE_COIL: usize = WALK_FRAMES + 4;
 /// The greatsword swept out flat to its side, low over the ground
 pub const POSE_SWEEP: usize = WALK_FRAMES + 5;
@@ -1339,10 +1347,12 @@ pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
     for t in TWEENS {
         let forward = (t.from, t.to) == (a, b);
         if forward || (t.to, t.from) == (a, b) {
-            if t.knights && !look.is_knight() {
+            if !has_tween(look, t) {
                 return None;
             }
-            let f = since / if forward { t.there } else { t.back };
+            // A serpent settles slowly into its coils and comes out of them quickly
+            let slow = if look.is_serpent() && t.knights { if forward == (t.to == POSE_COIL) { 3.3 } else { 1.2 } } else { 1.0 };
+            let f = since / (slow * if forward { t.there } else { t.back });
             if f >= 1.0 {
                 return None;
             }
@@ -1361,6 +1371,12 @@ pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
     None
 }
 
+/// Whether `look` goes between the poses of `t`: only knights have theirs, but for a serpent
+/// settling into its coils, which is a knight's crouch's frame, see POSE_COIL
+fn has_tween(look: Look, t: Tween) -> bool {
+    !t.knights || look.is_knight() || look.is_serpent() && (t.from, t.to) == (0, POSE_COIL)
+}
+
 /// Whether `look` is ever drawn in `frame`, so its model's worth making
 fn shown(look: Look, frame: usize) -> bool {
     match frame {
@@ -1375,8 +1391,9 @@ fn shown(look: Look, frame: usize) -> bool {
         _ if frame <= WALK_FRAMES => look.walks(),
         _ if look.build().is_none() => false,
         _ if frame < POSE_COIL => true,
+        POSE_COIL if look.is_serpent() => true,
         _ if frame < FIRST_TWEEN => look.is_knight(),
-        _ => !tween_at(frame).0.knights || look.is_knight(),
+        _ => has_tween(look, tween_at(frame).0),
     }
 }
 
@@ -1449,12 +1466,12 @@ impl Pose {
 }
 
 /// How far through its walk frame `frame` is, None for none, and how much of the first three
-/// poses it's in, getting ready, striking and its own: what a serpent's body is shaped by, see
-/// serpents::spine()
-pub(crate) fn frame_shape(frame: usize) -> (Option<f64>, [f64; 3]) {
+/// poses it's in, getting ready, striking and its own, and of lying coiled up at rest, a serpent's
+/// POSE_COIL: what a serpent's body is shaped by, see serpents::spine()
+pub(crate) fn frame_shape(frame: usize) -> (Option<f64>, [f64; 4]) {
     let phase = (1..=WALK_FRAMES).contains(&frame).then(|| (frame - 1) as f64 / WALK_FRAMES as f64);
     let pose = Pose::of(frame);
-    (phase, [pose.windup, pose.strike, pose.special])
+    (phase, [pose.windup, pose.strike, pose.special, pose.coil])
 }
 
 /// Voxels per meter of everything drawn like an animal, weapons and leaves too: the same as the
@@ -2431,7 +2448,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 Some(Build::Dragon | Build::Winged) => {}
                 Some(Build::Serpent) => {
                     if let Some(kind) = serpents::kind(look) {
-                        serpents::parts(&mut p, kind, phase, [pose.windup, pose.strike, pose.special]);
+                        serpents::parts(&mut p, kind, phase, [pose.windup, pose.strike, pose.special, pose.coil]);
                     }
                 }
                 // The rest are drawn out of jointed pieces, see src\rig.rs
@@ -2748,6 +2765,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
                 }
             }
         }
+        Look::SerpentTongue => p.extend(serpents::tongue_shapes()),
         // Bosses, all built above
         _ => {}
     }
@@ -3095,7 +3113,7 @@ pub(crate) fn path_to(look: Look, pose: usize) -> Vec<(f64, usize)> {
     let mut first = FIRST_TWEEN;
     for t in TWEENS {
         if (t.from, t.to) == (0, pose) || (t.from, t.to) == (pose, 0) {
-            if t.knights && !look.is_knight() {
+            if !has_tween(look, t) {
                 break;
             }
             let mut out: Vec<(f64, usize)> = (1..=t.steps).map(|k| (k as f64 / (t.steps + 1) as f64, first + k - 1)).collect();
@@ -3439,6 +3457,9 @@ pub struct Animal {
     /// For a serpent, the part of its long body the player's aiming at, from where it is, in
     /// voxels: where blows on it land, see center() and serpents::focus()
     pub focus: Option<Vector3<f64>>,
+    /// For a serpent lying on the ground, how its body's tipped to lie along the slope under it, in
+    /// radians: its head down, and over onto its right, eased towards the ground it's on
+    lie: [f64; 2],
 }
 
 /// How hard a bare-handed hit is
@@ -3608,6 +3629,7 @@ impl Animal {
             home: None,
             rng,
             focus: None,
+            lie: [0.0; 2],
         }
     }
 
@@ -3810,6 +3832,13 @@ impl Animal {
         let off = (self.heading - self.drawn_heading + PI).rem_euclid(TAU) - PI;
         let rate = TURN_EASE * (1.0 + 2.0 * off.abs());
         self.drawn_heading = (self.drawn_heading + off * (1.0 - (-rate * dt).exp())).rem_euclid(TAU);
+        // A serpent's long body lying along the slope it's on, rather than sticking out of it
+        if let Some(kind) = serpents::kind(self.look) {
+            let lie = self.lie_on(kind, world, water);
+            for (now, to) in self.lie.iter_mut().zip(lie) {
+                *now += (to - *now) * (1.0 - (-8.0 * dt).exp());
+            }
+        }
         // A great serpent's long body following its head
         if let Some(mut coils) = self.boss.as_mut().and_then(|b| b.coils.take()) {
             let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
@@ -3825,12 +3854,66 @@ impl Animal {
         self.boss.as_ref().and_then(|b| b.coils.as_deref())
     }
 
+    /// How serpent `kind` is tipped to lie along the ground where it is, see `lie`: from how high
+    /// the ground is under its head and tail ends and either side of its middle. Flat gliding over
+    /// it or swimming, and where there's no ground to lie on.
+    fn lie_on(&self, kind: &serpents::Kind, world: &World, water: WaterLevel) -> [f64; 2] {
+        let vpm = world.voxels_per_meter as f64;
+        let (x, y, z) = (self.position.x, self.position.y, self.position.z);
+        if kind.aloft || water(x, y) > z - 0.05 * vpm {
+            return [0.0; 2];
+        }
+        let (c, s) = (self.drawn_heading.cos(), self.drawn_heading.sin());
+        let height = |along: f64, out: f64| ground_at(world, water, x + (c * along - s * out) * vpm, y + (s * along + c * out) * vpm, z, 1.2 * vpm, 1.5 * vpm);
+        let slope = |a: Option<f64>, b: Option<f64>, apart: f64| a.zip(b).map_or(0.0, |(a, b)| ((a - b) / (apart * vpm)).atan());
+        let half = 0.32 * kind.length;
+        let down = -slope(height(half, 0.0), height(-half, 0.0), 2.0 * half);
+        let over = slope(height(0.0, 0.3), height(0.0, -0.3), 0.6);
+        [down.clamp(-0.5, 0.5), over.clamp(-0.4, 0.4)]
+    }
+
+    /// An ordinary serpent's tongue flicking out of its mouth, to draw beside it, see
+    /// serpents::flick(): None while it's in, or its jaws are open, or it's dying, frozen or gone
+    /// under the ground
+    pub fn tongue_instance(&self, world_voxels_per_meter: u32) -> Option<AnimalInstance> {
+        let boss = self.boss.as_ref()?;
+        if self.health <= 0.0 || self.status.pace() <= 0.0 || boss.buried() {
+            return None;
+        }
+        // Tasting the air for whatever it's watching or waiting for, quicker than as it goes about
+        let eager = boss.engaged || self.speed < 0.3;
+        let out = serpents::flick(self.age, self.id, eager);
+        if out < 0.05 {
+            return None;
+        }
+        let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
+        let posed = serpents::posed(self.look, frame)?;
+        if posed.gape > 0.3 {
+            return None;
+        }
+        let (root, ahead, side, up) = posed.tongue;
+        // Slid out of its mouth along the way its head points, from all of it inside; its model's
+        // made a little up off its bottom, see serpents::tongue_shapes()
+        let tip = Vector3::from(root) + Vector3::from(ahead) * (out - 1.0) * serpents::TONGUE - Vector3::from(up) * serpents::TONGUE_LIFT;
+        let turn = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_basis_unchecked(&[Vector3::from(ahead), Vector3::from(side), Vector3::from(up)]));
+        let size = scale * self.look.resolution() * self.look.scale();
+        let at = position + rotation * tip * size;
+        let look = Look::SerpentTongue;
+        Some(AnimalInstance::new(model_index(look, 0), at, rotation * turn, size / look.resolution(), look.reach() * size, MOVING).tinted(self.status.tint()))
+    }
+
     /// On through its walk cycle as it goes. Slowing to a stop, it finishes the step it's taking,
     /// so it comes to stand with its feet together, halfway through the cycle or at its end,
     /// rather than snapping to it; and starting off again, it starts from there.
     fn step(&mut self, dt: f64) {
         // Frozen solid or knocked down, it stays as it is
         if self.status.pace() <= 0.0 {
+            return;
+        }
+        // A serpent's S-curve goes on just as far as it goes, so its body slides along the curve
+        // and never over the ground; stopping, it lies where it stopped, still in the curve
+        if self.look.is_serpent() {
+            self.phase = (self.phase + self.speed * dt / self.look.stride()).fract();
             return;
         }
         let walking = self.speed > STEPPING;
@@ -4105,11 +4188,11 @@ impl Animal {
     /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's
     /// drawn, in voxels: where it can be hit, see serpents::focus()
     pub fn spine(&self, world_voxels_per_meter: u32) -> Option<Vec<Vector3<f64>>> {
-        let kind = serpents::kind(self.look)?;
+        serpents::kind(self.look)?;
         let (frame, position, rotation, _) = self.placement(world_voxels_per_meter);
-        let (phase, w) = frame_shape(frame);
+        let posed = serpents::posed(self.look, frame)?;
         let vpm = world_voxels_per_meter as f64;
-        Some((0..=8).map(|k| position + rotation * Vector3::from(serpents::spine(kind, k as f64 / 8.0, phase, w)) * vpm).collect())
+        Some(posed.spine.iter().map(|&p| position + rotation * Vector3::from(p) * vpm).collect())
     }
 
     /// Which of its frames it's drawn in, where, turned how and how big
@@ -4150,7 +4233,8 @@ impl Animal {
         let roll = self.boss.as_ref().map_or(0.0, Boss::roll);
         let lift = serpents::kind(self.look).map_or(0.0, |k| 2.0 * k.girth * (1.0 - roll.cos()) * 0.5);
         let position = self.position + (ahead * on + Vector3::new(0.0, 0.0, up + lift)) * vpm;
-        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), roll);
+        let [down, over] = self.lie;
+        let rotation = facing(heading) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch + down) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), over + roll);
         (frame, position, rotation, scale)
     }
 }

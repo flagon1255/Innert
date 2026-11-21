@@ -1071,7 +1071,7 @@ fn entries(game: &Game, library: &Library) -> Vec<Entry> {
             "Bosses"
         } else if l.is_monster() {
             "Monsters"
-        } else if l.is_shrine() || matches!(l, Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::ShedSkin | Look::SerpentBones) {
+        } else if l.is_shrine() || matches!(l, Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue) {
             "Things"
         } else {
             "Animals and people"
@@ -1119,6 +1119,10 @@ fn look_timelines(look: Look) -> Vec<Timeline> {
         attacks.push(("sweep", vec![(0, POSE_COIL), (POSE_COIL, POSE_SWEEP), (POSE_SWEEP, 0)]));
         attacks.push(("spikes", vec![(0, POSE_RAISE), (POSE_RAISE, POSE_SPIKES), (POSE_SPIKES, 0)]));
     }
+    // A serpent settling into its coils to rest, and out of them
+    if look.is_serpent() {
+        attacks.push(("coil", vec![(0, POSE_COIL), (POSE_COIL, 0)]));
+    }
     for (name, steps) in attacks {
         let mut frames = Vec::new();
         let mut t = 0.0;
@@ -1145,6 +1149,6 @@ fn look_timelines(look: Look) -> Vec<Timeline> {
 
 /// Whether a look has walking frames
 fn look_walks(look: Look) -> bool {
-    !matches!(look, Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones)
+    !matches!(look, Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue)
         && !look.is_shrine()
 }
