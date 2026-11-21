@@ -48,6 +48,31 @@ pub(in crate::combat) enum Shape {
     Orb,
     /// A seeking mote
     Mote,
+    /// A war fan's whirling funnel running on along the ground, carrying along what it's swept
+    /// up, `hit`
+    Gale,
+    /// A katar's ghostly fist
+    Fist,
+    /// A hook on its chain flung out, then reeled back in, dragging what it caught, by id
+    Hook { back: bool, caught: Option<u32> },
+    /// An anvil coming down out of the sky
+    Anvil,
+    /// A spear hurled high, coming down to stake the ground
+    Stake,
+    /// An arrow loosed high, bursting into arrowlets over where it's aimed, `range` up into it
+    Cloud,
+    /// One of those arrowlets, coming down
+    Arrowlet,
+    /// Two weighted balls spinning on a line
+    Bolas,
+    /// A flare going up, bursting to hang over where it's aimed once it's `range` up into it
+    Flare,
+    /// A beacon drifting down onto where it's aimed
+    Beacon,
+    /// A pot of shards lobbed onto where it's aimed
+    Pot,
+    /// One of its shards, skimming out along the ground
+    Shard,
 }
 
 /// What they leave going a while
@@ -65,6 +90,22 @@ pub(in crate::combat) enum Lasting {
     Line,
     /// A ring rolling out from `position` to `radius` meters, `hit` what it's reached
     Nova,
+    /// A ring of blades thrown out round `position` to `radius` meters and drawn back in, `hit`
+    /// what it's cut on its way out and then, once `owed` is 1, on its way back
+    BladeRing,
+    /// A spear staked in the ground at `position`, pulsing every STAKE_PULSE seconds, `owed`
+    /// pulses so far
+    Stake,
+    /// Arrowlets coming down over `position`, `owed` let fall so far
+    Downpour,
+    /// What a bolas wound round, `target`, held fast with what's by it, its balls spinning round
+    /// it at `velocity` off its middle
+    Bound,
+    /// A flare hanging over `position`, sinking, raining sparks, `owed` let fall so far
+    Flare,
+    /// A beacon set down at `position`, tolling every BEACON_TOLL seconds, `owed` tolls so far,
+    /// `hit` what this toll's ring has reached
+    Beacon,
 }
 
 /// How many steps a fissure takes, how far apart, in meters, and seconds between each, and how far
@@ -93,6 +134,52 @@ pub(in crate::combat) const NOVA_REACH: f64 = 9.0;
 const WHEEL_SPEED: f64 = 18.0;
 pub(in crate::combat) const WHEEL_REACH: f64 = 13.0;
 
+/// A war fan's gale: how far out it starts, the rings along its way, in meters, and how fast it
+/// runs, in meters a second
+pub(in crate::combat) const GALE_FROM: f64 = 2.0;
+pub(in crate::combat) const GALE_STEP: f64 = 2.0;
+pub(in crate::combat) const GALE_STEPS: usize = 7;
+const GALE_SPEED: f64 = 11.0;
+/// How far a katar's fists and a hook fly, in meters, and how fast
+pub(in crate::combat) const FISTS_REACH: f64 = 16.0;
+pub(in crate::combat) const HOOK_REACH: f64 = 18.0;
+const FIST_SPEED: f64 = 30.0;
+const HOOK_SPEED: f64 = 32.0;
+/// When a katar's five fists each leave it, as parts of its move
+const FIST_RELEASES: [f64; 5] = [0.2, 0.33, 0.46, 0.59, 0.72];
+/// How far out a naginata's ring of blades goes, in meters, and how long it takes out and back
+pub(in crate::combat) const RING_REACH: f64 = 9.0;
+const RING_SECONDS: f64 = 1.1;
+/// How far an anvil and a stake reach, how far over the ring an anvil comes down from, and how
+/// long it falls, in meters and seconds
+pub(in crate::combat) const ANVIL_REACH: f64 = 24.0;
+pub(in crate::combat) const STAKE_REACH: f64 = 26.0;
+const ANVIL_HEIGHT: f64 = 14.0;
+const ANVIL_FALL: f64 = 0.55;
+/// A stake's pulses: how many, how far apart, in seconds, and how far round each reaches
+const STAKE_PULSES: f64 = 3.0;
+const STAKE_PULSE: f64 = 0.55;
+const STAKE_ROUND: f64 = 3.0;
+/// How high over the ring a cloudburst arrow and a starshell burst, in meters, how many
+/// arrowlets come down, and over how long
+const CLOUD_HEIGHT: f64 = 11.0;
+const ARROWLETS: f64 = 20.0;
+const DOWNPOUR_SECONDS: f64 = 0.9;
+const FLARE_HEIGHT: f64 = 7.0;
+const FLARE_SECONDS: f64 = 5.0;
+/// How long a bolas holds, and how far round what it wound round it holds too, in meters
+const BOUND_SECONDS: f64 = 3.0;
+const BOUND_ROUND: f64 = 3.0;
+/// A beacon's tolls: how many, how far apart, in seconds, how far its rings roll out, in meters,
+/// and how fast
+const BEACON_TOLLS: f64 = 3.0;
+const BEACON_TOLL: f64 = 0.7;
+pub(in crate::combat) const BEACON_REACH: f64 = 5.0;
+const BEACON_SPEED: f64 = 14.0;
+/// How far a shrapnel pot's shards skim out, in meters, and how many there are
+pub(in crate::combat) const SHRAPNEL_REACH: f64 = 7.0;
+const SHARDS: usize = 12;
+
 /// A heavy blow's crescents: how many, how wide, how fast and far they fly, in meters and meters a
 /// second, and how hard each hits next to a blow
 pub(in crate::combat) fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
@@ -114,8 +201,45 @@ pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
         Power::Vortex => (0.8, BOMB_RELEASE),
         Power::Comet | Power::Nova => (1.0, 0.42),
         Power::Seekers => (0.8, 0.34),
+        Power::Gale => (0.75, 0.42),
+        Power::Fists => (0.95, FIST_RELEASES[0]),
+        Power::BladeRing => (1.0, 0.52),
+        Power::Hook => (0.85, 0.34),
+        Power::Anvil => (1.0, 0.56),
+        Power::Stake => (0.85, 0.42),
+        Power::Cloudburst => (0.95, 0.56),
+        Power::Bolas => (0.75, 0.4),
+        Power::Starshell => (0.85, 0.46),
+        Power::Beacon => (1.0, 0.5),
+        Power::Shrapnel => (0.8, 0.44),
         _ => (0.6, 0.32),
     }
+}
+
+/// Every moment, as a part of its move, a power's own move lets something go: a katar's five fists,
+/// one each, everything else once
+pub(in crate::combat) fn power_releases(power: Power) -> Vec<f64> {
+    match power {
+        Power::Fists => FIST_RELEASES.to_vec(),
+        _ => vec![power_timing(power).1],
+    }
+}
+
+/// How far out a ring of blades thrown out to `reach` meters is, `f` of the way through its time:
+/// flung out fast, slowing at its widest, and drawn back in
+fn ring_out(f: f64, reach: f64) -> f64 {
+    0.6 + (reach - 0.6) * (PI * f.clamp(0.0, 1.0)).sin().powf(0.6)
+}
+
+/// How fast to shoot something from `from`, falling as things do, so it tops out right at `top`,
+/// and how long it takes to get there
+fn topping_out(from: Vector3<f64>, top: Vector3<f64>, vpm: f64) -> (Vector3<f64>, f64) {
+    let g = 9.8 * vpm;
+    let rise = (top.z - from.z).max(vpm);
+    let vz = (2.0 * g * rise).sqrt();
+    let time = vz / g;
+    let across = (top - from) / time;
+    (Vector3::new(across.x, across.y, vz), time)
 }
 
 /// The move a power's shot, thrown or cast with, from where the weapon's held at rest
@@ -173,6 +297,116 @@ fn power_keys(power: Power, profile: &Profile) -> Vec<(f64, Pose, bool)> {
                 (0.8, at([-0.01, 0.03, 0.01], [-0.02, 0.45, 0.9]), false),
             ]
         }
+        // Wound right back out to the right, held a beat, then swept wide across, flat on, and
+        // carried right on round to the left
+        Power::Gale => vec![
+            (0.14, pose([0.36, 0.32, -0.12], [0.8, 0.1, 0.6], [-0.6, 0.0, 0.8]), false),
+            (0.3, pose([0.42, 0.28, -0.1], [0.88, 0.0, 0.48], [-0.48, 0.0, 0.88]), false),
+            (release - 0.04, pose([0.4, 0.3, -0.11], [0.86, 0.05, 0.5], [-0.5, 0.0, 0.86]), false),
+            (release, pose([0.02, 0.62, -0.18], [-0.1, 0.62, 0.78], [-1.0, 0.0, 0.1]), true),
+            (release + 0.12, pose([-0.3, 0.5, -0.22], [-0.85, 0.3, 0.42], [-0.4, 0.0, -0.9]), false),
+            (0.82, pose([-0.18, 0.48, -0.26], [-0.55, 0.45, 0.7], [-0.7, 0.0, -0.6]), false),
+        ],
+        // Drawn back to the hip and punched out five times, high, low, high, low, high, each fist
+        // snapped back to the chest before the next
+        Power::Fists => {
+            let mut keys = vec![(0.1, pose([0.26, 0.2, -0.3], [0.02, 0.96, 0.28], [1.0, 0.0, 0.0]), false)];
+            for (k, &at) in FIST_RELEASES.iter().enumerate() {
+                let low = (k % 2) as f64;
+                keys.push((at - 0.055, pose([0.25, 0.3, -0.27], [0.01, 0.97, 0.24], [1.0, 0.0, 0.0]), false));
+                keys.push((at, pose([0.12 - 0.03 * low, 0.72, -0.18 - 0.05 * low], [-0.06, 0.99, 0.05 - 0.05 * low], [1.0, 0.0, 0.0]), true));
+            }
+            keys.push((0.86, pose([0.26, 0.36, -0.27], [0.0, 0.95, 0.3], [1.0, 0.0, 0.0]), false));
+            keys
+        }
+        // Raised and spun right round overhead, once and a half, then swept out level as the ring
+        // leaves it, the pole carried on round to the left after it
+        Power::BladeRing => {
+            let mut keys = Vec::new();
+            for k in 0..6 {
+                let a = k as f64 / 4.0 * TAU;
+                keys.push((0.08 + 0.065 * k as f64, pose([0.12, 0.34, 0.06], [0.8 * a.cos(), 0.25 + 0.45 * a.sin(), 0.55], [-a.sin(), a.cos(), 0.0]), false));
+            }
+            keys.push((release, pose([0.04, 0.6, -0.24], [-0.2, 0.96, 0.12], [-1.0, 0.1, 0.0]), true));
+            keys.push((release + 0.14, pose([-0.22, 0.5, -0.3], [-0.88, 0.42, 0.05], [-0.4, -0.9, 0.0]), false));
+            keys.push((0.86, pose([-0.06, 0.46, -0.3], [-0.4, 0.5, 0.75], [-0.9, 0.2, 0.3]), false));
+            keys
+        }
+        // Wound back over the shoulder, flung out hard, then hauled back in as the chain draws
+        // tight
+        Power::Hook => vec![
+            (0.16, pose([0.32, 0.22, 0.0], [0.1, -0.35, 0.93], [0.0, 1.0, 0.3]), false),
+            (release - 0.05, pose([0.34, 0.16, 0.04], [0.08, -0.5, 0.86], [0.0, 1.0, 0.5]), false),
+            (release, pose([0.1, 0.72, -0.12], [0.0, 0.97, -0.12], [0.0, 0.12, 1.0]), true),
+            (release + 0.12, pose([0.1, 0.7, -0.16], [0.0, 0.95, -0.25], [0.0, 0.25, 1.0]), false),
+            (0.64, pose([0.3, 0.28, -0.18], [0.15, 0.55, 0.82], [0.0, 1.0, -0.2]), true),
+            (0.86, pose([0.29, 0.4, -0.25], [-0.02, 0.6, 0.8], [0.0, 1.0, 0.0]), false),
+        ],
+        // Raised high overhead, held there trembling as it gathers, then slammed straight down
+        // onto the ground in front, sinking after it as the anvil comes
+        Power::Anvil => vec![
+            (0.2, pose([0.22, 0.32, 0.02], [0.1, 0.05, 1.0], [0.0, 1.0, -0.05]), false),
+            (0.34, pose([0.21, 0.3, 0.07], [0.12, -0.05, 0.99], [0.0, 1.0, 0.05]), false),
+            (release - 0.06, pose([0.22, 0.29, 0.08], [0.1, -0.08, 0.99], [0.0, 1.0, 0.08]), false),
+            (release, pose([0.06, 0.62, -0.36], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]), true),
+            (release + 0.07, pose([0.06, 0.63, -0.42], [0.0, 0.72, -0.7], [0.0, -0.7, -0.72]), false),
+            (0.88, pose([0.07, 0.56, -0.38], [0.0, 0.78, -0.62], [0.0, -0.62, -0.78]), false),
+        ],
+        // Drawn far back over the shoulder, its point up, held, and hurled high, the arm coming on
+        // down after it
+        Power::Stake => vec![
+            (0.18, pose([0.36, 0.12, 0.0], [0.05, 0.4, 0.92], [-1.0, 0.0, 0.0]), false),
+            (release - 0.06, pose([0.38, 0.06, 0.05], [0.04, 0.48, 0.88], [-1.0, 0.0, 0.0]), false),
+            (release, pose([0.18, 0.7, 0.06], [-0.05, 0.75, 0.66], [-1.0, 0.0, 0.0]), true),
+            (release + 0.16, pose([0.12, 0.6, -0.25], [0.0, 0.62, -0.78], [-1.0, 0.0, 0.0]), false),
+            (0.86, pose([0.3, 0.36, -0.3], [0.04, 0.9, 0.42], [-1.0, 0.0, 0.0]), false),
+        ],
+        // The bow raised high, canted up at the sky, drawn and held, loosed with a snap
+        Power::Cloudburst => vec![
+            (0.18, bow_aimed(0.62, 0.0), false),
+            (0.4, bow_held(0.62, 0.0), false),
+            (release - 0.05, bow_held(0.64, 0.0), false),
+            (release, bow_loosed(0.62, 0.0), true),
+            (0.8, bow_aimed(0.2, 0.0), false),
+        ],
+        // Swung up and round to the right, levelled with a twist, settled and loosed, the line's
+        // weights tugging it after
+        Power::Bolas => {
+            let aimed = levelled(0.03, 0.0);
+            vec![
+                (0.14, levelled(0.2, 0.25), false),
+                (0.27, levelled(0.08, -0.08), false),
+                (release - 0.05, steadied(&aimed, 1.0), false),
+                (release, gun_kicked(&aimed, 1.1), true),
+                (release + 0.16, rocked(&aimed, 1.1), false),
+                (0.86, levelled(0.0, 0.0), false),
+            ]
+        }
+        // Raised right up to the sky and held, the flare going up with a kick that throws it back
+        Power::Starshell => {
+            let aimed = levelled(0.78, 0.0);
+            vec![(0.18, levelled(0.5, 0.1), false), (release - 0.12, aimed.clone(), false), (release - 0.03, steadied(&aimed, 1.0), false), (release, gun_kicked(&aimed, 1.5), true), (release + 0.2, rocked(&aimed, 1.5), false), (0.86, levelled(0.1, 0.0), false)]
+        }
+        // Lifted up and held as it gathers, then driven down point first at the ground ahead,
+        // as a beacon's set down
+        Power::Beacon => {
+            let at = spell_at(profile.style);
+            vec![
+                (0.15, at([0.0, -0.04, 0.1], [0.0, -0.2, 0.98]), false),
+                (0.34, at([0.0, -0.06, 0.16], [0.0, -0.3, 0.95]), false),
+                (release - 0.05, at([0.01, -0.05, 0.17], [0.02, -0.28, 0.96]), false),
+                (release, at([-0.04, 0.2, -0.08], [-0.05, 0.72, -0.69]), true),
+                (release + 0.12, at([-0.04, 0.21, -0.11], [-0.05, 0.66, -0.75]), false),
+                (0.86, at([-0.01, 0.03, 0.0], [-0.02, 0.4, 0.92]), false),
+            ]
+        }
+        // Swung back low behind and bowled underarm, the arm following through up high
+        Power::Shrapnel => vec![
+            (0.2, pose([0.3, 0.2, -0.42], [0.1, -0.35, 0.93], [1.0, 0.0, 0.0]), false),
+            (release - 0.08, pose([0.28, 0.24, -0.46], [0.08, -0.15, 0.98], [1.0, 0.0, 0.0]), false),
+            (release, pose([0.15, 0.66, -0.3], [0.0, 0.9, 0.42], [1.0, 0.0, 0.0]), true),
+            (0.74, pose([0.13, 0.6, -0.12], [0.0, 0.55, 0.83], [1.0, 0.0, 0.0]), false),
+        ],
         _ => Vec::new(),
     }
 }
@@ -228,11 +462,14 @@ impl Combat {
             }
             return false;
         };
-        // Its own move going on, what it lets go leaving the weapon as the move lets it go
+        // Its own move going on, what it lets go leaving the weapon as the move lets it go: once,
+        // or a katar's fists one after another
         if let Action::Power { t, length } = self.action {
-            let at = power_timing(power).1 * length;
-            if t <= at && t + dt > at {
-                self.unleash_power(arena, weapon, power);
+            for (shot, at) in power_releases(power).into_iter().enumerate() {
+                let at = at * length;
+                if t <= at && t + dt > at {
+                    self.unleash_power(arena, weapon, power, shot);
+                }
             }
             self.action = if t + dt >= length { Action::Idle } else { Action::Power { t: t + dt, length } };
             return true;
@@ -242,6 +479,20 @@ impl Combat {
         }
         let ready = self.power.cooldown <= 0.0;
         let kind = if profile.style == Style::Glaive { Kind::Melee } else { weapon.kind() };
+        // A power with a move of its own on a melee weapon or a bow: right click sets it going
+        // when it's ready, and while it comes round right click swings heavy or draws as ever
+        if power.own_move() && (kind == Kind::Melee || (kind == Kind::Ranged && profile.build == Build::None && profile.style != Style::Lob)) {
+            if controls.heavy && ready && self.cooldown <= 0.0 && matches!(self.action, Action::Idle) {
+                controls.heavy = false;
+                self.power.cooldown = power.cooldown();
+                self.action = Action::Power { t: 0.0, length: power_timing(power).0 };
+                self.cooldown = power_timing(power).0;
+                let pitch = if kind == Kind::Melee { 0.8 } else { 1.0 };
+                self.cues.push(Cue::here(Sound::HeavySwing, 0.5).pitched(pitch));
+                return true;
+            }
+            return false;
+        }
         match kind {
             // The heavy blow carries it, letting it go just as the blow lands
             Kind::Melee => {
@@ -252,7 +503,7 @@ impl Combat {
                     let step = if self.hitstop > 0.0 { dt * HITSTOP_PACE } else { dt };
                     if t + step >= length * lands {
                         self.power.cooldown = power.cooldown();
-                        self.unleash_power(arena, weapon, power);
+                        self.unleash_power(arena, weapon, power, 0);
                     }
                 }
             }
@@ -279,7 +530,7 @@ impl Combat {
             Kind::Ranged if profile.build == Build::None => {
                 if matches!(self.action, Action::Draw { .. }) && controls.attack && ready && self.drawn(profile) >= 1.0 {
                     self.power.cooldown = power.cooldown();
-                    self.unleash_power(arena, weapon, power);
+                    self.unleash_power(arena, weapon, power, 0);
                     self.action = Action::Loose { t: 0.0 };
                     self.cooldown = 0.25;
                     controls.attack = false;
@@ -293,7 +544,7 @@ impl Combat {
                     if matches!(self.action, Action::Brace { .. }) && self.brace >= 1.0 && self.cooldown <= 0.0 && ready && loosing && left > 0 {
                         self.power.cooldown = power.cooldown();
                         self.loads.insert(index, left - 1);
-                        self.unleash_power(arena, weapon, power);
+                        self.unleash_power(arena, weapon, power, 0);
                         self.action = Action::Fire { t: 0.0, length: 0.5 };
                         self.cooldown = 0.5;
                         controls.attack = false;
@@ -364,8 +615,9 @@ impl Combat {
         animate(rest, &keys, f)
     }
 
-    /// The power let go: what it shoots, hurls or sets off leaving the weapon
-    fn unleash_power(&mut self, arena: &mut Arena, weapon: &Weapon, power: Power) {
+    /// The power let go: what it shoots, hurls or sets off leaving the weapon, the `shot`th of
+    /// what its move lets go, see power_releases()
+    fn unleash_power(&mut self, arena: &mut Arena, weapon: &Weapon, power: Power, shot: usize) {
         let view = arena.view;
         let vpm = view.vpm;
         let up = Vector3::z();
@@ -593,6 +845,135 @@ impl Combat {
                 self.flashes.push(Flash { position: center + up * vpm, color: light, reach: 12.0, life: 0.4, lifetime: 0.4 });
                 self.shake = self.shake.max(0.5);
             }
+            // A funnel sent off along the ground the way it's aimed, as its rings showed
+            Power::Gale => {
+                let start = ground_under(arena.world, feet + flat * GALE_FROM * vpm + up * vpm, vpm) + up * 0.7 * vpm;
+                let reach = GALE_STEP * (GALE_STEPS - 1) as f64;
+                self.launch(&profile, None, Form::Bolt, start, flat * GALE_SPEED * vpm, base * 1.2, 0.0);
+                set(self, Shape::Gale, reach, 1.0);
+                let line = Combat::power_line(arena, GALE_FROM, GALE_STEP, GALE_STEPS);
+                self.keep_power_marks(power, &line, reach / GALE_SPEED);
+                self.cues.push(Cue::here(Sound::Whirr, 1.0).pitched(0.6));
+                self.cues.push(Cue::here(Sound::HeavySwing, 0.7).pitched(0.7));
+                self.sparks(start, 14, 3.5, look, 0.0, 0.4);
+            }
+            // A fist punched out from the hand at what the crosshair's on, as its ring showed
+            Power::Fists => {
+                let low = (shot % 2) as f64;
+                let from = view.eye + view.rotation * Vector3::new(0.12 - 0.04 * low, 0.85, -0.2 - 0.05 * low) * vpm;
+                let (to, who) = self.power_points(arena, power)[0];
+                let along = (to - from).try_normalize(1e-6).unwrap_or(level);
+                let range = (to - from).norm() / vpm + if who.is_some() { 1.0 } else { 0.3 };
+                self.launch(&profile, None, Form::Bolt, from, along * FIST_SPEED * vpm, base * 0.55, 0.0);
+                set(self, Shape::Fist, range, 1.0);
+                if who.is_none() {
+                    self.keep_power_marks(power, &[to], range / FIST_SPEED);
+                }
+                self.cues.push(Cue::here(Sound::Swing, 0.6).pitched(1.5 + 0.08 * shot as f32));
+                self.flashes.push(Flash { position: from, color: light, reach: 3.0, life: 0.12, lifetime: 0.12 });
+                self.sparks(from, 5, 2.5, look, 0.0, 0.25);
+            }
+            // A ring of blades thrown out all round the player, and drawn back in
+            Power::BladeRing => {
+                self.landed(feet + up * 0.9 * vpm);
+                self.keep_power_marks(power, &[feet + up * 0.05 * vpm], RING_SECONDS * 0.5);
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::BladeRing)), &profile, feet + up * 0.9 * vpm, Vector3::zeros(), RING_REACH, RING_SECONDS, base * 1.1);
+                self.cues.push(Cue::here(Sound::Whirr, 1.0).pitched(0.75));
+                self.cues.push(Cue::here(Sound::Shing, 0.8).pitched(0.9));
+                self.flashes.push(Flash { position: feet + up * vpm, color: light, reach: 8.0, life: 0.25, lifetime: 0.25 });
+            }
+            // A hook flung at what the crosshair first meets, or as far as it goes, and back
+            Power::Hook => {
+                let from = view.eye + view.rotation * Vector3::new(0.12, 0.9, -0.15) * vpm;
+                let (to, who) = self.power_points(arena, power)[0];
+                let along = (to - from).try_normalize(1e-6).unwrap_or(level);
+                let range = ((to - from).norm() / vpm + if who.is_some() { 1.0 } else { 0.2 }).min(HOOK_REACH + 1.0);
+                self.launch(&profile, None, Form::Bolt, from, along * HOOK_SPEED * vpm, base * 1.2, 0.0);
+                set(self, Shape::Hook { back: false, caught: None }, range, 1.0);
+                if who.is_none() {
+                    self.keep_power_marks(power, &[to], range / HOOK_SPEED);
+                }
+                self.cues.push(Cue::here(Sound::Whirr, 0.8).pitched(1.3));
+                self.cues.push(Cue::here(Sound::Clang, 0.4).pitched(1.2));
+                self.flashes.push(Flash { position: from, color: light, reach: 4.0, life: 0.15, lifetime: 0.15 });
+            }
+            // An anvil coming down out of the sky onto the ring shown as it was aimed, see aim.rs
+            Power::Anvil => {
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let from = aim + up * ANVIL_HEIGHT * vpm;
+                self.keep_power_ring(weapon, aim, ANVIL_FALL + 0.15);
+                self.launch(&profile, None, Form::Bolt, from, thrown(from, aim, ANVIL_FALL, 3.0, vpm), base * 2.4, 3.0);
+                set(self, Shape::Anvil, f64::INFINITY, 1.0);
+                self.cues.push(Cue::here(Sound::Slam, 0.6).pitched(0.7));
+                self.cues.push(Cue::at(Sound::Summon, from, 0.7).pitched(0.5));
+                self.flashes.push(Flash { position: from, color: light, reach: 10.0, life: 0.3, lifetime: 0.3 });
+                self.shake = self.shake.max(0.3);
+            }
+            // A spear hurled high to come down on the ring shown as it was aimed
+            Power::Stake => {
+                let from = view.eye + view.rotation * Vector3::new(0.2, 0.7, 0.1) * vpm;
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let time = 0.75 + 0.012 * (aim - from).norm() / vpm;
+                self.keep_power_ring(weapon, aim, time + 0.1);
+                self.launch(&profile, None, Form::Bolt, from, thrown(from, aim, time, 1.0, vpm), base * 1.6, 1.0);
+                set(self, Shape::Stake, f64::INFINITY, 1.0);
+                self.cues.push(Cue::here(Sound::Swing, 0.8).pitched(0.6));
+                self.cues.push(Cue::here(Sound::Shing, 0.6).pitched(0.8));
+                self.flashes.push(Flash { position: from, color: light, reach: 5.0, life: 0.2, lifetime: 0.2 });
+            }
+            // An arrow loosed so it tops out over the ring shown as it was aimed, bursting there
+            Power::Cloudburst => {
+                let from = self.held_point(weapon, view, true);
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let (velocity, time) = topping_out(from, aim + up * CLOUD_HEIGHT * vpm, vpm);
+                self.keep_power_ring(weapon, aim, time + DOWNPOUR_SECONDS + 0.6);
+                self.launch(&profile, Some(Missile { shot: Shot::Arrow, head: weapon.arrowhead(), power: true, size: 1.4 }), Form::Bolt, from, velocity, base * 1.1, 1.0);
+                set(self, Shape::Cloud, f64::INFINITY, 1.4);
+                self.cues.push(Cue::here(Sound::Twang, 1.0).pitched(0.7));
+                self.cues.push(Cue::here(Sound::Whirr, 0.5).pitched(1.6));
+                self.flashes.push(Flash { position: from, color: light, reach: 5.0, life: 0.2, lifetime: 0.2 });
+            }
+            Power::Bolas => {
+                let from = self.held_point(weapon, view, false);
+                let way = lead(from, target, 40.0, 0.2, vpm);
+                self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: true, size: 1.0 }), Form::Bolt, from, way * 40.0 * vpm, base * 1.3, 0.2);
+                set(self, Shape::Bolas, f64::INFINITY, 1.0);
+                self.cues.push(Cue::here(Sound::Release, 1.0).pitched(0.7));
+                self.cues.push(Cue::here(Sound::Whirr, 0.6).pitched(1.4));
+                self.flashes.push(Flash { position: from, color: light, reach: 4.0, life: 0.15, lifetime: 0.15 });
+                self.kick += 0.04;
+            }
+            // A flare shot so it tops out over the ring shown as it was aimed, bursting to hang there
+            Power::Starshell => {
+                let from = self.held_point(weapon, view, false);
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let (velocity, time) = topping_out(from, aim + up * FLARE_HEIGHT * vpm, vpm);
+                self.keep_power_ring(weapon, aim, time + FLARE_SECONDS);
+                self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: true, size: 1.3 }), Form::Bolt, from, velocity, base * 1.0, 1.0);
+                set(self, Shape::Flare, f64::INFINITY, 1.3);
+                self.gun_report(weapon, view, &profile, from, velocity.try_normalize(1e-6).unwrap_or(up), 1.4);
+                self.kick += 0.06;
+            }
+            // A beacon drifting down onto the ring shown as it was aimed
+            Power::Beacon => {
+                let from = self.held_point(weapon, view, false);
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let time = ((aim - from).norm() / (18.0 * vpm)).max(0.35);
+                self.keep_power_ring(weapon, aim, time + BEACON_TOLLS * BEACON_TOLL);
+                self.launch(&profile, None, Form::Bolt, from, thrown(from, aim, time, 0.3, vpm), base * 1.4, 0.3);
+                set(self, Shape::Beacon, f64::INFINITY, 1.0);
+                self.cues.push(Cue::here(Sound::Summon, 0.9).pitched(0.9));
+                self.flashes.push(Flash { position: from, color: light, reach: 7.0, life: 0.3, lifetime: 0.3 });
+            }
+            // A pot lobbed at where the bombs' ring was, the ring kept showing till it's there
+            Power::Shrapnel => {
+                let (aim, from, velocity, time) = self.lob_aim(arena, weapon);
+                self.keep_power_ring(weapon, aim, time);
+                self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.1 }), Form::Bolt, from, velocity, base * 1.5, BOMB_GRAVITY);
+                set(self, Shape::Pot, f64::INFINITY, 1.1);
+                self.cues.push(Cue::here(Sound::Swing, 0.7).pitched(0.8));
+                self.cues.push(Cue::here(Sound::Fuse, 0.5).pitched(1.1));
+            }
         }
     }
 
@@ -740,8 +1121,10 @@ impl Combat {
         // Glowing tracers behind what's shot, never reaching back past the muzzle
         let tracer = match shape {
             Shape::Bolt | Shape::Slug(_) => Some(0.04),
-            Shape::Lance => Some(0.06),
-            Shape::Arrow => Some(0.035),
+            Shape::Lance | Shape::Flare => Some(0.06),
+            Shape::Arrow | Shape::Cloud => Some(0.035),
+            Shape::Stake => Some(0.05),
+            Shape::Fist | Shape::Shard => Some(0.025),
             _ => None,
         };
         if let Some(seconds) = tracer
@@ -756,7 +1139,61 @@ impl Combat {
             p.position.z = ground.z + LASH_HIGH * vpm;
             p.velocity.z = 0.0;
         }
+        // A gale or a shrapnel pot's shard running on over the ground the same way
+        let skim = match shape {
+            Shape::Gale => Some(0.7),
+            Shape::Shard => Some(0.35),
+            _ => None,
+        };
+        if let Some(high) = skim {
+            let ground = ground_under(arena.world, p.position - Vector3::new(0.0, 0.0, high * vpm), vpm);
+            p.position.z = ground.z + high * vpm;
+            p.velocity.z = 0.0;
+        }
+        if shape == Shape::Gale {
+            self.gale_sweeps(arena, p, way, dt);
+        }
         match shape {
+            // Flung out as far as it goes, and turning back empty
+            Shape::Hook { back: false, .. } if p.flown >= p.range => {
+                p.trick = Trick::Signature(Sig::Power(Shape::Hook { back: true, caught: None }));
+                p.hit.clear();
+                self.cues.push(Cue::at(Sound::Clang, p.position, 0.4).pitched(1.5));
+                return false;
+            }
+            // Reeled back in to the hand, what it caught dragged along behind it, and struck again
+            // at the feet
+            Shape::Hook { back: true, caught } => {
+                let hand = arena.view.eye + arena.view.rotation * Vector3::new(0.25, 0.5, -0.3) * vpm;
+                let to = hand - p.position;
+                let held = caught.and_then(|id| arena.animals.iter().position(|a| a.id == id && a.health > 0.0));
+                if to.norm() < 1.6 * vpm {
+                    if let Some(i) = held {
+                        let center = arena.animals[i].center(vpm as u32);
+                        let profile = p.profile.clone();
+                        arena.animals[i].status.push = Vector3::zeros();
+                        self.power_hit(arena, &profile, i, center, p.damage * 0.6, hand);
+                    }
+                    self.sparks(p.position, 10, 2.5, look, 0.0, 0.3);
+                    self.cues.push(Cue::here(Sound::Clang, 0.6).pitched(1.1));
+                    return true;
+                }
+                p.velocity = to.normalize() * HOOK_SPEED * 0.75 * vpm;
+                if let Some(i) = held
+                    && arena.animals[i].boss.is_none()
+                {
+                    let pull = p.position - arena.animals[i].center(vpm as u32);
+                    let s = &mut arena.animals[i].status;
+                    s.push = Vector3::new(pull.x, pull.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * HOOK_SPEED * 0.75 * vpm;
+                    s.staggered = s.staggered.max(0.25);
+                }
+            }
+            // Bursting where it tops out, over the ring it was aimed at
+            Shape::Cloud | Shape::Flare if p.velocity.z <= 0.0 => {
+                let at = p.position;
+                self.power_lands(arena, p, shape, at);
+                return true;
+            }
             Shape::Wheel { back: true } => {
                 // Coming back to the hand, caught there
                 let hand = arena.view.eye - Vector3::new(0.0, 0.0, 0.4 * vpm);
@@ -824,6 +1261,74 @@ impl Combat {
         false
     }
 
+    /// A gale running on, `way`: what it meets cut once and swept up, and what it's swept up carried
+    /// along with it, dust and its element whirling up off it
+    fn gale_sweeps(&mut self, arena: &mut Arena, p: &mut Projectile, way: Vector3<f64>, dt: f64) {
+        let vpm = arena.view.vpm;
+        let speed = p.velocity.norm();
+        let profile = p.profile.clone();
+        let mut met = Vec::new();
+        for (i, a) in arena.animals.iter_mut().enumerate() {
+            if a.health <= 0.0 || a.look.is_pet() {
+                continue;
+            }
+            let center = a.center(vpm as u32);
+            // Only what's down on the ground it runs along, never what flies over it
+            if (center.z - p.position.z).abs() > (2.0 + a.look.body().1) * vpm {
+                continue;
+            }
+            let off = (center - p.position).xy().norm() / vpm - a.look.body().1;
+            if p.hit.contains(&a.id) {
+                if off < 3.0 && a.boss.is_none() {
+                    a.status.push = way * speed;
+                    a.status.staggered = a.status.staggered.max(0.2);
+                }
+            } else if off < 1.6 {
+                met.push(i);
+            }
+        }
+        for i in met {
+            let center = arena.animals[i].center(vpm as u32);
+            p.hit.push(arena.animals[i].id);
+            self.landed(center);
+            self.power_hit(arena, &profile, i, center, p.damage, p.position - way * vpm);
+        }
+        let look = Element::look(profile.element);
+        if random(&mut self.rng) < dt * 45.0 {
+            let a = random(&mut self.rng) * TAU;
+            let out = Vector3::new(a.cos(), a.sin(), 0.0);
+            let at = p.position + out * 0.8 * vpm - Vector3::new(0.0, 0.0, 0.5 * vpm);
+            let v = (Vector3::new(-out.y, out.x, 0.0) * 5.0 + Vector3::new(0.0, 0.0, 4.0)) * vpm + way * speed * 0.5;
+            self.sparks.push(Spark { position: at, velocity: v, look, life: 0.45, lifetime: 0.45, gravity: 0.0, slot: SLOT_SPARK });
+            self.cap_sparks();
+        }
+        if random(&mut self.rng) < dt * 12.0 {
+            let v = (self.any_direction() * 1.5 + Vector3::new(0.0, 0.0, 2.5)) * vpm;
+            self.drop(p.position - Vector3::new(0.0, 0.0, 0.6 * vpm), v, DROP_MUD, 0.7);
+        }
+    }
+
+    /// What a bolas wound round, or where it came down: `on` held fast, and what's round `at`,
+    /// for a while
+    fn bolas_bind(&mut self, arena: &mut Arena, p: &Projectile, at: Vector3<f64>, on: Option<u32>) {
+        let vpm = arena.view.vpm;
+        let center = on.and_then(|id| arena.animals.iter().find(|a| a.id == id)).map_or(at, |a| a.center(vpm as u32));
+        self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Bound)), &p.profile, center, Vector3::zeros(), BOUND_ROUND, BOUND_SECONDS, p.damage * 0.3);
+        if let Some(z) = self.zones.last_mut() {
+            z.target = on;
+        }
+        for i in Combat::foes_round(arena, center, BOUND_ROUND) {
+            let s = &mut arena.animals[i].status;
+            s.rooted = s.rooted.max(BOUND_SECONDS);
+            if arena.animals[i].boss.is_some() {
+                arena.animals[i].status.limit_for_boss();
+            }
+        }
+        self.cues.push(Cue::at(Sound::Whirr, center, 0.6).pitched(1.8));
+        self.cues.push(Cue::at(Sound::Clang, center, 0.4).pitched(1.3));
+        self.sparks(center, 10, 2.5, Element::look(p.profile.element), 0.3, 0.35);
+    }
+
     /// One of their shots striking animal `i` at `at`. True if it's gone, false if it goes on.
     pub(super) fn power_strikes(&mut self, arena: &mut Arena, p: &mut Projectile, shape: Shape, i: usize, at: Vector3<f64>) -> bool {
         self.landed(at);
@@ -876,6 +1381,34 @@ impl Combat {
                 true
             }
             Shape::Shell | Shape::Charge | Shape::Orb => {
+                self.power_lands(arena, p, shape, at);
+                true
+            }
+            // Its swath does it, as it runs on, see gale_sweeps()
+            Shape::Gale => false,
+            // The first thing in its way struck, and a little pop round it
+            Shape::Fist | Shape::Arrowlet | Shape::Shard => {
+                self.power_hit(arena, &profile, i, at, p.damage, from);
+                self.power_pop(arena, &profile, at, 0.9, p.damage * 0.35, Some(i));
+                true
+            }
+            // Caught on the hook, to be dragged back in with it
+            Shape::Hook { back: false, .. } => {
+                self.power_hit(arena, &profile, i, at, p.damage, from);
+                let caught = (arena.animals[i].boss.is_none() && arena.animals[i].health > 0.0).then_some(id);
+                p.hit.push(id);
+                p.trick = Trick::Signature(Sig::Power(Shape::Hook { back: true, caught }));
+                self.cues.push(Cue::at(Sound::Clang, at, 0.7).pitched(0.9));
+                false
+            }
+            Shape::Hook { back: true, .. } => false,
+            // Wound round it
+            Shape::Bolas => {
+                self.power_hit(arena, &profile, i, at, p.damage, from);
+                self.bolas_bind(arena, p, at, Some(id));
+                true
+            }
+            Shape::Anvil | Shape::Stake | Shape::Cloud | Shape::Flare | Shape::Beacon | Shape::Pot => {
                 self.power_lands(arena, p, shape, at);
                 true
             }
@@ -965,6 +1498,100 @@ impl Combat {
                 self.cues.push(Cue::at(Sound::Hex, ground, 0.9).pitched(0.5));
                 self.cues.push(Cue::at(Sound::Wail, ground, 0.3).pitched(1.2));
                 self.flashes.push(Flash { position: ground + up * vpm, color: profile.element.map_or([0.9, 0.85, 0.8], Element::light), reach: 8.0, life: 0.3, lifetime: 0.3 });
+            }
+            // Blowing itself out at the end of its run, flinging off all it carried
+            Shape::Gale => {
+                for &id in &p.hit {
+                    if let Some(a) = arena.animals.iter_mut().find(|a| a.id == id && a.health > 0.0 && a.boss.is_none()) {
+                        let away = (a.position - at).xy().try_normalize(1e-6).unwrap_or_else(|| way.xy());
+                        a.status.push = Vector3::new(away.x * 7.0, away.y * 7.0, 6.0) * vpm;
+                        a.status.staggered = a.status.staggered.max(0.6);
+                    }
+                }
+                self.power_burst(arena, &profile, at, 2.2, p.damage * 0.6, None);
+                self.sparks(at, 16, 4.5, look, 0.2, 0.45);
+                self.cues.push(Cue::at(Sound::Whirr, at, 0.7).pitched(0.5));
+            }
+            Shape::Fist | Shape::Arrowlet | Shape::Shard => self.power_pop(arena, &profile, at, 0.9, p.damage * 0.4, None),
+            // Glancing off what it struck and coming back empty
+            Shape::Hook { back: false, .. } => {
+                self.sparks(at, 10, 3.0, Element::look(None), 0.6, 0.3);
+                self.cues.push(Cue::at(Sound::Clang, at, 0.6).pitched(1.2));
+                self.launch(&profile, None, Form::Bolt, at - way * 0.3 * vpm, -way * HOOK_SPEED * vpm, p.damage, 0.0);
+                self.signed(Sig::Power(Shape::Hook { back: true, caught: None }));
+            }
+            Shape::Hook { back: true, .. } => self.sparks(at, 8, 2.5, look, 0.3, 0.3),
+            // Crashing down: the ground shaking, everything round thrown up, dust and stone flying
+            Shape::Anvil => {
+                let ground = Combat::floor_at(arena, at);
+                for i in Combat::foes_round(arena, ground, 3.5) {
+                    if arena.animals[i].boss.is_none() {
+                        let s = &mut arena.animals[i].status;
+                        s.push = up * 7.0 * vpm;
+                        s.staggered = s.staggered.max(0.8);
+                    }
+                }
+                self.power_burst(arena, &profile, ground + up * 0.4 * vpm, 3.5, p.damage, None);
+                if (ground - arena.view.eye).norm() > 4.5 * vpm {
+                    self.swells.push(Swell { model: STONE_PILLAR, position: ground, radius: 1.1, life: 0.6, lifetime: 0.6 });
+                }
+                for _ in 0..14 {
+                    let v = (self.any_direction() + up * 1.3) * 5.0 * vpm;
+                    self.drop(ground + up * 0.3 * vpm, v, DROP_MUD, 1.1);
+                }
+                self.cues.push(Cue::at(Sound::Quake, ground, 1.0).pitched(0.7));
+                self.cues.push(Cue::at(Sound::Slam, ground, 1.0).pitched(0.6));
+                self.shake = self.shake.max(0.9);
+            }
+            // Staked in the ground, to pulse a while
+            Shape::Stake => {
+                let ground = Combat::floor_at(arena, at);
+                self.power_burst(arena, &profile, ground + up * 0.4 * vpm, 1.6, p.damage * 0.6, None);
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Stake)), &profile, ground, way, STAKE_ROUND, STAKE_PULSES * STAKE_PULSE + 0.35, p.damage * 0.7);
+                self.cues.push(Cue::at(Sound::ArrowHit, ground, 0.9).pitched(0.6));
+                self.cues.push(Cue::at(Sound::Quake, ground, 0.5).pitched(1.4));
+                self.shake = self.shake.max(0.3);
+            }
+            // Bursting into a rain of arrowlets
+            Shape::Cloud => {
+                self.blasts.push(Blast { position: at, look, radius: 1.4, life: 0.35, lifetime: 0.35 });
+                self.sparks(at, 18, 5.0, look, 0.5, 0.5);
+                self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(1.3));
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Downpour)), &profile, at, Vector3::zeros(), 4.0, DOWNPOUR_SECONDS + 0.1, p.damage * 0.55);
+            }
+            // Bursting into a flare that hangs there
+            Shape::Flare => {
+                self.blasts.push(Blast { position: at, look, radius: 1.8, life: 0.4, lifetime: 0.4 });
+                self.sparks(at, 24, 6.0, look, 0.6, 0.6);
+                self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.9));
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Flare)), &profile, at, Vector3::zeros(), 6.0, FLARE_SECONDS, p.damage * 0.4);
+            }
+            Shape::Bolas => self.bolas_bind(arena, p, at, None),
+            // Set down, to toll
+            Shape::Beacon => {
+                let ground = Combat::floor_at(arena, at);
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Beacon)), &profile, ground, Vector3::zeros(), BEACON_REACH, BEACON_TOLLS * BEACON_TOLL + 0.45, p.damage);
+                self.flashes.push(Flash { position: ground + up * vpm, color: profile.element.map_or([0.95, 0.9, 0.8], Element::light), reach: 8.0, life: 0.3, lifetime: 0.3 });
+            }
+            // Bursting, its shards wheeling out along the ground all round
+            Shape::Pot => {
+                let ground = Combat::floor_at(arena, at) + up * 0.35 * vpm;
+                self.power_pop(arena, &profile, ground, 1.6, p.damage * 0.6, None);
+                let turn = random(&mut self.rng) * TAU;
+                for k in 0..SHARDS {
+                    let a = turn + k as f64 / SHARDS as f64 * TAU;
+                    let out = Vector3::new(a.cos(), a.sin(), 0.0);
+                    // Turned a little off straight out, so the wheel of them spins
+                    let along = (out + Vector3::new(-out.y, out.x, 0.0) * 0.35).normalize();
+                    self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: false, size: 0.8 }), Form::Bolt, ground + out * 0.3 * vpm, along * 14.0 * vpm, p.damage * 0.45, 0.0);
+                    self.signed(Sig::Power(Shape::Shard));
+                    if let Some(s) = self.projectiles.last_mut() {
+                        s.range = SHRAPNEL_REACH * vpm;
+                        s.size = 0.8;
+                    }
+                }
+                self.cues.push(Cue::at(Sound::Burst, ground, 1.0).pitched(1.0));
+                self.shake = self.shake.max(0.4);
             }
         }
     }
@@ -1121,6 +1748,165 @@ impl Combat {
                     self.cap_sparks();
                 }
             }
+            // Out round the player and back in, cutting what it passes each way, dragging in what
+            // it cuts coming back
+            Lasting::BladeRing => {
+                if let Some(feet) = arena.player {
+                    z.position = feet + up * 0.9 * vpm;
+                }
+                let f = (age / RING_SECONDS).clamp(0.0, 1.0);
+                if f >= 0.5 && z.owed < 1.0 {
+                    z.owed = 1.0;
+                    z.hit.clear();
+                }
+                let reached = ring_out(f, z.radius);
+                let cut: Vec<usize> = (0..arena.animals.len())
+                    .filter(|&i| {
+                        let a = &arena.animals[i];
+                        a.health > 0.0 && !a.look.is_pet() && !z.hit.contains(&a.id) && ((a.center(vpm as u32) - z.position).xy().norm() / vpm - reached).abs() < 1.2 + a.look.body().1
+                    })
+                    .collect();
+                for i in cut {
+                    z.hit.push(arena.animals[i].id);
+                    let center = arena.animals[i].center(vpm as u32);
+                    self.landed(center);
+                    self.power_hit(arena, &profile, i, center, z.damage, z.position);
+                    if z.owed >= 1.0 && arena.animals[i].health > 0.0 && arena.animals[i].boss.is_none() {
+                        let to = z.position - arena.animals[i].position;
+                        arena.animals[i].status.push = Vector3::new(to.x, to.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::zeros) * 9.0 * vpm;
+                    }
+                }
+                if random(&mut self.rng) < dt * 50.0 {
+                    let a = random(&mut self.rng) * TAU;
+                    let out = Vector3::new(a.cos(), a.sin(), 0.0);
+                    let v = (Vector3::new(-out.y, out.x, 0.0) * 6.0 + up * 1.5) * vpm;
+                    self.sparks.push(Spark { position: z.position + out * reached * vpm, velocity: v, look, life: 0.3, lifetime: 0.3, gravity: 0.3, slot: SLOT_SPARK });
+                    self.cap_sparks();
+                }
+            }
+            // Pulsing every so often, striking all round it each time
+            Lasting::Stake => {
+                while z.owed < STAKE_PULSES && age >= 0.15 + z.owed * STAKE_PULSE {
+                    z.owed += 1.0;
+                    let at = z.position + up * 0.3 * vpm;
+                    self.landed(at);
+                    self.power_burst(arena, &profile, at, z.radius, z.damage, None);
+                    let model = match element {
+                        Some(Element::Frost) => ICE_BURST,
+                        Some(Element::Poison) => ROOTS,
+                        Some(Element::Fire | Element::Storm | Element::Void) => STONE_PILLAR,
+                        _ => PILLAR,
+                    };
+                    if (z.position - arena.view.eye).norm() > 4.5 * vpm {
+                        self.swells.push(Swell { model, position: z.position, radius: 0.7, life: 0.45, lifetime: 0.45 });
+                    }
+                    self.sparks(at, 10, 3.5, look, 0.3, 0.4);
+                    self.cues.push(Cue::at(Sound::Burst, at, 0.7).pitched(0.9 + 0.1 * z.owed as f32));
+                    z.dwell = age;
+                }
+            }
+            // Arrowlets let fall one after another, out over the ring
+            Lasting::Downpour => {
+                let due = ((age / DOWNPOUR_SECONDS).min(1.0) * ARROWLETS).floor();
+                while z.owed < due {
+                    z.owed += 1.0;
+                    let a = random(&mut self.rng) * TAU;
+                    let r = z.radius * random(&mut self.rng).sqrt();
+                    let from = z.position + Vector3::new(a.cos() * r, a.sin() * r, -0.5) * vpm;
+                    let v = Vector3::new(-a.cos() * 0.8, -a.sin() * 0.8, -22.0) * vpm;
+                    self.launch(&profile, Some(Missile::arrow(0, true)), Form::Bolt, from, v, z.damage, 1.0);
+                    self.signed(Sig::Power(Shape::Arrowlet));
+                    if let Some(p) = self.projectiles.last_mut() {
+                        p.range = f64::INFINITY;
+                        p.size = 0.9;
+                    }
+                }
+            }
+            // Holding fast what it wound round, riding along on it, and what's by it
+            Lasting::Bound => {
+                if let Some(id) = z.target {
+                    match arena.animals.iter().position(|a| a.id == id && a.health > 0.0) {
+                        Some(i) => z.position = arena.animals[i].center(vpm as u32),
+                        None => z.target = None,
+                    }
+                }
+                for i in Combat::foes_round(arena, z.position, z.radius) {
+                    if arena.animals[i].boss.is_none() {
+                        let s = &mut arena.animals[i].status;
+                        s.rooted = s.rooted.max(0.15);
+                    }
+                }
+                if z.tick <= 0.0 {
+                    z.tick = 1.0;
+                    for i in Combat::foes_round(arena, z.position, z.radius * 0.6) {
+                        let center = arena.animals[i].center(vpm as u32);
+                        self.strike(arena, &profile, i, Blow { damage: z.damage, crit: false, heavy: false, from: z.position, depth: 1, element });
+                        self.sparks(center, 4, 2.0, look, 0.3, 0.3);
+                    }
+                }
+            }
+            // Hanging there, sinking, burning sparks raining down off it on what's under it, and
+            // marking what's under it
+            Lasting::Flare => {
+                let ground = Combat::floor_at(arena, z.position);
+                if z.position.z > ground.z + 4.0 * vpm {
+                    z.position.z -= 0.5 * vpm * dt;
+                }
+                for i in Combat::under(arena, ground, z.radius, 12.0) {
+                    let s = &mut arena.animals[i].status;
+                    s.marked = s.marked.max(0.4);
+                    s.mark_bonus = s.mark_bonus.max(0.3);
+                }
+                z.owed += dt * 5.0;
+                // Each spark at something under it, or anywhere under it if nothing is
+                let under: Vec<usize> = Combat::under(arena, ground, z.radius, 12.0);
+                while z.owed >= 1.0 {
+                    z.owed -= 1.0;
+                    let a = random(&mut self.rng) * TAU;
+                    let r = z.radius * 0.85 * random(&mut self.rng).sqrt();
+                    let pick = (random(&mut self.rng) * under.len() as f64) as usize;
+                    let to = match under.get(pick) {
+                        Some(&i) => arena.animals[i].center(vpm as u32),
+                        None => ground + Vector3::new(a.cos() * r, a.sin() * r, 0.0) * vpm,
+                    };
+                    let time = 0.6;
+                    self.launch(&profile, Some(Missile { shot: Shot::Ball, head: 0, power: false, size: 0.8 }), Form::Bolt, z.position, thrown(z.position, to, time, 0.6, vpm), z.damage, 0.6);
+                    self.signed(Sig::Power(Shape::Ember));
+                    if let Some(p) = self.projectiles.last_mut() {
+                        p.range = 30.0 * vpm;
+                        p.size = 0.8;
+                    }
+                }
+                if random(&mut self.rng) < dt * 25.0 {
+                    let v = self.any_direction() * 1.2 * vpm;
+                    self.fine(z.position, v, look, 0.4, 0.3);
+                }
+            }
+            // Tolling, a ring rolling out from it each time, through what it reaches
+            Lasting::Beacon => {
+                if z.owed < BEACON_TOLLS && age >= z.owed * BEACON_TOLL {
+                    z.owed += 1.0;
+                    z.dwell = age;
+                    z.hit.clear();
+                    if (z.position - arena.view.eye).norm() > 4.5 * vpm {
+                        self.swells.push(Swell { model: PILLAR, position: z.position, radius: 0.9, life: 0.5, lifetime: 0.5 });
+                    }
+                    self.cues.push(Cue::at(Sound::Toll, z.position, 0.9).pitched(0.8 + 0.12 * z.owed as f32));
+                    self.landed(z.position);
+                }
+                let reached = (0.5 + BEACON_SPEED * (age - z.dwell)).min(z.radius);
+                let near: Vec<usize> = Combat::foes_round(arena, z.position, reached).into_iter().filter(|&i| !z.hit.contains(&arena.animals[i].id)).collect();
+                for i in near {
+                    z.hit.push(arena.animals[i].id);
+                    let center = arena.animals[i].center(vpm as u32);
+                    self.power_hit(arena, &profile, i, center, z.damage * 0.6, z.position);
+                    if arena.animals[i].health > 0.0 && arena.animals[i].boss.is_none() {
+                        let away = arena.animals[i].position - z.position;
+                        let away = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                        arena.animals[i].status.push = Vector3::new(away.x, away.y, 0.3) * 5.0 * vpm;
+                    }
+                }
+            }
         }
     }
 
@@ -1147,7 +1933,12 @@ impl Combat {
                 self.power_burst(arena, &profile, z.position, 3.0, z.damage, None);
                 self.shake = self.shake.max(0.5);
             }
-            Lasting::Fissure | Lasting::Line | Lasting::Nova => {}
+            // Its last pulse a big one as it crumbles
+            Lasting::Stake => {
+                self.power_burst(arena, &profile, z.position + Vector3::new(0.0, 0.0, 0.4 * vpm), z.radius * 1.2, z.damage * 0.8, None);
+                self.sparks(z.position, 14, 4.0, Element::look(profile.element), 0.4, 0.4);
+            }
+            Lasting::Fissure | Lasting::Line | Lasting::Nova | Lasting::BladeRing | Lasting::Downpour | Lasting::Bound | Lasting::Flare | Lasting::Beacon => {}
         }
     }
 
@@ -1221,6 +2012,82 @@ impl Combat {
                 out.push(ball(0.36));
                 out.extend(self.ring_instances(eye, p.position, eye - p.position, 0.75 * far, look, 1.0 * far, self.time * 4.0));
             }
+            // A whirling funnel, spinning, rings of its element turning round it as it goes
+            Shape::Gale => {
+                let (model, twister) = self.model_at(TWISTER);
+                let foot = p.position - Vector3::new(0.0, 0.0, 0.7 * vpm);
+                let turn = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 9.0);
+                out.push((eye, place(model, twister, MODEL_RES, Vector3::zeros(), foot, turn, vpm, 1.15, MOVING)));
+                for (k, r) in [0.55, 0.85, 1.2].into_iter().enumerate() {
+                    let at = foot + Vector3::new(0.0, 0.0, (0.3 + 0.75 * k as f64) * vpm);
+                    out.extend(self.circle_instances(eye, at, r, look, 1.1, self.time * (7.0 + 2.0 * k as f64)));
+                }
+            }
+            // A fist of light, its streak behind it
+            Shape::Fist => {
+                out.push(ball(0.1));
+                out.extend(self.streak_at(eye, p.position - way * 0.2 * vpm, way, look, 1.8 * far));
+            }
+            // The hook's head, its chain run out behind it from the hand
+            Shape::Hook { .. } => {
+                let hand = eye + view.rotation * Vector3::new(0.25, 0.5, -0.3) * vpm;
+                out.extend(self.line_bolts(eye, hand, p.position, look, 0.7, 0.8, 0.0));
+                let head = if p.velocity.dot(&(p.position - hand)) < 0.0 { -way } else { way };
+                out.extend(self.streak_at(eye, p.position, head, look, 1.6 * far));
+                out.push(ball(0.09));
+            }
+            // An anvil of stone falling, glowing, its streak above it, a ring of its element round
+            Shape::Anvil => {
+                let (model, boulder) = self.model_at(BOULDER);
+                let tumble = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.time * 2.0);
+                out.push((eye, place(model, boulder, MODEL_RES, Vector3::zeros(), p.position, tumble, vpm, 1.6, MOVING)));
+                out.push(ball(0.22));
+                out.extend(self.line_bolts(eye, p.position + Vector3::new(0.0, 0.0, 3.0 * vpm), p.position, look, 0.7, 1.6, 0.0));
+                out.extend(self.circle_instances(eye, p.position, 0.9, look, 1.2, self.time * 5.0));
+            }
+            Shape::Stake => {
+                out.extend(self.line_bolts(eye, p.position - way * 2.4 * vpm, p.position, look, 0.5, 2.0 * far, 0.0));
+                out.extend(self.streak_at(eye, p.position + way * 0.2 * vpm, way, look, 3.0 * far));
+                out.push(ball(0.1));
+            }
+            Shape::Cloud => {
+                let (model, arrow) = self.effect_model(SLOT_ARROW + p.head.min(ARROW_HEADS - 1), look);
+                out.push((eye, place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 1.4 * far, MOVING)));
+                out.extend(self.line_bolts(eye, p.position - way * 2.0 * vpm, p.position - way * 0.4 * vpm, look, 0.6, 1.1 * far, 0.0));
+            }
+            Shape::Arrowlet => {
+                let (model, arrow) = self.effect_model(SLOT_ARROW, look);
+                out.push((eye, place(model, arrow, ARROW_RES, Vector3::new(ARROW_HEAD, 0.0, 0.0), p.position, rotation, vpm, 0.9 * far, MOVING)));
+            }
+            // Two balls spinning round each other on their line as they fly
+            Shape::Bolas => {
+                let across = way.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                let over = across.cross(&way);
+                let a = self.time * 22.0;
+                let arm = (across * a.cos() + over * a.sin()) * 0.45 * vpm;
+                let (model, b) = self.effect_model(SLOT_FIREBALL, look);
+                for s in [-1.0, 1.0] {
+                    out.push((eye, place(model, b, MODEL_RES, Vector3::zeros(), p.position + arm * s, spin, vpm, 0.12 * far, MOVING)));
+                }
+                out.extend(self.line_bolts(eye, p.position - arm, p.position + arm, look, 0.3, 0.7 * far, 0.0));
+            }
+            Shape::Flare => {
+                out.push(ball(0.16));
+                out.extend(self.streak_at(eye, p.position - way * 0.3 * vpm, way, look, 1.4 * far));
+            }
+            Shape::Beacon => {
+                out.push(ball(0.24));
+                out.extend(self.ring_instances(eye, p.position, eye - p.position, 0.5 * far, look, 0.9 * far, self.time * 6.0));
+            }
+            Shape::Pot => {
+                let (model, bomb) = self.effect_model(SLOT_BOMB, look);
+                let tumble = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), self.time * 8.0) * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), p.position.x * 0.3);
+                out.push((eye, place(model, bomb, BOMB_RES, Vector3::zeros(), p.position, tumble, vpm, 1.2 * far, MOVING)));
+            }
+            Shape::Shard => {
+                out.push(ball(0.07));
+                out.extend(self.streak_at(eye, p.position - way * 0.25 * vpm, way, look, 0.8 * far));
+            }
         }
         out
     }
@@ -1267,6 +2134,61 @@ impl Combat {
                 let reached = (0.6 + NOVA_SPEED * age).min(z.radius);
                 out.extend(self.circle_instances(eye, z.position, reached, look, 2.4 * fade, age * 0.6));
             }
+            // Two rings of spinning blades, turning opposite ways
+            Lasting::BladeRing => {
+                let reached = ring_out(age / RING_SECONDS, z.radius);
+                out.extend(self.circle_instances(eye, z.position, reached, look, 2.2, age * 9.0));
+                out.extend(self.circle_instances(eye, z.position + up * 0.3 * vpm, reached * 0.94, look, 1.6, -age * 7.0));
+            }
+            // The spear standing in the ground, a ring rolling out from it at each pulse
+            Lasting::Stake => {
+                let way = z.velocity.try_normalize(1e-6).unwrap_or(-up);
+                let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &way).unwrap_or_else(UnitQuaternion::identity);
+                let (model, quarrel) = self.effect_model(SLOT_QUARREL, look);
+                let head = z.position + up * 0.1 * vpm;
+                out.push((eye, place(model, quarrel, ARROW_RES, Vector3::new(QUARREL_HEAD, 0.0, 0.0), head, rotation, vpm, 2.2, MOVING)));
+                out.extend(self.line_bolts(eye, head - way * 2.2 * vpm, head, look, 0.55, 1.4, 0.0));
+                let since = age - z.dwell;
+                if z.owed > 0.0 && since < 0.35 {
+                    out.extend(self.circle_instances(eye, z.position + up * 0.1 * vpm, (0.5 + 10.0 * since).min(z.radius), look, 1.8 * (1.0 - since / 0.35), age));
+                }
+            }
+            // The arrow's burst, spreading and fading as the arrowlets come down
+            Lasting::Downpour => {
+                let fade = (z.life / z.lifetime).clamp(0.1, 1.0);
+                out.extend(self.circle_instances(eye, z.position, 1.0 + 2.5 * age, look, 1.3 * fade, age * 2.0));
+            }
+            // Its cords wound round what it holds, the balls swinging round
+            Lasting::Bound => {
+                let fade = (z.life / 0.4).clamp(0.1, 1.0);
+                out.extend(self.circle_instances(eye, z.position, 0.7, look, 0.9 * fade, age * 6.0));
+                let (model, b) = self.effect_model(SLOT_FIREBALL, look);
+                for s in [0.0, PI] {
+                    let a = age * 8.0 + s;
+                    let at = z.position + Vector3::new(a.cos() * 0.75, a.sin() * 0.75, -0.2) * vpm;
+                    out.push((eye, place(model, b, MODEL_RES, Vector3::zeros(), at, UnitQuaternion::identity(), vpm, 0.1, MOVING)));
+                }
+            }
+            // A burning star hanging there, flickering, a ring round it
+            Lasting::Flare => {
+                let (model, b) = self.effect_model(SLOT_FIREBALL, look);
+                let flicker = 1.0 + 0.12 * (self.time * 31.0).sin();
+                out.push((eye, place(model, b, MODEL_RES, Vector3::zeros(), z.position, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0), vpm, 0.34 * flicker, MOVING)));
+                out.extend(self.ring_instances(eye, z.position, eye - z.position, 0.7 * flicker, look, 1.2, self.time * 2.0));
+            }
+            // A column of light standing over where it was set down, its orb bobbing at the top,
+            // and the ring rolling out from its toll
+            Lasting::Beacon => {
+                let top = z.position + up * (1.6 + 0.1 * (age * 3.0).sin()) * vpm;
+                out.extend(self.line_bolts(eye, z.position, top, look, 0.5, 1.5, 0.0));
+                let (model, b) = self.effect_model(SLOT_FIREBALL, look);
+                out.push((eye, place(model, b, MODEL_RES, Vector3::zeros(), top, UnitQuaternion::from_axis_angle(&Vector3::z_axis(), age * 4.0), vpm, 0.22, MOVING)));
+                let since = age - z.dwell;
+                let reached = 0.5 + BEACON_SPEED * since;
+                if reached < z.radius + 0.5 {
+                    out.extend(self.circle_instances(eye, z.position + up * 0.15 * vpm, reached.min(z.radius), look, 2.2, age));
+                }
+            }
         }
         out
     }
@@ -1275,11 +2197,16 @@ impl Combat {
     pub(super) fn power_light(&self, z: &Zone, kind: Lasting) -> Option<(Vector3<f64>, f64, [f32; 3], f32)> {
         let color = z.profile.element.map_or([0.95, 0.9, 0.8], Element::light);
         let fade = (z.life / 0.3).min(1.0) as f32;
+        let age = z.lifetime - z.life;
         match kind {
             Lasting::Vortex => Some((z.position, 7.0, color, 0.9 * fade)),
-            Lasting::Nova => Some((z.position + Vector3::new(0.0, 0.0, self.vpm), 10.0, color, 0.8 * fade)),
+            Lasting::Nova | Lasting::BladeRing => Some((z.position + Vector3::new(0.0, 0.0, self.vpm), 10.0, color, 0.8 * fade)),
             Lasting::Stuck { .. } => Some((z.position, 3.0, color, 0.6)),
-            Lasting::Fissure | Lasting::Line => None,
+            // Flaring up with each pulse or toll
+            Lasting::Stake | Lasting::Beacon => Some((z.position + Vector3::new(0.0, 0.0, self.vpm), 7.0, color, (0.35 + 0.65 * (1.0 - (age - z.dwell) / 0.4).max(0.0)) as f32 * fade)),
+            // A flare lighting up the ground all round under it
+            Lasting::Flare => Some((z.position, 16.0, color, 1.2 * fade)),
+            Lasting::Fissure | Lasting::Line | Lasting::Downpour | Lasting::Bound => None,
         }
     }
 }
@@ -1306,12 +2233,19 @@ mod tests {
         crate::tools::Tool::ALL.iter().any(|t| t.family() == family)
     }
 
-    /// A legendary or mythic weapon of `family`, as one would drop
+    /// A legendary or mythic weapon of `family`, as one would drop, with its family's own power
     fn legendary(library: &Library, family: usize) -> Weapon {
+        let power = Power::of(&library.families[family].id);
         (0..40_000u32)
             .map(|seed| library.generate(hash(seed ^ 0x90e7), Some(family), 8.0))
-            .find(|w| w.profile.power.is_some())
+            .find(|w| w.profile.power.is_some() && w.profile.power == power)
             .unwrap_or_else(|| panic!("no legendary or mythic {} rolled", library.families[family].id))
+    }
+
+    /// A weapon of each part that brings a power of its own, see weapons::Component::power, with
+    /// the part's id: rolled as one would drop with that part on it
+    fn with_powers(library: &Library) -> Vec<(String, Weapon)> {
+        library.components.iter().filter(|c| c.power().is_some()).map(|c| (c.id.clone(), library.with_part(&c.id, None).unwrap_or_else(|| panic!("no weapon with {}", c.id)))).collect()
     }
 
     /// What using a power looked like, a pack ahead or not
@@ -1393,6 +2327,13 @@ mod tests {
             let common = library.generate(7, Some(family), 0.0);
             assert!(common.profile.power.is_none() || common.profile.special.is_some(), "a common {} has a power", f.id);
         }
+        // A part that brings a power of its own gives it to the weapon it's on, in place of its
+        // family's
+        for (id, weapon) in with_powers(&library) {
+            let c = library.components.iter().find(|c| c.id == id).unwrap();
+            assert_eq!(weapon.profile.power, c.power(), "{id}");
+            seen.push(c.power().unwrap());
+        }
         for power in Power::ALL {
             assert!(seen.contains(&power), "{power:?} isn't any family's");
             assert!(power.cooldown() >= 6.0, "{power:?} comes round too often");
@@ -1411,9 +2352,11 @@ mod tests {
         let library = Library::load();
         let world = field();
         let mut broken = Vec::new();
-        for (family, f) in library.families.iter().enumerate().filter(|(_, f)| !is_tool(&f.id)) {
-            let weapon = legendary(&library, family);
-            let name = format!("{} on a {}", weapon.profile.power.unwrap().name(weapon.profile.element), f.id);
+        // Every family's own, and every one a part brings
+        let mut weapons: Vec<(String, Weapon)> = library.families.iter().enumerate().filter(|(_, f)| !is_tool(&f.id)).map(|(family, f)| (f.id.clone(), legendary(&library, family))).collect();
+        weapons.extend(with_powers(&library).into_iter().map(|(id, w)| (format!("{} with {id}", library.families[w.family].id), w)));
+        for (what, weapon) in weapons {
+            let name = format!("{} on a {what}", weapon.profile.power.unwrap().name(weapon.profile.element));
             for foes in [false, true] {
                 let used = use_power(&world, &weapon, foes);
                 let pack = if foes { "with a pack ahead" } else { "alone" };

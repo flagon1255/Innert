@@ -7,7 +7,9 @@
 
 use super::*;
 use crate::weapons::Power;
-use super::signatures::powers::{BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, SEEKER_REACH, WHEEL_REACH, power_timing, wave_of};
+use super::signatures::powers::{
+    ANVIL_REACH, BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, FISTS_REACH, GALE_FROM, GALE_STEP, GALE_STEPS, HOOK_REACH, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, RING_REACH, SEEKER_REACH, SHRAPNEL_REACH, STAKE_REACH, WHEEL_REACH, power_timing, wave_of,
+};
 
 /// How far a special attack aimed at a spot reaches, in meters out along the ground
 pub(super) const SPOT_REACH: f64 = 30.0;
@@ -75,6 +77,12 @@ pub(super) fn power_aim(power: Power, profile: &Profile) -> Option<SpotAim> {
         Power::Mortar => Some(SpotAim { reach: MORTAR_REACH, least: 0.0, radius: 3.5 }),
         Power::Comet => Some(SpotAim { reach: SPOT_REACH, least: 0.0, radius: 3.5 }),
         Power::Vortex => Some(SpotAim { reach: profile.stat("range").max(6.0), least: 0.0, radius: BOMB_BLAST * profile.stat("area").max(0.5) }),
+        Power::Anvil => Some(SpotAim { reach: ANVIL_REACH, least: 2.5, radius: 3.5 }),
+        Power::Stake => Some(SpotAim { reach: STAKE_REACH, least: 3.0, radius: 3.0 }),
+        Power::Cloudburst => Some(SpotAim { reach: SPOT_REACH, least: 4.0, radius: 4.5 }),
+        Power::Starshell => Some(SpotAim { reach: MORTAR_REACH, least: 4.0, radius: 6.0 }),
+        Power::Beacon => Some(SpotAim { reach: SPOT_REACH, least: 0.0, radius: 5.0 }),
+        Power::Shrapnel => Some(SpotAim { reach: profile.stat("range").max(6.0), least: 0.0, radius: SHRAPNEL_REACH }),
         _ => None,
     }
 }
@@ -243,7 +251,7 @@ impl Combat {
     /// Where `weapon`'s power, let go now, comes down, if it's aimed at a spot
     pub(super) fn power_spot(&self, arena: &Arena, weapon: &Weapon) -> Option<Vector3<f64>> {
         let power = weapon.profile.power?;
-        if power == Power::Vortex {
+        if matches!(power, Power::Vortex | Power::Shrapnel) {
             return Some(self.lob_aim(arena, weapon).0);
         }
         power_aim(power, &weapon.profile).map(|aim| self.spot_aimed(arena, aim))
@@ -396,7 +404,14 @@ const LASH_STEP: f64 = 2.0;
 pub(super) fn power_way(power: Power) -> PowerWay {
     let wave = |p: Power| wave_of(p).3;
     match power {
-        Power::Mortar | Power::Comet | Power::Vortex => PowerWay::Spot,
+        Power::Mortar | Power::Comet | Power::Vortex | Power::Anvil | Power::Stake | Power::Cloudburst | Power::Starshell | Power::Beacon | Power::Shrapnel => PowerWay::Spot,
+        // A gale runs on along the ground, rings showing its way; fists, a hook and a bolas go at
+        // what the crosshair meets; a ring of blades goes out all round
+        Power::Gale => PowerWay::Line { from: GALE_FROM, step: GALE_STEP, steps: GALE_STEPS },
+        Power::Fists => PowerWay::Ray { reach: FISTS_REACH, fan: &[0.0], radius: 1.0 },
+        Power::Hook => PowerWay::Ray { reach: HOOK_REACH, fan: &[0.0], radius: 1.0 },
+        Power::Bolas => PowerWay::Ray { reach: AIM_RANGE, fan: &[0.0], radius: 1.5 },
+        Power::BladeRing => PowerWay::Round { reach: RING_REACH },
         Power::Crescent | Power::Rending | Power::WindCut => PowerWay::Ray { reach: wave(power), fan: &[0.0], radius: 1.2 },
         Power::BladeFan => PowerWay::Ray { reach: wave(power), fan: &FAN, radius: 0.8 },
         Power::Wheel => PowerWay::Ray { reach: WHEEL_REACH, fan: &[0.0], radius: 1.0 },
