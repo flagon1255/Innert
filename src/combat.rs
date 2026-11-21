@@ -751,8 +751,9 @@ struct BloodMoon {
     /// Seconds since it was unleashed, and when the shots leave the weapon or the blade comes down
     t: f64,
     release: f64,
-    /// Where the moon hangs in the sky
+    /// Where the moon hangs in the sky, and the spot it was aimed at, in the middle of its ring
     moon: Vector3<f64>,
+    spot: Vector3<f64>,
     /// What's to be drained, by id, nearest first, and the shots flying at each
     targets: Vec<u32>,
     shots: Vec<Bloodshot>,
@@ -823,13 +824,14 @@ struct Stream {
 
 /// How long a Blood Moon hangs at least, how far off it rises, in meters, how high up in the view
 /// it rises, as part of the way from the middle to the top, the least it rises over the horizon
-/// and the most, in radians, and how far round the player it drains, in meters
+/// and the most, in radians, and how far round where it's aimed it drains, in meters: its ring's
+/// size, see aim::spot_aim()
 const MOON_SECONDS: f64 = 2.4;
 const MOON_OFF: f64 = 42.0;
 const MOON_IN_VIEW: f64 = 0.35;
 const MOON_LOWEST: f64 = 0.2;
 const MOON_HIGHEST: f64 = 1.2;
-const MOON_REACH: f64 = 14.0;
+pub(crate) const MOON_RING: f64 = 7.0;
 /// Where Blood Moon's blood pools before the player drinks it, in meters ahead of and under the eye
 const POOL_AHEAD: f64 = 2.2;
 const POOL_LOW: f64 = 0.55;
@@ -5157,6 +5159,7 @@ impl Combat {
         }
         if let Some(m) = &mut self.blood_moon {
             m.moon -= shift;
+            m.spot -= shift;
             for s in &mut m.shots {
                 s.from -= shift;
                 s.to -= shift;
@@ -8151,8 +8154,18 @@ impl Combat {
                     let ahead = view.rotation * Vector3::new(0.0, 6.0, 0.0) * vpm;
                     self.sparks.push(Spark { position: view.eye + out, velocity: ahead + out * 2.0, look: blood, life: 0.35, lifetime: 0.35, gravity: 0.4, slot: SLOT_SPARK });
                 }
+                // And the ground splitting open in its ring where it was aimed, blood bursting up
+                // out of it, whether anything's there or not
+                for _ in 0..14 {
+                    let out = self.any_direction().component_mul(&Vector3::new(1.0, 1.0, 0.0)) * MOON_RING * 0.6 * random(&mut self.rng) * vpm;
+                    let v = (Vector3::new(0.0, 0.0, 3.5) + self.any_direction()) * vpm;
+                    self.drop(m.spot + out + Vector3::new(0.0, 0.0, 0.2 * vpm), v, DROP_BLOOD, 0.9);
+                }
+                self.sparks(m.spot + Vector3::new(0.0, 0.0, 0.4 * vpm), 12, 3.0, blood, 0.6, 0.5);
+                self.flashes.push(Flash { position: m.spot + Vector3::new(0.0, 0.0, 1.0 * vpm), color: Element::Blood.light(), reach: 10.0, life: 0.35, lifetime: 0.35 });
                 self.cap_sparks();
                 self.cues.push(Cue::here(Sound::HeavySwing, 0.9).pitched(0.8));
+                self.cues.push(Cue::at(Sound::Squelch, m.spot, 0.8).pitched(0.6));
             } else {
                 for (k, &id) in m.targets.iter().enumerate() {
                     if let Some(a) = arena.animals.iter().find(|a| a.id == id && a.health > 0.0) {
@@ -8161,11 +8174,12 @@ impl Combat {
                         m.shots.push(Bloodshot { target: Some(id), from, to, position: from, t: 0.0, arrive });
                     }
                 }
-                // Nothing near: shot up at the moon
+                // Nothing in its ring: shot into the ground where it was aimed, bursting there
                 if m.shots.is_empty() {
                     for k in 0..3 {
-                        let to = m.moon + self.any_direction() * 2.0 * vpm;
-                        m.shots.push(Bloodshot { target: None, from, to, position: from, t: 0.0, arrive: 0.55 + 0.06 * k as f64 });
+                        let to = m.spot + self.any_direction().component_mul(&Vector3::new(1.0, 1.0, 0.0)) * 1.5 * vpm;
+                        let arrive = 0.06 * k as f64 + (to - from).norm() / vpm / BLOODSHOT_PACE;
+                        m.shots.push(Bloodshot { target: None, from, to, position: from, t: 0.0, arrive });
                     }
                 }
                 self.flashes.push(Flash { position: from, color: Element::Blood.light(), reach: 4.0, life: 0.15, lifetime: 0.15 });
@@ -8195,7 +8209,7 @@ impl Combat {
             }
             match shot.target.and_then(|id| arena.animals.iter().position(|a| a.id == id && a.health > 0.0)) {
                 Some(i) => self.tear(arena, &mut m, i),
-                // Gone into the moon, or what it was at is already dead
+                // Into the ground where it was aimed, or what it was at is already dead
                 None => {
                     self.sparks(shot.position, 5, 2.0, blood, 0.2, 0.4);
                     self.flashes.push(Flash { position: shot.position, color: Element::Blood.light(), reach: 6.0, life: 0.2, lifetime: 0.2 });
@@ -8911,26 +8925,29 @@ impl Combat {
                 }
                 self.heal += 30.0;
             }
-            // A red moon rising, then shots let go at what's near, or a blade cutting down, and the
-            // blood torn out of each streaming back, see wax()
+            // A red moon rising over where it's aimed, then shots let go at what's in its ring, or
+            // a blade cutting down, and the blood torn out of each streaming back, see wax()
             Special::Bloodmoon => {
                 let (length, keys) = special_move(special, moves_kind(&profile), profile.style);
                 let mut near: Vec<(f64, u32)> = arena
                     .animals
                     .iter()
                     .filter(|a| a.health > 0.0 && !a.look.is_pet())
-                    .map(|a| ((a.position - feet).norm() / vpm - a.look.body().1, a.id))
-                    .filter(|&(d, _)| d < MOON_REACH)
+                    .map(|a| ((a.position - target).norm() / vpm - a.look.body().1, a.id))
+                    .filter(|&(d, _)| d < MOON_RING)
                     .collect();
                 near.sort_by(|a, b| a.0.total_cmp(&b.0));
                 let blade = moves_kind(&profile) == Kind::Melee && profile.style != Style::Lob;
                 // Bombs flung as orbs of blood, the rest shooting what they shoot
                 let shot = weapon.shot().filter(|&s| s != Shot::Shell);
-                let moon = moon_rise(arena.world, view.eye, forward, view.tan[1], vpm);
+                // Rising on beyond where it's aimed, the way it's aimed
+                let toward = (target - view.eye).try_normalize(1e-6).unwrap_or(forward);
+                let moon = moon_rise(arena.world, view.eye, toward, view.tan[1], vpm);
                 self.blood_moon = Some(BloodMoon {
                     t: 0.0,
                     release: first_release(length, &keys),
                     moon,
+                    spot: target,
                     targets: near.iter().take(8).map(|&(_, id)| id).collect(),
                     shots: Vec::new(),
                     streams: Vec::new(),
@@ -8946,16 +8963,16 @@ impl Combat {
                     damage: base * 1.2,
                     ending: None,
                 });
-                // Blood spurting up out of the ground in a ring round the player as it rises, never
-                // as high as the eye, the light going red
+                // Blood spurting up out of the ground round the edge of its ring as it rises, the
+                // light going red there
                 let blood = Element::look(Some(Element::Blood));
-                for k in 0..16 {
-                    let a = k as f64 / 16.0 * TAU;
+                for k in 0..24 {
+                    let a = k as f64 / 24.0 * TAU;
                     let out = Vector3::new(a.cos(), a.sin(), 0.0);
-                    self.sparks.push(Spark { position: feet + out * 2.4 * vpm + Vector3::new(0.0, 0.0, 0.2 * vpm), velocity: (out * 2.0 + Vector3::new(0.0, 0.0, 3.0)) * vpm, look: blood, life: 0.6, lifetime: 0.6, gravity: 1.0, slot: SLOT_SPARK });
+                    self.sparks.push(Spark { position: target + out * MOON_RING * 0.9 * vpm + Vector3::new(0.0, 0.0, 0.2 * vpm), velocity: (out * -1.0 + Vector3::new(0.0, 0.0, 4.0)) * vpm, look: blood, life: 0.7, lifetime: 0.7, gravity: 1.0, slot: SLOT_SPARK });
                 }
                 self.cap_sparks();
-                self.flashes.push(Flash { position: feet + Vector3::new(0.0, 0.0, 2.0 * vpm), color: Element::Blood.light(), reach: 16.0, life: 0.7, lifetime: 0.7 });
+                self.flashes.push(Flash { position: target + Vector3::new(0.0, 0.0, 2.0 * vpm), color: Element::Blood.light(), reach: 16.0, life: 0.7, lifetime: 0.7 });
                 self.cues.push(Cue::here(Sound::Toll, 0.9).pitched(0.5));
                 self.cues.push(Cue::here(Sound::Wail, 0.45).pitched(0.6));
             }
@@ -17056,7 +17073,8 @@ mod tests {
                     || !combat.zones.is_empty()
                     || !combat.lingering.is_empty()
                     || !combat.stases.is_empty()
-                    || !combat.mines.is_empty();
+                    || !combat.mines.is_empty()
+                    || combat.blood_moon.is_some();
             }
             if !let_go && !combat.marks.is_empty() {
                 out.before.clone_from(&combat.marks);

@@ -1597,7 +1597,7 @@ impl Special {
             Special::Flurry => "Dash forward, slashing at everything near five times.",
             Special::Nova => "A burst of holy light throws everything back and heals you.",
             Special::Rain => "Arrows rain down round where you aim.",
-            Special::Bloodmoon => "Drain the life of every enemy within 14 meters to heal yourself.",
+            Special::Bloodmoon => "A blood moon rises where you aim, draining the life of every enemy in its ring to heal you.",
             Special::Plague => "A great cloud of venom where you aim, lingering.",
             Special::Starfall => "A barrage of stars seeks out the enemies round you.",
             Special::FrostNova => "Ice bursts out all round you, freezing everything within 9 meters.",

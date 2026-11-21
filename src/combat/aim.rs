@@ -61,6 +61,7 @@ pub(super) fn spot_aim(special: Special, profile: &Profile) -> Option<SpotAim> {
         Special::Litany => (LITANY_AIM, 4.5, 0.0),
         Special::EmberKnell => (KNELL_AIM, 2.5, 0.0),
         Special::Bloodthread => (THREAD_AIM, 2.5, 0.0),
+        Special::Bloodmoon => (SPOT_REACH, MOON_RING, 0.0),
         _ => return None,
     };
     let reach = if profile.style == Style::Lob { profile.stat("range").max(6.0) } else { reach };
@@ -281,6 +282,8 @@ impl Combat {
             Special::Skyburst => 0.5 + far / 20.0,
             Special::NetBolt => 0.15 + far / 45.0,
             Special::Firecrackers => 2.0 + 0.025 * far,
+            // Its move, then its shots flying there, see BloodMoon
+            Special::Bloodmoon => 1.4 + far / BLOODSHOT_PACE,
             _ => return crosshair,
         };
         self.keep_rings(arena, &weapon.profile, special, spot, life);
