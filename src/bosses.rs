@@ -377,7 +377,20 @@ pub struct Boss {
     /// the Drowned Ring, see worldgen::Arena: it keeps to it, sweeping round the side of it the player's
     /// on and coming up out of it at its edge nearest them, see Game::set_lairs()
     pub basin: Option<f64>,
+    /// Seconds a serpent's been lying still, left be: long enough, it coils up, see COILS_AFTER
+    rest: f64,
+    /// Seconds till a serpent lying coiled shifts a little way, slowly, and settles again; and
+    /// seconds into that, while it's at it
+    stir: f64,
+    shifting: Option<[f64; 2]>,
 }
+
+/// Seconds a serpent lies still before it coils up to rest
+const COILS_AFTER: f64 = 1.2;
+/// Seconds a serpent shifting from where it lay takes to uncoil before it moves, and how long it
+/// goes on slithering, at the least and at the most
+const UNCOIL: f64 = 0.5;
+const SHIFT: [f64; 2] = [1.6, 3.4];
 
 /// Seconds a boss goes on after the player once it can't see them, and a monster
 const LOST: f64 = 8.0;
@@ -1060,6 +1073,9 @@ impl Boss {
             only: None,
             stuck: 0.0,
             basin: None,
+            rest: 0.0,
+            stir: 6.0 + 8.0 * ((key[0] ^ (key[1] * 31)) as u32 % 100) as f64 / 100.0,
+            shifting: None,
         }
     }
 
@@ -1117,6 +1133,8 @@ impl Boss {
             Phase::Act(Move::Charge, _) if self.look.is_great_serpent() => 2.3,
             Phase::Act(Move::Coil, _) => 2.1,
             _ if self.buried => 1.8,
+            // A serpent shifting from where it lay, slowly
+            Phase::Roam if self.shifting.is_some() => 0.45,
             _ => 1.0,
         }
     }
@@ -1498,6 +1516,11 @@ impl Boss {
                 _ => {}
             }
         }
+        // A serpent left be a while lies coiled up, but for one gliding through the air or gone
+        // under the snow
+        if self.look.is_serpent() && self.phase == Phase::Roam && self.rest > COILS_AFTER && !self.buried && self.look != Look::GaleSerpent {
+            return Some(POSE_COIL);
+        }
         match (self.phase, self.look.build()) {
             // A serpent rearing up coiled, then lunging out to bite; raising its head with its
             // hood flared or its throat swelling to spit; diving forward into the snow, and bursting
@@ -1717,8 +1740,8 @@ fn steer(a: &mut Animal, boss: &mut Boss, p: Vector3<f64>, distance: f64, close:
     match look {
         Look::Shieldbearer if distance < 5.0 && a.mood == Mood::Run => a.mood = Mood::Walk,
         Look::Gloomwing if distance > 1.5 => heading += 0.7 * (boss.clock * 2.3 + a.id as f64).sin(),
-        // A serpent weaving from side to side as it comes on
-        _ if look.is_serpent() && distance > close + 1.5 => heading += 0.3 * (boss.clock * 1.9 + a.id as f64).sin(),
+        // A serpent's S-curve weaves its body from side to side as it comes on, see
+        // serpents::spine(), so it comes on straight rather than swinging the whole of it about
         _ => {}
     }
     a.target_heading = heading;
@@ -2018,6 +2041,10 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
         }
     }
     boss.last_step = a.phase;
+    // Out of its rest as soon as it's roused
+    if boss.phase != Phase::Roam {
+        (boss.rest, boss.shifting) = (0.0, None);
+    }
     // Standing, now and then its plates grind and shed a trickle of pebbles
     if look == Look::Colossus && a.speed <= 0.3 {
         boss.crumble -= dt;
@@ -2050,9 +2077,28 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             } else if from_home > 6.0 {
                 a.mood = Mood::Walk;
                 a.target_heading = heading_to(a.position, boss.home);
+            } else if look.is_serpent() && !boss.buried && look != Look::GaleSerpent {
+                // A serpent lies coiled, and now and then uncoils and shifts a little way, slowly,
+                // back towards home if it's strayed, and settles again
+                if let Some([t, long]) = boss.shifting {
+                    let t = t + dt;
+                    boss.shifting = (t < long).then_some([t, long]);
+                    a.mood = if (UNCOIL..long).contains(&t) { Mood::Walk } else { Mood::Idle };
+                } else {
+                    a.mood = Mood::Idle;
+                    boss.stir -= dt;
+                    if boss.stir <= 0.0 {
+                        boss.stir = 9.0 + 14.0 * a.roll();
+                        boss.shifting = Some([0.0, UNCOIL + SHIFT[0] + (SHIFT[1] - SHIFT[0]) * a.roll()]);
+                        let turn = (a.roll() - 0.5) * 2.4;
+                        a.target_heading = if from_home > 3.0 { heading_to(a.position, boss.home) + 0.4 * turn } else { a.heading + turn };
+                    }
+                }
             } else {
                 a.mood = Mood::Idle;
             }
+            // Lying still, left be, long enough to coil up, see target_pose()
+            boss.rest = if a.mood == Mood::Idle && boss.shifting.is_none() && a.speed < 0.2 { boss.rest + dt } else { 0.0 };
             Phase::Roam
         }
         // Led round walls on the way to a door: straight on to where it's led, no stopping to fight

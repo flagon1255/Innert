@@ -1,5 +1,5 @@
 {
-  "what": "Reed viper, standing frame (1 of 36 frames)",
+  "what": "Reed viper, standing frame (1 of 39 frames)",
   "voxels_per_meter": 16.0,
   "size": [
     66,
@@ -19,7 +19,7 @@
   ],
   "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
   "written": [
-    3627,
-    "d481ef68e9e81e7e"
+    3519,
+    "3bb3b07a8679f3ef"
   ]
 }

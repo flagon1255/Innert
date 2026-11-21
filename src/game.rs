@@ -39,6 +39,8 @@ const HUNGER_SECONDS: f64 = 600.0;
 const ANIMAL_RANGE: f64 = 90.0;
 const FOOD_RANGE: f64 = 60.0;
 const PROP_RANGE: f64 = 30.0;
+/// A serpent's tongue, a hand long, isn't drawn further off than this
+const TONGUE_RANGE: f64 = 25.0;
 /// The most animals, bits of food, props and things flying drawn at once, nearest first
 const MAX_INSTANCES: usize = 140;
 /// About this many animals live around the player
@@ -5792,6 +5794,12 @@ impl Game {
                 }
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+                // A serpent's tongue flicking, near enough to be seen
+                if d < TONGUE_RANGE * vpm
+                    && let Some(tongue) = animal.tongue_instance(world.voxels_per_meter)
+                {
+                    creatures.push((d, tongue));
+                }
             }
         }
         let mut order: Vec<(f64, Option<AnimalInstance>, usize)> = creatures.into_iter().map(|(d, i)| (d, Some(i), 0)).chain(dragons.into_iter().map(|(d, k)| (d, None, k))).collect();

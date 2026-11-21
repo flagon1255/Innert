@@ -43,9 +43,25 @@ enum Trim {
     Spikes,
 }
 
+/// The marks down an ordinary serpent's back, each kind its own
+#[derive(Clone, Copy, PartialEq)]
+enum Marks {
+    /// A chain of dark diamonds down the middle of its back
+    Diamonds,
+    /// Dark blotches down either side, one side then the other
+    Blotches,
+    /// Narrow dark rings close together over its back and sides
+    Rings,
+    /// Glowing veins along its sides
+    Veins,
+    /// Broad dark bands over its back and sides, wide apart
+    Bands,
+}
+
 /// What an ordinary serpent's like to look at: its length and how thick it is at its thickest, in
 /// meters, how long its head is, the colors of its back, the pattern on it, its belly, its eyes and
-/// what it has besides, and whether it lies on the ground or glides over it
+/// what it has besides, whether it has a viper's broad wedge of a head, and whether it lies on the
+/// ground or glides over it
 pub(crate) struct Kind {
     pub length: f64,
     pub girth: f64,
@@ -56,27 +72,31 @@ pub(crate) struct Kind {
     eye: u8,
     extra: u8,
     trim: Trim,
+    marks: Marks,
+    viper: bool,
     /// Gliding through the air on its fins, drawn as high over the ground as it flies by
     /// Boss::sway(), its model low so it's no bigger than it has to be
     pub aloft: bool,
 }
 
-/// A reed viper: mossy green, dark diamonds down its back and a cream belly, a hood that flares
-/// round two glowing spots as it rears, and green venom in its eyes. It lies hidden in long grass
-/// and reeds till something comes close, and spits globs of venom.
-const REED_VIPER: Kind = Kind { length: 3.0, girth: 0.145, head: 0.4, back: MOSS, pattern: PINE, belly: FUR_CREAM, eye: GLOW_POISON, extra: GLOW_POISON, trim: Trim::Hood, aloft: false };
-/// A silt coiler: dark teal, blotched black, a pale belly and gold eyes, a fin down its back and a
-/// paddle of a tail. It swims in rivers and lakes, only its back showing, and comes up out of them.
-const SILT_COILER: Kind = Kind { length: 3.6, girth: 0.18, head: 0.46, back: TEMPLE_TEAL, pattern: OBSIDIAN, belly: LIMESTONE, eye: GOLD, extra: PINE, trim: Trim::Fin, aloft: false };
-/// A gale serpent: steel grey banded darker, a linen-pale belly, storm light in its eyes, gliding
+/// A reed viper: mossy green, a chain of dark diamonds down its back and a cream belly, a viper's
+/// broad head, a hood that flares round two glowing spots as it rears, and green venom in its eyes.
+/// It lies hidden in long grass and reeds till something comes close, and spits globs of venom.
+const REED_VIPER: Kind = Kind { length: 3.0, girth: 0.145, head: 0.4, back: MOSS, pattern: PINE, belly: FUR_CREAM, eye: GLOW_POISON, extra: GLOW_POISON, trim: Trim::Hood, marks: Marks::Diamonds, viper: true, aloft: false };
+/// A silt coiler: dark teal, blotched black down its sides, a pale belly and gold eyes, a fin down
+/// its back and a paddle of a tail. It swims in rivers and lakes, only its back showing, and comes
+/// up out of them.
+const SILT_COILER: Kind = Kind { length: 3.6, girth: 0.18, head: 0.46, back: TEMPLE_TEAL, pattern: OBSIDIAN, belly: LIMESTONE, eye: GOLD, extra: PINE, trim: Trim::Fin, marks: Marks::Blotches, viper: false, aloft: false };
+/// A gale serpent: steel grey ringed darker, a linen-pale belly, storm light in its eyes, gliding
 /// on two pairs of frilled fins. It comes down out of the air to bite, and spits crackling bolts.
-const GALE_SERPENT: Kind = Kind { length: 3.4, girth: 0.14, head: 0.4, back: STEEL, pattern: DARK_STEEL, belly: LINEN, eye: GLOW_STORM, extra: LINEN, trim: Trim::Wings, aloft: true };
+const GALE_SERPENT: Kind = Kind { length: 3.4, girth: 0.14, head: 0.4, back: STEEL, pattern: DARK_STEEL, belly: LINEN, eye: GLOW_STORM, extra: LINEN, trim: Trim::Wings, marks: Marks::Rings, viper: false, aloft: true };
 /// A bloodvein adder: black as obsidian, veined with glowing blood, bone horns curving back over
-/// its eyes. It spits blood three globs at a time.
-const BLOOD_ADDER: Kind = Kind { length: 2.8, girth: 0.15, head: 0.38, back: OBSIDIAN, pattern: GLOW_BLOOD, belly: BONE, eye: GLOW_BLOOD, extra: BONE, trim: Trim::Horns, aloft: false };
-/// A drift serpent: grey banded dark, a white belly, frost in its eyes and spikes of ice down its
-/// back. It swims through the snow under the surface and bursts up out of it, and spits frost.
-const DRIFT_SERPENT: Kind = Kind { length: 3.4, girth: 0.16, head: 0.42, back: STEEL, pattern: DARK_STEEL, belly: FUR_WHITE, eye: GLOW_FROST, extra: ICE, trim: Trim::Spikes, aloft: false };
+/// its broad viper's head. It spits blood three globs at a time.
+const BLOOD_ADDER: Kind = Kind { length: 2.8, girth: 0.15, head: 0.38, back: OBSIDIAN, pattern: GLOW_BLOOD, belly: BONE, eye: GLOW_BLOOD, extra: BONE, trim: Trim::Horns, marks: Marks::Veins, viper: true, aloft: false };
+/// A drift serpent: grey banded broadly dark, a white belly, frost in its eyes and spikes of ice
+/// down its back. It swims through the snow under the surface and bursts up out of it, and spits
+/// frost.
+const DRIFT_SERPENT: Kind = Kind { length: 3.4, girth: 0.16, head: 0.42, back: STEEL, pattern: DARK_STEEL, belly: FUR_WHITE, eye: GLOW_FROST, extra: ICE, trim: Trim::Spikes, marks: Marks::Bands, viper: true, aloft: false };
 
 /// The ordinary serpent `look` is, if it is one
 pub(crate) fn kind(look: Look) -> Option<&'static Kind> {
@@ -91,8 +111,32 @@ pub(crate) fn kind(look: Look) -> Option<&'static Kind> {
 }
 
 /// The ordinary serpents, one for each realm's land and the normal world's waters
-#[cfg(test)]
 pub const SERPENTS: [Look; 5] = [Look::ReedViper, Look::SiltCoiler, Look::GaleSerpent, Look::BloodAdder, Look::DriftSerpent];
+
+/// What's worked out once for each ordinary serpent in each of its frames, rather than in every
+/// frame of the game: points down its spine from its snout to the tip of its tail, where its
+/// tongue comes out of its mouth and which way, and how wide its jaws gape, see spine(),
+/// tongue_root() and gape()
+pub(crate) struct Posed {
+    pub spine: [Vec3; 9],
+    pub tongue: (Vec3, Vec3, Vec3, Vec3),
+    pub gape: f64,
+}
+
+/// Ordinary serpent `look` in frame `frame`, see Posed
+pub(crate) fn posed(look: Look, frame: usize) -> Option<&'static Posed> {
+    static MADE: OnceLock<Vec<Posed>> = OnceLock::new();
+    let n = crate::animals::FRAMES;
+    let i = SERPENTS.iter().position(|&l| l == look)?;
+    let made = MADE.get_or_init(|| {
+        let pose = |k: &Kind, f: usize| {
+            let (phase, w) = crate::animals::frame_shape(f);
+            Posed { spine: std::array::from_fn(|j| spine(k, j as f64 / 8.0, phase, w)), tongue: tongue_root(k, phase, w), gape: gape(w) }
+        };
+        SERPENTS.iter().filter_map(|&l| kind(l)).flat_map(|k| (0..n).map(move |f| pose(k, f))).collect()
+    });
+    made.get(i * n + frame.min(n - 1))
+}
 
 fn smooth(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
@@ -174,7 +218,7 @@ pub(crate) fn mouth(look: Look) -> Vec3 {
     let Some(k) = kind(look) else {
         return [1.0, 0.0, 0.5];
     };
-    let neck = spine(k, 0.0, None, [0.0, 0.0, 1.0]);
+    let neck = spine(k, 0.0, None, [0.0, 0.0, 1.0, 0.0]);
     [neck[0] + 0.9 * k.head, neck[1], neck[2] + if k.aloft { GLIDE } else { 0.0 }]
 }
 
@@ -184,23 +228,84 @@ fn radius(k: &Kind, u: f64) -> f64 {
     k.girth * (0.62 + 0.38 * smooth(u / 0.22)) * (1.0 - 0.84 * smooth((u - 0.4) / 0.6))
 }
 
+/// How far out to its side the S-curve its body lies in swings `d` meters back from its head along
+/// the ground, `still` as much as it does slithering: its head goes straight, the waves growing
+/// behind its neck
+fn swing(k: &Kind, d: f64, still: f64) -> f64 {
+    let v = d / k.length;
+    0.1 * k.length * still * smooth(v / 0.28) * (0.75 + 0.25 * v)
+}
+
+/// Where the line its body lies along is `d` meters back from its head along the ground, slithering
+/// `ph` of the way through its walk: out to its side, and up for what glides. The same curve on the
+/// ground however far it's gone, so its body slides along it, never over it.
+fn track(k: &Kind, d: f64, ph: f64, still: f64) -> [f64; 2] {
+    let wave = TAU * (d / stride(k) - ph);
+    let up = if k.aloft { 0.5 * swing(k, d, 1.0) * (0.5 * wave - PI * ph + 1.0).sin() } else { 0.0 };
+    [swing(k, d, still) * wave.sin(), up]
+}
+
+/// Where its spine is `u` of the way from its head to its tail as it lies along its S-curve, in
+/// meters: its head at the front of its model, every bit of it as far behind the bit in front as
+/// its body is long between them, so slithering bunches it up rather than stretching it out
+fn along_track(k: &Kind, u: f64, ph: f64, still: f64) -> Vec3 {
+    let l = k.length;
+    let goal = u * l;
+    let steps = 120;
+    let dd = l / steps as f64;
+    let (mut d, mut gone) = (0.0, 0.0);
+    let mut at = track(k, 0.0, ph, still);
+    for _ in 0..3 * steps {
+        let next = track(k, d + dd, ph, still);
+        let seg = (dd * dd + (next[0] - at[0]).powi(2)).sqrt();
+        if gone + seg >= goal {
+            let f = (goal - gone) / seg;
+            return [0.5 * l - d - f * dd, at[0] + f * (next[0] - at[0]), at[1] + f * (next[1] - at[1])];
+        }
+        (d, gone, at) = (d + dd, gone + seg, next);
+    }
+    [0.5 * l - d, at[0], at[1]]
+}
+
+/// Where its spine is `u` of the way from its head to its tail lying coiled up at rest: a loose
+/// spiral flat on the ground round a little hole, its tail on the outside, its neck coming up out of
+/// the middle over its coils and its head laid on them, facing +x
+fn coiled(k: &Kind, u: f64) -> Vec3 {
+    let l = k.length;
+    const NECK: f64 = 0.15;
+    // Each turn of it out from the last by about as much as it's thick
+    let gap = 2.0 * k.girth / TAU;
+    let hole = 1.0 * k.girth;
+    let middle = [-0.05 * l, 0.0];
+    // Wound outwards from the hole, `s` meters of it from its inner end
+    let round = |s: f64| {
+        let r = (hole * hole + 2.0 * gap * s).sqrt();
+        let turn = (r - hole) / gap;
+        [middle[0] + r * turn.cos(), middle[1] - r * turn.sin()]
+    };
+    if u >= NECK {
+        let p = round((u - NECK) * l);
+        return [p[0], p[1], radius(k, u)];
+    }
+    // Its neck, up over its coils from the middle and out, its head laid level on them
+    let t = 1.0 - u / NECK;
+    let from = round(0.0);
+    let on_top = 1.9 * k.girth + radius(k, u);
+    [from[0] + 0.82 * NECK * l * t, 0.06 * l * smooth(t), radius(k, u) + (on_top - radius(k, u)) * smooth(t / 0.55)]
+}
+
 /// Where its spine is `u` of the way from its head (0) to the tip of its tail (1), in meters of its
 /// model: facing +x with its middle over the origin and its belly on the ground. Slithering `phase`
 /// of the way through its walk, or lying still with None, and as much in each of its poses as `w`
-/// says: reared up coiled to strike, lunging out to bite, and reared higher to spit.
-pub(crate) fn spine(k: &Kind, u: f64, phase: Option<f64>, w: [f64; 3]) -> Vec3 {
+/// says: reared up coiled to strike, lunging out to bite, reared higher to spit, and coiled up at
+/// rest.
+pub(crate) fn spine(k: &Kind, u: f64, phase: Option<f64>, w: [f64; 4]) -> Vec3 {
     let l = k.length;
     let r = radius(k, u);
-    let along = u * l / stride(k);
     let ph = phase.unwrap_or(0.12);
     let still = if phase.is_some() { 1.0 } else { 0.8 };
-    // Its head goes straight; the waves grow behind its neck
-    let envelope = smooth(u / 0.28) * (0.75 + 0.25 * u);
-    let mut rest = [0.5 * l - u * l, 0.1 * l * still * envelope * (TAU * (along - ph)).sin(), r];
-    if k.aloft {
-        // Rising and falling a little as well as weaving, as it glides
-        rest[2] += 0.05 * l * envelope * (TAU * (0.5 * along - ph) + 1.0).sin();
-    }
+    let flat = along_track(k, u, ph, still);
+    let rest = [flat[0], flat[1], r + flat[2]];
     // Coiled flat under its neck, a loop and a little more, curling in
     let f = 0.32;
     let ring = |v: f64| {
@@ -208,8 +313,8 @@ pub(crate) fn spine(k: &Kind, u: f64, phase: Option<f64>, w: [f64; 3]) -> Vec3 {
         let out = (0.13 - 0.045 * v) * l;
         [-0.08 * l + out * turn.cos(), out * turn.sin(), radius(k, f + v * (1.0 - f))]
     };
-    // Reared up from the coil to `height` of its length, its head `ahead` of its middle, its neck
-    // bowed back in an S to strike
+    // Reared up from the coil to `height` of its length, its head `ahead` of its middle: its neck
+    // bowed back in an S, drawn back to strike, the top of it and its head held level
     let reared = |height: f64, ahead: f64| {
         if u > f {
             return ring((u - f) / (1.0 - f));
@@ -217,32 +322,53 @@ pub(crate) fn spine(k: &Kind, u: f64, phase: Option<f64>, w: [f64; 3]) -> Vec3 {
         let t = 1.0 - u / f;
         let base = ring(0.0);
         let top = [ahead * l, 0.0, height * l];
-        let rise = t * t * (3.0 - 2.0 * t);
-        [base[0] + (top[0] - base[0]) * t - 0.07 * l * (PI * t).sin(), 0.04 * l * (PI * t).sin(), base[2] + (top[2] - base[2]) * rise]
+        let rise = smooth(t / 0.78);
+        let s = -0.075 * l * (PI * t).sin() - 0.05 * l * (TAU * t).sin();
+        [base[0] + (top[0] - base[0]) * t + s, 0.04 * l * (PI * t).sin(), base[2] + (top[2] - base[2]) * rise]
     };
     let windup = reared(0.26, 0.15);
     let special = reared(0.31, 0.21);
     // Lunged out straight, its head a little up, its tail still curving behind
     let strike = [0.5 * l + 0.14 * l - u * l * 0.97, 0.05 * l * smooth((u - 0.35) / 0.5) * (TAU * (1.3 * u - ph)).sin(), r + 0.07 * l * (1.0 - smooth(u / 0.35))];
-    let mix = |i: usize| rest[i] + w[0] * (windup[i] - rest[i]) + w[1] * (strike[i] - rest[i]) + w[2] * (special[i] - rest[i]);
+    let coil = coiled(k, u);
+    let mix = |i: usize| rest[i] + w[0] * (windup[i] - rest[i]) + w[1] * (strike[i] - rest[i]) + w[2] * (special[i] - rest[i]) + w[3] * (coil[i] - rest[i]);
     [mix(0), mix(1), mix(2)]
 }
 
+/// Where its head is and which way it's turned, posed as spine() says: the back of its skull where
+/// its neck joins it, and ahead, out to its left and up from there. Tipped down a little to look at
+/// what it's about to strike.
+pub(crate) fn head(k: &Kind, phase: Option<f64>, w: [f64; 4]) -> (Vec3, Vec3, Vec3, Vec3) {
+    let neck = spine(k, 0.0, phase, w);
+    let ahead = unit(add(unit(sub(neck, spine(k, 0.035, phase, w)), [1.0, 0.0, 0.0]), [0.0, 0.0, -0.3 * (w[0] + w[2])]), [1.0, 0.0, 0.0]);
+    let side = unit(cross([0.0, 0.0, 1.0], ahead), [0.0, 1.0, 0.0]);
+    let up = cross(ahead, side);
+    (neck, ahead, side, up)
+}
+
+/// How wide its jaws gape in a pose, 0 shut
+pub(crate) fn gape(w: [f64; 4]) -> f64 {
+    0.75 * w[0] + 1.0 * w[1] + 0.95 * w[2]
+}
+
+/// Where its tongue comes out of its mouth, in meters of its model, see head()
+pub(crate) fn tongue_root(k: &Kind, phase: Option<f64>, w: [f64; 4]) -> (Vec3, Vec3, Vec3, Vec3) {
+    let (neck, ahead, side, up) = head(k, phase, w);
+    (add(add(neck, times(ahead, 0.88 * k.head)), times(up, -0.08 * k.head)), ahead, side, up)
+}
+
 /// How many pieces its body's made of, snout to tail
-const PIECES: usize = 18;
+const PIECES: usize = 30;
 
 /// The shapes making up ordinary serpent `k`, in meters, facing +x, its belly on the ground or, if
 /// it glides, as low as it can be: slithering `phase` of the way through its walk or lying still,
-/// and as much in its poses as `w` says, see spine()
-pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]) {
+/// and as much in its poses as `w` says, see spine(). Its tongue's drawn apart from it, flicking in
+/// and out, see tongue().
+pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 4]) {
     let at = |u: f64| spine(k, u, phase, w);
     let angle = phase.map_or(0.0, |ph| ph * TAU);
-    // Its head along its neck, tipped down a little to look at what it's about to strike
-    let neck = at(0.0);
-    let ahead = unit(add(unit(sub(neck, at(0.035)), [1.0, 0.0, 0.0]), [0.0, 0.0, -0.3 * (w[0] + w[2])]), [1.0, 0.0, 0.0]);
-    let side = unit(cross([0.0, 0.0, 1.0], ahead), [0.0, 1.0, 0.0]);
-    let up = cross(ahead, side);
-    let gape = 0.75 * w[0] + 1.0 * w[1] + 0.95 * w[2];
+    let (neck, ahead, side, up) = head(k, phase, w);
+    let gape = gape(w);
     let (hl, hw) = (k.head, k.head * 0.36);
     let lift = 0.32 * gape;
     let drop = 0.7 * gape;
@@ -250,7 +376,7 @@ pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]
     let lower = unit(sub(times(ahead, drop.cos()), times(up, drop.sin())), ahead);
     let upper_up = cross(upper, side);
     let on = |dir: Vec3, normal: Vec3, f: f64, s: f64, h: f64| add(add(add(neck, times(dir, f * hl)), times(side, s * hw)), times(normal, h * hw));
-    // Eyes, then fangs bared as it gapes, its tongue flicking as it slithers or rears
+    // Eyes, then fangs bared as it gapes
     for s in [-1.0, 1.0] {
         p.push(ball(on(upper, upper_up, 0.42, s * 0.62, 0.32), 0.2 * hw, k.eye));
     }
@@ -258,15 +384,6 @@ pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]
         for s in [-1.0, 1.0] {
             let root = on(upper, upper_up, 0.86, s * 0.3, -0.15);
             p.push(limb(root, add(root, add(times(upper_up, -0.65 * hw * gape), times(upper, 0.04))), 0.06 * hw, 0.03 * hw, BONE));
-        }
-    }
-    let flick = phase.is_some_and(|ph| (ph * 2.0 * TAU).sin() > 0.55) || w[0] > 0.6;
-    if flick && gape < 0.6 {
-        let root = on(ahead, up, 0.95, 0.0, -0.2);
-        let tip = add(root, times(ahead, 0.3 * hl));
-        p.push(limb(root, tip, 0.012, 0.01, FUR_RED));
-        for s in [-1.0, 1.0] {
-            p.push(limb(tip, add(add(tip, times(ahead, 0.08 * hl)), times(side, s * 0.06 * hl)), 0.009, 0.006, FUR_RED));
         }
     }
     // Horns curving back over its eyes
@@ -278,7 +395,14 @@ pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]
             p.push(limb(bend, add(bend, add(times(upper, -0.3 * hl), times(upper_up, 0.02))), 0.14 * hw, 0.03, k.extra));
         }
     }
-    // Its jaws, the inside of its mouth showing between them as they open
+    // A viper's head is a broad wedge, swollen out either side behind its eyes, much wider than its
+    // neck; the rest have slimmer heads
+    if k.viper {
+        for s in [-1.0, 1.0] {
+            p.push(limb(on(upper, upper_up, 0.06, s * 0.62, -0.05), on(upper, upper_up, 0.42, s * 0.52, 0.0), 0.5 * hw, 0.38 * hw, k.back));
+        }
+    }
+    // Its jaws, the inside of its mouth showing between them as they open, its chin and lips pale
     p.push(limb(sub(neck, times(ahead, 0.05 * hl)), add(neck, times(upper, hl)), 0.95 * hw, 0.42 * hw, k.back).stretched([1.0, 1.0, 0.72]));
     let jaw = sub(neck, times(up, 0.18 * hw));
     p.push(limb(jaw, add(jaw, times(lower, 0.9 * hl)), 0.75 * hw, 0.32 * hw, k.belly).stretched([1.0, 1.0, 0.6]));
@@ -334,7 +458,9 @@ pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]
                 let beat = match phase {
                     Some(_) => 0.45 * (angle + j as f64 * 1.3).sin(),
                     None => 0.15,
-                } * (1.0 - flare) + 0.7 * flare - 0.2 * w[1];
+                } * (1.0 - flare)
+                    + 0.7 * flare
+                    - 0.2 * w[1];
                 for d in [-1.0, 1.0] {
                     let tip = add(add(c, add(times(s, d * span * beat.cos()), [0.0, 0.0, span * beat.sin()])), times(t, -0.22 * span));
                     let trail = add(add(c, times(t, -0.32 * span)), times(s, d * 0.35 * span * beat.cos()));
@@ -351,31 +477,70 @@ pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]
         }
         Trim::Hood | Trim::Horns => {}
     }
-    // Its pattern: diamonds or blotches down its back, or glowing veins along its sides
-    for j in 0..12 {
-        let u = 0.07 + 0.072 * j as f64;
-        let (c, t, o) = dorsal_at(u);
-        let r = radius(k, u);
-        if k.trim == Trim::Horns {
-            let s = unit(cross(o, t), side);
-            for d in [-1.0, 1.0] {
-                p.push(limb(add(add(c, times(s, d * 0.72 * r)), times(t, 0.25 * r)), add(add(c, times(s, d * 0.72 * r)), times(t, -0.35 * r)), 0.32 * r, 0.32 * r, k.pattern));
+    // Its pattern, its own kind's: diamonds, blotches, rings, veins or bands, over its back and
+    // sides but never its pale belly
+    match k.marks {
+        Marks::Diamonds => {
+            for j in 0..11 {
+                let u = 0.08 + 0.078 * j as f64;
+                let (c, t, o) = dorsal_at(u);
+                let r = radius(k, u);
+                let s = unit(cross(o, t), side);
+                let top = add(c, times(o, 0.72 * r));
+                p.push(limb(add(top, times(t, 0.42 * r)), add(top, times(t, -0.42 * r)), 0.34 * r, 0.34 * r, k.pattern));
+                p.push(limb(add(top, times(s, -0.62 * r)), add(top, times(s, 0.62 * r)), 0.22 * r, 0.22 * r, k.pattern));
             }
-        } else if matches!(k.trim, Trim::Wings | Trim::Spikes) {
-            if j % 2 == 0 {
-                p.push(limb(add(c, times(t, 0.12 * r)), add(c, times(t, -0.12 * r)), 1.06 * r, 1.04 * r, k.pattern));
+        }
+        Marks::Blotches => {
+            for j in 0..14 {
+                let u = 0.08 + 0.062 * j as f64;
+                let (c, t, o) = dorsal_at(u);
+                let r = radius(k, u);
+                let s = unit(cross(o, t), side);
+                let d = if j % 2 == 0 { 1.0 } else { -1.0 };
+                p.push(ball(add(add(c, times(s, d * 0.62 * r)), times(o, 0.42 * r)), 0.46 * r, k.pattern));
             }
-        } else {
-            p.push(ball(add(c, times(o, 0.62 * r)), 0.48 * r, k.pattern));
+        }
+        Marks::Rings => {
+            for j in 0..16 {
+                let u = 0.07 + 0.056 * j as f64;
+                let (c, t, o) = dorsal_at(u);
+                let r = radius(k, u);
+                let mid = add(c, times(o, 0.22 * r));
+                p.push(limb(add(mid, times(t, 0.07 * r)), add(mid, times(t, -0.07 * r)), 0.9 * r, 0.9 * r, k.pattern));
+            }
+        }
+        Marks::Veins => {
+            for j in 0..12 {
+                let u = 0.07 + 0.072 * j as f64;
+                let (c, t, o) = dorsal_at(u);
+                let r = radius(k, u);
+                let s = unit(cross(o, t), side);
+                for d in [-1.0, 1.0] {
+                    p.push(limb(add(add(c, times(s, d * 0.72 * r)), times(t, 0.25 * r)), add(add(c, times(s, d * 0.72 * r)), times(t, -0.35 * r)), 0.32 * r, 0.32 * r, k.pattern));
+                }
+            }
+        }
+        Marks::Bands => {
+            for j in 0..7 {
+                let u = 0.08 + 0.12 * j as f64;
+                let (c, t, o) = dorsal_at(u);
+                let r = radius(k, u);
+                let mid = add(c, times(o, 0.22 * r));
+                p.push(limb(add(mid, times(t, 0.3 * r)), add(mid, times(t, -0.3 * r)), 0.9 * r, 0.9 * r, k.pattern));
+            }
         }
     }
-    // Its pale belly, then the rest of it
+    // Its pale belly, then the rest of it. Not where it's too thin for its belly to be less than
+    // all of it, towards the tip of its tail, so its tail isn't pale all over.
     for j in 0..PIECES {
         let (u0, u1) = (j as f64 / PIECES as f64, (j + 1) as f64 / PIECES as f64);
-        let (a, ta, oa) = dorsal_at(u0.max(0.01));
-        let (b, _, ob) = dorsal_at(u1);
-        let _ = ta;
         let (ra, rb) = (radius(k, u0), radius(k, u1));
+        if 0.74 * rb < 1.0 / crate::animals::MODEL_RES {
+            continue;
+        }
+        let (a, _, oa) = dorsal_at(u0.max(0.01));
+        let (b, _, ob) = dorsal_at(u1);
         p.push(limb(add(a, times(oa, -0.38 * ra)), add(b, times(ob, -0.38 * rb)), 0.74 * ra, 0.74 * rb, k.belly));
     }
     for j in 0..PIECES {
@@ -383,9 +548,40 @@ pub(crate) fn parts(p: &mut Vec<Part>, k: &Kind, phase: Option<f64>, w: [f64; 3]
         p.push(limb(at(u0), at(u1), radius(k, u0), radius(k, u1), k.back));
     }
     // The very tip of its tail
-    let tip = at(1.0);
-    p.push(ball(tip, 0.25 * k.girth, k.back));
-    let _ = ellipsoid;
+    p.push(ball(at(1.0), 0.25 * k.girth, k.back));
+}
+
+/// The shapes of a serpent's forked tongue, red, out along +x from its root at the origin: one
+/// model for every ordinary serpent, drawn apart from it as it flicks in and out, see tongue()
+pub(crate) fn tongue_shapes() -> Vec<Part> {
+    let z = TONGUE_LIFT;
+    vec![
+        limb([0.0, 0.0, z], [0.17, 0.0, z], 0.02, 0.016, FUR_RED),
+        limb([0.16, 0.0, z], [0.25, 0.045, z + 0.01], 0.014, 0.01, FUR_RED),
+        limb([0.16, 0.0, z], [0.25, -0.045, z + 0.01], 0.014, 0.01, FUR_RED),
+    ]
+}
+
+/// How long its tongue is, in meters
+pub(crate) const TONGUE: f64 = 0.25;
+/// How far up off the bottom of its model its tongue's made, so none of it's cut off
+pub(crate) const TONGUE_LIFT: f64 = 0.04;
+
+/// How far out its tongue is flicked `t` seconds into its life, 0 in its mouth to 1 all the way out:
+/// two or three quick flicks together, then a while with it in, more often while it's `eager`,
+/// watching something or lying in wait, than as it goes about
+pub fn flick(t: f64, id: u32, eager: bool) -> f64 {
+    let every = if eager { 1.7 } else { 3.4 };
+    let t = t + (id % 97) as f64 * 0.37;
+    let n = (t / every).floor();
+    let into = t - n * every;
+    let flicks = 2.0 + (hash(n as i64 as u32 ^ id.wrapping_mul(0x9e37)) % 2) as f64;
+    const ONE: f64 = 0.24;
+    if into >= flicks * ONE {
+        return 0.0;
+    }
+    let f = (into / ONE).fract();
+    (PI * f).sin().max(0.0).powf(0.6)
 }
 
 /// How far a point `p` is from the line through `from` along `along`, a unit vector, if it's ahead
@@ -982,7 +1178,19 @@ pub struct Coils {
     laid: bool,
     /// Which of its pieces are under the ground or the water
     under: Vec<bool>,
+    /// Its S-curve as it slithers: where its feet were last, how far it's gone all told in meters,
+    /// how much it's weaving, 0 lying still to 1 going fast, and how far out to its side each piece
+    /// of its body is weaving, in voxels, see bent()
+    feet: Option<Vector3<f64>>,
+    travelled: f64,
+    weave: f64,
+    bend: Vec<Vector3<f64>>,
 }
+
+/// How far out to its side a great serpent's body weaves going fast, in its body's thickness, and
+/// how far apart the waves of its S-curve are, in its pieces
+const WEAVE: f64 = 0.65;
+const WAVE_PIECES: f64 = 8.0;
 
 /// How many pieces back from its head a great serpent's neck bends up as it rears
 const NECK: f64 = 5.0;
@@ -1012,7 +1220,17 @@ impl Coils {
             pitch: 0.0,
             laid: false,
             under: vec![false; n],
+            feet: None,
+            travelled: 0.0,
+            weave: 0.0,
+            bend: vec![Vector3::zeros(); n],
         })
+    }
+
+    /// Each piece of its body where it's drawn, in voxels: weaving out to its side in its S-curve
+    /// as it slithers, see update()
+    pub fn body(&self) -> impl Iterator<Item = Vector3<f64>> + '_ {
+        self.points.iter().zip(&self.bend).map(|(p, b)| p + b)
     }
 
     pub fn kind(&self) -> &'static Great {
@@ -1029,6 +1247,7 @@ impl Coils {
             *at -= shift;
         }
         self.look_at = self.look_at.map(|p| p - shift);
+        self.feet = self.feet.map(|p| p - shift);
     }
 
     /// Where its snout is, in voxels: what it spits and sprays from
@@ -1046,7 +1265,7 @@ impl Coils {
         let n = self.points.len();
         // Kept further from its head, so its face doesn't fill the whole view
         let head = [(self.head + self.forward * 0.45 * g.head * vpm, 1.1 * g.girth, 1.0), (self.head, g.girth, 1.0)];
-        let body = self.points.iter().enumerate().map(|(k, p)| (*p, g.girth * taper(k, n), 0.35));
+        let body = self.body().enumerate().map(|(k, p)| (p, g.girth * taper(k, n), 0.35));
         let side = Vector2::new(-self.forward.y, self.forward.x).try_normalize(1e-6).unwrap_or_else(Vector2::x);
         let mut push = Vector3::zeros();
         for (p, r, spare) in head.into_iter().chain(body) {
@@ -1069,7 +1288,7 @@ impl Coils {
         let g = self.kind();
         let down = Vector3::new(0.0, 0.0, self.sunk * vpm);
         let mut out = vec![self.head + self.forward * 0.55 * g.head * vpm - down, self.head - down];
-        out.extend(self.points.iter().map(|p| p - down));
+        out.extend(self.body().map(|p| p - down));
         out
     }
 
@@ -1150,6 +1369,36 @@ impl Coils {
                 self.points[i] = self.points[i].lerp(&curve, rise);
             }
         }
+        self.slither(feet, dt, vpm);
+    }
+
+    /// Its body weaving from side to side in an S-curve as it slithers along, as far out as it's
+    /// going fast and only while it's going about, not rearing, diving, coiling or bringing its
+    /// tail down: each piece out to its side by how far along the way it's come that piece is, so
+    /// the curve lies still on the ground and its body slides along it. Its head and neck go
+    /// straight. What's drawn of it, struck and stood in, see body().
+    fn slither(&mut self, feet: Vector3<f64>, dt: f64, vpm: f64) {
+        let g = self.kind();
+        let gone = self.feet.map_or(0.0, |was| (feet - was).xy().norm() / vpm).min(4.0);
+        self.feet = Some(feet);
+        self.travelled += gone;
+        let speed = gone / dt.max(1e-3);
+        let about = self.lift_to < 1.6 * g.girth && self.dive_to <= 0.0 && self.dive < 0.5 * g.girth && self.tail.is_none() && self.sunk_to <= 0.0;
+        let want = if about { smooth((speed - 0.4) / 3.0) } else { 0.0 };
+        self.weave += (want - self.weave) * (1.0 - (-1.8 * dt).exp());
+        let n = self.points.len();
+        let wave = WAVE_PIECES * g.spacing;
+        let mut along = 0.0;
+        let mut prev = self.head;
+        for k in 0..n {
+            along += (self.points[k] - prev).norm() / vpm;
+            prev = self.points[k];
+            let ahead = if k == 0 { self.head } else { self.points[k - 1] };
+            let behind = self.points[(k + 1).min(n - 1)];
+            let way = (ahead - behind).xy().try_normalize(1e-6).unwrap_or_else(|| self.forward.xy());
+            let out = WEAVE * g.girth * self.weave * smooth((k as f64 + 0.5) / 4.0) * (0.5 + 0.5 * taper(k, n)) * (TAU * (self.travelled - along) / wave).sin();
+            self.bend[k] = Vector3::new(-way.y, way.x, 0.0) * out * vpm;
+        }
     }
 
     /// Its head, its jaw and every piece of its body, to draw, tinted as weapons have left it, see
@@ -1173,11 +1422,12 @@ impl Coils {
         out.push(place(self.great, 0, self.head - down, turn, 1.0, vpm).skinned(skin(-1.0)));
         let hinge = self.head - down + turn * Vector3::new(0.0, 0.0, -0.18 * g.girth) * vpm;
         out.push(place(self.great, 1, hinge, turn * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.75 * self.gape), 1.0, vpm).skinned(skin(-1.0)));
-        let n = self.points.len();
+        let body: Vec<Vector3<f64>> = self.body().collect();
+        let n = body.len();
         for k in 0..n {
-            let ahead = if k == 0 { self.head } else { self.points[k - 1] };
-            let behind = if k + 1 < n { self.points[k + 1] } else { self.points[k] * 2.0 - ahead };
-            out.push(place(self.great, 2, self.points[k] - down, along(ahead - behind), taper(k, n), vpm).skinned(skin(k as f64)));
+            let ahead = if k == 0 { self.head } else { body[k - 1] };
+            let behind = if k + 1 < n { body[k + 1] } else { body[k] * 2.0 - ahead };
+            out.push(place(self.great, 2, body[k] - down, along(ahead - behind), taper(k, n), vpm).skinned(skin(k as f64)));
         }
     }
 
@@ -1203,17 +1453,67 @@ mod tests {
     fn a_slither_leaves_its_body_where_its_head_went() {
         for look in SERPENTS {
             let k = kind(look).unwrap();
-            let step = 0.05;
+            let (from, step) = (0.2, 0.05);
+            // Where along the ground and out to its side each bit of it is, gone `ph` of a stride on
+            let lying = |u: f64, ph: f64| {
+                let p = spine(k, u, Some(ph), [0.0; 4]);
+                [p[0] + ph * stride(k), p[1]]
+            };
+            let later: Vec<[f64; 2]> = (0..=600).map(|i| lying(i as f64 / 600.0, from + step)).collect();
             for u in [0.3, 0.5, 0.7, 0.9] {
-                let here = spine(k, u, Some(0.2), [0.0; 3]);
-                // Gone `step` of a stride further on, the part that's now where this was is a little
-                // further back along it
-                let on = spine(k, u + step * stride(k) / k.length, Some(0.2 + step), [0.0; 3]);
-                let moved = [on[0] + step * stride(k), on[1]];
-                let sideways = (moved[1] - here[1]).abs();
-                assert!(sideways < 0.03 * k.length, "{look:?} at {u}: it slid {sideways:.3} m sideways");
+                let [x, y] = lying(u, from);
+                // Gone `step` of a stride further on, whatever part of it's now where this was
+                let pair = later.windows(2).find(|w| (w[0][0] - x) * (w[1][0] - x) <= 0.0).expect("some of it's still there");
+                let f = (x - pair[0][0]) / (pair[1][0] - pair[0][0]);
+                let there = pair[0][1] + f * (pair[1][1] - pair[0][1]);
+                let sideways = (there - y).abs();
+                assert!(sideways < 0.02 * k.length, "{look:?} at {u}: it slid {sideways:.3} m sideways");
             }
         }
+    }
+
+    /// However it's posed, slithering or lying coiled, its body's as long as it is, never stretched
+    /// out or squashed up, and slithering its head keeps on straight while its body weaves
+    #[test]
+    fn its_body_keeps_its_length_and_its_head_steady() {
+        for look in SERPENTS {
+            let k = kind(look).unwrap();
+            let length = |phase: Option<f64>, w: [f64; 4]| (0..200).map(|i| norm(sub(spine(k, (i + 1) as f64 / 200.0, phase, w), spine(k, i as f64 / 200.0, phase, w)))).sum::<f64>();
+            for (phase, w) in [(Some(0.0), [0.0; 4]), (Some(0.37), [0.0; 4]), (None, [0.0; 4]), (None, [0.0, 0.0, 0.0, 1.0])] {
+                let long = length(phase, w);
+                assert!((long / k.length - 1.0).abs() < 0.08, "{look:?} {phase:?} {w:?}: {long:.2} m long, not {:.2}", k.length);
+            }
+            for ph in [0.0, 0.25, 0.5, 0.75] {
+                let (_, ahead, _, _) = head(k, Some(ph), [0.0; 4]);
+                assert!(ahead[1].abs() < 0.15, "{look:?}'s head swings {:.2} off ahead slithering", ahead[1]);
+            }
+        }
+    }
+
+    /// Coiled up at rest it's gathered in round where it lies, its head laid over its coils facing
+    /// ahead, not stretched out
+    #[test]
+    fn it_coils_up_to_rest() {
+        for look in SERPENTS {
+            let k = kind(look).unwrap();
+            let coil = [0.0, 0.0, 0.0, 1.0];
+            for i in 0..=20 {
+                let p = spine(k, i as f64 / 20.0, None, coil);
+                assert!(p[0].hypot(p[1]) < 0.3 * k.length, "{look:?}'s coils reach out to {p:?}");
+            }
+            let (neck, ahead, _, _) = head(k, None, coil);
+            assert!(ahead[0] > 0.9, "{look:?}'s head faces {ahead:?}");
+            assert!(neck[2] > 2.0 * k.girth, "{look:?}'s head lies {:.2} m up, not on its coils", neck[2]);
+        }
+    }
+
+    /// Its tongue flicks in and out, two or three quick flicks, and more often watching something
+    #[test]
+    fn its_tongue_flicks() {
+        let out = |eager: bool| (0..6000).filter(|&i| flick(i as f64 * 0.005, 7, eager) > 0.3).count();
+        assert!(out(true) > out(false) && out(false) > 300, "{} {}", out(true), out(false));
+        assert!(out(true) < 3000, "its tongue's out {} of 6000", out(true));
+        assert!((0..6000).all(|i| (0.0..=1.0).contains(&flick(i as f64 * 0.005, 3, true))));
     }
 
     /// Rearing to strike, its head's well up off the ground, high over its coils, and its body's
@@ -1222,13 +1522,13 @@ mod tests {
     fn it_rears_up_coiled_and_lunges_out() {
         for look in SERPENTS {
             let k = kind(look).unwrap();
-            let head = |w: [f64; 3]| spine(k, 0.0, None, w);
-            let reared = head([1.0, 0.0, 0.0]);
+            let head = |w: [f64; 4]| spine(k, 0.0, None, w);
+            let reared = head([1.0, 0.0, 0.0, 0.0]);
             assert!(reared[2] > 0.2 * k.length, "{look:?} rears {:.2} m", reared[2]);
-            let tail = spine(k, 1.0, None, [1.0, 0.0, 0.0]);
+            let tail = spine(k, 1.0, None, [1.0, 0.0, 0.0, 0.0]);
             assert!(tail[0].abs() < 0.3 * k.length && tail[1].abs() < 0.3 * k.length, "{look:?}'s tail's at {tail:?}, not coiled");
-            assert!(head([0.0, 1.0, 0.0])[0] > head([0.0; 3])[0] + 0.1 * k.length);
-            assert!(head([0.0, 0.0, 1.0])[2] > reared[2]);
+            assert!(head([0.0, 1.0, 0.0, 0.0])[0] > head([0.0; 4])[0] + 0.1 * k.length);
+            assert!(head([0.0, 0.0, 1.0, 0.0])[2] > reared[2]);
         }
     }
 
@@ -1318,12 +1618,56 @@ mod tests {
         assert!((coils.points[coils.points.len() - 1] - target).xy().norm() < 1.0 * vpm, "its tail's come down where it was aimed");
         // Whoever's stood in its body is shoved out of it, to the side they're on, and whoever's
         // clear of it isn't
-        let piece = coils.points[4];
+        let piece = coils.body().nth(4).unwrap();
         let beside = piece + Vector3::new(0.0, 0.3, 0.0) * vpm;
         let shove = coils.shove(beside, 1.8, vpm);
         assert!(shove.y > 0.5 * vpm && shove.z == 0.0, "shoved out to the side it's on: {:.2} m", shove.y / vpm);
         assert!(coils.shove(piece + Vector3::new(0.0, 4.0, 0.0) * vpm, 1.8, vpm) == Vector3::zeros(), "clear of it, left be");
         assert!(coils.shove(piece + Vector3::new(0.0, 0.3, 4.0) * vpm, 1.8, vpm) == Vector3::zeros(), "high over it, left be");
+    }
+
+    /// Slithering along, a great serpent's body weaves from side to side in an S-curve that lies
+    /// still on the ground as its body slides along it, its head going straight; lying still, it
+    /// doesn't
+    #[test]
+    fn a_great_serpent_slithers_in_an_s_curve() {
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut coils = Coils::new(Look::Veinbinder).unwrap();
+        let g = coils.kind();
+        let start = Vector3::new(40.0, 96.0, 4.0) * vpm;
+        let dt = 1.0 / 30.0;
+        // Its body out to its side, by how far along the ground, in meters
+        let lying = |c: &Coils| -> Vec<[f64; 2]> { c.body().map(|p| [p.x / vpm, (p.y - start.y) / vpm]).collect() };
+        let mut k = 0;
+        let mut go = |c: &mut Coils, frames: usize, speed: f64| {
+            for _ in 0..frames {
+                k += 1;
+                c.update(start + Vector3::new(speed * dt * k as f64, 0.0, 0.0) * vpm, 0.0, 0.0, 0.0, &world, &water, dt);
+            }
+        };
+        go(&mut coils, 240, 3.0);
+        let before = lying(&coils);
+        let widest = before.iter().map(|p| p[1].abs()).fold(0.0, f64::max);
+        assert!(widest > 0.4 * g.girth, "it weaves only {widest:.2} m out");
+        assert!((coils.head.y - start.y).abs() < 1e-6, "its head goes straight");
+        go(&mut coils, 6, 3.0);
+        let after = lying(&coils);
+        // Whatever of it's now where a piece was, from its middle back, is as far out to its side
+        for p in &before[6..before.len() - 1] {
+            let Some(pair) = after.windows(2).find(|w| (w[0][0] - p[0]) * (w[1][0] - p[0]) <= 0.0) else { continue };
+            let f = (p[0] - pair[0][0]) / (pair[1][0] - pair[0][0]);
+            let there = pair[0][1] + f * (pair[1][1] - pair[0][1]);
+            assert!((there - p[1]).abs() < 0.15 * g.girth + 0.05, "it slid {:.2} m sideways at {:.1} m", (there - p[1]).abs(), p[0]);
+        }
+        // Stopped, it settles straight
+        let stopped = k;
+        for _ in 0..150 {
+            coils.update(start + Vector3::new(3.0 * dt * stopped as f64, 0.0, 0.0) * vpm, 0.0, 0.0, 0.0, &world, &water, dt);
+        }
+        let still = lying(&coils).iter().map(|p| p[1].abs()).fold(0.0, f64::max);
+        assert!(still < 0.1 * g.girth, "lying still it's {still:.2} m out");
     }
 
     /// What swims goes on out over deep water, the open sea of the Sunken Reach, rather than being
@@ -1432,6 +1776,72 @@ mod tests {
             assert!(omens.iter().any(|(l, ..)| *l == Look::ShedSkin) && omens.iter().any(|(l, ..)| *l == Look::SerpentBones));
         }
         assert!(gloom(1000.0) == 0.0 && gloom(100.0) > 0.99 && gloom(400.0) > 0.0);
+    }
+
+    /// How much of the graphics card's memory the ordinary serpents' frames and the great serpents'
+    /// pieces take, packed as the shader reads them: `cargo test --release serpent_model_memory --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn serpent_model_memory() {
+        let models = crate::animals::animal_models();
+        let frames = crate::animals::FRAMES;
+        let mut all = 0;
+        for look in SERPENTS {
+            let k = Look::ALL.iter().position(|&l| l == look).unwrap();
+            let mine: Vec<&Model> = models[k * frames..(k + 1) * frames].iter().collect();
+            let bytes = crate::animals::pack_models(&mine).len() * 4;
+            let shown = mine.iter().filter(|m| m.voxels.iter().any(|&v| v != 0)).count();
+            println!("{look:?}: {shown} frames, {:.1} KB packed", bytes as f64 / 1e3);
+            all += bytes;
+        }
+        let parts: Vec<&Model> = models[crate::animals::ANIMAL_MODELS - PART_MODELS..crate::animals::ANIMAL_MODELS].iter().collect();
+        let great = crate::animals::pack_models(&parts).len() * 4;
+        println!("ordinary serpents {:.1} KB, great serpents' pieces {:.1} KB", all as f64 / 1e3, great as f64 / 1e3);
+    }
+
+    /// Pictures of the ordinary serpents' frames from above and from the side, to look at them
+    /// without the game: `set SNAKE_DUMP=<folder>` and `cargo test --release dump_serpent_frames --
+    /// --ignored`
+    #[test]
+    #[ignore]
+    fn dump_serpent_frames() {
+        let Ok(dir) = std::env::var("SNAKE_DUMP") else { return };
+        let colors = crate::assets::materials();
+        let models = crate::animals::animal_models();
+        let frames = crate::animals::FRAMES;
+        let px = 6u32;
+        for look in SERPENTS {
+            let k = Look::ALL.iter().position(|&l| l == look).unwrap();
+            for f in [0, 1, 6, 11, 16, crate::animals::POSE_WINDUP, crate::animals::POSE_STRIKE, crate::animals::POSE_SPECIAL, crate::animals::POSE_COIL] {
+                let m = &models[k * frames + f];
+                let [sx, sy, sz] = m.size;
+                let at = |x: u32, y: u32, z: u32| m.voxels[(x + (y + z * sy) * sx) as usize];
+                let (w, h) = (sx * px, (sy + sz + 2) * px);
+                let mut img = image::RgbImage::from_pixel(w.max(1), h.max(1), image::Rgb([30, 30, 40]));
+                let mut put = |x: u32, y: u32, c: [u8; 3], shade: f64| {
+                    let c = c.map(|v| (v as f64 * shade).min(255.0) as u8);
+                    for dy in 0..px {
+                        for dx in 0..px {
+                            img.put_pixel(x * px + dx, y * px + dy, image::Rgb(c));
+                        }
+                    }
+                };
+                for x in 0..sx {
+                    for y in 0..sy {
+                        if let Some(z) = (0..sz).rev().find(|&z| at(x, y, z) != 0) {
+                            put(x, sy - 1 - y, colors[at(x, y, z) as usize].rgb, 0.55 + 0.45 * z as f64 / sz as f64);
+                        }
+                    }
+                    for z in 0..sz {
+                        if let Some(y) = (0..sy).find(|&y| at(x, y, z) != 0) {
+                            put(x, sy + 1 + (sz - 1 - z), colors[at(x, y, z) as usize].rgb, 1.0 - 0.45 * y as f64 / sy as f64);
+                        }
+                    }
+                }
+                img.save(format!("{dir}/{look:?}-{f}.png")).unwrap();
+            }
+        }
     }
 
     /// A blow lands on the part of a long body it's aimed at, not on its middle
