@@ -17,6 +17,7 @@ use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
 use crate::levels::{self, Slain, Source};
+use crate::skills::{self, Stat};
 use crate::realms::{self, Scaling};
 use crate::wings;
 use crate::save;
@@ -218,6 +219,15 @@ const GOLD: Color32 = Color32::from_rgb(255, 205, 70);
 fn galley_width(painter: &egui::Painter, text: &str, size: f32) -> f32 {
     painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE).size().x
 }
+
+/// The most of a blow armour from the skill web takes away
+const ARMOUR_MOST: f64 = 0.6;
+/// Skill points for a realm's three raid bosses all slain, and for a finale, and the most there can
+/// be of them all, see Game::claim_bonus()
+const REALM_POINTS: u32 = 1;
+const FINALE_POINTS: u32 = 2;
+#[cfg_attr(not(test), allow(dead_code))]
+pub const BONUS_POINTS_MOST: u32 = REALM_POINTS * realms::REALM_COUNT as u32 + FINALE_POINTS * 2;
 
 /// For screenshots of it: the moment of going up a level held on the HUD, see `--set level_up_hold`
 pub static HOLD_LEVEL_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -808,6 +818,19 @@ pub struct Game {
     /// The level the weapons of a save from before there were levels are given, see
     /// set_legacy_level()
     legacy_level: u32,
+    /// The skill web, which of its nodes are taken, the start always, and what they add up to,
+    /// see skills.rs; changed each time what's taken is, for the weapons to be worked out again,
+    /// see Weapon::set_boost()
+    web: Rc<skills::Web>,
+    taken: Vec<bool>,
+    totals: skills::Totals,
+    boost_version: u32,
+    /// Skill points over those levels give, for a realm's raid bosses all beaten and its finale,
+    /// and what's been claimed for, so nothing's claimed twice, see claim_bonus()
+    bonus_points: u32,
+    claimed: HashSet<String>,
+    /// Where the skill web's window is looking
+    pub skill_view: skills::View,
     /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
     /// with which realm's each leaves
     raid_lairs: HashMap<[i64; 3], u8>,
@@ -1036,6 +1059,13 @@ impl Game {
             experience: 0.0,
             levelled: f64::INFINITY,
             legacy_level: 1,
+            web: Rc::new(skills::Web::load()),
+            taken: Vec::new(),
+            totals: skills::Totals::default(),
+            boost_version: 1,
+            bonus_points: 0,
+            claimed: HashSet::new(),
+            skill_view: skills::View::new(),
             raid_lairs: HashMap::new(),
             sky_wares: false,
             covered: false,
@@ -1056,6 +1086,7 @@ impl Game {
             ward_models: crate::assets::wards(crate::guardians::models()),
             crowd: 0,
         };
+        game.forget_skills();
         game.arm_anew(seed);
         game.populate(world, water, seed, near);
         game
@@ -2028,6 +2059,12 @@ impl Game {
                 ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst, style: crate::weapons::ammo_style(&self.library.ammo[k].id) })
             });
         }
+        self.boost_weapons();
+        // The special attack charging as the skill web has it, and as much quicker for blows as
+        // the weapon's item level makes them harder, so it charges in about as many blows at
+        // every level
+        self.combat.charge_rate = self.charge_rate();
+        self.combat.charge_scale = held.map_or(1.0, |i| levels::weapon_power(self.weapons[i].item_level()));
         let weapon = held.map(|i| (i, &self.weapons[i]));
         let loaded = self.loaded.as_ref().map(|(_, l)| l);
         self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player, water }, weapon, loaded, controls, dt);
@@ -2819,9 +2856,9 @@ impl Game {
                     self.combat.popups.push(crate::combat::Popup { position: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), text: "Fireproof".into(), color: [255, 150, 60], size: 17.0, age: 0.0 });
                 }
             }
-            Some(Element::Fire) => self.burning = self.burning.max(2.0),
-            Some(Element::Poison) => self.poisoned = self.poisoned.max(4.0),
-            Some(Element::Frost) => self.chilled = self.chilled.max(2.5),
+            Some(Element::Fire) => self.burning = self.burning.max(2.0 * self.resisted(Stat::ResistFire)),
+            Some(Element::Poison) => self.poisoned = self.poisoned.max(4.0 * self.resisted(Stat::ResistPoison)),
+            Some(Element::Frost) => self.chilled = self.chilled.max(2.5 * self.resisted(Stat::ResistFrost)),
             _ => {}
         }
     }
@@ -2830,7 +2867,7 @@ impl Game {
     pub fn pace(&self) -> f64 {
         let chilled = if self.chilled > 0.0 { CHILLED_PACE } else { 1.0 };
         // Braced on a siege crossbow's leg, all but still
-        let chilled = chilled * self.combat.pace();
+        let chilled = chilled * self.combat.pace() * (1.0 + self.totals.share(Stat::MoveSpeed)).max(0.3);
         if self.snared > 0.0 { chilled.min(SNARED_PACE) } else { chilled }
     }
 
@@ -2921,12 +2958,15 @@ impl Game {
         if self.combat.parry(from, feet) {
             return;
         }
-        // Pricked back by thorned wings, as hard as the levels about make what's there tough
-        if self.worn_perk() == Some(wings::Perk::Thorns) {
-            self.prick(from, damage * wings::THORNS * self.foe_toughness());
+        // Pricked back by thorned wings, as hard as the levels about make what's there tough, and
+        // by the skill web's thorns, see skills::Stat::Thorns
+        let thorns = self.thorns();
+        if thorns > 0.0 {
+            self.prick(from, damage * thorns * self.foe_toughness());
         }
-        // Harder the higher the level of what's about, see levels::damage()
-        let damage = damage * self.foe_damage();
+        // Harder the higher the level of what's about, see levels::damage(), and less for armour
+        // from the skill web, never more than ARMOUR_MOST of it
+        let damage = damage * self.foe_damage() * self.armoured();
         let vpm = world.voxels_per_meter as f64;
         self.health -= damage;
         self.since_hurt = 0.0;
@@ -3117,7 +3157,8 @@ impl Game {
             }
         }
         if self.since_hurt > 5.0 {
-            self.health = (self.health + 4.0 * dt).min(self.max_health());
+            let rate = 4.0 * self.regen();
+            self.health = (self.health + rate * dt).min(self.max_health());
         }
         // Starving wears the player down, though not all the way
         if self.hunger <= 0.0 && self.health > 10.0 {
@@ -3249,7 +3290,16 @@ impl Game {
             // Experience for every monster and boss slain, by its level and what it was
             let slain = slain_of(look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
             if look.is_monster() || look.is_boss() {
-                self.gain_experience(levels::experience(animal.level.max(1), slain), Some(middle + Vector3::new(0.0, 0.0, 1.2 * vpm)));
+                let more = self.experience_boost();
+                self.gain_experience((levels::experience(animal.level.max(1), slain) * more).round(), Some(middle + Vector3::new(0.0, 0.0, 1.2 * vpm)));
+                // Health back for every kill, from the skill web
+                let leech = self.leech();
+                if leech > 0.0 {
+                    self.mend(leech);
+                }
+                if matches!(slain, Slain::Raid | Slain::Finale) {
+                    self.claim_bonus(look, slain);
+                }
             }
             let from = (animal.level.max(1), match slain {
                 Slain::Monster => Source::Found,
@@ -3838,6 +3888,7 @@ impl Game {
     fn take(&mut self, item: Item) {
         match item {
             Item::Gold(n) => {
+                let n = self.more_gold(n);
                 self.gold += n;
                 self.cues.push(Cue::here(Sound::Coins, 0.7));
                 self.say(format!("+{n} gold"));
@@ -3890,6 +3941,7 @@ impl Game {
         // A bandits' hoard has what they've taken in it too
         let hoard = chest.hoard;
         let gold = if hoard { gold + 60 + (hash(seed ^ 0x40a2) % 60) as u32 } else { gold };
+        let gold = self.more_gold(gold);
         self.opened.insert(key);
         self.milestone = true;
         self.target = None;
@@ -4567,6 +4619,13 @@ impl Game {
             wings_told: self.wings_told,
             level: Some(self.level),
             experience: self.experience,
+            skills: (0..self.taken.len()).filter(|&k| self.taken[k] && k != self.web.start).map(|k| self.web.nodes[k].id.clone()).collect(),
+            bonus_points: self.bonus_points,
+            claimed: {
+                let mut c: Vec<String> = self.claimed.iter().cloned().collect();
+                c.sort();
+                c
+            },
         }
     }
 
@@ -4644,6 +4703,9 @@ impl Game {
     pub fn new_character(&mut self, seed: u32) {
         self.slots.clear();
         (self.level, self.experience, self.levelled) = (1, 0.0, f64::INFINITY);
+        self.bonus_points = 0;
+        self.claimed.clear();
+        self.forget_skills();
         self.worn = None;
         self.glided = false;
         self.wings_told = false;
@@ -4689,6 +4751,17 @@ impl Game {
         self.selected = carried.selected.min(self.slots.len().saturating_sub(1));
         self.gold = carried.gold;
         self.bucket = carried.bucket.clamp(0.0, BUCKET_CAPACITY);
+        // The skill web as it was, what's no longer on it left out, and only what still hangs
+        // together from the start; a save from before it has every point to spend
+        self.bonus_points = carried.bonus_points;
+        self.claimed = carried.claimed.iter().cloned().collect();
+        self.forget_skills();
+        let mut wanted: Vec<usize> = carried.skills.iter().filter_map(|id| self.web.index(id)).collect();
+        while let Some(at) = wanted.iter().position(|&k| self.web.can_take(&self.taken, k)) {
+            let k = wanted.remove(at);
+            self.taken[k] = true;
+        }
+        self.retotal();
         self.restore_world(world);
         self.set_vitals(health, hunger, mana);
         self.models_version += 1;
@@ -4797,7 +4870,7 @@ impl Game {
 
     /// The player's health at full, which their level raises, see levels::max_health()
     pub fn max_health(&self) -> f64 {
-        levels::max_health(self.level)
+        ((levels::max_health(self.level) + self.totals.get(Stat::MaxHealth)) * (1.0 + self.totals.share(Stat::MaxHealthPct))).max(10.0)
     }
 
     /// The level a monster or boss of `look` comes at as the player's level and the band about
@@ -4834,6 +4907,191 @@ impl Game {
         if self.level >= levels::LEVEL_CAP {
             self.experience = 0.0;
         }
+    }
+
+    /// What the skill web makes of the player, each next to usual: how much of a blow gets through
+    /// armour, how much is pricked back by thorns, worn or learnt, how quickly health comes back,
+    /// how much a potion heals, how much experience and how much health back for a kill, and how
+    /// quickly the special attack charges
+    fn armoured(&self) -> f64 {
+        1.0 - self.totals.share(Stat::Armour).clamp(0.0, ARMOUR_MOST)
+    }
+    fn thorns(&self) -> f64 {
+        (if self.worn_perk() == Some(wings::Perk::Thorns) { wings::THORNS } else { 0.0 }) + self.totals.share(Stat::Thorns).max(0.0)
+    }
+    fn regen(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Regen)).max(0.0)
+    }
+    fn potion_boost(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Potion)).max(0.0)
+    }
+    fn experience_boost(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Experience)).max(0.0)
+    }
+    fn leech(&self) -> f64 {
+        self.totals.get(Stat::Leech).max(0.0)
+    }
+    fn charge_rate(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::SpecialRecharge)).max(0.1)
+    }
+
+    /// How long an affliction of what `stat` resists lasts next to usual
+    fn resisted(&self, stat: Stat) -> f64 {
+        (1.0 - self.totals.share(stat)).clamp(0.1, 1.0)
+    }
+
+    /// `n` gold found, made more by the skill web
+    fn more_gold(&self, n: u32) -> u32 {
+        (n as f64 * (1.0 + self.totals.share(Stat::GoldFind)).max(0.0)).round() as u32
+    }
+
+    /// How much quicker the player gathers, glides and throws the grappling hook than usual, from
+    /// the skill web
+    pub fn gather_speed(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::GatherSpeed)).max(0.1)
+    }
+    pub fn glide_boost(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Glide)).max(0.1)
+    }
+    pub fn hook_reach(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::HookReach)).max(0.1)
+    }
+
+    /// Every weapon worked out again as the skill web has it, those not yet as it is now, see
+    /// Weapon::set_boost()
+    fn boost_weapons(&mut self) {
+        let mut changed = false;
+        for weapon in &mut self.weapons {
+            if weapon.boosted != self.boost_version {
+                let tool = self.library.families[weapon.family].tool.is_some();
+                let boost = self.totals.boost(weapon.kind(), tool);
+                weapon.set_boost(boost, self.boost_version);
+                changed = true;
+            }
+        }
+        if changed {
+            self.loaded = None;
+        }
+    }
+
+    /// Skill points for a realm's raid boss of `look` slain, or its finale, `slain`: two for a
+    /// finale, and one once all three of a realm's raid bosses are, each claimed once whatever
+    /// journeys are made
+    fn claim_bonus(&mut self, look: Look, slain: Slain) {
+        let name = format!("{look:?}");
+        if slain == Slain::Finale {
+            if self.claimed.insert(format!("finale:{name}")) {
+                self.bonus_points += FINALE_POINTS;
+                self.say(format!("+{FINALE_POINTS} skill points for slaying the {}! (P)", look.name()));
+            }
+            return;
+        }
+        self.claimed.insert(format!("raid:{name}"));
+        for realm in &realms::REALMS {
+            let all = realm.raid_bosses.iter().all(|(l, _)| self.claimed.contains(&format!("raid:{l:?}")));
+            if realm.raid_bosses.iter().any(|(l, _)| *l == look) && all && self.claimed.insert(format!("realm:{}", realm.id)) {
+                self.bonus_points += REALM_POINTS;
+                self.say(format!("+{REALM_POINTS} skill point: every raid boss of {} is slain! (P)", realm.name));
+            }
+        }
+    }
+
+    /// Skill points to spend
+    pub fn skill_points(&self) -> i64 {
+        skills::points_free(self.level, self.bonus_points, &self.taken, self.web.start)
+    }
+
+    /// Every node of the skill web given back, the start taken
+    fn forget_skills(&mut self) {
+        self.taken = vec![false; self.web.nodes.len()];
+        self.taken[self.web.start] = true;
+        self.retotal();
+    }
+
+    /// What's taken on the skill web added up again, and every weapon to be worked out again
+    fn retotal(&mut self) {
+        self.totals = self.web.totals(&self.taken);
+        self.boost_version = self.boost_version.wrapping_add(1).max(1);
+        if self.health > 0.0 {
+            self.health = self.health.min(self.max_health());
+        }
+    }
+
+    /// Takes node `id` of the skill web, if it can be: for trying it out and for the window
+    pub fn take_skill(&mut self, k: usize) -> bool {
+        if k >= self.taken.len() || !self.web.can_take(&self.taken, k) || self.skill_points() <= 0 {
+            return false;
+        }
+        self.taken[k] = true;
+        self.retotal();
+        self.cues.push(Cue::here(Sound::Pickup, 0.7).pitched(1.3));
+        true
+    }
+
+    pub fn refund_skill(&mut self, k: usize) -> bool {
+        if k >= self.taken.len() || !self.web.can_refund(&self.taken, k) {
+            return false;
+        }
+        self.taken[k] = false;
+        self.retotal();
+        self.cues.push(Cue::here(Sound::Pickup, 0.5).pitched(0.8));
+        true
+    }
+
+    /// What forgetting the whole skill web costs here, if it can be: only by a merchant
+    fn forget_price(&self) -> Option<u32> {
+        let spent = self.taken.iter().filter(|t| **t).count().saturating_sub(1);
+        let feet = self.feet?;
+        let vpm = self.combat.vpm();
+        let near = self.merchants.iter().any(|&(id, _)| self.animals.iter().any(|a| a.id == id && (a.position - feet).norm() < SHOP_REACH * vpm));
+        (near && spent > 0).then(|| skills::refund_price(spent))
+    }
+
+    /// For trying it out: `count` nodes of the skill web taken, in a walk out from the start along
+    /// the branches in turn, as many as there are points for
+    pub fn take_skills(&mut self, count: usize) {
+        let order = ["melee", "defence", "mobility", "magic", "ranged", "bridge"];
+        let mut done = 0;
+        while done < count {
+            let next = order.iter().find_map(|b| (0..self.taken.len()).find(|&k| self.web.nodes[k].branch == *b && self.web.can_take(&self.taken, k)));
+            match next.or_else(|| (0..self.taken.len()).find(|&k| self.web.can_take(&self.taken, k))) {
+                Some(k) if self.take_skill(k) => done += 1,
+                _ => break,
+            }
+        }
+    }
+
+    /// The skill web's window, while it's open, see skills::window(): false once it's to close
+    pub fn skill_window(&mut self, ctx: &egui::Context) -> bool {
+        let web = self.web.clone();
+        let free = self.skill_points();
+        let forget = self.forget_price();
+        let mut view = std::mem::take(&mut self.skill_view);
+        let action = skills::window(ctx, &web, &mut view, &self.taken, free, self.level, forget);
+        self.skill_view = view;
+        match action {
+            Some(skills::Action::Take(k)) => {
+                self.take_skill(k);
+            }
+            Some(skills::Action::Refund(k)) => {
+                self.refund_skill(k);
+            }
+            Some(skills::Action::Forget) => {
+                if let Some(price) = forget {
+                    if self.gold >= price {
+                        self.gold -= price;
+                        self.forget_skills();
+                        self.cues.push(Cue::here(Sound::Chest, 0.6));
+                        self.say(format!("The merchant's tea has you forget every path you'd taken, for {price} gold."));
+                    } else {
+                        self.say(format!("Forgetting them all costs {price} gold."));
+                    }
+                }
+            }
+            Some(skills::Action::Close) => return false,
+            None => {}
+        }
+        true
     }
 
     /// For trying it out: the card of slot `slot` showing in the inventory
@@ -5349,7 +5607,7 @@ impl Game {
         }
         // Food heals a little too
         self.hunger = (self.hunger + item.food()).min(100.0);
-        self.health = (self.health + item.food() * 0.6 + item.heal()).min(self.max_health());
+        self.health = (self.health + item.food() * 0.6 + item.heal() * self.potion_boost()).min(self.max_health());
         self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if item.heal() > 0.0 { 1.5 } else { 1.0 }));
         if count > 1 {
             self.slots[slot].1 -= 1;
@@ -5573,6 +5831,16 @@ impl Game {
         painter.text(middle + vec2(1.0, 4.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), shadow);
         painter.text(middle + vec2(0.0, 3.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), Color32::WHITE);
         painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", FontId::proportional(9.0), Color32::from_white_alpha(170));
+        // Skill points to spend, under it
+        let free = self.skill_points();
+        if free > 0 {
+            let pulse = 0.75 + 0.25 * (self.combat.time() * 3.0).sin() as f32;
+            let text = if free == 1 { "1 point to spend · P".to_owned() } else { format!("{free} points to spend · P") };
+            // From the badge's left on, clear of the gold under the panel
+            let at = pos2(middle.x - 26.0, middle.y + 34.0);
+            painter.text(at + vec2(1.0, 1.0), Align2::LEFT_TOP, &text, FontId::proportional(13.0), shadow);
+            painter.text(at, Align2::LEFT_TOP, &text, FontId::proportional(13.0), Color32::from_rgb(140, 220, 255).gamma_multiply(pulse));
+        }
         // And along the foot of the panel
         let bar = Rect::from_min_size(pos2(panel.left() + 12.0, panel.bottom() - 5.0), vec2(panel.width() - 24.0, 3.0));
         painter.rect_filled(bar, 1.5, Color32::from_white_alpha(22));
@@ -7705,6 +7973,135 @@ mod tests {
         assert!(game.foe_damage() > 1.0 && game.foe_toughness() > 1.0);
         // A night raider from further on comes at least at its own realm's floor
         assert!(game.foe_level_at_least(Look::Skeleton, 30, 0.5) >= 30);
+    }
+
+    /// Every node of the skill web does what it says: each of what it gives, taken alone, moves
+    /// what the game's stats make of it the way it says, see skills::Stat
+    #[test]
+    fn every_skill_node_does_what_it_says() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.feet = Some(Vector3::new(4.0, 4.0, 4.0));
+        // A weapon with each stat a node can change, of each kind
+        let library = Library::load();
+        let mut wanted: Vec<(Kind, &str)> = Vec::new();
+        for kind in [Kind::Melee, Kind::Ranged, Kind::Magic] {
+            for stat in ["physicalDamage", "spellDamage", "elementalDamage", "attackSpeed", "drawSpeed", "reloadSpeed", "castSpeed", "critChance", "critDamage", "range", "projectileSpeed", "manaCost", "area", "statusPotency", "knockback"] {
+                wanted.push((kind, stat));
+            }
+        }
+        let mut by: HashMap<(u8, &str), usize> = HashMap::new();
+        for seed in 0..6000u32 {
+            if by.len() == wanted.len() {
+                break;
+            }
+            let w = library.generate(hash(seed ^ 0x5ce11), None, 3.0);
+            if library.families[w.family].tool.is_some() {
+                continue;
+            }
+            for &(kind, stat) in &wanted {
+                if w.kind() == kind && w.profile.stat(stat) > 0.0 && !by.contains_key(&(kind as u8, stat)) {
+                    by.insert((kind as u8, stat), game.weapons.len());
+                }
+            }
+            game.weapons.push(w);
+        }
+        let probe = |g: &mut Game, stat: Stat| -> f64 {
+            g.boost_weapons();
+            let weapon = |kind: Kind, name: &str| by.get(&(kind as u8, name)).map_or(0.0, |&w| g.weapons[w].profile.stat(name));
+            match stat {
+                Stat::MeleeDamage | Stat::Damage => weapon(Kind::Melee, "physicalDamage"),
+                Stat::RangedDamage => weapon(Kind::Ranged, "physicalDamage"),
+                Stat::MagicDamage => weapon(Kind::Magic, "spellDamage"),
+                Stat::MeleeSpeed => weapon(Kind::Melee, "attackSpeed"),
+                Stat::RangedSpeed => weapon(Kind::Ranged, "drawSpeed") + weapon(Kind::Ranged, "reloadSpeed"),
+                Stat::MagicSpeed => weapon(Kind::Magic, "castSpeed"),
+                Stat::CritChance => weapon(Kind::Melee, "critChance") + weapon(Kind::Ranged, "critChance"),
+                Stat::CritDamage => weapon(Kind::Melee, "critDamage") + weapon(Kind::Ranged, "critDamage"),
+                Stat::ElementalDamage => weapon(Kind::Magic, "elementalDamage") + weapon(Kind::Melee, "elementalDamage"),
+                Stat::MeleeReach => weapon(Kind::Melee, "range"),
+                Stat::ProjectileSpeed => weapon(Kind::Ranged, "projectileSpeed") + weapon(Kind::Magic, "projectileSpeed"),
+                Stat::ManaCost => weapon(Kind::Magic, "manaCost"),
+                Stat::Area => weapon(Kind::Magic, "area") + weapon(Kind::Melee, "area"),
+                Stat::StatusPotency => weapon(Kind::Melee, "statusPotency") + weapon(Kind::Magic, "statusPotency"),
+                Stat::Knockback => weapon(Kind::Melee, "knockback"),
+                Stat::GatherSpeed => g.gather_speed(),
+                Stat::MaxHealth | Stat::MaxHealthPct => g.max_health(),
+                Stat::Armour => 1.0 - g.armoured(),
+                Stat::Regen => g.regen(),
+                Stat::ResistFire | Stat::ResistPoison | Stat::ResistFrost => 1.0 - g.resisted(stat),
+                Stat::Potion => g.potion_boost(),
+                Stat::MoveSpeed => g.pace(),
+                Stat::Glide => g.glide_boost(),
+                Stat::HookReach => g.hook_reach(),
+                Stat::SpecialRecharge => g.charge_rate(),
+                Stat::Thorns => g.thorns(),
+                Stat::Leech => g.leech(),
+                Stat::GoldFind => g.more_gold(1000) as f64,
+                Stat::Experience => g.experience_boost(),
+            }
+        };
+        let web = game.web.clone();
+        let mut checked = HashSet::new();
+        for (k, node) in web.nodes.iter().enumerate().filter(|(_, n)| n.kind != skills::Kind::Start) {
+            for e in &node.effects {
+                game.forget_skills();
+                let before = probe(&mut game, e.stat);
+                game.taken[k] = true;
+                game.retotal();
+                let after = probe(&mut game, e.stat);
+                // Leech and thorns start at nothing, so can only go up
+                assert!((after - before) * e.value.signum() > 1e-9, "{} ({}): {:?} {} did nothing, {before} to {after}", node.name, node.id, e.stat, e.value);
+                checked.insert(e.stat);
+            }
+        }
+        game.forget_skills();
+        // And every stat a node could give is given by one
+        assert!(Stat::ALL.iter().all(|s| checked.contains(s)), "no node gives {:?}", Stat::ALL.iter().filter(|s| !checked.contains(s)).collect::<Vec<_>>());
+    }
+
+    /// The nodes taken, the bonus points and what they were claimed for go in the save and come
+    /// back; a save from before the web has every point to spend; a realm's three raid bosses
+    /// slain give a point once, a finale two
+    #[test]
+    fn skills_are_saved_and_points_are_earned() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        assert_eq!(game.skill_points(), 0);
+        game.set_level(10);
+        assert_eq!(game.skill_points(), 9);
+        game.take_skills(5);
+        assert_eq!(game.skill_points(), 4);
+        let health = game.max_health();
+        for (look, _) in realms::REALMS[0].raid_bosses {
+            game.claim_bonus(look, Slain::Raid);
+        }
+        game.claim_bonus(realms::REALMS[0].raid_bosses[0].0, Slain::Raid);
+        game.claim_bonus(Look::Ysveth, Slain::Finale);
+        game.claim_bonus(Look::Ysveth, Slain::Finale);
+        assert_eq!(game.bonus_points, REALM_POINTS + FINALE_POINTS);
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        assert_eq!(carried.skills.len(), 5);
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &game.world_save(), game.vitals());
+        assert_eq!(other.taken, game.taken);
+        assert_eq!(other.skill_points(), game.skill_points());
+        assert_eq!(other.max_health(), health);
+        assert_eq!(other.carried_save(), game.carried_save());
+        // From before there was a web: every point to spend
+        let mut old = carried.clone();
+        old.skills.clear();
+        old.bonus_points = 0;
+        old.claimed.clear();
+        other.restore(&old, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(other.skill_points(), 9);
+        // A node no longer on the web, or no longer joined to the start, is left out
+        let mut odd = carried.clone();
+        odd.skills = vec!["no such node".into(), "melee_n7".into()];
+        other.restore(&odd, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(other.taken.iter().filter(|t| **t).count(), 1);
     }
 
     /// While a realm's guardians stand its raid bosses are warded, but not its finale, its

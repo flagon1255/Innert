@@ -140,6 +140,15 @@ pub struct CarriedSave {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<u32>,
     pub experience: f64,
+    /// The nodes of the skill web taken, by their ids, see skills.rs, the skill points over those
+    /// levels give, and what those were claimed for: none in a save from before it, so every point
+    /// is there to spend
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bonus_points: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub claimed: Vec<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -595,6 +604,9 @@ mod tests {
                 wings_told: false,
                 level: Some(14),
                 experience: 120.5,
+                skills: vec!["melee_0".into(), "melee_1".into()],
+                bonus_points: 2,
+                claimed: vec!["finale:Ysveth".into()],
             },
             world: "normal".into(),
             worlds,

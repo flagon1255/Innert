@@ -1958,6 +1958,27 @@ pub struct Weapon {
     /// its sockets, each lifting it a level more, see item_level() and jewels.rs
     pub level: u32,
     pub jewels: u32,
+    /// What the skill web makes of it, see set_boost(), and for which of the game's changes to
+    /// what's taken there, see Game::boost_version
+    boost: Boost,
+    pub boosted: u32,
+}
+
+/// What the skill web makes of a weapon's numbers, see skills::Totals::boost(): each a fraction
+/// more, but critical chance, so much more of it, and critical damage, so many times more
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct Boost {
+    pub damage: f64,
+    pub speed: f64,
+    pub crit_chance: f64,
+    pub crit_damage: f64,
+    pub elemental: f64,
+    pub reach: f64,
+    pub projectile_speed: f64,
+    pub mana_cost: f64,
+    pub area: f64,
+    pub potency: f64,
+    pub knockback: f64,
 }
 
 impl Weapon {
@@ -1972,7 +1993,7 @@ impl Weapon {
         let scale = held_scale(fam, size, look.longest());
         let look = look.scaled(scale);
         let profile = Rc::new(profile);
-        Weapon { family, parts, seed, name, grade, size, base: profile.clone(), profile, tags, look, level: 1, jewels: 0 }
+        Weapon { family, parts, seed, name, grade, size, base: profile.clone(), profile, tags, look, level: 1, jewels: 0, boost: Boost::default(), boosted: 0 }
     }
 
     /// Its item level: the level it dropped at and one more for each jewel set into it, never over
@@ -1986,12 +2007,48 @@ impl Weapon {
     pub fn set_level(&mut self, level: u32, jewels: u32) {
         self.level = level.clamp(1, crate::levels::ITEM_CAP);
         self.jewels = jewels;
+        self.restat();
+    }
+
+    /// Made what the skill web makes it, `boost`, as of the game's change `version` to it
+    pub fn set_boost(&mut self, boost: Boost, version: u32) {
+        self.boosted = version;
+        if boost != self.boost {
+            self.boost = boost;
+            self.restat();
+        }
+    }
+
+    /// Its numbers worked out again from what its parts make of it, its item level and the skill
+    /// web's boost
+    fn restat(&mut self) {
         let power = crate::levels::weapon_power(self.item_level());
+        let b = self.boost;
         let mut profile = (*self.base).clone();
-        for name in ["physicalDamage", "elementalDamage", "spellDamage"] {
-            if let Some(v) = profile.stats.get_mut(name) {
-                *v *= power;
+        let stats = &mut profile.stats;
+        let mut times = |name: &str, by: f64| {
+            if let Some(v) = stats.get_mut(name) {
+                *v *= by.max(0.0);
             }
+        };
+        let damage = power * (1.0 + b.damage);
+        times("physicalDamage", damage);
+        times("spellDamage", damage);
+        times("elementalDamage", damage * (1.0 + b.elemental));
+        for name in ["attackSpeed", "drawSpeed", "reloadSpeed", "castSpeed"] {
+            times(name, 1.0 + b.speed);
+        }
+        times("range", 1.0 + b.reach);
+        times("projectileSpeed", 1.0 + b.projectile_speed);
+        times("manaCost", 1.0 + b.mana_cost);
+        times("area", 1.0 + b.area);
+        times("statusPotency", 1.0 + b.potency);
+        times("knockback", 1.0 + b.knockback);
+        if b.crit_chance != 0.0 {
+            *stats.entry("critChance".into()).or_insert(0.0) += b.crit_chance;
+        }
+        if b.crit_damage != 0.0 {
+            *stats.entry("critDamage".into()).or_insert(1.5) += b.crit_damage;
         }
         self.profile = Rc::new(profile);
     }

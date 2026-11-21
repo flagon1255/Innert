@@ -2091,6 +2091,11 @@ pub struct Combat {
     blood_timer: f64,
     /// How charged the special attack is, 0-1
     pub charge: f64,
+    /// How much quicker it charges than usual, for the skill web, and how much harder than at
+    /// item level 1 the weapon in hand hits, which its blows charge it that much less for, see
+    /// Game::update()
+    pub charge_rate: f64,
+    pub charge_scale: f64,
     /// A legendary or mythic weapon's power on right click: how long till it's ready again, see
     /// powers.rs
     power: PowerState,
@@ -5048,6 +5053,8 @@ impl Combat {
             close: false,
             blood_timer: 0.0,
             charge: 0.0,
+            charge_rate: 1.0,
+            charge_scale: 1.0,
             power: PowerState::default(),
             heal: 0.0,
             dash: Vector3::zeros(),
@@ -5447,7 +5454,7 @@ impl Combat {
             }
         }
 
-        self.charge = (self.charge + dt / SPECIAL_SECONDS).min(1.0);
+        self.charge = (self.charge + dt / SPECIAL_SECONDS * self.charge_rate).min(1.0);
         self.pool_timer -= dt;
         self.scar_timer -= dt;
         self.follow_up(arena, dt);
@@ -13130,7 +13137,7 @@ impl Combat {
         // Blood spraying out of it, or what it has for blood, and a hard blow staining the ground
         self.bleed(arena, i, damage, blow.from, blow.crit || blow.heavy || died);
         // Every blow charges the special attack
-        self.charge = (self.charge + damage / SPECIAL_CHARGE).min(1.0);
+        self.charge = (self.charge + damage / (SPECIAL_CHARGE * self.charge_scale.max(1e-6)) * self.charge_rate).min(1.0);
         arena.animals[i].status.shown = 4.0;
         // Flashing white, less for what follows on from a blow
         let s = &mut arena.animals[i].status;
