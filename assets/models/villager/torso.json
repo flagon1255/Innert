@@ -1,0 +1,29 @@
+{
+  "what": "Villager (Villager), torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    8,
+    14
+  ],
+  "pivot": [
+    3.5,
+    4.0,
+    6.6480000000000015
+  ],
+  "anchor": [
+    0.0,
+    0.0,
+    -0.4155000000000001
+  ],
+  "origin": [
+    -4,
+    -4,
+    -7
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    2628,
+    "631242ed994a291d"
+  ]
+}

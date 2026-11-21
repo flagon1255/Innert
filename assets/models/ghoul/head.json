@@ -1,0 +1,29 @@
+{
+  "what": "Ghoul, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    4,
+    5
+  ],
+  "pivot": [
+    0.6200000000000001,
+    2.0,
+    0.8399999999999999
+  ],
+  "anchor": [
+    0.14875,
+    0.0,
+    -0.05249999999999999
+  ],
+  "origin": [
+    -1,
+    -2,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1419,
+    "d27d007515a7652e"
+  ]
+}

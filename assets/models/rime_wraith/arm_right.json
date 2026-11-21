@@ -1,0 +1,29 @@
+{
+  "what": "Rime wraith, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    2,
+    7
+  ],
+  "pivot": [
+    0.5,
+    1.6799999999999997,
+    6.399999999999999
+  ],
+  "anchor": [
+    0.0625,
+    -0.04249999999999998,
+    -0.3999999999999999
+  ],
+  "origin": [
+    -1,
+    -2,
+    -6
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1301,
+    "aa151622794b32bc"
+  ]
+}

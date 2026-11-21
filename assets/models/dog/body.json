@@ -1,0 +1,29 @@
+{
+  "what": "Dog, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    4,
+    6
+  ],
+  "pivot": [
+    9.76,
+    2.0,
+    3.3840000000000003
+  ],
+  "anchor": [
+    -0.20375000000000001,
+    0.0,
+    -0.21150000000000002
+  ],
+  "origin": [
+    -10,
+    -2,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1908,
+    "d08e71673d38d484"
+  ]
+}

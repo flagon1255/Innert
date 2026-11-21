@@ -1,0 +1,29 @@
+{
+  "what": "Dune burrower, claw left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    7,
+    3
+  ],
+  "pivot": [
+    0.45599999999999774,
+    6.096,
+    2.072
+  ],
+  "anchor": [
+    0.25275000000000014,
+    -0.16225,
+    -0.1295
+  ],
+  "origin": [
+    0,
+    -6,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1417,
+    "448613e38e554f3b"
+  ]
+}

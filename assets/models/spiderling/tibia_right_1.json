@@ -1,0 +1,29 @@
+{
+  "what": "Cave spider, tibia right 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    5,
+    15
+  ],
+  "pivot": [
+    0.7999999999999989,
+    4.68,
+    14.8
+  ],
+  "anchor": [
+    0.04375000000000007,
+    -0.13624999999999998,
+    -0.925
+  ],
+  "origin": [
+    -1,
+    -5,
+    -15
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1345,
+    "f28bae75e19c5ecb"
+  ]
+}

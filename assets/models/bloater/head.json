@@ -1,0 +1,29 @@
+{
+  "what": "Bloater, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    4,
+    5
+  ],
+  "pivot": [
+    2.284,
+    2.0,
+    2.5199999999999996
+  ],
+  "anchor": [
+    0.013500000000000012,
+    0.0,
+    -0.15749999999999997
+  ],
+  "origin": [
+    -2,
+    -2,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1492,
+    "b6cf8e39a85e4c4e"
+  ]
+}

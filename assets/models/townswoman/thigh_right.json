@@ -1,0 +1,29 @@
+{
+  "what": "Villager (Townswoman), thigh right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    8
+  ],
+  "pivot": [
+    1.0,
+    1.06,
+    6.800000000000001
+  ],
+  "anchor": [
+    0.0,
+    -0.0037500000000000033,
+    -0.42500000000000004
+  ],
+  "origin": [
+    -1,
+    -1,
+    -7
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1380,
+    "84ba9fa04f8a00db"
+  ]
+}

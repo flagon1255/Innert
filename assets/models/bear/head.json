@@ -1,0 +1,29 @@
+{
+  "what": "Bear, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    8,
+    9
+  ],
+  "pivot": [
+    4.4399999999999995,
+    4.0,
+    4.32
+  ],
+  "anchor": [
+    0.06625000000000003,
+    0.0,
+    -0.27
+  ],
+  "origin": [
+    -4,
+    -4,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    2723,
+    "5902b425a2c7dc61"
+  ]
+}

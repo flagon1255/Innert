@@ -1,0 +1,29 @@
+{
+  "what": "Grave brute, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    4,
+    11
+  ],
+  "pivot": [
+    1.3785919999999998,
+    2.4311999999999996,
+    8.990400000000001
+  ],
+  "anchor": [
+    0.07008800000000001,
+    -0.026949999999999974,
+    -0.5619000000000001
+  ],
+  "origin": [
+    -1,
+    -2,
+    -9
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1680,
+    "ab3f4a1da9704b9f"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Dog, upper fore left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    1,
+    4
+  ],
+  "pivot": [
+    0.52,
+    0.43999999999999995,
+    3.4000000000000004
+  ],
+  "anchor": [
+    -0.0012500000000000011,
+    0.0037500000000000033,
+    -0.21250000000000002
+  ],
+  "origin": [
+    -1,
+    0,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1269,
+    "8c908f8765337c6c"
+  ]
+}

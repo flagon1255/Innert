@@ -1,0 +1,29 @@
+{
+  "what": "Cat (GrayCat), tail tip",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    2,
+    3
+  ],
+  "pivot": [
+    0.20000000000000018,
+    1.0,
+    0.7199999999999998
+  ],
+  "anchor": [
+    0.01874999999999999,
+    0.0,
+    -0.044999999999999984
+  ],
+  "origin": [
+    0,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1275,
+    "8aae8bd676c98c4d"
+  ]
+}

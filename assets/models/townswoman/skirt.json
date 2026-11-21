@@ -1,0 +1,29 @@
+{
+  "what": "Villager (Townswoman), skirt",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    9,
+    19
+  ],
+  "pivot": [
+    4.0,
+    4.5,
+    16.32
+  ],
+  "anchor": [
+    0.0,
+    0.0,
+    -1.02
+  ],
+  "origin": [
+    -4,
+    -5,
+    -16
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    3997,
+    "b19bec8972f8add2"
+  ]
+}

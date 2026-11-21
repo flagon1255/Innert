@@ -1,31 +1,350 @@
-bear/base.vox: Bear, standing frame (1 of 26 frames)
-dog/base.vox: Dog, standing frame (1 of 26 frames)
-gray_cat/base.vox: Cat (GrayCat), standing frame (1 of 26 frames)
-ginger_cat/base.vox: Cat (GingerCat), standing frame (1 of 26 frames)
-squirrel/base.vox: Squirrel, standing frame (1 of 2 frames)
-elderhorn/base.vox: Elderhorn, standing frame (1 of 39 frames)
-wolf/base.vox: Wolf, standing frame (1 of 41 frames)
-skeleton/base.vox: Skeleton, standing frame (1 of 41 frames)
-armored_skeleton/base.vox: Armoured skeleton, standing frame (1 of 41 frames)
-zombie/base.vox: Zombie, standing frame (1 of 20 frames)
-townswoman/base.vox: Villager (Townswoman), standing frame (1 of 41 frames)
-princess/base.vox: Princess, standing frame (1 of 41 frames)
-royal_guard/base.vox: Royal guard, standing frame (1 of 41 frames)
-crossbowman/base.vox: Bandit crossbowman, standing frame (1 of 41 frames)
-shieldbearer/base.vox: Bandit shieldbearer, standing frame (1 of 40 frames)
-rime_wraith/base.vox: Rime wraith, standing frame (1 of 41 frames)
-mire_lurker/base.vox: Mire lurker, standing frame (1 of 41 frames)
-sleetwing/base.vox: Sleetwing, standing frame (1 of 41 frames)
-squallwing/base.vox: Squallwing, standing frame (1 of 41 frames)
-blightwing/base.vox: Blightwing, standing frame (1 of 41 frames)
-pyre_matriarch/base.vox: Pyre Matriarch, standing frame (1 of 37 frames)
-cindermaw_tyrant/base.vox: Cindermaw Tyrant, standing frame (1 of 12 frames)
-thunderbird/base.vox: Thunderbird, standing frame (1 of 34 frames)
-harpy_queen/base.vox: Harpy Queen, standing frame (1 of 28 frames)
-gargoyle/base.vox: Gargoyle, standing frame (1 of 27 frames)
-rime_gargoyle/base.vox: Rimestone gargoyle, standing frame (1 of 39 frames)
-cinder_gargoyle/base.vox: Obsidian gargoyle, standing frame (1 of 43 frames)
-grotesque/base.vox: Belfry Grotesque, standing frame (1 of 30 frames)
+bear/body.vox: Bear, body
+bear/head.vox: Bear, head
+bear/tail.vox: Bear, tail
+bear/upper_fore_right.vox: Bear, upper fore right
+bear/upper_fore_left.vox: Bear, upper fore left
+bear/upper_hind_right.vox: Bear, upper hind right
+bear/upper_hind_left.vox: Bear, upper hind left
+bear/lower_fore_right.vox: Bear, lower fore right
+bear/lower_fore_left.vox: Bear, lower fore left
+bear/lower_hind_right.vox: Bear, lower hind right
+bear/lower_hind_left.vox: Bear, lower hind left
+dog/body.vox: Dog, body
+dog/head.vox: Dog, head
+dog/tail.vox: Dog, tail
+dog/upper_fore_right.vox: Dog, upper fore right
+dog/upper_fore_left.vox: Dog, upper fore left
+dog/upper_hind_right.vox: Dog, upper hind right
+dog/upper_hind_left.vox: Dog, upper hind left
+dog/lower_fore_right.vox: Dog, lower fore right
+dog/lower_fore_left.vox: Dog, lower fore left
+dog/lower_hind_right.vox: Dog, lower hind right
+dog/lower_hind_left.vox: Dog, lower hind left
+gray_cat/body.vox: Cat (GrayCat), body
+gray_cat/head.vox: Cat (GrayCat), head
+gray_cat/tail.vox: Cat (GrayCat), tail
+gray_cat/tail_tip.vox: Cat (GrayCat), tail tip
+gray_cat/upper_fore_right.vox: Cat (GrayCat), upper fore right
+gray_cat/upper_fore_left.vox: Cat (GrayCat), upper fore left
+gray_cat/upper_hind_right.vox: Cat (GrayCat), upper hind right
+gray_cat/upper_hind_left.vox: Cat (GrayCat), upper hind left
+gray_cat/lower_fore_right.vox: Cat (GrayCat), lower fore right
+gray_cat/lower_fore_left.vox: Cat (GrayCat), lower fore left
+gray_cat/lower_hind_right.vox: Cat (GrayCat), lower hind right
+gray_cat/lower_hind_left.vox: Cat (GrayCat), lower hind left
+ginger_cat: drawn from gray_cat's pieces in its own colours, see gray_cat/skins.json
+squirrel/body.vox: Squirrel, body
+squirrel/head.vox: Squirrel, head
+squirrel/tail.vox: Squirrel, tail
+squirrel/tail_tip.vox: Squirrel, tail tip
+squirrel/upper_fore_right.vox: Squirrel, upper fore right
+squirrel/upper_fore_left.vox: Squirrel, upper fore left
+squirrel/upper_hind_right.vox: Squirrel, upper hind right
+squirrel/upper_hind_left.vox: Squirrel, upper hind left
+squirrel/lower_fore_right.vox: Squirrel, lower fore right
+squirrel/lower_fore_left.vox: Squirrel, lower fore left
+squirrel/lower_hind_right.vox: Squirrel, lower hind right
+squirrel/lower_hind_left.vox: Squirrel, lower hind left
+apple/base.vox: Apple, standing frame (1 of 1 frames)
+meat/base.vox: Meat, standing frame (1 of 1 frames)
+candle/base.vox: Candle, standing frame (1 of 1 frames)
+skull/base.vox: Skull, standing frame (1 of 1 frames)
+chest/base.vox: Chest (Chest), standing frame (1 of 1 frames)
+open_chest/base.vox: Chest (OpenChest), standing frame (1 of 1 frames)
+merchant/base.vox: Merchant, standing frame (1 of 1 frames)
+coins/base.vox: Gold, standing frame (1 of 1 frames)
+potion/base.vox: Healing potion, standing frame (1 of 1 frames)
+bread/base.vox: Loaf of bread, standing frame (1 of 1 frames)
+wolf/body.vox: Wolf, body
+wolf/chest.vox: Wolf, chest
+wolf/neck.vox: Wolf, neck
+wolf/head.vox: Wolf, head
+wolf/muzzle.vox: Wolf, muzzle
+wolf/jaw.vox: Wolf, jaw
+wolf/tail.vox: Wolf, tail
+wolf/upper_fore_right.vox: Wolf, upper fore right
+wolf/upper_fore_left.vox: Wolf, upper fore left
+wolf/upper_hind_right.vox: Wolf, upper hind right
+wolf/upper_hind_left.vox: Wolf, upper hind left
+wolf/lower_fore_right.vox: Wolf, lower fore right
+wolf/lower_fore_left.vox: Wolf, lower fore left
+wolf/lower_hind_right.vox: Wolf, lower hind right
+wolf/lower_hind_left.vox: Wolf, lower hind left
+skeleton/pelvis.vox: Skeleton, pelvis
+skeleton/torso.vox: Skeleton, torso
+skeleton/head.vox: Skeleton, head
+skeleton/arm_right.vox: Skeleton, arm right
+skeleton/forearm_right.vox: Skeleton, forearm right
+skeleton/arm_left.vox: Skeleton, arm left
+skeleton/forearm_left.vox: Skeleton, forearm left
+skeleton/thigh_right.vox: Skeleton, thigh right
+skeleton/shin_right.vox: Skeleton, shin right
+skeleton/thigh_left.vox: Skeleton, thigh left
+skeleton/shin_left.vox: Skeleton, shin left
+skeleton/blade.vox: Skeleton, blade
+armored_skeleton/pelvis.vox: Armoured skeleton, pelvis
+armored_skeleton/torso.vox: Armoured skeleton, torso
+armored_skeleton/head.vox: Armoured skeleton, head
+armored_skeleton/arm_right.vox: Armoured skeleton, arm right
+armored_skeleton/forearm_right.vox: Armoured skeleton, forearm right
+armored_skeleton/arm_left.vox: Armoured skeleton, arm left
+armored_skeleton/forearm_left.vox: Armoured skeleton, forearm left
+armored_skeleton/thigh_right.vox: Armoured skeleton, thigh right
+armored_skeleton/shin_right.vox: Armoured skeleton, shin right
+armored_skeleton/thigh_left.vox: Armoured skeleton, thigh left
+armored_skeleton/shin_left.vox: Armoured skeleton, shin left
+armored_skeleton/blade.vox: Armoured skeleton, blade
+zombie/pelvis.vox: Zombie, pelvis
+zombie/torso.vox: Zombie, torso
+zombie/head.vox: Zombie, head
+zombie/arm_right.vox: Zombie, arm right
+zombie/forearm_right.vox: Zombie, forearm right
+zombie/arm_left.vox: Zombie, arm left
+zombie/forearm_left.vox: Zombie, forearm left
+zombie/thigh_right.vox: Zombie, thigh right
+zombie/shin_right.vox: Zombie, shin right
+zombie/thigh_left.vox: Zombie, thigh left
+zombie/shin_left.vox: Zombie, shin left
+zombie/blade.vox: Zombie, blade
+armored_zombie/pelvis.vox: Armoured zombie, pelvis
+armored_zombie/torso.vox: Armoured zombie, torso
+armored_zombie/head.vox: Armoured zombie, head
+armored_zombie/arm_right.vox: Armoured zombie, arm right
+armored_zombie/forearm_right.vox: Armoured zombie, forearm right
+armored_zombie/arm_left.vox: Armoured zombie, arm left
+armored_zombie/forearm_left.vox: Armoured zombie, forearm left
+armored_zombie/thigh_right.vox: Armoured zombie, thigh right
+armored_zombie/shin_right.vox: Armoured zombie, shin right
+armored_zombie/thigh_left.vox: Armoured zombie, thigh left
+armored_zombie/shin_left.vox: Armoured zombie, shin left
+armored_zombie/blade.vox: Armoured zombie, blade
+spiderling/body.vox: Cave spider, body
+spiderling/abdomen.vox: Cave spider, abdomen
+spiderling/femur_right_1.vox: Cave spider, femur right 1
+spiderling/femur_right_2.vox: Cave spider, femur right 2
+spiderling/femur_right_3.vox: Cave spider, femur right 3
+spiderling/femur_right_4.vox: Cave spider, femur right 4
+spiderling/femur_left_1.vox: Cave spider, femur left 1
+spiderling/femur_left_2.vox: Cave spider, femur left 2
+spiderling/femur_left_3.vox: Cave spider, femur left 3
+spiderling/femur_left_4.vox: Cave spider, femur left 4
+spiderling/tibia_right_1.vox: Cave spider, tibia right 1
+spiderling/tibia_right_2.vox: Cave spider, tibia right 2
+spiderling/tibia_right_3.vox: Cave spider, tibia right 3
+spiderling/tibia_right_4.vox: Cave spider, tibia right 4
+spiderling/tibia_left_1.vox: Cave spider, tibia left 1
+spiderling/tibia_left_2.vox: Cave spider, tibia left 2
+spiderling/tibia_left_3.vox: Cave spider, tibia left 3
+spiderling/tibia_left_4.vox: Cave spider, tibia left 4
+bandit/pelvis.vox: Bandit, pelvis
+bandit/torso.vox: Bandit, torso
+bandit/head.vox: Bandit, head
+bandit/arm_right.vox: Bandit, arm right
+bandit/forearm_right.vox: Bandit, forearm right
+bandit/arm_left.vox: Bandit, arm left
+bandit/forearm_left.vox: Bandit, forearm left
+bandit/thigh_right.vox: Bandit, thigh right
+bandit/shin_right.vox: Bandit, shin right
+bandit/thigh_left.vox: Bandit, thigh left
+bandit/shin_left.vox: Bandit, shin left
+bandit/blade.vox: Bandit, blade
+bandit_brute/pelvis.vox: Bandit brute, pelvis
+bandit_brute/torso.vox: Bandit brute, torso
+bandit_brute/head.vox: Bandit brute, head
+bandit_brute/arm_right.vox: Bandit brute, arm right
+bandit_brute/forearm_right.vox: Bandit brute, forearm right
+bandit_brute/arm_left.vox: Bandit brute, arm left
+bandit_brute/forearm_left.vox: Bandit brute, forearm left
+bandit_brute/thigh_right.vox: Bandit brute, thigh right
+bandit_brute/shin_right.vox: Bandit brute, shin right
+bandit_brute/thigh_left.vox: Bandit brute, thigh left
+bandit_brute/shin_left.vox: Bandit brute, shin left
+bandit_brute/blade.vox: Bandit brute, blade
+villager/torso.vox: Villager (Villager), torso
+villager/head.vox: Villager (Villager), head
+villager/arm_right.vox: Villager (Villager), arm right
+villager/forearm_right.vox: Villager (Villager), forearm right
+villager/arm_left.vox: Villager (Villager), arm left
+villager/forearm_left.vox: Villager (Villager), forearm left
+villager/thigh_right.vox: Villager (Villager), thigh right
+villager/shin_right.vox: Villager (Villager), shin right
+villager/thigh_left.vox: Villager (Villager), thigh left
+villager/shin_left.vox: Villager (Villager), shin left
+townswoman/torso.vox: Villager (Townswoman), torso
+townswoman/head.vox: Villager (Townswoman), head
+townswoman/arm_right.vox: Villager (Townswoman), arm right
+townswoman/forearm_right.vox: Villager (Townswoman), forearm right
+townswoman/arm_left.vox: Villager (Townswoman), arm left
+townswoman/forearm_left.vox: Villager (Townswoman), forearm left
+townswoman/skirt.vox: Villager (Townswoman), skirt
+townswoman/thigh_right.vox: Villager (Townswoman), thigh right
+townswoman/shin_right.vox: Villager (Townswoman), shin right
+townswoman/thigh_left.vox: Villager (Townswoman), thigh left
+townswoman/shin_left.vox: Villager (Townswoman), shin left
+princess/base.vox: Princess, standing frame (1 of 1 frames)
+royal_guard/base.vox: Royal guard, standing frame (1 of 1 frames)
+crossbowman/pelvis.vox: Bandit crossbowman, pelvis
+crossbowman/torso.vox: Bandit crossbowman, torso
+crossbowman/head.vox: Bandit crossbowman, head
+crossbowman/arm_right.vox: Bandit crossbowman, arm right
+crossbowman/forearm_right.vox: Bandit crossbowman, forearm right
+crossbowman/arm_left.vox: Bandit crossbowman, arm left
+crossbowman/forearm_left.vox: Bandit crossbowman, forearm left
+crossbowman/thigh_right.vox: Bandit crossbowman, thigh right
+crossbowman/shin_right.vox: Bandit crossbowman, shin right
+crossbowman/thigh_left.vox: Bandit crossbowman, thigh left
+crossbowman/shin_left.vox: Bandit crossbowman, shin left
+crossbowman/crossbow.vox: Bandit crossbowman, crossbow
+crossbowman/bolt.vox: Bandit crossbowman, bolt
+shieldbearer/pelvis.vox: Bandit shieldbearer, pelvis
+shieldbearer/torso.vox: Bandit shieldbearer, torso
+shieldbearer/head.vox: Bandit shieldbearer, head
+shieldbearer/arm_right.vox: Bandit shieldbearer, arm right
+shieldbearer/forearm_right.vox: Bandit shieldbearer, forearm right
+shieldbearer/arm_left.vox: Bandit shieldbearer, arm left
+shieldbearer/forearm_left.vox: Bandit shieldbearer, forearm left
+shieldbearer/thigh_right.vox: Bandit shieldbearer, thigh right
+shieldbearer/shin_right.vox: Bandit shieldbearer, shin right
+shieldbearer/thigh_left.vox: Bandit shieldbearer, thigh left
+shieldbearer/shin_left.vox: Bandit shieldbearer, shin left
+shieldbearer/mace.vox: Bandit shieldbearer, mace
+shieldbearer/shield.vox: Bandit shieldbearer, shield
+dune_burrower/body.vox: Dune burrower, body
+dune_burrower/head.vox: Dune burrower, head
+dune_burrower/arm_right.vox: Dune burrower, arm right
+dune_burrower/claw_right.vox: Dune burrower, claw right
+dune_burrower/pincer_right.vox: Dune burrower, pincer right
+dune_burrower/arm_left.vox: Dune burrower, arm left
+dune_burrower/claw_left.vox: Dune burrower, claw left
+dune_burrower/pincer_left.vox: Dune burrower, pincer left
+dune_burrower/thigh_right_1.vox: Dune burrower, thigh right 1
+dune_burrower/thigh_right_2.vox: Dune burrower, thigh right 2
+dune_burrower/thigh_right_3.vox: Dune burrower, thigh right 3
+dune_burrower/thigh_left_1.vox: Dune burrower, thigh left 1
+dune_burrower/thigh_left_2.vox: Dune burrower, thigh left 2
+dune_burrower/thigh_left_3.vox: Dune burrower, thigh left 3
+dune_burrower/shin_right_1.vox: Dune burrower, shin right 1
+dune_burrower/shin_right_2.vox: Dune burrower, shin right 2
+dune_burrower/shin_right_3.vox: Dune burrower, shin right 3
+dune_burrower/shin_left_1.vox: Dune burrower, shin left 1
+dune_burrower/shin_left_2.vox: Dune burrower, shin left 2
+dune_burrower/shin_left_3.vox: Dune burrower, shin left 3
+dune_burrower/tail_1.vox: Dune burrower, tail 1
+dune_burrower/tail_2.vox: Dune burrower, tail 2
+dune_burrower/tail_3.vox: Dune burrower, tail 3
+dune_burrower/tail_4.vox: Dune burrower, tail 4
+dune_burrower/tail_5.vox: Dune burrower, tail 5
+dune_burrower/stinger.vox: Dune burrower, stinger
+rime_wraith/body.vox: Rime wraith, body
+rime_wraith/shroud.vox: Rime wraith, shroud
+rime_wraith/head.vox: Rime wraith, head
+rime_wraith/arm_right.vox: Rime wraith, arm right
+rime_wraith/forearm_right.vox: Rime wraith, forearm right
+rime_wraith/arm_left.vox: Rime wraith, arm left
+rime_wraith/forearm_left.vox: Rime wraith, forearm left
+rime_wraith/rag_1.vox: Rime wraith, rag 1
+rime_wraith/rag_2.vox: Rime wraith, rag 2
+rime_wraith/rag_3.vox: Rime wraith, rag 3
+rime_wraith/rag_4.vox: Rime wraith, rag 4
+rime_wraith/rag_5.vox: Rime wraith, rag 5
+rime_wraith/rag_6.vox: Rime wraith, rag 6
+rime_wraith/rag_7.vox: Rime wraith, rag 7
+mire_lurker/body.vox: Mire lurker, body
+mire_lurker/head.vox: Mire lurker, head
+mire_lurker/jaw.vox: Mire lurker, jaw
+mire_lurker/mouth.vox: Mire lurker, mouth
+mire_lurker/tongue.vox: Mire lurker, tongue
+mire_lurker/tail.vox: Mire lurker, tail
+mire_lurker/frond_1.vox: Mire lurker, frond 1
+mire_lurker/frond_2.vox: Mire lurker, frond 2
+mire_lurker/frond_3.vox: Mire lurker, frond 3
+mire_lurker/frond_4.vox: Mire lurker, frond 4
+mire_lurker/upper_fore_right.vox: Mire lurker, upper fore right
+mire_lurker/upper_fore_left.vox: Mire lurker, upper fore left
+mire_lurker/upper_hind_right.vox: Mire lurker, upper hind right
+mire_lurker/upper_hind_left.vox: Mire lurker, upper hind left
+mire_lurker/lower_fore_right.vox: Mire lurker, lower fore right
+mire_lurker/lower_fore_left.vox: Mire lurker, lower fore left
+mire_lurker/lower_hind_right.vox: Mire lurker, lower hind right
+mire_lurker/lower_hind_left.vox: Mire lurker, lower hind left
+gloomwing/body.vox: Gloomwing, body
+gloomwing/head.vox: Gloomwing, head
+gloomwing/wing_right_inner.vox: Gloomwing, wing right inner
+gloomwing/wing_right_outer.vox: Gloomwing, wing right outer
+gloomwing/wing_left_inner.vox: Gloomwing, wing left inner
+gloomwing/wing_left_outer.vox: Gloomwing, wing left outer
+tusker/body.vox: Tusker, body
+tusker/head.vox: Tusker, head
+tusker/tail.vox: Tusker, tail
+tusker/upper_fore_right.vox: Tusker, upper fore right
+tusker/upper_fore_left.vox: Tusker, upper fore left
+tusker/upper_hind_right.vox: Tusker, upper hind right
+tusker/upper_hind_left.vox: Tusker, upper hind left
+tusker/lower_fore_right.vox: Tusker, lower fore right
+tusker/lower_fore_left.vox: Tusker, lower fore left
+tusker/lower_hind_right.vox: Tusker, lower hind right
+tusker/lower_hind_left.vox: Tusker, lower hind left
+bloater/belly.vox: Bloater, belly
+bloater/chest.vox: Bloater, chest
+bloater/head.vox: Bloater, head
+bloater/arm_right.vox: Bloater, arm right
+bloater/forearm_right.vox: Bloater, forearm right
+bloater/arm_left.vox: Bloater, arm left
+bloater/forearm_left.vox: Bloater, forearm left
+bloater/thigh_right.vox: Bloater, thigh right
+bloater/shin_right.vox: Bloater, shin right
+bloater/thigh_left.vox: Bloater, thigh left
+bloater/shin_left.vox: Bloater, shin left
+ghoul/pelvis.vox: Ghoul, pelvis
+ghoul/torso.vox: Ghoul, torso
+ghoul/head.vox: Ghoul, head
+ghoul/arm_right.vox: Ghoul, arm right
+ghoul/forearm_right.vox: Ghoul, forearm right
+ghoul/arm_left.vox: Ghoul, arm left
+ghoul/forearm_left.vox: Ghoul, forearm left
+ghoul/thigh_right.vox: Ghoul, thigh right
+ghoul/shin_right.vox: Ghoul, shin right
+ghoul/thigh_left.vox: Ghoul, thigh left
+ghoul/shin_left.vox: Ghoul, shin left
+grave_brute/pelvis.vox: Grave brute, pelvis
+grave_brute/torso.vox: Grave brute, torso
+grave_brute/head.vox: Grave brute, head
+grave_brute/arm_right.vox: Grave brute, arm right
+grave_brute/forearm_right.vox: Grave brute, forearm right
+grave_brute/arm_left.vox: Grave brute, arm left
+grave_brute/forearm_left.vox: Grave brute, forearm left
+grave_brute/thigh_right.vox: Grave brute, thigh right
+grave_brute/shin_right.vox: Grave brute, shin right
+grave_brute/thigh_left.vox: Grave brute, thigh left
+grave_brute/shin_left.vox: Grave brute, shin left
+grave_brute/gravestone.vox: Grave brute, gravestone
+bone_archer/pelvis.vox: Skeleton archer, pelvis
+bone_archer/torso.vox: Skeleton archer, torso
+bone_archer/head.vox: Skeleton archer, head
+bone_archer/arm_right.vox: Skeleton archer, arm right
+bone_archer/forearm_right.vox: Skeleton archer, forearm right
+bone_archer/arm_left.vox: Skeleton archer, arm left
+bone_archer/forearm_left.vox: Skeleton archer, forearm left
+bone_archer/thigh_right.vox: Skeleton archer, thigh right
+bone_archer/shin_right.vox: Skeleton archer, shin right
+bone_archer/thigh_left.vox: Skeleton archer, thigh left
+bone_archer/shin_left.vox: Skeleton archer, shin left
+bone_archer/bow.vox: Skeleton archer, bow
+bone_archer/string.vox: Skeleton archer, string
+bone_archer/drawn_string.vox: Skeleton archer, drawn string
+teleporter/base.vox: Innert Gate, standing frame (1 of 1 frames)
+realm_portal/base.vox: Portal home, standing frame (1 of 1 frames)
+portal_veil/base.vox: Portal, standing frame (1 of 1 frames)
+innert_block/base.vox: Innert block, standing frame (1 of 1 frames)
+grapple_hook/base.vox: Grappling hook, standing frame (1 of 1 frames)
+glider/base.vox: Wings, standing frame (1 of 1 frames)
+reed_viper/base.vox: Reed viper, standing frame (1 of 36 frames)
+silt_coiler/base.vox: Silt coiler, standing frame (1 of 36 frames)
+gale_serpent/base.vox: Gale serpent, standing frame (1 of 36 frames)
+blood_adder/base.vox: Bloodvein adder, standing frame (1 of 36 frames)
+drift_serpent/base.vox: Drift serpent, standing frame (1 of 36 frames)
+shed_skin/base.vox: Shed serpent skin, standing frame (1 of 1 frames)
+serpent_bones/base.vox: Serpent bones, standing frame (1 of 1 frames)
 dragon/ashwing/torso.vox: ashwing, torso
 dragon/ashwing/neck_1.vox: ashwing, neck 1
 dragon/ashwing/neck_2.vox: ashwing, neck 2
@@ -5440,4 +5759,4 @@ weapons/spade/fine_spade_blade.vox: Spade, blade: Steel Spade Blade
 weapons/spade/crude_tool_haft.vox: Spade, hilt: Rawhide-bound Haft
 weapons/spade/sturdy_tool_haft.vox: Spade, hilt: Leather-gripped Haft
 weapons/spade/fine_tool_haft.vox: Spade, hilt: Bronze-banded Ash Haft
-C:\Users\Andrej\Desktop\Innert\.claude\worktrees\modeltool\assets\trees.json: the trees' numbers
+C:\Users\Andrej\Desktop\Innert\.claude\worktrees\bakedrigs\assets\trees.json: the trees' numbers

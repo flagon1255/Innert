@@ -1,0 +1,29 @@
+{
+  "what": "Zombie, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    5,
+    8
+  ],
+  "pivot": [
+    1.512,
+    2.5,
+    0.8000000000000007
+  ],
+  "anchor": [
+    0.0305,
+    0.0,
+    -0.050000000000000044
+  ],
+  "origin": [
+    -2,
+    -3,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1436,
+    "6be7d81f534cee1b"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "what": "Candle, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    2,
+    5
+  ],
+  "pivot": [
+    1.5,
+    1.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    -1,
+    0
+  ],
+  "note": "",
+  "written": [
+    1308,
+    "ba5118b94cf6151e"
+  ]
+}

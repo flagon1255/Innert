@@ -1,0 +1,29 @@
+{
+  "what": "Bandit, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    7,
+    9
+  ],
+  "pivot": [
+    2.0,
+    3.5,
+    3.9200000000000017
+  ],
+  "anchor": [
+    0.0,
+    0.0,
+    -0.2450000000000001
+  ],
+  "origin": [
+    -2,
+    -4,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1916,
+    "cfe9204e53d94bbe"
+  ]
+}

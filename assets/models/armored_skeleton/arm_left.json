@@ -1,0 +1,29 @@
+{
+  "what": "Armoured skeleton, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    5
+  ],
+  "pivot": [
+    1.0,
+    1.02,
+    4.719999999999999
+  ],
+  "anchor": [
+    0.0,
+    -0.0012500000000000011,
+    -0.29499999999999993
+  ],
+  "origin": [
+    -1,
+    -1,
+    -5
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1280,
+    "cdf23b156d5b4206"
+  ]
+}

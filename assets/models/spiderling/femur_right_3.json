@@ -1,0 +1,29 @@
+{
+  "what": "Cave spider, femur right 3",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    8,
+    5
+  ],
+  "pivot": [
+    1.6399999999999997,
+    7.6,
+    0.40000000000000036
+  ],
+  "anchor": [
+    -0.03999999999999998,
+    -0.225,
+    -0.025000000000000022
+  ],
+  "origin": [
+    -2,
+    -8,
+    0
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1317,
+    "341a835c886835c2"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Cat (GrayCat), lower fore left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    1,
+    2
+  ],
+  "pivot": [
+    0.2400000000000002,
+    0.8,
+    0.2304
+  ],
+  "anchor": [
+    0.016249999999999987,
+    -0.018750000000000003,
+    -0.0144
+  ],
+  "origin": [
+    0,
+    -1,
+    0
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1260,
+    "87f9a7c11947633b"
+  ]
+}

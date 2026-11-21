@@ -1,0 +1,29 @@
+{
+  "what": "Grave brute, thigh left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    13
+  ],
+  "pivot": [
+    2.5,
+    2.612,
+    10.430400000000002
+  ],
+  "anchor": [
+    0.0,
+    -0.007000000000000006,
+    -0.6519000000000001
+  ],
+  "origin": [
+    -3,
+    -3,
+    -10
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    2138,
+    "9258f041f4d9730c"
+  ]
+}

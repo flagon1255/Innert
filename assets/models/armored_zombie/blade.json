@@ -1,0 +1,29 @@
+{
+  "what": "Armoured zombie, blade",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    3,
+    12
+  ],
+  "pivot": [
+    1.0399999999999991,
+    1.5,
+    11.799999999999997
+  ],
+  "anchor": [
+    0.24750000000000005,
+    0.0,
+    -0.7374999999999998
+  ],
+  "origin": [
+    -1,
+    -2,
+    -12
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1353,
+    "c36c4542a9bf8632"
+  ]
+}

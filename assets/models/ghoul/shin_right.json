@@ -1,0 +1,29 @@
+{
+  "what": "Ghoul, shin right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    2,
+    8
+  ],
+  "pivot": [
+    5.5,
+    1.2959999999999998,
+    7.359999999999999
+  ],
+  "anchor": [
+    -0.15625,
+    -0.01849999999999999,
+    -0.45999999999999996
+  ],
+  "origin": [
+    -6,
+    -1,
+    -7
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1337,
+    "fa3fe147e5d4f9ff"
+  ]
+}

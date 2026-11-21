@@ -1,0 +1,29 @@
+{
+  "what": "Grave brute, gravestone",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    11,
+    17
+  ],
+  "pivot": [
+    2.8017075177314688,
+    2.332,
+    14.524887470447556
+  ],
+  "anchor": [
+    0.2311432801417832,
+    0.198,
+    -0.9078054669029723
+  ],
+  "origin": [
+    -3,
+    -2,
+    -15
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    4924,
+    "dfe271e9f6f9cc5f"
+  ]
+}

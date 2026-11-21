@@ -1,0 +1,29 @@
+{
+  "what": "Bandit, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    7
+  ],
+  "pivot": [
+    1.8,
+    1.6600000000000001,
+    1.3999999999999986
+  ],
+  "anchor": [
+    -0.018750000000000003,
+    -0.010000000000000009,
+    -0.08749999999999991
+  ],
+  "origin": [
+    -2,
+    -2,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1345,
+    "a74a456ae5fa3e02"
+  ]
+}

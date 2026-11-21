@@ -1,0 +1,25 @@
+{
+  "what": "Shed serpent skin, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    62,
+    13,
+    3
+  ],
+  "pivot": [
+    31.0,
+    6.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -31,
+    -7,
+    0
+  ],
+  "note": "",
+  "written": [
+    2020,
+    "cc02a15e0db48d94"
+  ]
+}

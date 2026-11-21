@@ -1,0 +1,29 @@
+{
+  "what": "Gloomwing, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    7,
+    2
+  ],
+  "pivot": [
+    4.18,
+    6.88,
+    1.1999999999999993
+  ],
+  "anchor": [
+    -0.105,
+    -0.21125,
+    -0.07499999999999996
+  ],
+  "origin": [
+    -4,
+    -7,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1381,
+    "485abd1af0ef4ebc"
+  ]
+}

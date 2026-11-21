@@ -1,0 +1,29 @@
+{
+  "what": "Bandit brute, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    3,
+    6
+  ],
+  "pivot": [
+    1.3960000000000001,
+    1.3407999999999998,
+    4.6080000000000005
+  ],
+  "anchor": [
+    0.06899999999999999,
+    0.009950000000000014,
+    -0.28800000000000003
+  ],
+  "origin": [
+    -1,
+    -1,
+    -5
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1360,
+    "5271e80b3349cc85"
+  ]
+}

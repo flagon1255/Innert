@@ -1,0 +1,25 @@
+{
+  "what": "Gold, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    4,
+    2
+  ],
+  "pivot": [
+    2.0,
+    2.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    -2,
+    0
+  ],
+  "note": "",
+  "written": [
+    1287,
+    "027f9773d8b75028"
+  ]
+}

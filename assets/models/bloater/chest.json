@@ -1,0 +1,29 @@
+{
+  "what": "Bloater, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    12,
+    7
+  ],
+  "pivot": [
+    4.5,
+    6.0,
+    3.2880000000000003
+  ],
+  "anchor": [
+    0.0,
+    0.0,
+    -0.20550000000000002
+  ],
+  "origin": [
+    -5,
+    -6,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    2708,
+    "9b82fb0f0d936b4a"
+  ]
+}

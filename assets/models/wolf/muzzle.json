@@ -1,0 +1,29 @@
+{
+  "what": "Wolf, muzzle",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    2,
+    3
+  ],
+  "pivot": [
+    1.3399999999999999,
+    1.0,
+    1.4800000000000004
+  ],
+  "anchor": [
+    0.07250000000000001,
+    0.0,
+    -0.09250000000000003
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1331,
+    "ee270731102f4bf8"
+  ]
+}

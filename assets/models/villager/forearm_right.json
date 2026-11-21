@@ -1,0 +1,29 @@
+{
+  "what": "Villager (Villager), forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    2,
+    5
+  ],
+  "pivot": [
+    0.5,
+    1.1600000000000001,
+    4.079999999999998
+  ],
+  "anchor": [
+    0.0,
+    -0.010000000000000009,
+    -0.2549999999999999
+  ],
+  "origin": [
+    -1,
+    -1,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1293,
+    "7e16411cbe8165bb"
+  ]
+}

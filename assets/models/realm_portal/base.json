@@ -1,0 +1,25 @@
+{
+  "what": "Portal home, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    77,
+    96,
+    131
+  ],
+  "pivot": [
+    38.5,
+    48.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -39,
+    -48,
+    0
+  ],
+  "note": "",
+  "written": [
+    1050973,
+    "e188d682b8ebadf8"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Dune burrower, thigh left 3",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    6,
+    4
+  ],
+  "pivot": [
+    1.3200000000000003,
+    1.048,
+    0.5199999999999996
+  ],
+  "anchor": [
+    -0.020000000000000018,
+    0.122,
+    -0.03249999999999997
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1303,
+    "b58dde8ec14816ad"
+  ]
+}

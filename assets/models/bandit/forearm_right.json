@@ -1,0 +1,29 @@
+{
+  "what": "Bandit, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    3,
+    5
+  ],
+  "pivot": [
+    0.8,
+    1.3399999999999999,
+    4.399999999999999
+  ],
+  "anchor": [
+    0.075,
+    0.010000000000000009,
+    -0.2749999999999999
+  ],
+  "origin": [
+    -1,
+    -1,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1312,
+    "3d2be7e0ab935953"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Squirrel, lower fore left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    2,
+    1
+  ],
+  "pivot": [
+    0.45999999999999996,
+    0.98,
+    0.17279999999999998
+  ],
+  "anchor": [
+    0.0025000000000000022,
+    0.0012500000000000011,
+    -0.010799999999999999
+  ],
+  "origin": [
+    0,
+    -1,
+    0
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1259,
+    "edb95653846825c0"
+  ]
+}

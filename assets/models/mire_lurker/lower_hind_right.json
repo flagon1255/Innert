@@ -1,0 +1,29 @@
+{
+  "what": "Mire lurker, lower hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    3,
+    9
+  ],
+  "pivot": [
+    6.48,
+    1.1199999999999992,
+    7.36
+  ],
+  "anchor": [
+    -0.155,
+    0.02375000000000005,
+    -0.46
+  ],
+  "origin": [
+    -6,
+    -1,
+    -7
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1413,
+    "fefe0265821105bf"
+  ]
+}

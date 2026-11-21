@@ -1,25 +1,25 @@
 {
-  "what": "Royal guard, standing frame (1 of 41 frames)",
+  "what": "Royal guard, standing frame (1 of 1 frames)",
   "voxels_per_meter": 16.0,
   "size": [
-    38,
-    26,
-    18
+    8,
+    17,
+    42
   ],
   "pivot": [
-    19.0,
-    13.0,
+    4.0,
+    8.5,
     -0.0
   ],
   "anchor": null,
   "origin": [
-    -19,
-    -13,
+    -4,
+    -9,
     0
   ],
-  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "note": "",
   "written": [
-    9719,
-    "591308024f859089"
+    3409,
+    "e431171c5f5bb751"
   ]
 }

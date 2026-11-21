@@ -1,0 +1,25 @@
+{
+  "what": "Portal, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    36,
+    104
+  ],
+  "pivot": [
+    1.0,
+    18.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -1,
+    -18,
+    0
+  ],
+  "note": "",
+  "written": [
+    21988,
+    "dcead33b28990e3a"
+  ]
+}
