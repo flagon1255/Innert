@@ -79,6 +79,8 @@ pub enum Item {
     Hook,
     /// Wings of kind wings::KINDS[k], worn on the back to glide on, see Game::worn
     Wings(u8),
+    /// A jewel of kind `j`, see jewels.rs: set into a weapon's socket, it lifts its item level
+    Jewel(u8),
 }
 
 impl Item {
@@ -93,7 +95,7 @@ impl Item {
             Item::InnertBlock(_) => Some(Look::InnertBlock),
             Item::Hook => Some(Look::GrappleHook),
             Item::Wings(_) => Some(Look::Wings),
-            Item::Bucket | Item::Weapon(_) | Item::Ammo(..) => None,
+            Item::Bucket | Item::Weapon(_) | Item::Ammo(..) | Item::Jewel(_) => None,
         }
     }
 
@@ -116,6 +118,7 @@ impl Item {
             Item::InnertBlock(_) => "Innert Block",
             Item::Hook => "Grappling Hook",
             Item::Wings(k) => wings::KINDS[k as usize].name,
+            Item::Jewel(_) => "Jewel",
         }
     }
 
@@ -165,6 +168,7 @@ fn food_price(item: Item) -> u32 {
         // Game::sky_wares, and wings by every travelling merchant, see Game::stock()
         Item::Hook => 400,
         Item::Wings(k) => wings::KINDS[k as usize].price,
+        Item::Jewel(j) => crate::jewels::price(crate::jewels::parts(j).1),
         _ => 0,
     }
 }
@@ -202,6 +206,8 @@ enum Deal {
     /// Putting on the wings in a slot, and taking off those worn
     Wear(usize),
     TakeOff,
+    /// Setting the jewel in the first slot into the weapon in the second
+    Socket(usize, usize),
 }
 
 /// What was done with a slot in a grid of them: clicked, double or right clicked, or dragged onto
@@ -219,6 +225,13 @@ const GOLD: Color32 = Color32::from_rgb(255, 205, 70);
 fn galley_width(painter: &egui::Painter, text: &str, size: f32) -> f32 {
     painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE).size().x
 }
+
+/// How much less lucky jewels are rolled than weapons of the same luck, so they're the rarer, and
+/// the chance a chest has one, and how much more for each point of its luck, at most CHEST_JEWEL_MOST
+const JEWEL_LUCK: f64 = 0.35;
+const CHEST_JEWEL: f64 = 0.08;
+const CHEST_JEWEL_LUCK: f64 = 0.03;
+const CHEST_JEWEL_MOST: f64 = 0.35;
 
 /// The most of a blow armour from the skill web takes away
 const ARMOUR_MOST: f64 = 0.6;
@@ -831,6 +844,8 @@ pub struct Game {
     claimed: HashSet<String>,
     /// Where the skill web's window is looking
     pub skill_view: skills::View,
+    /// The jewels' icons, made the first time one's drawn, see jewels::icon()
+    jewel_icons: std::cell::OnceCell<Vec<egui::TextureHandle>>,
     /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
     /// with which realm's each leaves
     raid_lairs: HashMap<[i64; 3], u8>,
@@ -1066,6 +1081,7 @@ impl Game {
             bonus_points: 0,
             claimed: HashSet::new(),
             skill_view: skills::View::new(),
+            jewel_icons: std::cell::OnceCell::new(),
             raid_lairs: HashMap::new(),
             sky_wares: false,
             covered: false,
@@ -1357,6 +1373,7 @@ impl Game {
         match item {
             Item::Weapon(i) => self.weapons[i].name.clone(),
             Item::Ammo(k, n) => format!("{n} {}", self.library.ammo[k].display_name),
+            Item::Jewel(j) => crate::jewels::name(j),
             _ => item.name().to_owned(),
         }
     }
@@ -3392,6 +3409,14 @@ impl Game {
                     Hoard::Boss
                 };
                 let (piles, potions) = if ultra { (6, 5) } else if raid { (3, 3) } else { (1, 1) };
+                // And jewels, straight into the player's hands: a raid boss's or a finale's more and
+                // luckier, a lesser boss's only now and then
+                let (count, luck) = match hoard {
+                    Hoard::Boss => (usize::from(random(&mut self.rng) < 0.45), BOSS_LUCKS[0]),
+                    Hoard::Raid => (1 + usize::from(random(&mut self.rng) < 0.5), RAID_LUCKS[0]),
+                    Hoard::Huge => (2 + usize::from(random(&mut self.rng) < 0.5), RAID_LUCKS[0] * 2.0),
+                };
+                let jewels: Vec<Item> = (0..count).map(|_| self.roll_jewel(luck)).collect();
                 let rolls = hoard_rolls(hoard, &mut self.rng);
                 // Leaning to what suits it, see bosses::taste()
                 let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon_for(look, luck, sure, from)).collect();
@@ -3434,6 +3459,7 @@ impl Game {
                 } else {
                     self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
                 }
+                self.find_jewels(jewels);
                 // And a pair of wings, said after: a raid boss always leaves one, a realm's of the
                 // realm's own kind first, and any other boss now and then, each a kind the player
                 // hasn't yet, the luckier the bigger the boss
@@ -3942,6 +3968,9 @@ impl Game {
         let hoard = chest.hoard;
         let gold = if hoard { gold + 60 + (hash(seed ^ 0x40a2) % 60) as u32 } else { gold };
         let gold = self.more_gold(gold);
+        // Now and then a jewel, likelier the luckier the chest
+        let jewel_roll = (hash(seed ^ 0x9e3e1) >> 8) as f64 / 16_777_216.0;
+        let jewel = (jewel_roll < (CHEST_JEWEL + CHEST_JEWEL_LUCK * chest.luck).min(CHEST_JEWEL_MOST)).then(|| chest.luck);
         self.opened.insert(key);
         self.milestone = true;
         self.target = None;
@@ -3975,6 +4004,10 @@ impl Game {
         self.models_version += 1;
         self.cues.push(Cue::here(Sound::Chest, 0.8));
         self.say(message);
+        if let Some(luck) = jewel {
+            let found = self.roll_jewel(luck);
+            self.find_jewels(vec![found]);
+        }
         // Said after, how to wear them
         if let Some(k) = pair {
             self.gain_wings(k);
@@ -4180,6 +4213,16 @@ impl Game {
             Ware::Food(..) => 0,
         });
         wares.extend([Ware::Food(Item::Potion, 4), Ware::Food(Item::Bread, 6), Ware::Food(Item::Meat, 5), Ware::Food(Item::Apple, 10)]);
+        // Two kinds of jewel, common or uncommon, a few of each
+        for k in 0..2u32 {
+            let roll = hash(seed ^ 0x7e3e1 ^ k);
+            let category = crate::jewels::Category::ALL[roll as usize % 3];
+            let tier = ((roll >> 8) % 3 == 0) as usize;
+            let j = crate::jewels::jewel(category, tier);
+            if !wares.iter().any(|w| matches!(w, Ware::Food(Item::Jewel(o), _) if *o == j)) {
+                wares.push(Ware::Food(Item::Jewel(j), 2 + (roll >> 12) % 3));
+            }
+        }
         // A few kinds of special ammo, a bundle at a time
         let mut kinds: Vec<usize> = Vec::new();
         for _ in 0..4 {
@@ -4285,7 +4328,8 @@ impl Game {
         let (Some(&(item, count)), Some(feet)) = (self.slots.get(slot), self.feet) else {
             return;
         };
-        if item.kept() {
+        // Nor jewels, which have nothing to lie on the ground as
+        if item.kept() || matches!(item, Item::Jewel(_)) {
             return;
         }
         self.remove_slot(slot);
@@ -4562,7 +4606,7 @@ impl Game {
         }
         // A weapon from a save from before there were levels is of the level of where the player's
         // got to, see set_legacy_level()
-        weapon.set_level(saved.level.unwrap_or(self.legacy_level), saved.jewels);
+        weapon.set_level(saved.level.unwrap_or(self.legacy_level), saved.jewels.min(crate::jewels::sockets(weapon.grade)));
         self.weapons.push(weapon);
         Some(self.weapons.len() - 1)
     }
@@ -4583,6 +4627,7 @@ impl Game {
             Item::InnertBlock(realm) => S::InnertBlock { realm },
             Item::Hook => S::Hook,
             Item::Wings(k) => S::Wings { of: Some(wings::KINDS[k as usize].id.to_owned()) },
+            Item::Jewel(j) => S::Jewel { of: crate::jewels::id(j) },
         }
     }
 
@@ -4603,6 +4648,7 @@ impl Game {
             S::Hook => Item::Hook,
             // From before wings were worn: the plain ones
             S::Wings { of } => Item::Wings(of.as_deref().map_or(Some(wings::GULL), wings::by_id)?),
+            S::Jewel { of } => Item::Jewel(crate::jewels::by_id(of)?),
             S::InnertBlock { .. } | S::Unknown => return None,
         })
     }
@@ -5092,6 +5138,84 @@ impl Game {
             None => {}
         }
         true
+    }
+
+    /// Whether jewel `j` can be set into weapon `w`, and why not if it can't, see jewels::fits()
+    fn jewel_fits(&self, j: u8, w: usize) -> Result<(), String> {
+        let weapon = &self.weapons[w];
+        crate::jewels::fits(j, weapon.kind(), weapon.grade, self.library.families[weapon.family].tool.is_some(), weapon.jewels, weapon.item_level())
+    }
+
+    /// Sets the jewel in slot `jewel` into the weapon in slot `weapon`, if it fits: one of the
+    /// stack used up, the weapon an item level higher for good. Whether it was.
+    pub fn socket(&mut self, jewel: usize, weapon: usize) -> bool {
+        let (Some(&(Item::Jewel(j), _)), Some(&(Item::Weapon(w), _))) = (self.slots.get(jewel), self.slots.get(weapon)) else {
+            return false;
+        };
+        if let Err(why) = self.jewel_fits(j, w) {
+            self.say(why);
+            return false;
+        }
+        let (level, jewels) = (self.weapons[w].level, self.weapons[w].jewels + 1);
+        self.weapons[w].set_level(level, jewels);
+        self.loaded = None;
+        if self.slots[jewel].1 > 1 {
+            self.slots[jewel].1 -= 1;
+        } else {
+            self.remove_slot(jewel);
+        }
+        self.cues.push(Cue::here(Sound::Chest, 0.7).pitched(1.6));
+        self.milestone = true;
+        self.say(format!("The {} sinks into the {}, glowing: item level {} now.", crate::jewels::name(j), self.weapons[w].name, self.weapons[w].item_level()));
+        true
+    }
+
+    /// A jewel rolled with `luck`, as for Library::odds() but rarer than a weapon so lucky, see
+    /// JEWEL_LUCK, of a kind of weapon picked at random
+    fn roll_jewel(&mut self, luck: f64) -> Item {
+        let odds = self.library.odds(luck * JEWEL_LUCK * loot_scaling(self.scaling));
+        let total: f64 = odds.iter().sum();
+        let mut left = random(&mut self.rng) * total;
+        let mut tier = 0;
+        for (k, w) in odds.iter().enumerate() {
+            if left < *w {
+                tier = k;
+                break;
+            }
+            left -= w;
+            tier = k;
+        }
+        let category = crate::jewels::Category::ALL[(random(&mut self.rng) * 3.0) as usize % 3];
+        Item::Jewel(crate::jewels::jewel(category, tier.min(crate::jewels::TIERS - 1)))
+    }
+
+    /// Jewels found, straight into the player's hands and said, as they're too small to see lying
+    /// about
+    fn find_jewels(&mut self, found: Vec<Item>) {
+        for item in found {
+            if let Item::Jewel(j) = item {
+                self.add_item(item, 1);
+                self.say(format!("A {} glints among it, into your pack.", crate::jewels::name(j)));
+            }
+        }
+    }
+
+    /// For trying it out: one of each kind of jewel carried set into the first weapon carried it fits
+    pub fn socket_some(&mut self) {
+        for j in 0..crate::jewels::KINDS as u8 {
+            let Some(jewel) = self.slots.iter().position(|(i, _)| *i == Item::Jewel(j)) else { continue };
+            let weapon = (0..self.slots.len()).find(|&s| matches!(self.slots[s].0, Item::Weapon(w) if self.jewel_fits(j, w).is_ok()));
+            if let Some(weapon) = weapon {
+                self.socket(jewel, weapon);
+            }
+        }
+    }
+
+    /// For trying it out: `n` jewels of kind `id`, see jewels::id()
+    pub fn give_jewels(&mut self, id: &str, n: u32) {
+        if let Some(j) = crate::jewels::by_id(id) {
+            self.add_item(Item::Jewel(j), n);
+        }
     }
 
     /// For trying it out: the card of slot `slot` showing in the inventory
@@ -6120,6 +6244,7 @@ impl Game {
                     Color32::from_rgba_unmultiplied(r, g, b, if selected { 70 } else { 34 })
                 }
                 Item::Wings(k) => self.wings_color(k).gamma_multiply(if selected { 0.3 } else { 0.15 }),
+                Item::Jewel(j) => crate::jewels::tint(j).gamma_multiply(if selected { 0.3 } else { 0.15 }),
                 _ => Color32::from_white_alpha(if selected { 40 } else { 14 }),
             };
             painter.rect_filled(rect, 8.0, fill);
@@ -6498,10 +6623,36 @@ impl Game {
                             if item.consumable() && ui.button(if item.heal() > 0.0 { "Drink" } else { "Eat" }).clicked() {
                                 deed = Some(Deal::Eat(slot));
                             }
-                            if item != Item::Bucket && ui.button("Drop").clicked() {
+                            if item != Item::Bucket && !matches!(item, Item::Jewel(_)) && ui.button("Drop").clicked() {
                                 deed = Some(Deal::Drop(slot));
                             }
                         });
+                        // Jewels that fit it, to set into a socket, see jewels.rs
+                        if let Item::Weapon(w) = item {
+                            for (s, &(other, n)) in self.slots.iter().enumerate() {
+                                if let Item::Jewel(j) = other
+                                    && self.jewel_fits(j, w).is_ok()
+                                    && ui.button(RichText::new(format!("Set the {} into it ({n} carried)", crate::jewels::name(j))).color({
+                                        let [r, g, b] = crate::jewels::colors(j).light;
+                                        Color32::from_rgb(r, g, b)
+                                    })).on_hover_text("Lifts it an item level for good. A jewel once set can't be taken out again.").clicked()
+                                {
+                                    deed = Some(Deal::Socket(s, slot));
+                                }
+                            }
+                        }
+                        if let Item::Jewel(j) = item {
+                            let fitting: Vec<usize> = (0..self.slots.len()).filter(|&s| matches!(self.slots[s].0, Item::Weapon(w) if self.jewel_fits(j, w).is_ok())).collect();
+                            if fitting.is_empty() {
+                                ui.label(RichText::new("Nothing you carry has a free socket it fits.").weak().italics());
+                            }
+                            for s in fitting {
+                                let Item::Weapon(w) = self.slots[s].0 else { continue };
+                                if ui.button(format!("Set it into {} (item level {})", self.weapons[w].name, self.weapons[w].item_level())).clicked() {
+                                    deed = Some(Deal::Socket(slot, s));
+                                }
+                            }
+                        }
                         if let Item::Weapon(w) = item {
                             egui::CollapsingHeader::new("What it's made of").id_salt(("parts", w)).show(ui, |ui| self.weapon_parts(ui, &self.weapons[w]));
                         }
@@ -6523,10 +6674,17 @@ impl Game {
             Some(Deal::Hold(slot)) => self.hold(slot),
             Some(Deal::Eat(slot)) => self.eat(slot),
             Some(Deal::Drop(slot)) => self.drop_slot(slot),
+            // A jewel dragged onto a weapon it fits is set into it, see socket()
+            Some(Deal::Move(a, b)) if matches!((self.slots.get(a), self.slots.get(b)), (Some((Item::Jewel(_), _)), Some((Item::Weapon(_), _)))) => {
+                self.socket(a, b);
+            }
             Some(Deal::Move(a, b)) => self.move_slot(a, b),
             Some(Deal::Sort) => self.sort(),
             Some(Deal::Wear(slot)) => self.wear(slot),
             Some(Deal::TakeOff) => self.take_off(),
+            Some(Deal::Socket(jewel, weapon)) => {
+                self.socket(jewel, weapon);
+            }
             _ => {}
         }
         // A tool made, paid for with what's been gathered
@@ -6558,6 +6716,7 @@ impl Game {
                 let tint = match item {
                     Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
                     Item::Wings(k) => Some(self.wings_color(k)),
+                    Item::Jewel(j) => Some(crate::jewels::tint(j)),
                     _ => None,
                 };
                 let fill = tint.map_or(Color32::from_white_alpha(if i < HOTBAR { 22 } else { 12 }), |c| c.gamma_multiply(if i < HOTBAR { 0.3 } else { 0.2 }));
@@ -6693,6 +6852,7 @@ impl Game {
         let edge = match item {
             Item::Weapon(w) => color(self.library.rarities[self.weapons[w].grade].color),
             Item::Gold(_) => GOLD,
+            Item::Jewel(j) => crate::jewels::tint(j),
             _ => Color32::from_gray(150),
         };
         egui::Frame::new().fill(Color32::from_rgba_unmultiplied(14, 16, 22, 232)).stroke(Stroke::new(1.5f32, edge)).corner_radius(8.0).inner_margin(12.0)
@@ -6741,6 +6901,19 @@ impl Game {
                 ui.label(RichText::new(&def.description).weak().italics());
                 ui.separator();
                 ui.label(RichText::new(format!("{n} carried, used up a shot at a time. Plain {} never run out.", def.shot().plural())).weak());
+                ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
+                return;
+            }
+            Item::Jewel(j) => {
+                let (category, tier) = crate::jewels::parts(j);
+                let rarity = &self.library.rarities[tier.min(self.library.rarities.len() - 1)];
+                ui.label(RichText::new(crate::jewels::name(j)).size(19.0).strong().color(crate::jewels::tint(j)));
+                ui.label(RichText::new(format!("A jewel for {} {}", rarity.display_name.to_lowercase(), category.weapons())).weak());
+                ui.separator();
+                ui.label(RichText::new("Set into a socket of a weapon it fits, it lifts the weapon an item level, and its blows, its special and its power with it.").color(good));
+                ui.label(RichText::new(format!("Never past item level {}. Once set it can't be taken out.", levels::ITEM_CAP)).weak());
+                ui.label(RichText::new("Drag it onto the weapon, or pick the weapon and set it from its card.").weak());
+                ui.label(format!("{count} carried"));
                 ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
                 return;
             }
@@ -6868,6 +7041,30 @@ impl Game {
                 };
                 ui.label(RichText::new(format!("·  {how}  ·  {:+.0}% damage", (levels::weapon_power(level) - 1.0) * 100.0)).weak());
             });
+            // Its sockets, filled and empty, in its jewels' colour
+            if let Some(category) = crate::jewels::category_of(weapon.kind()) {
+                let j = crate::jewels::jewel(category, weapon.grade);
+                let sockets = crate::jewels::sockets(weapon.grade);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Sockets").weak());
+                    for k in 0..sockets {
+                        let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
+                        let c = rect.center();
+                        let gem = [c + vec2(0.0, -7.0), c + vec2(6.0, 0.0), c + vec2(0.0, 7.0), c + vec2(-6.0, 0.0)];
+                        if k < weapon.jewels {
+                            ui.painter().circle_filled(c, 8.0, crate::jewels::tint(j).gamma_multiply(0.35));
+                            ui.painter().add(egui::Shape::convex_polygon(gem.to_vec(), crate::jewels::tint(j), Stroke::new(1.0f32, Color32::WHITE)));
+                        } else {
+                            ui.painter().add(egui::Shape::closed_line(gem.to_vec(), Stroke::new(1.5f32, Color32::from_gray(130))));
+                        }
+                    }
+                    let left = sockets - weapon.jewels.min(sockets);
+                    let name = crate::jewels::name(j);
+                    let a = if name.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+                    let note = if left == 0 { "all filled".to_owned() } else { format!("{left} free, for {a} {name}") };
+                    ui.label(RichText::new(note).weak());
+                });
+            }
         }
         // How well it came out of the forge, and what the rarity and weight of its parts make of
         // its blows, so two of the same can be told apart
@@ -7089,6 +7286,12 @@ impl Game {
     fn draw_icon(&self, painter: &egui::Painter, item: Item, center: Pos2, size: f32) {
         let r = size * 0.5;
         match item {
+            // Drawn from its model, made into a picture the first time one's shown, see jewels::icon()
+            Item::Jewel(j) => {
+                let icons = self.jewel_icons.get_or_init(|| (0..crate::jewels::KINDS as u8).map(|k| painter.ctx().load_texture(format!("jewel {k}"), crate::jewels::icon(&crate::assets::root(), k, 48), egui::TextureOptions::LINEAR)).collect());
+                let rect = Rect::from_center_size(center, vec2(size * 1.25, size * 1.25));
+                painter.image(icons[j as usize % icons.len()].id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            }
             // A sheaf of arrows or bolts, or a pouch of shot, tipped with their element
             Item::Ammo(k, _) => {
                 let def = &self.library.ammo[k];
@@ -8102,6 +8305,72 @@ mod tests {
         odd.skills = vec!["no such node".into(), "melee_n7".into()];
         other.restore(&odd, &save::WorldSave::default(), (50.0, 50.0, 50.0));
         assert_eq!(other.taken.iter().filter(|t| **t).count(), 1);
+    }
+
+    /// A jewel sets only into a weapon of its own kind and rarity with a socket free, lifting it a
+    /// level each, never past the item level cap; the jewels carried and those set go in the save
+    /// and come back; a save from before them has every socket empty
+    #[test]
+    fn jewels_set_lift_weapons_and_are_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.slots.clear();
+        // A rare melee weapon and a common bow
+        let library = Library::load();
+        let rare = (0..4000u32).map(|s| library.generate(hash(s ^ 0x7e3), None, 2.0)).find(|w| w.grade == 2 && w.kind() == Kind::Melee && library.families[w.family].tool.is_none()).unwrap();
+        let bow = (0..4000u32).map(|s| library.generate(hash(s ^ 0x7e4), None, 0.5)).find(|w| w.grade == 0 && w.kind() == Kind::Ranged).unwrap();
+        game.give_weapon(rare);
+        game.give_weapon(bow);
+        let slot_of = |g: &Game, f: &dyn Fn(Item) -> bool| g.slots.iter().position(|(i, _)| f(*i)).unwrap();
+        let sword = slot_of(&game, &|i| matches!(i, Item::Weapon(_)));
+        let Item::Weapon(w) = game.slots[sword].0 else { panic!() };
+        assert_eq!(game.weapons[w].grade, 2);
+        game.weapons[w].set_level(20, 0);
+        game.give_jewels("melee_rare", 3);
+        game.give_jewels("ranged_rare", 1);
+        game.give_jewels("melee_epic", 1);
+        let jewel = |g: &Game, id: &str| slot_of(g, &|i| i == Item::Jewel(crate::jewels::by_id(id).unwrap()));
+        // Not another kind's, nor another rarity's
+        assert!(!game.socket(jewel(&game, "ranged_rare"), sword));
+        assert!(!game.socket(jewel(&game, "melee_epic"), sword));
+        let before = game.weapons[w].profile.stat("physicalDamage");
+        assert!(game.socket(jewel(&game, "melee_rare"), sword));
+        assert_eq!(game.weapons[w].item_level(), 21);
+        assert!(game.weapons[w].profile.stat("physicalDamage") > before);
+        assert!(game.socket(jewel(&game, "melee_rare"), sword));
+        // A rare one has two sockets, both full now
+        assert!(!game.socket(jewel(&game, "melee_rare"), sword));
+        assert_eq!((game.weapons[w].jewels, game.weapons[w].item_level()), (2, 22));
+        assert_eq!(game.slots[jewel(&game, "melee_rare")].1, 1);
+        // Never past the cap
+        game.weapons[w].set_level(levels::ITEM_CAP - 1, 0);
+        assert!(game.socket(jewel(&game, "melee_rare"), sword));
+        assert_eq!(game.weapons[w].item_level(), levels::ITEM_CAP);
+        game.give_jewels("melee_rare", 1);
+        assert!(!game.socket(jewel(&game, "melee_rare"), sword), "past the cap");
+        game.weapons[w].set_level(levels::ITEM_CAP, 2);
+        assert_eq!(game.weapons[w].item_level(), levels::ITEM_CAP);
+        // Saved and back
+        game.weapons[w].set_level(30, 1);
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &game.world_save(), game.vitals());
+        assert_eq!(other.carried_save(), game.carried_save());
+        let Item::Weapon(ow) = other.slots[sword].0 else { panic!() };
+        assert_eq!((other.weapons[ow].jewels, other.weapons[ow].item_level()), (1, 31));
+        assert!(other.slots.iter().any(|(i, n)| *i == Item::Jewel(crate::jewels::by_id("melee_rare").unwrap()) && *n == 1));
+        // From before there were jewels: every socket empty
+        let mut old = carried.clone();
+        for slot in &mut old.slots {
+            if let save::ItemSave::Weapon(sw) = &mut slot.item {
+                sw.jewels = 0;
+            }
+        }
+        let text = serde_json::to_string(&old).unwrap();
+        other.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        let Item::Weapon(ow) = other.slots[sword].0 else { panic!() };
+        assert_eq!((other.weapons[ow].jewels, other.weapons[ow].item_level()), (0, 30));
     }
 
     /// While a realm's guardians stand its raid bosses are warded, but not its finale, its

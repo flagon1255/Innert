@@ -1,0 +1,25 @@
+{
+  "what": "Common Verdant Eye, a jewel for bows, crossbows and guns: colour 1 its body, 2 its lighter facets, 3 gold, 4 white sparks",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    7,
+    9
+  ],
+  "pivot": [
+    3.0,
+    3.0,
+    0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    0
+  ],
+  "note": "A jewel, drawn only as its icon, in the inventory, the quick bar and a weapon's card. Its colours are its own, not materials: 1 its body, 2 its lighter facets, 3 gold, 4 white sparks. Change them in MagicaVoxel's palette.",
+  "written": [
+    1911,
+    "948e041ba0b1160c"
+  ]
+}

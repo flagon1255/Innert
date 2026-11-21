@@ -198,6 +198,10 @@ pub enum ItemSave {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         of: Option<String>,
     },
+    /// A jewel, by its kind's id, see jewels::id()
+    Jewel {
+        of: String,
+    },
     /// Something from a later Innert this one doesn't know: left out
     #[serde(other)]
     Unknown,
@@ -597,6 +601,7 @@ mod tests {
                     SlotSave { item: ItemSave::Weapon(WeaponSave { family: "bow".into(), parts: vec!["x".into()], seed: 7, name: Some("Fang of Ysveth".into()), level: None, jewels: 0 }), count: 1 },
                     SlotSave { item: ItemSave::Ammo { id: "broadhead_arrows".into(), rounds: 12 }, count: 1 },
                     SlotSave { item: ItemSave::Apple, count: 3 },
+                    SlotSave { item: ItemSave::Jewel { of: "melee_rare".into() }, count: 2 },
                     SlotSave { item: ItemSave::Bucket, count: 1 },
                 ],
                 worn: Some("gull".into()),

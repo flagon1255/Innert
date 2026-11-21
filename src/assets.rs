@@ -1062,6 +1062,29 @@ pub fn write_sidecar(dir: &Path, name: &str, model: &Model, mut sidecar: Sidecar
     Ok(path)
 }
 
+/// Writes a jewel's model to `path`, in its own colours rather than the materials', with its .json
+/// beside it, see jewels::export()
+pub(crate) fn write_jewel(path: &Path, grid: &Grid, palette: &[[u8; 4]; 256], what: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let bytes = vox::write(grid, palette);
+    let sidecar = Sidecar {
+        what: what.into(),
+        voxels_per_meter: MODEL_RES,
+        size: grid.size,
+        pivot: [-grid.origin[0] as f64, -grid.origin[1] as f64, -grid.origin[2] as f64],
+        anchor: None,
+        origin: grid.origin,
+        points: BTreeMap::new(),
+        note: "A jewel, drawn only as its icon, in the inventory, the quick bar and a weapon's card. Its colours are its own, not materials: 1 its body, 2 its lighter facets, 3 gold, 4 white sparks. Change them in MagicaVoxel's palette.".into(),
+        written: Some((bytes.len() as u64, hash_of(&bytes))),
+    };
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let json = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
+    std::fs::write(path.with_extension("json"), json).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Writes palette.txt, saying which colour index is which material, and palette.png, which
 /// MagicaVoxel can load as its palette
 pub fn write_palette(dir: &Path) -> Result<(), String> {
@@ -1234,6 +1257,8 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
     }
     // Weapons' parts
     crate::weapon_parts::export(dir, &library, &mut lines)?;
+    // Jewels, see jewels.rs
+    crate::jewels::export(dir, &mut lines)?;
     // The trees' numbers, beside assets\models as the game reads them, see worldgen\trees.rs
     let trees = if dir == root() { crate::worldgen::trees_path() } else { dir.join("trees.json") };
     std::fs::write(&trees, serde_json::to_string_pretty(&crate::worldgen::TreeBook::default()).map_err(|e| e.to_string())? + "\n").map_err(|e| e.to_string())?;

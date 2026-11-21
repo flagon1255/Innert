@@ -85,6 +85,7 @@ mod gather;
 mod gpu_timing;
 mod hearths;
 mod hot_reload;
+mod jewels;
 mod leaves;
 mod levels;
 mod serpent_lairs;
@@ -2448,6 +2449,17 @@ impl App {
         }
         if let Some(family) = setting("weapon") {
             game.select_family(family);
+        }
+        // `--set jewels=melee_rare:3,magic_common:1` gives those jewels, see jewels.rs, and
+        // `socket=1` sets one of each into the first weapon carried it fits
+        if let Some(list) = setting("jewels") {
+            for part in list.split(',') {
+                let (id, n) = part.split_once(':').map_or((part, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
+                game.give_jewels(id, n);
+            }
+        }
+        if flag("socket", false) {
+            game.socket_some();
         }
         // `--set ammo=fire_bolts` gives a few bundles of that special ammo and loads it
         if let Some(id) = setting("ammo") {
