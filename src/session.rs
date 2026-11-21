@@ -270,6 +270,10 @@ impl App {
         if fresh {
             self.game.new_character(save.seed);
         } else {
+            // A save from before there were levels: the player, and what they carry, at the floor of
+            // the furthest realm they've reached, see levels::legacy_level()
+            let reached = self.session.realms.as_ref().and_then(|r| r.visited.iter().max()).map_or(0, |&r| r as usize);
+            self.game.set_legacy_level(crate::levels::legacy_level(reached));
             let p = &save.player;
             self.game.restore(&save.carried, &done, (p.health, p.hunger, p.mana));
         }
@@ -361,6 +365,7 @@ impl App {
                 // Harder too the further on the journey's been, see realms::scaling_in()
                 let reached = self.session.realms.as_ref().and_then(|r| r.visited.iter().max()).map_or(realm, |&r| (r as usize).max(realm));
                 self.game.set_scaling(realms::scaling_in(realm, reached, journeys));
+                self.game.set_band(crate::levels::band_in(realm, reached));
                 self.game.set_crowd(realms::crowd(realm, reached));
                 // Hooks and wings on sale once the way to the sky isles is open
                 self.game.set_sky_wares(self.session.realms.as_ref().is_some_and(|r| r.unlocked.contains(&(realms::HOOK_REALM as u32))));
@@ -391,6 +396,8 @@ impl App {
             }
             _ => {
                 self.game.set_scaling(realms::Scaling::NONE);
+                // Free Roam has no realms: everything comes at the player's own level
+                self.game.set_band(crate::levels::Band::ANY);
                 self.game.set_crowd(0);
                 // Free Roam's merchants have hooks and wings to sell from the first
                 self.game.set_sky_wares(self.session.mode == Some(Mode::FreeRoam));
@@ -555,10 +562,12 @@ impl App {
         let from = std::mem::replace(&mut self.session.world, realm.id.to_owned());
         self.session.others.insert(from, left);
         let there = self.session.others.remove(realm.id).unwrap_or_default();
+        let mut first_time = false;
         if let Some(progress) = &mut self.session.realms {
             progress.realm = to as u32;
             if !progress.visited.contains(&(to as u32)) {
                 progress.visited.push(to as u32);
+                first_time = true;
             }
         }
         // Its landscape and what's been done to it
@@ -593,6 +602,10 @@ impl App {
         self.session.gate_open = false;
         self.rebuild_world();
         self.game.say(if to == 0 { "You step back through to the Innert Gate.".to_owned() } else { format!("You step through into {}.", realm.name) });
+        // Coming to a realm for the first time is worth something, see levels::first_visit()
+        if first_time && to > 0 {
+            self.game.gain_experience(crate::levels::first_visit(to), None);
+        }
     }
 
     /// For trying out the journey: as if it had got as far as realm `realm`, each realm before it
@@ -961,7 +974,7 @@ impl App {
         let (mut health, mut hunger, mana) = self.game.vitals();
         // Slain, they go on as they'd rise again
         let at = if self.game.dead() {
-            health = game::MAX_HEALTH;
+            health = self.game.max_health();
             hunger = hunger.max(40.0);
             self.game.rest_spot().unwrap_or(at)
         } else {

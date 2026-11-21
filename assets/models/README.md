@@ -228,3 +228,11 @@ Delete the file to go back to the code's animation.
 - If MagicaVoxel isn't found where it's usually installed, start the game with
   `--set magicavoxel=<path to MagicaVoxel.exe>`. Otherwise the editor shows the file's path to open
   yourself.
+
+## Jewels
+
+`jewels/` holds a file for each kind of jewel, `melee_rare.vox` and the like, see `src/jewels.rs`.
+They're drawn only as icons, in the inventory, the quick bar and a weapon's card. Unlike the rest,
+their colours aren't materials: colour 1 is a jewel's body, 2 its lighter facets, 3 gold and
+4 white sparks. Change them in MagicaVoxel's palette, or change the shape, and save: the game
+draws its icon from the file from then on. Delete the file for the code's jewel back.
