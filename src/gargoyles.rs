@@ -71,12 +71,12 @@ pub fn lore(look: Look) -> &'static str {
 
 pub fn health(look: Look) -> f64 {
     match look {
-        Look::Gargoyle => 260.0,
-        Look::BloodGargoyle => 280.0,
-        Look::RimeGargoyle => 280.0,
-        Look::CinderGargoyle => 300.0,
-        Look::MossGargoyle => 270.0,
-        Look::Grotesque => 3400.0,
+        Look::Gargoyle => 210.0,
+        Look::BloodGargoyle => 210.0,
+        Look::RimeGargoyle => 210.0,
+        Look::CinderGargoyle => 210.0,
+        Look::MossGargoyle => 210.0,
+        Look::Grotesque => 3000.0,
         _ => 15500.0,
     }
 }

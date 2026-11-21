@@ -130,13 +130,13 @@ pub fn lore(look: Look) -> &'static str {
 /// How much damage it takes to kill one
 pub fn health(look: Look) -> f64 {
     match look {
-        Look::Ashwing => 190.0,
-        Look::Sleetwing => 170.0,
+        Look::Ashwing => 175.0,
+        Look::Sleetwing => 175.0,
         Look::Squallwing => 175.0,
-        Look::Blightwing => 200.0,
-        Look::PyreMatriarch => 15500.0,
-        Look::CindermawTyrant => 17500.0,
-        Look::GildscaleHoardwarden => 16000.0,
+        Look::Blightwing => 175.0,
+        Look::PyreMatriarch => 14500.0,
+        Look::CindermawTyrant => 15500.0,
+        Look::GildscaleHoardwarden => 14500.0,
         // The drakes are as hard to kill as they always were, see Look::health()
         Look::Drake | Look::VenomDrake | Look::FrostWyrm | Look::StormDrake | Look::ElderWyrm => look.health(),
         // The Worldpyre Ancient, a finale wherever it is, raised to 46000 as one, see
@@ -1670,7 +1670,7 @@ struct Power {
 
 fn power(look: Look) -> Power {
     match look {
-        _ if is_drakeling(look) => Power { bite: 9.0, claw: 11.0, tail: 10.0, stomp: 0.0, crack: 0.0, breath: 16.0, ball: 10.0, rain: 0.0, gust: 4.0, push: 7.0 },
+        _ if is_drakeling(look) => Power { bite: 11.0, claw: 13.0, tail: 12.0, stomp: 0.0, crack: 0.0, breath: 16.0, ball: 12.0, rain: 0.0, gust: 4.0, push: 7.0 },
         Look::WorldpyreAncient => Power { bite: 34.0, claw: 32.0, tail: 36.0, stomp: 38.0, crack: 22.0, breath: 28.0, ball: 22.0, rain: 20.0, gust: 11.0, push: 12.0 },
         // A raid boss's blows, a third again as hard as a drake's, as they always were
         Look::ElderWyrm => Power { bite: 29.0, claw: 29.0, tail: 28.0, stomp: 30.0, crack: 16.0, breath: 24.0, ball: 24.0, rain: 18.0, gust: 9.0, push: 10.0 },
@@ -1685,6 +1685,13 @@ fn power(look: Look) -> Power {
         }
         _ => Power { bite: 26.0, claw: 28.0, tail: 30.0, stomp: 32.0, crack: 18.0, breath: 24.0, ball: 18.0, rain: 17.0, gust: 9.0, push: 10.0 },
     }
+}
+
+/// How hard its everyday blows hit, its jaws, its claws and what it spits, on the whole, for
+/// bosses::blow()
+pub fn blow(look: Look) -> f64 {
+    let p = power(look);
+    (p.bite + p.claw + p.ball) / 3.0
 }
 
 /// How near the player has to come before it turns on them, how far off they can get before it
@@ -4324,7 +4331,7 @@ mod tests {
     fn the_drakes_are_dragons_and_keep_their_roles() {
         use crate::animals::Build;
         let elements = [Element::Fire, Element::Poison, Element::Frost, Element::Storm, Element::Fire];
-        let healths = [2200.0, 2200.0, 2400.0, 2300.0, 13000.0];
+        let healths = [2600.0, 2600.0, 2600.0, 2600.0, 13500.0];
         for (k, look) in DRAKES.into_iter().enumerate() {
             assert_eq!(look.build(), Some(Build::Dragon), "{look:?}");
             assert!(look.is_dragon() && look.is_boss() && look.flies() && !is_drakeling(look) && !is_great(look));

@@ -745,28 +745,28 @@ fn closeness(look: Look) -> (f64, f64) {
 /// hard it hits, and how big a hole it blows
 fn slam(look: Look) -> (f64, f64, f64, f64) {
     match look {
-        Look::Wolf => (1.0, 1.3, 8.0, 0.0),
-        Look::Spiderling => (0.6, 1.0, 5.0, 0.0),
-        Look::Skeleton => (1.4, 1.6, 20.0, 0.0),
-        Look::ArmoredSkeleton => (1.4, 1.7, 23.0, 0.0),
-        Look::Zombie => (1.1, 1.5, 14.0, 0.0),
-        Look::ArmoredZombie => (1.1, 1.6, 17.0, 0.0),
-        Look::Bandit => (1.4, 1.5, 15.0, 0.0),
-        Look::BanditBrute => (1.5, 1.8, 26.0, 0.0),
+        Look::Wolf => (1.0, 1.3, 9.0, 0.0),
+        Look::Spiderling => (0.6, 1.0, 6.0, 0.0),
+        Look::Skeleton => (1.4, 1.6, 15.0, 0.0),
+        Look::ArmoredSkeleton => (1.4, 1.7, 17.0, 0.0),
+        Look::Zombie => (1.1, 1.5, 13.0, 0.0),
+        Look::ArmoredZombie => (1.1, 1.6, 15.0, 0.0),
+        Look::Bandit => (1.4, 1.5, 13.0, 0.0),
+        Look::BanditBrute => (1.5, 1.8, 20.0, 0.0),
         // A crossbowman's stock, a mace over the top of a shield, pincers and a sting, icy claws,
         // a bite, a gloomwing's teeth and a tusker's goring
         Look::Crossbowman => (1.2, 1.3, 9.0, 0.0),
-        Look::Shieldbearer => (1.4, 1.6, 18.0, 0.0),
+        Look::Shieldbearer => (1.4, 1.6, 15.0, 0.0),
         Look::DuneBurrower => (1.2, 1.5, 12.0, 0.0),
         Look::RimeWraith => (1.2, 1.4, 12.0, 0.0),
-        Look::MireLurker => (1.3, 1.6, 15.0, 0.0),
-        Look::Gloomwing => (0.5, 1.0, 5.0, 0.0),
-        Look::Tusker => (1.6, 1.8, 22.0, 0.0),
+        Look::MireLurker => (1.3, 1.6, 13.0, 0.0),
+        Look::Gloomwing => (0.5, 1.0, 6.0, 0.0),
+        Look::Tusker => (1.6, 1.8, 19.0, 0.0),
         // A serpent's bite, out where its head lunges to
         Look::ReedViper => (1.8, 1.05, 12.0, 0.0),
-        Look::SiltCoiler => (2.0, 1.2, 15.0, 0.0),
-        Look::GaleSerpent => (1.7, 1.0, 9.0, 0.0),
-        Look::BloodAdder => (1.6, 1.0, 11.0, 0.0),
+        Look::SiltCoiler => (2.0, 1.2, 13.0, 0.0),
+        Look::GaleSerpent => (1.7, 1.0, 11.0, 0.0),
+        Look::BloodAdder => (1.6, 1.0, 12.0, 0.0),
         Look::DriftSerpent => (1.8, 1.1, 12.0, 0.0),
         // A great serpent's jaws snapping shut out where its head lunged to
         _ if look.is_great_serpent() => {
@@ -777,8 +777,8 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         // A bloater bursting where it stands, a ghoul's claws, a brute's gravestone, an archer's
         // bow swung like a club and a necromancer's staff
         Look::Bloater => (0.0, 2.4, 14.0, 0.0),
-        Look::Ghoul => (1.1, 1.4, 10.0, 0.0),
-        Look::GraveBrute => (1.9, 2.1, 25.0, 0.0),
+        Look::Ghoul => (1.1, 1.4, 11.0, 0.0),
+        Look::GraveBrute => (1.9, 2.1, 21.0, 0.0),
         Look::BoneArcher => (1.1, 1.2, 8.0, 0.0),
         Look::Necromancer => (1.2, 1.3, 9.0, 0.0),
         Look::GraveKnight => (2.8, 3.6, 32.0, 1.0),
@@ -808,6 +808,19 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
             Some(Build::Wolf) => (2.2, 3.0, 24.0, 0.4),
             _ => (2.0, 2.6, 22.0, 0.5),
         },
+    }
+}
+
+/// How hard what a monster lands on the player most hits, before its level's damage, see
+/// levels::damage(): its blow, or what it shoots or casts if it keeps its distance, see Deed::Bolt
+/// and Deed::Spit in game.rs. For the balance of the realms, see realm_balance in game.rs.
+#[allow(dead_code)]
+pub fn blow(look: Look) -> f64 {
+    match look {
+        _ if look.is_dragon() => crate::dragons::blow(look),
+        _ if look.is_winged() => crate::avians::blow(look),
+        Look::Crossbowman | Look::BoneArcher | Look::Necromancer | Look::RimeWraith => 11.0,
+        _ => slam(look).2,
     }
 }
 

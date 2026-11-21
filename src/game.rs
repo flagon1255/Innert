@@ -264,6 +264,83 @@ fn foe_level_tint(level: u32, player: u32) -> Color32 {
     }
 }
 
+/// How many steps up a health bar's lifted at most to clear the bars of what's nearer before it's
+/// left out, and the gap left between them in pixels, see place_bars()
+const BAR_LIFTS: u8 = 2;
+const BAR_GAP: f32 = 2.0;
+/// What's made of a bar left out
+const BAR_HIDDEN: u8 = u8::MAX;
+/// How much room in pixels a bar that was lifted or left out needs before it comes back down, so
+/// bars bunched up don't flicker between one place and another
+const BAR_SPARE: f32 = 5.0;
+/// How much nearer a bar that wasn't lifted counts as than it is, when it comes to which of two is
+/// lifted, so two about as far off don't take turns at it
+const BAR_KEEP: f32 = 0.9;
+/// Health bars fade from this far off, in meters, to this far, where they're this much of what
+/// they were
+const BAR_FADE: [f32; 3] = [25.0, 60.0, 0.55];
+
+/// Seconds a health bar shows for after a hit, see combat::Status::shown, and how long ago at most
+/// a hit can have been for what was hit to have its bar placed first, see focus_bars()
+const BAR_SHOWN: f64 = 4.0;
+const BAR_HIT: f64 = 3.0;
+/// Seconds the crosshair has to stay on something before its bar's placed first, so sweeping it
+/// across a pack doesn't shuffle their bars about, and seconds at the least a bar's placed first
+/// before a hit on something else takes that from it
+const BAR_DWELL: f64 = 0.25;
+const BAR_HOLD: f64 = 0.5;
+
+/// Whose health bar's placed first, never lifted nor left out, see focus_bars()
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct BarFocus {
+    /// The id of what it's over, and when it was last made so, in seconds
+    on: Option<(u32, f64)>,
+    /// What the crosshair's on, and since when
+    aimed: Option<(u32, f64)>,
+}
+
+/// Whose bar's placed first at `now`, in seconds, with `last` what it was a frame before: what
+/// the crosshair's on, `aimed`, once it's stayed there BAR_DWELL; else what was hit last, `hit`
+/// with when, if that was since the bar placed first was, and that's been so for BAR_HOLD at the
+/// least, or there's none; else the same as before, while its bar's `shown`
+fn focus_bars(last: BarFocus, now: f64, aimed: Option<u32>, hit: Option<(u32, f64)>, shown: impl Fn(u32) -> bool) -> BarFocus {
+    let aimed = aimed.map(|id| last.aimed.filter(|a| a.0 == id).unwrap_or((id, now)));
+    let held = last.on.filter(|&(id, _)| shown(id));
+    let on = match (aimed, hit) {
+        (Some((id, since)), _) if now - since >= BAR_DWELL => Some((id, now)),
+        (_, Some((id, at))) if held.is_none_or(|(was, since)| was != id && at > since && now - since >= BAR_HOLD) => Some((id, now)),
+        _ => held,
+    };
+    BarFocus { on, aimed }
+}
+
+/// Where each health bar goes, of those in `plates`, nearest first, each the id of what it's over
+/// and where it'd be with its level's badge: how many steps up it's lifted to clear those nearer,
+/// up to BAR_LIFTS, or BAR_HIDDEN if it's left out. The bar over `focus` goes down first, where it
+/// is, see focus_bars(). `last` is what was made of them last frame, sorted by id, as is what
+/// comes back.
+fn place_bars(plates: &[(u32, Rect)], last: &[(u32, u8)], focus: Option<u32>) -> Vec<(u32, u8)> {
+    let mut placed: Vec<Rect> = Vec::with_capacity(plates.len());
+    let mut lifts = Vec::with_capacity(plates.len());
+    let first = plates.iter().filter(|p| Some(p.0) == focus);
+    for &(id, rect) in first.chain(plates.iter().filter(|p| Some(p.0) != focus)) {
+        let was = last.binary_search_by_key(&id, |e| e.0).ok().map(|k| last[k].1);
+        let step = rect.height() + BAR_GAP;
+        let lift = (0..=BAR_LIFTS).find(|&k| {
+            // Lower than it was only with room to spare
+            let spare = if was.is_some_and(|w| k < w) { BAR_SPARE } else { 0.0 };
+            let at = rect.translate(vec2(0.0, -step * k as f32)).expand(spare + BAR_GAP * 0.5);
+            placed.iter().all(|p| !p.intersects(at))
+        });
+        if let Some(k) = lift {
+            placed.push(rect.translate(vec2(0.0, -step * k as f32)));
+        }
+        lifts.push((id, lift.unwrap_or(BAR_HIDDEN)));
+    }
+    lifts.sort_unstable_by_key(|e| e.0);
+    lifts
+}
+
 /// And a weapon's item level: green over the player's, white the same, grey under
 fn item_level_tint(level: u32, player: u32) -> Color32 {
     match level.cmp(&player) {
@@ -848,6 +925,12 @@ pub struct Game {
     pub skill_view: skills::View,
     /// The jewels' icons, made the first time one's drawn, see jewels::icon()
     jewel_icons: std::cell::OnceCell<Vec<egui::TextureHandle>>,
+    /// Where each health bar over what's been hurt went last frame, by the id of what it's over, see
+    /// place_bars()
+    bar_lifts: std::cell::RefCell<Vec<(u32, u8)>>,
+    /// Whose bar's laid down first, see focus_bars(), and the clock it goes by
+    bar_focus: std::cell::RefCell<BarFocus>,
+    bar_clock: Instant,
     /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
     /// with which realm's each leaves
     raid_lairs: HashMap<[i64; 3], u8>,
@@ -1084,6 +1167,9 @@ impl Game {
             claimed: HashSet::new(),
             skill_view: skills::View::new(),
             jewel_icons: std::cell::OnceCell::new(),
+            bar_lifts: Default::default(),
+            bar_focus: Default::default(),
+            bar_clock: Instant::now(),
             raid_lairs: HashMap::new(),
             sky_wares: false,
             covered: false,
@@ -6053,6 +6139,106 @@ impl Game {
         }
     }
 
+    /// Health bars over what's just been hurt, bosses aside, which have theirs along the top: a bar
+    /// over each, narrower the further off it is, and for a monster its level on a badge stuck to
+    /// the bar's left end, so it goes with its own bar. Both fade as the bar does, and with
+    /// distance, see BAR_FADE. Where bars bunch up, the bar of what the crosshair's on or what was hit
+    /// last is laid down first, see focus_bars(), then the rest nearest first, and one that'd come
+    /// over one laid down already is lifted clear of it or left out, see place_bars().
+    fn health_bars(&self, painter: &egui::Painter, view: &View, on_screen: &dyn Fn(Vector3<f64>) -> Option<Pos2>) {
+        let vpm = view.vpm;
+        struct Plate {
+            id: u32,
+            distance: f32,
+            bar: Rect,
+            badge: Option<(Rect, std::sync::Arc<egui::Galley>, Color32)>,
+            vitality: f32,
+            alpha: f32,
+            shown: f64,
+        }
+        let mut plates = Vec::new();
+        // What the crosshair's on, of those with bars, however far off
+        let (eye, look) = (view.eye, view.forward());
+        let mut aimed: Option<(u32, f64)> = None;
+        for animal in &self.animals {
+            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() {
+                continue;
+            }
+            let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
+            let Some(at) = on_screen(top) else {
+                continue;
+            };
+            let distance = ((top - view.eye).norm() / vpm).max(1.0) as f32;
+            let width = (70.0 / distance.sqrt()).clamp(24.0, 70.0);
+            let fade = 1.0 - (1.0 - BAR_FADE[2]) * ((distance - BAR_FADE[0]) / (BAR_FADE[1] - BAR_FADE[0])).clamp(0.0, 1.0);
+            let alpha = animal.status.shown.min(1.0) as f32 * fade;
+            let bar = Rect::from_center_size(at, vec2(width, 5.0));
+            // Its level, in how it stands to the player's, a little smaller the further off, never
+            // too small to read
+            let badge = (animal.level > 0 && (animal.look.is_monster() || animal.look.build().is_some())).then(|| {
+                let size = 11.5 + 1.5 * ((width - 24.0) / 46.0).clamp(0.0, 1.0);
+                let galley = painter.layout_no_wrap(animal.level.to_string(), FontId::proportional(size), Color32::PLACEHOLDER);
+                let room = vec2(galley.size().x + 7.0, galley.size().y.max(bar.height() + 7.0));
+                let badge = Rect::from_min_size(pos2(bar.left() + 2.0 - room.x, bar.center().y - room.y * 0.5), room);
+                (badge, galley, foe_level_tint(animal.level, self.level))
+            });
+            let (height, radius) = animal.look.body();
+            let to = animal.position + Vector3::new(0.0, 0.0, height * vpm) - eye;
+            let along = to.dot(&look);
+            if along > 0.0 && (to - look * along).norm() < radius * vpm && aimed.is_none_or(|(_, best)| along < best) {
+                aimed = Some((animal.id, along));
+            }
+            plates.push(Plate { id: animal.id, distance, bar, badge, vitality: animal.vitality() as f32, alpha, shown: animal.status.shown });
+        }
+        if plates.is_empty() {
+            self.bar_lifts.borrow_mut().clear();
+            *self.bar_focus.borrow_mut() = BarFocus::default();
+            return;
+        }
+        // What was hit last, within BAR_HIT, and when: the first of them by id if several were at once
+        let now = self.bar_clock.elapsed().as_secs_f64();
+        let hit = plates
+            .iter()
+            .filter(|p| p.shown > BAR_SHOWN - BAR_HIT)
+            .max_by(|a, b| a.shown.min(BAR_SHOWN).total_cmp(&b.shown.min(BAR_SHOWN)).then(b.id.cmp(&a.id)))
+            .map(|p| (p.id, now - (BAR_SHOWN - p.shown.min(BAR_SHOWN))));
+        let focus = focus_bars(*self.bar_focus.borrow(), now, aimed.map(|a| a.0), hit, |id| plates.iter().any(|p| p.id == id));
+        *self.bar_focus.borrow_mut() = focus;
+        let focus = focus.on.map(|f| f.0);
+        // Nearest first; one that wasn't lifted last frame counts as a little nearer, so two about as
+        // far off don't take turns at being lifted
+        let last = self.bar_lifts.borrow().clone();
+        let was = |id: u32| last.binary_search_by_key(&id, |e| e.0).ok().map(|k| last[k].1);
+        let rank = |p: &Plate| p.distance * if was(p.id) == Some(0) { BAR_KEEP } else { 1.0 };
+        plates.sort_by(|a, b| rank(a).total_cmp(&rank(b)).then(a.id.cmp(&b.id)));
+        let whole = |p: &Plate| p.badge.as_ref().map_or(p.bar.expand(1.5), |(b, _, _)| b.union(p.bar.expand(1.5)));
+        let lifts = place_bars(&plates.iter().map(|p| (p.id, whole(p))).collect::<Vec<_>>(), &last, focus);
+        // Furthest first, so the nearer are drawn over them, and the one laid down first last
+        let order = plates.iter().rev().filter(|p| Some(p.id) != focus).chain(plates.iter().filter(|p| Some(p.id) == focus));
+        for p in order {
+            let Ok(k) = lifts.binary_search_by_key(&p.id, |e| e.0) else {
+                continue;
+            };
+            let lift = lifts[k].1;
+            if lift == BAR_HIDDEN {
+                continue;
+            }
+            let up = vec2(0.0, -(whole(p).height() + BAR_GAP) * lift as f32);
+            let bar = p.bar.translate(up);
+            let a = p.alpha;
+            painter.rect_filled(bar.expand(1.5), 3.0, Color32::from_black_alpha((128.0 * a) as u8));
+            let fill = Rect::from_min_size(bar.min, vec2(bar.width() * p.vitality, bar.height()));
+            painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, (255.0 * a) as u8));
+            if let Some((badge, galley, tint)) = &p.badge {
+                let badge = badge.translate(up);
+                painter.rect_filled(badge, 3.0, Color32::from_black_alpha((190.0 * a) as u8));
+                painter.rect_stroke(badge, 3.0, Stroke::new(1.0f32, tint.gamma_multiply(0.75 * a)), StrokeKind::Inside);
+                painter.galley(badge.center() - galley.size() * 0.5, galley.clone(), tint.gamma_multiply(a));
+            }
+        }
+        *self.bar_lifts.borrow_mut() = lifts;
+    }
+
     /// Crosshair, and along the top the quick bar, hunger, mana and messages, drawn over the game.
     /// Damage numbers and health bars float over what was hit.
     pub fn hud(&self, ctx: &egui::Context, view: &View) {
@@ -6084,30 +6270,7 @@ impl Game {
 
         // Health bars over animals that were just hurt
         let vpm = view.vpm;
-        for animal in &self.animals {
-            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() {
-                continue;
-            }
-            let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
-            let Some(at) = on_screen(top) else {
-                continue;
-            };
-            let distance = ((top - view.eye).norm() / vpm).max(1.0) as f32;
-            let width = (70.0 / distance.sqrt()).clamp(24.0, 70.0);
-            let alpha = (animal.status.shown.min(1.0) * 255.0) as u8;
-            let bar = Rect::from_center_size(at, vec2(width, 5.0));
-            painter.rect_filled(bar.expand(1.5), 3.0, Color32::from_black_alpha(alpha / 2));
-            let fill = Rect::from_min_size(bar.min, vec2(width * animal.vitality() as f32, 5.0));
-            painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, alpha));
-            // Its level just left of the bar, in how it stands to the player's
-            if animal.level > 0 && (animal.look.is_monster() || animal.look.build().is_some()) {
-                let tag = animal.level.to_string();
-                let at = pos2(bar.left() - 4.0, bar.center().y);
-                let font = FontId::proportional(12.0);
-                painter.text(at + vec2(1.0, 1.0), Align2::RIGHT_CENTER, &tag, font.clone(), Color32::from_black_alpha(alpha / 2));
-                painter.text(at, Align2::RIGHT_CENTER, &tag, font, foe_level_tint(animal.level, self.level).gamma_multiply(alpha as f32 / 255.0));
-            }
-        }
+        self.health_bars(&painter, view, &on_screen);
         // Merchants' names over their heads, so they're easy to find, and smaller ones over the
         // villagers' when near
         for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager() || a.look.is_royal()) {
@@ -8029,11 +8192,11 @@ mod tests {
             damage * speed
         };
         let trials = 60;
-        println!("| realm | level | monster health | hits to die | same-level weapon dps (median best) | seconds to kill | pack, seconds to clear |");
-        println!("|---|---|---|---|---|---|---|");
+        // The median best weapon from the hoards of every realm's guardians and raid bosses so far,
+        // by the time the player's through each realm, at item level 1: its level's worked in below
         let mut best_by_trial = vec![0.0f64; trials];
-        let mut kills = Vec::new();
-        for (r, realm) in realms::REALMS.iter().enumerate() {
+        let mut medians = Vec::new();
+        for r in 0..realms::REALMS.len() {
             let scaling = realms::scaling_in(r, r, 0);
             let luck = loot_scaling(scaling);
             for (t, best) in best_by_trial.iter_mut().enumerate() {
@@ -8043,22 +8206,54 @@ mod tests {
                     for (l, sure) in hoard_rolls(hoard, &mut rng) {
                         rng = hash(rng ^ 0x1007);
                         let seed = if sure { library.special_seed(rng, None, l * luck) } else { rng };
-                        // At item level 1: its level's worked in below
                         *best = best.max(dps(&library.generate(seed, None, l * luck)));
                     }
                 }
             }
             let mut sorted = best_by_trial.clone();
             sorted.sort_by(f64::total_cmp);
-            let median = sorted[trials / 2];
-            let looks: Vec<Look> = realm.monsters.iter().flat_map(|p| p.looks.iter().copied()).collect();
-            let base = looks.iter().map(|l| l.health()).sum::<f64>() / looks.len() as f64;
+            medians.push(sorted[trials / 2]);
+        }
+        // A realm's monsters on the whole, each as often as it goes about there: what they can take
+        // and how hard they hit, before their levels
+        let health_of = |r: usize| realms::monster_mean(r, Look::health);
+        let blow_of = |r: usize| realms::monster_mean(r, bosses::blow);
+
+        // Every monster comes at the player's level wherever it is, so at one level the realms should
+        // stand about even: what their monsters can take, how long the weapon the player'd have by
+        // then, of the same level, takes over one, and how many of their blows fell the player
+        println!("At one level, the player's, in every realm: each realm's monsters on the whole, and against a weapon of that level, the median best from the hoards up to the realm that level's in\n");
+        println!("| level | realm | monster health | seconds to kill | hits to die |");
+        println!("|---|---|---|---|---|");
+        let mut even = Vec::new();
+        for level in [10, 25, 40] {
+            let home = levels::BANDS.iter().position(|b| (b.lo..=b.hi).contains(&level)).unwrap();
+            let weapon = medians[home] * levels::weapon_power(level);
+            let mut healths = Vec::new();
+            for (r, realm) in realms::REALMS.iter().enumerate() {
+                let health = health_of(r) * levels::toughness(level);
+                let seconds = health / weapon.max(1e-6);
+                let hits = levels::max_health(level) / (blow_of(r) * levels::damage(level));
+                println!("| {level} | {} | {health:.0} | {seconds:.2} | {hits:.1} |", realm.name);
+                even.push((level, realm.name, seconds, hits));
+                healths.push(health);
+            }
+            let mean = healths.iter().sum::<f64>() / healths.len() as f64;
+            let spread = healths.iter().map(|h| (h / mean - 1.0).abs()).fold(0.0, f64::max);
+            println!("| {level} | all, weapon {weapon:.1} dps | {mean:.0} | {:.2} | within {:.0}% of each other |", mean / weapon, spread * 100.0);
+        }
+
+        println!("\nEach realm at its own band, the floor and the top, with the median best weapon from the hoards so far:\n");
+        println!("| realm | level | monster health | hits to die | same-level weapon dps (median best) | seconds to kill | pack, seconds to clear |");
+        println!("|---|---|---|---|---|---|---|");
+        let mut kills = Vec::new();
+        for (r, realm) in realms::REALMS.iter().enumerate() {
             let pack = realm.monsters.iter().map(|p| p.looks.len()).sum::<usize>() as f64 / realm.monsters.len() as f64 + realms::crowd(r, r) as f64;
             let band = levels::BANDS[r];
             for (end, level) in [("floor", band.lo), ("top", band.hi)] {
-                let health = base * levels::toughness(level);
-                let hits = levels::max_health(level) / (10.0 * levels::damage(level));
-                let weapon = median * levels::weapon_power(level);
+                let health = health_of(r) * levels::toughness(level);
+                let hits = levels::max_health(level) / (blow_of(r) * levels::damage(level));
+                let weapon = medians[r] * levels::weapon_power(level);
                 let seconds = health / weapon.max(1e-6);
                 kills.push((realm.name, end, seconds, hits));
                 println!("| {} | {end} {level} | {health:.0} | {hits:.1} | {weapon:.1} | {seconds:.2} | {pack:.1}, {:.1} s |", realm.name, pack * seconds);
@@ -8096,11 +8291,129 @@ mod tests {
             println!("| {} | {}-{} | {across:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |", realm.name, band.lo, band.hi, levels::experience(at, levels::Slain::Monster), levels::experience(at, levels::Slain::Boss), levels::experience(at, levels::Slain::Raid), levels::experience(at, levels::Slain::Finale), levels::first_visit(r));
         }
         println!("All of it to level {}: {:.0}", levels::LEVEL_CAP, levels::total_to(levels::LEVEL_CAP));
-        // Each kill in 1.5 to 3.5 seconds, five to ten blows to fell the player, never under four
+        // At one level, each kill in 1.5 to 3.5 seconds and five to ten blows to fell the player,
+        // in every realm
+        for (level, name, seconds, hits) in even {
+            assert!((1.5..=3.5).contains(&seconds), "{name} at {level}: {seconds:.2} s a kill");
+            assert!((5.0..=10.0).contains(&hits), "{name} at {level}: {hits:.1} hits");
+        }
+        // And at its own band about the same, never under four blows
         for (name, end, seconds, hits) in kills {
             assert!((1.0..=4.0).contains(&seconds), "{name} at its {end}: {seconds:.2} s a kill");
             assert!(hits >= 4.0 && hits <= 10.5, "{name} at its {end}: {hits:.1} hits");
         }
+    }
+
+    /// Health bars bunched up never come over each other: one that would is lifted clear of those
+    /// nearer, or left out once it can't be; nudged back and forth a little from one frame to the
+    /// next, as what's under them sways, they settle and stay where they are rather than flicker;
+    /// spread out again, they all come back down; and what the crosshair's on, or what was hit
+    /// last, is laid down first, staying put as the crosshair sweeps across them
+    #[test]
+    fn bunched_health_bars_keep_clear_of_each_other_and_still() {
+        let plate = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), vec2(58.0, 15.0));
+        // Eight in a tight bunch, nearest first, as a pack of skeletons a little way off
+        let plates: Vec<(u32, Rect)> = (0..8).map(|k| (k as u32 * 7 + 3, plate(400.0 + (k % 3) as f32 * 23.0, 300.0 + (k / 3) as f32 * 9.0 - (k % 2) as f32 * 4.0))).collect();
+        let shown = |plates: &[(u32, Rect)], lifts: &[(u32, u8)]| -> Vec<Rect> {
+            plates
+                .iter()
+                .filter_map(|&(id, r)| {
+                    let k = lifts[lifts.binary_search_by_key(&id, |e| e.0).unwrap()].1;
+                    (k != BAR_HIDDEN).then(|| r.translate(vec2(0.0, -(r.height() + BAR_GAP) * k as f32)))
+                })
+                .collect()
+        };
+        let lifts = place_bars(&plates, &[], None);
+        assert_eq!(lifts.len(), plates.len());
+        assert!(lifts.windows(2).all(|w| w[0].0 < w[1].0), "sorted by id");
+        let rects = shown(&plates, &lifts);
+        for (i, a) in rects.iter().enumerate() {
+            assert!(rects[i + 1..].iter().all(|b| !a.intersects(*b)), "{lifts:?}");
+        }
+        assert_eq!(lifts.iter().find(|e| e.0 == plates[0].0).unwrap().1, 0, "the nearest stays put");
+        assert!(lifts.iter().any(|e| (1..=BAR_LIFTS).contains(&e.1)) && lifts.iter().any(|e| e.1 == BAR_HIDDEN), "{lifts:?}");
+        // Swaying two pixels either way every frame: after a frame or two to settle, nothing moves
+        let mut now = lifts.clone();
+        let mut seen = Vec::new();
+        for frame in 0..12 {
+            let sway = if frame % 2 == 0 { 2.0 } else { -2.0 };
+            let moved: Vec<(u32, Rect)> = plates.iter().enumerate().map(|(k, &(id, r))| (id, r.translate(vec2(if k % 2 == 0 { sway } else { -sway }, sway * 0.5)))).collect();
+            now = place_bars(&moved, &now, None);
+            let rects = shown(&moved, &now);
+            for (i, a) in rects.iter().enumerate() {
+                assert!(rects[i + 1..].iter().all(|b| !a.intersects(*b)), "frame {frame}: {now:?}");
+            }
+            seen.push(now.clone());
+        }
+        assert!(seen[2..].iter().all(|l| *l == seen[2]), "{seen:?}");
+        // Spread out, every one comes back down
+        let apart: Vec<(u32, Rect)> = plates.iter().enumerate().map(|(k, &(id, r))| (id, r.translate(vec2(k as f32 * 200.0, 0.0)))).collect();
+        assert!(place_bars(&apart, &now, None).iter().all(|e| e.1 == 0));
+
+        // What the crosshair's on, or what was hit last, goes down first, where it is, however far
+        // back in the bunch, and the rest keep clear of it and of each other
+        let clear = |lifts: &[(u32, u8)], when: &str| {
+            let rects = shown(&plates, lifts);
+            for (i, a) in rects.iter().enumerate() {
+                assert!(rects[i + 1..].iter().all(|b| !a.intersects(*b)), "{when}: {lifts:?}");
+            }
+        };
+        let step = |lifts: &[(u32, u8)], id: u32| lifts.iter().find(|e| e.0 == id).unwrap().1;
+        let hidden = lifts.iter().find(|e| e.1 == BAR_HIDDEN).unwrap().0;
+        let first = place_bars(&plates, &lifts, Some(hidden));
+        assert_eq!(step(&first, hidden), 0, "{first:?}");
+        clear(&first, "one left out laid down first");
+        let has_bar = |id: u32| plates.iter().any(|p| p.0 == id);
+        let frame = 1.0 / 60.0;
+        // The crosshair swept quickly across the bunch, on each for a tenth of a second: none of
+        // them comes first, and nothing moves
+        let (mut focus, mut t) = (BarFocus::default(), 0.0);
+        let mut now = lifts.clone();
+        for k in 0..plates.len() * 2 {
+            for _ in 0..6 {
+                t += frame;
+                focus = focus_bars(focus, t, Some(plates[k % plates.len()].0), None, has_bar);
+                now = place_bars(&plates, &now, focus.on.map(|f| f.0));
+            }
+        }
+        assert_eq!(focus.on, None);
+        assert_eq!(now, lifts, "a quick sweep moved bars");
+        // Slowly, a second on each: the one it's on comes first once it's stayed there a moment,
+        // and bars move only when that changes, never in between
+        for k in 0..plates.len() {
+            let on = plates[k].0;
+            for f in 0..60 {
+                t += frame;
+                let before = (focus.on.map(|f| f.0), now.clone());
+                focus = focus_bars(focus, t, Some(on), None, has_bar);
+                now = place_bars(&plates, &now, focus.on.map(|f| f.0));
+                clear(&now, "slow sweep");
+                if focus.on.map(|f| f.0) == before.0 {
+                    assert_eq!(now, before.1, "bars moved with the same one first, {f} frames onto {on}");
+                }
+                if f as f64 * frame >= BAR_DWELL + frame {
+                    assert_eq!(focus.on.map(|f| f.0), Some(on));
+                    assert_eq!(step(&now, on), 0);
+                }
+            }
+        }
+        // Off them all, the last one stays first; something else hit takes it at once, but not
+        // while it's only just been taken
+        let last = plates[plates.len() - 1].0;
+        for _ in 0..60 {
+            t += frame;
+            focus = focus_bars(focus, t, None, None, has_bar);
+        }
+        assert_eq!(focus.on.map(|f| f.0), Some(last));
+        let struck = plates[0].0;
+        t += frame;
+        focus = focus_bars(focus, t, None, Some((struck, t)), has_bar);
+        assert_eq!(focus.on.map(|f| f.0), Some(struck));
+        t += frame;
+        let again = focus_bars(focus, t, None, Some((last, t)), has_bar);
+        assert_eq!(again.on.map(|f| f.0), Some(struck), "taken again too soon");
+        // And once its bar's gone, nothing's first
+        assert_eq!(focus_bars(focus, t + 1.0, None, None, |id| id != struck).on, None);
     }
 
     /// Experience gained goes up as many levels as it makes, each raising health at full; the level,
