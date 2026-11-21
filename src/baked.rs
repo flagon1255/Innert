@@ -611,11 +611,11 @@ fn points(parts: &[Part], tag: u8) -> Vec<V> {
     parts.iter().flat_map(|p| points_of(p, tag)).collect()
 }
 
-/// The box round the shapes of bone `tag`, as they reach
+/// The box round the shapes of bone `tag`, as they reach at least a voxel thick, as they're drawn
 fn bounds(parts: &[Part], tag: u8) -> Option<(V, V)> {
     let mut out: Option<(V, V)> = None;
     for p in parts.iter().filter(|p| p.bones().0 == tag || p.bones().1 == tag) {
-        let (a, b) = p.reach();
+        let (a, b) = p.thickened(MODEL_RES).reach();
         let (a, b) = (V::from(a), V::from(b));
         out = Some(match out {
             None => (a, b),
@@ -1246,6 +1246,14 @@ pub fn has_anims(look: Look) -> bool {
     anim::active() && CLIPS.iter().any(|c| anim::load(&id_of(look), c).is_some())
 }
 
+/// Whether the animation file `file`, its path from assets\anims without .json, is one of
+/// `look`'s clips: its own, or its build's for every look of that build without one of its own
+pub fn clip_file_of(look: Look, file: &str) -> bool {
+    let id = id_of(look);
+    let build = id.split('/').next().unwrap_or_default();
+    file.strip_prefix(&format!("{id}/")).is_some_and(|c| !c.contains('/')) || file.rsplit_once('/').is_some_and(|(d, _)| d == build)
+}
+
 /// The files of `look`'s that are among `files`, the files edited: its pieces' and its old
 /// standing frame's
 pub fn files_of(look: Look, files: &std::collections::HashSet<String>) -> Vec<String> {
@@ -1599,8 +1607,13 @@ mod tests {
             return;
         };
         let palette = palette();
-        let size = 200;
+        // `BAKED_ONLY=<look>` draws only that one, `BAKED_SIZE=<pixels>` each frame that big
+        let only = std::env::var("BAKED_ONLY").ok();
+        let size: u32 = std::env::var("BAKED_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
         for &look in &KINDS {
+            if only.as_ref().is_some_and(|o| !format!("{look:?}").eq_ignore_ascii_case(o)) {
+                continue;
+            }
             let rig = rig(look).unwrap();
             let mut frames: Vec<usize> = (0..=WALK).step_by(3).collect();
             frames.extend([animals::POSE_WINDUP, animals::POSE_STRIKE, animals::POSE_SPECIAL].into_iter().filter(|&f| animals::shown_in(look, f)));
@@ -1613,6 +1626,28 @@ mod tests {
             image.save(&path).unwrap();
             println!("{}", path.display());
         }
+        // The armoured skeleton with the player's old edit of its standing frame put on its
+        // pieces, below, as it's drawn without it, above
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("tests").join("armored_skeleton_base.vox");
+        let dir = std::env::temp_dir().join(format!("innert-legacy-sheet-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("armored_skeleton")).unwrap();
+        std::fs::copy(&source, dir.join("armored_skeleton").join("base.vox")).unwrap();
+        std::fs::copy(source.with_extension("json"), dir.join("armored_skeleton").join("base.json")).unwrap();
+        let rig = rig(Look::ArmoredSkeleton).unwrap();
+        let mut pieces = rig.pieces.clone();
+        legacy(rig, &mut pieces, &dir, "armored_skeleton/base").unwrap();
+        let edited = rig.bake(&pieces, None);
+        let mut frames: Vec<usize> = (0..=WALK).step_by(3).collect();
+        frames.extend([animals::POSE_WINDUP, animals::POSE_STRIKE, animals::POSE_SPECIAL]);
+        let mut image = image::RgbImage::new(size * frames.len() as u32, size * 2);
+        for (c, &f) in frames.iter().enumerate() {
+            draw(&rig.frames[f], 1.6, size, c as u32 * size, 0, &palette, &mut image);
+            draw(&edited[f], 1.6, size, c as u32 * size, size, &palette, &mut image);
+        }
+        let path = std::path::Path::new(&folder).join("ArmoredSkeleton_old_edit.png");
+        image.save(&path).unwrap();
+        println!("{}", path.display());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every bone's tagged on some shape, and every shape of a baked look is part of a bone
@@ -1648,6 +1683,18 @@ mod tests {
         let now = moved(&defs, code, &deltas[5]);
         assert!(now[arm].turn.angle_to(&code[arm].turn) > 1.0);
         assert!((now[blade].at - code[blade].at).norm() > 0.1, "the blade goes with the arm");
+    }
+
+    /// A clip saved, in a running game, bakes again the looks it's a clip of: its own look's, or
+    /// every look of its build's
+    #[test]
+    fn a_saved_clip_is_known_by_its_looks() {
+        assert!(clip_file_of(Look::ArmoredSkeleton, "undead/armored_skeleton/walk"));
+        assert!(!clip_file_of(Look::Skeleton, "undead/armored_skeleton/walk"));
+        assert!(clip_file_of(Look::Skeleton, "undead/strike") && clip_file_of(Look::Bandit, "undead/strike"));
+        assert!(!clip_file_of(Look::Wolf, "undead/strike"));
+        assert!(!clip_file_of(Look::Wolf, "boss/direwolf/walk") && !clip_file_of(Look::Wolf, "wolf/wolf/extra/walk"));
+        assert!(clip_file_of(Look::GingerCat, "beast/ginger_cat/idle"));
     }
 
     /// A piece's file edited goes with its limb: a voxel added to the end of a skeleton's blade is

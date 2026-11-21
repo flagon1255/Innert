@@ -1521,9 +1521,7 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
     // clips, its own or its build's, were saved
     let in_folder = |l: Look| names.iter().any(|f| f.split('/').next() == Some(look_folder(l).as_str()));
     for &look in &crate::baked::KINDS {
-        let id = crate::baked::id_of(look);
-        let build = id.split('/').next().unwrap_or_default();
-        let clip = anims.iter().any(|a| a.starts_with(&format!("{id}/")) || a.rsplit_once('/').is_some_and(|(d, _)| d == build));
+        let clip = anims.iter().any(|a| crate::baked::clip_file_of(look, a));
         let shared = crate::baked::skin_of(look).is_some_and(|(from, _)| in_folder(from));
         if !(everything || clip || shared || in_folder(look)) {
             continue;
