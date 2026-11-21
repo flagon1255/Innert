@@ -1,0 +1,29 @@
+{
+  "what": "Pyre Matriarch, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    31,
+    9,
+    10
+  ],
+  "pivot": [
+    4.224,
+    4.224,
+    5.280000000000001
+  ],
+  "anchor": [
+    0.70475,
+    0.017249999999999988,
+    -0.33000000000000007
+  ],
+  "origin": [
+    -4,
+    -4,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5644,
+    "662c58d5e3c7db21"
+  ]
+}

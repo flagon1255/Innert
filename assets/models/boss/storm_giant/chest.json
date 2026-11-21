@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    25,
+    36,
+    30
+  ],
+  "pivot": [
+    9.767999999999999,
+    17.688,
+    3.168
+  ],
+  "anchor": [
+    0.17075000000000007,
+    0.019500000000000073,
+    -0.198
+  ],
+  "origin": [
+    -10,
+    -18,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    45176,
+    "1329dd4fbf516f19"
+  ]
+}

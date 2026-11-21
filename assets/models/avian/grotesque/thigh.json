@@ -1,0 +1,29 @@
+{
+  "what": "Belfry Grotesque, thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    22
+  ],
+  "pivot": [
+    3.8720000000000008,
+    3.8720000000000008,
+    17.248
+  ],
+  "anchor": [
+    0.007999999999999952,
+    0.007999999999999952,
+    -1.078
+  ],
+  "origin": [
+    -4,
+    -4,
+    -17
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3912,
+    "a51dc50884ebb1ed"
+  ]
+}

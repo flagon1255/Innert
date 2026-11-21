@@ -1,0 +1,29 @@
+{
+  "what": "Bleeding Hart, neck",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    13,
+    32
+  ],
+  "pivot": [
+    6.4,
+    6.4,
+    6.4
+  ],
+  "anchor": [
+    0.35,
+    0.006249999999999978,
+    -0.4
+  ],
+  "origin": [
+    -6,
+    -6,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    13704,
+    "0acc1cc867671e7d"
+  ]
+}

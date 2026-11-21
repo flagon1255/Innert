@@ -1,0 +1,29 @@
+{
+  "what": "Belfry Grotesque, forearm",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    22
+  ],
+  "pivot": [
+    2.3232000000000004,
+    3.888,
+    19.376
+  ],
+  "anchor": [
+    0.10479999999999998,
+    0.007000000000000006,
+    -1.211
+  ],
+  "origin": [
+    -2,
+    -4,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2268,
+    "5a2b77697793aae0"
+  ]
+}

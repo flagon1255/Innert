@@ -1,0 +1,29 @@
+{
+  "what": "Stormtalon, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    3,
+    4
+  ],
+  "pivot": [
+    1.23136,
+    1.23136,
+    2.22976
+  ],
+  "anchor": [
+    0.14179,
+    0.01679,
+    -0.13936
+  ],
+  "origin": [
+    -1,
+    -1,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1331,
+    "a6e31cef14854f3e"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Rime Jotun, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    12,
+    26
+  ],
+  "pivot": [
+    5.984,
+    5.984,
+    13.328
+  ],
+  "anchor": [
+    0.09475,
+    0.0010000000000000009,
+    -0.833
+  ],
+  "origin": [
+    -6,
+    -6,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6779,
+    "90e9be2157d747de"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Bandit Warlord, foot left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    4,
+    3
+  ],
+  "pivot": [
+    1.632,
+    1.6320000000000001,
+    1.9040000000000001
+  ],
+  "anchor": [
+    0.0855,
+    0.022999999999999993,
+    -0.11900000000000001
+  ],
+  "origin": [
+    -2,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1372,
+    "5215c7a9c26afd3a"
+  ]
+}

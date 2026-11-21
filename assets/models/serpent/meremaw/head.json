@@ -1,0 +1,29 @@
+{
+  "what": "Meremaw, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    56,
+    36,
+    32
+  ],
+  "pivot": [
+    13.392000000000001,
+    17.544,
+    10.472
+  ],
+  "anchor": [
+    0.9129999999999999,
+    0.02849999999999997,
+    -0.6545
+  ],
+  "origin": [
+    -13,
+    -18,
+    -10
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    56996,
+    "90ac5740fd8d1edc"
+  ]
+}

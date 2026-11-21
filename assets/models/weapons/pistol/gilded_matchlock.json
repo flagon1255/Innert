@@ -1,0 +1,47 @@
+{
+  "what": "Pistol, lock: Gilded Matchlock",
+  "voxels_per_meter": 144.0,
+  "size": [
+    17,
+    5,
+    13
+  ],
+  "pivot": [
+    4.511999999999997,
+    0.6000000000000005,
+    6.864000000000001
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -1,
+    -7
+  ],
+  "points": {
+    "grip": [
+      0.015000000000000006,
+      0.0,
+      -0.055
+    ],
+    "mover_handle": [
+      0.37,
+      0.0,
+      0.0
+    ],
+    "mover_pivot": [
+      0.37,
+      0.0,
+      0.0
+    ],
+    "tip": [
+      0.37,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1548,
+    "6010c1f42778e0e9"
+  ]
+}

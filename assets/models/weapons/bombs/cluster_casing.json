@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Cluster Casing",
+  "voxels_per_meter": 192.0,
+  "size": [
+    30,
+    30,
+    33
+  ],
+  "pivot": [
+    15.255948976000184,
+    14.974400000000003,
+    0.4992
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -15,
+    0
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.038500000000000006
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.22900000000000004
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5236,
+    "c379f650e2f7cc1d"
+  ]
+}

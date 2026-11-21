@@ -1,0 +1,29 @@
+{
+  "what": "Harpy Plumes",
+  "voxels_per_meter": 96.0,
+  "size": [
+    132,
+    92,
+    7
+  ],
+  "pivot": [
+    3.456000000000003,
+    81.9449379310345,
+    3.4559999999999995
+  ],
+  "anchor": [
+    0.6515,
+    -0.3744264367816094,
+    -0.036
+  ],
+  "origin": [
+    -3,
+    -82,
+    -3
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    46670,
+    "caa330fed8b8749c"
+  ]
+}

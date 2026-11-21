@@ -1,0 +1,29 @@
+{
+  "what": "Cragmaw Ogre, foot right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    6,
+    6
+  ],
+  "pivot": [
+    2.880000000000001,
+    2.88,
+    2.88
+  ],
+  "anchor": [
+    0.16374999999999995,
+    0.007500000000000007,
+    -0.18
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1847,
+    "e503a7ff48b1d09b"
+  ]
+}

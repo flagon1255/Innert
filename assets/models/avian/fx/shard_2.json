@@ -1,0 +1,29 @@
+{
+  "what": "avian/fx/shard_2",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    4,
+    3
+  ],
+  "pivot": [
+    3.6799999999999997,
+    1.536,
+    1.024
+  ],
+  "anchor": [
+    0.020000000000000018,
+    0.028999999999999998,
+    -0.064
+  ],
+  "origin": [
+    -4,
+    -2,
+    -1
+  ],
+  "note": "Placed as the code places it.",
+  "written": [
+    1363,
+    "94eb6182e71b7bc4"
+  ]
+}

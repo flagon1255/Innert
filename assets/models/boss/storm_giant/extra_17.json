@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, extra 17",
+  "voxels_per_meter": 16.0,
+  "size": [
+    22,
+    22,
+    22
+  ],
+  "pivot": [
+    10.56,
+    10.56,
+    10.56
+  ],
+  "anchor": [
+    0.02749999999999997,
+    0.02749999999999997,
+    -0.66
+  ],
+  "origin": [
+    -11,
+    -11,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    21019,
+    "00cd675379fe206d"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Rime Jotun, extra 17",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    23,
+    23
+  ],
+  "pivot": [
+    11.424,
+    11.424,
+    11.424
+  ],
+  "anchor": [
+    0.004750000000000032,
+    0.004750000000000032,
+    -0.714
+  ],
+  "origin": [
+    -11,
+    -11,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    26227,
+    "040dd6c2dc4fcebe"
+  ]
+}

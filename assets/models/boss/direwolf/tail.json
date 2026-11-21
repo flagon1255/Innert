@@ -1,0 +1,29 @@
+{
+  "what": "Alpha Direwolf, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    5,
+    10
+  ],
+  "pivot": [
+    14.448,
+    2.016,
+    7.728
+  ],
+  "anchor": [
+    -0.37175,
+    0.03025,
+    -0.483
+  ],
+  "origin": [
+    -14,
+    -2,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1789,
+    "b84ef0271dfc5c9e"
+  ]
+}

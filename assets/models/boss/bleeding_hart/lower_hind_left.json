@@ -1,0 +1,29 @@
+{
+  "what": "Bleeding Hart, lower hind left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    5,
+    25
+  ],
+  "pivot": [
+    2.24,
+    2.24,
+    22.72
+  ],
+  "anchor": [
+    0.04749999999999999,
+    0.016249999999999987,
+    -1.42
+  ],
+  "origin": [
+    -2,
+    -2,
+    -23
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2193,
+    "d04f32619a018e19"
+  ]
+}

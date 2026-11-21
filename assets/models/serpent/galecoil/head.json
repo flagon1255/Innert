@@ -1,0 +1,29 @@
+{
+  "what": "Galecoil, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    50,
+    48,
+    22
+  ],
+  "pivot": [
+    11.84,
+    23.999999999999996,
+    9.239999999999998
+  ],
+  "anchor": [
+    0.8225,
+    2.220446049250313e-16,
+    -0.5774999999999999
+  ],
+  "origin": [
+    -12,
+    -24,
+    -9
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    40452,
+    "8dc9bbb18d7b7b3b"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Cloudreaver Roc, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    54,
+    101,
+    7
+  ],
+  "pivot": [
+    44.26702243850263,
+    97.59433226250265,
+    2.944
+  ],
+  "anchor": [
+    -1.0791889024064143,
+    -2.9433957664064154,
+    -0.184
+  ],
+  "origin": [
+    -44,
+    -98,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    36999,
+    "21d1fddfe6c2da53"
+  ]
+}

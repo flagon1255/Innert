@@ -1,0 +1,37 @@
+{
+  "what": "Dagger, blade: Gilded Hook-Knife",
+  "voxels_per_meter": 192.0,
+  "size": [
+    23,
+    3,
+    53
+  ],
+  "pivot": [
+    3.3840000000000003,
+    1.5695999999999994,
+    -54.0
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -2,
+    54
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1476
+    ],
+    "tip": [
+      0.10399999999999998,
+      0.0,
+      0.5596000000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4209,
+    "99299fd5773d1029"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Ironhide, neck",
+  "voxels_per_meter": 16.0,
+  "size": [
+    28,
+    18,
+    19
+  ],
+  "pivot": [
+    8.8,
+    8.8,
+    8.8
+  ],
+  "anchor": [
+    0.32499999999999996,
+    0.012499999999999956,
+    -0.55
+  ],
+  "origin": [
+    -9,
+    -9,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    17811,
+    "ed2e776612b1dbcb"
+  ]
+}

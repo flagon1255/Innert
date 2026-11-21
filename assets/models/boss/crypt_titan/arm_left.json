@@ -1,0 +1,29 @@
+{
+  "what": "Crypt Titan, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    19
+  ],
+  "pivot": [
+    1.232,
+    1.232,
+    17.072
+  ],
+  "anchor": [
+    0.01675,
+    0.01675,
+    -1.067
+  ],
+  "origin": [
+    -1,
+    -1,
+    -17
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1536,
+    "860d25d3bb869055"
+  ]
+}

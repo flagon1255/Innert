@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, cape",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    24,
+    48
+  ],
+  "pivot": [
+    3.38,
+    11.739200000000002,
+    46.112
+  ],
+  "anchor": [
+    -0.08625,
+    0.01629999999999987,
+    -2.882
+  ],
+  "origin": [
+    -3,
+    -12,
+    -46
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6078,
+    "71200c1d1dd037da"
+  ]
+}

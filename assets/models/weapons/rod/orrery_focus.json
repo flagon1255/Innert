@@ -1,0 +1,37 @@
+{
+  "what": "Lightning Rod, focus: Orrery Focus",
+  "voxels_per_meter": 150.0,
+  "size": [
+    22,
+    8,
+    48
+  ],
+  "pivot": [
+    11.200000000000001,
+    4.1000000000000005,
+    -125.95
+  ],
+  "anchor": null,
+  "origin": [
+    -11,
+    -4,
+    126
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.37
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      1.1400000000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4005,
+    "3695eda8b6d13c2f"
+  ]
+}

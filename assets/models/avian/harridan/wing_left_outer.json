@@ -1,0 +1,29 @@
+{
+  "what": "Harridan, wing left outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    23,
+    3
+  ],
+  "pivot": [
+    9.666629913394699,
+    0.8000000000000007,
+    1.1222255689363638
+  ],
+  "anchor": [
+    -0.2604143695871687,
+    0.66875,
+    -0.07013909805852274
+  ],
+  "origin": [
+    -10,
+    -1,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2193,
+    "e5e5f3f4860e880e"
+  ]
+}

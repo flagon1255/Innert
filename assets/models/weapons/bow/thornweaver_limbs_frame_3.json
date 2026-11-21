@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Thornweaver Limbs, frame 3 of 3",
+  "voxels_per_meter": 160.0,
+  "size": [
+    33,
+    8,
+    213
+  ],
+  "pivot": [
+    29.195981342224883,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -29,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.65
+    ],
+    "nock_1": [
+      -0.09670305211806596,
+      0.0,
+      0.68
+    ],
+    "nock_2": [
+      -0.24571396775348575,
+      0.0,
+      0.68
+    ],
+    "nock_3": [
+      -0.39472488338890555,
+      0.0,
+      0.68
+    ],
+    "tip": [
+      -0.09670305211806596,
+      0.0,
+      0.68
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    18319,
+    "4aa9bc50934bd60d"
+  ]
+}

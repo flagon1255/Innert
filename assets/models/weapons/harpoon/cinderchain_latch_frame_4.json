@@ -1,0 +1,67 @@
+{
+  "what": "Harpoon Crossbow, lock: Cinderchain Latch, frame 4 of 4",
+  "voxels_per_meter": 128.0,
+  "size": [
+    4,
+    11,
+    11
+  ],
+  "pivot": [
+    -59.9552,
+    -4.224,
+    19.968000000000004
+  ],
+  "anchor": null,
+  "origin": [
+    60,
+    4,
+    -20
+  ],
+  "points": {
+    "grip": [
+      0.26439999999999997,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.4844,
+      0.07,
+      -0.14
+    ],
+    "mover_pivot": [
+      0.4844,
+      0.055,
+      -0.075
+    ],
+    "nock_1": [
+      0.677741935483871,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.49461935483870967,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.3444,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.5644,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.83,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1610,
+    "3ebc7f543d32b97b"
+  ]
+}

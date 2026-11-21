@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Ivory Longbow, frame 2 of 3",
+  "voxels_per_meter": 160.0,
+  "size": [
+    20,
+    8,
+    245
+  ],
+  "pivot": [
+    16.800000000000004,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -17,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.75
+    ],
+    "nock_1": [
+      -0.07,
+      0.0,
+      0.78
+    ],
+    "nock_2": [
+      -0.21100000000000002,
+      0.0,
+      0.78
+    ],
+    "nock_3": [
+      -0.352,
+      0.0,
+      0.78
+    ],
+    "tip": [
+      -0.07,
+      0.0,
+      0.78
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    18486,
+    "8fcf4c50dc3c7338"
+  ]
+}

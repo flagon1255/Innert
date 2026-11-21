@@ -1,0 +1,29 @@
+{
+  "what": "Stone Warden, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    28,
+    45,
+    35
+  ],
+  "pivot": [
+    14.719999999999999,
+    22.4,
+    2.8800000000000026
+  ],
+  "anchor": [
+    -0.04499999999999993,
+    0.006250000000000089,
+    -0.18000000000000016
+  ],
+  "origin": [
+    -15,
+    -22,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    41921,
+    "bde2a02e80a24e94"
+  ]
+}

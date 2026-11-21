@@ -1,0 +1,29 @@
+{
+  "what": "Shatterfang, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    56,
+    24,
+    15
+  ],
+  "pivot": [
+    11.856000000000002,
+    11.856,
+    12.16
+  ],
+  "anchor": [
+    1.009,
+    0.009000000000000008,
+    -0.76
+  ],
+  "origin": [
+    -12,
+    -12,
+    -12
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    25673,
+    "630d49145d4cb99a"
+  ]
+}

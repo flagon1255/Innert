@@ -1,0 +1,29 @@
+{
+  "what": "Cragmaw Ogre, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    10,
+    47
+  ],
+  "pivot": [
+    4.5600000000000005,
+    4.5600000000000005,
+    40.56
+  ],
+  "anchor": [
+    0.02749999999999997,
+    0.02749999999999997,
+    -2.535
+  ],
+  "origin": [
+    -5,
+    -5,
+    -41
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6441,
+    "1efd69544dd86a02"
+  ]
+}

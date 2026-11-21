@@ -1,0 +1,29 @@
+{
+  "what": "Belfry Grotesque, upper arm",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    18
+  ],
+  "pivot": [
+    2.710400000000001,
+    2.710400000000001,
+    14.678400000000003
+  ],
+  "anchor": [
+    0.01809999999999995,
+    0.01809999999999995,
+    -0.9174000000000002
+  ],
+  "origin": [
+    -3,
+    -3,
+    -15
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2488,
+    "b664507d9f70b792"
+  ]
+}

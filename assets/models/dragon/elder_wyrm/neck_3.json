@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, neck 3",
+  "voxels_per_meter": 16.0,
+  "size": [
+    27,
+    13,
+    18
+  ],
+  "pivot": [
+    6.275525539745655,
+    6.275525539745655,
+    7.2168543707075035
+  ],
+  "anchor": [
+    0.45152965376589654,
+    0.014029653765896544,
+    -0.45105339816921897
+  ],
+  "origin": [
+    -6,
+    -6,
+    -7
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    10407,
+    "f6f908be3d82af53"
+  ]
+}

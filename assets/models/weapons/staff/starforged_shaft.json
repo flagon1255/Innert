@@ -1,0 +1,37 @@
+{
+  "what": "Staff, shaft: Starforged Shaft",
+  "voxels_per_meter": 150.0,
+  "size": [
+    9,
+    9,
+    239
+  ],
+  "pivot": [
+    4.68,
+    4.249999999999999,
+    2.960000000000001
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -4,
+    -3
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.8
+    ],
+    "tip": [
+      0.07,
+      0.0,
+      1.7200000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    32538,
+    "e9ce7489692db265"
+  ]
+}

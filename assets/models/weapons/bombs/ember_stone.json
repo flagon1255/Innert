@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, core: Ember Stone",
+  "voxels_per_meter": 192.0,
+  "size": [
+    6,
+    6,
+    6
+  ],
+  "pivot": [
+    3.056000000000001,
+    14.499839999999999,
+    -9.96
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -14,
+    10
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.034100000000000005
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.21300000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1786,
+    "81654c1fd4abc5f8"
+  ]
+}

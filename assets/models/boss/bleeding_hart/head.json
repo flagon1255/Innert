@@ -1,0 +1,29 @@
+{
+  "what": "Bleeding Hart, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    36,
+    32
+  ],
+  "pivot": [
+    4.16,
+    17.92,
+    6.08
+  ],
+  "anchor": [
+    0.45875,
+    0.004999999999999893,
+    -0.38
+  ],
+  "origin": [
+    -4,
+    -18,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5132,
+    "e4947e49ffd4ec9c"
+  ]
+}

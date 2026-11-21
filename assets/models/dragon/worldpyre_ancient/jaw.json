@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    47,
+    13,
+    15
+  ],
+  "pivot": [
+    6.400000000000002,
+    6.4,
+    8.0
+  ],
+  "anchor": [
+    1.0687499999999999,
+    0.006249999999999978,
+    -0.5
+  ],
+  "origin": [
+    -6,
+    -6,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    16445,
+    "3bdd4a862ed82e62"
+  ]
+}

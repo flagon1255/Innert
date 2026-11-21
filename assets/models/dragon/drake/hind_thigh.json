@@ -1,0 +1,29 @@
+{
+  "what": "Ember Drake, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    6,
+    15
+  ],
+  "pivot": [
+    2.7456,
+    2.7456,
+    11.4816
+  ],
+  "anchor": [
+    0.04715,
+    0.015899999999999997,
+    -0.7176
+  ],
+  "origin": [
+    -3,
+    -3,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2148,
+    "dc4449a3474a2c00"
+  ]
+}

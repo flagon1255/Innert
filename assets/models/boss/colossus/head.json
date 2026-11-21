@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    18,
+    18,
+    17
+  ],
+  "pivot": [
+    6.5280000000000005,
+    8.704,
+    1.6320000000000077
+  ],
+  "anchor": [
+    0.15449999999999997,
+    0.01849999999999996,
+    -0.10200000000000048
+  ],
+  "origin": [
+    -7,
+    -9,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    13147,
+    "ec998364520c8488"
+  ]
+}

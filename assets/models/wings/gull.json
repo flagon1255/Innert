@@ -1,0 +1,29 @@
+{
+  "what": "Gullfeather Wings",
+  "voxels_per_meter": 96.0,
+  "size": [
+    132,
+    72,
+    7
+  ],
+  "pivot": [
+    3.456000000000003,
+    62.1689379310345,
+    3.4559999999999995
+  ],
+  "anchor": [
+    0.6515,
+    -0.27259310344827603,
+    -0.036
+  ],
+  "origin": [
+    -3,
+    -62,
+    -3
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    41802,
+    "4cfe5c2202e0db46"
+  ]
+}

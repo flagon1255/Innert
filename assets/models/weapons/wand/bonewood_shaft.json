@@ -1,0 +1,37 @@
+{
+  "what": "Wand, shaft: Bonewood Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    4,
+    4,
+    59
+  ],
+  "pivot": [
+    1.7777349651726526,
+    1.9024441857131178,
+    1.0982399999999997
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    -2,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.075
+    ],
+    "tip": [
+      0.014,
+      0.0,
+      0.324
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1844,
+    "9618b39a0a70f8e4"
+  ]
+}

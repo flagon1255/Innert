@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, fore shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    14
+  ],
+  "pivot": [
+    3.0826390706808793,
+    2.36944,
+    11.756649224403304
+  ],
+  "anchor": [
+    0.08858505808244505,
+    0.00816,
+    -0.7347905765252065
+  ],
+  "origin": [
+    -3,
+    -2,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1828,
+    "aced2dcfc4f5a9b3"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Broodmother, tibia right 3",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    27
+  ],
+  "pivot": [
+    1.28,
+    1.28,
+    25.28
+  ],
+  "anchor": [
+    0.013749999999999998,
+    0.013749999999999998,
+    -1.58
+  ],
+  "origin": [
+    -1,
+    -1,
+    -25
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1573,
+    "a67355a4a23c5c90"
+  ]
+}

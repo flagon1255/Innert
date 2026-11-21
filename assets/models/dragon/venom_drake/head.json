@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    18,
+    17,
+    10
+  ],
+  "pivot": [
+    4.779116194178039,
+    8.19035776304932,
+    2.904
+  ],
+  "anchor": [
+    0.26380523786387255,
+    0.019352639809417482,
+    -0.1815
+  ],
+  "origin": [
+    -5,
+    -8,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2627,
+    "0e2c4e2e6b1d90bc"
+  ]
+}

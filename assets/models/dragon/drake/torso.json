@@ -1,0 +1,29 @@
+{
+  "what": "Ember Drake, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    33,
+    17,
+    20
+  ],
+  "pivot": [
+    16.64,
+    8.465600000000002,
+    8.008000000000001
+  ],
+  "anchor": [
+    -0.008750000000000036,
+    0.0021499999999998742,
+    -0.5005000000000001
+  ],
+  "origin": [
+    -17,
+    -8,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    22336,
+    "18ca6be4ccc8d393"
+  ]
+}

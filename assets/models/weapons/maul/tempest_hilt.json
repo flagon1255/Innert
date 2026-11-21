@@ -1,0 +1,37 @@
+{
+  "what": "Maul, hilt: Tempest Hilt",
+  "voxels_per_meter": 192.0,
+  "size": [
+    11,
+    8,
+    153
+  ],
+  "pivot": [
+    5.776000000000003,
+    3.776,
+    1.121464860145224
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -4,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.28509999999999996
+    ],
+    "tip": [
+      0.22,
+      0.0,
+      0.9865999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    18841,
+    "81806228fa0e14ce"
+  ]
+}

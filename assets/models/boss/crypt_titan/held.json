@@ -1,0 +1,29 @@
+{
+  "what": "Crypt Titan, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    18,
+    72
+  ],
+  "pivot": [
+    1.76,
+    8.8,
+    58.608000000000004
+  ],
+  "anchor": [
+    0.015,
+    0.012499999999999956,
+    -3.6630000000000003
+  ],
+  "origin": [
+    -2,
+    -9,
+    -59
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3309,
+    "72b7665a506c0b96"
+  ]
+}

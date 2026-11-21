@@ -1,0 +1,37 @@
+{
+  "what": "Halberd, hilt: Fanged Bone Hilt",
+  "voxels_per_meter": 192.0,
+  "size": [
+    10,
+    8,
+    298
+  ],
+  "pivot": [
+    3.4080000000000013,
+    3.8400000000000003,
+    5.0
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -4,
+    -5
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.6177999999999999
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      2.0678
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    32654,
+    "74eaee6f7459161e"
+  ]
+}

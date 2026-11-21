@@ -1,0 +1,37 @@
+{
+  "what": "Scepter, shaft: Willow Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    5,
+    5,
+    143
+  ],
+  "pivot": [
+    2.7456000000000005,
+    2.3599999999999994,
+    1.3232
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -2,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.22499999999999998
+    ],
+    "tip": [
+      0.035,
+      0.0,
+      0.81
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    7229,
+    "92512c651bd8a85f"
+  ]
+}

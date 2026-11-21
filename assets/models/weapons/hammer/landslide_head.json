@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, blade: Landslide Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    86,
+    35,
+    58
+  ],
+  "pivot": [
+    43.312,
+    17.28,
+    -119.0
+  ],
+  "anchor": null,
+  "origin": [
+    -43,
+    -17,
+    119
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.15,
+      0.0,
+      0.7275999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    311965,
+    "ad74525a4084338c"
+  ]
+}

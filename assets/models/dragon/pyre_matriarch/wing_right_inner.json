@@ -1,0 +1,29 @@
+{
+  "what": "Pyre Matriarch, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    59,
+    73,
+    9
+  ],
+  "pivot": [
+    44.56403118904068,
+    68.85119999999999,
+    3.5904
+  ],
+  "anchor": [
+    -0.9415019493150427,
+    -2.0219499999999995,
+    -0.2244
+  ],
+  "origin": [
+    -45,
+    -69,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    37911,
+    "170a1685a497b6b0"
+  ]
+}

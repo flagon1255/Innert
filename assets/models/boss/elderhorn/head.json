@@ -1,0 +1,29 @@
+{
+  "what": "Elderhorn, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    27,
+    24
+  ],
+  "pivot": [
+    3.016,
+    13.016,
+    4.4079999999999995
+  ],
+  "anchor": [
+    0.34275,
+    0.03025,
+    -0.27549999999999997
+  ],
+  "origin": [
+    -3,
+    -13,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2951,
+    "03650b0ebb185cb0"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Rimeskip Flask",
+  "voxels_per_meter": 192.0,
+  "size": [
+    23,
+    23,
+    17
+  ],
+  "pivot": [
+    11.397120000000001,
+    11.76256,
+    -15.959999999999999
+  ],
+  "anchor": null,
+  "origin": [
+    -11,
+    -12,
+    16
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.031900000000000005
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.22680000000000003
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    3633,
+    "000f5d47e02dae4c"
+  ]
+}

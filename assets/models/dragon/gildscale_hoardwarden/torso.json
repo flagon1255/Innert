@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    74,
+    40,
+    46
+  ],
+  "pivot": [
+    38.4,
+    19.891200000000005,
+    18.816000000000003
+  ],
+  "anchor": [
+    -0.08749999999999991,
+    0.006799999999999695,
+    -1.1760000000000002
+  ],
+  "origin": [
+    -38,
+    -20,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    269848,
+    "82bffcfe2a33a8b9"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Broodmother, abdomen",
+  "voxels_per_meter": 16.0,
+  "size": [
+    29,
+    24,
+    20
+  ],
+  "pivot": [
+    24.0,
+    12.0,
+    8.32
+  ],
+  "anchor": [
+    -0.59375,
+    0.0,
+    -0.52
+  ],
+  "origin": [
+    -24,
+    -12,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    30037,
+    "55b8231ab5893e3d"
+  ]
+}

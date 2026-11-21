@@ -1,0 +1,29 @@
+{
+  "what": "Cindermaw Tyrant, wing left inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    65,
+    54,
+    9
+  ],
+  "pivot": [
+    50.26645637658738,
+    3.5360000000000014,
+    3.6992000000000003
+  ],
+  "anchor": [
+    -1.1104035235367111,
+    1.4665,
+    -0.23120000000000002
+  ],
+  "origin": [
+    -50,
+    -4,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    31710,
+    "4b3325cd40194f59"
+  ]
+}

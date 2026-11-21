@@ -1,0 +1,29 @@
+{
+  "what": "Stone Warden, shin right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    10,
+    18
+  ],
+  "pivot": [
+    4.64,
+    4.64,
+    12.64
+  ],
+  "anchor": [
+    0.02250000000000002,
+    0.02250000000000002,
+    -0.79
+  ],
+  "origin": [
+    -5,
+    -5,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4928,
+    "4cf64fed2baaf625"
+  ]
+}

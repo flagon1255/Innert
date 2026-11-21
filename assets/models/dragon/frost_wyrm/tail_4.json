@@ -1,0 +1,29 @@
+{
+  "what": "Frost Wyrm, tail 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    9,
+    6
+  ],
+  "pivot": [
+    21.023999999999997,
+    4.392,
+    2.2220046613812485
+  ],
+  "anchor": [
+    -0.5639999999999998,
+    0.006749999999999978,
+    -0.13887529133632803
+  ],
+  "origin": [
+    -21,
+    -4,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1932,
+    "23b4bae1036d81ed"
+  ]
+}

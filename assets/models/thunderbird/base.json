@@ -1,0 +1,25 @@
+{
+  "what": "Thunderbird, standing frame (1 of 34 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    27
+  ],
+  "pivot": [
+    1.5,
+    1.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    -2,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    1574,
+    "ab109023404db025"
+  ]
+}

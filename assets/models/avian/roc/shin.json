@@ -1,0 +1,29 @@
+{
+  "what": "Cloudreaver Roc, shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    16,
+    33
+  ],
+  "pivot": [
+    4.641187087044257,
+    7.8016000000000005,
+    29.320289542641966
+  ],
+  "anchor": [
+    0.24117580705973396,
+    0.012399999999999967,
+    -1.8325180964151229
+  ],
+  "origin": [
+    -5,
+    -8,
+    -29
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4313,
+    "dc6d5fa6ba6cd365"
+  ]
+}

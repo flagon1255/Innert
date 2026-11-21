@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    7,
+    23
+  ],
+  "pivot": [
+    3.432,
+    3.432,
+    19.799999999999997
+  ],
+  "anchor": [
+    0.004250000000000004,
+    0.004250000000000004,
+    -1.2374999999999998
+  ],
+  "origin": [
+    -3,
+    -3,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3468,
+    "846670af505aa45e"
+  ]
+}

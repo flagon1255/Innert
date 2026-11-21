@@ -1,0 +1,47 @@
+{
+  "what": "Hand Cannon, stock: Fowler's Stock",
+  "voxels_per_meter": 144.0,
+  "size": [
+    96,
+    7,
+    8
+  ],
+  "pivot": [
+    67.10400000000001,
+    3.7800486911999993,
+    13.1328
+  ],
+  "anchor": null,
+  "origin": [
+    -67,
+    -4,
+    -13
+  ],
+  "points": {
+    "grip": [
+      -0.165,
+      0.0,
+      -0.06319999999999999
+    ],
+    "mover_handle": [
+      0.56,
+      0.0,
+      0.0
+    ],
+    "mover_pivot": [
+      0.56,
+      0.0,
+      0.0
+    ],
+    "tip": [
+      0.56,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    12935,
+    "2b6fa342a79757b8"
+  ]
+}

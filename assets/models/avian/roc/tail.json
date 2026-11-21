@@ -1,0 +1,29 @@
+{
+  "what": "Cloudreaver Roc, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    53,
+    44,
+    5
+  ],
+  "pivot": [
+    48.576,
+    21.667839999999998,
+    3.1647999999999996
+  ],
+  "anchor": [
+    -1.37975,
+    0.02076000000000011,
+    -0.19779999999999998
+  ],
+  "origin": [
+    -49,
+    -22,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    16434,
+    "cf3160c635724def"
+  ]
+}

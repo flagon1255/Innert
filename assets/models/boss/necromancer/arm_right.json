@@ -1,0 +1,29 @@
+{
+  "what": "Necromancer, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    8
+  ],
+  "pivot": [
+    1.12,
+    1.12,
+    6.24
+  ],
+  "anchor": [
+    0.023749999999999993,
+    0.023749999999999993,
+    -0.39
+  ],
+  "origin": [
+    -1,
+    -1,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1360,
+    "855fd9ac9314714e"
+  ]
+}

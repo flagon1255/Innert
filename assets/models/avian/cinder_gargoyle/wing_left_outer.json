@@ -1,0 +1,29 @@
+{
+  "what": "Obsidian gargoyle, wing left outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    16,
+    2
+  ],
+  "pivot": [
+    10.224000000000002,
+    0.7200000000000006,
+    0.72
+  ],
+  "anchor": [
+    -0.2952500000000001,
+    0.45499999999999996,
+    -0.045
+  ],
+  "origin": [
+    -10,
+    -1,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1740,
+    "a9db0ba234f487e8"
+  ]
+}

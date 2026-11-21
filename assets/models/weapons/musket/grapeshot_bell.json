@@ -1,0 +1,52 @@
+{
+  "what": "Musket, barrel: Grapeshot Bell",
+  "voxels_per_meter": 144.0,
+  "size": [
+    145,
+    8,
+    9
+  ],
+  "pivot": [
+    -54.83200000000001,
+    4.103999999999999,
+    4.5760000000000005
+  ],
+  "anchor": null,
+  "origin": [
+    55,
+    -4,
+    -5
+  ],
+  "points": {
+    "grip": [
+      0.325,
+      0.0,
+      -0.022
+    ],
+    "mover_handle": [
+      1.35,
+      0.0,
+      0.0
+    ],
+    "mover_pivot": [
+      1.35,
+      0.0,
+      0.0
+    ],
+    "support": [
+      0.8125,
+      0.0,
+      -0.027
+    ],
+    "tip": [
+      1.35,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    11674,
+    "06522314443a102f"
+  ]
+}

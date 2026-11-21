@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, binding: Feather Charm",
+  "voxels_per_meter": 150.0,
+  "size": [
+    9,
+    7,
+    31
+  ],
+  "pivot": [
+    3.899380165289255,
+    3.7364516129032253,
+    -129.95548387096775
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    130
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.4400000000000001
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.5851612903225807
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1870,
+    "24fed52fa7d59e50"
+  ]
+}

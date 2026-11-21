@@ -1,0 +1,29 @@
+{
+  "what": "Ancient Treant, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    20
+  ],
+  "pivot": [
+    3.84,
+    3.84,
+    15.84
+  ],
+  "anchor": [
+    0.010000000000000009,
+    0.010000000000000009,
+    -0.99
+  ],
+  "origin": [
+    -4,
+    -4,
+    -16
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3564,
+    "618f8b56725093d9"
+  ]
+}

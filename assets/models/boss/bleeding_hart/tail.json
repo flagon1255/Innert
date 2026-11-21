@@ -1,0 +1,29 @@
+{
+  "what": "Bleeding Hart, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    12
+  ],
+  "pivot": [
+    6.08,
+    2.24,
+    9.280000000000001
+  ],
+  "anchor": [
+    -0.09875,
+    0.016249999999999987,
+    -0.5800000000000001
+  ],
+  "origin": [
+    -6,
+    -2,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1677,
+    "8d34bff89d8807b0"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Bloodwake Gargoyle, upper arm",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    9,
+    28
+  ],
+  "pivot": [
+    4.3792,
+    4.3792,
+    22.875200000000003
+  ],
+  "anchor": [
+    0.007550000000000001,
+    0.007550000000000001,
+    -1.4297000000000002
+  ],
+  "origin": [
+    -4,
+    -4,
+    -23
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6204,
+    "cb195246f0104f53"
+  ]
+}

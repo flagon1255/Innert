@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, core: Sun Core",
+  "voxels_per_meter": 192.0,
+  "size": [
+    13,
+    13,
+    13
+  ],
+  "pivot": [
+    6.112000000000002,
+    6.054400000000001,
+    -127.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    127
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.13,
+      0.0,
+      0.7315999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5833,
+    "65474a0d0c4d7898"
+  ]
+}

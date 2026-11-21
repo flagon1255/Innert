@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Frostwing Limbs, frame 2 of 3",
+  "voxels_per_meter": 160.0,
+  "size": [
+    18,
+    8,
+    213
+  ],
+  "pivot": [
+    14.479999999999997,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -14,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.65
+    ],
+    "nock_1": [
+      -0.02999999999999997,
+      0.0,
+      0.68
+    ],
+    "nock_2": [
+      -0.15899999999999997,
+      0.0,
+      0.68
+    ],
+    "nock_3": [
+      -0.2879999999999999,
+      0.0,
+      0.68
+    ],
+    "tip": [
+      -0.02999999999999997,
+      0.0,
+      0.68
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    16854,
+    "aebcd6bcbccd9cdc"
+  ]
+}

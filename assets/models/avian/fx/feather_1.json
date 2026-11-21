@@ -1,0 +1,29 @@
+{
+  "what": "avian/fx/feather_1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    2,
+    2
+  ],
+  "pivot": [
+    5.04,
+    0.816,
+    0.72
+  ],
+  "anchor": [
+    0.028749999999999998,
+    0.011500000000000003,
+    -0.045
+  ],
+  "origin": [
+    -5,
+    -1,
+    -1
+  ],
+  "note": "Placed as the code places it.",
+  "written": [
+    1323,
+    "76029133df11a273"
+  ]
+}

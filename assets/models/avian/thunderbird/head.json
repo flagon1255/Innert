@@ -1,0 +1,29 @@
+{
+  "what": "Thunderbird, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    57,
+    22,
+    35
+  ],
+  "pivot": [
+    30.014400000000002,
+    10.62672,
+    10.5456
+  ],
+  "anchor": [
+    -0.09465000000000012,
+    0.023329999999999962,
+    -0.6591
+  ],
+  "origin": [
+    -30,
+    -11,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    20320,
+    "447d096342c9e10f"
+  ]
+}

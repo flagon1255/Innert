@@ -1,0 +1,37 @@
+{
+  "what": "Sword, blade: Moonreturn Blade",
+  "voxels_per_meter": 192.0,
+  "size": [
+    36,
+    3,
+    161
+  ],
+  "pivot": [
+    28.79896296296296,
+    1.5695999999999994,
+    -54.0
+  ],
+  "anchor": null,
+  "origin": [
+    -29,
+    -2,
+    54
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1476
+    ],
+    "tip": [
+      -0.126,
+      0.0,
+      1.1196
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    22148,
+    "1e539a861f6e020f"
+  ]
+}

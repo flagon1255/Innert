@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    12,
+    22
+  ],
+  "pivot": [
+    3.8720000000000008,
+    5.984000000000001,
+    18.5152
+  ],
+  "anchor": [
+    0.07049999999999995,
+    0.0009999999999999454,
+    -1.1572
+  ],
+  "origin": [
+    -4,
+    -6,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3020,
+    "54de381077bc3acf"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    18,
+    11,
+    22
+  ],
+  "pivot": [
+    9.239999999999998,
+    5.28,
+    3.696
+  ],
+  "anchor": [
+    -0.014999999999999902,
+    0.013749999999999984,
+    -0.231
+  ],
+  "origin": [
+    -9,
+    -5,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5095,
+    "a564b284db36ec83"
+  ]
+}

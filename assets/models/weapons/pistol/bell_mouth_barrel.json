@@ -1,0 +1,47 @@
+{
+  "what": "Pistol, barrel: Bell-Mouth Barrel",
+  "voxels_per_meter": 144.0,
+  "size": [
+    51,
+    7,
+    8
+  ],
+  "pivot": [
+    -7.488000000000003,
+    3.6936,
+    3.8640000000000008
+  ],
+  "anchor": null,
+  "origin": [
+    7,
+    -4,
+    -4
+  ],
+  "points": {
+    "grip": [
+      0.015000000000000006,
+      0.0,
+      -0.055
+    ],
+    "mover_handle": [
+      0.37,
+      0.0,
+      0.0
+    ],
+    "mover_pivot": [
+      0.37,
+      0.0,
+      0.0
+    ],
+    "tip": [
+      0.37,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4633,
+    "d125739644e34a6f"
+  ]
+}

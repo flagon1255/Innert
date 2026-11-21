@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, fore thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    7,
+    14
+  ],
+  "pivot": [
+    3.0451200000000003,
+    3.0451200000000003,
+    10.94912
+  ],
+  "anchor": [
+    0.028429999999999983,
+    0.028429999999999983,
+    -0.68432
+  ],
+  "origin": [
+    -3,
+    -3,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2384,
+    "29962662e7ca20d7"
+  ]
+}

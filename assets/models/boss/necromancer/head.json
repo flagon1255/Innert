@@ -1,0 +1,29 @@
+{
+  "what": "Necromancer, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    6,
+    7
+  ],
+  "pivot": [
+    5.28,
+    2.72,
+    2.7199999999999998
+  ],
+  "anchor": [
+    -0.08000000000000002,
+    0.017499999999999988,
+    -0.16999999999999998
+  ],
+  "origin": [
+    -5,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1632,
+    "2b198087e60574f9"
+  ]
+}

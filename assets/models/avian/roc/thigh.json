@@ -1,0 +1,29 @@
+{
+  "what": "Cloudreaver Roc, thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    13,
+    31
+  ],
+  "pivot": [
+    6.623999999999999,
+    6.4768,
+    24.1408
+  ],
+  "anchor": [
+    0.11725000000000008,
+    0.0014500000000000068,
+    -1.5088
+  ],
+  "origin": [
+    -7,
+    -6,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    13916,
+    "ad7b2a6a733aaae3"
+  ]
+}

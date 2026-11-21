@@ -1,0 +1,29 @@
+{
+  "what": "Rime Jotun, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    20,
+    50
+  ],
+  "pivot": [
+    9.920914891801113,
+    9.920914891801111,
+    42.16
+  ],
+  "anchor": [
+    0.0049428192624304534,
+    0.0049428192624305645,
+    -2.635
+  ],
+  "origin": [
+    -10,
+    -10,
+    -42
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    11321,
+    "7a61d6c34056d6e6"
+  ]
+}

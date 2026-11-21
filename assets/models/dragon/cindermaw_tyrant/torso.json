@@ -1,0 +1,29 @@
+{
+  "what": "Cindermaw Tyrant, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    84,
+    56,
+    61
+  ],
+  "pivot": [
+    43.52,
+    27.776639999999997,
+    26.2752
+  ],
+  "anchor": [
+    -0.0950000000000002,
+    0.013960000000000194,
+    -1.6422
+  ],
+  "origin": [
+    -44,
+    -28,
+    -26
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    596440,
+    "6d8858ae9fa37e94"
+  ]
+}

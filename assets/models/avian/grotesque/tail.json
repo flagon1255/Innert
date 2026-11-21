@@ -1,0 +1,29 @@
+{
+  "what": "Belfry Grotesque, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    37,
+    8,
+    8
+  ],
+  "pivot": [
+    33.808,
+    3.5360000000000005,
+    4.4
+  ],
+  "anchor": [
+    -0.95675,
+    0.02899999999999997,
+    -0.275
+  ],
+  "origin": [
+    -34,
+    -4,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2417,
+    "e67553e40bcddc67"
+  ]
+}

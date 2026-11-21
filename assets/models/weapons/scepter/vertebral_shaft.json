@@ -1,0 +1,37 @@
+{
+  "what": "Scepter, shaft: Vertebral Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    6,
+    7,
+    142
+  ],
+  "pivot": [
+    2.8512000000000004,
+    4.752,
+    1.3232
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -5,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.22499999999999998
+    ],
+    "tip": [
+      0.035,
+      0.0,
+      0.81
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    7741,
+    "39b2538a5b09cd61"
+  ]
+}

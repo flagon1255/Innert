@@ -1,0 +1,29 @@
+{
+  "what": "Frost Wyrm, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    36,
+    3
+  ],
+  "pivot": [
+    19.296,
+    34.5456,
+    0.9719999999999999
+  ],
+  "anchor": [
+    -0.54975,
+    -1.0341,
+    -0.06074999999999999
+  ],
+  "origin": [
+    -19,
+    -35,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4378,
+    "bc30fcfe17e7c31a"
+  ]
+}

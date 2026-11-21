@@ -1,0 +1,29 @@
+{
+  "what": "an arrow, bolt, shot, spell, spark, smoke, pool or the player's arm",
+  "voxels_per_meter": 16.0,
+  "size": [
+    26,
+    25,
+    19
+  ],
+  "pivot": [
+    7.0,
+    18.0,
+    10.0
+  ],
+  "anchor": [
+    0.375,
+    -0.34375,
+    -0.625
+  ],
+  "origin": [
+    -7,
+    -18,
+    -10
+  ],
+  "note": "Placed by its anchor as the code places it, and grows only round it. Its voxels a meter are the code's, not known here.",
+  "written": [
+    6689,
+    "a2024ddaf9956404"
+  ]
+}

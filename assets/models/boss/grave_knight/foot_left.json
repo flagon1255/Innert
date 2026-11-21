@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, foot left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    4,
+    4
+  ],
+  "pivot": [
+    1.7600000000000002,
+    1.7600000000000002,
+    2.112
+  ],
+  "anchor": [
+    0.13999999999999999,
+    0.014999999999999986,
+    -0.132
+  ],
+  "origin": [
+    -2,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1411,
+    "3c8d70ace39f6168"
+  ]
+}

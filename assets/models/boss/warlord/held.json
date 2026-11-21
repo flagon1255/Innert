@@ -1,0 +1,29 @@
+{
+  "what": "Bandit Warlord, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    7,
+    31
+  ],
+  "pivot": [
+    0.9520000000000001,
+    3.4400000000000004,
+    26.792
+  ],
+  "anchor": [
+    0.0029999999999999957,
+    0.0037499999999999756,
+    -1.6745
+  ],
+  "origin": [
+    -1,
+    -3,
+    -27
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1541,
+    "c08f24153c3ab57a"
+  ]
+}

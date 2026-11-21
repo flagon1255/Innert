@@ -1,0 +1,62 @@
+{
+  "what": "Hand Crossbow, prod: Wyrmbone Prod",
+  "voxels_per_meter": 128.0,
+  "size": [
+    8,
+    53,
+    4
+  ],
+  "pivot": [
+    -36.792,
+    26.629109800756343,
+    1.6080000000000005
+  ],
+  "anchor": null,
+  "origin": [
+    37,
+    -27,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.10500000000000004,
+      0.0,
+      -0.078
+    ],
+    "mover_handle": [
+      0.20000000000000004,
+      0.0,
+      -0.045
+    ],
+    "mover_pivot": [
+      0.37,
+      0.0,
+      -0.034
+    ],
+    "nock_1": [
+      0.298483870967742,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.22093870967741938,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.16000000000000003,
+      0.0,
+      0.006
+    ],
+    "tip": [
+      0.41000000000000003,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2589,
+    "fa64aa4a3d1a90e6"
+  ]
+}

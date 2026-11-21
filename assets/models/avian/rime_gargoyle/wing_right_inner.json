@@ -1,0 +1,29 @@
+{
+  "what": "Rimestone gargoyle, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    11,
+    3
+  ],
+  "pivot": [
+    9.303558038221935,
+    9.936000000000002,
+    0.864
+  ],
+  "anchor": [
+    -0.17522237738887092,
+    -0.2772500000000001,
+    -0.054
+  ],
+  "origin": [
+    -9,
+    -10,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1801,
+    "91dcaa72abe9ed2d"
+  ]
+}

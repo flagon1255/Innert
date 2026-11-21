@@ -1,0 +1,29 @@
+{
+  "what": "Thunder Drake, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    11,
+    13
+  ],
+  "pivot": [
+    8.208,
+    5.296,
+    2.904
+  ],
+  "anchor": [
+    0.14325,
+    0.012749999999999984,
+    -0.1815
+  ],
+  "origin": [
+    -8,
+    -5,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2335,
+    "510b734d07334a95"
+  ]
+}

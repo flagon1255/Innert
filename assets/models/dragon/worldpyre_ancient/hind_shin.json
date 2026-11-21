@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    29,
+    17,
+    58
+  ],
+  "pivot": [
+    8.809156489243065,
+    8.24,
+    50.0963558490452
+  ],
+  "anchor": [
+    0.3556777194223084,
+    0.016249999999999987,
+    -3.131022240565325
+  ],
+  "origin": [
+    -9,
+    -8,
+    -50
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    33185,
+    "7a9bbc5aaf8e8c1b"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Wand, binding: Locust Binding",
+  "voxels_per_meter": 192.0,
+  "size": [
+    2,
+    3,
+    11
+  ],
+  "pivot": [
+    1.2560516129032253,
+    1.3006451612903223,
+    -43.937187096774196
+  ],
+  "anchor": null,
+  "origin": [
+    -1,
+    -1,
+    44
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.075
+    ],
+    "tip": [
+      0.013548387096774195,
+      0.0,
+      0.32322580645161286
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1456,
+    "55a2e2436bce4574"
+  ]
+}

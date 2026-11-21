@@ -1,0 +1,29 @@
+{
+  "what": "sleetwing, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    3,
+    4
+  ],
+  "pivot": [
+    1.2159999999999997,
+    1.48,
+    1.52
+  ],
+  "anchor": [
+    0.20525000000000002,
+    0.0012500000000000011,
+    -0.095
+  ],
+  "origin": [
+    -1,
+    -1,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1411,
+    "b012344a58dca48c"
+  ]
+}

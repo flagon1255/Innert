@@ -1,0 +1,29 @@
+{
+  "what": "Thunderbird, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    46,
+    88,
+    6
+  ],
+  "pivot": [
+    37.58806456381595,
+    84.90126088381594,
+    2.496
+  ],
+  "anchor": [
+    -0.9117540352384967,
+    -2.556328805238496,
+    -0.156
+  ],
+  "origin": [
+    -38,
+    -85,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    24115,
+    "1cf1186237c10c5b"
+  ]
+}

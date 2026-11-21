@@ -1,0 +1,25 @@
+{
+  "what": "Pyre Matriarch, standing frame (1 of 37 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    35,
+    16,
+    18
+  ],
+  "pivot": [
+    17.5,
+    8.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -18,
+    -8,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    3544,
+    "15d39645acb0306a"
+  ]
+}

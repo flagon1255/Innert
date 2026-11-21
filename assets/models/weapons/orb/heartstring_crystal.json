@@ -1,0 +1,37 @@
+{
+  "what": "Orb, crystal: Heartstring Twins",
+  "voxels_per_meter": 192.0,
+  "size": [
+    21,
+    22,
+    21
+  ],
+  "pivot": [
+    10.752000000000002,
+    10.9290803985648,
+    -25.16
+  ],
+  "anchor": null,
+  "origin": [
+    -11,
+    -11,
+    25
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.186
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    22097,
+    "f3bcefa76ea29d5f"
+  ]
+}

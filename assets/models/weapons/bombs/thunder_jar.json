@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Thunder Jar",
+  "voxels_per_meter": 192.0,
+  "size": [
+    25,
+    25,
+    34
+  ],
+  "pivot": [
+    12.698880000000003,
+    12.499839999999999,
+    -0.007679999999999687
+  ],
+  "anchor": null,
+  "origin": [
+    -13,
+    -12,
+    0
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.034100000000000005
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.23520000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    33597,
+    "d58b7e8f3c567b46"
+  ]
+}
