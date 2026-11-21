@@ -1,7 +1,7 @@
 //! Levels: the player's, earned by experience, and those of the monsters and bosses they fight and
-//! the weapons they find. Each realm has a band of levels its monsters keep to, see BANDS: they
-//! come at the player's level, held within that band, so a realm's never easier than its floor nor
-//! harder than its top. What a monster can take and how hard it hits come from its level, see
+//! the weapons they find. Each realm has a band of levels, see BANDS: its monsters come at the
+//! player's level, never under the band's floor, so a realm's never easier than its floor and
+//! never left behind once the player's past its top. What a monster can take and how hard it hits come from its level, see
 //! toughness() and damage(), and a weapon hits harder for its item level, see weapon_power().
 //!
 //! Everything here is plain numbers, kept apart from the game, so it can be tested and tuned on
@@ -25,9 +25,11 @@ impl Band {
     /// Free Roam, which has no realms: everything comes at the player's level, whatever it is
     pub const ANY: Band = Band { lo: 1, hi: LEVEL_CAP };
 
-    /// The level of what's here, with the player at level `player`: theirs, held within the band
+    /// The level of what's here, with the player at level `player`: theirs, never under the band's
+    /// floor. The band's top is only where a realm's levels are meant to be passed through; what's
+    /// there keeps scaling with the player past it.
     pub fn level_for(self, player: u32) -> u32 {
-        player.clamp(self.lo, self.hi)
+        player.max(self.lo)
     }
 }
 
@@ -171,17 +173,21 @@ pub fn drop_level(level: u32, source: Source, roll: f64) -> u32 {
     (level as i32 + offset).clamp(1, DROP_CAP as i32) as u32
 }
 
-/// The level of a monster or boss in `band` with the player at level `player`, by `roll`, 0-1: a
-/// monster one either side of the band's level for the player, a boss one or two over, a raid boss
-/// or finale the top of the band, none of them past it
+/// The highest level a monster or boss can be: a raid boss's at the player's cap
+pub const FOE_CAP: u32 = LEVEL_CAP + 3;
+
+/// The level of a monster or boss in `band` with the player at level `player`, by `roll`, 0-1: it
+/// follows the player's level, never under the band's floor. A monster's one either side of it, a
+/// boss one or two over, a raid boss or finale three over, or the band's top if that's higher, so
+/// a realm's raid bosses are never easier than the top of its band.
 pub fn foe_level(band: Band, player: u32, slain: Slain, roll: f64) -> u32 {
-    let at = band.level_for(player);
+    let at = band.level_for(player) as i32;
     let level = match slain {
-        Slain::Monster => at as i32 + (roll * 3.0).floor().min(2.0) as i32 - 1,
-        Slain::Boss => at as i32 + 1 + (roll * 2.0).floor().min(1.0) as i32,
-        Slain::Raid | Slain::Finale => band.hi as i32,
+        Slain::Monster => at + (roll * 3.0).floor().min(2.0) as i32 - 1,
+        Slain::Boss => at + 1 + (roll * 2.0).floor().min(1.0) as i32,
+        Slain::Raid | Slain::Finale => (at + 3).max(band.hi as i32),
     };
-    level.clamp(band.lo as i32, band.hi as i32) as u32
+    level.clamp(band.lo as i32, FOE_CAP as i32) as u32
 }
 
 /// The level a player from a save from before there were levels starts at: the floor of the band
@@ -207,20 +213,25 @@ mod tests {
         for pair in BANDS.windows(2) {
             assert_eq!(pair[1].lo, pair[0].hi + 1);
         }
-        // A monster's never under its realm's floor nor over its top
+        // A monster's never under its realm's floor, and follows the player past its top
         for band in BANDS {
             for player in 1..=LEVEL_CAP {
                 for k in 0..10 {
                     let roll = k as f64 / 10.0;
                     for slain in [Slain::Monster, Slain::Boss, Slain::Raid, Slain::Finale] {
                         let l = foe_level(band, player, slain, roll);
-                        assert!((band.lo..=band.hi).contains(&l), "{band:?} {player} {slain:?}");
+                        assert!((band.lo..=FOE_CAP).contains(&l), "{band:?} {player} {slain:?}");
+                        if player >= band.lo {
+                            assert!(l + 1 >= player, "{band:?} {player} {slain:?} at {l}");
+                        }
                     }
                     assert!(foe_level(band, player, Slain::Boss, roll) >= foe_level(band, player, Slain::Monster, roll));
                 }
-                assert_eq!(foe_level(band, player, Slain::Raid, 0.5), band.hi);
+                assert_eq!(foe_level(band, player, Slain::Raid, 0.5), (band.level_for(player) + 3).max(band.hi));
             }
         }
+        // The normal world at the cap is as high as the last realm
+        assert_eq!(foe_level(BANDS[0], LEVEL_CAP, Slain::Monster, 0.5), LEVEL_CAP);
     }
 
     /// Each realm reached lifts the bands of those gone past, a step at a time, never as high as

@@ -8167,12 +8167,12 @@ mod tests {
             let Item::Weapon(w) = game.roll_weapon_for(Look::Golem, 1.0, false, (20, Source::Raid)) else { panic!() };
             assert!((20..=23).contains(&game.weapons[w].item_level()));
         }
-        // The band holds what's about, whatever the player's level
+        // What's about is at the player's level, never under the band's floor
         game.set_band(levels::BANDS[2]);
         game.set_level(3);
         assert_eq!(game.area_level(), levels::BANDS[2].lo);
         game.set_level(40);
-        assert_eq!(game.area_level(), levels::BANDS[2].hi);
+        assert_eq!(game.area_level(), 40);
         assert!(game.foe_damage() > 1.0 && game.foe_toughness() > 1.0);
         // A night raider from further on comes at least at its own realm's floor
         assert!(game.foe_level_at_least(Look::Skeleton, 30, 0.5) >= 30);
