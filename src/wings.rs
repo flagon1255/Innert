@@ -964,7 +964,10 @@ impl App {
         // The dusk bat's faster by night
         let night = kind.perk == Perk::Nightwing && self.cycle.is_night();
         if let Some(player) = &mut self.player {
-            player.glide_feel = if night { [kind.speed * NIGHT_SPEED, kind.sink, kind.turn * 1.25] } else { [kind.speed, kind.sink, kind.turn] };
+            // Quicker and sinking less for the skill web's gliding, see skills::Stat::Glide
+            let boost = self.game.glide_boost();
+            let feel = if night { [kind.speed * NIGHT_SPEED, kind.sink, kind.turn * 1.25] } else { [kind.speed, kind.sink, kind.turn] };
+            player.glide_feel = [feel[0] * boost, feel[1] / boost, feel[2]];
         }
         let flying = gliding && airborne;
         let flight = &mut self.wings;

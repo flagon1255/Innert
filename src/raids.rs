@@ -61,21 +61,22 @@ pub type RealmId = u32;
 /// them together, against the realm's own
 const VISITORS: f64 = 4.0;
 
-/// The monsters that come at night in realm `here`, how likely each is and how much tougher than
-/// usual: the realm's own, the walking dead and wolves in the normal world, and those of every
-/// other realm visited, as tough as in their own; the normal world's own far the most likely
-pub fn night_roster(here: RealmId, visited: &[RealmId]) -> Vec<(Look, f64, f64)> {
-    let mut roster: Vec<(Look, f64, f64)> = if here == 0 {
+/// The monsters that come at night in realm `here`, how likely each is and the least level each
+/// comes at, 0 for none but the realm's own: the realm's own, the walking dead and wolves in the
+/// normal world, and those of every other realm visited, at least at the floor of their own; the
+/// normal world's own far the most likely
+pub fn night_roster(here: RealmId, visited: &[RealmId]) -> Vec<(Look, f64, u32)> {
+    let mut roster: Vec<(Look, f64, u32)> = if here == 0 {
         vec![
-            (Look::Zombie, 3.0, 1.0),
-            (Look::Skeleton, 2.5, 1.0),
-            (Look::Ghoul, 1.5, 1.0),
-            (Look::ArmoredZombie, 1.2, 1.0),
-            (Look::ArmoredSkeleton, 1.0, 1.0),
-            (Look::BoneArcher, 1.0, 1.0),
-            (Look::Bloater, 0.8, 1.0),
-            (Look::Wolf, 1.2, 1.0),
-            (Look::GraveBrute, 0.5, 1.0),
+            (Look::Zombie, 3.0, 0),
+            (Look::Skeleton, 2.5, 0),
+            (Look::Ghoul, 1.5, 0),
+            (Look::ArmoredZombie, 1.2, 0),
+            (Look::ArmoredSkeleton, 1.0, 0),
+            (Look::BoneArcher, 1.0, 0),
+            (Look::Bloater, 0.8, 0),
+            (Look::Wolf, 1.2, 0),
+            (Look::GraveBrute, 0.5, 0),
         ]
     } else {
         realm_monsters(here, here, 12.0)
@@ -91,13 +92,13 @@ pub fn night_roster(here: RealmId, visited: &[RealmId]) -> Vec<(Look, f64, f64)>
 }
 
 /// The monsters of realm `realm` come to realm `here`, `weight` in all spread over them by how
-/// many of each go about, and how much tougher than here's own: as everything is, they're as tough
-/// as realm `here` is, see Game::set_scaling() and realms::scaling_in(), or as their own realm is
-/// where that's tougher
-fn realm_monsters(realm: RealmId, here: RealmId, weight: f64) -> Vec<(Look, f64, f64)> {
-    let (packs, scaling) = monsters_of(realm as usize);
+/// many of each go about, and the least level they come at: as everything is, they're of realm
+/// `here`'s level, see Game::set_band() and levels::band_in(), or their own realm's floor where
+/// that's higher
+fn realm_monsters(realm: RealmId, here: RealmId, weight: f64) -> Vec<(Look, f64, u32)> {
+    let (packs, band) = monsters_of(realm as usize);
     let (_, home) = monsters_of(here as usize);
-    let tougher = (scaling.toughness / home.toughness).max(1.0);
+    let tougher = if band.lo > home.lo { band.lo } else { 0 };
     let count: usize = packs.iter().map(|p| p.looks.len() * p.most).sum();
     packs
         .iter()
@@ -112,9 +113,9 @@ pub fn breaks_walls(look: Look) -> bool {
 }
 
 /// Picks one of `roster` from `roll`, 0-1, by how likely each is, leaving out the biggest unless
-/// `brutes`: which, and how much tougher than usual
-pub fn pick(roster: &[(Look, f64, f64)], roll: f64, brutes: bool) -> (Look, f64) {
-    let allowed: Vec<&(Look, f64, f64)> = roster.iter().filter(|(l, ..)| brutes || !breaks_walls(*l)).collect();
+/// `brutes`: which, and the least level it comes at
+pub fn pick(roster: &[(Look, f64, u32)], roll: f64, brutes: bool) -> (Look, u32) {
+    let allowed: Vec<&(Look, f64, u32)> = roster.iter().filter(|(l, ..)| brutes || !breaks_walls(*l)).collect();
     let total: f64 = allowed.iter().map(|(_, w, _)| w).sum();
     let mut left = roll.clamp(0.0, 0.999_999) * total;
     for (look, w, tough) in &allowed {
@@ -123,7 +124,7 @@ pub fn pick(roster: &[(Look, f64, f64)], roll: f64, brutes: bool) -> (Look, f64)
         }
         left -= w;
     }
-    allowed.last().map_or((Look::Zombie, 1.0), |(l, _, t)| (*l, *t))
+    allowed.last().map_or((Look::Zombie, 0), |(l, _, t)| (*l, *t))
 }
 
 /// What a column of blocks round a base is, for finding the way
@@ -431,21 +432,21 @@ mod tests {
     #[test]
     fn monsters_of_realms_visited_come_too() {
         let home = night_roster(0, &[0]);
-        assert!(home.iter().all(|&(_, _, t)| t == 1.0));
+        assert!(home.iter().all(|&(_, _, t)| t == 0));
         let travelled = night_roster(0, &[0, 1, 2]);
         let sky = monsters_of(1).0.iter().flat_map(|p| p.looks.iter()).copied().collect::<Vec<_>>();
         let dream = monsters_of(2).0.iter().flat_map(|p| p.looks.iter()).copied().collect::<Vec<_>>();
-        assert!(travelled.iter().any(|(l, _, t)| sky.contains(l) && *t > 1.0), "nothing from the sky isles");
-        assert!(travelled.iter().any(|(l, _, t)| dream.contains(l) && *t > 1.0), "nothing from the dream");
-        let own: f64 = travelled.iter().filter(|(_, _, t)| *t == 1.0).map(|(_, w, _)| w).sum();
+        assert!(travelled.iter().any(|(l, _, t)| sky.contains(l) && *t == crate::levels::BANDS[1].lo), "nothing from the sky isles");
+        assert!(travelled.iter().any(|(l, _, t)| dream.contains(l) && *t == crate::levels::BANDS[2].lo), "nothing from the dream");
+        let own: f64 = travelled.iter().filter(|(_, _, t)| *t == 0).map(|(_, w, _)| w).sum();
         let all: f64 = travelled.iter().map(|(_, w, _)| w).sum();
         assert!(own > all * 0.5, "the normal world's own come the most");
         // Not visited, none of them
         assert!(!home.iter().any(|(l, ..)| *l == Look::Gloomwing || *l == Look::RimeWraith));
-        // A realm's raid has its own monsters, as tough as everything there is already, not tougher
-        // again, and those of realms before it no less tough
+        // A realm's raid has its own monsters, of the level of everything there already, not
+        // higher, and those of realms before it no lower
         let ice = night_roster(3, &[0, 3]);
         assert!(ice.iter().any(|(l, ..)| *l == Look::RimeWraith));
-        assert!(ice.iter().all(|&(_, _, t)| t == 1.0), "{ice:?}");
+        assert!(ice.iter().all(|&(_, _, t)| t == 0), "{ice:?}");
     }
 }

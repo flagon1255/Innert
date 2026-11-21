@@ -87,7 +87,7 @@ impl App {
         let vpm = self.world.voxels_per_meter as f64;
         let eye = camera_to_voxels(self.camera.position, self.world.size);
         let dir = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
-        let reach = realms::HOOK_REACH_M as f64 * vpm;
+        let reach = realms::HOOK_REACH_M as f64 * self.game.hook_reach() * vpm;
         // Only into what's there in the world: out past its sides or down under everything there's
         // nothing to bite into, whatever's said to be beyond them
         let [sx, sy, _] = self.world.size.map(f64::from);
@@ -150,7 +150,7 @@ impl App {
         }
         let Some((at, target, by)) = hook.bite else {
             hook.out += THROW_SPEED * vpm * dt;
-            hook.returning = hook.out >= realms::HOOK_REACH_M as f64 * vpm;
+            hook.returning = hook.out >= realms::HOOK_REACH_M as f64 * self.game.hook_reach() * vpm;
             return;
         };
         match &mut hook.hauling {

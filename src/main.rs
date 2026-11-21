@@ -85,7 +85,9 @@ mod gather;
 mod gpu_timing;
 mod hearths;
 mod hot_reload;
+mod jewels;
 mod leaves;
+mod levels;
 mod serpent_lairs;
 mod serpent_trials;
 mod serpents;
@@ -102,6 +104,7 @@ mod rig;
 mod rope;
 mod save;
 mod session;
+mod skills;
 mod shafts;
 mod skips;
 mod staging;
@@ -1438,6 +1441,10 @@ struct App {
     wards: guardians::Wards,
     show_settings: bool,
     inventory_open: bool,
+    /// The skill web's window is open, over everything, the world held still behind it, see skills.rs
+    skills_open: bool,
+    /// Its window closed from within, for the mouse to be taken back next frame
+    skills_closed: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
     shopping: bool,
     // Set from the menu, done at the start of the next frame
@@ -2403,6 +2410,38 @@ impl App {
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
+        // For trying out levels: `--set player_level=12` starts the player at that level, before
+        // any monster's given its own, `level_up=1` has them go up one straight away, and
+        // `level_up_hold=1` holds the moment of it on the HUD for a screenshot, see levels.rs
+        if let Some(level) = setting("player_level").and_then(|v| v.parse().ok()) {
+            game.set_level(level);
+        }
+        if let Some(share) = setting("player_xp").and_then(|v| v.parse::<f64>().ok()) {
+            game.gain_experience(crate::levels::needed(game.level().0) * share.clamp(0.0, 0.99), None);
+        }
+        if flag("level_up", false) {
+            game.level_up_now();
+        }
+        // `--set skill_points=30` takes that many nodes of the skill web, going up levels for them
+        // if there aren't the points, and `--set skills=1` opens its window, `skill_zoom=0.4` that
+        // close, `skill_hover=melee_n3` with the pointer over that node, for its card
+        if let Some(n) = setting("skill_points").and_then(|v| v.parse::<usize>().ok()) {
+            while (game.skill_points() as usize) < n && game.level().0 < crate::levels::LEVEL_CAP {
+                game.level_up_now();
+            }
+            game.take_skills(n);
+        }
+        if let Some(zoom) = setting("skill_zoom").and_then(|v| v.parse::<f32>().ok()) {
+            game.skill_view.zoom = zoom;
+        }
+        if let Some(id) = setting("skill_hover") {
+            game.skill_view.hover = Some(id.to_owned());
+        }
+        // `--set inventory=1 inspect=2` opens the inventory with the card of its third slot showing
+        if let Some(slot) = setting("inspect").and_then(|v| v.parse().ok()) {
+            game.inspect(slot);
+        }
+        game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
         // For trying out weapons: `--set weapon_seed=7 weapon_luck=3` starts with other ones, rarer
         // the luckier, and `--set weapon=bow` with the bow in hand
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
@@ -2410,6 +2449,17 @@ impl App {
         }
         if let Some(family) = setting("weapon") {
             game.select_family(family);
+        }
+        // `--set jewels=melee_rare:3,magic_common:1` gives those jewels, see jewels.rs, and
+        // `socket=1` sets one of each into the first weapon carried it fits
+        if let Some(list) = setting("jewels") {
+            for part in list.split(',') {
+                let (id, n) = part.split_once(':').map_or((part, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
+                game.give_jewels(id, n);
+            }
+        }
+        if flag("socket", false) {
+            game.socket_some();
         }
         // `--set ammo=fire_bolts` gives a few bundles of that special ammo and loads it
         if let Some(id) = setting("ammo") {
@@ -2565,6 +2615,10 @@ impl App {
             let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
             game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
             println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
+            // `enemy_health=0.6` starts them hurt, their bars and levels showing
+            if let Some(fraction) = setting("enemy_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_monsters(fraction);
+            }
         }
         // `--set health=10` starts the player that hurt, to see them die
         if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
@@ -2775,6 +2829,8 @@ impl App {
             show_settings: flag("settings", false),
             // `--set inventory=1` shows the inventory, to see how it looks
             inventory_open: flag("inventory", false),
+            skills_open: flag("skills", false),
+            skills_closed: false,
             shopping: false,
             generate_requested: false,
             waterfall_requested: false,
@@ -2816,6 +2872,9 @@ impl App {
             }
             if let Some(gold) = setting("gold").and_then(|v| v.parse().ok()) {
                 app.game.set_gold(gold);
+            }
+            if let Some(level) = setting("player_level").and_then(|v| v.parse().ok()) {
+                app.game.set_level(level);
             }
             if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
                 app.game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));
@@ -3942,6 +4001,9 @@ impl App {
         if interactive && self.input.key_pressed(KeyCode::Escape) && !editor::is_app() {
             if self.session.gate_open {
                 self.session.gate_action = Some(session::GateAction::Close);
+            } else if self.skills_open {
+                self.skills_open = false;
+                self.set_focus(true);
             } else if self.map.open {
                 self.toggle_map();
             } else if self.game.shopping() {
@@ -3963,9 +4025,18 @@ impl App {
             }
         }
         let playing = interactive && !self.menu_open;
-        if playing && !self.game.shopping() && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
+        if playing && !self.game.shopping() && !self.skills_open && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
             self.inventory_open = !self.inventory_open;
             self.set_focus(!self.inventory_open);
+        }
+        // The skill web, see skills.rs: over everything, the world held still behind it
+        if std::mem::take(&mut self.skills_closed) {
+            self.set_focus(true);
+        }
+        if playing && !self.game.shopping() && self.loaded_scene.is_terrain() && self.input.key_pressed(KeyCode::KeyP) {
+            self.skills_open = !self.skills_open;
+            self.inventory_open = false;
+            self.set_focus(!self.skills_open);
         }
         // The model editor's own app is the editor, open from the start, see editor.rs
         if editor::is_app() && !self.editor.open {
@@ -4050,7 +4121,7 @@ impl App {
         // The world stands still while the menu is open, and while it's built afresh round the
         // player behind the dark, as on going through to another realm, so nothing that was about
         // them, a night's raiders least of all, can fall on them unseen meanwhile
-        if !self.menu_open && !self.editor.open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
+        if !self.menu_open && !self.editor.open && !self.skills_open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
             let water = &self.water;
@@ -5286,7 +5357,7 @@ impl App {
         // How many of the realm's guardians are slain, for the gate's window, see guardians.rs
         let guardians = self.guardians_slain();
         // And hints and messages aren't half hidden behind it or any other window
-        self.game.set_covered(map_marks.is_some() || self.inventory_open || self.session.gate_open || self.game.shopping());
+        self.game.set_covered(map_marks.is_some() || self.skills_open || self.inventory_open || self.session.gate_open || self.game.shopping());
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -5492,6 +5563,11 @@ impl App {
 
             if !self.menu_open && !self.editor.open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
+                // Drawn only while it's open, so it costs nothing shut
+                if self.skills_open && !self.game.skill_window(&ctx) {
+                    self.skills_open = false;
+                    self.skills_closed = true;
+                }
                 if !self.fixed_sun {
                     self.cycle.hud(&ctx, raid_note.as_deref());
                 }

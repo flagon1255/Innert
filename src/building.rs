@@ -623,6 +623,8 @@ impl App {
         let Some(power) = tools::power(tool, kind) else {
             return;
         };
+        // Quicker for the skill web's gathering, see skills::Stat::GatherSpeed
+        let power = power * self.game.gather_speed();
         let vpm = self.world.voxels_per_meter as f64;
         let same = self.building.gathering.as_ref().is_some_and(|g| g.key == key && g.kind == kind);
         if !same {

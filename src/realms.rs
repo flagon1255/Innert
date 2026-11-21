@@ -44,7 +44,10 @@ pub struct Realm {
     /// The monsters that roam it, a pack at a time. Each works on any land, the normal world's
     /// too: those that fly come down to fight, for night raids from one realm into another.
     pub monsters: &'static [Pack],
-    pub scaling: Scaling,
+    /// How much luckier what's found in it is than in the normal world: the wings in chests by
+    /// this much, the weapons by less, see game::loot_scaling(). How tough its monsters are comes
+    /// from their levels, see levels::BANDS.
+    pub luck: f64,
     /// The color of its rune on the gate, and its Innert blocks', in the HUD, and what the rune's
     /// made of
     pub color: [u8; 3],
@@ -59,9 +62,10 @@ pub struct Pack {
     pub most: usize,
 }
 
-/// How much harder a realm is than the normal world: how many times the health its bosses and
-/// monsters have, how much harder they hit, and how much luckier what's found is: the wings in
-/// chests by this much, the weapons by less, see game::loot_scaling()
+/// What's left of how much harder a realm is than its monsters' levels make it: how many times
+/// the health its bosses and monsters have and how much harder they hit, each time the journey's
+/// been made to the end, and how much luckier what's found there is, see Realm::luck. How tough
+/// they are otherwise is their levels', see levels.rs.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Scaling {
     pub toughness: f64,
@@ -81,18 +85,18 @@ impl Scaling {
 }
 
 /// How much of the way to the realm furthest on that's been reached the realms gone past get
-/// harder, the normal world among them: each new realm reached a step harder all the way back, so
-/// going home's never trivial, never as hard as that realm itself
-const REACHED_SHARE: f64 = 0.3;
+/// luckier, and their packs bigger, as their bands are lifted, see levels::REACHED_SHARE
+const REACHED_SHARE: f64 = crate::levels::REACHED_SHARE;
 
-/// How hard realm `realm` is with the journey come as far as realm `reached`, and made to the end
-/// `journeys` times before: its own scaling, and part of the way to that of the realm reached, see
-/// REACHED_SHARE
+/// How much harder realm `realm` is than its monsters' levels make it, with the journey come as far
+/// as realm `reached`, and made to the end `journeys` times before: only the journeys made, and its
+/// luck part of the way to that of the realm reached, see REACHED_SHARE. Its band is
+/// levels::band_in()'s.
 pub fn scaling_in(realm: usize, reached: usize, journeys: u32) -> Scaling {
-    let own = REALMS[realm.min(REALMS.len() - 1)].scaling;
-    let top = REALMS[reached.min(REALMS.len() - 1)].scaling;
-    let toward = |a: f64, b: f64| if b > a { a + (b - a) * REACHED_SHARE } else { a };
-    Scaling { toughness: toward(own.toughness, top.toughness), damage: toward(own.damage, top.damage), luck: toward(own.luck, top.luck) }.after(journeys)
+    let own = REALMS[realm.min(REALMS.len() - 1)].luck;
+    let top = REALMS[reached.min(REALMS.len() - 1)].luck;
+    let luck = if top > own { own + (top - own) * REACHED_SHARE } else { own };
+    Scaling { luck, ..Scaling::NONE }.after(journeys)
 }
 
 /// How many more monsters than usual go about together in realm `realm` with the journey come as
@@ -155,7 +159,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::ReedViper, Look::ReedViper], most: 2 },
             Pack { looks: &[Look::SiltCoiler, Look::SiltCoiler], most: 1 },
         ],
-        scaling: Scaling::NONE,
+        luck: 1.0,
         color: [255, 214, 120],
         rune: GLOW_HOLY,
     },
@@ -181,7 +185,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::BoneArcher, Look::ArmoredSkeleton, Look::ArmoredSkeleton], most: 1 },
             Pack { looks: &[Look::GaleSerpent, Look::GaleSerpent, Look::GaleSerpent], most: 2 },
         ],
-        scaling: Scaling { toughness: 1.9, damage: 1.2, luck: 2.0 },
+        luck: 2.0,
         color: [140, 200, 255],
         rune: GLOW_STORM,
     },
@@ -206,7 +210,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::BloodAdder, Look::BloodAdder], most: 2 },
             Pack { looks: &[Look::BloodGargoyle, Look::BloodGargoyle], most: 1 },
         ],
-        scaling: Scaling { toughness: 2.0, damage: 1.4, luck: 3.2 },
+        luck: 3.2,
         color: [235, 60, 70],
         rune: GLOW_BLOOD,
     },
@@ -229,7 +233,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::DriftSerpent, Look::DriftSerpent], most: 2 },
             Pack { looks: &[Look::RimeGargoyle, Look::RimeGargoyle], most: 1 },
         ],
-        scaling: Scaling { toughness: 2.6, damage: 1.6, luck: 4.8 },
+        luck: 4.8,
         color: [150, 235, 255],
         rune: GLOW_FROST,
     },
@@ -260,7 +264,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::ReedViper, Look::ReedViper], most: 1 },
             Pack { looks: &[Look::MossGargoyle, Look::MossGargoyle], most: 1 },
         ],
-        scaling: Scaling { toughness: 2.8, damage: 1.8, luck: 6.5 },
+        luck: 6.5,
         color: [70, 215, 200],
         rune: GLOW_POISON,
     },
@@ -289,7 +293,7 @@ pub const REALMS: [Realm; REALM_COUNT] = [
             Pack { looks: &[Look::Squallwing, Look::Squallwing, Look::Ashwing], most: 1 },
             Pack { looks: &[Look::Blightwing, Look::Ashwing], most: 1 },
         ],
-        scaling: Scaling { toughness: 3.2, damage: 2.0, luck: 9.0 },
+        luck: 9.0,
         color: [255, 120, 50],
         rune: GLOW_FIRE,
     },
@@ -311,11 +315,11 @@ pub fn by_id(id: &str) -> Option<usize> {
 }
 
 /// The monsters of realm `realm`, for a night raid somewhere else: which go about together, and
-/// how many such packs at most, as tough and as hard-hitting as in their own realm
+/// how many such packs at most, and the band of levels they keep to in their own realm
 #[allow(dead_code)]
-pub fn monsters_of(realm: usize) -> (&'static [Pack], Scaling) {
-    let r = &REALMS[realm.min(REALMS.len() - 1)];
-    (r.monsters, r.scaling)
+pub fn monsters_of(realm: usize) -> (&'static [Pack], crate::levels::Band) {
+    let r = realm.min(REALMS.len() - 1);
+    (REALMS[r].monsters, crate::levels::BANDS[r])
 }
 
 /// How far in front of the gate or a portal the player stands on coming to a realm, in meters: far
@@ -561,12 +565,14 @@ mod tests {
 
     #[test]
     fn realms_are_harder_and_richer_further_on() {
-        for pair in REALMS.windows(2) {
-            let (a, b) = (pair[0].scaling, pair[1].scaling);
-            assert!(b.toughness > a.toughness && b.damage > a.damage && b.luck > a.luck, "{} to {}", pair[0].name, pair[1].name);
+        assert_eq!(crate::levels::BANDS.len(), REALMS.len());
+        for (k, pair) in REALMS.windows(2).enumerate() {
+            assert!(pair[1].luck > pair[0].luck, "{} to {}", pair[0].name, pair[1].name);
+            let (a, b) = (crate::levels::BANDS[k], crate::levels::BANDS[k + 1]);
+            assert!(b.lo > a.hi, "{} to {}", pair[0].name, pair[1].name);
         }
-        let again = REALMS[3].scaling.after(1);
-        assert!(again.toughness > REALMS[3].scaling.toughness);
+        let again = scaling_in(3, 3, 1);
+        assert!(again.toughness > scaling_in(3, 3, 0).toughness && again.damage > 1.0);
         // Every realm's three are bosses, each different, and its monsters are monsters
         for r in &REALMS {
             for (k, (look, _)) in r.raid_bosses.iter().enumerate() {
@@ -579,20 +585,21 @@ mod tests {
         }
     }
 
-    /// Each new realm reached makes those gone past harder, the normal world above all, a step at a
-    /// time and never as hard as the realm reached; a realm's no harder for being reached itself,
-    /// and its packs are bigger the further on it is
+    /// Each new realm reached makes those gone past luckier, the normal world above all, a step at
+    /// a time and never as lucky as the realm reached, and lifts their bands, see
+    /// levels::band_in(); no harder than their levels but for journeys made; and its packs are
+    /// bigger the further on it is
     #[test]
     fn realms_gone_past_get_harder_with_each_realm_reached() {
         for realm in 0..REALMS.len() {
-            assert_eq!(scaling_in(realm, realm, 0), REALMS[realm].scaling);
-            assert_eq!(scaling_in(realm, 0, 0), REALMS[realm].scaling, "harder for a realm before it");
-            let mut last = REALMS[realm].scaling;
+            let own = scaling_in(realm, realm, 0);
+            assert_eq!((own.toughness, own.damage, own.luck), (1.0, 1.0, REALMS[realm].luck));
+            assert_eq!(scaling_in(realm, 0, 0), own, "harder for a realm before it");
+            let mut last = own;
             for reached in realm + 1..REALMS.len() {
                 let s = scaling_in(realm, reached, 0);
-                let top = REALMS[reached].scaling;
-                assert!(s.toughness > last.toughness && s.damage > last.damage && s.luck > last.luck, "{realm} with {reached} reached");
-                assert!(s.toughness < top.toughness && s.damage < top.damage, "{realm} as hard as {reached}");
+                assert!(s.luck > last.luck && s.luck < REALMS[reached].luck, "{realm} with {reached} reached");
+                assert!(crate::levels::band_in(realm, reached).lo > crate::levels::band_in(realm, reached - 1).lo);
                 last = s;
             }
             assert!(scaling_in(realm, realm, 1).toughness > scaling_in(realm, realm, 0).toughness);
