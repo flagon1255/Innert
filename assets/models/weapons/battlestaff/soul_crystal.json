@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, crystal: Soul Crystal",
+  "voxels_per_meter": 150.0,
+  "size": [
+    12,
+    13,
+    13
+  ],
+  "pivot": [
+    -2.100619834710745,
+    6.387096774193548,
+    -170.95548387096775
+  ],
+  "anchor": null,
+  "origin": [
+    2,
+    -6,
+    171
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.4400000000000001
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.5851612903225807
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5489,
+    "703274fccb234449"
+  ]
+}

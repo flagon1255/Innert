@@ -1,0 +1,29 @@
+{
+  "what": "Bloodwake Gargoyle, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    62,
+    43,
+    38
+  ],
+  "pivot": [
+    26.656000000000002,
+    21.2704,
+    12.3488
+  ],
+  "anchor": [
+    0.27149999999999985,
+    0.014350000000000085,
+    -0.7718
+  ],
+  "origin": [
+    -27,
+    -21,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    98295,
+    "56e79de7a5027c94"
+  ]
+}

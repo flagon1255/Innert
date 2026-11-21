@@ -1,0 +1,29 @@
+{
+  "what": "Tidefin Wings",
+  "voxels_per_meter": 96.0,
+  "size": [
+    130,
+    79,
+    5
+  ],
+  "pivot": [
+    1.467573538906116,
+    67.84878207823654,
+    2.112
+  ],
+  "anchor": [
+    0.661796108969728,
+    -0.29529981331496397,
+    -0.022
+  ],
+  "origin": [
+    -1,
+    -68,
+    -2
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    59178,
+    "956ecdb255ca3679"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Rime Jotun, foot left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    7,
+    6
+  ],
+  "pivot": [
+    3.2640000000000007,
+    3.264,
+    3.264
+  ],
+  "anchor": [
+    0.17099999999999996,
+    0.014750000000000013,
+    -0.204
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2031,
+    "f5374da171963470"
+  ]
+}

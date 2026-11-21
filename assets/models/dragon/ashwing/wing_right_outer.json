@@ -1,0 +1,29 @@
+{
+  "what": "ashwing, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    25,
+    2
+  ],
+  "pivot": [
+    13.200000000000001,
+    23.919999999999998,
+    0.72
+  ],
+  "anchor": [
+    -0.38750000000000007,
+    -0.7137499999999999,
+    -0.045
+  ],
+  "origin": [
+    -13,
+    -24,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2338,
+    "cf1ccb550576c0b3"
+  ]
+}

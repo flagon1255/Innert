@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    33,
+    29
+  ],
+  "pivot": [
+    5.808000000000001,
+    16.368000000000002,
+    2.604800000000002
+  ],
+  "anchor": [
+    0.011999999999999955,
+    0.008249999999999869,
+    -0.1628000000000001
+  ],
+  "origin": [
+    -6,
+    -16,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6884,
+    "baacbc1c2b46f445"
+  ]
+}

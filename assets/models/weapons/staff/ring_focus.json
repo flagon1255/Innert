@@ -1,0 +1,37 @@
+{
+  "what": "Staff, focus: Ring Focus",
+  "voxels_per_meter": 150.0,
+  "size": [
+    29,
+    8,
+    39
+  ],
+  "pivot": [
+    14.549999999999999,
+    4.249999999999999,
+    -225.71
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -4,
+    226
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.775
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      1.67
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    6158,
+    "c8b3f47985f7a54b"
+  ]
+}

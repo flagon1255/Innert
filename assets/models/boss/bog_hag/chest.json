@@ -1,0 +1,29 @@
+{
+  "what": "Mire Crone, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    10,
+    17
+  ],
+  "pivot": [
+    5.6,
+    4.927999999999999,
+    4.256
+  ],
+  "anchor": [
+    -0.03749999999999998,
+    0.0045000000000000595,
+    -0.266
+  ],
+  "origin": [
+    -6,
+    -5,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3284,
+    "017b1b8e1d40cccd"
+  ]
+}

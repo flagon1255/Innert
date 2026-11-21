@@ -1,0 +1,37 @@
+{
+  "what": "Lightning Rod, crystal: Prism",
+  "voxels_per_meter": 150.0,
+  "size": [
+    21,
+    10,
+    40
+  ],
+  "pivot": [
+    10.200000000000001,
+    5.1000000000000005,
+    -136.95
+  ],
+  "anchor": null,
+  "origin": [
+    -10,
+    -5,
+    137
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.37
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      1.1400000000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    3613,
+    "a3f549f852e11a63"
+  ]
+}

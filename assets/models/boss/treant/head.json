@@ -1,0 +1,29 @@
+{
+  "what": "Ancient Treant, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    35,
+    40,
+    31
+  ],
+  "pivot": [
+    16.8,
+    20.0,
+    2.3999999999999986
+  ],
+  "anchor": [
+    0.043749999999999956,
+    0.0,
+    -0.1499999999999999
+  ],
+  "origin": [
+    -17,
+    -20,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    79384,
+    "b556880d71c42fd0"
+  ]
+}

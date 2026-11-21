@@ -1,0 +1,52 @@
+{
+  "what": "Bow, mechanism: Hunter's Sight",
+  "voxels_per_meter": 160.0,
+  "size": [
+    8,
+    9,
+    18
+  ],
+  "pivot": [
+    1.6400000000000006,
+    -0.15999999999999925,
+    -102.48502857142857
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    0,
+    102
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.625
+    ],
+    "nock_1": [
+      -0.11,
+      0.0,
+      0.655
+    ],
+    "nock_2": [
+      -0.263,
+      0.0,
+      0.655
+    ],
+    "nock_3": [
+      -0.41600000000000004,
+      0.0,
+      0.655
+    ],
+    "tip": [
+      -0.11,
+      0.0,
+      0.655
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1705,
+    "7848d73768a2cc81"
+  ]
+}

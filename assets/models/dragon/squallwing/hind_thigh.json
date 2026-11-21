@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    12
+  ],
+  "pivot": [
+    2.016,
+    2.016,
+    9.072
+  ],
+  "anchor": [
+    0.03025,
+    0.03025,
+    -0.567
+  ],
+  "origin": [
+    -2,
+    -2,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1656,
+    "c07ac0598198f780"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    47,
+    25,
+    23
+  ],
+  "pivot": [
+    17.28,
+    12.000000000000002,
+    6.24
+  ],
+  "anchor": [
+    0.38874999999999993,
+    0.03124999999999989,
+    -0.39
+  ],
+  "origin": [
+    -17,
+    -12,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    12515,
+    "62c4bd670983408f"
+  ]
+}

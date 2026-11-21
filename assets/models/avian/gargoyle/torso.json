@@ -1,0 +1,29 @@
+{
+  "what": "Gargoyle, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    30,
+    10,
+    8
+  ],
+  "pivot": [
+    20.304,
+    4.896,
+    2.88
+  ],
+  "anchor": [
+    -0.3314999999999999,
+    0.006500000000000006,
+    -0.18
+  ],
+  "origin": [
+    -20,
+    -5,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2976,
+    "0ebb36886257599d"
+  ]
+}

@@ -28,6 +28,8 @@ mod beast;
 mod biped;
 mod caster;
 mod crawler;
+/// For the model and animation editor, see src\anim.rs
+pub mod edit;
 mod giant;
 mod golem;
 mod knight;
@@ -491,8 +493,15 @@ impl Rig {
         self.poise
     }
 
-    /// Posed for what it's doing now, `m`, its pieces and where things come out of it worked out
+    /// Posed for what it's doing now, `m`, its pieces and where things come out of it worked out,
+    /// with any animation file for it on top, see edit::edited()
     pub fn step(&mut self, m: &Moment) {
+        self.step_code(m);
+        edit::edited(self, m);
+    }
+
+    /// Posed as the code poses it, see step()
+    fn step_code(&mut self, m: &Moment) {
         let dt = m.dt;
         self.clock += dt;
         // The spring of its flinching, stiffer the smaller it is
@@ -623,7 +632,10 @@ fn build_models() -> Vec<(Model, V)> {
         handles.into_iter().flat_map(|h| h.join().expect("making a jointed boss's model failed")).collect()
     });
     made.sort_unstable_by_key(|(job, _)| *job);
-    made.into_iter().map(|(_, m)| m).collect()
+    let mut made: Vec<(Model, V)> = made.into_iter().map(|(_, m)| m).collect();
+    // Pieces drawn from files in assets\models, see src\assets.rs
+    crate::assets::bosses(&mut made);
+    made
 }
 
 static LAYOUT: OnceLock<Vec<(V, [u32; 3])>> = OnceLock::new();

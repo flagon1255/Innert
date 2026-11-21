@@ -1,0 +1,29 @@
+{
+  "what": "Harpy Queen, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    20,
+    3
+  ],
+  "pivot": [
+    19.008000000000003,
+    9.644800000000002,
+    1.664
+  ],
+  "anchor": [
+    -0.5317500000000002,
+    0.022199999999999886,
+    -0.104
+  ],
+  "origin": [
+    -19,
+    -10,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2801,
+    "25b6a34bb6aeb2d4"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Crypt Titan, shin right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    27
+  ],
+  "pivot": [
+    2.288,
+    2.288,
+    24.112000000000002
+  ],
+  "anchor": [
+    0.013250000000000012,
+    0.013250000000000012,
+    -1.5070000000000001
+  ],
+  "origin": [
+    -2,
+    -2,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2433,
+    "bcd0a37577a39667"
+  ]
+}

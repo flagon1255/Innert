@@ -1,0 +1,29 @@
+{
+  "what": "Sunken Pharaoh, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    16
+  ],
+  "pivot": [
+    3.016,
+    3.944,
+    12.296
+  ],
+  "anchor": [
+    0.0615,
+    0.003500000000000003,
+    -0.7685
+  ],
+  "origin": [
+    -3,
+    -4,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2084,
+    "8355be2f0cb2c78b"
+  ]
+}

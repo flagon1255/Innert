@@ -1,0 +1,37 @@
+{
+  "what": "Maul, core: Heart of the Horde",
+  "voxels_per_meter": 192.0,
+  "size": [
+    12,
+    12,
+    12
+  ],
+  "pivot": [
+    5.776000000000003,
+    5.776,
+    -176.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    176
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.28509999999999996
+    ],
+    "tip": [
+      0.22,
+      0.0,
+      0.9865999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4441,
+    "a1ae2e0828baf1c0"
+  ]
+}

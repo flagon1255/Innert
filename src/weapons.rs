@@ -12,7 +12,9 @@ use std::rc::Rc;
 use nalgebra::Vector3;
 use serde::Deserialize;
 
-use crate::animals::{MODEL_RES, Model, Part, ball, cuboid, ellipsoid, limb, voxelize};
+use crate::animals::{MODEL_RES, Model, Part};
+// Tagged with the slot they're drawn for, see src\weapon_parts.rs
+use crate::weapon_parts::{ball, cuboid, ellipsoid, limb, slot, voxelize};
 
 /// What each kind of special ammo looks like in flight, see ammo.rs
 mod ammo;
@@ -1959,7 +1961,8 @@ impl Weapon {
         let size = roll_size(seed);
         let (profile, tags, grade) = Weapon::work_out(library, family, &components, size, seed);
         let name = weapon_name(library, family, &components, &profile.synergies, seed, size);
-        let look = build_look(fam, &components);
+        // Its parts' shapes from their files where they've been changed, see src\weapon_parts.rs
+        let look = crate::weapon_parts::build(library, family, &parts, || build_look(fam, &components));
         let scale = held_scale(fam, size, look.longest());
         let look = look.scaled(scale);
         Weapon { family, parts, seed, name, grade, size, profile: Rc::new(profile), tags, look }
@@ -2551,6 +2554,27 @@ pub const CROSSBOW_SPANNED: usize = 2;
 pub const GUN_COCKED: usize = 0;
 pub const GUN_FIRED: usize = 1;
 
+/// The look of a weapon of `family` made of `parts`, as the code builds it, before it's scaled to
+/// its size: for the model files, see src\weapon_parts.rs
+pub fn look_of(library: &Library, family: usize, parts: &[usize]) -> WeaponLook {
+    let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+    build_look(&library.families[family], &components)
+}
+
+impl Library {
+    /// The parts that fit slot `slot` of `family`, in the order they're listed: for the model
+    /// files, see src\weapon_parts.rs
+    pub fn fitting(&self, family: usize, slot: &str) -> Vec<usize> {
+        let id = &self.families[family].id;
+        (0..self.components.len()).filter(|&c| self.components[c].slot_type == slot && self.components[c].compatible_families.contains(id)).collect()
+    }
+
+    /// The parts of `family`'s reference weapon: the first that fits each of its slots
+    pub fn reference_parts(&self, family: usize) -> Vec<usize> {
+        self.families[family].slots.iter().map(|slot| self.fitting(family, slot).first().copied().unwrap_or(0)).collect()
+    }
+}
+
 fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let visual = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
     let empty = Visual::default();
@@ -2635,6 +2659,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                     ..Default::default()
                 };
                 let mut blade_parts = Vec::new();
+                slot("focus");
                 tip = sword_blade(&mut blade_parts, &blade, tip.z + 0.06, None);
                 blade_parts.push(limb([0.0, 0.0, tip.z - 0.4], [0.0, 0.0, tip.z - 0.32], 0.02, 0.014, DARK_STEEL));
                 parts.splice(0..0, blade_parts);
@@ -2657,7 +2682,9 @@ fn orb(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     let r = 0.035 + crystal.size.unwrap_or(0.05) * 0.3;
     let c = [0.0, 0.0, 0.13 + r];
     // The orb first, so its setting doesn't hide it
+    slot("crystal");
     p.push(ball(c, r, gem));
+    slot("focus");
     match focus.shape.as_deref().unwrap_or("ring") {
         "prongs" | "crook" | "antlers" => {
             for k in 0..3 {
@@ -2692,10 +2719,13 @@ fn orb(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     }
     // A cup it hovers over, then the cradle, bound
     let bm = mat(&binding.material, LINEN);
+    slot("binding");
     for k in 0..3 {
         p.push(ellipsoid([0.0, 0.0, 0.03 + k as f64 * 0.03], [0.021, 0.021, 0.006], if k % 2 == 0 { bm } else { mat(&binding.accent, bm) }));
     }
+    slot("focus");
     p.push(ellipsoid([0.0, 0.0, 0.12], [0.04, 0.04, 0.014], setting));
+    slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 0.12], 0.016, 0.02, wood));
     (p, v3(0.0, 0.0, 0.05), Vector3::from(c))
 }
@@ -2715,25 +2745,32 @@ fn tome(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (
     let (w, h) = (0.11, 0.16);
     // Shut: the cover facing out, its corners capped, a clasp across, the crystal in the middle
     let mut closed = Vec::new();
+    slot("crystal");
     closed.push(ball([w * 0.5, -0.004, h * 0.5], crystal.size.unwrap_or(0.05).clamp(0.014, 0.03), gem));
+    slot("focus");
     for (x, z) in [(w - 0.012, 0.012), (w - 0.012, h - 0.012), (0.012, 0.012), (0.012, h - 0.012)] {
         closed.push(cuboid([x - 0.014, -0.003, z - 0.014], [x + 0.014, 0.038, z + 0.014], metal));
     }
     closed.push(cuboid([w - 0.004, -0.003, h * 0.45], [w + 0.01, 0.038, h * 0.55], metal));
+    slot("shaft");
     closed.push(cuboid([0.004, 0.006, 0.006], [w - 0.002, 0.029, h - 0.006], WAX));
     closed.push(cuboid([-0.008, 0.0, 0.0], [w, 0.035, h], cover));
     // Open: the pages to -y either side of the spine, runes on them, the crystal over the spine
     let mut open = Vec::new();
+    slot("crystal");
     open.push(ball([0.0, 0.004, h + 0.012], crystal.size.unwrap_or(0.05).clamp(0.012, 0.025), gem));
     for side in [-1.0, 1.0] {
+        slot("binding");
         for row in 0..4 {
             for k in 0..3 {
                 let x = side * (0.022 + 0.028 * k as f64);
                 open.push(ball([x, -0.0005, h - 0.03 - row as f64 * 0.03], 0.004, ink));
             }
         }
+        slot("focus");
         open.push(cuboid([side * w - 0.008, 0.016, -0.004], [side * w + 0.008, 0.026, h + 0.004], metal));
     }
+    slot("shaft");
     open.push(cuboid([-0.008, -0.002, 0.0], [0.008, 0.012, h], AIR));
     open.push(cuboid([-w + 0.004, 0.004, 0.006], [w - 0.004, 0.018, h - 0.006], WAX));
     open.push(cuboid([-w, 0.018, -0.004], [w, 0.026, h + 0.004], cover));
@@ -2752,20 +2789,25 @@ fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     let top = 0.72;
     // The faces, their eyes and mouths first so they show, each a little wider than the pole
     for (k, z) in [0.3, 0.45, 0.6].into_iter().enumerate() {
+        slot("crystal");
         for s in [-1.0, 1.0] {
             p.push(ball([0.045, s * 0.016, z + 0.012], 0.0075, gem));
         }
+        slot("shaft");
         p.push(cuboid([0.035, -0.014, z - 0.024], [0.06, 0.014, z - 0.016], AIR));
         p.push(limb([0.04, 0.0, z + 0.008], [0.062, 0.0, z - 0.004], 0.008, 0.004, wood));
         p.push(ellipsoid([0.0, 0.0, z], [0.05, 0.045, 0.06], if k % 2 == 0 { wood } else { paint }));
     }
     // Feathers hanging off the top face
+    slot("binding");
     for s in [-1.0, 1.0] {
         p.push(limb([0.0, s * 0.045, 0.62], [0.01, s * 0.08, 0.5], 0.01, 0.004, bm));
     }
     // The focus on top: horns, a skull, or the crystal held up on its own
     let c = [0.0, 0.0, top + 0.05];
+    slot("crystal");
     p.push(ball(c, crystal.size.unwrap_or(0.05).clamp(0.025, 0.045), gem));
+    slot("focus");
     match focus.shape.as_deref().unwrap_or("") {
         "antlers" | "crescent" | "horns" => {
             for s in [-1.0, 1.0] {
@@ -2779,6 +2821,7 @@ fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
             }
         }
     }
+    slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.026, 0.034, wood));
     (p, v3(0.0, 0.0, 0.14), Vector3::from(c))
 }
@@ -2799,10 +2842,15 @@ fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (
     // A domed crown, a waist widening slowly, then flaring out to a thick lip
     let mouth = -0.13;
     let flare = |t: f64| 0.026 + 0.016 * t + 0.032 * t.powi(4);
+    slot("crystal");
     p.push(ball([0.0, 0.0, mouth + 0.018], crystal.size.unwrap_or(0.05).clamp(0.014, 0.022), gem));
+    slot("focus");
     p.push(limb([0.0, 0.0, mouth - 0.01], [0.0, 0.0, -0.03], flare(1.0) - 0.008, flare(0.2) - 0.008, AIR));
+    slot("crystal");
     p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, mouth + 0.012], 0.003, 0.003, DARK_STEEL));
+    slot("binding");
     p.push(limb([0.0, 0.0, -0.04], [0.0, 0.0, -0.028], flare(0.15) + 0.004, flare(0.1) + 0.004, band));
+    slot("focus");
     let steps = 8;
     for k in 0..steps {
         let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
@@ -2811,6 +2859,7 @@ fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (
     p.push(ellipsoid([0.0, 0.0, -0.012], [0.027, 0.027, 0.016], metal));
     p.push(limb([0.0, 0.0, mouth - 0.003], [0.0, 0.0, mouth + 0.006], flare(1.0) + 0.004, flare(1.0), metal));
     // The handle over it, and a knob on top
+    slot("shaft");
     p.push(ball([0.0, 0.0, 0.17], 0.02, metal));
     p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.16], 0.015, 0.018, wood));
     (p, v3(0.0, 0.0, 0.09), v3(0.0, 0.0, mouth))
@@ -3085,18 +3134,22 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
     let fl = fuse.length.unwrap_or(0.07);
     let curl = fuse.width.unwrap_or(0.025);
     let end = [curl, 0.0, neck + fl];
+    slot("fuse");
     p.push(ball(end, 0.01, mat(&fuse.gem, GLOW_FIRE)));
     curve(&mut p, &[[0.0, 0.0, neck - 0.012], [curl * 0.2, 0.0, neck + fl * 0.45], [curl * 0.7, 0.0, neck + fl * 0.8], end], 0.0045, 0.0038, mat(&fuse.material, LINEN));
+    slot("core");
     if let Some(g) = core.gem.as_deref().and_then(material) {
         gem(&mut p, [0.0, -r * 0.96, c[2]], core.size.unwrap_or(0.02).clamp(0.01, 0.016), g, core.shape.as_deref());
     }
     match shape {
         // A skull, what fills it glowing out of its eyes and its cracks, its jaw wired on
         "skull" => {
+            slot("filling");
             for s in [-1.0, 1.0] {
                 p.push(ball([s * r * 0.36, -r * 0.82, c[2] + r * 0.12], r * 0.24, glow));
             }
             curve(&mut p, &[[r * 0.3, -r * 0.5, c[2] + r * 0.85], [r * 0.5, -r * 0.2, c[2] + r * 0.6], [r * 0.75, 0.0, c[2] + r * 0.7]], 0.004, 0.003, glow);
+            slot("casing");
             ring(&mut p, [0.0, -r * 0.2, c[2] - r * 0.55], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.7, 0.005, trim);
             p.push(ellipsoid([0.0, -r * 0.3, c[2] - r * 0.62], [r * 0.6, r * 0.55, r * 0.32], shell));
             p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.014, 0.012, trim));
@@ -3104,10 +3157,13 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // A little keg, hooped, staves showing, its bung glowing
         "keg" => {
+            slot("casing");
             for z in [c[2] - r * 0.6, c[2] + r * 0.6] {
                 ring(&mut p, [0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.9, 0.006, trim);
             }
+            slot("filling");
             p.push(ball([r * 0.82, 0.0, c[2]], 0.012, glow));
+            slot("casing");
             for k in 0..10 {
                 let a = k as f64 / 10.0 * TAU;
                 p.push(limb([a.cos() * r * 0.8, a.sin() * r * 0.8, c[2] - r * 0.95], [a.cos() * r * 0.9, a.sin() * r * 0.9, c[2]], 0.004, 0.004, BARK_DARK));
@@ -3118,19 +3174,24 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // A geode split open, what fills it glowing in its hollow among crystal points
         "geode" => {
+            slot("casing");
             for d in sphere_points(8) {
                 if d[0] > 0.0 {
                     p.push(limb([d[0] * r * 0.45, d[1] * r * 0.45, c[2] + d[2] * r * 0.45], [d[0] * r * 0.95, d[1] * r * 0.95, c[2] + d[2] * r * 0.95], r * 0.16, 0.003, CRYSTAL));
                 }
             }
+            slot("filling");
             p.push(ball([r * 0.2, 0.0, c[2]], r * 0.5, glow));
+            slot("casing");
             p.push(cuboid([r * 0.35, -r * 1.2, c[2] - r * 1.2], [r * 1.2, r * 1.2, c[2] + r * 1.2], AIR));
             p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.014, 0.012, trim));
             p.push(ball(c, r, shell));
         }
         // A fat clay belly, a neck, glowing pitch at its mouth and a cord tied round it
         "pot" => {
+            slot("filling");
             p.push(ball([0.0, 0.0, neck - 0.012], 0.017, glow));
+            slot("casing");
             ring(&mut p, [0.0, 0.0, neck - 0.006], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.022, 0.006, shell);
             ring(&mut p, [0.0, 0.0, c[2] + r * 0.3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.97, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.6], [0.0, 0.0, neck - 0.006], 0.028, 0.02, shell));
@@ -3138,9 +3199,11 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // What fills it glowing through the glass, a cork in its neck, rims round its shoulder
         "flask" => {
+            slot("casing");
             p.push(limb([0.0, 0.0, neck - 0.03], [0.0, 0.0, neck], 0.0135, 0.013, WOOD));
             ring(&mut p, [0.0, 0.0, c[2] + r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.92, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.7], [0.0, 0.0, neck - 0.028], 0.017, 0.014, shell));
+            slot("filling");
             p.push(ball(c, r, glow));
         }
         // Three charges bound together, their ends glowing
@@ -3149,10 +3212,12 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
                 let a = k as f64 / 3.0 * TAU;
                 (a.cos() * r * 0.5, a.sin() * r * 0.5)
             };
+            slot("filling");
             for k in 0..3 {
                 let (x, y) = at(k);
                 p.push(ball([x, y, c[2] + r * 1.22], r * 0.3, glow));
             }
+            slot("casing");
             for z in [c[2] - r * 0.5, c[2] + r * 0.6] {
                 ring(&mut p, [0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.98, 0.006, trim);
             }
@@ -3163,6 +3228,7 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // An iron cage, the charge inside glowing out between its bars
         "cage" => {
+            slot("casing");
             for k in 0..4 {
                 let a = k as f64 / 4.0 * TAU;
                 let points: Vec<[f64; 3]> = (0..=8)
@@ -3175,14 +3241,17 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
             }
             ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.05, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.9], [0.0, 0.0, neck], 0.014, 0.012, shell));
+            slot("filling");
             p.push(ball(c, r * 0.86, glow));
         }
         // An iron ball, vents round it glowing with what's in it, a band and a neck
         _ => {
+            slot("filling");
             for k in 0..5 {
                 let a = k as f64 / 5.0 * TAU + 0.3;
                 p.push(ball([a.cos() * r * 0.93, a.sin() * r * 0.93, c[2] + r * 0.25], 0.011, glow));
             }
+            slot("casing");
             ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.016, 0.014, trim));
             p.push(ball(c, r, shell));
@@ -3203,6 +3272,7 @@ fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     let coil = metal_or_bronze(mat(&binding.accent, BRONZE));
     let wrap = mat(&binding.material, LEATHER);
     let gem = mat(&crystal.gem, CRYSTAL);
+    slot("crystal");
     p.push(ball([0.0, 0.0, top + 0.03], crystal.size.unwrap_or(0.05).clamp(0.02, 0.034), gem));
     let spread = match focus.shape.as_deref().unwrap_or("") {
         "antlers" | "crescent" | "horns" | "crook" => 0.085,
@@ -3210,11 +3280,14 @@ fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     };
     for s in [-1.0, 1.0] {
         let tip = [s * spread * 0.7, 0.0, top + 0.25];
+        slot("crystal");
         p.push(ball(tip, 0.011, gem));
+        slot("focus");
         curve(&mut p, &[[0.0, 0.0, top - 0.01], [s * spread * 0.85, 0.0, top + 0.07], [s * spread, 0.0, top + 0.16], tip], 0.012, 0.005, metal);
     }
     p.push(limb([0.0, 0.0, top - 0.06], [0.0, 0.0, top + 0.01], 0.021, 0.025, metal));
     // The coil, six turns round the upper half
+    slot("binding");
     let steps = 96;
     for k in 0..=steps {
         let t = k as f64 / steps as f64;
@@ -3225,6 +3298,7 @@ fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
         p.push(limb([0.0, 0.0, z - 0.008], [0.0, 0.0, z + 0.008], 0.02, 0.02, coil));
     }
     p.push(limb([0.0, 0.0, 0.3], [0.0, 0.0, 0.44], 0.0185, 0.0185, wrap));
+    slot("shaft");
     p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.06], 0.012, 0.017, DARK_STEEL));
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.015, 0.017, wood));
     (p, v3(0.0, 0.0, 0.37), v3(0.0, 0.0, top + 0.22))
@@ -3245,13 +3319,16 @@ fn censer(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) ->
     let r = 0.06;
     let c = [0.0, 0.0, -0.4];
     // The holes first, so what burns inside glows out through them
+    slot("crystal");
     for (row, (up, out)) in [(0.38, 0.92), (-0.12, 0.99)].into_iter().enumerate() {
         for k in 0..8 {
             let a = (k as f64 + 0.5 * row as f64) / 8.0 * TAU;
             p.push(ball([a.cos() * r * out, a.sin() * r * out, c[2] + r * up], 0.0105, gem));
         }
     }
+    slot("binding");
     ring(&mut p, [0.0, 0.0, c[2] + r * 0.12], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.02, 0.007, band);
+    slot("focus");
     p.push(ball([0.0, 0.0, c[2] + r * 1.05], 0.012, metal));
     p.push(ellipsoid([0.0, 0.0, c[2] + r * 0.35], [r * 0.92, r * 0.92, r * 0.7], metal));
     p.push(ellipsoid(c, [r, r, r * 0.8], metal));
@@ -3268,6 +3345,7 @@ fn censer(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) ->
         }
     }
     ring(&mut p, top, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.016, 0.005, metal);
+    slot("shaft");
     p.push(ball([0.0, 0.0, 0.175], 0.016, metal));
     p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, 0.165], 0.012, 0.014, wood));
     (p, v3(0.0, 0.0, 0.07), Vector3::from(c))
@@ -3396,14 +3474,17 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
 
     // The core's gem goes first, set into the middle of the guard so it shows on both sides, or
     // just under the head
+    slot("core");
     if let Some(stone) = core.gem.as_deref().and_then(material) {
         let z = if family.guard { z_top + guard_height * 0.5 } else { z_top - 0.05 };
         gem(&mut p, [0.0, 0.0, z], core.size.unwrap_or(0.02).max(0.016), stone, core.shape.as_deref());
     }
+    slot("guard");
     if family.guard {
         sword_guard(&mut p, guard, z_top, guard_height);
     }
     let infuse = core.infuse.as_deref().and_then(material);
+    slot("blade");
     let tip = match blade.shape.as_deref().unwrap_or("straight") {
         shape @ ("axe" | "bearded" | "spike_axe" | "moon_axe") => axe_head(&mut p, blade, z_top, false, shape),
         "double_axe" => axe_head(&mut p, blade, z_top, true, "axe"),
@@ -3456,6 +3537,7 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
             sword_blade(&mut p, blade, z_blade, infuse)
         }
     };
+    slot("hilt");
     sword_hilt(&mut p, hilt, z_grip, grip_length, pommel, handle);
     (p, v3(0.0, 0.0, z_grip + handle * family.grip), tip)
 }
@@ -4213,13 +4295,16 @@ fn whip(lash: &Visual, handle: &Visual, core: &Visual, family: &Family) -> (Vec<
     // The gem of its core, set into the top of the handle, then the thong binding the lash on, and
     // the lash's first couple of centimeters coming out of it, which the simulated lash carries on
     let mut z_thong = z_top;
+    slot("core");
     if let Some(stone) = core.gem.as_deref().and_then(material) {
         let r = core.size.unwrap_or(0.02).max(0.017);
         gem(&mut p, [0.0, 0.0, z_top], r, stone, core.shape.as_deref());
         z_thong = z_top + r * 0.6;
     }
+    slot("lash");
     p.push(limb([0.0, 0.0, z_thong - 0.01], root, 0.018, thick * 1.3, braid));
     p.push(limb(root, [0.0, 0.0, root[2] + 0.015], thick * 1.3, thick * 1.2, cord));
+    slot("handle");
     sword_hilt(&mut p, handle, z_grip, grip_length, pommel, grip_length);
     (p, v3(0.0, 0.0, z_grip + grip_length * family.grip), v3(root[0], root[1], root[2]))
 }
@@ -4253,14 +4338,17 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
     let rest = [0.0, 0.028, mid + 0.03];
     let nock = [bend(1.0) - draw * DRAW_LENGTH, 0.0, mid + 0.03];
     let cord = mat(&string.material, BOWSTRING);
+    slot("string");
     p.push(limb(at(1.0), nock, 0.0065, 0.0065, cord));
     p.push(limb(at(-1.0), nock, 0.0065, 0.0065, cord));
 
+    slot("core");
     if let Some(stone) = core.gem.as_deref().and_then(material) {
         gem(&mut p, [0.018, 0.0, mid + 0.09], core.size.unwrap_or(0.022).max(0.014), stone, core.shape.as_deref());
     }
     let mm = mat(&mechanism.material, WOOD);
     let accent = mat(&mechanism.accent, mm);
+    slot("mechanism");
     match mechanism.shape.as_deref().unwrap_or("rest") {
         "twin" => {
             for dz in [0.0, 0.05] {
@@ -4288,6 +4376,7 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
         _ => p.push(cuboid([-0.012, 0.016, rest[2] - 0.016], [0.026, 0.042, rest[2] - 0.006], mm)),
     }
 
+    slot("limbs");
     if let Some(tips) = limbs.tips.as_deref().and_then(material) {
         for s in [-1.0, 1.0] {
             p.push(ball(at(s), 0.015, tips));
@@ -4521,6 +4610,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
         let mut p = Vec::new();
         let nock = nock_at(draw);
         // The strings, a bolt-thrower's to the ends of the yoke that drives its bolts
+        slot("prod");
         for &z in &decks {
             if build == Build::Fan {
                 for s in [-1.0, 1.0] {
@@ -4532,6 +4622,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
                 }
             }
         }
+        slot("lock");
         if build == Build::Fan {
             p.push(limb([nock, -0.08, 0.006], [nock, 0.08, 0.006], 0.0065, 0.0065, metal));
         }
@@ -4571,10 +4662,12 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             }
             _ => {}
         }
+        slot("core");
         if let Some(stone) = core.gem.as_deref().and_then(material) {
             gem(&mut p, [length * 0.6, seen * 0.02 * if build == Build::Fan { 1.6 } else { 1.0 }, -0.02], core.size.unwrap_or(0.02).max(0.013) * 0.8, stone, core.shape.as_deref());
         }
         // The grooves the bolts lie in, cut out of the tiller's top, fanned out on a bolt-thrower
+        slot("stock");
         if build == Build::Fan {
             for &(offset, yaw) in &rails {
                 let reach = length + 0.04 - x_latch;
@@ -4586,6 +4679,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             }
         }
         // The nut that catches the string, a bar across the yoke's for a bolt-thrower
+        slot("lock");
         if build == Build::Fan {
             p.push(limb([x_latch, -0.07, 0.002], [x_latch, 0.07, 0.002], 0.008, 0.008, metal));
         } else {
@@ -4610,9 +4704,11 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
         }
         let rear = [x_latch - 0.05, 0.0, deck];
         let front = [x_prod - 0.01, 0.0, if build == Build::Twin { deck } else { 0.012 }];
+        slot("sight");
         crossbow_sight(&mut p, sight, rear, front, seen);
         // The prod, bound on at the front, its tips capped, a compound one's with wheels the
         // string runs round
+        slot("prod");
         if let Some(tips) = tips {
             for &z in &decks {
                 for s in [-1.0, 1.0] {
@@ -4631,7 +4727,9 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
         }
         let top = decks[decks.len() - 1];
         let width = if build == Build::Fan { fan_half(x_prod) + 0.01 } else { 0.03 * thick.sqrt() };
+        slot("stock");
         p.push(cuboid([x_prod - 0.028 * thick.sqrt(), -width, -0.038 * thick.sqrt()], [x_prod + 0.028 * thick.sqrt(), width, top + 0.006], trim));
+        slot("prod");
         let steps = 12;
         for &z in &decks {
             for side in [-1.0, 1.0] {
@@ -4658,6 +4756,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
                 }
             }
         }
+        slot("lock");
         match build {
             // The windlass on its brackets at the butt
             Build::Crank => {
@@ -4677,6 +4776,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             // lever turns on
             Build::Repeater => {
                 let (back, front) = (x_latch - 0.02, x_latch + 0.24);
+                slot("stock");
                 for k in 0..2 {
                     let z = 0.085 + k as f64 * 0.012;
                     p.push(limb([front - 0.035, 0.0, z], [front - 0.005, 0.0, z], 0.005, 0.0015, metal));
@@ -4688,26 +4788,32 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
                     p.push(cuboid([x - 0.006, -0.021, 0.0], [x + 0.006, 0.021, 0.115], trim));
                 }
                 p.push(cuboid([back, -0.018, 0.0], [front, 0.018, 0.11], wood));
+                slot("lock");
                 p.push(limb([length - 0.005, -0.03, -0.03], [length - 0.005, 0.03, -0.03], 0.007, 0.007, metal));
             }
             // The rail the upper prod's groove runs along, and the gearbox at the side with its
             // pinion, and the rack's guide over the butt
             Build::Twin => {
+                slot("stock");
                 p.push(cuboid([x_latch - 0.03, -0.016, 0.0], [x_prod + 0.02, 0.016, TWIN_RISE - 0.003], wood));
                 for x in [x_latch + 0.08, x_prod - 0.08] {
                     p.push(cuboid([x - 0.006, -0.02, -0.04], [x + 0.006, 0.02, TWIN_RISE], trim));
                 }
+                slot("lock");
                 p.push(ball(pinion, 0.012, flourish));
                 p.push(cuboid([pinion[0] - 0.05, seen * 0.02, -0.05], [pinion[0] + 0.05, seen * 0.042, 0.004], metal));
                 p.push(cuboid([pinion[0] - 0.04, -0.01, TWIN_RISE + 0.015], [pinion[0] + 0.02, 0.01, TWIN_RISE + 0.045], metal));
+                slot("stock");
                 p.push(cuboid([pinion[0] - 0.02, -0.012, -0.01], [pinion[0] + 0.0, 0.012, TWIN_RISE + 0.03], trim));
             }
             // The jack's nut at the butt, iron straps round the tiller, the hinge of the leg
             Build::Siege => {
+                slot("stock");
                 p.push(cuboid([-0.02, -0.036, -0.055], [0.03, 0.036, 0.04], trim));
                 for x in [0.2, x_latch + 0.2, x_prod - 0.12] {
                     p.push(cuboid([x - 0.008, -0.034, -0.058], [x + 0.008, 0.034, 0.004], trim));
                 }
+                slot("lock");
                 p.push(limb([length - 0.1, -0.03, -0.06], [length - 0.1, 0.03, -0.06], 0.009, 0.009, metal));
             }
             // The reel under the tiller, its line wound round it, on its hanger
@@ -4730,10 +4836,12 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             _ => {}
         }
         // A stirrup out front to stand in while spanning it
+        slot("lock");
         if matches!(build, Build::Lever | Build::Crank | Build::Twin) {
             ring(&mut p, [length + 0.045, 0.0, -0.016], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 0.04, 0.0065, metal);
         }
         // Then the tiller, and its stock
+        slot("stock");
         match build {
             // Short, on a pistol grip under the latch, capped
             Build::Hand => {
@@ -4812,6 +4920,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
 
     // What spans it, at rest
     let mut m = Vec::new();
+    slot("lock");
     let mover = match build {
         // A windlass's two cranks, hanging down either side of the butt
         Build::Crank => {
@@ -4901,6 +5010,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
     let leg = (build == Build::Siege).then(|| {
         let pivot = [length - 0.1, 0.0, -0.06];
         let foot = [length - 0.52, 0.0, -0.075];
+        slot("lock");
         let mut l = vec![limb(pivot, foot, 0.014, 0.012, metal)];
         for s in [-1.0, 1.0] {
             l.push(limb(foot, [foot[0] - 0.05, s * 0.035, foot[2] - 0.004], 0.009, 0.006, flourish));
@@ -4990,6 +5100,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
     let body = |cocked: bool| {
         let mut p = Vec::new();
         // The bore, hollowing out the muzzle
+        slot("barrel");
         for &y in bores {
             p.push(limb([x_m - 0.03, side(y), 0.0], [x_m + 0.02, side(y), 0.0], mouth, mouth, AIR));
         }
@@ -5072,6 +5183,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         let lock_shape = lock.shape.as_deref().unwrap_or("flint");
         let (jaw, frizzen_top) = if cocked { ([x_b - 0.047, y, 0.033], [x_b - 0.009, y, 0.03]) } else { ([x_b - 0.017, y, 0.018], [x_b + 0.016, y, 0.02]) };
         let elbow = if cocked { [x_b - 0.072, y, 0.016] } else { [x_b - 0.042, y, 0.022] };
+        slot("lock");
         match lock_shape {
             // A serpentine holding a smouldering match, swung down into the pan to fire
             "match" => {
@@ -5099,6 +5211,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         // The pan, and the plate
         p.push(cuboid([x_b - 0.02, w, -0.001], [x_b - 0.004, w + 0.011, 0.005], metal));
         p.push(cuboid([plate, w, -0.02], [x_b + 0.015, w + 0.004, 0.009], metal));
+        slot("core");
         if let Some(stone) = core.gem.as_deref().and_then(material) {
             let r = core.size.unwrap_or(0.02).max(0.013) * 0.75;
             let at = match build {
@@ -5110,7 +5223,9 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         }
 
         // The trigger in its guard, then the stock
+        slot("lock");
         p.push(limb([x_b - 0.035, 0.0, -0.02], [x_b - 0.043, 0.0, -0.042], 0.0035, 0.003, metal));
+        slot("stock");
         if build != Build::Cannon {
             ring(&mut p, [x_b - 0.04, 0.0, -0.036], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.0035, trim);
         }
@@ -5137,8 +5252,10 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
             }
             // A wooden tiller under the breech, strapped to the barrel, to hold it by
             Build::Cannon => {
+                slot("barrel");
                 p.push(cuboid([x_b + 0.03, -outer * 0.8, -outer - 0.03], [x_b + 0.05, outer * 0.8, 0.0], bands));
                 p.push(cuboid([x_b + 0.12, -0.012, -outer - 0.04], [x_b + 0.15, 0.012, -outer + 0.01], tube));
+                slot("stock");
                 p.push(limb([x_b - fore, 0.0, -outer - 0.012], [x_b + 0.12, 0.0, -outer - 0.012], 0.022, 0.026, wood));
                 p.push(ball([x_b - fore, 0.0, -outer - 0.012], 0.024, trim));
             }
@@ -5158,6 +5275,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
     // The ramrod, as far down the barrel as it goes
     let bore = v3(x_m, side(bores[0]), 0.0);
     let rod = if build == Build::Cannon { 0.011 } else { 0.0042 };
+    slot("barrel");
     let rammer = [
         ball([bore.x, bore.y, 0.0], rod * 1.6, bands),
         limb([bore.x - (x_m - x_b) + 0.01, bore.y, 0.0], [bore.x, bore.y, 0.0], rod * 1.3, rod, if build == Build::Cannon { WOOD } else { STEEL }),
@@ -5198,6 +5316,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     };
 
     // The crystal first, so whatever holds it doesn't hide it
+    slot("crystal");
     match crystal.shape.as_deref().unwrap_or("orb") {
         "shard" => {
             p.push(limb([c[0], c[1], c[2] - size * 1.3], c, 0.004, size * 0.7, gem));
@@ -5236,6 +5355,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
         _ => p.push(ball(c, size, gem)),
     }
 
+    slot("focus");
     match focus_shape {
         "ring" => {
             ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.085, 0.012, fm);
@@ -5365,6 +5485,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     let bm = mat(&binding.material, LINEN);
     let ba = mat(&binding.accent, bm);
     let (low, high) = (top - 0.36, top - 0.05);
+    slot("binding");
     match binding.shape.as_deref().unwrap_or("wraps") {
         "bands" => {
             for z in [low + 0.04, (low + high) * 0.5, high - 0.02] {
@@ -5413,6 +5534,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     }
 
     // A metal foot, then the shaft
+    slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 0.06], thick * 0.65, thick * 1.1, DARK_STEEL));
     match shaft.shape.as_deref().unwrap_or("straight") {
         "twisted" => {

@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    17,
+    50
+  ],
+  "pivot": [
+    5.808,
+    8.448,
+    40.656
+  ],
+  "anchor": [
+    0.01200000000000001,
+    0.003249999999999975,
+    -2.541
+  ],
+  "origin": [
+    -6,
+    -8,
+    -41
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6849,
+    "7d34f905cd81cc6f"
+  ]
+}

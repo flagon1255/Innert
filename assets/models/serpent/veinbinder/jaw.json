@@ -1,0 +1,29 @@
+{
+  "what": "Veinbinder, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    57,
+    25,
+    16
+  ],
+  "pivot": [
+    12.479999999999997,
+    12.48,
+    12.8
+  ],
+  "anchor": [
+    1.0012500000000002,
+    0.0012499999999999734,
+    -0.8
+  ],
+  "origin": [
+    -12,
+    -12,
+    -13
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    28733,
+    "d0a4b0a290d0672f"
+  ]
+}

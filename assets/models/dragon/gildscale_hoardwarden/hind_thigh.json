@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    13,
+    34
+  ],
+  "pivot": [
+    6.451200000000001,
+    6.451200000000001,
+    26.611199999999997
+  ],
+  "anchor": [
+    0.06554999999999994,
+    0.0030499999999999416,
+    -1.6631999999999998
+  ],
+  "origin": [
+    -6,
+    -6,
+    -27
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    12921,
+    "e7987cc0faad94c0"
+  ]
+}

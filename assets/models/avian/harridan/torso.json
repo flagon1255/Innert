@@ -1,0 +1,29 @@
+{
+  "what": "Harridan, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    10,
+    6
+  ],
+  "pivot": [
+    10.6,
+    4.9,
+    2.9000000000000004
+  ],
+  "anchor": [
+    0.08750000000000002,
+    0.006249999999999978,
+    -0.18125000000000002
+  ],
+  "origin": [
+    -11,
+    -5,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2931,
+    "235db341dde33e65"
+  ]
+}

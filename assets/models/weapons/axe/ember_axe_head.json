@@ -1,0 +1,37 @@
+{
+  "what": "Axe, blade: Ember Axe Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    52,
+    7,
+    53
+  ],
+  "pivot": [
+    9.600000000000001,
+    3.5695999999999994,
+    -91.0
+  ],
+  "anchor": null,
+  "origin": [
+    -10,
+    -4,
+    91
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2336
+    ],
+    "tip": [
+      0.22,
+      0.0,
+      0.6115999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    44771,
+    "770d1bca30e451fe"
+  ]
+}

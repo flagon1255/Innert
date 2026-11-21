@@ -1016,7 +1016,16 @@ fn build_models() -> Vec<(Model, Vector3<f64>)> {
         handles.into_iter().flat_map(|h| h.join().expect("making a dragon's model failed")).collect()
     });
     made.sort_unstable_by_key(|(job, _)| *job);
-    made.into_iter().map(|(_, m)| m).collect()
+    let mut made: Vec<(Model, Vector3<f64>)> = made.into_iter().map(|(_, m)| m).collect();
+    // Pieces drawn from files in assets\models, see src\assets.rs
+    crate::assets::dragons(&mut made);
+    made
+}
+
+/// Where each model has the middle of its bottom, in its own meters, see layout(): for the model
+/// files, see src\assets.rs
+pub fn anchors() -> Vec<Vector3<f64>> {
+    layout().iter().map(|(anchor, _)| *anchor).collect()
 }
 
 static LAYOUT: OnceLock<Vec<(Vector3<f64>, [u32; 3])>> = OnceLock::new();
@@ -3927,6 +3936,8 @@ fn animate(d: &mut Dragon, h: &Here, want: &Rig, wings: &WingSet, dead: bool) {
         drawn.legs[leg].knee = l.knee + (kn - l.knee) * l.plant;
     }
     let (mouth, breath) = pose(&sp, d.center, d.yaw, &drawn, vpm, &mut d.bones);
+    // Animation files on top, see src\anim.rs
+    edited(d, vpm);
     d.mouth = mouth;
     d.breath = breath;
     // Hit in the body, till the player's seen looking at some other part of it, see Dragon::aim()
@@ -4422,3 +4433,175 @@ mod tests {
 }
 
 
+
+// The rig as the model and animation editor sees it, see src\anim.rs and src\editor.rs: a few
+// lines, so the animations edited there go on top of the code's poses here, see edited()
+
+/// What each of a dragon's bones is called, in the order of Dragon::bones
+const BONE_NAMES: [&str; BONES] = [
+    "torso",
+    "neck_1",
+    "neck_2",
+    "neck_3",
+    "head",
+    "jaw",
+    "tail_1",
+    "tail_2",
+    "tail_3",
+    "tail_4",
+    "wing_left_inner",
+    "wing_left_outer",
+    "wing_right_inner",
+    "wing_right_outer",
+    "thigh_hind_left",
+    "thigh_hind_right",
+    "thigh_fore_left",
+    "thigh_fore_right",
+    "shin_hind_left",
+    "shin_hind_right",
+    "shin_fore_left",
+    "shin_fore_right",
+];
+
+/// The clips a dragon's animations are kept by: standing, walking and flying, then each move
+const CLIPS: [&str; 15] = ["stand", "walk", "fly", "bite", "tail", "breath", "gust", "stomp", "roar", "swoop", "strafe", "hover", "spit", "dive", "rain"];
+
+/// A dragon's rig, for the editor and for animation files
+pub struct EditorRig(pub Look);
+
+impl EditorRig {
+    fn id_of(look: Look) -> String {
+        format!("dragon/{}", crate::assets::snake(&format!("{look:?}")))
+    }
+
+    fn bone_defs(look: Look) -> Vec<crate::anim::BoneDef> {
+        let sp = spec(look);
+        let parent = |b: usize| -> Option<usize> {
+            match b {
+                TORSO => None,
+                HEAD => Some(NECK + sp.necks.max(1) - 1),
+                JAW => Some(HEAD),
+                _ if b == NECK || b == TAIL => Some(TORSO),
+                _ if b < WING => Some(b - 1),
+                // An outer wing from its inner, an inner from the torso
+                _ if b < THIGH => Some(if (b - WING) % 2 == 0 { TORSO } else { b - 1 }),
+                _ if b < SHIN => Some(TORSO),
+                _ => Some(b - SHIN + THIGH),
+            }
+        };
+        (0..BONES).map(|b| crate::anim::BoneDef { name: BONE_NAMES[b].into(), parent: parent(b) }).collect()
+    }
+}
+
+/// The clip a dragon's in, by CLIPS, and how many seconds into it: its move, getting ready and
+/// making it, or flying, walking or standing
+fn clip_now(d: &Dragon) -> (&'static str, f64) {
+    let move_clip = |m: Move| CLIPS[3 + m as usize % (CLIPS.len() - 3)];
+    match d.state {
+        State::Wind(m, t) => (move_clip(m), t),
+        State::Do(m, t) => (move_clip(m), d.skill.map_or(0.0, |s| s.wind) + t),
+        _ if d.airborne => ("fly", d.clock),
+        _ if flat(d.velocity).norm() > 0.3 => ("walk", d.clock),
+        _ => ("stand", d.clock),
+    }
+}
+
+/// Its bones as animation files have them on top of the code's pose, if there are any, see
+/// src\anim.rs
+fn edited(d: &mut Dragon, vpm: f64) {
+    if !crate::anim::active() {
+        return;
+    }
+    let (clip, t) = clip_now(d);
+    let center = d.bones[TORSO].at;
+    let mut joints: Vec<crate::anim::Joint> = d.bones.iter().map(|b| crate::anim::Joint { at: b.at - center, turn: b.turn, shown: b.shown }).collect();
+    let look = d.look;
+    crate::anim::adjust(&EditorRig::id_of(look), clip, t, &|| EditorRig::bone_defs(look), &mut joints, vpm);
+    for (b, j) in d.bones.iter_mut().zip(&joints) {
+        b.at = center + j.at;
+        b.turn = j.turn;
+    }
+}
+
+impl crate::anim::Rig for EditorRig {
+    fn id(&self) -> String {
+        EditorRig::id_of(self.0)
+    }
+
+    fn bones(&self) -> Vec<crate::anim::BoneDef> {
+        EditorRig::bone_defs(self.0)
+    }
+
+    fn clips(&self) -> Vec<crate::anim::ClipDef> {
+        let sp = spec(self.0);
+        let k = sp.s.sqrt();
+        CLIPS
+            .iter()
+            .enumerate()
+            .map(|(i, &name)| crate::anim::ClipDef {
+                name: name.into(),
+                length: match i {
+                    0 => 4.0 * k,
+                    1 => 1.2 * k,
+                    2 => 1.0 / flight(self.0).beat,
+                    _ => 1.6 * k,
+                },
+                looping: i < 3,
+            })
+            .collect()
+    }
+
+    /// The code's own poses: standing, swaying and breathing; walking, its legs striding; flying,
+    /// its wings beating; and for a move, standing, or flying for a move made in the air
+    fn pose(&self, clip: usize, t: f64) -> Vec<crate::anim::Joint> {
+        let sp = spec(self.0);
+        let k = sp.s.sqrt();
+        let air = matches!(CLIPS.get(clip), Some(&("fly" | "swoop" | "strafe" | "hover" | "dive" | "rain")));
+        let mut rig = if air { Rig::flying() } else { Rig::standing(&sp) };
+        let sway = (t * 1.3 / k).sin();
+        for j in 0..sp.tails {
+            rig.tail[j][0] += 0.08 * sway * (j as f64 + 1.0) / sp.tails as f64;
+        }
+        rig.neck[0][1] += 0.03 * (t * 1.7 / k).sin();
+        if air {
+            let phase = t * flight(self.0).beat * TAU;
+            for w in &mut rig.wings {
+                w.flap += 0.9 * phase.sin();
+                w.bend += 0.45 * 0.9 * (phase - 0.9).sin();
+            }
+        } else if clip == 1 {
+            let phase = t / (1.2 * k) * TAU;
+            for (l, leg) in rig.legs.iter_mut().enumerate() {
+                let s = if l % 2 == 0 { 1.0 } else { -1.0 } * if l < 2 { 1.0 } else { -1.0 };
+                leg.swing += 0.35 * s * phase.sin();
+                leg.knee += 0.25 * (s * phase.cos()).max(0.0);
+            }
+        }
+        let mut bones = [Bone::default(); BONES];
+        pose(&sp, Vector3::zeros(), 0.0, &rig, 1.0, &mut bones);
+        bones.iter().map(|b| crate::anim::Joint { at: b.at, turn: b.turn, shown: b.shown }).collect()
+    }
+
+    fn draw(&self, joints: &[crate::anim::Joint], at: Vector3<f64>, yaw: f64, vpm: f64, lit: Option<usize>, out: &mut Vec<AnimalInstance>) {
+        let layout = layout();
+        let k = kind(self.0);
+        let base = animals::DRAGON_MODELS_AT + k * PIECES;
+        let face = rz(yaw);
+        for (b, j) in joints.iter().enumerate() {
+            let m = model_of(b);
+            let (anchor, size) = layout[k * PIECES + m];
+            if !j.shown || size == [1, 1, 1] {
+                continue;
+            }
+            let [x, y, z] = size.map(|s| s as f64 / MODEL_RES);
+            let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
+            let turn = face * j.turn;
+            let position = at + face * j.at * vpm + turn * anchor * vpm;
+            let mut instance = AnimalInstance::new((base + m) as u32, position, turn, vpm / MODEL_RES, reach, MOVING);
+            if lit == Some(b) {
+                instance = instance.skinned(0xA0_30_D0_FF);
+            }
+            out.push(instance);
+        }
+    }
+}

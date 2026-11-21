@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, binding: Phantom Wraps",
+  "voxels_per_meter": 150.0,
+  "size": [
+    13,
+    8,
+    47
+  ],
+  "pivot": [
+    6.812903225806452,
+    3.9387096774193546,
+    -113.95548387096774
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -4,
+    114
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.4400000000000001
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.5851612903225807
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2894,
+    "9d3346d80f83ce6a"
+  ]
+}

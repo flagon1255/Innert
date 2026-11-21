@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, neck 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    40,
+    21,
+    26
+  ],
+  "pivot": [
+    10.159685034488028,
+    10.15968503448803,
+    11.683637789661235
+  ],
+  "anchor": [
+    0.6150196853444982,
+    0.021269685344498135,
+    -0.7302273618538272
+  ],
+  "origin": [
+    -10,
+    -10,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    38568,
+    "101222c79bb936e3"
+  ]
+}

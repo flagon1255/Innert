@@ -1,6 +1,5 @@
-// No console window behind the game, except when debugging. Problems are shown in a box, see
-// show_error().
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//! Innert: the game, src\bin\innert.rs, and its model editor, src\bin\innert-editor.rs, are both
+//! this, started by main() or editor_main().
 
 use egui_winit_vulkano::{
     Gui,
@@ -63,6 +62,8 @@ use winit::{
 use winit_input_helper::WinitInputHelper;
 
 mod animals;
+mod anim;
+mod assets;
 mod audio;
 mod avians;
 mod bases;
@@ -74,6 +75,7 @@ mod compass;
 mod crash;
 mod daynight;
 mod dragons;
+mod editor;
 mod effects;
 mod game;
 mod gargoyles;
@@ -106,7 +108,9 @@ mod startup;
 mod stream;
 mod tools;
 mod voxelize;
+mod vox;
 mod water;
+mod weapon_parts;
 mod weapons;
 mod wings;
 mod worldgen;
@@ -204,6 +208,8 @@ impl RenderMode {
 enum Scene {
     Terrain,
     Model(Model),
+    /// The model editor's: a plain floor and nothing else, see editor.rs
+    Studio,
 }
 
 impl Scene {
@@ -218,6 +224,7 @@ impl Scene {
         match self {
             Scene::Terrain => "Terrain".to_string(),
             Scene::Model(model) => format!("{:?}", model),
+            Scene::Studio => "Studio".to_string(),
         }
     }
 
@@ -282,6 +289,7 @@ fn build_world(scene: Scene, terrain: &TerrainSettings, voxel_resolution: u32, o
             );
             (world, None)
         }
+        Scene::Studio => (World::studio(editor::STUDIO_SIZE, worldgen::material::STONE, worldgen::material::GRAVEL, terrain.voxels_per_meter), None),
     }
 }
 
@@ -1349,6 +1357,10 @@ struct App {
     // Every animal's model and the rest that never change, see Game::model_words(), and every
     // weapon's, see Game::weapon_model_words()
     animal_models: Subbuffer<[u32]>,
+    /// Model files in assets\models read again as they're saved, see assets.rs
+    model_files: assets::Reloader<Subbuffer<[u32]>>,
+    /// The model editor, in its own app, see editor.rs
+    editor: editor::Editor,
     weapon_models: Subbuffer<[u32]>,
     // Which of Game::models_version() the weapons' are
     models_version: u32,
@@ -1862,7 +1874,8 @@ impl Placed {
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
 
-        let scene = Scene::Terrain;
+        // The model editor's own app opens on a plain floor rather than the landscape
+        let scene = if editor::is_app() { Scene::Studio } else { Scene::Terrain };
         let mut terrain = INITIAL_TERRAIN;
         // As fine and as wide as the quality preset wants it, see quality.rs
         let preset = quality::chosen().settings();
@@ -2602,10 +2615,10 @@ impl App {
         );
         // A preview of the loading screen shows it fade into the menu, as it does in play, and
         // `--set menu=1` shows it in a screenshot run, to see it with `gui=1`
-        let menu_open = flag("menu", capture.is_none() || loading::previewing());
+        let menu_open = flag("menu", capture.is_none() || loading::previewing()) && !editor::is_app();
         // Saves go where they're kept, except in screenshot runs, which save only with `--set
         // saves=<folder>`, so trying things out never touches the player's own
-        let session = session::Session::new(setting("saves").map(PathBuf::from), capture.is_none());
+        let session = session::Session::new(setting("saves").map(PathBuf::from), capture.is_none() && !editor::is_app());
         // `--set waterfall=2` starts looking at the second waterfall
         let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
         // `--set sun_shafts=off`, `low` or `high`, and `sun_shafts_strength=1.5` for thicker air
@@ -2688,7 +2701,7 @@ impl App {
                 cycle.clock.running = flag("day_cycle", true);
                 cycle
             },
-            fixed_sun: ["sun_azimuth", "sun_elevation", "sun_ahead"].iter().any(|k| setting(k).is_some()),
+            fixed_sun: ["sun_azimuth", "sun_elevation", "sun_ahead"].iter().any(|k| setting(k).is_some()) || editor::is_app(),
             shadows: flag("shadows", preset.shadows),
             ambient_occlusion: flag("ao", preset.ambient_occlusion),
             bounce_light: flag("bounce", preset.bounce_light),
@@ -2716,6 +2729,8 @@ impl App {
             game,
             animals_on: flag("animals", true),
             animal_models,
+            model_files: assets::Reloader::new(),
+            editor: Default::default(),
             weapon_models,
             models_version,
             instance_allocator,
@@ -2973,7 +2988,7 @@ impl App {
                     // A pharaoh sunk in the desert's ruins and pyramids; an ogre in the old castles,
                     // towers and caverns, a jotun where it's cold and a thunderborn giant on the high
                     // stone; an elderhorn at the woods' shrines, a mire crone at the jungle's, see
-                    // Look::for_ground and srcig.rs
+                    // Look::for_ground and src\rig.rs
                     "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
                     "castle" | "watchtower" if pick % 4 == 3 => animals::Look::Ogre,
                     "cavern" if pick % 4 == 3 => animals::Look::Ogre,
@@ -3923,7 +3938,7 @@ impl App {
         // Screenshot runs from the command line ignore input, so they always show the same view
         let interactive = self.capture.is_none();
 
-        if interactive && self.input.key_pressed(KeyCode::Escape) {
+        if interactive && self.input.key_pressed(KeyCode::Escape) && !editor::is_app() {
             if self.session.gate_open {
                 self.session.gate_action = Some(session::GateAction::Close);
             } else if self.map.open {
@@ -3951,6 +3966,13 @@ impl App {
             self.inventory_open = !self.inventory_open;
             self.set_focus(!self.inventory_open);
         }
+        // The model editor's own app is the editor, open from the start, see editor.rs
+        if editor::is_app() && !self.editor.open {
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
+            self.editor.toggle(&self.world, eye, &mut self.game);
+            self.set_focus(false);
+        }
+        let playing = playing && !self.editor.open;
         if playing && self.input.key_pressed(KeyCode::F1) {
             self.show_settings = !self.show_settings;
         }
@@ -4027,7 +4049,7 @@ impl App {
         // The world stands still while the menu is open, and while it's built afresh round the
         // player behind the dark, as on going through to another realm, so nothing that was about
         // them, a night's raiders least of all, can fall on them unseen meanwhile
-        if !self.menu_open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
+        if !self.menu_open && !self.editor.open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
             let water = &self.water;
@@ -4272,6 +4294,31 @@ impl App {
             }
         }
 
+        // The model editor's view, turned about what it shows
+        if self.editor.open && !interactive {
+            self.editor.update(delta_time, &editor::Controls::default(), &mut self.game);
+        } else if self.editor.open {
+            let (dx, dy) = self.input.mouse_diff();
+            let (left, right) = (self.input.mouse_held(MouseButton::Left), self.input.mouse_held(MouseButton::Right));
+            let keys = [(KeyCode::Space, ' '), (KeyCode::KeyX, 'x'), (KeyCode::KeyY, 'y'), (KeyCode::KeyZ, 'z'), (KeyCode::KeyG, 'g'), (KeyCode::KeyQ, 'q'), (KeyCode::KeyE, 'e'), (KeyCode::KeyK, 'k'), (KeyCode::Delete, 'd')];
+            let controls = editor::Controls {
+                drag: if left { (dx as f64, dy as f64) } else { (0.0, 0.0) },
+                turn: if right { (dx as f64, dy as f64) } else { (0.0, 0.0) },
+                scroll: self.input.scroll_diff().1 as f64,
+                keys: keys.iter().filter(|(k, _)| self.input.key_pressed(*k)).map(|(_, c)| *c).collect(),
+            };
+            self.editor.update(delta_time, &controls, &mut self.game);
+        }
+        if self.editor.open {
+            let vpm = self.world.voxels_per_meter as f64;
+            let (target, yaw, pitch, distance) = self.editor.camera(vpm);
+            self.camera.rotation = Vector3::new(pitch, 0.0, yaw);
+            self.camera.fov = 60.0;
+            let forward = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let mut eye = target - forward * distance;
+            eye.z = eye.z.min(self.world.size[2] as f64 - 2.0 * vpm);
+            self.camera.position = voxels_to_camera(eye, self.world.size);
+        }
         let sky_key = self.sky().key;
         let view = [
             self.camera.position.x,
@@ -4412,6 +4459,19 @@ impl App {
                         self.play.flown,
                         self.stream.as_ref().is_some_and(|s| s.busy())
                     );
+                }
+            }
+            // The model editor, see editor.rs: opened, then a creature in a pose, a dragon's bone
+            // keyed, a weapon held and one part of it, and a pair of wings, a shot of each
+            ("editor", f) => {
+                if f == 10 && !self.editor.open {
+                    self.editor.toggle(&self.world, eye, &mut self.game);
+                    self.set_focus(false);
+                }
+                if self.editor.open && self.editor.scripted(f, &mut self.game)
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.shots.push(f + 2);
                 }
             }
             ("hunt", 20) => {
@@ -5323,8 +5383,12 @@ impl App {
             note
         });
 
+        let mut reread_models = false;
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
+            if self.editor.open {
+                reread_models = self.editor.ui(&ctx, &mut self.game);
+            }
 
             // Dark while the world's built afresh round the camera, gone too fast for the strips to
             // keep up, see stream.rs
@@ -5425,7 +5489,7 @@ impl App {
                     });
             }
 
-            if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
+            if !self.menu_open && !self.editor.open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
                 if !self.fixed_sun {
                     self.cycle.hud(&ctx, raid_note.as_deref());
@@ -5667,6 +5731,12 @@ impl App {
                 }
             });
         });
+        // Asked for in the model editor
+        if reread_models {
+            let allocator = self.memory_allocator.clone();
+            self.model_files.reload_all(self.game.model_lists(), move |words| model_buffer(&allocator, words));
+            anim::forget();
+        }
 
         if let Some(focused) = focus_change {
             self.focused = focused;
@@ -5759,6 +5829,22 @@ impl App {
             post_flags |= POST_DENOISE;
         }
 
+        // A model file saved: its models worked out again and packed on a thread of their own,
+        // then swapped in here, see assets.rs
+        let allocator = self.memory_allocator.clone();
+        let game = &self.game;
+        if let Some(done) = self.model_files.poll(|| game.model_lists(), move |words| model_buffer(&allocator, words)) {
+            if let Some(buffer) = done.made {
+                self.animal_models = buffer;
+            }
+            if let Some(wings) = done.wings {
+                self.game.set_wing_models(wings);
+            }
+            if let Some(looks) = done.weapons {
+                self.game.set_weapon_looks(looks);
+            }
+        }
+
         // A weapon was found, so there's a new model to draw
         if self.game.models_version() != self.models_version {
             let start = Instant::now();
@@ -5772,9 +5858,18 @@ impl App {
         // The weapon in hand, and the animals, food and things flying near the camera, for the
         // shader to trace
         let playing = self.loaded_scene.is_terrain() && self.animals_on;
-        let mut instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        let mut instances: Vec<AnimalInstance> = if self.editor.open {
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
+            self.editor.instances(&self.game, self.world.voxels_per_meter as f64, eye, self.camera.rotation.z, self.camera.rotation.x)
+        } else if playing {
+            self.game.instances(&self.world, &view)
+        } else {
+            Vec::new()
+        };
         // A grappling hook's rope, and wings spread to glide, see rope.rs
-        instances.extend(rope);
+        if !self.editor.open {
+            instances.extend(rope);
+        }
         if let Some(perf) = &mut self.perf {
             perf.instances = perf.instances.max(instances.len());
         }
@@ -6433,7 +6528,7 @@ fn window_attributes(out_of_sight: bool) -> winit::window::WindowAttributes {
     let mut attributes = Window::default_attributes()
         .with_inner_size(size)
         .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
-        .with_title("Innert")
+        .with_title(if editor::is_app() { "Innert Model Editor" } else { "Innert" })
         .with_visible(false);
     // Screenshot runs happen out of sight: never shown at all, so they can't take focus from
     // whatever's on the screen, like a game in fullscreen, which would minimize it. Windows
@@ -6728,9 +6823,21 @@ const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3
 #[global_allocator]
 static ALLOCATOR: perf::Counting = perf::Counting;
 
-fn main() {
+/// The model editor's own app, innert-editor: the game's renderer on a plain studio, opening
+/// straight into the editor, see editor.rs
+pub fn editor_main() {
+    editor::set_app();
+    main();
+}
+
+/// The game
+pub fn main() {
     if std::env::args().any(|a| a == "--screenshot") {
         perf::count_heap();
+    }
+    // `--export-models <dir>` writes every model as a MagicaVoxel file and stops, see assets.rs
+    if let Some(code) = assets::export_from_args() {
+        std::process::exit(code);
     }
     startup::init();
     // `--set vram_budget=2048` takes the graphics card to have no more memory for the game than

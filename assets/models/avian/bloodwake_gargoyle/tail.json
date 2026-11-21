@@ -1,0 +1,29 @@
+{
+  "what": "Bloodwake Gargoyle, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    56,
+    11,
+    12
+  ],
+  "pivot": [
+    52.224,
+    5.3312,
+    6.8
+  ],
+  "anchor": [
+    -1.5139999999999998,
+    0.010550000000000004,
+    -0.425
+  ],
+  "origin": [
+    -52,
+    -5,
+    -7
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5294,
+    "4d014faf6140add2"
+  ]
+}

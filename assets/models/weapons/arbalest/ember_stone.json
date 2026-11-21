@@ -1,0 +1,67 @@
+{
+  "what": "Arbalest, core: Ember Stone",
+  "voxels_per_meter": 128.0,
+  "size": [
+    5,
+    5,
+    6
+  ],
+  "pivot": [
+    -66.696,
+    0.16799999999999926,
+    5.464
+  ],
+  "anchor": null,
+  "origin": [
+    67,
+    0,
+    -5
+  ],
+  "points": {
+    "grip": [
+      0.298,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.07,
+      0.085,
+      -0.065
+    ],
+    "mover_pivot": [
+      0.07,
+      0.0,
+      0.02
+    ],
+    "nock_1": [
+      0.7012903225806453,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.5119032258064516,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.378,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.598,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.91,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1573,
+    "6007cc813c30d02c"
+  ]
+}

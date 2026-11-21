@@ -1,0 +1,29 @@
+{
+  "what": "dragon/fx/breath_storm_1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    14,
+    12
+  ],
+  "pivot": [
+    7.36,
+    6.4,
+    -2.08
+  ],
+  "anchor": [
+    0.00874999999999998,
+    0.03749999999999998,
+    0.13
+  ],
+  "origin": [
+    -7,
+    -6,
+    2
+  ],
+  "note": "Placed as the code places it.",
+  "written": [
+    5639,
+    "2f6fe1c8049efa86"
+  ]
+}

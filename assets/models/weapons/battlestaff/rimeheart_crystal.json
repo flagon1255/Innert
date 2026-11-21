@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, crystal: Rimeheart Crystal",
+  "voxels_per_meter": 150.0,
+  "size": [
+    10,
+    10,
+    25
+  ],
+  "pivot": [
+    -3.100619834710744,
+    5.068387096774194,
+    -164.95548387096775
+  ],
+  "anchor": null,
+  "origin": [
+    3,
+    -5,
+    165
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.4400000000000001
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.5851612903225807
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5301,
+    "ad793a387ce4db69"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Orb, shaft: Ash Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    7,
+    8,
+    24
+  ],
+  "pivot": [
+    3.6000000000000014,
+    3.88153607014714,
+    2.8400000000000007
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    -3
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.18
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    3660,
+    "ff463a4e1cef137d"
+  ]
+}

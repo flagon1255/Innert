@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, hilt: Berserker's Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    8,
+    8,
+    125
+  ],
+  "pivot": [
+    4.112000000000002,
+    4.054400000000001,
+    0.03200000000000003
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    0
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.13,
+      0.0,
+      0.7315999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    16672,
+    "be5ed80649d71fc5"
+  ]
+}

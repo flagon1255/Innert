@@ -1,0 +1,37 @@
+{
+  "what": "Flail, blade: Twin Flail Heads",
+  "voxels_per_meter": 192.0,
+  "size": [
+    52,
+    27,
+    96
+  ],
+  "pivot": [
+    25.619690382366166,
+    12.296005890578584,
+    -79.0
+  ],
+  "anchor": null,
+  "origin": [
+    -26,
+    -12,
+    79
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1736
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.833
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    39281,
+    "c57dc09fcc9a41fd"
+  ]
+}

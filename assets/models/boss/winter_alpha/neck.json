@@ -1,0 +1,29 @@
+{
+  "what": "Winter Alpha, neck",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    9,
+    14
+  ],
+  "pivot": [
+    4.031999999999999,
+    4.032,
+    4.032
+  ],
+  "anchor": [
+    0.34175000000000005,
+    0.029249999999999998,
+    -0.252
+  ],
+  "origin": [
+    -4,
+    -4,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4099,
+    "57f9cb9264501bd8"
+  ]
+}

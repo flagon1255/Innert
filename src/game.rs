@@ -738,8 +738,9 @@ pub struct Game {
     loaded: Option<((usize, usize), Loaded)>,
     combat: Combat,
     leaves: Leaves,
-    /// The models of animals and things lying around, see animals::animal_models()
-    models: Vec<Model>,
+    /// The models of animals and things lying around, see animals::animal_models(), with those
+    /// drawn from files read in, see src\assets.rs: shared with the thread reading them again
+    models: std::sync::Arc<Vec<Model>>,
     /// Changes whenever there are new models to draw, like when a weapon is found
     models_version: u32,
     seed: u32,
@@ -785,6 +786,10 @@ pub struct Game {
     crowd: usize,
     /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
     dragonfire: dragonfire::Fire,
+    /// The model editor's floor, and the weapon or part it's showing, with its voxels a meter,
+    /// see editor.rs
+    stage_models: Vec<Model>,
+    preview: Vec<(Model, Vector3<f64>)>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
 }
@@ -963,7 +968,7 @@ impl Game {
             loaded: None,
             combat: Combat::new(seed, ANIMAL_MODELS as u32),
             leaves: Leaves::new(seed),
-            models: animals::animal_models(),
+            models: std::sync::Arc::new(crate::assets::apply_looks(animals::animal_models())),
             models_version: 0,
             seed,
             rng: hash(seed ^ 0x9a3e),
@@ -975,7 +980,7 @@ impl Game {
             sky_wares: false,
             covered: false,
             worn: None,
-            wing_models: wings::models(),
+            wing_models: crate::assets::wings(wings::models()),
             aloft: None,
             glided: false,
             wings_told: false,
@@ -983,10 +988,12 @@ impl Game {
             aeries: Vec::new(),
             shrines_seen: HashSet::new(),
             dragonfire: Default::default(),
+            stage_models: crate::editor::stage_models(),
+            preview: Vec::new(),
             aerie: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
-            ward_models: crate::guardians::models(),
+            ward_models: crate::assets::wards(crate::guardians::models()),
             crowd: 0,
         };
         game.arm_anew(seed);
@@ -1034,6 +1041,10 @@ impl Game {
 
     /// Fills a new world with animals and apples. What the player carries stays.
     pub fn populate(&mut self, world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) {
+        // Nothing lives in the model editor's studio, see editor.rs
+        if crate::editor::is_app() {
+            return;
+        }
         self.animals = animals::spawn(world, water, seed, near);
         let mut rng = hash(seed ^ 0x5e4);
         self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
@@ -1082,6 +1093,7 @@ impl Game {
             .chain(self.leaves.models.iter())
             .chain(self.wing_models.iter().map(|(m, _)| m))
             .chain(self.ward_models.iter().map(|(m, _)| m))
+            .chain(self.stage_models.iter())
             .collect();
         pack_models(&models)
     }
@@ -1090,7 +1102,7 @@ impl Game {
     /// They're kept apart from the rest, which never change, as sending all of those again each
     /// time a weapon turns up takes long enough to hold up the game.
     pub fn weapon_model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).collect();
+        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).collect();
         let mut words = vec![self.weapon_model(0)];
         words.extend(pack_models(&models));
         words
@@ -1108,7 +1120,7 @@ impl Game {
     /// Where weapon `index`'s models start among model_words()
     fn weapon_model(&self, index: usize) -> u32 {
         let before: usize = self.weapons[..index].iter().map(|w| w.look.frames.len()).sum();
-        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + self.ward_models.len() + before) as u32
+        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + self.ward_models.len() + self.stage_models.len() + before) as u32
     }
 
     /// The weapon in hand, with its index
@@ -4887,6 +4899,63 @@ impl Game {
 
     pub fn wing_model(&self, k: usize) -> u32 {
         self.leaf_model() + (self.leaves.models.len() + k) as u32
+    }
+
+    /// The models as model_words() packs them, for the model files to be read again away from
+    /// the game, see assets::Reloader
+    pub fn model_lists(&self) -> crate::assets::Lists {
+        let copy = crate::assets::copy;
+        crate::assets::Lists {
+            base: self.models.clone(),
+            between: self.combat.models.iter().map(|(m, _)| copy(m)).chain(self.leaves.models.iter().map(copy)).collect(),
+            effects: self.combat.models.len(),
+            effect_anchors: self.combat.models.iter().map(|(_, a)| *a).collect(),
+            ward_anchors: self.ward_models.iter().map(|(_, a)| *a).collect(),
+            wings: self.wing_models.iter().map(|(m, a)| (copy(m), *a)).collect(),
+            after: self.ward_models.iter().map(|(m, _)| copy(m)).chain(self.stage_models.iter().map(copy)).collect(),
+            weapons: self.weapons.iter().map(|w| (w.family, w.parts.clone(), w.seed)).collect(),
+        }
+    }
+
+    /// The model editor's floor, see editor.rs
+    pub fn stage_model(&self) -> u32 {
+        self.ward_model(self.ward_models.len())
+    }
+
+    /// What the model editor shows of a weapon, its frames or one part, see editor.rs: drawn
+    /// with the weapons
+    pub fn set_preview(&mut self, frames: Vec<(Model, Vector3<f64>)>) {
+        self.preview = frames;
+        self.models_version += 1;
+    }
+
+    /// The model of frame `k` of what set_preview() was given, and where its anchor is
+    pub fn preview_model(&self, k: usize) -> Option<(u32, Vector3<f64>, [u32; 3])> {
+        let (m, a) = self.preview.get(k)?;
+        Some((self.weapon_model(self.weapons.len()) + k as u32, *a, m.size))
+    }
+
+    /// One of the models model_words() starts with, the animals' and the rest, see model_lists()
+    pub fn base_model(&self, i: usize) -> &Model {
+        &self.models[i]
+    }
+
+    /// The wings' models read again from their files, see assets::Reloader
+    pub fn set_wing_models(&mut self, models: Vec<(Model, Vector3<f64>)>) {
+        if models.len() == self.wing_models.len() {
+            self.wing_models = models;
+        }
+    }
+
+    /// The weapons' looks made again, from their parts' files, see assets::Reloader: for the
+    /// weapons model_lists() gave
+    pub fn set_weapon_looks(&mut self, looks: Vec<(usize, Vec<usize>, u32, crate::weapons::WeaponLook)>) {
+        for (w, (family, parts, seed, look)) in self.weapons.iter_mut().zip(looks) {
+            if w.family == family && w.parts == parts && w.seed == seed {
+                w.look = look;
+            }
+        }
+        self.models_version += 1;
     }
 
     /// The models of the wards round raid bosses, and where the first is among model_words(), see

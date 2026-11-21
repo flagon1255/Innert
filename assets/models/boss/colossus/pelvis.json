@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    25,
+    40,
+    20
+  ],
+  "pivot": [
+    12.24,
+    19.584,
+    8.16
+  ],
+  "anchor": [
+    0.016249999999999987,
+    0.026000000000000023,
+    -0.51
+  ],
+  "origin": [
+    -12,
+    -20,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    38991,
+    "3e99490986fc68da"
+  ]
+}

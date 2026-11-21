@@ -1,0 +1,29 @@
+{
+  "what": "Winter Alpha, upper hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    15
+  ],
+  "pivot": [
+    2.52,
+    2.52,
+    11.928
+  ],
+  "anchor": [
+    0.03,
+    0.03,
+    -0.7455
+  ],
+  "origin": [
+    -3,
+    -3,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1952,
+    "b1b935b3c8705d5f"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, tail 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    85,
+    31,
+    24
+  ],
+  "pivot": [
+    76.0,
+    15.200000000000001,
+    9.398919086788649
+  ],
+  "anchor": [
+    -2.09375,
+    0.018749999999999933,
+    -0.5874324429242905
+  ],
+  "origin": [
+    -76,
+    -15,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    39945,
+    "b69cc5c0e77a59d7"
+  ]
+}

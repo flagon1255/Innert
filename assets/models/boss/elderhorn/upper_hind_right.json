@@ -1,0 +1,29 @@
+{
+  "what": "Elderhorn, upper hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    23
+  ],
+  "pivot": [
+    3.944,
+    3.944,
+    18.791999999999998
+  ],
+  "anchor": [
+    0.003500000000000003,
+    0.003500000000000003,
+    -1.1744999999999999
+  ],
+  "origin": [
+    -4,
+    -4,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3424,
+    "2370756a33d4ceb9"
+  ]
+}

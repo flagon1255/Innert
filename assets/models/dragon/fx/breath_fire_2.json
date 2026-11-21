@@ -1,0 +1,29 @@
+{
+  "what": "dragon/fx/breath_fire_2",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    15,
+    13
+  ],
+  "pivot": [
+    7.36,
+    7.04,
+    -1.92
+  ],
+  "anchor": [
+    0.00874999999999998,
+    0.028749999999999998,
+    0.12
+  ],
+  "origin": [
+    -7,
+    -7,
+    2
+  ],
+  "note": "Placed as the code places it.",
+  "written": [
+    5879,
+    "0c951ec3f35d9b6c"
+  ]
+}

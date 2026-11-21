@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, tail 2",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    6,
+    8
+  ],
+  "pivot": [
+    13.047999999999998,
+    2.968,
+    3.2648
+  ],
+  "anchor": [
+    -0.2842499999999999,
+    0.0020000000000000018,
+    -0.20405
+  ],
+  "origin": [
+    -13,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2368,
+    "1ce40409934d7708"
+  ]
+}

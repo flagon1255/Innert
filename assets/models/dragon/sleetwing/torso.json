@@ -1,0 +1,29 @@
+{
+  "what": "sleetwing, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    12,
+    14
+  ],
+  "pivot": [
+    12.16,
+    5.624,
+    5.319999999999999
+  ],
+  "anchor": [
+    -0.010000000000000009,
+    0.02350000000000002,
+    -0.33249999999999996
+  ],
+  "origin": [
+    -12,
+    -6,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    8099,
+    "5ff7fd4ed7e53bfe"
+  ]
+}

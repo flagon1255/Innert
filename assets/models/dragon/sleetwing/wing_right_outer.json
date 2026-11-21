@@ -1,0 +1,29 @@
+{
+  "what": "sleetwing, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    24,
+    2
+  ],
+  "pivot": [
+    12.576,
+    22.759999999999998,
+    0.72
+  ],
+  "anchor": [
+    -0.34850000000000003,
+    -0.6724999999999999,
+    -0.045
+  ],
+  "origin": [
+    -13,
+    -23,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2222,
+    "0b4c94b412a3ed2f"
+  ]
+}

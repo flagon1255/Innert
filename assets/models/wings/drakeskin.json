@@ -1,0 +1,29 @@
+{
+  "what": "Drakeskin Wings",
+  "voxels_per_meter": 96.0,
+  "size": [
+    146,
+    106,
+    8
+  ],
+  "pivot": [
+    7.382780337528743,
+    87.80659322814483,
+    3.73248
+  ],
+  "anchor": [
+    0.683512704817409,
+    -0.36256867945984206,
+    -0.03888
+  ],
+  "origin": [
+    -7,
+    -88,
+    -4
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    95582,
+    "ffd7a45f91065476"
+  ]
+}

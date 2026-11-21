@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Serpent Limbs, frame 2 of 3",
+  "voxels_per_meter": 160.0,
+  "size": [
+    34,
+    8,
+    205
+  ],
+  "pivot": [
+    26.623669686662303,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -27,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.625
+    ],
+    "nock_1": [
+      -0.08357533503203028,
+      0.0,
+      0.655
+    ],
+    "nock_2": [
+      -0.22864793554163937,
+      0.0,
+      0.655
+    ],
+    "nock_3": [
+      -0.37372053605124844,
+      0.0,
+      0.655
+    ],
+    "tip": [
+      -0.08357533503203028,
+      0.0,
+      0.655
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    17383,
+    "8c3f3ec95323ff99"
+  ]
+}

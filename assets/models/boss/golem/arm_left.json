@@ -1,0 +1,29 @@
+{
+  "what": "Stone Warden, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    10,
+    23
+  ],
+  "pivot": [
+    4.32,
+    4.32,
+    17.92
+  ],
+  "anchor": [
+    0.011249999999999982,
+    0.04249999999999998,
+    -1.12
+  ],
+  "origin": [
+    -4,
+    -4,
+    -18
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5316,
+    "3c5365de90f702b8"
+  ]
+}

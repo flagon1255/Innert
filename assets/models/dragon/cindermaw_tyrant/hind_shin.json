@@ -1,0 +1,29 @@
+{
+  "what": "Cindermaw Tyrant, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    13,
+    41
+  ],
+  "pivot": [
+    6.0057599999999995,
+    6.23968,
+    34.06552197735074
+  ],
+  "anchor": [
+    0.24964000000000003,
+    0.016270000000000007,
+    -2.1290951235844213
+  ],
+  "origin": [
+    -6,
+    -6,
+    -34
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    14261,
+    "f8f33e5a1d86e1ba"
+  ]
+}

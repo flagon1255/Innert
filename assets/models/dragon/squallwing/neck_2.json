@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, neck 2",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    6,
+    8
+  ],
+  "pivot": [
+    2.646000000000001,
+    2.6460000000000004,
+    3.0429
+  ],
+  "anchor": [
+    0.20962499999999995,
+    0.022124999999999978,
+    -0.19018125
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1947,
+    "be1f434f1551b1c7"
+  ]
+}

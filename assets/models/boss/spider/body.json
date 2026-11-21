@@ -1,0 +1,29 @@
+{
+  "what": "Broodmother, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    13,
+    13
+  ],
+  "pivot": [
+    8.8,
+    6.08,
+    6.88
+  ],
+  "anchor": [
+    0.16874999999999996,
+    0.026249999999999996,
+    -0.43
+  ],
+  "origin": [
+    -9,
+    -6,
+    -7
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6152,
+    "6dd1bc585109123c"
+  ]
+}

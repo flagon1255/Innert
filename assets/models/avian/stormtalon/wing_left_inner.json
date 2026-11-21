@@ -1,0 +1,29 @@
+{
+  "what": "Stormtalon, wing left inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    22,
+    25,
+    4
+  ],
+  "pivot": [
+    16.22823094857143,
+    1.5359999999999996,
+    1.536
+  ],
+  "anchor": [
+    -0.32676443428571433,
+    0.68525,
+    -0.096
+  ],
+  "origin": [
+    -16,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3989,
+    "53f819a2b67c9cd7"
+  ]
+}

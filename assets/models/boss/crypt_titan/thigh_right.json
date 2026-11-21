@@ -1,0 +1,29 @@
+{
+  "what": "Crypt Titan, thigh right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    27
+  ],
+  "pivot": [
+    1.408,
+    1.408,
+    24.728
+  ],
+  "anchor": [
+    0.005750000000000005,
+    0.005750000000000005,
+    -1.5455
+  ],
+  "origin": [
+    -1,
+    -1,
+    -25
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1861,
+    "b27e1e0c48df73c1"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Ember Drake, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    18,
+    31,
+    3
+  ],
+  "pivot": [
+    16.944,
+    29.372,
+    0.9359999999999998
+  ],
+  "anchor": [
+    -0.49649999999999994,
+    -0.867,
+    -0.05849999999999999
+  ],
+  "origin": [
+    -17,
+    -29,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3386,
+    "ff37ecc6bab6012d"
+  ]
+}

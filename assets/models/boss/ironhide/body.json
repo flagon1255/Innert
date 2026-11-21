@@ -1,0 +1,29 @@
+{
+  "what": "Ironhide, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    53,
+    28,
+    38
+  ],
+  "pivot": [
+    27.2,
+    13.6,
+    14.4
+  ],
+  "anchor": [
+    -0.043749999999999956,
+    0.025000000000000022,
+    -0.9
+  ],
+  "origin": [
+    -27,
+    -14,
+    -14
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    99044,
+    "3ac38fc5eda24efc"
+  ]
+}

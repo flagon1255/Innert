@@ -1,0 +1,29 @@
+{
+  "what": "Shatterfang, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    48,
+    32,
+    47
+  ],
+  "pivot": [
+    24.0,
+    15.808,
+    16.72
+  ],
+  "anchor": [
+    0.0,
+    0.01200000000000001,
+    -1.045
+  ],
+  "origin": [
+    -24,
+    -16,
+    -17
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    115715,
+    "6195f8b566ffbd60"
+  ]
+}

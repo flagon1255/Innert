@@ -1,0 +1,29 @@
+{
+  "what": "Rimestone gargoyle, thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    9
+  ],
+  "pivot": [
+    6.9546396860515,
+    2.1024000000000003,
+    6.93967554114107
+  ],
+  "anchor": [
+    -0.15341498037821877,
+    0.024849999999999983,
+    -0.4337297213213169
+  ],
+  "origin": [
+    -7,
+    -2,
+    -7
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1473,
+    "860ebaaaa3abf32f"
+  ]
+}

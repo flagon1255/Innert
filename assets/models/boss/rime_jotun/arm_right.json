@@ -1,0 +1,29 @@
+{
+  "what": "Rime Jotun, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    24
+  ],
+  "pivot": [
+    3.536,
+    3.536,
+    20.400000000000002
+  ],
+  "anchor": [
+    0.028999999999999998,
+    0.028999999999999998,
+    -1.2750000000000001
+  ],
+  "origin": [
+    -4,
+    -4,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4144,
+    "87fb9287c0e48711"
+  ]
+}

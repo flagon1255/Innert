@@ -1,0 +1,37 @@
+{
+  "what": "Scepter, binding: Feather Charm",
+  "voxels_per_meter": 192.0,
+  "size": [
+    8,
+    6,
+    28
+  ],
+  "pivot": [
+    3.2609032258064508,
+    3.2609032258064508,
+    -112.34296774193548
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    112
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.22499999999999998
+    ],
+    "tip": [
+      0.03387096774193549,
+      0.0,
+      0.8080645161290322
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1733,
+    "25fc7a5cea95e7d6"
+  ]
+}

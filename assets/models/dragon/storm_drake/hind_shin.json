@@ -1,0 +1,29 @@
+{
+  "what": "Thunder Drake, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    15
+  ],
+  "pivot": [
+    2.5943806872031967,
+    2.072,
+    13.329052520751754
+  ],
+  "anchor": [
+    0.1191012070498002,
+    0.026749999999999996,
+    -0.8330657825469846
+  ],
+  "origin": [
+    -3,
+    -2,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1724,
+    "06082f289a9539cb"
+  ]
+}

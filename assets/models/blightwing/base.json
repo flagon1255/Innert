@@ -1,0 +1,25 @@
+{
+  "what": "Blightwing, standing frame (1 of 41 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    72,
+    20,
+    5
+  ],
+  "pivot": [
+    36.0,
+    10.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -36,
+    -10,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    3551,
+    "a1bda4d307057c59"
+  ]
+}

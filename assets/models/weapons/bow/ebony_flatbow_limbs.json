@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Ebony Flatbow",
+  "voxels_per_meter": 160.0,
+  "size": [
+    19,
+    9,
+    187
+  ],
+  "pivot": [
+    15.44,
+    4.73024,
+    1.5149714285714282
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -5,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.575
+    ],
+    "nock_1": [
+      -0.09,
+      0.0,
+      0.605
+    ],
+    "nock_2": [
+      -0.237,
+      0.0,
+      0.605
+    ],
+    "nock_3": [
+      -0.384,
+      0.0,
+      0.605
+    ],
+    "tip": [
+      -0.09,
+      0.0,
+      0.605
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    17954,
+    "a1e01b6dd626cd3d"
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "what": "Blunderbuss, barrel: Sunderer Barrel, frame 3 of 3",
+  "voxels_per_meter": 144.0,
+  "size": [
+    79,
+    2,
+    2
+  ],
+  "pivot": [
+    -49.61376000000001,
+    0.9676800000000001,
+    0.9676800000000001
+  ],
+  "anchor": null,
+  "origin": [
+    50,
+    -1,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.265,
+      0.0,
+      -0.022
+    ],
+    "mover_handle": [
+      0.8900000000000001,
+      0.0,
+      0.0
+    ],
+    "mover_pivot": [
+      0.8900000000000001,
+      0.0,
+      0.0
+    ],
+    "support": [
+      0.549,
+      0.0,
+      -0.032799999999999996
+    ],
+    "tip": [
+      0.8900000000000001,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2360,
+    "e868a27b288bbc2b"
+  ]
+}

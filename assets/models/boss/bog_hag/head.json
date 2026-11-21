@@ -1,0 +1,29 @@
+{
+  "what": "Mire Crone, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    8,
+    16
+  ],
+  "pivot": [
+    3.5839999999999996,
+    3.856,
+    9.68
+  ],
+  "anchor": [
+    0.08850000000000002,
+    0.009000000000000008,
+    -0.605
+  ],
+  "origin": [
+    -4,
+    -4,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2068,
+    "0bbc0d7a21e28930"
+  ]
+}

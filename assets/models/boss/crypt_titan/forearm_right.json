@@ -1,0 +1,29 @@
+{
+  "what": "Crypt Titan, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    20
+  ],
+  "pivot": [
+    2.2,
+    2.2,
+    17.16
+  ],
+  "anchor": [
+    0.01874999999999999,
+    0.01874999999999999,
+    -1.0725
+  ],
+  "origin": [
+    -2,
+    -2,
+    -17
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1988,
+    "bed67b93b32166ec"
+  ]
+}

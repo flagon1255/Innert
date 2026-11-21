@@ -1,0 +1,29 @@
+{
+  "what": "Coil Unending, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    106,
+    59,
+    59
+  ],
+  "pivot": [
+    32.52,
+    29.016,
+    19.095999999999997
+  ],
+  "anchor": [
+    1.2799999999999998,
+    0.03025000000000011,
+    -1.1934999999999998
+  ],
+  "origin": [
+    -33,
+    -29,
+    -19
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    341281,
+    "a2e86be8e74d3b00"
+  ]
+}

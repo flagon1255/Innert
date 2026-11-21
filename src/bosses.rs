@@ -941,7 +941,6 @@ fn reel_at(look: Look) -> f64 {
 
 /// Seconds `look` takes to get ready for move `m`, to make it and to get over it, as it does
 /// when it's not angry, for posing it
-#[cfg(test)]
 pub fn timing(look: Look, m: Move) -> (f64, f64, f64) {
     (windup(look, m), duration(look, m), recovery(look, m))
 }
@@ -974,7 +973,6 @@ pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
 }
 
 /// The moves `look` makes in a fight, for trying each of them out
-#[cfg(test)]
 pub fn repertoire(look: Look) -> Vec<Move> {
     let boss = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
     let mut moves: Vec<Move> = boss.menu().iter().map(|&(m, _, _)| m).collect();

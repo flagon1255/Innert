@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, fore shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    10,
+    31
+  ],
+  "pivot": [
+    6.412244009263568,
+    4.740480000000001,
+    26.429190517853776
+  ],
+  "anchor": [
+    0.192984749421027,
+    0.016219999999999957,
+    -1.651824407365861
+  ],
+  "origin": [
+    -6,
+    -5,
+    -26
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7005,
+    "0e808ad0d3580e4b"
+  ]
+}

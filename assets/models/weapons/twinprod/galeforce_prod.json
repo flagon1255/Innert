@@ -1,0 +1,67 @@
+{
+  "what": "Twin-Prod Crossbow, prod: Galeforce Prod",
+  "voxels_per_meter": 128.0,
+  "size": [
+    11,
+    83,
+    10
+  ],
+  "pivot": [
+    -79.696,
+    41.66907949131529,
+    1.4640000000000004
+  ],
+  "anchor": null,
+  "origin": [
+    80,
+    -42,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.23919999999999997,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.2,
+      0.08,
+      -0.092
+    ],
+    "mover_pivot": [
+      0.2,
+      0.05,
+      -0.022
+    ],
+    "nock_1": [
+      0.6516129032258065,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.4757290322580645,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.3192,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.5392,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.77,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    6729,
+    "6f86edd2919c46de"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Hive Jar",
+  "voxels_per_meter": 192.0,
+  "size": [
+    27,
+    27,
+    36
+  ],
+  "pivot": [
+    13.434595952509596,
+    13.23712,
+    0.053760000000000474
+  ],
+  "anchor": null,
+  "origin": [
+    -13,
+    -13,
+    0
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.036300000000000006
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.2436
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    40004,
+    "f1cd5cbabd9dca67"
+  ]
+}

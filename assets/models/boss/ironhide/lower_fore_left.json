@@ -1,0 +1,29 @@
+{
+  "what": "Ironhide, lower fore left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    10,
+    18
+  ],
+  "pivot": [
+    4.48,
+    4.928000000000001,
+    12.928
+  ],
+  "anchor": [
+    0.06374999999999997,
+    0.0044999999999999485,
+    -0.808
+  ],
+  "origin": [
+    -4,
+    -5,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4888,
+    "a62f7681a827470e"
+  ]
+}

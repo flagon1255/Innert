@@ -1,0 +1,29 @@
+{
+  "what": "ashwing, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    4,
+    12
+  ],
+  "pivot": [
+    2.1618312978486127,
+    1.76,
+    10.419271169809042
+  ],
+  "anchor": [
+    0.0836355438844617,
+    0.015,
+    -0.6512044481130651
+  ],
+  "origin": [
+    -2,
+    -2,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1468,
+    "2d30911bc58ab9c5"
+  ]
+}

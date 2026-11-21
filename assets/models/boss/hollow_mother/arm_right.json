@@ -1,0 +1,29 @@
+{
+  "what": "Hollow Mother, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    20
+  ],
+  "pivot": [
+    1.288,
+    1.288,
+    18.216
+  ],
+  "anchor": [
+    0.013249999999999998,
+    0.013249999999999998,
+    -1.1385
+  ],
+  "origin": [
+    -1,
+    -1,
+    -18
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1588,
+    "d831c076e35b0423"
+  ]
+}

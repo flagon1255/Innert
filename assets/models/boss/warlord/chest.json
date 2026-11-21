@@ -1,0 +1,29 @@
+{
+  "what": "Bandit Warlord, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    20,
+    37
+  ],
+  "pivot": [
+    7.8132,
+    9.792000000000002,
+    20.400000000000002
+  ],
+  "anchor": [
+    -0.11332500000000001,
+    0.0129999999999999,
+    -1.2750000000000001
+  ],
+  "origin": [
+    -8,
+    -10,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    8509,
+    "0d8e57c9174088db"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Pyre Matriarch, tail 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    54,
+    21,
+    15
+  ],
+  "pivot": [
+    48.04800000000001,
+    10.032,
+    5.802643279747601
+  ],
+  "anchor": [
+    -1.3155000000000006,
+    0.029249999999999998,
+    -0.36266520498422505
+  ],
+  "origin": [
+    -48,
+    -10,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    10793,
+    "3892fd00b155f75b"
+  ]
+}

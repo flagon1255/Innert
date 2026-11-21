@@ -1,0 +1,29 @@
+{
+  "what": "Alpha Direwolf, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    9,
+    15
+  ],
+  "pivot": [
+    4.368,
+    4.368,
+    4.704000000000001
+  ],
+  "anchor": [
+    0.16449999999999998,
+    0.00824999999999998,
+    -0.29400000000000004
+  ],
+  "origin": [
+    -4,
+    -4,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2979,
+    "25ebe29317ceb573"
+  ]
+}

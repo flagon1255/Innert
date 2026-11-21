@@ -1,0 +1,37 @@
+{
+  "what": "Scepter, shaft: Splashing Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    6,
+    6,
+    143
+  ],
+  "pivot": [
+    2.9952000000000005,
+    3.3599999999999994,
+    1.5344000000000007
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.22499999999999998
+    ],
+    "tip": [
+      0.035,
+      0.0,
+      0.81
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    8856,
+    "a62c89da9a579a40"
+  ]
+}

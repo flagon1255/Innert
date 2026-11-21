@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, wing left outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    28,
+    3
+  ],
+  "pivot": [
+    19.856,
+    1.0735360000000007,
+    0.9359999999999998
+  ],
+  "anchor": [
+    -0.5847500000000001,
+    0.807904,
+    -0.05849999999999999
+  ],
+  "origin": [
+    -20,
+    -1,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3234,
+    "e227d7e897b9d882"
+  ]
+}

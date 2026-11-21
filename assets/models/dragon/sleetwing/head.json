@@ -1,0 +1,29 @@
+{
+  "what": "sleetwing, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    16,
+    7,
+    9
+  ],
+  "pivot": [
+    6.4959999999999996,
+    3.3440000000000003,
+    2.316
+  ],
+  "anchor": [
+    0.09400000000000003,
+    0.009749999999999981,
+    -0.14475
+  ],
+  "origin": [
+    -6,
+    -3,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1739,
+    "ab58d91148db6540"
+  ]
+}

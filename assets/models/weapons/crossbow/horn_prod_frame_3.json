@@ -1,0 +1,67 @@
+{
+  "what": "Crossbow, prod: Horn Prod, frame 3 of 4",
+  "voxels_per_meter": 128.0,
+  "size": [
+    48,
+    78,
+    6
+  ],
+  "pivot": [
+    -37.696,
+    38.8352,
+    2.4640000000000004
+  ],
+  "anchor": null,
+  "origin": [
+    38,
+    -39,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.2224,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.14239999999999997,
+      0.0,
+      0.04
+    ],
+    "mover_pivot": [
+      0.39239999999999997,
+      0.0,
+      0.03
+    ],
+    "nock_1": [
+      0.5989,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.43843,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.3024,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.5224,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.73,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5740,
+    "811d58d3a8fcb2b4"
+  ]
+}

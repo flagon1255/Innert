@@ -1477,26 +1477,34 @@ pub struct Part {
     material: u8,
     /// Darker bands across the body, every few voxels along x
     stripes: u8,
+    /// What it's part of, for telling a weapon's parts apart in its model, see voxelize_tagged()
+    tag: u8,
 }
 
 pub fn ball(c: Vec3, r: f64, material: u8) -> Part {
-    Part { a: c, b: c, ra: r, rb: r, stretch: [1.0; 3], boxed: false, material, stripes: AIR }
+    Part { a: c, b: c, ra: r, rb: r, stretch: [1.0; 3], boxed: false, material, stripes: AIR, tag: 0 }
 }
 
 pub fn ellipsoid(c: Vec3, radii: Vec3, material: u8) -> Part {
     let r = radii[0].min(radii[1]).min(radii[2]);
-    Part { a: c, b: c, ra: r, rb: r, stretch: radii.map(|v| v / r), boxed: false, material, stripes: AIR }
+    Part { a: c, b: c, ra: r, rb: r, stretch: radii.map(|v| v / r), boxed: false, material, stripes: AIR, tag: 0 }
 }
 
 pub fn limb(a: Vec3, b: Vec3, ra: f64, rb: f64, material: u8) -> Part {
-    Part { a, b, ra, rb, stretch: [1.0; 3], boxed: false, material, stripes: AIR }
+    Part { a, b, ra, rb, stretch: [1.0; 3], boxed: false, material, stripes: AIR, tag: 0 }
 }
 
 pub fn cuboid(lo: Vec3, hi: Vec3, material: u8) -> Part {
-    Part { a: lo, b: hi, ra: 0.0, rb: 0.0, stretch: [1.0; 3], boxed: true, material, stripes: AIR }
+    Part { a: lo, b: hi, ra: 0.0, rb: 0.0, stretch: [1.0; 3], boxed: true, material, stripes: AIR, tag: 0 }
 }
 
 impl Part {
+    /// Tagged `tag`, see voxelize_tagged()
+    pub fn tagged(mut self, tag: u8) -> Self {
+        self.tag = tag;
+        self
+    }
+
     pub(crate) fn striped(mut self, stripes: u8) -> Self {
         self.stripes = stripes;
         self
@@ -2809,6 +2817,12 @@ pub struct Model {
 /// they're placed. Returns where the shader puts the model in the world, the middle of its bottom,
 /// in the same meters as the shapes.
 pub fn voxelize(parts: &[Part], res: f64) -> (Model, Vector3<f64>) {
+    let (model, anchor, _) = voxelize_tagged(parts, res);
+    (model, anchor)
+}
+
+/// The same, with the tag of the shape each voxel was taken by, see Part::tagged(), 0 for air
+pub fn voxelize_tagged(parts: &[Part], res: f64) -> (Model, Vector3<f64>, Vec<u8>) {
     let parts: Vec<Part> = parts.iter().map(|p| p.thickened(res)).collect();
     let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
     for part in &parts {
@@ -2822,6 +2836,7 @@ pub fn voxelize(parts: &[Part], res: f64) -> (Model, Vector3<f64>) {
     let mut voxels = vec![AIR; (size[0] * size[1] * size[2]) as usize];
     // Each shape only looks at the voxels around it, and takes those no earlier shape took
     let mut taken = vec![false; voxels.len()];
+    let mut tags = vec![0u8; voxels.len()];
     for part in &parts {
         let (a, b) = part.reach();
         let from = [0, 1, 2].map(|i| (((a[i] - lo[i]) * res - 0.5).floor().max(0.0) as u32).min(size[i]));
@@ -2834,13 +2849,14 @@ pub fn voxelize(parts: &[Part], res: f64) -> (Model, Vector3<f64>) {
                     if !taken[i] && part.contains(p) {
                         taken[i] = true;
                         voxels[i] = part.material;
+                        tags[i] = part.tag;
                     }
                 }
             }
         }
     }
     let anchor = Vector3::new(lo[0] + size[0] as f64 * 0.5 / res, lo[1] + size[1] as f64 * 0.5 / res, lo[2]);
-    (Model { size, voxels }, anchor)
+    (Model { size, voxels }, anchor, tags)
 }
 
 fn rasterize(look: Look, phase: Option<f64>, pose: Pose) -> Model {

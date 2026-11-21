@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, wing left outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    69,
+    147,
+    9
+  ],
+  "pivot": [
+    64.48,
+    4.514461538461546,
+    3.599999999999999
+  ],
+  "anchor": [
+    -1.8737500000000002,
+    4.311596153846153,
+    -0.22499999999999995
+  ],
+  "origin": [
+    -64,
+    -5,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    106370,
+    "88aed7f770a806c2"
+  ]
+}

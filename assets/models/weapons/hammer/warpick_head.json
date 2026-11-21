@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, blade: Warpick Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    67,
+    25,
+    46
+  ],
+  "pivot": [
+    33.712,
+    12.441600000000001,
+    -126.0
+  ],
+  "anchor": null,
+  "origin": [
+    -34,
+    -12,
+    126
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.1,
+      0.0,
+      0.7336
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    110970,
+    "c6c1253d9e1b1cc5"
+  ]
+}

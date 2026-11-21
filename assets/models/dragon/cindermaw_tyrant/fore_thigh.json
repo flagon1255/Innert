@@ -1,0 +1,29 @@
+{
+  "what": "Cindermaw Tyrant, fore thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    19,
+    39
+  ],
+  "pivot": [
+    9.008639999999996,
+    9.008639999999998,
+    29.680639999999997
+  ],
+  "anchor": [
+    0.09321000000000024,
+    0.030710000000000126,
+    -1.8550399999999998
+  ],
+  "origin": [
+    -9,
+    -9,
+    -30
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    26841,
+    "6488596b3768df54"
+  ]
+}

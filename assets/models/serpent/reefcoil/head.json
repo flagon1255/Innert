@@ -1,0 +1,29 @@
+{
+  "what": "Reefcoil, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    72,
+    40,
+    35
+  ],
+  "pivot": [
+    18.24,
+    19.6992,
+    14.783999999999999
+  ],
+  "anchor": [
+    1.11,
+    0.018799999999999928,
+    -0.9239999999999999
+  ],
+  "origin": [
+    -18,
+    -20,
+    -15
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    147332,
+    "71e58a5032fe4722"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Maul, blade: Anvil Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    117,
+    36,
+    57
+  ],
+  "pivot": [
+    71.248,
+    17.856,
+    -153.0
+  ],
+  "anchor": null,
+  "origin": [
+    -71,
+    -18,
+    153
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.28509999999999996
+    ],
+    "tip": [
+      0.23,
+      0.0,
+      0.9875999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    381427,
+    "959562151d42823f"
+  ]
+}

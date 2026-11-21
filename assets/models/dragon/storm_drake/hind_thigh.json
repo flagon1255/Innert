@@ -1,0 +1,29 @@
+{
+  "what": "Thunder Drake, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    5,
+    14
+  ],
+  "pivot": [
+    2.496,
+    2.496,
+    11.232000000000001
+  ],
+  "anchor": [
+    0.0315,
+    0.0002500000000000002,
+    -0.7020000000000001
+  ],
+  "origin": [
+    -2,
+    -2,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2000,
+    "9e7f4d3e90dab611"
+  ]
+}

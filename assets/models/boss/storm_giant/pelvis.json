@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    24,
+    15
+  ],
+  "pivot": [
+    9.239999999999998,
+    11.616,
+    8.712
+  ],
+  "anchor": [
+    0.016250000000000098,
+    0.02400000000000002,
+    -0.5445
+  ],
+  "origin": [
+    -9,
+    -12,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    14360,
+    "e4ebded99baef50f"
+  ]
+}

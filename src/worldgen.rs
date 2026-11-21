@@ -9,6 +9,8 @@ mod castles;
 mod dragonlair;
 mod towns;
 mod trees;
+/// The trees' numbers, see assets	rees.json
+pub use trees::{TreeBook, book_path as trees_path, reload_trees};
 mod undercity;
 
 pub use aeries::{SHRINE, SHRINE_KEY, aeries, way_up as way_up_to_shrine};
@@ -546,6 +548,19 @@ impl World {
     /// A world `size` voxels across that moves on over the landscape a strip at a time, with room
     /// for `strip` columns more along x and y for the next strip to come in, see install(). Empty
     /// at `origin` till the strips of it are put in.
+    /// Nothing but a floor a brick thick, checkered a brick to a square in `light` and `dark`: the
+    /// model editor's studio, see src\editor.rs
+    pub fn studio(size: [u32; 3], light: u8, dark: u8, voxels_per_meter: u32) -> Self {
+        let [bx, by, bz] = size.map(|n| n as usize / 8);
+        let mut grid = vec![0u32; bx * by * bz];
+        for y in 0..by {
+            for x in 0..bx {
+                grid[x + y * bx] = SOLID_BRICK | if (x + y) % 2 == 0 { light } else { dark } as u32;
+            }
+        }
+        World::new(size, [0; 3], grid, Vec::new(), voxels_per_meter)
+    }
+
     pub fn window(size: [u32; 3], strip: u32, origin: [i64; 2], voxels_per_meter: u32, sea_level: Option<f32>) -> Self {
         let phys = [size[0] + strip, size[1] + strip];
         let cells = (phys[0] / 8) as usize * (phys[1] / 8) as usize * (size[2] / 8) as usize;

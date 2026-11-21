@@ -1,0 +1,37 @@
+{
+  "what": "Katana, hilt: Hilt of the Fallen King",
+  "voxels_per_meter": 192.0,
+  "size": [
+    8,
+    8,
+    60
+  ],
+  "pivot": [
+    4.384,
+    4.032,
+    -0.5375999999999994
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.15560000000000002
+    ],
+    "tip": [
+      0.0238,
+      0.0,
+      1.0695999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    10564,
+    "d5cfd2cc83a6b187"
+  ]
+}

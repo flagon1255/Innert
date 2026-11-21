@@ -1,0 +1,29 @@
+{
+  "what": "Skyhunter, thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    4,
+    8
+  ],
+  "pivot": [
+    5.138880003576614,
+    1.8,
+    6.352376966877578
+  ],
+  "anchor": [
+    -0.10243000022353838,
+    0.012499999999999997,
+    -0.3970235604298486
+  ],
+  "origin": [
+    -5,
+    -2,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1369,
+    "70b68e9fddbb0976"
+  ]
+}

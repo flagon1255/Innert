@@ -1,0 +1,25 @@
+{
+  "what": "Belfry Grotesque, standing frame (1 of 30 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    13,
+    12
+  ],
+  "pivot": [
+    4.5,
+    6.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -7,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    2981,
+    "4579ba6bb2683e95"
+  ]
+}

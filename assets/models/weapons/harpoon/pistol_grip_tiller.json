@@ -1,0 +1,67 @@
+{
+  "what": "Harpoon Crossbow, stock: Pistol-Grip Tiller",
+  "voxels_per_meter": 128.0,
+  "size": [
+    91,
+    9,
+    23
+  ],
+  "pivot": [
+    -13.823999999999998,
+    4.922799999999995,
+    21.887999999999998
+  ],
+  "anchor": null,
+  "origin": [
+    14,
+    -5,
+    -22
+  ],
+  "points": {
+    "grip": [
+      0.25439999999999996,
+      0.0,
+      -0.085
+    ],
+    "mover_handle": [
+      0.4844,
+      0.07,
+      -0.14
+    ],
+    "mover_pivot": [
+      0.4844,
+      0.055,
+      -0.075
+    ],
+    "nock_1": [
+      0.677741935483871,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.49461935483870967,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.3444,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.5644,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.83,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    13219,
+    "b4c9637b95e55947"
+  ]
+}

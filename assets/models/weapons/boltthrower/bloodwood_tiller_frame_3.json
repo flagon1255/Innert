@@ -1,0 +1,67 @@
+{
+  "what": "Bolt-Thrower, stock: Bloodwood Tiller, frame 3 of 4",
+  "voxels_per_meter": 128.0,
+  "size": [
+    118,
+    48,
+    16
+  ],
+  "pivot": [
+    2.304000000000002,
+    23.889999999999993,
+    14.464
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    -24,
+    -14
+  ],
+  "points": {
+    "grip": [
+      0.28,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.16,
+      0.16,
+      -0.03
+    ],
+    "mover_pivot": [
+      0.7200000000000001,
+      0.16,
+      -0.03
+    ],
+    "nock_1": [
+      0.720967741935484,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.5166774193548388,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.36000000000000004,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.5800000000000001,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.91,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    43917,
+    "0385a241d135a60c"
+  ]
+}

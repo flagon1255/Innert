@@ -1,0 +1,29 @@
+{
+  "what": "Ember Drake, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    11,
+    11
+  ],
+  "pivot": [
+    8.208,
+    5.088,
+    2.904
+  ],
+  "anchor": [
+    0.14325,
+    0.025749999999999995,
+    -0.1815
+  ],
+  "origin": [
+    -8,
+    -5,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2463,
+    "272e41bd5ab83d17"
+  ]
+}

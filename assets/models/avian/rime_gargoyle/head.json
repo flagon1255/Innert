@@ -1,0 +1,29 @@
+{
+  "what": "Rimestone gargoyle, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    8,
+    8
+  ],
+  "pivot": [
+    3.6000000000000005,
+    3.7439999999999998,
+    2.3040000000000003
+  ],
+  "anchor": [
+    0.08749999999999997,
+    0.016000000000000014,
+    -0.14400000000000002
+  ],
+  "origin": [
+    -4,
+    -4,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1571,
+    "00cbdeaa19afc50c"
+  ]
+}

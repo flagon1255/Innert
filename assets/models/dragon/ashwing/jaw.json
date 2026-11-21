@@ -1,0 +1,29 @@
+{
+  "what": "ashwing, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    4,
+    4
+  ],
+  "pivot": [
+    1.2799999999999998,
+    1.52,
+    1.6
+  ],
+  "anchor": [
+    0.2325,
+    0.03,
+    -0.1
+  ],
+  "origin": [
+    -1,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1435,
+    "f8b9f3704398e074"
+  ]
+}

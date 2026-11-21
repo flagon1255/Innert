@@ -1,0 +1,29 @@
+{
+  "what": "Pyre Matriarch, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    11,
+    38
+  ],
+  "pivot": [
+    5.814043282900423,
+    5.03712,
+    33.06359486036983
+  ],
+  "anchor": [
+    0.26162229481872357,
+    0.02893000000000001,
+    -2.0664746787731145
+  ],
+  "origin": [
+    -6,
+    -5,
+    -33
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    8645,
+    "f524c13dee24dbf7"
+  ]
+}

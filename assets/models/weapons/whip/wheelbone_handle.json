@@ -1,0 +1,42 @@
+{
+  "what": "Whip, handle: Wheelbone Handle",
+  "voxels_per_meter": 192.0,
+  "size": [
+    12,
+    7,
+    55
+  ],
+  "pivot": [
+    5.819166045610595,
+    3.4559999999999995,
+    1.5920684693414964
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -3,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.16419999999999998
+    ],
+    "lash_root": [
+      0.0,
+      0.0,
+      0.31920000000000004
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.31920000000000004
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    7912,
+    "4b1f7f4bb106d618"
+  ]
+}

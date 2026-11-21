@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, thigh left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    21
+  ],
+  "pivot": [
+    1.1264,
+    1.1264,
+    19.782400000000003
+  ],
+  "anchor": [
+    0.023349999999999996,
+    0.023349999999999996,
+    -1.2364000000000002
+  ],
+  "origin": [
+    -1,
+    -1,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1581,
+    "71bac6820e61ff66"
+  ]
+}

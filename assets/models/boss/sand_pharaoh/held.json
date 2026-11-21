@@ -1,0 +1,29 @@
+{
+  "what": "Sunken Pharaoh, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    7,
+    41
+  ],
+  "pivot": [
+    1.8559999999999999,
+    3.016,
+    22.064
+  ],
+  "anchor": [
+    0.009000000000000008,
+    0.03025,
+    -1.379
+  ],
+  "origin": [
+    -2,
+    -3,
+    -22
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1688,
+    "44629363536db4e4"
+  ]
+}

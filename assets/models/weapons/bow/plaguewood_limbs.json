@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Plaguewood Limbs",
+  "voxels_per_meter": 160.0,
+  "size": [
+    15,
+    8,
+    197
+  ],
+  "pivot": [
+    11.790666448979588,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -12,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.6
+    ],
+    "nock_1": [
+      -0.02999999999999997,
+      0.0,
+      0.63
+    ],
+    "nock_2": [
+      -0.15899999999999997,
+      0.0,
+      0.63
+    ],
+    "nock_3": [
+      -0.2879999999999999,
+      0.0,
+      0.63
+    ],
+    "tip": [
+      -0.02999999999999997,
+      0.0,
+      0.63
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    14933,
+    "e82dc2b4819adfc4"
+  ]
+}

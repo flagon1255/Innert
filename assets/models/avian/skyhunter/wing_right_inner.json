@@ -1,0 +1,29 @@
+{
+  "what": "Skyhunter, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    11,
+    2
+  ],
+  "pivot": [
+    6.872228571428571,
+    10.08,
+    0.84
+  ],
+  "anchor": [
+    -0.14826428571428568,
+    -0.28625,
+    -0.0525
+  ],
+  "origin": [
+    -7,
+    -10,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1641,
+    "2e1168cd790ed7e0"
+  ]
+}

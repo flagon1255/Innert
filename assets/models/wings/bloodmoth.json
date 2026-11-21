@@ -1,0 +1,29 @@
+{
+  "what": "Bloodmoth Wings",
+  "voxels_per_meter": 96.0,
+  "size": [
+    148,
+    118,
+    8
+  ],
+  "pivot": [
+    26.208,
+    89.42399999999999,
+    3.5999999999999996
+  ],
+  "anchor": [
+    0.49783333333333335,
+    -0.3169166666666666,
+    -0.0375
+  ],
+  "origin": [
+    -26,
+    -89,
+    -4
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    131142,
+    "b08ba9c1b40e20d5"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Cinderwing",
+  "voxels_per_meter": 96.0,
+  "size": [
+    138,
+    87,
+    7
+  ],
+  "pivot": [
+    6.8359077199340135,
+    72.01985227989407,
+    3.4559999999999995
+  ],
+  "anchor": [
+    0.6475426279173541,
+    -0.29708179458222983,
+    -0.036
+  ],
+  "origin": [
+    -7,
+    -72,
+    -3
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    82326,
+    "b8dfa86ba54beb50"
+  ]
+}

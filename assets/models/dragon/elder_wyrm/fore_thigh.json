@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, fore thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    12,
+    27
+  ],
+  "pivot": [
+    5.9904,
+    5.9904,
+    20.5824
+  ],
+  "anchor": [
+    0.06309999999999999,
+    0.0005999999999999894,
+    -1.2864
+  ],
+  "origin": [
+    -6,
+    -6,
+    -21
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    9036,
+    "7c08b2bb4cfe6a40"
+  ]
+}

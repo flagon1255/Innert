@@ -873,10 +873,12 @@ fn parts_made() -> &'static (Vec<Model>, Vec<Shape>) {
             sets.push(jaw(g, skin));
             sets.push(piece(g, skin));
         }
-        let made: Vec<(Model, Vector3<f64>)> = std::thread::scope(|scope| {
+        let mut made: Vec<(Model, Vector3<f64>)> = std::thread::scope(|scope| {
             let handles: Vec<_> = sets.iter().map(|parts| scope.spawn(move || voxelize(parts, crate::animals::MODEL_RES))).collect();
             handles.into_iter().map(|h| h.join().expect("making a serpent's model failed")).collect()
         });
+        // Pieces drawn from files in assets\models, see src\assets.rs
+        crate::assets::serpents(&mut made);
         let shapes = made
             .iter()
             .map(|(model, anchor)| {
@@ -888,6 +890,12 @@ fn parts_made() -> &'static (Vec<Model>, Vec<Shape>) {
             .collect();
         (made.into_iter().map(|(model, _)| model).collect(), shapes)
     })
+}
+
+/// Where each of the great serpents' models has the middle of its bottom, from the point it's made
+/// round, in meters: for the model files, see src\assets.rs
+pub fn anchors() -> Vec<Vector3<f64>> {
+    parts_made().1.iter().map(|s| s.anchor).collect()
 }
 
 /// The great serpents' models, to go after the animals' own, see animals::animal_models()

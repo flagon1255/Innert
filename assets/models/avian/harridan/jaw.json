@@ -1,0 +1,29 @@
+{
+  "what": "Harridan, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    4,
+    3
+  ],
+  "pivot": [
+    0.4800000000000002,
+    1.7600000000000002,
+    1.056
+  ],
+  "anchor": [
+    0.09499999999999999,
+    0.014999999999999986,
+    -0.066
+  ],
+  "origin": [
+    0,
+    -2,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1303,
+    "7a8040b6290f6f60"
+  ]
+}

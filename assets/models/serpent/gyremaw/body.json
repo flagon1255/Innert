@@ -1,0 +1,29 @@
+{
+  "what": "Gyremaw, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    60,
+    40,
+    55
+  ],
+  "pivot": [
+    29.6,
+    19.968,
+    21.12
+  ],
+  "anchor": [
+    0.02499999999999991,
+    0.0020000000000000018,
+    -1.32
+  ],
+  "origin": [
+    -30,
+    -20,
+    -21
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    225415,
+    "3f9281b67705a71b"
+  ]
+}

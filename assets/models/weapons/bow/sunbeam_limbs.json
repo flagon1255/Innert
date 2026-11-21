@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Sunbeam Limbs",
+  "voxels_per_meter": 160.0,
+  "size": [
+    23,
+    8,
+    221
+  ],
+  "pivot": [
+    20.0,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -20,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.675
+    ],
+    "nock_1": [
+      -0.11,
+      0.0,
+      0.7050000000000001
+    ],
+    "nock_2": [
+      -0.263,
+      0.0,
+      0.7050000000000001
+    ],
+    "nock_3": [
+      -0.41600000000000004,
+      0.0,
+      0.7050000000000001
+    ],
+    "tip": [
+      -0.11,
+      0.0,
+      0.7050000000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    17646,
+    "d5936ac31ad469c3"
+  ]
+}
