@@ -1544,6 +1544,15 @@ weapons/sword/gilt_sickle_sword.vox: Sword, blade: Gilt Sickle-Sword
 weapons/sword/moonwake_blade.vox: Sword, blade: Moonwake Blade
 weapons/sword/phantomstep_sabre.vox: Sword, blade: Phantomstep Sabre
 weapons/sword/hurled_moon_blade.vox: Sword, blade: Moonreturn Blade
+weapons/sword/scimitar_blade.vox: Sword, blade: Scimitar Blade
+weapons/sword/damascus_blade.vox: Sword, blade: Damascus Blade
+weapons/sword/sawback_blade.vox: Sword, blade: Sawback Blade
+weapons/sword/khopesh_blade.vox: Sword, blade: Khopesh Blade
+weapons/sword/macuahuitl_blade.vox: Sword, blade: Macuahuitl
+weapons/sword/crystal_shard_blade.vox: Sword, blade: Crystal Shard
+weapons/sword/veinsteel_blade.vox: Sword, blade: Veinsteel Blade
+weapons/sword/gilt_scimitar.vox: Sword, blade: Gilt Scimitar
+weapons/sword/galecaller_edge.vox: Sword, blade: Galecaller Edge
 weapons/sword/leather_grip.vox: Sword, hilt: Leather Grip
 weapons/sword/wooden_hilt.vox: Sword, hilt: Wooden Hilt
 weapons/sword/wrapped_grip.vox: Sword, hilt: Wrapped Grip
@@ -1560,6 +1569,11 @@ weapons/sword/wheel_pommel_grip.vox: Sword, hilt: Wheel-Pommel Grip
 weapons/sword/ebony_crescent_hilt.vox: Sword, hilt: Ebony Crescent Hilt
 weapons/sword/fanged_bone_hilt.vox: Sword, hilt: Fanged Bone Hilt
 weapons/sword/faceted_obsidian_hilt.vox: Sword, hilt: Faceted Obsidian Hilt
+weapons/sword/knuckled_bone_grip.vox: Sword, hilt: Bone Grip
+weapons/sword/spiral_cord_grip.vox: Sword, hilt: Spiral Cord Grip
+weapons/sword/ribbed_grip.vox: Sword, hilt: Ribbed Grip
+weapons/sword/obsidian_claw_grip.vox: Sword, hilt: Obsidian Claw Grip
+weapons/sword/runed_bone_grip.vox: Sword, hilt: Runed Bone Grip
 weapons/sword/iron_crossguard.vox: Sword, guard: Iron Crossguard
 weapons/sword/bar_guard.vox: Sword, guard: Bar Guard
 weapons/sword/disc_guard.vox: Sword, guard: Disc Guard
@@ -1580,6 +1594,10 @@ weapons/sword/shell_guard.vox: Sword, guard: Shell Guard
 weapons/sword/serpent_guard.vox: Sword, guard: Serpent Guard
 weapons/sword/spiked_guard.vox: Sword, guard: Spiked Guard
 weapons/sword/gilded_crescent_guard.vox: Sword, guard: Gilded Crescent Guard
+weapons/sword/steel_basket_hilt.vox: Sword, guard: Steel Basket
+weapons/sword/knuckle_bow_guard.vox: Sword, guard: Knuckle Bow
+weapons/sword/sunburst_guard.vox: Sword, guard: Sunburst Guard
+weapons/sword/antler_guard.vox: Sword, guard: Antler Guard
 weapons/sword/iron_core.vox: Sword, core: Iron Core
 weapons/sword/quartz_core.vox: Sword, core: Quartz Core
 weapons/sword/amber_core.vox: Sword, core: Amber Core
@@ -1602,6 +1620,8 @@ weapons/sword/dawnshard_core.vox: Sword, core: Dawnshard Core
 weapons/sword/weeping_core.vox: Sword, core: Weeping Core
 weapons/sword/choir_core.vox: Sword, core: Choir Core
 weapons/sword/crescent_heart.vox: Sword, core: Crescent Heart
+weapons/sword/star_core.vox: Sword, core: Star Core
+weapons/sword/watching_eye_core.vox: Sword, core: Watching Eye
 weapons/axe/iron_axe_head.vox: Axe, blade: Iron Axe Head
 weapons/axe/bearded_axe_head.vox: Axe, blade: Bearded Axe Head
 weapons/axe/double_bit_head.vox: Axe, blade: Double-Bit Head
@@ -1616,6 +1636,11 @@ weapons/axe/bearded_axe_head_2.vox: Axe, blade: Bearded Axe Head
 weapons/axe/rusted_hatchet.vox: Axe, blade: Rusted Hatchet
 weapons/axe/engraved_moon_axe.vox: Axe, blade: Engraved Moon Axe
 weapons/axe/obsidian_beard.vox: Axe, blade: Obsidian Beard
+weapons/axe/dane_axe_head.vox: Axe, blade: Dane Axe Head
+weapons/axe/skeggox_head.vox: Axe, blade: Skeggox Head
+weapons/axe/cinder_dane_head.vox: Axe, blade: Cinder Dane Head
+weapons/axe/labrys_head.vox: Axe, blade: Labrys Head
+weapons/axe/wheel_of_ages_head.vox: Axe, blade: Wheel of Ages
 weapons/axe/leather_grip.vox: Axe, hilt: Leather Grip
 weapons/axe/wooden_hilt.vox: Axe, hilt: Wooden Hilt
 weapons/axe/wrapped_grip.vox: Axe, hilt: Wrapped Grip
@@ -1632,6 +1657,11 @@ weapons/axe/wheel_pommel_grip.vox: Axe, hilt: Wheel-Pommel Grip
 weapons/axe/ebony_crescent_hilt.vox: Axe, hilt: Ebony Crescent Hilt
 weapons/axe/fanged_bone_hilt.vox: Axe, hilt: Fanged Bone Hilt
 weapons/axe/faceted_obsidian_hilt.vox: Axe, hilt: Faceted Obsidian Hilt
+weapons/axe/knuckled_bone_grip.vox: Axe, hilt: Bone Grip
+weapons/axe/spiral_cord_grip.vox: Axe, hilt: Spiral Cord Grip
+weapons/axe/ribbed_grip.vox: Axe, hilt: Ribbed Grip
+weapons/axe/obsidian_claw_grip.vox: Axe, hilt: Obsidian Claw Grip
+weapons/axe/runed_bone_grip.vox: Axe, hilt: Runed Bone Grip
 weapons/axe/iron_core.vox: Axe, core: Iron Core
 weapons/axe/quartz_core.vox: Axe, core: Quartz Core
 weapons/axe/amber_core.vox: Axe, core: Amber Core
@@ -1656,6 +1686,8 @@ weapons/axe/weeping_core.vox: Axe, core: Weeping Core
 weapons/axe/choir_core.vox: Axe, core: Choir Core
 weapons/axe/crescent_heart.vox: Axe, core: Crescent Heart
 weapons/axe/heart_of_the_mountain.vox: Axe, core: Heart of the Mountain
+weapons/axe/star_core.vox: Axe, core: Star Core
+weapons/axe/watching_eye_core.vox: Axe, core: Watching Eye
 weapons/hammer/iron_mallet_head.vox: Hammer, blade: Iron Mallet Head
 weapons/hammer/flanged_mace_head.vox: Hammer, blade: Flanged Mace Head
 weapons/hammer/spiked_maul_head.vox: Hammer, blade: Spiked Maul Head
@@ -1671,6 +1703,11 @@ weapons/hammer/beaked_hammer_head.vox: Hammer, blade: Beaked Hammer Head
 weapons/hammer/morning_star_head.vox: Hammer, blade: Morning Star
 weapons/hammer/ossuary_mace.vox: Hammer, blade: Ossuary Mace
 weapons/hammer/stormanvil_head.vox: Hammer, blade: Stormanvil Head
+weapons/hammer/sledge_head.vox: Hammer, blade: Sledge Head
+weapons/hammer/studded_club_head.vox: Hammer, blade: Studded Club
+weapons/hammer/lucerne_head.vox: Hammer, blade: Lucerne Head
+weapons/hammer/bone_club_head.vox: Hammer, blade: Bone Club
+weapons/hammer/heavenfall_sledge.vox: Hammer, blade: Heavenfall Sledge
 weapons/hammer/leather_grip.vox: Hammer, hilt: Leather Grip
 weapons/hammer/wooden_hilt.vox: Hammer, hilt: Wooden Hilt
 weapons/hammer/wrapped_grip.vox: Hammer, hilt: Wrapped Grip
@@ -1687,6 +1724,11 @@ weapons/hammer/wheel_pommel_grip.vox: Hammer, hilt: Wheel-Pommel Grip
 weapons/hammer/ebony_crescent_hilt.vox: Hammer, hilt: Ebony Crescent Hilt
 weapons/hammer/fanged_bone_hilt.vox: Hammer, hilt: Fanged Bone Hilt
 weapons/hammer/faceted_obsidian_hilt.vox: Hammer, hilt: Faceted Obsidian Hilt
+weapons/hammer/knuckled_bone_grip.vox: Hammer, hilt: Bone Grip
+weapons/hammer/spiral_cord_grip.vox: Hammer, hilt: Spiral Cord Grip
+weapons/hammer/ribbed_grip.vox: Hammer, hilt: Ribbed Grip
+weapons/hammer/obsidian_claw_grip.vox: Hammer, hilt: Obsidian Claw Grip
+weapons/hammer/runed_bone_grip.vox: Hammer, hilt: Runed Bone Grip
 weapons/hammer/iron_core.vox: Hammer, core: Iron Core
 weapons/hammer/quartz_core.vox: Hammer, core: Quartz Core
 weapons/hammer/amber_core.vox: Hammer, core: Amber Core
@@ -1711,6 +1753,8 @@ weapons/hammer/weeping_core.vox: Hammer, core: Weeping Core
 weapons/hammer/choir_core.vox: Hammer, core: Choir Core
 weapons/hammer/heart_of_the_mountain.vox: Hammer, core: Heart of the Mountain
 weapons/hammer/orbit_heart.vox: Hammer, core: Orbit Heart
+weapons/hammer/star_core.vox: Hammer, core: Star Core
+weapons/hammer/watching_eye_core.vox: Hammer, core: Watching Eye
 weapons/dagger/steel_dagger_blade.vox: Dagger, blade: Steel Dagger Blade
 weapons/dagger/bone_shiv.vox: Dagger, blade: Bone Shiv
 weapons/dagger/kris_blade.vox: Dagger, blade: Kris Blade
@@ -1726,6 +1770,12 @@ weapons/dagger/gilded_hookknife.vox: Dagger, blade: Gilded Hook-Knife
 weapons/dagger/jade_leaf_dagger.vox: Dagger, blade: Jade Leaf
 weapons/dagger/rusted_hook_dagger.vox: Dagger, blade: Rusted Hook
 weapons/dagger/gloaming_blade.vox: Dagger, blade: Gloaming Blade
+weapons/dagger/tanto_blade.vox: Dagger, blade: Tanto Blade
+weapons/dagger/beast_fang_blade.vox: Dagger, blade: Beast Fang
+weapons/dagger/sawback_dagger.vox: Dagger, blade: Sawback Dagger
+weapons/dagger/sickle_dagger.vox: Dagger, blade: Sickle Dagger
+weapons/dagger/arcane_shard_dagger.vox: Dagger, blade: Arcane Shard
+weapons/dagger/galefang_blade.vox: Dagger, blade: Galefang
 weapons/dagger/leather_grip.vox: Dagger, hilt: Leather Grip
 weapons/dagger/wooden_hilt.vox: Dagger, hilt: Wooden Hilt
 weapons/dagger/wrapped_grip.vox: Dagger, hilt: Wrapped Grip
@@ -1742,6 +1792,11 @@ weapons/dagger/wheel_pommel_grip.vox: Dagger, hilt: Wheel-Pommel Grip
 weapons/dagger/ebony_crescent_hilt.vox: Dagger, hilt: Ebony Crescent Hilt
 weapons/dagger/fanged_bone_hilt.vox: Dagger, hilt: Fanged Bone Hilt
 weapons/dagger/faceted_obsidian_hilt.vox: Dagger, hilt: Faceted Obsidian Hilt
+weapons/dagger/knuckled_bone_grip.vox: Dagger, hilt: Bone Grip
+weapons/dagger/spiral_cord_grip.vox: Dagger, hilt: Spiral Cord Grip
+weapons/dagger/ribbed_grip.vox: Dagger, hilt: Ribbed Grip
+weapons/dagger/obsidian_claw_grip.vox: Dagger, hilt: Obsidian Claw Grip
+weapons/dagger/runed_bone_grip.vox: Dagger, hilt: Runed Bone Grip
 weapons/dagger/iron_crossguard.vox: Dagger, guard: Iron Crossguard
 weapons/dagger/bar_guard.vox: Dagger, guard: Bar Guard
 weapons/dagger/disc_guard.vox: Dagger, guard: Disc Guard
@@ -1763,6 +1818,10 @@ weapons/dagger/serpent_guard.vox: Dagger, guard: Serpent Guard
 weapons/dagger/spiked_guard.vox: Dagger, guard: Spiked Guard
 weapons/dagger/gilded_crescent_guard.vox: Dagger, guard: Gilded Crescent Guard
 weapons/dagger/nightfan_guard.vox: Dagger, guard: Nightfan Guard
+weapons/dagger/steel_basket_hilt.vox: Dagger, guard: Steel Basket
+weapons/dagger/knuckle_bow_guard.vox: Dagger, guard: Knuckle Bow
+weapons/dagger/sunburst_guard.vox: Dagger, guard: Sunburst Guard
+weapons/dagger/antler_guard.vox: Dagger, guard: Antler Guard
 weapons/dagger/iron_core.vox: Dagger, core: Iron Core
 weapons/dagger/quartz_core.vox: Dagger, core: Quartz Core
 weapons/dagger/amber_core.vox: Dagger, core: Amber Core
@@ -1785,6 +1844,8 @@ weapons/dagger/dawnshard_core.vox: Dagger, core: Dawnshard Core
 weapons/dagger/weeping_core.vox: Dagger, core: Weeping Core
 weapons/dagger/choir_core.vox: Dagger, core: Choir Core
 weapons/dagger/crescent_heart.vox: Dagger, core: Crescent Heart
+weapons/dagger/star_core.vox: Dagger, core: Star Core
+weapons/dagger/watching_eye_core.vox: Dagger, core: Watching Eye
 weapons/spear/leaf_point.vox: Spear, blade: Leaf Point
 weapons/spear/bodkin_point.vox: Spear, blade: Bodkin Point
 weapons/spear/barbed_point.vox: Spear, blade: Barbed Point
@@ -1801,6 +1862,10 @@ weapons/spear/ivory_trident_head.vox: Spear, blade: Ivory Trident
 weapons/spear/earthsplitter_point.vox: Spear, blade: Earthsplitter Point
 weapons/spear/stormspire_point.vox: Spear, blade: Stormspire Point
 weapons/spear/viperfang_point.vox: Spear, blade: Viperfang Point
+weapons/spear/boar_spear_head.vox: Spear, blade: Boar Spear Head
+weapons/spear/partisan_head.vox: Spear, blade: Partisan Head
+weapons/spear/gilded_partisan.vox: Spear, blade: Gilded Partisan
+weapons/spear/heavenpike_head.vox: Spear, blade: Heavenpike
 weapons/spear/leather_grip.vox: Spear, hilt: Leather Grip
 weapons/spear/wooden_hilt.vox: Spear, hilt: Wooden Hilt
 weapons/spear/wrapped_grip.vox: Spear, hilt: Wrapped Grip
@@ -1817,6 +1882,11 @@ weapons/spear/wheel_pommel_grip.vox: Spear, hilt: Wheel-Pommel Grip
 weapons/spear/ebony_crescent_hilt.vox: Spear, hilt: Ebony Crescent Hilt
 weapons/spear/fanged_bone_hilt.vox: Spear, hilt: Fanged Bone Hilt
 weapons/spear/faceted_obsidian_hilt.vox: Spear, hilt: Faceted Obsidian Hilt
+weapons/spear/knuckled_bone_grip.vox: Spear, hilt: Bone Grip
+weapons/spear/spiral_cord_grip.vox: Spear, hilt: Spiral Cord Grip
+weapons/spear/ribbed_grip.vox: Spear, hilt: Ribbed Grip
+weapons/spear/obsidian_claw_grip.vox: Spear, hilt: Obsidian Claw Grip
+weapons/spear/runed_bone_grip.vox: Spear, hilt: Runed Bone Grip
 weapons/spear/iron_core.vox: Spear, core: Iron Core
 weapons/spear/quartz_core.vox: Spear, core: Quartz Core
 weapons/spear/amber_core.vox: Spear, core: Amber Core
@@ -1839,6 +1909,8 @@ weapons/spear/dawnshard_core.vox: Spear, core: Dawnshard Core
 weapons/spear/weeping_core.vox: Spear, core: Weeping Core
 weapons/spear/choir_core.vox: Spear, core: Choir Core
 weapons/spear/chargers_heart.vox: Spear, core: Charger's Heart
+weapons/spear/star_core.vox: Spear, core: Star Core
+weapons/spear/watching_eye_core.vox: Spear, core: Watching Eye
 weapons/bow/ash_limbs.vox: Bow, limbs: Ashwood Limbs
 weapons/bow/ash_limbs_frame_2.vox: Bow, limbs: Ashwood Limbs, frame 2 of 3
 weapons/bow/ash_limbs_frame_3.vox: Bow, limbs: Ashwood Limbs, frame 3 of 3
@@ -1923,6 +1995,21 @@ weapons/bow/emberwick_limbs_frame_3.vox: Bow, limbs: Emberwick Limbs, frame 3 of
 weapons/bow/vigil_limbs.vox: Bow, limbs: Vigil Limbs
 weapons/bow/vigil_limbs_frame_2.vox: Bow, limbs: Vigil Limbs, frame 2 of 3
 weapons/bow/vigil_limbs_frame_3.vox: Bow, limbs: Vigil Limbs, frame 3 of 3
+weapons/bow/compound_limbs.vox: Bow, limbs: Compound Limbs
+weapons/bow/compound_limbs_frame_2.vox: Bow, limbs: Compound Limbs, frame 2 of 3
+weapons/bow/compound_limbs_frame_3.vox: Bow, limbs: Compound Limbs, frame 3 of 3
+weapons/bow/reflex_limbs.vox: Bow, limbs: Deep Reflex Limbs
+weapons/bow/reflex_limbs_frame_2.vox: Bow, limbs: Deep Reflex Limbs, frame 2 of 3
+weapons/bow/reflex_limbs_frame_3.vox: Bow, limbs: Deep Reflex Limbs, frame 3 of 3
+weapons/bow/antler_limbs.vox: Bow, limbs: Antler Limbs
+weapons/bow/antler_limbs_frame_2.vox: Bow, limbs: Antler Limbs, frame 2 of 3
+weapons/bow/antler_limbs_frame_3.vox: Bow, limbs: Antler Limbs, frame 3 of 3
+weapons/bow/cinder_compound_limbs.vox: Bow, limbs: Cinder Compound
+weapons/bow/cinder_compound_limbs_frame_2.vox: Bow, limbs: Cinder Compound, frame 2 of 3
+weapons/bow/cinder_compound_limbs_frame_3.vox: Bow, limbs: Cinder Compound, frame 3 of 3
+weapons/bow/stormcloud_limbs.vox: Bow, limbs: Stormcloud Limbs
+weapons/bow/stormcloud_limbs_frame_2.vox: Bow, limbs: Stormcloud Limbs, frame 2 of 3
+weapons/bow/stormcloud_limbs_frame_3.vox: Bow, limbs: Stormcloud Limbs, frame 3 of 3
 weapons/bow/hemp_string.vox: Bow, string: Hemp String
 weapons/bow/hemp_string_frame_2.vox: Bow, string: Hemp String, frame 2 of 3
 weapons/bow/hemp_string_frame_3.vox: Bow, string: Hemp String, frame 3 of 3
@@ -2096,6 +2183,10 @@ weapons/staff/serpent_focus.vox: Staff, focus: Serpent Focus
 weapons/staff/ivory_halo_focus.vox: Staff, focus: Ivory Halo
 weapons/staff/jade_crook_focus.vox: Staff, focus: Jade Crook
 weapons/staff/bone_cage_focus.vox: Staff, focus: Bone Cage
+weapons/staff/iron_lantern_focus.vox: Staff, focus: Lantern Focus
+weapons/staff/winged_focus.vox: Staff, focus: Gilded Wings
+weapons/staff/bone_hand_focus.vox: Staff, focus: Bone Hand
+weapons/staff/lighthouse_focus.vox: Staff, focus: Lighthouse
 weapons/staff/quartz_crystal.vox: Staff, crystal: Quartz Crystal
 weapons/staff/amber_crystal.vox: Staff, crystal: Amber Crystal
 weapons/staff/smoky_crystal.vox: Staff, crystal: Smoky Quartz
@@ -2120,6 +2211,9 @@ weapons/staff/sunstone.vox: Staff, crystal: Sunstone
 weapons/staff/twin_shard_crystal.vox: Staff, crystal: Twin Shards
 weapons/staff/prism_crystal_2.vox: Staff, crystal: Prism
 weapons/staff/ember_geode.vox: Staff, crystal: Ember Geode
+weapons/staff/starburst_crystal.vox: Staff, crystal: Star Crystal
+weapons/staff/spiral_crystal.vox: Staff, crystal: Spiral Crystal
+weapons/staff/stormbeacon_crystal.vox: Staff, crystal: Stormbeacon
 weapons/staff/cloth_wraps.vox: Staff, binding: Cloth Wraps
 weapons/staff/leather_bands.vox: Staff, binding: Leather Bands
 weapons/staff/iron_bands.vox: Staff, binding: Iron Bands
@@ -2175,6 +2269,10 @@ weapons/wand/serpent_focus.vox: Wand, focus: Serpent Focus
 weapons/wand/ivory_halo_focus.vox: Wand, focus: Ivory Halo
 weapons/wand/jade_crook_focus.vox: Wand, focus: Jade Crook
 weapons/wand/bone_cage_focus.vox: Wand, focus: Bone Cage
+weapons/wand/iron_lantern_focus.vox: Wand, focus: Lantern Focus
+weapons/wand/winged_focus.vox: Wand, focus: Gilded Wings
+weapons/wand/bone_hand_focus.vox: Wand, focus: Bone Hand
+weapons/wand/lighthouse_focus.vox: Wand, focus: Lighthouse
 weapons/wand/quartz_crystal.vox: Wand, crystal: Quartz Crystal
 weapons/wand/amber_crystal.vox: Wand, crystal: Amber Crystal
 weapons/wand/smoky_crystal.vox: Wand, crystal: Smoky Quartz
@@ -2199,6 +2297,9 @@ weapons/wand/sunstone.vox: Wand, crystal: Sunstone
 weapons/wand/twin_shard_crystal.vox: Wand, crystal: Twin Shards
 weapons/wand/prism_crystal_2.vox: Wand, crystal: Prism
 weapons/wand/ember_geode.vox: Wand, crystal: Ember Geode
+weapons/wand/starburst_crystal.vox: Wand, crystal: Star Crystal
+weapons/wand/spiral_crystal.vox: Wand, crystal: Spiral Crystal
+weapons/wand/stormbeacon_crystal.vox: Wand, crystal: Stormbeacon
 weapons/wand/cloth_wraps.vox: Wand, binding: Cloth Wraps
 weapons/wand/leather_bands.vox: Wand, binding: Leather Bands
 weapons/wand/iron_bands.vox: Wand, binding: Iron Bands
@@ -2230,6 +2331,10 @@ weapons/greatsword/tapered_greatblade.vox: Greatsword, blade: Tapered Greatblade
 weapons/greatsword/notched_greatblade.vox: Greatsword, blade: Notched Greatblade
 weapons/greatsword/serpent_greatblade.vox: Greatsword, blade: Serpent Greatblade
 weapons/greatsword/runed_obsidian_greatblade.vox: Greatsword, blade: Runed Obsidian Greatblade
+weapons/greatsword/sawback_greatblade.vox: Greatsword, blade: Sawback Greatblade
+weapons/greatsword/great_macuahuitl.vox: Greatsword, blade: Great Macuahuitl
+weapons/greatsword/falcata_greatblade.vox: Greatsword, blade: Falcata Greatblade
+weapons/greatsword/ringbreaker_blade.vox: Greatsword, blade: Ringbreaker Blade
 weapons/greatsword/leather_grip.vox: Greatsword, hilt: Leather Grip
 weapons/greatsword/wooden_hilt.vox: Greatsword, hilt: Wooden Hilt
 weapons/greatsword/wrapped_grip.vox: Greatsword, hilt: Wrapped Grip
@@ -2246,6 +2351,11 @@ weapons/greatsword/wheel_pommel_grip.vox: Greatsword, hilt: Wheel-Pommel Grip
 weapons/greatsword/ebony_crescent_hilt.vox: Greatsword, hilt: Ebony Crescent Hilt
 weapons/greatsword/fanged_bone_hilt.vox: Greatsword, hilt: Fanged Bone Hilt
 weapons/greatsword/faceted_obsidian_hilt.vox: Greatsword, hilt: Faceted Obsidian Hilt
+weapons/greatsword/knuckled_bone_grip.vox: Greatsword, hilt: Bone Grip
+weapons/greatsword/spiral_cord_grip.vox: Greatsword, hilt: Spiral Cord Grip
+weapons/greatsword/ribbed_grip.vox: Greatsword, hilt: Ribbed Grip
+weapons/greatsword/obsidian_claw_grip.vox: Greatsword, hilt: Obsidian Claw Grip
+weapons/greatsword/runed_bone_grip.vox: Greatsword, hilt: Runed Bone Grip
 weapons/greatsword/iron_crossguard.vox: Greatsword, guard: Iron Crossguard
 weapons/greatsword/bar_guard.vox: Greatsword, guard: Bar Guard
 weapons/greatsword/disc_guard.vox: Greatsword, guard: Disc Guard
@@ -2266,6 +2376,10 @@ weapons/greatsword/shell_guard.vox: Greatsword, guard: Shell Guard
 weapons/greatsword/serpent_guard.vox: Greatsword, guard: Serpent Guard
 weapons/greatsword/spiked_guard.vox: Greatsword, guard: Spiked Guard
 weapons/greatsword/gilded_crescent_guard.vox: Greatsword, guard: Gilded Crescent Guard
+weapons/greatsword/steel_basket_hilt.vox: Greatsword, guard: Steel Basket
+weapons/greatsword/knuckle_bow_guard.vox: Greatsword, guard: Knuckle Bow
+weapons/greatsword/sunburst_guard.vox: Greatsword, guard: Sunburst Guard
+weapons/greatsword/antler_guard.vox: Greatsword, guard: Antler Guard
 weapons/greatsword/iron_core.vox: Greatsword, core: Iron Core
 weapons/greatsword/quartz_core.vox: Greatsword, core: Quartz Core
 weapons/greatsword/amber_core.vox: Greatsword, core: Amber Core
@@ -2289,6 +2403,8 @@ weapons/greatsword/dawnshard_core.vox: Greatsword, core: Dawnshard Core
 weapons/greatsword/weeping_core.vox: Greatsword, core: Weeping Core
 weapons/greatsword/choir_core.vox: Greatsword, core: Choir Core
 weapons/greatsword/crescent_heart.vox: Greatsword, core: Crescent Heart
+weapons/greatsword/star_core.vox: Greatsword, core: Star Core
+weapons/greatsword/watching_eye_core.vox: Greatsword, core: Watching Eye
 weapons/katana/tamahagane_blade.vox: Katana, blade: Tamahagane Blade
 weapons/katana/black_lacquer_blade.vox: Katana, blade: Black Lacquer Blade
 weapons/katana/raijin_blade.vox: Katana, blade: Raijin Blade
@@ -2302,6 +2418,10 @@ weapons/katana/tidemoon_edge.vox: Katana, blade: Tidemoon Edge
 weapons/katana/jade_katana_blade.vox: Katana, blade: Jade-Etched Blade
 weapons/katana/bone_katana_blade.vox: Katana, blade: Bone-White Blade
 weapons/katana/severing_blade.vox: Katana, blade: Severing Blade
+weapons/katana/tachi_blade.vox: Katana, blade: Tachi Blade
+weapons/katana/chokuto_blade.vox: Katana, blade: Chokuto Blade
+weapons/katana/veiled_tachi.vox: Katana, blade: Veiled Tachi
+weapons/katana/windsong_tachi.vox: Katana, blade: Windsong Tachi
 weapons/katana/leather_grip.vox: Katana, hilt: Leather Grip
 weapons/katana/wooden_hilt.vox: Katana, hilt: Wooden Hilt
 weapons/katana/wrapped_grip.vox: Katana, hilt: Wrapped Grip
@@ -2319,6 +2439,11 @@ weapons/katana/ebony_crescent_hilt.vox: Katana, hilt: Ebony Crescent Hilt
 weapons/katana/fanged_bone_hilt.vox: Katana, hilt: Fanged Bone Hilt
 weapons/katana/faceted_obsidian_hilt.vox: Katana, hilt: Faceted Obsidian Hilt
 weapons/katana/stillwater_hilt.vox: Katana, hilt: Stillwater Hilt
+weapons/katana/knuckled_bone_grip.vox: Katana, hilt: Bone Grip
+weapons/katana/spiral_cord_grip.vox: Katana, hilt: Spiral Cord Grip
+weapons/katana/ribbed_grip.vox: Katana, hilt: Ribbed Grip
+weapons/katana/obsidian_claw_grip.vox: Katana, hilt: Obsidian Claw Grip
+weapons/katana/runed_bone_grip.vox: Katana, hilt: Runed Bone Grip
 weapons/katana/iron_crossguard.vox: Katana, guard: Iron Crossguard
 weapons/katana/bar_guard.vox: Katana, guard: Bar Guard
 weapons/katana/disc_guard.vox: Katana, guard: Disc Guard
@@ -2339,6 +2464,10 @@ weapons/katana/shell_guard.vox: Katana, guard: Shell Guard
 weapons/katana/serpent_guard.vox: Katana, guard: Serpent Guard
 weapons/katana/spiked_guard.vox: Katana, guard: Spiked Guard
 weapons/katana/gilded_crescent_guard.vox: Katana, guard: Gilded Crescent Guard
+weapons/katana/steel_basket_hilt.vox: Katana, guard: Steel Basket
+weapons/katana/knuckle_bow_guard.vox: Katana, guard: Knuckle Bow
+weapons/katana/sunburst_guard.vox: Katana, guard: Sunburst Guard
+weapons/katana/antler_guard.vox: Katana, guard: Antler Guard
 weapons/katana/iron_core.vox: Katana, core: Iron Core
 weapons/katana/quartz_core.vox: Katana, core: Quartz Core
 weapons/katana/amber_core.vox: Katana, core: Amber Core
@@ -2361,6 +2490,8 @@ weapons/katana/dawnshard_core.vox: Katana, core: Dawnshard Core
 weapons/katana/weeping_core.vox: Katana, core: Weeping Core
 weapons/katana/choir_core.vox: Katana, core: Choir Core
 weapons/katana/crescent_heart.vox: Katana, core: Crescent Heart
+weapons/katana/star_core.vox: Katana, core: Star Core
+weapons/katana/watching_eye_core.vox: Katana, core: Watching Eye
 weapons/scythe/farm_scythe_blade.vox: Scythe, blade: Farm Scythe Blade
 weapons/scythe/war_scythe_blade.vox: Scythe, blade: War Scythe Blade
 weapons/scythe/rime_reaper_blade.vox: Scythe, blade: Rime Reaper Blade
@@ -2374,6 +2505,9 @@ weapons/scythe/twin_moon_scythe.vox: Scythe, blade: Twin-Moon Scythe Blade
 weapons/scythe/rusted_scythe_blade.vox: Scythe, blade: Rusted Scythe Blade
 weapons/scythe/gilded_reaper_blade.vox: Scythe, blade: Gilded Reaper
 weapons/scythe/gleaner_blade.vox: Scythe, blade: Gleaner's Blade
+weapons/scythe/straight_war_scythe.vox: Scythe, blade: War Scythe Blade
+weapons/scythe/crescent_scythe_blade.vox: Scythe, blade: Crescent Scythe
+weapons/scythe/gravehook_crescent.vox: Scythe, blade: Gravehook
 weapons/scythe/leather_grip.vox: Scythe, hilt: Leather Grip
 weapons/scythe/wooden_hilt.vox: Scythe, hilt: Wooden Hilt
 weapons/scythe/wrapped_grip.vox: Scythe, hilt: Wrapped Grip
@@ -2390,6 +2524,11 @@ weapons/scythe/wheel_pommel_grip.vox: Scythe, hilt: Wheel-Pommel Grip
 weapons/scythe/ebony_crescent_hilt.vox: Scythe, hilt: Ebony Crescent Hilt
 weapons/scythe/fanged_bone_hilt.vox: Scythe, hilt: Fanged Bone Hilt
 weapons/scythe/faceted_obsidian_hilt.vox: Scythe, hilt: Faceted Obsidian Hilt
+weapons/scythe/knuckled_bone_grip.vox: Scythe, hilt: Bone Grip
+weapons/scythe/spiral_cord_grip.vox: Scythe, hilt: Spiral Cord Grip
+weapons/scythe/ribbed_grip.vox: Scythe, hilt: Ribbed Grip
+weapons/scythe/obsidian_claw_grip.vox: Scythe, hilt: Obsidian Claw Grip
+weapons/scythe/runed_bone_grip.vox: Scythe, hilt: Runed Bone Grip
 weapons/scythe/iron_core.vox: Scythe, core: Iron Core
 weapons/scythe/quartz_core.vox: Scythe, core: Quartz Core
 weapons/scythe/amber_core.vox: Scythe, core: Amber Core
@@ -2414,6 +2553,8 @@ weapons/scythe/choir_core.vox: Scythe, core: Choir Core
 weapons/scythe/crescent_heart.vox: Scythe, core: Crescent Heart
 weapons/scythe/chargers_heart.vox: Scythe, core: Charger's Heart
 weapons/scythe/soulcistern_core.vox: Scythe, core: Soulcistern Core
+weapons/scythe/star_core.vox: Scythe, core: Star Core
+weapons/scythe/watching_eye_core.vox: Scythe, core: Watching Eye
 weapons/halberd/iron_halberd_head.vox: Halberd, blade: Iron Halberd Head
 weapons/halberd/bardiche_head.vox: Halberd, blade: Bardiche Head
 weapons/halberd/stormguard_head.vox: Halberd, blade: Stormguard Head
@@ -2428,6 +2569,10 @@ weapons/halberd/breach_bill.vox: Halberd, blade: Bill of the Breach
 weapons/halberd/copper_halberd_head.vox: Halberd, blade: Copper Halberd Head
 weapons/halberd/runed_bill_head.vox: Halberd, blade: Runed Billhook
 weapons/halberd/gleaning_bill.vox: Halberd, blade: Gleaning Bill
+weapons/halberd/lochaber_head.vox: Halberd, blade: Lochaber Head
+weapons/halberd/poleaxe_head.vox: Halberd, blade: Poleaxe Head
+weapons/halberd/hookmaw_head.vox: Halberd, blade: Hookmaw
+weapons/halberd/wardstake_head.vox: Halberd, blade: Wardstake
 weapons/halberd/leather_grip.vox: Halberd, hilt: Leather Grip
 weapons/halberd/wooden_hilt.vox: Halberd, hilt: Wooden Hilt
 weapons/halberd/wrapped_grip.vox: Halberd, hilt: Wrapped Grip
@@ -2444,6 +2589,11 @@ weapons/halberd/wheel_pommel_grip.vox: Halberd, hilt: Wheel-Pommel Grip
 weapons/halberd/ebony_crescent_hilt.vox: Halberd, hilt: Ebony Crescent Hilt
 weapons/halberd/fanged_bone_hilt.vox: Halberd, hilt: Fanged Bone Hilt
 weapons/halberd/faceted_obsidian_hilt.vox: Halberd, hilt: Faceted Obsidian Hilt
+weapons/halberd/knuckled_bone_grip.vox: Halberd, hilt: Bone Grip
+weapons/halberd/spiral_cord_grip.vox: Halberd, hilt: Spiral Cord Grip
+weapons/halberd/ribbed_grip.vox: Halberd, hilt: Ribbed Grip
+weapons/halberd/obsidian_claw_grip.vox: Halberd, hilt: Obsidian Claw Grip
+weapons/halberd/runed_bone_grip.vox: Halberd, hilt: Runed Bone Grip
 weapons/halberd/iron_core.vox: Halberd, core: Iron Core
 weapons/halberd/quartz_core.vox: Halberd, core: Quartz Core
 weapons/halberd/amber_core.vox: Halberd, core: Amber Core
@@ -2468,6 +2618,8 @@ weapons/halberd/choir_core.vox: Halberd, core: Choir Core
 weapons/halberd/crescent_heart.vox: Halberd, core: Crescent Heart
 weapons/halberd/chargers_heart.vox: Halberd, core: Charger's Heart
 weapons/halberd/soulcistern_core.vox: Halberd, core: Soulcistern Core
+weapons/halberd/star_core.vox: Halberd, core: Star Core
+weapons/halberd/watching_eye_core.vox: Halberd, core: Watching Eye
 weapons/scepter/oak_shaft.vox: Scepter, shaft: Oak Shaft
 weapons/scepter/ash_shaft.vox: Scepter, shaft: Ash Shaft
 weapons/scepter/iron_shaft.vox: Scepter, shaft: Iron Shaft
@@ -2507,6 +2659,10 @@ weapons/scepter/serpent_focus.vox: Scepter, focus: Serpent Focus
 weapons/scepter/ivory_halo_focus.vox: Scepter, focus: Ivory Halo
 weapons/scepter/jade_crook_focus.vox: Scepter, focus: Jade Crook
 weapons/scepter/bone_cage_focus.vox: Scepter, focus: Bone Cage
+weapons/scepter/iron_lantern_focus.vox: Scepter, focus: Lantern Focus
+weapons/scepter/winged_focus.vox: Scepter, focus: Gilded Wings
+weapons/scepter/bone_hand_focus.vox: Scepter, focus: Bone Hand
+weapons/scepter/lighthouse_focus.vox: Scepter, focus: Lighthouse
 weapons/scepter/quartz_crystal.vox: Scepter, crystal: Quartz Crystal
 weapons/scepter/amber_crystal.vox: Scepter, crystal: Amber Crystal
 weapons/scepter/smoky_crystal.vox: Scepter, crystal: Smoky Quartz
@@ -2533,6 +2689,9 @@ weapons/scepter/sunstone.vox: Scepter, crystal: Sunstone
 weapons/scepter/twin_shard_crystal.vox: Scepter, crystal: Twin Shards
 weapons/scepter/prism_crystal_2.vox: Scepter, crystal: Prism
 weapons/scepter/ember_geode.vox: Scepter, crystal: Ember Geode
+weapons/scepter/starburst_crystal.vox: Scepter, crystal: Star Crystal
+weapons/scepter/spiral_crystal.vox: Scepter, crystal: Spiral Crystal
+weapons/scepter/stormbeacon_crystal.vox: Scepter, crystal: Stormbeacon
 weapons/scepter/cloth_wraps.vox: Scepter, binding: Cloth Wraps
 weapons/scepter/leather_bands.vox: Scepter, binding: Leather Bands
 weapons/scepter/iron_bands.vox: Scepter, binding: Iron Bands
@@ -2588,6 +2747,8 @@ weapons/whip/copperbound_handle.vox: Whip, handle: Copper-Bound Handle
 weapons/whip/serpent_charmers_grip.vox: Whip, handle: Serpent-Charmer's Grip
 weapons/whip/tripwire_handle.vox: Whip, handle: Tripwire Handle
 weapons/whip/skyhook_grip.vox: Whip, handle: Skyhook Grip
+weapons/whip/obsidian_grip_handle.vox: Whip, handle: Obsidian Handle
+weapons/whip/gilded_bone_handle.vox: Whip, handle: Gilded Bone Handle
 weapons/whip/iron_core.vox: Whip, core: Iron Core
 weapons/whip/quartz_core.vox: Whip, core: Quartz Core
 weapons/whip/amber_core.vox: Whip, core: Amber Core
@@ -2697,6 +2858,15 @@ weapons/crossbow/bramble_prod_frame_3.vox: Crossbow, prod: Bramble Prod, frame 3
 weapons/crossbow/stakewright_prod.vox: Crossbow, prod: Stakewright Prod
 weapons/crossbow/stakewright_prod_frame_2.vox: Crossbow, prod: Stakewright Prod, frame 2 of 4
 weapons/crossbow/stakewright_prod_frame_3.vox: Crossbow, prod: Stakewright Prod, frame 3 of 4
+weapons/crossbow/bone_prod.vox: Crossbow, prod: Bone Prod
+weapons/crossbow/bone_prod_frame_2.vox: Crossbow, prod: Bone Prod, frame 2 of 4
+weapons/crossbow/bone_prod_frame_3.vox: Crossbow, prod: Bone Prod, frame 3 of 4
+weapons/crossbow/winged_prod.vox: Crossbow, prod: Winged Prod
+weapons/crossbow/winged_prod_frame_2.vox: Crossbow, prod: Winged Prod, frame 2 of 4
+weapons/crossbow/winged_prod_frame_3.vox: Crossbow, prod: Winged Prod, frame 3 of 4
+weapons/crossbow/snaresong_prod.vox: Crossbow, prod: Snaresong Prod
+weapons/crossbow/snaresong_prod_frame_2.vox: Crossbow, prod: Snaresong Prod, frame 2 of 4
+weapons/crossbow/snaresong_prod_frame_3.vox: Crossbow, prod: Snaresong Prod, frame 3 of 4
 weapons/crossbow/oak_tiller.vox: Crossbow, stock: Oak Tiller
 weapons/crossbow/walnut_tiller.vox: Crossbow, stock: Walnut Tiller
 weapons/crossbow/birch_tiller.vox: Crossbow, stock: Birch Tiller
@@ -2893,6 +3063,15 @@ weapons/arbalest/bramble_prod_frame_3.vox: Arbalest, prod: Bramble Prod, frame 3
 weapons/arbalest/stakewright_prod.vox: Arbalest, prod: Stakewright Prod
 weapons/arbalest/stakewright_prod_frame_2.vox: Arbalest, prod: Stakewright Prod, frame 2 of 4
 weapons/arbalest/stakewright_prod_frame_3.vox: Arbalest, prod: Stakewright Prod, frame 3 of 4
+weapons/arbalest/bone_prod.vox: Arbalest, prod: Bone Prod
+weapons/arbalest/bone_prod_frame_2.vox: Arbalest, prod: Bone Prod, frame 2 of 4
+weapons/arbalest/bone_prod_frame_3.vox: Arbalest, prod: Bone Prod, frame 3 of 4
+weapons/arbalest/winged_prod.vox: Arbalest, prod: Winged Prod
+weapons/arbalest/winged_prod_frame_2.vox: Arbalest, prod: Winged Prod, frame 2 of 4
+weapons/arbalest/winged_prod_frame_3.vox: Arbalest, prod: Winged Prod, frame 3 of 4
+weapons/arbalest/snaresong_prod.vox: Arbalest, prod: Snaresong Prod
+weapons/arbalest/snaresong_prod_frame_2.vox: Arbalest, prod: Snaresong Prod, frame 2 of 4
+weapons/arbalest/snaresong_prod_frame_3.vox: Arbalest, prod: Snaresong Prod, frame 3 of 4
 weapons/arbalest/oak_tiller.vox: Arbalest, stock: Oak Tiller
 weapons/arbalest/walnut_tiller.vox: Arbalest, stock: Walnut Tiller
 weapons/arbalest/birch_tiller.vox: Arbalest, stock: Birch Tiller
@@ -3119,6 +3298,15 @@ weapons/repeater/bramble_prod_frame_3.vox: Repeating Crossbow, prod: Bramble Pro
 weapons/repeater/stakewright_prod.vox: Repeating Crossbow, prod: Stakewright Prod
 weapons/repeater/stakewright_prod_frame_2.vox: Repeating Crossbow, prod: Stakewright Prod, frame 2 of 4
 weapons/repeater/stakewright_prod_frame_3.vox: Repeating Crossbow, prod: Stakewright Prod, frame 3 of 4
+weapons/repeater/bone_prod.vox: Repeating Crossbow, prod: Bone Prod
+weapons/repeater/bone_prod_frame_2.vox: Repeating Crossbow, prod: Bone Prod, frame 2 of 4
+weapons/repeater/bone_prod_frame_3.vox: Repeating Crossbow, prod: Bone Prod, frame 3 of 4
+weapons/repeater/winged_prod.vox: Repeating Crossbow, prod: Winged Prod
+weapons/repeater/winged_prod_frame_2.vox: Repeating Crossbow, prod: Winged Prod, frame 2 of 4
+weapons/repeater/winged_prod_frame_3.vox: Repeating Crossbow, prod: Winged Prod, frame 3 of 4
+weapons/repeater/snaresong_prod.vox: Repeating Crossbow, prod: Snaresong Prod
+weapons/repeater/snaresong_prod_frame_2.vox: Repeating Crossbow, prod: Snaresong Prod, frame 2 of 4
+weapons/repeater/snaresong_prod_frame_3.vox: Repeating Crossbow, prod: Snaresong Prod, frame 3 of 4
 weapons/repeater/oak_tiller.vox: Repeating Crossbow, stock: Oak Tiller
 weapons/repeater/oak_tiller_frame_2.vox: Repeating Crossbow, stock: Oak Tiller, frame 2 of 4
 weapons/repeater/oak_tiller_frame_3.vox: Repeating Crossbow, stock: Oak Tiller, frame 3 of 4
@@ -3355,6 +3543,15 @@ weapons/handcrossbow/bramble_prod_frame_3.vox: Hand Crossbow, prod: Bramble Prod
 weapons/handcrossbow/stakewright_prod.vox: Hand Crossbow, prod: Stakewright Prod
 weapons/handcrossbow/stakewright_prod_frame_2.vox: Hand Crossbow, prod: Stakewright Prod, frame 2 of 4
 weapons/handcrossbow/stakewright_prod_frame_3.vox: Hand Crossbow, prod: Stakewright Prod, frame 3 of 4
+weapons/handcrossbow/bone_prod.vox: Hand Crossbow, prod: Bone Prod
+weapons/handcrossbow/bone_prod_frame_2.vox: Hand Crossbow, prod: Bone Prod, frame 2 of 4
+weapons/handcrossbow/bone_prod_frame_3.vox: Hand Crossbow, prod: Bone Prod, frame 3 of 4
+weapons/handcrossbow/winged_prod.vox: Hand Crossbow, prod: Winged Prod
+weapons/handcrossbow/winged_prod_frame_2.vox: Hand Crossbow, prod: Winged Prod, frame 2 of 4
+weapons/handcrossbow/winged_prod_frame_3.vox: Hand Crossbow, prod: Winged Prod, frame 3 of 4
+weapons/handcrossbow/snaresong_prod.vox: Hand Crossbow, prod: Snaresong Prod
+weapons/handcrossbow/snaresong_prod_frame_2.vox: Hand Crossbow, prod: Snaresong Prod, frame 2 of 4
+weapons/handcrossbow/snaresong_prod_frame_3.vox: Hand Crossbow, prod: Snaresong Prod, frame 3 of 4
 weapons/handcrossbow/oak_tiller.vox: Hand Crossbow, stock: Oak Tiller
 weapons/handcrossbow/walnut_tiller.vox: Hand Crossbow, stock: Walnut Tiller
 weapons/handcrossbow/birch_tiller.vox: Hand Crossbow, stock: Birch Tiller
@@ -3549,6 +3746,15 @@ weapons/twinprod/bramble_prod_frame_3.vox: Twin-Prod Crossbow, prod: Bramble Pro
 weapons/twinprod/stakewright_prod.vox: Twin-Prod Crossbow, prod: Stakewright Prod
 weapons/twinprod/stakewright_prod_frame_2.vox: Twin-Prod Crossbow, prod: Stakewright Prod, frame 2 of 4
 weapons/twinprod/stakewright_prod_frame_3.vox: Twin-Prod Crossbow, prod: Stakewright Prod, frame 3 of 4
+weapons/twinprod/bone_prod.vox: Twin-Prod Crossbow, prod: Bone Prod
+weapons/twinprod/bone_prod_frame_2.vox: Twin-Prod Crossbow, prod: Bone Prod, frame 2 of 4
+weapons/twinprod/bone_prod_frame_3.vox: Twin-Prod Crossbow, prod: Bone Prod, frame 3 of 4
+weapons/twinprod/winged_prod.vox: Twin-Prod Crossbow, prod: Winged Prod
+weapons/twinprod/winged_prod_frame_2.vox: Twin-Prod Crossbow, prod: Winged Prod, frame 2 of 4
+weapons/twinprod/winged_prod_frame_3.vox: Twin-Prod Crossbow, prod: Winged Prod, frame 3 of 4
+weapons/twinprod/snaresong_prod.vox: Twin-Prod Crossbow, prod: Snaresong Prod
+weapons/twinprod/snaresong_prod_frame_2.vox: Twin-Prod Crossbow, prod: Snaresong Prod, frame 2 of 4
+weapons/twinprod/snaresong_prod_frame_3.vox: Twin-Prod Crossbow, prod: Snaresong Prod, frame 3 of 4
 weapons/twinprod/oak_tiller.vox: Twin-Prod Crossbow, stock: Oak Tiller
 weapons/twinprod/oak_tiller_frame_2.vox: Twin-Prod Crossbow, stock: Oak Tiller, frame 2 of 4
 weapons/twinprod/oak_tiller_frame_3.vox: Twin-Prod Crossbow, stock: Oak Tiller, frame 3 of 4
@@ -3815,6 +4021,15 @@ weapons/siegecrossbow/bramble_prod_frame_3.vox: Siege Crossbow, prod: Bramble Pr
 weapons/siegecrossbow/stakewright_prod.vox: Siege Crossbow, prod: Stakewright Prod
 weapons/siegecrossbow/stakewright_prod_frame_2.vox: Siege Crossbow, prod: Stakewright Prod, frame 2 of 5
 weapons/siegecrossbow/stakewright_prod_frame_3.vox: Siege Crossbow, prod: Stakewright Prod, frame 3 of 5
+weapons/siegecrossbow/bone_prod.vox: Siege Crossbow, prod: Bone Prod
+weapons/siegecrossbow/bone_prod_frame_2.vox: Siege Crossbow, prod: Bone Prod, frame 2 of 5
+weapons/siegecrossbow/bone_prod_frame_3.vox: Siege Crossbow, prod: Bone Prod, frame 3 of 5
+weapons/siegecrossbow/winged_prod.vox: Siege Crossbow, prod: Winged Prod
+weapons/siegecrossbow/winged_prod_frame_2.vox: Siege Crossbow, prod: Winged Prod, frame 2 of 5
+weapons/siegecrossbow/winged_prod_frame_3.vox: Siege Crossbow, prod: Winged Prod, frame 3 of 5
+weapons/siegecrossbow/snaresong_prod.vox: Siege Crossbow, prod: Snaresong Prod
+weapons/siegecrossbow/snaresong_prod_frame_2.vox: Siege Crossbow, prod: Snaresong Prod, frame 2 of 5
+weapons/siegecrossbow/snaresong_prod_frame_3.vox: Siege Crossbow, prod: Snaresong Prod, frame 3 of 5
 weapons/siegecrossbow/oak_tiller.vox: Siege Crossbow, stock: Oak Tiller
 weapons/siegecrossbow/walnut_tiller.vox: Siege Crossbow, stock: Walnut Tiller
 weapons/siegecrossbow/birch_tiller.vox: Siege Crossbow, stock: Birch Tiller
@@ -4054,6 +4269,15 @@ weapons/harpoon/bramble_prod_frame_3.vox: Harpoon Crossbow, prod: Bramble Prod, 
 weapons/harpoon/stakewright_prod.vox: Harpoon Crossbow, prod: Stakewright Prod
 weapons/harpoon/stakewright_prod_frame_2.vox: Harpoon Crossbow, prod: Stakewright Prod, frame 2 of 4
 weapons/harpoon/stakewright_prod_frame_3.vox: Harpoon Crossbow, prod: Stakewright Prod, frame 3 of 4
+weapons/harpoon/bone_prod.vox: Harpoon Crossbow, prod: Bone Prod
+weapons/harpoon/bone_prod_frame_2.vox: Harpoon Crossbow, prod: Bone Prod, frame 2 of 4
+weapons/harpoon/bone_prod_frame_3.vox: Harpoon Crossbow, prod: Bone Prod, frame 3 of 4
+weapons/harpoon/winged_prod.vox: Harpoon Crossbow, prod: Winged Prod
+weapons/harpoon/winged_prod_frame_2.vox: Harpoon Crossbow, prod: Winged Prod, frame 2 of 4
+weapons/harpoon/winged_prod_frame_3.vox: Harpoon Crossbow, prod: Winged Prod, frame 3 of 4
+weapons/harpoon/snaresong_prod.vox: Harpoon Crossbow, prod: Snaresong Prod
+weapons/harpoon/snaresong_prod_frame_2.vox: Harpoon Crossbow, prod: Snaresong Prod, frame 2 of 4
+weapons/harpoon/snaresong_prod_frame_3.vox: Harpoon Crossbow, prod: Snaresong Prod, frame 3 of 4
 weapons/harpoon/oak_tiller.vox: Harpoon Crossbow, stock: Oak Tiller
 weapons/harpoon/oak_tiller_frame_2.vox: Harpoon Crossbow, stock: Oak Tiller, frame 2 of 4
 weapons/harpoon/oak_tiller_frame_3.vox: Harpoon Crossbow, stock: Oak Tiller, frame 3 of 4
@@ -4319,6 +4543,15 @@ weapons/boltthrower/bramble_prod_frame_3.vox: Bolt-Thrower, prod: Bramble Prod, 
 weapons/boltthrower/stakewright_prod.vox: Bolt-Thrower, prod: Stakewright Prod
 weapons/boltthrower/stakewright_prod_frame_2.vox: Bolt-Thrower, prod: Stakewright Prod, frame 2 of 4
 weapons/boltthrower/stakewright_prod_frame_3.vox: Bolt-Thrower, prod: Stakewright Prod, frame 3 of 4
+weapons/boltthrower/bone_prod.vox: Bolt-Thrower, prod: Bone Prod
+weapons/boltthrower/bone_prod_frame_2.vox: Bolt-Thrower, prod: Bone Prod, frame 2 of 4
+weapons/boltthrower/bone_prod_frame_3.vox: Bolt-Thrower, prod: Bone Prod, frame 3 of 4
+weapons/boltthrower/winged_prod.vox: Bolt-Thrower, prod: Winged Prod
+weapons/boltthrower/winged_prod_frame_2.vox: Bolt-Thrower, prod: Winged Prod, frame 2 of 4
+weapons/boltthrower/winged_prod_frame_3.vox: Bolt-Thrower, prod: Winged Prod, frame 3 of 4
+weapons/boltthrower/snaresong_prod.vox: Bolt-Thrower, prod: Snaresong Prod
+weapons/boltthrower/snaresong_prod_frame_2.vox: Bolt-Thrower, prod: Snaresong Prod, frame 2 of 4
+weapons/boltthrower/snaresong_prod_frame_3.vox: Bolt-Thrower, prod: Snaresong Prod, frame 3 of 4
 weapons/boltthrower/oak_tiller.vox: Bolt-Thrower, stock: Oak Tiller
 weapons/boltthrower/oak_tiller_frame_2.vox: Bolt-Thrower, stock: Oak Tiller, frame 2 of 4
 weapons/boltthrower/oak_tiller_frame_3.vox: Bolt-Thrower, stock: Oak Tiller, frame 3 of 4
@@ -4534,6 +4767,12 @@ weapons/pistol/wyrmthroat_barrel.vox: Pistol, barrel: Wyrmthroat Bore
 weapons/pistol/wyrmthroat_barrel_frame_3.vox: Pistol, barrel: Wyrmthroat Bore, frame 3 of 3
 weapons/pistol/chainshot_barrel.vox: Pistol, barrel: Chainshot Bore
 weapons/pistol/chainshot_barrel_frame_3.vox: Pistol, barrel: Chainshot Bore, frame 3 of 3
+weapons/pistol/pepperbox_barrel.vox: Pistol, barrel: Pepperbox Barrels
+weapons/pistol/pepperbox_barrel_frame_3.vox: Pistol, barrel: Pepperbox Barrels, frame 3 of 3
+weapons/pistol/runed_barrel.vox: Pistol, barrel: Runed Barrel
+weapons/pistol/runed_barrel_frame_3.vox: Pistol, barrel: Runed Barrel, frame 3 of 3
+weapons/pistol/nightsun_barrel.vox: Pistol, barrel: Nightsun Barrel
+weapons/pistol/nightsun_barrel_frame_3.vox: Pistol, barrel: Nightsun Barrel, frame 3 of 3
 weapons/pistol/walnut_stock.vox: Pistol, stock: Walnut Stock
 weapons/pistol/beech_stock.vox: Pistol, stock: Beech Stock
 weapons/pistol/fowlers_stock.vox: Pistol, stock: Fowler's Stock
@@ -4649,6 +4888,12 @@ weapons/musket/wyrmthroat_barrel.vox: Musket, barrel: Wyrmthroat Bore
 weapons/musket/wyrmthroat_barrel_frame_3.vox: Musket, barrel: Wyrmthroat Bore, frame 3 of 3
 weapons/musket/riftbore_barrel.vox: Musket, barrel: Riftbore Barrel
 weapons/musket/riftbore_barrel_frame_3.vox: Musket, barrel: Riftbore Barrel, frame 3 of 3
+weapons/musket/pepperbox_barrel.vox: Musket, barrel: Pepperbox Barrels
+weapons/musket/pepperbox_barrel_frame_3.vox: Musket, barrel: Pepperbox Barrels, frame 3 of 3
+weapons/musket/runed_barrel.vox: Musket, barrel: Runed Barrel
+weapons/musket/runed_barrel_frame_3.vox: Musket, barrel: Runed Barrel, frame 3 of 3
+weapons/musket/nightsun_barrel.vox: Musket, barrel: Nightsun Barrel
+weapons/musket/nightsun_barrel_frame_3.vox: Musket, barrel: Nightsun Barrel, frame 3 of 3
 weapons/musket/walnut_stock.vox: Musket, stock: Walnut Stock
 weapons/musket/beech_stock.vox: Musket, stock: Beech Stock
 weapons/musket/fowlers_stock.vox: Musket, stock: Fowler's Stock
@@ -4764,6 +5009,12 @@ weapons/blunderbuss/wyrmthroat_barrel.vox: Blunderbuss, barrel: Wyrmthroat Bore
 weapons/blunderbuss/wyrmthroat_barrel_frame_3.vox: Blunderbuss, barrel: Wyrmthroat Bore, frame 3 of 3
 weapons/blunderbuss/caltrop_bell.vox: Blunderbuss, barrel: Caltrop Bell
 weapons/blunderbuss/caltrop_bell_frame_3.vox: Blunderbuss, barrel: Caltrop Bell, frame 3 of 3
+weapons/blunderbuss/pepperbox_barrel.vox: Blunderbuss, barrel: Pepperbox Barrels
+weapons/blunderbuss/pepperbox_barrel_frame_3.vox: Blunderbuss, barrel: Pepperbox Barrels, frame 3 of 3
+weapons/blunderbuss/runed_barrel.vox: Blunderbuss, barrel: Runed Barrel
+weapons/blunderbuss/runed_barrel_frame_3.vox: Blunderbuss, barrel: Runed Barrel, frame 3 of 3
+weapons/blunderbuss/nightsun_barrel.vox: Blunderbuss, barrel: Nightsun Barrel
+weapons/blunderbuss/nightsun_barrel_frame_3.vox: Blunderbuss, barrel: Nightsun Barrel, frame 3 of 3
 weapons/blunderbuss/walnut_stock.vox: Blunderbuss, stock: Walnut Stock
 weapons/blunderbuss/beech_stock.vox: Blunderbuss, stock: Beech Stock
 weapons/blunderbuss/fowlers_stock.vox: Blunderbuss, stock: Fowler's Stock
@@ -4880,6 +5131,12 @@ weapons/handcannon/wyrmthroat_barrel.vox: Hand Cannon, barrel: Wyrmthroat Bore
 weapons/handcannon/wyrmthroat_barrel_frame_3.vox: Hand Cannon, barrel: Wyrmthroat Bore, frame 3 of 3
 weapons/handcannon/chainshot_barrel.vox: Hand Cannon, barrel: Chainshot Bore
 weapons/handcannon/chainshot_barrel_frame_3.vox: Hand Cannon, barrel: Chainshot Bore, frame 3 of 3
+weapons/handcannon/pepperbox_barrel.vox: Hand Cannon, barrel: Pepperbox Barrels
+weapons/handcannon/pepperbox_barrel_frame_3.vox: Hand Cannon, barrel: Pepperbox Barrels, frame 3 of 3
+weapons/handcannon/runed_barrel.vox: Hand Cannon, barrel: Runed Barrel
+weapons/handcannon/runed_barrel_frame_3.vox: Hand Cannon, barrel: Runed Barrel, frame 3 of 3
+weapons/handcannon/nightsun_barrel.vox: Hand Cannon, barrel: Nightsun Barrel
+weapons/handcannon/nightsun_barrel_frame_3.vox: Hand Cannon, barrel: Nightsun Barrel, frame 3 of 3
 weapons/handcannon/walnut_stock.vox: Hand Cannon, stock: Walnut Stock
 weapons/handcannon/beech_stock.vox: Hand Cannon, stock: Beech Stock
 weapons/handcannon/fowlers_stock.vox: Hand Cannon, stock: Fowler's Stock
@@ -5007,6 +5264,9 @@ weapons/orb/twin_shard_crystal.vox: Orb, crystal: Twin Shards
 weapons/orb/prism_crystal_2.vox: Orb, crystal: Prism
 weapons/orb/ember_geode.vox: Orb, crystal: Ember Geode
 weapons/orb/heartstring_crystal.vox: Orb, crystal: Heartstring Twins
+weapons/orb/starburst_crystal.vox: Orb, crystal: Star Crystal
+weapons/orb/spiral_crystal.vox: Orb, crystal: Spiral Crystal
+weapons/orb/stormbeacon_crystal.vox: Orb, crystal: Stormbeacon
 weapons/orb/cloth_wraps.vox: Orb, binding: Cloth Wraps
 weapons/orb/leather_bands.vox: Orb, binding: Leather Bands
 weapons/orb/iron_bands.vox: Orb, binding: Iron Bands
@@ -5152,6 +5412,12 @@ weapons/tome/ember_geode.vox: Tome, crystal: Ember Geode
 weapons/tome/ember_geode_frame_2.vox: Tome, crystal: Ember Geode, frame 2 of 2
 weapons/tome/litany_crystal.vox: Tome, crystal: Litany Prism
 weapons/tome/litany_crystal_frame_2.vox: Tome, crystal: Litany Prism, frame 2 of 2
+weapons/tome/starburst_crystal.vox: Tome, crystal: Star Crystal
+weapons/tome/starburst_crystal_frame_2.vox: Tome, crystal: Star Crystal, frame 2 of 2
+weapons/tome/spiral_crystal.vox: Tome, crystal: Spiral Crystal
+weapons/tome/spiral_crystal_frame_2.vox: Tome, crystal: Spiral Crystal, frame 2 of 2
+weapons/tome/stormbeacon_crystal.vox: Tome, crystal: Stormbeacon
+weapons/tome/stormbeacon_crystal_frame_2.vox: Tome, crystal: Stormbeacon, frame 2 of 2
 weapons/tome/cloth_wraps_frame_2.vox: Tome, binding: Cloth Wraps, frame 2 of 2
 weapons/tome/leather_bands_frame_2.vox: Tome, binding: Leather Bands, frame 2 of 2
 weapons/tome/iron_bands_frame_2.vox: Tome, binding: Iron Bands, frame 2 of 2
@@ -5233,6 +5499,9 @@ weapons/totem/twin_shard_crystal.vox: Totem, crystal: Twin Shards
 weapons/totem/prism_crystal_2.vox: Totem, crystal: Prism
 weapons/totem/ember_geode.vox: Totem, crystal: Ember Geode
 weapons/totem/heartstring_crystal.vox: Totem, crystal: Heartstring Twins
+weapons/totem/starburst_crystal.vox: Totem, crystal: Star Crystal
+weapons/totem/spiral_crystal.vox: Totem, crystal: Spiral Crystal
+weapons/totem/stormbeacon_crystal.vox: Totem, crystal: Stormbeacon
 weapons/totem/cloth_wraps.vox: Totem, binding: Cloth Wraps
 weapons/totem/leather_bands.vox: Totem, binding: Leather Bands
 weapons/totem/iron_bands.vox: Totem, binding: Iron Bands
@@ -5315,6 +5584,9 @@ weapons/bell/twin_shard_crystal.vox: Bell, crystal: Twin Shards
 weapons/bell/prism_crystal_2.vox: Bell, crystal: Prism
 weapons/bell/ember_geode.vox: Bell, crystal: Ember Geode
 weapons/bell/knelling_crystal.vox: Bell, crystal: Knelling Geode
+weapons/bell/starburst_crystal.vox: Bell, crystal: Star Crystal
+weapons/bell/spiral_crystal.vox: Bell, crystal: Spiral Crystal
+weapons/bell/stormbeacon_crystal.vox: Bell, crystal: Stormbeacon
 weapons/bell/cloth_wraps.vox: Bell, binding: Cloth Wraps
 weapons/bell/leather_bands.vox: Bell, binding: Leather Bands
 weapons/bell/iron_bands.vox: Bell, binding: Iron Bands
@@ -5370,6 +5642,10 @@ weapons/battlestaff/serpent_focus.vox: Battle Staff, focus: Serpent Focus
 weapons/battlestaff/ivory_halo_focus.vox: Battle Staff, focus: Ivory Halo
 weapons/battlestaff/jade_crook_focus.vox: Battle Staff, focus: Jade Crook
 weapons/battlestaff/bone_cage_focus.vox: Battle Staff, focus: Bone Cage
+weapons/battlestaff/iron_lantern_focus.vox: Battle Staff, focus: Lantern Focus
+weapons/battlestaff/winged_focus.vox: Battle Staff, focus: Gilded Wings
+weapons/battlestaff/bone_hand_focus.vox: Battle Staff, focus: Bone Hand
+weapons/battlestaff/lighthouse_focus.vox: Battle Staff, focus: Lighthouse
 weapons/battlestaff/quartz_crystal.vox: Battle Staff, crystal: Quartz Crystal
 weapons/battlestaff/amber_crystal.vox: Battle Staff, crystal: Amber Crystal
 weapons/battlestaff/smoky_crystal.vox: Battle Staff, crystal: Smoky Quartz
@@ -5394,6 +5670,9 @@ weapons/battlestaff/sunstone.vox: Battle Staff, crystal: Sunstone
 weapons/battlestaff/twin_shard_crystal.vox: Battle Staff, crystal: Twin Shards
 weapons/battlestaff/prism_crystal_2.vox: Battle Staff, crystal: Prism
 weapons/battlestaff/ember_geode.vox: Battle Staff, crystal: Ember Geode
+weapons/battlestaff/starburst_crystal.vox: Battle Staff, crystal: Star Crystal
+weapons/battlestaff/spiral_crystal.vox: Battle Staff, crystal: Spiral Crystal
+weapons/battlestaff/stormbeacon_crystal.vox: Battle Staff, crystal: Stormbeacon
 weapons/battlestaff/cloth_wraps.vox: Battle Staff, binding: Cloth Wraps
 weapons/battlestaff/leather_bands.vox: Battle Staff, binding: Leather Bands
 weapons/battlestaff/iron_bands.vox: Battle Staff, binding: Iron Bands
@@ -5425,6 +5704,9 @@ weapons/flail/grinning_skull_flail.vox: Flail, blade: Grinning Skull
 weapons/flail/geode_flail.vox: Flail, blade: Geode Flail Head
 weapons/flail/ruinous_orbit_head.vox: Flail, blade: Ruinous Orbit
 weapons/flail/stormcatcher_flail_head.vox: Flail, blade: Stormcatcher Head
+weapons/flail/spiked_wheel_flail.vox: Flail, blade: Spiked Wheel
+weapons/flail/drill_flail.vox: Flail, blade: Drill Head
+weapons/flail/forgewheel_flail.vox: Flail, blade: Forgewheel
 weapons/flail/leather_grip.vox: Flail, hilt: Leather Grip
 weapons/flail/wooden_hilt.vox: Flail, hilt: Wooden Hilt
 weapons/flail/wrapped_grip.vox: Flail, hilt: Wrapped Grip
@@ -5441,6 +5723,11 @@ weapons/flail/wheel_pommel_grip.vox: Flail, hilt: Wheel-Pommel Grip
 weapons/flail/ebony_crescent_hilt.vox: Flail, hilt: Ebony Crescent Hilt
 weapons/flail/fanged_bone_hilt.vox: Flail, hilt: Fanged Bone Hilt
 weapons/flail/faceted_obsidian_hilt.vox: Flail, hilt: Faceted Obsidian Hilt
+weapons/flail/knuckled_bone_grip.vox: Flail, hilt: Bone Grip
+weapons/flail/spiral_cord_grip.vox: Flail, hilt: Spiral Cord Grip
+weapons/flail/ribbed_grip.vox: Flail, hilt: Ribbed Grip
+weapons/flail/obsidian_claw_grip.vox: Flail, hilt: Obsidian Claw Grip
+weapons/flail/runed_bone_grip.vox: Flail, hilt: Runed Bone Grip
 weapons/flail/iron_core.vox: Flail, core: Iron Core
 weapons/flail/quartz_core.vox: Flail, core: Quartz Core
 weapons/flail/amber_core.vox: Flail, core: Amber Core
@@ -5465,6 +5752,8 @@ weapons/flail/weeping_core.vox: Flail, core: Weeping Core
 weapons/flail/choir_core.vox: Flail, core: Choir Core
 weapons/flail/heart_of_the_mountain.vox: Flail, core: Heart of the Mountain
 weapons/flail/orbit_heart.vox: Flail, core: Orbit Heart
+weapons/flail/star_core.vox: Flail, core: Star Core
+weapons/flail/watching_eye_core.vox: Flail, core: Watching Eye
 weapons/maul/iron_maul_head.vox: Maul, blade: Iron Maul Head
 weapons/maul/stone_maul_head.vox: Maul, blade: Stone Maul Head
 weapons/maul/anvil_head.vox: Maul, blade: Anvil Head
@@ -5480,6 +5769,9 @@ weapons/maul/spiked_maul_head_2.vox: Maul, blade: Spiked Maul Head
 weapons/maul/stormglass_maul.vox: Maul, blade: Stormglass Maul Head
 weapons/maul/pillarstone_maul.vox: Maul, blade: Pillarstone
 weapons/maul/cloudforged_maul_head.vox: Maul, blade: Cloudforged Head
+weapons/maul/stepped_maul_head.vox: Maul, blade: Stepped Head
+weapons/maul/great_skull_maul.vox: Maul, blade: Great Skull
+weapons/maul/thunderfoundry_maul.vox: Maul, blade: Thunderfoundry
 weapons/maul/leather_grip.vox: Maul, hilt: Leather Grip
 weapons/maul/wooden_hilt.vox: Maul, hilt: Wooden Hilt
 weapons/maul/wrapped_grip.vox: Maul, hilt: Wrapped Grip
@@ -5496,6 +5788,11 @@ weapons/maul/wheel_pommel_grip.vox: Maul, hilt: Wheel-Pommel Grip
 weapons/maul/ebony_crescent_hilt.vox: Maul, hilt: Ebony Crescent Hilt
 weapons/maul/fanged_bone_hilt.vox: Maul, hilt: Fanged Bone Hilt
 weapons/maul/faceted_obsidian_hilt.vox: Maul, hilt: Faceted Obsidian Hilt
+weapons/maul/knuckled_bone_grip.vox: Maul, hilt: Bone Grip
+weapons/maul/spiral_cord_grip.vox: Maul, hilt: Spiral Cord Grip
+weapons/maul/ribbed_grip.vox: Maul, hilt: Ribbed Grip
+weapons/maul/obsidian_claw_grip.vox: Maul, hilt: Obsidian Claw Grip
+weapons/maul/runed_bone_grip.vox: Maul, hilt: Runed Bone Grip
 weapons/maul/iron_core.vox: Maul, core: Iron Core
 weapons/maul/quartz_core.vox: Maul, core: Quartz Core
 weapons/maul/amber_core.vox: Maul, core: Amber Core
@@ -5520,6 +5817,8 @@ weapons/maul/weeping_core.vox: Maul, core: Weeping Core
 weapons/maul/choir_core.vox: Maul, core: Choir Core
 weapons/maul/heart_of_the_mountain.vox: Maul, core: Heart of the Mountain
 weapons/maul/orbit_heart.vox: Maul, core: Orbit Heart
+weapons/maul/star_core.vox: Maul, core: Star Core
+weapons/maul/watching_eye_core.vox: Maul, core: Watching Eye
 weapons/bombs/iron_bomb.vox: Bombs, casing: Iron Bomb
 weapons/bombs/clay_firepot.vox: Bombs, casing: Clay Firepot
 weapons/bombs/glass_flask.vox: Bombs, casing: Glass Flask
@@ -5540,6 +5839,9 @@ weapons/bombs/obsidian_skull_bomb.vox: Bombs, casing: Obsidian Skull
 weapons/bombs/firecracker_bundle.vox: Bombs, casing: Firecracker Bundle
 weapons/bombs/rimeskip_casing.vox: Bombs, casing: Rimeskip Flask
 weapons/bombs/clockwork_brood_casing.vox: Bombs, casing: Clockwork Brood
+weapons/bombs/gourd_casing.vox: Bombs, casing: Dried Gourd
+weapons/bombs/lantern_casing.vox: Bombs, casing: Lantern Charge
+weapons/bombs/hailpot_casing.vox: Bombs, casing: Hailpot
 weapons/bombs/hemp_fuse.vox: Bombs, fuse: Hemp Fuse
 weapons/bombs/short_fuse.vox: Bombs, fuse: Short Fuse
 weapons/bombs/long_fuse.vox: Bombs, fuse: Long Fuse
@@ -5644,6 +5946,9 @@ weapons/rod/sunstone.vox: Lightning Rod, crystal: Sunstone
 weapons/rod/twin_shard_crystal.vox: Lightning Rod, crystal: Twin Shards
 weapons/rod/prism_crystal_2.vox: Lightning Rod, crystal: Prism
 weapons/rod/ember_geode.vox: Lightning Rod, crystal: Ember Geode
+weapons/rod/starburst_crystal.vox: Lightning Rod, crystal: Star Crystal
+weapons/rod/spiral_crystal.vox: Lightning Rod, crystal: Spiral Crystal
+weapons/rod/stormbeacon_crystal.vox: Lightning Rod, crystal: Stormbeacon
 weapons/rod/cloth_wraps.vox: Lightning Rod, binding: Cloth Wraps
 weapons/rod/leather_bands.vox: Lightning Rod, binding: Leather Bands
 weapons/rod/iron_bands.vox: Lightning Rod, binding: Iron Bands
@@ -5725,6 +6030,9 @@ weapons/censer/twin_shard_crystal.vox: Censer, crystal: Twin Shards
 weapons/censer/prism_crystal_2.vox: Censer, crystal: Prism
 weapons/censer/ember_geode.vox: Censer, crystal: Ember Geode
 weapons/censer/knelling_crystal.vox: Censer, crystal: Knelling Geode
+weapons/censer/starburst_crystal.vox: Censer, crystal: Star Crystal
+weapons/censer/spiral_crystal.vox: Censer, crystal: Spiral Crystal
+weapons/censer/stormbeacon_crystal.vox: Censer, crystal: Stormbeacon
 weapons/censer/cloth_wraps.vox: Censer, binding: Cloth Wraps
 weapons/censer/leather_bands.vox: Censer, binding: Leather Bands
 weapons/censer/iron_bands.vox: Censer, binding: Iron Bands
@@ -5741,6 +6049,192 @@ weapons/censer/runescribe_binding.vox: Censer, binding: Runescribe Wraps
 weapons/censer/miasma_binding.vox: Censer, binding: Miasma Binding
 weapons/censer/fen_binding.vox: Censer, binding: Fenwrapped Binding
 weapons/censer/locust_binding.vox: Censer, binding: Locust Binding
+weapons/warfan/paper_fan_leaf.vox: War Fan, blade: Paper Leaf
+weapons/warfan/silk_fan_leaf.vox: War Fan, blade: Silk Leaf
+weapons/warfan/iron_fan_leaf.vox: War Fan, blade: Iron Ribs
+weapons/warfan/crane_feather_leaf.vox: War Fan, blade: Crane Feathers
+weapons/warfan/jade_fan_leaf.vox: War Fan, blade: Jade Leaf
+weapons/warfan/razor_fan_leaf.vox: War Fan, blade: Razor Ribs
+weapons/warfan/phoenix_fan_leaf.vox: War Fan, blade: Phoenix Feathers
+weapons/warfan/rime_fan_leaf.vox: War Fan, blade: Rime Leaf
+weapons/warfan/eye_of_the_storm_leaf.vox: War Fan, blade: Eye of the Storm
+weapons/warfan/thousandfold_leaf.vox: War Fan, blade: Thousandfold
+weapons/warfan/leather_grip.vox: War Fan, hilt: Leather Grip
+weapons/warfan/wooden_hilt.vox: War Fan, hilt: Wooden Hilt
+weapons/warfan/wrapped_grip.vox: War Fan, hilt: Wrapped Grip
+weapons/warfan/duelist_hilt.vox: War Fan, hilt: Duelist's Hilt
+weapons/warfan/heavy_hilt.vox: War Fan, hilt: Heavy Hilt
+weapons/warfan/executioner_hilt.vox: War Fan, hilt: Executioner's Hilt
+weapons/warfan/vampiric_hilt.vox: War Fan, hilt: Vampiric Hilt
+weapons/warfan/tempest_hilt.vox: War Fan, hilt: Tempest Hilt
+weapons/warfan/kings_hilt.vox: War Fan, hilt: Hilt of the Fallen King
+weapons/warfan/hollow_hilt.vox: War Fan, hilt: Hollow Hilt
+weapons/warfan/stormlotus_hilt.vox: War Fan, hilt: Stormlotus Hilt
+weapons/warfan/berserker_grip.vox: War Fan, hilt: Berserker's Grip
+weapons/warfan/wheel_pommel_grip.vox: War Fan, hilt: Wheel-Pommel Grip
+weapons/warfan/ebony_crescent_hilt.vox: War Fan, hilt: Ebony Crescent Hilt
+weapons/warfan/fanged_bone_hilt.vox: War Fan, hilt: Fanged Bone Hilt
+weapons/warfan/faceted_obsidian_hilt.vox: War Fan, hilt: Faceted Obsidian Hilt
+weapons/warfan/knuckled_bone_grip.vox: War Fan, hilt: Bone Grip
+weapons/warfan/spiral_cord_grip.vox: War Fan, hilt: Spiral Cord Grip
+weapons/warfan/ribbed_grip.vox: War Fan, hilt: Ribbed Grip
+weapons/warfan/obsidian_claw_grip.vox: War Fan, hilt: Obsidian Claw Grip
+weapons/warfan/runed_bone_grip.vox: War Fan, hilt: Runed Bone Grip
+weapons/warfan/iron_core.vox: War Fan, core: Iron Core
+weapons/warfan/quartz_core.vox: War Fan, core: Quartz Core
+weapons/warfan/amber_core.vox: War Fan, core: Amber Core
+weapons/warfan/ember_core.vox: War Fan, core: Ember Core
+weapons/warfan/rime_core.vox: War Fan, core: Rime Core
+weapons/warfan/venom_core.vox: War Fan, core: Venom Core
+weapons/warfan/storm_core.vox: War Fan, core: Storm Core
+weapons/warfan/void_heart.vox: War Fan, core: Void Heart
+weapons/warfan/sun_core.vox: War Fan, core: Sun Core
+weapons/warfan/heart_of_winter.vox: War Fan, core: Heart of Winter
+weapons/warfan/glacier_core.vox: War Fan, core: Glacier Core
+weapons/warfan/heart_of_the_horde.vox: War Fan, core: Heart of the Horde
+weapons/warfan/trappers_knot.vox: War Fan, core: Trapper's Knot
+weapons/warfan/rending_core.vox: War Fan, core: Rending Core
+weapons/warfan/quaking_core.vox: War Fan, core: Quaking Core
+weapons/warfan/plagueheart_core.vox: War Fan, core: Plagueheart
+weapons/warfan/maelstrom_core.vox: War Fan, core: Maelstrom Core
+weapons/warfan/garnet_core.vox: War Fan, core: Garnet Core
+weapons/warfan/dawnshard_core.vox: War Fan, core: Dawnshard Core
+weapons/warfan/weeping_core.vox: War Fan, core: Weeping Core
+weapons/warfan/choir_core.vox: War Fan, core: Choir Core
+weapons/warfan/star_core.vox: War Fan, core: Star Core
+weapons/warfan/watching_eye_core.vox: War Fan, core: Watching Eye
+weapons/katar/iron_katar_blade.vox: Katar, blade: Iron Katar Blade
+weapons/katar/broad_katar_blade.vox: Katar, blade: Broad Katar Blade
+weapons/katar/split_katar_blade.vox: Katar, blade: Split Katar Blade
+weapons/katar/wavy_katar_blade.vox: Katar, blade: Wavy Katar Blade
+weapons/katar/bone_katar_blade.vox: Katar, blade: Bone Katar Blade
+weapons/katar/gilded_katar_blade.vox: Katar, blade: Gilded Katar Blade
+weapons/katar/void_katar_blade.vox: Katar, blade: Voidsplit Katar
+weapons/katar/venom_katar_blade.vox: Katar, blade: Venom Katar
+weapons/katar/tigerclaw_katar_blade.vox: Katar, blade: Tigerclaw
+weapons/katar/heartpiercer_katar_blade.vox: Katar, blade: Heartpiercer
+weapons/katar/leather_grip.vox: Katar, hilt: Leather Grip
+weapons/katar/wooden_hilt.vox: Katar, hilt: Wooden Hilt
+weapons/katar/wrapped_grip.vox: Katar, hilt: Wrapped Grip
+weapons/katar/duelist_hilt.vox: Katar, hilt: Duelist's Hilt
+weapons/katar/heavy_hilt.vox: Katar, hilt: Heavy Hilt
+weapons/katar/executioner_hilt.vox: Katar, hilt: Executioner's Hilt
+weapons/katar/vampiric_hilt.vox: Katar, hilt: Vampiric Hilt
+weapons/katar/tempest_hilt.vox: Katar, hilt: Tempest Hilt
+weapons/katar/kings_hilt.vox: Katar, hilt: Hilt of the Fallen King
+weapons/katar/hollow_hilt.vox: Katar, hilt: Hollow Hilt
+weapons/katar/stormlotus_hilt.vox: Katar, hilt: Stormlotus Hilt
+weapons/katar/berserker_grip.vox: Katar, hilt: Berserker's Grip
+weapons/katar/wheel_pommel_grip.vox: Katar, hilt: Wheel-Pommel Grip
+weapons/katar/ebony_crescent_hilt.vox: Katar, hilt: Ebony Crescent Hilt
+weapons/katar/fanged_bone_hilt.vox: Katar, hilt: Fanged Bone Hilt
+weapons/katar/faceted_obsidian_hilt.vox: Katar, hilt: Faceted Obsidian Hilt
+weapons/katar/knuckled_bone_grip.vox: Katar, hilt: Bone Grip
+weapons/katar/spiral_cord_grip.vox: Katar, hilt: Spiral Cord Grip
+weapons/katar/ribbed_grip.vox: Katar, hilt: Ribbed Grip
+weapons/katar/obsidian_claw_grip.vox: Katar, hilt: Obsidian Claw Grip
+weapons/katar/runed_bone_grip.vox: Katar, hilt: Runed Bone Grip
+weapons/katar/iron_core.vox: Katar, core: Iron Core
+weapons/katar/quartz_core.vox: Katar, core: Quartz Core
+weapons/katar/amber_core.vox: Katar, core: Amber Core
+weapons/katar/ember_core.vox: Katar, core: Ember Core
+weapons/katar/rime_core.vox: Katar, core: Rime Core
+weapons/katar/venom_core.vox: Katar, core: Venom Core
+weapons/katar/storm_core.vox: Katar, core: Storm Core
+weapons/katar/void_heart.vox: Katar, core: Void Heart
+weapons/katar/sun_core.vox: Katar, core: Sun Core
+weapons/katar/heart_of_winter.vox: Katar, core: Heart of Winter
+weapons/katar/glacier_core.vox: Katar, core: Glacier Core
+weapons/katar/heart_of_the_horde.vox: Katar, core: Heart of the Horde
+weapons/katar/trappers_knot.vox: Katar, core: Trapper's Knot
+weapons/katar/rending_core.vox: Katar, core: Rending Core
+weapons/katar/quaking_core.vox: Katar, core: Quaking Core
+weapons/katar/plagueheart_core.vox: Katar, core: Plagueheart
+weapons/katar/maelstrom_core.vox: Katar, core: Maelstrom Core
+weapons/katar/garnet_core.vox: Katar, core: Garnet Core
+weapons/katar/dawnshard_core.vox: Katar, core: Dawnshard Core
+weapons/katar/weeping_core.vox: Katar, core: Weeping Core
+weapons/katar/choir_core.vox: Katar, core: Choir Core
+weapons/katar/star_core.vox: Katar, core: Star Core
+weapons/katar/watching_eye_core.vox: Katar, core: Watching Eye
+weapons/naginata/naginata_blade.vox: Naginata, blade: Naginata Blade
+weapons/naginata/long_naginata_blade.vox: Naginata, blade: Long Naginata Blade
+weapons/naginata/guandao_blade.vox: Naginata, blade: Guandao Blade
+weapons/naginata/bisento_blade.vox: Naginata, blade: Bisento Blade
+weapons/naginata/damascus_naginata_blade.vox: Naginata, blade: Damascus Naginata
+weapons/naginata/dragon_guandao_blade.vox: Naginata, blade: Dragon Guandao
+weapons/naginata/moonglaive_blade.vox: Naginata, blade: Moonglaive
+weapons/naginata/frostwind_bisento_blade.vox: Naginata, blade: Frostwind Bisento
+weapons/naginata/thousand_petals_blade.vox: Naginata, blade: Thousand Petals
+weapons/naginata/reavers_crook_blade.vox: Naginata, blade: Reaver's Crook
+weapons/naginata/leather_grip.vox: Naginata, hilt: Leather Grip
+weapons/naginata/wooden_hilt.vox: Naginata, hilt: Wooden Hilt
+weapons/naginata/wrapped_grip.vox: Naginata, hilt: Wrapped Grip
+weapons/naginata/duelist_hilt.vox: Naginata, hilt: Duelist's Hilt
+weapons/naginata/heavy_hilt.vox: Naginata, hilt: Heavy Hilt
+weapons/naginata/executioner_hilt.vox: Naginata, hilt: Executioner's Hilt
+weapons/naginata/vampiric_hilt.vox: Naginata, hilt: Vampiric Hilt
+weapons/naginata/tempest_hilt.vox: Naginata, hilt: Tempest Hilt
+weapons/naginata/kings_hilt.vox: Naginata, hilt: Hilt of the Fallen King
+weapons/naginata/hollow_hilt.vox: Naginata, hilt: Hollow Hilt
+weapons/naginata/stormlotus_hilt.vox: Naginata, hilt: Stormlotus Hilt
+weapons/naginata/berserker_grip.vox: Naginata, hilt: Berserker's Grip
+weapons/naginata/wheel_pommel_grip.vox: Naginata, hilt: Wheel-Pommel Grip
+weapons/naginata/ebony_crescent_hilt.vox: Naginata, hilt: Ebony Crescent Hilt
+weapons/naginata/fanged_bone_hilt.vox: Naginata, hilt: Fanged Bone Hilt
+weapons/naginata/faceted_obsidian_hilt.vox: Naginata, hilt: Faceted Obsidian Hilt
+weapons/naginata/knuckled_bone_grip.vox: Naginata, hilt: Bone Grip
+weapons/naginata/spiral_cord_grip.vox: Naginata, hilt: Spiral Cord Grip
+weapons/naginata/ribbed_grip.vox: Naginata, hilt: Ribbed Grip
+weapons/naginata/obsidian_claw_grip.vox: Naginata, hilt: Obsidian Claw Grip
+weapons/naginata/runed_bone_grip.vox: Naginata, hilt: Runed Bone Grip
+weapons/naginata/iron_crossguard.vox: Naginata, guard: Iron Crossguard
+weapons/naginata/bar_guard.vox: Naginata, guard: Bar Guard
+weapons/naginata/disc_guard.vox: Naginata, guard: Disc Guard
+weapons/naginata/swept_guard.vox: Naginata, guard: Swept Guard
+weapons/naginata/horned_guard.vox: Naginata, guard: Horned Guard
+weapons/naginata/gilded_guard.vox: Naginata, guard: Gilded Guard
+weapons/naginata/thorn_guard.vox: Naginata, guard: Thorn Guard
+weapons/naginata/winged_guard.vox: Naginata, guard: Winged Guard
+weapons/naginata/dragon_guard.vox: Naginata, guard: Wyrm Guard
+weapons/naginata/abyss_guard.vox: Naginata, guard: Abyssal Guard
+weapons/naginata/spectral_guard.vox: Naginata, guard: Spectral Guard
+weapons/naginata/basket_guard.vox: Naginata, guard: Basket Guard
+weapons/naginata/warlords_guard.vox: Naginata, guard: Warlord's Guard
+weapons/naginata/sweeping_guard.vox: Naginata, guard: Sweeping Guard
+weapons/naginata/shattering_guard.vox: Naginata, guard: Shattering Guard
+weapons/naginata/ring_guard.vox: Naginata, guard: Ring Guard
+weapons/naginata/shell_guard.vox: Naginata, guard: Shell Guard
+weapons/naginata/serpent_guard.vox: Naginata, guard: Serpent Guard
+weapons/naginata/spiked_guard.vox: Naginata, guard: Spiked Guard
+weapons/naginata/gilded_crescent_guard.vox: Naginata, guard: Gilded Crescent Guard
+weapons/naginata/steel_basket_hilt.vox: Naginata, guard: Steel Basket
+weapons/naginata/knuckle_bow_guard.vox: Naginata, guard: Knuckle Bow
+weapons/naginata/sunburst_guard.vox: Naginata, guard: Sunburst Guard
+weapons/naginata/antler_guard.vox: Naginata, guard: Antler Guard
+weapons/naginata/iron_core.vox: Naginata, core: Iron Core
+weapons/naginata/quartz_core.vox: Naginata, core: Quartz Core
+weapons/naginata/amber_core.vox: Naginata, core: Amber Core
+weapons/naginata/ember_core.vox: Naginata, core: Ember Core
+weapons/naginata/rime_core.vox: Naginata, core: Rime Core
+weapons/naginata/venom_core.vox: Naginata, core: Venom Core
+weapons/naginata/storm_core.vox: Naginata, core: Storm Core
+weapons/naginata/void_heart.vox: Naginata, core: Void Heart
+weapons/naginata/sun_core.vox: Naginata, core: Sun Core
+weapons/naginata/heart_of_winter.vox: Naginata, core: Heart of Winter
+weapons/naginata/glacier_core.vox: Naginata, core: Glacier Core
+weapons/naginata/heart_of_the_horde.vox: Naginata, core: Heart of the Horde
+weapons/naginata/trappers_knot.vox: Naginata, core: Trapper's Knot
+weapons/naginata/rending_core.vox: Naginata, core: Rending Core
+weapons/naginata/quaking_core.vox: Naginata, core: Quaking Core
+weapons/naginata/plagueheart_core.vox: Naginata, core: Plagueheart
+weapons/naginata/maelstrom_core.vox: Naginata, core: Maelstrom Core
+weapons/naginata/garnet_core.vox: Naginata, core: Garnet Core
+weapons/naginata/dawnshard_core.vox: Naginata, core: Dawnshard Core
+weapons/naginata/weeping_core.vox: Naginata, core: Weeping Core
+weapons/naginata/choir_core.vox: Naginata, core: Choir Core
+weapons/naginata/star_core.vox: Naginata, core: Star Core
+weapons/naginata/watching_eye_core.vox: Naginata, core: Watching Eye
 weapons/hatchet/crude_hatchet_head.vox: Hatchet, blade: Knapped Stone Head
 weapons/hatchet/sturdy_hatchet_head.vox: Hatchet, blade: Iron Hatchet Head
 weapons/hatchet/fine_hatchet_head.vox: Hatchet, blade: Steel Hatchet Head

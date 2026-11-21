@@ -1,0 +1,37 @@
+{
+  "what": "Naginata, blade: Guandao Blade",
+  "voxels_per_meter": 192.0,
+  "size": [
+    38,
+    5,
+    119
+  ],
+  "pivot": [
+    15.384,
+    2.5695999999999994,
+    -284.0
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -3,
+    284
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.5376
+    ],
+    "tip": [
+      0.08000000000000002,
+      0.0,
+      2.0996
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    21106,
+    "8ce1cea441cdce99"
+  ]
+}

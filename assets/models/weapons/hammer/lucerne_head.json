@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, blade: Lucerne Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    67,
+    19,
+    58
+  ],
+  "pivot": [
+    37.976,
+    9.753599999999999,
+    -126.0
+  ],
+  "anchor": null,
+  "origin": [
+    -38,
+    -10,
+    126
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.15,
+      0.0,
+      0.7325999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    56243,
+    "58dbfa0cac6a9694"
+  ]
+}

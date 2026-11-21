@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Deep Reflex Limbs, frame 2 of 3",
+  "voxels_per_meter": 160.0,
+  "size": [
+    21,
+    8,
+    189
+  ],
+  "pivot": [
+    17.239999999999988,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -17,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.575
+    ],
+    "nock_1": [
+      5.551115123125783e-17,
+      0.0,
+      0.605
+    ],
+    "nock_2": [
+      -0.11999999999999993,
+      0.0,
+      0.605
+    ],
+    "nock_3": [
+      -0.2399999999999999,
+      0.0,
+      0.605
+    ],
+    "tip": [
+      5.551115123125783e-17,
+      0.0,
+      0.605
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    15873,
+    "4d2023ca1f762d66"
+  ]
+}

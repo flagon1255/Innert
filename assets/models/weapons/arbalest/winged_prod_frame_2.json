@@ -1,0 +1,67 @@
+{
+  "what": "Arbalest, prod: Winged Prod, frame 2 of 4",
+  "voxels_per_meter": 128.0,
+  "size": [
+    37,
+    112,
+    6
+  ],
+  "pivot": [
+    -72.696,
+    56.168,
+    2.4640000000000004
+  ],
+  "anchor": null,
+  "origin": [
+    73,
+    -56,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.298,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.07,
+      0.085,
+      -0.065
+    ],
+    "mover_pivot": [
+      0.07,
+      0.0,
+      0.02
+    ],
+    "nock_1": [
+      0.7845161290322582,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.5701612903225808,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.378,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.598,
+      0.0,
+      -0.03
+    ],
+    "tip": [
+      0.91,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    7928,
+    "0f92f34e7d8b53bf"
+  ]
+}
