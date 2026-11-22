@@ -328,6 +328,9 @@ struct Projectile {
     trick: Trick,
     /// Special ammo's own look, which of weapons::AMMO_STYLES, see ammo.rs
     ammo: Option<u8>,
+    /// How long it's been going down through water, in seconds, once it's splashed into it, see
+    /// Combat::fly()
+    sinking: Option<f64>,
 }
 
 /// What a bolt does beyond flying and hitting
@@ -441,6 +444,28 @@ const STUCK_SINK: f64 = 0.8;
 const SPENT_PACE: f64 = 0.18;
 const SPENT_GRAVITY: f64 = 4.0;
 const SPENT_POWER: f64 = 0.25;
+/// What's shot or thrown into water: how much of its speed it keeps going in, how hard the water
+/// drags at it after, a part of its speed a second, so it sinks no faster than about 3 m/s, and
+/// how many seconds it goes on sinking before it's gone down out of sight, see Combat::fly()
+const WATER_ENTRY: f64 = 0.2;
+const WATER_DRAG: f64 = 3.0;
+const SINK_SECONDS: f64 = 2.5;
+/// How deep under water, in meters, a blast still throws up a plume of it over where it goes off
+const PLUME_DEPTH: f64 = 6.0;
+
+/// How big a splash `p` makes going into water, 1 for a spell's
+fn water_splash(p: &Projectile) -> f64 {
+    if !p.arrow {
+        return 1.0;
+    }
+    match (p.trick, p.shot) {
+        (Trick::Bomb { .. }, _) => 1.0,
+        (Trick::Fragment, _) => 0.3,
+        (_, Shot::Shell) => 1.3,
+        (_, Shot::Ball) => 0.45 * p.size.clamp(0.6, 1.6),
+        _ => 0.6,
+    }
+}
 
 /// How far from the eye anything's ever seen in `world`, in voxels: never further than its edge
 /// is from the middle less a strip, as it moves on a strip at a time once the eye's half a strip
@@ -2238,6 +2263,41 @@ fn solid_along(world: &World, a: Vector3<f64>, b: Vector3<f64>) -> Option<f64> {
         let p = a + (b - a) * t;
         p.z < 0.0 || !is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
     })
+}
+
+/// Where the line from `a` to `b` first goes through the top of the water, short of `until`, the
+/// part of the way along it, 0-1, that it runs into something solid, see solid_along(): how far
+/// along, and whether it goes down into the water there rather than coming up out of it. The
+/// water's looked at all along the line, about a voxel apart, not only at its ends, so what flies
+/// fast over a beach into the shallows, or into the sea and on into its bottom within the one
+/// step, still goes into the water where it does. The same for the sea, lakes and rivers, at
+/// whatever height each lies, as `water` has them.
+fn water_crossing(water: WaterLevel, a: Vector3<f64>, b: Vector3<f64>, until: f64) -> Option<(f64, bool)> {
+    let end = until.min(1.0);
+    if end.is_nan() || end <= 0.0 {
+        return None;
+    }
+    let steps = ((b - a).norm() * end).ceil().clamp(1.0, 256.0) as usize;
+    let mut was = a;
+    let mut under = a.z <= water(a.x, a.y);
+    for k in 1..=steps {
+        let t = end * k as f64 / steps as f64;
+        let p = a + (b - a) * t;
+        let top = water(p.x, p.y);
+        let now = p.z <= top;
+        if now != under {
+            // Where between the two it crosses the top of the water here, which is as level as
+            // can be over a voxel or so
+            let level = if now { top } else { water(was.x, was.y) };
+            let rise = p.z - was.z;
+            let along = if rise.abs() > 1e-9 { ((level - was.z) / rise).clamp(0.0, 1.0) } else { 1.0 };
+            let t0 = end * (k - 1) as f64 / steps as f64;
+            return Some((t0 + (t - t0) * along, now));
+        }
+        was = p;
+        under = now;
+    }
+    None
 }
 
 /// How a weapon is held, in the camera's right, forward and up, in meters
@@ -10078,6 +10138,7 @@ impl Combat {
             blast: 0.0,
             trick: Trick::None,
             ammo: None,
+            sinking: None,
         });
     }
 
@@ -11934,6 +11995,7 @@ impl Combat {
             blast: 0.0,
             trick: Trick::None,
             ammo,
+            sinking: None,
         };
         let mut shots = vec![make(direction, damage)];
         if profile.has(Effect::Multishot) {
@@ -12103,15 +12165,29 @@ impl Combat {
                     }
                 }
             }
+            // Going down through water, it's dragged hard, sinking slowly, and what's sunk for a
+            // while has gone down out of sight: a shell or a bomb going off where it's got to,
+            // anything else just gone
+            if let Some(under) = p.sinking {
+                // A bomb goes off when its fuse has burnt down, wherever it's sunk to
+                if under > SINK_SECONDS && !matches!(p.trick, Trick::Bomb { .. }) {
+                    if p.arrow && (p.blast > 0.0 || profile.has(Effect::Explosive)) {
+                        self.impact(arena, &p, p.position);
+                    }
+                    continue;
+                }
+                p.sinking = Some(under + dt);
+                p.velocity *= (-WATER_DRAG * dt).exp();
+            }
             p.velocity.z -= 9.8 * p.gravity * vpm * dt;
-            let (start, end) = (p.position, p.position + p.velocity * dt);
+            let (start, mut end) = (p.position, p.position + p.velocity * dt);
 
             // Spells and arrows with an element leave it trailing behind them, and arrows shot at
             // full draw and a gun's balls a streak. A fireball sheds more, venom and blood drip,
             // and a shell's fuse sputters. Not so far off it's faded into the sky,
-            // where none of it would be seen.
+            // where none of it would be seen, nor under water.
             let shell = p.arrow && p.shot == Shot::Shell;
-            let shown = (start - arena.view.eye).norm() < trail_reach;
+            let shown = (start - arena.view.eye).norm() < trail_reach && p.sinking.is_none();
             // Special ammo trails what it trails, each kind its own, see ammo.rs
             if let Some(k) = p.ammo.filter(|_| shown && p.trick != Trick::Fragment) {
                 p.trail += dt * if p.shot == Shot::Ball { ammo::AMMO_BALL_TRAIL } else { ammo::AMMO_TRAIL };
@@ -12173,14 +12249,16 @@ impl Combat {
 
             let mut gone = false;
             let mut bounced = false;
-            let wall = solid_along(arena.world, start, end).unwrap_or(f64::MAX);
-            // Splashing into water: a spell goes off on it, an arrow carries on, slowed
-            let (high, low) = ((arena.water)(start.x, start.y), (arena.water)(end.x, end.y));
-            if start.z > high && end.z <= low && low.is_finite() {
-                let t = ((start.z - low) / (start.z - end.z)).clamp(0.0, 1.0);
-                if t < wall {
-                    let at = start + (end - start) * t;
-                    self.splash(at, if p.arrow { 0.6 } else { 1.0 });
+            let mut wall = solid_along(arena.world, start, end).unwrap_or(f64::MAX);
+            // Splashing into water on its way, before it gets to whatever's under it: a spell, or
+            // a special attack's shot, goes off on it; an arrow, a bolt, a ball, a shell or a bomb
+            // goes on down into it, slowed hard, and only strikes the bottom after, as it sinks
+            // onto it. Coming back up out of it, as what's thrown up out of the water does, it
+            // splashes a little.
+            if let Some((t, into)) = water_crossing(arena.water, start, end, wall) {
+                let at = start + (end - start) * t;
+                if into {
+                    self.splash(at, water_splash(&p));
                     if let Trick::Comet(_) = p.trick {
                         self.comet_impact(arena, &p, at);
                         continue;
@@ -12197,7 +12275,16 @@ impl Combat {
                         self.impact(arena, &p, at);
                         continue;
                     }
-                    p.velocity *= 0.3;
+                    p.velocity *= WATER_ENTRY;
+                    p.gravity = p.gravity.max(1.0);
+                    p.sinking = Some(0.0);
+                    // The rest of this step at the pace it goes on at, so it strikes the bottom
+                    // after, as it sinks onto it, rather than in the same moment it goes in
+                    end = at + p.velocity * dt * (1.0 - t);
+                    wall = solid_along(arena.world, start, end).unwrap_or(f64::MAX);
+                } else {
+                    self.splash(at, 0.3);
+                    p.sinking = None;
                 }
             }
             // Animals it passes through on the way, nearest first
@@ -12649,6 +12736,8 @@ impl Combat {
             blast: 0.0,
             trick,
             ammo: p.ammo,
+            // Under water still, if it's set off from under water
+            sinking: p.sinking.map(|_| 0.0),
         }
     }
 
@@ -12755,6 +12844,12 @@ impl Combat {
             // Felt more the nearer and bigger it is
             let near = (1.0 - (at - arena.view.eye).norm() / vpm / 30.0).max(0.0);
             self.shake = self.shake.max(near * (0.3 + radius * 0.25));
+            // Going off under water, as a shell or a bomb that's sunk to the bottom does, it
+            // throws a plume of it up out of the top over where it is
+            let top = (arena.water)(at.x, at.y);
+            if top > at.z + 0.2 * vpm && top < at.z + PLUME_DEPTH * vpm {
+                self.splash(Vector3::new(at.x, at.y, top), (0.9 + radius * 0.45).min(2.6));
+            }
         }
         let r = radius * vpm;
         // Measured to the nearest of its body, so a big one's caught by a blast at its feet
@@ -14381,8 +14476,7 @@ impl Combat {
             let body = arena.player.map(|feet| feet + Vector3::new(0.0, 0.0, 1.0 * vpm));
             let direct = body.and_then(|b| sphere_hit(start, end, b, 0.8 * vpm));
             let wall = solid_along(arena.world, start, end);
-            let (high, low) = ((arena.water)(start.x, start.y), (arena.water)(end.x, end.y));
-            let water = (start.z > high && end.z <= low && low.is_finite()).then(|| ((start.z - low) / (start.z - end.z)).clamp(0.0, 1.0));
+            let water = water_crossing(arena.water, start, end, wall.unwrap_or(f64::MAX)).filter(|&(_, into)| into).map(|(t, _)| t);
             // Missing, it flies on till it comes down or strikes something, or goes out of the
             // world where it's never seen again, see lost()
             let landed = [direct, wall, water].into_iter().flatten().reduce(f64::min);
@@ -17933,6 +18027,100 @@ mod tests {
         let mut v = p.velocity;
         v.z -= 9.8 * p.gravity * vpm * dt;
         p.position + v * dt
+    }
+
+    /// Where what's in flight goes into water is looked for all along the way it goes in a step,
+    /// not only at its ends: going down into the sea, over the sea and on into the beach past it in
+    /// the one step, into the shallows and on into the bottom under them, into a lake lying higher
+    /// up than the sea, never into what's beyond a wall it runs into first, never while it stays
+    /// over the water or over dry land, and coming up out of the water is told from going into it
+    #[test]
+    fn what_flies_into_water_is_seen_going_in_wherever_it_does() {
+        // The sea's top at 10 up to x = 20, dry land on from there, and a lake with its top at 14
+        // from x = 40 to 50
+        let water = |x: f64, _: f64| if x < 20.0 { 10.0 } else if (40.0..50.0).contains(&x) { 14.0 } else { f64::NEG_INFINITY };
+        let at = |x: f64, z: f64| Vector3::new(x, 0.0, z);
+        let into = |a, b, until| water_crossing(&water, a, b, until).filter(|&(_, into)| into).map(|(t, _)| t);
+        // Straight down into the sea, a quarter of the way along
+        assert!(into(at(5.0, 12.0), at(5.0, 4.0), f64::MAX).is_some_and(|t| (t - 0.25).abs() < 1e-6));
+        // Over the sea and on into the beach in one step, its end over dry land: it went in at
+        // x = 12 on the way
+        let t = into(at(10.0, 11.0), at(26.0, 3.0), f64::MAX).expect("went into the sea before the beach");
+        assert!((10.0 + 16.0 * t - 12.0).abs() < 0.1, "went in at x = {:.2}", 10.0 + 16.0 * t);
+        // Into the shallows and on into the bottom, three quarters of the way, in the one step:
+        // into the water first
+        assert!(into(at(5.0, 11.0), at(5.0, 7.0), 0.75).is_some_and(|t| (t - 0.25).abs() < 1e-6));
+        // A wall before the water, a fifth of the way: it never gets to the water
+        assert!(water_crossing(&water, at(5.0, 11.0), at(5.0, 7.0), 0.2).is_none());
+        // Into the lake, at its own height
+        assert!(into(at(44.0, 16.0), at(46.0, 12.0), f64::MAX).is_some_and(|t| (t - 0.5).abs() < 1e-6));
+        // Low over dry land, and over the sea never coming down to it
+        assert!(water_crossing(&water, at(22.0, 5.0), at(38.0, 1.0), f64::MAX).is_none());
+        assert!(water_crossing(&water, at(0.0, 12.0), at(18.0, 11.0), f64::MAX).is_none());
+        // Coming up out of the sea, halfway along
+        assert!(water_crossing(&water, at(5.0, 8.0), at(5.0, 12.0), f64::MAX).is_some_and(|(t, into)| !into && (t - 0.5).abs() < 1e-6));
+    }
+
+    /// A hand cannon's shell shot into the shallows splashes as it goes into the water, and only
+    /// after that, sinking on down through it, strikes the bottom and goes off there, throwing a
+    /// plume of water up out of the top over where it did; an arrow splashes in the same way, then
+    /// sticks in the bottom
+    #[test]
+    fn a_shot_into_water_splashes_before_it_strikes_the_bottom() {
+        let library = crate::weapons::Library::load();
+        let vpm = 8.0;
+        let world = open_ground(96, 8);
+        // A meter of water over the ground, from 20 m out
+        let level = 5.0 * vpm;
+        let water = move |_: f64, y: f64| if y > 20.0 * vpm { level } else { f64::NEG_INFINITY };
+        let feet = Vector3::new(48.0, 10.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let cannon = library.generate(1, library.family("handcannon"), 1.0);
+        let shots = [(cannon.profile.clone(), Shot::Shell, cannon.profile.stat("projectileSpeed")), (plain_profile(), Shot::Arrow, 50.0)];
+        for (profile, shot, speed) in shots {
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            let mut animals = Vec::new();
+            let aim = Vector3::new(48.0, 34.0, 5.3) * vpm;
+            combat.shoot(&view, &profile, Some(Missile { shot, head: 0, power: false, size: 1.0 }), Form::Bolt, eye, (aim - eye).normalize(), speed * vpm, 20.0);
+            let (mut splashed, mut struck, mut plume) = (None, None, false);
+            for frame in 0..180 {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.fly(&mut arena, 1.0 / 60.0);
+                let cues = std::mem::take(&mut combat.cues);
+                for cue in &cues {
+                    let z = cue.at.map_or(f64::NAN, |at| at.z);
+                    match cue.sound {
+                        Sound::Splash if splashed.is_none() => {
+                            assert!((z - level).abs() < 0.5 * vpm, "{shot:?} splashed {:.2} m off the top of the water", (z - level) / vpm);
+                            splashed = Some(frame);
+                        }
+                        Sound::Splash => plume |= (z - level).abs() < 0.1 * vpm,
+                        Sound::Burst => {
+                            assert!(z < level - 0.5 * vpm, "{shot:?} went off {:.2} m under the top of the water", (level - z) / vpm);
+                            struck = Some(frame);
+                        }
+                        _ => {}
+                    }
+                }
+                if shot == Shot::Arrow && struck.is_none() && !combat.stuck.is_empty() {
+                    assert!(combat.stuck[0].position.z < level, "the arrow stuck in over the water");
+                    struck = Some(frame);
+                }
+                if combat.projectiles.is_empty() {
+                    break;
+                }
+            }
+            let (Some(splashed), Some(struck)) = (splashed, struck) else {
+                panic!("{shot:?}: splashed {splashed:?}, struck the bottom {struck:?}");
+            };
+            assert!(splashed < struck, "{shot:?} splashed in frame {splashed}, struck the bottom in frame {struck}");
+            if shot == Shot::Shell {
+                assert!(plume, "no plume of water up over where the shell went off");
+            }
+            println!("{shot:?}: splashed in frame {splashed}, struck the bottom in frame {struck}");
+        }
     }
 
     /// The rule for what's shot or cast: nothing in flight runs out of time and falls out of the
