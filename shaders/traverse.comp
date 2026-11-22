@@ -1236,9 +1236,14 @@ vec3 sunDisc(vec3 dir) {
     return color;
 }
 
+// How much of the sky's own brightness lights what's in shade, for light that's sunlight's
+// rather than the sky's to do the lighting: shade a good deal darker than what the sun's on, the
+// way it is out of doors. The sky itself is drawn as bright as ever.
+const float SKY_FILL = 0.5;
+
 // Cheap stand-in for light from the sky and the ground, used when bounce light is off
 vec3 ambientLight(vec3 normal) {
-    vec3 sky = 0.5 * (skyColor(vec3(0, 0, 1)) + skyColor(normalize(vec3(1, 0, 0.2))));
+    vec3 sky = 0.5 * (skyColor(vec3(0, 0, 1)) + skyColor(normalize(vec3(1, 0, 0.2)))) * SKY_FILL;
     vec3 ground = vec3(0.3, 0.27, 0.2) * (sunColor() * 0.15 + sky * 0.3);
     return mix(ground, sky, normal.z * 0.5 + 0.5);
 }
@@ -1799,7 +1804,8 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
             if (grassAt(ivec2(floor(end.xy)), ground) >= 0 && end.z < ground - UNDERGROUND * float(max(pc.world_size.w, 1u)))
             return skyColor(dir) * 0.04;
         }
-        return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+        // Seen in a reflection, the sky as it is; bounced into shade, only so much of it
+        return include_sun ? skyColor(dir) + sunDisc(dir) : skyColor(dir) * SKY_FILL;
     }
 
     uint material = hitMaterial(hit);

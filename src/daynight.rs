@@ -51,7 +51,7 @@ const SWAP_Z: f64 = -0.025;
 /// The moon's light at its brightest, high in the sky
 const MOONLIGHT: [f64; 3] = [0.050, 0.066, 0.112];
 /// How much brighter the night's shown, as eyes get used to the dark
-pub const NIGHT_EXPOSURE: f64 = 1.7;
+pub const NIGHT_EXPOSURE: f64 = 1.45;
 /// Nights from one full moon to the next: it waxes and wanes through new, crescent and half
 pub const LUNAR_NIGHTS: u32 = 8;
 /// How much of the full moon's light there is when it's new: some, from the stars and the sky, so
@@ -503,7 +503,7 @@ mod tests {
         // Moonlight's a small part of sunlight, but some
         let luma = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         assert!(luma(midnight.key_light) > 0.04 && luma(midnight.key_light) < 0.05 * luma(noon.key_light));
-        assert!(midnight.exposure > 1.5 && (noon.exposure - 1.0).abs() < 1e-6 && midnight.night > 0.99 && noon.night < 1e-6);
+        assert!(midnight.exposure > 1.3 &&(noon.exposure - 1.0).abs() < 1e-6 && midnight.night > 0.99 && noon.night < 1e-6);
         // The light given over is continuous where the moon takes over from the sun
         let before = Sky::at(sun_angle(SUNSET) + 0.02);
         let after = Sky::at(sun_angle(SUNSET) + 0.06);

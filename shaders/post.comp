@@ -18,7 +18,7 @@ const uint POST_DENOISE = 4;
 // Has to match BLOOM_SCALE in main.rs: bloom is computed at 1/4 of the render resolution
 const int BLOOM_SCALE = 4;
 
-const float EXPOSURE = 0.78;
+const float EXPOSURE = 0.62;
 // Colors are made richer before tone mapping, which washes out bright ones, and again after
 const float RICHNESS = 1.1;
 const float SATURATION = 1.2;
