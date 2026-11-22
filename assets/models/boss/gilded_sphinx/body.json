@@ -1,0 +1,29 @@
+{
+  "what": "Gilded Sphinx, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    60,
+    28,
+    37
+  ],
+  "pivot": [
+    30.272,
+    13.728000000000002,
+    13.376000000000001
+  ],
+  "anchor": [
+    -0.016999999999999904,
+    0.016999999999999904,
+    -0.8360000000000001
+  ],
+  "origin": [
+    -30,
+    -14,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    96119,
+    "3f1ced7838ccab34"
+  ]
+}

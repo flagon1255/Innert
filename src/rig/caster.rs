@@ -6,6 +6,10 @@
 //! weeping from where her eyes should be and glowing in her heart. They thrust their staffs out to
 //! hurl what's in them, sweep them round to fling swarms, raise them to call down the sky or call up
 //! the dead, and the Hollow Mother raises all four arms to weep blood down all round the player.
+//! And the Lantern Widow of the Dreaming Red and the flooded churches, see src\bosses\roster.rs: tall
+//! and gaunt in black mourning to the ground, veiled, a crown of black lace, pale hands, an iron
+//! crook with a lantern caged in bronze hung from it, the void burning in it, which she raises and
+//! circles to close a ring of gloom on the player, and draws about her to vanish.
 
 use super::biped::{self, ARM, CHEST, EXTRA, FOOT, FORE, Frame, Gait, HEAD, PELVIS, SHIN, Stance, THIGH, TOOL, bone};
 use super::*;
@@ -51,6 +55,8 @@ pub fn rest(look: Look) -> Stance {
     let mut s = match look {
         Look::BogHag => f.rest([[0.38, -0.26, 0.82], [0.32, 0.25, 0.72]]),
         Look::HollowMother => f.rest([[0.25, -0.5, 1.15], [0.25, 0.5, 1.15]]),
+        // Her crook planted beside her, her other hand folded at her breast
+        Look::LanternWidow => f.rest([[0.22, -0.3, 1.05], [0.22, 0.06, 1.25]]),
         _ => f.rest([[0.25, -0.28, 1.0], [0.1, 0.3, 0.92]]),
     };
     s.tool = [0.05, 0.0, -1.0];
@@ -130,6 +136,51 @@ pub fn pieces(look: Look) -> Vec<Vec<Part>> {
             for k in 0..2 {
                 out[ARM[k]] = vec![bone(0.32, 0.07, 0.06, dark)];
                 out[FORE[k]] = vec![ball([0.0, 0.0, -0.32], 0.045, body), bone(0.3, 0.06, 0.085, dark)];
+            }
+            return out;
+        }
+        Look::LanternWidow => {
+            // A gown of black mourning to the ground, its hem trailing, a dark iron girdle; a bodice
+            // and high collar; a veil hanging over her face, two glints of the void through it, and
+            // a crown of black lace spikes; long sleeves, pale hands
+            out[PELVIS] = vec![
+                ellipsoid([0.04, 0.0, -0.9], [0.36, 0.38, 0.05], accent),
+                ellipsoid([0.0, 0.0, 0.04], [0.14, 0.18, 0.04], accent),
+                limb([0.0, 0.0, 0.06], [0.05, 0.0, -0.9], 0.17, 0.36, dark),
+                limb([-0.08, 0.0, -0.2], [-0.32, 0.0, -0.92], 0.12, 0.18, dark),
+            ];
+            out[CHEST] = vec![
+                limb([0.0, 0.0, 0.42], [0.0, 0.0, 0.55], 0.09, 0.11, dark),
+                ellipsoid([0.06, 0.0, 0.3], [0.08, 0.14, 0.08], body),
+                ellipsoid([0.0, 0.0, 0.22], [0.13, 0.2, 0.26], dark),
+            ];
+            let h = &mut out[HEAD];
+            for s in [-1.0, 1.0] {
+                h.push(ball([0.12, s * 0.045, 0.07], 0.022, glow));
+            }
+            for k in 0..7 {
+                let a = (k as f64 / 6.0 - 0.5) * 2.4;
+                h.push(limb([-0.02, 0.12 * a.sin(), 0.2], [-0.04, 0.15 * a.sin(), 0.38 + 0.05 * a.cos()], 0.02, 0.005, dark));
+            }
+            h.push(limb([0.1, 0.0, 0.12], [0.16, 0.0, -0.2], 0.1, 0.13, dark).stretched([0.45, 1.0, 1.0]));
+            h.push(ellipsoid([-0.02, 0.0, 0.08], [0.13, 0.13, 0.17], dark));
+            h.push(ball([0.03, 0.0, 0.06], 0.1, body));
+            // An iron crook, its hook at the top, the lantern hung from it caged in bronze, the void
+            // burning inside
+            let lantern = [0.13, 0.0, TOP - 0.14];
+            let mut crook = vec![ball(lantern, 0.075, glow)];
+            for k in 0..4 {
+                let a = k as f64 * TAU / 4.0 + 0.4;
+                crook.push(limb([lantern[0] + a.cos() * 0.09, a.sin() * 0.09, lantern[2] - 0.1], [lantern[0] + a.cos() * 0.09, a.sin() * 0.09, lantern[2] + 0.1], 0.02, 0.02, extra));
+            }
+            crook.push(ellipsoid([lantern[0], 0.0, lantern[2] + 0.11], [0.1, 0.1, 0.03], extra));
+            crook.push(limb([lantern[0], 0.0, lantern[2] + 0.12], [lantern[0], 0.0, TOP + 0.06], 0.02, 0.02, extra));
+            crook.push(limb([0.0, 0.0, TOP + 0.08], [0.15, 0.0, TOP + 0.1], 0.04, 0.035, accent));
+            crook.push(limb([0.0, 0.0, TOP + 0.08], [0.0, 0.0, -0.92], 0.04, 0.04, accent));
+            out[TOOL] = crook;
+            for k in 0..2 {
+                out[ARM[k]] = vec![bone(0.32, 0.06, 0.06, dark)];
+                out[FORE[k]] = vec![ball([0.0, 0.0, -0.31], 0.045, body), limb([0.0, 0.0, -0.18], [0.0, 0.0, -0.27], 0.07, 0.09, dark), bone(0.3, 0.055, 0.07, dark)];
             }
             return out;
         }
@@ -297,6 +348,33 @@ fn fight(look: Look, rest: &Stance, m: &Moment) -> (Stance, f64, f64) {
             (Move::Spit, Stage::Wind) => return pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), drawn, Ease::Gather), (d.len, flung, Ease::Snap)]), 10.0),
             (Move::Spit, Stage::Act) => return pick((flung, false), 20.0),
             (_, Stage::Recover) => return pick(along(d.t, &[(0.0, cleave, Ease::Linear), (d.len, guard, Ease::Smooth)]), 6.0),
+            _ => {}
+        }
+    }
+    if look == Look::LanternWidow {
+        match (d.m, d.stage) {
+            // Her lantern raised high and swung round in a circle as the gloom gathers, then held
+            // out at the player, swaying, as the ring closes on them
+            (Move::Gloomgate, Stage::Wind) => {
+                let (mut s, quick) = along(d.t, &[(0.0, guard, Ease::Linear), (d.len * 0.35, raised, Ease::Gather), (d.len, raised, Ease::Linear)]);
+                let a = d.t * 7.5;
+                let round = ((d.t - d.len * 0.25) / 0.3).clamp(0.0, 1.0);
+                s.hands[0][0] += 0.2 * a.cos() * round;
+                s.hands[0][1] += 0.2 * a.sin() * round;
+                return pick((s, quick), 12.0);
+            }
+            (Move::Gloomgate, Stage::Act) => {
+                let mut s = Stance { hips: [0.08, 0.0, lift], lean: 0.12, bend: 0.1, nod: -0.1, hands: [[0.72, -0.2, 1.75], [0.3, 0.2, 1.2]], tool: [0.05, 0.0, -1.0], ..guard };
+                s.hands[0][1] += 0.08 * (d.t * 3.1).sin();
+                s.hands[0][2] += 0.05 * (d.t * 4.3).sin();
+                s.turn += 0.1 * (d.t * 2.0).sin();
+                return pick((s, false), 10.0);
+            }
+            // Drawing her veil and her sleeves in about her, bowed, to vanish
+            (Move::Blink, Stage::Wind | Stage::Act) => {
+                let drawn_in = Stance { hips: [0.0, 0.0, lift - 0.05], bend: 0.35, nod: 0.45, hands: [[0.22, -0.08, 1.3], [0.22, 0.1, 1.35]], tool: [0.3, 0.2, -0.93], ..guard };
+                return pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len, drawn_in, Ease::Gather)]), 14.0);
+            }
             _ => {}
         }
     }

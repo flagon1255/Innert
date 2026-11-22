@@ -338,13 +338,14 @@ portal_veil/base.vox: Portal, standing frame (1 of 1 frames)
 innert_block/base.vox: Innert block, standing frame (1 of 1 frames)
 grapple_hook/base.vox: Grappling hook, standing frame (1 of 1 frames)
 glider/base.vox: Wings, standing frame (1 of 1 frames)
-reed_viper/base.vox: Reed viper, standing frame (1 of 36 frames)
-silt_coiler/base.vox: Silt coiler, standing frame (1 of 36 frames)
-gale_serpent/base.vox: Gale serpent, standing frame (1 of 36 frames)
-blood_adder/base.vox: Bloodvein adder, standing frame (1 of 36 frames)
-drift_serpent/base.vox: Drift serpent, standing frame (1 of 36 frames)
+reed_viper/base.vox: Reed viper, standing frame (1 of 39 frames)
+silt_coiler/base.vox: Silt coiler, standing frame (1 of 39 frames)
+gale_serpent/base.vox: Gale serpent, standing frame (1 of 39 frames)
+blood_adder/base.vox: Bloodvein adder, standing frame (1 of 39 frames)
+drift_serpent/base.vox: Drift serpent, standing frame (1 of 39 frames)
 shed_skin/base.vox: Shed serpent skin, standing frame (1 of 1 frames)
 serpent_bones/base.vox: Serpent bones, standing frame (1 of 1 frames)
+serpent_tongue/base.vox: Serpent's tongue, standing frame (1 of 1 frames)
 dragon/ashwing/torso.vox: ashwing, torso
 dragon/ashwing/neck_1.vox: ashwing, neck 1
 dragon/ashwing/neck_2.vox: ashwing, neck 2
@@ -809,6 +810,115 @@ boss/bleeding_hart/lower_fore_right.vox: Bleeding Hart, lower fore right
 boss/bleeding_hart/lower_fore_left.vox: Bleeding Hart, lower fore left
 boss/bleeding_hart/lower_hind_right.vox: Bleeding Hart, lower hind right
 boss/bleeding_hart/lower_hind_left.vox: Bleeding Hart, lower hind left
+boss/slagwright/pelvis.vox: Slagwright, pelvis
+boss/slagwright/chest.vox: Slagwright, chest
+boss/slagwright/head.vox: Slagwright, head
+boss/slagwright/arm_right.vox: Slagwright, arm right
+boss/slagwright/forearm_right.vox: Slagwright, forearm right
+boss/slagwright/arm_left.vox: Slagwright, arm left
+boss/slagwright/forearm_left.vox: Slagwright, forearm left
+boss/slagwright/thigh_right.vox: Slagwright, thigh right
+boss/slagwright/shin_right.vox: Slagwright, shin right
+boss/slagwright/foot_right.vox: Slagwright, foot right
+boss/slagwright/thigh_left.vox: Slagwright, thigh left
+boss/slagwright/shin_left.vox: Slagwright, shin left
+boss/slagwright/foot_left.vox: Slagwright, foot left
+boss/slagwright/held.vox: Slagwright, held
+boss/slagwright/extra_17.vox: Slagwright, extra 17
+boss/cinderback/body.vox: Cinderback Tortoise, body
+boss/cinderback/neck.vox: Cinderback Tortoise, neck
+boss/cinderback/head.vox: Cinderback Tortoise, head
+boss/cinderback/tail.vox: Cinderback Tortoise, tail
+boss/cinderback/upper_fore_right.vox: Cinderback Tortoise, upper fore right
+boss/cinderback/upper_fore_left.vox: Cinderback Tortoise, upper fore left
+boss/cinderback/upper_hind_right.vox: Cinderback Tortoise, upper hind right
+boss/cinderback/upper_hind_left.vox: Cinderback Tortoise, upper hind left
+boss/cinderback/lower_fore_right.vox: Cinderback Tortoise, lower fore right
+boss/cinderback/lower_fore_left.vox: Cinderback Tortoise, lower fore left
+boss/cinderback/lower_hind_right.vox: Cinderback Tortoise, lower hind right
+boss/cinderback/lower_hind_left.vox: Cinderback Tortoise, lower hind left
+boss/lantern_widow/pelvis.vox: Lantern Widow, pelvis
+boss/lantern_widow/chest.vox: Lantern Widow, chest
+boss/lantern_widow/head.vox: Lantern Widow, head
+boss/lantern_widow/arm_right.vox: Lantern Widow, arm right
+boss/lantern_widow/forearm_right.vox: Lantern Widow, forearm right
+boss/lantern_widow/arm_left.vox: Lantern Widow, arm left
+boss/lantern_widow/forearm_left.vox: Lantern Widow, forearm left
+boss/lantern_widow/held.vox: Lantern Widow, held
+boss/dreadmare/body.vox: Dreadmare, body
+boss/dreadmare/neck.vox: Dreadmare, neck
+boss/dreadmare/head.vox: Dreadmare, head
+boss/dreadmare/tail.vox: Dreadmare, tail
+boss/dreadmare/upper_fore_right.vox: Dreadmare, upper fore right
+boss/dreadmare/upper_fore_left.vox: Dreadmare, upper fore left
+boss/dreadmare/upper_hind_right.vox: Dreadmare, upper hind right
+boss/dreadmare/upper_hind_left.vox: Dreadmare, upper hind left
+boss/dreadmare/lower_fore_right.vox: Dreadmare, lower fore right
+boss/dreadmare/lower_fore_left.vox: Dreadmare, lower fore left
+boss/dreadmare/lower_hind_right.vox: Dreadmare, lower hind right
+boss/dreadmare/lower_hind_left.vox: Dreadmare, lower hind left
+boss/sunstinger/body.vox: Sunstinger, body
+boss/sunstinger/abdomen.vox: Sunstinger, abdomen
+boss/sunstinger/femur_right_1.vox: Sunstinger, femur right 1
+boss/sunstinger/femur_right_2.vox: Sunstinger, femur right 2
+boss/sunstinger/femur_right_3.vox: Sunstinger, femur right 3
+boss/sunstinger/femur_right_4.vox: Sunstinger, femur right 4
+boss/sunstinger/femur_left_1.vox: Sunstinger, femur left 1
+boss/sunstinger/femur_left_2.vox: Sunstinger, femur left 2
+boss/sunstinger/femur_left_3.vox: Sunstinger, femur left 3
+boss/sunstinger/femur_left_4.vox: Sunstinger, femur left 4
+boss/sunstinger/tibia_right_1.vox: Sunstinger, tibia right 1
+boss/sunstinger/tibia_right_2.vox: Sunstinger, tibia right 2
+boss/sunstinger/tibia_right_3.vox: Sunstinger, tibia right 3
+boss/sunstinger/tibia_right_4.vox: Sunstinger, tibia right 4
+boss/sunstinger/tibia_left_1.vox: Sunstinger, tibia left 1
+boss/sunstinger/tibia_left_2.vox: Sunstinger, tibia left 2
+boss/sunstinger/tibia_left_3.vox: Sunstinger, tibia left 3
+boss/sunstinger/tibia_left_4.vox: Sunstinger, tibia left 4
+boss/sunstinger/extra_19.vox: Sunstinger, extra 19
+boss/sunstinger/extra_20.vox: Sunstinger, extra 20
+boss/sunstinger/extra_21.vox: Sunstinger, extra 21
+boss/sunstinger/extra_22.vox: Sunstinger, extra 22
+boss/sunstinger/extra_23.vox: Sunstinger, extra 23
+boss/sunstinger/extra_24.vox: Sunstinger, extra 24
+boss/grovemaul/pelvis.vox: Grovemaul, pelvis
+boss/grovemaul/chest.vox: Grovemaul, chest
+boss/grovemaul/head.vox: Grovemaul, head
+boss/grovemaul/arm_right.vox: Grovemaul, arm right
+boss/grovemaul/forearm_right.vox: Grovemaul, forearm right
+boss/grovemaul/arm_left.vox: Grovemaul, arm left
+boss/grovemaul/forearm_left.vox: Grovemaul, forearm left
+boss/grovemaul/thigh_right.vox: Grovemaul, thigh right
+boss/grovemaul/shin_right.vox: Grovemaul, shin right
+boss/grovemaul/foot_right.vox: Grovemaul, foot right
+boss/grovemaul/thigh_left.vox: Grovemaul, thigh left
+boss/grovemaul/shin_left.vox: Grovemaul, shin left
+boss/grovemaul/foot_left.vox: Grovemaul, foot left
+boss/grovemaul/extra_17.vox: Grovemaul, extra 17
+boss/hoarback/body.vox: Hoarback Mammoth, body
+boss/hoarback/neck.vox: Hoarback Mammoth, neck
+boss/hoarback/head.vox: Hoarback Mammoth, head
+boss/hoarback/tail.vox: Hoarback Mammoth, tail
+boss/hoarback/upper_fore_right.vox: Hoarback Mammoth, upper fore right
+boss/hoarback/upper_fore_left.vox: Hoarback Mammoth, upper fore left
+boss/hoarback/upper_hind_right.vox: Hoarback Mammoth, upper hind right
+boss/hoarback/upper_hind_left.vox: Hoarback Mammoth, upper hind left
+boss/hoarback/lower_fore_right.vox: Hoarback Mammoth, lower fore right
+boss/hoarback/lower_fore_left.vox: Hoarback Mammoth, lower fore left
+boss/hoarback/lower_hind_right.vox: Hoarback Mammoth, lower hind right
+boss/hoarback/lower_hind_left.vox: Hoarback Mammoth, lower hind left
+boss/gilded_sphinx/body.vox: Gilded Sphinx, body
+boss/gilded_sphinx/neck.vox: Gilded Sphinx, neck
+boss/gilded_sphinx/head.vox: Gilded Sphinx, head
+boss/gilded_sphinx/tail.vox: Gilded Sphinx, tail
+boss/gilded_sphinx/upper_fore_right.vox: Gilded Sphinx, upper fore right
+boss/gilded_sphinx/upper_fore_left.vox: Gilded Sphinx, upper fore left
+boss/gilded_sphinx/upper_hind_right.vox: Gilded Sphinx, upper hind right
+boss/gilded_sphinx/upper_hind_left.vox: Gilded Sphinx, upper hind left
+boss/gilded_sphinx/lower_fore_right.vox: Gilded Sphinx, lower fore right
+boss/gilded_sphinx/lower_fore_left.vox: Gilded Sphinx, lower fore left
+boss/gilded_sphinx/lower_hind_right.vox: Gilded Sphinx, lower hind right
+boss/gilded_sphinx/lower_hind_left.vox: Gilded Sphinx, lower hind left
 avian/harpy/torso.vox: Harpy, torso
 avian/harpy/head.vox: Harpy, head
 avian/harpy/wing_left_inner.vox: Harpy, wing left inner
@@ -6253,4 +6363,22 @@ weapons/spade/fine_spade_blade.vox: Spade, blade: Steel Spade Blade
 weapons/spade/crude_tool_haft.vox: Spade, hilt: Rawhide-bound Haft
 weapons/spade/sturdy_tool_haft.vox: Spade, hilt: Leather-gripped Haft
 weapons/spade/fine_tool_haft.vox: Spade, hilt: Bronze-banded Ash Haft
-C:\Users\Andrej\Desktop\Innert\.claude\worktrees\bakedrigs\assets\trees.json: the trees' numbers
+jewels/melee_common.vox: Common Bloodstone
+jewels/melee_uncommon.vox: Uncommon Bloodstone
+jewels/melee_rare.vox: Rare Bloodstone
+jewels/melee_epic.vox: Epic Bloodstone
+jewels/melee_legendary.vox: Legendary Bloodstone
+jewels/melee_mythic.vox: Mythic Bloodstone
+jewels/ranged_common.vox: Common Verdant Eye
+jewels/ranged_uncommon.vox: Uncommon Verdant Eye
+jewels/ranged_rare.vox: Rare Verdant Eye
+jewels/ranged_epic.vox: Epic Verdant Eye
+jewels/ranged_legendary.vox: Legendary Verdant Eye
+jewels/ranged_mythic.vox: Mythic Verdant Eye
+jewels/magic_common.vox: Common Skyglass
+jewels/magic_uncommon.vox: Uncommon Skyglass
+jewels/magic_rare.vox: Rare Skyglass
+jewels/magic_epic.vox: Epic Skyglass
+jewels/magic_legendary.vox: Legendary Skyglass
+jewels/magic_mythic.vox: Mythic Skyglass
+C:\Users\Andrej\Desktop\Innert\.claude\worktrees\morebosses\assets\trees.json: the trees' numbers

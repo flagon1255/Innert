@@ -1,0 +1,29 @@
+{
+  "what": "Grovemaul, shin left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    20
+  ],
+  "pivot": [
+    3.7199999999999998,
+    3.7199999999999998,
+    15.872
+  ],
+  "anchor": [
+    0.017500000000000016,
+    0.017500000000000016,
+    -0.992
+  ],
+  "origin": [
+    -4,
+    -4,
+    -16
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3540,
+    "84db8709961f4dcd"
+  ]
+}

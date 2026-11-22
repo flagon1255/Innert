@@ -1,0 +1,29 @@
+{
+  "what": "Lantern Widow, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    10,
+    18
+  ],
+  "pivot": [
+    3.224,
+    4.960000000000001,
+    0.992
+  ],
+  "anchor": [
+    0.017249999999999988,
+    0.0024999999999999467,
+    -0.062
+  ],
+  "origin": [
+    -3,
+    -5,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3363,
+    "09fcf7df729669c0"
+  ]
+}

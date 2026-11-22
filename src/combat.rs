@@ -2227,6 +2227,12 @@ fn ichor(look: Look) -> (usize, Option<u8>) {
         Look::RimeJotun => (DROP_ICE, None),
         Look::SandPharaoh => (DROP_ASH, None),
         Look::BogHag => (DROP_VENOM, Some(MOSS)),
+        // Sparks off the smith's iron and the tortoise's shell, dust off the sphinx's stone, the
+        // void out of the widow, venom out of the scorpion
+        Look::Slagwright | Look::Cinderback => (DROP_EMBER, None),
+        Look::GildedSphinx => (DROP_ASH, None),
+        Look::LanternWidow => (DROP_VOID, None),
+        Look::Sunstinger => (DROP_VENOM, Some(MOSS)),
         Look::Spider | Look::Spiderling | Look::Rimeweaver | Look::DuneBurrower => (DROP_VENOM, Some(MOSS)),
         // Shards of frost off a wraith, and the swamp water a lurker's full of
         Look::RimeWraith => (DROP_ICE, None),
@@ -14223,6 +14229,20 @@ impl Combat {
             self.drop(at + Vector3::new(0.0, 0.0, 0.2 * vpm), v * vpm, kind, 1.3);
         }
         self.stir(at, 1.3, 0.5, kind);
+    }
+
+    /// A boss's element bursting up out of the ground at `at`, `radius` meters round, see
+    /// bosses::Deed::Flare: a fountain of `kind`, the element's own sparks and a flash of its light,
+    /// and no hole left, as so many come up at once
+    pub fn flare(&mut self, at: Vector3<f64>, element: Option<Element>, kind: usize, radius: f64) {
+        self.burst_up(at, kind);
+        self.element_hit(at + Vector3::new(0.0, 0.0, 0.4 * self.vpm), element, 0.8 + 0.4 * radius);
+        if let Some(e) = element {
+            self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.6 * self.vpm), color: e.light(), reach: 4.0 + 2.0 * radius, life: 0.25, lifetime: 0.25 });
+            // A ball of it swelling up out of the ground, bright enough to see in the sun
+            self.blasts.push(Blast { position: at + Vector3::new(0.0, 0.0, 0.4 * self.vpm), look: Element::look(Some(e)), radius: 0.6 + 0.5 * radius, life: 0.35, lifetime: 0.35 });
+        }
+        self.cap_sparks();
     }
 
     /// A wraith gone from `from` in a swirl of frost drawn in on itself, and back at `to` in a

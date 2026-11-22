@@ -1,0 +1,29 @@
+{
+  "what": "Dreadmare, upper hind left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    24
+  ],
+  "pivot": [
+    3.944,
+    3.944,
+    19.256
+  ],
+  "anchor": [
+    0.003500000000000003,
+    0.003500000000000003,
+    -1.2035
+  ],
+  "origin": [
+    -4,
+    -4,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3476,
+    "e562cc8be6de9ddf"
+  ]
+}

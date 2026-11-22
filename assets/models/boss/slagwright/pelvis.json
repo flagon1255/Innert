@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    24,
+    25
+  ],
+  "pivot": [
+    9.216000000000001,
+    11.520000000000001,
+    18.432
+  ],
+  "anchor": [
+    0.017749999999999932,
+    0.029999999999999916,
+    -1.152
+  ],
+  "origin": [
+    -9,
+    -12,
+    -18
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    16180,
+    "72d5a159cdffcdd9"
+  ]
+}

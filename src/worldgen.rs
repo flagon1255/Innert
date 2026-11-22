@@ -1237,21 +1237,29 @@ impl World {
         let r = radius.ceil() as i64 + 1;
         let [cx, cy, cz] = center.map(|v| v.floor() as i64);
         let mut edits: Vec<([i64; 3], u8)> = Vec::new();
+        // Past where the furthest spatter reaches, and in the air, nothing's painted: both looked
+        // at before working out the spatter, which is the costly part, as most of what's round a
+        // stain is one or the other
+        let furthest = (radius * 1.15).powi(2);
         for z in cz - r..=cz + r {
             for y in cy - r..=cy + r {
                 for x in cx - r..=cx + r {
-                    let d = ((x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2)).sqrt();
-                    // Thinning out in spatters towards the edge
-                    let spatter = 0.55 + 0.6 * unit(hash3((x + o[0]) as u32, (y + o[1]) as u32 ^ 0x5ca7, (z + o[2]) as u32)) as f64;
-                    if d > radius * spatter {
+                    let d2 = (x as f64 + 0.5 - center[0]).powi(2) + (y as f64 + 0.5 - center[1]).powi(2) + (z as f64 + 0.5 - center[2]).powi(2);
+                    if d2 > furthest {
                         continue;
                     }
                     let here = self.material_at(x, y, z);
-                    if burn && plant(here) {
-                        edits.push(([x, y, z], AIR));
+                    let burnt = burn && plant(here);
+                    if !burnt && (is_passable(here) || here == WATER || plant(here)) {
                         continue;
                     }
-                    if is_passable(here) || here == WATER || plant(here) {
+                    // Thinning out in spatters towards the edge
+                    let spatter = 0.55 + 0.6 * unit(hash3((x + o[0]) as u32, (y + o[1]) as u32 ^ 0x5ca7, (z + o[2]) as u32)) as f64;
+                    if d2.sqrt() > radius * spatter {
+                        continue;
+                    }
+                    if burnt {
+                        edits.push(([x, y, z], AIR));
                         continue;
                     }
                     let open = [[0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1]].iter().any(|o| {

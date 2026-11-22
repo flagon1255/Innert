@@ -1,0 +1,29 @@
+{
+  "what": "Dreadmare, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    41,
+    15,
+    17
+  ],
+  "pivot": [
+    20.880000000000003,
+    7.216,
+    8.816
+  ],
+  "anchor": [
+    -0.02375000000000016,
+    0.017749999999999988,
+    -0.551
+  ],
+  "origin": [
+    -21,
+    -7,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    22853,
+    "bf11aadc36106ad7"
+  ]
+}
