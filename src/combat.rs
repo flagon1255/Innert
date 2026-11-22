@@ -17470,10 +17470,10 @@ mod tests {
         for frame in 0..((start + seconds) / dt) as usize {
             let t = frame as f64 * dt - start;
             let controls = if power {
-                // As a player would, see power_controls(), right click held to aim it, but for
-                // bombs, thrown as it's let go of
+                // As a player would, see power_controls(), right click held a moment to aim it
+                // and let go, which sets it off
                 let mut c = combat.power_controls(weapon, t, dt);
-                c.aiming |= weapon.profile.style != Style::Lob;
+                c.aiming |= weapon.profile.style != Style::Lob && (0.0..0.3).contains(&t);
                 c
             } else {
                 Controls { special: frame == (start / dt) as usize, aiming: true, ..Default::default() }

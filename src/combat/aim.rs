@@ -334,9 +334,10 @@ impl Combat {
                     self.marks.extend(rings(special, aim, spot, way_to(arena, spot), vpm));
                 }
             }
-            if let Action::Power { t, length } = self.action
-                && let Some(power) = profile.power
-                && t <= power_timing(power).1 * length
+            // Its spot while it's aimed, right click held, and through its move till it's let go
+            let held = self.power.aiming && controls.aiming;
+            if let Some(power) = profile.power
+                && (held || matches!(self.action, Action::Power { t, length } if t <= power_timing(power).1 * length))
                 && let Some(spot) = self.power_spot(arena, weapon)
                 && let Some(aim) = power_aim(power, profile)
             {

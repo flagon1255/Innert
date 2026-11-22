@@ -13,11 +13,13 @@ use super::*;
 use crate::combat::aim::{PowerWay, power_way};
 use crate::weapons::Power;
 
-/// How long till the power's ready again, and how long right click's been held, for bombs
+/// How long till the power's ready again, how long right click's been held, for bombs, and
+/// whether it's being aimed, right click pressed with it ready and held, to go off when let go
 #[derive(Default)]
 pub(in crate::combat) struct PowerState {
     pub(in crate::combat) cooldown: f64,
     held: f64,
+    pub(in crate::combat) aiming: bool,
 }
 
 /// What one of their shots is
@@ -420,7 +422,7 @@ impl Combat {
     /// What a player does with the mouse to use `weapon`'s power, `t` seconds after starting to,
     /// in frames `step` seconds long, for scripts and tests: a heavy blow; a bow drawn and loosed
     /// once it's full; bombs aimed a moment and let go; a siege crossbow braced and loosed; anything
-    /// else, right click
+    /// else, right click pressed, held a moment to aim and let go
     pub fn power_controls(&self, weapon: &Weapon, t: f64, step: f64) -> Controls {
         let profile = &weapon.profile;
         let mut c = Controls::default();
@@ -429,9 +431,10 @@ impl Combat {
         }
         let used = self.power.cooldown > 0.0;
         let kind = if profile.style == Style::Glaive { Kind::Melee } else { profile.kind };
+        let own = profile.power.is_some_and(|p| p.own_move());
         match kind {
             Kind::Ranged if profile.style == Style::Lob => c.aiming = t < 0.3,
-            Kind::Ranged if profile.build == Build::None => {
+            Kind::Ranged if profile.build == Build::None && !own => {
                 c.aiming = !used;
                 c.heavy = t < step;
                 c.attack = !used && self.drawn(profile) >= 1.0;
@@ -475,13 +478,41 @@ impl Combat {
             return true;
         }
         if matches!(self.action, Action::Special { .. }) || self.thrown.is_some() || self.raise < 1.0 {
+            self.power.aiming = false;
             return false;
         }
         let ready = self.power.cooldown <= 0.0;
         let kind = if profile.style == Style::Glaive { Kind::Melee } else { weapon.kind() };
+        // Aimed first: right click pressed with it ready only starts aiming it, its marks showing
+        // where it'll go while it's held, and it goes off as it's let go. Not bombs, which do so
+        // their own way below, nor the heavy blow or the bow drawn full that carry it, nor a
+        // braced siege crossbow, nor letting go of a harpoon's line.
+        let own = power.own_move() && (kind == Kind::Melee || (kind == Kind::Ranged && profile.build == Build::None && profile.style != Style::Lob));
+        let line_out = profile.build == Build::Harpoon && (self.tether.is_some() || self.projectiles.iter().any(|p| p.trick == Trick::Harpoon));
+        let shouldered = kind == Kind::Ranged && profile.build != Build::None && profile.build != Build::Siege && profile.style != Style::Lob && !line_out;
+        if own || shouldered || kind == Kind::Magic {
+            if self.power.aiming {
+                if controls.aiming {
+                    // Held, aiming: right click does nothing else meanwhile, no heavy blow, no draw
+                    controls.heavy = false;
+                    controls.aiming = false;
+                    return false;
+                }
+                // Let go: off it goes, as a press used to set it off
+                self.power.aiming = false;
+                controls.heavy = true;
+            } else if controls.heavy && ready && controls.aiming {
+                self.power.aiming = true;
+                controls.heavy = false;
+                controls.aiming = false;
+                return false;
+            }
+        } else {
+            self.power.aiming = false;
+        }
         // A power with a move of its own on a melee weapon or a bow: right click sets it going
         // when it's ready, and while it comes round right click swings heavy or draws as ever
-        if power.own_move() && (kind == Kind::Melee || (kind == Kind::Ranged && profile.build == Build::None && profile.style != Style::Lob)) {
+        if own {
             if controls.heavy && ready && self.cooldown <= 0.0 && matches!(self.action, Action::Idle) {
                 controls.heavy = false;
                 self.power.cooldown = power.cooldown();
@@ -551,7 +582,6 @@ impl Combat {
                     }
                 } else {
                     // Right click shoots it, but for letting go of a harpoon's line
-                    let line_out = profile.build == Build::Harpoon && (self.tether.is_some() || self.projectiles.iter().any(|p| p.trick == Trick::Harpoon));
                     if controls.heavy && !line_out {
                         controls.heavy = false;
                         if ready && matches!(self.action, Action::Idle | Action::Fire { .. } | Action::Reload { .. }) {
@@ -2460,7 +2490,10 @@ mod tests {
             }
             step(&mut combat, Controls { heavy: true, aiming: true, ..Default::default() });
             if legendary {
-                assert!(matches!(combat.action, Action::Power { .. }), "right click shoots a legendary repeater's power");
+                // Aimed while it's held, shot as it's let go
+                assert!(!matches!(combat.action, Action::Power { .. }), "a legendary repeater's power waits to be let go of");
+                step(&mut combat, Controls::default());
+                assert!(matches!(combat.action, Action::Power { .. }), "letting go of right click shoots a legendary repeater's power");
                 for _ in 0..60 {
                     step(&mut combat, Controls::default());
                 }

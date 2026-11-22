@@ -5021,7 +5021,8 @@ impl App {
                 if f == 1 && self.player.is_none() {
                     self.player = Some(Player::new(eye, &self.world));
                 }
-                self.script_controls = combat::Controls { heavy: true, aiming: true, ..Default::default() };
+                // Let go now and then, for a power aimed with right click held to go off
+                self.script_controls = combat::Controls { heavy: true, aiming: f % 40 != 39, ..Default::default() };
                 if f % 40 == 0 {
                     println!("frame {frame}: {} holes blown", self.craters.len());
                 }
