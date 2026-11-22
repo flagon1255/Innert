@@ -5570,6 +5570,8 @@ impl App {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
+                // As tall as the window lets it be, scrolling through the rest when it's short
+                let room = (ctx.screen_rect().height() - 2.0 * 36.0 - 24.0).max(120.0);
                 egui::Area::new(egui::Id::new("menu"))
                     .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(&ctx, |ui| {
@@ -5579,6 +5581,7 @@ impl App {
                             .inner_margin(36.0)
                             .show(ui, |ui| {
                                 ui.set_width(340.0);
+                                egui::ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| {
                                 ui.vertical_centered(|ui| {
                                     // Resume, each mode with Continue and New, Settings and Quit,
                                     // done at the start of the next frame, see menu_picked()
@@ -5616,6 +5619,7 @@ impl App {
                                         .size(13.0)
                                         .color(Color32::from_gray(190)),
                                     );
+                                });
                                 });
                             });
                     });
