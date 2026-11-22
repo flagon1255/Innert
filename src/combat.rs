@@ -14144,6 +14144,8 @@ impl Combat {
         self.element_hit(at + Vector3::new(0.0, 0.0, 0.4 * self.vpm), element, 0.8 + 0.4 * radius);
         if let Some(e) = element {
             self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.6 * self.vpm), color: e.light(), reach: 4.0 + 2.0 * radius, life: 0.25, lifetime: 0.25 });
+            // A ball of it swelling up out of the ground, bright enough to see in the sun
+            self.blasts.push(Blast { position: at + Vector3::new(0.0, 0.0, 0.4 * self.vpm), look: Element::look(Some(e)), radius: 0.6 + 0.5 * radius, life: 0.35, lifetime: 0.35 });
         }
         self.cap_sparks();
     }

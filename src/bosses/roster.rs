@@ -47,19 +47,17 @@ pub fn scale(look: Look) -> f64 {
     }
 }
 
-/// How much damage it takes, as tough as the bosses of its tier: the lesser about the giants', the
-/// pharaoh's and the stags', the raid bosses about the Dreaming Red's
+/// How much damage it takes, as much as the bosses of its tier and role, see levels::BOSS_HEALTH:
+/// the heavy ones as the giants and golems, the widow and the mare as the casters and the beasts,
+/// the scorpion as the spiders; the mammoth as the Colossus, the sphinx as the Dreaming Red's
 pub fn health(look: Look) -> f64 {
     match look {
-        Look::Slagwright => 3200.0,
-        Look::Cinderback => 3300.0,
-        Look::LanternWidow => 2500.0,
-        Look::Dreadmare => 2500.0,
-        Look::Sunstinger => 2600.0,
-        Look::Grovemaul => 3000.0,
-        Look::Hoarback => 14500.0,
-        Look::GildedSphinx => 13500.0,
-        _ => 2500.0,
+        Look::Slagwright | Look::Cinderback | Look::Grovemaul => 3000.0,
+        Look::LanternWidow | Look::Dreadmare => 2600.0,
+        Look::Sunstinger => 2350.0,
+        Look::Hoarback => 15500.0,
+        Look::GildedSphinx => 14500.0,
+        _ => 2600.0,
     }
 }
 
@@ -254,6 +252,8 @@ const RIME_WAVES: [f64; 3] = [0.0, 0.55, 1.1];
 /// Seconds the Gilded Sphinx's jets of fire wheel round, and radians a second they turn
 const SUN_SECONDS: f64 = 2.6;
 const SUN_TURN: f64 = 0.75;
+/// Seconds between the bursts of flame along each of its jets
+const SUN_FLARES: f64 = 0.18;
 /// Where the slag comes down round the player, in meters
 const SLAG_RING: f64 = 3.4;
 
@@ -565,12 +565,21 @@ pub fn during(m: Move, t: f64, dt: f64, a: &mut Animal, boss: &mut Boss, player:
                 boss.deeds.push(Deed::Quake { at: boss.leap.0, from: ((local - dt) * QUAKE_PACE).max(0.0), to, dt });
             }
         }
-        // Its jets of fire wheeling round it
+        // Its jets of fire wheeling round it, the ground bursting into flame along each of them
+        // a little way further out each time, as the sun's spokes go round
         Move::Sunwheel => {
+            let beat = |t: f64| (t / SUN_FLARES) as usize;
+            let flaring = t - dt <= 0.0 || beat(t) != beat(t - dt);
             for turn in jets(boss, t) {
                 let from = jet_from(a, turn, vpm);
-                let direction = Vector3::new(turn.cos(), turn.sin(), -0.07).normalize();
+                let way = Vector3::new(turn.cos(), turn.sin(), 0.0);
+                let direction = Vector3::new(way.x, way.y, -0.07).normalize();
                 boss.deeds.push(Deed::Breath { from, direction, dt });
+                if flaring {
+                    let out = 2.0 + 2.6 * (beat(t) % 4) as f64;
+                    let at = from + way * out * vpm;
+                    boss.deeds.push(Deed::Flare { at, delay: 0.2, radius: 1.3, damage: 14.0 });
+                }
             }
         }
         _ => {}
