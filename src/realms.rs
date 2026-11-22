@@ -199,7 +199,9 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         raid_bosses: [(Look::BloodwakeGargoyle, [280.0, -40.0]), (Look::HollowMother, [-120.0, 280.0]), (Look::BleedingHart, [-200.0, -240.0])],
         lair_names: ["the red vigil", "the soft hollows", "the dreaming wood"],
         lair_marks: [Landmark::Anywhere; 3],
-        guardians: &[Look::Direwolf, Look::Ironhide, Look::VenomDrake, Look::Golem, Look::Drake],
+        // Its own guardians first, the Lantern Widow and the Dreadmare, see src\bosses\roster.rs,
+        // and three from the land below
+        guardians: &[Look::LanternWidow, Look::Dreadmare, Look::Direwolf, Look::Ironhide, Look::VenomDrake],
         finale: None,
         finale_mark: Landmark::Anywhere,
         monsters: &[
@@ -218,12 +220,13 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         id: "ice",
         name: "The Rimelands",
         seed: ICE_SEED,
-        // A rime jotun on the glacier rather than a golem of ice, and a thunderborn giant among its
-        // guardians
-        raid_bosses: [(Look::FrostWyrm, [250.0, 180.0]), (Look::RimeJotun, [-240.0, 160.0]), (Look::WinterAlpha, [40.0, -310.0])],
-        lair_names: ["the frozen heights", "the glacier", "the white woods"],
+        // A rime jotun on the glacier rather than a golem of ice, and the Hoarback Mammoth, a raid
+        // boss of its own, on the tusk fields, see src\bosses\roster.rs; a thunderborn giant and the
+        // winter alpha among its guardians
+        raid_bosses: [(Look::FrostWyrm, [250.0, 180.0]), (Look::RimeJotun, [-240.0, 160.0]), (Look::Hoarback, [40.0, -310.0])],
+        lair_names: ["the frozen heights", "the glacier", "the tusk fields"],
         lair_marks: [Landmark::Anywhere; 3],
-        guardians: &[Look::Frostfang, Look::Rimeweaver, Look::StormGiant, Look::GraveKnight],
+        guardians: &[Look::Frostfang, Look::Rimeweaver, Look::StormGiant, Look::WinterAlpha, Look::GraveKnight],
         finale: None,
         finale_mark: Landmark::Anywhere,
         monsters: &[
@@ -277,10 +280,10 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         raid_bosses: [(Look::PyreMatriarch, [240.0, 170.0]), (Look::CindermawTyrant, [-250.0, 110.0]), (Look::GildscaleHoardwarden, [-60.0, -300.0])],
         lair_names: ["the peak roost", "the caldera", "the bone cave"],
         lair_marks: [Landmark::Roost, Landmark::Caldera, Landmark::BoneCave],
-        // Its guardians fire and stone from before the great dragons: a golem of magma and an ember
-        // drake, and with them a storm drake and a grave knight, as the dragons have no lesser
-        // bosses of their own, only drakelings
-        guardians: &[Look::MagmaGolem, Look::Drake, Look::StormDrake, Look::GraveKnight],
+        // Its guardians fire and stone from before the great dragons: the Slagwright at its forge
+        // and the Cinderback Tortoise, its own, see src\bosses\roster.rs, a golem of magma and an
+        // ember drake, and with them a storm drake and a grave knight
+        guardians: &[Look::Slagwright, Look::Cinderback, Look::MagmaGolem, Look::Drake, Look::StormDrake, Look::GraveKnight],
         // And the first fire, that comes down once they're beaten, in an arena of its own, see
         // worldgen\dragonlair.rs and Places::find()
         finale: Some((Look::WorldpyreAncient, [40.0, 340.0], "the heart of the mountain")),

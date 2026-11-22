@@ -39,7 +39,7 @@ pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 23] = [
+pub const KINDS: [Look; 31] = [
     Look::Treant,
     Look::Spider,
     Look::Rimeweaver,
@@ -63,6 +63,14 @@ pub const KINDS: [Look; 23] = [
     Look::HollowMother,
     Look::Elderhorn,
     Look::BleedingHart,
+    Look::Slagwright,
+    Look::Cinderback,
+    Look::LanternWidow,
+    Look::Dreadmare,
+    Look::Sunstinger,
+    Look::Grovemaul,
+    Look::Hoarback,
+    Look::GildedSphinx,
 ];
 
 /// Pieces each has room for among the models, those it doesn't have left empty
@@ -98,10 +106,11 @@ fn family(look: Look) -> Family {
     match look {
         Look::GraveKnight | Look::CryptTitan => Family::Knight,
         Look::Treant => Family::Treant,
-        Look::Spider | Look::Rimeweaver => Family::Crawler,
-        Look::Ogre | Look::RimeJotun | Look::StormGiant => Family::Giant,
-        Look::SandPharaoh | Look::BogHag | Look::HollowMother | Look::Warlord | Look::Necromancer => Family::Caster,
+        Look::Spider | Look::Rimeweaver | Look::Sunstinger => Family::Crawler,
+        Look::Ogre | Look::RimeJotun | Look::StormGiant | Look::Slagwright | Look::Grovemaul => Family::Giant,
+        Look::SandPharaoh | Look::BogHag | Look::HollowMother | Look::Warlord | Look::Necromancer | Look::LanternWidow => Family::Caster,
         Look::Elderhorn | Look::BleedingHart | Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => Family::Beast,
+        Look::Cinderback | Look::Dreadmare | Look::Hoarback | Look::GildedSphinx => Family::Beast,
         _ => Family::Golem,
     }
 }

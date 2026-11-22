@@ -177,6 +177,20 @@ pub enum Look {
     // An ordinary serpent's forked tongue, drawn apart from it as it flicks in and out, see
     // serpents::flick()
     SerpentTongue,
+    // Bosses for where there were fewest, drawn jointed, see src\bosses\roster.rs: the Slagwright,
+    // a smith of black iron with slag in its crucible, and the Cinderback Tortoise, vents smoking
+    // on its shell, for the Cinder Crown and the desert; the Lantern Widow and the Dreadmare for
+    // the Dreaming Red, the widow in the flooded churches too; the Sunstinger, a scorpion of the
+    // desert ruins; the Grovemaul, a great ape of the jungle; and two raid bosses, the Hoarback
+    // Mammoth of the Rimelands and the snowbound castles, and the Gilded Sphinx of the desert ruins
+    Slagwright,
+    Cinderback,
+    LanternWidow,
+    Dreadmare,
+    Sunstinger,
+    Grovemaul,
+    Hoarback,
+    GildedSphinx,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -233,7 +247,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 110] = [
+    pub const ALL: [Look; 118] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -344,6 +358,14 @@ impl Look {
         Look::Grotesque,
         Look::BloodwakeGargoyle,
         Look::SerpentTongue,
+        Look::Slagwright,
+        Look::Cinderback,
+        Look::LanternWidow,
+        Look::Dreadmare,
+        Look::Sunstinger,
+        Look::Grovemaul,
+        Look::Hoarback,
+        Look::GildedSphinx,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -444,6 +466,7 @@ impl Look {
     /// realm's three great serpents are, see serpents::GREATS.
     pub fn is_raid(self) -> bool {
         matches!(self, Look::Colossus | Look::ElderWyrm | Look::CryptTitan | Look::HollowMother | Look::BleedingHart | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw)
+            || matches!(self, Look::Hoarback | Look::GildedSphinx)
             || crate::dragons::is_great(self)
             || crate::avians::is_raid(self)
     }
@@ -488,6 +511,14 @@ impl Look {
             Look::Ogre | Look::RimeJotun | Look::StormGiant => Build::Golem,
             Look::SandPharaoh | Look::BogHag | Look::HollowMother => Build::Undead,
             Look::Elderhorn | Look::BleedingHart => Build::Bear,
+            // The smith, the ape and the tortoise are as heavy as golems; the widow casts as the
+            // dead do; the mare runs as the alpha wolves do; the scorpion scuttles as the
+            // Broodmother does; the mammoth and the sphinx go as the great bears do
+            Look::Slagwright | Look::Grovemaul | Look::Cinderback => Build::Golem,
+            Look::LanternWidow => Build::Undead,
+            Look::Dreadmare => Build::Wolf,
+            Look::Sunstinger => Build::Spider,
+            Look::Hoarback | Look::GildedSphinx => Build::Bear,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
@@ -535,6 +566,7 @@ impl Look {
             Look::Elderhorn => 1.45,
             Look::HollowMother => 2.3,
             Look::BleedingHart => 2.0,
+            _ if crate::bosses::roster::has(self) => crate::bosses::roster::scale(self),
             _ => 1.0,
         }
     }
@@ -543,7 +575,7 @@ impl Look {
     /// numbers, like how far it reaches, are for: 1 for a boss, more for a raid boss
     pub fn size(self) -> f64 {
         match self {
-            Look::Colossus | Look::ElderWyrm | Look::HollowMother | Look::BleedingHart => self.scale(),
+            Look::Colossus | Look::ElderWyrm | Look::HollowMother | Look::BleedingHart | Look::Hoarback | Look::GildedSphinx => self.scale(),
             Look::CryptTitan => self.scale() / Look::GraveKnight.scale(),
             _ if self.is_dragon() => crate::dragons::size(self),
             _ if self.is_winged() => crate::avians::size(self),
@@ -568,6 +600,10 @@ impl Look {
             Look::SandPharaoh => Some(Look::Skeleton),
             Look::BogHag => Some(Look::MireLurker),
             Look::HollowMother => Some(Look::Ghoul),
+            // The mammoth trumpets for the wolves that follow its herd, and the sphinx calls the
+            // burrowers up out of the sand
+            Look::Hoarback => Some(Look::Wolf),
+            Look::GildedSphinx => Some(Look::DuneBurrower),
             // The Water realm's raid serpents call up serpents of their own
             Look::Hollowtide => Some(Look::SiltCoiler),
             Look::Reefcoil => Some(Look::ReedViper),
@@ -619,6 +655,7 @@ impl Look {
             Look::SandPharaoh => Some(Element::Fire),
             Look::BogHag | Look::Elderhorn => Some(Element::Poison),
             Look::HollowMother | Look::BleedingHart => Some(Element::Blood),
+            _ if crate::bosses::roster::has(self) => crate::bosses::roster::element(self),
             Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie | Look::DuneBurrower | Look::Bloater => Some(Element::Poison),
             Look::Necromancer => Some(Element::Void),
             Look::RimeWraith => Some(Element::Frost),
@@ -645,6 +682,13 @@ impl Look {
         let jungle = matches!(ground, JUNGLE_GRASS | VINE);
         let stony = matches!(ground, STONE | ROCK | GRAVEL);
         match self {
+            // A mammoth in the snowbound castles rather than the Colossus; a smith in the desert's
+            // caverns rather than an ogre, and a scorpion rather than a bear; a great ape in the
+            // jungle's shrines and colonnades, see src\bosses\roster.rs
+            Look::Colossus if cold => Look::Hoarback,
+            Look::Ogre if desert => Look::Slagwright,
+            Look::Ironhide if desert => Look::Sunstinger,
+            Look::Treant | Look::Direwolf if jungle => Look::Grovemaul,
             Look::Golem if cold => Look::FrostGolem,
             Look::Golem if desert => Look::MagmaGolem,
             Look::Drake if cold => Look::FrostWyrm,
@@ -656,6 +700,17 @@ impl Look {
             Look::Treant | Look::Elderhorn | Look::Golem if jungle => Look::BogHag,
             Look::Direwolf if cold => Look::WinterAlpha,
             Look::Spider if cold => Look::Rimeweaver,
+            _ => self,
+        }
+    }
+
+    /// The kind of `self`, a boss, that lives in land `land`: the Dreaming Red has its own, the
+    /// Lantern Widow where a drake would be, in its flooded churches and towers, and the Dreadmare
+    /// where an alpha wolf would roam, see src\bosses\roster.rs
+    pub fn for_land(self, land: Land) -> Look {
+        match (self, land) {
+            (Look::Drake, Land::Dream) => Look::LanternWidow,
+            (Look::Direwolf, Land::Dream) => Look::Dreadmare,
             _ => self,
         }
     }
@@ -699,6 +754,7 @@ impl Look {
             Look::Elderhorn => make(FUR_BROWN, FUR_DARK, MOSS, GOLD, BONE),
             Look::HollowMother => make(FUR_CREAM, OBSIDIAN, TEMPLE_RED, GLOW_BLOOD, BONE),
             Look::BleedingHart => make(FUR_DARK, OBSIDIAN, LEAVES_CRIMSON, GLOW_BLOOD, BONE),
+            _ if crate::bosses::roster::has(self) => crate::bosses::roster::skin(self),
             Look::Skeleton => make(BONE, BARK_DARK, CLOTH, GLOW_FROST, STEEL),
             Look::ArmoredSkeleton => make(BONE, BARK_DARK, STEEL, GLOW_FROST, STEEL),
             Look::Zombie => make(MOSS, PINE, LINEN, GLOW_POISON, BONE),
@@ -827,6 +883,7 @@ impl Look {
             // Its wings spread, see src\avians.rs
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
+            Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::reach(self),
         }
     }
 
@@ -891,6 +948,7 @@ impl Look {
             // Wherever on it the blow's aimed, see avians::Flier::aim()
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
+            Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
         }
     }
 
@@ -984,6 +1042,7 @@ impl Look {
             Look::SerpentTongue => "serpent's tongue",
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
+            Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::name(self),
         }
     }
 
@@ -1006,6 +1065,8 @@ impl Look {
     /// How much damage it takes to hunt. A bare-handed hit does PUNCH.
     pub fn health(self) -> f64 {
         match self {
+            // As tough as the bosses of their tier, see src\bosses\roster.rs
+            _ if crate::bosses::roster::has(self) => crate::bosses::roster::health(self),
             Look::Bear => 140.0,
             Look::Dog => 60.0,
             Look::GrayCat | Look::GingerCat => 30.0,
@@ -1084,6 +1145,7 @@ impl Look {
             Look::Tusker => 2,
             Look::Squirrel | Look::Wolf | Look::MireLurker => 1,
             Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => 6,
+            Look::Hoarback => 8,
             _ if crate::dragons::is_drakeling(self) => 1,
             _ => 0,
         }
@@ -1093,6 +1155,7 @@ impl Look {
     pub fn walk_speed(self) -> f64 {
         match self {
             _ if self.is_dragon() => return crate::dragons::speeds(self).0,
+            _ if crate::bosses::roster::has(self) => return crate::bosses::roster::speeds(self).0,
             Look::Colossus => return 1.8,
             Look::ElderWyrm => return 2.2,
             Look::CryptTitan => return 1.6,
@@ -1150,6 +1213,7 @@ impl Look {
     pub fn run_speed(self) -> f64 {
         match self {
             _ if self.is_dragon() => return crate::dragons::speeds(self).1,
+            _ if crate::bosses::roster::has(self) => return crate::bosses::roster::speeds(self).1,
             Look::Colossus => return 3.2,
             Look::ElderWyrm => return 5.5,
             Look::CryptTitan => return 3.4,
@@ -1226,6 +1290,7 @@ impl Look {
             Look::SandPharaoh | Look::BogHag => return 1.2 * self.scale(),
             Look::HollowMother => return 1.6 * self.scale(),
             Look::Elderhorn | Look::BleedingHart => return 2.4 * self.scale(),
+            _ if crate::bosses::roster::has(self) => return crate::bosses::roster::stride(self) * self.scale(),
             _ => {}
         }
         match self.build() {

@@ -11,6 +11,9 @@ use crate::serpents;
 use crate::weapons::Element;
 use crate::worldgen::{World, is_passable};
 
+/// The bosses added for where there were fewest: what they are and their own moves
+pub mod roster;
+
 /// How near the player has to come before a boss turns on them, and how far off they can get
 /// before it gives up, in meters
 const NOTICE: f64 = 24.0;
@@ -97,9 +100,31 @@ pub enum Move {
     Thunderclap,
     /// The Elderhorn bellowing, the ground shaking out from under its hooves
     Bellow,
+    // The moves of the bosses of src\bosses\roster.rs
+    /// The Slagwright's hammer struck down on its crucible, slag flung up out of it to come down
+    /// all round the player, where it shows
+    Slagrain,
+    /// The Cinderback Tortoise drawn into its shell, its vents spitting burning rocks out over the
+    /// ground in rings, one further out than the last
+    Vents,
+    /// The Lantern Widow's lantern raised, and a ring of gloom closing in on where the player
+    /// stood, her wisps flying in to put it out on whoever's still inside
+    Gloomgate,
+    /// The Dreadmare rearing and bringing its hooves down twice, a line of blood-fire running out
+    /// along the ground at the player from each
+    Hoofbrand,
+    /// The Sunstinger's tail stabbing down three times, each where the player was a moment before
+    Sting,
+    /// The Grovemaul leaping high onto the player, vines bursting up in a ring round where it lands
+    Pounce,
+    /// The Hoarback rearing and stamping three times, shockwaves of frost running out across the
+    /// ground one after another, to be jumped
+    Rimestomp,
+    /// The Gilded Sphinx sitting up with the sun in its eyes, jets of fire wheeling round it
+    Sunwheel,
 }
 
-const MOVES: usize = 33;
+const MOVES: usize = 41;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -137,6 +162,14 @@ impl Move {
         Move::Trample,
         Move::Thunderclap,
         Move::Bellow,
+        Move::Slagrain,
+        Move::Vents,
+        Move::Gloomgate,
+        Move::Hoofbrand,
+        Move::Sting,
+        Move::Pounce,
+        Move::Rimestomp,
+        Move::Sunwheel,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -264,6 +297,12 @@ pub enum Deed {
     /// Pebbles and dust shaken loose off the Colossus at `from`, falling round `at` on the ground:
     /// as a foot comes down, or `loud`ly as it stands, its plates grinding
     Shed { at: Vector3<f64>, from: Vector3<f64>, loud: bool },
+    /// Its element bursting up out of the ground at `at` in `delay` seconds, hurting what's within
+    /// `radius` meters for `damage`, the ground stirring and a ring closing in on it till then
+    Flare { at: Vector3<f64>, delay: f64, radius: f64, damage: f64 },
+    /// Its element, or a burning `rock` of it, lobbed from `from` to come down on `to` in `time`
+    /// seconds, its ring showing where, hurting what's within `radius` meters for `damage`
+    Lob { from: Vector3<f64>, to: Vector3<f64>, time: f64, damage: f64, radius: f64, rock: bool },
 }
 
 /// What the Earthbreaker Colossus has hold of, tearing a boulder up out of the ground to throw
@@ -527,6 +566,7 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Trample) => 1.0,
         (_, Move::Thunderclap) => 1.1,
         (_, Move::Bellow) => 0.8,
+        (_, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) => roster::timing(look, m).0,
     }
 }
 
@@ -570,6 +610,9 @@ fn duration(look: Look, m: Move) -> f64 {
         Move::Trample => 2.4,
         Move::Thunderclap => quake_reach(look) / QUAKE_PACE,
         Move::Bellow => BELLOW_REACH / QUAKE_PACE,
+        // A pounce is a leap, see leap()
+        Move::Pounce => leap(look).0,
+        Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).1,
     }
 }
 
@@ -630,6 +673,7 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Trample => 0.9,
         Move::Thunderclap => 1.0,
         Move::Bellow => 0.7,
+        Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).2,
     }
 }
 
@@ -693,6 +737,7 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Trample => 7.0,
         Move::Thunderclap => 9.0,
         Move::Bellow => 8.0,
+        Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).3,
     }
 }
 
@@ -713,6 +758,9 @@ fn leap(look: Look) -> (f64, f64, f64, f64) {
         Look::Direwolf | Look::WinterAlpha => (0.7, 3.0, 3.0, 24.0),
         // The Grave Knight's leap, its greatsword raised, to cleave down where the player stood
         Look::GraveKnight => (0.85, 3.4, 3.2, 30.0),
+        // The Grovemaul springing up high to come down fists first, and the sphinx pouncing
+        Look::Grovemaul => (0.95, 4.6, 3.2, 30.0),
+        Look::GildedSphinx => (0.9, 5.0, 4.0, 36.0),
         _ => (0.8, 4.0, 3.0, 26.0),
     }
 }
@@ -793,6 +841,7 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::Elderhorn => (2.4, 2.6, 26.0, 0.5),
         Look::HollowMother => (3.4, 3.8, 36.0, 0.0),
         Look::BleedingHart => (3.4, 3.6, 36.0, 0.9),
+        _ if roster::has(look) => roster::slam(look),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
         _ if look.is_raid() => {
             let base = if look == Look::CryptTitan { Look::GraveKnight } else if look.build() == Some(Build::Golem) { Look::Golem } else { Look::Drake };
@@ -971,6 +1020,7 @@ pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
         Look::Elderhorn => &["bow", "spear", "dagger"],
         Look::HollowMother => &["scythe", "whip", "tome", "dagger"],
         Look::BleedingHart => &["spear", "bow", "halberd", "whip"],
+        _ if roster::has(look) => roster::taste(look),
         _ => match look.build() {
             Some(Build::Golem) => &["hammer", "maul", "flail"],
             Some(Build::Bear) => &["axe", "hammer", "maul"],
@@ -1260,6 +1310,8 @@ impl Boss {
             _ if self.look == Look::HollowMother => &[(Move::Summon, 0.0, 14.0), (Move::Cataclysm, 0.0, 14.0), (Move::Weep, 0.0, 12.0), (Move::Slam, 0.0, 2.2), (Move::Lash, 2.0, 6.0), (Move::Spit, 2.5, 14.0)],
             _ if self.look == Look::BleedingHart => &[(Move::Cataclysm, 0.0, 15.0), (Move::Slam, 0.0, 2.4), (Move::Maul, 1.2, 3.8), (Move::Trample, 3.5, 16.0), (Move::RootWave, 3.0, 11.0), (Move::Volley, 4.0, 17.0)],
             _ if self.look == Look::Elderhorn => &[(Move::Bellow, 0.0, 6.0), (Move::Slam, 0.0, 4.2), (Move::Maul, 2.5, 7.0), (Move::Trample, 7.0, 30.0), (Move::Volley, 8.0, 30.0)],
+            // And those of src\bosses\roster.rs
+            _ if roster::has(self.look) => roster::menu(self.look),
             // Monsters bite or swing at what's in reach, and some pounce
             Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
             Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
@@ -2272,6 +2324,11 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             if m == Move::Quake {
                 boss.deeds.push(Deed::Mark { at: a.position, radius: quake_reach(look), closing: 0.0 });
             }
+            // Where the moves of src\bosses\roster.rs will come down, showing on the ground
+            if roster::owns(m) {
+                let whole = windup(look, m) * quick.max(0.8) + boss.hold;
+                roster::winding(m, t, whole, a, &mut boss, forward, vpm);
+            }
             // Where a knight's blow will land, showing on the ground, the ring closing in on it
             // as it comes: in front of it, all round it, or where it'll leap to
             if look.is_knight() {
@@ -2485,7 +2542,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         a.target_heading = heading_to(a.position, boss.aim);
                         a.heading = a.target_heading;
                     }
-                    Move::Leap => {
+                    Move::Leap | Move::Pounce => {
                         // Coming down just short of the player, not on top of them; a monster
                         // right in front of them
                         let off = boss.aim - a.position;
@@ -2571,6 +2628,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                             boss.deeds.push(Deed::Roar { at: a.position, angry: boss.enraged });
                         }
                     }
+                    Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::begin(m, a, &mut boss, player, forward, vpm),
                 }
                 Phase::Act(m, 0.0)
             }
@@ -2626,7 +2684,13 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         boss.trail -= dt;
                         if boss.trail <= 0.0 && t > 0.3 {
                             boss.trail = 0.35;
-                            boss.deeds.push(Deed::Roots { at: a.position - forward * 1.5 * look.scale() * vpm });
+                            let behind = a.position - forward * 1.5 * look.scale() * vpm;
+                            // The Dreadmare's hoofprints bursting into blood-fire behind it instead
+                            if look == Look::Dreadmare {
+                                boss.deeds.push(Deed::Flare { at: behind + Vector3::new(0.0, 0.0, 1.0 * vpm), delay: 0.45, radius: 1.4, damage: 16.0 });
+                            } else {
+                                boss.deeds.push(Deed::Roots { at: behind });
+                            }
                         }
                     }
                     let reach = if look.is_great_serpent() { 3.8 } else { 2.8 };
@@ -2646,7 +2710,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     over = over || (boss.rammed && distance > 6.0);
                 }
                 // Through the air in an arc, coming down hard where the player was
-                Move::Leap => {
+                Move::Leap | Move::Pounce => {
                     let (from, to) = boss.leap;
                     let (time, high, radius, damage) = leap(look);
                     let f = (t / time).min(1.0);
@@ -2660,8 +2724,13 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         let crater = if monster || look.is_knight() { 0.0 } else { 0.6 };
                         boss.deeds.push(Deed::Slam { at: to, radius, damage, crater });
                         boss.deeds.push(Deed::Stomp(to));
+                        // Vines bursting up in a ring round where the Grovemaul came down
+                        if m == Move::Pounce {
+                            roster::landed(a, &mut boss, to, vpm);
+                        }
                     }
                 }
+                Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::during(m, t, dt, a, &mut boss, player, vpm),
                 // A knight's greatsword sweeping round low: out of the crouch across in front,
                 // then on round with its whole body, all the way round once, or twice when it's
                 // angry, hitting whoever's within its reach and not jumping as it passes them.

@@ -6,6 +6,14 @@
 //! back at the hock. It walks a foot at a time, gallops when it charges, rears up to bring its
 //! forehooves down, lowers its antlers to charge, sweeps them side to side, shakes thorns off them,
 //! and bellows with its head thrown back. Dying, its legs fold and it falls over onto its side.
+//!
+//! And four more, see src\bosses\roster.rs: the Cinderback Tortoise, a shell of black glass with
+//! vents smoking on it, which draws itself in to spit burning rocks out of them; the Dreadmare, a
+//! nightmare of a horse, its ribs showing, blood burning in its mane and tail, rearing to bring its
+//! hooves down; the Hoarback Mammoth, shaggy and white, ice grown on its back, tusks of old bone and a
+//! trunk it sprays frost from, rearing and stamping again and again; and the Gilded Sphinx, a
+//! lion of carved sandstone with folded wings, a gold-banded headdress and a face of stone, the sun
+//! burning in its eyes, sitting up to wheel its jets of fire round it.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -81,10 +89,67 @@ const WOLF: Shape = Shape {
     cast: [0.24, 0.0, -0.06],
 };
 
+/// The Cinderback's: low and broad under its shell, its stubby legs splayed out
+const TORTOISE: Shape = Shape {
+    high: 0.75,
+    joints: [[0.52, -0.42, -0.08], [0.52, 0.42, -0.08], [-0.48, -0.42, -0.08], [-0.48, 0.42, -0.08]],
+    legs: [[0.4, 0.42], [0.4, 0.42]],
+    bends: [-1.0, 1.0],
+    neck_at: [0.78, 0.0, 0.02],
+    neck_long: [0.36, 0.0, 0.12],
+    tail_at: [-0.8, 0.0, -0.05],
+    mouth: [0.3, 0.0, -0.04],
+    cast: [0.3, 0.0, -0.02],
+};
+
+/// The Dreadmare's: a horse's, its neck longer and higher than a stag's
+const HORSE: Shape = Shape {
+    high: 1.4,
+    joints: [[0.6, -0.18, -0.15], [0.6, 0.18, -0.15], [-0.62, -0.18, -0.13], [-0.62, 0.18, -0.13]],
+    legs: [[0.64, 0.68], [0.66, 0.7]],
+    bends: [1.0, -1.0],
+    neck_at: [0.72, 0.0, 0.12],
+    neck_long: [0.42, 0.0, 0.62],
+    tail_at: [-0.82, 0.0, 0.15],
+    mouth: [0.52, 0.0, -0.24],
+    cast: [0.45, 0.0, -0.12],
+};
+
+/// The Hoarback's: huge and high-shouldered on pillars of legs, its head low on a short neck, its
+/// trunk hanging nearly to the ground, which it sprays frost from
+const MAMMOTH: Shape = Shape {
+    high: 1.6,
+    joints: [[0.72, -0.38, -0.3], [0.72, 0.38, -0.3], [-0.72, -0.38, -0.3], [-0.72, 0.38, -0.3]],
+    legs: [[0.68, 0.72], [0.68, 0.72]],
+    bends: [-1.0, 1.0],
+    neck_at: [1.0, 0.0, 0.25],
+    neck_long: [0.35, 0.0, 0.1],
+    tail_at: [-1.2, 0.0, 0.15],
+    mouth: [0.55, 0.0, -0.45],
+    cast: [0.85, 0.0, -1.1],
+};
+
+/// The Gilded Sphinx's: a lion's, its elbows and hocks both bent back
+const LION: Shape = Shape {
+    high: 1.15,
+    joints: [[0.62, -0.24, -0.12], [0.62, 0.24, -0.12], [-0.6, -0.24, -0.1], [-0.6, 0.24, -0.1]],
+    legs: [[0.56, 0.58], [0.6, 0.62]],
+    bends: [-1.0, -1.0],
+    neck_at: [0.78, 0.0, 0.22],
+    neck_long: [0.24, 0.0, 0.36],
+    tail_at: [-0.82, 0.0, 0.12],
+    mouth: [0.24, 0.0, -0.06],
+    cast: [0.26, 0.0, 0.04],
+};
+
 fn shape(look: Look) -> Shape {
     match look {
         Look::Ironhide | Look::Frostfang => BEAR,
         Look::Direwolf | Look::WinterAlpha => WOLF,
+        Look::Cinderback => TORTOISE,
+        Look::Dreadmare => HORSE,
+        Look::Hoarback => MAMMOTH,
+        Look::GildedSphinx => LION,
         _ => STAG,
     }
 }
@@ -133,6 +198,10 @@ pub fn pieces(look: Look) -> Vec<Vec<Part>> {
     match look {
         Look::Ironhide | Look::Frostfang => return bear(look),
         Look::Direwolf | Look::WinterAlpha => return wolf(look),
+        Look::Cinderback => return tortoise(look),
+        Look::Dreadmare => return mare(look),
+        Look::Hoarback => return mammoth(look),
+        Look::GildedSphinx => return sphinx(look),
         _ => {}
     }
     let skin = look.skin();
@@ -257,6 +326,203 @@ fn wolf(look: Look) -> Vec<Vec<Part>> {
     out
 }
 
+/// The Cinderback Tortoise: a domed shell of black glass rimmed with rock, cracks of fire across it
+/// and four vents on it smoking with fire, a sandy hide under it, a beaked head with eyes of fire,
+/// stubby legs with dark claws
+fn tortoise(look: Look) -> Vec<Vec<Part>> {
+    let skin = look.skin();
+    let (hide, shell, rim, glow, claw) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let b = TORTOISE;
+    let mut out = vec![Vec::new(); PIECES];
+    let s = &mut out[BODY];
+    for (x, y) in [(0.25, 0.2), (-0.22, -0.26), (-0.32, 0.22), (0.12, -0.3)] {
+        s.push(ball([x, y, 0.84], 0.075, glow));
+        s.push(limb([x, y, 0.6], [x * 1.05, y * 1.05, 0.84], 0.13, 0.09, rim));
+    }
+    for (from, to) in [([0.6, -0.1, 0.45], [0.2, 0.15, 0.68]), ([-0.1, 0.5, 0.42], [-0.45, 0.1, 0.62]), ([0.0, -0.55, 0.35], [-0.5, -0.3, 0.5])] {
+        s.push(limb(from, to, 0.03, 0.03, glow));
+    }
+    s.push(ellipsoid([0.0, 0.0, 0.02], [0.92, 0.72, 0.12], rim));
+    s.push(ellipsoid([0.0, 0.0, 0.2], [0.86, 0.66, 0.5], shell));
+    s.push(ellipsoid([0.0, 0.0, -0.12], [0.76, 0.56, 0.2], hide));
+    out[NECK] = vec![limb([0.0, 0.0, 0.0], b.neck_long, 0.15, 0.12, hide)];
+    out[HEAD] = vec![
+        ball([0.16, -0.09, 0.07], 0.03, glow),
+        ball([0.16, 0.09, 0.07], 0.03, glow),
+        limb([0.12, 0.0, -0.02], [0.32, 0.0, -0.09], 0.08, 0.03, claw),
+        ellipsoid([0.06, 0.0, 0.02], [0.18, 0.13, 0.12], hide),
+    ];
+    out[TAIL] = vec![limb([0.0, 0.0, 0.0], [-0.2, 0.0, -0.08], 0.07, 0.02, hide)];
+    for k in 0..4 {
+        let hind = k >= 2;
+        let [upper, lower] = b.legs[hind as usize];
+        out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], 0.16, 0.14, hide)];
+        let mut foot = vec![cuboid([-0.3, -0.3, -lower - 0.4], [0.3, 0.3, -lower], AIR)];
+        for y in [-0.07, 0.0, 0.07] {
+            foot.push(limb([0.1, y, -lower + 0.05], [0.2, y * 1.3, -lower + 0.02], 0.03, 0.015, claw));
+        }
+        foot.push(ellipsoid([0.04, 0.0, -lower + 0.07], [0.16, 0.15, 0.08], hide));
+        foot.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.08], 0.14, 0.15, hide));
+        out[LOWER[k]] = foot;
+    }
+    out
+}
+
+/// The Dreadmare: a black horse gaunt enough its ribs show pale, blood burning in its mane, its
+/// tail and its eyes, red tack hanging off it, hooves of black glass
+fn mare(look: Look) -> Vec<Vec<Part>> {
+    let skin = look.skin();
+    let (coat, hoof, rib, glow, tack) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let b = HORSE;
+    let mut out = vec![Vec::new(); PIECES];
+    let body = &mut out[BODY];
+    for k in 0..4 {
+        let x = 0.25 - 0.17 * k as f64;
+        for s in [-1.0, 1.0] {
+            body.push(limb([x, s * 0.2, 0.24], [x + 0.06, s * 0.28, -0.12], 0.025, 0.02, rib));
+        }
+    }
+    // A torn red saddlecloth, and the strap of a bridle long since broken
+    body.push(ellipsoid([-0.05, 0.0, 0.28], [0.3, 0.3, 0.06], tack));
+    body.push(ellipsoid([0.45, 0.0, -0.02], [0.4, 0.28, 0.36], coat));
+    body.push(ellipsoid([-0.5, 0.0, 0.02], [0.4, 0.29, 0.33], coat));
+    body.push(ellipsoid([0.0, 0.0, 0.0], [0.8, 0.26, 0.31], coat));
+    // A mane of blood-fire along the top of its neck
+    let mut neck = Vec::new();
+    for k in 0..6 {
+        let f = k as f64 / 5.0;
+        let at = [b.neck_long[0] * f - 0.08, 0.0, b.neck_long[2] * f + 0.08];
+        neck.push(limb(at, [at[0] - 0.22, (k % 2) as f64 * 0.06 - 0.03, at[2] + 0.12], 0.05, 0.01, glow));
+    }
+    neck.push(limb([0.0, 0.0, 0.0], b.neck_long, 0.2, 0.13, coat));
+    out[NECK] = neck;
+    let h = &mut out[HEAD];
+    for s in [-1.0, 1.0] {
+        h.push(ball([0.14, s * 0.1, 0.05], 0.035, glow));
+        h.push(limb([0.0, s * 0.07, 0.1], [-0.05, s * 0.09, 0.26], 0.04, 0.012, coat));
+        h.push(ball([0.5, s * 0.04, -0.21], 0.025, glow));
+    }
+    h.push(limb([0.12, 0.0, 0.12], [0.3, 0.0, 0.05], 0.03, 0.03, tack));
+    h.push(limb([0.05, 0.0, 0.05], [0.52, 0.0, -0.22], 0.12, 0.075, coat));
+    h.push(ellipsoid([0.05, 0.0, 0.05], [0.14, 0.11, 0.13], coat));
+    out[TAIL] = vec![limb([0.0, 0.0, 0.0], [-0.25, 0.0, -0.35], 0.06, 0.03, glow), limb([0.0, 0.05, 0.0], [-0.3, 0.08, -0.25], 0.04, 0.01, glow)];
+    for k in 0..4 {
+        let hind = k >= 2;
+        let [upper, lower] = b.legs[hind as usize];
+        out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], if hind { 0.17 } else { 0.13 }, 0.075, coat)];
+        out[LOWER[k]] = vec![
+            cuboid([-0.2, -0.2, -lower - 0.3], [0.2, 0.2, -lower], AIR),
+            ellipsoid([0.03, 0.0, -lower + 0.05], [0.09, 0.08, 0.07], hoof),
+            ball([0.0, 0.0, -lower + 0.16], 0.05, glow),
+            ball([0.0, 0.0, 0.0], 0.07, coat),
+            limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.08], 0.06, 0.045, coat),
+        ];
+    }
+    out
+}
+
+/// The Hoarback Mammoth: a hill of white wool over grey, its fringe hanging to its knees, ice grown
+/// in spikes along its back with frost glowing in them, a domed head with small eyes of frost,
+/// flapping ears, a long trunk curling at its end, and great tusks of old bone sweeping out and up
+fn mammoth(look: Look) -> Vec<Vec<Part>> {
+    let skin = look.skin();
+    let (wool, grey, ice, glow, tusk) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let b = MAMMOTH;
+    let mut out = vec![Vec::new(); PIECES];
+    let body = &mut out[BODY];
+    for (x, y, h) in [(0.55, 0.0, 0.5), (0.25, 0.15, 0.45), (0.1, -0.18, 0.5), (-0.25, 0.1, 0.4), (-0.55, -0.08, 0.35), (0.4, -0.2, 0.35)] {
+        body.push(ball([x + 0.05, y, 0.95 + h * 0.6], 0.05, glow));
+        body.push(limb([x, y, 0.75], [x - 0.12, y * 1.4, 0.8 + h], 0.13, 0.02, ice));
+    }
+    // Its fringe of grey hanging from its flanks and belly
+    for k in 0..7 {
+        let x = 0.7 - 0.25 * k as f64;
+        for s in [-1.0, 1.0] {
+            body.push(limb([x, s * 0.6, -0.2], [x - 0.05, s * 0.66, -0.85], 0.12, 0.06, grey));
+        }
+    }
+    body.push(ellipsoid([0.55, 0.0, 0.5], [0.6, 0.56, 0.5], wool));
+    body.push(ellipsoid([0.1, 0.0, 0.05], [1.15, 0.7, 0.74], wool));
+    out[NECK] = vec![limb([0.0, 0.0, 0.0], b.neck_long, 0.55, 0.5, wool)];
+    let h = &mut out[HEAD];
+    for s in [-1.0, 1.0] {
+        h.push(ball([0.42, s * 0.3, 0.12], 0.05, glow));
+        h.push(ellipsoid([0.0, s * 0.46, 0.0], [0.12, 0.2, 0.28], grey));
+        // A tusk out of either side of its trunk, sweeping down, out and up
+        h.push(limb([0.45, s * 0.2, -0.32], [1.05, s * 0.42, -0.55], 0.1, 0.08, tusk));
+        h.push(limb([1.05, s * 0.42, -0.55], [1.45, s * 0.36, -0.15], 0.08, 0.055, tusk));
+        h.push(limb([1.45, s * 0.36, -0.15], [1.48, s * 0.18, 0.25], 0.055, 0.02, tusk));
+    }
+    h.push(limb([0.48, 0.0, -0.1], [0.62, 0.0, -0.55], 0.19, 0.14, grey));
+    h.push(limb([0.62, 0.0, -0.55], [0.72, 0.0, -0.95], 0.14, 0.11, grey));
+    h.push(limb([0.72, 0.0, -0.95], [0.86, 0.0, -1.08], 0.11, 0.08, grey));
+    h.push(ellipsoid([0.15, 0.0, 0.3], [0.38, 0.36, 0.32], wool));
+    h.push(ellipsoid([0.2, 0.0, 0.05], [0.45, 0.42, 0.45], wool));
+    out[TAIL] = vec![ball([-0.12, 0.0, -0.5], 0.08, grey), limb([0.0, 0.0, 0.0], [-0.1, 0.0, -0.45], 0.08, 0.05, wool)];
+    for k in 0..4 {
+        let hind = k >= 2;
+        let [upper, lower] = b.legs[hind as usize];
+        out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], 0.3, 0.26, wool)];
+        out[LOWER[k]] = vec![
+            cuboid([-0.5, -0.5, -lower - 0.6], [0.5, 0.5, -lower], AIR),
+            ellipsoid([0.12, 0.0, -lower + 0.06], [0.1, 0.16, 0.06], tusk),
+            ellipsoid([0.0, 0.0, -lower + 0.12], [0.28, 0.28, 0.13], grey),
+            limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.12], 0.26, 0.25, wool),
+        ];
+    }
+    out
+}
+
+/// The Gilded Sphinx: a lion of carved sandstone, darker where it's carved, its wings folded along
+/// its back banded in gold, a headdress striped teal and gold falling either side of a stern face,
+/// a ceremonial beard of gold, the sun burning in its eyes and on its breast
+fn sphinx(look: Look) -> Vec<Vec<Part>> {
+    let skin = look.skin();
+    let (stone, carved, gold, glow, teal) = (skin.body, skin.dark, skin.accent, skin.glow, skin.extra);
+    let b = LION;
+    let mut out = vec![Vec::new(); PIECES];
+    let body = &mut out[BODY];
+    body.push(ball([0.72, 0.0, 0.05], 0.09, glow));
+    body.push(ellipsoid([0.7, 0.0, 0.05], [0.06, 0.18, 0.18], gold));
+    for s in [-1.0, 1.0] {
+        // Its folded wings, feathers carved in bands of gold
+        body.push(ellipsoid([-0.08, s * 0.3, 0.36], [0.72, 0.07, 0.24], gold).striped(carved));
+        body.push(limb([0.5, s * 0.28, 0.36], [0.2, s * 0.32, 0.6], 0.07, 0.05, gold));
+    }
+    body.push(ellipsoid([0.42, 0.0, 0.0], [0.42, 0.32, 0.38], stone));
+    body.push(ellipsoid([-0.5, 0.0, 0.02], [0.36, 0.31, 0.32], stone));
+    body.push(ellipsoid([0.0, 0.0, 0.0], [0.8, 0.28, 0.29], stone));
+    // Its headdress falling either side of its neck
+    let mut neck = Vec::new();
+    for s in [-1.0, 1.0] {
+        neck.push(limb([b.neck_long[0], s * 0.17, b.neck_long[2]], [0.02, s * 0.24, -0.02], 0.09, 0.07, teal).striped(gold));
+    }
+    neck.push(limb([0.0, 0.0, 0.0], b.neck_long, 0.24, 0.19, stone));
+    out[NECK] = neck;
+    let h = &mut out[HEAD];
+    for s in [-1.0, 1.0] {
+        h.push(ball([0.17, s * 0.065, 0.07], 0.03, glow));
+    }
+    h.push(limb([0.18, 0.0, -0.08], [0.21, 0.0, -0.3], 0.04, 0.03, gold));
+    h.push(limb([0.12, 0.0, 0.24], [0.22, 0.0, 0.2], 0.03, 0.02, gold));
+    h.push(ellipsoid([0.14, 0.0, 0.0], [0.1, 0.12, 0.14], stone));
+    h.push(ellipsoid([0.02, 0.0, 0.08], [0.17, 0.24, 0.2], teal).striped(gold));
+    out[TAIL] = vec![ball([-0.5, 0.0, -0.42], 0.06, carved), limb([0.0, 0.0, 0.0], [-0.5, 0.0, -0.38], 0.05, 0.035, stone)];
+    for k in 0..4 {
+        let hind = k >= 2;
+        let [upper, lower] = b.legs[hind as usize];
+        out[UPPER[k]] = vec![limb([0.0, 0.0, 0.0], [0.0, 0.0, -upper], if hind { 0.21 } else { 0.18 }, 0.13, stone)];
+        let mut paw = vec![cuboid([-0.25, -0.25, -lower - 0.35], [0.25, 0.25, -lower], AIR)];
+        for y in [-0.06, 0.0, 0.06] {
+            paw.push(ball([0.18, y, -lower + 0.03], 0.03, gold));
+        }
+        paw.push(ellipsoid([0.07, 0.0, -lower + 0.07], [0.15, 0.12, 0.08], stone));
+        paw.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, -lower + 0.06], 0.12, 0.1, stone));
+        out[LOWER[k]] = paw;
+    }
+    out
+}
+
 /// Where each piece goes in `s`
 fn solve(b: &Shape, s: &Stance, bones: &mut [Bone; PIECES], sockets: &mut Sockets) {
     let at = V::new(0.0, 0.0, b.high) + V::from(s.body);
@@ -353,6 +619,9 @@ fn fight(look: Look, rest: &Stance, m: &Moment) -> (Stance, f64, f64) {
     let mut lunged = Stance { body: [0.55, 0.0, -0.1], pitch: 0.12, neck: [-0.15, 0.0], head: [0.2, 0.0], jaw: 1.0, tail: [0.3, 0.0], ..guard };
     lunged.feet[0][0] += 0.7;
     lunged.feet[1][0] += 0.6;
+    if let Some(own) = own_fight(look, &d, f, &guard, &reared, &stamped, &lowered, &bellow) {
+        return own;
+    }
     match (d.m, d.stage) {
         (Move::Slam, Stage::Wind) if wolf => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), crouched, Ease::Gather), (d.len, lunged, Ease::Snap)]), 10.0),
         (Move::Slam, Stage::Act) if wolf => pick((lunged, false), 25.0),
@@ -434,6 +703,101 @@ fn fight(look: Look, rest: &Stance, m: &Moment) -> (Stance, f64, f64) {
     }
 }
 
+/// How the beasts of src\bosses\roster.rs go about their own moves, and those they make otherwise
+/// than a stag does, posed at a stag's size as the rest are: None for what they do as a stag does
+#[allow(clippy::too_many_arguments)]
+fn own_fight(look: Look, d: &Doing, f: [[f64; 3]; 4], guard: &Stance, reared: &Stance, stamped: &Stance, lowered: &Stance, bellow: &Stance) -> Option<(Stance, f64, f64)> {
+    let pick = |(s, quick): (Stance, bool), slow: f64| Some((s, if quick { 40.0 } else { slow }, 0.0));
+    let (guard, reared, stamped, lowered, bellow) = (*guard, *reared, *stamped, *lowered, *bellow);
+    // Its head drawn back, then thrust out with its jaws open, to spit
+    let drawn = Stance { body: [-0.12, 0.0, 0.0], neck: [0.3, 0.0], head: [-0.2, 0.0], jaw: 0.3, ..guard };
+    let spat = Stance { body: [0.15, 0.0, -0.05], neck: [-0.1, 0.0], head: [0.3, 0.0], jaw: 1.0, ..guard };
+    let spit = |stage: Stage, t: f64, len: f64| match stage {
+        Stage::Wind => pick(along(t, &[(0.0, guard, Ease::Linear), ((len - SNAP).max(0.05), drawn, Ease::Gather), (len, spat, Ease::Snap)]), 10.0),
+        _ => pick((spat, false), 20.0),
+    };
+    // Stamping again and again, rearing a little way between
+    let half = mix(&stamped, &reared, 0.7);
+    match look {
+        Look::Cinderback => {
+            // Drawn into its shell, down on the ground, its head, legs and tail pulled in
+            let mut hunkered = Stance { body: [0.0, 0.0, -0.6], neck: [-0.9, 0.0], head: [0.9, 0.0], tail: [-0.8, 0.0], ..guard };
+            for k in 0..4 {
+                hunkered.feet[k] = [f[k][0] * 0.55, f[k][1] * 0.75, 0.0];
+            }
+            // Half up on its hind legs to stamp, as high as a tortoise rears
+            let lifted = mix(&guard, &reared, 0.4);
+            match (d.m, d.stage) {
+                (Move::Vents, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len * 0.7, hunkered, Ease::Gather), (d.len, hunkered, Ease::Linear)]), 10.0),
+                (Move::Vents, Stage::Act) => {
+                    let mut s = hunkered;
+                    s.body[2] += 0.025 * (d.t * 37.0).sin();
+                    s.roll += 0.025 * (d.t * 29.0).sin();
+                    pick((s, false), 20.0)
+                }
+                (Move::Vents, Stage::Recover) => pick(along(d.t, &[(0.0, hunkered, Ease::Linear), (d.len * 0.55, hunkered, Ease::Linear), (d.len, guard, Ease::Smooth)]), 6.0),
+                (Move::Slam | Move::Quake, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), lifted, Ease::Gather), (d.len, stamped, Ease::Snap)]), 9.0),
+                (Move::Spit, Stage::Wind | Stage::Act) => spit(d.stage, d.t, d.len),
+                _ => None,
+            }
+        }
+        // Rearing high, then bringing its hooves down, up again a little way and down again
+        Look::Dreadmare => match (d.m, d.stage) {
+            (Move::Hoofbrand, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), reared, Ease::Gather), (d.len, stamped, Ease::Snap)]), 10.0),
+            (Move::Hoofbrand, Stage::Act) => pick(along(d.t, &[(0.0, stamped, Ease::Linear), (0.1, stamped, Ease::Linear), (0.32, half, Ease::Gather), (0.45, stamped, Ease::Snap), (d.len, stamped, Ease::Linear)]), 20.0),
+            _ => None,
+        },
+        Look::Hoarback => {
+            // Its trunk swung up and out ahead of it to spray frost, sweeping from side to side
+            let spray = Stance { body: [0.05, 0.0, 0.0], neck: [0.3, 0.0], head: [-0.55, 0.0], ..guard };
+            let tossed = Stance { body: [-0.05, 0.0, 0.05], neck: [0.6, 0.0], head: [-0.6, 0.0], ..guard };
+            match (d.m, d.stage) {
+                (Move::Rimestomp, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), reared, Ease::Gather), (d.len, stamped, Ease::Snap)]), 9.0),
+                (Move::Rimestomp, Stage::Act) => pick(
+                    along(d.t, &[(0.0, stamped, Ease::Linear), (0.3, half, Ease::Gather), (0.55, stamped, Ease::Snap), (0.85, half, Ease::Gather), (1.1, stamped, Ease::Snap), (d.len, stamped, Ease::Linear)]),
+                    20.0,
+                ),
+                (Move::Breath, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len, spray, Ease::Gather)]), 10.0),
+                (Move::Breath, Stage::Act) => {
+                    let mut s = spray;
+                    s.head[1] += 0.3 * (d.t * 1.7).sin();
+                    pick((s, false), 12.0)
+                }
+                // Tusks lowered to the ground, then tossed up, flinging the ice it scooped up
+                (Move::Throw, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), ((d.len - SNAP).max(0.05), lowered, Ease::Gather), (d.len, tossed, Ease::Snap)]), 10.0),
+                (Move::Throw, Stage::Act) => pick((tossed, false), 18.0),
+                _ => None,
+            }
+        }
+        Look::GildedSphinx => {
+            // Sitting up on its haunches, its head raised, forepaws planted before it
+            let mut sat = Stance { body: [-0.35, 0.0, -0.05], pitch: -0.45, neck: [0.45, 0.0], head: [-0.15, 0.0], tail: [0.2, 0.0], ..guard };
+            for k in 0..4 {
+                let (x, y) = if k < 2 { (0.3, 1.0) } else { (0.25, 1.2) };
+                sat.feet[k] = [f[k][0] + x, f[k][1] * y, 0.0];
+            }
+            let breathe = Stance { body: [0.1, 0.0, -0.1], pitch: 0.08, neck: [-0.15, 0.0], head: [0.25, 0.0], jaw: 1.0, ..guard };
+            match (d.m, d.stage) {
+                (Move::Sunwheel, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len * 0.6, sat, Ease::Gather), (d.len, mix(&sat, &bellow, 0.3), Ease::Smooth)]), 10.0),
+                (Move::Sunwheel, Stage::Act) => {
+                    let mut s = mix(&sat, &bellow, 0.3);
+                    s.head[1] += 0.35 * (d.t * 1.1).sin();
+                    pick((s, false), 10.0)
+                }
+                (Move::Sunwheel, Stage::Recover) => pick(along(d.t, &[(0.0, sat, Ease::Linear), (d.len, guard, Ease::Smooth)]), 5.0),
+                (Move::Breath, Stage::Wind) => pick(along(d.t, &[(0.0, guard, Ease::Linear), (d.len, Stance { jaw: 0.4, neck: [0.2, 0.0], head: [-0.1, 0.0], ..breathe }, Ease::Gather)]), 10.0),
+                (Move::Breath, Stage::Act) => {
+                    let mut s = breathe;
+                    s.neck[1] += 0.15 * (d.t * 1.7).sin();
+                    pick((s, false), 12.0)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Dying: its head thrown up, its legs folding under it, then over onto its side
 fn death(rest: &Stance, t: f64) -> (Stance, f64, f64) {
     let f = rest.feet;
@@ -480,4 +844,9 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
         s.roll += 0.4 * fl[2];
     }
     solve(&shape(look), &s, &mut r.bones, &mut r.sockets);
+    // What the Hoarback tosses comes off the ends of its tusks
+    if look == Look::Hoarback {
+        let head = r.bones[HEAD];
+        r.sockets.grip = head.at + head.turn * V::new(1.45, 0.0, 0.05);
+    }
 }
