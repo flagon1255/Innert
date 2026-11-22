@@ -73,6 +73,8 @@ struct Constants {
     info: [u32; 4],
     /// How many columns the world is across, and where its first is kept, see shaders\water.comp
     room: [u32; 4],
+    /// The area kept flowing round the camera, from x and y to x and y
+    flowing: [u32; 4],
 }
 
 /// What the water's kept in on the GPU that a strip coming into the world is sent over into, see
@@ -589,12 +591,14 @@ impl Water {
 
         let wake = wake.map_or([0.0; 4], |(p, v)| [p[0] as f32, p[1] as f32, v[0] as f32, v[1] as f32]);
         let room = [self.size[0], self.size[1], self.wrap[0], self.wrap[1]];
+        let flowing = [corner[0], corner[1], corner[0] + area[0], corner[1] + area[1]];
         let constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2]| Constants {
             brush,
             wake,
             params: [STEP as f32, self.sea_level, self.voxels_per_meter as f32, 0.0],
             info: [stage as u32, self.spring_count, corner[0], corner[1]],
             room,
+            flowing,
         };
 
         builder
@@ -611,7 +615,9 @@ impl Water {
         };
         for step in 0..steps {
             let brush = if step == 0 { self.brush.take().unwrap_or([0.0; 4]) } else { [0.0; 4] };
-            dispatch(builder, constants(Stage::Flux, [0.0; 4], corner), groups(area));
+            // And a column more all round, the still water there pushing water in, see
+            // shaders\water.comp
+            dispatch(builder, constants(Stage::Flux, [0.0; 4], corner), groups([area[0] + 2, area[1] + 2]));
             dispatch(builder, constants(Stage::Depth, brush, corner), groups(area));
         }
         // Screenshot runs with `--set gpu_times=1` time each part
