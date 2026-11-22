@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    7,
+    23
+  ],
+  "pivot": [
+    3.3280000000000007,
+    3.3280000000000007,
+    19.2
+  ],
+  "anchor": [
+    0.010749999999999954,
+    0.010749999999999954,
+    -1.2
+  ],
+  "origin": [
+    -3,
+    -3,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3332,
+    "c79c178ab96ee338"
+  ]
+}

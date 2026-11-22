@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, foot right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    7,
+    6
+  ],
+  "pivot": [
+    3.328,
+    3.3280000000000003,
+    3.072
+  ],
+  "anchor": [
+    0.167,
+    0.010749999999999982,
+    -0.192
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1939,
+    "a5f56907ad2fc34a"
+  ]
+}

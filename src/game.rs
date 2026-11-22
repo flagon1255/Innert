@@ -21,7 +21,7 @@ use crate::skills::{self, Stat};
 use crate::realms::{self, Scaling};
 use crate::wings;
 use crate::save;
-use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
+use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{self, World, is_passable, material::*};
 use crate::serpents;
 use crate::tools;
@@ -705,6 +705,8 @@ struct Root {
     damage: f64,
     drag: Vector3<f64>,
     element: Option<Element>,
+    /// Not roots but a boss's element bursting up, of this kind of drop, see bosses::Deed::Flare
+    flare: Option<usize>,
 }
 
 /// The top of the ground at `x`, `y`, in voxels: the highest of what's solid there that isn't a
@@ -1711,7 +1713,13 @@ impl Game {
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
             // A raid boss is that boss whatever the land, and so's a realm's guardian, see guardians.rs
-            let look = if lair.raid.is_some() || lair.look.is_great_serpent() || realms::is_guardian_key(&lair.key) { lair.look } else { lair.look.for_ground(ground_round(world, water, lair.position)) };
+            // Otherwise the kind of it for the land it's in, the Dreaming Red's own, and for the
+            // ground round it
+            let look = if lair.raid.is_some() || lair.look.is_great_serpent() || realms::is_guardian_key(&lair.key) {
+                lair.look
+            } else {
+                lair.look.for_land(worldgen::land_of(self.seed)).for_ground(ground_round(world, water, lair.position))
+            };
             // A great serpent that swims lies in the deep water by its lair, out from the shore, the
             // rest on the ground
             let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, if look.is_ultra() { 2.5 } else { 1.5 })).flatten();
@@ -2645,7 +2653,7 @@ impl Game {
             Deed::Roots { at } => {
                 // On the ground under the player, if they're jumping
                 let at = ground_under(world, at);
-                self.roots.push(Root { at, left: ROOTS_WARNING, radius: ROOTS_RADIUS, damage: 24.0, drag: Vector3::zeros(), element: None });
+                self.roots.push(Root { at, left: ROOTS_WARNING, radius: ROOTS_RADIUS, damage: 24.0, drag: Vector3::zeros(), element: None, flare: None });
                 self.cues.push(Cue::at(Sound::Rumble, at, 0.8).pitched(0.7));
             }
             // Lines of roots, each bursting up a little after the one before, dragging the player
@@ -2659,7 +2667,7 @@ impl Game {
                     let along = Vector3::new(ahead.x * c - ahead.y * s, ahead.x * s + ahead.y * c, 0.0);
                     for k in 0..WAVE_ROOTS {
                         let at = ground_under(world, from + along * (3.0 + WAVE_SPACING * k as f64) * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm));
-                        self.roots.push(Root { at, left: 0.8 + 0.15 * k as f64, radius: WAVE_RADIUS, damage: 16.0, drag: -along, element });
+                        self.roots.push(Root { at, left: 0.8 + 0.15 * k as f64, radius: WAVE_RADIUS, damage: 16.0, drag: -along, element, flare: None });
                     }
                 }
                 self.cues.push(Cue::at(Sound::Rumble, from, 1.0).pitched(0.5));
@@ -2933,6 +2941,30 @@ impl Game {
                 }
             }
             Deed::Shed { at, from, loud } => self.combat.shed(at, from, loud),
+            // A boss's element about to burst up out of the ground, the ground stirring there till
+            // then, see grow_roots(); in the air, on the ground under it
+            Deed::Flare { at, delay, radius, damage } => {
+                let at = ground_under(world, at);
+                let kind = match element {
+                    Some(Element::Fire) => DROP_EMBER,
+                    Some(Element::Frost) => DROP_ICE,
+                    Some(Element::Poison) => DROP_VENOM,
+                    Some(Element::Blood) => DROP_BLOOD,
+                    Some(Element::Void) => DROP_VOID,
+                    _ => DROP_MUD,
+                };
+                self.roots.push(Root { at, left: delay, radius, damage, drag: Vector3::zeros(), element, flare: Some(kind) });
+            }
+            // Its element, or a burning rock of it, lobbed to come down where it shows
+            Deed::Lob { from, to, time, damage, radius, rock } => {
+                let e = element.unwrap_or(Element::Fire);
+                let kind = if rock { HostileKind::Boulder(Some(e)) } else { HostileKind::Spell(e) };
+                self.combat.hurl(kind, from, to, time.max(0.2), damage, radius);
+                // Not every one heard, when there are so many at once
+                if random(&mut self.rng) < 0.35 {
+                    self.cues.push(Cue::at(if rock { Sound::HeavySwing } else { Sound::Cast(Element::look(Some(e)) as u8) }, from, 0.8).pitched(if rock { 0.55 } else { 0.8 }));
+                }
+            }
         }
     }
 
@@ -2985,21 +3017,39 @@ impl Game {
             let at = root.at;
             let near = (1.0 - (at - view.eye).norm() / vpm / 30.0).max(0.0);
             if root.left > 0.0 {
-                // Stirring harder and shaking more as it comes, a ring closing in on where
+                // Stirring harder and shaking more as it comes, a ring closing in on where; a
+                // flare's stirring its own element up, and only shaking the ground once it bursts
                 let closing = (root.left / ROOTS_WARNING).min(1.0);
-                self.combat.stir(at, root.radius, dt * (2.0 - closing), DROP_MUD);
+                self.combat.stir(at, root.radius, dt * (2.0 - closing), root.flare.unwrap_or(DROP_MUD));
                 self.combat.mark(at, root.radius, closing);
-                self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
+                if root.flare.is_none() {
+                    self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
+                }
                 self.roots.push(root);
                 continue;
             }
-            self.combat.erupt(at, root.radius);
-            self.shake = self.shake.max(0.5 * near);
+            match root.flare {
+                Some(kind) => {
+                    self.combat.flare(at, root.element, kind, root.radius);
+                    self.shake = self.shake.max(0.25 * near);
+                    if root.damage > 0.0 || random(&mut self.rng) < 0.4 {
+                        self.cues.push(Cue::at(Sound::Burst, at, 0.6).pitched(0.9 + 0.3 * random(&mut self.rng) as f32));
+                    }
+                    if root.damage <= 0.0 {
+                        continue;
+                    }
+                }
+                None => {
+                    self.combat.erupt(at, root.radius);
+                    self.shake = self.shake.max(0.5 * near);
+                }
+            }
             if let Some(feet) = player {
                 let off = feet - at;
                 if off.xy().norm() < root.radius * vpm && off.z.abs() < 2.0 * vpm {
-                    self.hurt(root.damage, at, feet, world, "roots");
-                    let up = if root.drag == Vector3::zeros() { 5.5 } else { 3.0 };
+                    self.hurt(root.damage, at, feet, world, if root.flare.is_some() { "the ground bursting" } else { "roots" });
+                    // A flare throws them up a little; roots high, or dragging them along
+                    let up = if root.flare.is_some() { 2.2 } else if root.drag == Vector3::zeros() { 5.5 } else { 3.0 };
                     self.thrown += (root.drag * 4.0 + Vector3::new(0.0, 0.0, up)) * vpm;
                     self.afflict(root.element);
                 }
@@ -3537,13 +3587,17 @@ impl Game {
                 self.shake = self.shake.max(1.0);
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
+                // What its hoard's called, for those with one of their own, see bosses::roster
+                let hoard_name = bosses::roster::hoard(look).unwrap_or("hoard");
                 if ultra {
                     self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
                 } else if let Some(realm) = block {
                     let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
-                    self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its hoard spills out, some of it {rarity}!", look.name()));
+                    self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name()));
                 } else if raid {
-                    self.say(format!("Raid boss slain! The {} falls, and its hoard spills out. Some of it's {rarity}!", look.name()));
+                    self.say(format!("Raid boss slain! The {} falls, and its {hoard_name} spills out. Some of it's {rarity}!", look.name()));
+                } else if bosses::roster::has(look) {
+                    self.say(format!("You defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", look.name()));
                 } else {
                     self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
                 }

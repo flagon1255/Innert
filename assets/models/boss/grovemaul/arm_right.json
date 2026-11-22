@@ -1,0 +1,29 @@
+{
+  "what": "Grovemaul, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    28
+  ],
+  "pivot": [
+    3.9680000000000004,
+    3.9680000000000004,
+    23.312
+  ],
+  "anchor": [
+    0.001999999999999974,
+    0.001999999999999974,
+    -1.457
+  ],
+  "origin": [
+    -4,
+    -4,
+    -23
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5188,
+    "b7fd4743c51d0094"
+  ]
+}

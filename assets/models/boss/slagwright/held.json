@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    18,
+    47
+  ],
+  "pivot": [
+    4.608,
+    8.704,
+    39.93600000000001
+  ],
+  "anchor": [
+    0.024500000000000022,
+    0.01849999999999996,
+    -2.4960000000000004
+  ],
+  "origin": [
+    -5,
+    -9,
+    -40
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    8009,
+    "4838df50a659cea9"
+  ]
+}

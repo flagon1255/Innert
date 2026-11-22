@@ -1,0 +1,29 @@
+{
+  "what": "Cinderback Tortoise, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    7,
+    8
+  ],
+  "pivot": [
+    2.8800000000000003,
+    3.12,
+    4.08
+  ],
+  "anchor": [
+    0.22624999999999998,
+    0.023749999999999993,
+    -0.255
+  ],
+  "origin": [
+    -3,
+    -3,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1955,
+    "055a8ab6e7196ff3"
+  ]
+}

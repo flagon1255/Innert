@@ -1,0 +1,29 @@
+{
+  "what": "Sunstinger, extra 19",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    14
+  ],
+  "pivot": [
+    2.76,
+    2.8979999999999997,
+    10.488
+  ],
+  "anchor": [
+    0.015000000000000013,
+    0.0063750000000000195,
+    -0.6555
+  ],
+  "origin": [
+    -3,
+    -3,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2164,
+    "ff3ddc92e0a0677b"
+  ]
+}

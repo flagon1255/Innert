@@ -1,0 +1,29 @@
+{
+  "what": "Hoarback Mammoth, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    7,
+    26
+  ],
+  "pivot": [
+    7.68,
+    3.072,
+    22.272
+  ],
+  "anchor": [
+    -0.13624999999999998,
+    0.026749999999999996,
+    -1.392
+  ],
+  "origin": [
+    -8,
+    -3,
+    -22
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3409,
+    "b06180493e81d76e"
+  ]
+}

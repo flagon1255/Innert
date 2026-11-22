@@ -1,0 +1,29 @@
+{
+  "what": "Lantern Widow, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    11
+  ],
+  "pivot": [
+    2.2319999999999998,
+    2.2319999999999998,
+    9.176
+  ],
+  "anchor": [
+    0.016750000000000015,
+    0.016750000000000015,
+    -0.5735
+  ],
+  "origin": [
+    -2,
+    -2,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1608,
+    "3851d4b0127dc658"
+  ]
+}

@@ -3049,7 +3049,13 @@ impl App {
                     // towers and caverns, a jotun where it's cold and a thunderborn giant on the high
                     // stone; an elderhorn at the woods' shrines, a mire crone at the jungle's, see
                     // Look::for_ground and src\rig.rs
+                    // The Gilded Sphinx, a raid boss, in some of the desert's ruins, and the
+                    // Cinderback Tortoise in others, see src\bosses\roster.rs
+                    "desert ruins" if pick % 5 == 0 => animals::Look::GildedSphinx,
                     "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
+                    "desert ruins" if pick % 3 == 0 => animals::Look::Cinderback,
+                    // The Lantern Widow in half the flooded churches, a drake in the rest
+                    "flooded church" if pick % 2 == 0 => animals::Look::LanternWidow,
                     "castle" | "watchtower" if pick % 4 == 3 => animals::Look::Ogre,
                     "cavern" if pick % 4 == 3 => animals::Look::Ogre,
                     "shrine" if pick % 2 == 0 => animals::Look::Elderhorn,

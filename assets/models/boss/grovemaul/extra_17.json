@@ -1,0 +1,29 @@
+{
+  "what": "Grovemaul, extra 17",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    21,
+    21
+  ],
+  "pivot": [
+    10.416,
+    10.416,
+    10.416
+  ],
+  "anchor": [
+    0.005249999999999977,
+    0.005249999999999977,
+    -0.651
+  ],
+  "origin": [
+    -10,
+    -10,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    20287,
+    "1e02a7f28e1da30a"
+  ]
+}

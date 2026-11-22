@@ -1,0 +1,29 @@
+{
+  "what": "Gilded Sphinx, lower hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    9,
+    29
+  ],
+  "pivot": [
+    4.224,
+    4.224,
+    23.936000000000003
+  ],
+  "anchor": [
+    0.11099999999999999,
+    0.017249999999999988,
+    -1.4960000000000002
+  ],
+  "origin": [
+    -4,
+    -4,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6445,
+    "c9c520223528eb48"
+  ]
+}

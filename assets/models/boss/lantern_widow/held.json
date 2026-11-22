@@ -1,0 +1,29 @@
+{
+  "what": "Lantern Widow, held",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    6,
+    44
+  ],
+  "pivot": [
+    0.992,
+    2.7758081386144395,
+    23.808
+  ],
+  "anchor": [
+    0.15675,
+    0.014011991336597529,
+    -1.488
+  ],
+  "origin": [
+    -1,
+    -3,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2296,
+    "a2dfb4600b15d008"
+  ]
+}

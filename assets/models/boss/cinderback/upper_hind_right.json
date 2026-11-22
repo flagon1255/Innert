@@ -1,0 +1,29 @@
+{
+  "what": "Cinderback Tortoise, upper hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    18
+  ],
+  "pivot": [
+    3.84,
+    3.84,
+    13.440000000000001
+  ],
+  "anchor": [
+    0.010000000000000009,
+    0.010000000000000009,
+    -0.8400000000000001
+  ],
+  "origin": [
+    -4,
+    -4,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3592,
+    "15770dfddce38ff5"
+  ]
+}

@@ -1295,10 +1295,16 @@ pub fn read_pieces(look: Look, dir: &Path, files: &std::collections::HashSet<Str
 /// pieces, was written from: `look`'s standing frame, or the frame the old export wrote there,
 /// counting every look's frames as taking up the jointed bosses' pieces too, if the file's .json
 /// says that's what was written
+/// How many models apart each look's files were put by the export that counted the jointed bosses'
+/// pieces in with the frames, see assets::frames(): every frame of every look and the jointed
+/// bosses' pieces, over how many looks there were, as it was then. Kept as it was, as more looks and
+/// more jointed bosses since would put an old file on yet another frame.
+const LEGACY_STRIDE: usize = 56;
+
 fn written_from(look: Look, sidecar: Option<&crate::assets::Sidecar>) -> Option<Model> {
     let mut candidates = vec![animals::drawn_frame(look, 0)];
     let all = Look::ALL.len();
-    let stride = (all * animals::FRAMES + crate::rig::MODELS) / all;
+    let stride = LEGACY_STRIDE;
     if let Some(i) = Look::ALL.iter().position(|&l| l == look).map(|i| i * stride).filter(|&i| i < all * animals::FRAMES) {
         candidates.push(animals::drawn_frame(Look::ALL[i / animals::FRAMES], i % animals::FRAMES));
     }

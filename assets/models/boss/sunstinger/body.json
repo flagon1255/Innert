@@ -1,0 +1,29 @@
+{
+  "what": "Sunstinger, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    17,
+    8
+  ],
+  "pivot": [
+    4.600000000000001,
+    8.463999999999999,
+    2.76
+  ],
+  "anchor": [
+    0.3687499999999999,
+    0.0022500000000000853,
+    -0.1725
+  ],
+  "origin": [
+    -5,
+    -8,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6243,
+    "d602cbe72c993b71"
+  ]
+}
