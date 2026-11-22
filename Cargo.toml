@@ -6,6 +6,8 @@ rust-version = "1.86.0"
 # The game and its model editor are each a little program over the same code, whose root stays
 # at src/main.rs, see src/bin
 autobins = false
+# What `cargo run` starts without --bin: the game, `cargo run --release --bin innert-editor` the editor
+default-run = "innert"
 
 [lib]
 name = "innert"
