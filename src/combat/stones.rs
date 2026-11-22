@@ -481,8 +481,7 @@ impl Combat {
             let body = arena.player.map(|feet| feet + Vector3::new(0.0, 0.0, 1.0 * vpm));
             let direct = body.filter(|_| r.damage > 0.0).and_then(|b| sphere_hit(start, end, b, (0.6 + r.radius) * vpm));
             let wall = solid_along(arena.world, start - down, end - down);
-            let (high, low) = ((arena.water)(start.x, start.y), (arena.water)(end.x, end.y));
-            let water = (start.z > high && end.z <= low && low.is_finite()).then(|| ((start.z - low) / (start.z - end.z)).clamp(0.0, 1.0));
+            let water = water_crossing(arena.water, start, end, wall.unwrap_or(f64::MAX)).filter(|&(_, into)| into).map(|(t, _)| t);
             let Some(t) = [direct, wall, water].into_iter().flatten().reduce(f64::min) else {
                 r.position = end;
                 if !lost(arena.world, arena.view.eye, r.position, true) && r.age < r.flight + 6.0 {

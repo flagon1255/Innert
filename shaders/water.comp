@@ -54,6 +54,8 @@ layout(push_constant) uniform PushConstants {
     // are in the landscape modulo the room there is, which they go round, see at(): so the water
     // just flows on as it does, with nothing moved but what comes in put where what left was.
     uvec4 room;
+    // The area around the camera that's kept flowing, from x and y to x and y, in columns
+    uvec4 flowing;
 } pc;
 
 // Top of the ground in each column, which never changes
@@ -107,10 +109,21 @@ float height(ivec2 c) {
     return imageLoad(groundImage, p).r + imageLoad(depthImage, p).r;
 }
 
-// How hard water is pushed through each pipe, from how much higher it stands than its neighbor's
+// Whether column `c` is in the area kept flowing, see PushConstants::flowing
+bool flowing(ivec2 c) {
+    return all(greaterThanEqual(c, ivec2(pc.flowing.xy))) && all(lessThan(c, ivec2(pc.flowing.zw)));
+}
+
+// How hard water is pushed through each pipe, from how much higher it stands than its neighbor's.
+// The still water round the area kept flowing is as much a part of the sea, lake or river as
+// what's flowing: the columns just outside the area push water in through their pipes into it as
+// any others would, though how deep they are stays as it is till the camera comes near, so the
+// water in the area can never drain away below, or rise above, the still water round it, which
+// would leave a step in the water where the area ends. Their pipes out of the area aren't used.
 void flux(ivec2 c, ivec2 size) {
     float dt = pc.params.x;
     float gravity = 9.8 * pc.params.z;
+    bool edge = !flowing(c);
     ivec2 here = at(c);
     float depth = imageLoad(depthImage, here).r;
     vec4 f = imageLoad(fluxImage, here);
@@ -124,7 +137,7 @@ void flux(ivec2 c, ivec2 size) {
     float h = imageLoad(groundImage, here).r + depth;
     for (int i = 0; i < 4; i++) {
         ivec2 n = c + DIRS[i];
-        f[i] = inside(n, size) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
+        f[i] = inside(n, size) && (!edge || flowing(n)) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
     }
 
     // Whatever wades through pushes the water in front of it along, making a little bow wave,
@@ -136,7 +149,7 @@ void flux(ivec2 c, ivec2 size) {
     float fastest = 1.2 * pc.params.z;
     if (length(push) > fastest)
     push *= fastest / length(push);
-    if (closeness > 0 && length(push) > 0) {
+    if (closeness > 0 && length(push) > 0 && !edge) {
         for (int i = 0; i < 4; i++)
         f[i] = max(f[i], closeness * depth * max(dot(vec2(DIRS[i]), push), 0) * 0.5);
     }
@@ -445,6 +458,9 @@ void main() {
         surface(c, size, g, near_water, tiled);
         return;
     }
+    // The pipes are worked out for a column more all round the area that flows, see flux()
+    if (stage == FLUX)
+    c -= ivec2(1);
     if (!inside(c, size))
     return;
     if (stage == FLUX)
