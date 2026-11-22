@@ -325,6 +325,16 @@ pub fn monsters_of(realm: usize) -> (&'static [Pack], crate::levels::Band) {
     (REALMS[r].monsters, crate::levels::BANDS[r])
 }
 
+/// What `of` makes of the monsters of realm `realm` on the whole, each as often as it goes about
+/// there: each pack's as many times as there are such packs about at most, as night raids count
+/// them, see raids.rs. For the balance of the realms against each other, see levels.rs.
+#[allow(dead_code)]
+pub fn monster_mean(realm: usize, of: impl Fn(Look) -> f64) -> f64 {
+    let packs = REALMS[realm.min(REALMS.len() - 1)].monsters;
+    let (sum, count) = packs.iter().flat_map(|p| p.looks.iter().map(move |&l| (l, p.most as f64))).fold((0.0, 0.0), |(s, n), (l, w)| (s + of(l) * w, n + w));
+    sum / count
+}
+
 /// How far in front of the gate or a portal the player stands on coming to a realm, in meters: far
 /// enough to see all of it
 const ARRIVAL_M: f64 = 11.0;
@@ -585,6 +595,43 @@ mod tests {
             assert!(r.monsters.iter().all(|p| p.looks.iter().all(|l| l.is_monster())));
             assert!(r.seed == NORMAL_SEED || r.seed > FREE_ROAM_SEEDS);
             assert_eq!(by_id(r.id).map(|k| REALMS[k].name), Some(r.name));
+        }
+    }
+
+    /// Monsters of a level are about as hard to kill, and hit about as hard, whatever realm they're
+    /// from: each kind's own health within levels::MONSTER_SPREAD of the rest's, lesser bosses' and
+    /// raid bosses' within theirs, those raised to raid bosses about as tough as the rest, and at
+    /// any one level each realm's monsters on the whole within a tenth of the others' in health and
+    /// within an eighth in how hard they hit
+    #[test]
+    fn monsters_of_a_level_are_as_tough_in_every_realm() {
+        use crate::levels::{self, BOSS_HEALTH, BOSS_SPREAD, MONSTER_HEALTH, MONSTER_SPREAD, RAID_HEALTH, RAID_SPREAD};
+        let within = |v: f64, of: f64, [lo, hi]: [f64; 2]| v >= of * lo - 1e-9 && v <= of * hi + 1e-9;
+        for look in Look::ALL {
+            let h = look.health();
+            if look.is_monster() {
+                assert!(within(h, MONSTER_HEALTH, MONSTER_SPREAD), "{look:?} has {h}");
+            } else if look.is_boss() && !look.is_raid() && !look.is_ultra() {
+                assert!(within(h, BOSS_HEALTH, BOSS_SPREAD), "{look:?} has {h}");
+            } else if look.is_raid() && look != crate::dragons::ULTRA {
+                assert!(within(h, RAID_HEALTH, RAID_SPREAD), "{look:?} has {h}");
+            }
+        }
+        for r in &REALMS {
+            for (look, _) in r.raid_bosses {
+                let h = if look.is_raid() { look.health() } else { look.health() * RAID_PROMOTION };
+                assert!(within(h, RAID_HEALTH, [0.85, 1.1]), "{}: {look:?} has {h}", r.name);
+            }
+        }
+        for level in [1, 10, 25, 40, levels::LEVEL_CAP] {
+            let healths: Vec<f64> = (0..REALMS.len()).map(|r| monster_mean(r, Look::health) * levels::toughness(level)).collect();
+            let blows: Vec<f64> = (0..REALMS.len()).map(|r| monster_mean(r, crate::bosses::blow) * levels::damage(level)).collect();
+            for (of, most, what) in [(&healths, 0.1, "health"), (&blows, 0.125, "blows")] {
+                let mean = of.iter().sum::<f64>() / of.len() as f64;
+                for (r, v) in of.iter().enumerate() {
+                    assert!((v / mean - 1.0).abs() <= most, "{} at level {level}: {what} {v:.1} against {mean:.1} on the whole", REALMS[r].name);
+                }
+            }
         }
     }
 
