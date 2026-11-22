@@ -213,16 +213,18 @@ pub fn hoard(look: Look) -> Option<&'static str> {
 /// hard it hits, and how big a hole it blows
 pub fn slam(look: Look) -> (f64, f64, f64, f64) {
     match look {
-        // A forge hammer, a tortoise's forefeet, a crook, a mare's hooves, pincers, an ape's fists
-        Look::Slagwright => (2.5, 3.0, 32.0, 0.8),
-        Look::Cinderback => (2.0, 2.8, 28.0, 0.6),
+        // A forge hammer, a tortoise's forefeet, a crook, a mare's hooves, pincers, an ape's fists.
+        // Those of fire and frost leave no hole, as a hole leaves the ground scorched or frosted
+        // round it, and so wide a stain holds up the frame it's splashed in.
+        Look::Slagwright => (2.5, 3.0, 32.0, 0.0),
+        Look::Cinderback => (2.0, 2.8, 28.0, 0.0),
         Look::LanternWidow => (1.7, 2.0, 18.0, 0.0),
         Look::Dreadmare => (2.3, 2.5, 26.0, 0.4),
         Look::Sunstinger => (2.0, 1.9, 22.0, 0.0),
         Look::Grovemaul => (2.4, 2.9, 30.0, 0.7),
         // A mammoth's forefeet and a sphinx's paws, raid bosses' blows
-        Look::Hoarback => (4.6, 4.4, 38.0, 1.0),
-        Look::GildedSphinx => (3.8, 3.8, 36.0, 0.6),
+        Look::Hoarback => (4.6, 4.4, 38.0, 0.0),
+        Look::GildedSphinx => (3.8, 3.8, 36.0, 0.0),
         _ => (2.0, 2.6, 22.0, 0.5),
     }
 }
@@ -286,8 +288,8 @@ pub fn timing(look: Look, m: Move) -> (f64, f64, f64, f64) {
 /// build's size
 pub fn menu(look: Look) -> &'static [(Move, f64, f64)] {
     match look {
-        Look::Slagwright => &[(Move::Slagrain, 4.5, 26.0), (Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.6), (Move::Quake, 3.0, 12.0)],
-        Look::Cinderback => &[(Move::Vents, 0.0, 12.0), (Move::Slam, 0.0, 3.8), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.5, 26.0)],
+        Look::Slagwright => &[(Move::Slagrain, 3.6, 26.0), (Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.6)],
+        Look::Cinderback => &[(Move::Vents, 0.0, 12.0), (Move::Slam, 0.0, 3.8), (Move::Spit, 4.5, 26.0)],
         Look::LanternWidow => &[(Move::Blink, 0.0, 2.6), (Move::Gloomgate, 3.0, 22.0), (Move::Slam, 0.0, 3.0), (Move::Spit, 3.0, 26.0)],
         Look::Dreadmare => &[(Move::Hoofbrand, 3.5, 18.0), (Move::Slam, 0.0, 4.0), (Move::Trample, 7.0, 30.0)],
         Look::Sunstinger => &[(Move::Sting, 0.0, 6.0), (Move::Slam, 0.0, 3.2), (Move::Spit, 5.0, 24.0)],
@@ -558,11 +560,15 @@ pub fn during(m: Move, t: f64, dt: f64, a: &mut Animal, boss: &mut Boss, player:
                 }
                 if local - dt <= 0.0 && start > 0.0 {
                     boss.deeds.push(Deed::Stomp(a.position));
+                    boss.deeds.push(Deed::Slam { at: a.position, radius: 0.0, damage: 0.0, crater: 0.0 });
                     let forward = Vector3::new(a.heading.cos(), a.heading.sin(), 0.0);
                     boss.deeds.push(Deed::Flare { at: a.position + forward * 2.4 * s * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm), delay: 0.0, radius: 2.0, damage: 0.0 });
                 }
+                // Only the first wave leaves its crater and its frost on the ground, the rest
+                // running out over it, so the ground's splashed once rather than three times over
+                let least = if start > 0.0 { 1e-3 } else { 0.0 };
                 let to = (local * QUAKE_PACE).min(reach);
-                boss.deeds.push(Deed::Quake { at: boss.leap.0, from: ((local - dt) * QUAKE_PACE).max(0.0), to, dt });
+                boss.deeds.push(Deed::Quake { at: boss.leap.0, from: ((local - dt) * QUAKE_PACE).max(least), to, dt });
             }
         }
         // Its jets of fire wheeling round it, the ground bursting into flame along each of them
