@@ -1,0 +1,29 @@
+{
+  "what": "Hoarback Mammoth, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    89,
+    60,
+    93
+  ],
+  "pivot": [
+    40.31999999999999,
+    29.952,
+    37.248
+  ],
+  "anchor": [
+    0.2612500000000004,
+    0.0029999999999998916,
+    -2.328
+  ],
+  "origin": [
+    -40,
+    -30,
+    -37
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    685023,
+    "a58c442ad52941f8"
+  ]
+}

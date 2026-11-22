@@ -1,0 +1,29 @@
+{
+  "what": "Gilded Sphinx, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    22,
+    5,
+    19
+  ],
+  "pivot": [
+    19.712000000000003,
+    2.112,
+    16.896
+  ],
+  "anchor": [
+    -0.5445000000000002,
+    0.024249999999999994,
+    -1.056
+  ],
+  "origin": [
+    -20,
+    -2,
+    -17
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2045,
+    "d7a5b2036a37dd37"
+  ]
+}

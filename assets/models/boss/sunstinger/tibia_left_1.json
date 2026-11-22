@@ -1,0 +1,29 @@
+{
+  "what": "Sunstinger, tibia left 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    7,
+    35
+  ],
+  "pivot": [
+    3.312,
+    3.4959999999999996,
+    32.568
+  ],
+  "anchor": [
+    0.04300000000000001,
+    0.000250000000000028,
+    -2.0355
+  ],
+  "origin": [
+    -3,
+    -3,
+    -33
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3097,
+    "2e0d5983cdb02dbf"
+  ]
+}

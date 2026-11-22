@@ -1,0 +1,29 @@
+{
+  "what": "Lantern Widow, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    19,
+    42
+  ],
+  "pivot": [
+    12.4,
+    9.424000000000001,
+    31.247999999999998
+  ],
+  "anchor": [
+    -0.05625000000000002,
+    0.004749999999999921,
+    -1.9529999999999998
+  ],
+  "origin": [
+    -12,
+    -9,
+    -31
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    23006,
+    "bce5fe8a4e26391b"
+  ]
+}

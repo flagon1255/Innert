@@ -1,0 +1,29 @@
+{
+  "what": "Gilded Sphinx, upper fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    13,
+    33
+  ],
+  "pivot": [
+    6.336,
+    6.336,
+    26.048000000000002
+  ],
+  "anchor": [
+    0.010249999999999981,
+    0.010249999999999981,
+    -1.6280000000000001
+  ],
+  "origin": [
+    -6,
+    -6,
+    -26
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    11633,
+    "821d95636dc0ce7f"
+  ]
+}

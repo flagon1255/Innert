@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, shin left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    23
+  ],
+  "pivot": [
+    3.84,
+    3.84,
+    18.944
+  ],
+  "anchor": [
+    0.010000000000000009,
+    0.010000000000000009,
+    -1.184
+  ],
+  "origin": [
+    -4,
+    -4,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4132,
+    "b30da29437be1d7b"
+  ]
+}

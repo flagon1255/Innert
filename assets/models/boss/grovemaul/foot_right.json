@@ -1,0 +1,29 @@
+{
+  "what": "Grovemaul, foot right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    7,
+    6
+  ],
+  "pivot": [
+    3.224000000000001,
+    3.472000000000001,
+    2.728
+  ],
+  "anchor": [
+    0.20474999999999993,
+    0.001749999999999946,
+    -0.1705
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2123,
+    "9526f2e1b3eb7768"
+  ]
+}

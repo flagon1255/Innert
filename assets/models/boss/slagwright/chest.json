@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    26,
+    36,
+    30
+  ],
+  "pivot": [
+    9.472,
+    17.92,
+    3.072000000000001
+  ],
+  "anchor": [
+    0.22050000000000003,
+    0.004999999999999893,
+    -0.19200000000000006
+  ],
+  "origin": [
+    -9,
+    -18,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    44176,
+    "a11df72de9e12410"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, thigh left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    9,
+    25
+  ],
+  "pivot": [
+    4.352,
+    4.352,
+    19.712
+  ],
+  "anchor": [
+    0.00924999999999998,
+    0.00924999999999998,
+    -1.232
+  ],
+  "origin": [
+    -4,
+    -4,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5644,
+    "3669a373c741a3e0"
+  ]
+}

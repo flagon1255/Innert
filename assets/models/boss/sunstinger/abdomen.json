@@ -1,0 +1,29 @@
+{
+  "what": "Sunstinger, abdomen",
+  "voxels_per_meter": 16.0,
+  "size": [
+    22,
+    17,
+    9
+  ],
+  "pivot": [
+    19.872,
+    8.28,
+    3.128
+  ],
+  "anchor": [
+    -0.5545,
+    0.01375000000000004,
+    -0.1955
+  ],
+  "origin": [
+    -20,
+    -8,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7440,
+    "14ae2f0cbbb3ece2"
+  ]
+}

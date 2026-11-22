@@ -1,0 +1,29 @@
+{
+  "what": "Gilded Sphinx, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    17,
+    22
+  ],
+  "pivot": [
+    5.280000000000001,
+    8.448,
+    11.968
+  ],
+  "anchor": [
+    0.13874999999999993,
+    0.003249999999999975,
+    -0.748
+  ],
+  "origin": [
+    -5,
+    -8,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7900,
+    "a069dcbdc5dacadd"
+  ]
+}
