@@ -458,11 +458,12 @@ fn water_splash(p: &Projectile) -> f64 {
     if !p.arrow {
         return 1.0;
     }
+    // A heavy ball or a shell slams into it, throwing up a tall column, an arrow only flicks it
     match (p.trick, p.shot) {
-        (Trick::Bomb { .. }, _) => 1.0,
+        (Trick::Bomb { .. }, _) => 1.4,
         (Trick::Fragment, _) => 0.3,
-        (_, Shot::Shell) => 1.3,
-        (_, Shot::Ball) => 0.45 * p.size.clamp(0.6, 1.6),
+        (_, Shot::Shell) => 2.0,
+        (_, Shot::Ball) => 0.9 * p.size.clamp(0.6, 1.6),
         _ => 0.6,
     }
 }
@@ -2154,6 +2155,10 @@ pub struct Combat {
     pub cues: Vec<Cue>,
     /// Holes explosions blow in the world: where, and how big in meters
     pub craters: Vec<(Vector3<f64>, f64)>,
+    /// Where something's gone into water, or burst up out of it, and how big a splash it made, 1
+    /// for a spell's: each knocks a dip in the water there that rolls out as a wave, see
+    /// App::ripple()
+    pub waves: Vec<(Vector3<f64>, f64)>,
     /// Stains splashed on the ground: where, how big in meters, of what material, and whether
     /// they burn off what grows there
     pub stains: Vec<(Vector3<f64>, f64, u8, bool)>,
@@ -5354,6 +5359,7 @@ impl Combat {
             messages: Vec::new(),
             cues: Vec::new(),
             craters: Vec::new(),
+            waves: Vec::new(),
             stains: Vec::new(),
             blasts: Vec::new(),
             blast_floors: Vec::new(),
@@ -13348,6 +13354,8 @@ impl Combat {
             self.drop(at + Vector3::new(0.0, 0.0, 0.1 * vpm), Vector3::new(a.cos() * 2.2, a.sin() * 2.2, 1.6) * vpm * size.sqrt(), DROP_WATER, 0.6);
         }
         self.cues.push(Cue::at(Sound::Splash, at, (0.5 + 0.4 * size) as f32));
+        // And the water itself knocked down where it went in, rolling out from there as a wave
+        self.waves.push((at, size));
     }
 
     /// A thread of lightning from `from` to `to`, a few sparks along it, cheaper than a bolt_line

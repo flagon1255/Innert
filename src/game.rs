@@ -2093,6 +2093,12 @@ impl Game {
         self.animals.iter_mut()
     }
 
+    /// Where things have gone into water since last time, and how big a splash each made, see
+    /// Combat::waves
+    pub fn take_waves(&mut self) -> Vec<(Vector3<f64>, f64)> {
+        std::mem::take(&mut self.combat.waves)
+    }
+
     pub fn take_cues(&mut self) -> Vec<Cue> {
         let mut cues = std::mem::take(&mut self.cues);
         cues.append(&mut self.combat.cues);

@@ -1010,6 +1010,11 @@ fn host_words(memory_allocator: &Arc<StandardMemoryAllocator>, words: Vec<u32>) 
 /// App::pending_craters: a burst of them, as a cluster bomb's, goes over the next few frames
 const CARVE_SECONDS: f64 = 0.004;
 
+/// How much water something knocks down going into it, in cubic meters, for a splash of size 1,
+/// see App::ripple(), and how long till it's let back, wider, so the dip rolls on out as a wave
+const RIPPLE_VOLUME: f64 = 0.45;
+const RIPPLE_REFILL_SECONDS: f64 = 0.15;
+
 /// Room for this many more bricks in the main world than it starts with, for holes blown in it.
 /// `--set spare_bricks=100` leaves less, to try out making more room.
 fn spare_bricks() -> usize {
@@ -1408,6 +1413,10 @@ struct App {
     /// Holes still to be blown, a few a frame, see CARVE_SECONDS: where, in voxels of the whole
     /// landscape, and how big, in meters
     pending_craters: VecDeque<(Vector3<f64>, f64)>,
+    /// Water still to be knocked down or let back where things went into it, see ripple(): in how
+    /// many seconds, where in voxels of the whole landscape, how far round in voxels, and how many
+    /// cubic voxels, taken out if negative. One a frame, as the water takes one brush a frame.
+    pending_ripples: Vec<(f64, Vector3<f64>, f64, f64)>,
     /// Stains still to be splashed, once the holes before them are blown, the same way
     pending_stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     // Stains splashed on the ground the same way: where, how big, of what, and whether it burnt
@@ -2808,6 +2817,7 @@ impl App {
             batching: false,
             edit_uploads: Vec::new(),
             pending_craters: VecDeque::new(),
+            pending_ripples: Vec::new(),
             pending_stains: Vec::new(),
             stains: Vec::new(),
             step_distance: 0.0,
@@ -2881,6 +2891,10 @@ impl App {
             }
             // And `realm=1`, `blocks=3` and the like to try out the journey through the realms
             app.try_journey(&settings);
+            // `weapon=handcannon` in hand in the mode started too, not only in the world before it
+            if let Some(family) = setting("weapon") {
+                app.game.select_family(family);
+            }
             println!("STATE at the start: {}", app.state_line());
         }
         // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
@@ -3747,6 +3761,7 @@ impl App {
         self.edited_ground = None;
         self.edit_uploads.clear();
         self.pending_craters.clear();
+        self.pending_ripples.clear();
         self.pending_stains.clear();
         self.voxel_set = get_voxel_set(
             self.memory_allocator.clone(),
@@ -3829,6 +3844,39 @@ impl App {
             }
         }
         self.look_from(eye, target);
+    }
+
+    /// Something going into the water at `at`, splashing `size`, 1 for a spell's, see
+    /// Combat::waves: the water knocked down there at once, a dip that rolls out as a ring of
+    /// wave, and let back a moment later, spread wider, so the wave goes on out and none of it's
+    /// lost. As much as is there to knock down in shallows, so it never takes the bottom dry.
+    fn ripple(&mut self, at: Vector3<f64>, size: f64, origin: Vector3<f64>) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let radius = (0.7 + 0.45 * size) * vpm;
+        let there = self.water.volume_near(at.x, at.y, radius);
+        let volume = (RIPPLE_VOLUME * size.powf(1.5) * vpm.powi(3)).min(0.6 * there);
+        if volume < 0.05 * vpm.powi(3) {
+            return;
+        }
+        self.pending_ripples.push((0.0, at + origin, radius, -volume));
+        self.pending_ripples.push((RIPPLE_REFILL_SECONDS, at + origin, radius * 1.9, volume));
+        // At most a few dozen waiting, the oldest let go, as a hail of shots into the sea needs
+        // only so many waves
+        if self.pending_ripples.len() > 48 {
+            self.pending_ripples.drain(..self.pending_ripples.len() - 48);
+        }
+    }
+
+    /// The first of what's waiting in pending_ripples that's due, if any, into the water
+    fn let_ripples_out(&mut self, dt: f64, origin: Vector3<f64>) {
+        for r in &mut self.pending_ripples {
+            r.0 -= dt;
+        }
+        if let Some(k) = self.pending_ripples.iter().position(|r| r.0 <= 0.0) {
+            let (_, at, radius, volume) = self.pending_ripples.remove(k);
+            let at = at - origin;
+            self.water.pour(at.x, at.y, radius, volume);
+        }
     }
 
     /// Fills the bucket from the water the camera looks at
@@ -4163,6 +4211,12 @@ impl App {
             let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
             let craters = self.game.take_craters();
             self.pending_craters.extend(craters.into_iter().map(|(center, radius)| (center + origin, radius)));
+            // Water knocked down where things went into it, as they go in, before they've got
+            // to the bottom
+            for (at, size) in self.game.take_waves() {
+                self.ripple(at, size, origin);
+            }
+            self.let_ripples_out(delta_time.min(0.1), origin);
             let stains = self.game.take_stains();
             self.pending_stains.extend(stains.into_iter().map(|(center, radius, material, burn)| (center + origin, radius, material, burn)));
             // What's blown and splashed this frame, for what's built to take the blows, see below
