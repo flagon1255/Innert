@@ -71,6 +71,7 @@ mod bases;
 mod building;
 mod bosses;
 mod camera;
+mod character;
 mod combat;
 mod compass;
 mod crash;
@@ -2541,6 +2542,13 @@ impl App {
             game.inspect(slot);
         }
         game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set class=priest` and the rest without a mode: who's playing is that character, armed
+        // as their class starts, their body there for its shadow, to try them out in screenshot
+        // runs with `enemy=` and the rest, see character.rs. A mode started sets its own.
+        if setting("class").is_some() && setting("mode").is_none() {
+            game.set_character(&character::Character::from_settings());
+            game.new_character(terrain.seed);
+        }
         // For trying out weapons: `--set weapon_seed=7 weapon_luck=3` starts with other ones, rarer
         // the luckier, and `--set weapon=bow` with the bow in hand
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
@@ -3002,6 +3010,18 @@ impl App {
         }
         // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
         app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
+        // `--set creator=freeroam` opens the window a new character's made in, as New does, with
+        // what `--set class=priest`, `name=`, `skin=` and the rest say chosen, turned `creator_turn`
+        // radians round, to see it in a screenshot with `menu=1 gui=1`
+        if let Some(mode) = setting("creator").and_then(save::Mode::parse) {
+            let turn = setting("creator_turn").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            app.session.creator = Some(character::creator::Creator::with(mode, character::Character::from_settings(), turn));
+        }
+        // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
+        // as for the menu or the window a new character's made in
+        if let (Some(frames), Some(capture)) = (setting("shot_at"), &mut app.capture) {
+            capture.shots.extend(frames.split(',').filter_map(|f| f.trim().parse::<usize>().ok()));
+        }
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -4161,6 +4181,9 @@ impl App {
         if let Some(action) = self.session.action.take() {
             self.menu_picked(action, event_loop);
         }
+        if let Some(pick) = self.session.creator_pick.take() {
+            self.creator_picked(pick);
+        }
         self.update_session(delta_time.min(0.25));
         // `--set save_at=300` saves at that frame of a screenshot run, saying what it saved
         static SAVE_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
@@ -4191,6 +4214,9 @@ impl App {
             } else if self.inventory_open {
                 self.inventory_open = false;
                 self.set_focus(true);
+            } else if self.menu_open && self.session.creator.is_some() {
+                // Back from making a new character to the menu
+                self.session.creator = None;
             } else if self.menu_open && self.started {
                 self.menu_open = false;
                 self.set_focus(true);
@@ -4799,6 +4825,20 @@ impl App {
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
+            }
+            // Stands in the shallows nearest, looking straight down into the water, to see the
+            // player's own body there, see character::body
+            ("mirror", 1) => self.stand_in_water(0.35, true),
+            ("mirror", f) if f > 1 => self.camera.rotation.x = -1.35,
+            // Casts with what's in hand at the nearest of a pack `--set arrive_enemy` put there, again
+            // and again from frame `--set cast_from=40`, facing it, as a priest hurls spears
+            ("cast", f) => {
+                let from = settings_from_args().into_iter().find(|(k, _)| k == "cast_from").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(40);
+                if let Some(target) = self.game.nearest_foe(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                let casting = f >= from && (f - from) % 40 < 6;
+                self.script_controls = combat::Controls { attack: casting, holding: casting, ..Default::default() };
             }
             // Finds the nearest water and casts into it, to see it splash
             ("splash", f) => {
@@ -5692,7 +5732,14 @@ impl App {
                 painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((leaving * leaving * 255.0) as u8));
             }
 
-            if self.menu_open {
+            // A new character being made, before the game they're for, see character\creator.rs
+            if self.menu_open
+                && let Some(creator) = &mut self.session.creator
+            {
+                if let Some(pick) = character::creator::window(&ctx, creator) {
+                    self.session.creator_pick = Some(pick);
+                }
+            } else if self.menu_open {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));

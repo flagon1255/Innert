@@ -1,0 +1,37 @@
+{
+  "what": "Talisman, binding: Rosary Beads",
+  "voxels_per_meter": 192.0,
+  "size": [
+    3,
+    17,
+    17
+  ],
+  "pivot": [
+    -0.544,
+    8.368,
+    -4.24
+  ],
+  "anchor": null,
+  "origin": [
+    1,
+    -8,
+    4
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.06
+    ],
+    "tip": [
+      0.02,
+      0.0,
+      0.16999999999999998
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2024,
+    "cbc546c6a31f004d"
+  ]
+}

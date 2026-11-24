@@ -10,6 +10,8 @@ use super::*;
 
 pub(super) mod powers;
 use powers::{Lasting, Shape};
+/// A talisman's spears and a skull focus's dead raised, see weapons::Rite
+pub(in crate::combat) mod faith;
 
 /// Every one of them
 pub(super) const SIGNATURES: [Special; 16] = [

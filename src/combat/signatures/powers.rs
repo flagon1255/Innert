@@ -75,6 +75,11 @@ pub(in crate::combat) enum Shape {
     Pot,
     /// One of its shards, skimming out along the ground
     Shard,
+    /// A spear of holy lightning from a talisman, through everything, lightning arcing off what it
+    /// strikes, `big` for the great one of its power, see faith.rs
+    Spear { big: bool },
+    /// A skull focus's shade, drifting to the ring to raise the dead there, see faith.rs
+    Shade,
 }
 
 /// What they leave going a while
@@ -214,6 +219,8 @@ pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
         Power::Starshell => (0.85, 0.46),
         Power::Beacon => (1.0, 0.5),
         Power::Shrapnel => (0.8, 0.44),
+        Power::Thunderspear => (0.9, 0.48),
+        Power::RaiseDead => (1.0, 0.5),
         _ => (0.6, 0.32),
     }
 }
@@ -399,6 +406,28 @@ fn power_keys(power: Power, profile: &Profile) -> Vec<(f64, Pose, bool)> {
                 (release - 0.05, at([0.01, -0.05, 0.17], [0.02, -0.28, 0.96]), false),
                 (release, at([-0.04, 0.2, -0.08], [-0.05, 0.72, -0.69]), true),
                 (release + 0.12, at([-0.04, 0.21, -0.11], [-0.05, 0.66, -0.75]), false),
+                (0.86, at([-0.01, 0.03, 0.0], [-0.02, 0.4, 0.92]), false),
+            ]
+        }
+        // Drawn far back over the shoulder as the lightning gathers into a spear in the hand, held
+        // a beat trembling, and hurled, the arm coming on down after it
+        Power::Thunderspear => vec![
+            (0.16, pose([0.34, 0.1, 0.02], [0.05, -0.3, 0.95], [1.0, 0.0, 0.0]), false),
+            (0.32, pose([0.4, 0.02, 0.1], [0.04, -0.45, 0.89], [1.0, 0.0, 0.0]), false),
+            (release - 0.06, pose([0.41, 0.0, 0.11], [0.05, -0.5, 0.86], [1.0, 0.0, 0.0]), false),
+            (release, pose([0.16, 0.72, 0.0], [-0.05, 0.85, 0.52], [1.0, 0.0, 0.0]), true),
+            (release + 0.16, pose([0.12, 0.62, -0.26], [0.0, 0.7, -0.7], [1.0, 0.0, 0.0]), false),
+            (0.86, pose([0.3, 0.38, -0.3], [0.04, 0.4, 0.92], [1.0, 0.0, 0.0]), false),
+        ],
+        // Raised high and held as the dead are called, then thrust down at the ground ahead
+        Power::RaiseDead => {
+            let at = spell_at(profile.style);
+            vec![
+                (0.15, at([0.0, -0.05, 0.12], [0.0, -0.25, 0.97]), false),
+                (0.36, at([0.01, -0.07, 0.17], [0.02, -0.35, 0.94]), false),
+                (release - 0.05, at([0.0, -0.06, 0.18], [0.0, -0.3, 0.95]), false),
+                (release, at([-0.03, 0.22, -0.1], [-0.04, 0.7, -0.71]), true),
+                (release + 0.14, at([-0.03, 0.23, -0.13], [-0.04, 0.64, -0.77]), false),
                 (0.86, at([-0.01, 0.03, 0.0], [-0.02, 0.4, 0.92]), false),
             ]
         }
@@ -995,6 +1024,27 @@ impl Combat {
                 self.cues.push(Cue::here(Sound::Summon, 0.9).pitched(0.9));
                 self.flashes.push(Flash { position: from, color: light, reach: 7.0, life: 0.3, lifetime: 0.3 });
             }
+            // A great spear of holy lightning hurled at what the crosshair first meets, as its
+            // marks showed, or bursting as far as it goes, see faith.rs
+            Power::Thunderspear => {
+                let from = view.eye + view.rotation * Vector3::new(0.2, 0.75, 0.0) * vpm;
+                let (to, who) = self.power_points(arena, power)[0];
+                let range = (to - from).norm() / vpm * 1.03 + if who.is_some() { 4.0 } else { 0.3 };
+                self.hurl_spear(&profile, from, to, base * 2.2, range, true);
+                if who.is_none() {
+                    self.keep_power_marks(power, &[to], range / 32.0);
+                }
+                self.shake = self.shake.max(0.2);
+            }
+            // A shade sent down onto the ring shown as it was aimed, to raise the dead there
+            Power::RaiseDead => {
+                let from = self.held_point(weapon, view, false);
+                let aim = self.power_spot(arena, weapon).unwrap_or(target);
+                let time = ((aim - from).norm() / (16.0 * vpm)).max(0.35);
+                self.keep_power_ring(weapon, aim, time + 0.3);
+                self.send_shade(&profile, from, aim, time, base);
+                self.flashes.push(Flash { position: from, color: [0.6, 0.1, 0.45], reach: 6.0, life: 0.3, lifetime: 0.3 });
+            }
             // A pot lobbed at where the bombs' ring was, the ring kept showing till it's there
             Power::Shrapnel => {
                 let (aim, from, velocity, time) = self.lob_aim(arena, weapon);
@@ -1111,7 +1161,7 @@ impl Combat {
 
     /// A burst of the power's element `radius` meters round `at` for `damage`, leaving no mark, its
     /// element doing what it does to all it catches but `skip`
-    fn power_burst(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, skip: Option<usize>) {
+    pub(super) fn power_burst(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, skip: Option<usize>) {
         let vpm = arena.view.vpm;
         let caught: Vec<usize> = Combat::foes_round(arena, at, radius).into_iter().filter(|&i| Some(i) != skip).collect();
         self.scarless = true;
@@ -1155,6 +1205,7 @@ impl Combat {
             Shape::Arrow | Shape::Cloud => Some(0.035),
             Shape::Stake => Some(0.05),
             Shape::Fist | Shape::Shard => Some(0.025),
+            Shape::Spear { .. } => Some(0.07),
             _ => None,
         };
         if let Some(seconds) = tracer
@@ -1182,6 +1233,13 @@ impl Combat {
         }
         if shape == Shape::Gale {
             self.gale_sweeps(arena, p, way, dt);
+        }
+        // A talisman's spear crackling, a shade trailing darkness, see faith.rs
+        if let Shape::Spear { big } = shape {
+            self.spear_crackles(p, big, dt);
+        }
+        if shape == Shape::Shade {
+            self.shade_trails(p, dt);
         }
         match shape {
             // Flung out as far as it goes, and turning back empty
@@ -1438,9 +1496,14 @@ impl Combat {
                 self.bolas_bind(arena, p, at, Some(id));
                 true
             }
-            Shape::Anvil | Shape::Stake | Shape::Cloud | Shape::Flare | Shape::Beacon | Shape::Pot => {
+            Shape::Anvil | Shape::Stake | Shape::Cloud | Shape::Flare | Shape::Beacon | Shape::Pot | Shape::Shade => {
                 self.power_lands(arena, p, shape, at);
                 true
+            }
+            // Through all, lightning arcing off each, see faith.rs
+            Shape::Spear { big } => {
+                self.spear_strikes(arena, p, big, i, at);
+                false
             }
         }
     }
@@ -1457,6 +1520,10 @@ impl Combat {
         let look = Element::look(profile.element);
         let way = p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
         match shape {
+            // A bolt from the sky where a spear ends, and the dead raised where a shade comes down,
+            // see faith.rs
+            Shape::Spear { big } => self.spear_lands(arena, p, big, at),
+            Shape::Shade => self.raise_dead(arena, p, at),
             // Breaking up into sparks and a flash where it ends
             Shape::Wave { .. } => {
                 self.sparks(at, 16, 3.5, look, 0.3, 0.45);
@@ -2118,6 +2185,8 @@ impl Combat {
                 out.push(ball(0.07));
                 out.extend(self.streak_at(eye, p.position - way * 0.25 * vpm, way, look, 0.8 * far));
             }
+            Shape::Spear { big } => out.extend(self.spear_instances(p, big, view)),
+            Shape::Shade => out.extend(self.shade_instances(p, view)),
         }
         out
     }
@@ -2355,7 +2424,12 @@ mod tests {
             assert_eq!(weapon.profile.power, Some(power), "{}", f.id);
             seen.push(power);
             let common = library.generate(7, Some(family), 0.0);
-            assert!(common.profile.power.is_none() || common.profile.special.is_some(), "a common {} has a power", f.id);
+            // But for a skull focus and a talisman, whose powers are theirs at any rarity
+            if Power::innate(&f.id) {
+                assert_eq!(common.profile.power, Some(power), "a common {} has no power", f.id);
+            } else {
+                assert!(common.profile.power.is_none() || common.profile.special.is_some(), "a common {} has a power", f.id);
+            }
         }
         // A part that brings a power of its own gives it to the weapon it's on, in place of its
         // family's

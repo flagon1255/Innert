@@ -1,0 +1,37 @@
+{
+  "what": "Skull Focus, focus: Weathered Skull",
+  "voxels_per_meter": 192.0,
+  "size": [
+    24,
+    20,
+    24
+  ],
+  "pivot": [
+    11.904,
+    9.983999999999998,
+    -40.048
+  ],
+  "anchor": null,
+  "origin": [
+    -12,
+    -10,
+    40
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.09
+    ],
+    "tip": [
+      0.04,
+      0.0,
+      0.279
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    24348,
+    "5fe0de9b41cd1767"
+  ]
+}

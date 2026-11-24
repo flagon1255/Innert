@@ -3633,6 +3633,12 @@ pub const STILL: u32 = 0;
 pub const MOVING: u32 = 1;
 /// In the player's hand
 pub const HELD: u32 = 2;
+/// The player's own body, which the eye never sees, only its shadow and reflections, see
+/// character::body. Has to match BODY in shaders\traverse.comp.
+pub const BODY: u32 = 3;
+/// Drawn in the player's colours, see AnimalInstance::outfit(). Has to match TINT_OUTFIT in
+/// shaders\traverse.comp.
+pub const TINT_OUTFIT: u32 = 0x100;
 
 /// What weapons did to an animal, shown on it. Has to match TINT_* in shaders\traverse.comp.
 pub const TINT_NONE: u32 = 0;
@@ -3684,9 +3690,26 @@ impl AnimalInstance {
         self
     }
 
+    /// In the colours the player chose for themselves: what's leather on it in one and what's cloth
+    /// in the other, packed as character::outfit() packs them, light and dark as it was. 0 leaves
+    /// it as it is.
+    pub fn outfit(mut self, colours: u32) -> Self {
+        if colours != 0 {
+            self.info[2] |= TINT_OUTFIT;
+            self.info[3] = colours;
+        }
+        self
+    }
+
     /// Where it's put, in voxels of the main world
     pub fn sphere_center(&self) -> Vector3<f64> {
         Vector3::new(self.position[0] as f64, self.position[1] as f64, self.position[2] as f64)
+    }
+
+    /// Which model it is, for tests
+    #[cfg(test)]
+    pub fn model(&self) -> u32 {
+        self.info[0]
     }
 
     /// Where it is and how far it reaches from there, in voxels of the main world, for tests
@@ -3785,6 +3808,20 @@ const SWIM_DEPTH: f64 = 48.0;
 pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_voxels_per_meter: u32) -> AnimalInstance {
     let vpm = world_voxels_per_meter as f64;
     AnimalInstance::new(model_index(look, 0), position, facing(heading), vpm / look.resolution(), look.reach() * vpm, STILL)
+}
+
+/// Something of `look` walking, `phase` of the way through its stride, 0 to 1, or None standing, or
+/// winding up and striking with `strike`, 0 to 1, as a necromancer's skeletons fight, see
+/// combat\faith.rs: turned `rotation`, its feet at `position`
+pub fn posed_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, phase: Option<f64>, strike: Option<f64>, world_voxels_per_meter: u32) -> AnimalInstance {
+    let vpm = world_voxels_per_meter as f64;
+    let frame = match (strike, phase) {
+        (Some(s), _) if s < 0.55 => POSE_WINDUP,
+        (Some(_), _) => POSE_STRIKE,
+        (None, Some(p)) => 1 + (p * WALK_FRAMES as f64).round() as usize % WALK_FRAMES,
+        (None, None) => 0,
+    };
+    AnimalInstance::new(model_index(look, frame), position, rotation, vpm / look.resolution(), look.reach() * vpm, MOVING)
 }
 
 /// The same in the player's hand, turned any way, like a grappling hook or wings spread to glide

@@ -83,6 +83,8 @@ pub(super) fn power_aim(power: Power, profile: &Profile) -> Option<SpotAim> {
         Power::Starshell => Some(SpotAim { reach: MORTAR_REACH, least: 4.0, radius: 6.0 }),
         Power::Beacon => Some(SpotAim { reach: SPOT_REACH, least: 0.0, radius: 5.0 }),
         Power::Shrapnel => Some(SpotAim { reach: profile.stat("range").max(6.0), least: 0.0, radius: SHRAPNEL_REACH }),
+        // Where the dead are to rise, the ring as wide as they're raised round it
+        Power::RaiseDead => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: crate::combat::signatures::faith::RAISE_ROUND }),
         _ => None,
     }
 }
@@ -405,7 +407,9 @@ const LASH_STEP: f64 = 2.0;
 pub(super) fn power_way(power: Power) -> PowerWay {
     let wave = |p: Power| wave_of(p).3;
     match power {
-        Power::Mortar | Power::Comet | Power::Vortex | Power::Anvil | Power::Stake | Power::Cloudburst | Power::Starshell | Power::Beacon | Power::Shrapnel => PowerWay::Spot,
+        Power::Mortar | Power::Comet | Power::Vortex | Power::Anvil | Power::Stake | Power::Cloudburst | Power::Starshell | Power::Beacon | Power::Shrapnel | Power::RaiseDead => PowerWay::Spot,
+        // A talisman's great spear goes at what the crosshair first meets, as a spear's javelin does
+        Power::Thunderspear => PowerWay::Ray { reach: crate::combat::signatures::faith::SPEAR_REACH, fan: &[0.0], radius: 1.8 },
         // A gale runs on along the ground, rings showing its way; fists, a hook and a bolas go at
         // what the crosshair meets; a ring of blades goes out all round
         Power::Gale => PowerWay::Line { from: GALE_FROM, step: GALE_STEP, steps: GALE_STEPS },

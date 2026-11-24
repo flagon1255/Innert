@@ -1262,6 +1262,9 @@ struct Familiar {
     profile: Rc<Profile>,
     damage: f64,
     phantom: bool,
+    /// One of the dead raised by a skull focus, walking the ground as a skeleton and striking what's
+    /// near rather than hanging in the air casting, see signatures\faith.rs
+    risen: Option<signatures::faith::Risen>,
 }
 
 /// Spectral blades circling the player: seconds left, how far round they've gone, and seconds
@@ -2075,6 +2078,11 @@ pub struct Combat {
     beam_tick: f64,
     beam_hum: f64,
     familiars: Vec<Familiar>,
+    /// Where the slain lie, for a skull focus to raise, see signatures\faith.rs
+    graves: signatures::faith::Graves,
+    /// The colours of the player's gloves and sleeves, for the arms held before the eye, see
+    /// AnimalInstance::outfit(): 0 for the arms' own
+    outfit: u32,
     orbit: Option<Orbit>,
     stases: Vec<Stasis>,
     siphon: Option<Siphon>,
@@ -5329,6 +5337,8 @@ impl Combat {
             beam_tick: 0.0,
             beam_hum: 0.0,
             familiars: Vec::new(),
+            graves: Default::default(),
+            outfit: 0,
             orbit: None,
             stases: Vec::new(),
             siphon: None,
@@ -5418,6 +5428,7 @@ impl Combat {
 
     /// The world moved over by `shift` voxels
     pub fn recenter(&mut self, shift: Vector3<f64>) {
+        self.graves.recenter(shift);
         // What's in flight, and what's about to be, as an echo's shots
         for p in self.projectiles.iter_mut().chain(self.echoes.iter_mut().filter_map(|e| e.shot.as_mut())) {
             p.recenter(shift);
@@ -5782,6 +5793,8 @@ impl Combat {
         self.scar_timer -= dt;
         self.follow_up(arena, dt);
         self.conjured(arena, weapon.map(|(_, w)| w), dt);
+        // Where the slain lie, for a skull focus to raise them, see faith.rs
+        self.mark_graves(arena, dt);
         self.fly(arena, dt);
         // Special attacks carried out of the weapon going off where their shots got to
         for (special, at) in std::mem::take(&mut self.arrivals) {
@@ -8005,12 +8018,12 @@ impl Combat {
     /// the oldest of them going if there are too many
     fn conjure(&mut self, profile: &Rc<Profile>, phantom: bool, at: Vector3<f64>) {
         let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
-        if !phantom && self.familiars.iter().filter(|f| !f.phantom).count() >= FAMILIARS {
-            if let Some(k) = self.familiars.iter().position(|f| !f.phantom) {
+        if !phantom && self.familiars.iter().filter(|f| !f.phantom && f.risen.is_none()).count() >= FAMILIARS {
+            if let Some(k) = self.familiars.iter().position(|f| !f.phantom && f.risen.is_none()) {
                 self.familiars.remove(k);
             }
         }
-        self.familiars.push(Familiar { position: at, life: FAMILIAR_SECONDS, wait: 0.3, profile: profile.clone(), damage: if phantom { damage * 0.5 } else { damage }, phantom });
+        self.familiars.push(Familiar { position: at, life: FAMILIAR_SECONDS, wait: 0.3, profile: profile.clone(), damage: if phantom { damage * 0.5 } else { damage }, phantom, risen: None });
         self.sparks(at, 14, 2.0, Element::look(if phantom { Some(Element::Holy) } else { profile.element }), -0.1, 0.5);
         self.cues.push(Cue::at(Sound::Summon, at, 0.6).pitched(if phantom { 0.8 } else { 1.0 }));
     }
@@ -8022,6 +8035,16 @@ impl Combat {
         let feet = arena.player.unwrap_or(arena.view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
         for mut f in std::mem::take(&mut self.familiars) {
             f.life -= dt;
+            // The dead a skull focus raised walk and strike rather than cast, see faith.rs
+            if f.risen.is_some() {
+                self.walk_risen(arena, &mut f, dt);
+                if f.life > 0.0 {
+                    self.familiars.push(f);
+                } else {
+                    self.sparks(f.position + Vector3::new(0.0, 0.0, 0.5 * vpm), 10, 1.5, Element::look(Some(Element::Void)), 0.4, 0.5);
+                }
+                continue;
+            }
             f.wait -= dt;
             if f.wait <= 0.0 {
                 f.wait = if f.phantom { 0.5 } else { FAMILIAR_PACE };
@@ -11928,10 +11951,14 @@ impl Combat {
         let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
         let look = Element::look(profile.element);
         self.flashes.push(Flash { position: from, color: profile.element.map_or([0.5, 0.9, 1.0], Element::light), reach: 5.0, life: 0.2, lifetime: 0.2 });
+        // A talisman's spear of holy lightning, a skull focus's bolt of death, see faith.rs
+        if self.cast_rite(arena, &profile, from, target, damage) {
+            return;
+        }
         match profile.style {
             // A familiar conjured a little way ahead, each beside the last
             Style::Summon => {
-                let n = self.familiars.iter().filter(|f| !f.phantom).count() % FAMILIARS;
+                let n = self.familiars.iter().filter(|f| !f.phantom && f.risen.is_none()).count() % FAMILIARS;
                 let (x, z) = [(-0.9, 0.4), (0.9, 0.4), (0.0, 1.0)][n];
                 let at = arena.view.eye + arena.view.rotation * Vector3::new(x, 2.2, z) * vpm;
                 self.conjure(&profile, false, at);
@@ -15464,7 +15491,13 @@ impl Combat {
         let x = y.cross(&z);
         let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[x, y, z])));
         let (model, arm) = self.model_at(ARMS + which);
-        place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD)
+        place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD).outfit(self.outfit)
+    }
+
+    /// The colours of the player's gloves and sleeves, for the arms held before the eye, see
+    /// character::body::colours()
+    pub fn set_outfit(&mut self, colours: u32) {
+        self.outfit = colours;
     }
 
     /// What else to draw for the crossbow or gun in hand, its models from `first_model`, held at
@@ -15848,7 +15881,13 @@ impl Combat {
             add(view.eye + (h.position - view.eye) * 0.1, instance);
         }
         // Familiars, glowing orbs bobbing where they hang, and phantoms, pillars of light
+        let mut risen = Vec::new();
         for f in &self.familiars {
+            // The dead a skull focus raised, as skeletons, see faith.rs
+            if let Some(r) = &f.risen {
+                self.risen_instances(f, r, view, &mut risen);
+                continue;
+            }
             let bob = Vector3::new(0.0, 0.0, (self.time * 2.5 + f.position.x).sin() * 0.08 * vpm);
             let fade = (f.life / 0.4).min(1.0) * ((FAMILIAR_SECONDS - f.life) / 0.25).min(1.0);
             let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0);
@@ -16186,6 +16225,7 @@ impl Combat {
         // Rings and smoke are only extra, so they go after everything else: the first left out
         // when there's too much to draw, and the last to cast shadows
         out.extend(extras.into_iter().map(|(at, instance)| (1e9 + (at - view.eye).norm(), instance)));
+        out.extend(risen);
     }
 
     /// What to draw for the fine sparks trailing off the weapon in hand. They don't need to cast
@@ -16267,6 +16307,11 @@ impl Combat {
             lights.push(light(at, reach, color, strength));
         }
         for f in &self.familiars {
+            // The dead raised glowing faintly red in the chest
+            if f.risen.is_some() {
+                lights.push(light(f.position + Vector3::new(0.0, 0.0, 1.25 * vpm), 2.5, [0.9, 0.12, 0.2], 0.35));
+                continue;
+            }
             let color = if f.phantom { Element::Holy.light() } else { f.profile.element.map_or([0.7, 0.5, 1.0], Element::light) };
             lights.push(light(f.position, 3.5, color, 0.6));
         }
