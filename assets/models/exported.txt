@@ -1635,6 +1635,14 @@ wings/tidefin.vox: Tidefin Wings
 wings/drakeskin.vox: Drakeskin Wings
 wings/thornleaf.vox: Thornleaf Wings
 wings/bloodmoth.vox: Bloodmoth Wings
+player/head.vox: The player, head
+player/torso.vox: The player, torso
+player/upper_arm_right.vox: The player, upper arm right
+player/upper_arm_left.vox: The player, upper arm left
+player/forearm_right.vox: The player, forearm right
+player/forearm_left.vox: The player, forearm left
+player/leg_right.vox: The player, leg right
+player/leg_left.vox: The player, leg left
 weapons/sword/iron_blade.vox: Sword, blade: Iron Blade
 weapons/sword/steel_longblade.vox: Sword, blade: Steel Longblade
 weapons/sword/broad_blade.vox: Sword, blade: Broad Blade
@@ -6381,4 +6389,4 @@ jewels/magic_rare.vox: Rare Skyglass
 jewels/magic_epic.vox: Epic Skyglass
 jewels/magic_legendary.vox: Legendary Skyglass
 jewels/magic_mythic.vox: Mythic Skyglass
-C:\Users\Andrej\Desktop\Innert\.claude\worktrees\morebosses\assets\trees.json: the trees' numbers
+C:\Users\Andrej\Desktop\Innert\.claude\worktrees\charcreate\assets\trees.json: the trees' numbers

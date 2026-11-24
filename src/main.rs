@@ -71,6 +71,7 @@ mod bases;
 mod building;
 mod bosses;
 mod camera;
+mod character;
 mod combat;
 mod compass;
 mod crash;
@@ -2899,6 +2900,18 @@ impl App {
         }
         // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
         app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
+        // `--set creator=freeroam` opens the window a new character's made in, as New does, with
+        // what `--set class=priest`, `name=`, `skin=` and the rest say chosen, turned `creator_turn`
+        // radians round, to see it in a screenshot with `menu=1 gui=1`
+        if let Some(mode) = setting("creator").and_then(save::Mode::parse) {
+            let turn = setting("creator_turn").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            app.session.creator = Some(character::creator::Creator::with(mode, character::Character::from_settings(), turn));
+        }
+        // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
+        // as for the menu or the window a new character's made in
+        if let (Some(frames), Some(capture)) = (setting("shot_at"), &mut app.capture) {
+            capture.shots.extend(frames.split(',').filter_map(|f| f.trim().parse::<usize>().ok()));
+        }
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -4038,6 +4051,9 @@ impl App {
         if let Some(action) = self.session.action.take() {
             self.menu_picked(action, event_loop);
         }
+        if let Some(pick) = self.session.creator_pick.take() {
+            self.creator_picked(pick);
+        }
         self.update_session(delta_time.min(0.25));
         // `--set save_at=300` saves at that frame of a screenshot run, saying what it saved
         static SAVE_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
@@ -4068,6 +4084,9 @@ impl App {
             } else if self.inventory_open {
                 self.inventory_open = false;
                 self.set_focus(true);
+            } else if self.menu_open && self.session.creator.is_some() {
+                // Back from making a new character to the menu
+                self.session.creator = None;
             } else if self.menu_open && self.started {
                 self.menu_open = false;
                 self.set_focus(true);
@@ -5567,7 +5586,14 @@ impl App {
                 painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((leaving * leaving * 255.0) as u8));
             }
 
-            if self.menu_open {
+            // A new character being made, before the game they're for, see character\creator.rs
+            if self.menu_open
+                && let Some(creator) = &mut self.session.creator
+            {
+                if let Some(pick) = character::creator::window(&ctx, creator) {
+                    self.session.creator_pick = Some(pick);
+                }
+            } else if self.menu_open {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));

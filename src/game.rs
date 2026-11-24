@@ -528,11 +528,17 @@ const KIT_TRIES: usize = 64;
 /// from `seed` with `luck`, and with `rarest`, no part or weapon rarer than that: a synergy or two
 /// can lift a weapon a grade above its parts, so then it's the first seed on whose weapon isn't.
 fn kit(library: &Library, seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
+    kit_of(library, &KIT, seed, luck, rarest)
+}
+
+/// The same for weapons of `families`, one of each, as a class starts with, see character::Class::kit()
+fn kit_of(library: &Library, families: &[&str], seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
     let mut odds = library.odds(luck);
     if let Some(top) = rarest {
         odds.truncate(top + 1);
     }
-    KIT.iter()
+    families
+        .iter()
         .enumerate()
         .filter_map(|(k, id)| {
             let family = library.family(id)?;
@@ -972,6 +978,12 @@ pub struct Game {
     preview: Vec<(Model, Vector3<f64>)>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
+    /// Who's playing, see character.rs: their name, class and how hard it is, and their body's
+    /// pieces made for how they look, drawn after the weapons, in the colours each piece is drawn
+    /// in, see character::body
+    character: crate::character::Character,
+    body_models: Vec<(Model, Vector3<f64>)>,
+    body_colours: [u32; crate::character::body::PIECES],
 }
 
 /// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
@@ -1191,6 +1203,9 @@ impl Game {
             gloom: 0.0,
             ward_models: crate::assets::wards(crate::guardians::models()),
             crowd: 0,
+            character: Default::default(),
+            body_models: Vec::new(),
+            body_colours: [0; crate::character::body::PIECES],
         };
         game.forget_skills();
         game.arm_anew(seed);
@@ -1200,8 +1215,23 @@ impl Game {
 
     /// What a new player starts with, see arm(): plain gear, nothing with a special attack
     fn arm_anew(&mut self, seed: u32) {
-        let kit = kit(&self.library, seed, KIT_LUCK, Some(KIT_RAREST));
+        let kit = kit_of(&self.library, self.character.class.kit(), seed, KIT_LUCK, Some(KIT_RAREST));
         self.arm_with(&kit);
+    }
+
+    /// Who's playing, see character.rs: what they're called, the class whose lean is added to the
+    /// skill web's and whose kit a new character starts with, see new_character(), how hard it is,
+    /// and their body made for how they look, its colours on the arms held before the eye too
+    pub fn set_character(&mut self, character: &crate::character::Character) {
+        let looks_changed = self.body_models.is_empty() || self.character.looks != character.looks;
+        self.character = character.clone();
+        if looks_changed {
+            self.body_models = crate::character::body::models(&character.looks);
+            self.body_colours = crate::character::body::colours(&character.looks);
+            self.models_version += 1;
+        }
+        self.combat.set_outfit(self.body_colours[crate::character::body::FOREARM[0]]);
+        self.retotal();
     }
 
     /// For trying them out, as `--set weapon_seed=7 weapon_luck=3` does: what the player starts
@@ -1299,7 +1329,8 @@ impl Game {
     /// They're kept apart from the rest, which never change, as sending all of those again each
     /// time a weapon turns up takes long enough to hold up the game.
     pub fn weapon_model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).collect();
+        // And the player's body after them, see character::body, made again whenever how they look is
+        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).chain(self.body_models.iter().map(|(m, _)| m)).collect();
         let mut words = vec![self.weapon_model(0)];
         words.extend(pack_models(&models));
         words
@@ -2232,6 +2263,12 @@ impl Game {
         // The boss bar's trail catching up with what it's lost, a moment after each blow
         if let Some((foe, health, ..)) = self.foe(view.eye) {
             let name = foe.name();
+            // A boss newly come for the player taunts them by name
+            if name != self.boss_bar.0 && !name.is_empty() {
+                const TAUNTS: [&str; 5] = ["So, {}. You came at last.", "Kneel, {}, and it will be quick.", "Another fool. Your name, {}, dies with you.", "I smell your fear, {}.", "{}... they will sing nothing of you."];
+                let taunt = TAUNTS[hash(name.len() as u32 ^ self.seed ^ self.level) as usize % TAUNTS.len()].replace("{}", &self.character.name);
+                self.say(format!("The {name}: \"{taunt}\""));
+            }
             let (shown, mut trail, mut hold, mut flash) = if name == self.boss_bar.0 { (self.boss_bar.1, self.boss_bar.2, self.boss_bar.3, self.boss_bar.4) } else { (health, health, 0.0, 0.0) };
             if health < shown - 0.03 {
                 flash = 1.0;
@@ -3165,14 +3202,15 @@ impl Game {
         }
     }
 
-    /// The player at `feet` is killed by `by`. Half the gold they carry spills where they fell, to
-    /// come back for, and every boss and monster goes home healed.
+    /// The player at `feet` is killed by `by`. As much of the gold they carry as how hard it is
+    /// says spills where they fell, to come back for: none on Story, half on Normal, all of it on
+    /// Hard. Every boss and monster goes home healed.
     fn die(&mut self, by: &str, feet: Vector3<f64>, vpm: f64) {
         self.health = 0.0;
         self.dead = Some((by.to_owned(), 0.0));
         self.died = true;
         self.shop = None;
-        let lost = self.gold / 2;
+        let lost = (self.gold as f64 * self.character.difficulty.gold_lost()).round() as u32;
         self.lost = lost;
         if lost > 0 {
             self.gold -= lost;
@@ -3599,13 +3637,13 @@ impl Game {
                     self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
                 } else if let Some(realm) = block {
                     let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
-                    self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name()));
+                    self.say(format!("Raid boss slain! The {} falls before {}, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name(), self.character.name));
                 } else if raid {
-                    self.say(format!("Raid boss slain! The {} falls, and its {hoard_name} spills out. Some of it's {rarity}!", look.name()));
+                    self.say(format!("Raid boss slain! The {} falls before {}, and its {hoard_name} spills out. Some of it's {rarity}!", look.name(), self.character.name));
                 } else if bosses::roster::has(look) {
-                    self.say(format!("You defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", look.name()));
+                    self.say(format!("{} defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 } else {
-                    self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
+                    self.say(format!("{} defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 }
                 self.find_jewels(jewels);
                 // And a pair of wings, said after: a raid boss always leaves one, a realm's of the
@@ -5056,10 +5094,10 @@ impl Game {
     /// How many times their own health the monsters about have, and how much harder they hit, by
     /// the level of what's about
     fn foe_toughness(&self) -> f64 {
-        levels::toughness(self.area_level()) * self.scaling.toughness
+        levels::toughness(self.area_level()) * self.scaling.toughness * self.character.difficulty.foe_health()
     }
     fn foe_damage(&self) -> f64 {
-        levels::damage(self.area_level()) * self.scaling.damage
+        levels::damage(self.area_level()) * self.scaling.damage * self.character.difficulty.foe_damage()
     }
 
     /// The player's health at full, which their level raises, see levels::max_health()
@@ -5205,6 +5243,10 @@ impl Game {
     /// What's taken on the skill web added up again, and every weapon to be worked out again
     fn retotal(&mut self) {
         self.totals = self.web.totals(&self.taken);
+        // And what the player's class leans towards, as if it were a few nodes more
+        for &(stat, value) in self.character.class.lean() {
+            self.totals.0[stat as usize] += value;
+        }
         self.boost_version = self.boost_version.wrapping_add(1).max(1);
         if self.health > 0.0 {
             self.health = self.health.min(self.max_health());
@@ -5896,7 +5938,23 @@ impl Game {
         let camera = view.eye;
         // Nothing in hand while lying dead
         let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
+        let holding = held.is_some();
         let mut out = self.combat.held_instances(held, view);
+        // The player's own body where they stand, for its shadow and reflections, among the first
+        // so it's always in them, see character::body. Not while lying dead, nor flying.
+        if let Some(feet) = self.feet.filter(|_| self.dead.is_none() && !self.body_models.is_empty()) {
+            let forward = view.forward();
+            let stance = crate::character::body::Stance {
+                yaw: forward.y.atan2(forward.x) - FRAC_PI_2,
+                pitch: forward.z.clamp(-1.0, 1.0).asin(),
+                walked: view.stride,
+                speed: view.speed,
+                holding,
+                time: self.combat.time(),
+            };
+            let first = self.weapon_model(self.weapons.len()) + self.preview.len() as u32;
+            out.extend(crate::character::body::instances(&self.body_models, &self.body_colours, first, &self.character.looks, &stance, feet, vpm));
+        }
         // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
         // the blocks set in it up close
         for shrine in &self.shrines {
@@ -6109,6 +6167,15 @@ impl Game {
         painter.text(middle + vec2(1.0, 4.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), shadow);
         painter.text(middle + vec2(0.0, 3.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), Color32::WHITE);
         painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", FontId::proportional(9.0), Color32::from_white_alpha(170));
+        // Who's playing, and as what, beside it
+        let name = &self.character.name;
+        let at = pos2(middle.x + 33.0, middle.y - 8.0);
+        painter.text(at + vec2(1.0, 1.0), Align2::LEFT_CENTER, name, FontId::proportional(15.0), shadow);
+        painter.text(at, Align2::LEFT_CENTER, name, FontId::proportional(15.0), Color32::WHITE);
+        let [r, g, b] = self.character.class.color();
+        let class = format!("{} · {}", self.character.class.name(), self.character.difficulty.name());
+        painter.text(at + vec2(1.0, 17.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), shadow);
+        painter.text(at + vec2(0.0, 16.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), Color32::from_rgb(r, g, b));
         // Skill points to spend, under it
         let free = self.skill_points();
         if free > 0 {

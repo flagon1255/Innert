@@ -1039,6 +1039,28 @@ pub fn wings(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)>
     made
 }
 
+/// The player's body's pieces, see character::body, with the files read in: a piece edited in
+/// assets\models\player\ is drawn as it's been edited whatever the player looks like, its leather
+/// still in the colour of their skin, gloves or boots, and its cloth in that of their hair or clothes
+pub fn player(mut made: Vec<(Model, Vector3<f64>)>, _looks: &crate::character::Looks) -> Vec<(Model, Vector3<f64>)> {
+    if enabled() && edited(&root()).iter().any(|f| f.starts_with("player/")) {
+        let changed = apply_anchored(&mut made, crate::character::body::BODY_RES, &player_file);
+        if changed > 0 {
+            log(format!("Model files: {changed} pieces of the player's body read"));
+        }
+    }
+    made
+}
+
+fn player_file(i: usize) -> Option<String> {
+    Some(format!("player/{}", crate::character::body::PIECE_NAMES.get(i)?))
+}
+
+/// What's said in the files of the player's body
+const PLAYER_NOTE: &str = "A piece of the player's own body, seen only in its shadow and reflections, never by the eye: the pivot is its joint. \
+    Its leather (73) is drawn in the colour the player chose for its skin, gloves, belt or boots, and its cloth (74) in that of their hair or clothes; \
+    everything else in its own colour. Drawn as edited for every look; as exported it's a new character's.";
+
 // Writing the files
 
 /// Writes `model` to `name`.vox under `dir`, with its .json beside it
@@ -1254,6 +1276,15 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
         let name = wing_file(i).unwrap();
         write_model(dir, &name, m, WING_RES, Some(*a), kind.name, "The right wing; the left is it mirrored.")?;
         lines.push(format!("{name}.vox: {}", kind.name));
+    }
+    // The player's body, in the looks a new character has
+    let looks = crate::character::Looks::default();
+    for (p, name) in crate::character::body::PIECE_NAMES.iter().enumerate() {
+        let (m, a) = crate::character::body::piece(p, &looks);
+        let file = player_file(p).unwrap();
+        let what = format!("The player, {}", name.replace('_', " "));
+        write_model(dir, &file, &m, crate::character::body::BODY_RES, Some(a), &what, PLAYER_NOTE)?;
+        lines.push(format!("{file}.vox: {what}"));
     }
     // Weapons' parts
     crate::weapon_parts::export(dir, &library, &mut lines)?;
@@ -1959,6 +1990,12 @@ mod tests {
         let effects_code = crate::weapons::effect_models();
         let effects_shipped = effects(crate::weapons::effect_models());
         assert!(effects_code.iter().zip(&effects_shipped).all(|(a, b)| a.0.voxels == b.0.voxels && a.1 == b.1));
+        // The player's body, as a new character looks
+        let looks = crate::character::Looks::default();
+        let body_code: Vec<(Model, Vector3<f64>)> = (0..crate::character::body::PIECES).map(|p| crate::character::body::piece(p, &looks)).collect();
+        let body_shipped = crate::character::body::models(&looks);
+        assert!(body_code.iter().zip(&body_shipped).all(|(a, b)| a.0.voxels == b.0.voxels && a.0.size == b.0.size), "the player's body's files are as the code makes it");
+        assert!((0..crate::character::body::PIECES).all(|p| files.contains(&player_file(p).unwrap())), "the player's body ships as files");
         // And every weapon part shipped is the code's, so every weapon's built as it was
         let library = Library::load();
         for f in 0..library.families.len() {

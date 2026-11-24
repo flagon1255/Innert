@@ -18,6 +18,8 @@ use crate::weapon_parts::{ball, cuboid, ellipsoid, limb, slot, voxelize};
 
 /// What each kind of special ammo looks like in flight, see ammo.rs
 mod ammo;
+/// How a skull focus and a talisman look
+mod relics;
 pub use ammo::{AMMO_RES, AMMO_SHOT_RES, AMMO_STYLES, Puff, Trail, ammo_style};
 use crate::worldgen::material::*;
 
@@ -550,6 +552,31 @@ pub enum Casting {
     Scoop,
     /// Held up and shown, as a scepter is, then levelled
     Present,
+}
+
+/// What a weapon that casts does with its spell, if not as its style and element have it: a skull
+/// focus's drains the life of what it strikes, a talisman's is a spear of holy lightning, see
+/// combat\faith.rs. And their powers, raising the dead and the great spear, are theirs at any
+/// rarity, see Power::innate().
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rite {
+    #[default]
+    None,
+    /// A skull focus's: a bolt of death draining what it strikes
+    Drain,
+    /// A talisman's: a spear of holy lightning, through all it meets, arcing on
+    Spear,
+}
+
+impl Rite {
+    /// The rite of the family with id `family`
+    pub fn of(family: &str) -> Rite {
+        match family {
+            "skullfocus" => Rite::Drain,
+            "talisman" => Rite::Spear,
+            _ => Rite::None,
+        }
+    }
 }
 
 /// How a bow's drawn or a crossbow or gun loaded, from what its parts are like, see knack_of()
@@ -1353,6 +1380,8 @@ pub struct Profile {
     pub casting: Casting,
     /// How it's drawn or loaded, for a bow, crossbow or gun, see knack_of()
     pub knack: Knack,
+    /// What its spell does, for a skull focus or a talisman, see Rite
+    pub rite: Rite,
 }
 
 /// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
@@ -1814,12 +1843,19 @@ pub enum Power {
     /// A pot of its element lobbed onto the ring, bursting into a wheel of shards skimming out
     /// along the ground: on bombs
     Shrapnel,
+    /// A great spear of holy lightning hurled from a talisman, through everything in a line,
+    /// lightning arcing off all it strikes and a bolt coming down where it ends: on a talisman,
+    /// at any rarity
+    Thunderspear,
+    /// A shade of death sent to the ring, raising skeletons out of the ground there, or out of
+    /// the slain lying near, to fight for a while: on a skull focus, at any rarity
+    RaiseDead,
 }
 
 impl Power {
     /// Every one of them
     #[cfg(test)]
-    pub const ALL: [Power; 29] = [
+    pub const ALL: [Power; 31] = [
         Power::Crescent,
         Power::Rending,
         Power::WindCut,
@@ -1849,12 +1885,23 @@ impl Power {
         Power::Starshell,
         Power::Beacon,
         Power::Shrapnel,
+        Power::Thunderspear,
+        Power::RaiseDead,
     ];
 
     /// Whether it has a move of its own on right click, rather than being carried by a melee
     /// weapon's heavy blow or a bow drawn full: the ones parts bring, and the new families'
     pub fn own_move(self) -> bool {
-        matches!(self, Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Cloudburst | Power::Bolas | Power::Starshell | Power::Beacon | Power::Shrapnel)
+        matches!(
+            self,
+            Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Cloudburst | Power::Bolas | Power::Starshell | Power::Beacon | Power::Shrapnel | Power::Thunderspear | Power::RaiseDead
+        )
+    }
+
+    /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
+    /// ones: what a necromancer and a priest are about, see character::Class
+    pub fn innate(family: &str) -> bool {
+        matches!(family, "skullfocus" | "talisman")
     }
 
     /// The one a family's legendary and mythic weapons have, by its id
@@ -1881,6 +1928,8 @@ impl Power {
             "warfan" => Power::Gale,
             "katar" => Power::Fists,
             "naginata" => Power::BladeRing,
+            "talisman" => Power::Thunderspear,
+            "skullfocus" => Power::RaiseDead,
             _ => return None,
         })
     }
@@ -1916,11 +1965,21 @@ impl Power {
             Power::Starshell => "Starshell",
             Power::Beacon => "Beacon",
             Power::Shrapnel => "Shrapnel",
+            Power::Thunderspear => "Thunderspear",
+            Power::RaiseDead => "Raising",
         }
     }
 
     /// What it's called, in `element`: a searing crescent, a rime wheel
     pub fn name(self, element: Option<Element>) -> String {
+        // A talisman's spear is holy lightning, a skull focus's raising death, whatever's in them
+        match (self, element) {
+            (Power::Thunderspear, Some(Element::Storm)) => return "Storm Saint's Thunderspear".to_owned(),
+            (Power::Thunderspear, _) => return "Sanctified Thunderspear".to_owned(),
+            (Power::RaiseDead, Some(Element::Blood)) => return "Blood Raising".to_owned(),
+            (Power::RaiseDead, _) => return "Grave Raising".to_owned(),
+            _ => {}
+        }
         let adjective = match element {
             Some(Element::Fire) => "Searing",
             Some(Element::Frost) => "Rime",
@@ -1942,6 +2001,8 @@ impl Power {
             Power::CometArrow | Power::Ricochet | Power::Fists | Power::Hook => 7.0,
             Power::Vortex | Power::Mortar | Power::Anvil | Power::Starshell | Power::Beacon => 9.0,
             Power::Cloudburst | Power::Shrapnel => 9.0,
+            Power::Thunderspear => 7.0,
+            Power::RaiseDead => 14.0,
             _ => 8.0,
         }
     }
@@ -1950,7 +2011,8 @@ impl Power {
     pub fn mana(self) -> f64 {
         match self {
             Power::Comet | Power::Seekers | Power::Nova => 2.0,
-            Power::Beacon => 2.5,
+            Power::Beacon | Power::Thunderspear => 2.5,
+            Power::RaiseDead => 3.0,
             _ => 0.0,
         }
     }
@@ -2000,7 +2062,14 @@ impl Power {
             Power::Starshell => "A flare of {e} shot high bursts over the ring and hangs there for 5 s, raining burning sparks on what's under it and marking it to take 30% more.",
             Power::Beacon => "A beacon of {e} set down on the ring tolls three times, a ring rolling out 5 meters from it each time, through everything it reaches.",
             Power::Shrapnel => "A pot of {e} lobbed onto the ring bursts into a wheel of twelve shards skimming out 7 meters along the ground, each bursting where it strikes.",
+            Power::Thunderspear => "Aimed while right click's held, a great spear of holy lightning is hurled from the talisman as it's let go, through everything in a line 30 meters on, lightning arcing off all it strikes to what's near, a bolt coming down where it ends.",
+            Power::RaiseDead => "Aimed while right click's held, a shade of death flies to the ring as it's let go and raises three skeletons out of the ground, or out of the slain lying near, to fight for you for 16 s.",
         };
+        // Both of these are theirs whatever's in them
+        if matches!(self, Power::Thunderspear | Power::RaiseDead) {
+            let rider = if self == Power::Thunderspear { "Every enemy it strikes heals you a little." } else { "Each blow they land drains life back to you." };
+            return format!("{what} {rider} Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
+        }
         let rider = match element {
             Some(Element::Fire) => "What it hits is set burning.",
             Some(Element::Frost) => "What it hits is chilled, frozen if it's chilled already.",
@@ -2334,7 +2403,8 @@ impl Weapon {
         let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(4);
         // Its family's, or the rarest part's that brings one of its own
         let own = by_rarity.iter().find_map(|c| c.power);
-        let power = if grade >= legendary || special.is_some() || best >= legendary { own.or_else(|| Power::of(&fam.id)) } else { None };
+        // A skull focus raises the dead, and a talisman hurls its great spear, at any rarity
+        let power = if grade >= legendary || special.is_some() || best >= legendary || Power::innate(&fam.id) { own.or_else(|| Power::of(&fam.id)) } else { None };
         let (build, caliber, cycle, bolt) = (fam.build, fam.caliber, fam.cycle, fam.bolt);
         let (heavy, finish) = moves_from_parts(fam, components);
         let casting = casting_of(fam, components, &stats, element);
@@ -2360,6 +2430,7 @@ impl Weapon {
             finish,
             casting,
             knack,
+            rite: Rite::of(&fam.id),
             quality,
             pace,
             forged,
@@ -2927,6 +2998,15 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
         Kind::Magic if family.style == Style::Arc => {
             let (parts, grip, tip) = rod(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
+        }
+        // A necromancer's skull focus and a priest's talisman, see weapons\relics.rs
+        Kind::Magic if family.id == "skullfocus" => {
+            let (parts, grip, tip) = relics::skull(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.id == "talisman" => {
+            let (parts, grip, tip) = relics::talisman(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
         Kind::Magic if family.style == Style::Censer => {
             let (parts, grip, tip) = censer(v("shaft"), v("focus"), v("crystal"), v("binding"));
