@@ -6032,7 +6032,7 @@ impl App {
             .filter(|(d, _)| *d < 0.0)
             .collect();
         lights.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut fighting = if playing { self.game.lights(&view) } else { Vec::new() };
+        let mut fighting = if playing { self.game.lights(&view, sky.night) } else { Vec::new() };
         fighting.extend(rope_lights);
         let lights: Vec<[f32; 8]> = fighting.into_iter().chain(lights.into_iter().map(|(_, l)| l)).take(MAX_LIGHTS).collect();
         let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();

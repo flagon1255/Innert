@@ -13,7 +13,7 @@ use nalgebra::{UnitQuaternion, Vector2, Vector3};
 use crate::animals::{self, ANIMAL_MODELS, Animal, AnimalInstance, Build, Look, Model, pack_models};
 use crate::audio::{Cue, Ground, Sound};
 use crate::bosses::{self, Deed, Flock, Move};
-use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
+use crate::combat::{self, Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
 use crate::levels::{self, Slain, Source};
@@ -2201,10 +2201,16 @@ impl Game {
             // serpents::ULTRA_ELEMENTS
             let element = serpents::element_now(animal);
             if let Some(boss) = &mut animal.boss {
-                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d)));
+                // Whether what it's doing is made of its element, so the rings showing where it's
+                // coming down glow with it
+                let glowing = boss.doing().is_some_and(|d| bosses::elemental(d.m, element));
+                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d, glowing)));
             }
         }
-        for (look, element, deed) in deeds {
+        for (look, element, deed, glowing) in deeds {
+            if glowing && let Some(e) = element {
+                self.glow_deed(e, deed);
+            }
             self.carry_out(look, element, deed, world, water, player, view);
         }
         self.tend_dragonfire(world, player, view, dt);
@@ -2353,6 +2359,21 @@ impl Game {
             if let Some(points) = points {
                 a.focus = serpents::focus(&points, view.eye, view.forward()).map(|p| p - a.position);
             }
+        }
+    }
+
+    /// The light of `element` where what a boss or monster is doing in it shows on the ground: a
+    /// ring of it brightening as it closes in on where it's coming down, and a shockwave of it
+    /// lighting the ground it runs over, see Combat::glow()
+    fn glow_deed(&mut self, element: Element, deed: Deed) {
+        let vpm = self.combat.vpm();
+        match deed {
+            Deed::Mark { at, radius, closing } => {
+                let strength = 0.35 + 0.55 * (1.0 - closing.clamp(0.0, 1.0));
+                self.combat.glow(at + Vector3::new(0.0, 0.0, 0.6 * vpm), radius + 3.0, element.light(), strength as f32, 0.15);
+            }
+            Deed::Quake { at, to, .. } => self.combat.glow(at + Vector3::new(0.0, 0.0, 1.0 * vpm), to + 3.0, element.light(), 0.7, 0.3),
+            _ => {}
         }
     }
 
@@ -3028,6 +3049,12 @@ impl Game {
                 let closing = (root.left / ROOTS_WARNING).min(1.0);
                 self.combat.stir(at, root.radius, dt * (2.0 - closing), root.flare.unwrap_or(DROP_MUD));
                 self.combat.mark(at, root.radius, closing);
+                // A flare of fire or a spell's element glowing up through the ground as it comes
+                if root.flare.is_some()
+                    && let Some(e) = root.element
+                {
+                    self.combat.glow(at + Vector3::new(0.0, 0.0, 0.5 * vpm), root.radius + 2.5, e.light(), (0.3 + 0.5 * (1.0 - closing)) as f32, 0.15);
+                }
                 if root.flare.is_none() {
                     self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
                 }
@@ -6038,13 +6065,34 @@ impl Game {
         out
     }
 
-    /// Lights from the fighting, in the form main.rs keeps the world's lights in
-    pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
-        let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view);
-        self.dragonfire_lights(view, &mut lights);
-        self.aerie_lights(view, &mut lights);
-        // The veil of the gate or a portal glows, breathing slowly
+    /// Lights from the fighting, in the form main.rs keeps the world's lights in: brighter and
+    /// reaching further the darker the night, `night` 0 by day to 1, see combat::NIGHT_BRIGHTER
+    pub fn lights(&self, view: &View, night: f64) -> Vec<[f32; 8]> {
+        let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view, night);
+        let mut fire = Vec::new();
+        self.dragonfire_lights(view, &mut fire);
+        self.aerie_lights(view, &mut fire);
+        // What bosses and monsters are gathering or pouring out of their element: a drake's throat
+        // glowing as it breathes, a caster's staff as it calls the sky down, the nearest few
         let vpm = view.vpm;
+        let mut casting: Vec<[f32; 8]> = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0 && (a.position - view.eye).norm() < 60.0 * vpm)
+            .filter_map(|a| {
+                let (at, element, strength) = bosses::glow(a, vpm)?;
+                let c = element.light();
+                let s = strength as f32;
+                Some([at.x as f32, at.y as f32, at.z as f32, ((4.0 + 4.0 * strength) * vpm) as f32, c[0] * s, c[1] * s, c[2] * s, 1.0])
+            })
+            .collect();
+        casting.sort_by(|a, b| combat::light_rank(a, view.eye).total_cmp(&combat::light_rank(b, view.eye)));
+        fire.extend(casting.into_iter().take(3));
+        for mut l in fire {
+            combat::night_boost(&mut l, night);
+            lights.push(l);
+        }
+        // The veil of the gate or a portal glows, breathing slowly
         let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
         for shrine in self.shrines.iter().filter(|s| s.open) {
             let p = shrine.position + Vector3::new(0.0, 0.0, 2.8 * vpm);

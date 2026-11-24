@@ -1879,6 +1879,41 @@ fn posed_at(a: &Animal, p: Vector3<f64>, vpm: f64) -> Vector3<f64> {
     a.rig_point(p, vpm)
 }
 
+/// Whether move `m`, made by a boss or monster of `element`, is made of it, so it gives off its
+/// light as it's made: what's breathed, spat, called down or up, flung or stamped out in it. A
+/// blow, a bite, a charge or roots give none, but a molten golem's fists and stamps glow.
+pub fn elemental(m: Move, element: Option<Element>) -> bool {
+    let Some(e) = element else {
+        return false;
+    };
+    match m {
+        Move::Breath | Move::Spit | Move::Storm | Move::Cataclysm | Move::Hex | Move::Weep | Move::Gloomgate | Move::Slagrain | Move::Vents | Move::Hoofbrand | Move::Sunwheel | Move::Thunderclap | Move::Blink | Move::Rimestomp | Move::Avalanche => true,
+        Move::Slam | Move::Quake => e == Element::Fire,
+        _ => false,
+    }
+}
+
+/// The light of what boss or monster `a` is gathering or pouring out of its element, if it's
+/// making such a move, see elemental(): where, in voxels, of what, and how bright, 0 to 1,
+/// swelling as it winds up, full while it's made and dying down after
+pub fn glow(a: &Animal, vpm: f64) -> Option<(Vector3<f64>, Element, f64)> {
+    use crate::rig::Stage;
+    let boss = a.boss.as_ref()?;
+    let element = serpents::element_now(a)?;
+    let d = boss.doing()?;
+    if !elemental(d.m, Some(element)) {
+        return None;
+    }
+    let k = (d.t / d.len.max(1e-3)).clamp(0.0, 1.0);
+    let strength = match d.stage {
+        Stage::Wind => 0.3 + 0.7 * k * k,
+        Stage::Act => 0.9 + 0.1 * (d.t * 17.0).sin(),
+        Stage::Recover => 0.8 * (1.0 - 2.5 * k).max(0.0),
+        _ => 0.0,
+    };
+    (strength > 0.02).then(|| (emit(a, boss, vpm), element, strength))
+}
+
 /// Where what boss `a` casts, spits or throws comes from: out of its jointed pose where it has one,
 /// see rig::Sockets, else its mouth
 fn emit(a: &Animal, boss: &Boss, vpm: f64) -> Vector3<f64> {
@@ -2952,6 +2987,50 @@ fn spout(a: &Animal, boss: &Boss, vpm: f64) -> Vector3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every move a boss or monster makes of its element lights up what's round it, in its
+    /// element's color, from as it starts winding up till it's made, brighter as it comes; and
+    /// blows, bites and charges, and anything by those of no element, give no light
+    #[test]
+    fn every_elemental_move_gives_light() {
+        let vpm = 16.0;
+        let (mut lit, mut dark) = (0, 0);
+        for look in Look::ALL.into_iter().filter(|l| l.build().is_some()) {
+            let element = look.element();
+            for m in repertoire(look) {
+                let mut a = Animal::boss(look, Vector3::new(100.0, 100.0, 100.0) * vpm, [0; 3], 7);
+                let wind = windup(look, m).max(0.2);
+                let mut strengths = Vec::new();
+                for (k, phase) in [Phase::WindUp(m, 0.05 * wind), Phase::WindUp(m, 0.95 * wind), Phase::Act(m, 0.0)].into_iter().enumerate() {
+                    a.boss.as_mut().unwrap().phase = phase;
+                    let glow = glow(&a, vpm);
+                    if elemental(m, element) {
+                        let (at, e, strength) = glow.unwrap_or_else(|| panic!("{look:?}'s {m:?} gives no light, {k}"));
+                        assert_eq!(Some(e), element, "{look:?}'s {m:?}");
+                        // A great serpent's snout is wherever its coils have taken it, laid out once
+                        // it's in the world
+                        let coiled = a.boss.as_ref().is_some_and(|b| b.coils.is_some());
+                        assert!(coiled || (at - a.position).norm() < 20.0 * vpm, "{look:?}'s {m:?} lights somewhere else");
+                        strengths.push(strength);
+                    } else {
+                        assert!(glow.is_none(), "{look:?}'s {m:?} lights up, made of nothing");
+                    }
+                }
+                if elemental(m, element) {
+                    assert!(strengths[0] < strengths[1] && strengths[1] <= strengths[2] + 0.11, "{look:?}'s {m:?} doesn't swell as it comes: {strengths:?}");
+                    lit += 1;
+                } else {
+                    dark += 1;
+                }
+            }
+        }
+        for m in [Move::Maul, Move::Charge, Move::Swat, Move::Roots, Move::Lash, Move::Tail] {
+            assert!(!elemental(m, Some(Element::Fire)), "{m:?} lights up");
+        }
+        assert!(elemental(Move::Breath, Some(Element::Fire)) && !elemental(Move::Breath, None));
+        println!("{lit} elemental moves light up, {dark} others don't");
+        assert!(lit >= 20, "only {lit} moves light up");
+    }
 
     /// The Colossus's throw plays out slowly enough to be seen coming and got out of the way of,
     /// angry or not: its fists dug into the ground a good while, prying its boulder loose, then
