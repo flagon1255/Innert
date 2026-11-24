@@ -14,7 +14,7 @@ use crate::weapons::Rite;
 /// in meters a second
 pub(in crate::combat) const SPEAR_REACH: f64 = 30.0;
 const CAST_REACH: f64 = 24.0;
-const SPEAR_SPEED: f64 = 40.0;
+const SPEAR_SPEED: f64 = 32.0;
 /// How far lightning arcs off what a spear strikes, in meters, and to how many, for the cast one
 /// and the great one
 const ARC_REACH: f64 = 7.0;
@@ -535,7 +535,7 @@ use crate::weapons::Rite;
         let mut spears = 0;
         let mut seen_for = 0.0;
         let mut healed = 0.0f64;
-        let pack = fight(&talisman, 9.0, 1.6, |_, t| Controls { attack: t < 0.05, holding: t < 0.05, ..Default::default() }, |c, view, _, _| {
+        let pack = fight(&talisman, 9.0, 2.0, |_, t| Controls { attack: t < 0.7, holding: t < 0.7, ..Default::default() }, |c, view, _, _| {
             spears = spears.max(c.projectiles.iter().filter(|p| p.trick == Trick::Signature(Sig::Power(Shape::Spear { big: false }))).count());
             if seen(c, view) {
                 seen_for += 1.0 / 60.0;

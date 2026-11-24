@@ -104,9 +104,9 @@ pub(super) fn talisman(shaft: &Visual, focus: &Visual, crystal: &Visual, binding
     let gem = mat(&crystal.gem, GLOW_HOLY);
     let band = mat(&binding.material, LINEN);
     let trim = mat(&binding.accent, band);
-    let top = 0.13;
-    let c = [0.0, 0.0, top + 0.075];
-    let r = 0.06;
+    let top = 0.11;
+    let c = [0.0, 0.0, top + 0.06];
+    let r = 0.046;
     // Its heart, burning on both faces
     slot("crystal");
     let heart = crystal.size.unwrap_or(0.016).clamp(0.012, 0.03);

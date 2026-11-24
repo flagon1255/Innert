@@ -3480,6 +3480,12 @@ impl AnimalInstance {
         Vector3::new(self.position[0] as f64, self.position[1] as f64, self.position[2] as f64)
     }
 
+    /// Which model it is, for tests
+    #[cfg(test)]
+    pub fn model(&self) -> u32 {
+        self.info[0]
+    }
+
     /// Where it is and how far it reaches from there, in voxels of the main world, for tests
     /// seeing whether it can be seen
     #[cfg(test)]

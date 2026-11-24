@@ -96,7 +96,12 @@ pub fn shapes(p: usize, looks: &Looks) -> Vec<Part> {
                 // A beard along the jaw, in the hair's colour, the mouth showing through
                 2 => s.push(ellipsoid([0.045, 0.0, 0.085], [0.075, 0.09, 0.06], CLOTH)),
                 // A scar down the right cheek
-                3 => s.push(limb([0.098, -0.048, 0.19], [0.093, -0.07, 0.115], 0.007, 0.007, MEAT)),
+                3 => {
+                    for k in 0..3 {
+                        let f = k as f64 / 2.0;
+                        s.push(cuboid([0.094, -0.05 - 0.016 * f, 0.18 - 0.045 * f], [0.102, -0.046 - 0.016 * f, 0.186 - 0.045 * f], MEAT));
+                    }
+                }
                 _ => {}
             }
             // The hair before the head, so it's hair where they overlap: a cap over the top and

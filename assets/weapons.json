@@ -3477,7 +3477,7 @@
       "visualProfile": { "shape": "gourd", "size": 0.064, "material": "clay", "accent": "dark_steel" },
       "naming": { "signature": "Hailpot" } },
 
-    { "id": "bone_grip", "displayName": "Bone Grip", "slotType": "shaft", "compatibleFamilies": ["skullfocus"], "rarity": "common", "weight": 10, "batch": 2,
+    { "id": "bone_focus_grip", "displayName": "Bone Grip", "slotType": "shaft", "compatibleFamilies": ["skullfocus"], "rarity": "common", "weight": 10, "batch": 2,
       "baseStats": { "spellDamage": 2 },
       "visualProfile": { "shape": "grip", "material": "bone", "accent": "leather" } },
     { "id": "yew_grip", "displayName": "Yew Grip", "slotType": "shaft", "compatibleFamilies": ["skullfocus"], "rarity": "common", "weight": 8, "batch": 2,

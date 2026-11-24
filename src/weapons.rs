@@ -7945,9 +7945,12 @@ mod tests {
             same += (now == was) as usize;
         }
         let share = |n: usize| n as f64 / seeds as f64;
-        // Three new families of thirty-nine, and a part of the second batch on about one weapon in
-        // five of the rest
-        assert!((0.05..0.11).contains(&share(new_family)), "new families {:.3}", share(new_family));
+        // The later batches' families as often as there are of them, the second's three and the
+        // third's skull focus and talisman, and a part of a later batch on about one weapon in five
+        // of the rest
+        let weapons = library.weapon_families();
+        let later = library.families[..weapons].iter().filter(|f| f.batch > 0).count() as f64 / weapons as f64;
+        assert!((share(new_family) - later).abs() < 0.03, "new families {:.3}, for {later:.3} of them", share(new_family));
         assert!((0.08..0.35).contains(&share(new_parts)), "new parts {:.3}", share(new_parts));
         assert!(share(same) > 0.65, "only {:.3} the same", share(same));
         // Every part of the second batch turns up, in lucky loot

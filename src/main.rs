@@ -2452,6 +2452,13 @@ impl App {
             game.inspect(slot);
         }
         game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set class=priest` and the rest without a mode: who's playing is that character, armed
+        // as their class starts, their body there for its shadow, to try them out in screenshot
+        // runs with `enemy=` and the rest, see character.rs. A mode started sets its own.
+        if setting("class").is_some() && setting("mode").is_none() {
+            game.set_character(&character::Character::from_settings());
+            game.new_character(terrain.seed);
+        }
         // For trying out weapons: `--set weapon_seed=7 weapon_luck=3` starts with other ones, rarer
         // the luckier, and `--set weapon=bow` with the bow in hand
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
@@ -4693,6 +4700,20 @@ impl App {
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
+            }
+            // Stands in the shallows nearest, looking straight down into the water, to see the
+            // player's own body there, see character::body
+            ("mirror", 1) => self.stand_in_water(0.35, true),
+            ("mirror", f) if f > 1 => self.camera.rotation.x = -1.35,
+            // Casts with what's in hand at the nearest of a pack `--set arrive_enemy` put there, again
+            // and again from frame `--set cast_from=40`, facing it, as a priest hurls spears
+            ("cast", f) => {
+                let from = settings_from_args().into_iter().find(|(k, _)| k == "cast_from").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(40);
+                if let Some(target) = self.game.nearest_foe(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                let casting = f >= from && (f - from) % 40 < 6;
+                self.script_controls = combat::Controls { attack: casting, holding: casting, ..Default::default() };
             }
             // Finds the nearest water and casts into it, to see it splash
             ("splash", f) => {

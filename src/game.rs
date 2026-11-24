@@ -5942,7 +5942,8 @@ impl Game {
         let mut out = self.combat.held_instances(held, view);
         // The player's own body where they stand, for its shadow and reflections, among the first
         // so it's always in them, see character::body. Not while lying dead, nor flying.
-        if let Some(feet) = self.feet.filter(|_| self.dead.is_none() && !self.body_models.is_empty()) {
+        // Flying, the feet are taken to be at the eye, and there's no body
+        if let Some(feet) = self.feet.filter(|f| self.dead.is_none() && !self.body_models.is_empty() && camera.z - f.z > vpm) {
             let forward = view.forward();
             let stance = crate::character::body::Stance {
                 yaw: forward.y.atan2(forward.x) - FRAC_PI_2,

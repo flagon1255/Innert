@@ -6353,6 +6353,47 @@ weapons/naginata/weeping_core.vox: Naginata, core: Weeping Core
 weapons/naginata/choir_core.vox: Naginata, core: Choir Core
 weapons/naginata/star_core.vox: Naginata, core: Star Core
 weapons/naginata/watching_eye_core.vox: Naginata, core: Watching Eye
+weapons/skullfocus/bone_focus_grip.vox: Skull Focus, shaft: Bone Grip
+weapons/skullfocus/yew_grip.vox: Skull Focus, shaft: Yew Grip
+weapons/skullfocus/spine_grip.vox: Skull Focus, shaft: Spine Grip
+weapons/skullfocus/iron_haft_grip.vox: Skull Focus, shaft: Black Iron Grip
+weapons/skullfocus/lich_spine_grip.vox: Skull Focus, shaft: Lich's Spine
+weapons/skullfocus/goat_skull.vox: Skull Focus, focus: Goat Skull
+weapons/skullfocus/man_skull.vox: Skull Focus, focus: Weathered Skull
+weapons/skullfocus/crowned_skull.vox: Skull Focus, focus: Crowned Skull
+weapons/skullfocus/obsidian_skull.vox: Skull Focus, focus: Obsidian Skull
+weapons/skullfocus/wyrm_skull.vox: Skull Focus, focus: Wyrm Skull
+weapons/skullfocus/first_king_skull.vox: Skull Focus, focus: Skull of the First King
+weapons/skullfocus/grave_ember.vox: Skull Focus, crystal: Grave Ember
+weapons/skullfocus/blood_ember.vox: Skull Focus, crystal: Blood Ember
+weapons/skullfocus/soul_shard_eyes.vox: Skull Focus, crystal: Soul Shards
+weapons/skullfocus/heart_of_ruin.vox: Skull Focus, crystal: Heart of Ruin
+weapons/skullfocus/abyssal_eye.vox: Skull Focus, crystal: Abyssal Eye
+weapons/skullfocus/grave_cloth.vox: Skull Focus, binding: Grave Cloth
+weapons/skullfocus/iron_rings_binding.vox: Skull Focus, binding: Iron Rings
+weapons/skullfocus/finger_bones.vox: Skull Focus, binding: Finger Bones
+weapons/skullfocus/chains_of_the_damned.vox: Skull Focus, binding: Chains of the Damned
+weapons/talisman/linen_cord.vox: Talisman, shaft: Linen Cord
+weapons/talisman/bronze_chain.vox: Talisman, shaft: Bronze Chain
+weapons/talisman/silver_chain.vox: Talisman, shaft: Silver Chain
+weapons/talisman/gilded_chain.vox: Talisman, shaft: Gilded Chain
+weapons/talisman/saints_chain.vox: Talisman, shaft: Saint's Chain
+weapons/talisman/oak_icon.vox: Talisman, focus: Oak Icon
+weapons/talisman/bronze_sunwheel.vox: Talisman, focus: Bronze Sunwheel
+weapons/talisman/silver_star.vox: Talisman, focus: Silver Star
+weapons/talisman/gold_halo_icon.vox: Talisman, focus: Golden Halo
+weapons/talisman/seraph_icon.vox: Talisman, focus: Seraph Icon
+weapons/talisman/dawnbreaker_icon.vox: Talisman, focus: Dawnbreaker
+weapons/talisman/stormcrown_icon.vox: Talisman, focus: Crown of the Storm Saint
+weapons/talisman/amber_spark.vox: Talisman, crystal: Amber Spark
+weapons/talisman/storm_pearl.vox: Talisman, crystal: Storm Pearl
+weapons/talisman/dawn_gem.vox: Talisman, crystal: Dawn Gem
+weapons/talisman/thunder_heart.vox: Talisman, crystal: Thunder Heart
+weapons/talisman/radiant_core.vox: Talisman, crystal: Radiant Core
+weapons/talisman/prayer_ribbon.vox: Talisman, binding: Prayer Ribbon
+weapons/talisman/rosary_beads.vox: Talisman, binding: Rosary Beads
+weapons/talisman/vow_seals.vox: Talisman, binding: Vow Seals
+weapons/talisman/choir_bells.vox: Talisman, binding: Choir Bells
 weapons/hatchet/crude_hatchet_head.vox: Hatchet, blade: Knapped Stone Head
 weapons/hatchet/sturdy_hatchet_head.vox: Hatchet, blade: Iron Hatchet Head
 weapons/hatchet/fine_hatchet_head.vox: Hatchet, blade: Steel Hatchet Head

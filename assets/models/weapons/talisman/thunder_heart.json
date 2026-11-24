@@ -1,0 +1,37 @@
+{
+  "what": "Talisman, crystal: Thunder Heart",
+  "voxels_per_meter": 192.0,
+  "size": [
+    7,
+    11,
+    11
+  ],
+  "pivot": [
+    3.456,
+    5.904,
+    -27.240000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -6,
+    27
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.06
+    ],
+    "tip": [
+      0.02,
+      0.0,
+      0.16999999999999998
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    3025,
+    "1d3337e4f7770969"
+  ]
+}

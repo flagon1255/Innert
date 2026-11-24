@@ -1032,7 +1032,7 @@ impl Combat {
                 let range = (to - from).norm() / vpm * 1.03 + if who.is_some() { 4.0 } else { 0.3 };
                 self.hurl_spear(&profile, from, to, base * 2.2, range, true);
                 if who.is_none() {
-                    self.keep_power_marks(power, &[to], range / 40.0);
+                    self.keep_power_marks(power, &[to], range / 32.0);
                 }
                 self.shake = self.shake.max(0.2);
             }
@@ -2424,7 +2424,12 @@ mod tests {
             assert_eq!(weapon.profile.power, Some(power), "{}", f.id);
             seen.push(power);
             let common = library.generate(7, Some(family), 0.0);
-            assert!(common.profile.power.is_none() || common.profile.special.is_some(), "a common {} has a power", f.id);
+            // But for a skull focus and a talisman, whose powers are theirs at any rarity
+            if Power::innate(&f.id) {
+                assert_eq!(common.profile.power, Some(power), "a common {} has no power", f.id);
+            } else {
+                assert!(common.profile.power.is_none() || common.profile.special.is_some(), "a common {} has a power", f.id);
+            }
         }
         // A part that brings a power of its own gives it to the weapon it's on, in place of its
         // family's

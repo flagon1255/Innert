@@ -1,0 +1,37 @@
+{
+  "what": "Skull Focus, focus: Goat Skull",
+  "voxels_per_meter": 192.0,
+  "size": [
+    27,
+    41,
+    30
+  ],
+  "pivot": [
+    14.935999999999996,
+    20.311999999999998,
+    -40.048
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -20,
+    40
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.09
+    ],
+    "tip": [
+      0.04,
+      0.0,
+      0.279
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    27781,
+    "58894ebec37dbd1b"
+  ]
+}
