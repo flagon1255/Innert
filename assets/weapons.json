@@ -3608,7 +3608,7 @@
       "baseStats": { "elementalDamage": 9 }, "element": "storm", "effects": ["chain"],
       "visualProfile": { "gem": "glow_storm", "size": 0.024 },
       "naming": { "prefix": "Thunderous" } },
-    { "id": "radiant_core", "special": "nova", "displayName": "Radiant Core", "slotType": "crystal", "compatibleFamilies": ["talisman"], "rarity": "legendary", "weight": 2, "batch": 2,
+    { "id": "radiant_core", "special": "phantomhost", "displayName": "Radiant Core", "slotType": "crystal", "compatibleFamilies": ["talisman"], "rarity": "legendary", "weight": 2, "batch": 2,
       "baseStats": { "elementalDamage": 13 }, "element": "holy", "effects": ["lifesteal", "stagger"],
       "visualProfile": { "gem": "glow_holy", "size": 0.026 },
       "naming": { "signature": "Radiant Core" } },
