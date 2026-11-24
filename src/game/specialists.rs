@@ -664,6 +664,11 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let at = near + flat * distance * vpm;
+        // On dry ground near there
+        let Some(found) = animals::spawn_keeper(world, water, trade.look(), at, 2.0, hash(at.x as u32)) else {
+            return;
+        };
+        let at = found.position;
         let key = [at.x as i64, at.y as i64, -4 - trade.index() as i64];
         let heading = (-flat.y).atan2(-flat.x);
         self.keep_stall(world, water, key, at, trade, heading, hash(at.x as u32 ^ trade.index() as u32));

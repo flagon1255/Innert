@@ -2938,6 +2938,10 @@ impl App {
         if flag("talk", false) {
             app.game.stage_talk(start, setting("talk_do"), setting("talk_gold").and_then(|v| v.parse().ok()), flag("talk_home", false));
         }
+        // `--set map=1` opens the map, to see what's marked on it
+        if flag("map", false) {
+            app.map.open = true;
+        }
         // `--set shots_at=80,140` takes shots at those frames too, with the GUI with `gui=1`, as of
         // the window of a specialist being talked to
         if let Some(capture) = &mut app.capture {
