@@ -1,0 +1,25 @@
+{
+  "what": "Wingmaker, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    24,
+    29
+  ],
+  "pivot": [
+    6.0,
+    12.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -12,
+    0
+  ],
+  "note": "",
+  "written": [
+    4144,
+    "5cdccdce92c46b09"
+  ]
+}

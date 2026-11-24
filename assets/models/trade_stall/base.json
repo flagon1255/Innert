@@ -1,0 +1,25 @@
+{
+  "what": "Merchant's stand, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    16,
+    24,
+    31
+  ],
+  "pivot": [
+    8.0,
+    12.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -8,
+    -12,
+    0
+  ],
+  "note": "",
+  "written": [
+    5372,
+    "e4d567bd124fe19d"
+  ]
+}

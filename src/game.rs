@@ -30,6 +30,8 @@ use crate::tools;
 mod dragonfire;
 /// What avians and gargoyles throw, call down and break into, see src\avians.rs
 mod aerie;
+/// The specialist merchants, talked to and asked to the base, see src\merchants.rs
+mod specialists;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -476,6 +478,8 @@ pub struct Stall {
     /// For the royal armoury in a castle's throne room, which way the princess keeping it faces:
     /// she sells only legendary and mythic weapons, see royal_stock()
     pub royal: Option<f64>,
+    /// For a specialist's stall, their trade and which way they face, see src\merchants.rs
+    pub trade: Option<(crate::merchants::Trade, f64)>,
 }
 
 /// A town's square: where its middle is in voxels, on the paving, how many folk live round it
@@ -972,6 +976,9 @@ pub struct Game {
     preview: Vec<(Model, Vector3<f64>)>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
+    /// The specialist merchants: who keeps which stall, who's being talked to and who lives at the
+    /// base, see game\specialists.rs
+    trades: specialists::Trades,
 }
 
 /// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
@@ -1187,6 +1194,7 @@ impl Game {
             stage_models: crate::editor::stage_models(),
             preview: Vec::new(),
             aerie: Default::default(),
+            trades: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
             ward_models: crate::assets::wards(crate::guardians::models()),
@@ -1993,13 +2001,14 @@ impl Game {
         self.leaves.recenter(shift);
         self.target = None;
         self.merchants.retain(|(id, _)| self.animals.iter().any(|a| a.id == *id));
+        self.recenter_trades(shift);
         self.forget_weapons();
         self.rest = self.rest.map(|r| r - shift).filter(inside);
 
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
         // pop up right in front of them. Bosses, dungeon monsters, merchants and villagers have
         // homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager() && !a.look.is_royal()).count());
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && !a.look.is_merchant() && a.look != Look::TradeStall && !a.look.is_villager() && !a.look.is_royal()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| a.look.is_bandit()).count();
         // The packs of the country the player's come into, as the old ones are left behind
@@ -3759,10 +3768,11 @@ impl Game {
                 self.beams.push(chest.position);
             }
         }
-        if let Some(key) = self.shop {
+        if let Some(key) = self.shop.or(self.talking_to()) {
             let near = self.merchants.iter().find(|(_, k)| *k == key).and_then(|(id, _)| self.animals.iter().find(|a| a.id == *id));
             if near.is_none_or(|m| (m.position - view.eye).norm() > SHOP_REACH * vpm) {
                 self.shop = None;
+                self.stop_talking();
                 self.say("You walk away from the merchant.");
             }
         }
@@ -4043,9 +4053,14 @@ impl Game {
             Some(Target::Chest(i)) => self.open_chest(i),
             Some(Target::Animal(i)) => {
                 let look = self.animals[i].look;
-                if look == Look::Merchant || look == Look::Princess {
+                if look.is_merchant() || look == Look::Princess {
                     let id = self.animals[i].id;
-                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
+                    // A specialist's talked to first, see game\specialists.rs
+                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id)
+                        && self.is_specialist(key)
+                    {
+                        self.talk_to(key, self.animals[i].position);
+                    } else if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
                         self.stock(key);
                         self.shop = Some(key);
                         self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(1.3));
@@ -4205,13 +4220,14 @@ impl Game {
         self.say(if worn { format!("You put on the {name}: jump, then hold Space in the air to glide.") } else { format!("The {name} are in your pack: press I and Wear them to change wings.") });
     }
 
-    /// Whether the player's trading with a merchant
+    /// Whether the player's trading with a merchant, or talking to one
     pub fn shopping(&self) -> bool {
-        self.shop.is_some()
+        self.shop.is_some() || self.talking_to().is_some()
     }
 
     pub fn close_shop(&mut self) {
         self.shop = None;
+        self.stop_talking();
     }
 
     /// The merchants' spots in the piece of the world just built, in its voxels: one turns up at
@@ -4223,6 +4239,11 @@ impl Game {
                 continue;
             }
             let seed = hash(stall.key[0] as u32 ^ hash(stall.key[1] as u32 ^ 0x5a1e));
+            // A specialist's, unless they've moved to the base, see game\specialists.rs
+            if let Some((trade, heading)) = stall.trade {
+                self.keep_stall(world, water, stall.key, stall.position, trade, heading, seed);
+                continue;
+            }
             let keeper = match stall.royal {
                 Some(heading) => animals::spawn_royal(world, water, Look::Princess, stall.position, heading, seed),
                 None => animals::spawn_merchant(world, water, stall.position, stall.within, seed),
@@ -4337,7 +4358,7 @@ impl Game {
         if !self.stocks.contains_key(&key) {
             self.roll_stock(key);
         }
-        if self.royals.contains(&key) {
+        if self.royals.contains(&key) || self.is_specialist(key) {
             return;
         }
         // Every travelling merchant has a pair of wings the player hasn't, the plainest there's
@@ -4365,6 +4386,9 @@ impl Game {
     fn roll_stock(&mut self, key: [i64; 3]) {
         if self.royals.contains(&key) {
             return self.royal_stock(key);
+        }
+        if let Some((trade, seed)) = self.specialist_of(key) {
+            return self.specialist_stock(key, trade, seed);
         }
         let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
         let mut wares = Vec::new();
@@ -4900,6 +4924,7 @@ impl Game {
         self.merchants.clear();
         self.royals.clear();
         self.shop = None;
+        self.trades.leave_world();
         self.target = None;
         self.combat.clear();
         self.leaves.clear();
@@ -6046,6 +6071,13 @@ impl Game {
                 near.push((d, animals::still_instance(look, position, heading, world.voxels_per_meter)));
             }
         }
+        // The stands of the merchants living at the base, see game\specialists.rs
+        for &(position, heading) in self.trades.stands() {
+            let d = (position - camera).norm();
+            if d < ANIMAL_RANGE * vpm {
+                near.push((d, animals::still_instance(Look::TradeStall, position, heading, world.voxels_per_meter)));
+            }
+        }
         for chest in &self.chests {
             let d = (chest.position - camera).norm();
             if d < PROP_RANGE * vpm {
@@ -6113,7 +6145,9 @@ impl Game {
             Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
-                Some(if look == Look::Merchant {
+                Some(if let Some(trade) = crate::merchants::Trade::of_look(look) {
+                    format!("E  talk to the {}", trade.title().to_lowercase())
+                } else if look == Look::Merchant {
                     "E  trade with the merchant".to_owned()
                 } else if look == Look::Princess {
                     "E  trade with the princess".to_owned()
@@ -6381,8 +6415,11 @@ impl Game {
         self.health_bars(&painter, view, &on_screen);
         // Merchants' names over their heads, so they're easy to find, and smaller ones over the
         // villagers' when near
-        for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager() || a.look.is_royal()) {
-            let (name, color, height, range, size) = if npc.look == Look::Merchant {
+        for npc in self.animals.iter().filter(|a| a.look.is_merchant() || a.look.is_villager() || a.look.is_royal()) {
+            let (name, color, height, range, size) = if let Some(trade) = crate::merchants::Trade::of_look(npc.look) {
+                let [r, g, b] = trade.color();
+                (trade.title(), Color32::from_rgb(r, g, b), 2.25, 28.0, 15.0)
+            } else if npc.look == Look::Merchant {
                 ("Merchant", GOLD, 2.15, 28.0, 15.0)
             } else if npc.look == Look::Princess {
                 ("Princess", Color32::from_rgb(255, 170, 215), 2.05, 28.0, 15.0)
@@ -7484,12 +7521,17 @@ impl Game {
     /// The merchant's stall: what they sell, and what the player carries to sell them. False once
     /// it's closed.
     pub fn shop_window(&mut self, ctx: &egui::Context) -> bool {
+        // A specialist being talked to, before trading, see game\specialists.rs
+        if self.talking_to().is_some() {
+            return self.talk_window(ctx);
+        }
         let Some(key) = self.shop else {
             return false;
         };
         let mut open = true;
         let mut deed = None;
-        egui::Window::new(if self.royals.contains(&key) { "The Royal Armoury" } else { "Merchant" })
+        let title = self.shop_title(key).unwrap_or(if self.royals.contains(&key) { "The Royal Armoury".to_owned() } else { "Merchant".to_owned() });
+        egui::Window::new(title)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

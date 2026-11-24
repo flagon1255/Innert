@@ -346,6 +346,13 @@ drift_serpent/base.vox: Drift serpent, standing frame (1 of 39 frames)
 shed_skin/base.vox: Shed serpent skin, standing frame (1 of 1 frames)
 serpent_bones/base.vox: Serpent bones, standing frame (1 of 1 frames)
 serpent_tongue/base.vox: Serpent's tongue, standing frame (1 of 1 frames)
+bowyer/base.vox: Bowyer, standing frame (1 of 1 frames)
+wandwright/base.vox: Wandwright, standing frame (1 of 1 frames)
+bladesmith/base.vox: Weaponsmith, standing frame (1 of 1 frames)
+gunsmith/base.vox: Gunsmith, standing frame (1 of 1 frames)
+jeweller/base.vox: Jeweller, standing frame (1 of 1 frames)
+wingmaker/base.vox: Wingmaker, standing frame (1 of 1 frames)
+trade_stall/base.vox: Merchant's stand, standing frame (1 of 1 frames)
 dragon/ashwing/torso.vox: ashwing, torso
 dragon/ashwing/neck_1.vox: ashwing, neck 1
 dragon/ashwing/neck_2.vox: ashwing, neck 2
