@@ -1,0 +1,25 @@
+{
+  "what": "Weaponsmith, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    11,
+    28
+  ],
+  "pivot": [
+    6.0,
+    5.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    0
+  ],
+  "note": "",
+  "written": [
+    3453,
+    "89191930bc0f92b2"
+  ]
+}

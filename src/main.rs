@@ -94,6 +94,7 @@ mod serpents;
 mod limits;
 mod loading;
 mod memory;
+mod merchants;
 mod night;
 mod perf;
 mod player;
@@ -2202,8 +2203,15 @@ impl Placed {
             let (square, way_in) = (at(square), at(way_in));
             let out = Vector3::new(way_in.x - square.x, way_in.y - square.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
             let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            // `town=bowyer` and the like in front of that specialist's stall, see merchants.rs
+            let wanted = town_view.and_then(|v| merchants::Trade::by_id(v)).map_or("town stall", |t| t.stall_site());
+            let specialist = town_view == Some("specialist");
+            if let Some(l) = &landscape {
+                let stalls: Vec<String> = l.sites().iter().filter(|s| s.kind.ends_with("stall")).map(|s| format!("{} at {:.0}, {:.0}", s.kind, s.position[0], s.position[1])).collect();
+                println!("Stalls about: {}", stalls.join("; "));
+            }
             let stall = landscape.as_ref().and_then(|l| {
-                let sites = l.sites().iter().filter(|s| s.kind == "town stall");
+                let sites = l.sites().iter().filter(|s| s.kind == wanted || specialist && merchants::Trade::of_site(s.kind).is_some());
                 sites.map(|s| (at(s.position), Vector3::new(s.facing[0] as f64, s.facing[1] as f64, 0.0))).min_by(|a, b| (a.0 - square).norm().total_cmp(&(b.0 - square).norm()))
             });
             let (eye, target) = match (town_view, stall) {
@@ -2211,6 +2219,7 @@ impl Placed {
                 (Some("tunnel"), _) => (way_in + out * 7.0 * vpm + up(1.7), way_in + up(1.4)),
                 // Where a customer would stand, the merchant behind the counter
                 (Some("stall"), Some((spot, facing))) => (spot + facing * 3.2 * vpm + up(1.6), spot + up(1.2)),
+                (Some(v), Some((spot, facing))) if v == "specialist" || merchants::Trade::by_id(v).is_some() => (spot + facing * 4.6 * vpm + up(1.9), spot + up(1.5)),
                 // A little way along a street, looking down it across the square
                 _ => (square + out * 10.0 * vpm + up(1.7), square - out * 8.0 * vpm + up(1.2)),
             };
@@ -2642,6 +2651,19 @@ impl App {
         if flag("shop", false) {
             game.open_nearest_shop(start);
         }
+        // `--set specialist=bowyer` puts that specialist `specialist_distance=3` meters ahead, see
+        // merchants.rs, and `specialist=all` every one of them side by side
+        if let Some(wanted) = setting("specialist") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let side = Vector3::new(-ahead.y, ahead.x, 0.0).try_normalize(1e-6).unwrap_or(Vector3::y());
+            let distance = setting("specialist_distance").and_then(|v| v.parse().ok()).unwrap_or(3.0);
+            let trades: Vec<merchants::Trade> = if wanted == "all" { merchants::Trade::ALL.to_vec() } else { merchants::Trade::by_id(wanted).into_iter().collect() };
+            let vpm = world.voxels_per_meter as f64;
+            for (k, &trade) in trades.iter().enumerate() {
+                let by = (k as f64 - (trades.len() as f64 - 1.0) / 2.0) * 1.1 * vpm;
+                game.summon_specialist(&world, &water_level, start + side * by, ahead, distance, trade);
+            }
+        }
         // `--set villager=3` puts a villager of each kind that many meters ahead, to see them close
         if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
@@ -2910,6 +2932,12 @@ impl App {
         if setting("shop").is_some_and(|v| v == "true" || v == "1") {
             app.game.open_nearest_shop(start);
         }
+        // `--set talk=1` talks to the specialist nearest the start, see merchants.rs, and
+        // `talk_do=invite`, `land` or `trade` says that, with `talk_gold=500` to pay with and
+        // `talk_home=1` a fireplace at the base to come to
+        if flag("talk", false) {
+            app.game.stage_talk(start, setting("talk_do"), setting("talk_gold").and_then(|v| v.parse().ok()), flag("talk_home", false));
+        }
         if let Some(n) = visit_waterfall {
             app.waterfall_index = n - 1;
             app.visit_waterfall();
@@ -3154,12 +3182,17 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 if site.kind == "town stall" {
-                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None });
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None, trade: None });
+                }
+                // A specialist's stall beside it, see merchants.rs
+                if let Some(trade) = merchants::Trade::of_site(site.kind) {
+                    let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.0, royal: None, trade: Some((trade, heading)) });
                 }
                 // The princess keeps the royal armoury in a castle's throne room
                 if site.kind.starts_with("royal") {
                     let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
-                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
+                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading), trade: None });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
                 if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town" | "gargoyle perch") {
@@ -3168,7 +3201,7 @@ impl App {
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
-                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None })
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None, trade: None })
             })
             .collect();
         // Folk live round the towns' squares, those down in caverns in fewer of them, and some
@@ -4190,6 +4223,8 @@ impl App {
             let start = Instant::now();
             self.update_raid(delta_time.min(0.1));
             self.slow("the night's raid", start);
+            // The merchants living at the base, see merchants.rs
+            self.update_merchants(delta_time.min(0.1));
             // The old foundations of the gate in a new game of Realms, see gates.rs
             self.lay_ruins();
             // A shot kicking the view up, springing back down

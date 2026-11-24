@@ -692,13 +692,14 @@ impl Terrain {
             t.houses.push(house);
         }
 
-        // Stalls on the corners of the square, between the streets
+        // Stalls on the corners of the square, between the streets: the travelling merchant's, and
+        // one or two specialists' beside it, see src\merchants.rs
         let mut corners = [0, 1, 2, 3];
         for i in (1..4).rev() {
             let j = ((rng.next() * (i + 1) as f32) as usize).min(i);
             corners.swap(i, j);
         }
-        for &k in corners.iter().take(1 + (rng.next() * 2.99) as usize) {
+        for &k in corners.iter().take(2 + (rng.next() * 1.99) as usize) {
             let a = std::f32::consts::FRAC_PI_4 + k as f32 * FRAC_PI_2 + rng.range(-0.2, 0.2);
             let (x, y) = (t.square[0] + a.cos() * (t.radius - 2.2), t.square[1] + a.sin() * (t.radius - 2.2));
             let f = if a.cos().abs() > a.sin().abs() { [-a.cos().signum(), 0.0] } else { [0.0, -a.sin().signum()] };
@@ -749,8 +750,9 @@ impl Terrain {
         // The well, the stalls, and lanterns lighting the square and the streets
         let mut s = Vec::new();
         self.well(t, &mut s, features);
-        for stall in &t.stalls {
-            self.stall(t, stall, &mut s, features, &mut rng);
+        let trades = crate::merchants::town_trades(t.stalls.len(), t.seed);
+        for (stall, &trade) in t.stalls.iter().zip(&trades) {
+            self.stall(t, stall, trade, &mut s, features, &mut rng);
         }
         for (k, &(way, length)) in t.streets.iter().enumerate() {
             let side = if k % 2 == 0 { 1.0 } else { -1.0 };
@@ -1115,11 +1117,26 @@ impl Terrain {
 
     /// A merchant's stall at `at` on the square of town `t`, facing the middle of it: a counter
     /// of goods under a striped awning on four posts, a crate and a barrel beside it, and the
-    /// merchant's spot behind it, "town stall"
-    fn stall(&self, t: &Town, at: &Frame, s: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+    /// merchant's spot behind it, "town stall". A specialist's, of `trade`, has its awning in their
+    /// colours and the sign of their trade over its front, see trade_sign(), and its spot is theirs,
+    /// see Trade::stall_site().
+    fn stall(&self, t: &Town, at: &Frame, trade: Option<crate::merchants::Trade>, s: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+        use crate::merchants::Trade;
         let g = self.paving(t, at.x, at.y);
         let clear = |shape: Shape| shape.placed(Placement::Clear);
         let (cloth, stripe) = [(CLOTH, LINEN), (TEMPLE_TEAL, LINEN), (MOSS, LINEN), (TEMPLE_RED, FLOWER_YELLOW)][(rng.next() * 3.99) as usize];
+        let (cloth, stripe) = match trade {
+            None => (cloth, stripe),
+            Some(Trade::Bowyer) => (MOSS, FLOWER_WHITE),
+            Some(Trade::Wandwright) => (FLOWER_PURPLE, GOLD),
+            Some(Trade::Bladesmith) => (TEMPLE_RED, DARK_STEEL),
+            Some(Trade::Gunsmith) => (BARK_DARK, FLOWER_YELLOW),
+            Some(Trade::Jeweller) => (TEMPLE_TEAL, GOLD),
+            Some(Trade::Wingmaker) => (FLOWER_BLUE, FLOWER_WHITE),
+        };
+        if let Some(trade) = trade {
+            Self::trade_sign(s, at, g, trade);
+        }
         let counter = g + 0.92;
         // The goods along the counter
         let mut v = -0.8;
@@ -1168,7 +1185,66 @@ impl Terrain {
         let p = at.point(-1.0, 0.0, 0.0);
         let spot = [p[0], p[1], self.paving(t, p[0], p[1])];
         if self.inside(spot[0], spot[1]) {
-            features.sites.push(Site { kind: "town stall", position: spot, facing: at.f });
+            features.sites.push(Site { kind: trade.map_or("town stall", |t| t.stall_site()), position: spot, facing: at.f });
+        }
+    }
+
+    /// The sign of a specialist's `trade` over the front of their stall at `at`, its paving at `g`: a
+    /// board on top of the awning's front edge, facing out, with what they make on it, a bow and an
+    /// arrow, a staff with a glowing stone, two swords crossed, a musket and a cannonball, a great
+    /// gem, or a pair of wings
+    fn trade_sign(s: &mut Vec<Shape>, at: &Frame, g: f32, trade: crate::merchants::Trade) {
+        use crate::merchants::Trade;
+        let clear = |shape: Shape| shape.placed(Placement::Clear);
+        // Points on the board's face, `v` across and `z` up from its middle
+        let (u, mid) = (0.86, g + 2.78);
+        let on = |v: f32, z: f32| at.point(u, v, mid + z);
+        let bar = |s: &mut Vec<Shape>, a: (f32, f32), b: (f32, f32), r: f32, material: u8| s.push(clear(Shape::capsule(on(a.0, a.1), on(b.0, b.1), r, r, material, AIR, false)));
+        match trade {
+            Trade::Bowyer => {
+                let mut last = (-0.12, -0.3);
+                for k in 1..=8 {
+                    let t = k as f32 / 8.0;
+                    let p = (-0.12 - 0.22 * (t * std::f32::consts::PI).sin(), -0.3 + 0.6 * t);
+                    bar(s, last, p, 0.04, WOOD);
+                    last = p;
+                }
+                bar(s, (-0.12, -0.3), (-0.12, 0.3), 0.025, BOWSTRING);
+                bar(s, (-0.4, 0.0), (0.42, 0.0), 0.03, WOOD);
+                s.push(clear(Shape::sphere(on(0.45, 0.0), 0.06, DARK_STEEL, AIR, false)));
+                s.push(clear(Shape::sphere(on(-0.4, 0.0), 0.06, FLOWER_RED, AIR, false)));
+            }
+            Trade::Wandwright => {
+                bar(s, (-0.35, -0.3), (0.25, 0.2), 0.04, WOOD);
+                s.push(clear(Shape::sphere(on(0.3, 0.24), 0.11, GLOW_ARCANE, AIR, false)));
+            }
+            Trade::Bladesmith => {
+                for d in [-1.0, 1.0] {
+                    bar(s, (-0.38 * d, -0.3), (0.3 * d, 0.3), 0.035, STEEL);
+                    bar(s, (-0.36 * d - 0.07, -0.2), (-0.36 * d + 0.12, -0.26), 0.035, GOLD);
+                }
+            }
+            Trade::Gunsmith => {
+                bar(s, (-0.42, -0.12), (0.3, 0.16), 0.04, DARK_STEEL);
+                bar(s, (-0.42, -0.12), (-0.2, -0.2), 0.07, WOOD);
+                s.push(clear(Shape::sphere(on(0.38, -0.18), 0.1, DARK_STEEL, AIR, false)));
+            }
+            Trade::Jeweller => {
+                s.push(clear(Shape::ellipsoid(on(0.0, 0.02), [0.16, 0.16, 0.2], CRYSTAL, AIR)));
+                s.push(clear(Shape::ellipsoid(on(0.0, -0.05), [0.24, 0.24, 0.06], GOLD, AIR)));
+            }
+            Trade::Wingmaker => {
+                for d in [-1.0, 1.0] {
+                    s.push(clear(Shape::ellipsoid(on(0.25 * d, 0.05), [0.12, 0.12, 0.2], FLOWER_WHITE, AIR)));
+                    bar(s, (0.05 * d, -0.05), (0.45 * d, 0.25), 0.04, FLOWER_WHITE);
+                }
+            }
+        }
+        // The board, and the two posts holding it up off the awning
+        s.push(clear(at.block([0.78, 0.83], [-0.62, 0.62], [mid - 0.3, mid + 0.3], LINEN, AIR)));
+        s.push(clear(at.block([0.74, 0.8], [-0.7, 0.7], [mid - 0.38, mid + 0.38], WOOD, BARK_DARK)));
+        for v in [-0.55, 0.55] {
+            s.push(clear(at.block([0.76, 0.82], [v - 0.04, v + 0.04], [g + 2.3, mid - 0.3], WOOD, AIR)));
         }
     }
 

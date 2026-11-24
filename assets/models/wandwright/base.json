@@ -1,0 +1,25 @@
+{
+  "what": "Wandwright, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    14,
+    37
+  ],
+  "pivot": [
+    6.0,
+    7.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -7,
+    0
+  ],
+  "note": "",
+  "written": [
+    6944,
+    "a340a52098d0cf42"
+  ]
+}

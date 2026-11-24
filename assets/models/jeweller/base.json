@@ -1,0 +1,25 @@
+{
+  "what": "Jeweller, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    11,
+    30
+  ],
+  "pivot": [
+    7.5,
+    5.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -8,
+    -6,
+    0
+  ],
+  "note": "",
+  "written": [
+    5642,
+    "b8077185bbc4a927"
+  ]
+}

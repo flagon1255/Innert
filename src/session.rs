@@ -161,6 +161,11 @@ impl Session {
         }
     }
 
+    /// Which world the player's in: "normal", or a realm's, see realms.rs
+    pub fn world_name(&self) -> &str {
+        &self.world
+    }
+
     /// Whether a screenshot run's trial has the player gliding, see Trial::glide_at
     pub fn trial_glides(&self) -> bool {
         self.trial.glide.is_some()
@@ -277,6 +282,8 @@ impl App {
             let p = &save.player;
             self.game.restore(&save.carried, &done, (p.health, p.hunger, p.mana));
         }
+        // The merchants living at the base, see merchants.rs: none in a new game or an old save
+        self.game.load_household(save.section(crate::merchants::SECTION).unwrap_or_default());
         // Where the gate, the portal and the raid bosses are in the realm, and how hard it is
         self.enter_realm();
         if fresh && !self.session.standing {
@@ -1015,6 +1022,9 @@ impl App {
                 let mut sections = session.sections.clone();
                 if let Ok(value) = serde_json::to_value(self.bases.game_save(self.cycle.clock)) {
                     sections.insert(bases::GAME_SECTION.to_owned(), value);
+                }
+                if let Some(value) = self.merchants_save() {
+                    sections.insert(crate::merchants::SECTION.to_owned(), value);
                 }
                 sections
             },

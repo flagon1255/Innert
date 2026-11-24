@@ -191,6 +191,16 @@ pub enum Look {
     Grovemaul,
     Hoarback,
     GildedSphinx,
+    // Specialist merchants, each keeping a stall of their own trade in the towns, and who can be
+    // asked to come and work at the player's base, see src\merchants.rs: a bowyer, a wandwright, a
+    // weaponsmith, a gunsmith, a jeweller and a wingmaker; and the stand they set up there
+    Bowyer,
+    Wandwright,
+    Bladesmith,
+    Gunsmith,
+    Jeweller,
+    Wingmaker,
+    TradeStall,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -247,7 +257,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 118] = [
+    pub const ALL: [Look; 125] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -366,6 +376,13 @@ impl Look {
         Look::Grovemaul,
         Look::Hoarback,
         Look::GildedSphinx,
+        Look::Bowyer,
+        Look::Wandwright,
+        Look::Bladesmith,
+        Look::Gunsmith,
+        Look::Jeweller,
+        Look::Wingmaker,
+        Look::TradeStall,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -625,6 +642,8 @@ impl Look {
             self,
             Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue
         ) && !self.is_shrine()
+            && !self.is_merchant()
+            && self != Look::TradeStall
     }
 
     /// Part of the way through the realms, which stands where it is, see src\realms.rs
@@ -884,6 +903,9 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::reach(self),
+            // Up to the top of a hat, a staff or a bow held upright, or wings on the back
+            Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => 2.2,
+            Look::TradeStall => 2.0,
         }
     }
 
@@ -949,6 +971,8 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
+            Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => (0.95, 0.42),
+            Look::TradeStall => (0.5, 0.6),
         }
     }
 
@@ -1043,13 +1067,26 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::name(self),
+            Look::Bowyer => "bowyer",
+            Look::Wandwright => "wandwright",
+            Look::Bladesmith => "weaponsmith",
+            Look::Gunsmith => "gunsmith",
+            Look::Jeweller => "jeweller",
+            Look::Wingmaker => "wingmaker",
+            Look::TradeStall => "merchant's stand",
         }
     }
 
     /// Pets get petted, the rest can be hunted for meat
     pub fn is_pet(self) -> bool {
         // Merchants can't be hurt either, only traded with, nor can villagers, only talked to
-        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat | Look::Merchant) || self.is_villager() || self.is_royal()
+        matches!(self, Look::Dog | Look::GrayCat | Look::GingerCat) || self.is_merchant() || self.is_villager() || self.is_royal()
+    }
+
+    /// A merchant, the travelling one or a specialist of a trade, see src\merchants.rs, standing by
+    /// their wares
+    pub fn is_merchant(self) -> bool {
+        matches!(self, Look::Merchant | Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker)
     }
 
     /// The princess of a royal castle or one of her guards, who stay where they are
@@ -2684,6 +2721,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         Look::Villager | Look::Townswoman => villager(&mut p, swing, look == Look::Townswoman),
         Look::Princess => princess(&mut p),
         Look::RoyalGuard => royal_guard(&mut p),
+        Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => specialist(&mut p, look),
+        Look::TradeStall => trade_stall(&mut p),
         Look::Coins => {
             // A little heap of gold coins, a few tipped up against it
             for (x, y, z) in [(0.0, 0.0, 0.02), (0.05, 0.04, 0.05), (-0.05, 0.03, 0.03), (0.03, -0.05, 0.03), (-0.02, -0.02, 0.07), (0.07, -0.02, 0.02)] {
@@ -2972,6 +3011,193 @@ fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
             let side = (y > 0.0) as usize;
             leg(p, [0.0, y, 0.9], 0.86, 0.075, 0.45 * swing * s, LEATHER, BARK_DARK, [THIGH[side], SHIN[side]]);
         }
+    }
+}
+
+/// A specialist merchant, see src\merchants.rs, about 1.75 meters tall and standing by their
+/// wares, each in the clothes of their trade with what they make in hand: the bowyer in a green
+/// cloak and feathered cap, a longbow upright in hand and a quiver on the back; the wandwright in a
+/// violet robe and pointed hat, a staff topped with a glowing crystal; the weaponsmith in a leather
+/// apron over a red shirt, sleeves rolled, resting on a sword held point down; the gunsmith in a long
+/// dark coat and tricorn with goggles on it, a musket on the shoulder and a powder horn at the hip;
+/// the jeweller in a red robe and turban, holding out a tray of glowing stones; and the wingmaker in
+/// sky blue, goggles up, a pair of white wings on the back and a quill in hand
+fn specialist(p: &mut Vec<Part>, look: Look) {
+    // What they wear and carry first, as earlier shapes win where they overlap
+    let (skin, hair, top, legs, boots, robe) = match look {
+        Look::Bowyer => {
+            p.push(limb([-0.06, 0.09, 1.76], [-0.22, 0.14, 1.95], 0.025, 0.012, FLOWER_RED));
+            p.push(ellipsoid([0.0, 0.0, 1.73], [0.15, 0.15, 0.065], MOSS));
+            p.push(ellipsoid([0.05, 0.0, 1.69], [0.2, 0.17, 0.025], MOSS));
+            // The longbow, upright in the right hand, bending forward, and its string
+            let (bx, by) = (0.22, -0.33);
+            let mut last = [bx, by, 0.2];
+            for k in 1..=12 {
+                let t = k as f64 / 12.0;
+                let at = [bx + 0.14 * (t * PI).sin(), by, 0.2 + 1.75 * t];
+                p.push(limb(last, at, 0.03, 0.03, WOOD));
+                last = at;
+            }
+            p.push(limb([bx - 0.01, by, 0.22], [bx - 0.01, by, 1.93], 0.014, 0.014, BOWSTRING));
+            // The quiver on the back, arrows standing up out of it
+            for k in 0..4 {
+                let y = -0.07 + k as f64 * 0.045;
+                p.push(ball([-0.29, y, 1.72 + 0.02 * (k % 2) as f64], 0.035, FLOWER_WHITE));
+                p.push(limb([-0.27, y, 1.45], [-0.29, y, 1.72], 0.014, 0.014, WOOD));
+            }
+            p.push(limb([-0.22, 0.04, 0.95], [-0.27, -0.02, 1.5], 0.08, 0.075, LEATHER));
+            (FUR_TAN, FUR_BROWN, LEATHER, FUR_BROWN, LEATHER, Some((MOSS, 0.15, 0.24)))
+        }
+        Look::Wandwright => {
+            // The pointed hat, its gold band and wide brim, and a white beard
+            p.push(limb([-0.01, 0.0, 1.74], [-0.12, 0.0, 2.12], 0.14, 0.012, FLOWER_PURPLE));
+            p.push(ellipsoid([0.0, 0.0, 1.745], [0.15, 0.15, 0.03], GOLD));
+            p.push(ellipsoid([0.0, 0.0, 1.715], [0.26, 0.26, 0.025], FLOWER_PURPLE));
+            p.push(ellipsoid([0.13, 0.0, 1.47], [0.06, 0.1, 0.13], FUR_WHITE));
+            // The staff, a crystal glowing at its head between gold prongs
+            let (sx, sy) = (0.24, -0.31);
+            p.push(ball([sx, sy, 2.03], 0.07, GLOW_ARCANE));
+            for a in [0.0f64, 2.1, 4.2] {
+                p.push(limb([sx, sy, 1.92], [sx + 0.07 * a.cos(), sy + 0.07 * a.sin(), 2.07], 0.018, 0.012, GOLD));
+            }
+            p.push(limb([sx, sy, 0.02], [sx, sy, 1.94], 0.03, 0.028, WOOD));
+            // A satchel at the hip, scrolls sticking out of it
+            p.push(limb([0.02, 0.29, 1.05], [0.02, 0.33, 1.2], 0.025, 0.025, LINEN));
+            p.push(ellipsoid([0.02, 0.27, 0.95], [0.1, 0.07, 0.1], LEATHER));
+            (FUR_CREAM, FUR_WHITE, FLOWER_PURPLE, FLOWER_PURPLE, BARK_DARK, Some((FLOWER_PURPLE, 0.19, 0.35)))
+        }
+        Look::Bladesmith => {
+            // A red headband, and a short beard
+            p.push(ellipsoid([0.0, 0.0, 1.69], [0.14, 0.14, 0.03], CLOTH));
+            p.push(ellipsoid([0.12, 0.0, 1.51], [0.05, 0.1, 0.06], FUR_BROWN));
+            // The sword, point down in front, both hands resting on its pommel
+            let sx = 0.32;
+            p.push(ball([sx, 0.0, 1.17], 0.04, GOLD));
+            p.push(limb([sx, 0.0, 1.0], [sx, 0.0, 1.14], 0.03, 0.03, LEATHER));
+            p.push(cuboid([sx - 0.03, -0.15, 0.96], [sx + 0.03, 0.15, 1.01], GOLD));
+            p.push(limb([sx, 0.0, 0.96], [sx, 0.0, 0.1], 0.04, 0.012, STEEL));
+            // A hammer hung at the belt, and the leather apron
+            p.push(cuboid([0.02, 0.2, 0.6], [0.12, 0.3, 0.68], DARK_STEEL));
+            p.push(limb([0.07, 0.25, 0.65], [0.07, 0.24, 0.95], 0.02, 0.02, WOOD));
+            p.push(ellipsoid([0.13, 0.0, 0.92], [0.05, 0.18, 0.45], LEATHER));
+            (FUR_TAN, FUR_DARK, CLOTH, BARK_DARK, LEATHER, None)
+        }
+        Look::Gunsmith => {
+            // The tricorn, goggles strapped round it, and a moustache
+            for y in [-0.06, 0.06] {
+                p.push(ball([0.14, y, 1.79], 0.035, CRYSTAL));
+            }
+            p.push(ellipsoid([0.0, 0.0, 1.79], [0.135, 0.135, 0.04], BRONZE));
+            p.push(ellipsoid([0.0, 0.0, 1.8], [0.13, 0.13, 0.08], FUR_DARK));
+            for k in 0..3 {
+                let a = k as f64 * TAU / 3.0;
+                p.push(limb([0.0, 0.0, 1.735], [0.22 * a.cos(), 0.22 * a.sin(), 1.77], 0.06, 0.03, FUR_DARK));
+            }
+            p.push(ellipsoid([0.13, 0.0, 1.55], [0.035, 0.08, 0.02], FUR_DARK));
+            // The musket over the right shoulder, held at its stock, and a powder horn
+            p.push(limb([0.18, -0.25, 1.06], [0.02, -0.26, 1.38], 0.05, 0.04, WOOD));
+            p.push(limb([0.02, -0.26, 1.38], [-0.3, -0.27, 2.0], 0.028, 0.025, DARK_STEEL));
+            p.push(limb([0.06, 0.25, 1.0], [0.16, 0.23, 0.86], 0.05, 0.02, BONE));
+            // Brass buttons down the coat
+            for z in [1.1, 1.22, 1.34] {
+                p.push(ball([0.14, 0.0, z], 0.025, BRONZE));
+            }
+            (FUR_TAN, FUR_DARK, BARK_DARK, LEATHER, BARK_DARK, Some((BARK_DARK, 0.17, 0.27)))
+        }
+        Look::Jeweller => {
+            // A turban with a red stone set in it, a loupe at one eye
+            p.push(ball([0.14, 0.0, 1.76], 0.035, GLOW_BLOOD));
+            p.push(ellipsoid([0.0, 0.0, 1.74], [0.15, 0.15, 0.09], LINEN));
+            p.push(ball([0.13, 0.05, 1.61], 0.032, BRONZE));
+            // The tray of stones held out in both hands
+            for (k, gem) in [GLOW_BLOOD, GLOW_POISON, GLOW_FROST, GLOW_HOLY, GLOW_ARCANE].into_iter().enumerate() {
+                p.push(ball([0.33 + 0.04 * (k % 2) as f64, -0.14 + k as f64 * 0.07, 1.08], 0.038, gem));
+            }
+            p.push(cuboid([0.22, -0.2, 1.0], [0.44, 0.2, 1.05], WOOD));
+            // A gold sash and hem
+            p.push(ellipsoid([0.0, 0.0, 1.0], [0.18, 0.24, 0.035], GOLD));
+            p.push(ellipsoid([0.0, 0.0, 0.07], [0.33, 0.33, 0.04], GOLD));
+            (FUR_BROWN, FUR_DARK, TEMPLE_RED, TEMPLE_RED, LEATHER, Some((TEMPLE_RED, 0.18, 0.31)))
+        }
+        _ => {
+            // The wingmaker: goggles up on a leather cap, a scarf, and a quill in hand
+            for y in [-0.06, 0.06] {
+                p.push(ball([0.13, y, 1.72], 0.035, CRYSTAL));
+            }
+            p.push(ellipsoid([0.0, 0.0, 1.71], [0.14, 0.14, 0.03], BRONZE));
+            p.push(ellipsoid([-0.01, 0.0, 1.66], [0.14, 0.145, 0.12], LEATHER));
+            p.push(limb([0.2, -0.3, 1.05], [0.3, -0.36, 1.32], 0.03, 0.015, FUR_WHITE));
+            p.push(limb([-0.1, 0.12, 1.42], [-0.2, 0.18, 1.1], 0.04, 0.03, LINEN));
+            p.push(ellipsoid([0.02, 0.0, 1.43], [0.12, 0.17, 0.045], LINEN));
+            // A pair of white wings on the back, half spread
+            for s in [-1.0, 1.0] {
+                p.push(ellipsoid([-0.27, s * 0.42, 1.35], [0.035, 0.3, 0.38], FUR_WHITE));
+                p.push(limb([-0.23, s * 0.12, 1.45], [-0.28, s * 0.68, 1.75], 0.05, 0.035, FUR_WHITE));
+            }
+            (FUR_CREAM, FUR_GINGER, FLOWER_BLUE, LINEN, LEATHER, None)
+        }
+    };
+    // The head, the hair round the back of it, and the neck
+    p.push(ellipsoid([-0.05, 0.0, 1.62], [0.11, 0.135, 0.11], hair));
+    p.push(ball([0.02, 0.0, 1.6], 0.13, skin));
+    p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.05, 0.05, skin));
+    // The arms: where each hand is, by what they hold
+    let hands: [Vec3; 2] = match look {
+        Look::Bowyer => [[0.22, -0.33, 1.05], [0.06, 0.26, 0.92]],
+        Look::Wandwright => [[0.24, -0.31, 1.12], [0.08, 0.27, 0.95]],
+        Look::Bladesmith => [[0.3, -0.05, 1.08], [0.3, 0.05, 1.08]],
+        Look::Gunsmith => [[0.16, -0.25, 1.08], [0.08, 0.26, 0.93]],
+        Look::Jeweller => [[0.26, -0.2, 1.03], [0.26, 0.2, 1.03]],
+        _ => [[0.2, -0.3, 1.05], [0.06, 0.26, 0.92]],
+    };
+    // Rolled up, the weaponsmith's forearms are bare
+    let (upper, fore) = match look {
+        Look::Bladesmith => (CLOTH, skin),
+        _ => (top, top),
+    };
+    for (k, s) in [-1.0f64, 1.0].into_iter().enumerate() {
+        let hand = hands[k];
+        let shoulder = [0.0, s * 0.2, 1.4];
+        let elbow = [0.03 + (hand[0] - 0.03) * 0.3, s * 0.26, 1.14 + (hand[2] - 1.0) * 0.3];
+        p.push(ball(hand, 0.047, skin));
+        p.push(limb(elbow, hand, 0.05, 0.045, fore));
+        p.push(limb(shoulder, elbow, 0.06, 0.052, upper));
+    }
+    // A belt, the body, and a robe flaring to the ground or legs in boots
+    p.push(ellipsoid([0.0, 0.0, 0.99], [0.15, 0.215, 0.04], LEATHER));
+    p.push(ellipsoid([0.0, 0.0, 1.21], [0.135, 0.195, 0.24], top));
+    match robe {
+        Some((cloth, waist, hem)) => p.push(limb([0.0, 0.0, 1.05], [0.0, 0.0, 0.04], waist, hem, cloth)),
+        None => {
+            p.push(limb([0.0, 0.0, 1.0], [0.0, 0.0, 0.82], 0.18, 0.2, top));
+            for y in [-0.1, 0.1] {
+                p.push(limb([0.03, y, 0.18], [0.07, y, 0.02], 0.075, 0.08, boots));
+                p.push(limb([0.0, y, 0.88], [0.02, y, 0.15], 0.085, 0.07, legs));
+            }
+        }
+    }
+}
+
+/// The stand a specialist sets up at the base, see src\merchants.rs: a table with a cloth hung down
+/// its front, a striped awning on two posts at its back, and pots and a crate of goods on it
+fn trade_stall(p: &mut Vec<Part>) {
+    p.push(ball([0.05, -0.35, 1.0], 0.1, CLAY_POT));
+    p.push(ball([0.12, 0.38, 0.98], 0.08, CLAY_POT));
+    p.push(cuboid([-0.18, -0.12, 0.88], [0.12, 0.18, 1.1], WOOD));
+    p.push(limb([0.0, -0.05, 0.93], [0.0, 0.1, 0.93], 0.06, 0.06, LINEN));
+    // The awning, in stripes, sloping down to the front
+    for k in 0..6 {
+        let y0 = -0.72 + k as f64 * 0.24;
+        p.push(cuboid([-0.42, y0, 1.82], [0.48, y0 + 0.24, 1.88], if k % 2 == 0 { CLOTH } else { LINEN }));
+    }
+    for y in [-0.62, 0.62] {
+        p.push(limb([-0.34, y, 0.0], [-0.34, y, 1.84], 0.035, 0.035, WOOD));
+    }
+    // The cloth down the front, the top and the legs
+    p.push(cuboid([0.27, -0.62, 0.35], [0.32, 0.62, 0.84], CLOTH));
+    p.push(cuboid([-0.3, -0.65, 0.8], [0.3, 0.65, 0.88], WOOD));
+    for (x, y) in [(-0.25, -0.58), (-0.25, 0.58), (0.25, -0.58), (0.25, 0.58)] {
+        p.push(limb([x, y, 0.0], [x, y, 0.8], 0.03, 0.03, WOOD));
     }
 }
 
@@ -4036,7 +4262,7 @@ impl Animal {
         }
 
         // A merchant stays by its wares, turning to whoever comes near
-        if look == Look::Merchant {
+        if look.is_merchant() {
             self.speed = 0.0;
             self.mood = Mood::Idle;
             if let Some(player) = player {
@@ -4333,6 +4559,19 @@ pub fn spawn_boss(world: &World, water: WaterLevel, look: Look, near: Vector3<f6
 
 /// A merchant on open ground near `near`, in voxels, within `within` meters, if there's anywhere
 pub fn spawn_merchant(world: &World, water: WaterLevel, near: Vector3<f64>, within: f64, seed: u32) -> Option<Animal> {
+    spawn_keeper(world, water, Look::Merchant, near, within, seed)
+}
+
+/// A merchant standing at `at`, in voxels, on the ground there, facing `heading`, of `look`: the
+/// travelling one or a specialist, see src\merchants.rs
+pub fn keeper_at(look: Look, at: Vector3<f64>, heading: f64, seed: u32) -> Animal {
+    let mut keeper = Animal::new(look, at, hash(seed ^ 0x3e7d));
+    (keeper.heading, keeper.target_heading, keeper.drawn_heading) = (heading, heading, heading);
+    keeper
+}
+
+/// The same of `look`, a specialist, see src\merchants.rs
+pub fn spawn_keeper(world: &World, water: WaterLevel, look: Look, near: Vector3<f64>, within: f64, seed: u32) -> Option<Animal> {
     let vpm = world.voxels_per_meter as f64;
     let [sx, sy, _] = world.size.map(f64::from);
     let mut rng = hash(seed ^ 0x3e7c);
@@ -4344,7 +4583,7 @@ pub fn spawn_merchant(world: &World, water: WaterLevel, near: Vector3<f64>, with
             continue;
         }
         if let Some(z) = ground_at(world, water, x, y, near.z, 3.0 * vpm, 4.0 * vpm) {
-            return Some(Animal::new(Look::Merchant, Vector3::new(x, y, z), hash(rng)));
+            return Some(Animal::new(look, Vector3::new(x, y, z), hash(rng)));
         }
     }
     None
