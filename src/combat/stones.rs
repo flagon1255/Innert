@@ -509,6 +509,10 @@ impl Combat {
             // Where it struck: its bottom on the ground, or itself on the player
             let impact = if wall.is_some_and(|w| w <= t) { at - down } else { at };
             self.smash(impact, r.radius, r.velocity, vpm);
+            // Its fire left burning on the ground a moment
+            if r.element == Some(Element::Fire) {
+                self.burning(impact, 1.0 + r.radius);
+            }
         }
     }
 
@@ -796,6 +800,12 @@ impl Combat {
                 self.mote(at, Some(Element::Fire), 1.6);
             }
         }
+    }
+
+    /// The light of the rocks flying with fire in their cracks, as Combat::lights() has them: where,
+    /// how far it reaches in meters and how bright, the bigger the brighter
+    pub(super) fn rock_lights(&self) -> Vec<(Vector3<f64>, f64, f32)> {
+        self.stones.rocks.iter().filter(|r| r.element == Some(Element::Fire) && r.damage > 0.0).map(|r| (r.position, 4.0 + 3.0 * r.radius, (0.6 + 0.8 * r.radius) as f32)).collect()
     }
 
     /// What to draw for the stone: what's held and flying, which the eye follows, as if it were

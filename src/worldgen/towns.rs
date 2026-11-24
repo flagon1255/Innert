@@ -26,7 +26,7 @@ const DOME: f32 = 0.72;
 /// The ways streets go out of a square
 const WAYS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 /// The light lanterns give
-const LANTERN_LIGHT: [f32; 3] = [1.0, 0.66, 0.3];
+const LANTERN_LIGHT: [f32; 3] = [1.0, 0.71, 0.36];
 
 /// How far a cavern's flat floor goes out, next to the widest of the hollow cut for it
 fn floor_width() -> f32 {
@@ -761,6 +761,10 @@ impl Terrain {
                 let foot = if along < t.radius { self.paving(t, px, py) } else if surface { height_at(&self.settings, px, py) + 0.03 } else { z };
                 self.lantern_post(&mut s, features, [px, py, foot], [-out[0], -out[1]]);
             }
+            // And where it leaves the town, on its other side, lighting the way in
+            let (px, py) = (x + way[0] * (length - 0.6) - out[0] * (STREET_HALF + 0.6), y + way[1] * (length - 0.6) - out[1] * (STREET_HALF + 0.6));
+            let foot = if surface { height_at(&self.settings, px, py) + 0.03 } else { z };
+            self.lantern_post(&mut s, features, [px, py, foot], out);
         }
         // On the corners of the square with no stall
         for k in 0..4 {
@@ -887,7 +891,7 @@ impl Terrain {
         s.push(block([iu - 0.05, hu + 0.08], [-0.65, 0.65], [f + 2.1, f + 2.3], (WOOD, BARK_DARK)));
 
         // A lantern by the door, or an awning over it in the desert
-        if rng.next() < 0.4 {
+        if rng.next() < 0.6 {
             let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
             s.push(block([hu - 0.05, hu + 0.36], [side * 0.9 - 0.03, side * 0.9 + 0.03], [f + 2.32, f + 2.38], (DARK_STEEL, AIR)));
             let p = at.point(hu + 0.32, side * 0.9, f + 2.05);
@@ -914,10 +918,18 @@ impl Terrain {
         s.push(block([tu + 0.65, tu + 0.95], [tv - 0.15, tv + 0.15], [f, f + 0.45], (WOOD, BARK_DARK)));
         // Whichever piece of the landscape it's in, so the random numbers run on the same way for
         // every piece the house is built for; those of other pieces aren't kept, see Terrain::place()
-        if rng.next() < 0.6 {
+        let candlelit = rng.next() < 0.6;
+        if candlelit {
             candle(features, at.point(tu, tv + side * 0.15, f + 0.8), &mut rng);
         }
         barrel(s, at.point(iu - 0.38, side * (iv - 0.38), f));
+        // Where there's no candle, most often a lantern hung on a chain from the ceiling over the
+        // table, out of the way of heads, lighting the room and out through the windows and the
+        // door. Rolled apart, so the rest of the house is as it was.
+        if !candlelit && unit(hash(h.seed ^ 0x1a47)) < 0.75 {
+            s.push(block([tu - 0.015, tu + 0.015], [tv - 0.015, tv + 0.015], [top - 0.28, top + 0.05], (DARK_STEEL, AIR)));
+            self.lantern(s, features, at.point(tu, tv, top - 0.55), 7.5);
+        }
 
         // The room inside, and its floorboards
         s.push(at.room([-iu, iu], [-iv, iv], [f, top]));
@@ -1086,8 +1098,13 @@ impl Terrain {
             s.push(clear(Shape::block([x - outer, y - outer, g - 0.4], [x + outer, y + outer, g + 0.5], stone.0, stone.1)).patterned(Pattern::Bricks));
             features.floors.push(Floor { lo: [x - inner, y - inner], hi: [x + inner, y + inner], height: g + 0.15, water: g + 0.48 });
             features.footprints.push([x - outer, y - outer, x + outer, y + outer, g + 0.7]);
+            // A lantern on a post by the basin, where folk come for water after dark
+            self.lantern_post(s, features, [x + outer + 0.6, y + 0.4, self.paving(t, x + outer + 0.6, y + 0.4)], [-1.0, 0.0]);
             return;
         }
+        // A lantern hung on a chain from the ridge of the little roof, over the windlass
+        s.push(clear(Shape::block([x - 0.465, y - 0.015, g + 2.85], [x - 0.435, y + 0.015, g + 3.1], DARK_STEEL, AIR)));
+        self.lantern(s, features, [x - 0.45, y, g + 2.58], 10.0);
         // The little roof, its ridge along the windlass, on posts up to the ridge
         let (eaves, rise) = (g + 2.3, 0.85);
         s.push(clear(Shape::capsule([x - 1.15, y, eaves + rise + 0.04], [x + 1.15, y, eaves + rise + 0.04], 0.12, 0.12, WOOD, AIR, false)));

@@ -2212,6 +2212,40 @@ fn broken_wall(s: &mut Vec<Shape>, at: &Frame, rng: &mut Rng, u: [f32; 2], v: [f
     top
 }
 
+/// The light a torch gives, redder than a lantern's behind its glass
+pub const TORCH_LIGHT: [f32; 3] = [1.0, 0.55, 0.22];
+
+/// A torch on a stake driven into the ground at `foot`, burning `tall` meters up, into `shapes`,
+/// its light into `lights`
+fn standing_torch(shapes: &mut Vec<Shape>, lights: &mut Vec<Light>, foot: Vec3, tall: f32) {
+    let [x, y, z] = foot;
+    shapes.push(Shape::capsule([x, y, z - 0.4], [x, y, z + tall], 0.06, 0.05, WOOD, BARK_DARK, false));
+    shapes.push(Shape::capsule([x, y, z + tall - 0.05], [x, y, z + tall + 0.1], 0.08, 0.08, DARK_STEEL, AIR, false));
+    shapes.push(Shape::ellipsoid([x, y, z + tall + 0.22], [0.1, 0.1, 0.17], FLAME, AIR));
+    lights.push(Light { position: [x, y, z + tall + 0.6], color: TORCH_LIGHT, reach: 9.0 });
+}
+
+/// Whether `p` is in the hollows cut by `shapes`, rather than in the rock
+fn in_hollow(shapes: &[Shape], p: Vec3) -> bool {
+    shapes.iter().any(|s| s.placement == Placement::Carve && !s.clear_of(p, 0.0) && s.holds(p, s.depth(p, 1.0 / 16.0)))
+}
+
+/// How far out from `from` along `dir` the first rock is that none of the hollows cut by `shapes`
+/// holds, in meters to a tenth, if it's within `most`
+fn wall_out(shapes: &[Shape], from: Vec3, dir: Vec3, most: f32) -> Option<f32> {
+    let reach = most + 0.5;
+    let near: Vec<&Shape> = shapes.iter().filter(|s| s.placement == Placement::Carve && !s.clear_of(from, reach)).collect();
+    let mut d = 0.0;
+    while d <= most {
+        let p = add(from, scale(dir, d));
+        if !near.iter().any(|s| s.holds(p, s.depth(p, 1.0 / 16.0))) {
+            return Some(d);
+        }
+        d += 0.1;
+    }
+    None
+}
+
 /// A candle standing at `at`, whose flame lights up the room
 fn candle(features: &mut Features, at: Vec3, rng: &mut Rng) {
     features.props.push(Prop { kind: PropKind::Candle, position: at, heading: rng.next() * TAU, luck: 0.0 });
@@ -5417,6 +5451,16 @@ impl Terrain {
                     "watchtower" => self.watchtower(at, lowest, if c.snow > 0.6 { (BRICK_STONE, SNOW) } else { (BRICK_STONE, MOSS) }, &mut rng, features),
                     _ => self.castle(at, lowest, c.snow > 0.6, &mut rng, features),
                 };
+                // Torches either side of the way up to it, still burning: someone, or something,
+                // keeps them lit, and they're seen from far off in the dark
+                let mut shapes = shapes;
+                for side in [-1.0f32, 1.0] {
+                    let p = at.point(half + 2.0, side * 2.6, 0.0);
+                    let g = height_at(&self.settings, p[0], p[1]);
+                    if g > sea_level + 0.3 {
+                        standing_torch(&mut shapes, &mut features.lights, [p[0], p[1], g], 1.6);
+                    }
+                }
                 features.sites.push(Site { kind, position: [x, y, lowest], facing });
                 objects.push(Object::new(shapes, rng.0));
                 features.footprints.push([x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0, top]);
@@ -6053,6 +6097,12 @@ impl Terrain {
         let mut next_cavern = rng.range(10.0, 18.0) as usize;
         let mut caverns = Vec::new();
         let mut lairs = Vec::new();
+        // Where torches go on its walls, see cave_torches(): the middle of a stretch of tunnel at
+        // the height of its floor, which way it goes, and which side
+        let mut torches: Vec<(Vec3, Vec3, f32)> = Vec::new();
+        let (way_in, heading_in) = (p, yaw);
+        let mut end = (p, [yaw.cos(), yaw.sin(), 0.0]);
+        let mut since_torch = 0;
         for i in 0..segments {
             let next_radius = (radius + rng.range(-0.35, 0.35)).clamp(1.8, 3.4);
             let dir = [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()];
@@ -6061,6 +6111,16 @@ impl Terrain {
             let floor = p[2].min(q[2]) - radius.min(next_radius) * 0.6;
             let tunnel = Shape::capsule(p, q, radius, next_radius, AIR, AIR, false).placed(Placement::Carve);
             cave.shapes.push(tunnel.roughened(0.3 * radius.max(next_radius), floor));
+            // In a cave there's a way into, someone's lit the way: a torch just inside, and one
+            // every twenty meters or so after, on one wall then the other, in pools with the dark
+            // between, and none by the crystals, which light their own stretch
+            since_torch += 1;
+            if mouth && (i == 2 || since_torch >= 9 && !(3..=5).contains(&(i % 8))) {
+                let mid = [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, floor];
+                torches.push((mid, dir, if torches.len() % 2 == 0 { 1.0 } else { -1.0 }));
+                since_torch = 0;
+            }
+            end = ([(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, floor], dir);
             if i % 8 == 4 {
                 let at = [q[0] + rng.range(-0.6, 0.6), q[1] + rng.range(-0.6, 0.6), q[2] - next_radius * 0.8];
                 for _ in 0..3 {
@@ -6102,6 +6162,13 @@ impl Terrain {
         // Only where there's a way in
         cave.nests = if mouth { caverns } else { Vec::new() };
         cave.lairs = lairs;
+        if mouth {
+            // Either side of the way into the great cavern at its end, and either side of its
+            // mouth out on the hillside, so it's found in the dark
+            torches.push((end.0, end.1, 1.0));
+            torches.push((end.0, end.1, -1.0));
+            self.cave_torches(&mut cave, &mut inside, &torches, way_in, heading_in);
+        }
         cave.shapes.extend(inside);
         for s in &cave.shapes {
             cave.bounds = [cave.bounds[0].min(s.min[0]), cave.bounds[1].min(s.min[1]), cave.bounds[2].max(s.max[0]), cave.bounds[3].max(s.max[1])];
@@ -6201,6 +6268,43 @@ impl Terrain {
         let glow = [tint[0] * 0.6 + 0.4, tint[1] * 0.6 + 0.4, tint[2] * 0.6 + 0.4];
         cave.lights.push(Light { position: [middle[0], middle[1], top - hang - 0.8], color: glow, reach: if great { 28.0 } else { 15.0 } });
         Some((floor, wide))
+    }
+
+    /// Torches in iron brackets on the walls of `cave`, into `inside`, at each of `spots`: the middle
+    /// of a stretch of tunnel on its floor, which way it goes and which side, -1 or 1. Each goes
+    /// where the wall really is on that side, a torch's height over the floor, and is left out
+    /// where there's no wall near enough. And two on stakes either side of its mouth at `mouth`, out
+    /// on the hillside, its way in going `heading`.
+    fn cave_torches(&self, cave: &mut Cave, inside: &mut Vec<Shape>, spots: &[(Vec3, Vec3, f32)], mouth: Vec3, heading: f32) {
+        for &(at, along, side) in spots {
+            let out = normalize([-along[1] * side, along[0] * side, 0.0]);
+            let from = [at[0], at[1], at[2] + 1.55];
+            let Some(wall) = wall_out(&cave.shapes, from, out, 5.0) else {
+                continue;
+            };
+            if wall < 0.9 {
+                continue;
+            }
+            let p = |d: f32, up: f32| [from[0] + out[0] * (wall - d), from[1] + out[1] * (wall - d), from[2] + up];
+            // Where the roof curves in over it there may be no room for its flame, or for its light
+            // a little out from it and over it, where it's not shaded by the torch itself
+            let Some(light) = [p(0.75, 0.75), p(0.9, 0.55), p(1.0, 0.35)].into_iter().find(|&q| in_hollow(&cave.shapes, q)) else {
+                continue;
+            };
+            if !in_hollow(&cave.shapes, p(0.34, 0.7)) {
+                continue;
+            }
+            inside.push(Shape::capsule(p(-0.3, 0.0), p(0.22, 0.0), 0.035, 0.035, DARK_STEEL, AIR, false).placed(Placement::Inside));
+            inside.push(Shape::capsule(p(0.12, -0.12), p(0.32, 0.4), 0.05, 0.045, WOOD, BARK_DARK, false).placed(Placement::Inside));
+            inside.push(Shape::ellipsoid(p(0.34, 0.54), [0.08, 0.08, 0.14], FLAME, AIR).placed(Placement::Inside));
+            cave.lights.push(Light { position: light, color: TORCH_LIGHT, reach: 9.0 });
+        }
+        // Out on the hillside, clear of the hole the way in's cut, one either side of it
+        let back = [-heading.cos(), -heading.sin()];
+        for side in [-1.0f32, 1.0] {
+            let (x, y) = (mouth[0] + back[0] * 1.5 - back[1] * side * 3.4, mouth[1] + back[1] * 1.5 + back[0] * side * 3.4);
+            standing_torch(&mut cave.shapes, &mut cave.lights, [x, y, height_at(&self.settings, x, y)], 1.6);
+        }
     }
 
     /// The dungeons reaching into this piece of the landscape
@@ -6644,6 +6748,17 @@ impl Terrain {
                     .placed(Placement::Clear)
                     .patterned(Pattern::Carved),
             );
+            // A torch in a bracket on the front of each pillar still standing, lighting the way
+            // down, so it's found at night
+            if side != fallen {
+                let z = top + 1.9;
+                let p = |d: f32, up: f32| at.point(pu - 0.42 - d, side * pv, z + up);
+                let clear = |s: Shape| s.placed(Placement::Clear);
+                solids.push(clear(Shape::capsule(p(-0.15, 0.0), p(0.22, 0.0), 0.035, 0.035, DARK_STEEL, AIR, false)));
+                solids.push(clear(Shape::capsule(p(0.12, -0.12), p(0.3, 0.4), 0.05, 0.045, WOOD, BARK_DARK, false)));
+                solids.push(clear(Shape::ellipsoid(p(0.32, 0.54), [0.08, 0.08, 0.14], FLAME, AIR)));
+                features.lights.push(Light { position: p(0.75, 0.9), color: TORCH_LIGHT, reach: 9.0 });
+            }
         }
         let gap = if fallen == 0.0 && rng.next() < 0.6 { Some(2 + (rng.next() * 5.0) as usize) } else { None };
         for k in 0..10 {
@@ -8008,5 +8123,46 @@ mod tests {
         for origin in [[0, 0], [side, 0], [0, side], [-side, -side], [2 * side, side], [2560, 13312]] {
             generate_terrain(&settings, origin, &cache);
         }
+    }
+
+    /// Caves with a way in are lit by torches, two on stakes either side of the mouth out on the
+    /// hillside, either side of the way into the great cavern at the far end, and on the walls
+    /// along the way in pools, a good way apart: each in the air of the cave, its wall close by
+    #[test]
+    fn caves_with_a_way_in_have_torches_on_their_walls() {
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let terrain = Terrain::around(&settings, [0.0, 0.0], [32.0, 32.0]);
+        let (mut lit, mut well_lit, mut on_walls) = (0, 0, 0);
+        for c in 0..400 {
+            let Some(cave) = terrain.cave_in(c % 20 - 10, c / 20 - 10) else {
+                continue;
+            };
+            let torches: Vec<&Light> = cave.lights.iter().filter(|l| l.color == TORCH_LIGHT).collect();
+            if torches.is_empty() {
+                continue;
+            }
+            lit += 1;
+            // Those on stakes burn 2.2 m over the ground under them
+            let under: Vec<&&Light> = torches.iter().filter(|l| (l.position[2] - height_at(&settings, l.position[0], l.position[1]) - 2.2).abs() > 0.01).collect();
+            assert!(torches.len() - under.len() == 2, "{} torches out on the hillside", torches.len() - under.len());
+            // Those cut short, where the sea's under them, may have little room for any
+            if under.len() >= 2 {
+                well_lit += 1;
+            }
+            for t in &under {
+                let p = t.position;
+                assert!(cave.shapes.iter().any(|s| s.placement == Placement::Carve && s.holds(p, s.depth(p, 1.0 / 16.0))), "a torch's light in the rock at {p:?}");
+                let wall = (0..16).filter_map(|k| wall_out(&cave.shapes, p, [(k as f32 * 0.39).cos(), (k as f32 * 0.39).sin(), 0.0], 3.0)).fold(f32::MAX, f32::min);
+                assert!(wall < 2.0, "a torch {wall} m from any wall");
+                on_walls += 1;
+            }
+            // In pools, not one after another: only those either side of the way into the great
+            // cavern are close together, and maybe the last on the way to them
+            let close = under.iter().enumerate().flat_map(|(i, a)| under[i + 1..].iter().map(move |b| (0..3).map(|k| (a.position[k] - b.position[k]).powi(2)).sum::<f32>().sqrt())).filter(|&d| d < 8.0).count();
+            assert!(close <= 3, "{close} pairs of torches crowded together");
+        }
+        println!("{lit} caves lit, {well_lit} with two torches or more inside, {on_walls} torches on their walls");
+        assert!(lit >= 3, "only {lit} caves with torches");
+        assert!(well_lit * 10 >= lit * 9, "only {well_lit} of {lit} caves well lit");
     }
 }

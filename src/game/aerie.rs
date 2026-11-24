@@ -536,7 +536,11 @@ impl Game {
             b.age += dt;
             if !b.struck {
                 if !b.arc {
-                    self.combat.mark(b.to, b.radius, (1.0 - b.age / b.delay.max(1e-6)).clamp(0.0, 1.0));
+                    let closing = (1.0 - b.age / b.delay.max(1e-6)).clamp(0.0, 1.0);
+                    self.combat.mark(b.to, b.radius, closing);
+                    // The air crackling over where it's coming down, brighter as it comes
+                    let vpm = self.combat.vpm();
+                    self.combat.glow(b.to + Vector3::new(0.0, 0.0, 1.5 * vpm), b.radius + 3.0, Element::Storm.light(), (0.3 + 0.5 * (1.0 - closing)) as f32, 0.15);
                 }
                 if b.age >= b.delay {
                     b.struck = true;
