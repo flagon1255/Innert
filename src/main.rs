@@ -2938,6 +2938,11 @@ impl App {
         if flag("talk", false) {
             app.game.stage_talk(start, setting("talk_do"), setting("talk_gold").and_then(|v| v.parse().ok()), flag("talk_home", false));
         }
+        // `--set shots_at=80,140` takes shots at those frames too, with the GUI with `gui=1`, as of
+        // the window of a specialist being talked to
+        if let Some(capture) = &mut app.capture {
+            capture.shots.extend(setting("shots_at").map_or(Vec::new(), |v| v.split(',').filter_map(|n| n.trim().parse::<usize>().ok()).collect()));
+        }
         if let Some(n) = visit_waterfall {
             app.waterfall_index = n - 1;
             app.visit_waterfall();

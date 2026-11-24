@@ -87,7 +87,7 @@ fn floor_at(world: &World, at: Vector3<f64>) -> Option<f64> {
 
 /// The lucks the weapons a specialist has are rolled with, as for Library::odds(), before a
 /// realm's scaling: more of them than the travelling merchant's MERCHANT_LUCKS, and luckier
-const SPECIALIST_LUCKS: [f64; 7] = [0.8, 1.0, 1.2, 1.4, 1.7, 2.0, 2.4];
+const SPECIALIST_LUCKS: [f64; 7] = [1.0, 1.2, 1.4, 1.7, 2.0, 2.4, 2.8];
 /// The share of their weapons that aren't of their own trade, one in this many
 const OTHER_TRADE: u32 = 8;
 
@@ -736,7 +736,8 @@ mod tests {
         for n in 0..30 {
             let key = [n, 7 * n, 7];
             game.stock(key);
-            general_grades.extend(game.stocks[&key].iter().filter_map(|w| if let Ware::Weapon(i) = *w { Some(game.weapons[i].grade) } else { None }));
+            // Its weapons, not the tool it has too
+            general_grades.extend(game.stocks[&key].iter().filter_map(|w| if let Ware::Weapon(i) = *w { merchants::trade_of(&library, game.weapons[i].family).map(|_| game.weapons[i].grade) } else { None }));
         }
         let general = general_grades.iter().sum::<usize>() as f64 / general_grades.len() as f64;
         for trade in Trade::ALL {
