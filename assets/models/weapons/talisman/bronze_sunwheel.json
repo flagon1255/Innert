@@ -1,0 +1,37 @@
+{
+  "what": "Talisman, focus: Bronze Sunwheel",
+  "voxels_per_meter": 192.0,
+  "size": [
+    3,
+    32,
+    29
+  ],
+  "pivot": [
+    1.456,
+    16.184,
+    -18.240000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -1,
+    -16,
+    18
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.06
+    ],
+    "tip": [
+      0.02,
+      0.0,
+      0.16999999999999998
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5276,
+    "5c32643845655e19"
+  ]
+}

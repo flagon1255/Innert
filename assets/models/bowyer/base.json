@@ -1,0 +1,25 @@
+{
+  "what": "Bowyer, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    13,
+    32
+  ],
+  "pivot": [
+    6.5,
+    6.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -7,
+    0
+  ],
+  "note": "",
+  "written": [
+    4918,
+    "1ea616f2358da6e6"
+  ]
+}

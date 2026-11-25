@@ -129,6 +129,11 @@ pub struct Session {
     /// Whether the realm's three raid bosses are beaten, and its finale's risen if it has one
     finale_risen: bool,
     trial: Trial,
+    /// The window a new character's made in, open between New and the game it's for, what was
+    /// picked in it this frame, and the character made, for begin() to start the new game with
+    pub creator: Option<crate::character::creator::Creator>,
+    pub creator_pick: Option<crate::character::creator::Pick>,
+    next_character: Option<crate::character::Character>,
 }
 
 impl Session {
@@ -158,7 +163,15 @@ impl Session {
             leaving: None,
             finale_risen: false,
             trial: Trial::default(),
+            creator: None,
+            creator_pick: None,
+            next_character: None,
         }
+    }
+
+    /// Which world the player's in: "normal", or a realm's, see realms.rs
+    pub fn world_name(&self) -> &str {
+        &self.world
     }
 
     /// Whether a screenshot run's trial has the player gliding, see Trial::glide_at
@@ -260,6 +273,20 @@ impl App {
         // Other systems take what's theirs from these
         session.sections = save.sections.clone();
         session.world_sections = done.sections.clone();
+        // Who's playing: the one just made for a new game, as `--set class=` and the rest make them
+        // without the window, or the one saved, a wanderer on Normal in a save from before there
+        // were characters, see character.rs
+        let mut character = if fresh {
+            session.next_character.take().unwrap_or_else(crate::character::Character::from_settings)
+        } else {
+            save.section::<crate::character::Character>(crate::character::SECTION).unwrap_or_default()
+        };
+        character.mend();
+        if let Ok(value) = serde_json::to_value(&character) {
+            session.sections.insert(crate::character::SECTION.to_owned(), value);
+        }
+        session.creator = None;
+        self.game.set_character(&character);
         session.played = save.played;
         session.due = false;
         session.gate_open = false;
@@ -277,6 +304,8 @@ impl App {
             let p = &save.player;
             self.game.restore(&save.carried, &done, (p.health, p.hunger, p.mana));
         }
+        // The merchants living at the base, see merchants.rs: none in a new game or an old save
+        self.game.load_household(save.section(crate::merchants::SECTION).unwrap_or_default());
         // Where the gate, the portal and the raid bosses are in the realm, and how hard it is
         self.enter_realm();
         if fresh && !self.session.standing {
@@ -1016,6 +1045,9 @@ impl App {
                 if let Ok(value) = serde_json::to_value(self.bases.game_save(self.cycle.clock)) {
                     sections.insert(bases::GAME_SECTION.to_owned(), value);
                 }
+                if let Some(value) = self.merchants_save() {
+                    sections.insert(crate::merchants::SECTION.to_owned(), value);
+                }
                 sections
             },
         })
@@ -1149,12 +1181,29 @@ impl App {
                 let save = self.session.saves.saved(mode).cloned();
                 self.begin(mode, save);
             }
-            MenuAction::New(mode) => self.begin(mode, None),
+            // Who's to play it made first, see character\creator.rs
+            MenuAction::New(mode) => {
+                let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.subsec_nanos());
+                self.session.creator = Some(crate::character::creator::Creator::new(mode, seed));
+            }
             MenuAction::Settings => self.show_settings = !self.show_settings,
             MenuAction::Quit => {
                 self.save_game(true);
                 event_loop.exit();
             }
+        }
+    }
+
+    /// Does what was picked in the window a new character's made in: back to the menu, or the new
+    /// game started with them
+    pub(super) fn creator_picked(&mut self, pick: crate::character::creator::Pick) {
+        let Some(creator) = self.session.creator.take() else {
+            return;
+        };
+        if pick == crate::character::creator::Pick::Start {
+            println!("A new character: {} the {}, on {}", creator.character.name, creator.character.class.name(), creator.character.difficulty.name());
+            self.session.next_character = Some(creator.character);
+            self.begin(creator.mode, None);
         }
     }
 
@@ -1311,6 +1360,10 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             let played = (save.played / 60.0).round() as u64;
             let seed = if mode == Mode::FreeRoam { format!(", seed {}", save.seed) } else { String::new() };
             let note = if now { format!("Playing now{seed}") } else { format!("Saved {}{seed}, {played} min played", save::ago(save.saved_at)) };
+            // Who's playing it, as what, and how hard
+            let who = save.section::<crate::character::Character>(crate::character::SECTION).unwrap_or_default();
+            let level = save.carried.level.map_or(String::new(), |l| format!(", level {l}"));
+            ui.label(RichText::new(format!("{}, {}{level} · {}", who.name, who.class.name(), who.difficulty.name())).size(15.0).strong().color(Color32::from_rgb(235, 220, 180)));
             ui.label(RichText::new(note).size(13.0).color(Color32::from_rgb(200, 215, 170)));
             ui.add_space(2.0);
         }

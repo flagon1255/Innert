@@ -68,6 +68,9 @@ pub struct Marks {
     pub settings: TerrainSettings,
     /// A wing shrine not yet claimed near the player, see worldgen\aeries.rs
     pub shrine: Option<[f64; 2]>,
+    /// The specialist merchants come across, and those living at the base, see merchants.rs: where,
+    /// what's written by them, and their colour
+    pub merchants: Vec<([f64; 2], String, [u8; 3])>,
 }
 
 /// An angle brought into -PI to PI
@@ -191,6 +194,7 @@ impl App {
             warded: self.guardians_slain().is_some_and(|(slain, of)| slain < of),
             settings: self.terrain_settings(),
             shrine: self.game.wing_shrine_near(self.feet_m(), game::SHRINE_SEEN),
+            merchants: self.game.merchant_marks(self.session.world_name()),
         }
     }
 
@@ -447,6 +451,19 @@ pub fn draw_map(ctx: &egui::Context, map: &mut Map, marks: &Marks) {
         let diamond = vec![at + vec2(0.0, -7.0), at + vec2(6.0, 0.0), at + vec2(0.0, 7.0), at + vec2(-6.0, 0.0)];
         painter.add(Shape::convex_polygon(diamond, gold, Stroke::new(1.5f32, Color32::from_black_alpha(170))));
         label(at, "Wing shrine", gold);
+    }
+    // The specialist merchants, a little stall in their colour, and the base's in green
+    for (spot, name, [r, g, b]) in &marks.merchants {
+        let at = to_screen(*spot);
+        if !inside(at) {
+            continue;
+        }
+        let color = Color32::from_rgb(*r, *g, *b);
+        let roof = vec![at + vec2(-8.0, -2.0), at + vec2(0.0, -9.0), at + vec2(8.0, -2.0)];
+        painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 2.0), vec2(11.0, 8.0)), 1.5, Color32::from_black_alpha(190));
+        painter.add(Shape::convex_polygon(roof, color, Stroke::new(1.5f32, Color32::from_black_alpha(190))));
+        painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 2.0), vec2(8.0, 6.0)), 1.0, color);
+        label(at, name, color);
     }
     // The player, an arrow the way they face
     let at = to_screen(marks.player);

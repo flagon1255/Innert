@@ -1151,4 +1151,6 @@ fn look_timelines(look: Look) -> Vec<Timeline> {
 fn look_walks(look: Look) -> bool {
     !matches!(look, Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue)
         && !look.is_shrine()
+        && !look.is_merchant()
+        && look != Look::TradeStall
 }

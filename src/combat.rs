@@ -48,7 +48,32 @@ const QUARREL_GRAVITY: f64 = 0.3;
 const BALL_GRAVITY: f64 = 0.12;
 const SHELL_GRAVITY: f64 = 0.6;
 /// The most lights fights add to the world's at once
-const MAX_LIGHTS: usize = 6;
+const MAX_LIGHTS: usize = 8;
+/// At night the light of fire, spells and the elements is this much brighter than by day at the
+/// most, and reaches this much further, so a breath of fire in the dark lights everything round
+/// it: by day it's lost in the sunlight anyway. 0 by day, see Sky::night in daynight.rs.
+pub const NIGHT_BRIGHTER: f32 = 1.6;
+pub const NIGHT_FURTHER: f32 = 0.6;
+/// The most glows kept at once, see Glow
+const MOST_GLOWS: usize = 24;
+
+/// `light`, one of the lights as lights() gives them, made brighter and further reaching for how
+/// dark the night is, `night` 0 by day to 1, see NIGHT_BRIGHTER
+pub fn night_boost(light: &mut [f32; 8], night: f64) {
+    let night = night.clamp(0.0, 1.0) as f32;
+    light[3] *= 1.0 + NIGHT_FURTHER * night;
+    for c in &mut light[4..7] {
+        *c *= 1.0 + NIGHT_BRIGHTER * night;
+    }
+}
+
+/// Which of the lights fights give matters most to the eye at `eye`: the nearest and brightest,
+/// the smaller the better
+pub fn light_rank(light: &[f32; 8], eye: Vector3<f64>) -> f64 {
+    let d = (Vector3::new(light[0] as f64, light[1] as f64, light[2] as f64) - eye).norm();
+    let bright = light[4].abs().max(light[5].abs()).max(light[6].abs()).max(0.05) as f64;
+    d / (light[3].max(1.0) as f64 * bright.sqrt())
+}
 
 /// A synergy's chain reactions stop this many hits deep, whatever the data says
 const MAX_DEPTH: u32 = 6;
@@ -1237,6 +1262,9 @@ struct Familiar {
     profile: Rc<Profile>,
     damage: f64,
     phantom: bool,
+    /// One of the dead raised by a skull focus, walking the ground as a skeleton and striking what's
+    /// near rather than hanging in the air casting, see signatures\faith.rs
+    risen: Option<signatures::faith::Risen>,
 }
 
 /// Spectral blades circling the player: seconds left, how far round they've gone, and seconds
@@ -1803,6 +1831,18 @@ struct Flash {
     lifetime: f64,
 }
 
+/// Light a boss's or monster's element gives off for as long as what gives it goes on, kept up by
+/// calling Combat::glow() again each frame and fading once it's not: a breath pouring out, a ring
+/// of it closing in on where it's coming down, the ground left burning. In meters.
+struct Glow {
+    position: Vector3<f64>,
+    color: [f32; 3],
+    reach: f64,
+    strength: f32,
+    life: f64,
+    lifetime: f64,
+}
+
 /// An attack repeating itself a moment later
 struct Echo {
     delay: f64,
@@ -2038,6 +2078,11 @@ pub struct Combat {
     beam_tick: f64,
     beam_hum: f64,
     familiars: Vec<Familiar>,
+    /// Where the slain lie, for a skull focus to raise, see signatures\faith.rs
+    graves: signatures::faith::Graves,
+    /// The colours of the player's gloves and sleeves, for the arms held before the eye, see
+    /// AnimalInstance::outfit(): 0 for the arms' own
+    outfit: u32,
     orbit: Option<Orbit>,
     stases: Vec<Stasis>,
     siphon: Option<Siphon>,
@@ -2148,6 +2193,7 @@ pub struct Combat {
     sparks: Vec<Spark>,
     stuck: Vec<Stuck>,
     flashes: Vec<Flash>,
+    glows: Vec<Glow>,
     echoes: Vec<Echo>,
     pub popups: Vec<Popup>,
     /// What to tell the player, and sounds to play
@@ -5291,6 +5337,8 @@ impl Combat {
             beam_tick: 0.0,
             beam_hum: 0.0,
             familiars: Vec::new(),
+            graves: Default::default(),
+            outfit: 0,
             orbit: None,
             stases: Vec::new(),
             siphon: None,
@@ -5354,6 +5402,7 @@ impl Combat {
             sparks: Vec::new(),
             stuck: Vec::new(),
             flashes: Vec::new(),
+            glows: Vec::new(),
             echoes: Vec::new(),
             popups: Vec::new(),
             messages: Vec::new(),
@@ -5379,6 +5428,7 @@ impl Combat {
 
     /// The world moved over by `shift` voxels
     pub fn recenter(&mut self, shift: Vector3<f64>) {
+        self.graves.recenter(shift);
         // What's in flight, and what's about to be, as an echo's shots
         for p in self.projectiles.iter_mut().chain(self.echoes.iter_mut().filter_map(|e| e.shot.as_mut())) {
             p.recenter(shift);
@@ -5743,6 +5793,8 @@ impl Combat {
         self.scar_timer -= dt;
         self.follow_up(arena, dt);
         self.conjured(arena, weapon.map(|(_, w)| w), dt);
+        // Where the slain lie, for a skull focus to raise them, see faith.rs
+        self.mark_graves(arena, dt);
         self.fly(arena, dt);
         // Special attacks carried out of the weapon going off where their shots got to
         for (special, at) in std::mem::take(&mut self.arrivals) {
@@ -5802,6 +5854,10 @@ impl Combat {
             f.life -= dt;
         }
         self.flashes.retain(|f| f.life > 0.0);
+        for g in &mut self.glows {
+            g.life -= dt;
+        }
+        self.glows.retain(|g| g.life > 0.0);
         self.age_blasts(arena, dt);
         let rise = 0.9 * arena.view.vpm;
         for p in &mut self.popups {
@@ -7962,12 +8018,12 @@ impl Combat {
     /// the oldest of them going if there are too many
     fn conjure(&mut self, profile: &Rc<Profile>, phantom: bool, at: Vector3<f64>) {
         let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
-        if !phantom && self.familiars.iter().filter(|f| !f.phantom).count() >= FAMILIARS {
-            if let Some(k) = self.familiars.iter().position(|f| !f.phantom) {
+        if !phantom && self.familiars.iter().filter(|f| !f.phantom && f.risen.is_none()).count() >= FAMILIARS {
+            if let Some(k) = self.familiars.iter().position(|f| !f.phantom && f.risen.is_none()) {
                 self.familiars.remove(k);
             }
         }
-        self.familiars.push(Familiar { position: at, life: FAMILIAR_SECONDS, wait: 0.3, profile: profile.clone(), damage: if phantom { damage * 0.5 } else { damage }, phantom });
+        self.familiars.push(Familiar { position: at, life: FAMILIAR_SECONDS, wait: 0.3, profile: profile.clone(), damage: if phantom { damage * 0.5 } else { damage }, phantom, risen: None });
         self.sparks(at, 14, 2.0, Element::look(if phantom { Some(Element::Holy) } else { profile.element }), -0.1, 0.5);
         self.cues.push(Cue::at(Sound::Summon, at, 0.6).pitched(if phantom { 0.8 } else { 1.0 }));
     }
@@ -7979,6 +8035,16 @@ impl Combat {
         let feet = arena.player.unwrap_or(arena.view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
         for mut f in std::mem::take(&mut self.familiars) {
             f.life -= dt;
+            // The dead a skull focus raised walk and strike rather than cast, see faith.rs
+            if f.risen.is_some() {
+                self.walk_risen(arena, &mut f, dt);
+                if f.life > 0.0 {
+                    self.familiars.push(f);
+                } else {
+                    self.sparks(f.position + Vector3::new(0.0, 0.0, 0.5 * vpm), 10, 1.5, Element::look(Some(Element::Void)), 0.4, 0.5);
+                }
+                continue;
+            }
             f.wait -= dt;
             if f.wait <= 0.0 {
                 f.wait = if f.phantom { 0.5 } else { FAMILIAR_PACE };
@@ -11885,10 +11951,14 @@ impl Combat {
         let damage = profile.stat("spellDamage") + profile.stat("elementalDamage");
         let look = Element::look(profile.element);
         self.flashes.push(Flash { position: from, color: profile.element.map_or([0.5, 0.9, 1.0], Element::light), reach: 5.0, life: 0.2, lifetime: 0.2 });
+        // A talisman's spear of holy lightning, a skull focus's bolt of death, see faith.rs
+        if self.cast_rite(arena, &profile, from, target, damage) {
+            return;
+        }
         match profile.style {
             // A familiar conjured a little way ahead, each beside the last
             Style::Summon => {
-                let n = self.familiars.iter().filter(|f| !f.phantom).count() % FAMILIARS;
+                let n = self.familiars.iter().filter(|f| !f.phantom && f.risen.is_none()).count() % FAMILIARS;
                 let (x, z) = [(-0.9, 0.4), (0.9, 0.4), (0.0, 1.0)][n];
                 let at = arena.view.eye + arena.view.rotation * Vector3::new(x, 2.2, z) * vpm;
                 self.conjure(&profile, false, at);
@@ -14303,6 +14373,32 @@ impl Combat {
         }
     }
 
+    /// Light of `color` at `at`, reaching `reach` meters, `strength` as bright as a flash at its
+    /// height is: kept up while this is called again each frame, fading over `lifetime` seconds once
+    /// it's not, see Glow. One already near it of the same color is taken over, so what's kept up
+    /// as it moves stays the one light.
+    pub fn glow(&mut self, at: Vector3<f64>, reach: f64, color: [f32; 3], strength: f32, lifetime: f64) {
+        let glow = Glow { position: at, color, reach, strength, life: lifetime, lifetime };
+        let near = 1.5 * self.vpm;
+        if let Some(g) = self.glows.iter_mut().find(|g| g.color == color && (g.position - at).norm() < near) {
+            *g = glow;
+            return;
+        }
+        if self.glows.len() >= MOST_GLOWS {
+            // The one closest to going out makes room, the oldest of those as close
+            if let Some(k) = (0..self.glows.len()).min_by(|&a, &b| self.glows[a].life.total_cmp(&self.glows[b].life)) {
+                self.glows.remove(k);
+            }
+        }
+        self.glows.push(glow);
+    }
+
+    /// The ground left burning `radius` meters round `at` where a boss's fire came down, its light
+    /// dying down over a few seconds
+    pub fn burning(&mut self, at: Vector3<f64>, radius: f64) {
+        self.glow(at + Vector3::new(0.0, 0.0, 0.5 * self.vpm), 2.5 + radius, Element::Fire.light(), 0.7, 2.8);
+    }
+
     /// `element` breathed out from `from` along `direction` for `dt` seconds: flame rising, frost
     /// and venom sinking as they spread
     pub fn breathe(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64, element: Element) {
@@ -14329,6 +14425,10 @@ impl Combat {
         if random(&mut self.rng) < dt * 20.0 {
             self.flashes.push(Flash { position: from + direction * 3.0 * vpm, color: element.light(), reach: 7.0, life: 0.12, lifetime: 0.12 });
         }
+        // And the whole stream lighting up what's round it all the while it pours out, brightest a
+        // little way out where it's thickest, its far end lighting the ground it rolls over
+        self.glow(from + direction * 2.5 * vpm, 9.0, element.light(), 1.3, 0.2);
+        self.glow(from + direction * 7.0 * vpm, 7.0, element.light(), 0.8, 0.25);
     }
 
     /// What a boss threw going off at `at`, and what it leaves on the ground
@@ -14355,6 +14455,7 @@ impl Combat {
                     self.drop(at, v * 4.0 * vpm, DROP_ICE, 1.2);
                 }
                 self.stains.push((at, 3.0, SNOW, false));
+                self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.5 * vpm), color: Element::Frost.light(), reach: 7.0, life: 0.35, lifetime: 0.35 });
                 self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(0.75));
                 self.cues.push(Cue::at(Sound::Crack, at, 0.9).pitched(1.2));
             }
@@ -14368,6 +14469,7 @@ impl Combat {
                     self.drop(at, v * 4.0 * vpm, if k % 2 == 0 { DROP_EMBER } else { DROP_ASH }, 1.4);
                 }
                 self.stains.push((at, 2.6, BARK_DARK, true));
+                self.burning(at, 2.6);
                 self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.45));
             }
             HostileKind::Spell(Element::Fire) => {
@@ -14376,6 +14478,7 @@ impl Combat {
                 self.blasts.push(Blast { position: at, look, radius: 1.3, life: 0.4, lifetime: 0.4 });
                 self.flashes.push(Flash { position: at, color: Element::Fire.light(), reach: 8.0, life: 0.35, lifetime: 0.35 });
                 self.stains.push((at, 1.8, BARK_DARK, true));
+                self.burning(at, 1.8);
                 self.cues.push(Cue::at(Sound::Burst, at, 1.0).pitched(0.85));
             }
             // A splash of venom and a pool of it
@@ -14387,6 +14490,9 @@ impl Combat {
                 }
                 self.element_hit(at, Some(Element::Poison), 1.8);
                 self.stains.push((at, 2.2, MOSS, false));
+                // The venom glowing a moment where it splashed
+                self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.5 * vpm), color: Element::Poison.light(), reach: 6.0, life: 0.3, lifetime: 0.3 });
+                self.glow(at + Vector3::new(0.0, 0.0, 0.4 * vpm), 4.0, Element::Poison.light(), 0.35, 1.5);
                 self.cues.push(Cue::at(Sound::Splash, at, 1.0).pitched(0.7));
             }
             HostileKind::Spell(Element::Frost) => {
@@ -14394,6 +14500,7 @@ impl Combat {
                 self.swells.push(Swell { model: ICE_BURST, position: at, radius: 1.2, life: 0.9, lifetime: 0.9 });
                 self.element_hit(at, Some(Element::Frost), 1.6);
                 self.stains.push((at, 2.2, SNOW, false));
+                self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.5 * vpm), color: Element::Frost.light(), reach: 6.0, life: 0.3, lifetime: 0.3 });
                 self.cues.push(Cue::at(Sound::Crack, at, 0.9).pitched(1.25));
             }
             HostileKind::Spell(e) => {
@@ -15384,7 +15491,13 @@ impl Combat {
         let x = y.cross(&z);
         let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[x, y, z])));
         let (model, arm) = self.model_at(ARMS + which);
-        place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD)
+        place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD).outfit(self.outfit)
+    }
+
+    /// The colours of the player's gloves and sleeves, for the arms held before the eye, see
+    /// character::body::colours()
+    pub fn set_outfit(&mut self, colours: u32) {
+        self.outfit = colours;
     }
 
     /// What else to draw for the crossbow or gun in hand, its models from `first_model`, held at
@@ -15768,7 +15881,13 @@ impl Combat {
             add(view.eye + (h.position - view.eye) * 0.1, instance);
         }
         // Familiars, glowing orbs bobbing where they hang, and phantoms, pillars of light
+        let mut risen = Vec::new();
         for f in &self.familiars {
+            // The dead a skull focus raised, as skeletons, see faith.rs
+            if let Some(r) = &f.risen {
+                self.risen_instances(f, r, view, &mut risen);
+                continue;
+            }
             let bob = Vector3::new(0.0, 0.0, (self.time * 2.5 + f.position.x).sin() * 0.08 * vpm);
             let fade = (f.life / 0.4).min(1.0) * ((FAMILIAR_SECONDS - f.life) / 0.25).min(1.0);
             let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 3.0);
@@ -16106,6 +16225,7 @@ impl Combat {
         // Rings and smoke are only extra, so they go after everything else: the first left out
         // when there's too much to draw, and the last to cast shadows
         out.extend(extras.into_iter().map(|(at, instance)| (1e9 + (at - view.eye).norm(), instance)));
+        out.extend(risen);
     }
 
     /// What to draw for the fine sparks trailing off the weapon in hand. They don't need to cast
@@ -16129,7 +16249,10 @@ impl Combat {
     /// Lights from spells flying, flashes, burning animals and a glowing staff in hand, in the
     /// form main.rs keeps the world's lights in. They're marked as moving, so the shader works
     /// their light out fresh every frame rather than keeping it, see Light in shaders\traverse.comp.
-    pub fn lights(&self, weapon: Option<&Weapon>, animals: &[Animal], view: &View) -> Vec<[f32; 8]> {
+    /// The darker the night, `night` 0 by day to 1, the brighter they are and the further they
+    /// reach, see NIGHT_BRIGHTER, all but the glow of what's in hand, which would only dazzle. The
+    /// nearest and brightest are kept, see light_rank().
+    pub fn lights(&self, weapon: Option<&Weapon>, animals: &[Animal], view: &View, night: f64) -> Vec<[f32; 8]> {
         let vpm = view.vpm;
         let light = |p: Vector3<f64>, reach: f64, color: [f32; 3], strength: f32| {
             [p.x as f32, p.y as f32, p.z as f32, (reach * vpm) as f32, color[0] * strength, color[1] * strength, color[2] * strength, 1.0]
@@ -16184,12 +16307,31 @@ impl Combat {
             lights.push(light(at, reach, color, strength));
         }
         for f in &self.familiars {
+            // The dead raised glowing faintly red in the chest
+            if f.risen.is_some() {
+                lights.push(light(f.position + Vector3::new(0.0, 0.0, 1.25 * vpm), 2.5, [0.9, 0.12, 0.2], 0.35));
+                continue;
+            }
             let color = if f.phantom { Element::Holy.light() } else { f.profile.element.map_or([0.7, 0.5, 1.0], Element::light) };
             lights.push(light(f.position, 3.5, color, 0.6));
         }
         // Fire arrows burning where they stuck
         for s in self.stuck.iter().filter(|s| s.glowing > 0.0 && s.element == Some(Element::Fire)) {
             lights.push(light(s.position, 2.5, Element::Fire.light(), 0.6 * (s.glowing / 5.0).min(1.0) as f32));
+        }
+        // What bosses and monsters breathe, call up and leave burning, kept up by glow(), fire
+        // flickering
+        for (k, g) in self.glows.iter().enumerate() {
+            let fade = (g.life / g.lifetime).clamp(0.0, 1.0) as f32;
+            let flicker = if g.color == Element::Fire.light() { 0.85 + 0.15 * (self.time * 13.0 + k as f64 * 1.7).sin() as f32 } else { 1.0 };
+            lights.push(light(g.position, g.reach, g.color, g.strength * fade.sqrt() * flicker));
+        }
+        // Rocks flung burning, see stones.rs
+        for (at, reach, strength) in self.rock_lights() {
+            lights.push(light(at, reach, Element::Fire.light(), strength));
+        }
+        for l in &mut lights {
+            night_boost(l, night);
         }
         if let Some(weapon) = weapon
             && weapon.kind() == Kind::Magic
@@ -16209,14 +16351,13 @@ impl Combat {
         }
         for a in animals {
             if a.status.burn > 0.0 && a.health > 0.0 {
-                lights.push(light(a.center(vpm as u32), 4.0, Element::Fire.light(), 0.8));
+                let mut l = light(a.center(vpm as u32), 4.0, Element::Fire.light(), 0.8);
+                night_boost(&mut l, night);
+                lights.push(l);
             }
         }
-        // The nearest first
-        lights.sort_by(|a, b| {
-            let d = |l: &[f32; 8]| (Vector3::new(l[0] as f64, l[1] as f64, l[2] as f64) - view.eye).norm();
-            d(a).total_cmp(&d(b))
-        });
+        // The nearest and brightest first
+        lights.sort_by(|a, b| light_rank(a, view.eye).total_cmp(&light_rank(b, view.eye)));
         lights.truncate(MAX_LIGHTS);
         lights
     }
@@ -18717,5 +18858,48 @@ mod tests {
         let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
         combat.strike(&mut arena, &profile, 0, blow());
         assert!(animals[0].health < whole && combat.charge > 0.0);
+    }
+
+    /// A boss's breath of fire lights up what's round it in fire's color the whole while it pours
+    /// out, much brighter and further at night than by day; the ground it leaves burning glows a
+    /// while; and the lights are never more than MAX_LIGHTS, the nearest and brightest kept
+    #[test]
+    fn boss_fire_lights_up_the_night() {
+        let vpm = 16.0;
+        let eye = Vector3::new(100.0, 100.0, 50.0) * vpm;
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        let mouth = eye + Vector3::new(0.0, 10.0 * vpm, 1.0 * vpm);
+        combat.breathe(mouth, -Vector3::y(), 1.0 / 60.0, Element::Fire);
+        combat.flashes.clear();
+        let fire = Element::Fire.light();
+        let fiery = |l: &[f32; 8]| ((l[5] / l[4]) - fire[1] / fire[0]).abs() < 0.01 && ((l[6] / l[4]) - fire[2] / fire[0]).abs() < 0.01;
+        let day = combat.lights(None, &[], &view, 0.0);
+        let night = combat.lights(None, &[], &view, 1.0);
+        assert!(!day.is_empty() && day.iter().all(fiery) && night.iter().all(fiery), "a breath of fire gives no light of fire");
+        let most = |ls: &[[f32; 8]]| ls.iter().map(|l| (l[3], l[4])).fold((0.0f32, 0.0f32), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+        let (d, n) = (most(&day), most(&night));
+        assert!(n.0 >= d.0 * 1.5 && n.1 >= d.1 * 2.0, "night light {n:?} next to day's {d:?}");
+        // Kept up while it pours out, still the one light for each part of it
+        for _ in 0..30 {
+            combat.breathe(mouth, -Vector3::y(), 1.0 / 60.0, Element::Fire);
+        }
+        assert_eq!(combat.glows.len(), 2);
+        // The ground burning where fire came down, dying down
+        combat.glows.clear();
+        combat.flashes.clear();
+        combat.burning(eye + Vector3::new(4.0 * vpm, 0.0, -1.6 * vpm), 2.0);
+        let at_first = combat.lights(None, &[], &view, 1.0).iter().map(|l| l[4]).fold(0.0f32, f32::max);
+        combat.glows[0].life *= 0.25;
+        let later = combat.lights(None, &[], &view, 1.0).iter().map(|l| l[4]).fold(0.0f32, f32::max);
+        assert!(at_first > 0.5 && later < at_first * 0.7 && later > 0.0, "burning {at_first} then {later}");
+        // Many at once, the oldest making room for the newest: of those, the nearest kept
+        for k in (0..40).rev() {
+            combat.glow(eye + Vector3::new(k as f64 * 3.0 * vpm, 0.0, 0.0), 5.0, Element::Arcane.light(), 1.0, 1.0);
+        }
+        let lights = combat.lights(None, &[], &view, 1.0);
+        assert_eq!(lights.len(), MAX_LIGHTS);
+        assert!(lights.iter().all(|l| (Vector3::new(l[0] as f64, l[1] as f64, l[2] as f64) - eye).norm() < 40.0 * vpm), "far lights kept over near ones");
     }
 }

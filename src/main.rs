@@ -71,6 +71,7 @@ mod bases;
 mod building;
 mod bosses;
 mod camera;
+mod character;
 mod combat;
 mod compass;
 mod crash;
@@ -96,6 +97,7 @@ mod limits;
 mod loading;
 mod materials;
 mod memory;
+mod merchants;
 mod night;
 mod perf;
 mod pieces;
@@ -278,6 +280,55 @@ fn voxels_to_camera(position: Vector3<f64>, world_size: [u32; 3]) -> Vector3<f64
     (position - size * 0.5) / size.max()
 }
 
+/// The flames and crystals to light the world with this frame, of `lights`, in voxels as App::lights
+/// has them, for the eye at `eye`: those whose light reaches nearest it, the most STILL_LIGHTS, each
+/// fading out as it comes to be the next left out, or to LIGHT_MARGIN_M past where its light
+/// reaches, so walking along a cave lit by many torches they come and go smoothly
+fn still_lights(lights: impl Iterator<Item = [f32; 8]>, eye: Vector3<f32>, vpm: f32) -> Vec<[f32; 8]> {
+    let (margin, fade) = (LIGHT_MARGIN_M * vpm, LIGHT_FADE_M * vpm);
+    let mut near: Vec<(f32, [f32; 8])> = lights.map(|l| ((Vector3::new(l[0], l[1], l[2]) - eye).norm() - l[3], l)).filter(|(r, _)| *r < margin).collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Where the first left out is, which moves smoothly as the eye does
+    let cutoff = near.get(STILL_LIGHTS).map_or(margin, |(r, _)| r.min(margin));
+    near.truncate(STILL_LIGHTS);
+    near.into_iter()
+        .filter_map(|(r, mut l)| {
+            let t = ((r - (cutoff - fade)) / fade).clamp(0.0, 1.0);
+            let k = 1.0 - t * t * (3.0 - 2.0 * t);
+            for c in &mut l[4..7] {
+                *c *= k;
+            }
+            (k > 0.0).then_some(l)
+        })
+        .collect()
+}
+
+/// Light `light`, as App::lights has it, flickering and swaying a little at `seconds` if it's a
+/// flame, going by its warm color: a torch's or a fire's most, a candle's less and a lantern's,
+/// yellower behind its glass, least. Crystals and glows shine steady.
+fn flicker(light: [f32; 8], seconds: f32, vpm: f32) -> [f32; 8] {
+    let [r, g, b] = [light[4], light[5], light[6]];
+    if r <= 0.0 || r < g || g <= b {
+        return light;
+    }
+    let amount = ((0.78 - g / r) * 3.5).clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return light;
+    }
+    // Each its own way, so they don't all flicker together
+    let s = (light[0] * 0.37 + light[1] * 0.71 + light[2] * 0.13).fract() * 40.0;
+    let t = seconds;
+    let k = 1.0 + amount * (0.09 * (t * 7.3 + s).sin() + 0.06 * (t * 13.1 + 2.3 * s).sin() + 0.04 * (t * 23.7 + 1.7 * s).sin());
+    let sway = amount * 0.03 * vpm;
+    let mut out = light;
+    out[0] += sway * (t * 1.9 + s).sin();
+    out[1] += sway * (t * 2.3 + 0.5 * s).cos();
+    for c in &mut out[4..7] {
+        *c *= k;
+    }
+    out
+}
+
 /// The world in voxels, and for generated landscapes what it was built from, to build finer pieces
 /// of later. A landscape is endless, and the world holds the piece of it whose corner is at
 /// `origin`, in voxels from the corner of the whole landscape.
@@ -369,8 +420,17 @@ const VRAM_CHECK: Duration = Duration::from_secs(2);
 /// How long after coming down for want of room the render scale may go back up, so it doesn't go
 /// up and down while whatever took the room comes and goes
 const RAISE_AFTER: Duration = Duration::from_secs(30);
-/// The most flames and crystals lighting things up at once, nearest the camera first
-const MAX_LIGHTS: usize = 16;
+/// The most flames and crystals lighting things up at once, nearest the camera first, see
+/// still_lights(): a share of their own, so the fighting never takes one of theirs away and makes
+/// it go out
+const STILL_LIGHTS: usize = 14;
+/// And the most lights from the fighting, see Game::lights(), the nearest and brightest first
+const FIGHTING_LIGHTS: usize = 10;
+/// How far past where its light reaches a flame or crystal is still sent, in meters, so a pool
+/// of light down a cave or a street shows from a way off; and over how many meters before that,
+/// or before where the farthest of STILL_LIGHTS sent is, each fades out, so none pops in or out
+const LIGHT_MARGIN_M: f32 = 12.0;
+const LIGHT_FADE_M: f32 = 4.0;
 /// Has to match CACHE_WORDS in shaders\traverse.comp. How many entries the light cache has is
 /// up to how much memory the graphics card has, see memory.rs: the shader goes by how big it is.
 const LIGHT_CACHE_WORDS: u64 = 13;
@@ -2098,6 +2158,29 @@ impl Placed {
             let eye = middle + back + Vector3::new(0.0, 0.0, 1.7 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+            // `--set cave=passage` stands a little way down the tunnel from a torch on its wall, the
+            // nearest more than 15 m out from the cavern, looking back along the tunnel at it
+            let torch = landscape.as_ref().and_then(|l| {
+                let off = |p: [f32; 3]| (p[0] - floor[0]).hypot(p[1] - floor[1]);
+                l.lights()
+                    .iter()
+                    .filter(|t| t.color == worldgen::TORCH_LIGHT && off(t.position) > 15.0 && t.position[2] < floor[2] + 12.0)
+                    .min_by(|a, b| off(a.position).total_cmp(&off(b.position)))
+                    .map(|t| Vector3::new(t.position[0] as f64 * vpm - origin[0] as f64, t.position[1] as f64 * vpm - origin[1] as f64, t.position[2] as f64 * vpm))
+            });
+            if let (Some("passage"), Some(torch)) = (setting("cave"), torch) {
+                // Which way the tunnel runs from it: the way with the most room, at head height
+                let low = torch - Vector3::new(0.0, 0.0, 0.8 * vpm);
+                let room = |d: Vector3<f64>| (1..=(12.0 * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + d.x * k as f64) as i64, (low.y + d.y * k as f64) as i64, low.z as i64))).count();
+                let way = (0..32).map(|k| k as f64 / 32.0 * std::f64::consts::TAU).map(|a| Vector3::new(a.cos(), a.sin(), 0.0)).max_by_key(|&d| room(d)).unwrap_or(Vector3::x());
+                let eye = low + way * (room(way) as f64).min(7.0 * vpm) * 0.85;
+                camera.position = voxels_to_camera(eye, world.size);
+                let target = voxels_to_camera(torch - way * 3.0 * vpm - Vector3::new(0.0, 0.0, 0.6 * vpm), world.size);
+                camera.look_at(target);
+                // The same view for a build without this, as `--set camera=` and `look_at=`
+                let whole = voxels_to_camera(eye + Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), [widest, widest, terrain.size()[2]]);
+                println!("Passage view: --set camera={},{},{} --set look_at={},{},{}", whole.x, whole.y, whole.z, target.x, target.y, target.z);
+            }
         } else if let Some((inside, out)) = falls_cave {
             // Just inside the cave behind a waterfall, looking out through it
             let vpm = world.voxels_per_meter as f64;
@@ -2205,8 +2288,15 @@ impl Placed {
             let (square, way_in) = (at(square), at(way_in));
             let out = Vector3::new(way_in.x - square.x, way_in.y - square.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
             let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            // `town=bowyer` and the like in front of that specialist's stall, see merchants.rs
+            let wanted = town_view.and_then(|v| merchants::Trade::by_id(v)).map_or("town stall", |t| t.stall_site());
+            let specialist = town_view == Some("specialist");
+            if let Some(l) = &landscape {
+                let stalls: Vec<String> = l.sites().iter().filter(|s| s.kind.ends_with("stall")).map(|s| format!("{} at {:.0}, {:.0}", s.kind, s.position[0], s.position[1])).collect();
+                println!("Stalls about: {}", stalls.join("; "));
+            }
             let stall = landscape.as_ref().and_then(|l| {
-                let sites = l.sites().iter().filter(|s| s.kind == "town stall");
+                let sites = l.sites().iter().filter(|s| s.kind == wanted || specialist && merchants::Trade::of_site(s.kind).is_some());
                 sites.map(|s| (at(s.position), Vector3::new(s.facing[0] as f64, s.facing[1] as f64, 0.0))).min_by(|a, b| (a.0 - square).norm().total_cmp(&(b.0 - square).norm()))
             });
             let (eye, target) = match (town_view, stall) {
@@ -2214,6 +2304,7 @@ impl Placed {
                 (Some("tunnel"), _) => (way_in + out * 7.0 * vpm + up(1.7), way_in + up(1.4)),
                 // Where a customer would stand, the merchant behind the counter
                 (Some("stall"), Some((spot, facing))) => (spot + facing * 3.2 * vpm + up(1.6), spot + up(1.2)),
+                (Some(v), Some((spot, facing))) if v == "specialist" || merchants::Trade::by_id(v).is_some() => (spot + facing * 4.6 * vpm + up(1.9), spot + up(1.5)),
                 // A little way along a street, looking down it across the square
                 _ => (square + out * 10.0 * vpm + up(1.7), square - out * 8.0 * vpm + up(1.2)),
             };
@@ -2454,6 +2545,13 @@ impl App {
             game.inspect(slot);
         }
         game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set class=priest` and the rest without a mode: who's playing is that character, armed
+        // as their class starts, their body there for its shadow, to try them out in screenshot
+        // runs with `enemy=` and the rest, see character.rs. A mode started sets its own.
+        if setting("class").is_some() && setting("mode").is_none() {
+            game.set_character(&character::Character::from_settings());
+            game.new_character(terrain.seed);
+        }
         // For trying out weapons: `--set weapon_seed=7 weapon_luck=3` starts with other ones, rarer
         // the luckier, and `--set weapon=bow` with the bow in hand
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
@@ -2644,6 +2742,19 @@ impl App {
         }
         if flag("shop", false) {
             game.open_nearest_shop(start);
+        }
+        // `--set specialist=bowyer` puts that specialist `specialist_distance=3` meters ahead, see
+        // merchants.rs, and `specialist=all` every one of them side by side
+        if let Some(wanted) = setting("specialist") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let side = Vector3::new(-ahead.y, ahead.x, 0.0).try_normalize(1e-6).unwrap_or(Vector3::y());
+            let distance = setting("specialist_distance").and_then(|v| v.parse().ok()).unwrap_or(3.0);
+            let trades: Vec<merchants::Trade> = if wanted == "all" { merchants::Trade::ALL.to_vec() } else { merchants::Trade::by_id(wanted).into_iter().collect() };
+            let vpm = world.voxels_per_meter as f64;
+            for (k, &trade) in trades.iter().enumerate() {
+                let by = (k as f64 - (trades.len() as f64 - 1.0) / 2.0) * 1.1 * vpm;
+                game.summon_specialist(&world, &water_level, start + side * by, ahead, distance, trade);
+            }
         }
         // `--set villager=3` puts a villager of each kind that many meters ahead, to see them close
         if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
@@ -2902,6 +3013,18 @@ impl App {
         }
         // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
         app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
+        // `--set creator=freeroam` opens the window a new character's made in, as New does, with
+        // what `--set class=priest`, `name=`, `skin=` and the rest say chosen, turned `creator_turn`
+        // radians round, to see it in a screenshot with `menu=1 gui=1`
+        if let Some(mode) = setting("creator").and_then(save::Mode::parse) {
+            let turn = setting("creator_turn").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            app.session.creator = Some(character::creator::Creator::with(mode, character::Character::from_settings(), turn));
+        }
+        // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
+        // as for the menu or the window a new character's made in
+        if let (Some(frames), Some(capture)) = (setting("shot_at"), &mut app.capture) {
+            capture.shots.extend(frames.split(',').filter_map(|f| f.trim().parse::<usize>().ok()));
+        }
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -2912,6 +3035,21 @@ impl App {
         // nearer than the one wandering about
         if setting("shop").is_some_and(|v| v == "true" || v == "1") {
             app.game.open_nearest_shop(start);
+        }
+        // `--set talk=1` talks to the specialist nearest the start, see merchants.rs, and
+        // `talk_do=invite`, `land` or `trade` says that, with `talk_gold=500` to pay with and
+        // `talk_home=1` a fireplace at the base to come to
+        if flag("talk", false) {
+            app.game.stage_talk(start, setting("talk_do"), setting("talk_gold").and_then(|v| v.parse().ok()), flag("talk_home", false));
+        }
+        // `--set map=1` opens the map, to see what's marked on it
+        if flag("map", false) {
+            app.map.open = true;
+        }
+        // `--set shots_at=80,140` takes shots at those frames too, with the GUI with `gui=1`, as of
+        // the window of a specialist being talked to
+        if let Some(capture) = &mut app.capture {
+            capture.shots.extend(setting("shots_at").map_or(Vec::new(), |v| v.split(',').filter_map(|n| n.trim().parse::<usize>().ok()).collect()));
         }
         if let Some(n) = visit_waterfall {
             app.waterfall_index = n - 1;
@@ -3157,12 +3295,17 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 if site.kind == "town stall" {
-                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None });
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None, trade: None });
+                }
+                // A specialist's stall beside it, see merchants.rs
+                if let Some(trade) = merchants::Trade::of_site(site.kind) {
+                    let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.0, royal: None, trade: Some((trade, heading)) });
                 }
                 // The princess keeps the royal armoury in a castle's throne room
                 if site.kind.starts_with("royal") {
                     let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
-                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
+                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading), trade: None });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
                 if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town" | "gargoyle perch") {
@@ -3171,7 +3314,7 @@ impl App {
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
-                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None })
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None, trade: None })
             })
             .collect();
         // Folk live round the towns' squares, those down in caverns in fewer of them, and some
@@ -4041,6 +4184,9 @@ impl App {
         if let Some(action) = self.session.action.take() {
             self.menu_picked(action, event_loop);
         }
+        if let Some(pick) = self.session.creator_pick.take() {
+            self.creator_picked(pick);
+        }
         self.update_session(delta_time.min(0.25));
         // `--set save_at=300` saves at that frame of a screenshot run, saying what it saved
         static SAVE_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
@@ -4071,6 +4217,9 @@ impl App {
             } else if self.inventory_open {
                 self.inventory_open = false;
                 self.set_focus(true);
+            } else if self.menu_open && self.session.creator.is_some() {
+                // Back from making a new character to the menu
+                self.session.creator = None;
             } else if self.menu_open && self.started {
                 self.menu_open = false;
                 self.set_focus(true);
@@ -4195,6 +4344,8 @@ impl App {
             let start = Instant::now();
             self.update_raid(delta_time.min(0.1));
             self.slow("the night's raid", start);
+            // The merchants living at the base, see merchants.rs
+            self.update_merchants(delta_time.min(0.1));
             // The old foundations of the gate in a new game of Realms, see gates.rs
             self.lay_ruins();
             // A shot kicking the view up, springing back down
@@ -4679,6 +4830,20 @@ impl App {
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
+            }
+            // Stands in the shallows nearest, looking straight down into the water, to see the
+            // player's own body there, see character::body
+            ("mirror", 1) => self.stand_in_water(0.35, true),
+            ("mirror", f) if f > 1 => self.camera.rotation.x = -1.35,
+            // Casts with what's in hand at the nearest of a pack `--set arrive_enemy` put there, again
+            // and again from frame `--set cast_from=40`, facing it, as a priest hurls spears
+            ("cast", f) => {
+                let from = settings_from_args().into_iter().find(|(k, _)| k == "cast_from").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(40);
+                if let Some(target) = self.game.nearest_foe(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                let casting = f >= from && (f - from) % 40 < 6;
+                self.script_controls = combat::Controls { attack: casting, holding: casting, ..Default::default() };
             }
             // Finds the nearest water and casts into it, to see it splash
             ("splash", f) => {
@@ -5572,7 +5737,14 @@ impl App {
                 painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((leaving * leaving * 255.0) as u8));
             }
 
-            if self.menu_open {
+            // A new character being made, before the game they're for, see character\creator.rs
+            if self.menu_open
+                && let Some(creator) = &mut self.session.creator
+            {
+                if let Some(pick) = character::creator::window(&ctx, creator) {
+                    self.session.creator_pick = Some(pick);
+                }
+            } else if self.menu_open {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
@@ -6033,17 +6205,14 @@ impl App {
         // Light from spells and fire first, then the flames and crystals nearest the camera whose
         // light reaches it
         let camera_voxels = camera_to_voxels(self.camera.position, self.world.size).cast::<f32>();
-        let mut lights: Vec<(f32, [f32; 8])> = self
-            .lights
-            .iter()
-            .chain(base_lights.iter())
-            .map(|l| ((Vector3::new(l[0], l[1], l[2]) - camera_voxels).norm() - l[3], *l))
-            .filter(|(d, _)| *d < 0.0)
-            .collect();
-        lights.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut fighting = if playing { self.game.lights(&view) } else { Vec::new() };
+        let vpm = self.world.voxels_per_meter as f32;
+        let seconds = self.start_time.elapsed().as_secs_f32();
+        let still = still_lights(self.lights.iter().chain(base_lights.iter()).map(|l| flicker(*l, seconds, vpm)), camera_voxels, vpm);
+        let mut fighting = if playing { self.game.lights(&view, sky.night) } else { Vec::new() };
         fighting.extend(rope_lights);
-        let lights: Vec<[f32; 8]> = fighting.into_iter().chain(lights.into_iter().map(|(_, l)| l)).take(MAX_LIGHTS).collect();
+        fighting.sort_by(|a, b| combat::light_rank(a, view.eye).total_cmp(&combat::light_rank(b, view.eye)));
+        fighting.truncate(FIGHTING_LIGHTS);
+        let lights: Vec<[f32; 8]> = fighting.into_iter().chain(still).collect();
         let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();
         light_buffer.write().unwrap()[..lights.len()].copy_from_slice(&lights);
 
@@ -7018,5 +7187,55 @@ pub fn main() {
     // What went wrong has been said already
     if !loaded {
         std::process::exit(101);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Walking down a cave lit by a torch every few meters, far more than STILL_LIGHTS of them in
+    /// sight, the lights sent never go over STILL_LIGHTS, the nearest is always lit full, and none
+    /// jumps in brightness from one step to the next: each comes and goes smoothly
+    #[test]
+    fn many_torches_come_and_go_smoothly() {
+        let vpm = 16.0f32;
+        let torch = |k: usize| [k as f32 * 4.0 * vpm, 0.0, 2.0 * vpm, 9.0 * vpm, 1.0, 0.55, 0.22, 0.0];
+        let torches: Vec<[f32; 8]> = (0..60).map(torch).collect();
+        let mut last: Option<Vec<([f32; 3], f32)>> = None;
+        for step in 0..400 {
+            let eye = Vector3::new(step as f32 * 0.25 * vpm, 0.5 * vpm, 1.7 * vpm);
+            let lights = still_lights(torches.iter().copied(), eye, vpm);
+            assert!(lights.len() <= STILL_LIGHTS);
+            let nearest = torches.iter().map(|l| (Vector3::new(l[0], l[1], l[2]) - eye).norm()).fold(f32::MAX, f32::min);
+            assert!(lights.iter().any(|l| (Vector3::new(l[0], l[1], l[2]) - eye).norm() == nearest && l[4] == 1.0), "the nearest isn't lit full {step} steps in");
+            let now: Vec<([f32; 3], f32)> = lights.iter().map(|l| ([l[0], l[1], l[2]], l[4])).collect();
+            if let Some(before) = &last {
+                for (at, bright) in torches.iter().map(|l| [l[0], l[1], l[2]]).map(|at| {
+                    let of = |v: &Vec<([f32; 3], f32)>| v.iter().find(|(p, _)| *p == at).map_or(0.0, |(_, b)| *b);
+                    (at, (of(&now), of(before)))
+                }) {
+                    assert!((bright.0 - bright.1).abs() < 0.25, "the torch at {at:?} jumps from {} to {} {step} steps in", bright.1, bright.0);
+                }
+            }
+            last = Some(now);
+        }
+    }
+
+    /// Flames flicker a little and lanterns less, round how bright they are; crystals and the glows
+    /// of fallen cities don't
+    #[test]
+    fn flames_flicker_crystals_dont() {
+        let vpm = 16.0;
+        let swing = |color: [f32; 3]| {
+            let l = [100.0, 200.0, 300.0, 144.0, color[0], color[1], color[2], 0.0];
+            let seen: Vec<f32> = (0..200).map(|k| flicker(l, k as f32 * 0.037, vpm)[4] / color[0]).collect();
+            seen.iter().copied().fold(0.0f32, f32::max) - seen.iter().copied().fold(f32::MAX, f32::min)
+        };
+        let (torch, lantern) = (swing([1.0, 0.55, 0.22]), swing([1.0, 0.71, 0.36]));
+        assert!(torch > 0.15 && torch < 0.45, "a torch flickers by {torch}");
+        assert!(lantern > 0.02 && lantern < torch * 0.5, "a lantern flickers by {lantern}, a torch by {torch}");
+        assert_eq!(swing([0.35, 0.85, 1.0]), 0.0);
+        assert_eq!(swing([-0.2, -0.3, -0.1]), 0.0);
     }
 }

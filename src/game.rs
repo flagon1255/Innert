@@ -13,7 +13,7 @@ use nalgebra::{UnitQuaternion, Vector2, Vector3};
 use crate::animals::{self, ANIMAL_MODELS, Animal, AnimalInstance, Build, Look, Model, pack_models};
 use crate::audio::{Cue, Ground, Sound};
 use crate::bosses::{self, Deed, Flock, Move};
-use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
+use crate::combat::{self, Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
 use crate::levels::{self, Slain, Source};
@@ -30,6 +30,8 @@ use crate::tools;
 mod dragonfire;
 /// What avians and gargoyles throw, call down and break into, see src\avians.rs
 mod aerie;
+/// The specialist merchants, talked to and asked to the base, see src\merchants.rs
+mod specialists;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -476,6 +478,8 @@ pub struct Stall {
     /// For the royal armoury in a castle's throne room, which way the princess keeping it faces:
     /// she sells only legendary and mythic weapons, see royal_stock()
     pub royal: Option<f64>,
+    /// For a specialist's stall, their trade and which way they face, see src\merchants.rs
+    pub trade: Option<(crate::merchants::Trade, f64)>,
 }
 
 /// A town's square: where its middle is in voxels, on the paving, how many folk live round it
@@ -528,11 +532,17 @@ const KIT_TRIES: usize = 64;
 /// from `seed` with `luck`, and with `rarest`, no part or weapon rarer than that: a synergy or two
 /// can lift a weapon a grade above its parts, so then it's the first seed on whose weapon isn't.
 fn kit(library: &Library, seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
+    kit_of(library, &KIT, seed, luck, rarest)
+}
+
+/// The same for weapons of `families`, one of each, as a class starts with, see character::Class::kit()
+fn kit_of(library: &Library, families: &[&str], seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
     let mut odds = library.odds(luck);
     if let Some(top) = rarest {
         odds.truncate(top + 1);
     }
-    KIT.iter()
+    families
+        .iter()
         .enumerate()
         .filter_map(|(k, id)| {
             let family = library.family(id)?;
@@ -979,6 +989,15 @@ pub struct Game {
     packed_weapons: std::cell::RefCell<Option<(u32, Vec<u32>)>>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
+    /// The specialist merchants: who keeps which stall, who's being talked to and who lives at the
+    /// base, see game\specialists.rs
+    trades: specialists::Trades,
+    /// Who's playing, see character.rs: their name, class and how hard it is, and their body's
+    /// pieces made for how they look, drawn after the weapons, in the colours each piece is drawn
+    /// in, see character::body
+    character: crate::character::Character,
+    body_models: Vec<(Model, Vector3<f64>)>,
+    body_colours: [u32; crate::character::body::PIECES],
 }
 
 /// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
@@ -1197,10 +1216,14 @@ impl Game {
             one_off_changes: 0,
             packed_weapons: std::cell::RefCell::new(None),
             aerie: Default::default(),
+            trades: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
             ward_models: crate::assets::wards(crate::guardians::models()),
             crowd: 0,
+            character: Default::default(),
+            body_models: Vec::new(),
+            body_colours: [0; crate::character::body::PIECES],
         };
         game.forget_skills();
         game.arm_anew(seed);
@@ -1210,8 +1233,23 @@ impl Game {
 
     /// What a new player starts with, see arm(): plain gear, nothing with a special attack
     fn arm_anew(&mut self, seed: u32) {
-        let kit = kit(&self.library, seed, KIT_LUCK, Some(KIT_RAREST));
+        let kit = kit_of(&self.library, self.character.class.kit(), seed, KIT_LUCK, Some(KIT_RAREST));
         self.arm_with(&kit);
+    }
+
+    /// Who's playing, see character.rs: what they're called, the class whose lean is added to the
+    /// skill web's and whose kit a new character starts with, see new_character(), how hard it is,
+    /// and their body made for how they look, its colours on the arms held before the eye too
+    pub fn set_character(&mut self, character: &crate::character::Character) {
+        let looks_changed = self.body_models.is_empty() || self.character.looks != character.looks;
+        self.character = character.clone();
+        if looks_changed {
+            self.body_models = crate::character::body::models(&character.looks);
+            self.body_colours = crate::character::body::colours(&character.looks);
+            self.models_version += 1;
+        }
+        self.combat.set_outfit(self.body_colours[crate::character::body::FOREARM[0]]);
+        self.retotal();
     }
 
     /// For trying them out, as `--set weapon_seed=7 weapon_luck=3` does: what the player starts
@@ -1310,11 +1348,12 @@ impl Game {
     /// time a weapon turns up takes long enough to hold up the game.
     pub fn weapon_model_words(&self) -> Vec<u32> {
         // The weapons' packed as they were last time if only the one-off models have changed since,
-        // so a tree coming down doesn't pack every weapon again
+        // so a tree coming down doesn't pack every weapon again; the player's body after them, see
+        // character::body, made again whenever how they look is
         let key = self.models_version.wrapping_sub(self.one_off_changes);
         let mut cache = self.packed_weapons.borrow_mut();
         if cache.as_ref().is_none_or(|(k, _)| *k != key) {
-            let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).collect();
+            let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).chain(self.body_models.iter().map(|(m, _)| m)).collect();
             *cache = Some((key, pack_models(&models)));
         }
         let mut words = vec![self.weapon_model(0)];
@@ -2040,13 +2079,14 @@ impl Game {
         self.leaves.recenter(shift);
         self.target = None;
         self.merchants.retain(|(id, _)| self.animals.iter().any(|a| a.id == *id));
+        self.recenter_trades(shift);
         self.forget_weapons();
         self.rest = self.rest.map(|r| r - shift).filter(inside);
 
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
         // pop up right in front of them. Bosses, dungeon monsters, merchants and villagers have
         // homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager() && !a.look.is_royal()).count());
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && !a.look.is_merchant() && a.look != Look::TradeStall && !a.look.is_villager() && !a.look.is_royal()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| a.look.is_bandit()).count();
         // The packs of the country the player's come into, as the old ones are left behind
@@ -2248,10 +2288,16 @@ impl Game {
             // serpents::ULTRA_ELEMENTS
             let element = serpents::element_now(animal);
             if let Some(boss) = &mut animal.boss {
-                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d)));
+                // Whether what it's doing is made of its element, so the rings showing where it's
+                // coming down glow with it
+                let glowing = boss.doing().is_some_and(|d| bosses::elemental(d.m, element));
+                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d, glowing)));
             }
         }
-        for (look, element, deed) in deeds {
+        for (look, element, deed, glowing) in deeds {
+            if glowing && let Some(e) = element {
+                self.glow_deed(e, deed);
+            }
             self.carry_out(look, element, deed, world, water, player, view);
         }
         self.tend_dragonfire(world, player, view, dt);
@@ -2279,6 +2325,12 @@ impl Game {
         // The boss bar's trail catching up with what it's lost, a moment after each blow
         if let Some((foe, health, ..)) = self.foe(view.eye) {
             let name = foe.name();
+            // A boss newly come for the player taunts them by name
+            if name != self.boss_bar.0 && !name.is_empty() {
+                const TAUNTS: [&str; 5] = ["So, {}. You came at last.", "Kneel, {}, and it will be quick.", "Another fool. Your name, {}, dies with you.", "I smell your fear, {}.", "{}... they will sing nothing of you."];
+                let taunt = TAUNTS[hash(name.len() as u32 ^ self.seed ^ self.level) as usize % TAUNTS.len()].replace("{}", &self.character.name);
+                self.say(format!("The {name}: \"{taunt}\""));
+            }
             let (shown, mut trail, mut hold, mut flash) = if name == self.boss_bar.0 { (self.boss_bar.1, self.boss_bar.2, self.boss_bar.3, self.boss_bar.4) } else { (health, health, 0.0, 0.0) };
             if health < shown - 0.03 {
                 flash = 1.0;
@@ -2400,6 +2452,21 @@ impl Game {
             if let Some(points) = points {
                 a.focus = serpents::focus(&points, view.eye, view.forward()).map(|p| p - a.position);
             }
+        }
+    }
+
+    /// The light of `element` where what a boss or monster is doing in it shows on the ground: a
+    /// ring of it brightening as it closes in on where it's coming down, and a shockwave of it
+    /// lighting the ground it runs over, see Combat::glow()
+    fn glow_deed(&mut self, element: Element, deed: Deed) {
+        let vpm = self.combat.vpm();
+        match deed {
+            Deed::Mark { at, radius, closing } => {
+                let strength = 0.35 + 0.55 * (1.0 - closing.clamp(0.0, 1.0));
+                self.combat.glow(at + Vector3::new(0.0, 0.0, 0.6 * vpm), radius + 3.0, element.light(), strength as f32, 0.15);
+            }
+            Deed::Quake { at, to, .. } => self.combat.glow(at + Vector3::new(0.0, 0.0, 1.0 * vpm), to + 3.0, element.light(), 0.7, 0.3),
+            _ => {}
         }
     }
 
@@ -3075,6 +3142,12 @@ impl Game {
                 let closing = (root.left / ROOTS_WARNING).min(1.0);
                 self.combat.stir(at, root.radius, dt * (2.0 - closing), root.flare.unwrap_or(DROP_MUD));
                 self.combat.mark(at, root.radius, closing);
+                // A flare of fire or a spell's element glowing up through the ground as it comes
+                if root.flare.is_some()
+                    && let Some(e) = root.element
+                {
+                    self.combat.glow(at + Vector3::new(0.0, 0.0, 0.5 * vpm), root.radius + 2.5, e.light(), (0.3 + 0.5 * (1.0 - closing)) as f32, 0.15);
+                }
                 if root.flare.is_none() {
                     self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
                 }
@@ -3212,14 +3285,15 @@ impl Game {
         }
     }
 
-    /// The player at `feet` is killed by `by`. Half the gold they carry spills where they fell, to
-    /// come back for, and every boss and monster goes home healed.
+    /// The player at `feet` is killed by `by`. As much of the gold they carry as how hard it is
+    /// says spills where they fell, to come back for: none on Story, half on Normal, all of it on
+    /// Hard. Every boss and monster goes home healed.
     fn die(&mut self, by: &str, feet: Vector3<f64>, vpm: f64) {
         self.health = 0.0;
         self.dead = Some((by.to_owned(), 0.0));
         self.died = true;
         self.shop = None;
-        let lost = self.gold / 2;
+        let lost = (self.gold as f64 * self.character.difficulty.gold_lost()).round() as u32;
         self.lost = lost;
         if lost > 0 {
             self.gold -= lost;
@@ -3650,13 +3724,13 @@ impl Game {
                     self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
                 } else if let Some(realm) = block {
                     let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
-                    self.say(format!("Raid boss slain! The {} falls, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name()));
+                    self.say(format!("Raid boss slain! The {} falls before {}, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name(), self.character.name));
                 } else if raid {
-                    self.say(format!("Raid boss slain! The {} falls, and its {hoard_name} spills out. Some of it's {rarity}!", look.name()));
+                    self.say(format!("Raid boss slain! The {} falls before {}, and its {hoard_name} spills out. Some of it's {rarity}!", look.name(), self.character.name));
                 } else if bosses::roster::has(look) {
-                    self.say(format!("You defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", look.name()));
+                    self.say(format!("{} defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 } else {
-                    self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
+                    self.say(format!("{} defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 }
                 self.find_jewels(jewels);
                 // And a pair of wings, said after: a raid boss always leaves one, a realm's of the
@@ -3783,10 +3857,11 @@ impl Game {
                 self.beams.push(chest.position);
             }
         }
-        if let Some(key) = self.shop {
+        if let Some(key) = self.shop.or(self.talking_to()) {
             let near = self.merchants.iter().find(|(_, k)| *k == key).and_then(|(id, _)| self.animals.iter().find(|a| a.id == *id));
             if near.is_none_or(|m| (m.position - view.eye).norm() > SHOP_REACH * vpm) {
                 self.shop = None;
+                self.stop_talking();
                 self.say("You walk away from the merchant.");
             }
         }
@@ -4067,9 +4142,14 @@ impl Game {
             Some(Target::Chest(i)) => self.open_chest(i),
             Some(Target::Animal(i)) => {
                 let look = self.animals[i].look;
-                if look == Look::Merchant || look == Look::Princess {
+                if look.is_merchant() || look == Look::Princess {
                     let id = self.animals[i].id;
-                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
+                    // A specialist's talked to first, see game\specialists.rs
+                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id)
+                        && self.is_specialist(key)
+                    {
+                        self.talk_to(key, self.animals[i].position);
+                    } else if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
                         self.stock(key);
                         self.shop = Some(key);
                         self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(1.3));
@@ -4254,13 +4334,14 @@ impl Game {
         self.say(if worn { format!("You put on the {name}: jump, then hold Space in the air to glide.") } else { format!("The {name} are in your pack: press I and Wear them to change wings.") });
     }
 
-    /// Whether the player's trading with a merchant
+    /// Whether the player's trading with a merchant, or talking to one
     pub fn shopping(&self) -> bool {
-        self.shop.is_some()
+        self.shop.is_some() || self.talking_to().is_some()
     }
 
     pub fn close_shop(&mut self) {
         self.shop = None;
+        self.stop_talking();
     }
 
     /// The merchants' spots in the piece of the world just built, in its voxels: one turns up at
@@ -4272,6 +4353,11 @@ impl Game {
                 continue;
             }
             let seed = hash(stall.key[0] as u32 ^ hash(stall.key[1] as u32 ^ 0x5a1e));
+            // A specialist's, unless they've moved to the base, see game\specialists.rs
+            if let Some((trade, heading)) = stall.trade {
+                self.keep_stall(world, water, stall.key, stall.position, trade, heading, seed);
+                continue;
+            }
             let keeper = match stall.royal {
                 Some(heading) => animals::spawn_royal(world, water, Look::Princess, stall.position, heading, seed),
                 None => animals::spawn_merchant(world, water, stall.position, stall.within, seed),
@@ -4386,7 +4472,7 @@ impl Game {
         if !self.stocks.contains_key(&key) {
             self.roll_stock(key);
         }
-        if self.royals.contains(&key) {
+        if self.royals.contains(&key) || self.is_specialist(key) {
             return;
         }
         // Every travelling merchant has a pair of wings the player hasn't, the plainest there's
@@ -4414,6 +4500,9 @@ impl Game {
     fn roll_stock(&mut self, key: [i64; 3]) {
         if self.royals.contains(&key) {
             return self.royal_stock(key);
+        }
+        if let Some((trade, seed)) = self.specialist_of(key) {
+            return self.specialist_stock(key, trade, seed);
         }
         let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
         let mut wares = Vec::new();
@@ -4948,6 +5037,7 @@ impl Game {
         self.merchants.clear();
         self.royals.clear();
         self.shop = None;
+        self.trades.leave_world();
         self.target = None;
         self.combat.clear();
         self.leaves.clear();
@@ -5131,10 +5221,10 @@ impl Game {
     /// How many times their own health the monsters about have, and how much harder they hit, by
     /// the level of what's about
     fn foe_toughness(&self) -> f64 {
-        levels::toughness(self.area_level()) * self.scaling.toughness
+        levels::toughness(self.area_level()) * self.scaling.toughness * self.character.difficulty.foe_health()
     }
     fn foe_damage(&self) -> f64 {
-        levels::damage(self.area_level()) * self.scaling.damage
+        levels::damage(self.area_level()) * self.scaling.damage * self.character.difficulty.foe_damage()
     }
 
     /// The player's health at full, which their level raises, see levels::max_health()
@@ -5280,6 +5370,10 @@ impl Game {
     /// What's taken on the skill web added up again, and every weapon to be worked out again
     fn retotal(&mut self) {
         self.totals = self.web.totals(&self.taken);
+        // And what the player's class leans towards, as if it were a few nodes more
+        for &(stat, value) in self.character.class.lean() {
+            self.totals.0[stat as usize] += value;
+        }
         self.boost_version = self.boost_version.wrapping_add(1).max(1);
         if self.health > 0.0 {
             self.health = self.health.min(self.max_health());
@@ -5759,7 +5853,7 @@ impl Game {
 
     /// Where the one-off model in slot `slot` is among all models
     pub fn one_off_model(&self, slot: usize) -> u32 {
-        self.weapon_model(self.weapons.len()) + (self.preview.len() + slot) as u32
+        self.weapon_model(self.weapons.len()) + (self.preview.len() + self.body_models.len() + slot) as u32
     }
 
     /// The model of frame `k` of what set_preview() was given, and where its anchor is
@@ -5988,7 +6082,24 @@ impl Game {
         let camera = view.eye;
         // Nothing in hand while lying dead
         let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
+        let holding = held.is_some();
         let mut out = self.combat.held_instances(held, view);
+        // The player's own body where they stand, for its shadow and reflections, among the first
+        // so it's always in them, see character::body. Not while lying dead, nor flying.
+        // Flying, the feet are taken to be at the eye, and there's no body
+        if let Some(feet) = self.feet.filter(|f| self.dead.is_none() && !self.body_models.is_empty() && camera.z - f.z > vpm) {
+            let forward = view.forward();
+            let stance = crate::character::body::Stance {
+                yaw: forward.y.atan2(forward.x) - FRAC_PI_2,
+                pitch: forward.z.clamp(-1.0, 1.0).asin(),
+                walked: view.stride,
+                speed: view.speed,
+                holding,
+                time: self.combat.time(),
+            };
+            let first = self.weapon_model(self.weapons.len()) + self.preview.len() as u32;
+            out.extend(crate::character::body::instances(&self.body_models, &self.body_colours, first, &self.character.looks, &stance, feet, vpm));
+        }
         // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
         // the blocks set in it up close
         for shrine in &self.shrines {
@@ -6111,6 +6222,13 @@ impl Game {
                 near.push((d, animals::still_instance(look, position, heading, world.voxels_per_meter)));
             }
         }
+        // The stands of the merchants living at the base, see game\specialists.rs
+        for &(position, heading) in self.trades.stands() {
+            let d = (position - camera).norm();
+            if d < ANIMAL_RANGE * vpm {
+                near.push((d, animals::still_instance(Look::TradeStall, position, heading, world.voxels_per_meter)));
+            }
+        }
         for chest in &self.chests {
             let d = (chest.position - camera).norm();
             if d < PROP_RANGE * vpm {
@@ -6130,13 +6248,34 @@ impl Game {
         out
     }
 
-    /// Lights from the fighting, in the form main.rs keeps the world's lights in
-    pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
-        let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view);
-        self.dragonfire_lights(view, &mut lights);
-        self.aerie_lights(view, &mut lights);
-        // The veil of the gate or a portal glows, breathing slowly
+    /// Lights from the fighting, in the form main.rs keeps the world's lights in: brighter and
+    /// reaching further the darker the night, `night` 0 by day to 1, see combat::NIGHT_BRIGHTER
+    pub fn lights(&self, view: &View, night: f64) -> Vec<[f32; 8]> {
+        let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view, night);
+        let mut fire = Vec::new();
+        self.dragonfire_lights(view, &mut fire);
+        self.aerie_lights(view, &mut fire);
+        // What bosses and monsters are gathering or pouring out of their element: a drake's throat
+        // glowing as it breathes, a caster's staff as it calls the sky down, the nearest few
         let vpm = view.vpm;
+        let mut casting: Vec<[f32; 8]> = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0 && (a.position - view.eye).norm() < 60.0 * vpm)
+            .filter_map(|a| {
+                let (at, element, strength) = bosses::glow(a, vpm)?;
+                let c = element.light();
+                let s = strength as f32;
+                Some([at.x as f32, at.y as f32, at.z as f32, ((4.0 + 4.0 * strength) * vpm) as f32, c[0] * s, c[1] * s, c[2] * s, 1.0])
+            })
+            .collect();
+        casting.sort_by(|a, b| combat::light_rank(a, view.eye).total_cmp(&combat::light_rank(b, view.eye)));
+        fire.extend(casting.into_iter().take(3));
+        for mut l in fire {
+            combat::night_boost(&mut l, night);
+            lights.push(l);
+        }
+        // The veil of the gate or a portal glows, breathing slowly
         let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
         for shrine in self.shrines.iter().filter(|s| s.open) {
             let p = shrine.position + Vector3::new(0.0, 0.0, 2.8 * vpm);
@@ -6157,7 +6296,9 @@ impl Game {
             Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
-                Some(if look == Look::Merchant {
+                Some(if let Some(trade) = crate::merchants::Trade::of_look(look) {
+                    format!("E  talk to the {}", trade.title().to_lowercase())
+                } else if look == Look::Merchant {
                     "E  trade with the merchant".to_owned()
                 } else if look == Look::Princess {
                     "E  trade with the princess".to_owned()
@@ -6201,6 +6342,15 @@ impl Game {
         painter.text(middle + vec2(1.0, 4.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), shadow);
         painter.text(middle + vec2(0.0, 3.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), Color32::WHITE);
         painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", FontId::proportional(9.0), Color32::from_white_alpha(170));
+        // Who's playing, and as what, beside it
+        let name = &self.character.name;
+        let at = pos2(middle.x + 33.0, middle.y - 8.0);
+        painter.text(at + vec2(1.0, 1.0), Align2::LEFT_CENTER, name, FontId::proportional(15.0), shadow);
+        painter.text(at, Align2::LEFT_CENTER, name, FontId::proportional(15.0), Color32::WHITE);
+        let [r, g, b] = self.character.class.color();
+        let class = format!("{} · {}", self.character.class.name(), self.character.difficulty.name());
+        painter.text(at + vec2(1.0, 17.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), shadow);
+        painter.text(at + vec2(0.0, 16.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), Color32::from_rgb(r, g, b));
         // Skill points to spend, under it
         let free = self.skill_points();
         if free > 0 {
@@ -6425,8 +6575,11 @@ impl Game {
         self.health_bars(&painter, view, &on_screen);
         // Merchants' names over their heads, so they're easy to find, and smaller ones over the
         // villagers' when near
-        for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager() || a.look.is_royal()) {
-            let (name, color, height, range, size) = if npc.look == Look::Merchant {
+        for npc in self.animals.iter().filter(|a| a.look.is_merchant() || a.look.is_villager() || a.look.is_royal()) {
+            let (name, color, height, range, size) = if let Some(trade) = crate::merchants::Trade::of_look(npc.look) {
+                let [r, g, b] = trade.color();
+                (trade.title(), Color32::from_rgb(r, g, b), 2.25, 28.0, 15.0)
+            } else if npc.look == Look::Merchant {
                 ("Merchant", GOLD, 2.15, 28.0, 15.0)
             } else if npc.look == Look::Princess {
                 ("Princess", Color32::from_rgb(255, 170, 215), 2.05, 28.0, 15.0)
@@ -7539,12 +7692,17 @@ impl Game {
     /// The merchant's stall: what they sell, and what the player carries to sell them. False once
     /// it's closed.
     pub fn shop_window(&mut self, ctx: &egui::Context) -> bool {
+        // A specialist being talked to, before trading, see game\specialists.rs
+        if self.talking_to().is_some() {
+            return self.talk_window(ctx);
+        }
         let Some(key) = self.shop else {
             return false;
         };
         let mut open = true;
         let mut deed = None;
-        egui::Window::new(if self.royals.contains(&key) { "The Royal Armoury" } else { "Merchant" })
+        let title = self.shop_title(key).unwrap_or(if self.royals.contains(&key) { "The Royal Armoury".to_owned() } else { "Merchant".to_owned() });
+        egui::Window::new(title)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

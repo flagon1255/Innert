@@ -189,6 +189,12 @@ const uint STILL = 0;
 const uint MOVING = 1;
 // In the player's hand, moving with the camera. It's drawn in front of whatever it's poking into.
 const uint HELD = 2;
+// The player's own body, round the camera: rays from the camera pass it by, so it's only seen in
+// its shadow and in reflections, see src\character\body.rs
+const uint BODY = 3;
+// Drawn in the player's colours, a flag over the rest: its leather in the colour in the low half of
+// info.w, its cloth in that in the high half, each 5, 6 and 5 bits of red, green and blue
+const uint TINT_OUTFIT = 0x100u;
 const uint TINT_NONE = 0;
 const uint TINT_BURNING = 1;
 const uint TINT_FROZEN = 2;
@@ -380,6 +386,8 @@ const uint MAT_CRYSTAL = 56;
 const uint MAT_FLAME = 57;
 const uint MAT_STEEL = 69;
 const uint MAT_BRONZE = 72;
+const uint MAT_LEATHER = 73;
+const uint MAT_CLOTH = 74;
 const uint MAT_GLOW_FIRE = 79;
 const uint MAT_GLOW_HOLY = 86;
 
@@ -931,6 +939,8 @@ vec3 animalToWorld(uint index, vec3 p) {
 // camera, as checking every one for every shadow and bounce costs too much
 const uint SECONDARY_ANIMALS = 24;
 uint g_animal_limit = 0xFFFFFFFFu;
+// Set while lighting what's held, so the player's own body round it doesn't shade it
+bool g_no_body = false;
 
 // The animals and props whose bounding spheres the camera's rays through this workgroup's tile of
 // pixels might pass through, a bit each, worked out by all its invocations together before any
@@ -969,7 +979,7 @@ void cullTileAnimals() {
                 float cos_a = sqrt(max(1 - sin_a * sin_a, 0));
                 keep = dot(to, axis) / d >= cos_cone * cos_a - sin_cone * sin_a;
             }
-            if (keep)
+            if (keep && animals[i].info.y != BODY)
             atomicOr(s_tile_animals[i / 32], 1u << (i % 32));
         }
     }
@@ -1005,6 +1015,8 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
             i = next++;
         }
         Animal a = animals[i];
+        if (a.info.y == BODY && (from_camera || g_no_body))
+        continue;
         float limit = from_camera && a.info.y == HELD ? FLT_MAX : max_t;
         // Only animals whose bounding sphere the ray passes through
         vec3 to = a.position.xyz - origin;
@@ -1491,6 +1503,16 @@ vec3 g_glass_sheen = vec3(0);
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
     vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
+    // The player's body and arms in the colours they chose: leather in one, cloth in the other,
+    // each voxel as much lighter or darker as it was than its material, see TINT_OUTFIT
+    if (hit.level == ANIMAL && (material == MAT_LEATHER || material == MAT_CLOTH) && (animals[hit.instance].info.z & TINT_OUTFIT) != 0u) {
+        uint packed = animals[hit.instance].info.w;
+        uint c = material == MAT_LEATHER ? packed & 0xFFFFu : packed >> 16;
+        vec3 to = pow(vec3(float(c >> 11), float((c >> 5) & 63u), float(c & 31u)) / vec3(31, 63, 31), vec3(2.2));
+        vec3 base = pow(PALETTE[material], vec3(2.2));
+        const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+        albedo = to * (dot(albedo, LUMA) / dot(base, LUMA));
+    }
     // Clay's darker and muddier where it's wet, under the sea or just over it. Only that, as
     // anything more here costs every ray that hits anything.
     if (material == MAT_CLAY && hit.level != ANIMAL && voxelPoint(hit, vec3(0.5)).z < pc.sun_direction.w + 0.3 * float(max(pc.world_size.w, 1u)))
@@ -1526,7 +1548,7 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     // A skin taken on, the whole of it turned towards one colour, light and dark as it was: the
     // Coil Unending's body taking on each element in turn. Red, green, blue and how far, a byte each.
     uint skin = animals[hit.instance].info.w;
-    if (skin != 0u) {
+    if (skin != 0u && (animals[hit.instance].info.z & TINT_OUTFIT) == 0u) {
         vec4 to = unpackUnorm4x8(skin);
         float light = dot(albedo, vec3(0.299, 0.587, 0.114));
         albedo = mix(albedo, to.rgb * (0.35 + 1.3 * light), to.a);
@@ -2623,6 +2645,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         bool held = hit.level == ANIMAL && animals[hit.instance].info.y == HELD;
         if (held)
         g_held = true;
+        g_no_body = held;
         vec3 face = faceCenter(hit);
 
         bool gi = (pc.flags & FLAG_GI) != 0;
