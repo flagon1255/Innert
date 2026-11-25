@@ -2199,7 +2199,7 @@ impl Weapon {
         let name = weapon_name(library, family, &components, &profile.synergies, seed, size);
         // Its parts' shapes from their files where they've been changed, see src\weapon_parts.rs
         let look = crate::weapon_parts::build(library, family, &parts, || build_look(fam, &components));
-        let scale = held_scale(fam, size, look.longest());
+        let scale = held_scale(fam, size, look.longest()) * held_size(fam);
         let look = look.scaled(scale);
         let profile = Rc::new(profile);
         Weapon { family, parts, seed, name, grade, size, base: profile.clone(), profile, tags, look, level: 1, jewels: 0, boost: Boost::default(), boosted: 0 }
@@ -2648,6 +2648,11 @@ fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element
     if !matches!(family.style, Style::Cast | Style::Flick) {
         return Casting::Thrust;
     }
+    // A talisman's held up and shown, then levelled at the crosshair: raised overhead as a staff
+    // is, a thing so small comes right up into the eye
+    if family.id == "talisman" {
+        return Casting::Present;
+    }
     let wand = family.style == Style::Flick;
     let focus = components.iter().find(|c| c.slot_type == "focus").and_then(|c| c.visual_profile.shape.as_deref()).unwrap_or("");
     let cast_speed = stats.get("castSpeed").copied().unwrap_or(2.0);
@@ -2887,6 +2892,13 @@ fn held_scale(family: &Family, size: usize, longest: f64) -> f64 {
         _ => 1.0,
     };
     1.0 + (s - 1.0) * damped
+}
+
+/// How much smaller than its parts make it a weapon of `family` is drawn in the hand, whatever
+/// size it was made: a talisman's broad icon held up near the eye looks bigger than the rest of
+/// the one-handed foci, a wand's thin length or a skull, so it's drawn a little smaller
+fn held_size(family: &Family) -> f64 {
+    if family.id == "talisman" { 0.8 } else { 1.0 }
 }
 
 /// A part of a crossbow or gun drawn apart from the rest, as it moves while it's loaded: a lever
@@ -7780,7 +7792,7 @@ mod tests {
             let family = &library.families[weapon.family];
             let plain = Weapon::assemble(&library, weapon.family, weapon.parts.clone(), seed);
             assert_eq!(plain.size, weapon.size);
-            let scale = weapon.look.scale;
+            let scale = weapon.look.scale / held_size(family);
             assert!((0.8..=1.2).contains(&scale), "{} drawn {scale}", weapon.name);
             assert_eq!(scale > 1.0, weapon.size > SIZES.len() / 2, "{}", weapon.name);
             assert!(weapon.look.longest() < 2.6, "{} is {:.2} m long", weapon.name, weapon.look.longest());
@@ -7892,6 +7904,12 @@ mod tests {
         // A halo calls down from overhead, a bone cage gathers in both hands, a crook sweeps
         assert_eq!(made("staff", "focus", "ivory_halo_focus").casting, Casting::Overhead);
         assert_eq!(made("staff", "focus", "bone_cage_focus").casting, Casting::Gather);
+        // A talisman's shown, holy as it is, never raised overhead into the eye, and drawn smaller
+        // in the hand than it's made
+        assert_eq!(made("talisman", "focus", "gold_halo_icon").casting, Casting::Present);
+        let talisman = library.generate(11, library.family("talisman"), 0.0);
+        let plain = held_scale(&library.families[talisman.family], talisman.size, talisman.look.longest());
+        assert!(talisman.look.scale < plain * 0.85, "a talisman's drawn {} where its size alone has it {plain}", talisman.look.scale);
         // A matchlock's loaded heavily, a wheel-lock with a flourish
         assert_eq!(made("musket", "lock", "gilded_matchlock").knack, Knack::Heavy);
         assert_eq!(made("pistol", "lock", "copper_wheel_lock").knack, Knack::Showy);
