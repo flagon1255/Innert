@@ -2197,6 +2197,8 @@ impl Weapon {
         let size = roll_size(seed);
         let (profile, tags, grade) = Weapon::work_out(library, family, &components, size, seed);
         let name = weapon_name(library, family, &components, &profile.synergies, seed, size);
+        // A tool's called by its tier, and its rarity's what it rolled, see src\tools.rs
+        let (name, grade) = crate::tools::dress(library, family, &parts, seed).unwrap_or((name, grade));
         // Its parts' shapes from their files where they've been changed, see src\weapon_parts.rs
         let look = crate::weapon_parts::build(library, family, &parts, || build_look(fam, &components));
         let scale = held_scale(fam, size, look.longest());

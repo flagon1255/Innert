@@ -91,3 +91,16 @@
    87  9ee029   lime leaves
    88  75080f   crimson leaves
    89  946145   clay bank, as it lies in the ground
+   90  b3dbe0   glass
+   91  cca857   thatch
+   92  edebe3   marble
+   93  4d5461   slate
+   94  383638   basalt
+   95  85573d   iron ore
+   96  5c8f7a   copper ore
+   97  d6bd8f   birch planks
+   98  4d301c   dark oak planks
+   99  a86b3d   pine planks
+  100  c29966   palm planks
+  101  bdbab3   cut stone
+  102  243d9e   blue cloth
