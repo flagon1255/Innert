@@ -3353,6 +3353,31 @@ pub fn pack_models(models: &[&Model]) -> Vec<u32> {
     words
 }
 
+/// Models packed by pack_models(), `packed`, followed by models each packed alone by it, `alone`,
+/// as one list of them all, the same as packing all of them at once would make but for sharing
+/// voxels: so a big model that comes and goes, as a tree coming down, is packed on a thread of its
+/// own and only copied in here, see felling.rs
+pub fn splice_packed(packed: &[u32], alone: &[Vec<u32>]) -> Vec<u32> {
+    // How many headers there are: the first model's voxels start right after them
+    let headers = if packed.is_empty() { 0 } else { packed[0] as usize / HEADER_WORDS };
+    let shift = alone.len() * HEADER_WORDS;
+    let mut out = Vec::with_capacity(packed.len() + shift + alone.iter().map(|w| w.len() - w[0] as usize).sum::<usize>());
+    out.extend_from_slice(&packed[..headers * HEADER_WORDS]);
+    for k in 0..headers {
+        out[k * HEADER_WORDS] += shift as u32;
+    }
+    out.resize(headers * HEADER_WORDS + shift, 0);
+    out.extend_from_slice(&packed[headers * HEADER_WORDS..]);
+    for (j, words) in alone.iter().enumerate() {
+        let at = out.len();
+        let header = (headers + j) * HEADER_WORDS;
+        out[header..header + HEADER_WORDS].copy_from_slice(&words[..HEADER_WORDS]);
+        out[header] = at as u32;
+        out.extend_from_slice(&words[words[0] as usize..]);
+    }
+    out
+}
+
 /// Voxels four to a word
 fn pack_voxels(voxels: &[u8]) -> Vec<u32> {
     voxels.chunks(4).map(|chunk| chunk.iter().enumerate().fold(0, |w, (j, &m)| w | (m as u32) << (j * 8))).collect()

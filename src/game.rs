@@ -970,6 +970,13 @@ pub struct Game {
     /// see editor.rs
     stage_models: Vec<Model>,
     preview: Vec<(Model, Vector3<f64>)>,
+    /// One-off models drawn with the weapons, after the model editor's: trees coming down, see
+    /// felling.rs, each in a slot of its own
+    one_offs: Vec<Vec<u32>>,
+    /// How many times models_version went up for the one-off models alone, and the weapons'
+    /// models packed as of the rest of it, see weapon_model_words()
+    one_off_changes: u32,
+    packed_weapons: std::cell::RefCell<Option<(u32, Vec<u32>)>>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
 }
@@ -1186,6 +1193,9 @@ impl Game {
             dragonfire: Default::default(),
             stage_models: crate::editor::stage_models(),
             preview: Vec::new(),
+            one_offs: Vec::new(),
+            one_off_changes: 0,
+            packed_weapons: std::cell::RefCell::new(None),
             aerie: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
@@ -1299,9 +1309,16 @@ impl Game {
     /// They're kept apart from the rest, which never change, as sending all of those again each
     /// time a weapon turns up takes long enough to hold up the game.
     pub fn weapon_model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).collect();
+        // The weapons' packed as they were last time if only the one-off models have changed since,
+        // so a tree coming down doesn't pack every weapon again
+        let key = self.models_version.wrapping_sub(self.one_off_changes);
+        let mut cache = self.packed_weapons.borrow_mut();
+        if cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).collect();
+            *cache = Some((key, pack_models(&models)));
+        }
         let mut words = vec![self.weapon_model(0)];
-        words.extend(pack_models(&models));
+        words.extend(crate::animals::splice_packed(cache.as_ref().map_or(&[][..], |(_, w)| w.as_slice()), &self.one_offs));
         words
     }
 
@@ -1383,17 +1400,47 @@ impl Game {
         self.held().and_then(|(_, w)| tools::of(&self.library, w))
     }
 
-    /// How good the best `tool` carried is, if one is
+    /// The tier of the best `tool` carried, if one is
     pub fn best_tool(&self, tool: tools::Tool) -> Option<usize> {
-        self.slots
-            .iter()
-            .filter_map(|&(item, _)| match item {
-                Item::Weapon(w) => tools::of(&self.library, &self.weapons[w]),
-                _ => None,
-            })
-            .filter(|&(t, _)| t == tool)
-            .map(|(_, grade)| grade)
-            .max()
+        self.best_gear(tool).map(|g| g.tier)
+    }
+
+    /// The best `tool` carried for gathering with, if one is, see tools::best()
+    pub fn best_gear(&self, tool: tools::Tool) -> Option<tools::Gear> {
+        tools::best(
+            self.slots
+                .iter()
+                .filter_map(|&(item, _)| match item {
+                    Item::Weapon(w) => tools::gear(&self.library, &self.weapons[w]),
+                    _ => None,
+                })
+                .filter(|g| g.tool == tool),
+        )
+    }
+
+    /// The tool in hand, everything about it, if it's a tool
+    pub fn held_gear(&self) -> Option<tools::Gear> {
+        self.held().and_then(|(_, w)| tools::gear(&self.library, w))
+    }
+
+    /// What weapons and tools are made of, see weapons.rs
+    pub fn library(&self) -> &Library {
+        &self.library
+    }
+
+    /// How many slots of the pack are taken, for scripts to inspect the last
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// The camera shaken this hard at least, 0 to about 1, as by a tree crashing down near by
+    pub fn jolt(&mut self, amount: f64) {
+        self.shake = self.shake.max(amount);
+    }
+
+    /// The player thrown this fast, in voxels a second, as by a tree coming down on them
+    pub fn shove(&mut self, velocity: Vector3<f64>) {
+        self.thrown += velocity;
     }
 
     /// How many melee blows have landed, for a tool's to gather where they land, see tools.rs
@@ -3564,6 +3611,10 @@ impl Game {
                 let rolls = hoard_rolls(hoard, &mut self.rng);
                 // Leaning to what suits it, see bosses::taste()
                 let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon_for(look, luck, sure, from)).collect();
+                // Often a tool too, rare ones likelier than crafting makes, see tools.rs
+                if random(&mut self.rng) < if raid { 0.8 } else { 0.35 } {
+                    loot.extend(self.roll_tool(if raid { 4.0 } else { 2.5 }));
+                }
                 // The Coil Unending's fang among it; the Worldpyre Ancient's is put straight into
                 // the player's hands, above
                 if look == Look::Ysveth {
@@ -4107,6 +4158,7 @@ impl Game {
     fn open_chest(&mut self, i: usize) {
         let chest = &self.chests[i];
         let key = chest.key;
+        let chest_luck = chest.luck;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
         let weapon = self.library.generate(seed, None, chest.luck * loot_scaling(self.scaling));
         // Of the level of where it is, a bandits' hoard's leaning higher, as a boss's does
@@ -4122,6 +4174,8 @@ impl Game {
         self.opened.insert(key);
         self.milestone = true;
         self.target = None;
+        // Now and then a tool, a hoard's always, see tools.rs
+        let tool = if hoard || hash(seed ^ 0x7001) % 5 == 0 { self.roll_tool(1.5 + chest_luck * self.scaling.luck) } else { None };
         let rarity = &self.library.rarities[weapon.grade];
         let family = &self.library.families[weapon.family];
         // Half of them have a bundle of special ammo in too
@@ -4132,12 +4186,19 @@ impl Game {
         let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
         // Now and then, wings, likelier the luckier the chest, the rarer kinds rarer, and never a
         // kind the player has already
-        let luck = chest.luck * self.scaling.luck;
+        let luck = chest_luck * self.scaling.luck;
         let chance = (CHEST_WINGS + CHEST_WINGS_LUCK * luck).min(CHEST_WINGS_MOST);
         let pair = (((hash(seed ^ 0x3175) >> 8) as f64 / 16_777_216.0) < chance).then(|| (hash(seed ^ 0x3176) >> 8) as f64 / 16_777_216.0).and_then(|roll| wings::pick(roll, luck, |k| self.carries(Item::Wings(k))));
         let extra = match pair {
             Some(k) => format!("{extra}, the {}", wings::KINDS[k as usize].name),
             None => extra,
+        };
+        let extra = match tool {
+            Some(Item::Weapon(t)) => {
+                let w = &self.weapons[t];
+                format!("{extra}, {} {}", self.library.rarities[w.grade].display_name.to_lowercase(), w.name)
+            }
+            _ => extra,
         };
         let found = if hoard { "In the bandits' hoard you find" } else { "You found" };
         let grade = rarity.display_name.to_lowercase();
@@ -4145,6 +4206,9 @@ impl Game {
         let message = format!("{found} {}, {a} {grade} {}{extra}, and {gold} gold!", weapon.name, family.display_name.to_lowercase());
         self.weapons.push(weapon);
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        if let Some(tool) = tool {
+            self.slots.push((tool, 1));
+        }
         if let Some((k, n)) = ammo {
             self.add_item(Item::Ammo(k, n), 1);
         }
@@ -4160,6 +4224,18 @@ impl Game {
         if let Some(k) = pair {
             self.gain_wings(k);
         }
+    }
+
+    /// A tool found, of a tier as good as how far on the player is and a rarity rolled with `luck`,
+    /// see tools::loot(): made, and the item it is
+    fn roll_tool(&mut self, luck: f64) -> Option<Item> {
+        let roll = hash(self.rng ^ 0x7001_7001);
+        self.rng = hash(self.rng.wrapping_add(0x9e37_79b9));
+        let depth = self.area_level() as f64 / levels::ITEM_CAP as f64;
+        let tool = tools::loot(&self.library, roll, depth, luck)?;
+        self.weapons.push(tool);
+        self.models_version += 1;
+        Some(Item::Weapon(self.weapons.len() - 1))
     }
 
     /// Wings of kind `k` come to the player: put on at once if they wear none, else into the pack,
@@ -4349,9 +4425,8 @@ impl Game {
             self.weapons.push(weapon);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
-        // And a fine tool, for gathering with, see tools.rs
-        let tool = tools::Tool::ALL[hash(seed ^ 0x7001) as usize % tools::Tool::ALL.len()];
-        if let Some(made) = tools::make(&self.library, tool, tools::FINE) {
+        // And a couple of tools, copper or iron, for gathering with, see tools.rs
+        for made in tools::merchant_stock(&self.library, hash(seed ^ 0x7001), 2) {
             self.weapons.push(made);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
@@ -5670,6 +5745,23 @@ impl Game {
         self.models_version += 1;
     }
 
+    /// One-off model `packed` put in slot `slot`, as a tree coming down, see felling.rs: packed
+    /// already by pack_models() as the only model, on a thread of its own, so it's only copied in
+    /// with the weapons' models as they're sent to the GPU with the next frame
+    pub fn set_one_off(&mut self, slot: usize, packed: Vec<u32>) {
+        if self.one_offs.len() <= slot {
+            self.one_offs.resize_with(slot + 1, || pack_models(&[&Model { size: [1, 1, 1], voxels: vec![AIR] }]));
+        }
+        self.one_offs[slot] = packed;
+        self.models_version += 1;
+        self.one_off_changes += 1;
+    }
+
+    /// Where the one-off model in slot `slot` is among all models
+    pub fn one_off_model(&self, slot: usize) -> u32 {
+        self.weapon_model(self.weapons.len()) + (self.preview.len() + slot) as u32
+    }
+
     /// The model of frame `k` of what set_preview() was given, and where its anchor is
     pub fn preview_model(&self, k: usize) -> Option<(u32, Vector3<f64>, [u32; 3])> {
         let (m, a) = self.preview.get(k)?;
@@ -6773,7 +6865,7 @@ impl Game {
             .show(ctx, |ui| {
                 // What's carried, or making tools from what's been gathered, see tools.rs
                 if tools::tabs(ui, crafting) {
-                    made = tools::craft_tab(ui, crafting, &|tool| self.best_tool(tool));
+                    made = tools::craft_tab(ui, crafting, &|tool| self.best_gear(tool));
                     return;
                 }
                 ui.horizontal(|ui| {
@@ -6918,12 +7010,17 @@ impl Game {
             }
             _ => {}
         }
-        // A tool made, paid for with what's been gathered
-        if let Some((tool, grade)) = made
-            && let Some(weapon) = tools::make(&self.library, tool, grade)
-            && crafting.materials.take(tools::cost(tool, grade))
+        // A tool made, paid for with what's been gathered, its rarity rolled as it's made
+        let roll = hash(self.rng ^ 0xc4af);
+        if let Some((tool, tier)) = made
+            && let Some(weapon) = tools::craft(&self.library, tool, tier, roll)
+            && crafting.materials.take(tools::cost(tool, tier))
         {
-            self.say(format!("Crafted a {}: G gathers {:.0}× faster with it now.", weapon.name, tools::SPEED[grade.min(tools::FINE)] / tools::BARE_HANDS));
+            self.rng = hash(self.rng.wrapping_add(0x9e37_79b9));
+            let rarity = &self.library.rarities[weapon.grade];
+            let speed = tools::gear(&self.library, &weapon).map_or(1.0, |g| g.speed());
+            let lucky = if weapon.grade >= 2 { "! " } else { ": " };
+            self.say(format!("Crafted {} {} {}{lucky}G gathers {:.1}× faster with it now.", if weapon.grade == 1 { "an" } else { "a" }, rarity.display_name.to_lowercase(), weapon.name, speed / tools::BARE_HANDS));
             self.give_weapon(weapon);
             self.cues.push(Cue::here(Sound::Place, 0.8).pitched(1.2));
         }
@@ -7260,6 +7357,12 @@ impl Game {
                 ui.label(RichText::new(format!("·  {}", element.name())).color(color(element.color())));
             }
         });
+        // A tool's tier, what it gathers and how quickly, and what its rarity does for it
+        if let Some(gear) = tools::gear(library, weapon) {
+            for (line, tint) in tools::card_lines(&gear) {
+                ui.label(RichText::new(line).color(tint));
+            }
+        }
         // Its item level, in how it stands to the player's: above it better, below it worse
         if library.families[weapon.family].tool.is_none() {
             let level = weapon.item_level();

@@ -6346,23 +6346,55 @@ weapons/naginata/choir_core.vox: Naginata, core: Choir Core
 weapons/naginata/star_core.vox: Naginata, core: Star Core
 weapons/naginata/watching_eye_core.vox: Naginata, core: Watching Eye
 weapons/hatchet/crude_hatchet_head.vox: Hatchet, blade: Knapped Stone Head
-weapons/hatchet/sturdy_hatchet_head.vox: Hatchet, blade: Iron Hatchet Head
-weapons/hatchet/fine_hatchet_head.vox: Hatchet, blade: Steel Hatchet Head
+weapons/hatchet/sturdy_hatchet_head.vox: Hatchet, blade: Copper Axe Head
+weapons/hatchet/fine_hatchet_head.vox: Hatchet, blade: Iron Axe Head
+weapons/hatchet/steel_hatchet_head.vox: Hatchet, blade: Steel Axe Head
+weapons/hatchet/obsidian_hatchet_head.vox: Hatchet, blade: Obsidian Axe Head
 weapons/hatchet/crude_tool_haft.vox: Hatchet, hilt: Rawhide-bound Haft
 weapons/hatchet/sturdy_tool_haft.vox: Hatchet, hilt: Leather-gripped Haft
 weapons/hatchet/fine_tool_haft.vox: Hatchet, hilt: Bronze-banded Ash Haft
+weapons/hatchet/steel_tool_haft.vox: Hatchet, hilt: Steel-capped Ash Haft
+weapons/hatchet/obsidian_tool_haft.vox: Hatchet, hilt: Gold-wound Ebony Haft
 weapons/pickaxe/crude_pickaxe_head.vox: Pickaxe, blade: Antler and Flint Pick
-weapons/pickaxe/sturdy_pickaxe_head.vox: Pickaxe, blade: Iron Pick Head
-weapons/pickaxe/fine_pickaxe_head.vox: Pickaxe, blade: Steel Pick Head
+weapons/pickaxe/sturdy_pickaxe_head.vox: Pickaxe, blade: Copper Pick Head
+weapons/pickaxe/fine_pickaxe_head.vox: Pickaxe, blade: Iron Pick Head
+weapons/pickaxe/steel_pickaxe_head.vox: Pickaxe, blade: Steel Pick Head
+weapons/pickaxe/obsidian_pickaxe_head.vox: Pickaxe, blade: Obsidian Pick Head
 weapons/pickaxe/crude_tool_haft.vox: Pickaxe, hilt: Rawhide-bound Haft
 weapons/pickaxe/sturdy_tool_haft.vox: Pickaxe, hilt: Leather-gripped Haft
 weapons/pickaxe/fine_tool_haft.vox: Pickaxe, hilt: Bronze-banded Ash Haft
+weapons/pickaxe/steel_tool_haft.vox: Pickaxe, hilt: Steel-capped Ash Haft
+weapons/pickaxe/obsidian_tool_haft.vox: Pickaxe, hilt: Gold-wound Ebony Haft
 weapons/spade/crude_spade_blade.vox: Spade, blade: Fire-hardened Wooden Blade
-weapons/spade/sturdy_spade_blade.vox: Spade, blade: Iron Spade Blade
-weapons/spade/fine_spade_blade.vox: Spade, blade: Steel Spade Blade
+weapons/spade/sturdy_spade_blade.vox: Spade, blade: Copper Shovel Blade
+weapons/spade/fine_spade_blade.vox: Spade, blade: Iron Shovel Blade
+weapons/spade/steel_spade_blade.vox: Spade, blade: Steel Shovel Blade
+weapons/spade/obsidian_spade_blade.vox: Spade, blade: Obsidian Shovel Blade
 weapons/spade/crude_tool_haft.vox: Spade, hilt: Rawhide-bound Haft
 weapons/spade/sturdy_tool_haft.vox: Spade, hilt: Leather-gripped Haft
 weapons/spade/fine_tool_haft.vox: Spade, hilt: Bronze-banded Ash Haft
+weapons/spade/steel_tool_haft.vox: Spade, hilt: Steel-capped Ash Haft
+weapons/spade/obsidian_tool_haft.vox: Spade, hilt: Gold-wound Ebony Haft
+weapons/sickle/crude_sickle_blade.vox: Sickle, blade: Flint-toothed Sickle
+weapons/sickle/sturdy_sickle_blade.vox: Sickle, blade: Copper Sickle Blade
+weapons/sickle/fine_sickle_blade.vox: Sickle, blade: Iron Sickle Blade
+weapons/sickle/steel_sickle_blade.vox: Sickle, blade: Steel Sickle Blade
+weapons/sickle/obsidian_sickle_blade.vox: Sickle, blade: Obsidian Sickle Blade
+weapons/sickle/crude_tool_haft.vox: Sickle, hilt: Rawhide-bound Haft
+weapons/sickle/sturdy_tool_haft.vox: Sickle, hilt: Leather-gripped Haft
+weapons/sickle/fine_tool_haft.vox: Sickle, hilt: Bronze-banded Ash Haft
+weapons/sickle/steel_tool_haft.vox: Sickle, hilt: Steel-capped Ash Haft
+weapons/sickle/obsidian_tool_haft.vox: Sickle, hilt: Gold-wound Ebony Haft
+weapons/chisel/crude_chisel_head.vox: Mason's Hammer, blade: Hammerstone and Flint Chisel
+weapons/chisel/sturdy_chisel_head.vox: Mason's Hammer, blade: Copper Mallet and Chisel
+weapons/chisel/fine_chisel_head.vox: Mason's Hammer, blade: Iron Mallet and Chisel
+weapons/chisel/steel_chisel_head.vox: Mason's Hammer, blade: Steel Mallet and Chisel
+weapons/chisel/obsidian_chisel_head.vox: Mason's Hammer, blade: Obsidian Mallet and Chisel
+weapons/chisel/crude_tool_haft.vox: Mason's Hammer, hilt: Rawhide-bound Haft
+weapons/chisel/sturdy_tool_haft.vox: Mason's Hammer, hilt: Leather-gripped Haft
+weapons/chisel/fine_tool_haft.vox: Mason's Hammer, hilt: Bronze-banded Ash Haft
+weapons/chisel/steel_tool_haft.vox: Mason's Hammer, hilt: Steel-capped Ash Haft
+weapons/chisel/obsidian_tool_haft.vox: Mason's Hammer, hilt: Gold-wound Ebony Haft
 jewels/melee_common.vox: Common Bloodstone
 jewels/melee_uncommon.vox: Uncommon Bloodstone
 jewels/melee_rare.vox: Rare Bloodstone
@@ -6381,4 +6413,4 @@ jewels/magic_rare.vox: Rare Skyglass
 jewels/magic_epic.vox: Epic Skyglass
 jewels/magic_legendary.vox: Legendary Skyglass
 jewels/magic_mythic.vox: Mythic Skyglass
-C:\Users\Andrej\Desktop\Innert\.claude\worktrees\morebosses\assets\trees.json: the trees' numbers
+C:\Users\Andrej\AppData\Local\Temp\claude\c46ed4f726b1f982\23fd8364-88b7-4af6-99ec-df0cd51069f0\scratchpad\buildtools\export\trees.json: the trees' numbers
