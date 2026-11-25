@@ -7383,7 +7383,7 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
 
 /// Where the models of every kind of special ammo in flight start among effect_models(), in the
 /// order of AMMO_STYLES
-pub const AMMO_MODELS: usize = crate::effects::STONE_SLAB + 1;
+pub const AMMO_MODELS: usize = crate::effects::EFFECT_MODELS;
 
 /// Where the coil a coil bind winds round what it holds is among effect_models(), and a serpent
 /// lash's serpent's head
