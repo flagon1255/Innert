@@ -12,24 +12,37 @@ use nalgebra::Vector3;
 use crate::bases::{BLOCK, Materials};
 use crate::worldgen::{FOLIAGE_BRICK, World, is_passable, material::*};
 
-/// What a voxel gives when it's gathered
+/// What kind of gathering a voxel takes, which says the tool for it, see tools::Tool::for_yield()
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Yield {
     Wood,
+    /// Rough stone, rock, basalt, obsidian and ice, broken with a pickaxe
     Stone,
+    /// Stone that's cut, sandstone, slate and marble, with a hammer and chisel
+    Cut,
+    /// Copper and iron ore, with a pickaxe
+    Ore,
     Clay,
-    /// Earth, sand and snow: dug out of the way, for nothing
+    Sand,
+    /// Reeds, dry grass and flax, cut with a sickle
+    Plant,
+    /// Earth and snow: dug out of the way, for nothing
     Earth,
     /// Metal, crystal, and the like: left alone
     Nothing,
 }
 
 pub fn yield_of(material: u8) -> Yield {
-    match material {
-        WOOD | BARK_DARK | BIRCH_BARK | PALM_WOOD | DEAD_WOOD | MUSHROOM_STEM | CACTUS => Yield::Wood,
-        STONE | ROCK | GRAVEL | LIMESTONE | SANDSTONE | SANDSTONE_DARK | BRICK_STONE | MORTAR | TEMPLE_STONE | TEMPLE_DARK | OBSIDIAN | MOSS => Yield::Stone,
-        CLAY | CLAY_BANK | CLAY_POT => Yield::Clay,
-        GRASS | DIRT | SAND | SNOW | JUNGLE_GRASS | ICE => Yield::Earth,
+    use crate::materials::{Res, res_of};
+    match (material, res_of(material)) {
+        (_, Some(Res::Wood)) => Yield::Wood,
+        (_, Some(Res::Stone | Res::Basalt | Res::Obsidian | Res::Ice)) => Yield::Stone,
+        (_, Some(Res::Sandstone | Res::Marble | Res::Slate)) => Yield::Cut,
+        (_, Some(Res::CopperOre | Res::IronOre)) => Yield::Ore,
+        (_, Some(Res::Clay)) => Yield::Clay,
+        (_, Some(Res::Sand)) => Yield::Sand,
+        (_, Some(Res::Reed | Res::Cloth)) => Yield::Plant,
+        (GRASS | DIRT | SNOW | JUNGLE_GRASS, _) => Yield::Earth,
         _ => Yield::Nothing,
     }
 }
@@ -49,9 +62,13 @@ pub fn is_crown(material: u8) -> bool {
 pub fn work_seconds(y: Yield, tree: bool) -> f64 {
     match y {
         Yield::Wood if tree => 3.0,
+        Yield::Ore => 2.8,
+        Yield::Cut => 2.6,
         Yield::Stone => 2.4,
         Yield::Clay | Yield::Wood => 1.6,
+        Yield::Sand => 0.9,
         Yield::Earth => 0.8,
+        Yield::Plant => 0.6,
         Yield::Nothing => f64::INFINITY,
     }
 }
@@ -269,7 +286,7 @@ pub struct Block {
 /// in it that can be gathered.
 pub fn block_at(world: &World, brick: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -> Option<Block> {
     let mut cut = Cut::new();
-    let mut counts = [0usize; 4];
+    let mut counts: HashMap<Option<crate::materials::Res>, usize> = HashMap::new();
     let mut most: HashMap<u8, usize> = HashMap::new();
     let mut tops: HashSet<[i64; 2]> = HashSet::new();
     for k in 0..512i64 {
@@ -282,24 +299,19 @@ pub fn block_at(world: &World, brick: [i64; 3], built: &dyn Fn([i64; 3]) -> bool
         if y == Yield::Nothing && !is_passable(m) {
             continue;
         }
-        if is_passable(m) && y == Yield::Nothing {
-            // Plants in the block go with it
+        if is_passable(m) {
+            // Plants in the block go with it, giving nothing
             add_to(&mut cut, v);
             continue;
         }
         add_to(&mut cut, v);
         *most.entry(m).or_default() += 1;
-        counts[match y {
-            Yield::Wood => 0,
-            Yield::Stone => 1,
-            Yield::Clay => 2,
-            _ => 3,
-        }] += 1;
+        *counts.entry(crate::materials::res_of(m).filter(|_| y != Yield::Earth)).or_default() += 1;
         if k / 64 == 7 {
             tops.insert([v[0], v[1]]);
         }
     }
-    if counts.iter().sum::<usize>() == 0 {
+    if counts.values().sum::<usize>() == 0 {
         return None;
     }
     // What grew on top of it, left hanging
@@ -313,16 +325,47 @@ pub fn block_at(world: &World, brick: [i64; 3], built: &dyn Fn([i64; 3]) -> bool
         }
     }
     let give = |n: usize| ((n * PER_BLOCK + 256) / 512) as u32;
-    let material = most.into_iter().max_by_key(|&(_, n)| n).map_or(DIRT, |(m, _)| m);
-    Some(Block { cut, gives: Materials::new(give(counts[0]), give(counts[1]), give(counts[2])), material })
+    let mut gives = Materials::default();
+    for (res, n) in counts {
+        if let Some(res) = res {
+            *gives.get_mut(res) += give(n);
+        }
+    }
+    let material = most.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))).map_or(DIRT, |(m, _)| m);
+    Some(Block { cut, gives, material })
 }
 
+/// Reeds, dry grass or flax cut where `hit` is, a crop's voxel, and the same crop round it in its
+/// brick and those over and under it: what goes, and what it gives, a reed or a cloth for every
+/// CROP_VOXELS of it, one at least and four at most
+pub fn crop_at(world: &World, hit: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -> Option<Block> {
+    let material = world.material_at(hit[0], hit[1], hit[2]);
+    let res = crate::materials::res_of(material).filter(|_| crate::materials::is_crop(material))?;
+    let brick = hit.map(|v| v.div_euclid(BLOCK));
+    let mut cut = Cut::new();
+    let mut n = 0;
+    for dz in -1..=1 {
+        for k in 0..512i64 {
+            let v = [brick[0] * 8 + k % 8, brick[1] * 8 + (k / 8) % 8, (brick[2] + dz) * 8 + k / 64];
+            let m = world.material_at(v[0], v[1], v[2]);
+            if crate::materials::res_of(m) == Some(res) && crate::materials::is_crop(m) && !built(v) {
+                add_to(&mut cut, v);
+                n += 1;
+            }
+        }
+    }
+    (n > 0).then(|| Block { cut, gives: Materials::of(res, (n / CROP_VOXELS).clamp(1, 4) as u32), material })
+}
+
+/// Voxels of a crop for each reed or cloth it gives
+pub const CROP_VOXELS: usize = 24;
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // A world with a flat ground, a tree on it and another beside it, their crowns touching
-    fn grove() -> World {
+    pub(crate) fn grove() -> World {
         let size = [128u32, 128, 256];
         let mut world = World::window(size, 0, [0, 0], 16, None);
         let set = |world: &mut World, x: i64, y: i64, z: i64, m: u8| {

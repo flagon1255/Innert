@@ -268,7 +268,7 @@ const uint FAR_DIRECT_INTERVAL = 16;
 const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 90;
+const uint PALETTE_SIZE = 103;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
     vec3(0.28, 0.48, 0.17), // grass
@@ -359,7 +359,20 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(1.00, 0.92, 0.60), // holy
     vec3(0.62, 0.88, 0.16), // lime leaves
     vec3(0.46, 0.03, 0.06), // crimson leaves
-    vec3(0.58, 0.38, 0.27)  // clay bank, as it lies in the ground
+    vec3(0.58, 0.38, 0.27), // clay bank, as it lies in the ground
+    vec3(0.70, 0.86, 0.88), // glass
+    vec3(0.80, 0.66, 0.34), // thatch
+    vec3(0.93, 0.92, 0.89), // marble
+    vec3(0.30, 0.33, 0.38), // slate
+    vec3(0.22, 0.21, 0.22), // basalt
+    vec3(0.52, 0.34, 0.24), // iron ore
+    vec3(0.36, 0.56, 0.48), // copper ore
+    vec3(0.84, 0.74, 0.56), // birch planks
+    vec3(0.30, 0.19, 0.11), // dark oak planks
+    vec3(0.66, 0.42, 0.24), // pine planks
+    vec3(0.76, 0.60, 0.40), // palm planks
+    vec3(0.74, 0.73, 0.70), // cut stone
+    vec3(0.14, 0.24, 0.62)  // blue cloth
 );
 
 // Has to match the material ids in src\worldgen.rs
@@ -1467,6 +1480,13 @@ const float BLADE_HEIGHT = 0.45;
 
 // Has to match worldgen::material::CLAY_BANK
 const uint MAT_CLAY = 89;
+// Has to match worldgen::material::GLASS. What's seen through glass, through as many voxels of it
+// as GLASS_PANES at most, is tinted by GLASS_TINT for each, and the sky's mirrored in its face.
+const uint MAT_GLASS = 90;
+const uint GLASS_PANES = 4;
+const vec3 GLASS_TINT = vec3(0.86, 0.94, 0.93);
+vec3 g_glass_tint = vec3(1);
+vec3 g_glass_sheen = vec3(0);
 
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
@@ -2468,7 +2488,10 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     return shadeUnderwater(origin, dir, steps, distance);
 
     g_sky_lit = false;
+    g_glass_tint = vec3(1);
+    g_glass_sheen = vec3(0);
     vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
+    color = color * g_glass_tint + g_glass_sheen;
     color = atmosphere(origin, dir, distance, color, seed);
     float kept = g_transmittance;
     // Only so much of the endless landscape is there at once, so things fade into the sky well
@@ -2495,7 +2518,25 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     Hit hit;
     // Past where everything's faded into the sky there's no need to look any further
     float far = pc.haze.w > 0 ? pc.haze.w : FLT_MAX;
-    bool solid = trace(origin, dir, false, far, hit, steps);
+    // Glass is seen through: the ray goes on out the far side of each voxel of it, a few at most,
+    // what's behind it a little tinted and the sky mirrored faintly in its face, see shade(). The
+    // one call to trace() in the loop, so the shader holds only the one copy of it.
+    bool solid;
+    float through = 0;
+    uint material = 0;
+    for (uint k = 0;; k++) {
+        solid = trace(origin + dir * through, dir, false, far - through, hit, steps);
+        hit.t += through;
+        material = solid ? hitMaterial(hit) : 0;
+        if (!solid || material != MAT_GLASS || hit.level == ANIMAL || k >= GLASS_PANES)
+        break;
+        vec3 inv = clamp(1 / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
+        vec3 out_t = max((voxelPoint(hit, vec3(0)) - origin) * inv, (voxelPoint(hit, vec3(1)) - origin) * inv);
+        through = min(out_t.x, min(out_t.y, out_t.z)) + 0.02;
+        if (k == 0)
+        g_glass_sheen = skyColor(reflect(dir, hit.normal)) * waterFresnel(dir, hit.normal) * 0.8;
+        g_glass_tint *= GLASS_TINT;
+    }
     g_animal_limit = SECONDARY_ANIMALS;
     g_sway = false;
     g_clear_leaves = false;
@@ -2523,7 +2564,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     float sea_level = pc.sun_direction.w;
     vec3 pos = origin + dir * hit.t;
     vec3 normal = hit.normal;
-    uint material = 0;
     if (wet) {
         distance = water.t;
         // The denoiser leaves water alone
@@ -2549,7 +2589,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         }
     } else {
         distance = hit.t;
-        material = hitMaterial(hit);
 
         // Seen through the side of the world, the water at its edge continues the open sea
         bool world_edge = hit.level == MAIN

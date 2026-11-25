@@ -312,7 +312,7 @@ impl App {
                 .filter(|p| p.kind.weak() || big)
                 .filter_map(|p| {
                     let near = p.blocks().iter().map(|b| (Vector3::new(b[0] as f64 + 0.5, b[1] as f64 + 0.5, b[2] as f64 + 0.5) * BLOCK as f64 - at).norm()).fold(f64::MAX, f64::min);
-                    (near < reach).then(|| (p.id, p.kind == bases::Kind::Door, p.middle()))
+                    (near < reach).then(|| (p.id, p.kind.is_door(), p.middle()))
                 })
                 .collect();
             for (id, door, middle) in hit {
@@ -375,7 +375,7 @@ pub fn hud(raid: &Raid, bases: &bases::Bases, world: &World, ctx: &egui::Context
     let t = ctx.input(|i| i.time) as f32;
     let fade = (1.0 - (since as f32 - STRUCK_SECONDS as f32 + 1.0).max(0.0)).clamp(0.0, 1.0);
     let left = (piece.health / piece.kind.health()).clamp(0.0, 1.0) as f32;
-    let what = if piece.kind == bases::Kind::Door { "Your door's under attack!" } else { "They're breaking through!" };
+    let what = if piece.kind.is_door() { "Your door's under attack!" } else { "They're breaking through!" };
     let pulse = 0.75 + 0.25 * (t * 6.0).sin();
     painter.text(pos2(screen.center().x, screen.center().y - 150.0), Align2::CENTER_CENTER, what, FontId::proportional(20.0), Color32::from_rgb(255, 90, 70).gamma_multiply(fade * pulse));
     // Its health over it, where it is

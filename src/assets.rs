@@ -538,8 +538,22 @@ fn hash_of(bytes: &[u8]) -> String {
 /// as its .json keeps them: for telling which model a file was written from, see
 /// baked::legacy()
 pub(crate) fn written_as(model: &Model, res: f64) -> (u64, String) {
+    written_with(model, res, &palette())
+}
+
+/// The same, as written with the palette as it was before the building materials were added, see
+/// src\materials.rs: its colours past clay bank not materials. A file written then says so.
+pub(crate) fn written_as_before(model: &Model, res: f64) -> (u64, String) {
+    let mut old = palette();
+    for colour in old.iter_mut().skip(crate::worldgen::material::CLAY_BANK as usize + 1) {
+        *colour = NOT_A_MATERIAL;
+    }
+    written_with(model, res, &old)
+}
+
+fn written_with(model: &Model, res: f64, palette: &[[u8; 4]; 256]) -> (u64, String) {
     let grid = Grid { size: model.size, voxels: model.voxels.clone(), origin: origin_of(pivot_of(model.size, None, res)) };
-    let bytes = vox::write(&grid, &palette());
+    let bytes = vox::write(&grid, palette);
     (bytes.len() as u64, hash_of(&bytes))
 }
 
@@ -1715,7 +1729,9 @@ mod tests {
     fn palette_is_the_materials() {
         use crate::worldgen::material::*;
         let m = materials();
-        assert_eq!(m.len(), CLAY_BANK as usize + 1, "a material for every id");
+        assert_eq!(m.len(), LAST as usize + 1, "a material for every id");
+        assert_eq!(m[GLASS as usize].name, "glass");
+        assert_eq!(m[CLOTH_BLUE as usize].name, "blue cloth");
         assert_eq!(m[TEMPLE_RED as usize].name, "red paint");
         let map = material_map(&palette());
         for i in 1..m.len() {
