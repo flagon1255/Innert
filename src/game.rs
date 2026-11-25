@@ -2703,9 +2703,13 @@ impl Game {
                 self.combat.hurl(HostileKind::Spell(element), from, to, time, damage, radius);
                 self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element)) as u8), from, 1.0).pitched(0.6));
             }
-            Deed::Breath { from, direction, dt: seconds } => {
+            Deed::Breath { from, direction, dt: seconds } | Deed::Jet { from, direction, dt: seconds } => {
                 let element = element.unwrap_or(Element::Fire);
-                self.combat.breathe(from, direction, seconds, element);
+                if matches!(deed, Deed::Jet { .. }) {
+                    self.combat.jet(from, direction, seconds, element);
+                } else {
+                    self.combat.breathe(from, direction, seconds, element);
+                }
                 if self.breath_sound <= 0.0 {
                     self.breath_sound = 1.8;
                     self.cues.push(Cue::at(Sound::Breath, from, 1.0).pitched(if element == Element::Fire { 1.0 } else { 1.25 }));

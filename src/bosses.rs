@@ -236,6 +236,9 @@ pub enum Deed {
     Spit { from: Vector3<f64>, to: Vector3<f64> },
     /// Breathing fire for `dt` seconds
     Breath { from: Vector3<f64>, direction: Vector3<f64>, dt: f64 },
+    /// A jet of its element roaring out for `dt` seconds, as a breath but thicker and brighter, to
+    /// be seen in full sun: the Gilded Sphinx's, wheeling round it
+    Jet { from: Vector3<f64>, direction: Vector3<f64>, dt: f64 },
     /// Charging into the player, who's thrown along `direction`
     Ram { damage: f64, direction: Vector3<f64> },
     /// A heavy footfall

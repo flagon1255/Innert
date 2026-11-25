@@ -580,7 +580,7 @@ pub fn during(m: Move, t: f64, dt: f64, a: &mut Animal, boss: &mut Boss, player:
                 let from = jet_from(a, turn, vpm);
                 let way = Vector3::new(turn.cos(), turn.sin(), 0.0);
                 let direction = Vector3::new(way.x, way.y, -0.07).normalize();
-                boss.deeds.push(Deed::Breath { from, direction, dt });
+                boss.deeds.push(Deed::Jet { from, direction, dt });
                 if flaring {
                     let out = 2.0 + 2.6 * (beat(t) % 4) as f64;
                     let at = from + way * out * vpm;
