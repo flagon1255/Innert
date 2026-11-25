@@ -199,26 +199,26 @@
     {
       "id": "musket", "displayName": "Musket", "kind": "ranged", "style": "powder",
       "slots": ["barrel", "stock", "lock", "core"],
-      "build": "musket", "length": 1.15, "barrel": 0.95, "caliber": 0.009,
+      "build": "musket", "length": 1.15, "barrel": 0.95, "caliber": 0.009, "rarityDamage": 0.5,
       "synergyTags": ["projectile", "ranged", "heavy"],
-      "baseStats": { "physicalDamage": 55, "reloadSpeed": 0.36, "magazine": 1, "projectileSpeed": 210, "critChance": 0.15, "critDamage": 2.1, "knockback": 4, "statusPotency": 1 },
+      "baseStats": { "physicalDamage": 78, "reloadSpeed": 0.36, "magazine": 1, "projectileSpeed": 210, "critChance": 0.15, "critDamage": 2.1, "knockback": 4, "statusPotency": 1 },
       "nouns": ["musket", "longgun", "fusil", "thunderstick", "arquebus"]
     },
     {
       "id": "blunderbuss", "displayName": "Blunderbuss", "kind": "ranged", "style": "powder",
       "slots": ["barrel", "stock", "lock", "core"],
-      "build": "blunderbuss", "length": 0.72, "barrel": 0.55, "caliber": 0.013,
+      "build": "blunderbuss", "length": 0.72, "barrel": 0.55, "caliber": 0.013, "rarityDamage": 0.5,
       "synergyTags": ["projectile", "ranged", "heavy", "area"],
-      "baseStats": { "physicalDamage": 54, "pellets": 9, "spread": 6, "range": 16, "reloadSpeed": 0.4, "magazine": 1, "projectileSpeed": 120, "critChance": 0.05, "critDamage": 1.6, "knockback": 6, "statusPotency": 1 },
+      "baseStats": { "physicalDamage": 72, "pellets": 9, "spread": 6, "range": 16, "reloadSpeed": 0.4, "magazine": 1, "projectileSpeed": 120, "critChance": 0.05, "critDamage": 1.6, "knockback": 6, "statusPotency": 1 },
       "nouns": ["blunderbuss", "dragoon", "thunderer", "bellmouth", "scattergun"]
     },
     {
       "id": "handcannon", "displayName": "Hand Cannon", "kind": "ranged", "style": "powder",
       "slots": ["barrel", "stock", "lock", "core"],
-      "build": "cannon", "length": 0.5, "barrel": 0.5, "caliber": 0.032,
+      "build": "cannon", "length": 0.5, "barrel": 0.5, "caliber": 0.032, "rarityDamage": 0.5,
       "effects": ["explosive"],
       "synergyTags": ["projectile", "ranged", "heavy", "area"],
-      "baseStats": { "physicalDamage": 44, "reloadSpeed": 0.3, "magazine": 1, "projectileSpeed": 55, "critChance": 0.05, "critDamage": 1.6, "knockback": 6, "area": 1.2, "statusPotency": 1 },
+      "baseStats": { "physicalDamage": 63, "reloadSpeed": 0.3, "magazine": 1, "projectileSpeed": 55, "critChance": 0.05, "critDamage": 1.6, "knockback": 6, "area": 1.2, "statusPotency": 1 },
       "nouns": ["handgonne", "bombard", "culverin", "roarer", "cannon"]
     },
     {

@@ -437,6 +437,12 @@ pub struct Family {
     /// Stats added on by the weapon's grade, a number for each rarity: how far a whip reaches
     #[serde(default)]
     grade_stats: BTreeMap<String, Vec<f64>>,
+    /// How much of the rarity of its parts shows in how hard it hits, as a power of what their
+    /// damageScale makes of it, see Weapon::work_out(): 1, all of it, for most, and less for a
+    /// flatter rise from common to mythic, for the powder guns, whose one shot after a long load
+    /// has to tell whatever they're made of
+    #[serde(default = "one")]
+    rarity_damage: f64,
     /// How a crossbow or gun is built, and so loaded
     #[serde(default)]
     pub build: Build,
@@ -2316,6 +2322,8 @@ impl Weapon {
         // forge quite alike. Bigger reaches further, hits harder and throws what it hits further,
         // but is slower.
         let (quality, pace, forged) = Weapon::forging(library, components, seed);
+        // Only as much of the rarity as its family takes, see Family::rarity_damage
+        let quality = quality.powf(fam.rarity_damage);
         let sized = &SIZES[size.min(SIZES.len() - 1)];
         let mut scale = |name: &str, by: f64| {
             if let Some(v) = stats.get_mut(name) {
@@ -8255,6 +8263,75 @@ mod tests {
             Weapon::work_out(&library, maul, &with, 2, 5).0.stat("attackSpeed")
         };
         assert!(speed("stone_maul_head") < speed("iron_maul_head"));
+    }
+
+    /// What the weapons of family `f` do on the whole at each grade, rolled with luck from little
+    /// to a lot so every grade turns up: how hard one blow or shot hits, and that times how many a
+    /// second, at item level 1, for grades rolled at least `least` times
+    fn by_grade(library: &Library, f: usize, least: usize) -> BTreeMap<usize, (f64, f64)> {
+        let speed = |p: &Profile| ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"].iter().map(|k| p.stat(k)).find(|&v| v > 0.0).unwrap_or(0.0);
+        let mut rolled: BTreeMap<usize, Vec<(f64, f64)>> = BTreeMap::new();
+        for seed in 0..1600u32 {
+            let seed = seed * 7 + 1;
+            let (_, parts) = library.roll(seed, Some(f), [0.3, 1.0, 3.0, 8.0][seed as usize % 4]);
+            let cs: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+            let (p, _, grade) = Weapon::work_out(library, f, &cs, roll_size(seed), seed);
+            rolled.entry(grade).or_default().push((damage(&p), damage(&p) * speed(&p)));
+        }
+        rolled
+            .into_iter()
+            .filter(|(_, v)| v.len() >= least)
+            .map(|(g, v)| {
+                let n = v.len() as f64;
+                (g, (v.iter().map(|x| x.0).sum::<f64>() / n, v.iter().map(|x| x.1).sum::<f64>() / n))
+            })
+            .collect()
+    }
+
+    /// Even a common musket, blunderbuss or hand cannon hits hard, its one shot after a long load
+    /// worth the wait: through the normal world's levels, a common musket fells an ordinary monster
+    /// of its own level in three shots at most, a blunderbuss's whole spread in three too, and a
+    /// hand cannon's shell, its burst and all, in two. The rarer ones still hit harder, grade by
+    /// grade, and for all that, no powder gun does more a second than the best of the rest of the
+    /// weapons of its grade, the long load being what it pays for it.
+    #[test]
+    fn common_powder_guns_hit_hard() {
+        use crate::levels;
+        let library = Library::parse(BUILT_IN).unwrap();
+        let explosive = library.effects.iter().find(|e| e.id == "explosive").and_then(|e| e.params.get("power").copied()).unwrap();
+        // Each with how much its shot does all told for its damage: a blunderbuss's pellets all
+        // striking, as combat.rs's PELLETS_SHARE has it, and a shell bursting in what it struck
+        let guns = [("musket", 1.0, 3.0), ("blunderbuss", 1.25, 3.0), ("handcannon", 1.0 + explosive, 2.0)];
+        let mut best_of_the_rest: BTreeMap<usize, (f64, &str)> = BTreeMap::new();
+        for (f, fam) in library.families.iter().enumerate() {
+            if fam.tool.is_some() || fam.style == Style::Powder {
+                continue;
+            }
+            for (g, (_, dps)) in by_grade(&library, f, 20) {
+                let best = best_of_the_rest.entry(g).or_insert((0.0, ""));
+                if dps > best.0 {
+                    *best = (dps, &fam.id);
+                }
+            }
+        }
+        for (id, share, most) in guns {
+            let f = library.family(id).unwrap();
+            let grades = by_grade(&library, f, 20);
+            let (common, _) = grades[&0];
+            for level in 1..=levels::BANDS[0].hi {
+                let shot = common * share * levels::weapon_power(level);
+                let shots = levels::MONSTER_HEALTH * levels::toughness(level) / shot;
+                assert!(shots <= most, "a common {id} at level {level} takes {shots:.2} shots to fell an ordinary monster of its level, {shot:.0} a shot");
+            }
+            let mut last = 0.0;
+            for (g, (hit, dps)) in grades {
+                let rarity = &library.rarities[g].id;
+                assert!(hit > last * 1.02, "a {rarity} {id} hits {hit:.1}, no harder than the grade under it, {last:.1}");
+                last = hit;
+                let (best, of) = best_of_the_rest[&g];
+                assert!(dps * share < best, "a {rarity} {id} does {:.1} a second, more than any {rarity} {of}, {best:.1}", dps * share);
+            }
+        }
     }
 
     /// What each family's weapons do, made of its commonest parts, its lightest and heaviest
