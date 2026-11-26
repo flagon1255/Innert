@@ -384,7 +384,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
     egui::Area::new(egui::Id::new("skill web")).fixed_pos(screen.min).order(egui::Order::Foreground).show(ctx, |ui| {
         let (rect, response) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(12, 10, 9, 234));
+        painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(7, 7, 7, 236));
         if response.dragged() {
             view.offset += response.drag_delta();
         }
@@ -419,11 +419,11 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
                     continue;
                 }
                 let (stroke, tint) = if taken[k] && taken[j] {
-                    (4.0, Color32::from_rgb(255, 214, 120))
+                    (4.0, Color32::from_gray(236))
                 } else if taken[k] || taken[j] {
-                    (2.5, Color32::from_rgb(150, 140, 110))
+                    (2.5, Color32::from_gray(140))
                 } else {
-                    (2.0, Color32::from_rgb(70, 62, 52))
+                    (2.0, Color32::from_gray(60))
                 };
                 painter.line_segment([a, b], Stroke::new(stroke * view.zoom.sqrt(), tint));
             }
@@ -442,9 +442,9 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
             if near {
                 hovered = Some(k);
             }
-            let fill = if taken[k] { color } else if open && free > 0 { color.gamma_multiply(0.35) } else { Color32::from_rgb(32, 28, 24) };
+            let fill = if taken[k] { color } else if open && free > 0 { color.gamma_multiply(0.35) } else { Color32::from_gray(26) };
             let rim = if taken[k] {
-                Color32::from_rgb(255, 230, 160)
+                Color32::WHITE
             } else if open {
                 color
             } else {
@@ -461,8 +461,8 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
                     painter.circle_stroke(at, r + 4.0 * view.zoom, Stroke::new(1.0f32, rim.gamma_multiply(0.6)));
                 }
                 Kind::Start => {
-                    painter.circle_filled(at, r, Color32::from_rgb(60, 52, 36));
-                    painter.circle_stroke(at, r, Stroke::new(3.0f32, Color32::from_rgb(255, 214, 120)));
+                    painter.circle_filled(at, r, Color32::from_gray(40));
+                    painter.circle_stroke(at, r, Stroke::new(3.0f32, Color32::WHITE));
                 }
                 Kind::Small => {
                     painter.circle_filled(at, r, fill);
@@ -520,9 +520,9 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
         if let Some(price) = forget {
             let button = Rect::from_min_size(pos2(rect.left() + 20.0, rect.bottom() - 70.0), vec2(270.0, 34.0));
             let over = hovered_pos.is_some_and(|p| button.contains(p));
-            painter.rect_filled(button, 6.0, if over { Color32::from_rgb(90, 70, 40) } else { Color32::from_rgb(60, 48, 30) });
-            painter.rect_stroke(button, 6.0, Stroke::new(1.5f32, Color32::from_rgb(255, 205, 70)), StrokeKind::Inside);
-            painter.text(button.center(), Align2::CENTER_CENTER, format!("Forget them all  ·  {price} gold"), FontId::proportional(15.0), Color32::from_rgb(255, 205, 70));
+            painter.rect_filled(button, 3.0, if over { Color32::from_gray(54) } else { Color32::from_gray(30) });
+            painter.rect_stroke(button, 3.0, Stroke::new(1.5f32, if over { Color32::WHITE } else { Color32::from_gray(150) }), StrokeKind::Inside);
+            painter.text(button.center(), Align2::CENTER_CENTER, format!("Forget them all  ·  {price} gold"), FontId::proportional(15.0), crate::theme::HEADING);
             if over && response.clicked() {
                 action = Some(Action::Forget);
             }

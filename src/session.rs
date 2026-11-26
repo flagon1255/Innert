@@ -1301,7 +1301,7 @@ pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave
         }
         if restored {
             ui.add_space(6.0);
-            ui.label(RichText::new("All realms restored. The gate burns with the light of every one of them.").size(16.0).strong().color(Color32::from_rgb(255, 220, 140)));
+            ui.label(RichText::new("All realms restored. The gate burns with the light of every one of them.").size(16.0).strong().color(theme::HEADING));
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -1337,7 +1337,7 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
     let mut picked = None;
     let big = |ui: &mut egui::Ui, text: &str| ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).font(theme::display(19.0))));
     let gray = theme::WEAK;
-    // The name in blackletter, in gold over a shadow, a flourish under it
+    // The name in blackletter, white over a shadow, a printer's flourish under it
     let (title, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TITLE_HIGH), egui::Sense::hover());
     let painter = ui.painter();
     let at = title.center() + egui::vec2(0.0, TITLE_DOWN);
@@ -1387,8 +1387,8 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             // Who's playing it, as what, and how hard
             let who = save.section::<crate::character::Character>(crate::character::SECTION).unwrap_or_default();
             let level = save.carried.level.map_or(String::new(), |l| format!(", level {l}"));
-            ui.label(RichText::new(format!("{}, {}{level} · {}", who.name, who.class.name(), who.difficulty.name())).size(15.0).strong().color(Color32::from_rgb(235, 220, 180)));
-            ui.label(RichText::new(note).size(13.0).color(Color32::from_rgb(200, 215, 170)));
+            ui.label(RichText::new(format!("{}, {}{level} · {}", who.name, who.class.name(), who.difficulty.name())).size(15.0).strong().color(theme::TEXT));
+            ui.label(RichText::new(note).size(13.0).color(Color32::from_gray(190)));
             ui.add_space(2.0);
         }
         if let save::Slot::Unreadable(why) = saves.slot(mode) {
@@ -1400,7 +1400,7 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             ui.add_space((ui.available_width() - if continuing { 260.0 } else { 126.0 }).max(0.0) * 0.5);
             if continuing {
                 // Going on, the likelier, lit as the button that goes on
-                if ui.add_sized(half, egui::Button::new(RichText::new("Continue").size(18.0)).fill(theme::PRIMARY)).clicked() {
+                if ui.add_sized(half, theme::primary("Continue", 17.0)).clicked() {
                     picked = Some(MenuAction::Continue(mode));
                 }
                 ui.add_space(8.0);
@@ -1444,7 +1444,7 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
 pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
     let room = (ctx.screen_rect().height() - 2.0 * MENU_MARGIN - 24.0).max(120.0);
     egui::Area::new(egui::Id::new("menu")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        theme::framed(ui, theme::panel(30.0, 18.0), |ui| {
+        theme::framed(ui, theme::panel(MENU_MARGIN, 6.0), |ui| {
             ui.set_width(376.0);
             // Room for all of it, not only for as much as there was the frame before: an Area lays
             // out what's in it within the size it had last, which left Settings and Quit scrolled

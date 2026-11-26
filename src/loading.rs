@@ -1131,14 +1131,15 @@ fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Op
     painter.rect_filled(bar, 2.0, fade(Color32::from_white_alpha(34)));
     let filled = Rect::from_min_max(bar.min, pos2(bar.min.x + width * look.fraction, bar.max.y));
     let first = mesh.vertices.len() as u32;
-    let (cool, warm) = (fade(Color32::from_rgb(236, 158, 96)), fade(Color32::from_rgb(255, 230, 176)));
+    // Grey to white, as the menu it gives way to
+    let (cool, warm) = (fade(Color32::from_gray(140)), fade(Color32::from_gray(250)));
     mesh.colored_vertex(filled.left_top(), cool);
     mesh.colored_vertex(filled.right_top(), warm);
     mesh.colored_vertex(filled.right_bottom(), warm);
     mesh.colored_vertex(filled.left_bottom(), cool);
     mesh.add_triangle(first, first + 1, first + 2);
     mesh.add_triangle(first, first + 2, first + 3);
-    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_rgba_unmultiplied(255, 220, 160, 90)));
+    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_white_alpha(80)));
     painter.add(Shape::mesh(mesh));
 
     let below = bar.max.y + 12.0;

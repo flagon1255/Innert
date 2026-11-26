@@ -173,7 +173,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
     }
     let texture = creator.picture(ctx);
     egui::Area::new(egui::Id::new("character creation")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        theme::framed(ui, theme::panel(20.0, 16.0), |ui| {
+        theme::framed(ui, theme::panel(20.0, 6.0), |ui| {
             ui.set_width(wide - 40.0);
             ui.set_max_height(tall - 40.0);
             ui.horizontal(|ui| {
@@ -192,7 +192,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                     ui.set_width(picture_width);
                     let (rect, response) = ui.allocate_exact_size(vec2(picture_width, picture_height - 70.0), Sense::drag());
                     ui.painter().image(texture, rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0f32, theme::BRONZE.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, 3.0, Stroke::new(1.0f32, theme::EDGE.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     if response.dragged() {
                         creator.turn += response.drag_delta().x as f64 * 0.012;
                         creator.spinning = false;
@@ -212,7 +212,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                             creator.character.looks = Looks::random(seed);
                         }
                     });
-                    let paint = egui::Button::new(RichText::new("Paint face and body…").size(15.0)).fill(Color32::from_rgb(68, 54, 84));
+                    let paint = egui::Button::new(RichText::new("Paint face and body…").size(15.0));
                     if ui.add_sized([picture_width, 30.0], paint).on_hover_text("Paint the voxels of your body: war paint, scars, a beard").clicked() {
                         creator.paint(Focus::Face);
                     }
@@ -241,7 +241,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                 let c = &creator.character;
                 let summary = format!("{} · {} · {}", c.name, c.class.name(), c.difficulty.name());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let start = egui::Button::new(RichText::new("Start").font(theme::display(20.0)).color(Color32::WHITE)).fill(theme::PRIMARY);
+                    let start = theme::primary("Start", 20.0);
                     if ui.add_sized([160.0, 40.0], start).clicked() {
                         picked = Some(Pick::Start);
                     }
@@ -287,9 +287,9 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
             let ui = &mut columns[k % 2];
             let chosen = creator.character.class == class;
             let frame = egui::Frame::new()
-                .fill(if chosen { Color32::from_rgba_unmultiplied(72, 56, 36, 225) } else { Color32::from_rgba_unmultiplied(32, 26, 21, 205) })
-                .stroke(Stroke::new(if chosen { 2.0f32 } else { 1.0 }, if chosen { color(class.color()) } else { theme::BRONZE.gamma_multiply(0.6) }))
-                .corner_radius(8.0)
+                .fill(if chosen { Color32::from_rgba_unmultiplied(40, 40, 40, 228) } else { Color32::from_rgba_unmultiplied(20, 20, 20, 205) })
+                .stroke(Stroke::new(if chosen { 2.0f32 } else { 1.0 }, if chosen { color(class.color()) } else { theme::EDGE.gamma_multiply(0.6) }))
+                .corner_radius(4.0)
                 .inner_margin(8.0);
             let response = frame
                 .show(ui, |ui| {
@@ -307,7 +307,7 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
                     ui.label(RichText::new(format!("Starts with: {kit}")).size(12.5).color(gray));
                     let lean: Vec<String> = class.lean().iter().map(|&(stat, value)| stat.describe(value)).collect();
                     ui.label(RichText::new(format!("Leans: {}", lean.join(", "))).size(12.5).color(Color32::from_rgb(160, 210, 255)));
-                    ui.label(RichText::new(format!("Signature: {}", class.signature())).size(12.5).color(Color32::from_rgb(235, 205, 130)));
+                    ui.label(RichText::new(format!("Signature: {}", class.signature())).size(12.5).color(Color32::from_gray(236)));
                 })
                 .response
                 .interact(Sense::click());
