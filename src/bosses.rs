@@ -148,9 +148,25 @@ pub enum Move {
     /// A wyrm spewing its element up out of its maw, to come down all round the player where it
     /// shows
     Spout,
+    /// The Aeolith hurling its great ring at the player like a discus: spinning out to come down
+    /// where it shows, bursting, and sweeping back to it
+    Ringcast,
+    /// The Aeolith's rings laid level and spun up into a whirlwind that draws the player in, then
+    /// bursting out from it
+    Gyre,
+    /// The Aeolith's stone shards raised high over it and flung down on and round the player
+    Shardfall,
+    /// The Stormbell swelling dark and raining lightning from its rim where it shows round the player,
+    /// and once more where they've gone
+    Staticfall,
+    /// The Stormbell's tendrils lashed out at the player, lightning running on along the ground
+    Thunderlash,
+    /// The Stormbell drawing its tendrils up and charging till it crackles, then letting it all go in
+    /// rings of lightning running out over the ground round it
+    Overcharge,
 }
 
-const MOVES: usize = 49;
+const MOVES: usize = 55;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -204,6 +220,12 @@ impl Move {
         Move::Breach,
         Move::Thrash,
         Move::Spout,
+        Move::Ringcast,
+        Move::Gyre,
+        Move::Shardfall,
+        Move::Staticfall,
+        Move::Thunderlash,
+        Move::Overcharge,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -270,6 +292,9 @@ pub enum Deed {
     Spit { from: Vector3<f64>, to: Vector3<f64> },
     /// Breathing fire for `dt` seconds
     Breath { from: Vector3<f64>, direction: Vector3<f64>, dt: f64 },
+    /// A jet of its element roaring out for `dt` seconds, as a breath but thicker and brighter, to
+    /// be seen in full sun: the Gilded Sphinx's, wheeling round it
+    Jet { from: Vector3<f64>, direction: Vector3<f64>, dt: f64 },
     /// Charging into the player, who's thrown along `direction`
     Ram { damage: f64, direction: Vector3<f64> },
     /// A heavy footfall
@@ -339,6 +364,9 @@ pub enum Deed {
     Lob { from: Vector3<f64>, to: Vector3<f64>, time: f64, damage: f64, radius: f64, rock: bool },
     /// What a kraken or a squid does that no other boss does, see src\bosses\kraken.rs
     Kraken(kraken::Act),
+    /// Wind whirling round `at` for `dt` seconds, out to `reach` meters, drawing whoever's within it
+    /// in towards it, `pull` meters a second at the most
+    Gust { at: Vector3<f64>, reach: f64, pull: f64, dt: f64 },
 }
 
 /// What the Earthbreaker Colossus has hold of, tearing a boulder up out of the ground to throw
@@ -606,6 +634,7 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Bellow) => 0.8,
         (_, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) => roster::timing(look, m).0,
         (_, Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout) => wilds::timing(look, m).0,
+        (_, Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge) => roster::sky::timing(look, m).0,
     }
 }
 
@@ -653,6 +682,7 @@ fn duration(look: Look, m: Move) -> f64 {
         Move::Pounce => leap(look).0,
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).1,
         Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).1,
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).1,
     }
 }
 
@@ -715,6 +745,7 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Bellow => 0.7,
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).2,
         Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).2,
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).2,
     }
 }
 
@@ -780,6 +811,7 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Bellow => 8.0,
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).3,
         Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).3,
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).3,
     }
 }
 
@@ -1932,6 +1964,7 @@ fn moment(a: &Animal, boss: &Boss, player: Option<Vector3<f64>>, vpm: f64, dt: f
         turning: a.turning(),
         doing: if a.health > 0.0 { boss.doing() } else { None },
         target: player.map(|p| local(p + Vector3::new(0.0, 0.0, 1.5 * vpm))),
+        aim: boss.doing().map(|_| local(boss.aim)),
         engaged: boss.engaged,
         enraged: boss.enraged,
         stage: boss.stage,
@@ -1956,6 +1989,9 @@ pub fn elemental(m: Move, element: Option<Element>) -> bool {
     match m {
         Move::Breath | Move::Spit | Move::Storm | Move::Cataclysm | Move::Hex | Move::Weep | Move::Gloomgate | Move::Slagrain | Move::Vents | Move::Hoofbrand | Move::Sunwheel | Move::Thunderclap | Move::Blink | Move::Rimestomp | Move::Avalanche => true,
         Move::Inkveil | Move::Maelstrom | Move::Spout => true,
+        // The Sky Isles' own: the Aeolith's runes blazing as it flings its ring, spins its gyre and
+        // calls its shards down, the Stormbell crackling as it rains, lashes and lets go
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => true,
         Move::Slam | Move::Quake => e == Element::Fire,
         _ => false,
     }
@@ -2778,6 +2814,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::begin(m, a, &mut boss, player, forward, vpm),
                     Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom => kraken::begin(m, a, &mut boss, forward, vpm),
                     Move::Breach | Move::Thrash | Move::Spout => wyrms::begin(m, a, &mut boss, world, forward, vpm),
+                    Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::begin(m, a, &mut boss, player, forward, vpm),
                 }
                 Phase::Act(m, 0.0)
             }
@@ -2882,6 +2919,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                 Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::during(m, t, dt, a, &mut boss, player, vpm),
                 Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom => kraken::during(m, t, dt, a, &mut boss, player, vpm),
                 Move::Breach | Move::Thrash | Move::Spout => wyrms::during(m, t, dt, a, &mut boss, player, vpm),
+                Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::during(m, t, dt, a, &mut boss, player, vpm),
                 // A knight's greatsword sweeping round low: out of the crouch across in front,
                 // then on round with its whole body, all the way round once, or twice when it's
                 // angry, hitting whoever's within its reach and not jumping as it passes them.

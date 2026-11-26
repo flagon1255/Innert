@@ -131,7 +131,7 @@ impl Game {
             }
             // Water jetting out in a stream, knocking whoever it catches back and off their feet
             Act::Jet { from, dir, dt, reach } => {
-                self.combat.jet(from, dir, dt);
+                self.combat.water_jet(from, dir, dt);
                 if self.breath_sound <= 0.0 {
                     self.breath_sound = 1.4;
                     self.cues.push(Cue::at(Sound::Breath, from, 1.0).pitched(0.7));

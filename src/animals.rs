@@ -211,6 +211,11 @@ pub enum Look {
     DuneWyrm,
     CalderaWyrm,
     Skymane,
+    // Bosses of the Sky Isles' own, drifting over their floating islands, drawn jointed, see
+    // src\bosses\roster.rs and src\rig\drifter.rs: the Aeolith, a spirit of the wind bound in rings of
+    // carved stone, and the Stormbell, a jelly of thundercloud trailing crackling tendrils
+    Aeolith,
+    Stormbell,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -270,7 +275,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 130] = [
+    pub const ALL: [Look; 132] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -401,6 +406,8 @@ impl Look {
         Look::DuneWyrm,
         Look::CalderaWyrm,
         Look::Skymane,
+        Look::Aeolith,
+        Look::Stormbell,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -559,6 +566,8 @@ impl Look {
             Look::Dreadmare => Build::Wolf,
             Look::Sunstinger => Build::Spider,
             Look::Hoarback | Look::GildedSphinx => Build::Bear,
+            // The Sky Isles' own drift light as the casting dead walk, never shaking the ground
+            Look::Aeolith | Look::Stormbell => Build::Undead,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
@@ -755,7 +764,8 @@ impl Look {
 
     /// The kind of `self`, a boss, that lives in land `land`: the Dreaming Red has its own, the
     /// Lantern Widow where a drake would be, in its flooded churches and towers, and the Dreadmare
-    /// where an alpha wolf would roam, see src\bosses\roster.rs
+    /// where an alpha wolf would roam; and the Sky Isles theirs, the Aeolith where a great bear would
+    /// be and the Stormbell where a treant would, see src\bosses\roster.rs
     pub fn for_land(self, land: Land) -> Look {
         match (self, land) {
             (Look::Drake, Land::Dream) => Look::LanternWidow,
@@ -763,6 +773,8 @@ impl Look {
             // The Caldera Wyrm boring through the ash of the Cinder Crown where a wolf or a spider
             // would be, see src\bosses\wilds.rs
             (Look::Direwolf | Look::Spider, Land::Dragon) => Look::CalderaWyrm,
+            (Look::Ironhide, Land::Sky) => Look::Aeolith,
+            (Look::Treant, Land::Sky) => Look::Stormbell,
             _ => self,
         }
     }
@@ -942,6 +954,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::reach(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::reach(self),
             // Up to the top of a hat, a staff or a bow held upright, or wings on the back
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => 2.2,
             Look::TradeStall => 2.0,
@@ -1013,6 +1026,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::body(self),
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => (0.95, 0.42),
             Look::TradeStall => (0.5, 0.6),
         }
@@ -1109,6 +1123,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::name(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::name(self),
             Look::Bowyer => "bowyer",
             Look::Wandwright => "wandwright",
             Look::Bladesmith => "weaponsmith",
@@ -3891,6 +3906,8 @@ pub struct Animal {
     /// For a serpent lying on the ground, how its body's tipped to lie along the slope under it, in
     /// radians: its head down, and over onto its right, eased towards the ground it's on
     lie: [f64; 2],
+    /// For a demi-boss, which of demis::KINDS it is: drawn bigger and tinted, see src\demis.rs
+    pub demi: Option<u8>,
     /// And how much longer and wider than its model it's drawn: its S-curve tight and quick going
     /// fast, fleeing or coming on to strike, loose and lazy going slowly, see serpents::stretch()
     stretch: [f64; 2],
@@ -4086,6 +4103,7 @@ impl Animal {
             rng,
             focus: None,
             lie: [0.0; 2],
+            demi: None,
             stretch: [1.0; 2],
             drape: [0.0; 4],
         }
@@ -4177,7 +4195,7 @@ impl Animal {
             return self.position + focus;
         }
         let lifted = self.boss.as_ref().map_or(0.0, |b| b.sway()[2]);
-        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
+        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 * self.grown() + lifted) * world_voxels_per_meter as f64)
     }
 
     /// Where the boulder the Earthbreaker Colossus is tearing up out of the ground is, in voxels,
@@ -4227,6 +4245,11 @@ impl Animal {
     pub fn roams(&self) -> bool {
         let wandering = self.boss.as_ref().is_some_and(|b| b.key[2] == -2);
         self.look.is_wild() || wandering && matches!(self.look, Look::Zombie | Look::Ghoul | Look::Bloater | Look::Skeleton | Look::BoneArcher)
+    }
+
+    /// How much bigger it's drawn than its kind: a demi-boss's grown, see src\demis.rs
+    pub fn grown(&self) -> f64 {
+        self.demi.map_or(1.0, |k| crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].grown)
     }
 
     /// How much health it has left, 0-1
@@ -4695,7 +4718,7 @@ impl Animal {
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let vpm = world_voxels_per_meter as f64;
-        let mut radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
+        let mut radius = (self.look.reach() * self.grown() + on.abs() + up.abs()) * vpm;
         // An ordinary serpent's S-curve stretched or squeezed for how fast it goes, and its body
         // draped over the ground under it, see AnimalInstance::shaped()
         let shaped = serpents::kind(self.look).is_some() && (self.stretch != [1.0; 2] || self.drape != [0.0; 4]);
@@ -4704,8 +4727,14 @@ impl Animal {
             radius = radius * self.stretch[0].max(self.stretch[1]).max(1.0) + most * vpm;
         }
         let instance = AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint());
-        if shaped { instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale)) } else { instance }
-    }
+        if shaped {
+            return instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale));
+        }
+        // A demi-boss in the skin it's taken on down in the dark
+        match self.demi {
+            Some(k) => instance.skinned(crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].skin),
+            None => instance,
+        }    }
 
     /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's
     /// drawn, in voxels: where it can be hit, see serpents::focus()
@@ -4735,7 +4764,7 @@ impl Animal {
             None => 0,
         };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
-        let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
+        let mut scale = world_voxels_per_meter as f64 / self.look.resolution() * self.grown();
         let mut heading = self.drawn_heading;
         // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
         // less the faster they go, so they're never still as statues between frames; a jointed boss

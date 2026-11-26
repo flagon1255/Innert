@@ -1796,6 +1796,28 @@ struct Blast {
     lifetime: f64,
 }
 
+/// A tongue of flame pouring out along a jet of fire, see Combat::jet(): drawn as an explosion's
+/// first hot stages, swelling as it goes and dwindling away at its end, so a jet's a stream of
+/// fire thick and bright enough to see in full sun, white-hot where it leaves
+struct Tongue {
+    position: Vector3<f64>,
+    velocity: Vector3<f64>,
+    look: usize,
+    /// How big round it is as it leaves, in meters
+    radius: f64,
+    life: f64,
+    lifetime: f64,
+}
+
+/// Tongues of flame a jet pours out a second, at the most there are at once, how fast they leave
+/// in meters a second, how quickly they slow, how fast they rise, and how long each lasts
+const TONGUES_A_SECOND: f64 = 24.0;
+const MOST_TONGUES: usize = 96;
+const TONGUE_PACE: f64 = 13.0;
+const TONGUE_DRAG: f64 = 1.1;
+const TONGUE_RISE: f64 = 2.0;
+const TONGUE_SECONDS: f64 = 0.6;
+
 /// The smoke an explosion leaves drifting up and thinning away after it's gone, drawn with its
 /// last stages, see effects::BLAST_STAGES
 struct Remnant {
@@ -2210,6 +2232,8 @@ pub struct Combat {
     pub stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     /// Fireballs swelling up where explosions go off
     blasts: Vec<Blast>,
+    /// Tongues of flame pouring out along a jet of fire, see jet()
+    tongues: Vec<Tongue>,
     /// How high each of `blasts` is over the ground under it, for the ring it throws up there,
     /// worked out as each is new, see age_blasts(); and the smoke they leave after
     blast_floors: Vec<f64>,
@@ -2284,6 +2308,9 @@ fn ichor(look: Look) -> (usize, Option<u8>) {
         Look::GildedSphinx => (DROP_ASH, None),
         Look::LanternWidow => (DROP_VOID, None),
         Look::Sunstinger => (DROP_VENOM, Some(MOSS)),
+        // Chips of carved stone off the Aeolith's rings, and rain out of the Stormbell's cloud
+        Look::Aeolith => (DROP_MUD, None),
+        Look::Stormbell => (DROP_WATER, None),
         Look::Spider | Look::Spiderling | Look::Rimeweaver | Look::DuneBurrower => (DROP_VENOM, Some(MOSS)),
         // Shards of frost off a wraith, and the swamp water a lurker's full of
         Look::RimeWraith => (DROP_ICE, None),
@@ -5427,6 +5454,7 @@ impl Combat {
             waves: Vec::new(),
             stains: Vec::new(),
             blasts: Vec::new(),
+            tongues: Vec::new(),
             blast_floors: Vec::new(),
             remnants: Vec::new(),
             // With any files of them read in, see src\assets.rs
@@ -5588,6 +5616,9 @@ impl Combat {
         for b in &mut self.blasts {
             b.position -= shift;
         }
+        for f in &mut self.tongues {
+            f.position -= shift;
+        }
         for r in &mut self.remnants {
             r.position -= shift;
         }
@@ -5618,6 +5649,7 @@ impl Combat {
         self.flashes.clear();
         self.blasts.clear();
         self.blast_floors.clear();
+        self.tongues.clear();
         self.remnants.clear();
         self.echoes.clear();
         self.popups.clear();
@@ -5875,6 +5907,14 @@ impl Combat {
         }
         self.glows.retain(|g| g.life > 0.0);
         self.age_blasts(arena, dt);
+        // Tongues of flame slowing as they spread out along their jet, and rising as flame does
+        let (drag, lift) = ((-TONGUE_DRAG * dt).exp(), TONGUE_RISE * arena.view.vpm * dt);
+        for f in &mut self.tongues {
+            f.position += f.velocity * dt;
+            f.velocity = f.velocity * drag + Vector3::new(0.0, 0.0, lift);
+            f.life -= dt;
+        }
+        self.tongues.retain(|f| f.life > 0.0);
         let rise = 0.9 * arena.view.vpm;
         for p in &mut self.popups {
             p.age += dt;
@@ -14267,6 +14307,11 @@ impl Combat {
             self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.6 * self.vpm), color: e.light(), reach: 4.0 + 2.0 * radius, life: 0.25, lifetime: 0.25 });
             // A ball of it swelling up out of the ground, bright enough to see in the sun
             self.blasts.push(Blast { position: at + Vector3::new(0.0, 0.0, 0.4 * self.vpm), look: Element::look(Some(e)), radius: 0.6 + 0.5 * radius, life: 0.35, lifetime: 0.35 });
+            // Lightning leaping up out of the ground there, a thread of it, so it shows in the sun
+            if e == Element::Storm {
+                let top = at + Vector3::new((random(&mut self.rng) - 0.5) * self.vpm, (random(&mut self.rng) - 0.5) * self.vpm, (2.2 + random(&mut self.rng)) * self.vpm);
+                self.arc(at, top);
+            }
         }
         self.cap_sparks();
     }
@@ -14381,13 +14426,86 @@ impl Combat {
 
     /// Water jetted out of `from` along `direction` for `dt` seconds by a kraken, see
     /// game\brine.rs: a stream of drops flying out, falling as they go
-    pub fn jet(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64) {
+    pub fn water_jet(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64) {
         let vpm = self.vpm;
         let count = (dt * 140.0 + random(&mut self.rng)) as usize;
         for _ in 0..count {
             let spread = self.any_direction() * 0.07;
             let velocity = (direction + spread).normalize() * (14.0 + 5.0 * random(&mut self.rng)) * vpm;
             self.drop(from, velocity, DROP_WATER, 1.1);
+        }
+    }
+
+    /// A jet of `element` roaring out from `from` along `direction` for `dt` seconds, as the Gilded
+    /// Sphinx's wheel round it: thicker and brighter than a breath, so it reads in full sun. Tongues
+    /// of flame pour out white-hot and billow as they go, see Tongue; embers fly off it rising, and
+    /// dark smoke rolls up off its end. It lights what's round it as a breath does, no more, so it
+    /// isn't blinding at night.
+    pub fn jet(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64, element: Element) {
+        let vpm = self.vpm;
+        let look = Element::look(Some(element));
+        let mut owed = dt * TONGUES_A_SECOND;
+        while owed > 0.0 {
+            if random(&mut self.rng) < owed {
+                let spread = self.any_direction() * 0.07;
+                let velocity = (direction + spread).normalize() * TONGUE_PACE * (0.85 + 0.3 * random(&mut self.rng)) * vpm;
+                let life = TONGUE_SECONDS * (0.85 + 0.3 * random(&mut self.rng));
+                self.tongues.push(Tongue { position: from, velocity, look, radius: 0.42 + 0.12 * random(&mut self.rng), life, lifetime: life });
+            }
+            owed -= 1.0;
+        }
+        if self.tongues.len() > MOST_TONGUES {
+            let extra = self.tongues.len() - MOST_TONGUES;
+            self.tongues.drain(..extra);
+        }
+        // Embers streaming off it, rising
+        let count = (dt * 30.0 + random(&mut self.rng)) as usize;
+        for _ in 0..count {
+            let spread = self.any_direction() * 0.22;
+            let velocity = (direction + spread).normalize() * (7.0 + 5.0 * random(&mut self.rng)) * vpm;
+            let life = 0.5 + 0.4 * random(&mut self.rng);
+            self.sparks.push(Spark { position: from, velocity, look, life, lifetime: life, gravity: -0.18, slot: SLOT_SPARK });
+        }
+        // Smoke rolling up off its end, dark against the sky and the sand
+        if element == Element::Fire && random(&mut self.rng) < dt * 3.0 {
+            let at = from + direction * (5.5 + 1.5 * random(&mut self.rng)) * vpm + Vector3::new(0.0, 0.0, 0.8 * vpm);
+            let life = 1.0 + 0.4 * random(&mut self.rng);
+            self.sparks.push(Spark { position: at, velocity: (direction * 1.5 + Vector3::new(0.0, 0.0, 1.6)) * vpm, look, life, lifetime: life, gravity: -0.05, slot: SLOT_CLOUD });
+        }
+        self.cap_sparks();
+        if random(&mut self.rng) < dt * 20.0 {
+            self.flashes.push(Flash { position: from + direction * 3.0 * vpm, color: element.light(), reach: 7.0, life: 0.12, lifetime: 0.12 });
+        }
+        self.glow(from + direction * 2.5 * vpm, 9.0, element.light(), 1.3, 0.2);
+        self.glow(from + direction * 7.0 * vpm, 7.0, element.light(), 0.8, 0.25);
+    }
+
+    /// A whirlwind round `at`, on the ground, `reach` meters round, for `dt` seconds, see
+    /// bosses::Deed::Gust: streaks of `element` and dust whirling round and in towards the middle,
+    /// rising as they go, and its light at the heart of it
+    pub fn gust(&mut self, at: Vector3<f64>, reach: f64, dt: f64, element: Option<Element>) {
+        let vpm = self.vpm;
+        let look = Element::look(element);
+        let mut owed = dt * 70.0;
+        while owed > 0.0 {
+            if random(&mut self.rng) < owed {
+                let a = random(&mut self.rng) * TAU;
+                let r = (0.35 + 0.65 * random(&mut self.rng).sqrt()) * reach;
+                let out = Vector3::new(a.cos(), a.sin(), 0.0);
+                let round = Vector3::new(-a.sin(), a.cos(), 0.0);
+                let from = at + out * r * vpm + Vector3::new(0.0, 0.0, (0.2 + 2.4 * random(&mut self.rng)) * vpm);
+                let velocity = (round * (5.0 + 0.6 * r) - out * (2.5 + 0.3 * r) + Vector3::new(0.0, 0.0, 1.2)) * vpm;
+                if random(&mut self.rng) < 0.6 {
+                    self.sparks.push(Spark { position: from, velocity, look, life: 0.45, lifetime: 0.45, gravity: -0.05, slot: SLOT_SPARK });
+                } else {
+                    self.drop(from - Vector3::new(0.0, 0.0, 0.15 * vpm), velocity * 0.7 + Vector3::new(0.0, 0.0, 2.0 * vpm), DROP_MUD, 0.5);
+                }
+            }
+            owed -= 1.0;
+        }
+        self.cap_sparks();
+        if let Some(e) = element {
+            self.glow(at + Vector3::new(0.0, 0.0, 1.5 * vpm), reach + 3.0, e.light(), 0.9, 0.25);
         }
     }
 
@@ -16174,6 +16292,16 @@ impl Combat {
                 let (model, ring) = self.model_at(BLAST_RINGS + b.look.min(ELEMENT_LOOKS - 1));
                 extras.push((at, place(model, ring, BLAST_RING_RES, Vector3::zeros(), at, spin, vpm, spread, MOVING)));
             }
+        }
+        // Tongues of flame along a jet: white-hot as they leave, billowing as they spread and slow,
+        // dwindling away at the end, turning as they go
+        for f in &self.tongues {
+            let t = 1.0 - f.life / f.lifetime;
+            let stage = blast_stage(f.look, t * 0.55);
+            let (model, shape) = self.model_at(BLASTS + f.look.min(ELEMENT_LOOKS - 1) * BLAST_STAGES + stage);
+            let swell = (0.7 + 1.5 * t) * (1.0 - 0.85 * smooth((t - 0.6) / 0.4));
+            let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), blast_yaw(f.position) + t * 2.0);
+            add(f.position, place(model, shape, BLAST_RES, Vector3::zeros(), f.position, spin, vpm, blast_size(f.position, f.radius, swell), MOVING));
         }
         // Their smoke drifting up and thinning away after them, the newest first
         for r in self.remnants.iter().rev() {

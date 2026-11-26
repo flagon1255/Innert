@@ -1,0 +1,29 @@
+{
+  "what": "Stormbell, frill",
+  "voxels_per_meter": 16.0,
+  "size": [
+    55,
+    55,
+    7
+  ],
+  "pivot": [
+    27.12,
+    27.12,
+    4.5600000000000005
+  ],
+  "anchor": [
+    0.023749999999999938,
+    0.023749999999999938,
+    -0.28500000000000003
+  ],
+  "origin": [
+    -27,
+    -27,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    10996,
+    "e8e0869822e853ba"
+  ]
+}

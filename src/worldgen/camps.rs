@@ -178,8 +178,13 @@ impl Terrain {
                         let (x, y) = (((s.min[0] + s.max[0]) * 0.5).clamp(area[0], area[2]), ((s.min[1] + s.max[1]) * 0.5).clamp(area[1], area[3]));
                         overlaps(flat(s), area, 1.0) && ground(x, y).is_none_or(|g| s.max[2] > g.0 - 1.0)
                     };
+                    // Nor anywhere near a ravine, however far off what's dug for it is, see
+                    // ravines.rs: the next spot in its square instead
                     let clear = |area: [f32; 4]| {
-                        !keep_out.iter().any(|k| overlaps(*k, area, 2.0)) && !footprints.iter().any(|f| overlaps([f[0], f[1], f[2], f[3]], area, 2.0)) && !dug.iter().any(|s| opens(s, area))
+                        !keep_out.iter().any(|k| overlaps(*k, area, 2.0))
+                            && !footprints.iter().any(|f| overlaps([f[0], f[1], f[2], f[3]], area, 2.0))
+                            && !dug.iter().any(|s| opens(s, area))
+                            && !ravines::over_ravine(&self.settings, area, 3.0)
                     };
                     self.plan_camp(cx, cy, &ground, &clear)
                 };
