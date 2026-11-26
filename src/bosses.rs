@@ -816,7 +816,7 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::GaleSerpent => (1.7, 1.0, 11.0, 0.0),
         Look::BloodAdder => (1.6, 1.0, 12.0, 0.0),
         Look::DriftSerpent => (1.8, 1.1, 12.0, 0.0),
-        // A shark's jaws snapping shut where it lunged to, see srcnimals\sealife.rs
+        // A shark's jaws snapping shut where it lunged to, see src\animals\sealife.rs
         Look::Saltjaw | Look::Ghostmaw => crate::animals::sealife::shark_of(look).map_or((1.5, 1.5, 15.0, 0.0), |k| (k.length * 0.45, 1.5, k.bite, 0.0)),
         // A great serpent's jaws snapping shut out where its head lunged to
         _ if look.is_great_serpent() => {
