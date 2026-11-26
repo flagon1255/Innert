@@ -126,6 +126,23 @@ pub mod material {
     /// red-brown, gathered for building, see src\gather.rs. CLAY is the pale grey of plaster and
     /// smoke.
     pub const CLAY_BANK: u8 = 89;
+    // Building materials and what they're gathered from, see src\materials.rs. Glass is seen
+    // through, see shadeSurface() in shaders\traverse.comp.
+    pub const GLASS: u8 = 90;
+    pub const THATCH: u8 = 91;
+    pub const MARBLE: u8 = 92;
+    pub const SLATE: u8 = 93;
+    pub const BASALT: u8 = 94;
+    pub const IRON_ORE: u8 = 95;
+    pub const COPPER_ORE: u8 = 96;
+    pub const PLANK_BIRCH: u8 = 97;
+    pub const PLANK_DARK: u8 = 98;
+    pub const PLANK_PINE: u8 = 99;
+    pub const PLANK_PALM: u8 = 100;
+    pub const CUT_STONE: u8 = 101;
+    pub const CLOTH_BLUE: u8 = 102;
+    /// The last material there is: every id up to it has a colour in the palette
+    pub const LAST: u8 = CLOTH_BLUE;
 }
 
 use material::*;
@@ -4573,11 +4590,35 @@ impl Terrain {
             return MOSS;
         }
         let pick = hash3(layer as u32, self.settings.seed, 0x57a7a) % 6;
-        if land_of(self.settings.seed) == Land::Dragon {
-            return [OBSIDIAN, ROCK, ROCK, STONE, STONE, GRAVEL][pick as usize];
+        let land = land_of(self.settings.seed);
+        // Veins of ore deep in the rock, in clumps a few voxels across, seen in caves and cliffs:
+        // copper from two meters in, iron from four, see src\materials.rs
+        let vpm = self.settings.voxels_per_meter.max(1) as i32;
+        if depth > 2 * vpm {
+            let clump = (vpm / 5).max(1);
+            let vein = unit(hash3((column.x.div_euclid(clump as i64)) as u32 ^ 0x0e5e, (column.y.div_euclid(clump as i64)) as u32, z.div_euclid(clump) as u32 ^ self.settings.seed));
+            if vein < 0.006 && depth > 4 * vpm {
+                return IRON_ORE;
+            }
+            if vein > 0.992 && land != Land::Dragon {
+                return COPPER_ORE;
+            }
+        }
+        if land == Land::Dragon {
+            return [OBSIDIAN, BASALT, ROCK, BASALT, STONE, GRAVEL][pick as usize];
         }
         if column.desert {
             return [SANDSTONE, SANDSTONE, SANDSTONE, SANDSTONE_DARK, SAND, CLAY_BANK][pick as usize];
+        }
+        // Now and then a band of slate, and high in the mountains, or anywhere in the Rimelands,
+        // of marble
+        let band = hash3(layer as u32, self.settings.seed, 0x51a7e) % 10;
+        let high = z as f32 > self.settings.height_m as f32 * 0.45 * vpm as f32;
+        if band == 0 || (band == 1 && land == Land::Ice) {
+            return SLATE;
+        }
+        if (band == 2 || band == 3) && (high || land == Land::Ice) {
+            return MARBLE;
         }
         match pick {
             0 | 1 | 2 => STONE,

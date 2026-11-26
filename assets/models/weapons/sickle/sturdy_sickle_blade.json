@@ -1,0 +1,37 @@
+{
+  "what": "Sickle, blade: Copper Sickle Blade",
+  "voxels_per_meter": 192.0,
+  "size": [
+    70,
+    9,
+    20
+  ],
+  "pivot": [
+    19.504,
+    4.569599999999999,
+    -29.0
+  ],
+  "anchor": null,
+  "origin": [
+    -20,
+    -5,
+    29
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.0836
+    ],
+    "tip": [
+      0.265,
+      0.0,
+      0.1526
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    10190,
+    "b4b81aabb915a72f"
+  ]
+}

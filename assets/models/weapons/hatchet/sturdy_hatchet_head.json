@@ -1,13 +1,13 @@
 {
-  "what": "Hatchet, blade: Iron Hatchet Head",
+  "what": "Hatchet, blade: Copper Axe Head",
   "voxels_per_meter": 192.0,
   "size": [
-    35,
+    34,
     7,
     31
   ],
   "pivot": [
-    9.600000000000001,
+    9.6,
     3.5695999999999994,
     -72.0
   ],
@@ -24,14 +24,14 @@
       0.1444
     ],
     "tip": [
-      0.13,
+      0.125,
       0.0,
       0.4556
     ]
   },
   "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
   "written": [
-    17809,
-    "e384c1e3bf000b10"
+    17269,
+    "0cde427975296de8"
   ]
 }

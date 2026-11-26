@@ -30,6 +30,8 @@ pub struct Creator {
     rolls: u32,
     /// What each family of weapons is called, for what each class starts with
     families: std::collections::HashMap<String, String>,
+    /// Scrolled down this far through what's chosen next frame, for screenshot runs
+    pub scroll_to: Option<f32>,
 }
 
 /// What's picked in it
@@ -43,12 +45,12 @@ impl Creator {
     /// For a new game of `mode`, starting from a character made up from `seed`
     pub fn new(mode: Mode, seed: u32) -> Creator {
         let character = Character { name: super::random_name(seed), ..Default::default() };
-        Creator { mode, character, turn: 0.45, spinning: true, models: None, texture: None, rolls: seed, families: family_names() }
+        Creator { mode, character, turn: 0.45, spinning: true, models: None, texture: None, rolls: seed, families: family_names(), scroll_to: None }
     }
 
     /// For screenshot runs: starting with `character`, turned `turn` radians round, still
     pub fn with(mode: Mode, character: Character, turn: f64) -> Creator {
-        Creator { mode, character, turn, spinning: false, models: None, texture: None, rolls: 1, families: family_names() }
+        Creator { mode, character, turn, spinning: false, models: None, texture: None, rolls: 1, families: family_names(), scroll_to: None }
     }
 
     fn roll(&mut self) -> u32 {
@@ -187,7 +189,15 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                 });
                 ui.add_space(14.0);
                 ui.vertical(|ui| {
-                    egui::ScrollArea::vertical().max_height(body_height).auto_shrink([false, false]).show(ui, |ui| {
+                    // Its scroll bar always there and solid, not only once the mouse is over it, so
+                    // in a short window it's plain there's more below: the last classes and how hard
+                    // it's to be
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                    let mut area = egui::ScrollArea::vertical().max_height(body_height).auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
+                    if let Some(y) = creator.scroll_to.take() {
+                        area = area.vertical_scroll_offset(y);
+                    }
+                    area.show(ui, |ui| {
                         choose(ui, creator);
                     });
                 });
@@ -287,4 +297,27 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
         });
     }
     ui.add_space(8.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// In a short window, the size of the one played in and shorter, the whole window's on screen,
+    /// Back and Start along its foot, what's chosen scrolling within it
+    #[test]
+    fn it_fits_a_short_window() {
+        for [w, h] in [[1548.0, 872.0], [1600.0, 734.0], [1238.0, 698.0], [1280.0, 600.0]] {
+            let ctx = egui::Context::default();
+            let mut creator = Creator::with(Mode::Realms, Character::default(), 0.5);
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), ..Default::default() };
+            for _ in 0..3 {
+                let _ = ctx.run(input.clone(), |ctx| {
+                    window(ctx, &mut creator);
+                });
+            }
+            let shown = ctx.memory(|m| m.area_rect(egui::Id::new("character creation"))).expect("the window's drawn");
+            assert!(shown.min.y >= 0.0 && shown.max.y <= h && shown.min.x >= 0.0 && shown.max.x <= w, "at {w}×{h} it's at {shown:?}");
+        }
+    }
 }
