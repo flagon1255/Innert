@@ -7,6 +7,7 @@ mod aeries;
 mod camps;
 mod castles;
 mod dragonlair;
+mod ravines;
 mod towns;
 mod trees;
 /// The trees' numbers, see assets	rees.json
@@ -20,6 +21,8 @@ pub use camps::{Camp, CampKind, camp_spots};
 pub use dragonlair::{DRAGON_ARENA_FLOOR, DRAGON_ARENA_REACH, LairKind, dragon_arena_way, far_lair, lairs_set, set_lairs};
 #[allow(unused_imports)]
 pub use undercity::Sunken;
+#[allow(unused_imports)]
+pub use ravines::{BONES_SITE, Chasm, Hold, LURKER_SITE, NEST_SITE, RAVINE_SITE, ROOST_SITE, built_by_chasm, nearest_chasm};
 
 /// Material ids, one byte per voxel. Has to match the palette in shaders\traverse.comp.
 pub mod material {
@@ -1924,6 +1927,13 @@ impl Shape {
         self
     }
 
+    /// Nothing of it below `floor` meters high, which is left flat, as a ravine's floor is
+    fn floored(mut self, floor: f32) -> Self {
+        self.floor = floor;
+        self.min[2] = self.min[2].max(floor);
+        self
+    }
+
     /// Whether `p` is inside it, its squared depth being `depth`, see depth(). Rough shapes are
     /// lumpy, their surface pushed in and out by the noise only near it, as working it out costs.
     fn holds(&self, p: Vec3, depth: f32) -> bool {
@@ -1933,7 +1943,7 @@ impl Shape {
             _ => {}
         }
         if self.rough <= 0.0 {
-            return depth <= 1.0;
+            return depth <= 1.0 && p[2] >= self.floor;
         }
         // The floor bumpy a little, worked out only near it
         let swell = self.rough * 0.25;
@@ -2262,9 +2272,10 @@ fn chest(features: &mut Features, at: Vec3, heading: f32, luck: f32) {
     features.props.push(Prop { kind: PropKind::Chest, position: at, heading, luck });
 }
 
-/// Ravines start at most one in each RAVINE_CELL square, and reach at most RAVINE_REACH from there
+/// Ravines start at most one in each RAVINE_CELL square, and reach at most RAVINE_REACH from there,
+/// see ravines.rs
 const RAVINE_CELL: f32 = 100.0;
-const RAVINE_REACH: f32 = 100.0;
+const RAVINE_REACH: f32 = 135.0;
 
 /// Dungeons: at most one in each DUNGEON_CELL square, nothing of it further than DUNGEON_REACH
 /// along either axis from its doorway, all in meters
@@ -3877,6 +3888,8 @@ struct Features {
     sites: Vec<Site>,
     /// Bandits' camps, see camps.rs
     camps: Vec<Camp>,
+    /// The ravines cut out of the ground reaching into this piece, see ravines.rs
+    ravines: Vec<Arc<ravines::Course>>,
 }
 
 /// A building: what kind, where its middle is and which way it faces, with the lowest ground
@@ -4996,6 +5009,9 @@ impl Terrain {
         }
         let footprints = std::mem::take(&mut features.footprints);
         let (own_lo, own_hi) = (self.own_lo, self.own_hi);
+        // Nothing grows or stands over a ravine, out over the drop
+        let gaps = features.ravines.clone();
+        let over_gap = |x: f32, y: f32| gaps.iter().any(|c| c.near([x, y, x, y], 1.5));
 
         // Calls `place` for one random spot in every `cell` meter square, with the column there,
         // except where buildings stand: out to `reach` meters past the piece itself, as far as what
@@ -5011,7 +5027,7 @@ impl Terrain {
                     if x < lo[0] || y < lo[1] || x >= hi[0] || y >= hi[1] {
                         continue;
                     }
-                    if footprints.iter().any(|f| x > f[0] - 1.5 && y > f[1] - 1.5 && x < f[2] + 1.5 && y < f[3] + 1.5) {
+                    if footprints.iter().any(|f| x > f[0] - 1.5 && y > f[1] - 1.5 && x < f[2] + 1.5 && y < f[3] + 1.5) || over_gap(x, y) {
                         continue;
                     }
                     // Nor on the Drowned Ring or its causeway, nor anywhere it'd reach over them
@@ -5370,41 +5386,53 @@ impl Terrain {
                 if unit(r) > 0.85 {
                     continue;
                 }
-                let s = hash(r);
-                let x = (cx as f32 + 0.2 + 0.6 * unit(s)) * BUILDING_CELL;
-                let y = (cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * BUILDING_CELL;
-
                 // Each kind of land has buildings of its own: Aztec pyramids and temples deep in
                 // the jungle, overgrown colonnades on its edges, carved sandstone ruins in the
                 // desert, and castles, watchtowers, colonnades and flooded churches elsewhere.
                 // They sink into the ground on the uphill side, so the ground only has to be
                 // fairly flat.
-                let c = climate(&self.settings, x, y);
                 let pick = unit(r >> 8);
-                let kind = if c.jungle > 0.7 {
-                    if pick < 0.55 { "pyramid" } else { "shrine" }
-                } else if c.jungle > 0.3 {
-                    "colonnade"
-                } else if c.desert > 0.6 {
-                    if pick < 0.65 { "desert ruins" } else { "colonnade" }
-                } else if c.snow > 0.6 {
-                    if pick < 0.6 { "castle" } else { "watchtower" }
-                } else if pick < 0.3 {
-                    "castle"
-                } else if pick < 0.55 {
-                    "flooded church"
-                } else if pick < 0.78 {
-                    "colonnade"
-                } else {
-                    "watchtower"
+                let kind_at = |x: f32, y: f32| {
+                    let c = climate(&self.settings, x, y);
+                    let kind = if c.jungle > 0.7 {
+                        if pick < 0.55 { "pyramid" } else { "shrine" }
+                    } else if c.jungle > 0.3 {
+                        "colonnade"
+                    } else if c.desert > 0.6 {
+                        if pick < 0.65 { "desert ruins" } else { "colonnade" }
+                    } else if c.snow > 0.6 {
+                        if pick < 0.6 { "castle" } else { "watchtower" }
+                    } else if pick < 0.3 {
+                        "castle"
+                    } else if pick < 0.55 {
+                        "flooded church"
+                    } else if pick < 0.78 {
+                        "colonnade"
+                    } else {
+                        "watchtower"
+                    };
+                    let (half, flatness) = match kind {
+                        "pyramid" => (12.5, 6.0),
+                        "shrine" => (5.0, 3.5),
+                        "flooded church" => (9.5, 4.0),
+                        "colonnade" => (8.5, 4.5),
+                        "watchtower" => (4.5, 3.0),
+                        _ => (8.5, 6.0),
+                    };
+                    (c, kind, half, flatness)
                 };
-                let (half, flatness) = match kind {
-                    "pyramid" => (12.5, 6.0),
-                    "shrine" => (5.0, 3.5),
-                    "flooded church" => (9.5, 4.0),
-                    "colonnade" => (8.5, 4.5),
-                    "watchtower" => (4.5, 3.0),
-                    _ => (8.5, 6.0),
+                // Never over a ravine, anywhere across it nor where the torches stand out in front:
+                // another spot in the square if one's in the way
+                let spot = (0..4u32).find_map(|attempt| {
+                    let s = if attempt == 0 { hash(r) } else { hash3(r, attempt, 0x5eb7) };
+                    let x = (cx as f32 + 0.2 + 0.6 * unit(s)) * BUILDING_CELL;
+                    let y = (cy as f32 + 0.2 + 0.6 * unit(s >> 16)) * BUILDING_CELL;
+                    let (c, kind, half, flatness) = kind_at(x, y);
+                    let reach = half + 1.0;
+                    (!ravines::over_ravine(&self.settings, [x - reach, y - reach, x + reach, y + reach], 3.0)).then_some((s, x, y, c, kind, half, flatness))
+                });
+                let Some((s, x, y, c, kind, half, flatness)) = spot else {
+                    continue;
                 };
                 if keep_out.iter().any(|k| overlaps(*k, [x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0], 0.0)) {
                     continue;
@@ -5472,6 +5500,10 @@ impl Terrain {
         for (lip, flow, wide) in self.waterfalls_near() {
             let r = hash3((lip[0] * 4.0) as i32 as u32, (lip[1] * 4.0) as i32 as u32, seed ^ 0x9a7e);
             if unit(r) > 0.5 || wide > STREAM_HALF_WIDTH + 0.5 || climate(&self.settings, lip[0], lip[1]).jungle < 0.7 {
+                continue;
+            }
+            // Its pillars stand on the banks, never at the edge of a ravine
+            if ravines::over_ravine(&self.settings, [lip[0] - 5.0, lip[1] - 5.0, lip[0] + 5.0, lip[1] + 5.0], 2.0) {
                 continue;
             }
             let mut rng = Rng(hash(r));
@@ -5885,86 +5917,6 @@ impl Terrain {
             skull(features, side(d, high + 0.25), rng);
         }
         (s, high + 1.0)
-    }
-
-    /// Ravines: long, deep, narrow cracks in the ground, wandering along with ledges down their
-    /// sides, at most one in each RAVINE_CELL square. Most are open to the sky; the rest are
-    /// crevices hidden under the ground, with crystals glowing at the bottom.
-    fn ravines(&self, features: &mut Features, royal: &[[f32; 4]]) -> Vec<Object> {
-        let (lo, hi) = (self.lo, self.hi);
-        let mut objects = Vec::new();
-        let first = [((lo[0] - RAVINE_REACH) / RAVINE_CELL).floor() as i32, ((lo[1] - RAVINE_REACH) / RAVINE_CELL).floor() as i32];
-        let last = [((hi[0] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32, ((hi[1] + RAVINE_REACH) / RAVINE_CELL).ceil() as i32];
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                // None breaks into a royal castle, see castles.rs
-                let into = |o: &Object| royal.iter().any(|r| overlaps([o.min[0], o.min[1], o.max[0], o.max[1]], *r, 3.0));
-                if !royal.is_empty() && self.ravine(cx, cy, &mut Features::default()).is_some_and(|o| into(&o)) {
-                    continue;
-                }
-                objects.extend(self.ravine(cx, cy, features));
-            }
-        }
-        objects
-    }
-
-    /// The ravine starting in one RAVINE_CELL square, if there's one
-    fn ravine(&self, cx: i32, cy: i32, features: &mut Features) -> Option<Object> {
-        const STEP: f32 = 2.0;
-        let seed = self.settings.seed;
-        let sea_level = sea_level_m(&self.settings);
-        let r = hash3(cx as u32, cy as u32, seed ^ 0x7a71);
-        if unit(r) > 0.7 {
-            return None;
-        }
-        let mut rng = Rng(hash(r));
-        let (mut x, mut y) = ((cx as f32 + rng.next()) * RAVINE_CELL, (cy as f32 + rng.next()) * RAVINE_CELL);
-        if height_at(&self.settings, x, y) < sea_level + 4.0 {
-            return None;
-        }
-        let open = rng.next() < 0.5;
-        let mut heading = rng.next() * TAU;
-        let width = rng.range(2.0, 4.5);
-        let depth = rng.range(10.0, 22.0);
-        let steps = 15 + (rng.next() * 30.0) as usize;
-        let mut shapes = Vec::new();
-        let mut crystals = Vec::new();
-        for i in 0..steps {
-            // Narrow at both ends
-            let taper = (std::f32::consts::PI * (i as f32 + 0.5) / steps as f32).sin().sqrt();
-            heading += rng.range(-0.25, 0.25);
-            let along = [heading.cos(), heading.sin(), 0.0];
-            x += along[0] * STEP;
-            y += along[1] * STEP;
-            let ground = height_at(&self.settings, x, y);
-            if ground < sea_level + 1.0 {
-                break;
-            }
-            let top = if open { ground + 2.0 } else { ground - rng.range(4.0, 7.0) };
-            let bottom = top - depth * taper - 2.0;
-            if i == steps / 2 && self.inside(x, y) {
-                let kind = if open { "ravine" } else { "crevice" };
-                features.sites.push(Site { kind, position: [x, y, if open { ground } else { bottom + 1.5 }], facing: [along[0], along[1]] });
-            }
-            let middle = (top + bottom) * 0.5;
-            let w = width * taper + 0.6;
-            // A wide upper part and a narrower deeper one, leaving ledges down the sides
-            shapes.push(Shape::slab([x, y, middle + (top - bottom) * 0.15], along, STEP * 2.0, w, (top - bottom) * 0.75));
-            shapes.push(Shape::slab([x, y, middle - (top - bottom) * 0.1], along, STEP * 2.0, w * 0.55, top - bottom));
-            features.recuts.push([x - w - STEP, y - w - STEP, x + w + STEP, y + w + STEP, ground + 3.0]);
-            if !open && i % 6 == 3 {
-                let at = [x + rng.range(-0.3, 0.3), y + rng.range(-0.3, 0.3), bottom + 0.6];
-                for _ in 0..3 {
-                    let offset = [rng.range(-0.3, 0.3), rng.range(-0.3, 0.3), rng.range(0.0, 0.4)];
-                    crystals.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
-                }
-                if self.inside(at[0], at[1]) {
-                    features.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 7.0 });
-                }
-            }
-        }
-        shapes.extend(crystals);
-        Some(Object::new(shapes, rng.0))
     }
 
     /// Winding tunnels under the hills, at most one starting in each CAVE_CELL square, opening out
@@ -6480,17 +6432,9 @@ impl Terrain {
                 return None;
             }
         }
-        let first = [0, 1].map(|i| ((lo[i] - RAVINE_REACH - 2.0) / RAVINE_CELL).floor() as i32);
-        let last = [0, 1].map(|i| ((hi[i] + RAVINE_REACH + 2.0) / RAVINE_CELL).ceil() as i32);
-        let mut scratch = Features::default();
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                if let Some(ravine) = self.ravine(cx, cy, &mut scratch)
-                    && ravine.shapes.iter().any(|s| rects.iter().any(|r| overlaps(*r, [s.min[0], s.min[1], s.max[0], s.max[1]], 2.0)))
-                {
-                    return None;
-                }
-            }
+        let courses = ravines::courses_near(&self.settings, [lo[0] - 2.0, lo[1] - 2.0, hi[0] + 2.0, hi[1] + 2.0]);
+        if courses.iter().any(|c| rects.iter().any(|r| c.near(*r, 2.0))) {
+            return None;
         }
         Some(d)
     }

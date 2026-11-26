@@ -250,11 +250,10 @@ struct Town {
 }
 
 /// What's round a town being planned, worked out once for all the spots tried in its square:
-/// for each square of their own, the caves' hollows and caverns, the ravines and the dungeons
+/// for each square of their own, the caves' hollows and caverns and the dungeons
 #[derive(Default)]
 struct Near {
     caves: HashMap<(i32, i32), CaveProbe>,
-    ravines: HashMap<(i32, i32), Vec<[f32; 4]>>,
     dungeons: HashMap<(i32, i32), Vec<[f32; 4]>>,
 }
 
@@ -527,18 +526,9 @@ impl Terrain {
                 }
             }
         }
-        let first = [0, 1].map(|i| ((rect[i] - RAVINE_REACH - 2.0) / RAVINE_CELL).floor() as i32);
-        let last = [0, 1].map(|i| ((rect[i + 2] + RAVINE_REACH + 2.0) / RAVINE_CELL).ceil() as i32);
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                let ravine = near.ravines.entry((cx, cy)).or_insert_with(|| {
-                    let mut scratch = Features::default();
-                    self.ravine(cx, cy, &mut scratch).map_or(Vec::new(), |o| o.shapes.iter().map(|s| [s.min[0], s.min[1], s.max[0], s.max[1]]).collect())
-                });
-                if ravine.iter().any(|r| overlaps(*r, rect, 3.0)) {
-                    return false;
-                }
-            }
+        // Nor over a ravine, anywhere across it
+        if ravines::over_ravine(&self.settings, rect, 3.0) {
+            return false;
         }
         let margin = 8.0;
         for river in self.rivers_near(cache, [rect[0] - margin, rect[1] - margin], [rect[2] + margin, rect[3] + margin]) {
