@@ -266,8 +266,6 @@ impl Combat {
 
     /// One of their shots striking animal `i` at `at`. True if it's gone.
     pub(in crate::combat) fn tempest_strikes(&mut self, arena: &mut Arena, p: &mut Projectile, shape: Shape, i: usize, at: Vector3<f64>) -> bool {
-        let vpm = arena.view.vpm;
-        let storm = Element::look(Some(Element::Storm));
         let profile = p.profile.clone();
         let id = arena.animals[i].id;
         let from = p.position - p.velocity * 0.02;
