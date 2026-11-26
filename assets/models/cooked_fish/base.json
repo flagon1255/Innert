@@ -1,0 +1,25 @@
+{
+  "what": "Cooked fish, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 48.0,
+  "size": [
+    22,
+    9,
+    6
+  ],
+  "pivot": [
+    11.0,
+    4.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -11,
+    -5,
+    0
+  ],
+  "note": "",
+  "written": [
+    1840,
+    "1e7ae14adca5333f"
+  ]
+}

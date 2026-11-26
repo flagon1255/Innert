@@ -1,0 +1,25 @@
+{
+  "what": "Raw fish, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 48.0,
+  "size": [
+    19,
+    9,
+    5
+  ],
+  "pivot": [
+    9.5,
+    4.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -10,
+    -5,
+    0
+  ],
+  "note": "",
+  "written": [
+    1693,
+    "7619aa944b6e0d54"
+  ]
+}
