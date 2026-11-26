@@ -1895,12 +1895,28 @@ pub enum Power {
     Spectrum,
     /// A runestone's: a circle of runes written on the ring one by one, then blasting up together
     Runeburst,
+    /// A spear of holy lightning hurled to stick in the ground or in what it strikes, erupting a
+    /// moment later into lightning leaping all round: on a talisman's rarest parts
+    Vigil,
+    /// Spears of holy lightning raining down out of the sky onto the ring one after another: on a
+    /// talisman's rarest parts
+    Heavenfall,
+    /// Three quick spears of holy lightning hurled one after another: on a talisman's rarest parts
+    Triune,
+    /// Lightning called down out of the sky onto the ring, striking again and again round it
+    Stormcall,
+    /// Ice bursting up out of the ground in a line of spikes, leaving the ground frozen
+    Glacier,
+    /// Tendrils of shadow reaching up out of the ground at the ring, holding what they catch
+    Shadowgrasp,
+    /// Two orbs of its element wheeling round the hand, then flying off spiralling round each other
+    Helix,
 }
 
 impl Power {
     /// Every one of them
     #[cfg(test)]
-    pub const ALL: [Power; 36] = [
+    pub const ALL: [Power; 43] = [
         Power::Crescent,
         Power::Rending,
         Power::WindCut,
@@ -1937,6 +1953,13 @@ impl Power {
         Power::Ringstorm,
         Power::Spectrum,
         Power::Runeburst,
+        Power::Vigil,
+        Power::Heavenfall,
+        Power::Triune,
+        Power::Stormcall,
+        Power::Glacier,
+        Power::Shadowgrasp,
+        Power::Helix,
     ];
 
     /// Whether it has a move of its own on right click, rather than being carried by a melee
@@ -1963,6 +1986,12 @@ impl Power {
                 | Power::Seekers
                 | Power::Nova
         )
+    }
+
+    /// Whether it's one of a talisman's spears of holy lightning, formed in the hand while it's
+    /// aimed, see faith.rs
+    pub fn spear(self) -> bool {
+        matches!(self, Power::Thunderspear | Power::Vigil | Power::Triune)
     }
 
     /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
@@ -2044,6 +2073,13 @@ impl Power {
             Power::Ringstorm => "Ringstorm",
             Power::Spectrum => "Spectrum",
             Power::Runeburst => "Runeburst",
+            Power::Vigil => "Vigil",
+            Power::Heavenfall => "Heavenfall",
+            Power::Triune => "Triune",
+            Power::Stormcall => "Stormcall",
+            Power::Glacier => "Glacier",
+            Power::Shadowgrasp => "Grasp",
+            Power::Helix => "Helix",
         }
     }
 
@@ -2057,6 +2093,13 @@ impl Power {
             (Power::RaiseDead, _) => return "Grave Raising".to_owned(),
             // A priest's spears are holy lightning whatever's in the talisman
             (Power::Shadowstep, _) => return "Shadowstep Strike".to_owned(),
+            // A priest's spears are holy lightning whatever's in the talisman
+            (Power::Vigil, _) => return "Vigil Spear".to_owned(),
+            (Power::Heavenfall, _) => return "Heavenfall Spears".to_owned(),
+            (Power::Triune, _) => return "Triune Spears".to_owned(),
+            (Power::Stormcall, _) => return "Stormcall Thunderhead".to_owned(),
+            (Power::Shadowgrasp, Some(Element::Void) | None) => return "Grasping Shadows".to_owned(),
+            (Power::Glacier, Some(Element::Frost) | None) => return "Rising Glacier".to_owned(),
             _ => {}
         }
         let adjective = match element {
@@ -2082,7 +2125,9 @@ impl Power {
             Power::Cloudburst | Power::Shrapnel => 9.0,
             Power::Thunderspear => 7.0,
             Power::RaiseDead => 14.0,
-            Power::Shadowstep => 6.0,
+            Power::Shadowstep | Power::Triune | Power::Helix => 6.0,
+            Power::Heavenfall | Power::Stormcall => 10.0,
+            Power::Vigil | Power::Glacier | Power::Shadowgrasp => 8.0,
             Power::Runeburst => 10.0,
             Power::Spectrum => 8.0,
             _ => 8.0,
@@ -2092,9 +2137,9 @@ impl Power {
     /// How many times its spell's mana it costs, for a weapon that casts
     pub fn mana(self) -> f64 {
         match self {
-            Power::Comet | Power::Seekers | Power::Nova | Power::Spectrum => 2.0,
-            Power::Beacon | Power::Thunderspear => 2.5,
-            Power::RaiseDead | Power::Runeburst => 3.0,
+            Power::Comet | Power::Seekers | Power::Nova | Power::Spectrum | Power::Helix => 2.0,
+            Power::Beacon | Power::Thunderspear | Power::Vigil | Power::Triune | Power::Glacier | Power::Shadowgrasp => 2.5,
+            Power::RaiseDead | Power::Runeburst | Power::Heavenfall | Power::Stormcall => 3.0,
             _ => 0.0,
         }
     }
@@ -2108,6 +2153,7 @@ impl Power {
             Power::Vortex | Power::Shrapnel => "Hold right click to aim, let go to throw it",
             Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Starbreak => "Right click: a move of its own when it's ready, a heavy blow while it comes round",
             Power::Shadowstep | Power::Ringstorm => "Hold right click to aim, let go to use it",
+            Power::Thunderspear => "Hold right click to aim, the spear forming in the hand, longer for a greater spear; let go to hurl it",
             Power::Cloudburst => "Right click: loosed high when it's ready, a draw while it comes round",
             _ => "Right click",
         }
@@ -2152,10 +2198,17 @@ impl Power {
             Power::Ringstorm => "Three rings of {e} hurled out in a fan, 15 meters, each curving back to you, cutting everything both ways.",
             Power::Spectrum => "The light split into a fan of five rays, fire, frost, lightning, arcane and holy, 28 meters, each bursting where it strikes.",
             Power::Runeburst => "Six runes of {e} written round the ring one after another, 3.5 meters round, blasting up together once the circle's whole.",
+            Power::Vigil => "Aimed while right click's held, a spear of holy lightning hurled as it's let go sticks fast in what it strikes or the ground, crackling, and a moment later erupts, lightning coming down onto it and leaping to everything within 8 meters.",
+            Power::Heavenfall => "Aimed while right click's held, a spear of holy lightning hurled into the sky as it's let go, and nine come down out of it onto the ring one after another, each bursting where it lands.",
+            Power::Triune => "Aimed while right click's held, three quick spears of holy lightning hurled one after another as it's let go, each through everything in its way, lightning arcing off what it strikes.",
+            Power::Stormcall => "An orb of {e} sent up over the ring gathers into a thunderhead, and lightning comes down out of it six times, onto what's under it or anywhere 4 meters round, each bolt leaping on to the next.",
+            Power::Glacier => "Ice bursts up out of the ground in a line of spikes 14 meters ahead, step by step, freezing what it catches, the ground along it frozen 3 s, slowing what stands on it.",
+            Power::Shadowgrasp => "A knot of {e} cast onto the ring, where tendrils reach up out of the ground, holding everything within 3.5 meters fast for 3 s and wringing it.",
+            Power::Helix => "Two orbs of {e} wheel round the hand, then fly off at the crosshair spiralling round each other, 30 meters, each bursting where it strikes.",
         };
         // These are theirs whatever's in them
-        if matches!(self, Power::Thunderspear | Power::RaiseDead) {
-            let rider = if self == Power::Thunderspear { "Every enemy it strikes heals you a little." } else { "Each blow they land drains life back to you." };
+        if matches!(self, Power::Thunderspear | Power::RaiseDead | Power::Vigil | Power::Heavenfall | Power::Triune) {
+            let rider = if self == Power::RaiseDead { "Each blow they land drains life back to you." } else { "Every enemy it strikes heals you a little, and it strikes harder at what's standing in water." };
             return format!("{what} {rider} Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
         }
         if self == Power::Shadowstep {

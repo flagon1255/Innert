@@ -8,6 +8,7 @@
 use super::*;
 use crate::weapons::Power;
 use super::signatures::arsenal::{RUNE_ROUND, SPECTRUM_FAN, SPECTRUM_REACH, STAR_REACH, STEP_REACH};
+use super::signatures::miracles::{GLACIER_FROM, GLACIER_STEP, GLACIER_STEPS, GRASP_ROUND, HEAVEN_ROUND, HELIX_REACH, STORM_ROUND, TRIUNE_FAN};
 use super::signatures::powers::{
     ANVIL_REACH, BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, FISTS_REACH, GALE_FROM, GALE_STEP, GALE_STEPS, HOOK_REACH, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, RING_REACH, SEEKER_REACH, SHRAPNEL_REACH, STAKE_REACH, WHEEL_REACH, power_timing, wave_of,
 };
@@ -87,6 +88,9 @@ pub(super) fn power_aim(power: Power, profile: &Profile) -> Option<SpotAim> {
         // Where the dead are to rise, the ring as wide as they're raised round it
         Power::RaiseDead => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: crate::combat::signatures::faith::RAISE_ROUND }),
         Power::Runeburst => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: RUNE_ROUND }),
+        Power::Heavenfall => Some(SpotAim { reach: SPOT_REACH, least: 3.0, radius: HEAVEN_ROUND }),
+        Power::Stormcall => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: STORM_ROUND }),
+        Power::Shadowgrasp => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: GRASP_ROUND }),
         _ => None,
     }
 }
@@ -437,6 +441,12 @@ pub(super) fn power_way(power: Power) -> PowerWay {
         Power::Ringstorm => PowerWay::Ray { reach: WHEEL_REACH, fan: &FAN, radius: 1.0 },
         Power::Spectrum => PowerWay::Ray { reach: SPECTRUM_REACH, fan: &SPECTRUM_FAN, radius: 0.9 },
         Power::Runeburst => PowerWay::Spot,
+        // A priest's spears and the new magic powers, see miracles.rs
+        Power::Vigil => PowerWay::Ray { reach: crate::combat::signatures::faith::SPEAR_REACH, fan: &[0.0], radius: 1.8 },
+        Power::Triune => PowerWay::Ray { reach: crate::combat::signatures::faith::SPEAR_REACH, fan: &TRIUNE_FAN, radius: 1.2 },
+        Power::Heavenfall | Power::Stormcall | Power::Shadowgrasp => PowerWay::Spot,
+        Power::Glacier => PowerWay::Line { from: GLACIER_FROM, step: GLACIER_STEP, steps: GLACIER_STEPS },
+        Power::Helix => PowerWay::Ray { reach: HELIX_REACH, fan: &[0.0], radius: 1.5 },
     }
 }
 

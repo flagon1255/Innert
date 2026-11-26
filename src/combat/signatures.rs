@@ -13,6 +13,8 @@ use powers::{Lasting, Shape};
 /// The third batch's powers: a war pick's, throwing knives', a chakram's, a prism's and a
 /// runestone's
 pub(super) mod arsenal;
+/// New magic powers: a priest's spears, a thunderhead, a glacier, grasping shadows and a helix
+pub(super) mod miracles;
 /// A talisman's spears and a skull focus's dead raised, see weapons::Rite
 pub(in crate::combat) mod faith;
 
@@ -619,7 +621,7 @@ pub(super) fn lead(from: Vector3<f64>, to: Vector3<f64>, speed: f64, gravity: f6
 }
 
 /// How far `p` is from the line from `a` to `b`
-fn off_line(p: Vector3<f64>, a: Vector3<f64>, b: Vector3<f64>) -> f64 {
+pub(super) fn off_line(p: Vector3<f64>, a: Vector3<f64>, b: Vector3<f64>) -> f64 {
     let line = b - a;
     let along = ((p - a).dot(&line) / line.norm_squared().max(1e-9)).clamp(0.0, 1.0);
     (p - (a + line * along)).norm()

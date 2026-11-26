@@ -48,8 +48,15 @@ pub const STONE_SLAB: usize = STONE_BOULDER + 1;
 /// light, a gold-collared blade of it, wings spread behind the blade, and lightning wound round
 /// the shaft, so it reads as a spear wherever it's seen from but end on, see faith.rs
 pub const HOLY_SPEAR: usize = STONE_SLAB + 1;
+/// A stretch of lightning for each look: a bar a voxel long along x, three across, white-hot in
+/// its heart and its element's glow round that, stretched along x by the shader to reach from one
+/// point of a bolt to the next, see combat\lightning.rs
+pub const BOLT_BARS: usize = HOLY_SPEAR + 1;
+/// Tendrils of shadow reaching up out of the ground, a meter and a half high, curling, their
+/// middle at 0
+pub const TENDRILS: usize = BOLT_BARS + ELEMENT_LOOKS;
 /// How many effect models there are in all
-pub const EFFECT_MODELS: usize = HOLY_SPEAR + 1;
+pub const EFFECT_MODELS: usize = TENDRILS + 1;
 pub const STONE_ROUND: f64 = 0.5;
 pub const SLAB_HEIGHT: f64 = 1.6;
 pub const SPEAR_LENGTH: f64 = 1.7;
@@ -1214,6 +1221,64 @@ fn holy_spear() -> (Model, Vector3<f64>) {
     voxelize(&p, SPEAR_RES)
 }
 
+/// A stretch of lightning, see BOLT_BARS: its heart white-hot, its element's glow round it, the
+/// corners left out so it's round enough end on
+fn bolt_bar(look: usize) -> (Model, Vector3<f64>) {
+    use Element::*;
+    let (heart, glow) = match element_of(look) {
+        None | Some(Storm) => (GLOW_HOLY, GLOW_STORM),
+        Some(Holy) => (FLAME, GLOW_HOLY),
+        Some(Frost) => (GLOW_STORM, GLOW_FROST),
+        Some(Fire) => (FLAME, GLOW_FIRE),
+        Some(Poison) => (GLOW_HOLY, GLOW_POISON),
+        Some(Arcane) => (GLOW_HOLY, GLOW_ARCANE),
+        Some(Void) => (GLOW_ARCANE, GLOW_VOID),
+        Some(Blood) => (GLOW_FIRE, GLOW_BLOOD),
+    };
+    let mut m = crate::assets::air([1, 3, 3]);
+    for z in 0..3usize {
+        for y in 0..3usize {
+            let corner = y != 1 && z != 1;
+            m.voxels[y + z * 3] = if y == 1 && z == 1 { heart } else if corner { AIR } else { glow };
+        }
+    }
+    (m, Vector3::zeros())
+}
+
+/// Tendrils of shadow, see TENDRILS: seven reaching up and curling over out of a dark pool, thick
+/// and black at their roots and thinning to glowing tips, a glow of the void in their hearts
+fn tendrils() -> (Model, Vector3<f64>) {
+    let mut seed = 0x7e4d;
+    let mut p = vec![ellipsoid_part([0.0, 0.0, 0.02], [0.5, 0.5, 0.06], OBSIDIAN)];
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.6;
+        let out = 0.15 + 0.2 * random(&mut seed);
+        let height = 0.9 + 0.6 * random(&mut seed);
+        let curl = 0.25 + 0.25 * random(&mut seed);
+        let (c, s) = (a.cos(), a.sin());
+        let points = [
+            [c * out, s * out, 0.0],
+            [c * (out + 0.08), s * (out + 0.08), height * 0.4],
+            [c * (out + curl * 0.6) - s * 0.1, s * (out + curl * 0.6) + c * 0.1, height * 0.8],
+            [c * (out + curl), s * (out + curl), height * 0.92],
+            [c * (out + curl * 1.25), s * (out + curl * 1.25), height * 0.75],
+        ];
+        for (j, pair) in points.windows(2).enumerate() {
+            let r = 0.07 * (1.0 - j as f64 * 0.22);
+            let material = if j == 3 { GLOW_VOID } else if j == 0 { OBSIDIAN } else { FUR_DARK };
+            p.push(limb(pair[0], pair[1], r, r * 0.75, material));
+            if j < 2 {
+                p.insert(0, limb(pair[0], pair[1], r * 0.35, r * 0.3, GLOW_ARCANE));
+            }
+        }
+    }
+    voxelize(&p, MODEL_RES)
+}
+
+fn ellipsoid_part(c: [f64; 3], radii: [f64; 3], material: u8) -> crate::animals::Part {
+    crate::animals::ellipsoid(c, radii, material)
+}
+
 type Job = Box<dyn Fn() -> (Model, Vector3<f64>) + Sync>;
 
 /// The models from BLASTS on, made on every core at once
@@ -1240,6 +1305,10 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
     jobs.push(Box::new(stone_boulder));
     jobs.push(Box::new(stone_slab));
     jobs.push(Box::new(holy_spear));
+    for look in 0..ELEMENT_LOOKS {
+        jobs.push(Box::new(move || bolt_bar(look)));
+    }
+    jobs.push(Box::new(tendrils));
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let mut made: Vec<(usize, (Model, Vector3<f64>))> = std::thread::scope(|scope| {

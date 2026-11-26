@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::weapons::Rite;
+use super::powers::power_timing;
 
 /// How far a talisman's great spear flies at most, and its cast one, in meters, and how fast,
 /// in meters a second
@@ -19,6 +20,10 @@ const SPEAR_SPEED: f64 = 32.0;
 /// still once it's well off, see spear_axis()
 const SPEAR_TILT: f64 = 0.5;
 const SPEAR_TILT_FAR: f64 = 0.14;
+/// How long right click's held aiming the great spear before it's as great as it gets, in seconds,
+/// and how long a spear takes to form in the hand at all
+pub(in crate::combat) const SPEAR_CHARGE: f64 = 1.2;
+pub(in crate::combat) const SPEAR_FORMS: f64 = 0.4;
 
 /// Which way a spear's drawn pointing, flying `way`, `flown` meters from the hand it left, which is
 /// `hand` from the eye, `fallback` being out to the side and down from the eye in case its hand
@@ -187,10 +192,89 @@ impl Combat {
             let look = if random(&mut self.rng) < 0.5 { storm } else { holy };
             self.fine(at, v, look, 0.14, 0.0);
         }
-        if big && random(&mut self.rng) < dt * 6.0 {
-            let jag = p.position + (self.any_direction() + Vector3::new(0.0, 0.0, -0.6)) * 1.4 * vpm;
-            self.bolt_line(p.position, jag, storm);
+        // Forks of lightning leaping off it now and then, down to the ground or off to the side, a
+        // great spear's more often and further, see lightning.rs
+        let size = p.size.max(1.0);
+        if random(&mut self.rng) < dt * if big { 9.0 } else { 4.0 } * size {
+            let back = random(&mut self.rng) * reach.min(3.0) * vpm;
+            let from = p.position - way * back;
+            let jag = from + (self.any_direction() + Vector3::new(0.0, 0.0, -0.6)) * (0.8 + 0.8 * size) * vpm;
+            let look = if random(&mut self.rng) < 0.7 { storm } else { holy };
+            self.lightning(from, jag, look, 0.03 * size, 1, 2, 0.0, 0.0);
         }
+    }
+
+    /// How long right click's held aiming a spear before the greatest one's formed, in seconds, and
+    /// how long the spear takes to form in the hand at all
+    pub(in crate::combat) fn spear_charge(&self) -> f64 {
+        (self.power.aimed / SPEAR_CHARGE).clamp(0.0, 1.0)
+    }
+
+    /// A spear forming in the hand, crackling light gathering into it from all round, as a spear
+    /// power's aimed or wound up: sparks drawn in to the hand, `formed` of the way to whole
+    pub(in crate::combat) fn spear_gathers(&mut self, hand: Vector3<f64>, formed: f64, dt: f64) {
+        let storm = Element::look(Some(Element::Storm));
+        let holy = Element::look(Some(Element::Holy));
+        let rate = 30.0 + 40.0 * formed;
+        let n = (rate * dt + random(&mut self.rng)) as usize;
+        for _ in 0..n {
+            let look = if random(&mut self.rng) < 0.5 { storm } else { holy };
+            let d = self.any_direction();
+            let at = hand + d * (0.35 + 0.25 * random(&mut self.rng)) * self.vpm;
+            self.fine(at, -d * 1.6 * self.vpm, look, 0.22, 0.0);
+        }
+        if random(&mut self.rng) < dt * (3.0 + 8.0 * formed) {
+            let to = hand + self.any_direction() * 0.45 * self.vpm;
+            self.lightning(hand, to, storm, 0.012 + 0.012 * formed, 0, 1, 0.0, 0.0);
+        }
+    }
+
+    /// How far formed the spear in the hand is, 0 to 1 and on past 1 as a great one's charged, if
+    /// one's forming: a spear power aimed, right click held, or wound up, till it's let go
+    pub(in crate::combat) fn spear_forming(&self, weapon: &Weapon) -> Option<f64> {
+        let power = weapon.profile.power.filter(|p| p.spear())?;
+        if self.power.aiming {
+            return Some(smooth(self.power.aimed / SPEAR_FORMS) * (1.0 + 0.45 * self.spear_charge()));
+        }
+        match self.action {
+            Action::Power { t, length } => {
+                let release = power_timing(power).1 * length;
+                (t < release).then(|| smooth(t / release.max(1e-3) * 1.3) * (1.0 + 0.45 * self.power.charge))
+            }
+            _ => None,
+        }
+    }
+
+    /// The spear forming in the hand at `hand`, `formed` of the way: drawn small and growing,
+    /// held overhand over the shoulder, its point on ahead, turning slowly as it crackles
+    pub(in crate::combat) fn forming_spear(&self, hand: Vector3<f64>, view: &View, formed: f64) -> Vec<AnimalInstance> {
+        let vpm = view.vpm;
+        if formed < 0.03 {
+            return Vec::new();
+        }
+        // Held up over the right shoulder, well out in front of the eye so it never fills the view,
+        // its point on ahead and a little up
+        let axis = view.rotation * Vector3::new(-0.12, 1.0, 0.22).normalize();
+        let size = 0.42 * formed;
+        let middle = view.eye + view.rotation * Vector3::new(0.2, 0.95, 0.06) * vpm;
+        let point = middle.lerp(&hand, 0.15) + axis * crate::effects::SPEAR_LENGTH * 0.5 * size * vpm;
+        let (model, spear) = self.model_at(crate::effects::HOLY_SPEAR);
+        let across = (view.rotation * Vector3::x()).cross(&axis).try_normalize(1e-6).unwrap_or_else(Vector3::z);
+        let turn = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_basis_unchecked(&[axis, across.cross(&axis), across]));
+        let roll = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.time * 4.0);
+        let flicker = 1.0 + 0.06 * (self.time * 47.0).sin();
+        vec![place(model, spear, crate::effects::SPEAR_RES, Vector3::zeros(), point, turn * roll, vpm, size * flicker, HELD)]
+    }
+
+    /// Where a priest's spear's held as it's aimed: drawn back over the shoulder from `rest`,
+    /// trembling with what gathers in it, more the longer it's held
+    pub(in crate::combat) fn spear_aim_pose(&self, rest: &Pose) -> Pose {
+        let drawn = pose([0.4, 0.02, 0.1], [0.04, -0.45, 0.89], [1.0, 0.0, 0.0]);
+        let mut p = blend(rest, &drawn, smooth(self.power.aimed / 0.3));
+        let shake = 0.002 + 0.005 * self.spear_charge();
+        p.hand.x += shake * (self.time * 31.0).sin();
+        p.hand.z += shake * (self.time * 37.0).cos();
+        p
     }
 
     /// A spear striking animal `i` at `at`, going on through it: lightning arcing off it to what's
@@ -201,13 +285,19 @@ impl Combat {
         let id = arena.animals[i].id;
         p.hit.push(id);
         let from = p.position - p.velocity * 0.02;
-        let blow = Blow { damage: p.damage, crit: false, heavy: big, from, depth: 0, element: profile.element.or(Some(Element::Holy)) };
+        // Harder at what's standing in water, the lightning running through it
+        let wet = self.wet(arena, i);
+        let blow = Blow { damage: p.damage * wet, crit: false, heavy: big, from, depth: 0, element: profile.element.or(Some(Element::Holy)) };
         self.element_hit(at, Some(Element::Holy), if big { 1.6 } else { 1.1 });
+        self.element_hit(at, Some(Element::Storm), if wet > 1.0 { 1.2 } else { 0.7 });
         self.sparks(at, if big { 12 } else { 7 }, 3.5, Element::look(Some(Element::Holy)), 0.4, 0.35);
+        self.flashes.push(Flash { position: at, color: Element::Storm.light(), reach: if big { 7.0 } else { 4.5 }, life: 0.14, lifetime: 0.14 });
         self.cues.push(Cue::at(Sound::Hit, at, 0.7));
+        self.cues.push(Cue::at(Sound::Crackle, at, 0.6).pitched(1.2));
         self.strike(arena, &profile, i, blow);
-        if big && arena.animals[i].health > 0.0 {
-            arena.animals[i].status.staggered = arena.animals[i].status.staggered.max(0.5);
+        // Staggered, the smaller ones, as it goes through
+        if arena.animals[i].health > 0.0 && arena.animals[i].boss.is_none() {
+            arena.animals[i].status.staggered = arena.animals[i].status.staggered.max(if big { 0.6 } else { 0.3 });
         }
         self.heal += p.damage * SPEAR_HEAL;
         self.arc_on(arena, &profile, at, p.damage * 0.45, ARCS[big as usize], &p.hit.clone());
@@ -220,11 +310,13 @@ impl Combat {
         let vpm = arena.view.vpm;
         let storm = Element::look(Some(Element::Storm));
         let near: Vec<usize> = Combat::foes_round(arena, at, ARC_REACH).into_iter().filter(|&j| !spared.contains(&arena.animals[j].id)).take(count).collect();
-        for j in near {
+        // Leaping on to each a moment after the last, so it's seen jumping from one to the next
+        for (k, j) in near.into_iter().enumerate() {
             let to = arena.animals[j].center(vpm as u32);
-            self.bolt_line(at, to, storm);
-            self.flashes.push(Flash { position: to, color: Element::Storm.light(), reach: 4.0, life: 0.12, lifetime: 0.12 });
+            let delay = (k + 1) as f64 * HOP_GAP;
+            self.lightning(at, to, storm, 0.06, 2, 3, delay, 0.6);
             self.sparks(to, 6, 3.0, storm, 0.2, 0.3);
+            let damage = damage * self.wet(arena, j);
             self.strike(arena, profile, j, Blow { damage, crit: false, heavy: false, from: at, depth: 1, element: Some(Element::Storm) });
             let s = &mut arena.animals[j].status;
             s.shocked = s.shocked.max(1.0);
@@ -241,13 +333,27 @@ impl Combat {
         let storm = Element::look(Some(Element::Storm));
         let holy = Element::look(Some(Element::Holy));
         let ground = Combat::floor_at(arena, at);
-        let sky = ground + up * if big { 14.0 } else { 7.0 } * vpm;
-        self.bolt_line(sky, ground, storm);
-        if big {
-            self.bolt_line(sky + Vector3::new(0.7, -0.4, 0.0) * vpm, ground, holy);
+        // Lightning out of the sky where it ends, forked, striking again and again, a flash
+        // lighting everything round, sparks and a scorch where it comes down; one coming down out
+        // of the sky itself, as Heavenfall's do, bursts into lightning crackling out along the
+        // ground instead
+        let falling = p.velocity.try_normalize(1e-6).is_some_and(|w| w.z < -0.7);
+        let size = p.size.max(1.0);
+        if falling {
+            for _ in 0..3 {
+                let a = random(&mut self.rng) * TAU;
+                let out = ground + Vector3::new(a.cos(), a.sin(), 0.05) * (1.2 + random(&mut self.rng)) * vpm;
+                self.lightning(ground + up * 0.2 * vpm, out, storm, 0.045, 1, 2, 0.0, 0.0);
+            }
+            self.scorch(ground, 0.7);
+        } else {
+            self.sky_bolt(ground, storm, if big { 1.0 + 0.4 * size } else { 0.8 }, 0.0);
+            if big {
+                self.sky_bolt(ground + Vector3::new(0.9, -0.5, 0.0) * vpm, holy, 0.8, 0.07);
+            }
         }
-        self.blasts.push(Blast { position: at, look: holy, radius: if big { 1.6 } else { 0.8 }, life: 0.35, lifetime: 0.35 });
-        self.flashes.push(Flash { position: at + up * vpm, color: Element::Holy.light(), reach: if big { 12.0 } else { 6.0 }, life: 0.3, lifetime: 0.3 });
+        self.blasts.push(Blast { position: at, look: holy, radius: if big { 1.2 + 0.4 * size } else { 0.8 }, life: 0.35, lifetime: 0.35 });
+        self.flashes.push(Flash { position: at + up * vpm, color: Element::Holy.light(), reach: if big { 7.0 + 2.0 * size } else { 5.0 }, life: 0.25, lifetime: 0.25 });
         self.power_burst(arena, &profile, at, if big { 2.4 } else { 1.2 }, p.damage * if big { 0.6 } else { 0.35 }, None);
         self.arc_on(arena, &profile, at, p.damage * 0.35, ARCS[big as usize], &p.hit.clone());
         let rotation = UnitQuaternion::rotation_between(&Vector3::x(), &p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x)).unwrap_or_else(UnitQuaternion::identity);
@@ -273,8 +379,10 @@ impl Combat {
         let far = ((p.position - eye).norm() / vpm / 15.0).max(1.0).sqrt();
         let flown = p.flown / vpm;
         let axis = spear_axis(way, p.position - way * p.flown - eye, view.rotation * Vector3::new(1.0, 0.0, -0.4), flown);
-        let size = if big { 1.5 } else { 1.0 };
-        let grown = 0.35 + 0.65 * smooth(flown / 2.5);
+        // A great spear's as big as it was charged, see spear_charge()
+        let size = if big { 0.94 * p.size.max(1.0) } else { p.size.max(1.0) };
+        // Heavenfall's are whole as they come down out of the sky
+        let grown = if way.z < -0.7 { 1.0 } else { 0.35 + 0.65 * smooth(flown / 2.5) };
         let length = crate::effects::SPEAR_LENGTH * size * grown;
         let tail = p.position - axis * length * vpm;
         let mut out = Vec::new();
@@ -635,6 +743,51 @@ use crate::weapons::Rite;
             big |= flying;
         });
         assert!(big && held_back, "the great spear's hurled as right click's let go, not as it's pressed");
+    }
+
+    /// The great spear forms in the hand as right click's held, the longer the greater: held a
+    /// moment it's whole, held long it's hurled bigger and striking harder than one let go at once,
+    /// never leaving the hand till the throw's wound up, and never formed with nothing aimed
+    #[test]
+    fn the_great_spear_forms_in_the_hand_and_charges() {
+        let library = Library::load();
+        let world = field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(24.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: [1.2445, 0.7002], vpm, speed: 0.0, stride: 0.0 };
+        let talisman = weapon(&library, "talisman");
+        assert_eq!(talisman.profile.power, Some(Power::Thunderspear));
+        // Held `hold` seconds: how formed it got, and the spear hurled, its size and damage
+        let throw = |hold: f64| {
+            let mut animals = Vec::new();
+            let mut combat = Combat::new(1, 0);
+            let dt = 1.0 / 60.0;
+            let mut formed: f64 = 0.0;
+            let mut spear = None;
+            for frame in 0..((hold + 2.0) / dt) as usize {
+                let t = frame as f64 * dt - 0.5;
+                let controls = Controls { heavy: (0.0..dt).contains(&t), aiming: t >= 0.0 && t < hold, ..Default::default() };
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.update(&mut arena, Some((0, &talisman)), None, controls, dt);
+                if t < 0.0 {
+                    assert!(combat.spear_forming(&talisman).is_none(), "a spear forming before it's aimed");
+                }
+                formed = formed.max(combat.spear_forming(&talisman).unwrap_or(0.0));
+                if spear.is_none()
+                    && let Some(p) = combat.projectiles.iter().find(|p| matches!(p.trick, Trick::Signature(Sig::Power(Shape::Spear { big: true }))))
+                {
+                    assert!(t >= hold, "hurled before right click was let go");
+                    spear = Some((p.size, p.damage));
+                }
+            }
+            (formed, spear.expect("no spear hurled"))
+        };
+        let (quick_formed, (quick_size, quick_damage)) = throw(0.15);
+        let (full_formed, (full_size, full_damage)) = throw(1.4);
+        assert!(quick_formed > 0.2, "a quick spear's never seen forming, {quick_formed:.2}");
+        assert!(full_formed > 1.2, "a charged spear's only {full_formed:.2} formed");
+        assert!(full_size > quick_size + 0.5 && full_damage > quick_damage * 1.5, "charged {full_size:.2} {full_damage:.1}, quick {quick_size:.2} {quick_damage:.1}");
     }
 
     /// A spear's drawn with its butt towards the hand it left, tipped well over as it leaves it

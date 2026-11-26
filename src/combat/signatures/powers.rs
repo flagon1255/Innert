@@ -20,6 +20,10 @@ pub(in crate::combat) struct PowerState {
     pub(in crate::combat) cooldown: f64,
     held: f64,
     pub(in crate::combat) aiming: bool,
+    /// How long it's been aimed, right click held, and how charged it was as it was let go, 0 to 1,
+    /// for a priest's great spear, see faith.rs
+    pub(in crate::combat) aimed: f64,
+    pub(in crate::combat) charge: f64,
 }
 
 /// What one of their shots is
@@ -93,6 +97,16 @@ pub(in crate::combat) enum Shape {
     Glyph,
     /// A runestone's cast, a mote of its light flying to where it's aimed to write a rune there
     Sigil,
+    /// A Vigil Spear, sticking fast where it strikes, see miracles.rs
+    Vigil,
+    /// Heavenfall's spear hurled up into the sky
+    Ascent,
+    /// Stormcall's orb going up over the ring to gather into a thunderhead
+    Storm,
+    /// Grasping Shadows' knot of shadow cast onto the ring
+    Grasp,
+    /// One of Helix's two orbs, wheeling round the other, `phase` which
+    Helix { phase: u8 },
 }
 
 /// What they leave going a while
@@ -135,6 +149,17 @@ pub(in crate::combat) enum Lasting {
     Runes,
     /// A runestone's one rune, written where its cast came down and blasting up a moment later
     Sigil,
+    /// A Vigil Spear stuck fast, in `target` at `velocity` off its middle or in the ground, its
+    /// way in `path`, erupting when its time's out, see miracles.rs
+    Vigil,
+    /// Heavenfall's spears coming down over the ring, `owed` so far
+    Heavenfall,
+    /// Stormcall's thunderhead over the ring, striking, `owed` times so far
+    Storm,
+    /// Glacier's ice bursting up step by step along `velocity`, the steps so far in `path`
+    Glacier,
+    /// Grasping Shadows' tendrils holding what's round
+    Grasp,
 }
 
 /// How many steps a fissure takes, how far apart, in meters, and seconds between each, and how far
@@ -224,7 +249,7 @@ pub(in crate::combat) fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
 /// How long a power's own move takes, for those shot, thrown or cast with a move of their own, and
 /// when what it lets go leaves the weapon, as part of it
 pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
-    if let Some(timing) = super::arsenal::arsenal_timing(power) {
+    if let Some(timing) = super::arsenal::arsenal_timing(power).or_else(|| super::miracles::miracle_timing(power)) {
         return timing;
     }
     match power {
@@ -253,6 +278,9 @@ pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
 /// Every moment, as a part of its move, a power's own move lets something go: a katar's five fists,
 /// one each, everything else once
 pub(in crate::combat) fn power_releases(power: Power) -> Vec<f64> {
+    if let Some(releases) = super::miracles::miracle_releases(power) {
+        return releases;
+    }
     match power {
         Power::Fists => FIST_RELEASES.to_vec(),
         _ => vec![power_timing(power).1],
@@ -267,7 +295,7 @@ fn ring_out(f: f64, reach: f64) -> f64 {
 
 /// How fast to shoot something from `from`, falling as things do, so it tops out right at `top`,
 /// and how long it takes to get there
-fn topping_out(from: Vector3<f64>, top: Vector3<f64>, vpm: f64) -> (Vector3<f64>, f64) {
+pub(super) fn topping_out(from: Vector3<f64>, top: Vector3<f64>, vpm: f64) -> (Vector3<f64>, f64) {
     let g = 9.8 * vpm;
     let rise = (top.z - from.z).max(vpm);
     let vz = (2.0 * g * rise).sqrt();
@@ -278,7 +306,7 @@ fn topping_out(from: Vector3<f64>, top: Vector3<f64>, vpm: f64) -> (Vector3<f64>
 
 /// The move a power's shot, thrown or cast with, from where the weapon's held at rest
 fn power_keys(power: Power, profile: &Profile) -> Vec<(f64, Pose, bool)> {
-    if let Some(keys) = super::arsenal::arsenal_keys(power, profile) {
+    if let Some(keys) = super::arsenal::arsenal_keys(power, profile).or_else(|| super::miracles::miracle_keys(power, profile)) {
         return keys;
     }
     let (_, release) = power_timing(power);
@@ -550,16 +578,26 @@ impl Combat {
         if own || shouldered || kind == Kind::Magic {
             if self.power.aiming {
                 if controls.aiming {
-                    // Held, aiming: right click does nothing else meanwhile, no heavy blow, no draw
+                    // Held, aiming: right click does nothing else meanwhile, no heavy blow, no draw;
+                    // a priest's spear forming in the hand meanwhile, greater the longer it's held
+                    self.power.aimed += dt;
+                    if power.spear() {
+                        let hand = arena.view.eye + arena.view.rotation * Vector3::new(0.36, 0.1, 0.22) * arena.view.vpm;
+                        let formed = (self.power.aimed / super::faith::SPEAR_FORMS).min(1.0);
+                        self.spear_gathers(hand, formed, dt);
+                    }
                     controls.heavy = false;
                     controls.aiming = false;
                     return false;
                 }
                 // Let go: off it goes, as a press used to set it off
                 self.power.aiming = false;
+                self.power.charge = self.spear_charge();
                 controls.heavy = true;
             } else if controls.heavy && ready && controls.aiming {
                 self.power.aiming = true;
+                self.power.aimed = 0.0;
+                self.power.charge = 0.0;
                 controls.heavy = false;
                 controls.aiming = false;
                 return false;
@@ -731,11 +769,12 @@ impl Combat {
             }
         };
         // The third batch's, see arsenal.rs
-        if self.unleash_arsenal(arena, weapon, power, base) {
+        if self.unleash_arsenal(arena, weapon, power, base) || self.unleash_miracle(arena, weapon, power, shot, base) {
             return;
         }
         match power {
             Power::Starbreak | Power::Shadowstep | Power::Ringstorm | Power::Spectrum | Power::Runeburst => {}
+            Power::Vigil | Power::Heavenfall | Power::Triune | Power::Stormcall | Power::Glacier | Power::Shadowgrasp | Power::Helix => {}
             // Crescents flying on from the blow, out of the chest, or a whip's low over the ground
             // Each at what the crosshair, or its fan either side, first meets within its reach, or
             // as far as that, as its rings showed, see aim.rs; a whip's on along the ground
@@ -1059,15 +1098,21 @@ impl Combat {
             }
             // A great spear of holy lightning hurled at what the crosshair first meets, as its
             // marks showed, or bursting as far as it goes, see faith.rs
+            // Greater and brighter, and striking harder, the longer it was held, see faith.rs
             Power::Thunderspear => {
                 let from = view.eye + view.rotation * Vector3::new(0.2, 0.75, 0.0) * vpm;
                 let (to, who) = self.power_points(arena, power)[0];
                 let range = (to - from).norm() / vpm * 1.03 + if who.is_some() { 4.0 } else { 0.3 };
-                self.hurl_spear(&profile, from, to, base * 2.2, range, true);
+                let charge = self.power.charge;
+                self.hurl_spear(&profile, from, to, base * 2.2 * (0.8 + 0.7 * charge), range, true);
+                if let Some(p) = self.projectiles.last_mut() {
+                    p.size = 1.5 + 0.9 * charge;
+                }
                 if who.is_none() {
                     self.keep_power_marks(power, &[to], range / 32.0);
                 }
-                self.shake = self.shake.max(0.2);
+                self.flashes.push(Flash { position: from, color: Element::Storm.light(), reach: 6.0 + 6.0 * charge, life: 0.2, lifetime: 0.2 });
+                self.shake = self.shake.max(0.2 + 0.25 * charge);
             }
             // A shade sent down onto the ring shown as it was aimed, to raise the dead there
             Power::RaiseDead => {
@@ -1092,7 +1137,7 @@ impl Combat {
 
     /// What it does to animal `i` it strikes at `at` for `damage`, as its element has it, from
     /// `from`
-    fn power_hit(&mut self, arena: &mut Arena, profile: &Rc<Profile>, i: usize, at: Vector3<f64>, damage: f64, from: Vector3<f64>) {
+    pub(super) fn power_hit(&mut self, arena: &mut Arena, profile: &Rc<Profile>, i: usize, at: Vector3<f64>, damage: f64, from: Vector3<f64>) {
         let element = profile.element;
         self.element_hit(at, element, 1.3);
         self.sparks(at, 8, 3.0, Element::look(element), 0.6, 0.35);
@@ -1238,7 +1283,7 @@ impl Combat {
             Shape::Arrow | Shape::Cloud => Some(0.035),
             Shape::Stake => Some(0.05),
             Shape::Fist | Shape::Shard => Some(0.025),
-            Shape::Spear { .. } => Some(0.07),
+            Shape::Spear { .. } | Shape::Vigil | Shape::Ascent => Some(0.07),
             Shape::Ray | Shape::Step => Some(0.04),
             _ => None,
         };
@@ -1271,6 +1316,17 @@ impl Combat {
         // A talisman's spear crackling, a shade trailing darkness, see faith.rs
         if let Shape::Spear { big } = shape {
             self.spear_crackles(p, big, dt);
+        }
+        // A Vigil Spear crackling as a spear does, Helix's orbs wheeling round each other, a knot of
+        // shadow trailing darkness, see miracles.rs
+        if matches!(shape, Shape::Vigil | Shape::Ascent) {
+            self.spear_crackles(p, false, dt);
+        }
+        if let Shape::Helix { phase } = shape {
+            self.helix_flies(p, phase, dt);
+        }
+        if shape == Shape::Grasp {
+            self.shade_trails(p, dt);
         }
         if shape == Shape::Shade {
             self.shade_trails(p, dt);
@@ -1568,13 +1624,28 @@ impl Combat {
                 self.glyph_lands(arena, p, at);
                 true
             }
+            // Stuck fast in what it strikes, see miracles.rs
+            Shape::Vigil => {
+                self.vigil_strikes(arena, p, i, at);
+                true
+            }
+            Shape::Ascent => false,
+            Shape::Storm | Shape::Grasp => {
+                self.power_lands(arena, p, shape, at);
+                true
+            }
+            Shape::Helix { .. } => {
+                self.power_hit(arena, &profile, i, at, p.damage, from);
+                self.power_pop(arena, &profile, at, 1.2, p.damage * 0.4, Some(i));
+                true
+            }
         }
     }
 
     /// One of their shots coming down at `at`, on the ground, a wall or the water, or as far as
     /// it goes
     pub(super) fn power_lands(&mut self, arena: &mut Arena, p: &Projectile, shape: Shape, at: Vector3<f64>) {
-        if !matches!(shape, Shape::Wheel { back: true }) {
+        if !matches!(shape, Shape::Wheel { back: true } | Shape::Ascent) {
             self.landed(at);
         }
         let vpm = arena.view.vpm;
@@ -1603,6 +1674,37 @@ impl Combat {
             }
             Shape::Ray => self.power_pop(arena, &profile, at, 1.4, p.damage * 0.5, None),
             Shape::Glyph | Shape::Sigil => self.glyph_lands(arena, p, at),
+            // A Vigil Spear stuck in the ground; Heavenfall's spear gone up into the sky; a
+            // thunderhead gathering where Stormcall's orb tops out; tendrils reaching up where a
+            // knot of shadow comes down, see miracles.rs
+            Shape::Vigil => self.stick_vigil(p, at, None),
+            Shape::Ascent => {
+                self.sparks(at, 14, 4.0, Element::look(Some(Element::Holy)), 0.3, 0.4);
+                self.flashes.push(Flash { position: at, color: Element::Holy.light(), reach: 10.0, life: 0.3, lifetime: 0.3 });
+                self.cues.push(Cue::at(Sound::Thunder, at, 0.4).pitched(1.3));
+            }
+            Shape::Storm => {
+                let ground = Combat::floor_at(arena, at);
+                self.thunderhead(at, 3.5, 10);
+                self.flashes.push(Flash { position: at, color: Element::Storm.light(), reach: 12.0, life: 0.3, lifetime: 0.3 });
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Storm)), &profile, ground, Vector3::zeros(), super::miracles::STORM_ROUND, 0.4 + 6.0 * 0.24 + 0.3, p.damage);
+                self.cues.push(Cue::at(Sound::Rumble, at, 0.9).pitched(0.8));
+            }
+            Shape::Grasp => {
+                let ground = Combat::floor_at(arena, at);
+                self.zone(ZoneKind::Signature(SigZone::Power(Lasting::Grasp)), &profile, ground, Vector3::zeros(), super::miracles::GRASP_ROUND, super::miracles::GRASP_SECONDS, p.damage);
+                if (ground - arena.view.eye).norm() > 3.0 * vpm {
+                    self.swells.push(Swell { model: crate::effects::TENDRILS, position: ground, radius: 2.4, life: 3.0, lifetime: 3.0 });
+                }
+                for i in Combat::foes_round(arena, ground, super::miracles::GRASP_ROUND).into_iter().take(4) {
+                    let at = arena.animals[i].position;
+                    self.swells.push(Swell { model: crate::effects::TENDRILS, position: at, radius: 1.3, life: 2.8, lifetime: 2.8 });
+                }
+                self.sparks(ground + up * 0.3 * vpm, 14, 2.5, look, -0.2, 0.6);
+                self.cues.push(Cue::at(Sound::Wail, ground, 0.5).pitched(0.6));
+                self.cues.push(Cue::at(Sound::Quake, ground, 0.4).pitched(1.6));
+            }
+            Shape::Helix { .. } => self.power_pop(arena, &profile, at, 1.2, p.damage * 0.5, None),
             // Breaking up into sparks and a flash where it ends
             Shape::Wave { .. } => {
                 self.sparks(at, 16, 3.5, look, 0.3, 0.45);
@@ -1873,6 +1975,9 @@ impl Combat {
             // A knife stuck in the ground, see thrown.rs; a circle of runes being written, see
             // arsenal.rs
             Lasting::Knife { .. } => {}
+            Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => {
+                self.miracle_zone(arena, z, kind, dt);
+            }
             Lasting::Runes | Lasting::Sigil => self.runes_go_on(arena, z, kind == Lasting::Sigil),
             // A Starbreak's crack, a short fissure, see arsenal.rs
             Lasting::Crack => {
@@ -2160,6 +2265,7 @@ impl Combat {
             }
             Lasting::Fissure | Lasting::Line | Lasting::Nova | Lasting::BladeRing | Lasting::Downpour | Lasting::Bound | Lasting::Flare | Lasting::Beacon => {}
             Lasting::Knife { .. } | Lasting::Crack | Lasting::Runes | Lasting::Sigil => {}
+            Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => self.miracle_zone_ends(arena, z, kind),
         }
     }
 
@@ -2325,6 +2431,7 @@ impl Combat {
                 }
             }
             Shape::Step | Shape::Ray | Shape::Glyph | Shape::Sigil => out.extend(self.arsenal_shot_instances(p, shape, view)),
+            Shape::Vigil | Shape::Ascent | Shape::Storm | Shape::Grasp | Shape::Helix { .. } => out.extend(self.miracle_shot_instances(p, shape, view)),
         }
         out
     }
@@ -2348,6 +2455,7 @@ impl Combat {
                 }
             }
             Lasting::Runes | Lasting::Sigil => out.extend(self.runes_instances(z, view, kind == Lasting::Sigil)),
+            Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => out.extend(self.miracle_zone_instances(z, kind, view)),
             // A glowing crack along the ground as far as it's split
             Lasting::Fissure | Lasting::Crack => {
                 let to = z.position + z.velocity * z.owed.max(0.5) + up * 0.15 * vpm;
@@ -2454,6 +2562,7 @@ impl Combat {
             // A flare lighting up the ground all round under it
             Lasting::Flare => Some((z.position, 16.0, color, 1.2 * fade)),
             Lasting::Fissure | Lasting::Line | Lasting::Downpour | Lasting::Bound | Lasting::Knife { .. } | Lasting::Crack => None,
+            Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => self.miracle_light(z, kind),
             // A circle of runes glowing as it's written, blazing as it blasts up
             Lasting::Runes | Lasting::Sigil => {
                 let blaze = if z.dwell > 0.0 { (1.0 - (age - z.dwell) / 0.4).max(0.0) * 2.0 } else { 0.25 + 0.1 * z.owed };

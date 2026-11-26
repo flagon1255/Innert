@@ -32,6 +32,10 @@ mod stones;
 mod aim;
 /// Throwing knives and a chakram, thrown by hand
 mod thrown;
+/// Lightning drawn as jagged, branching bolts that flicker and strike again
+mod lightning;
+/// What a spell of each element leaves where it goes off
+mod marks;
 use aim::{spot_aim, way_to};
 /// Special ammo flying each kind its own way, see ammo.rs
 mod ammo;
@@ -81,6 +85,9 @@ pub fn light_rank(light: &[f32; 8], eye: Vector3<f64>) -> f64 {
 const MAX_DEPTH: u32 = 6;
 /// How far a spell's own explosion reaches where it lands, in meters
 const MAGIC_BLAST: f64 = 1.6;
+/// Seconds between one hop of a chain of lightning and the next, so it's seen leaping on from one
+/// to the next, see lightning.rs
+const HOP_GAP: f64 = 0.045;
 
 /// What weapons have done to an animal, wearing off over time
 #[derive(Default)]
@@ -2102,9 +2109,16 @@ pub struct Combat {
     /// hand, and whether the throw going on is a heavy one, see thrown.rs
     flung: std::cell::Cell<Option<thrown::Flung>>,
     throw_heavy: bool,
+    /// Lightning crackling a moment, see lightning.rs, where the eye was last, and the weapon in
+    /// hand's profile, for what's left on the ground by what has none of its own
+    bolts: Vec<lightning::Bolt>,
+    /// Seconds till a spell can leave its element's mark on the ground again, see marks.rs
+    mark_timer: f64,
     /// How much harder the player's blows land from behind or unseen, from the skill web and their
     /// class, as a share, see set_backstab()
     backstab: f64,
+    eye_at: Vector3<f64>,
+    last_profile: Option<Rc<Profile>>,
     shackle: Option<Shackle>,
     blood_moon: Option<BloodMoon>,
     /// Cluster Volley's bombs waiting to be fired, see Lob
@@ -5465,7 +5479,11 @@ impl Combat {
             thrown: None,
             flung: std::cell::Cell::new(None),
             throw_heavy: false,
+            bolts: Vec::new(),
+            mark_timer: 0.0,
             backstab: 0.0,
+            eye_at: Vector3::zeros(),
+            last_profile: None,
             shackle: None,
             blood_moon: None,
             lobs: Vec::new(),
@@ -5556,6 +5574,9 @@ impl Combat {
         }
         for l in &mut self.lingering {
             l.position -= shift;
+        }
+        for b in &mut self.bolts {
+            b.recenter(shift);
         }
         for p in &mut self.pending {
             match &mut p.act {
@@ -5774,6 +5795,12 @@ impl Combat {
         self.faced.clear();
         self.rays.clear();
         self.vpm = arena.view.vpm;
+        self.eye_at = arena.view.eye;
+        if let Some((_, w)) = weapon
+            && self.last_profile.as_ref().is_none_or(|p| !Rc::ptr_eq(p, &w.profile))
+        {
+            self.last_profile = Some(w.profile.clone());
+        }
         self.seen = seen_within(arena.world);
         self.speed = arena.view.speed;
         self.stride = arena.view.stride;
@@ -5971,6 +5998,8 @@ impl Combat {
             f.life -= dt;
         }
         self.flashes.retain(|f| f.life > 0.0);
+        self.update_bolts(dt);
+        self.mark_timer -= dt;
         for g in &mut self.glows {
             g.life -= dt;
         }
@@ -7074,8 +7103,8 @@ impl Combat {
         let (mut at, mut i, mut power) = (from, first, 1.0);
         for hop in 0..=hops {
             let center = arena.animals[i].center(vpm as u32);
-            self.zap_line(at, center, look);
-            self.flashes.push(Flash { position: center, color, reach: 4.0, life: 0.12, lifetime: 0.12 });
+            self.zap_line_after(at, center, look, hop as f64 * HOP_GAP);
+            self.flashes.push(Flash { position: center, color, reach: 4.0, life: 0.12 + hop as f64 * HOP_GAP, lifetime: 0.12 + hop as f64 * HOP_GAP });
             let crit = self.roll_crit(profile);
             let hit = damage * power * if crit { profile.stat("critDamage") } else { 1.0 };
             struck.push(arena.animals[i].id);
@@ -7135,20 +7164,15 @@ impl Combat {
         self.cap_sparks();
     }
 
-    /// A jagged thread of lightning, or of `look`'s element, from `from` to `to`, there a moment
+    /// A jagged thread of lightning, or of `look`'s element, from `from` to `to`, forked, there a
+    /// moment, flickering, see lightning.rs; `delay` seconds after now, as a hop of a chain
+    /// leaping on after the last
     fn zap_line(&mut self, from: Vector3<f64>, to: Vector3<f64>, look: usize) {
-        let vpm = self.vpm;
-        let steps = ((to - from).norm() / (0.35 * vpm)).clamp(4.0, 26.0) as usize;
-        for k in 0..=steps {
-            let jitter = if k == 0 || k == steps { Vector3::zeros() } else { self.any_direction() * 0.22 * vpm };
-            let at = from.lerp(&to, k as f64 / steps as f64) + jitter;
-            if (at - from).norm() < 1.2 * vpm && k < 3 {
-                self.fine(at, Vector3::zeros(), look, 0.12, 0.0);
-            } else {
-                self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.16, lifetime: 0.16, gravity: 0.0, slot: SLOT_SPARK });
-            }
-        }
-        self.cap_sparks();
+        self.zap_line_after(from, to, look, 0.0);
+    }
+
+    fn zap_line_after(&mut self, from: Vector3<f64>, to: Vector3<f64>, look: usize, delay: f64) {
+        self.lightning(from, to, look, 0.055, 1, 2, delay, 0.0);
     }
 
     /// Swinging the censer in hand back and forth on its chains while the button's held: each
@@ -12837,6 +12861,8 @@ impl Combat {
                 self.burst(arena, profile, at, MAGIC_BLAST * reach * 1.5, 0.0, 1, true, Some(Element::Void), None);
             }
             self.burst(arena, profile, at, MAGIC_BLAST * reach, p.damage * 0.5, 1, false, profile.element.or(Some(Element::Arcane)), None);
+            // And leaves its element's mark there, see marks.rs
+            self.spell_mark(arena, profile, at, p.form, p.damage);
         } else {
             self.sparks(at, 4, 1.5, look, 1.0, 0.3);
             if profile.element.is_some() {
@@ -13483,33 +13509,19 @@ impl Combat {
         self.waves.push((at, size));
     }
 
-    /// A thread of lightning from `from` to `to`, a few sparks along it, cheaper than a bolt_line
-    /// for stringing a lot of them at once
+    /// A thread of lightning from `from` to `to`, forked once, striking twice, a few sparks
+    /// crackling off where it ends: cheap enough to string a lot of them at once, see lightning.rs
     fn arc(&mut self, from: Vector3<f64>, to: Vector3<f64>) {
-        let vpm = self.vpm;
         let look = Element::look(Some(Element::Storm));
-        let steps = ((to - from).norm() / (0.45 * vpm)).clamp(3.0, 18.0) as usize;
-        for k in 0..=steps {
-            let jitter = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5) * 0.3 * vpm;
-            let at = from.lerp(&to, k as f64 / steps as f64) + if k == 0 || k == steps { Vector3::zeros() } else { jitter };
-            self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.2, lifetime: 0.2, gravity: 0.0, slot: SLOT_SPARK });
-        }
-        self.cap_sparks();
-        self.flashes.push(Flash { position: to, color: Element::Storm.light(), reach: 4.0, life: 0.12, lifetime: 0.12 });
+        self.lightning(from, to, look, 0.045, 1, 2, 0.0, 0.5);
+        self.sparks(to, 3, 3.0, look, 0.3, 0.2);
     }
 
-    /// Lightning from `from` to `to`, jagged, there for a moment
+    /// Lightning from `from` to `to`, jagged and forked, flickering and striking again a moment,
+    /// crackling, see lightning.rs
     fn bolt_line(&mut self, from: Vector3<f64>, to: Vector3<f64>, look: usize) {
-        let vpm = self.vpm;
-        let steps = ((to - from).norm() / (0.2 * vpm)).clamp(8.0, 120.0) as usize;
-        let mut offset = Vector3::zeros();
-        for k in 0..=steps {
-            let f = k as f64 / steps as f64;
-            // Wandering off and back, pinned at both ends
-            offset = (offset + self.any_direction() * 0.12 * vpm) * (1.0 - f).min(f * 4.0).min(1.0);
-            self.sparks.push(Spark { position: from.lerp(&to, f) + offset, velocity: Vector3::zeros(), look, life: 0.25, lifetime: 0.25, gravity: 0.0, slot: SLOT_SPARK });
-        }
-        self.cap_sparks();
+        self.lightning(from, to, look, 0.075, 2, 3, 0.0, 0.8);
+        self.sparks(to, 4, 3.5, look, 0.4, 0.25);
         self.cues.push(Cue::at(Sound::Crackle, to, 0.8));
     }
 
@@ -13520,6 +13532,7 @@ impl Combat {
     }
 
     /// How much harder, as a share, see set_backstab()
+    #[cfg(test)]
     pub fn backstab(&self) -> f64 {
         self.backstab
     }
@@ -14112,20 +14125,16 @@ impl Combat {
                     self.fine(at, Vector3::new(a.cos(), a.sin(), 0.08) * 1.8 * vpm, look, 0.45, 0.0);
                 }
             }
-            // Crackling, and on a hard hit lightning striking down from the sky onto it
+            // Crackling, little forks of it jumping off, and on a hard hit lightning striking down
+            // from the sky onto it, see lightning.rs
             Some(Element::Storm) => {
-                self.sparks(at, n(8.0), 4.5, look, 0.0, 0.2);
+                self.sparks(at, n(6.0), 4.5, look, 0.0, 0.2);
+                for _ in 0..n(1.5).min(3) {
+                    let jag = at + (self.any_direction() + Vector3::new(0.0, 0.0, -0.3)) * 0.9 * vpm;
+                    self.lightning(at, jag, look, 0.03, 0, 2, 0.0, 0.0);
+                }
                 if strength >= 1.4 {
-                    let top = at + Vector3::new(0.0, 0.0, 10.0 * vpm);
-                    let steps = 50;
-                    for k in 0..=steps {
-                        let f = k as f64 / steps as f64;
-                        let jitter = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.0) * (1.0 - f) * 0.9 * vpm;
-                        self.sparks.push(Spark { position: top.lerp(&at, f) + jitter, velocity: Vector3::zeros(), look, life: 0.28, lifetime: 0.28, gravity: 0.0, slot: SLOT_SPARK });
-                    }
-                    self.flashes.push(Flash { position: at, color: Element::Storm.light(), reach: 8.0, life: 0.18, lifetime: 0.18 });
-                    self.cues.push(Cue::at(Sound::Crackle, at, 0.9).pitched(0.8));
-                    self.shake = self.shake.max(0.3);
+                    self.sky_bolt(at, look, 0.8, 0.0);
                 }
             }
             // Bubbles rising slowly
@@ -15334,6 +15343,10 @@ impl Combat {
         // it's held at rest, see powers.rs
         if let Action::Power { t, length } = self.action {
             p = self.power_pose(weapon, &p, t / length);
+        } else if self.power.aiming && weapon.profile.power.is_some_and(crate::weapons::Power::spear) {
+            // A priest's spear aimed: drawn back over the shoulder, held, trembling the more the
+            // longer it's held, see faith.rs
+            p = self.spear_aim_pose(&p);
         }
         // A flourish now and then, standing about with it
         if self.action == Action::Idle && self.idle > IDLE_AFTER {
@@ -15672,6 +15685,10 @@ impl Combat {
             if !thrown {
                 out.push(place(first_model + frame as u32, &look.frames[frame], look.res, look.grip, hand, rotation, vpm, 1.0, HELD));
             }
+            // A priest's spear forming in the hand as it's aimed and wound up, see faith.rs
+            if let Some(formed) = self.spear_forming(weapon) {
+                out.extend(self.forming_spear(hand, view, formed));
+            }
             let build = weapon.profile.build;
             if build != Build::None {
                 // A hand crossbow's held in the left hand, the rest in the right
@@ -15907,6 +15924,7 @@ impl Combat {
     fn other_instances(&self, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
         let vpm = view.vpm;
         self.stone_instances(view, out);
+        self.bolt_instances(view, out);
         let mut add = |at: Vector3<f64>, instance: AnimalInstance| out.push(((at - view.eye).norm(), instance));
         for s in &self.stuck {
             // Sinking away into what it's stuck in as it goes, point first, never just gone, and
@@ -16255,6 +16273,8 @@ impl Combat {
                     let flicker = 1.0 + 0.07 * (self.time * 41.0 + i.position.x).sin();
                     (PILLAR_STAGES + (t > 0.55) as usize, PILLAR_RES, grow.sqrt() * flicker, self.time * 1.5)
                 }
+                // Tendrils of shadow writhing as they reach up and sink back, see effects::tendrils()
+                crate::effects::TENDRILS => (i.model, MODEL_RES, grow.sqrt(), (self.time * 0.9 + i.position.y * 0.01).sin() * 0.4),
                 _ => (i.model, MODEL_RES, grow, 0.0),
             };
             let (model, shape) = self.model_at(index);

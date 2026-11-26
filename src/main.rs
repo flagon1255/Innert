@@ -4824,7 +4824,15 @@ impl App {
                 }
                 // `--set special_key=right` uses its power on right click instead, as a player would
                 self.script_controls = if settings_from_args().iter().any(|(k, v)| k == "special_key" && v == "right") {
-                    self.game.power_controls((f as f64 - when as f64) / 60.0, 1.0 / 60.0)
+                    let t = (f as f64 - when as f64) / 60.0;
+                    let mut c = self.game.power_controls(t, 1.0 / 60.0);
+                    // `--set power_hold=1.2` keeps right click held aiming that long, as a priest
+                    // charges the great spear
+                    let hold = settings_from_args().into_iter().find(|(k, _)| k == "power_hold").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    if t >= 0.0 && t < hold {
+                        c.aiming = true;
+                    }
+                    c
                 } else {
                     // `--set special_aim=1` aims it with right click held the while, its ring showing
                     let aiming = settings_from_args().iter().any(|(k, v)| k == "special_aim" && v == "1");
