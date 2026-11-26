@@ -172,8 +172,9 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         raid_bosses: [(Look::Roc, [240.0, 60.0]), (Look::Thunderbird, [-60.0, 300.0]), (Look::HarpyQueen, [-260.0, -160.0])],
         lair_names: ["the roc's eyrie", "the thunder isle", "the harpies' court"],
         lair_marks: [Landmark::Anywhere; 3],
-        // Its guardians the Stormtalon and the Harridan, and two from the land below
-        guardians: &[Look::Stormtalon, Look::Harridan, Look::Ironhide, Look::Treant],
+        // Its guardians its own: the Aeolith and the Stormbell, drifting over their islands, see
+        // src\bosses\roster.rs, and the avians' Stormtalon and Harridan
+        guardians: &[Look::Aeolith, Look::Stormtalon, Look::Stormbell, Look::Harridan],
         finale: None,
         finale_mark: Landmark::Anywhere,
         // Flocks of harpies and skyhunters above all, and those come up from below

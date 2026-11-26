@@ -1,0 +1,29 @@
+{
+  "what": "Aeolith, fist left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    11,
+    11
+  ],
+  "pivot": [
+    5.888000000000002,
+    5.376,
+    5.376
+  ],
+  "anchor": [
+    0.038249999999999895,
+    0.007749999999999979,
+    -0.336
+  ],
+  "origin": [
+    -6,
+    -5,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4683,
+    "2b7579e131996794"
+  ]
+}

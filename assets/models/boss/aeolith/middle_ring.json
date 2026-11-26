@@ -1,0 +1,29 @@
+{
+  "what": "Aeolith, middle ring",
+  "voxels_per_meter": 16.0,
+  "size": [
+    54,
+    53,
+    5
+  ],
+  "pivot": [
+    26.624,
+    26.376457466544284,
+    2.304
+  ],
+  "anchor": [
+    0.023500000000000076,
+    0.007721408340982228,
+    -0.144
+  ],
+  "origin": [
+    -27,
+    -26,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    11747,
+    "8ff048a88c9d02c1"
+  ]
+}

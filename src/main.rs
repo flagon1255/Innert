@@ -5100,9 +5100,11 @@ impl App {
                     let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
                     *held = Some((at, target));
                 }
+                // Looking at its feet, or `view_look=2.5` that many meters up from them, at the middle
+                // of something that floats
                 if let Some((at, target)) = *held {
                     self.camera.position = voxels_to_camera(at, self.world.size);
-                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                    self.camera.look_at(voxels_to_camera(target + Vector3::new(0.0, 0.0, number("view_look", 0.0) * vpm), self.world.size));
                 }
                 self.game.set_health(100.0);
                 let pressing = number("view_attack", 0.0) > 0.5 && f > 30;

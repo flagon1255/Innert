@@ -826,6 +826,8 @@ pub struct Game {
     /// So the sound of being hurt doesn't go off every frame
     hurt_sound: f64,
     breath_sound: f64,
+    /// Seconds till a whirlwind's howl is heard again, see bosses::Deed::Gust
+    gust_sound: f64,
     /// So the whoosh of something just missing doesn't go off over and over
     dodge_sound: f64,
     /// The boss bar: which boss, how much health it showed last, a trail lagging behind that,
@@ -1137,6 +1139,7 @@ impl Game {
             fumes: Vec::new(),
             hurt_sound: 0.0,
             breath_sound: 0.0,
+            gust_sound: 0.0,
             dodge_sound: 0.0,
             boss_bar: ("", 1.0, 1.0, 0.0, 0.0),
             knockback: Vector3::zeros(),
@@ -2634,6 +2637,12 @@ impl Game {
                         Cue::at(Sound::Flap, at, 0.8).pitched(0.85)
                     }
                     Move::Maul => Cue::at(Sound::Roar, at, 0.5).pitched(voice * 1.8),
+                    // The Aeolith's rings whirring up, its wind rising; the Stormbell's thunder
+                    // gathering and lightning crackling down its tendrils
+                    Move::Ringcast | Move::Shardfall => Cue::at(Sound::Whirr, at, 0.9).pitched(0.6),
+                    Move::Gyre => Cue::at(Sound::Gale, at, 1.0).pitched(0.9),
+                    Move::Staticfall | Move::Overcharge => Cue::at(Sound::Thunder, at, 0.8).pitched(0.7),
+                    Move::Thunderlash => Cue::at(Sound::Zap, at, 0.9).pitched(0.7),
                     _ => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.2),
                 };
                 self.cues.push(cue);
@@ -2750,9 +2759,13 @@ impl Game {
                 self.combat.hurl(HostileKind::Spell(element), from, to, time, damage, radius);
                 self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element)) as u8), from, 1.0).pitched(0.6));
             }
-            Deed::Breath { from, direction, dt: seconds } => {
+            Deed::Breath { from, direction, dt: seconds } | Deed::Jet { from, direction, dt: seconds } => {
                 let element = element.unwrap_or(Element::Fire);
-                self.combat.breathe(from, direction, seconds, element);
+                if matches!(deed, Deed::Jet { .. }) {
+                    self.combat.jet(from, direction, seconds, element);
+                } else {
+                    self.combat.breathe(from, direction, seconds, element);
+                }
                 if self.breath_sound <= 0.0 {
                     self.breath_sound = 1.8;
                     self.cues.push(Cue::at(Sound::Breath, from, 1.0).pitched(if element == Element::Fire { 1.0 } else { 1.25 }));
@@ -3071,9 +3084,32 @@ impl Game {
                     Some(Element::Poison) => DROP_VENOM,
                     Some(Element::Blood) => DROP_BLOOD,
                     Some(Element::Void) => DROP_VOID,
+                    // Rain thrown up out of a thundercloud's lightning striking
+                    Some(Element::Storm) => DROP_WATER,
                     _ => DROP_MUD,
                 };
                 self.roots.push(Root { at, left: delay, radius, damage, drag: Vector3::zeros(), element, flare: Some(kind) });
+            }
+            // A whirlwind round a boss: dust and its element whirling in to it, howling, and
+            // whoever's within it drawn in, harder the nearer, but never off their feet
+            Deed::Gust { at, reach, pull, dt: seconds } => {
+                self.combat.gust(at, reach, seconds, element);
+                self.gust_sound -= seconds;
+                if self.gust_sound <= 0.0 {
+                    self.gust_sound = 1.6;
+                    self.cues.push(Cue::at(Sound::Gale, at, 0.9).pitched(0.8));
+                }
+                if let Some(feet) = player {
+                    let off = (at - feet).xy();
+                    let d = off.norm() / vpm;
+                    if d < reach && d > 0.8 && (feet.z - at.z).abs() < 4.0 * vpm {
+                        let inward = off / off.norm();
+                        let round = Vector2::new(-inward.y, inward.x);
+                        let strength = pull * (0.45 + 0.55 * (1.0 - d / reach));
+                        let drawn = (inward + round * 0.35) * strength;
+                        self.thrown += Vector3::new(drawn.x, drawn.y, 0.0) * vpm * seconds * 4.0;
+                    }
+                }
             }
             // Its element, or a burning rock of it, lobbed to come down where it shows
             Deed::Lob { from, to, time, damage, radius, rock } => {

@@ -201,6 +201,11 @@ pub enum Look {
     Jeweller,
     Wingmaker,
     TradeStall,
+    // Bosses of the Sky Isles' own, drifting over their floating islands, drawn jointed, see
+    // src\bosses\roster.rs and src\rig\drifter.rs: the Aeolith, a spirit of the wind bound in rings of
+    // carved stone, and the Stormbell, a jelly of thundercloud trailing crackling tendrils
+    Aeolith,
+    Stormbell,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -257,7 +262,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 125] = [
+    pub const ALL: [Look; 127] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -383,6 +388,8 @@ impl Look {
         Look::Jeweller,
         Look::Wingmaker,
         Look::TradeStall,
+        Look::Aeolith,
+        Look::Stormbell,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -536,6 +543,8 @@ impl Look {
             Look::Dreadmare => Build::Wolf,
             Look::Sunstinger => Build::Spider,
             Look::Hoarback | Look::GildedSphinx => Build::Bear,
+            // The Sky Isles' own drift light as the casting dead walk, never shaking the ground
+            Look::Aeolith | Look::Stormbell => Build::Undead,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
@@ -725,11 +734,14 @@ impl Look {
 
     /// The kind of `self`, a boss, that lives in land `land`: the Dreaming Red has its own, the
     /// Lantern Widow where a drake would be, in its flooded churches and towers, and the Dreadmare
-    /// where an alpha wolf would roam, see src\bosses\roster.rs
+    /// where an alpha wolf would roam; and the Sky Isles theirs, the Aeolith where a great bear would
+    /// be and the Stormbell where a treant would, see src\bosses\roster.rs
     pub fn for_land(self, land: Land) -> Look {
         match (self, land) {
             (Look::Drake, Land::Dream) => Look::LanternWidow,
             (Look::Direwolf, Land::Dream) => Look::Dreadmare,
+            (Look::Ironhide, Land::Sky) => Look::Aeolith,
+            (Look::Treant, Land::Sky) => Look::Stormbell,
             _ => self,
         }
     }
@@ -903,6 +915,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::reach(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::reach(self),
             // Up to the top of a hat, a staff or a bow held upright, or wings on the back
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => 2.2,
             Look::TradeStall => 2.0,
@@ -971,6 +984,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::body(self),
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => (0.95, 0.42),
             Look::TradeStall => (0.5, 0.6),
         }
@@ -1067,6 +1081,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::name(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::name(self),
             Look::Bowyer => "bowyer",
             Look::Wandwright => "wandwright",
             Look::Bladesmith => "weaponsmith",
