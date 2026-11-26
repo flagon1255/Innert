@@ -1,0 +1,29 @@
+{
+  "what": "Grotto Squid, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    25,
+    23,
+    20
+  ],
+  "pivot": [
+    9.504000000000001,
+    11.232000000000001,
+    10.8
+  ],
+  "anchor": [
+    0.18724999999999992,
+    0.01674999999999993,
+    -0.675
+  ],
+  "origin": [
+    -10,
+    -11,
+    -11
+  ],
+  "note": "A piece placed along the kraken's body and arms: the pivot is the point it's made round.",
+  "written": [
+    15784,
+    "ec7522bc227a9ade"
+  ]
+}

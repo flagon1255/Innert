@@ -1,0 +1,29 @@
+{
+  "what": "Grotto Squid, mantle",
+  "voxels_per_meter": 16.0,
+  "size": [
+    52,
+    22,
+    20
+  ],
+  "pivot": [
+    42.120000000000005,
+    10.583999999999998,
+    9.72
+  ],
+  "anchor": [
+    -1.0075000000000003,
+    0.026000000000000134,
+    -0.6075
+  ],
+  "origin": [
+    -42,
+    -11,
+    -10
+  ],
+  "note": "A piece placed along the kraken's body and arms: the pivot is the point it's made round.",
+  "written": [
+    29565,
+    "3b200a5051044f28"
+  ]
+}

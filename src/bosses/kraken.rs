@@ -117,7 +117,7 @@ fn hide(look: Look) -> Hide {
         Look::GrottoSquid => Hide { skin: FUR_WHITE, dark: TEMPLE_TEAL, belly: LIMESTONE, eye: GLOW_ARCANE, glow: GLOW_ARCANE, sucker: FUR_CREAM, crust: ICE },
         // Deep red, mottled black, a cream belly and suckers, eyes of old gold, the void glowing in
         // spots down its sides, crusted with barnacles
-        _ => Hide { skin: FUR_RED, dark: OBSIDIAN, belly: FUR_CREAM, eye: GOLD, glow: GLOW_VOID, sucker: FUR_CREAM, crust: LIMESTONE },
+        _ => Hide { skin: CLOTH, dark: OBSIDIAN, belly: FUR_CREAM, eye: GOLD, glow: GLOW_VOID, sucker: FUR_CREAM, crust: LIMESTONE },
     }
 }
 
