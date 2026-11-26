@@ -2124,7 +2124,9 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
     let (notice, give_up, leash) = match look {
         // A great serpent rises to whoever comes near its lair, and follows them a long way
         Look::Ysveth => (60.0, 140.0, 160.0),
-        _ if look.is_great_serpent() || look.is_kraken() => (26.0, 60.0, 75.0),
+        _ if look.is_great_serpent() => (26.0, 60.0, 75.0),
+        // A kraken out in the deep water sees whoever comes down to the shore
+        _ if look.is_kraken() => (34.0, 60.0, 75.0),
         Look::Wolf => (22.0, 34.0, 50.0),
         Look::Spiderling => (14.0, 24.0, 32.0),
         // Keeping watch with a crossbow, they see further

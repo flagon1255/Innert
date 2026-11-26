@@ -117,7 +117,7 @@ fn hide(look: Look) -> Hide {
         Look::GrottoSquid => Hide { skin: FUR_WHITE, dark: TEMPLE_TEAL, belly: LIMESTONE, eye: GLOW_ARCANE, glow: GLOW_ARCANE, sucker: FUR_CREAM, crust: ICE },
         // Deep red, mottled black, a cream belly and suckers, eyes of old gold, the void glowing in
         // spots down its sides, crusted with barnacles
-        _ => Hide { skin: TEMPLE_RED, dark: OBSIDIAN, belly: FUR_CREAM, eye: GOLD, glow: GLOW_VOID, sucker: FUR_CREAM, crust: LIMESTONE },
+        _ => Hide { skin: FUR_RED, dark: OBSIDIAN, belly: FUR_CREAM, eye: GOLD, glow: GLOW_VOID, sucker: FUR_CREAM, crust: LIMESTONE },
     }
 }
 
@@ -201,10 +201,11 @@ fn own_turn(boss: &Boss) -> f64 {
     ((boss.key[0] ^ boss.key[1].wrapping_mul(13)) as f64 * 0.29).rem_euclid(TAU)
 }
 
-/// Where its arms come up round the player at `aim`: on them, and in a ring round them
-fn lash_spots(look: Look, boss: &Boss, vpm: f64) -> Vec<V3> {
+/// Where its arms come up round the player at `aim`: on them, and in a ring round them, the first
+/// of it on the side towards it, where it's seen coming
+fn lash_spots(look: Look, boss: &Boss, from: V3, vpm: f64) -> Vec<V3> {
     let n = rising_spots(look, boss.enraged);
-    let turn = own_turn(boss);
+    let turn = heading_to(boss.aim, from) + 0.3 * (own_turn(boss) - PI).signum();
     std::iter::once(boss.aim)
         .chain((0..n - 1).map(|k| {
             let a = turn + k as f64 / (n - 1) as f64 * TAU;
@@ -229,7 +230,7 @@ pub fn winding(m: Move, t: f64, whole: f64, a: &Animal, boss: &mut Boss, vpm: f6
             if stir {
                 boss.trail = 0.1;
             }
-            for at in lash_spots(a.look, boss, vpm) {
+            for at in lash_spots(a.look, boss, a.position, vpm) {
                 boss.deeds.push(Deed::Mark { at, radius: 1.9, closing });
                 if stir {
                     boss.deeds.push(Deed::Burrow { at });
@@ -261,7 +262,7 @@ pub fn begin(m: Move, a: &mut Animal, boss: &mut Boss, forward: V3, vpm: f64) {
         Move::Lashrise => {
             let spots = {
                 let b = &*boss;
-                lash_spots(look, b, vpm)
+                lash_spots(look, b, a.position, vpm)
             };
             let body = boss.kraken.as_deref_mut().unwrap();
             for (n, spot) in spots.into_iter().enumerate() {
@@ -648,7 +649,7 @@ fn pose(a: &Animal, boss: &mut Boss, body: &mut Body, world: &World, water: Wate
         };
         let turn = heading + side * fan + 0.18 * wave + body.spin;
         let out = Vector3::new(turn.cos(), turn.sin(), 0.0);
-        let raised = if c < ARMS && c % 3 == 1 { (if engaged { 2.2 } else { 0.7 } + 0.9 * (body.clock * 0.9 + c as f64).sin()).max(0.0) * k } else { 0.0 };
+        let raised = if c < ARMS && c % 2 == 1 { (if engaged { 3.0 } else { 0.7 } + 1.1 * (body.clock * 0.9 + c as f64).sin()).max(0.0) * k } else { 0.0 };
         let mut want = root + out * longest * if c < ARMS { 0.7 } else { 0.5 } + up * ((top - root.z) / vpm - 0.25 * k + raised) * vpm;
         if spinning {
             want += up * 0.8 * k * vpm;
