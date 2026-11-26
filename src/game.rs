@@ -7594,12 +7594,14 @@ impl Game {
             self.weapon_card(ui, w);
             return;
         }
-        let good = Color32::from_rgb(120, 230, 110);
+        let good = theme::GOOD;
+        // Its name in the colour it's edged in, and a rule of that under what it is
+        let edge = self.card_edge(item);
         match item {
             Item::Ammo(k, n) => {
                 let def = &self.library.ammo[k];
                 let tint = def.element.map_or(Color32::WHITE, |e| color(e.color()));
-                ui.label(RichText::new(&def.display_name).size(19.0).strong().color(tint));
+                theme::card_title(ui, &def.display_name, tint);
                 let what = match def.shot() {
                     Shot::Arrow => "Arrows, for bows",
                     Shot::Quarrel => "Bolts, for crossbows",
@@ -7611,22 +7613,27 @@ impl Game {
                         ui.label(RichText::new(format!("·  {}", e.name())).color(color(e.color())));
                     }
                 });
-                ui.separator();
+                theme::rule(ui, if def.element.is_some() { tint } else { edge });
                 for &d in &def.effect_defs {
                     let effect = &self.library.effects[d];
-                    ui.label(RichText::new(format!("• {}: {}", effect.display_name, effect.description)).color(Color32::from_rgb(200, 220, 255)));
+                    theme::bullet(ui, "•", theme::ACCENT, &effect.display_name, Color32::from_rgb(200, 220, 255), &effect.description, theme::TEXT);
                 }
+                // What it adds to each shot, and what it multiplies, in rows
                 let (adds, times) = def.stats();
-                for (key, label, unit) in STATS {
-                    if let Some(&v) = adds.get(key) {
-                        let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
-                        ui.label(RichText::new(format!("+{} {}", unit.show(v), label.to_lowercase())).color(good));
+                egui::Grid::new(("ammo card", k)).num_columns(2).spacing([14.0, 1.0]).show(ui, |ui| {
+                    for (key, label, unit) in STATS {
+                        if let Some(&v) = adds.get(key) {
+                            let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
+                            theme::row(ui, &label, RichText::new(format!("+{}", unit.show(v))).color(good));
+                            ui.end_row();
+                        }
+                        if let Some(&v) = times.get(key) {
+                            let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
+                            theme::row(ui, label, RichText::new(shown).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
+                            ui.end_row();
+                        }
                     }
-                    if let Some(&v) = times.get(key) {
-                        let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
-                        ui.label(RichText::new(format!("{shown} {}", label.to_lowercase())).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
-                    }
-                }
+                });
                 ui.label(RichText::new(&def.description).weak().italics());
                 ui.separator();
                 ui.label(RichText::new(format!("{n} carried, used up a shot at a time. Plain {} never run out.", def.shot().plural())).weak());
@@ -7636,9 +7643,9 @@ impl Game {
             Item::Jewel(j) => {
                 let (category, tier) = crate::jewels::parts(j);
                 let rarity = &self.library.rarities[tier.min(self.library.rarities.len() - 1)];
-                ui.label(RichText::new(crate::jewels::name(j)).size(19.0).strong().color(crate::jewels::tint(j)));
+                theme::card_title(ui, &crate::jewels::name(j), crate::jewels::tint(j));
                 ui.label(RichText::new(format!("A jewel for {} {}", rarity.display_name.to_lowercase(), category.weapons())).weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(RichText::new("Set into a socket of a weapon it fits, it lifts the weapon an item level, and its blows, its special and its power with it.").color(good));
                 ui.label(RichText::new(format!("Never past item level {}. Once set it can't be taken out.", levels::ITEM_CAP)).weak());
                 ui.label(RichText::new("Drag it onto the weapon, or pick the weapon and set it from its card.").weak());
@@ -7647,14 +7654,14 @@ impl Game {
                 return;
             }
             Item::Gold(n) => {
-                ui.label(RichText::new(format!("{n} gold")).size(19.0).strong().color(GOLD));
+                theme::card_title(ui, &format!("{n} gold"), GOLD);
                 ui.label(RichText::new("Coin, to spend at merchants").weak());
                 return;
             }
             Item::Bucket => {
-                ui.label(RichText::new("Bucket").size(19.0).strong().color(Color32::WHITE));
+                theme::card_title(ui, "Bucket", Color32::WHITE);
                 ui.label(RichText::new("A magic bucket").weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(format!("{:.1} of {:.0} m³ of water in it", self.bucket, BUCKET_CAPACITY));
                 ui.label(RichText::new("Click on water to fill it, right click to pour it out.").weak());
                 return;
@@ -7662,9 +7669,9 @@ impl Game {
             Item::InnertBlock(realm) => {
                 let r = &realms::REALMS[realm as usize % realms::REALMS.len()];
                 let [cr, cg, cb] = r.color;
-                ui.label(RichText::new(format!("Innert Block of {}", r.name.trim_start_matches("The "))).size(19.0).strong().color(Color32::from_rgb(cr, cg, cb)));
+                theme::card_title(ui, &format!("Innert Block of {}", r.name.trim_start_matches("The ")), Color32::from_rgb(cr, cg, cb));
                 ui.label(RichText::new("Left by one of the realm's raid bosses").weak());
-                ui.separator();
+                theme::rule(ui, Color32::from_rgb(cr, cg, cb));
                 ui.label(format!("{count} of {} carried", realms::RAIDS));
                 ui.label(RichText::new("Set all three into the Innert Gate in the normal world to open the way to the next realm.").weak());
                 ui.label(RichText::new("Never lost, sold or dropped.").weak().italics());
@@ -7673,16 +7680,16 @@ impl Game {
             Item::Wings(k) => {
                 let kind = &wings::KINDS[k as usize];
                 let rarity = &self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)];
-                ui.label(RichText::new(kind.name).size(19.0).strong().color(color(rarity.color)));
+                theme::card_title(ui, kind.name, color(rarity.color));
                 ui.label(RichText::new(format!("{} wings, worn on the back", rarity.display_name)).weak());
-                ui.separator();
+                theme::rule(ui, color(rarity.color));
                 ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
                 ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
                 if let Some((lift, wait)) = kind.flap {
                     ui.label(RichText::new(format!("Press Space in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s")).color(good));
                 }
                 if let Some((perk, [r, g, b])) = wings::perk_text(kind.perk) {
-                    ui.label(RichText::new(perk).color(Color32::from_rgb(r, g, b)));
+                    theme::bullet(ui, "★", theme::ACCENT, &perk, Color32::from_rgb(r, g, b), "", theme::TEXT);
                 }
                 ui.label(RichText::new(kind.about).italics());
                 ui.separator();
@@ -7692,9 +7699,9 @@ impl Game {
                 return;
             }
             Item::Hook => {
-                ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+                theme::card_title(ui, &item.name(), Color32::WHITE);
                 ui.label(RichText::new("For getting about the sky isles").weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(if item == Item::Hook {
                     format!("With it in hand, click to throw it up to {:.0} m. Where it bites into rock or earth, its rope hauls you there, up over the edge if it's an edge. Jump to let go.", realms::HOOK_REACH_M)
                 } else {
@@ -7705,16 +7712,22 @@ impl Game {
             }
             _ => {}
         }
-        ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+        theme::card_title(ui, &item.name(), Color32::WHITE);
         ui.label(RichText::new(if item.heal() > 0.0 { "Potion" } else { "Food" }).weak());
-        ui.separator();
-        if item.food() > 0.0 {
-            ui.label(RichText::new(format!("+{:.0} hunger", item.food())).color(good).size(16.0));
-            ui.label(RichText::new(format!("+{:.0} health", item.food() * 0.6)).color(good));
-        }
-        if item.heal() > 0.0 {
-            ui.label(RichText::new(format!("+{:.0} health, at once", item.heal())).color(good).size(16.0));
-        }
+        theme::rule(ui, edge);
+        // What it gives, in rows
+        egui::Grid::new(("food card", item.name())).num_columns(2).spacing([14.0, 1.0]).show(ui, |ui| {
+            if item.food() > 0.0 {
+                theme::row(ui, "Hunger", RichText::new(format!("+{:.0}", item.food())).color(good).size(16.0));
+                ui.end_row();
+                theme::row(ui, "Health", RichText::new(format!("+{:.0}", item.food() * 0.6)).color(good));
+                ui.end_row();
+            }
+            if item.heal() > 0.0 {
+                theme::row(ui, "Health, at once", RichText::new(format!("+{:.0}", item.heal())).color(good).size(16.0));
+                ui.end_row();
+            }
+        });
         if count > 1 {
             ui.label(RichText::new(format!("{count} carried")).weak());
         }
@@ -7732,7 +7745,7 @@ impl Game {
         let profile = &weapon.profile;
         // Compared with what's in hand if it's the same kind, and shoots the same kind of thing
         let other = self.held().filter(|&(i, held)| i != w && held.kind() == weapon.kind() && held.shot() == weapon.shot()).map(|(_, held)| held);
-        let (good, bad) = (Color32::from_rgb(120, 230, 110), Color32::from_rgb(240, 95, 85));
+        let (good, bad) = (theme::GOOD, theme::BAD);
         // How much better or worse it is than the one in hand, nothing if about the same
         let against = |ui: &mut egui::Ui, by: f64, unit: Unit, higher: bool| {
             let least = match unit {
@@ -7751,7 +7764,7 @@ impl Game {
             let better = (by > 0.0) == higher;
             ui.label(RichText::new(format!("{}{shown}", if by > 0.0 { "+" } else { "−" })).color(if better { good } else { bad }).strong());
         };
-        ui.label(RichText::new(&weapon.name).size(19.0).strong().color(color(rarity.color)));
+        theme::card_title(ui, &weapon.name, color(rarity.color));
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} {}", rarity.display_name, library.families[weapon.family].display_name)).color(color(rarity.color).gamma_multiply(0.8)));
             if let Some(element) = profile.element {
@@ -7814,10 +7827,10 @@ impl Game {
             ui.label(RichText::new(format!("{} {}", profile.make(), percent(profile.forged))).color(tint));
             ui.label(RichText::new(format!("·  parts {} damage, {} speed", percent(profile.quality), percent(profile.pace))).weak());
         });
-        ui.separator();
+        theme::rule(ui, color(rarity.color));
         let damage = |p: &Profile| ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum::<f64>();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{:.0}", damage(profile))).size(32.0).strong().color(Color32::WHITE));
+            ui.label(RichText::new(format!("{:.0}", damage(profile))).font(theme::display(30.0)).color(Color32::WHITE));
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 ui.label(RichText::new("damage").weak());
@@ -7841,8 +7854,7 @@ impl Game {
                     ui.label(RichText::new(format!("{} damage", profile.element.map_or("Elemental", Element::name))).color(tint));
                     ui.label(RichText::new(unit.show(value)).color(tint));
                 } else {
-                    ui.label(RichText::new(label).weak());
-                    ui.label(unit.show(value));
+                    theme::row(ui, label, RichText::new(unit.show(value)).color(theme::TEXT));
                 }
                 match other {
                     Some(other) => against(ui, value - other.profile.stat(key), unit, key != "manaCost"),
@@ -7869,12 +7881,12 @@ impl Game {
             for e in &profile.effects {
                 let def = &library.effects[e.def];
                 let strength = if e.potency > 1.0 { format!(" ×{:.1}", e.potency) } else { String::new() };
-                ui.label(RichText::new(format!("• {}{}: {}", def.display_name, strength, def.description)).color(Color32::from_rgb(200, 220, 255)));
+                theme::bullet(ui, "•", theme::ACCENT, &format!("{}{}", def.display_name, strength), Color32::from_rgb(200, 220, 255), &def.description, theme::TEXT);
             }
         }
         for s in &profile.synergies {
             let def = &library.synergies[s.def];
-            ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
+            theme::bullet(ui, "★", theme::ACCENT, &def.display_name, Color32::from_rgb(255, 225, 160), &def.description, theme::TEXT);
         }
         // How a magic weapon of an unusual kind is used
         let how = match profile.style {
