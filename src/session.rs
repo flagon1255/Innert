@@ -1301,7 +1301,7 @@ pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave
         }
         if restored {
             ui.add_space(6.0);
-            ui.label(RichText::new("All realms restored. The gate burns with the light of every one of them.").size(16.0).strong().color(Color32::from_rgb(255, 220, 140)));
+            ui.label(RichText::new("All realms restored. The gate burns with the light of every one of them.").size(16.0).strong().color(theme::HEADING));
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -1316,6 +1316,20 @@ pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave
     picked
 }
 
+/// How big the name is at the head of the menu, in blackletter, how high a space it's given, and
+/// how far down its middle it's set in that, see title_at()
+pub const TITLE_SIZE: f32 = 80.0;
+const TITLE_HIGH: f32 = 72.0;
+const TITLE_DOWN: f32 = 0.0;
+/// How far in from the menu's edge what's in it starts
+const MENU_MARGIN: f32 = 30.0;
+
+/// Where the middle of the name at the head of the menu is, the menu at `menu`, for the loading
+/// screen to glide its own name over to
+pub fn title_at(menu: egui::Rect) -> egui::Pos2 {
+    egui::pos2(menu.center().x, menu.top() + MENU_MARGIN + TITLE_HIGH * 0.5 + TITLE_DOWN)
+}
+
 /// The main menu: Resume while playing, each mode with Continue if it has a save and New, asking
 /// first before a new game takes the place of a saved one, then Settings and Quit. What's picked
 /// is given back.
@@ -1323,13 +1337,14 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
     let mut picked = None;
     let big = |ui: &mut egui::Ui, text: &str| ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).font(theme::display(19.0))));
     let gray = theme::WEAK;
-    // The name in the headings' font, in gold over a shadow, a flourish under it
-    let (title, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 68.0), egui::Sense::hover());
+    // The name in blackletter, white over a shadow, a printer's flourish under it
+    let (title, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TITLE_HIGH), egui::Sense::hover());
     let painter = ui.painter();
-    painter.text(title.center() + egui::vec2(2.0, 3.0), Align2::CENTER_CENTER, "INNERT", theme::display(62.0), Color32::from_black_alpha(170));
-    painter.text(title.center(), Align2::CENTER_CENTER, "INNERT", theme::display(62.0), theme::HEADING);
-    theme::flourish(painter, egui::pos2(title.center().x, title.bottom() + 2.0), 120.0);
-    ui.add_space(18.0);
+    let at = title.center() + egui::vec2(0.0, TITLE_DOWN);
+    painter.text(at + egui::vec2(2.0, 3.0), Align2::CENTER_CENTER, "Innert", theme::blackletter(TITLE_SIZE), Color32::from_black_alpha(190));
+    painter.text(at, Align2::CENTER_CENTER, "Innert", theme::blackletter(TITLE_SIZE), theme::HEADING);
+    theme::flourish(painter, egui::pos2(title.center().x, title.bottom() + 4.0), 120.0);
+    ui.add_space(16.0);
 
     if let Some(mode) = menu.confirm {
         let when = saves.saved(mode).map_or(String::new(), |s| format!(", saved {}", save::ago(s.saved_at)));
@@ -1355,9 +1370,9 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         picked = Some(MenuAction::Resume);
     }
     for mode in Mode::ALL {
-        ui.add_space(14.0);
+        ui.add_space(12.0);
         let now = started && playing == Some(mode);
-        ui.label(RichText::new(mode.name()).font(theme::display(23.0)).color(theme::HEADING));
+        ui.label(RichText::new(mode.name()).font(theme::blackletter(26.0)).color(theme::HEADING));
         let about = match mode {
             Mode::FreeRoam => "The endless wilderness, on any seed",
             Mode::Realms => "A journey from the normal world through the realms",
@@ -1372,8 +1387,8 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             // Who's playing it, as what, and how hard
             let who = save.section::<crate::character::Character>(crate::character::SECTION).unwrap_or_default();
             let level = save.carried.level.map_or(String::new(), |l| format!(", level {l}"));
-            ui.label(RichText::new(format!("{}, {}{level} · {}", who.name, who.class.name(), who.difficulty.name())).size(15.0).strong().color(Color32::from_rgb(235, 220, 180)));
-            ui.label(RichText::new(note).size(13.0).color(Color32::from_rgb(200, 215, 170)));
+            ui.label(RichText::new(format!("{}, {}{level} · {}", who.name, who.class.name(), who.difficulty.name())).size(15.0).strong().color(theme::TEXT));
+            ui.label(RichText::new(note).size(13.0).color(Color32::from_gray(190)));
             ui.add_space(2.0);
         }
         if let save::Slot::Unreadable(why) = saves.slot(mode) {
@@ -1385,7 +1400,7 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             ui.add_space((ui.available_width() - if continuing { 260.0 } else { 126.0 }).max(0.0) * 0.5);
             if continuing {
                 // Going on, the likelier, lit as the button that goes on
-                if ui.add_sized(half, egui::Button::new(RichText::new("Continue").size(18.0)).fill(theme::PRIMARY)).clicked() {
+                if ui.add_sized(half, theme::primary("Continue", 17.0)).clicked() {
                     picked = Some(MenuAction::Continue(mode));
                 }
                 ui.add_space(8.0);
@@ -1427,9 +1442,9 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
 /// The menu's window in the middle of the screen, `add` filling it: as tall as the window lets it
 /// be, scrolling through the rest when it's short
 pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
-    let room = (ctx.screen_rect().height() - 2.0 * 30.0 - 24.0).max(120.0);
+    let room = (ctx.screen_rect().height() - 2.0 * MENU_MARGIN - 24.0).max(120.0);
     egui::Area::new(egui::Id::new("menu")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        theme::framed(ui, theme::panel(30.0, 18.0), |ui| {
+        theme::framed(ui, theme::panel(MENU_MARGIN, 6.0), |ui| {
             ui.set_width(376.0);
             // Room for all of it, not only for as much as there was the frame before: an Area lays
             // out what's in it within the size it had last, which left Settings and Quit scrolled

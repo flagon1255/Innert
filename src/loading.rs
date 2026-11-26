@@ -1116,15 +1116,14 @@ fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Op
     cube(&painter, pos2(center, middle - 118.0 + (t * 1.7).sin() * 3.0), t, alpha);
     let (mut name, mut solid) = (pos2(center, middle - 18.0), alpha);
     if let Some((menu, along)) = glide {
-        // As the menu lays them out, under its margin, see App::render()
-        let row = |size: f32| ctx.fonts(|f| f.row_height(&FontId::proportional(size)));
-        let to = pos2(menu.center().x, menu.top() + 36.0 + row(60.0) * 0.5);
-        name = name.lerp(to, smoothstep(along));
+        // Where the menu has it, see session::menu()
+        name = name.lerp(crate::session::title_at(menu), smoothstep(along));
         if along < 1.0 {
             solid = 1.0;
         }
     }
-    painter.text(name, Align2::CENTER_CENTER, "INNERT", FontId::proportional(60.0), Color32::WHITE.gamma_multiply(solid));
+    // In blackletter, as the menu has it
+    painter.text(name, Align2::CENTER_CENTER, "Innert", crate::theme::blackletter(crate::session::TITLE_SIZE), Color32::WHITE.gamma_multiply(solid));
 
     let width = (w * 0.56).min(360.0);
     let bar = Rect::from_min_size(pos2(center - width * 0.5, middle + 78.0), vec2(width, 4.0));
@@ -1132,14 +1131,15 @@ fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Op
     painter.rect_filled(bar, 2.0, fade(Color32::from_white_alpha(34)));
     let filled = Rect::from_min_max(bar.min, pos2(bar.min.x + width * look.fraction, bar.max.y));
     let first = mesh.vertices.len() as u32;
-    let (cool, warm) = (fade(Color32::from_rgb(236, 158, 96)), fade(Color32::from_rgb(255, 230, 176)));
+    // Grey to white, as the menu it gives way to
+    let (cool, warm) = (fade(Color32::from_gray(140)), fade(Color32::from_gray(250)));
     mesh.colored_vertex(filled.left_top(), cool);
     mesh.colored_vertex(filled.right_top(), warm);
     mesh.colored_vertex(filled.right_bottom(), warm);
     mesh.colored_vertex(filled.left_bottom(), cool);
     mesh.add_triangle(first, first + 1, first + 2);
     mesh.add_triangle(first, first + 2, first + 3);
-    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_rgba_unmultiplied(255, 220, 160, 90)));
+    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_white_alpha(80)));
     painter.add(Shape::mesh(mesh));
 
     let below = bar.max.y + 12.0;

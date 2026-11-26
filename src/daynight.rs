@@ -403,7 +403,7 @@ impl DayNight {
         let day = daylight(sun_direction(sun_angle(hour)).z) as f32;
         let sky = lerp_color(Color32::from_rgb(20, 26, 60), Color32::from_rgb(90, 150, 220), day);
         painter.circle_filled(center, radius + 4.0, crate::theme::hud_fill());
-        painter.circle_stroke(center, radius + 4.0, Stroke::new(1.0f32, crate::theme::BRONZE.gamma_multiply(0.75)));
+        painter.circle_stroke(center, radius + 4.0, Stroke::new(1.0f32, crate::theme::EDGE.gamma_multiply(0.75)));
         let top: Vec<Pos2> = (0..=24).map(|k| center + vec2(-(PI as f32 * k as f32 / 24.0).cos(), -(PI as f32 * k as f32 / 24.0).sin()) * radius).collect();
         painter.add(egui::Shape::convex_polygon(top, sky, Stroke::NONE));
         let ground = lerp_color(Color32::from_rgb(18, 22, 16), Color32::from_rgb(52, 74, 40), day);

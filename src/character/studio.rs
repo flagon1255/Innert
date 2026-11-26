@@ -648,11 +648,11 @@ pub fn window(ctx: &egui::Context, studio: &mut Studio, character: &mut Characte
     let wide = (screen.width() - 2.0 * margin).clamp(320.0, 1500.0);
     let tall = (screen.height() - 2.0 * margin).max(260.0);
     egui::Area::new(egui::Id::new("character painting")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        crate::theme::framed(ui, crate::theme::panel(20.0, 16.0), |ui| {
+        crate::theme::framed(ui, crate::theme::panel(20.0, 6.0), |ui| {
             ui.set_width(wide - 40.0);
             ui.set_max_height(tall - 40.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Paint your character").font(crate::theme::display(25.0)).color(crate::theme::HEADING));
+                ui.label(RichText::new("Paint your character").font(crate::theme::blackletter(31.0)).color(crate::theme::HEADING));
                 ui.add_space(10.0);
                 ui.label(RichText::new("voxel by voxel: war paint, scars, tattoos, a beard. Changing your looks after keeps what's painted.").size(14.0).color(crate::theme::WEAK));
             });
@@ -673,7 +673,7 @@ pub fn window(ctx: &egui::Context, studio: &mut Studio, character: &mut Characte
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add_sized([130.0, 36.0], egui::Button::new(RichText::new("Done").font(crate::theme::display(18.0)).color(Color32::WHITE)).fill(crate::theme::PRIMARY)).clicked() {
+                if ui.add_sized([130.0, 36.0], crate::theme::primary("Done", 18.0)).clicked() {
                     done = true;
                 }
                 ui.add_space(10.0);
@@ -781,7 +781,7 @@ fn view(ui: &mut egui::Ui, studio: &mut Studio, character: &mut Character, size:
     if let Some(t) = &studio.texture {
         painter.image(t.id(), rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    painter.rect_stroke(rect, 8.0, Stroke::new(1.0f32, crate::theme::BRONZE.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0f32, crate::theme::EDGE.gamma_multiply(0.7)), egui::StrokeKind::Inside);
     let tool = studio.stroke.as_ref().map_or_else(|| studio.tool_for(modifiers), |s| s.0);
     if let Some(h) = hit {
         let shot = &studio.shot.as_ref().unwrap().0;
