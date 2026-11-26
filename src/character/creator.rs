@@ -281,6 +281,7 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
                     ui.label(RichText::new(format!("Starts with: {kit}")).size(12.5).color(gray));
                     let lean: Vec<String> = class.lean().iter().map(|&(stat, value)| stat.describe(value)).collect();
                     ui.label(RichText::new(format!("Leans: {}", lean.join(", "))).size(12.5).color(Color32::from_rgb(160, 210, 255)));
+                    ui.label(RichText::new(format!("Signature: {}", class.signature())).size(12.5).color(Color32::from_rgb(235, 205, 130)));
                 })
                 .response
                 .interact(Sense::click());

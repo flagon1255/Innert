@@ -266,6 +266,20 @@ impl Class {
         }
     }
 
+    /// Its signature power on right click, and what it does, in a line: the first weapon of its
+    /// kit's, at any rarity for a priest, a rogue and a necromancer, a legendary one's for the rest
+    pub fn signature(self) -> &'static str {
+        match self {
+            Class::Archer => "Comet Arrow: a bow drawn full looses an arrow through everything, bursting where it comes down. On a legendary bow.",
+            Class::Fighter => "Crescent: the sword's heavy blow flies on as a crescent, cutting through everything in its way. On a legendary sword.",
+            Class::Priest => "Sanctified Thunderspear: hold right click and a great spear of holy lightning forms in the hand, hurled as it's let go.",
+            Class::Mage => "Comet: a great slow orb from the staff, bursting wide where it lands. On a legendary staff.",
+            Class::Rogue => "Shadowstep Strike: a step through the shadows to behind what's aimed at, striking it in the back.",
+            Class::Necromancer => "Grave Raising: a shade sent to the ring raises three skeletons out of the ground to fight for you.",
+            Class::Wanderer => "None of its own: one of every weapon, each with its own once it's legendary.",
+        }
+    }
+
     /// The families of the weapons it starts with, the first in hand, see weapons.json: a
     /// wanderer's are every one a new player had before there were classes
     pub fn kit(self) -> &'static [&'static str] {
@@ -475,6 +489,12 @@ mod tests {
         assert_eq!(knives.profile.power, Some(crate::weapons::Power::Shadowstep));
         for stat in [Stat::CritChance, Stat::CritDamage, Stat::MoveSpeed, Stat::Backstab] {
             assert!(Class::Rogue.lean().iter().any(|&(s, v)| s == stat && v > 0.0), "a rogue doesn't lean into {stat:?}");
+        }
+        // Each card's signature power is its first weapon's, by the name it goes by
+        for class in Class::OFFERED {
+            let power = crate::weapons::Power::of(class.kit()[0]).unwrap_or_else(|| panic!("{class:?}'s first weapon has no power"));
+            let named = class.signature().split(':').next().unwrap_or_default();
+            assert!(named.ends_with(power.noun()), "{class:?}'s signature is {named}, not {}", power.noun());
         }
     }
 

@@ -2059,7 +2059,8 @@ impl Power {
         })
     }
 
-    fn noun(self) -> &'static str {
+    /// What it is, whatever its element
+    pub fn noun(self) -> &'static str {
         match self {
             Power::Crescent => "Crescent",
             Power::Rending => "Rending Wave",
