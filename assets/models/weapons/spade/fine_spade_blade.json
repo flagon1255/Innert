@@ -1,19 +1,19 @@
 {
-  "what": "Spade, blade: Steel Spade Blade",
+  "what": "Spade, blade: Iron Shovel Blade",
   "voxels_per_meter": 192.0,
   "size": [
-    41,
+    36,
     7,
-    79
+    77
   ],
   "pivot": [
-    20.352000000000004,
+    17.951999999999998,
     3.5695999999999994,
     -130.0
   ],
   "anchor": null,
   "origin": [
-    -20,
+    -18,
     -4,
     130
   ],
@@ -26,12 +26,12 @@
     "tip": [
       0.0,
       0.0,
-      1.0876000000000001
+      1.0776
     ]
   },
   "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
   "written": [
-    30278,
-    "6bb67702c0ed2146"
+    26266,
+    "d520ec155fd4ff71"
   ]
 }

@@ -24,57 +24,175 @@ use crate::worldgen::{BRICK_WORDS, EMPTY_BRICK, SOLID_BRICK, World, material::*}
 pub const BLOCK: i64 = 8;
 const BLOCK_VOXELS: usize = 512;
 
-/// What the player has gathered to build with
+/// What the player has gathered to build with: wood, stone and clay, and the rest of what
+/// materials.rs says there is, each counted by Res. A save from before the rest has none of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Materials {
     pub wood: u32,
     pub stone: u32,
     pub clay: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub birch: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pine: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub darkwood: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub palm: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub sand: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub sandstone: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub marble: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub slate: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub basalt: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub obsidian: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ice: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reed: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cloth: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub copper_ore: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub iron_ore: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub copper: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub iron: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub glass: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Materials {
     pub const fn new(wood: u32, stone: u32, clay: u32) -> Self {
-        Materials { wood, stone, clay }
+        Materials {
+            wood,
+            stone,
+            clay,
+            birch: 0,
+            pine: 0,
+            darkwood: 0,
+            palm: 0,
+            sand: 0,
+            sandstone: 0,
+            marble: 0,
+            slate: 0,
+            basalt: 0,
+            obsidian: 0,
+            ice: 0,
+            reed: 0,
+            cloth: 0,
+            copper_ore: 0,
+            iron_ore: 0,
+            copper: 0,
+            iron: 0,
+            glass: 0,
+        }
+    }
+
+    /// `n` of `res` alone
+    pub fn of(res: Res, n: u32) -> Self {
+        let mut m = Materials::default();
+        *m.get_mut(res) = n;
+        m
+    }
+
+    /// The same with `n` more of `res`
+    pub fn with(mut self, res: Res, n: u32) -> Self {
+        *self.get_mut(res) += n;
+        self
+    }
+
+    pub fn get(&self, res: Res) -> u32 {
+        let mut copy = *self;
+        *copy.get_mut(res)
+    }
+
+    pub fn get_mut(&mut self, res: Res) -> &mut u32 {
+        match res {
+            Res::Wood => &mut self.wood,
+            Res::Stone => &mut self.stone,
+            Res::Clay => &mut self.clay,
+            Res::Birch => &mut self.birch,
+            Res::Pine => &mut self.pine,
+            Res::Darkwood => &mut self.darkwood,
+            Res::Palm => &mut self.palm,
+            Res::Sand => &mut self.sand,
+            Res::Sandstone => &mut self.sandstone,
+            Res::Marble => &mut self.marble,
+            Res::Slate => &mut self.slate,
+            Res::Basalt => &mut self.basalt,
+            Res::Obsidian => &mut self.obsidian,
+            Res::Ice => &mut self.ice,
+            Res::Reed => &mut self.reed,
+            Res::Cloth => &mut self.cloth,
+            Res::CopperOre => &mut self.copper_ore,
+            Res::IronOre => &mut self.iron_ore,
+            Res::Copper => &mut self.copper,
+            Res::Iron => &mut self.iron,
+            Res::Glass => &mut self.glass,
+        }
     }
 
     pub fn covers(&self, cost: Materials) -> bool {
-        self.wood >= cost.wood && self.stone >= cost.stone && self.clay >= cost.clay
+        Res::ALL.iter().all(|&r| self.get(r) >= cost.get(r))
     }
 
     pub fn take(&mut self, cost: Materials) -> bool {
         if !self.covers(cost) {
             return false;
         }
-        self.wood -= cost.wood;
-        self.stone -= cost.stone;
-        self.clay -= cost.clay;
+        for r in Res::ALL {
+            *self.get_mut(r) -= cost.get(r);
+        }
         true
     }
 
     pub fn add(&mut self, more: Materials) {
-        self.wood = self.wood.saturating_add(more.wood);
-        self.stone = self.stone.saturating_add(more.stone);
-        self.clay = self.clay.saturating_add(more.clay);
+        for r in Res::ALL {
+            let n = self.get_mut(r);
+            *n = n.saturating_add(more.get(r));
+        }
     }
 
     /// As much of it as `share`, 0-1, of it, rounded down: what's given back for something taken
     /// down damaged
     pub fn share(&self, share: f64) -> Materials {
-        let s = |n: u32| (n as f64 * share.clamp(0.0, 1.0) + 1e-9).floor() as u32;
-        Materials::new(s(self.wood), s(self.stone), s(self.clay))
+        let mut out = Materials::default();
+        for r in Res::ALL {
+            *out.get_mut(r) = (self.get(r) as f64 * share.clamp(0.0, 1.0) + 1e-9).floor() as u32;
+        }
+        out
     }
 
     pub fn is_empty(&self) -> bool {
-        self.wood == 0 && self.stone == 0 && self.clay == 0
+        Res::ALL.iter().all(|&r| self.get(r) == 0)
+    }
+
+    /// What there's any of, in the order of Res::ALL
+    pub fn parts(&self) -> Vec<(Res, u32)> {
+        Res::ALL.iter().map(|&r| (r, self.get(r))).filter(|&(_, n)| n > 0).collect()
     }
 
     /// Like "2 wood, 1 clay"
     pub fn describe(&self) -> String {
-        let parts: Vec<String> = [(self.wood, "wood"), (self.stone, "stone"), (self.clay, "clay")].iter().filter(|(n, _)| *n > 0).map(|(n, name)| format!("{n} {name}")).collect();
+        let parts: Vec<String> = self.parts().iter().map(|(r, n)| format!("{n} {}", r.name().to_lowercase())).collect();
         if parts.is_empty() { "nothing".to_string() } else { parts.join(", ") }
     }
 }
+
+pub use crate::materials::Res;
 
 /// What can be built
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -99,11 +217,84 @@ pub enum Kind {
     /// One of the weathered stones in a ring where the Innert Gate once stood, laid in a new game
     /// of Realms, see session.rs: never built by the player, nor taken down
     OldStone,
+    // Of the materials in materials.rs, their voxels worked out in pieces.rs
+    BirchWall,
+    PineWall,
+    DarkWall,
+    PalmWall,
+    Fence,
+    ThatchRoof,
+    CutStoneWall,
+    /// Half a block thick, against its back
+    HalfWall,
+    /// The bottom half of a block
+    Slab,
+    /// The top half of a block, as a floor is
+    CobbleFloor,
+    /// Two blocks across and two high, a round arch through it
+    Arch,
+    SlateRoof,
+    SandstoneWall,
+    MarbleWall,
+    /// Two meters tall
+    MarblePillar,
+    BasaltWall,
+    ObsidianWall,
+    IceWall,
+    GlassWindow,
+    GlassPane,
+    IronBars,
+    /// As a door is, two blocks across and four high, opened and shut with E, but far stronger
+    IronGate,
+    /// Two meters tall, a lamp on top
+    LampPost,
+    /// A meter long, hung against what's behind it
+    Banner,
+    Rug,
+    /// Two blocks high: smelts ore and sand with E, see materials::smelt()
+    Furnace,
 }
 
 impl Kind {
-    /// In the order they're picked from
-    pub const ALL: [Kind; 10] = [Kind::WoodWall, Kind::ClayWall, Kind::StoneWall, Kind::Floor, Kind::Stairs, Kind::Door, Kind::Torch, Kind::Lantern, Kind::Hearth, Kind::Chimney];
+    /// In the order they're picked from, tab by tab, see pieces::TABS
+    pub const ALL: [Kind; 36] = [
+        Kind::WoodWall,
+        Kind::BirchWall,
+        Kind::PineWall,
+        Kind::DarkWall,
+        Kind::PalmWall,
+        Kind::Floor,
+        Kind::Stairs,
+        Kind::Door,
+        Kind::Fence,
+        Kind::ThatchRoof,
+        Kind::StoneWall,
+        Kind::CutStoneWall,
+        Kind::HalfWall,
+        Kind::Slab,
+        Kind::CobbleFloor,
+        Kind::Arch,
+        Kind::SlateRoof,
+        Kind::SandstoneWall,
+        Kind::MarbleWall,
+        Kind::MarblePillar,
+        Kind::BasaltWall,
+        Kind::ObsidianWall,
+        Kind::IceWall,
+        Kind::ClayWall,
+        Kind::GlassWindow,
+        Kind::GlassPane,
+        Kind::IronBars,
+        Kind::IronGate,
+        Kind::LampPost,
+        Kind::Banner,
+        Kind::Rug,
+        Kind::Torch,
+        Kind::Lantern,
+        Kind::Hearth,
+        Kind::Chimney,
+        Kind::Furnace,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -118,7 +309,93 @@ impl Kind {
             Kind::Hearth => "Fireplace",
             Kind::Chimney => "Chimney",
             Kind::OldStone => "Old Foundation Stone",
+            Kind::BirchWall => "Birch Plank Wall",
+            Kind::PineWall => "Pine Board Wall",
+            Kind::DarkWall => "Dark Oak Wall",
+            Kind::PalmWall => "Palm Wall",
+            Kind::Fence => "Fence",
+            Kind::ThatchRoof => "Thatched Roof",
+            Kind::CutStoneWall => "Cut Stone Wall",
+            Kind::HalfWall => "Half Wall",
+            Kind::Slab => "Stone Slab",
+            Kind::CobbleFloor => "Cobbled Floor",
+            Kind::Arch => "Stone Arch",
+            Kind::SlateRoof => "Slate Roof",
+            Kind::SandstoneWall => "Sandstone Wall",
+            Kind::MarbleWall => "Marble Wall",
+            Kind::MarblePillar => "Marble Pillar",
+            Kind::BasaltWall => "Basalt Wall",
+            Kind::ObsidianWall => "Obsidian Wall",
+            Kind::IceWall => "Ice Wall",
+            Kind::GlassWindow => "Glass Window",
+            Kind::GlassPane => "Glass Pane",
+            Kind::IronBars => "Iron Bars",
+            Kind::IronGate => "Iron Gate",
+            Kind::LampPost => "Lamp Post",
+            Kind::Banner => "Banner",
+            Kind::Rug => "Rug",
+            Kind::Furnace => "Furnace",
         }
+    }
+
+    /// Whether it stands in the way as a wall does, for raiders finding their way round, see
+    /// raids.rs
+    pub fn is_wall(self) -> bool {
+        matches!(
+            self,
+            Kind::WoodWall
+                | Kind::ClayWall
+                | Kind::StoneWall
+                | Kind::Hearth
+                | Kind::Chimney
+                | Kind::BirchWall
+                | Kind::PineWall
+                | Kind::DarkWall
+                | Kind::PalmWall
+                | Kind::CutStoneWall
+                | Kind::HalfWall
+                | Kind::SandstoneWall
+                | Kind::MarbleWall
+                | Kind::MarblePillar
+                | Kind::BasaltWall
+                | Kind::ObsidianWall
+                | Kind::IceWall
+                | Kind::GlassWindow
+                | Kind::GlassPane
+                | Kind::IronBars
+                | Kind::Furnace
+                | Kind::Fence
+        )
+    }
+
+    /// Whether it opens and shuts as a door does: a door or an iron gate
+    pub fn is_door(self) -> bool {
+        matches!(self, Kind::Door | Kind::IronGate)
+    }
+
+    /// Whether it's of stone, glass or metal rather than wood, cloth or clay, for its cracks
+    fn stony(self) -> bool {
+        matches!(
+            self,
+            Kind::StoneWall
+                | Kind::ClayWall
+                | Kind::OldStone
+                | Kind::Hearth
+                | Kind::Chimney
+                | Kind::CutStoneWall
+                | Kind::HalfWall
+                | Kind::Slab
+                | Kind::CobbleFloor
+                | Kind::Arch
+                | Kind::SlateRoof
+                | Kind::SandstoneWall
+                | Kind::MarbleWall
+                | Kind::MarblePillar
+                | Kind::BasaltWall
+                | Kind::ObsidianWall
+                | Kind::IceWall
+                | Kind::Furnace
+        )
     }
 
     /// Whether the player builds it and can take it down
@@ -140,6 +417,30 @@ impl Kind {
             Kind::Hearth => Materials::new(0, 8, 4),
             Kind::Chimney => Materials::new(0, 3, 1),
             Kind::OldStone => Materials::new(0, 0, 0),
+            Kind::BirchWall => Materials::of(Res::Birch, 2),
+            Kind::PineWall => Materials::of(Res::Pine, 2),
+            Kind::DarkWall => Materials::of(Res::Darkwood, 2),
+            Kind::PalmWall => Materials::of(Res::Palm, 2),
+            Kind::Fence => Materials::new(1, 0, 0),
+            Kind::ThatchRoof => Materials::new(1, 0, 0).with(Res::Reed, 2),
+            Kind::CutStoneWall => Materials::new(0, 3, 0),
+            Kind::HalfWall | Kind::Slab | Kind::CobbleFloor => Materials::new(0, 1, 0),
+            Kind::Arch => Materials::new(0, 6, 1),
+            Kind::SlateRoof => Materials::new(1, 0, 0).with(Res::Slate, 2),
+            Kind::SandstoneWall => Materials::of(Res::Sandstone, 2),
+            Kind::MarbleWall => Materials::of(Res::Marble, 2),
+            Kind::MarblePillar => Materials::of(Res::Marble, 4),
+            Kind::BasaltWall => Materials::of(Res::Basalt, 2),
+            Kind::ObsidianWall => Materials::of(Res::Obsidian, 2),
+            Kind::IceWall => Materials::of(Res::Ice, 2),
+            Kind::GlassWindow => Materials::new(1, 0, 0).with(Res::Glass, 1),
+            Kind::GlassPane => Materials::of(Res::Glass, 1),
+            Kind::IronBars => Materials::of(Res::Iron, 1),
+            Kind::IronGate => Materials::of(Res::Iron, 5),
+            Kind::LampPost => Materials::of(Res::Iron, 2).with(Res::Glass, 1),
+            Kind::Banner => Materials::new(1, 0, 0).with(Res::Cloth, 2),
+            Kind::Rug => Materials::of(Res::Cloth, 2),
+            Kind::Furnace => Materials::new(0, 6, 3),
         }
     }
 
@@ -158,20 +459,44 @@ impl Kind {
             Kind::Hearth => 900.0,
             Kind::Chimney => 700.0,
             Kind::OldStone => 2000.0,
+            Kind::BirchWall | Kind::PineWall | Kind::PalmWall => 330.0,
+            Kind::DarkWall => 400.0,
+            Kind::Fence => 150.0,
+            Kind::ThatchRoof => 180.0,
+            Kind::CutStoneWall => 1200.0,
+            Kind::HalfWall => 600.0,
+            Kind::Slab | Kind::CobbleFloor => 450.0,
+            Kind::Arch => 1100.0,
+            Kind::SlateRoof => 420.0,
+            Kind::SandstoneWall => 850.0,
+            Kind::MarbleWall | Kind::MarblePillar => 1300.0,
+            Kind::BasaltWall => 1500.0,
+            Kind::ObsidianWall => 1900.0,
+            Kind::IceWall => 420.0,
+            Kind::GlassWindow => 110.0,
+            Kind::GlassPane => 80.0,
+            Kind::IronBars => 800.0,
+            Kind::IronGate => 650.0,
+            Kind::LampPost => 300.0,
+            Kind::Banner | Kind::Rug => 60.0,
+            Kind::Furnace => 900.0,
         }
     }
 
-    /// Whether ordinary monsters can harm it at all: they go for doors, but only the biggest can
-    /// break walls, or anything else built
+    /// Whether ordinary monsters can harm it at all: they go for doors and gates, but only the
+    /// biggest can break walls, or anything else built
     pub fn weak(self) -> bool {
-        self == Kind::Door
+        self.is_door()
     }
 
-    /// Blocks across and high: a door's two by four, all else one
+    /// Blocks across and high: a door's and a gate's two by four, an arch two by two, a pillar and
+    /// a lamp post four high, a banner and a furnace two, all else one
     pub fn size(self) -> (i64, i64) {
         match self {
-            Kind::Door => (2, 4),
-            Kind::Hearth | Kind::Chimney => (2, 2),
+            Kind::Door | Kind::IronGate => (2, 4),
+            Kind::Hearth | Kind::Chimney | Kind::Arch => (2, 2),
+            Kind::MarblePillar | Kind::LampPost => (1, 4),
+            Kind::Banner | Kind::Furnace => (1, 2),
             _ => (1, 1),
         }
     }
@@ -181,22 +506,67 @@ impl Kind {
         match self {
             Kind::Torch => Some(([1.0, 0.55, 0.22], 8.0)),
             Kind::Lantern => Some(([1.0, 0.72, 0.42], 11.0)),
+            Kind::LampPost => Some(([1.0, 0.78, 0.5], 13.0)),
+            Kind::Furnace => Some(([1.0, 0.45, 0.15], 5.0)),
             _ => None,
+        }
+    }
+
+    /// How high its light is, in voxels over the foot of its first block
+    fn light_height(self) -> f64 {
+        match self {
+            Kind::Torch => 6.5,
+            Kind::LampPost => 27.5,
+            Kind::Furnace => 3.5,
+            _ => 4.5,
         }
     }
 
     /// Whether it turns, so it matters which way it's put: stairs go up one way, a door spans one.
     /// An old stone's turn is 1 for the top one of its stack, the one worn down.
     pub fn turns(self) -> bool {
-        matches!(self, Kind::Stairs | Kind::Door | Kind::OldStone | Kind::Hearth | Kind::Chimney)
+        matches!(
+            self,
+            Kind::Stairs
+                | Kind::Door
+                | Kind::OldStone
+                | Kind::Hearth
+                | Kind::Chimney
+                | Kind::Fence
+                | Kind::ThatchRoof
+                | Kind::SlateRoof
+                | Kind::HalfWall
+                | Kind::Arch
+                | Kind::GlassWindow
+                | Kind::GlassPane
+                | Kind::IronBars
+                | Kind::IronGate
+                | Kind::Banner
+                | Kind::Furnace
+        )
     }
 
     /// What it's mostly made of, for its debris
     pub fn material(self) -> u8 {
         match self {
             Kind::ClayWall | Kind::Lantern => CLAY_POT,
-            Kind::StoneWall | Kind::Hearth | Kind::Chimney => BRICK_STONE,
-            Kind::OldStone => STONE,
+            Kind::StoneWall | Kind::Hearth | Kind::Chimney | Kind::Furnace => BRICK_STONE,
+            Kind::OldStone | Kind::CobbleFloor => STONE,
+            Kind::BirchWall => PLANK_BIRCH,
+            Kind::PineWall => PLANK_PINE,
+            Kind::DarkWall => PLANK_DARK,
+            Kind::PalmWall => PLANK_PALM,
+            Kind::ThatchRoof => THATCH,
+            Kind::CutStoneWall | Kind::HalfWall | Kind::Slab | Kind::Arch => CUT_STONE,
+            Kind::SlateRoof => SLATE,
+            Kind::SandstoneWall => SANDSTONE,
+            Kind::MarbleWall | Kind::MarblePillar => MARBLE,
+            Kind::BasaltWall => BASALT,
+            Kind::ObsidianWall => OBSIDIAN,
+            Kind::IceWall => ICE,
+            Kind::GlassWindow | Kind::GlassPane => GLASS,
+            Kind::IronBars | Kind::IronGate | Kind::LampPost => DARK_STEEL,
+            Kind::Banner | Kind::Rug => CLOTH_BLUE,
             _ => WOOD,
         }
     }
@@ -279,7 +649,7 @@ impl Piece {
     pub fn light_at(&self) -> Option<[f64; 3]> {
         self.kind.light()?;
         let b = self.at.map(|v| (v * BLOCK) as f64);
-        Some([b[0] + 4.0, b[1] + 4.0, b[2] + if self.kind == Kind::Torch { 6.5 } else { 4.5 }])
+        Some([b[0] + 4.0, b[1] + 4.0, b[2] + self.kind.light_height()])
     }
 
     /// The middle of it, in voxels of the whole landscape
@@ -409,14 +779,15 @@ impl Piece {
                         // front, see crate::hearths
                         Kind::Hearth => crate::hearths::hearth_voxel(column * 8 + along(side), row * 8 + z, along(face), crate::hearths::stage(self.fuel), r),
                         Kind::Chimney => crate::hearths::chimney_voxel(column * 8 + along(side), g[2], along(face), r),
+                        kind => crate::pieces::voxel(kind, &crate::pieces::At { x, y, z, g, r, a: column * 8 + along(side), h: row * 8 + z, t: along(face), open: self.open }),
                     };
                     // Cracked as it's damaged: some voxels darkened, the worst knocked out
-                    let m = if m != AIR && stage > 0 && self.kind != Kind::Door {
+                    let m = if m != AIR && stage > 0 && !self.kind.is_door() {
                         let crack = hash3(g[0] as u32 ^ 0x5eed, g[1] as u32, g[2] as u32) % 100;
                         if crack < stage as u32 * 4 && stage >= 2 && is_surface(x, y, z) {
                             AIR
                         } else if crack < stage as u32 * 12 {
-                            if matches!(self.kind, Kind::StoneWall | Kind::ClayWall | Kind::OldStone | Kind::Hearth | Kind::Chimney) { GRAVEL } else { DEAD_WOOD }
+                            if self.kind.stony() { GRAVEL } else { DEAD_WOOD }
                         } else {
                             m
                         }
@@ -734,7 +1105,7 @@ impl Bases {
     /// Opens or shuts door `id`, returning whether it's open now and its blocks
     pub fn toggle_door(&mut self, id: u32) -> Option<(bool, Vec<[i64; 3]>)> {
         let i = *self.by_id.get(&id)?;
-        if self.pieces[i].kind != Kind::Door {
+        if !self.pieces[i].kind.is_door() {
             return None;
         }
         let old = self.looks(i);

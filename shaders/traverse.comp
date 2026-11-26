@@ -182,7 +182,12 @@ struct Animal {
     // of a sphere around it centered there
     vec4 position;
     vec4 rotation; // A quaternion turning its model the way it faces in the world
-    vec4 scale; // x: size of its voxels in voxels of the main world
+    float size; // How big its voxels are, in voxels of the main world
+    // For a serpent, how much longer and wider than its model it's drawn, less 1, two halves, and
+    // how far up its bottom's drawn at four points evenly along it, from its back end to its front,
+    // in its own voxels, two halves in each: see shaped() and drapeAt()
+    uint stretch;
+    uvec2 drape;
     uvec4 info; // x: model, y: STILL, MOVING or HELD, z: TINT_* for what weapons did to it
 };
 const uint STILL = 0;
@@ -274,7 +279,7 @@ const uint FAR_DIRECT_INTERVAL = 16;
 const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 90;
+const uint PALETTE_SIZE = 103;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
     vec3(0.28, 0.48, 0.17), // grass
@@ -365,7 +370,20 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(1.00, 0.92, 0.60), // holy
     vec3(0.62, 0.88, 0.16), // lime leaves
     vec3(0.46, 0.03, 0.06), // crimson leaves
-    vec3(0.58, 0.38, 0.27)  // clay bank, as it lies in the ground
+    vec3(0.58, 0.38, 0.27), // clay bank, as it lies in the ground
+    vec3(0.70, 0.86, 0.88), // glass
+    vec3(0.80, 0.66, 0.34), // thatch
+    vec3(0.93, 0.92, 0.89), // marble
+    vec3(0.30, 0.33, 0.38), // slate
+    vec3(0.22, 0.21, 0.22), // basalt
+    vec3(0.52, 0.34, 0.24), // iron ore
+    vec3(0.36, 0.56, 0.48), // copper ore
+    vec3(0.84, 0.74, 0.56), // birch planks
+    vec3(0.30, 0.19, 0.11), // dark oak planks
+    vec3(0.66, 0.42, 0.24), // pine planks
+    vec3(0.76, 0.60, 0.40), // palm planks
+    vec3(0.74, 0.73, 0.70), // cut stone
+    vec3(0.14, 0.24, 0.62)  // blue cloth
 );
 
 // Has to match the material ids in src\worldgen.rs
@@ -915,11 +933,77 @@ vec3 fromAnimal(Animal a, vec3 v) {
     return rotate(a.rotation, v);
 }
 
+// Whether an animal's drawn stretched or draped, a serpent slithering over the ground, see
+// AnimalInstance::shaped() in src\animals.rs
+bool shaped(Animal a) {
+    return a.stretch != 0u || a.drape != uvec2(0);
+}
+
+// How far up a shaped() animal's drawn `x` of its voxels along its model, `length` voxels long: in
+// a straight line between each of its four points and the next
+float drapeAt(Animal a, float x, float length) {
+    vec4 knots = vec4(unpackHalf2x16(a.drape.x), unpackHalf2x16(a.drape.y));
+    float f = clamp(x / length * 3.0, 0.0, 3.0);
+    int k = min(int(f), 2);
+    return mix(knots[k], knots[k + 1], f - float(k));
+}
+
 // A point in an animal's voxels, in voxels of the main world
 vec3 animalToWorld(uint index, vec3 p) {
     Animal a = animals[index];
     uvec3 size = modelSize(a.info.x);
-    return a.position.xyz + fromAnimal(a, (p - vec3(vec2(size.xy) * 0.5, 0)) * a.scale.x);
+    vec3 m = p - vec3(vec2(size.xy) * 0.5, 0);
+    if (shaped(a)) {
+        m.z += drapeAt(a, p.x, float(size.x));
+        m.xy *= unpackHalf2x16(a.stretch) + 1.0;
+    }
+    return a.position.xyz + fromAnimal(a, m * a.size);
+}
+
+// Steps along o + d t through the voxels of a model `size` big, in its own voxels, kept as
+// keptVoxel() has them, through the slice of it from x = along.x to along.y and no further than
+// limit: the t of the first solid one, which it is and the axis it was stepped into along
+bool marchModel(vec3 o, vec3 d, uvec3 size, vec2 along, float limit, bool weapon, uint start, uvec3 kept, uvec3 kept_from, out float t_hit, out ivec3 c_hit, out uint axis_hit) {
+    vec3 inv = clamp(1 / d, vec3(-FLT_MAX), vec3(FLT_MAX));
+    vec3 t1 = (vec3(along.x, 0, 0) - o) * inv;
+    vec3 t2 = (vec3(along.y, vec2(size.yz)) - o) * inv;
+    vec3 tmins = min(t1, t2);
+    vec3 tmaxs = max(t1, t2);
+    float t = max(max(tmins.x, tmins.y), max(tmins.z, 0));
+    float t_exit = min(min(tmaxs.x, tmaxs.y), tmaxs.z);
+    if (t > t_exit || t > limit)
+    return false;
+    uint axis = tmins.x > tmins.y ? (tmins.x > tmins.z ? 0 : 2) : (tmins.y > tmins.z ? 1 : 2);
+    vec3 sgn = sign(d);
+    ivec3 c = clamp(ivec3(floor(o + d * t)), ivec3(0), ivec3(size) - 1);
+    vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
+    vec3 delta = abs(inv);
+    float end = min(limit, t_exit);
+    for (int k = 0; k < 512 && t <= end; k++) {
+        if (keptVoxel(weapon, start, kept, uvec3(c) - kept_from) != 0) {
+            t_hit = t;
+            c_hit = c;
+            axis_hit = axis;
+            return true;
+        }
+        if (next.x < next.y && next.x < next.z) {
+            axis = 0;
+            t = next.x;
+            next.x += delta.x;
+        } else if (next.y < next.z) {
+            axis = 1;
+            t = next.y;
+            next.y += delta.y;
+        } else {
+            axis = 2;
+            t = next.z;
+            next.z += delta.z;
+        }
+        c[axis] += int(sgn[axis]);
+        if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, ivec3(size))))
+        break;
+    }
+    return false;
 }
 
 // Rays besides those from the camera only check this many animals and props, the nearest to the
@@ -1019,28 +1103,41 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
         uint start = modelHeader(model, 0);
         uvec3 kept = unpackSize(modelHeader(model, 2));
         uvec3 kept_from = unpackSize(modelHeader(model, 3));
-        float s = a.scale.x;
-        vec3 o = toAnimal(a, -to) / s + vec3(vec2(size.xy) * 0.5, 0);
+        float s = a.size;
+        vec3 o = toAnimal(a, -to) / s;
         vec3 d = toAnimal(a, dir) / s;
-        vec3 inv = clamp(1 / d, vec3(-FLT_MAX), vec3(FLT_MAX));
-        vec3 t1 = -o * inv;
-        vec3 t2 = (vec3(size) - o) * inv;
-        vec3 tmins = min(t1, t2);
-        vec3 tmaxs = max(t1, t2);
-        float t = max(max(tmins.x, tmins.y), max(tmins.z, 0));
-        float t_exit = min(min(tmaxs.x, tmaxs.y), tmaxs.z);
-        if (t > t_exit || t > limit)
-        continue;
-
-        uint axis = tmins.x > tmins.y ? (tmins.x > tmins.z ? 0 : 2) : (tmins.y > tmins.z ? 1 : 2);
-        vec3 sgn = sign(d);
-        ivec3 c = clamp(ivec3(floor(o + d * t)), ivec3(0), ivec3(size) - 1);
-        vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
-        vec3 delta = abs(inv);
-        for (int k = 0; k < 512 && t <= limit; k++) {
-            if (keptVoxel(weapon, start, kept, uvec3(c) - kept_from) != 0) {
+        // A serpent stretched and draped over the ground, see shaped(): the ray's squeezed to
+        // match, and traced through its model a third of its length at a time, sheared up or down
+        // in each third as far as it's draped there, so it goes straight through each
+        int pieces = 1;
+        vec4 knots = vec4(0);
+        if (shaped(a)) {
+            vec2 stretch = unpackHalf2x16(a.stretch) + 1.0;
+            o.xy /= stretch;
+            d.xy /= stretch;
+            knots = vec4(unpackHalf2x16(a.drape.x), unpackHalf2x16(a.drape.y));
+            pieces = knots == vec4(0) ? 1 : 3;
+        }
+        o += vec3(vec2(size.xy) * 0.5, 0);
+        float third = float(size.x) / 3.0;
+        for (int j = 0; j < pieces; j++) {
+            // Nearest first along the ray
+            int piece = d.x < 0 ? pieces - 1 - j : j;
+            vec3 po = o;
+            vec3 pd = d;
+            vec2 along = vec2(0, size.x);
+            if (pieces > 1) {
+                along = vec2(piece, piece + 1) * third;
+                float rise = (knots[piece + 1] - knots[piece]) / third;
+                po.z -= knots[piece] + rise * (o.x - along.x);
+                pd.z -= rise * d.x;
+            }
+            float t;
+            ivec3 c;
+            uint axis;
+            if (marchModel(po, pd, size, along, limit, weapon, start, kept, kept_from, t, c, axis)) {
                 vec3 local_normal = vec3(0);
-                local_normal[axis] = -sgn[axis];
+                local_normal[axis] = -sign(pd[axis]);
                 hit.level = ANIMAL;
                 hit.instance = i;
                 hit.coord = uvec3(c);
@@ -1053,22 +1150,6 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
                 found = true;
                 break;
             }
-            if (next.x < next.y && next.x < next.z) {
-                axis = 0;
-                t = next.x;
-                next.x += delta.x;
-            } else if (next.y < next.z) {
-                axis = 1;
-                t = next.y;
-                next.y += delta.y;
-            } else {
-                axis = 2;
-                t = next.z;
-                next.z += delta.z;
-            }
-            c[axis] += int(sgn[axis]);
-            if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, ivec3(size))))
-            break;
         }
     }
     return found;
@@ -1479,6 +1560,13 @@ const float BLADE_HEIGHT = 0.45;
 
 // Has to match worldgen::material::CLAY_BANK
 const uint MAT_CLAY = 89;
+// Has to match worldgen::material::GLASS. What's seen through glass, through as many voxels of it
+// as GLASS_PANES at most, is tinted by GLASS_TINT for each, and the sky's mirrored in its face.
+const uint MAT_GLASS = 90;
+const uint GLASS_PANES = 4;
+const vec3 GLASS_TINT = vec3(0.86, 0.94, 0.93);
+vec3 g_glass_tint = vec3(1);
+vec3 g_glass_sheen = vec3(0);
 
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
@@ -2490,7 +2578,10 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     return shadeUnderwater(origin, dir, steps, distance);
 
     g_sky_lit = false;
+    g_glass_tint = vec3(1);
+    g_glass_sheen = vec3(0);
     vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
+    color = color * g_glass_tint + g_glass_sheen;
     color = atmosphere(origin, dir, distance, color, seed);
     float kept = g_transmittance;
     // Only so much of the endless landscape is there at once, so things fade into the sky well
@@ -2517,7 +2608,25 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     Hit hit;
     // Past where everything's faded into the sky there's no need to look any further
     float far = pc.haze.w > 0 ? pc.haze.w : FLT_MAX;
-    bool solid = trace(origin, dir, false, far, hit, steps);
+    // Glass is seen through: the ray goes on out the far side of each voxel of it, a few at most,
+    // what's behind it a little tinted and the sky mirrored faintly in its face, see shade(). The
+    // one call to trace() in the loop, so the shader holds only the one copy of it.
+    bool solid;
+    float through = 0;
+    uint material = 0;
+    for (uint k = 0;; k++) {
+        solid = trace(origin + dir * through, dir, false, far - through, hit, steps);
+        hit.t += through;
+        material = solid ? hitMaterial(hit) : 0;
+        if (!solid || material != MAT_GLASS || hit.level == ANIMAL || k >= GLASS_PANES)
+        break;
+        vec3 inv = clamp(1 / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
+        vec3 out_t = max((voxelPoint(hit, vec3(0)) - origin) * inv, (voxelPoint(hit, vec3(1)) - origin) * inv);
+        through = min(out_t.x, min(out_t.y, out_t.z)) + 0.02;
+        if (k == 0)
+        g_glass_sheen = skyColor(reflect(dir, hit.normal)) * waterFresnel(dir, hit.normal) * 0.8;
+        g_glass_tint *= GLASS_TINT;
+    }
     g_animal_limit = SECONDARY_ANIMALS;
     g_sway = false;
     g_clear_leaves = false;
@@ -2545,7 +2654,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     float sea_level = pc.sun_direction.w;
     vec3 pos = origin + dir * hit.t;
     vec3 normal = hit.normal;
-    uint material = 0;
     if (wet) {
         distance = water.t;
         // The denoiser leaves water alone
@@ -2571,7 +2679,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         }
     } else {
         distance = hit.t;
-        material = hitMaterial(hit);
 
         // Seen through the side of the world, the water at its edge continues the open sea
         bool world_edge = hit.level == MAIN

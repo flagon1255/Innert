@@ -78,6 +78,7 @@ mod crash;
 mod daynight;
 mod dragons;
 mod editor;
+mod felling;
 mod effects;
 mod game;
 mod gargoyles;
@@ -94,10 +95,12 @@ mod serpent_trials;
 mod serpents;
 mod limits;
 mod loading;
+mod materials;
 mod memory;
 mod merchants;
 mod night;
 mod perf;
+mod pieces;
 mod player;
 mod quality;
 mod raids;
@@ -3015,7 +3018,10 @@ impl App {
         // radians round, to see it in a screenshot with `menu=1 gui=1`
         if let Some(mode) = setting("creator").and_then(save::Mode::parse) {
             let turn = setting("creator_turn").and_then(|v| v.parse().ok()).unwrap_or(0.5);
-            app.session.creator = Some(character::creator::Creator::with(mode, character::Character::from_settings(), turn));
+            let mut creator = character::creator::Creator::with(mode, character::Character::from_settings(), turn);
+            // And `creator_scroll=600` scrolled that far down what's chosen, to see the bottom of it
+            creator.scroll_to = setting("creator_scroll").and_then(|v| v.parse().ok());
+            app.session.creator = Some(creator);
         }
         // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
         // as for the menu or the window a new character's made in
@@ -4293,7 +4299,7 @@ impl App {
             // Building, E mends what's damaged
             if self.input.key_pressed(KeyCode::KeyE) && building {
                 self.mend_here();
-            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() && !self.hearth_here() {
+            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() && !self.furnace_here() && !self.hearth_here() {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
                 if self.game.shopping() {
@@ -4333,6 +4339,8 @@ impl App {
             self.slow("the fighting, animals and such", start);
             // A tool's blow landing gathers what it struck, see tools.rs
             self.update_tools(delta_time.min(0.1));
+            // Trees coming down, see felling.rs
+            self.update_felling(delta_time.min(0.1));
             // The fires burning down, smoking and warming whoever's by them, see hearths.rs
             self.update_hearths(delta_time.min(0.1));
             // Monsters coming at night, and what's built taking their blows, see night.rs
@@ -6165,9 +6173,11 @@ impl App {
         if self.game.models_version() != self.models_version {
             let start = Instant::now();
             self.models_version = self.game.models_version();
-            self.weapon_models = model_buffer(&self.memory_allocator, self.game.weapon_model_words());
+            let words = self.game.weapon_model_words();
+            let packed = start.elapsed().as_secs_f64() * 1000.0;
+            self.weapon_models = model_buffer(&self.memory_allocator, words);
             if self.capture.is_some() {
-                println!("Models sent in {:.1} ms", start.elapsed().as_secs_f64() * 1000.0);
+                println!("Models sent in {:.1} ms, {packed:.1} ms of it packing them", start.elapsed().as_secs_f64() * 1000.0);
             }
         }
 
@@ -6185,6 +6195,8 @@ impl App {
         // A grappling hook's rope, and wings spread to glide, see rope.rs
         if !self.editor.open {
             instances.extend(rope);
+            // Trees coming down, see felling.rs
+            instances.extend(building::felling_instances(&self.building, &self.game, &self.world));
         }
         if let Some(perf) = &mut self.perf {
             perf.instances = perf.instances.max(instances.len());

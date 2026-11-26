@@ -1,19 +1,19 @@
 {
-  "what": "Pickaxe, blade: Iron Pick Head",
+  "what": "Pickaxe, blade: Copper Pick Head",
   "voxels_per_meter": 192.0,
   "size": [
-    94,
+    86,
     9,
     19
   ],
   "pivot": [
-    46.93599999999999,
+    43.096,
     4.569599999999999,
     -106.0
   ],
   "anchor": null,
   "origin": [
-    -47,
+    -43,
     -5,
     106
   ],
@@ -24,14 +24,14 @@
       0.1916
     ],
     "tip": [
-      0.24,
+      0.22,
       0.0,
       0.5575999999999999
     ]
   },
   "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
   "written": [
-    14262,
-    "4b2a80f024a9350a"
+    13546,
+    "a2cebb2e3474f48c"
   ]
 }

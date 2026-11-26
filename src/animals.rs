@@ -3594,6 +3594,31 @@ pub fn pack_models(models: &[&Model]) -> Vec<u32> {
     words
 }
 
+/// Models packed by pack_models(), `packed`, followed by models each packed alone by it, `alone`,
+/// as one list of them all, the same as packing all of them at once would make but for sharing
+/// voxels: so a big model that comes and goes, as a tree coming down, is packed on a thread of its
+/// own and only copied in here, see felling.rs
+pub fn splice_packed(packed: &[u32], alone: &[Vec<u32>]) -> Vec<u32> {
+    // How many headers there are: the first model's voxels start right after them
+    let headers = if packed.is_empty() { 0 } else { packed[0] as usize / HEADER_WORDS };
+    let shift = alone.len() * HEADER_WORDS;
+    let mut out = Vec::with_capacity(packed.len() + shift + alone.iter().map(|w| w.len() - w[0] as usize).sum::<usize>());
+    out.extend_from_slice(&packed[..headers * HEADER_WORDS]);
+    for k in 0..headers {
+        out[k * HEADER_WORDS] += shift as u32;
+    }
+    out.resize(headers * HEADER_WORDS + shift, 0);
+    out.extend_from_slice(&packed[headers * HEADER_WORDS..]);
+    for (j, words) in alone.iter().enumerate() {
+        let at = out.len();
+        let header = (headers + j) * HEADER_WORDS;
+        out[header..header + HEADER_WORDS].copy_from_slice(&words[..HEADER_WORDS]);
+        out[header] = at as u32;
+        out.extend_from_slice(&words[words[0] as usize..]);
+    }
+    out
+}
+
 /// Voxels four to a word
 fn pack_voxels(voxels: &[u8]) -> Vec<u32> {
     voxels.chunks(4).map(|chunk| chunk.iter().enumerate().fold(0, |w, (j, &m)| w | (m as u32) << (j * 8))).collect()
@@ -3674,8 +3699,29 @@ pub const TINT_LIT: u32 = 7;
 pub struct AnimalInstance {
     position: [f32; 4],
     rotation: [f32; 4],
-    scale: [f32; 4],
+    /// How big its voxels are in voxels of the main world, then for a serpent how it's stretched
+    /// and draped over the ground, see shaped()
+    size: f32,
+    stretch: u32,
+    drape: [u32; 2],
     info: [u32; 4],
+}
+
+/// `x` as a half float, as unpackHalf2x16() reads it in the shaders: near enough for how far a
+/// model's stretched or draped, nothing smaller than a ten-thousandth, nothing past 65000
+fn half(x: f64) -> u32 {
+    let bits = (x as f32).to_bits();
+    let sign = (bits >> 16) & 0x8000;
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mantissa = bits & 0x7f_ffff;
+    if exponent <= 0 {
+        return sign;
+    }
+    if exponent >= 31 {
+        return sign | 0x7bff;
+    }
+    // Rounded to the nearest, which may carry over into the exponent, as it should
+    (sign | ((exponent as u32) << 10) | (mantissa >> 13)) + ((mantissa >> 12) & 1)
 }
 
 impl AnimalInstance {
@@ -3687,9 +3733,22 @@ impl AnimalInstance {
         AnimalInstance {
             position: [position.x as f32, position.y as f32, position.z as f32, reach as f32],
             rotation: [q.x as f32, q.y as f32, q.z as f32, q.w as f32],
-            scale: [scale as f32, 0.0, 0.0, 0.0],
+            size: scale as f32,
+            stretch: 0,
+            drape: [0, 0],
             info: [model, kind, TINT_NONE, 0],
         }
+    }
+
+    /// Drawn `stretch` times as long and as wide as its model, its height as it is, and draped:
+    /// its bottom raised `drape` of its model's voxels at four points evenly along it, from its
+    /// back end to its front, and in a straight line between them. A serpent's S-curve tighter or
+    /// looser for how fast it goes, and its body lying along the ground under it, from one model.
+    /// See shaped() in shaders\traverse.comp; its reach has to be wide enough for it.
+    pub fn shaped(mut self, stretch: [f64; 2], drape: [f64; 4]) -> Self {
+        self.stretch = half(stretch[0] - 1.0) | half(stretch[1] - 1.0) << 16;
+        self.drape = [half(drape[0]) | half(drape[1]) << 16, half(drape[2]) | half(drape[3]) << 16];
+        self
     }
 
     pub fn tinted(mut self, tint: u32) -> Self {
@@ -3794,7 +3853,18 @@ pub struct Animal {
     /// For a serpent lying on the ground, how its body's tipped to lie along the slope under it, in
     /// radians: its head down, and over onto its right, eased towards the ground it's on
     lie: [f64; 2],
+    /// And how much longer and wider than its model it's drawn: its S-curve tight and quick going
+    /// fast, fleeing or coming on to strike, loose and lazy going slowly, see serpents::stretch()
+    stretch: [f64; 2],
+    /// And how far above that slope its body's drawn at four points evenly along its model, from
+    /// its tail end to its head, in meters: draped over the bumps and hollows under it, rather than
+    /// lying across them in a straight line. Eased, as `lie` is.
+    drape: [f64; 4],
 }
+
+/// The furthest above or below the slope it lies along a serpent's body is draped at any point, in
+/// meters, see Animal::drape
+const DRAPE: f64 = 0.6;
 
 /// How hard a bare-handed hit is
 pub const PUNCH: f64 = 35.0;
@@ -3978,6 +4048,8 @@ impl Animal {
             rng,
             focus: None,
             lie: [0.0; 2],
+            stretch: [1.0; 2],
+            drape: [0.0; 4],
         }
     }
 
@@ -4180,11 +4252,23 @@ impl Animal {
         let off = (self.heading - self.drawn_heading + PI).rem_euclid(TAU) - PI;
         let rate = TURN_EASE * (1.0 + 2.0 * off.abs());
         self.drawn_heading = (self.drawn_heading + off * (1.0 - (-rate * dt).exp())).rem_euclid(TAU);
-        // A serpent's long body lying along the slope it's on, rather than sticking out of it
+        // A serpent's long body lying along the slope it's on, rather than sticking out of it, and
+        // draped over the bumps and hollows in it; its S-curve as tight as it's quick, slithering
         if let Some(kind) = serpents::kind(self.look) {
+            let ease = 1.0 - (-8.0 * dt).exp();
             let lie = self.lie_on(kind, world, water);
             for (now, to) in self.lie.iter_mut().zip(lie) {
-                *now += (to - *now) * (1.0 - (-8.0 * dt).exp());
+                *now += (to - *now) * ease;
+            }
+            let (frame, position, rotation, _) = self.placement(world.voxels_per_meter);
+            let (walk, run) = (self.look.walk_speed(), self.look.run_speed());
+            let stretch = if frame <= WALK_FRAMES { serpents::stretch((self.speed - walk) / (run - walk).max(0.1)) } else { [1.0; 2] };
+            for (now, to) in self.stretch.iter_mut().zip(stretch) {
+                *now += (to - *now) * (1.0 - (-5.0 * dt).exp());
+            }
+            let drape = self.drape_on(kind, world, water, frame, position, rotation);
+            for (now, to) in self.drape.iter_mut().zip(drape) {
+                *now += (to - *now) * ease;
             }
         }
         // A great serpent's long body following its head
@@ -4220,6 +4304,36 @@ impl Animal {
         [down.clamp(-0.5, 0.5), over.clamp(-0.4, 0.4)]
     }
 
+    /// How far above or below the slope it lies along serpent `kind`'s drawn in `frame`, placed at
+    /// `position` turned by `rotation`, has the ground at each of four points evenly along its
+    /// model, see `drape`, in meters: up over a bump, down into a hollow. Flat gliding over it,
+    /// swimming or dying, and where there's no ground to lie on.
+    fn drape_on(&self, kind: &serpents::Kind, world: &World, water: WaterLevel, frame: usize, position: Vector3<f64>, rotation: UnitQuaternion<f64>) -> [f64; 4] {
+        let vpm = world.voxels_per_meter as f64;
+        let (x, y, z) = (self.position.x, self.position.y, self.position.z);
+        let Some(posed) = serpents::posed(self.look, frame) else {
+            return [0.0; 4];
+        };
+        if kind.aloft || self.health <= 0.0 || water(x, y) > z - 0.05 * vpm {
+            return [0.0; 4];
+        }
+        let half = posed.half * self.stretch[0];
+        std::array::from_fn(|k| {
+            let at = position + rotation * Vector3::new(-half + k as f64 * 2.0 * half / 3.0, 0.0, 0.0) * vpm;
+            ground_at(world, water, at.x, at.y, at.z, vpm, vpm).map_or(0.0, |g| ((g - at.z) / vpm).clamp(-DRAPE, DRAPE))
+        })
+    }
+
+    /// Where point `p` of an ordinary serpent's model drawn in a frame `half` meters long either
+    /// side of its middle is drawn, stretched and draped as it is now, see `stretch` and `drape`:
+    /// as AnimalInstance::shaped() has the shader draw it, in meters of its model
+    fn shaped(&self, p: Vector3<f64>, half: f64) -> Vector3<f64> {
+        let f = ((p.x + half) / (2.0 * half).max(1e-6) * 3.0).clamp(0.0, 3.0);
+        let k = (f as usize).min(2);
+        let up = self.drape[k] + (self.drape[k + 1] - self.drape[k]) * (f - k as f64);
+        Vector3::new(p.x * self.stretch[0], p.y * self.stretch[1], p.z + up)
+    }
+
     /// An ordinary serpent's tongue flicking out of its mouth, to draw beside it, see
     /// serpents::flick(): None while it's in, or its jaws are open, or it's dying, frozen or gone
     /// under the ground
@@ -4243,6 +4357,8 @@ impl Animal {
         // Slid out of its mouth along the way its head points, from all of it inside; its model's
         // made a little up off its bottom, see serpents::tongue_shapes()
         let tip = Vector3::from(root) + Vector3::from(ahead) * (out - 1.0) * serpents::TONGUE - Vector3::from(up) * serpents::TONGUE_LIFT;
+        // Out of its mouth where its head's drawn, stretched and draped
+        let tip = self.shaped(tip, posed.half);
         let turn = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_basis_unchecked(&[Vector3::from(ahead), Vector3::from(side), Vector3::from(up)]));
         let size = scale * self.look.resolution() * self.look.scale();
         let at = position + rotation * tip * size;
@@ -4261,7 +4377,7 @@ impl Animal {
         // A serpent's S-curve goes on just as far as it goes, so its body slides along the curve
         // and never over the ground; stopping, it lies where it stopped, still in the curve
         if self.look.is_serpent() {
-            self.phase = (self.phase + self.speed * dt / self.look.stride()).fract();
+            self.phase = (self.phase + self.speed * dt / (self.look.stride() * self.stretch[0])).fract();
             return;
         }
         let walking = self.speed > STEPPING;
@@ -4529,8 +4645,17 @@ impl Animal {
         }
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
-        let radius = (self.look.reach() + on.abs() + up.abs()) * world_voxels_per_meter as f64;
-        AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint())
+        let vpm = world_voxels_per_meter as f64;
+        let mut radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
+        // An ordinary serpent's S-curve stretched or squeezed for how fast it goes, and its body
+        // draped over the ground under it, see AnimalInstance::shaped()
+        let shaped = serpents::kind(self.look).is_some() && (self.stretch != [1.0; 2] || self.drape != [0.0; 4]);
+        if shaped {
+            let most = self.drape.iter().fold(0.0f64, |m, d| m.max(d.abs()));
+            radius = radius * self.stretch[0].max(self.stretch[1]).max(1.0) + most * vpm;
+        }
+        let instance = AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint());
+        if shaped { instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale)) } else { instance }
     }
 
     /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's
@@ -4540,7 +4665,7 @@ impl Animal {
         let (frame, position, rotation, _) = self.placement(world_voxels_per_meter);
         let posed = serpents::posed(self.look, frame)?;
         let vpm = world_voxels_per_meter as f64;
-        Some(posed.spine.iter().map(|&p| position + rotation * Vector3::from(p) * vpm).collect())
+        Some(posed.spine.iter().map(|&p| position + rotation * self.shaped(Vector3::from(p), posed.half) * vpm).collect())
     }
 
     /// Which of its frames it's drawn in, where, turned how and how big
@@ -4956,6 +5081,44 @@ pub fn spawn_wilds(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A snake lying across a bump in the ground is drawn draped over it, its middle raised up over
+    /// the bump rather than its body running through it in a straight line, and where it can be
+    /// hit raised with it; and its S-curve's tighter slithering fast than slowly
+    #[test]
+    fn a_snake_drapes_over_the_ground_and_tightens_its_curve_going_fast() {
+        let [slow, fast] = [serpents::stretch(0.0), serpents::stretch(1.0)];
+        assert!(fast[0] < 1.0 && fast[1] < 1.0 && slow[0] > 1.0 && slow[1] > 1.0, "slow {slow:?}, fast {fast:?}");
+        // A flat field 32 m across at 8 voxels a meter, its ground 4 m up, a bump half a meter high
+        // three across and two wide in the middle of it
+        let size = [256u32, 256, 64];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 4].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 8;
+        let mut bump = [AIR; 512];
+        bump[..256].fill(DIRT);
+        for bx in 15..18 {
+            for by in 15..17 {
+                world.set_brick([bx, by, 4], &bump);
+            }
+        }
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let vpm = 8.0;
+        let mut snake = Animal::new(Look::ReedViper, Vector3::new(16.5, 16.0, 4.0) * vpm, 7);
+        (snake.heading, snake.target_heading, snake.drawn_heading) = (0.0, 0.0, 0.0);
+        let kind = serpents::kind(Look::ReedViper).unwrap();
+        let (frame, position, rotation, _) = snake.placement(8);
+        let drape = snake.drape_on(kind, &world, &water, frame, position, rotation);
+        assert!(drape[1] > 0.4 && drape[2] > 0.4, "its middle's up over the bump: {drape:?}");
+        assert!(drape[0].abs() < 0.05 && drape[3].abs() < 0.05, "its ends lie on the ground either side: {drape:?}");
+        let flat = snake.spine(8).unwrap();
+        snake.drape = drape;
+        let draped = snake.spine(8).unwrap();
+        assert!(draped[4].z > flat[4].z + 0.4 * vpm, "where it's hit's up over the bump too");
+        assert!(snake.instance(8).drape != [0, 0], "it's drawn draped");
+    }
 
     /// Every frame of every monster added for the different kinds of country: solid enough to
     /// see, small enough for the shader, and inside the reach it's culled by
