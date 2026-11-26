@@ -12,6 +12,7 @@ use super::studio::{self, Focus, Studio};
 use super::{BUILDS, CLOTHS, Character, Class, Difficulty, FACES, GLOVES, HAIR_COLORS, HAIRS, Looks, NAME_LENGTH, SKINS};
 use crate::animals::Model;
 use crate::save::Mode;
+use crate::theme;
 
 /// How wide the picture of the body is drawn, in pixels, before it's scaled to fit
 const PICTURE: usize = 260;
@@ -114,7 +115,7 @@ fn color(rgb: [u8; 3]) -> Color32 {
 /// A heading over a part of the window
 fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(10.0);
-    ui.label(RichText::new(text).size(19.0).strong().color(Color32::from_rgb(255, 215, 130)));
+    theme::heading(ui, text, 18.0);
     ui.add_space(2.0);
 }
 
@@ -172,13 +173,13 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
     }
     let texture = creator.picture(ctx);
     egui::Area::new(egui::Id::new("character creation")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        egui::Frame::new().fill(Color32::from_black_alpha(205)).corner_radius(16.0).inner_margin(20.0).show(ui, |ui| {
+        theme::framed(ui, theme::panel(20.0, 16.0), |ui| {
             ui.set_width(wide - 40.0);
             ui.set_max_height(tall - 40.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("A new character").size(28.0).strong().color(Color32::WHITE));
+                ui.label(RichText::new("A new character").font(theme::display(27.0)).color(theme::HEADING));
                 ui.add_space(10.0);
-                ui.label(RichText::new(format!("for a new {} game", creator.mode.name())).size(15.0).color(Color32::from_gray(180)));
+                ui.label(RichText::new(format!("for a new {} game", creator.mode.name())).size(15.0).color(theme::WEAK));
             });
             ui.add_space(6.0);
             // The picture, as tall as the window lets it be, beside everything that's chosen
@@ -191,7 +192,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                     ui.set_width(picture_width);
                     let (rect, response) = ui.allocate_exact_size(vec2(picture_width, picture_height - 70.0), Sense::drag());
                     ui.painter().image(texture, rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0f32, Color32::from_gray(60)), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0f32, theme::BRONZE.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     if response.dragged() {
                         creator.turn += response.drag_delta().x as f64 * 0.012;
                         creator.spinning = false;
@@ -211,7 +212,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                             creator.character.looks = Looks::random(seed);
                         }
                     });
-                    let paint = egui::Button::new(RichText::new("Paint face and body…").size(15.0)).fill(Color32::from_rgb(70, 60, 100));
+                    let paint = egui::Button::new(RichText::new("Paint face and body…").size(15.0)).fill(Color32::from_rgb(68, 54, 84));
                     if ui.add_sized([picture_width, 30.0], paint).on_hover_text("Paint the voxels of your body: war paint, scars, a beard").clicked() {
                         creator.paint(Focus::Face);
                     }
@@ -240,12 +241,12 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                 let c = &creator.character;
                 let summary = format!("{} · {} · {}", c.name, c.class.name(), c.difficulty.name());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let start = egui::Button::new(RichText::new("Start").size(20.0).strong()).fill(Color32::from_rgb(70, 110, 60));
+                    let start = egui::Button::new(RichText::new("Start").font(theme::display(20.0)).color(Color32::WHITE)).fill(theme::PRIMARY);
                     if ui.add_sized([160.0, 40.0], start).clicked() {
                         picked = Some(Pick::Start);
                     }
                     ui.add_space(10.0);
-                    ui.label(RichText::new(summary).size(15.0).color(Color32::from_gray(200)));
+                    ui.label(RichText::new(summary).size(15.0).color(theme::TEXT));
                 });
             });
         });
@@ -261,7 +262,7 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
     let gray = Color32::from_gray(185);
     heading(ui, "Name");
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut creator.character.name).char_limit(NAME_LENGTH).desired_width(240.0).font(egui::TextStyle::Heading));
+        ui.add(egui::TextEdit::singleline(&mut creator.character.name).char_limit(NAME_LENGTH).desired_width(240.0).font(egui::FontId::proportional(18.0)));
         if ui.button(RichText::new("🎲 Random name").size(14.0)).clicked() {
             let seed = creator.roll();
             creator.character.name = super::random_name(seed);
@@ -286,15 +287,15 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
             let ui = &mut columns[k % 2];
             let chosen = creator.character.class == class;
             let frame = egui::Frame::new()
-                .fill(if chosen { Color32::from_rgba_unmultiplied(60, 70, 90, 220) } else { Color32::from_rgba_unmultiplied(30, 32, 38, 200) })
-                .stroke(Stroke::new(if chosen { 2.0f32 } else { 1.0 }, if chosen { color(class.color()) } else { Color32::from_gray(60) }))
+                .fill(if chosen { Color32::from_rgba_unmultiplied(72, 56, 36, 225) } else { Color32::from_rgba_unmultiplied(32, 26, 21, 205) })
+                .stroke(Stroke::new(if chosen { 2.0f32 } else { 1.0 }, if chosen { color(class.color()) } else { theme::BRONZE.gamma_multiply(0.6) }))
                 .corner_radius(8.0)
                 .inner_margin(8.0);
             let response = frame
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(class.name()).size(17.0).strong().color(color(class.color())));
-                    ui.label(RichText::new(class.about()).size(13.0).color(Color32::from_gray(210)));
+                    ui.label(RichText::new(class.name()).font(theme::display(16.0)).color(color(class.color())));
+                    ui.label(RichText::new(class.about()).size(13.0).color(theme::TEXT));
                     let kit: Vec<String> = class
                         .kit()
                         .iter()
@@ -339,6 +340,7 @@ mod tests {
     fn it_fits_a_short_window() {
         for [w, h] in [[1548.0, 872.0], [1600.0, 734.0], [1238.0, 698.0], [1280.0, 600.0]] {
             let ctx = egui::Context::default();
+            crate::theme::apply(&ctx);
             let mut creator = Creator::with(Mode::Realms, Character::default(), 0.5);
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), ..Default::default() };
             for _ in 0..3 {

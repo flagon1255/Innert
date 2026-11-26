@@ -7247,6 +7247,14 @@ impl Game {
                     made = tools::craft_tab(ui, crafting, &|tool| self.best_gear(tool));
                     return;
                 }
+                // No taller than the window has room for under the quick bar, scrolling through
+                // the rest in a short one
+                let room = (ctx.screen_rect().height() - 190.0).max(200.0);
+                // Room to grow into, under the tabs: a window lays out what's in it within the size
+                // it had last
+                ui.scope(|ui| {
+                ui.set_max_height(room);
+                egui::ScrollArea::vertical().id_salt("pack").max_height(room).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong());
                     ui.separator();
@@ -7261,12 +7269,12 @@ impl Game {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("On your back").weak());
                     let (rect, response) = ui.allocate_exact_size(vec2(40.0, 40.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 7.0, Color32::from_white_alpha(16));
+                    let worn = self.worn.map(|k| color(self.library.rarities[wings::KINDS[k as usize].rarity.min(self.library.rarities.len() - 1)].color));
+                    theme::slot(ui.painter(), rect, worn, false);
                     match self.worn {
                         Some(k) => {
                             let kind = &wings::KINDS[k as usize];
                             let tint = color(self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)].color);
-                            ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.5f32, tint), StrokeKind::Inside);
                             self.draw_icon(ui.painter(), Item::Wings(k), rect.center(), 24.0);
                             response.on_hover_ui(|ui| {
                                 ui.set_width(280.0);
@@ -7364,6 +7372,8 @@ impl Game {
                 ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
                 ui.label(RichText::new("Wings go on your back, above: jump, then hold Space in the air to glide; some flap with Space, some dash with Shift. Every merchant sells a pair, and bosses and chests leave them.").weak().small());
+                });
+                });
             });
         // The quick bar along the top takes what's dragged onto it too
         if let Some(SlotClick::Moved(a, b)) = self.quick_bar_targets(ctx) {
@@ -7959,8 +7969,8 @@ impl Game {
                 ui.separator();
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(360.0);
-                        ui.label(RichText::new("For sale").strong());
+                        ui.set_width(384.0);
+                        theme::heading(ui, "For sale", 15.0);
                         egui::ScrollArea::vertical().id_salt("wares").max_height(ctx.screen_rect().height() * 0.55).show(ui, |ui| {
                             for (k, &ware) in self.stocks.get(&key).into_iter().flatten().enumerate() {
                                 let (item, left) = match ware {
@@ -7970,6 +7980,7 @@ impl Game {
                                 let cost = self.price(item);
                                 let row = ui.horizontal(|ui| {
                                     let (rect, _) = ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                                    theme::slot(ui.painter(), rect.shrink(2.0), self.slot_tint(item), false);
                                     self.draw_icon(ui.painter(), item, rect.center(), 26.0);
                                     let name = match item {
                                         Item::Weapon(w) => RichText::new(&self.weapons[w].name).color(color(self.library.rarities[self.weapons[w].grade].color)).strong(),
@@ -7996,7 +8007,7 @@ impl Game {
                     });
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Yours, click to sell one").strong());
+                        theme::heading(ui, "Yours, click to sell one", 15.0);
                         match self.slot_grid(ui, "selling", true) {
                             Some(SlotClick::Once(slot) | SlotClick::Twice(slot)) => deed = Some(Deal::Sell(slot)),
                             Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),

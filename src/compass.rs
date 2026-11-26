@@ -376,16 +376,17 @@ pub fn draw_map(ctx: &egui::Context, map: &mut Map, marks: &Marks) {
     let side = (screen.bottom() - top - 60.0).min(screen.width() * 0.8).min(680.0).max(120.0);
     let rect = Rect::from_min_size(pos2(screen.center().x - side / 2.0, top), vec2(side, side));
     let frame = Rect::from_min_max(rect.min - vec2(14.0, 44.0), rect.max + vec2(14.0, 34.0));
-    painter.rect_filled(frame, 14.0, Color32::from_black_alpha(200));
-    painter.text(pos2(rect.center().x, rect.top() - 22.0), Align2::CENTER_CENTER, &marks.title, FontId::proportional(22.0), Color32::WHITE);
-    painter.text(pos2(rect.center().x, rect.bottom() + 18.0), Align2::CENTER_CENTER, "M to close", FontId::proportional(13.0), Color32::from_gray(170));
+    painter.rect(frame, 14.0, crate::theme::panel_fill(), Stroke::new(1.0f32, crate::theme::BRONZE), StrokeKind::Inside);
+    crate::theme::accent(&painter, frame, 1.0);
+    painter.text(pos2(rect.center().x, rect.top() - 22.0), Align2::CENTER_CENTER, &marks.title, crate::theme::display(21.0), crate::theme::HEADING);
+    painter.text(pos2(rect.center().x, rect.bottom() + 18.0), Align2::CENTER_CENTER, "M to close", FontId::proportional(13.0), crate::theme::WEAK);
     let Some(image) = &map.image else {
         painter.text(rect.center(), Align2::CENTER_CENTER, "Drawing the map...", FontId::proportional(18.0), Color32::from_gray(200));
         return;
     };
     let texture = map.texture.get_or_insert_with(|| ctx.load_texture("map", egui::ColorImage::from_rgba_unmultiplied([MAP_PIXELS, MAP_PIXELS], &image.pixels), TextureOptions::LINEAR));
     painter.image(texture.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.5f32, Color32::from_white_alpha(90)), StrokeKind::Outside);
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.5f32, crate::theme::BRONZE), StrokeKind::Outside);
     let to_screen = |p: [f64; 2]| -> Pos2 {
         let u = (p[0] - image.middle[0]) / MAP_ACROSS_M + 0.5;
         let v = 0.5 - (p[1] - image.middle[1]) / MAP_ACROSS_M;

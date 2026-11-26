@@ -1321,14 +1321,19 @@ pub fn gate_window(ctx: &egui::Context, here: usize, progress: &save::RealmsSave
 /// is given back.
 pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Option<Mode>, saves: &save::Saves, seed: &mut u32, show_settings: bool) -> Option<MenuAction> {
     let mut picked = None;
-    let big = |ui: &mut egui::Ui, text: &str| ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).size(20.0)));
-    let gray = Color32::from_gray(190);
-    ui.label(RichText::new("INNERT").size(60.0).strong().color(Color32::WHITE));
+    let big = |ui: &mut egui::Ui, text: &str| ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).font(theme::display(19.0))));
+    let gray = theme::WEAK;
+    // The name in the headings' font, in gold over a shadow, a flourish under it
+    let (title, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 68.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.text(title.center() + egui::vec2(2.0, 3.0), Align2::CENTER_CENTER, "INNERT", theme::display(62.0), Color32::from_black_alpha(170));
+    painter.text(title.center(), Align2::CENTER_CENTER, "INNERT", theme::display(62.0), theme::HEADING);
+    theme::flourish(painter, egui::pos2(title.center().x, title.bottom() + 2.0), 120.0);
     ui.add_space(18.0);
 
     if let Some(mode) = menu.confirm {
         let when = saves.saved(mode).map_or(String::new(), |s| format!(", saved {}", save::ago(s.saved_at)));
-        ui.label(RichText::new(format!("Start a new {} game?", mode.name())).size(22.0).color(Color32::WHITE));
+        ui.label(RichText::new(format!("Start a new {} game?", mode.name())).font(theme::display(21.0)).color(theme::HEADING));
         ui.add_space(6.0);
         ui.label(RichText::new(format!("It takes the place of the one you have{when}, which can't be had back.")).size(14.0).color(gray));
         ui.add_space(14.0);
@@ -1352,7 +1357,7 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
     for mode in Mode::ALL {
         ui.add_space(14.0);
         let now = started && playing == Some(mode);
-        ui.label(RichText::new(mode.name()).size(24.0).strong().color(Color32::WHITE));
+        ui.label(RichText::new(mode.name()).font(theme::display(23.0)).color(theme::HEADING));
         let about = match mode {
             Mode::FreeRoam => "The endless wilderness, on any seed",
             Mode::Realms => "A journey from the normal world through the realms",
@@ -1379,7 +1384,8 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             let continuing = saved.is_some() && saves.enabled();
             ui.add_space((ui.available_width() - if continuing { 260.0 } else { 126.0 }).max(0.0) * 0.5);
             if continuing {
-                if ui.add_sized(half, egui::Button::new(RichText::new("Continue").size(18.0))).clicked() {
+                // Going on, the likelier, lit as the button that goes on
+                if ui.add_sized(half, egui::Button::new(RichText::new("Continue").size(18.0)).fill(theme::PRIMARY)).clicked() {
                     picked = Some(MenuAction::Continue(mode));
                 }
                 ui.add_space(8.0);
@@ -1416,4 +1422,89 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         ui.label(RichText::new("Not saving in this run").size(12.0).color(gray));
     }
     picked
+}
+
+/// The menu's window in the middle of the screen, `add` filling it: as tall as the window lets it
+/// be, scrolling through the rest when it's short
+pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
+    let room = (ctx.screen_rect().height() - 2.0 * 30.0 - 24.0).max(120.0);
+    egui::Area::new(egui::Id::new("menu")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        theme::framed(ui, theme::panel(30.0, 18.0), |ui| {
+            ui.set_width(376.0);
+            // Room for all of it, not only for as much as there was the frame before: an Area lays
+            // out what's in it within the size it had last, which left Settings and Quit scrolled
+            // out of sight however tall the window
+            ui.set_max_height(room);
+            // Its scroll bar solid, so in a short window it's plain there's more below
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            egui::ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| ui.vertical_centered(add));
+        });
+    });
+}
+
+/// How to play, under the menu
+pub fn menu_help(ui: &mut egui::Ui) {
+    ui.add_space(18.0);
+    ui.label(
+        RichText::new(
+            "WASD move · Space jump · Shift run · F fly\n\
+             Click swing or cast · bow: hold right click, click to shoot\n\
+             Crossbow, gun: click to shoot, Q or right click reloads · T ammo\n\
+             Right click heavy swing, or eat · E pick up, open, trade, pet\n\
+             Legendary: R special · right click its power, Q reloads\n\
+             Number keys pick what's in hand · I inventory · M map\n\
+             Wings: jump, then hold Space in the air to glide\n\
+             Merchants sell wings; bosses and chests leave them\n\
+             F1 settings · Esc menu",
+        )
+        .size(13.0)
+        .color(theme::WEAK),
+    );
+    // Gathering and building, see building.rs
+    ui.add_space(10.0);
+    theme::heading(ui, "Gathering and building", 15.0);
+    ui.label(
+        RichText::new(
+            "Hold G at a tree, rock or clay to gather it\n\
+             Bare hands work; tools are 2–4× faster (I › Craft)\n\
+             B build · 1–9, 0 pick a piece, its cost beside it\n\
+             Click build · right click take down · R turn",
+        )
+        .size(13.0)
+        .color(theme::WEAK),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// At the size of the window played in, all of the menu shows, Quit and how to play at its
+    /// foot with nothing to scroll; in a shorter one it's all on screen, the rest scrolling
+    #[test]
+    fn the_menu_fits_and_scrolls() {
+        for [w, h] in [[1548.0, 872.0], [1600.0, 734.0], [1280.0, 600.0]] {
+            let ctx = egui::Context::default();
+            theme::apply(&ctx);
+            let saves = save::Saves::new(None, false);
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h))), ..Default::default() };
+            let mut end = egui::Rect::NOTHING;
+            for _ in 0..4 {
+                let _ = ctx.run(input.clone(), |ctx| {
+                    menu_window(ctx, |ui| {
+                        menu(&mut ModeMenu::default(), ui, true, Some(Mode::Realms), &saves, &mut 7, false);
+                        menu_help(ui);
+                        end = ui.label("end").rect;
+                    });
+                });
+            }
+            let shown = ctx.memory(|m| m.area_rect(egui::Id::new("menu"))).expect("the menu's drawn");
+            assert!(shown.min.y >= 0.0 && shown.max.y <= h && shown.min.x >= 0.0 && shown.max.x <= w, "at {w}×{h} it's at {shown:?}");
+            if h >= 872.0 {
+                assert!(end.max.y <= shown.max.y, "at {w}×{h} its foot's at {:.0}, under the window's at {:.0}", end.max.y, shown.max.y);
+            } else if h <= 600.0 {
+                assert!(end.max.y > shown.max.y, "at {w}×{h} the rest scrolls");
+            }
+        }
+    }
 }

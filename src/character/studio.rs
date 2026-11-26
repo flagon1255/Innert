@@ -648,13 +648,13 @@ pub fn window(ctx: &egui::Context, studio: &mut Studio, character: &mut Characte
     let wide = (screen.width() - 2.0 * margin).clamp(320.0, 1500.0);
     let tall = (screen.height() - 2.0 * margin).max(260.0);
     egui::Area::new(egui::Id::new("character painting")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        egui::Frame::new().fill(Color32::from_black_alpha(205)).corner_radius(16.0).inner_margin(20.0).show(ui, |ui| {
+        crate::theme::framed(ui, crate::theme::panel(20.0, 16.0), |ui| {
             ui.set_width(wide - 40.0);
             ui.set_max_height(tall - 40.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Paint your character").size(26.0).strong().color(Color32::WHITE));
+                ui.label(RichText::new("Paint your character").font(crate::theme::display(25.0)).color(crate::theme::HEADING));
                 ui.add_space(10.0);
-                ui.label(RichText::new("voxel by voxel: war paint, scars, tattoos, a beard. Changing your looks after keeps what's painted.").size(14.0).color(Color32::from_gray(175)));
+                ui.label(RichText::new("voxel by voxel: war paint, scars, tattoos, a beard. Changing your looks after keeps what's painted.").size(14.0).color(crate::theme::WEAK));
             });
             ui.add_space(6.0);
             let footer = 50.0;
@@ -673,7 +673,7 @@ pub fn window(ctx: &egui::Context, studio: &mut Studio, character: &mut Characte
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add_sized([130.0, 36.0], egui::Button::new(RichText::new("Done").size(18.0).strong()).fill(Color32::from_rgb(70, 110, 60))).clicked() {
+                if ui.add_sized([130.0, 36.0], egui::Button::new(RichText::new("Done").font(crate::theme::display(18.0)).color(Color32::WHITE)).fill(crate::theme::PRIMARY)).clicked() {
                     done = true;
                 }
                 ui.add_space(10.0);
@@ -781,7 +781,7 @@ fn view(ui: &mut egui::Ui, studio: &mut Studio, character: &mut Character, size:
     if let Some(t) = &studio.texture {
         painter.image(t.id(), rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    painter.rect_stroke(rect, 8.0, Stroke::new(1.0f32, Color32::from_gray(60)), egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, 8.0, Stroke::new(1.0f32, crate::theme::BRONZE.gamma_multiply(0.7)), egui::StrokeKind::Inside);
     let tool = studio.stroke.as_ref().map_or_else(|| studio.tool_for(modifiers), |s| s.0);
     if let Some(h) = hit {
         let shot = &studio.shot.as_ref().unwrap().0;
@@ -814,7 +814,7 @@ fn swatch(ui: &mut egui::Ui, rgb: [u8; 3], chosen: bool, name: &str) -> bool {
 
 fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
-    ui.label(RichText::new(text).size(16.0).strong().color(Color32::from_rgb(255, 215, 130)));
+    crate::theme::heading(ui, text, 16.0);
     ui.add_space(2.0);
 }
 
@@ -1115,6 +1115,7 @@ mod tests {
     fn painted_with_the_mouse() {
         use egui::{Event, PointerButton};
         let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
         let mut studio = Studio::new(Focus::Face);
         let mut character = Character::default();
         let screen = egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(1548.0, 872.0));
@@ -1155,6 +1156,7 @@ mod tests {
     fn it_fits_a_short_window() {
         for [w, h] in [[1548.0, 872.0], [1600.0, 734.0], [1280.0, 600.0]] {
             let ctx = egui::Context::default();
+            crate::theme::apply(&ctx);
             let mut studio = Studio::new(Focus::Face);
             let mut character = Character::default();
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), ..Default::default() };

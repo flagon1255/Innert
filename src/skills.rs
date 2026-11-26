@@ -384,7 +384,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
     egui::Area::new(egui::Id::new("skill web")).fixed_pos(screen.min).order(egui::Order::Foreground).show(ctx, |ui| {
         let (rect, response) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(8, 10, 18, 232));
+        painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(12, 10, 9, 234));
         if response.dragged() {
             view.offset += response.drag_delta();
         }
@@ -423,7 +423,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
                 } else if taken[k] || taken[j] {
                     (2.5, Color32::from_rgb(150, 140, 110))
                 } else {
-                    (2.0, Color32::from_rgb(60, 64, 78))
+                    (2.0, Color32::from_rgb(70, 62, 52))
                 };
                 painter.line_segment([a, b], Stroke::new(stroke * view.zoom.sqrt(), tint));
             }
@@ -442,7 +442,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
             if near {
                 hovered = Some(k);
             }
-            let fill = if taken[k] { color } else if open && free > 0 { color.gamma_multiply(0.35) } else { Color32::from_rgb(28, 30, 38) };
+            let fill = if taken[k] { color } else if open && free > 0 { color.gamma_multiply(0.35) } else { Color32::from_rgb(32, 28, 24) };
             let rim = if taken[k] {
                 Color32::from_rgb(255, 230, 160)
             } else if open {
@@ -486,32 +486,33 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
 
         // Across the top: what it is, the points, and how
         let top = rect.top() + 18.0;
-        painter.text(pos2(rect.center().x, top), Align2::CENTER_TOP, "Skill Web", FontId::proportional(30.0), Color32::from_rgb(255, 222, 150));
+        painter.text(pos2(rect.center().x, top), Align2::CENTER_TOP, "Skill Web", crate::theme::display(30.0), crate::theme::HEADING);
+        crate::theme::flourish(&painter, pos2(rect.center().x, top + 37.0), 110.0);
         let points = if free == 1 { "1 point to spend".to_owned() } else { format!("{free} points to spend") };
-        painter.text(pos2(rect.center().x, top + 40.0), Align2::CENTER_TOP, format!("Level {level}  ·  {points}"), FontId::proportional(18.0), if free > 0 { Color32::from_rgb(140, 220, 255) } else { Color32::from_gray(200) });
+        painter.text(pos2(rect.center().x, top + 46.0), Align2::CENTER_TOP, format!("Level {level}  ·  {points}"), FontId::proportional(18.0), if free > 0 { crate::theme::INFO } else { crate::theme::TEXT });
         painter.text(
             pos2(rect.center().x, rect.bottom() - 16.0),
             Align2::CENTER_BOTTOM,
             "Click a lit node next to one taken to take it  ·  right click to give it back  ·  drag to look about, scroll to come closer  ·  P or Esc to close",
             FontId::proportional(14.0),
-            Color32::from_gray(170),
+            crate::theme::WEAK,
         );
         // What each branch is, at its end
         let legend = [("Melee", "melee"), ("Ranged", "ranged"), ("Magic", "magic"), ("Movement and gathering", "mobility"), ("Defence", "defence")];
         for (k, (name, id)) in legend.iter().enumerate() {
             let y = rect.top() + 90.0 + k as f32 * 22.0;
             painter.circle_filled(pos2(rect.left() + 26.0, y + 8.0), 6.0, branch_color(id));
-            painter.text(pos2(rect.left() + 40.0, y), Align2::LEFT_TOP, *name, FontId::proportional(15.0), Color32::from_gray(210));
+            painter.text(pos2(rect.left() + 40.0, y), Align2::LEFT_TOP, *name, FontId::proportional(15.0), crate::theme::TEXT);
         }
         // What all those taken add up to, down the right
         let totals = web.totals(taken);
         let mut y = rect.top() + 90.0;
-        painter.text(pos2(rect.right() - 24.0, y), Align2::RIGHT_TOP, "All together", FontId::proportional(16.0), Color32::from_rgb(255, 222, 150));
+        painter.text(pos2(rect.right() - 24.0, y), Align2::RIGHT_TOP, "All together", crate::theme::display(16.0), crate::theme::HEADING);
         y += 24.0;
         for stat in Stat::ALL {
             let v = totals.get(stat);
             if v.abs() > 1e-9 {
-                painter.text(pos2(rect.right() - 24.0, y), Align2::RIGHT_TOP, stat.describe(v), FontId::proportional(13.0), Color32::from_gray(205));
+                painter.text(pos2(rect.right() - 24.0, y), Align2::RIGHT_TOP, stat.describe(v), FontId::proportional(13.0), crate::theme::TEXT);
                 y += 18.0;
             }
         }
@@ -533,7 +534,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
             let at = place(n) + vec2(radius(n) + 14.0, -10.0);
             let at = at.min(rect.right_bottom() - vec2(320.0, 160.0));
             egui::Area::new(egui::Id::new("skill card")).fixed_pos(at).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).fill(Color32::from_rgb(22, 24, 32)).stroke(Stroke::new(1.5f32, branch_color(&n.branch))).show(ui, |ui| {
+                egui::Frame::popup(ui.style()).fill(crate::theme::panel_fill()).stroke(Stroke::new(1.5f32, branch_color(&n.branch))).show(ui, |ui| {
                     ui.set_max_width(300.0);
                     let kind = match n.kind {
                         Kind::Start => "Where every path begins",
@@ -541,7 +542,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
                         Kind::Notable => "Notable",
                         Kind::Keystone => "Keystone",
                     };
-                    ui.label(egui::RichText::new(&n.name).size(18.0).strong().color(branch_color(&n.branch)));
+                    ui.label(egui::RichText::new(&n.name).font(crate::theme::display(17.0)).color(branch_color(&n.branch)));
                     if !kind.is_empty() {
                         ui.label(egui::RichText::new(kind).italics().color(Color32::from_gray(170)));
                     }
