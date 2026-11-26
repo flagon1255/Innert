@@ -353,6 +353,16 @@ gunsmith/base.vox: Gunsmith, standing frame (1 of 1 frames)
 jeweller/base.vox: Jeweller, standing frame (1 of 1 frames)
 wingmaker/base.vox: Wingmaker, standing frame (1 of 1 frames)
 trade_stall/base.vox: Merchant's stand, standing frame (1 of 1 frames)
+silverfin/base.vox: Silverfin, standing frame (1 of 21 frames)
+reefling/base.vox: Reefling, standing frame (1 of 21 frames)
+brookback/base.vox: Brookback, standing frame (1 of 21 frames)
+gloamfin/base.vox: Gloamfin, standing frame (1 of 21 frames)
+frostfin/base.vox: Frostfin, standing frame (1 of 21 frames)
+saltjaw/base.vox: Saltjaw, standing frame (1 of 36 frames)
+ghostmaw/base.vox: Ghostmaw, standing frame (1 of 36 frames)
+raw_fish/base.vox: Raw fish, standing frame (1 of 1 frames)
+cooked_fish/base.vox: Cooked fish, standing frame (1 of 1 frames)
+shark_tooth/base.vox: Shark tooth, standing frame (1 of 1 frames)
 dragon/ashwing/torso.vox: ashwing, torso
 dragon/ashwing/neck_1.vox: ashwing, neck 1
 dragon/ashwing/neck_2.vox: ashwing, neck 2

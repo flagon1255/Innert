@@ -1,0 +1,25 @@
+{
+  "what": "Ghostmaw, standing frame (1 of 36 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    67,
+    39,
+    25
+  ],
+  "pivot": [
+    33.5,
+    19.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -34,
+    -20,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    15702,
+    "ad34af171c63bcd2"
+  ]
+}

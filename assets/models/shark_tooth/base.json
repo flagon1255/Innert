@@ -1,0 +1,25 @@
+{
+  "what": "Shark tooth, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 48.0,
+  "size": [
+    12,
+    5,
+    4
+  ],
+  "pivot": [
+    6.0,
+    2.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -3,
+    0
+  ],
+  "note": "",
+  "written": [
+    1416,
+    "8f0d2d62a86968ba"
+  ]
+}

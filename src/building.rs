@@ -1713,7 +1713,7 @@ impl App {
             // a shot as it's first struck, once it's half broken, and as it gives way
             // A fireplace in a hut, its chimney up through the roof, stocked with four logs, see
             // hearths.rs: `--set hearth_view=out` looks at the hut from outside, `in` at the fire
-            // from just inside the door, and `cook` roasts meat over it from there
+            // from just inside the door, `cook` roasts meat over it from there and `fish` cooks fish
             ("hearth", 3) => {
                 self.bases.materials.add(bases::Materials::new(400, 300, 120));
                 let ahead = Vector3::new(-self.camera.rotation.z.sin(), self.camera.rotation.z.cos(), 0.0);
@@ -1753,12 +1753,19 @@ impl App {
             }
             ("hearth", f) if self.building.phase == 1 => {
                 let since = f - self.building.mark;
-                let cook = settings_from_args().iter().any(|(k, v)| k == "hearth_view" && v == "cook");
+                // `hearth_view=fish` cooks raw fish instead, see animals\sealife.rs
+                let fish = settings_from_args().iter().any(|(k, v)| k == "hearth_view" && v == "fish");
+                let cook = fish || settings_from_args().iter().any(|(k, v)| k == "hearth_view" && v == "cook");
                 match since {
                     40 if cook => {
-                        self.game.hand(crate::game::Item::Meat, 3);
+                        self.game.hand(if fish { crate::game::Item::RawFish } else { crate::game::Item::Meat }, 3);
                     }
+                    // Every one of the fish, so the cooked are in hand after
                     70 | 90 if cook => {
+                        self.hearth_here();
+                        println!("frame {frame}: {}", self.game.last_message().unwrap_or(""));
+                    }
+                    110 if fish => {
                         self.hearth_here();
                         println!("frame {frame}: {}", self.game.last_message().unwrap_or(""));
                     }
