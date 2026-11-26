@@ -1188,7 +1188,7 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     let right = screen.right() - 16.0;
     let (width, row, small) = (196.0, 34.0, 20.0);
     let high = ALWAYS as f32 * row + (shown.len() - ALWAYS) as f32 * small;
-    painter.rect_filled(egui::Rect::from_min_size(pos2(right - width, top - 14.0), vec2(width + 8.0, high + 6.0)), 8.0, Color32::from_black_alpha(120));
+    crate::theme::hud_panel(&painter, egui::Rect::from_min_size(pos2(right - width, top - 14.0), vec2(width + 8.0, high + 6.0)), 8.0);
     let mut y = top;
     for &(k, res) in &shown {
         let full = k < ALWAYS;
@@ -1275,12 +1275,12 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         let alpha = ((card.age / 0.35).min(1.0) * ((HINT_SECONDS - card.age) / 0.8).clamp(0.0, 1.0)) as f32;
         let wrap = 380.0;
         let tint = |c: Color32| c.gamma_multiply(alpha);
-        let title = painter.layout(card.title.clone(), FontId::proportional(18.0), tint(Color32::from_rgb(255, 215, 130)), wrap);
+        let title = painter.layout(card.title.clone(), crate::theme::display(17.0), tint(crate::theme::HEADING), wrap);
         let lines: Vec<_> = card.lines.iter().map(|l| painter.layout(l.clone(), FontId::proportional(14.5), tint(Color32::from_gray(230)), wrap)).collect();
         let high = title.size().y + 8.0 + lines.iter().map(|g| g.size().y + 6.0).sum::<f32>();
         let at = pos2(screen.left() + 24.0, (c.y - 60.0 - high * 0.5).max(screen.top() + 200.0));
         let card_rect = egui::Rect::from_min_size(at - vec2(14.0, 12.0), vec2(wrap + 28.0, high + 22.0));
-        painter.rect_filled(card_rect, 10.0, Color32::from_black_alpha((205.0 * alpha) as u8));
+        painter.rect(card_rect, 10.0, crate::theme::panel_fill().gamma_multiply(alpha * 0.9), Stroke::new(1.0f32, crate::theme::BRONZE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
         painter.rect_filled(egui::Rect::from_min_size(card_rect.min, vec2(4.0, card_rect.height())), 2.0, tint(Color32::from_rgb(255, 215, 130)));
         painter.text(card_rect.right_top() + vec2(-10.0, 8.0), Align2::RIGHT_TOP, "hint", FontId::proportional(11.0), tint(Color32::from_gray(140)));
         let mut y = at.y;
@@ -1312,20 +1312,24 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     }
     let mut y = (screen.center().y - 170.0).max(screen.top() + 260.0);
     let tab_rows = TABS.len().div_ceil(3) as f32;
-    painter.rect_filled(egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(width + 10.0, 34.0 + tab_rows * 26.0 + 8.0 + entries.len() as f32 * 26.0 + 58.0)), 10.0, Color32::from_black_alpha(150));
-    painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "BUILDING", FontId::proportional(15.0), Color32::from_rgb(255, 215, 130));
-    painter.text(pos2(x + width - 14.0, y - 14.0), Align2::RIGHT_CENTER, "C next tab  ·  B to stop", FontId::proportional(12.0), Color32::from_gray(170));
+    let list = egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(width + 10.0, 34.0 + tab_rows * 26.0 + 8.0 + entries.len() as f32 * 26.0 + 58.0));
+    painter.rect(list, 10.0, Color32::from_rgba_unmultiplied(14, 11, 8, 190), Stroke::new(1.0f32, crate::theme::BRONZE), egui::StrokeKind::Inside);
+    crate::theme::accent(&painter, list, 1.0);
+    painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "Building", crate::theme::display(16.0), crate::theme::HEADING);
+    painter.text(pos2(x + width - 14.0, y - 14.0), Align2::RIGHT_CENTER, "C next tab  ·  B to stop", FontId::proportional(12.0), crate::theme::WEAK);
     let cell = (width - 14.0) / 3.0;
     for (k, (title, kinds)) in TABS.iter().enumerate() {
         let at = pos2(x + (k % 3) as f32 * cell, y + (k / 3) as f32 * 26.0 + 2.0);
         let open = k == tab;
         let rect = egui::Rect::from_min_size(at + vec2(-4.0, 0.0), vec2(cell - 4.0, 22.0));
-        painter.rect_filled(rect, 5.0, if open { Color32::from_rgba_unmultiplied(255, 215, 130, 60) } else { Color32::from_white_alpha(10) });
+        // The open one as what's picked is everywhere, the rest as buttons
         if open {
-            painter.rect_stroke(rect, 5.0, Stroke::new(1.2f32, Color32::from_rgb(255, 215, 130)), egui::StrokeKind::Inside);
+            painter.rect(rect, 5.0, Color32::from_rgb(112, 80, 36), Stroke::new(1.2f32, crate::theme::ACCENT), egui::StrokeKind::Inside);
+        } else {
+            painter.rect(rect, 5.0, Color32::from_rgba_unmultiplied(52, 42, 32, 200), Stroke::new(1.0f32, Color32::from_rgb(98, 76, 50)), egui::StrokeKind::Inside);
         }
         let can = kinds.iter().filter(|kind| bases.materials.covers(kind.cost())).count();
-        painter.text(rect.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, *title, FontId::proportional(13.0), if open { Color32::WHITE } else { Color32::from_gray(185) });
+        painter.text(rect.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, *title, FontId::proportional(13.0), if open { Color32::WHITE } else { crate::theme::TEXT.gamma_multiply(0.85) });
         painter.text(rect.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, format!("{can}/{}", kinds.len()), FontId::proportional(11.0), if can > 0 { Color32::from_rgb(150, 225, 140) } else { Color32::from_gray(120) });
     }
     y += tab_rows * 26.0 + 8.0;
@@ -1336,7 +1340,7 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         let picked = index == building.picked;
         let afford = have.covers(cost);
         if picked {
-            painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(width - 4.0, 24.0)), 6.0, Color32::from_white_alpha(if afford { 30 } else { 16 }));
+            painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(width - 4.0, 24.0)), 6.0, Color32::from_rgba_unmultiplied(255, 220, 160, if afford { 34 } else { 16 }));
             painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(3.0, 24.0)), 1.5, if afford { Color32::from_rgb(110, 240, 140) } else { Color32::from_rgb(250, 90, 80) });
         }
         let grey = Color32::from_gray(125);
@@ -1358,8 +1362,8 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         }
         y += 26.0;
     }
-    painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, "Click build  ·  Right click take down  ·  C tab", FontId::proportional(12.5), Color32::from_gray(195));
-    painter.text(pos2(x, y + 34.0), Align2::LEFT_CENTER, "R turn  ·  Wheel pick  ·  E door, mend, smelt  ·  G gather", FontId::proportional(12.5), Color32::from_gray(195));
+    painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, "Click build  ·  Right click take down  ·  C tab", FontId::proportional(12.5), crate::theme::WEAK);
+    painter.text(pos2(x, y + 34.0), Align2::LEFT_CENTER, "R turn  ·  Wheel pick  ·  E door, mend, smelt  ·  G gather", FontId::proportional(12.5), crate::theme::WEAK);
 
     // Where it'd go: a box round it, green if it can, red if not, and why not
     let Some(ghost) = ghost else {

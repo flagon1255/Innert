@@ -116,6 +116,7 @@ mod skips;
 mod staging;
 mod startup;
 mod stream;
+mod theme;
 mod tools;
 mod voxelize;
 mod vox;
@@ -2637,6 +2638,9 @@ impl App {
         if let Some(slot) = setting("inspect").and_then(|v| v.parse().ok()) {
             game.inspect(slot);
         }
+        // And `card_hover=1` with the card of its second slot showing as it does with the pointer
+        // over it, in the inventory or at a merchant's
+        game.card_hover = setting("card_hover").and_then(|v| v.parse().ok());
         game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
         // `--set class=priest` and the rest without a mode: who's playing is that character, armed
         // as their class starts, their body there for its shadow, to try them out in screenshot
@@ -3165,6 +3169,14 @@ impl App {
         // `--set map=1` opens the map, to see what's marked on it
         if flag("map", false) {
             app.map.open = true;
+        }
+        // `--set build=1` starts building, the pieces to pick from showing, and `--set craft=1`
+        // shows the inventory's Craft tab when it's open, to see them with `gui=1`
+        if flag("build", false) {
+            app.building.on = true;
+        }
+        if flag("craft", false) {
+            app.building.craft_open = true;
         }
         // `--set shots_at=80,140` takes shots at those frames too, with the GUI with `gui=1`, as of
         // the window of a specialist being talked to
@@ -5981,59 +5993,16 @@ impl App {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
-                // As tall as the window lets it be, scrolling through the rest when it's short
-                let room = (ctx.screen_rect().height() - 2.0 * 36.0 - 24.0).max(120.0);
-                egui::Area::new(egui::Id::new("menu"))
-                    .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-                    .show(&ctx, |ui| {
-                        egui::Frame::new()
-                            .fill(Color32::from_black_alpha(180))
-                            .corner_radius(18.0)
-                            .inner_margin(36.0)
-                            .show(ui, |ui| {
-                                ui.set_width(340.0);
-                                egui::ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| {
-                                ui.vertical_centered(|ui| {
-                                    // Resume, each mode with Continue and New, Settings and Quit,
-                                    // done at the start of the next frame, see menu_picked()
-                                    let session = &mut self.session;
-                                    let picked = session::menu(&mut session.menu, ui, self.started, session.mode, &session.saves, &mut self.new_seed, self.show_settings);
-                                    if picked.is_some() {
-                                        session.action = picked;
-                                    }
-                                    ui.add_space(18.0);
-                                    ui.label(
-                                        RichText::new(
-                                            "WASD move · Space jump · Shift run · F fly\n\
-                                             Click swing or cast · bow: hold right click, click to shoot\n\
-                                             Crossbow, gun: click to shoot, Q or right click reloads · T ammo\n\
-                                             Right click heavy swing, or eat · E pick up, open, trade, pet\n\
-                                             Legendary: R special · right click its power, Q reloads\n\
-                                             Number keys pick what's in hand · I inventory · M map\n\
-                                             Wings: jump, then hold Space in the air to glide\n\
-                                             Merchants sell wings; bosses and chests leave them\n\
-                                             F1 settings · Esc menu",
-                                        )
-                                        .size(13.0)
-                                        .color(Color32::from_gray(190)),
-                                    );
-                                    // Gathering and building, see building.rs
-                                    ui.add_space(10.0);
-                                    ui.label(RichText::new("Gathering and building").size(14.0).strong().color(Color32::from_rgb(255, 215, 130)));
-                                    ui.label(
-                                        RichText::new(
-                                            "Hold G at a tree, rock or clay to gather it\n\
-                                             Bare hands work; tools are 2–4× faster (I › Craft)\n\
-                                             B build · 1–9, 0 pick a piece, its cost beside it\n\
-                                             Click build · right click take down · R turn",
-                                        )
-                                        .size(13.0)
-                                        .color(Color32::from_gray(190)),
-                                    );
-                                });
-                                });
-                            });
-                    });
+                // Resume, each mode with Continue and New, Settings and Quit, done at the start of
+                // the next frame, see menu_picked(), and how to play under them
+                session::menu_window(&ctx, |ui| {
+                    let session = &mut self.session;
+                    let picked = session::menu(&mut session.menu, ui, self.started, session.mode, &session.saves, &mut self.new_seed, self.show_settings);
+                    if picked.is_some() {
+                        session.action = picked;
+                    }
+                    session::menu_help(ui);
+                });
             }
 
             if !self.menu_open && !self.editor.open && self.loaded_scene.is_terrain() && self.animals_on {

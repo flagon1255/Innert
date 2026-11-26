@@ -16,6 +16,8 @@ New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item 'target\release\innert.exe' $out
 # Where each sound came from. They're all free to use with no conditions, but credited anyway.
 Copy-Item 'assets\sounds\CREDITS.txt' (Join-Path $out 'Sound credits.txt')
+# And the font the headings are in, which is built into the game, with its licence
+Copy-Item 'assets\fonts\CREDITS.txt' (Join-Path $out 'Font credits.txt')
 
 # Microsoft allows these to be shipped next to a program, so it runs without installing them
 $studios = @("${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio") | Where-Object { Test-Path $_ }

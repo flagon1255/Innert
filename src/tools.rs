@@ -454,7 +454,9 @@ pub fn craft_tab(ui: &mut egui::Ui, crafting: &Crafting, best: &dyn Fn(Tool) -> 
     ui.label(RichText::new(format!("Carried:  {}", if carried.is_empty() { "nothing yet".to_owned() } else { carried.join("   ") })).strong());
     ui.label(RichText::new("Hold G at what you want to gather. Bare hands gather most things; the best tool you carry for it is used and makes it quicker, and the hardest stone and ore need a good enough one. Smelt ore and sand at a furnace (E). Each tool crafted rolls a rarity: the rarer, the more it does.").weak().small());
     ui.add_space(6.0);
-    egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
+    // As tall as there's room for under the quick bar, at most 560
+    let room = (ui.ctx().screen_rect().height() - 310.0).clamp(160.0, 560.0);
+    egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
         egui::Grid::new("craft").spacing([12.0, 8.0]).striped(true).show(ui, |ui| {
             for tool in Tool::ALL {
                 let have = best(tool);

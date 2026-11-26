@@ -402,7 +402,8 @@ impl DayNight {
         // The sky in the top half, darker towards night, and the land under it
         let day = daylight(sun_direction(sun_angle(hour)).z) as f32;
         let sky = lerp_color(Color32::from_rgb(20, 26, 60), Color32::from_rgb(90, 150, 220), day);
-        painter.circle_filled(center, radius + 3.0, Color32::from_black_alpha(130));
+        painter.circle_filled(center, radius + 4.0, crate::theme::hud_fill());
+        painter.circle_stroke(center, radius + 4.0, Stroke::new(1.0f32, crate::theme::BRONZE.gamma_multiply(0.75)));
         let top: Vec<Pos2> = (0..=24).map(|k| center + vec2(-(PI as f32 * k as f32 / 24.0).cos(), -(PI as f32 * k as f32 / 24.0).sin()) * radius).collect();
         painter.add(egui::Shape::convex_polygon(top, sky, Stroke::NONE));
         let ground = lerp_color(Color32::from_rgb(18, 22, 16), Color32::from_rgb(52, 74, 40), day);
@@ -435,7 +436,7 @@ impl DayNight {
         painter.circle_stroke(center, radius + 2.0, Stroke::new(2.0f32, ring));
         let (h, m) = (hour.floor() as u32, ((hour.fract() * 60.0).floor() as u32).min(59));
         let label = format!("{h:02}:{m:02}");
-        painter.text(center + vec2(0.0, radius + 14.0), Align2::CENTER_CENTER, &label, FontId::proportional(14.0), Color32::from_gray(225));
+        crate::theme::shadowed(&painter, center + vec2(0.0, radius + 15.0), Align2::CENTER_CENTER, &label, FontId::proportional(14.0), crate::theme::TEXT);
         // What's said under it, kept on the screen
         let note_at = pos2(screen.right() - 12.0, center.y + radius + 31.0);
         let note = match part {

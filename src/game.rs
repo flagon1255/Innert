@@ -24,6 +24,7 @@ use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{self, World, is_passable, material::*};
 use crate::serpents;
+use crate::theme;
 use crate::tools;
 
 /// What dragons breathe and leave burning, see src\dragons.rs
@@ -970,6 +971,9 @@ pub struct Game {
     claimed: HashSet<String>,
     /// Where the skill web's window is looking
     pub skill_view: skills::View,
+    /// For screenshots: the slot of the inventory or a merchant's stall whose card shows as if the
+    /// pointer were over it, see `--set card_hover`
+    pub card_hover: Option<usize>,
     /// The jewels' icons, made the first time one's drawn, see jewels::icon()
     jewel_icons: std::cell::OnceCell<Vec<egui::TextureHandle>>,
     /// Where each health bar over what's been hurt went last frame, by the id of what it's over, see
@@ -1237,6 +1241,7 @@ impl Game {
             bonus_points: 0,
             claimed: HashSet::new(),
             skill_view: skills::View::new(),
+            card_hover: None,
             jewel_icons: std::cell::OnceCell::new(),
             bar_lifts: Default::default(),
             bar_focus: Default::default(),
@@ -6544,25 +6549,28 @@ impl Game {
     fn level_hud(&self, painter: &egui::Painter, panel: Rect, pad: f32) {
         let (level, toward) = self.level();
         let shadow = Color32::from_black_alpha(160);
-        let blue = Color32::from_rgb(120, 200, 255);
+        // The gold of how far they are to the next level
+        let xp = Color32::from_rgb(240, 196, 100);
         let middle = pos2(panel.right() + 12.0 + 27.0, panel.center().y);
-        painter.circle_filled(middle, 27.0 + pad * 0.4, Color32::from_black_alpha(120));
-        painter.circle_filled(middle, 22.0, Color32::from_rgba_unmultiplied(40, 60, 90, 200));
+        let outer = 27.0 + pad * 0.4;
+        painter.circle_filled(middle, outer, theme::hud_fill());
+        painter.circle_stroke(middle, outer, Stroke::new(1.0f32, theme::BRONZE.gamma_multiply(0.75)));
+        painter.circle_filled(middle, 22.0, Color32::from_rgba_unmultiplied(46, 34, 22, 225));
+        painter.circle_stroke(middle, 22.0, Stroke::new(1.0f32, theme::BRONZE));
         // How far to the next, round it from the top
-        painter.circle_stroke(middle, 24.5, Stroke::new(3.0f32, Color32::from_white_alpha(28)));
+        painter.circle_stroke(middle, 25.0, Stroke::new(3.0f32, Color32::from_white_alpha(24)));
         if toward > 0.0 {
-            let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * toward as f32 * std::f32::consts::TAU).map(|a| middle + vec2(a.sin(), -a.cos()) * 24.5).collect();
-            painter.add(egui::Shape::line(points, Stroke::new(3.0f32, blue)));
+            let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * toward as f32 * std::f32::consts::TAU).map(|a| middle + vec2(a.sin(), -a.cos()) * 25.0).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(3.0f32, xp)));
         }
         let number = level.to_string();
-        painter.text(middle + vec2(1.0, 4.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), shadow);
-        painter.text(middle + vec2(0.0, 3.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), Color32::WHITE);
-        painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", FontId::proportional(9.0), Color32::from_white_alpha(170));
+        painter.text(middle + vec2(1.0, 5.0), Align2::CENTER_CENTER, &number, theme::display(20.0), shadow);
+        painter.text(middle + vec2(0.0, 4.0), Align2::CENTER_CENTER, &number, theme::display(20.0), Color32::WHITE);
+        painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", theme::display(8.5), theme::HEADING.gamma_multiply(0.85));
         // Who's playing, and as what, beside it
         let name = &self.character.name;
         let at = pos2(middle.x + 33.0, middle.y - 8.0);
-        painter.text(at + vec2(1.0, 1.0), Align2::LEFT_CENTER, name, FontId::proportional(15.0), shadow);
-        painter.text(at, Align2::LEFT_CENTER, name, FontId::proportional(15.0), Color32::WHITE);
+        theme::shadowed(painter, at, Align2::LEFT_CENTER, name, theme::display(15.0), theme::HEADING);
         let [r, g, b] = self.character.class.color();
         let class = format!("{} · {}", self.character.class.name(), self.character.difficulty.name());
         painter.text(at + vec2(1.0, 17.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), shadow);
@@ -6575,12 +6583,12 @@ impl Game {
             // From the badge's left on, clear of the gold under the panel
             let at = pos2(middle.x - 26.0, middle.y + 34.0);
             painter.text(at + vec2(1.0, 1.0), Align2::LEFT_TOP, &text, FontId::proportional(13.0), shadow);
-            painter.text(at, Align2::LEFT_TOP, &text, FontId::proportional(13.0), Color32::from_rgb(140, 220, 255).gamma_multiply(pulse));
+            painter.text(at, Align2::LEFT_TOP, &text, FontId::proportional(13.0), theme::INFO.gamma_multiply(pulse));
         }
         // And along the foot of the panel
         let bar = Rect::from_min_size(pos2(panel.left() + 12.0, panel.bottom() - 5.0), vec2(panel.width() - 24.0, 3.0));
-        painter.rect_filled(bar, 1.5, Color32::from_white_alpha(22));
-        painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * toward as f32, bar.height())), 1.5, blue.gamma_multiply(0.85));
+        painter.rect_filled(bar, 1.5, Color32::from_black_alpha(90));
+        theme::gradient(painter, Rect::from_min_size(bar.min, vec2(bar.width() * toward as f32, bar.height())), theme::lighter(xp, 0.3), theme::darker(xp, 0.75));
 
         // Just gone up a level
         let t = self.levelled as f32;
@@ -6633,9 +6641,12 @@ impl Game {
         };
         let aloft = self.aloft.unwrap_or_default();
         let tint = self.wings_color(k);
-        painter.rect_filled(rect.expand(pad), 12.0, Color32::from_black_alpha(120));
-        painter.rect_filled(rect, 8.0, tint.gamma_multiply(if aloft.gliding { 0.5 } else { 0.18 }));
-        painter.rect_stroke(rect, 8.0, Stroke::new(if aloft.gliding { 2.5f32 } else { 1.5 }, tint), StrokeKind::Inside);
+        theme::hud_panel(painter, rect.expand(pad), 12.0);
+        theme::slot(painter, rect, Some(tint), false);
+        if aloft.gliding {
+            painter.rect_filled(rect, 7.0, tint.gamma_multiply(0.35));
+            painter.rect_stroke(rect, 7.0, Stroke::new(2.5f32, tint), StrokeKind::Inside);
+        }
         self.draw_icon(painter, Item::Wings(k), rect.center() + vec2(0.0, 2.0), slot * 0.62);
         painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, "Back", FontId::proportional(10.0), faint);
         let mut under = rect.bottom() + pad + 5.0;
@@ -6923,41 +6934,30 @@ impl Game {
         let bars_width = 170.0;
         let width = pad + slots_width + 20.0 + bars_width + pad;
         let panel = Rect::from_min_size(pos2(center.x - width / 2.0, screen.top() + 14.0), vec2(width, slot + 2.0 * pad));
-        painter.rect_filled(panel, 12.0, Color32::from_black_alpha(120));
+        theme::hud_panel(&painter, panel, 12.0);
 
         let left = panel.left() + pad;
         if self.slots.is_empty() {
             painter.text(pos2(left + slots_width / 2.0, panel.center().y), Align2::CENTER_CENTER, "Nothing yet", FontId::proportional(14.0), faint);
         }
+        // Each in its slot, edged in the colour of its rarity, the one in hand ringed in gold, with
+        // the key that picks it and how many there are
         for (i, &(item, count)) in self.slots.iter().enumerate().take(HOTBAR) {
             let rect = Rect::from_min_size(pos2(left + i as f32 * (slot + gap), panel.top() + pad), vec2(slot, slot));
-            let selected = i == self.selected;
-            let fill = match item {
-                Item::Weapon(w) => {
-                    let [r, g, b] = self.library.rarities[self.weapons[w].grade].color;
-                    Color32::from_rgba_unmultiplied(r, g, b, if selected { 70 } else { 34 })
-                }
-                Item::Wings(k) => self.wings_color(k).gamma_multiply(if selected { 0.3 } else { 0.15 }),
-                Item::Jewel(j) => crate::jewels::tint(j).gamma_multiply(if selected { 0.3 } else { 0.15 }),
-                _ => Color32::from_white_alpha(if selected { 40 } else { 14 }),
-            };
-            painter.rect_filled(rect, 8.0, fill);
-            if selected {
-                painter.rect_stroke(rect, 8.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
-            }
+            theme::slot(&painter, rect, self.slot_tint(item), i == self.selected);
             self.draw_icon(&painter, item, rect.center() - vec2(0.0, 2.0), slot * 0.58);
             if let Some(n) = item.shown(count) {
-                painter.text(rect.right_bottom() - vec2(5.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(13.0), Color32::WHITE);
+                theme::shadowed(&painter, rect.right_bottom() - vec2(5.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(13.0), Color32::WHITE);
             }
-            painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), faint);
+            theme::key_number(&painter, rect, &(i + 1).to_string());
         }
 
+        // Each bar framed, with how much there is on it
         let bars_left = left + slots_width + 20.0;
-        let bar = |y: f32, label: &str, fraction: f64, fill: Color32| {
-            painter.text(pos2(bars_left, y), Align2::LEFT_TOP, label, FontId::proportional(11.0), faint);
-            let back = Rect::from_min_size(pos2(bars_left + 52.0, y + 2.0), vec2(bars_width - 52.0, 9.0));
-            painter.rect_filled(back, 4.5, Color32::from_white_alpha(25));
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(back.width() * fraction.clamp(0.0, 1.0) as f32, 9.0)), 4.5, fill);
+        let bar = |y: f32, label: &str, fraction: f64, fill: Color32, value: String| {
+            painter.text(pos2(bars_left, y + 6.5), Align2::LEFT_CENTER, label, FontId::proportional(11.0), theme::TEXT.gamma_multiply(0.75));
+            let back = Rect::from_min_size(pos2(bars_left + 52.0, y + 1.0), vec2(bars_width - 52.0, 11.0));
+            theme::bar(&painter, back, fraction as f32, fill, Some(&value));
         };
         let hunger = if self.hunger > 25.0 { Color32::from_rgb(232, 160, 60) } else { Color32::from_rgb(200, 90, 40) };
         // Health turns green while poisoned and orange while burning, saying so
@@ -6972,12 +6972,16 @@ impl Game {
         } else {
             ("Health", Color32::from_rgb(225, 55, 60))
         };
-        bar(panel.top() + pad - 4.0, label, self.health / self.max_health(), fill);
-        bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger);
-        bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255));
+        let of = |now: f64, most: f64| format!("{:.0} / {:.0}", now.max(0.0).ceil(), most);
+        bar(panel.top() + pad - 4.0, label, self.health / self.max_health(), fill, of(self.health, self.max_health()));
+        bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger, format!("{:.0}", self.hunger.max(0.0).ceil()));
+        bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255), of(self.combat.mana, MAX_MANA));
         // Gold under the bars, and how much more there is in the pack under the quick bar
         let purse = pos2(panel.right() - 12.0, panel.bottom() + 5.0);
-        painter.circle_filled(purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5), 6.0, GOLD);
+        let coin = purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5);
+        painter.circle_filled(coin, 6.0, GOLD);
+        painter.circle_stroke(coin, 6.0, Stroke::new(1.0f32, theme::darker(GOLD, 0.55)));
+        painter.circle_filled(coin - vec2(1.5, 1.5), 1.8, Color32::from_rgb(255, 240, 190));
         painter.text(purse + vec2(1.0, 1.0), Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), shadow);
         painter.text(purse, Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), GOLD);
         if self.slots.len() > HOTBAR {
@@ -7047,9 +7051,15 @@ impl Game {
                 painter.text(left + vec2(1.0, 1.0), Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), shadow);
                 painter.text(left, Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), foe_level_tint(level, self.level));
             }
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(size), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
-            painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
+            // Its name in the headings' font, over a bar framed in bronze with a gold diamond at
+            // either end
+            let font = theme::display(size - 1.0);
+            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, font.clone(), shadow);
+            painter.text(at, Align2::CENTER_BOTTOM, &title, font, if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
+            painter.rect(back.expand(2.0), 4.0, Color32::from_black_alpha(160), Stroke::new(1.0f32, theme::BRONZE), StrokeKind::Outside);
+            for end in [back.left() - 9.0, back.right() + 9.0] {
+                theme::diamond(&painter, pos2(end, back.center().y), 4.5, theme::ACCENT);
+            }
             if ward.is_some() {
                 let pulse = 0.6 + 0.4 * (self.combat.time() * 3.0).sin() as f32;
                 painter.rect_stroke(back.expand(4.0), 7.0, Stroke::new(2.0f32, warded.gamma_multiply(pulse)), StrokeKind::Outside);
@@ -7057,12 +7067,16 @@ impl Game {
             if flash > 0.0 {
                 painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
             }
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 2.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
             let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
             // A demi-boss's bar the colour of dusk, so it's not taken for a boss's
             let [r, g, b] = element.map_or(if demi { [150, 60, 190] } else { [190, 40, 35] }, |e| e.color().map(|c| (c as f32 * 0.85) as u8));
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
+            // Shaded light to dark down it, a glint along its top
+            let fill = Color32::from_rgb(red(r), red(g), red(b));
+            let left = Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height()));
+            theme::gradient(&painter, left, theme::lighter(fill, 0.2), theme::darker(fill, 0.62));
+            painter.line_segment([left.left_top() + vec2(0.0, 0.5), left.right_top() + vec2(0.0, 0.5)], Stroke::new(1.0f32, Color32::from_white_alpha(70)));
             // Where a raid boss goes into its next phases, marked across the bar
             let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {
                 crate::dragons::phases(foe)
@@ -7160,13 +7174,16 @@ impl Game {
         if let Some((_, weapon)) = self.held().filter(|_| !self.covered) {
             let rarity = &self.library.rarities[weapon.grade];
             let at = pos2(center.x, below);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), shadow);
-            painter.text(at, Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), color(rarity.color));
             let kind = &self.library.families[weapon.family].display_name;
             let detail = match self.combat.frenzy() {
                 Some((bonus, left)) => format!("{} {}  ·  Frenzy +{:.0}% ({:.0} s)", rarity.display_name, kind, bonus * 100.0, left.ceil()),
                 None => format!("{} {}", rarity.display_name, kind),
             };
+            // On a soft dark backing, so it reads over snow and sky at noon
+            let name = painter.layout_no_wrap(weapon.name.clone(), theme::display(17.0), Color32::WHITE).size().x;
+            let wide = name.max(galley_width(&painter, &detail, 12.0)) + 40.0;
+            painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 19.0), vec2(wide, 40.0)), 14.0, Color32::from_black_alpha(55));
+            theme::shadowed(&painter, at, Align2::CENTER_TOP, &weapon.name, theme::display(17.0), color(rarity.color));
             painter.text(at + vec2(0.0, 21.0), Align2::CENTER_TOP, detail, FontId::proportional(12.0), faint);
             below += 42.0;
             // What it's loaded with, how many are left, and how to switch
@@ -7192,9 +7209,7 @@ impl Game {
                 let tint = if ready { color(rarity.color) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(14.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(14.0), tint);
-                let back = Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0));
-                painter.rect_filled(back, 2.5, Color32::from_white_alpha(30));
-                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * charge, 5.0)), 2.5, color(rarity.color));
+                theme::bar(&painter, Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0)), charge, color(rarity.color), None);
                 below += 32.0;
             }
             // Its power on right click, filling as it comes ready again
@@ -7205,9 +7220,7 @@ impl Game {
                 let tint = if ready >= 1.0 { weapon.profile.element.map_or(color(rarity.color), |e| color(e.color())) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(13.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(13.0), tint);
-                let back = Rect::from_center_size(pos2(center.x, below + 20.0), vec2(150.0, 4.0));
-                painter.rect_filled(back, 2.0, Color32::from_white_alpha(30));
-                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * ready, 4.0)), 2.0, tint);
+                theme::bar(&painter, Rect::from_center_size(pos2(center.x, below + 20.0), vec2(150.0, 4.0)), ready, tint, None);
                 below += 28.0;
             }
         }
@@ -7241,6 +7254,14 @@ impl Game {
                     made = tools::craft_tab(ui, crafting, &|tool| self.best_gear(tool));
                     return;
                 }
+                // No taller than the window has room for under the quick bar, scrolling through
+                // the rest in a short one
+                let room = (ctx.screen_rect().height() - 190.0).max(200.0);
+                // Room to grow into, under the tabs: a window lays out what's in it within the size
+                // it had last
+                ui.scope(|ui| {
+                ui.set_max_height(room);
+                egui::ScrollArea::vertical().id_salt("pack").max_height(room).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong());
                     ui.separator();
@@ -7255,12 +7276,12 @@ impl Game {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("On your back").weak());
                     let (rect, response) = ui.allocate_exact_size(vec2(40.0, 40.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 7.0, Color32::from_white_alpha(16));
+                    let worn = self.worn.map(|k| color(self.library.rarities[wings::KINDS[k as usize].rarity.min(self.library.rarities.len() - 1)].color));
+                    theme::slot(ui.painter(), rect, worn, false);
                     match self.worn {
                         Some(k) => {
                             let kind = &wings::KINDS[k as usize];
                             let tint = color(self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)].color);
-                            ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.5f32, tint), StrokeKind::Inside);
                             self.draw_icon(ui.painter(), Item::Wings(k), rect.center(), 24.0);
                             response.on_hover_ui(|ui| {
                                 ui.set_width(280.0);
@@ -7358,6 +7379,8 @@ impl Game {
                 ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
                 ui.label(RichText::new("Wings go on your back, above: jump, then hold Space in the air to glide; some flap with Space, some dash with Shift. Every merchant sells a pair, and bosses and chests leave them.").weak().small());
+                });
+                });
             });
         // The quick bar along the top takes what's dragged onto it too
         if let Some(SlotClick::Moved(a, b)) = self.quick_bar_targets(ctx) {
@@ -7414,45 +7437,43 @@ impl Game {
                     clicked = Some(action);
                 }
                 let painter = ui.painter();
-                let tint = match item {
-                    Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
-                    Item::Wings(k) => Some(self.wings_color(k)),
-                    Item::Jewel(j) => Some(crate::jewels::tint(j)),
-                    _ => None,
-                };
-                let fill = tint.map_or(Color32::from_white_alpha(if i < HOTBAR { 22 } else { 12 }), |c| c.gamma_multiply(if i < HOTBAR { 0.3 } else { 0.2 }));
-                painter.rect_filled(rect, 7.0, fill);
-                if let Some(c) = tint {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(1.0f32, c.gamma_multiply(0.8)), StrokeKind::Inside);
+                // The quick bar's row a little lighter than the pack's
+                let inspected = self.inspected == Some(i);
+                theme::slot(painter, rect, self.slot_tint(item), self.selected == i && !inspected);
+                if i < HOTBAR && self.slot_tint(item).is_none() {
+                    painter.rect_filled(rect, 7.0, Color32::from_white_alpha(8));
                 }
                 if response.hovered() {
                     painter.rect_filled(rect, 7.0, Color32::from_white_alpha(18));
+                    painter.rect_stroke(rect, 7.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.8)), StrokeKind::Inside);
                 }
-                if self.inspected == Some(i) {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, GOLD), StrokeKind::Inside);
-                } else if self.selected == i {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
+                if inspected {
+                    painter.rect_stroke(rect.expand(2.0), 9.0, Stroke::new(2.0f32, GOLD), StrokeKind::Inside);
                 }
                 self.draw_icon(painter, item, rect.center() - vec2(0.0, 1.0), cell * 0.56);
                 if let Some(n) = item.shown(count) {
-                    painter.text(rect.right_bottom() - vec2(4.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(12.0), Color32::WHITE);
+                    theme::shadowed(painter, rect.right_bottom() - vec2(4.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(12.0), Color32::WHITE);
                 }
                 if i < HOTBAR {
-                    painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
+                    theme::key_number(painter, rect, &(i + 1).to_string());
                 }
                 // No card while something's being dragged about, it'd only get in the way
+                let card = |ui: &mut egui::Ui| {
+                    ui.set_width(280.0);
+                    self.item_card(ui, item, count);
+                    if selling && item != Item::Bucket {
+                        ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
+                    } else {
+                        ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
+                    }
+                };
                 let response = if dragging {
                     response
+                } else if self.card_hover == Some(i) {
+                    response.show_tooltip_ui(card);
+                    response
                 } else {
-                    response.on_hover_ui(|ui| {
-                        ui.set_width(280.0);
-                        self.item_card(ui, item, count);
-                        if selling && item != Item::Bucket {
-                            ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
-                        } else {
-                            ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
-                        }
-                    })
+                    response.on_hover_ui(card)
                 };
                 if response.double_clicked() || response.secondary_clicked() {
                     clicked = Some(SlotClick::Twice(i));
@@ -7548,15 +7569,29 @@ impl Game {
         self.cues.push(Cue::here(Sound::Equip, 0.5));
     }
 
-    /// The frame round an item's card: dark, edged in the color of a weapon's rarity
-    fn card_frame(&self, item: Item) -> egui::Frame {
-        let edge = match item {
-            Item::Weapon(w) => color(self.library.rarities[self.weapons[w].grade].color),
+    /// The colour a slot holding `item` is edged in: a weapon's rarity, wings' and a jewel's own,
+    /// and none for the rest
+    fn slot_tint(&self, item: Item) -> Option<Color32> {
+        match item {
+            Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
+            Item::Wings(k) => Some(self.wings_color(k)),
+            Item::Jewel(j) => Some(crate::jewels::tint(j)),
+            _ => None,
+        }
+    }
+
+    /// The colour an item's card is edged and ruled in: a weapon's rarity, gold's, wings' and a
+    /// jewel's own, bronze for the rest
+    fn card_edge(&self, item: Item) -> Color32 {
+        match item {
             Item::Gold(_) => GOLD,
-            Item::Jewel(j) => crate::jewels::tint(j),
-            _ => Color32::from_gray(150),
-        };
-        egui::Frame::new().fill(Color32::from_rgba_unmultiplied(14, 16, 22, 232)).stroke(Stroke::new(1.5f32, edge)).corner_radius(8.0).inner_margin(12.0)
+            _ => self.slot_tint(item).unwrap_or(theme::BRONZE),
+        }
+    }
+
+    /// The frame round an item's card: deep, edged in the color of a weapon's rarity
+    fn card_frame(&self, item: Item) -> egui::Frame {
+        theme::panel(12.0, 8.0).stroke(Stroke::new(1.5f32, self.card_edge(item)))
     }
 
     /// Everything about `item`, `count` of them: what it is, what it does, and what it's worth. A
@@ -7566,12 +7601,14 @@ impl Game {
             self.weapon_card(ui, w);
             return;
         }
-        let good = Color32::from_rgb(120, 230, 110);
+        let good = theme::GOOD;
+        // Its name in the colour it's edged in, and a rule of that under what it is
+        let edge = self.card_edge(item);
         match item {
             Item::Ammo(k, n) => {
                 let def = &self.library.ammo[k];
                 let tint = def.element.map_or(Color32::WHITE, |e| color(e.color()));
-                ui.label(RichText::new(&def.display_name).size(19.0).strong().color(tint));
+                theme::card_title(ui, &def.display_name, tint);
                 let what = match def.shot() {
                     Shot::Arrow => "Arrows, for bows",
                     Shot::Quarrel => "Bolts, for crossbows",
@@ -7583,22 +7620,27 @@ impl Game {
                         ui.label(RichText::new(format!("·  {}", e.name())).color(color(e.color())));
                     }
                 });
-                ui.separator();
+                theme::rule(ui, if def.element.is_some() { tint } else { edge });
                 for &d in &def.effect_defs {
                     let effect = &self.library.effects[d];
-                    ui.label(RichText::new(format!("• {}: {}", effect.display_name, effect.description)).color(Color32::from_rgb(200, 220, 255)));
+                    theme::bullet(ui, "•", theme::ACCENT, &effect.display_name, Color32::from_rgb(200, 220, 255), &effect.description, theme::TEXT);
                 }
+                // What it adds to each shot, and what it multiplies, in rows
                 let (adds, times) = def.stats();
-                for (key, label, unit) in STATS {
-                    if let Some(&v) = adds.get(key) {
-                        let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
-                        ui.label(RichText::new(format!("+{} {}", unit.show(v), label.to_lowercase())).color(good));
+                egui::Grid::new(("ammo card", k)).num_columns(2).spacing([14.0, 1.0]).show(ui, |ui| {
+                    for (key, label, unit) in STATS {
+                        if let Some(&v) = adds.get(key) {
+                            let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
+                            theme::row(ui, &label, RichText::new(format!("+{}", unit.show(v))).color(good));
+                            ui.end_row();
+                        }
+                        if let Some(&v) = times.get(key) {
+                            let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
+                            theme::row(ui, label, RichText::new(shown).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
+                            ui.end_row();
+                        }
                     }
-                    if let Some(&v) = times.get(key) {
-                        let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
-                        ui.label(RichText::new(format!("{shown} {}", label.to_lowercase())).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
-                    }
-                }
+                });
                 ui.label(RichText::new(&def.description).weak().italics());
                 ui.separator();
                 ui.label(RichText::new(format!("{n} carried, used up a shot at a time. Plain {} never run out.", def.shot().plural())).weak());
@@ -7608,9 +7650,9 @@ impl Game {
             Item::Jewel(j) => {
                 let (category, tier) = crate::jewels::parts(j);
                 let rarity = &self.library.rarities[tier.min(self.library.rarities.len() - 1)];
-                ui.label(RichText::new(crate::jewels::name(j)).size(19.0).strong().color(crate::jewels::tint(j)));
+                theme::card_title(ui, &crate::jewels::name(j), crate::jewels::tint(j));
                 ui.label(RichText::new(format!("A jewel for {} {}", rarity.display_name.to_lowercase(), category.weapons())).weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(RichText::new("Set into a socket of a weapon it fits, it lifts the weapon an item level, and its blows, its special and its power with it.").color(good));
                 ui.label(RichText::new(format!("Never past item level {}. Once set it can't be taken out.", levels::ITEM_CAP)).weak());
                 ui.label(RichText::new("Drag it onto the weapon, or pick the weapon and set it from its card.").weak());
@@ -7619,14 +7661,14 @@ impl Game {
                 return;
             }
             Item::Gold(n) => {
-                ui.label(RichText::new(format!("{n} gold")).size(19.0).strong().color(GOLD));
+                theme::card_title(ui, &format!("{n} gold"), GOLD);
                 ui.label(RichText::new("Coin, to spend at merchants").weak());
                 return;
             }
             Item::Bucket => {
-                ui.label(RichText::new("Bucket").size(19.0).strong().color(Color32::WHITE));
+                theme::card_title(ui, "Bucket", Color32::WHITE);
                 ui.label(RichText::new("A magic bucket").weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(format!("{:.1} of {:.0} m³ of water in it", self.bucket, BUCKET_CAPACITY));
                 ui.label(RichText::new("Click on water to fill it, right click to pour it out.").weak());
                 return;
@@ -7634,9 +7676,9 @@ impl Game {
             Item::InnertBlock(realm) => {
                 let r = &realms::REALMS[realm as usize % realms::REALMS.len()];
                 let [cr, cg, cb] = r.color;
-                ui.label(RichText::new(format!("Innert Block of {}", r.name.trim_start_matches("The "))).size(19.0).strong().color(Color32::from_rgb(cr, cg, cb)));
+                theme::card_title(ui, &format!("Innert Block of {}", r.name.trim_start_matches("The ")), Color32::from_rgb(cr, cg, cb));
                 ui.label(RichText::new("Left by one of the realm's raid bosses").weak());
-                ui.separator();
+                theme::rule(ui, Color32::from_rgb(cr, cg, cb));
                 ui.label(format!("{count} of {} carried", realms::RAIDS));
                 ui.label(RichText::new("Set all three into the Innert Gate in the normal world to open the way to the next realm.").weak());
                 ui.label(RichText::new("Never lost, sold or dropped.").weak().italics());
@@ -7645,16 +7687,16 @@ impl Game {
             Item::Wings(k) => {
                 let kind = &wings::KINDS[k as usize];
                 let rarity = &self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)];
-                ui.label(RichText::new(kind.name).size(19.0).strong().color(color(rarity.color)));
+                theme::card_title(ui, kind.name, color(rarity.color));
                 ui.label(RichText::new(format!("{} wings, worn on the back", rarity.display_name)).weak());
-                ui.separator();
+                theme::rule(ui, color(rarity.color));
                 ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
                 ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
                 if let Some((lift, wait)) = kind.flap {
                     ui.label(RichText::new(format!("Press Space in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s")).color(good));
                 }
                 if let Some((perk, [r, g, b])) = wings::perk_text(kind.perk) {
-                    ui.label(RichText::new(perk).color(Color32::from_rgb(r, g, b)));
+                    theme::bullet(ui, "★", theme::ACCENT, &perk, Color32::from_rgb(r, g, b), "", theme::TEXT);
                 }
                 ui.label(RichText::new(kind.about).italics());
                 ui.separator();
@@ -7664,9 +7706,9 @@ impl Game {
                 return;
             }
             Item::Hook => {
-                ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+                theme::card_title(ui, &item.name(), Color32::WHITE);
                 ui.label(RichText::new("For getting about the sky isles").weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(if item == Item::Hook {
                     format!("With it in hand, click to throw it up to {:.0} m. Where it bites into rock or earth, its rope hauls you there, up over the edge if it's an edge. Jump to let go.", realms::HOOK_REACH_M)
                 } else {
@@ -7677,16 +7719,22 @@ impl Game {
             }
             _ => {}
         }
-        ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+        theme::card_title(ui, &item.name(), Color32::WHITE);
         ui.label(RichText::new(if item.heal() > 0.0 { "Potion" } else { "Food" }).weak());
-        ui.separator();
-        if item.food() > 0.0 {
-            ui.label(RichText::new(format!("+{:.0} hunger", item.food())).color(good).size(16.0));
-            ui.label(RichText::new(format!("+{:.0} health", item.food() * 0.6)).color(good));
-        }
-        if item.heal() > 0.0 {
-            ui.label(RichText::new(format!("+{:.0} health, at once", item.heal())).color(good).size(16.0));
-        }
+        theme::rule(ui, edge);
+        // What it gives, in rows
+        egui::Grid::new(("food card", item.name())).num_columns(2).spacing([14.0, 1.0]).show(ui, |ui| {
+            if item.food() > 0.0 {
+                theme::row(ui, "Hunger", RichText::new(format!("+{:.0}", item.food())).color(good).size(16.0));
+                ui.end_row();
+                theme::row(ui, "Health", RichText::new(format!("+{:.0}", item.food() * 0.6)).color(good));
+                ui.end_row();
+            }
+            if item.heal() > 0.0 {
+                theme::row(ui, "Health, at once", RichText::new(format!("+{:.0}", item.heal())).color(good).size(16.0));
+                ui.end_row();
+            }
+        });
         if count > 1 {
             ui.label(RichText::new(format!("{count} carried")).weak());
         }
@@ -7704,7 +7752,7 @@ impl Game {
         let profile = &weapon.profile;
         // Compared with what's in hand if it's the same kind, and shoots the same kind of thing
         let other = self.held().filter(|&(i, held)| i != w && held.kind() == weapon.kind() && held.shot() == weapon.shot()).map(|(_, held)| held);
-        let (good, bad) = (Color32::from_rgb(120, 230, 110), Color32::from_rgb(240, 95, 85));
+        let (good, bad) = (theme::GOOD, theme::BAD);
         // How much better or worse it is than the one in hand, nothing if about the same
         let against = |ui: &mut egui::Ui, by: f64, unit: Unit, higher: bool| {
             let least = match unit {
@@ -7723,7 +7771,7 @@ impl Game {
             let better = (by > 0.0) == higher;
             ui.label(RichText::new(format!("{}{shown}", if by > 0.0 { "+" } else { "−" })).color(if better { good } else { bad }).strong());
         };
-        ui.label(RichText::new(&weapon.name).size(19.0).strong().color(color(rarity.color)));
+        theme::card_title(ui, &weapon.name, color(rarity.color));
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} {}", rarity.display_name, library.families[weapon.family].display_name)).color(color(rarity.color).gamma_multiply(0.8)));
             if let Some(element) = profile.element {
@@ -7786,10 +7834,10 @@ impl Game {
             ui.label(RichText::new(format!("{} {}", profile.make(), percent(profile.forged))).color(tint));
             ui.label(RichText::new(format!("·  parts {} damage, {} speed", percent(profile.quality), percent(profile.pace))).weak());
         });
-        ui.separator();
+        theme::rule(ui, color(rarity.color));
         let damage = |p: &Profile| ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum::<f64>();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{:.0}", damage(profile))).size(32.0).strong().color(Color32::WHITE));
+            ui.label(RichText::new(format!("{:.0}", damage(profile))).font(theme::display(30.0)).color(Color32::WHITE));
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 ui.label(RichText::new("damage").weak());
@@ -7813,8 +7861,7 @@ impl Game {
                     ui.label(RichText::new(format!("{} damage", profile.element.map_or("Elemental", Element::name))).color(tint));
                     ui.label(RichText::new(unit.show(value)).color(tint));
                 } else {
-                    ui.label(RichText::new(label).weak());
-                    ui.label(unit.show(value));
+                    theme::row(ui, label, RichText::new(unit.show(value)).color(theme::TEXT));
                 }
                 match other {
                     Some(other) => against(ui, value - other.profile.stat(key), unit, key != "manaCost"),
@@ -7841,12 +7888,12 @@ impl Game {
             for e in &profile.effects {
                 let def = &library.effects[e.def];
                 let strength = if e.potency > 1.0 { format!(" ×{:.1}", e.potency) } else { String::new() };
-                ui.label(RichText::new(format!("• {}{}: {}", def.display_name, strength, def.description)).color(Color32::from_rgb(200, 220, 255)));
+                theme::bullet(ui, "•", theme::ACCENT, &format!("{}{}", def.display_name, strength), Color32::from_rgb(200, 220, 255), &def.description, theme::TEXT);
             }
         }
         for s in &profile.synergies {
             let def = &library.synergies[s.def];
-            ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
+            theme::bullet(ui, "★", theme::ACCENT, &def.display_name, Color32::from_rgb(255, 225, 160), &def.description, theme::TEXT);
         }
         // How a magic weapon of an unusual kind is used
         let how = match profile.style {
@@ -7941,8 +7988,8 @@ impl Game {
                 ui.separator();
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(360.0);
-                        ui.label(RichText::new("For sale").strong());
+                        ui.set_width(384.0);
+                        theme::heading(ui, "For sale", 15.0);
                         egui::ScrollArea::vertical().id_salt("wares").max_height(ctx.screen_rect().height() * 0.55).show(ui, |ui| {
                             for (k, &ware) in self.stocks.get(&key).into_iter().flatten().enumerate() {
                                 let (item, left) = match ware {
@@ -7952,6 +7999,7 @@ impl Game {
                                 let cost = self.price(item);
                                 let row = ui.horizontal(|ui| {
                                     let (rect, _) = ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                                    theme::slot(ui.painter(), rect.shrink(2.0), self.slot_tint(item), false);
                                     self.draw_icon(ui.painter(), item, rect.center(), 26.0);
                                     let name = match item {
                                         Item::Weapon(w) => RichText::new(&self.weapons[w].name).color(color(self.library.rarities[self.weapons[w].grade].color)).strong(),
@@ -7978,7 +8026,7 @@ impl Game {
                     });
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Yours, click to sell one").strong());
+                        theme::heading(ui, "Yours, click to sell one", 15.0);
                         match self.slot_grid(ui, "selling", true) {
                             Some(SlotClick::Once(slot) | SlotClick::Twice(slot)) => deed = Some(Deal::Sell(slot)),
                             Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),
