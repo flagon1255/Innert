@@ -657,6 +657,33 @@ mod tests {
         terrain
     }
 
+    /// The water a ravine starts with, cut below the sea and below rivers: none down in it but the
+    /// sea's, where the sea reaches it, never a column of a river's water standing in the air
+    #[test]
+    fn ravines_start_dry_or_at_the_sea() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let vpm = settings.voxels_per_meter as f32;
+        let sea = ((sea_level_m(&settings) * vpm) as i32 + 1) as f32;
+        let rivers = RiverCache::default();
+        let mut checked = 0;
+        for near in [[0.0, 0.0], [600.0, 200.0], [-400.0, 700.0], [900.0, -800.0]] {
+            let Some(c) = nearest_chasm(&settings, near, None) else {
+                continue;
+            };
+            let corner = [((c.floor[0] - 32.0) * vpm) as i64, ((c.floor[1] - 32.0) * vpm) as i64];
+            let (_, world) = generate_area(&settings, corner, [256, 256], &rivers);
+            let water = world.water.as_ref().expect("its water");
+            for (i, (&g, &s)) in water.ground.iter().zip(&water.surface).enumerate() {
+                // Down in it, under the sea
+                if g < sea - 2.0 * vpm {
+                    checked += 1;
+                    assert!(s == 0.0 || (s - sea).abs() < 0.5, "water at {s} on the floor at {g} in column {i}, the sea at {sea}");
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked} columns down in ravines");
+    }
+
     /// Nothing's built over a ravine: no part of any building, ruin, camp, town, castle, dungeon,
     /// fallen city's way down or dragon's lair, nor wing shrine, comes over one, across the whole of
     /// what it covers, in several landscapes; some stand near the edge of one all the same

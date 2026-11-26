@@ -22,6 +22,8 @@ const DEMI_JEWEL: f64 = 0.25;
 const DEMI_JEWEL_LUCK: f64 = 4.0;
 /// How near a demi-boss's lair the player comes, in meters, for it to be marked on the map
 const DEMI_SEEN: f64 = 45.0;
+/// What the lairs come near are kept under in the save of each world, see save::WorldSave::section()
+pub(super) const SEEN_SECTION: &str = "demis_seen";
 
 impl Game {
     /// The demi-bosses' lairs in the piece of the world just built, in its voxels: one turns up in
@@ -154,5 +156,10 @@ mod tests {
         // And it's marked on the map once come near
         other.note_demis(ground, 4.0);
         assert_eq!(other.demi_marks().len(), 1);
+        // Kept with the rest of the world in the save
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&other.world_save()).unwrap()).unwrap();
+        let mut again = Game::new(&world, &dry, 9, ground);
+        again.restore(&carried, &done, game.vitals());
+        assert_eq!(again.demi_marks(), other.demi_marks());
     }
 }

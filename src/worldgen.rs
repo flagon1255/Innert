@@ -4247,6 +4247,7 @@ impl Terrain {
             }
         }
         // Ravines and such cut into the ground: water lies on whatever's left, and falls in
+        let sea_voxels = ((sea_level_m(&self.settings) * vpm) as i32 + 1) as f32;
         let is_wood = |m: u8| matches!(m, WOOD | BIRCH_BARK | PALM_WOOD | BARK_DARK | DEAD_WOOD);
         for cut in &self.features.recuts {
             let top = (cut[4] * vpm).ceil() as i64;
@@ -4256,8 +4257,15 @@ impl Terrain {
                     let m = world.material_at(x, y, z);
                     !is_passable(m) && !is_wood(m)
                 }) {
+                    let before = water.ground[i];
                     water.ground[i] = (z + 1) as f32;
-                    if water.surface[i] <= water.ground[i] {
+                    // Where a river or a lake ran over what's cut away, the hollow cut deep under it
+                    // starts dry, rather than with a column of the water that was over it standing
+                    // in it: the river pours in, and the water finds its own level. Where it was the
+                    // sea, the sea fills it, as it would.
+                    let deep = water.ground[i] < before - vpm;
+                    let sea = (water.surface[i] - sea_voxels).abs() < 0.5;
+                    if water.surface[i] <= water.ground[i] || deep && !sea {
                         water.surface[i] = 0.0;
                     }
                 }

@@ -5041,6 +5041,8 @@ impl Game {
         let mut done = save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() };
         // What's known of the dragons' lairs, see game\dragonfire.rs
         done.set_section(crate::dragons::WORLD_SECTION, &self.dragonfire.lore);
+        // The demi-bosses' lairs come near, for the map, see game\demi.rs
+        done.set_section(demi::SEEN_SECTION, &sorted(&self.demis_seen));
         done
     }
 
@@ -5160,6 +5162,7 @@ impl Game {
         self.defeated = world.defeated.iter().copied().collect();
         self.cleared = world.cleared.iter().copied().collect();
         self.dragonfire.lore = world.section(crate::dragons::WORLD_SECTION).unwrap_or_default();
+        self.demis_seen = world.section::<Vec<[i64; 3]>>(demi::SEEN_SECTION).unwrap_or_default().into_iter().collect();
         self.stocks.clear();
         for stock in &world.stocks {
             let mut wares = Vec::new();
