@@ -970,6 +970,9 @@ pub struct Game {
     claimed: HashSet<String>,
     /// Where the skill web's window is looking
     pub skill_view: skills::View,
+    /// For screenshots: the slot of the inventory or a merchant's stall whose card shows as if the
+    /// pointer were over it, see `--set card_hover`
+    pub card_hover: Option<usize>,
     /// The jewels' icons, made the first time one's drawn, see jewels::icon()
     jewel_icons: std::cell::OnceCell<Vec<egui::TextureHandle>>,
     /// Where each health bar over what's been hurt went last frame, by the id of what it's over, see
@@ -1237,6 +1240,7 @@ impl Game {
             bonus_points: 0,
             claimed: HashSet::new(),
             skill_view: skills::View::new(),
+            card_hover: None,
             jewel_icons: std::cell::OnceCell::new(),
             bar_lifts: Default::default(),
             bar_focus: Default::default(),
@@ -7434,18 +7438,22 @@ impl Game {
                     painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
                 }
                 // No card while something's being dragged about, it'd only get in the way
+                let card = |ui: &mut egui::Ui| {
+                    ui.set_width(280.0);
+                    self.item_card(ui, item, count);
+                    if selling && item != Item::Bucket {
+                        ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
+                    } else {
+                        ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
+                    }
+                };
                 let response = if dragging {
                     response
+                } else if self.card_hover == Some(i) {
+                    response.show_tooltip_ui(card);
+                    response
                 } else {
-                    response.on_hover_ui(|ui| {
-                        ui.set_width(280.0);
-                        self.item_card(ui, item, count);
-                        if selling && item != Item::Bucket {
-                            ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
-                        } else {
-                            ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
-                        }
-                    })
+                    response.on_hover_ui(card)
                 };
                 if response.double_clicked() || response.secondary_clicked() {
                     clicked = Some(SlotClick::Twice(i));

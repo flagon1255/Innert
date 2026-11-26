@@ -2637,6 +2637,9 @@ impl App {
         if let Some(slot) = setting("inspect").and_then(|v| v.parse().ok()) {
             game.inspect(slot);
         }
+        // And `card_hover=1` with the card of its second slot showing as it does with the pointer
+        // over it, in the inventory or at a merchant's
+        game.card_hover = setting("card_hover").and_then(|v| v.parse().ok());
         game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
         // `--set class=priest` and the rest without a mode: who's playing is that character, armed
         // as their class starts, their body there for its shadow, to try them out in screenshot
@@ -3160,6 +3163,14 @@ impl App {
         // `--set map=1` opens the map, to see what's marked on it
         if flag("map", false) {
             app.map.open = true;
+        }
+        // `--set build=1` starts building, the pieces to pick from showing, and `--set craft=1`
+        // shows the inventory's Craft tab when it's open, to see them with `gui=1`
+        if flag("build", false) {
+            app.building.on = true;
+        }
+        if flag("craft", false) {
+            app.building.craft_open = true;
         }
         // `--set shots_at=80,140` takes shots at those frames too, with the GUI with `gui=1`, as of
         // the window of a specialist being talked to
