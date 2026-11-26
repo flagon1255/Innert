@@ -3671,6 +3671,17 @@ impl Game {
     }
 
     /// The middle of the body of the boss or monster nearest `near`, if there's one about
+    /// For looking at it: where the nearest of the look named `name`, or whose name ends so, is, its
+    /// feet, in voxels
+    pub fn nearest_named(&self, near: Vector3<f64>, name: &str) -> Option<Vector3<f64>> {
+        let wanted = name.to_lowercase();
+        self.animals
+            .iter()
+            .filter(|a| a.health > 0.0 && format!("{:?}", a.look).to_lowercase().ends_with(&wanted))
+            .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
+            .map(|a| a.position)
+    }
+
     pub fn nearest_boss(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
         let vpm = self.combat.vpm();
         self.animals
@@ -4632,6 +4643,8 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let at = near + flat * distance * vpm;
+        // On the ground there, whether `near` is the player's feet or the camera over them
+        let at = Vector3::new(at.x, at.y, animals::ground_under(world, water, at).unwrap_or(at.z));
         let key = [at.x as i64, at.y as i64, -3];
         if let Some(merchant) = animals::spawn_merchant(world, water, at, 1.0, self.rng) {
             self.merchants.push((merchant.id, key));
@@ -4648,6 +4661,8 @@ impl Game {
         let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
         for (look, by) in [(Look::Villager, -0.6), (Look::Townswoman, 0.6)] {
             let at = near + (flat * distance + side * by) * vpm;
+            // On the ground there, whether `near` is the player's feet or the camera over them
+            let at = Vector3::new(at.x, at.y, animals::ground_under(world, water, at).unwrap_or(at.z));
             if let Some(villager) = animals::spawn_villager(world, water, look, at, 0.1, (at + origin, 6.0), self.rng ^ by.to_bits() as u32) {
                 self.animals.push(villager);
             }

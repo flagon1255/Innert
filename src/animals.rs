@@ -4195,6 +4195,11 @@ fn ground_at(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, 
     ground_wading(world, water, x, y, z, up, down, 0.2)
 }
 
+/// The ground under `at`, in voxels, within 60 meters down: its height, if there's any to stand on
+pub fn ground_under(world: &World, water: WaterLevel, at: Vector3<f64>) -> Option<f64> {
+    ground_at(world, water, at.x, at.y, at.z, 0.0, 60.0 * world.voxels_per_meter as f64)
+}
+
 /// The same for something that wades through water up to `wade` meters deep
 #[allow(clippy::too_many_arguments)]
 fn ground_wading(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, down: f64, wade: f64) -> Option<f64> {

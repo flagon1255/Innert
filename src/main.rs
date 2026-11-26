@@ -5276,7 +5276,13 @@ impl App {
                 static HELD: std::sync::Mutex<Option<(Vector3<f64>, Vector3<f64>)>> = std::sync::Mutex::new(None);
                 let placing = f <= 20 || number("view_follow", 0.0) > 0.5;
                 let mut held = HELD.lock().unwrap();
-                if let Some(target) = self.game.nearest_boss(feet).filter(|_| placing) {
+                // Or `watch=villager`, `watch=merchant` and the like, the nearest of that look, to see
+                // how townsfolk, merchants and animals move
+                let watched = match settings_from_args().into_iter().find(|(k, _)| k == "watch") {
+                    Some((_, name)) => self.game.nearest_named(feet, &name),
+                    None => self.game.nearest_boss(feet),
+                };
+                if let Some(target) = watched.filter(|_| placing) {
                     let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
                     let from = number("view_from", 1.4);
                     let distance = number("view_distance", 12.0);
@@ -5297,6 +5303,9 @@ impl App {
                     let tries = [0.0, -2.0 * from, 0.5, -2.0 * from - 0.5, -0.5, -2.0 * from + 0.5, 1.0, -2.0 * from - 1.0];
                     let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
                     *held = Some((at, target));
+                    if f == 20 {
+                        println!("frame {frame}: watching from {:.1} m off what's at {:?}", (at - target).norm() / vpm, (target / vpm).map(|v| (v * 10.0).round() / 10.0));
+                    }
                 }
                 // Looking at its feet, or `view_look=2.5` that many meters up from them, at the middle
                 // of something that floats
