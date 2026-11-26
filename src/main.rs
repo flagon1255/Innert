@@ -3311,10 +3311,16 @@ impl App {
                     // The Gilded Sphinx, a raid boss, in some of the desert's ruins, and the
                     // Cinderback Tortoise in others, see src\bosses\roster.rs
                     "desert ruins" if pick % 5 == 0 => animals::Look::GildedSphinx,
+                    // A Dune Wyrm under the sand out in front of others, see src\bosses\wyrms.rs
+                    "desert ruins" | "pyramid" if pick % 5 == 3 => animals::Look::DuneWyrm,
                     "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
                     "desert ruins" if pick % 3 == 0 => animals::Look::Cinderback,
                     // The Lantern Widow in half the flooded churches, a drake in the rest
                     "flooded church" if pick % 2 == 0 => animals::Look::LanternWidow,
+                    // The Skymane on the high towers, see src\dragons\skymane.rs, and the Grotto Squid
+                    // in the pools of the waterfall caves, see src\bosses\kraken.rs
+                    "watchtower" if pick % 6 == 2 => animals::Look::Skymane,
+                    "waterfall cave" => animals::Look::GrottoSquid,
                     "castle" | "watchtower" if pick % 4 == 3 => animals::Look::Ogre,
                     "cavern" if pick % 4 == 3 => animals::Look::Ogre,
                     "shrine" if pick % 2 == 0 => animals::Look::Elderhorn,

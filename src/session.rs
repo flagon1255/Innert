@@ -812,6 +812,10 @@ impl App {
             let distance = setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(16.0);
             self.game.summon(world, &level, look, feet, ahead(distance), distance);
             println!("ARRIVE: the {} {distance} m off", look.name());
+            // Making only `--set boss_move=` too, as one put in the world first seen does
+            if let Some(m) = setting("boss_move").and_then(|name| crate::bosses::Move::named(&name)) {
+                self.game.force_boss_move(m);
+            }
         }
     }
 

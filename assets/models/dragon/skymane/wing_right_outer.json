@@ -1,0 +1,29 @@
+{
+  "what": "Skymane, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    48,
+    4
+  ],
+  "pivot": [
+    18.495617888976636,
+    45.86090969131965,
+    1.26
+  ],
+  "anchor": [
+    -0.5309761180610397,
+    -1.366306855707478,
+    -0.07875
+  ],
+  "origin": [
+    -18,
+    -46,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2942,
+    "7be85b2ef7a3430e"
+  ]
+}

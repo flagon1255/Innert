@@ -30,6 +30,8 @@ use crate::tools;
 mod dragonfire;
 /// What avians and gargoyles throw, call down and break into, see src\avians.rs
 mod aerie;
+/// What the krakens do to the player, see bosses::kraken
+mod brine;
 /// The specialist merchants, talked to and asked to the base, see src\merchants.rs
 mod specialists;
 mod demi;
@@ -998,6 +1000,8 @@ pub struct Game {
     packed_weapons: std::cell::RefCell<Option<(u32, Vec<u32>)>>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
+    /// The krakens' ink and the rest, see game\brine.rs
+    brine: brine::Deep,
     /// The specialist merchants: who keeps which stall, who's being talked to and who lives at the
     /// base, see game\specialists.rs
     trades: specialists::Trades,
@@ -1228,6 +1232,7 @@ impl Game {
             one_off_changes: 0,
             packed_weapons: std::cell::RefCell::new(None),
             aerie: Default::default(),
+            brine: Default::default(),
             trades: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
@@ -1820,7 +1825,19 @@ impl Game {
             };
             // A great serpent that swims lies in the deep water by its lair, out from the shore, the
             // rest on the ground
-            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, if look.is_ultra() { 2.5 } else { 1.5 })).flatten();
+            let least = match look {
+                _ if look.is_ultra() => 2.5,
+                Look::Kraken => 3.0,
+                Look::GrottoSquid => bosses::kraken::SHALLOW,
+                _ => 1.5,
+            };
+            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, least)).flatten();
+            // A kraken's only ever in the water, looked for further off if there's none near; but a
+            // realm's guardian has to be somewhere, as its raid bosses are warded till it's slain
+            let deep = deep.or_else(|| look.is_kraken().then(|| animals::deep_water_near(world, water, lair.position, 120.0, 1.2)).flatten());
+            if look.is_kraken() && deep.is_none() && !realms::is_guardian_key(&lair.key) {
+                continue;
+            }
             let swimming = deep.map(|at| Animal::boss(look, Vector3::new(at.x, at.y, water(at.x, at.y) - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
             if let Some(mut boss) = swimming.or_else(|| animals::spawn_boss(world, water, look, lair.position, lair.key, seed)) {
                 // The Coil Unending's as hard as it is already, whether it's the Water realm's finale
@@ -2034,6 +2051,18 @@ impl Game {
         let at = near + flat * distance * vpm;
         let ground = floor_near(world, at.x, at.y, near.z);
         let key = [at.x as i64, at.y as i64, -1];
+        // What swims in deep water nearby, out from the shore, a kraken only there
+        if look.swims() {
+            let least = if look.is_kraken() { if look == Look::Kraken { 3.0 } else { bosses::kraken::SHALLOW } } else { 1.5 };
+            if let Some(deep) = animals::deep_water_near(world, water, Vector3::new(at.x, at.y, ground), 45.0, least) {
+                let top = water(deep.x, deep.y) - serpents::draft(look) * vpm;
+                self.animals.push(Animal::boss(look, Vector3::new(deep.x, deep.y, top), key, self.rng));
+                return;
+            }
+            if look.is_kraken() {
+                return;
+            }
+        }
         if let Some(boss) = animals::spawn_boss(world, water, look, Vector3::new(at.x, at.y, ground), key, self.rng) {
             self.animals.push(boss);
         }
@@ -2061,6 +2090,7 @@ impl Game {
         }
         self.dragonfire.recenter(shift);
         self.aerie.recenter(shift);
+        self.brine.recenter(shift);
         for root in &mut self.roots {
             root.at -= shift;
         }
@@ -2314,6 +2344,7 @@ impl Game {
         }
         self.tend_dragonfire(world, player, view, dt);
         self.tend_aerie(world, player, view, dt);
+        self.tend_brine(player, dt);
         self.watch_for_lairs(player);
         self.watch_for_shrines(player);
         self.grow_roots(world, player, view, dt);
@@ -2460,10 +2491,12 @@ impl Game {
     /// aiming at, see serpents::focus()
     fn aim_at_serpents(&mut self, view: &View) {
         let vpm = view.vpm;
-        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent()) {
+        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent() || a.look.is_kraken()) {
             a.focus = None;
             let points = match a.coils() {
                 Some(coils) => Some(coils.hit_points(vpm)),
+                // A kraken's head, its mantle and its arms near it, see bosses::kraken::Body
+                None if a.look.is_kraken() => a.kraken().map(|k| k.hit_points(vpm)),
                 None if (a.position - view.eye).norm() < 70.0 * vpm => a.spine(vpm as u32),
                 None => None,
             };
@@ -2498,6 +2531,8 @@ impl Game {
             Deed::Phase { at, stage } if look.is_dragon() => return self.dragon_phase(look, at, stage, view),
             // And what avians and gargoyles do, see game\aerie.rs
             Deed::Aerie(act) => return self.aerie_act(look, act, world, player, view),
+            // And what krakens do, see game\brine.rs
+            Deed::Kraken(act) => return self.kraken_act(look, element, act, world, water, player, view),
             Deed::Phase { at, stage } if look.is_winged() => return self.aerie_phase(look, at, stage, view),
             _ => {}
         }
@@ -3054,7 +3089,7 @@ impl Game {
                 }
             }
             // Seen to above
-            Deed::Dragon(_) | Deed::Aerie(_) => {}
+            Deed::Dragon(_) | Deed::Aerie(_) | Deed::Kraken(_) => {}
             // The Colossus working stone, see combat/stones.rs: the boulder it tore up and lifted
             // hurled out of its hands, with a grunt
             Deed::Hurl { id, from, to } => {
@@ -3370,6 +3405,7 @@ impl Game {
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
+        self.brine.clear();
         self.burning = 0.0;
         self.poisoned = 0.0;
         self.chilled = 0.0;
@@ -3454,6 +3490,7 @@ impl Game {
             self.roots.clear();
             self.webs.clear();
             self.fumes.clear();
+        self.brine.clear();
             self.safe_for = 0.0;
             return;
         };
@@ -3621,7 +3658,7 @@ impl Game {
             // And a dragon falls out of the sky and lies a moment where it fell first, a jointed
             // boss falls, see rig::dying(), and an avian or a gargoyle comes down, see avians::dying()
             let a = &self.animals[k];
-            if a.health > 0.0 || writhing(a) || crate::dragons::dying(a) || crate::rig::dying(a) || crate::avians::dying(a) {
+            if a.health > 0.0 || writhing(a) || crate::dragons::dying(a) || crate::rig::dying(a) || crate::avians::dying(a) || bosses::kraken::dying(a) {
                 k += 1;
                 continue;
             }
@@ -3783,7 +3820,7 @@ impl Game {
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
                 // What its hoard's called, for those with one of their own, see bosses::roster
-                let hoard_name = bosses::roster::hoard(look).unwrap_or("hoard");
+                let hoard_name = bosses::roster::hoard(look).or_else(|| bosses::wilds::hoard(look)).unwrap_or("hoard");
                 if ultra {
                     self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
                 } else if let Some(realm) = block {
@@ -3791,7 +3828,7 @@ impl Game {
                     self.say(format!("Raid boss slain! The {} falls before {}, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name(), self.character.name));
                 } else if raid {
                     self.say(format!("Raid boss slain! The {} falls before {}, and its {hoard_name} spills out. Some of it's {rarity}!", look.name(), self.character.name));
-                } else if bosses::roster::has(look) {
+                } else if bosses::roster::has(look) || bosses::wilds::has(look) {
                     self.say(format!("{} defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 } else {
                     self.say(format!("{} defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
@@ -5110,6 +5147,7 @@ impl Game {
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
+        self.brine.clear();
         self.rest = None;
         self.safe_for = 0.0;
         self.knockback = Vector3::zeros();
@@ -6203,6 +6241,12 @@ impl Game {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
                 creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+            } else if let Some(body) = animal.kraken() {
+                // A kraken's mantle, head and every piece of its arms, the same way, see
+                // bosses::kraken::Body
+                pieces.clear();
+                body.instances(vpm, animal.status.tint(), &mut pieces);
+                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
             } else if animal.dragon.is_some() || animal.winged.is_some() || crate::rig::rigged(animal.look) {
                 // A jointed boss, avian or gargoyle too, see rig::instances() and avians::instances()
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
@@ -6330,7 +6374,7 @@ impl Game {
             .iter()
             .filter(|a| a.health > 0.0 && (a.position - view.eye).norm() < 60.0 * vpm)
             .filter_map(|a| {
-                let (at, element, strength) = bosses::glow(a, vpm)?;
+                let (at, element, strength) = bosses::glow(a, vpm).or_else(|| crate::dragons::glow(a))?;
                 let c = element.light();
                 let s = strength as f32;
                 Some([at.x as f32, at.y as f32, at.z as f32, ((4.0 + 4.0 * strength) * vpm) as f32, c[0] * s, c[1] * s, c[2] * s, 1.0])
@@ -6618,6 +6662,8 @@ impl Game {
         let faint = Color32::from_white_alpha(140);
         let on_screen = |p: Vector3<f64>| view.project(p).map(|[x, y]| pos2(screen.left() + x as f32 * screen.width(), screen.top() + y as f32 * screen.height()));
 
+        // Blinded by a kraken's ink, see game\brine.rs
+        self.ink_veil(&painter, screen);
         // The sky darkening over the Coil Unending's lair, a bruised gloom closing in from above
         if self.gloom > 0.01 {
             let g = self.gloom as f32;

@@ -14424,6 +14424,18 @@ impl Combat {
         self.glow(from + direction * 7.0 * vpm, 7.0, element.light(), 0.8, 0.25);
     }
 
+    /// Water jetted out of `from` along `direction` for `dt` seconds by a kraken, see
+    /// game\brine.rs: a stream of drops flying out, falling as they go
+    pub fn water_jet(&mut self, from: Vector3<f64>, direction: Vector3<f64>, dt: f64) {
+        let vpm = self.vpm;
+        let count = (dt * 140.0 + random(&mut self.rng)) as usize;
+        for _ in 0..count {
+            let spread = self.any_direction() * 0.07;
+            let velocity = (direction + spread).normalize() * (14.0 + 5.0 * random(&mut self.rng)) * vpm;
+            self.drop(from, velocity, DROP_WATER, 1.1);
+        }
+    }
+
     /// A jet of `element` roaring out from `from` along `direction` for `dt` seconds, as the Gilded
     /// Sphinx's wheel round it: thicker and brighter than a breath, so it reads in full sun. Tongues
     /// of flame pour out white-hot and billow as they go, see Tongue; embers fly off it rising, and

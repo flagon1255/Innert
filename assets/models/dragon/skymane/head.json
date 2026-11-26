@@ -1,0 +1,29 @@
+{
+  "what": "Skymane, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    20,
+    19
+  ],
+  "pivot": [
+    4.76,
+    9.8,
+    9.24
+  ],
+  "anchor": [
+    0.3275,
+    0.012499999999999956,
+    -0.5775
+  ],
+  "origin": [
+    -5,
+    -10,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5711,
+    "c879a0af21f79b08"
+  ]
+}

@@ -254,7 +254,8 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         // Its guardians the lesser great serpents, each of them at home in a realm of its own but
         // all of them come to the sea: the Meremaw from the lakes, the Galecoil out of the sky, the
         // Veinbinder and the Shatterfang, see serpents.rs
-        guardians: &[Look::Meremaw, Look::Galecoil, Look::Veinbinder, Look::Shatterfang],
+        // and the Tidewrack Kraken, at home in the open sea, see src\bosses\kraken.rs
+        guardians: &[Look::Meremaw, Look::Galecoil, Look::Veinbinder, Look::Shatterfang, Look::Kraken],
         // And the Coil Unending, rising from the deep of the Drowned Ring once they're beaten, see
         // worldgen::Arena
         finale: Some((Look::Ysveth, [60.0, -330.0], "the Drowned Ring")),
@@ -284,7 +285,8 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         // Its guardians fire and stone from before the great dragons: the Slagwright at its forge
         // and the Cinderback Tortoise, its own, see src\bosses\roster.rs, a golem of magma and an
         // ember drake, and with them a storm drake and a grave knight
-        guardians: &[Look::Slagwright, Look::Cinderback, Look::MagmaGolem, Look::Drake, Look::StormDrake, Look::GraveKnight],
+        // and the Caldera Wyrm boring through its ash, see src\bosses\wyrms.rs
+        guardians: &[Look::Slagwright, Look::Cinderback, Look::CalderaWyrm, Look::MagmaGolem, Look::Drake, Look::StormDrake, Look::GraveKnight],
         // And the first fire, that comes down once they're beaten, in an arena of its own, see
         // worldgen\dragonlair.rs and Places::find()
         finale: Some((Look::WorldpyreAncient, [40.0, 340.0], "the heart of the mountain")),

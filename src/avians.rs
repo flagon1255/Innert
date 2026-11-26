@@ -467,7 +467,8 @@ pub fn fx_shape(fx: usize) -> (V3, [u32; 3]) {
 /// Which feathers each throws, and the shards of which stone each breaks into
 pub fn feather_of(look: Look) -> usize {
     match look {
-        Look::HarpyQueen => FX_FEATHER + 1,
+        // And the Skymane's gold-edged ones, see src\dragons\skymane.rs
+        Look::HarpyQueen | Look::Skymane => FX_FEATHER + 1,
         Look::Stormtalon | Look::Thunderbird => FX_FEATHER + 2,
         _ => FX_FEATHER,
     }
