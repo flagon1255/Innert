@@ -3018,7 +3018,10 @@ impl App {
         // radians round, to see it in a screenshot with `menu=1 gui=1`
         if let Some(mode) = setting("creator").and_then(save::Mode::parse) {
             let turn = setting("creator_turn").and_then(|v| v.parse().ok()).unwrap_or(0.5);
-            app.session.creator = Some(character::creator::Creator::with(mode, character::Character::from_settings(), turn));
+            let mut creator = character::creator::Creator::with(mode, character::Character::from_settings(), turn);
+            // And `creator_scroll=600` scrolled that far down what's chosen, to see the bottom of it
+            creator.scroll_to = setting("creator_scroll").and_then(|v| v.parse().ok());
+            app.session.creator = Some(creator);
         }
         // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
         // as for the menu or the window a new character's made in

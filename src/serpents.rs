@@ -121,6 +121,9 @@ pub(crate) struct Posed {
     pub spine: [Vec3; 9],
     pub tongue: (Vec3, Vec3, Vec3, Vec3),
     pub gape: f64,
+    /// How far its model reaches ahead of and behind its middle, in meters: what it's draped along,
+    /// see Animal::drape
+    pub half: f64,
 }
 
 /// Ordinary serpent `look` in frame `frame`, see Posed
@@ -129,13 +132,25 @@ pub(crate) fn posed(look: Look, frame: usize) -> Option<&'static Posed> {
     let n = crate::animals::FRAMES;
     let i = SERPENTS.iter().position(|&l| l == look)?;
     let made = MADE.get_or_init(|| {
-        let pose = |k: &Kind, f: usize| {
+        let pose = |l: Look, k: &Kind, f: usize| {
             let (phase, w) = crate::animals::frame_shape(f);
-            Posed { spine: std::array::from_fn(|j| spine(k, j as f64 / 8.0, phase, w)), tongue: tongue_root(k, phase, w), gape: gape(w) }
+            let res = crate::animals::MODEL_RES;
+            let parts: Vec<Part> = crate::animals::frame_parts(l, f).iter().map(|p| p.thickened(res)).collect();
+            let half = crate::animals::frame_size(&parts, res)[0] as f64 * 0.5 / res;
+            Posed { spine: std::array::from_fn(|j| spine(k, j as f64 / 8.0, phase, w)), tongue: tongue_root(k, phase, w), gape: gape(w), half }
         };
-        SERPENTS.iter().filter_map(|&l| kind(l)).flat_map(|k| (0..n).map(move |f| pose(k, f))).collect()
+        SERPENTS.iter().filter_map(|&l| Some((l, kind(l)?))).flat_map(|(l, k)| (0..n).map(move |f| pose(l, k, f))).collect()
     });
     made.get(i * n + frame.min(n - 1))
+}
+
+/// How much longer and wider than its model an ordinary serpent's drawn slithering at `pace`, 0 at
+/// its walk and 1 at its run: its S-curve looser and lazier going slowly, its waves wider and
+/// further apart, and tighter and quicker going fast, fleeing or coming on to strike. Its body
+/// still slides along the curve, as its walk goes on as far as it goes, see Animal::step().
+pub(crate) fn stretch(pace: f64) -> [f64; 2] {
+    let t = smooth(pace);
+    [1.06 - 0.16 * t, 1.15 - 0.37 * t]
 }
 
 fn smooth(t: f64) -> f64 {
