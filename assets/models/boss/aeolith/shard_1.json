@@ -1,0 +1,29 @@
+{
+  "what": "Aeolith, shard 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    19
+  ],
+  "pivot": [
+    2.5600000000000005,
+    2.5600000000000005,
+    8.704
+  ],
+  "anchor": [
+    0.02749999999999997,
+    0.02749999999999997,
+    -0.544
+  ],
+  "origin": [
+    -3,
+    -3,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1975,
+    "70fc8485a0eee16a"
+  ]
+}
