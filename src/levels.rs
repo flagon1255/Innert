@@ -123,6 +123,8 @@ pub fn total_to(level: u32) -> f64 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slain {
     Monster,
+    /// A demi-boss, down in a ravine, see src\demis.rs
+    Demi,
     /// A lesser boss, a guardian among them
     Boss,
     /// One of a realm's raid bosses, or a huge raid boss
@@ -135,10 +137,11 @@ pub enum Slain {
 const KILLS_A_LEVEL: f64 = 30.0;
 
 /// Experience for slaying something of level `level`: a monster's a 30th of what that level takes,
-/// a boss's eight times that, a raid boss's thirty and a finale's sixty
+/// a demi-boss's three times that, a boss's eight, a raid boss's thirty and a finale's sixty
 pub fn experience(level: u32, slain: Slain) -> f64 {
     let times = match slain {
         Slain::Monster => 1.0,
+        Slain::Demi => 3.0,
         Slain::Boss => 8.0,
         Slain::Raid => 30.0,
         Slain::Finale => 60.0,
@@ -159,6 +162,8 @@ pub const DROP_OFFSETS: [i32; 5] = [-1, 0, 1, 2, 3];
 pub enum Source {
     /// A monster, a chest, a bandits' hoard
     Found,
+    /// A demi-boss, see src\demis.rs
+    Demi,
     /// A lesser boss's hoard
     Boss,
     /// A raid boss's or a finale's
@@ -171,6 +176,7 @@ pub enum Source {
 pub fn offset_weights(source: Source) -> [f64; 5] {
     match source {
         Source::Found => [0.20, 0.35, 0.25, 0.13, 0.07],
+        Source::Demi => [0.12, 0.28, 0.30, 0.19, 0.11],
         Source::Boss => [0.05, 0.20, 0.32, 0.27, 0.16],
         Source::Raid => [0.0, 0.10, 0.25, 0.35, 0.30],
         Source::Merchant => [0.30, 0.45, 0.25, 0.0, 0.0],
@@ -197,12 +203,13 @@ pub fn drop_level(level: u32, source: Source, roll: f64) -> u32 {
 pub const FOE_CAP: u32 = LEVEL_CAP + 3;
 
 /// The level of a monster or boss with the player at level `player`, by `roll`, 0-1, wherever it
-/// is: a monster one either side of the player's level, a boss one or two over, a raid boss or
-/// finale three over
+/// is: a monster one either side of the player's level, a demi-boss at it or one over, a boss one
+/// or two over, a raid boss or finale three over
 pub fn foe_level(band: Band, player: u32, slain: Slain, roll: f64) -> u32 {
     let at = band.level_for(player) as i32;
     let level = match slain {
         Slain::Monster => at + (roll * 3.0).floor().min(2.0) as i32 - 1,
+        Slain::Demi => at + (roll * 2.0).floor().min(1.0) as i32,
         Slain::Boss => at + 1 + (roll * 2.0).floor().min(1.0) as i32,
         Slain::Raid | Slain::Finale => at + 3,
     };
@@ -238,12 +245,13 @@ mod tests {
             for player in 1..=LEVEL_CAP {
                 for k in 0..10 {
                     let roll = k as f64 / 10.0;
-                    for slain in [Slain::Monster, Slain::Boss, Slain::Raid, Slain::Finale] {
+                    for slain in [Slain::Monster, Slain::Demi, Slain::Boss, Slain::Raid, Slain::Finale] {
                         let l = foe_level(band, player, slain, roll);
                         assert!((1..=FOE_CAP).contains(&l) && l + 1 >= player, "{band:?} {player} {slain:?} at {l}");
                         assert_eq!(l, foe_level(BANDS[0], player, slain, roll), "the same in every realm");
                     }
-                    assert!(foe_level(band, player, Slain::Boss, roll) >= foe_level(band, player, Slain::Monster, roll));
+                    assert!(foe_level(band, player, Slain::Boss, roll) >= foe_level(band, player, Slain::Demi, roll));
+                    assert!(foe_level(band, player, Slain::Demi, roll) >= foe_level(band, player, Slain::Monster, roll));
                 }
                 assert_eq!(foe_level(band, player, Slain::Raid, 0.5), player + 3);
             }
@@ -299,6 +307,8 @@ mod tests {
         assert!(merchant[3] == 0 && merchant[4] == 0);
         let mean = |c: [usize; 5]| c.iter().enumerate().map(|(k, n)| (k as f64 - 1.0) * *n as f64).sum::<f64>() / 10_000.0;
         assert!(mean(spread(5, Source::Raid)) > mean(spread(5, Source::Boss)) && mean(spread(5, Source::Boss)) > mean(found));
+        // A demi-boss's between a monster's and a boss's
+        assert!(mean(spread(5, Source::Boss)) > mean(spread(5, Source::Demi)) && mean(spread(5, Source::Demi)) > mean(found));
         assert_eq!(drop_level(1, Source::Found, 0.0), 1);
         assert_eq!(drop_level(LEVEL_CAP, Source::Found, 0.9999), DROP_CAP);
         assert_eq!(drop_level(DROP_CAP, Source::Raid, 0.9999), DROP_CAP);
@@ -308,7 +318,8 @@ mod tests {
     fn slaying_bigger_foes_gives_more() {
         for l in 1..LEVEL_CAP {
             assert!(experience(l, Slain::Monster) <= experience(l + 1, Slain::Monster));
-            assert!(experience(l, Slain::Monster) < experience(l, Slain::Boss));
+            assert!(experience(l, Slain::Monster) < experience(l, Slain::Demi));
+            assert!(experience(l, Slain::Demi) < experience(l, Slain::Boss));
             assert!(experience(l, Slain::Boss) < experience(l, Slain::Raid));
             assert!(experience(l, Slain::Raid) < experience(l, Slain::Finale));
         }
