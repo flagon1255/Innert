@@ -76,7 +76,7 @@ impl Game {
             }
         }
         for at in spray {
-            self.combat.stir(at, 0.22, dt * 0.5, DROP_WATER);
+            self.combat.stir(at, 0.12, dt * 0.2, DROP_WATER);
         }
         // Stranded or swum off, gone without a word
         self.animals.retain(|a| !a.swim.as_ref().is_some_and(|s| s.gone));
@@ -167,6 +167,8 @@ impl Game {
         self.animals
             .iter()
             .filter_map(|a| a.swim.as_ref().and_then(|s| s.fin))
+            // Only going, so it doesn't heap the water up where it lies still
+            .filter(|(_, v)| v.norm() > 0.6 * self.combat.vpm())
             .min_by(|a, b| (a.0 - near).norm().total_cmp(&(b.0 - near).norm()))
             .map(|(at, v)| ([at.x, at.y], [v.x, v.y]))
     }

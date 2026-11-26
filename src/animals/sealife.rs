@@ -30,7 +30,7 @@ type V3 = Vector3<f64>;
 
 /// How much finer a fish's model is than everything else's, see Look::resolution(): a fish is only
 /// a hand long
-pub const FINE: f64 = 2.0;
+pub const FINE: f64 = 3.0;
 
 /// The fish, and the sharks
 pub const FISH: [Look; 5] = [Look::Silverfin, Look::Reefling, Look::Brookback, Look::Gloamfin, Look::Frostfin];
@@ -82,18 +82,18 @@ pub struct Fish {
 }
 
 pub const FISHES: [Fish; 5] = [
-    // A slim fish of the open sea, blue-grey over silver, with a pale line along its side and a dark
-    // spot by its tail, in big shoals
+    // A slim fish of the open sea, silver over white, with a sea green line along its side and a
+    // dark spot by its tail, in big shoals
     Fish {
         look: Look::Silverfin,
         name: "silverfin",
-        length: 0.3,
-        depth: 0.075,
-        width: 0.045,
-        back: CLOTH_BLUE,
-        belly: STEEL,
+        length: 0.34,
+        depth: 0.085,
+        width: 0.05,
+        back: STEEL,
+        belly: FUR_WHITE,
         fin: FUR_GRAY,
-        accent: FUR_WHITE,
+        accent: TEMPLE_TEAL,
         bands: AIR,
         cruise: 0.9,
         dart: 3.4,
@@ -226,7 +226,7 @@ pub const SHARK_KINDS: [Shark; 2] = [
         cruise: 1.3,
         circle: 2.4,
         dart: 6.5,
-        least: 1.5,
+        least: 1.1,
         ring: (9.0, 5.0),
         health: 210.0,
         bite: 15.0,
@@ -246,7 +246,7 @@ pub const SHARK_KINDS: [Shark; 2] = [
         cruise: 1.1,
         circle: 2.2,
         dart: 7.2,
-        least: 2.2,
+        least: 1.6,
         ring: (12.0, 6.5),
         health: 245.0,
         bite: 21.0,
@@ -461,7 +461,7 @@ fn lying(p: &mut Vec<Part>, f: &Fish, cooked: bool) {
     let mut fish_parts = Vec::new();
     fish(&mut fish_parts, f, None);
     let zc = f.depth * (0.5 + UNDER);
-    let (body, char) = if cooked { (FUR_GINGER, BARK_DARK) } else { (STEEL, CLOTH_BLUE) };
+    let (body, char) = if cooked { (FUR_GINGER, BARK_DARK) } else { (FUR_WHITE, STEEL) };
     for part in fish_parts {
         let material = match part.material {
             EYE if cooked => BONE,
@@ -471,7 +471,7 @@ fn lying(p: &mut Vec<Part>, f: &Fish, cooked: bool) {
                 if cooked {
                     char
                 } else {
-                    CLOTH_BLUE
+                    STEEL
                 }
             }
             m if m == f.fin => {
@@ -520,13 +520,6 @@ fn shark(p: &mut Vec<Part>, k: &Shark, phase: Option<f64>, pose: [f64; 3]) {
     for side in [-1.0, 1.0] {
         p.push(ball(at(0.115, side * w * 0.3, 0.1 * d), 0.035 * l / 2.5, k.eye));
     }
-    // Its gill slits, dark down either side behind its head
-    for side in [-1.0, 1.0] {
-        for g in 0..4 {
-            let s = 0.25 + 0.025 * g as f64;
-            p.push(limb(at(s, side * w * 0.47 * girth(s).sqrt(), 0.18 * d), at(s + 0.01, side * w * 0.47 * girth(s).sqrt(), -0.22 * d), 0.02, 0.02, if ghost { FUR_GRAY } else { OBSIDIAN }));
-        }
-    }
     // Old scars raked down the ghostmaw's flanks
     if ghost {
         for side in [-1.0, 1.0] {
@@ -538,10 +531,10 @@ fn shark(p: &mut Vec<Part>, k: &Shark, phase: Option<f64>, pose: [f64; 3]) {
     // Its jaws: the snout over them, the lower jaw hinged under its eyes and dropping open, rows of
     // teeth along both, and its maw red inside
     let open = (gape.max(0.1 * f64::from(phase.is_some())) * (1.0 - snap)).clamp(0.0, 1.0);
-    let lift = 0.12 * d * open;
+    let lift = 0.22 * d * open;
     let hinge = [x(0.24), y(0.24), zc - 0.12 * d];
-    let drop = 0.95 * open;
-    let jaw_length = 0.2 * l;
+    let drop = 1.15 * open;
+    let jaw_length = 0.21 * l;
     let jaw = |f: f64| [hinge[0] + jaw_length * f * drop.cos(), hinge[1] + (y(0.24 - 0.2 * f) - y(0.24)), hinge[2] - jaw_length * f * drop.sin()];
     let teeth = if open > 0.15 { 6 } else { 0 };
     for t in 0..teeth {
@@ -557,7 +550,7 @@ fn shark(p: &mut Vec<Part>, k: &Shark, phase: Option<f64>, pose: [f64; 3]) {
     // The lower jaw
     p.push(limb(hinge, jaw(0.92), 0.17 * d, 0.1 * d, k.belly));
     if open > 0.15 {
-        p.push(ellipsoid([x(0.16), y(0.16), zc - 0.04 * d + lift * 0.3], [0.1 * l, w * 0.27, d * 0.28 * open + 0.03], MEAT));
+        p.push(ellipsoid([x(0.15), y(0.15), zc - 0.12 * d], [0.11 * l, w * 0.3, d * 0.45 * open + 0.03], MEAT));
     }
     // A dark tip to the dorsal fin, the pectorals and the lower lobe of the tail
     let fin_root = |s: f64| at(s, 0.0, 0.45 * d * girth(s));
@@ -653,6 +646,8 @@ pub struct Swim {
     pub fin: Option<(V3, V3)>,
     /// Seconds the player's been out of the water, for a shark to give up on them
     lost: f64,
+    /// Seconds till a shark going round the player can turn to go round the other way
+    flip: f64,
     /// Seconds stranded with no water under it, to go once it's been so a while
     dry: f64,
     /// Gone: swum off out of the way, to be taken out of the world without a word
@@ -678,6 +673,7 @@ impl Swim {
             hunt: Hunt::Cruise,
             fin: None,
             lost: 0.0,
+            flip: 0.0,
             dry: 0.0,
             gone: false,
             leaving: false,
@@ -852,11 +848,12 @@ fn swim_fish(a: &mut Animal, s: &mut Swim, f: &Fish, world: &World, water: Water
     a.phase = (a.phase + dt * f.beat * (0.5 + 0.8 * v.norm() / f.cruise)).fract();
 }
 
-/// Where the player's middle is if they're in water deep enough to be come at, over their chest,
+/// Where the player's middle is if they're in water deep enough to be come at, swimming or wading
+/// deep,
 /// see hunt(): their feet `feet`, in voxels
 fn prey(water: WaterLevel, feet: V3, vpm: f64) -> Option<V3> {
     let top = water(feet.x, feet.y);
-    (top.is_finite() && top > feet.z + 1.0 * vpm).then(|| feet + Vector3::new(0.0, 0.0, 1.0 * vpm))
+    (top.is_finite() && top > feet.z + 0.8 * vpm).then(|| feet + Vector3::new(0.0, 0.0, 1.0 * vpm))
 }
 
 fn hunt(a: &mut Animal, s: &mut Swim, k: &Shark, world: &World, water: WaterLevel, player: Option<V3>, dt: f64) {
@@ -924,16 +921,20 @@ fn hunt(a: &mut Animal, s: &mut Swim, k: &Shark, world: &World, water: WaterLeve
                 let round = round + way * speed / ring * dt;
                 let ahead = round + way * 0.45;
                 let point = prey + Vector3::new(ahead.cos(), ahead.sin(), 0.0) * ring * vpm;
+                // The shore or the shallows in the way: round the other way, but not back and forth
                 let mut way = way;
-                if !fits(Vector3::new(point.x, point.y, fin_out)) {
+                s.flip -= dt;
+                if s.flip <= 0.0 && !fits(Vector3::new(point.x, point.y, fin_out)) {
                     way = -way;
+                    s.flip = 2.0;
                 }
                 goal = Some(point);
                 want_z = fin_out;
                 turn = 2.2;
                 s.hunt = Hunt::Circle { round, way, t, length };
-                // Closed in: it comes at them, if there's water deep enough for it all the way
-                if t >= length && reachable(world, water, center, prey, k, vpm) {
+                // Closed in: it comes at them, if there's water deep enough for it all the way, or in
+                // the end anyway, to break off where it gets too shallow
+                if t >= length && (reachable(world, water, center, prey, k, vpm) || t > length + 4.0) {
                     s.hunt = Hunt::Charge { t: 0.0 };
                     if let Some(boss) = &mut a.boss {
                         boss.deeds.push(Deed::WindUp(Move::Slam, center));
@@ -1024,17 +1025,24 @@ fn hunt(a: &mut Animal, s: &mut Swim, k: &Shark, world: &World, water: WaterLeve
         }
     }
     // Feeling ahead: too shallow there, or the shore, and it turns for deeper water; charging, it
-    // gives up and breaks off
+    // gives up and breaks off, unless it's all but on the player, when it lunges on into the
+    // shallows after them, as far as half as deep as it can swim in
+    let lunging = matches!(s.hunt, Hunt::Charge { .. } | Hunt::Bite { .. }) && target.is_some_and(|t| near(t) < 4.5);
+    let shallow = |p: V3| wet(world, water, p, 0.05 * vpm, k.least * 0.5 * vpm);
+    let fits = |p: V3| if lunging { shallow(p) } else { fits(p) };
     let feel = (2.0 + 0.4 * a.speed) * vpm;
     let probe = |h: f64| Vector3::new(center.x + h.cos() * feel, center.y + h.sin() * feel, center.z.min(top - 0.2 * vpm));
-    if !fits(probe(a.heading)) {
+    if !lunging && !fits(probe(a.heading)) {
         if let Hunt::Charge { .. } = s.hunt {
             s.hunt = Hunt::Break { t: 0.0, away: a.heading + PI };
         }
         let way = [0.8, -0.8, 1.6, -1.6, 2.4, -2.4].into_iter().find(|&t| fits(probe(a.heading + t))).unwrap_or(PI);
         a.heading = turn_towards(a.heading, a.heading + way, 3.0 * dt);
-        if let Hunt::Circle { round, way, t, length } = s.hunt {
+        if let Hunt::Circle { round, way, t, length } = s.hunt
+            && s.flip <= 0.0
+        {
             s.hunt = Hunt::Circle { round, way: -way, t, length };
+            s.flip = 2.0;
         }
     }
     a.heading = a.heading.rem_euclid(TAU);
@@ -1062,9 +1070,13 @@ fn hunt(a: &mut Animal, s: &mut Swim, k: &Shark, world: &World, water: WaterLeve
             s.fin = Some((Vector3::new(center.x + back.x, center.y + back.y, top), Vector3::new(a.heading.cos(), a.heading.sin(), 0.0) * a.speed * vpm));
         }
     }
-    s.velocity = Vector3::new(a.heading.cos(), a.heading.sin(), 0.0) * a.speed + Vector3::new(0.0, 0.0, rise);
+    // Pitched as it's really going up or down, not as it would
+    let climb = (center.z - (a.position.z + half)) / vpm / dt.max(1e-3);
+    s.velocity = Vector3::new(a.heading.cos(), a.heading.sin(), 0.0) * a.speed + Vector3::new(0.0, 0.0, climb);
     a.position = center - Vector3::new(0.0, 0.0, half);
-    a.lie = [-(rise.atan2(a.speed.max(0.5))).clamp(-0.45, 0.45), 0.0];
+    let pitch = -(climb.atan2(a.speed.max(0.8))).clamp(-0.4, 0.4);
+    a.lie[0] += (pitch - a.lie[0]) * (1.0 - (-4.0 * dt).exp());
+    a.lie[1] = 0.0;
     a.phase = (a.phase + dt * (0.45 + 0.35 * a.speed)).fract();
 }
 
@@ -1349,5 +1361,108 @@ mod tests {
             let b = frame_model(look, 11).voxels;
             assert_ne!(a, b, "{look:?}'s tail doesn't sweep");
         }
+    }
+
+    /// Pictures of fish and sharks from above and the side, a few frames each, to look them over:
+    /// `SEA_DUMP=<dir> cargo test --release dump_sea_life`
+    #[test]
+    fn dump_sea_life() {
+        let Ok(dir) = std::env::var("SEA_DUMP") else { return };
+        let colors = crate::assets::materials();
+        for look in FISH.into_iter().chain(SHARKS).chain([Look::RawFish, Look::CookedFish, Look::SharkTooth]) {
+            let px = if is_shark(look) { 6u32 } else { 14 };
+            let frames: Vec<usize> = [0, 1, 6, 11, 16, POSE_WINDUP, POSE_STRIKE, crate::animals::POSE_SPECIAL].into_iter().filter(|&f| shown(look, f)).collect();
+            for f in frames {
+                let m = frame_model(look, f);
+                let [sx, sy, sz] = m.size;
+                let at = |x: u32, y: u32, z: u32| m.voxels[(x + (y + z * sy) * sx) as usize];
+                let (w, h) = (sx * px, (sy + sz + 2) * px);
+                let mut img = image::RgbImage::from_pixel(w.max(1), h.max(1), image::Rgb([30, 30, 40]));
+                let mut put = |x: u32, y: u32, c: [u8; 3], shade: f64| {
+                    let c = c.map(|v| (v as f64 * shade).min(255.0) as u8);
+                    for dy in 0..px {
+                        for dx in 0..px {
+                            img.put_pixel(x * px + dx, y * px + dy, image::Rgb(c));
+                        }
+                    }
+                };
+                for x in 0..sx {
+                    for y in 0..sy {
+                        if let Some(z) = (0..sz).rev().find(|&z| at(x, y, z) != 0) {
+                            put(x, sy - 1 - y, colors[at(x, y, z) as usize].rgb, 0.55 + 0.45 * z as f64 / sz as f64);
+                        }
+                    }
+                    for z in 0..sz {
+                        if let Some(y) = (0..sy).find(|&y| at(x, y, z) != 0) {
+                            put(x, sy + 1 + (sz - 1 - z), colors[at(x, y, z) as usize].rgb, 1.0 - 0.45 * y as f64 / sy as f64);
+                        }
+                    }
+                }
+                img.save(format!("{dir}/{look:?}-{f}.png")).unwrap();
+            }
+        }
+    }
+
+    /// A sea 48 m by 48 m at 8 voxels a meter, its bottom 4 m up and its top 3 m over that, with an
+    /// island of dry ground 8 m round in its middle
+    fn sea() -> (World, impl Fn(f64, f64) -> f64) {
+        let size = [384u32, 384, 128];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 4].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 8;
+        let island = |x: f64, y: f64| (x - 192.0).hypot(y - 192.0) < 64.0;
+        (world, move |x: f64, y: f64| if island(x, y) { f64::NEG_INFINITY } else { 56.0 })
+    }
+
+    /// A school keeps in the water, off the bottom and under the top, and keeps together, swimming
+    #[test]
+    fn a_school_swims_in_the_water() {
+        let (world, water) = sea();
+        let vpm = 8.0;
+        let mut fish = spawn_school(&world, &water, Look::Silverfin, Vector3::new(60.0, 60.0, 44.0), 7);
+        assert!(fish.len() >= 7, "only {} in the school", fish.len());
+        let start: V3 = fish.iter().map(|f| f.position).sum::<V3>() / fish.len() as f64;
+        for _ in 0..600 {
+            school(&mut fish, None, &[], vpm);
+            for f in &mut fish {
+                f.update(&world, &water, None, 1.0 / 30.0);
+                let c = f.position + Vector3::new(0.0, 0.0, middle(f.look) * vpm);
+                assert!(c.z < 56.0 && c.z > 32.0, "{c:?} out of the water");
+                assert!((c.x - 192.0).hypot(c.y - 192.0) > 60.0, "a fish swam up onto the island");
+            }
+        }
+        let end: V3 = fish.iter().map(|f| f.position).sum::<V3>() / fish.len() as f64;
+        assert!((end - start).norm() > 3.0 * vpm, "the school didn't go anywhere");
+        let spread = fish.iter().map(|f| (f.position - end).norm()).fold(0.0, f64::max) / vpm;
+        assert!(spread < 6.0, "the school's spread {spread:.1} m apart");
+    }
+
+    /// A shark comes round the player swimming, its fin through the top of the water, charges, bites
+    /// and breaks off, never leaving the water nor going up onto the island
+    #[test]
+    fn a_shark_circles_and_bites() {
+        let (world, water) = sea();
+        let vpm = 8.0;
+        let mut shark = spawn_shark(&world, Look::Saltjaw, Vector3::new(60.0, 60.0, 50.0), 3);
+        let player = Vector3::new(110.0, 90.0, 32.0);
+        let (mut circled, mut fin, mut charged, mut bit, mut broke) = (false, false, false, false, false);
+        for _ in 0..1800 {
+            shark.update(&world, &water, Some(player), 1.0 / 30.0);
+            let s = shark.swim.as_ref().unwrap();
+            match s.hunt {
+                Hunt::Circle { .. } => circled = true,
+                Hunt::Charge { .. } => charged = true,
+                Hunt::Break { .. } => broke = true,
+                _ => {}
+            }
+            fin |= s.fin.is_some() && matches!(s.hunt, Hunt::Circle { .. });
+            let c = shark.position + Vector3::new(0.0, 0.0, middle(shark.look) * vpm);
+            assert!(c.z < 56.0 && c.z > 32.0, "{c:?} out of the water");
+            assert!((c.x - 192.0).hypot(c.y - 192.0) > 64.0, "the shark went up onto the island");
+            bit |= shark.boss.as_mut().unwrap().deeds.drain(..).any(|d| matches!(d, Deed::Slam { .. }));
+        }
+        assert!(circled && fin && charged && bit && broke, "circled {circled}, fin out {fin}, charged {charged}, bit {bit}, broke off {broke}");
     }
 }

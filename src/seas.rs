@@ -2,10 +2,14 @@
 //! goes by each frame, a shark's fin pushing its wake through the water, and the `sea` script for
 //! screenshots of it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::*;
 use crate::animals::sealife::Hunt;
+
+/// The frame the `sea` script swims out, once the world's in place and no longer held still as it
+/// is going through to a realm, 0 till then
+static SWIM_AT: AtomicUsize = AtomicUsize::new(0);
 
 /// Whose turn it is to push the water, see fin_turn()
 static FIN_TURN: AtomicBool = AtomicBool::new(false);
@@ -34,16 +38,24 @@ impl App {
         let number = |key: &str, default: f64| setting(key).and_then(|v| v.parse::<f64>().ok()).unwrap_or(default);
         let vpm = self.world.voxels_per_meter as f64;
         let eye = camera_to_voxels(self.camera.position, self.world.size);
-        if frame == 1 {
-            self.stand_in_water(number("sea_depth", 2.5), true);
-            if setting("sea_calm").is_some() {
-                self.game.calm_sea();
+        if frame == 1 && setting("sea_calm").is_some() {
+            self.game.calm_sea();
+        }
+        let mut at = SWIM_AT.load(Ordering::Relaxed);
+        if at == 0 {
+            if frame >= 2 && !self.held_still() {
+                SWIM_AT.store(frame + 20, Ordering::Relaxed);
             }
+            return;
+        }
+        if frame == at {
+            self.stand_in_water(number("sea_depth", 2.5), true);
             return;
         }
         let water = &self.water;
         let level = |x: f64, y: f64| water.surface_at(x, y);
-        if frame == 3 {
+        at += 2;
+        if frame == at {
             let feet = self.player.as_ref().map_or(eye, |p| p.position);
             let look = setting("school").and_then(|name| animals::sealife::FISH.into_iter().find(|l| l.name() == name));
             for k in 0..number("schools", 3.0) as usize {
@@ -57,9 +69,10 @@ impl App {
             }
             return;
         }
-        if frame < 3 {
+        if frame < at {
             return;
         }
+        let frame = frame - at;
         let view = setting("sea_view").unwrap_or_default();
         match view.as_str() {
             // Under the water by the nearest fish, looking at it and those about it
@@ -93,21 +106,29 @@ impl App {
                 if let Some((shark, _, hunt)) = self.game.nearest_shark(eye) {
                     self.camera.look_at(voxels_to_camera(shark, self.world.size));
                     if frame % 20 == 0 {
-                        println!("frame {frame}: the shark's {:.1} m off, {hunt:?}", (shark - eye).norm() / vpm);
+                        let feet = self.player.as_ref().map_or(eye, |p| p.position);
+                        let (over_feet, over_shark) = ((self.water.surface_at(feet.x, feet.y) - feet.z) / vpm, (self.water.surface_at(shark.x, shark.y) - shark.z) / vpm);
+                        println!("frame {frame}: the shark's {:.1} m off, {hunt:?}, water {over_shark:.2} m over it and {over_feet:.2} m over the player's feet", (shark - feet).norm() / vpm);
                     }
                     if let Hunt::Bite { t } = hunt
                         && t < 0.05
                         && let Some(capture) = &mut self.capture
                     {
                         println!("frame {frame}: the shark bites");
-                        capture.shots.push(frame + 1);
+                        capture.shots.push(frame + at + 2);
+                    }
+                    if let Hunt::Break { t, .. } = hunt
+                        && t < 0.05
+                    {
+                        let feet = self.player.as_ref().map_or(eye, |p| p.position);
+                        println!("frame {frame}: the shark breaks off: {}", self.game.report(feet));
                     }
                     if let Hunt::Charge { t } = hunt
                         && (0.9..0.95).contains(&t)
                         && let Some(capture) = &mut self.capture
                     {
                         println!("frame {frame}: the shark lunges");
-                        capture.shots.push(frame + 1);
+                        capture.shots.push(frame + at + 2);
                     }
                 }
             }
