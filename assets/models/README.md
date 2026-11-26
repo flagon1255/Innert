@@ -90,7 +90,7 @@ The frames are baked from jointed pieces: a head, a torso, upper arms and forear
 shins, a tail, what's held in a hand. Each piece is its own file, `<creature>/<piece>.vox`, with
 its joint at the scene's middle.
 
-Within 40 meters, the nearest ten or so are posed afresh every frame from those same pieces, as
+Within 40 meters (28 on the Medium preset, 18 on Low), the nearest ten or so are posed afresh every frame from those same pieces, as
 smoothly as time goes, rather than stepping from one baked frame to the next: partway between the
 frames of their walk, easing into and out of it, and partway between the frames of each blow. The
 townsfolk and merchants breathe, look about, turn their heads to whoever comes near, and talk with
