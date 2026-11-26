@@ -380,6 +380,8 @@ pub struct Studio {
     texture: Option<egui::TextureHandle>,
     /// The mouse taken to be this far across and down the picture, for screenshot runs
     pub hover_at: Option<[f32; 2]>,
+    /// Where the picture was last shown, on the screen
+    shown: Option<egui::Rect>,
     /// What's said under the controls, as where the files were exported to
     said: Option<String>,
 }
@@ -406,6 +408,7 @@ impl Studio {
             shot: None,
             texture: None,
             hover_at: None,
+            shown: None,
             said: None,
         }
     }
@@ -687,6 +690,7 @@ pub fn window(ctx: &egui::Context, studio: &mut Studio, character: &mut Characte
 /// The picture to paint on, `size` across and down
 fn view(ui: &mut egui::Ui, studio: &mut Studio, character: &mut Character, size: [f32; 2]) {
     let (rect, response) = ui.allocate_exact_size(vec2(size[0], size[1]), Sense::click_and_drag());
+    studio.shown = Some(rect);
     let k = (ui.ctx().pixels_per_point() as f64).min(MOST_PIXELS / size[0].max(size[1]) as f64);
     let pixels = [(size[0] as f64 * k).round().max(8.0) as usize, (size[1] as f64 * k).round().max(8.0) as usize];
     let looks = character.looks;
@@ -786,7 +790,9 @@ fn view(ui: &mut egui::Ui, studio: &mut Studio, character: &mut Character, size:
         for &(p, key, face, mirrored) in &targets {
             let index = if tool == Tool::Pick { h.index } else { paint::index_of(&studio.models[p].0, &studio.models[p].1, key) };
             let corners: Vec<Pos2> = shot.corners(p, index, face).iter().map(|&c| to_screen(c)).collect();
-            let colour = if mirrored { tool.outline().gamma_multiply(0.55) } else { tool.outline() };
+            // Grey where the tool does nothing, as adding or taking away off the head
+            let idle = matches!(tool, Tool::Add | Tool::Remove) && p != HEAD;
+            let colour = if idle { Color32::from_gray(120) } else if mirrored { tool.outline().gamma_multiply(0.55) } else { tool.outline() };
             painter.add(egui::Shape::closed_line(corners, Stroke::new(if mirrored { 1.5f32 } else { 2.0 }, colour)));
         }
         let m = paint::voxel(&studio.models[h.piece].0, h.index);
@@ -934,7 +940,7 @@ mod tests {
 
     /// The face, seen close up, fills the picture, and what's under its middle is the head
     fn face_studio() -> (Studio, Character, Shot) {
-        let mut character = Character::default();
+        let character = Character::default();
         let mut studio = Studio::new(Focus::Face);
         studio.sync(&character);
         let shot = render(&studio.models, &character.looks, &studio.posed, &studio.camera.unwrap(), [300, 300]);
@@ -1101,6 +1107,47 @@ mod tests {
             println!("{focus:?}: {each:.1} ms");
             assert!(each < 60.0, "{focus:?} takes {each:.1} ms to draw");
         }
+    }
+
+    /// With the mouse as a player uses it: dragged over the face it paints a stroke, Ctrl+Z takes
+    /// it off again, a right click picks up the colour under it, and Done's done
+    #[test]
+    fn painted_with_the_mouse() {
+        use egui::{Event, PointerButton};
+        let ctx = egui::Context::default();
+        let mut studio = Studio::new(Focus::Face);
+        let mut character = Character::default();
+        let screen = egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(1548.0, 872.0));
+        let frame = |studio: &mut Studio, character: &mut Character, events: Vec<Event>, modifiers: Modifiers| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, modifiers, ..Default::default() };
+            let mut done = false;
+            let _ = ctx.run(input, |ctx| done = window(ctx, studio, character));
+            done
+        };
+        let none = Modifiers::NONE;
+        for _ in 0..2 {
+            frame(&mut studio, &mut character, vec![], none);
+        }
+        let rect = studio.shown.expect("the picture's shown");
+        let (from, to) = (rect.center() + vec2(-60.0, 40.0), rect.center() + vec2(60.0, 40.0));
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: none };
+        frame(&mut studio, &mut character, vec![Event::PointerMoved(from)], none);
+        frame(&mut studio, &mut character, vec![button(from, true)], none);
+        for k in 1..=6 {
+            frame(&mut studio, &mut character, vec![Event::PointerMoved(from + (to - from) * k as f32 / 6.0)], none);
+        }
+        frame(&mut studio, &mut character, vec![button(to, false)], none);
+        let stroke = character.paint.len();
+        assert!(stroke >= 4, "a stroke across the face painted {stroke} voxels");
+        assert_eq!(studio.undo.len(), 1, "the stroke's one thing to undo");
+        let z = Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND };
+        frame(&mut studio, &mut character, vec![z], Modifiers::COMMAND);
+        assert!(character.paint.is_empty());
+        let right = |pressed| Event::PointerButton { pos: from, button: PointerButton::Secondary, pressed, modifiers: none };
+        frame(&mut studio, &mut character, vec![Event::PointerMoved(from), right(true)], none);
+        frame(&mut studio, &mut character, vec![right(false)], none);
+        assert_eq!(studio.colour, Colour::Look(Role::Skin), "picked up off the face");
+        assert!(character.paint.is_empty());
     }
 
     /// At the size of the window played in and shorter, the whole of it's on screen
