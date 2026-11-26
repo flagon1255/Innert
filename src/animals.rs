@@ -3853,6 +3853,8 @@ pub struct Animal {
     /// For a serpent lying on the ground, how its body's tipped to lie along the slope under it, in
     /// radians: its head down, and over onto its right, eased towards the ground it's on
     lie: [f64; 2],
+    /// For a demi-boss, which of demis::KINDS it is: drawn bigger and tinted, see src\demis.rs
+    pub demi: Option<u8>,
     /// And how much longer and wider than its model it's drawn: its S-curve tight and quick going
     /// fast, fleeing or coming on to strike, loose and lazy going slowly, see serpents::stretch()
     stretch: [f64; 2],
@@ -4048,6 +4050,7 @@ impl Animal {
             rng,
             focus: None,
             lie: [0.0; 2],
+            demi: None,
             stretch: [1.0; 2],
             drape: [0.0; 4],
         }
@@ -4139,7 +4142,7 @@ impl Animal {
             return self.position + focus;
         }
         let lifted = self.boss.as_ref().map_or(0.0, |b| b.sway()[2]);
-        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
+        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 * self.grown() + lifted) * world_voxels_per_meter as f64)
     }
 
     /// Where the boulder the Earthbreaker Colossus is tearing up out of the ground is, in voxels,
@@ -4189,6 +4192,11 @@ impl Animal {
     pub fn roams(&self) -> bool {
         let wandering = self.boss.as_ref().is_some_and(|b| b.key[2] == -2);
         self.look.is_wild() || wandering && matches!(self.look, Look::Zombie | Look::Ghoul | Look::Bloater | Look::Skeleton | Look::BoneArcher)
+    }
+
+    /// How much bigger it's drawn than its kind: a demi-boss's grown, see src\demis.rs
+    pub fn grown(&self) -> f64 {
+        self.demi.map_or(1.0, |k| crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].grown)
     }
 
     /// How much health it has left, 0-1
@@ -4646,7 +4654,7 @@ impl Animal {
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let vpm = world_voxels_per_meter as f64;
-        let mut radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
+        let mut radius = (self.look.reach() * self.grown() + on.abs() + up.abs()) * vpm;
         // An ordinary serpent's S-curve stretched or squeezed for how fast it goes, and its body
         // draped over the ground under it, see AnimalInstance::shaped()
         let shaped = serpents::kind(self.look).is_some() && (self.stretch != [1.0; 2] || self.drape != [0.0; 4]);
@@ -4655,8 +4663,14 @@ impl Animal {
             radius = radius * self.stretch[0].max(self.stretch[1]).max(1.0) + most * vpm;
         }
         let instance = AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint());
-        if shaped { instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale)) } else { instance }
-    }
+        if shaped {
+            return instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale));
+        }
+        // A demi-boss in the skin it's taken on down in the dark
+        match self.demi {
+            Some(k) => instance.skinned(crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].skin),
+            None => instance,
+        }    }
 
     /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's
     /// drawn, in voxels: where it can be hit, see serpents::focus()
@@ -4686,7 +4700,7 @@ impl Animal {
             None => 0,
         };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
-        let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
+        let mut scale = world_voxels_per_meter as f64 / self.look.resolution() * self.grown();
         let mut heading = self.drawn_heading;
         // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
         // less the faster they go, so they're never still as statues between frames; a jointed boss

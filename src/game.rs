@@ -32,6 +32,8 @@ mod dragonfire;
 mod aerie;
 /// The specialist merchants, talked to and asked to the base, see src\merchants.rs
 mod specialists;
+mod demi;
+pub use demi::DemiLair;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -855,6 +857,11 @@ pub struct Game {
     /// Bosses' lairs in this piece of the world, and those beaten, by where they are in the landscape
     lairs: Vec<Lair>,
     defeated: HashSet<[i64; 3]>,
+    /// The demi-bosses' lairs down in the ravines in this piece of the world, see src\demis.rs;
+    /// those beaten are among defeated
+    demis: Vec<DemiLair>,
+    /// Those the player's come near, marked on the map, see game\demi.rs
+    demis_seen: HashSet<[i64; 3]>,
     /// Dungeon halls in this piece of the world, and those cleared of monsters
     dens: Vec<[i64; 3]>,
     cleared: HashSet<[i64; 3]>,
@@ -1153,6 +1160,8 @@ impl Game {
             safe_for: 0.0,
             lairs: Vec::new(),
             defeated: HashSet::new(),
+            demis: Vec::new(),
+            demis_seen: HashSet::new(),
             dens: Vec::new(),
             cleared: HashSet::new(),
             boss_chests: Vec::new(),
@@ -2237,7 +2246,7 @@ impl Game {
             if !animal.toughened && animal.look.build().is_some() {
                 animal.toughened = true;
                 if animal.level == 0 {
-                    let slain = slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
+                    let slain = if animal.demi.is_some() { Slain::Demi } else { slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs) };
                     let mut roll = hash(animal.id ^ 0x1e7e1);
                     animal.level = levels::foe_level(band, player_level, slain, random(&mut roll));
                 }
@@ -2326,10 +2335,13 @@ impl Game {
         self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, water, player, dt);
         // The boss bar's trail catching up with what it's lost, a moment after each blow
-        if let Some((foe, health, ..)) = self.foe(view.eye) {
-            let name = foe.name();
+        if let Some((foe, health, .., name)) = self.foe(view.eye) {
+            // A demi-boss stirring from among the bones, see src\demis.rs
+            if foe.is_monster() && name != self.boss_bar.0 {
+                self.say(format!("{name} stirs among the bones and comes for you!"));
+            }
             // A boss newly come for the player taunts them by name
-            if name != self.boss_bar.0 && !name.is_empty() {
+            if !foe.is_monster() && name != self.boss_bar.0 && !name.is_empty() {
                 const TAUNTS: [&str; 5] = ["So, {}. You came at last.", "Kneel, {}, and it will be quick.", "Another fool. Your name, {}, dies with you.", "I smell your fear, {}.", "{}... they will sing nothing of you."];
                 let taunt = TAUNTS[hash(name.len() as u32 ^ self.seed ^ self.level) as usize % TAUNTS.len()].replace("{}", &self.character.name);
                 self.say(format!("The {name}: \"{taunt}\""));
@@ -2346,6 +2358,9 @@ impl Game {
                 trail -= 0.6 * dt;
             }
             self.boss_bar = (name, health, trail.max(health), hold, (flash - dt / 0.18).max(0.0));
+        }
+        if let Some(feet) = player {
+            self.note_demis(feet, world.voxels_per_meter as f64);
         }
         self.reap(world);
         self.leaves.update(world, water, view.eye, dt);
@@ -3484,15 +3499,23 @@ impl Game {
         }
     }
 
-    /// The boss fighting the player, if any, nearest first: which it is, how much health it has
-    /// left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>, u32)> {
+    /// The boss fighting the player, if any, nearest first, or a demi-boss, see src\demis.rs:
+    /// which it is, how much health it has left, 0-1, whether it's enraged, where its middle is,
+    /// whether it's warded, its level, and what it's called
+    #[allow(clippy::type_complexity)]
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>, u32, &'static str)> {
         let vpm = self.combat.vpm() as u32;
         self.animals
             .iter()
-            .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
+            .filter(|a| a.health > 0.0 && (a.look.is_boss() || a.demi.is_some()) && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded, a.level))
+            .map(|a| {
+                let name = match (a.demi, &a.boss) {
+                    (Some(kind), Some(b)) => crate::demis::name(kind, b.key),
+                    _ => a.look.name(),
+                };
+                (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded, a.level, name)
+            })
     }
 
     /// Whether a boss being fought has its bar up along the bottom of the view, see hud()
@@ -3507,7 +3530,7 @@ impl Game {
 
     /// For trying them out: every boss about down to `fraction` of its health
     pub fn hurt_bosses(&mut self, fraction: f64) {
-        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss()) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss() || a.demi.is_some()) {
             animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
         }
     }
@@ -3606,7 +3629,7 @@ impl Game {
             let look = animal.look;
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
             // Experience for every monster and boss slain, by its level and what it was
-            let slain = slain_of(look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
+            let slain = self.slain(&animal);
             if look.is_monster() || look.is_boss() {
                 let more = self.experience_boost();
                 self.gain_experience((levels::experience(animal.level.max(1), slain) * more).round(), Some(middle + Vector3::new(0.0, 0.0, 1.2 * vpm)));
@@ -3621,6 +3644,7 @@ impl Game {
             }
             let from = (animal.level.max(1), match slain {
                 Slain::Monster => Source::Found,
+                Slain::Demi => Source::Demi,
                 Slain::Boss => Source::Boss,
                 Slain::Raid | Slain::Finale => Source::Raid,
             });
@@ -3651,7 +3675,11 @@ impl Game {
                     }
                 }
             }
-            if look.is_monster() && !burst {
+            // A demi-boss leaves what it hoarded down there, see game\demi.rs
+            if let Some(kind) = animal.demi {
+                self.demi_spoils(world, &animal, kind, from);
+            }
+            if look.is_monster() && !burst && animal.demi.is_none() {
                 let mut loot = Vec::new();
                 // People and the dead had a little gold on them; what spiders and burrowers caught
                 // now and then did; wolves, gloomwings, lurkers and tuskers have nothing
@@ -3788,7 +3816,7 @@ impl Game {
             }
             if burst {
                 self.say("A bloater bursts in a cloud of venom!");
-            } else if look.is_monster() {
+            } else if look.is_monster() && animal.demi.is_none() {
                 self.say(format!("You slew a {}.", look.name()));
             } else if !look.is_boss() {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
@@ -5049,6 +5077,8 @@ impl Game {
         let mut done = save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() };
         // What's known of the dragons' lairs, see game\dragonfire.rs
         done.set_section(crate::dragons::WORLD_SECTION, &self.dragonfire.lore);
+        // The demi-bosses' lairs come near, for the map, see game\demi.rs
+        done.set_section(demi::SEEN_SECTION, &sorted(&self.demis_seen));
         done
     }
 
@@ -5168,6 +5198,7 @@ impl Game {
         self.defeated = world.defeated.iter().copied().collect();
         self.cleared = world.cleared.iter().copied().collect();
         self.dragonfire.lore = world.section(crate::dragons::WORLD_SECTION).unwrap_or_default();
+        self.demis_seen = world.section::<Vec<[i64; 3]>>(demi::SEEN_SECTION).unwrap_or_default().into_iter().collect();
         self.stocks.clear();
         for stock in &world.stocks {
             let mut wares = Vec::new();
@@ -6499,7 +6530,7 @@ impl Game {
         let (eye, look) = (view.eye, view.forward());
         let mut aimed: Option<(u32, f64)> = None;
         for animal in &self.animals {
-            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() {
+            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() || animal.demi.is_some() {
                 continue;
             }
             let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
@@ -6806,7 +6837,7 @@ impl Game {
         self.level_hud(&painter, panel, pad);
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((foe, vitality, enraged, middle, ward, level)) = self.foe(view.eye) {
+        if let Some((foe, vitality, enraged, middle, ward, level, title)) = self.foe(view.eye) {
             // Off the edge of the screen or behind, an arrow round the edge points the way to it,
             // with how far
             let inner = screen.shrink(50.0);
@@ -6836,10 +6867,11 @@ impl Game {
             } else if foe.is_raid() {
                 format!("RAID  ·  {}", foe.name())
             } else {
-                foe.name().to_string()
+                title.to_string()
             };
-            // A raid boss's bar is longer
-            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
+            // A raid boss's bar is longer, a demi-boss's shorter
+            let demi = foe.is_monster();
+            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else if demi { 0.32 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
             let tall = if ultra { 18.0 } else { 12.0 };
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
@@ -6877,7 +6909,8 @@ impl Game {
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
             let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
-            let [r, g, b] = element.map_or([190, 40, 35], |e| e.color().map(|c| (c as f32 * 0.85) as u8));
+            // A demi-boss's bar the colour of dusk, so it's not taken for a boss's
+            let [r, g, b] = element.map_or(if demi { [150, 60, 190] } else { [190, 40, 35] }, |e| e.color().map(|c| (c as f32 * 0.85) as u8));
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
             // Where a raid boss goes into its next phases, marked across the bar
             let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {

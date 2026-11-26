@@ -76,6 +76,7 @@ mod combat;
 mod compass;
 mod crash;
 mod daynight;
+mod demis;
 mod dragons;
 mod editor;
 mod felling;
@@ -2050,8 +2051,50 @@ impl Placed {
                 .collect();
             worldgen::set_lairs(terrain.seed, lairs);
         }
+        // `--set crevice=edge` starts on the rim of the nearest open ravine beside the hollow at its
+        // bottom, looking down into it; `crevice=bottom` down on its floor looking across the
+        // hollow at what's there, `crevice=ramp` at the top of the way down looking down it,
+        // `crevice=air` high over it, `crevice=demi` and `crevice=fight` on the floor of the nearest
+        // with a demi-boss in it, the latter near enough for it to come for the player, and
+        // `crevice=built` high over the nearest thing built near the edge of one. With
+        // `--set hold=bones`, `crystals`, `fungus`, `nest` or `cache`, the nearest with that down in it.
+        let crevice_view = setting("crevice");
+        // `--set demi=archer`, `brute`, `ghoul` or `spider`: every demi-boss that kind, see demis.rs
+        if let Some(kind) = setting("demi")
+            && !demis::force(kind)
+        {
+            println!("No demi-boss grows from a {kind}");
+        }
+        // Near where a new game sets out, so with a mode too the world needn't move on from it
+        let near_start = {
+            let widest = memory::WIDTHS_M[0] * terrain.voxels_per_meter;
+            let at = camera_to_voxels(scene.initial_camera().position, [widest, widest, terrain.size()[2]]) / terrain.voxels_per_meter as f64;
+            [at.x as f32, at.y as f32]
+        };
+        let hold = setting("hold").and_then(|h| worldgen::Hold::ALL.into_iter().find(|k| format!("{k:?}").eq_ignore_ascii_case(h)));
+        let chasm_built = crevice_view.filter(|v| *v == "built").and_then(|_| worldgen::built_by_chasm(&terrain, near_start, 14.0, &rivers));
+        let chasm = match crevice_view {
+            Some("built") => chasm_built.map(|(_, _, c)| c),
+            Some("demi" | "fight") => worldgen::nearest_chasm(&terrain, near_start, Some(worldgen::Hold::Lurker)),
+            Some(_) => worldgen::nearest_chasm(&terrain, near_start, hold),
+            None => None,
+        };
+        if let Some(c) = &chasm {
+            println!("Crevice: {:?} down in it, its floor at {:.0}, {:.0}, {:.1} m under its rim", c.hold, c.floor[0], c.floor[1], c.rim[2] - c.floor[2]);
+        }
+        if let Some((kind, at, _)) = chasm_built {
+            println!("Built by a crevice: a {kind} at {:.0}, {:.0}", at[0], at[1]);
+        }
+        let chasm_spot = chasm.map(|c| match chasm_built {
+            Some((_, at, _)) => [(at[0] + c.rim[0]) * 0.5, (at[1] + c.rim[1]) * 0.5],
+            // Between it and where a new game sets out, if they're near enough for both to be in
+            // the world, so a game started with `--set mode=` needn't move it on
+            None if (c.floor[0] - near_start[0]).hypot(c.floor[1] - near_start[1]) < 110.0 => [(c.floor[0] + near_start[0]) * 0.5, (c.floor[1] + near_start[1]) * 0.5],
+            None => [c.floor[0], c.floor[1]],
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
         let start_in = dragon_lair
+            .or(chasm_spot)
             .or(camp_at)
             .or(dungeon.map(|d| [d[0], d[1]]))
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
@@ -2322,6 +2365,40 @@ impl Placed {
             let eye = Vector3::new(eye.x, eye.y, ground(eye) + setting("rise").and_then(|v| v.parse::<f64>().ok()).unwrap_or(16.0) * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(Vector3::new(middle.x, middle.y, ground(middle) + 3.0 * vpm), world.size));
+        } else if let Some(c) = &chasm {
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let flat = |d: [f32; 2]| Vector3::new(d[0] as f64, d[1] as f64, 0.0);
+            let (across, along) = (flat(c.across), flat(c.along));
+            let (eye, target) = match crevice_view {
+                // Over the middle of it a little above its rim, looking down along it to the floor
+                Some("edge") => {
+                    let eye = at(c.floor) - along * 12.0 * vpm;
+                    (Vector3::new(eye.x, eye.y, at(c.rim).z + 4.0 * vpm), at(c.floor) + along * 3.0 * vpm)
+                }
+                Some("ramp") => (at(c.top) + up(1.7), at(c.foot) + up(1.2)),
+                Some("air") => (at(c.rim) - across * 14.0 * vpm + up(26.0), at(c.floor)),
+                Some("built") => {
+                    let built = chasm_built.map_or(c.rim, |(_, b, _)| b);
+                    let middle = (at(built) + at(c.rim)) * 0.5;
+                    let side = Vector3::new(-(at(built) - at(c.rim)).y, (at(built) - at(c.rim)).x, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                    (middle + side * 34.0 * vpm + up(30.0), middle)
+                }
+                // Back along the floor from the hollow, looking across it
+                Some("demi") => (at(c.floor) - along * 11.0 * vpm + up(1.7), at(c.floor) + up(1.0)),
+                Some("fight") => (at(c.floor) - along * 6.0 * vpm + up(1.7), at(c.floor) + up(1.0)),
+                _ => (at(c.floor) - along * 6.5 * vpm + up(1.7), at(c.floor) + along * 2.0 * vpm + up(0.4)),
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
+            // The same view for a build without this, as `--set camera=` and `look_at=`, in the world
+            // that starts round that camera
+            let shift = Vector3::new(origin[0] as f64, origin[1] as f64, 0.0);
+            let e = voxels_to_camera(eye + shift, [widest, widest, terrain.size()[2]]);
+            let there = [0, 1].map(|i| (((eye + shift)[i]) as i64 - terrain.size()[i] as i64 / 2 + strip / 2).div_euclid(strip) * strip);
+            let t = voxels_to_camera(target + shift - Vector3::new(there[0] as f64, there[1] as f64, 0.0), world.size);
+            println!("Crevice view: --set camera={},{},{} --set look_at={},{},{}", e.x, e.y, e.z, t.x, t.y, t.z);
         } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
@@ -2361,7 +2438,8 @@ impl Placed {
         if let Some(target) = setting("look_at").and_then(parse_vector) {
             camera.look_at(target);
         }
-        let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city;
+        let down_in_chasm = chasm.is_some() && matches!(crevice_view, Some("bottom" | "demi" | "fight"));
+        let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city || down_in_chasm;
         // Into the world that moves on from here a strip at a time
         let (world, pieces, river_springs) = match &landscape {
             Some(landscape) => into_window(world, landscape),
@@ -2990,7 +3068,17 @@ impl App {
         // come back from the save next time.
         if let Some(mode) = setting("mode").and_then(save::Mode::parse) {
             let saved = if flag("new", false) { None } else { app.session.saves.saved(mode).cloned() };
+            let view = (app.camera.position, app.camera.rotation);
             app.begin(mode, saved);
+            // `--set crevice=fight` and the like with a mode too: the player stands where the view
+            // of the ravine is, near where the game sets out, see Placed::place()
+            if setting("crevice").is_some() {
+                let eye = camera_to_voxels(view.0, app.world.size);
+                let mut player = Player::new(eye, &app.world);
+                player.position = eye - Vector3::new(0.0, 0.0, 1.6 * app.world.voxels_per_meter as f64);
+                app.player = Some(player);
+                (app.camera.position, app.camera.rotation) = view;
+            }
             if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
                 app.game.set_health(health);
             }
@@ -3173,8 +3261,8 @@ impl App {
             })
             .collect();
         // Bosses guard some of the ruins: golems the castles and watchtowers, drakes the desert
-        // ruins and pyramids, Ironhide the shrines, colonnades and ravines. Each waits a little way
-        // out in front, where there's room to fight.
+        // ruins and pyramids, Ironhide the shrines and colonnades. Each waits a little way out in
+        // front, where there's room to fight. Down in the ravines it's demi-boss's instead, below.
         let camps = &landscape.camps;
         let camp_at = |site: &worldgen::Site| camps.iter().find(|c| c.fire == site.position);
         let lairs: Vec<game::Lair> = landscape
@@ -3229,9 +3317,6 @@ impl App {
                     "watchtower" | "colonnade" if pick % 2 == 1 => animals::Look::Direwolf,
                     "watchtower" | "pyramid" | "flooded church" => animals::Look::Drake,
                     "colonnade" => animals::Look::Ironhide,
-                    // A crevice is shut in under the ground, with no way down to it, so nothing
-                    // guards it
-                    "ravine" => animals::Look::Spider,
                     // In caves spiders, cave bears, and golems of the stone itself
                     "cavern" if pick % 3 == 2 => animals::Look::Golem,
                     "cavern" if pick % 3 == 1 => animals::Look::Ironhide,
@@ -3242,7 +3327,7 @@ impl App {
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart" | "dragon lair") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart" | "dragon lair") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
                 // As hard to beat there as a realm's finale, see realms::FINALE_PROMOTION
                 let key = if look == dragons::ULTRA { realms::finale_key_at([at[0] as f64, at[1] as f64]) } else { key };
@@ -3255,8 +3340,9 @@ impl App {
         let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).chain(self.serpent_sites()).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
-        // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
-        // front of desert ruins and pyramids
+        // once they're all dead, and burrowers dig in out in front of desert ruins and pyramids.
+        // Down at the bottoms of open ravines the dead walk among the bones, gloomwings roost
+        // among the crystals and spiders nest, see worldgen\ravines.rs.
         let dens: Vec<game::Den> = landscape
             .sites
             .iter()
@@ -3274,7 +3360,9 @@ impl App {
                             hint: c.hint,
                         }),
                     ),
-                    "ravine" => (game::DenKind::Roost, 0.0, None),
+                    worldgen::ROOST_SITE => (game::DenKind::Roost, 0.0, None),
+                    worldgen::NEST_SITE => (game::DenKind::Nest, 0.0, None),
+                    worldgen::BONES_SITE => (game::DenKind::Hall, 0.0, None),
                     "desert ruins" | "pyramid" => (game::DenKind::Burrows, 12.0, None),
                     "fallen castle" | "fallen court" | "fallen hall" | "fallen throne" => (game::DenKind::Fallen, 0.0, None),
                     // The dead walking the streets, the square, the canal and the temple of a city
@@ -3311,7 +3399,7 @@ impl App {
                     return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading), trade: None });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town" | "gargoyle perch") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || site.kind.starts_with("ravine") || site.kind == worldgen::LURKER_SITE || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town" | "gargoyle perch") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
@@ -3348,6 +3436,14 @@ impl App {
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
+        // A demi-boss down in one in five of the open ravines, see src\demis.rs
+        let demis: Vec<game::DemiLair> = landscape
+            .sites
+            .iter()
+            .filter(|site| site.kind == worldgen::LURKER_SITE)
+            .map(|site| game::DemiLair { position: to_voxels(site.position), heading: (site.facing[1] as f64).atan2(site.facing[0] as f64), key: site.position.map(|v| (v * 10.0).round() as i64) })
+            .collect();
+        self.game.set_demis(&self.world, &|x, y| water.surface_at(x, y), demis);
         self.game.set_shrines(&self.world, shrines);
         self.place_omens();
 

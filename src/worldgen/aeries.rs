@@ -197,7 +197,13 @@ fn shoulder(settings: &TerrainSettings, summit: [f32; 2]) -> Option<[f32; 2]> {
         .filter(|&(_, h)| h > peak - BELOW_TOP)
         .collect();
     spots.sort_by(|a, b| b.1.total_cmp(&a.1));
-    spots.into_iter().map(|(at, _)| at).filter(|&at| unevenness(settings, at) < 2.2).take(24).find(|&at| good_peak(settings, at))
+    spots.into_iter().map(|(at, _)| at).filter(|&at| unevenness(settings, at) < 2.2 && !by_ravine(settings, at)).take(24).find(|&at| good_peak(settings, at))
+}
+
+/// Whether a shrine at `at` would stand over a ravine or at its edge, its standing stones and the
+/// steps up onto it too, see ravines.rs
+fn by_ravine(settings: &TerrainSettings, at: [f32; 2]) -> bool {
+    ravines::over_ravine(settings, [at[0] - 4.0, at[1] - 4.0, at[0] + 4.0, at[1] + 4.0], 3.0)
 }
 
 /// Whether `at` is where a shrine can stand: on the top of a fine peak, near enough level for its
@@ -208,7 +214,7 @@ pub fn good_peak(settings: &TerrainSettings, at: [f32; 2]) -> bool {
         return false;
     };
     let near = (summit[0] - at[0]).hypot(summit[1] - at[1]) <= SHOULDER as f32 * 3.0 * 1.5;
-    fine_summit(settings, summit) && near && h > peak - BELOW_TOP - 0.01 && unevenness(settings, at) < 2.2 && way_up(settings, at).is_some()
+    fine_summit(settings, summit) && near && h > peak - BELOW_TOP - 0.01 && unevenness(settings, at) < 2.2 && !by_ravine(settings, at) && way_up(settings, at).is_some()
 }
 /// Which way there's a way up to a shrine at `at`, coming down from it: a way no step of which is
 /// higher than STEEPEST for each meter along, down to land a good way lower, or in the sky isles,
