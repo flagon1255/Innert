@@ -5374,6 +5374,7 @@ impl Game {
         for &(stat, value) in self.character.class.lean() {
             self.totals.0[stat as usize] += value;
         }
+        self.combat.set_backstab(self.totals.0[Stat::Backstab as usize]);
         self.boost_version = self.boost_version.wrapping_add(1).max(1);
         if self.health > 0.0 {
             self.health = self.health.min(self.max_health());
@@ -8890,6 +8891,7 @@ mod tests {
                 Stat::Leech => g.leech(),
                 Stat::GoldFind => g.more_gold(1000) as f64,
                 Stat::Experience => g.experience_boost(),
+                Stat::Backstab => 1.0 + g.combat.backstab(),
             }
         };
         let web = game.web.clone();

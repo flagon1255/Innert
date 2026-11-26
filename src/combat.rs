@@ -2102,6 +2102,9 @@ pub struct Combat {
     /// hand, and whether the throw going on is a heavy one, see thrown.rs
     flung: std::cell::Cell<Option<thrown::Flung>>,
     throw_heavy: bool,
+    /// How much harder the player's blows land from behind or unseen, from the skill web and their
+    /// class, as a share, see set_backstab()
+    backstab: f64,
     shackle: Option<Shackle>,
     blood_moon: Option<BloodMoon>,
     /// Cluster Volley's bombs waiting to be fired, see Lob
@@ -5462,6 +5465,7 @@ impl Combat {
             thrown: None,
             flung: std::cell::Cell::new(None),
             throw_heavy: false,
+            backstab: 0.0,
             shackle: None,
             blood_moon: None,
             lobs: Vec::new(),
@@ -13509,6 +13513,30 @@ impl Combat {
         self.cues.push(Cue::at(Sound::Crackle, to, 0.8));
     }
 
+    /// How much harder the player's blows land from behind or at what hasn't seen them, in
+    /// percent, see skills::Stat::Backstab
+    pub fn set_backstab(&mut self, percent: f64) {
+        self.backstab = (percent / 100.0).max(0.0);
+    }
+
+    /// How much harder, as a share, see set_backstab()
+    pub fn backstab(&self) -> f64 {
+        self.backstab
+    }
+
+    /// Whether the player's behind animal `i`, or it's not yet seen them: unhurt, and not running
+    fn unseen_or_behind(&self, arena: &Arena, i: usize) -> bool {
+        let a = &arena.animals[i];
+        let Some(feet) = arena.player else {
+            return false;
+        };
+        let to = (feet - a.position).xy();
+        let facing = nalgebra::Vector2::new(a.heading.cos(), a.heading.sin());
+        let behind = to.try_normalize(1e-6).is_some_and(|t| t.dot(&facing) < -0.35);
+        let unseen = a.health >= a.max_health && a.mood != crate::animals::Mood::Run && !a.look.is_boss();
+        behind || unseen
+    }
+
     /// One hit landing on animal `i`: its damage, then the weapon's effects and synergies
     fn strike(&mut self, arena: &mut Arena, profile: &Rc<Profile>, i: usize, blow: Blow) {
         let vpm = arena.view.vpm;
@@ -13531,6 +13559,11 @@ impl Combat {
         }
         if arena.animals[i].status.marked > 0.0 {
             damage *= 1.0 + arena.animals[i].status.mark_bonus;
+        }
+        // A rogue's own blow from behind, or at what's not yet seen them: unhurt and not coming on
+        // at them, see skills::Stat::Backstab
+        if blow.depth == 0 && self.backstab > 0.0 && self.unseen_or_behind(arena, i) {
+            damage *= 1.0 + self.backstab;
         }
         // Rupture: a hit on something bleeding hard tears its wounds open, all the bleeding still
         // to come landing at once
@@ -17933,6 +17966,44 @@ mod tests {
         }
         let _ = vpm;
         out
+    }
+
+    /// A rogue's blows land harder from behind, or at what's not yet seen them, unhurt and not
+    /// coming on; anyone else's as hard from wherever
+    #[test]
+    fn blows_from_behind_land_harder_for_a_rogue() {
+        let library = crate::weapons::Library::load();
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(48.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let weapon = library.generate(3, library.family("dagger"), 0.0);
+        // How much a blow of 10 takes off the bandit ahead, facing `heading`, hurt already or not
+        let hit = |backstab: f64, heading: f64, hurt: bool| {
+            let mut animals = bandit_ahead(&world, feet, 0.0);
+            animals[0].heading = heading;
+            // Standing about, not coming on at the player yet
+            animals[0].mood = crate::animals::Mood::Idle;
+            if hurt {
+                animals[0].health -= 1.0;
+            }
+            let before = animals[0].health;
+            let mut combat = Combat::new(1, 0);
+            combat.set_backstab(backstab);
+            {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.strike(&mut arena, &weapon.profile, 0, Blow { damage: 10.0, crit: false, heavy: false, from: feet, depth: 0, element: None });
+            }
+            before - animals[0].health
+        };
+        // The player's at -y from it: facing +y it's turned away
+        let (away, facing) = (FRAC_PI_2, -FRAC_PI_2);
+        let plain = hit(20.0, facing, true);
+        assert!(plain > 0.0);
+        assert!(hit(20.0, away, true) > plain * 1.15, "from behind");
+        assert!(hit(20.0, facing, false) > plain * 1.15, "unseen");
+        assert!((hit(0.0, away, true) - hit(0.0, facing, true)).abs() < 1e-6, "no rogue, no difference");
     }
 
     /// One bandit 12 m ahead of `feet`, `lift` meters up off the ground, hale enough not to die
