@@ -4723,9 +4723,11 @@ impl Animal {
                 }
             }
         }
+        // Not so far round walking past, only a glance
+        let most = 1.1 - 0.5 * self.stride;
         let ease = 1.0 - (-GAZE_EASE * dt).exp();
         for (now, to) in self.gaze.iter_mut().zip(want) {
-            *now += (to.clamp(-1.1, 1.1) - *now) * ease;
+            *now += (to.clamp(-most, most) - *now) * ease;
         }
         self.talk += (talking - self.talk) * (1.0 - (-2.5 * dt).exp());
     }

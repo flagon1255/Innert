@@ -20,7 +20,7 @@
 //! holding those places, see legacy(), so it goes with them too.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
@@ -1416,12 +1416,21 @@ pub fn legacy(rig: &Rig, pieces: &mut [Piece], dir: &Path, name: &str) -> Result
 
 // Posed live
 
-/// Whether those near the camera are posed afresh every frame from their pieces, see Rig::live(),
-/// rather than drawn in their baked frames: `--set live_npcs=0` draws every one in its frames
-static LIVE: AtomicBool = AtomicBool::new(true);
+/// How near the camera, in meters, those posed afresh every frame from their pieces are, see
+/// Rig::live(), rather than drawn in their baked frames: `--set live_npcs=0` draws every one in
+/// its frames, and `live_npcs=25` poses only those within 25 meters
+static LIVE: AtomicU32 = AtomicU32::new(LIVE_RANGE);
 
-pub fn set_live(on: bool) {
-    LIVE.store(on, Ordering::Relaxed);
+/// How near the camera they're posed live as the game ships, in meters
+pub const LIVE_RANGE: u32 = 40;
+
+pub fn set_live(meters: u32) {
+    LIVE.store(meters, Ordering::Relaxed);
+}
+
+/// How near the camera they're posed live, in meters, 0 for none
+pub fn live_range() -> f64 {
+    LIVE.load(Ordering::Relaxed) as f64
 }
 
 /// Which looks have frames replaced outright by files, `<look>/walk_03.vox` and the like, by KINDS:
@@ -1441,7 +1450,7 @@ pub fn replaced(look: Look, yes: bool) {
 /// Whether `look` can be posed live from its pieces: baked from them, none of them swelling, which
 /// a piece drawn whole can't, and none of its frames replaced by a file
 pub fn posable(look: Look) -> bool {
-    if !LIVE.load(Ordering::Relaxed) {
+    if LIVE.load(Ordering::Relaxed) == 0 {
         return false;
     }
     let Some(k) = kind(look) else { return false };

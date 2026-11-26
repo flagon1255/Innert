@@ -53,11 +53,10 @@ const FISH_RANGE: f64 = 40.0;
 const TONGUE_RANGE: f64 = 25.0;
 /// The most animals, bits of food, props and things flying drawn at once, nearest first
 const MAX_INSTANCES: usize = 140;
-/// Townsfolk, merchants, monsters and animals nearer than this, in meters, are posed afresh from
-/// their pieces every frame, see baked::Rig::live(), as many as LIVE_PIECES pieces between them, and
-/// never more than MOST_INSTANCES drawn in all: shaders\traverse.comp sorts no more than 256 by the
-/// tiles of the screen, and the hook's rope, wings and wards come after
-const LIVE_RANGE: f64 = 40.0;
+/// Townsfolk, merchants, monsters and animals near the camera, see baked::live_range(), are posed
+/// afresh from their pieces every frame, see baked::Rig::live(), as many as LIVE_PIECES pieces
+/// between them, and never more than MOST_INSTANCES drawn in all: shaders\traverse.comp sorts no
+/// more than 256 by the tiles of the screen, and the hook's rope, wings and wards come after
 const LIVE_PIECES: usize = 110;
 const MOST_INSTANCES: usize = 224;
 
@@ -6406,7 +6405,7 @@ impl Game {
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
                 // Near enough, posed live from its pieces, see below
-                if d < LIVE_RANGE * vpm && crate::baked::posable(animal.look) {
+                if d < crate::baked::live_range() * vpm && crate::baked::posable(animal.look) {
                     live.push((creatures.len() - 1, k));
                 }
                 // A serpent's tongue flicking, near enough to be seen

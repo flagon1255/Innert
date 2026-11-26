@@ -2706,8 +2706,9 @@ impl App {
         // their own moves, in a screenshot run, see avians.rs
         avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
         // `--set live_npcs=0` draws townsfolk, merchants, monsters and animals in their baked frames
-        // however near, rather than posed afresh from their pieces, to compare
-        baked::set_live(flag("live_npcs", true));
+        // however near, rather than posed afresh from their pieces, to compare, and `live_npcs=25`
+        // poses only those within 25 meters
+        baked::set_live(setting("live_npcs").and_then(|v| v.parse().ok()).unwrap_or(preset.live_npcs));
         // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
         // try fighting it
         let boss = setting("boss").and_then(|name| {
@@ -4803,6 +4804,7 @@ impl App {
         self.reflections = s.reflections;
         self.fast_upscale = s.fast_upscale;
         self.shafts.quality = s.sun_shafts;
+        baked::set_live(s.live_npcs);
         water::set_flowing_area((s.flowing_water_m * self.world.voxels_per_meter as f32) as u32);
     }
 
