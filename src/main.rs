@@ -2061,6 +2061,11 @@ impl Placed {
             // Halfway from the foot of the shaft to the temple, so all of it's in the world
             .or(sunken.as_ref().map(|s| [(s.foot[0] + s.heart[0]) * 0.5, (s.foot[1] + s.heart[1]) * 0.5]))
             .or(river_at)
+            // `--set at=x,y` starts over that spot of the landscape, in meters
+            .or_else(|| {
+                let at: Vec<f32> = setting("at")?.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                (at.len() == 2).then(|| [at[0], at[1]])
+            })
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         // Lined up with the strips the world moves on by, see stream.rs
         let strip = (stream::STRIP_M * terrain.voxels_per_meter) as i64;
@@ -2458,6 +2463,9 @@ impl Loaded {
         let water = progress.run(Step::Water, || {
             let mut springs = river_springs.clone();
             springs.extend(pieces.iter().flat_map(|p| p.springs.iter().copied()));
+            if flag("water_report", false) {
+                water::keep_report();
+            }
             let mut water = Water::new(memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue, &pipelines.water, world, &springs);
             water.active &= flag("water", true);
             water
@@ -2495,6 +2503,9 @@ impl App {
         let preset = quality.settings();
         println!("Quality: {} (sun shafts {})", quality.name(), preset.sun_shafts.name());
         water::set_flowing_area((setting("flowing_water_m").and_then(|v| v.parse().ok()).unwrap_or(preset.flowing_water_m) * world.voxels_per_meter as f32) as u32);
+        if let Some(times) = setting("water_speed").and_then(|v| v.parse().ok()) {
+            water::set_speed(times);
+        }
 
         let input = WinitInputHelper::new();
         let flag = |key: &str, default: bool| setting(key).map_or(default, |v| v == "true" || v == "1");
@@ -4678,6 +4689,35 @@ impl App {
                 println!("frame {frame}: poured, bucket now {:.2} m³", self.game.bucket());
             }
             ("wade", 2) => self.scripted_walk = true,
+            // Keeps still `--set drift_after=20` seconds, then a shot, then moves `--set drift=40`
+            // meters to the right and `drift_back` meters back, still looking the same way, for the
+            // water that's been flowing to be seen beside the still water past it, see water.rs
+            ("drift", f) => {
+                let setting = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                // The camera, not someone walking about
+                if f == 1 {
+                    self.player = None;
+                }
+                // A shot of how it is before moving off
+                if self.play.flown == 0.0
+                    && run_time >= setting("drift_after", 20.0) - 1.0
+                    && let Some(capture) = &mut self.capture
+                {
+                    self.play.flown = 1.0;
+                    capture.shots.push(f + 2);
+                }
+                if self.play.leg == 0 && run_time >= setting("drift_after", 20.0) {
+                    self.play.leg = 1;
+                    let right = Vector3::new(look.y, -look.x, 0.0).try_normalize(1e-9).unwrap_or(Vector3::x());
+                    let back = -Vector3::new(look.x, look.y, 0.0).try_normalize(1e-9).unwrap_or(Vector3::y());
+                    let eye = eye + (right * setting("drift", 40.0) + back * setting("drift_back", 0.0)) * vpm;
+                    self.camera.position = voxels_to_camera(eye, self.world.size);
+                    println!("frame {f}: drifted to {:.0}, {:.0}", eye.x / vpm, eye.y / vpm);
+                    if let Some(capture) = &mut self.capture {
+                        capture.shots.push(f + 2);
+                    }
+                }
+            }
             // Runs straight on and on, saying now and then how far the edge of the world is ahead,
             // to see the next piece of the landscape is ready before the edge is reached
             ("trek", f) => {
@@ -6768,6 +6808,7 @@ impl App {
             let encoded = post_flags & POST_ENCODE_SRGB != 0;
             if capture_done && let Some(mut capture) = self.capture.take() {
                 save_screenshot(&buffer, resample_extent, encoded, &capture.path);
+                self.water.report(&self.command_buffer_allocator, &self.queue);
 
                 if capture.stats_from > 0 {
                     println!("Frame times from frame {} on, once the world's there", capture.stats_from);

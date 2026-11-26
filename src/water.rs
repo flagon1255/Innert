@@ -59,6 +59,24 @@ static ACTIVE_COLUMNS: AtomicU32 = AtomicU32::new(1024);
 pub fn set_flowing_area(columns: u32) {
     ACTIVE_COLUMNS.store(columns.max(64), Ordering::Relaxed);
 }
+
+/// How many times faster than real time the water flows, for screenshot runs to see where it
+/// settles after minutes of it in a few seconds: `--set water_speed=20`
+static SPEED: AtomicU32 = AtomicU32::new(1);
+
+/// See SPEED
+pub fn set_speed(times: u32) {
+    SPEED.store(times.max(1), Ordering::Relaxed);
+}
+
+/// Whether the water keeps where worldgen put it, for screenshot runs with `--set water_report=1`
+/// to say how far it's gone from there, see Water::report()
+static REPORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// See REPORT
+pub fn keep_report() {
+    REPORT.store(true, Ordering::Relaxed);
+}
 /// Frames between copies of the water back to the CPU
 const READBACK_FRAMES: u32 = 30;
 /// Water shallower than this, in meters, doesn't count as water for walking about in
@@ -84,6 +102,32 @@ pub struct WaterImages {
     pub ground: Arc<Image>,
     pub depth: Arc<Image>,
     pub flux: Arc<Image>,
+    pub rest: Arc<Image>,
+}
+
+/// A float as a half float, rounded to the nearest: the bits of it. Whole numbers up to 2048 come
+/// out exactly, as the tops of the water worldgen lays do, see rest_half().
+fn half(v: f32) -> u16 {
+    let bits = v.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    if exponent <= 0 {
+        // Too small to matter here: none
+        return sign;
+    }
+    let rounded = (bits & 0x7f_ffff) + 0x1000;
+    let (exponent, mantissa) = if rounded & 0x80_0000 != 0 { (exponent + 1, 0) } else { (exponent, rounded >> 13) };
+    if exponent >= 31 {
+        return sign | 0x7c00;
+    }
+    sign | (exponent as u16) << 10 | mantissa as u16
+}
+
+/// Where worldgen laid the top of the water in a column whose ground and water are as high as
+/// `ground` and `surface`, as shaders\water.comp keeps it: a half float, 0 where it's dry. Two
+/// columns go over in a word, the first in its low half.
+pub fn rest_half(ground: f32, surface: f32) -> u16 {
+    if surface > ground { half(surface) } else { 0 }
 }
 
 pub struct Water {
@@ -106,6 +150,7 @@ pub struct Water {
     pub blocks_view: Arc<ImageView>,
     depth_view: Arc<ImageView>,
     flux_view: Arc<ImageView>,
+    rest_view: Arc<ImageView>,
     depth_image: Arc<Image>,
     flux_image: Arc<Image>,
     /// Whether there's any water to simulate
@@ -136,6 +181,13 @@ pub struct Water {
     /// Whether the ground's changed since the surface round the camera was last worked out, like
     /// when a hole's been blown in it, see record()
     ground_changed: bool,
+    /// The top of the water where worldgen put it, NaN where it's dry, see REPORT
+    laid: Option<Vec<f32>>,
+}
+
+/// The top of the water in each column, NaN where there's too little to be drawn
+fn ground_and_depth_tops(ground: &[f32], depth: &[f32]) -> Vec<f32> {
+    ground.iter().zip(depth).map(|(&g, &d)| if d > 0.05 { g + d } else { f32::NAN }).collect()
 }
 
 /// The smallest box around both, from x and y to x and y
@@ -201,7 +253,7 @@ fn springs_set(
     memory_allocator: &Arc<StandardMemoryAllocator>,
     descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>,
     layout: &Arc<vulkano::descriptor_set::layout::DescriptorSetLayout>,
-    views: [&Arc<ImageView>; 5],
+    views: [&Arc<ImageView>; 6],
     springs: &[[f32; 4]],
     origin: [i64; 2],
     vpm: f64,
@@ -226,12 +278,15 @@ fn springs_set(
         if in_columns.is_empty() { vec![[0.0f32; 4]] } else { in_columns },
     )
     .unwrap();
-    let mut writes: Vec<WriteDescriptorSet> = views.iter().enumerate().map(|(i, view)| WriteDescriptorSet::image_view(i as u32, (*view).clone())).collect();
+    // The images, then the springs, then where the water was laid
+    let mut writes: Vec<WriteDescriptorSet> = views[..5].iter().enumerate().map(|(i, view)| WriteDescriptorSet::image_view(i as u32, (*view).clone())).collect();
     writes.push(WriteDescriptorSet::buffer(5, buffer));
+    writes.push(WriteDescriptorSet::image_view(6, views[5].clone()));
     (DescriptorSet::new(descriptor_set_allocator.clone(), layout.clone(), writes, []).unwrap(), count)
 }
 
-/// Sends `values` over to `image` at `at`, `extent` across, a row after another
+/// Sends `values` over to `image` at `at`, `extent` across, a row of `row` words after another
+#[allow(clippy::too_many_arguments)]
 fn send_rect(
     memory_allocator: &Arc<StandardMemoryAllocator>,
     command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
@@ -239,10 +294,9 @@ fn send_rect(
     image: &Arc<Image>,
     at: [u32; 2],
     extent: [u32; 2],
-    words: usize,
+    row: usize,
     fill: impl Fn(&mut [u32], usize),
 ) {
-    let row = extent[0] as usize * words;
     crate::staging::send(
         memory_allocator,
         command_buffer_allocator,
@@ -342,13 +396,16 @@ impl Water {
             columns as u64,
         )
         .unwrap();
+        // Where worldgen laid the water, in half floats two to a word, see shaders\water.comp
+        let rest_image = image([room[0].div_ceil(2), room[1]], Format::R32_UINT);
         let view = |image: &Arc<Image>| ImageView::new_default(image.clone()).unwrap();
-        let (ground_view, depth_view, flux_view, surface_view, blocks_view) =
-            (view(&ground_image), view(&depth_image), view(&flux_image), view(&surface_image), view(&blocks_image));
+        let (ground_view, depth_view, flux_view, surface_view, blocks_view, rest_view) =
+            (view(&ground_image), view(&depth_image), view(&flux_image), view(&surface_image), view(&blocks_image), view(&rest_image));
 
         // The ground and how deep the water is go over a few rows at a time, see staging.rs
+        let width = room[0] as usize;
         for (data, image) in [(&ground, &ground_image), (&depth, &depth_image)] {
-            send_rect(memory_allocator, command_buffer_allocator, queue, image, [0, 0], room, 1, |piece, first| {
+            send_rect(memory_allocator, command_buffer_allocator, queue, image, [0, 0], room, width, |piece, first| {
                 for (word, value) in piece.iter_mut().zip(&data[first..]) {
                     *word = value.to_bits();
                 }
@@ -373,14 +430,28 @@ impl Water {
                 clear_value: [-1.0, 0.0, 0.0, 0.0].into(),
                 ..ClearColorImageInfo::image(blocks_image)
             })
+            .unwrap()
+            .clear_color_image(ClearColorImageInfo::image(rest_image.clone()))
             .unwrap();
         // Waited for on a fence: a future dropped unfinished waits for the whole queue to go idle,
         // holding it the while, so frames being drawn meanwhile couldn't be sent
         builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        // Where the water was laid, two columns to a word, the room being a whole number of strips
+        // across
+        if map.is_some() && width % 2 == 0 {
+            send_rect(memory_allocator, command_buffer_allocator, queue, &rest_image, [0, 0], [room[0] / 2, room[1]], width / 2, |piece, first| {
+                for (k, word) in piece.iter_mut().enumerate() {
+                    let i = (first + k) * 2;
+                    let rest = |i: usize| rest_half(ground[i], ground[i] + depth[i]) as u32;
+                    *word = rest(i) | rest(i + 1) << 16;
+                }
+            });
+        }
 
         let layout = pipeline.layout().set_layouts()[0].clone();
-        let views = [&ground_view, &depth_view, &flux_view, &surface_view, &blocks_view];
+        let views = [&ground_view, &depth_view, &flux_view, &surface_view, &blocks_view, &rest_view];
         let vpm = world.voxels_per_meter as f64;
+        let laid = REPORT.load(Ordering::Relaxed).then(|| ground_and_depth_tops(&ground, &depth));
         let (set, spring_count) = springs_set(memory_allocator, descriptor_set_allocator, &layout, views, springs, [world.origin[0], world.origin[1]], vpm);
         Water {
             size,
@@ -398,6 +469,7 @@ impl Water {
             blocks_view,
             depth_view,
             flux_view,
+            rest_view,
             depth_image,
             flux_image,
             active: map.is_some(),
@@ -413,14 +485,53 @@ impl Water {
             time_debt: 0.0,
             drawn_once: false,
             ground_changed: false,
+            laid,
         }
+    }
+
+    /// How far the water's gone from where worldgen put it, for screenshot runs, see REPORT: how
+    /// many columns are wet that weren't or dry that were, how many stand more than 25 cm higher or
+    /// lower, and the most either way, by the CPU's copy
+    pub fn report(&self, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>) {
+        let Some(laid) = &self.laid else {
+            return;
+        };
+        // All of it, straight from the GPU
+        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+        builder.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(self.depth_image.clone(), self.readback.clone())).unwrap();
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        let depth: Vec<f32> = match self.readback.read() {
+            Ok(data) => data.to_vec(),
+            Err(e) => {
+                println!("Water couldn't come back to be compared: {e}");
+                return;
+            }
+        };
+        let vpm = self.voxels_per_meter as f32;
+        let now = ground_and_depth_tops(&self.ground, &depth);
+        let (mut wetted, mut dried, mut higher, mut lower, mut most, mut least) = (0, 0, 0, 0, 0.0f32, 0.0f32);
+        for (&a, &b) in laid.iter().zip(&now) {
+            match (a.is_nan(), b.is_nan()) {
+                (true, false) => wetted += 1,
+                (false, true) => dried += 1,
+                (false, false) => {
+                    let d = (b - a) / vpm;
+                    higher += (d > 0.25) as u32;
+                    lower += (d < -0.25) as u32;
+                    most = most.max(d);
+                    least = least.min(d);
+                }
+                _ => {}
+            }
+        }
+        println!("Water against where it was laid: {wetted} columns wetted, {dried} dried, {higher} over 25 cm higher, {lower} lower, most {most:.2} m higher and {:.2} m lower", -least);
     }
 
     /// Where water wells up, rivers' springs and inside buildings: x, y, cubic meters a second and
     /// radius, in meters from the corner of the whole landscape, for the world whose corner is at
     /// `origin` in its voxels. Made anew whenever the world moves on.
     pub fn set_springs(&mut self, springs: &[[f32; 4]], origin: [i64; 2]) {
-        let views = [&self.ground_view, &self.depth_view, &self.flux_view, &self.surface_view, &self.blocks_view];
+        let views = [&self.ground_view, &self.depth_view, &self.flux_view, &self.surface_view, &self.blocks_view, &self.rest_view];
         (self.set, self.spring_count) = springs_set(&self.memory_allocator, &self.descriptor_set_allocator, &self.layout, views, springs, origin, self.voxels_per_meter);
     }
 
@@ -435,7 +546,7 @@ impl Water {
     /// What the GPU keeps the water in, for a strip coming in to be sent over into, see
     /// fill_strip()
     pub fn images(&self) -> WaterImages {
-        WaterImages { ground: self.ground_view.image().clone(), depth: self.depth_image.clone(), flux: self.flux_image.clone() }
+        WaterImages { ground: self.ground_view.image().clone(), depth: self.depth_image.clone(), flux: self.flux_image.clone(), rest: self.rest_view.image().clone() }
     }
 
     /// The CPU's copy of what stream.rs sends over of a strip, once it's in the world: its ground and
@@ -456,6 +567,9 @@ impl Water {
                     let (g, s) = (ground.get(i).copied().unwrap_or(0.0), surface.get(i).copied().unwrap_or(0.0));
                     self.ground[row + at + k] = g;
                     self.depth[row + at + k] = (s - g).max(0.0);
+                    if let Some(laid) = &mut self.laid {
+                        laid[row + at + k] = if s - g > 0.05 { s } else { f32::NAN };
+                    }
                 }
             }
         }
@@ -467,12 +581,12 @@ impl Water {
         self.resurface.push([lo[0], lo[1], hi[0], hi[1]]);
     }
 
-    /// How much of the GPU's memory it takes, near enough: ground, depth, flux and surface per
-    /// column, and the blocks
+    /// How much of the GPU's memory it takes, near enough: ground, depth, flux, surface and where
+    /// it was laid per column, and the blocks
     pub fn bytes(&self) -> u64 {
         let columns = self.room[0] as u64 * self.room[1] as u64;
         let blocks = self.room[0].div_ceil(BLOCK) as u64 * self.room[1].div_ceil(BLOCK) as u64;
-        columns * (4 + 4 + 8 + 8) + blocks * 4
+        columns * (4 + 4 + 8 + 8 + 2) + blocks * 4
     }
 
     /// How much it keeps on the CPU: the ground and depths
@@ -570,7 +684,8 @@ impl Water {
         if !self.active {
             return;
         }
-        self.time_debt = (self.time_debt + frame_time).min(STEP * MAX_STEPS as f64);
+        let speed = SPEED.load(Ordering::Relaxed) as f64;
+        self.time_debt = (self.time_debt + frame_time * speed).min(STEP * MAX_STEPS as f64 * speed);
         let steps = (self.time_debt / STEP) as u32;
         self.time_debt -= steps as f64 * STEP;
 
@@ -703,6 +818,195 @@ impl Water {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// shaders\water.comp's flux and depth stages on the CPU, for a world `size` columns across
+    struct Sim {
+        size: [usize; 2],
+        vpm: f32,
+        ground: Vec<f32>,
+        depth: Vec<f32>,
+        flux: Vec<[f32; 4]>,
+        springs: Vec<[f32; 4]>,
+        sea: f32,
+        rest: Vec<f32>,
+        settle: f32,
+    }
+
+    const DIRS: [[i64; 2]; 4] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    const OPPOSITE: [usize; 4] = [1, 0, 3, 2];
+
+    impl Sim {
+        fn new(size: [usize; 2], vpm: f32, ground: Vec<f32>, surface: &[f32]) -> Self {
+            let depth = surface.iter().zip(&ground).map(|(&s, &g)| (s - g).max(0.0)).collect();
+            let rest = surface.iter().zip(&ground).map(|(&s, &g)| if s > g { s } else { 0.0 }).collect();
+            Sim { size, vpm, ground, depth, flux: vec![[0.0; 4]; size[0] * size[1]], springs: Vec::new(), sea: 0.0, rest, settle: 0.0 }
+        }
+        fn inside(&self, c: [i64; 2]) -> bool {
+            c[0] >= 0 && c[1] >= 0 && c[0] < self.size[0] as i64 && c[1] < self.size[1] as i64
+        }
+        fn i(&self, c: [i64; 2]) -> usize {
+            c[0] as usize + c[1] as usize * self.size[0]
+        }
+        fn height(&self, c: [i64; 2]) -> f32 {
+            let i = self.i(c);
+            self.ground[i] + self.depth[i]
+        }
+        /// A step, with the area from `lo` to `hi` flowing
+        fn step(&mut self, lo: [i64; 2], hi: [i64; 2]) {
+            let dt = STEP as f32;
+            let gravity = 9.8 * self.vpm;
+            let flowing = |c: [i64; 2]| c[0] >= lo[0] && c[1] >= lo[1] && c[0] < hi[0] && c[1] < hi[1];
+            for y in lo[1] - 1..hi[1] + 1 {
+                for x in lo[0] - 1..hi[0] + 1 {
+                    let c = [x, y];
+                    if !self.inside(c) {
+                        continue;
+                    }
+                    let edge = !flowing(c);
+                    let here = self.i(c);
+                    let depth = self.depth[here];
+                    if depth <= 0.0 {
+                        self.flux[here] = [0.0; 4];
+                        continue;
+                    }
+                    let h = self.ground[here] + depth;
+                    let mut f = self.flux[here];
+                    for k in 0..4 {
+                        let n = [c[0] + DIRS[k][0], c[1] + DIRS[k][1]];
+                        f[k] = if self.inside(n) && (!edge || flowing(n)) { (f[k] * 0.996 + dt * gravity * (h - self.height(n))).max(0.0) } else { 0.0 };
+                    }
+                    let total: f32 = f.iter().sum();
+                    if total * dt > depth {
+                        f = f.map(|v| v * depth / (total * dt));
+                    }
+                    self.flux[here] = f;
+                }
+            }
+            let mut next = self.depth.clone();
+            for y in lo[1]..hi[1] {
+                for x in lo[0]..hi[0] {
+                    let c = [x, y];
+                    let here = self.i(c);
+                    let f = self.flux[here];
+                    let mut inflow = 0.0;
+                    for k in 0..4 {
+                        let n = [c[0] + DIRS[k][0], c[1] + DIRS[k][1]];
+                        if self.inside(n) {
+                            inflow += self.flux[self.i(n)][OPPOSITE[k]];
+                        }
+                    }
+                    let mut d = self.depth[here] + dt * (inflow - f.iter().sum::<f32>());
+                    let center = [x as f32 + 0.5, y as f32 + 0.5];
+                    for s in &self.springs {
+                        if (center[0] - s[0]).hypot(center[1] - s[1]) < s[3] {
+                            d += dt * s[2] / (std::f32::consts::PI * s[3] * s[3]);
+                        }
+                    }
+                    let ground = self.ground[here];
+                    if self.sea > 0.0 && d > 0.0 && ground < self.sea && (ground + d - self.sea).abs() < 0.5 * self.vpm {
+                        d += (self.sea - ground - d) * (dt / 2.0);
+                    }
+                    if self.settle > 0.0 && self.rest[here] > 0.0 {
+                        d += (self.rest[here] - ground - d) * (dt / self.settle);
+                    }
+                    if d < 0.02 {
+                        d -= dt * 0.01;
+                    }
+                    next[here] = d.max(0.0);
+                }
+            }
+            self.depth = next;
+        }
+    }
+
+    /// Not a test: how the water worldgen lays out round a desert river settles once it flows,
+    /// `cargo test --release water_settles_where_worldgen_puts_it -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn water_settles_where_worldgen_puts_it() {
+        use crate::worldgen::{RiverCache, TerrainSettings, find_climate, generate_area};
+        let vpm = 4u32;
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: vpm, seed: 1, grass_tufts: false };
+        let at: [f32; 2] = std::env::var("AT").ok().and_then(|v| {
+            let p: Vec<f32> = v.split(',').filter_map(|s| s.parse().ok()).collect();
+            (p.len() == 2).then(|| [p[0], p[1]])
+        }).unwrap_or_else(|| find_climate(&settings, "desert", [160.0, 160.0]).unwrap());
+        let side_m: u32 = std::env::var("SIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(192);
+        let n = side_m * vpm;
+        let cache = RiverCache::default();
+        let at = if std::env::var("RIVER").is_ok() {
+            let origin = [(at[0] * vpm as f32) as i64, (at[1] * vpm as f32) as i64].map(|v| v.div_euclid(8) * 8);
+            let (terrain, _) = generate_area(&settings, origin, [32, 32], &cache);
+            terrain.widest_river_near(at, &cache).unwrap_or(at)
+        } else {
+            at
+        };
+        let origin = [(at[0] * vpm as f32) as i64 - n as i64 / 2, (at[1] * vpm as f32) as i64 - n as i64 / 2].map(|v| v.div_euclid(8) * 8);
+        let (terrain, world) = generate_area(&settings, origin, [n, n], &cache);
+        let map = world.water.as_ref().unwrap();
+        let size = [n as usize, n as usize];
+        let mut sim = Sim::new(size, vpm as f32, map.ground.clone(), &map.surface);
+        let v = vpm as f32;
+        sim.springs = terrain.springs().iter().map(|s| [s[0] * v - origin[0] as f32, s[1] * v - origin[1] as f32, s[2] * v.powi(3), s[3] * v]).collect();
+        if std::env::var("SEA").is_ok() {
+            sim.sea = world.sea_level.unwrap_or(0.0);
+        }
+        sim.settle = std::env::var("SETTLE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        println!("at {at:?}, origin {origin:?}, {} springs, sea {}", sim.springs.len(), sim.sea);
+        let before: Vec<f32> = (0..size[0] * size[1]).map(|i| if sim.depth[i] > 0.05 { sim.ground[i] + sim.depth[i] } else { f32::NAN }).collect();
+        let seconds: f32 = std::env::var("SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0);
+        let area: Vec<i64> = std::env::var("BOX").ok().map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect()).filter(|b: &Vec<i64>| b.len() == 4).unwrap_or(vec![1, 1, n as i64 - 1, n as i64 - 1]);
+        for k in 0..(seconds * 120.0) as usize {
+            sim.step([area[0], area[1]], [area[2], area[3]]);
+            if k % 2400 == 0 {
+                let change = || (0..size[0] * size[1]).filter(|&i| !before[i].is_nan()).map(|i| (((sim.ground[i] + sim.depth[i]).max(sim.ground[i]) - before[i]) / v, i));
+                let (rise, at) = change().fold((f32::MIN, 0), |a, b| if b.0 > a.0 { b } else { a });
+                let drop = change().fold(f32::MAX, |a, b| a.min(b.0));
+                println!(
+                    "{:.0} s: highest rise {rise:.2} m at {:.1}, {:.1} (ground {:.2} m, was {:.2} m), deepest drop {drop:.2} m",
+                    k as f32 / 120.0,
+                    (origin[0] + (at % size[0]) as i64) as f32 / v,
+                    (origin[1] + (at / size[0]) as i64) as f32 / v,
+                    sim.ground[at] / v,
+                    before[at] / v
+                );
+            }
+        }
+        let (mut wet, mut dropped, mut rose, mut dried, mut flooded) = (0, 0, 0, 0, 0);
+        let img = image::RgbImage::from_fn(n, n, |x, y| {
+            let i = x as usize + (n as usize - 1 - y as usize) * size[0];
+            let now = if sim.depth[i] > 0.05 { sim.ground[i] + sim.depth[i] } else { f32::NAN };
+            let b = before[i];
+            let g = ((map.ground[i] / v - 15.0) * 8.0).clamp(0.0, 255.0) as u8;
+            match (b.is_nan(), now.is_nan()) {
+                (true, true) => image::Rgb([g, g, g]),
+                (false, true) => {
+                    dried += 1;
+                    image::Rgb([255, 0, 0])
+                }
+                (true, false) => {
+                    flooded += 1;
+                    image::Rgb([0, 255, 0])
+                }
+                (false, false) => {
+                    wet += 1;
+                    let d = (now - b) / v;
+                    if d < -0.25 {
+                        dropped += 1;
+                        image::Rgb([255, 160, 0])
+                    } else if d > 0.25 {
+                        rose += 1;
+                        image::Rgb([0, 200, 255])
+                    } else {
+                        image::Rgb([0, 0, 160])
+                    }
+                }
+            }
+        });
+        let path = std::env::var("SETTLE_MAP").map_or(std::env::temp_dir().join("settle.png"), std::path::PathBuf::from);
+        img.save(&path).unwrap();
+        println!("after {seconds} s: {wet} wet as they were, {dropped} dropped over 25 cm, {rose} rose, {dried} dried up, {flooded} flooded; map {}", path.display());
+    }
 
     #[test]
     fn what_flowed_moves_with_the_world() {

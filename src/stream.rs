@@ -128,6 +128,7 @@ enum Target {
     WaterGround,
     WaterDepth,
     WaterFlux,
+    WaterRest,
 }
 
 /// A piece of a strip on its way to the GPU: the host memory it's in, how much of it, and where it
@@ -464,6 +465,27 @@ fn send(staging: &Staging, to_main: &Sender<FromJob>, strip: &Strip, room: [u32;
         {
             return false;
         }
+        // Where its water was laid, two columns to a word, see water.rs: strips and the room being
+        // whole numbers of them across, the columns going round do so between words
+        let rest = |i: usize| crate::water::rest_half(at(ground, i), at(surface, i)) as u32;
+        for &((kx, ix, nx), (ky, iy, ny)) in &column_rects {
+            debug_assert!(kx % 2 == 0 && ix % 2 == 0 && nx % 2 == 0);
+            let row = (nx / 2) as usize;
+            let fill = |piece: &mut [u32], first: usize| {
+                for (k, word) in piece.iter_mut().enumerate() {
+                    let (x, y) = ((first + k) % row, (first + k) / row);
+                    let i = ix as usize + 2 * x + (iy as usize + y) * sx as usize;
+                    *word = rest(i) | rest(i + 1) << 16;
+                }
+            };
+            let copies = |first: usize, n: usize| {
+                let (y, rows) = ((first / row) as u32, (n / row) as u32);
+                (vec![BufferImageCopy { image_offset: [kx / 2, ky + y, 0], image_extent: [nx / 2, rows, 1], ..Default::default() }], Vec::new())
+            };
+            if !stage(staging, to_main, row * ny as usize, row, Target::WaterRest, fill, copies) {
+                return false;
+            }
+        }
     }
     true
 }
@@ -796,6 +818,7 @@ impl Stream {
                 Target::WaterGround => Some(water.ground.clone()),
                 Target::WaterDepth => Some(water.depth.clone()),
                 Target::WaterFlux => Some(water.flux.clone()),
+                Target::WaterRest => Some(water.rest.clone()),
                 Target::Bricks => None,
             };
             match image {

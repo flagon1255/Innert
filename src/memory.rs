@@ -60,12 +60,12 @@ const STRIP_M: u32 = crate::stream::STRIP_M;
 /// About how much of the graphics card's memory a piece of the landscape `width_m` wide and
 /// `height_m` tall takes at `vpm` voxels a meter, with the room it has for a strip more each way:
 /// its bricks with room for holes blown in it, the map of them, the grass, and the water's ground,
-/// depth, flow and surface (the last two in half floats, see water.rs)
+/// depth, flow, surface and where it was laid (the last three in half floats, see water.rs)
 pub fn piece_bytes(width_m: u32, height_m: u32, vpm: u32) -> u64 {
     let side = ((width_m + STRIP_M) * vpm) as u64;
     let room = side * side;
     let grid = room / 64 * (height_m * vpm / 8) as u64 * 4;
-    bricks_bytes(width_m, vpm) + grid + room * 4 + room * (4 + 4 + 8 + 8)
+    bricks_bytes(width_m, vpm) + grid + room * 4 + room * (4 + 4 + 8 + 8 + 2)
 }
 
 /// About how many bytes the bricks of a piece of the landscape `width_m` wide at `vpm` voxels a

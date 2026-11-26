@@ -7467,6 +7467,35 @@ mod tests {
         assert!(land > 0 && with * 4 >= land * 3);
     }
 
+    #[test]
+    #[ignore]
+    fn probe_river() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let p: Vec<f32> = std::env::var("AT").unwrap().split(',').map(|v| v.parse().unwrap()).collect();
+        let cache = RiverCache::default();
+        let origin = [((p[0] - 40.0) * 4.0) as i64, ((p[1] - 40.0) * 4.0) as i64].map(|v| v.div_euclid(8) * 8);
+        let (terrain, world) = generate_area(&settings, origin, [320, 320], &cache);
+        for (r, path) in terrain.rivers.iter().enumerate() {
+            for (i, q) in path.iter().enumerate() {
+                if (q.x - p[0]).hypot(q.y - p[1]) < 25.0 && i % 4 == 0 {
+                    println!("river {r} point {i}: {:.1}, {:.1} surface {:.2} half {:.2} lip {}", q.x, q.y, q.surface, q.half_width, q.lip);
+                }
+            }
+        }
+        println!("footprints {:?}", terrain.features.footprints.iter().filter(|f| (f[0] - p[0]).abs() < 40.0 && (f[1] - p[1]).abs() < 40.0).collect::<Vec<_>>());
+        println!("recuts {:?}", terrain.features.recuts.iter().filter(|f| (f[0] - p[0]).abs() < 60.0 && (f[1] - p[1]).abs() < 60.0).collect::<Vec<_>>());
+        let map = world.water.as_ref().unwrap();
+        for dy in -6..=6 {
+            let mut line = String::new();
+            for dx in -10..=10 {
+                let (x, y) = (((p[0] + dx as f32) * 4.0) as i64 - origin[0], ((p[1] - dy as f32) * 4.0) as i64 - origin[1]);
+                let i = (x + y * 320) as usize;
+                line += &format!("{:5.1}{} ", map.ground[i] / 4.0, if map.surface[i] > 0.0 { format!("/{:4.1}", map.surface[i] / 4.0) } else { "     ".into() });
+            }
+            println!("{line}");
+        }
+    }
+
     /// A map of two kilometers of the landscape, a pixel to a meter, with its rivers bright blue:
     /// `cargo test --release river_map -- --ignored`, saved where RIVER_MAP says or in the temp folder
     #[test]

@@ -79,6 +79,16 @@ layout(set = 0, binding = 4, r32f) uniform image2D blockImage;
 layout(set = 0, binding = 5) readonly buffer Springs {
     vec4 springs[];
 };
+// Where worldgen laid the top of the water in each column, which never changes, 0 where it laid
+// none: the sea, the lakes, the rivers' pools, as the still water further off keeps them, see
+// depth(). In half floats, which hold the whole voxels it's laid to exactly, two
+// columns side by side in each, the first in the low half.
+layout(set = 0, binding = 6, r32ui) readonly uniform uimage2D restImage;
+
+// How many seconds the water takes to settle most of the way back to where worldgen laid it, see
+// depth(): slow enough that waves still roll and splashes still spread, but too quick for what
+// springs and rivers pour in to pile up
+const float SETTLE = 2.0;
 
 const ivec2 DIRS[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
 // The flux component a neighbor in DIRS[i] uses to send water back this way
@@ -185,10 +195,22 @@ void depth(ivec2 c, ivec2 size) {
     if (pc.brush.z > 0 && from_brush < pc.brush.z)
     d += pc.brush.w * (0.5 + 0.5 * cos(3.14159265 * from_brush / pc.brush.z));
 
+    // Only the water round the camera flows, and the still water further off is where worldgen laid
+    // it, as is the water of each strip of the world that comes in. What flows is drawn back to
+    // there a little at a time wherever worldgen laid some: what the springs and the rivers flowing
+    // in pour into a pool or a lake has nowhere else to go, but for the edge of what flows, and
+    // would pile up into a flood standing over the still water round it, and what drains out into
+    // holes, is scooped up or splashed out would leave it lower. Either way there'd be a step in the
+    // water where what flows ends, and left behind once the camera's gone on.
+    float ground = imageLoad(groundImage, here).r;
+    float rest = unpackHalf2x16(imageLoad(restImage, ivec2(here.x >> 1, here.y)).r)[here.x & 1];
+    if (rest > 0)
+    d += (rest - ground - d) * (dt / SETTLE);
+
     // The edges of the world are the open sea, which takes in rivers and fills anything below it
     float sea = pc.params.y;
     if (sea > 0 && (any(equal(c, ivec2(0))) || any(equal(c, size - 1))))
-    d = sea - imageLoad(groundImage, here).r;
+    d = sea - ground;
 
     // Thin films left behind dry up
     if (d < 0.02)
