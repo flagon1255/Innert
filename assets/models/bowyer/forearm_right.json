@@ -1,0 +1,29 @@
+{
+  "what": "Bowyer, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    2,
+    3
+  ],
+  "pivot": [
+    0.8919999999999999,
+    1.3399999999999999,
+    2.479999999999997
+  ],
+  "anchor": [
+    0.06925,
+    -0.02124999999999999,
+    -0.1549999999999998
+  ],
+  "origin": [
+    -1,
+    -1,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1284,
+    "711b4f947d9db4af"
+  ]
+}

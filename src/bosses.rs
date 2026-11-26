@@ -1357,6 +1357,17 @@ impl Boss {
         animals::tween(self.look, before.unwrap_or(0), now.unwrap_or(0), since).or(now)
     }
 
+    /// The same for posing it live, see src\baked.rs: the frames it's going through from the pose it
+    /// was in to the one it's going to, 0 being walking or standing, and how far along them it is;
+    /// or just the one it's in
+    pub fn pose_path(&self) -> Option<(Vec<usize>, f64)> {
+        if let Some(f) = self.fixed_pose {
+            return Some((vec![f], 0.0));
+        }
+        let (now, before, since) = self.posed;
+        animals::tween_path(self.look, before.unwrap_or(0), now.unwrap_or(0), since).or_else(|| now.map(|f| (vec![f], 0.0)))
+    }
+
     /// The move it's making and how far into which part of it, for posing a jointed boss, see
     /// src\rig.rs: None roaming or chasing
     pub fn doing(&self) -> Option<crate::rig::Doing> {

@@ -1,0 +1,29 @@
+{
+  "what": "Princess, forearm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    4,
+    3
+  ],
+  "pivot": [
+    0.30000000000000004,
+    3.34,
+    2.0799999999999983
+  ],
+  "anchor": [
+    0.075,
+    -0.08374999999999999,
+    -0.1299999999999999
+  ],
+  "origin": [
+    0,
+    -3,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1313,
+    "1cf70d3de7795a6b"
+  ]
+}

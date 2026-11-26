@@ -1,0 +1,29 @@
+{
+  "what": "Wingmaker, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    22,
+    29
+  ],
+  "pivot": [
+    3.8193103448275854,
+    11.248275862068965,
+    14.416551724137928
+  ],
+  "anchor": [
+    0.011293103448275915,
+    -0.015517241379310346,
+    -0.9010344827586205
+  ],
+  "origin": [
+    -4,
+    -11,
+    -14
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    3691,
+    "7f42c5ff7743a0b2"
+  ]
+}

@@ -708,7 +708,7 @@ impl Look {
 
     /// Whether it ever walks, so has frames of walking: things lying about don't, nor do the
     /// merchant and the royals, who stand where they are
-    fn walks(self) -> bool {
+    pub(crate) fn walks(self) -> bool {
         !matches!(
             self,
             Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue
@@ -1589,6 +1589,40 @@ pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
         first += t.steps;
     }
     None
+}
+
+/// Seconds something posed live takes to go from one pose to another it has no frames between,
+/// eased, rather than snapping, see tween_path()
+const CROSSFADE: f64 = 0.16;
+
+/// What `look` goes through `since` seconds after it went from pose `a` to pose `b`, 0 being
+/// standing or walking, to pose it live, see src\baked.rs: the frames from the one to the other,
+/// the first `a` and the last `b`, and how far along them it is, 0 to 1, eased in and out as
+/// tween() eases them. Two poses with no frames between are gone between in CROSSFADE seconds.
+/// None once it's got there.
+pub fn tween_path(look: Look, a: usize, b: usize, since: f64) -> Option<(Vec<usize>, f64)> {
+    if a == b {
+        return None;
+    }
+    let mut first = FIRST_TWEEN;
+    for t in TWEENS {
+        let forward = (t.from, t.to) == (a, b);
+        if (forward || (t.to, t.from) == (a, b)) && has_tween(look, t) {
+            let slow = if look.is_serpent() && t.knights { if forward == (t.to == POSE_COIL) { 3.3 } else { 1.2 } } else { 1.0 };
+            let f = since / (slow * if forward { t.there } else { t.back });
+            if f >= 1.0 {
+                return None;
+            }
+            let mut path: Vec<usize> = std::iter::once(t.from).chain(first..first + t.steps).chain(std::iter::once(t.to)).collect();
+            if !forward {
+                path.reverse();
+            }
+            return Some((path, f * f * (3.0 - 2.0 * f)));
+        }
+        first += t.steps;
+    }
+    let f = since / CROSSFADE;
+    (f < 1.0).then(|| (vec![a, b], f * f * (3.0 - 2.0 * f)))
 }
 
 /// Whether `look` goes between the poses of `t`: only knights have theirs, but for a serpent
@@ -2800,7 +2834,10 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         }
         Look::Merchant => {
             // A travelling pedlar in a hooded brown robe and green sash, a towering pack of wares
-            // on its back, a lantern held out on a crook. It sways a little as it waits.
+            // on its back, a lantern held out on a crook. It sways a little as it waits. Its shapes
+            // are tagged with the bones it's posed by as it stands, see src\baked.rs: its head in
+            // its hood, the arm holding out the lantern, the other, and the rest of it.
+            use crate::baked::villager::*;
             let robe = BARK_DARK;
             // Its face in the shadow of the hood, eyes catching the lantern light
             for y in [-0.05, 0.05] {
@@ -2809,19 +2846,23 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             p.push(ellipsoid([0.15, 0.0, 1.57], [0.07, 0.1, 0.1], FUR_TAN));
             p.push(ellipsoid([0.06, 0.0, 1.62], [0.17, 0.17, 0.2], LEATHER));
             p.push(limb([0.0, 0.0, 1.5], [-0.08, 0.0, 1.8], 0.15, 0.04, LEATHER));
+            tag(&mut p, 0, HEAD);
             // Its sash, and a coin purse at its belt
-            p.push(ellipsoid([0.0, 0.0, 1.0], [0.21, 0.27, 0.06], MOSS));
-            p.push(ball([0.16, 0.18, 0.95], 0.06, GOLD));
+            p.push(ellipsoid([0.0, 0.0, 1.0], [0.21, 0.27, 0.06], MOSS).on(TORSO));
+            p.push(ball([0.16, 0.18, 0.95], 0.06, GOLD).on(TORSO));
             // The robe, flaring to the ground
-            p.push(limb([0.0, 0.0, 1.42], [0.0, 0.0, 0.05], 0.2, 0.32, robe));
+            p.push(limb([0.0, 0.0, 1.42], [0.0, 0.0, 0.05], 0.2, 0.32, robe).on(TORSO));
             // The arm holding out the lantern on its crook, the other at its side
+            let start = p.len();
             p.push(limb([0.05, -0.22, 1.32], [0.32, -0.3, 1.1], 0.06, 0.05, robe));
             p.push(limb([0.32, -0.3, 1.1], [0.42, -0.3, 1.75], 0.025, 0.02, WOOD));
             p.push(limb([0.42, -0.3, 1.75], [0.55, -0.3, 1.7], 0.02, 0.02, WOOD));
             p.push(ball([0.55, -0.3, 1.55], 0.06, GLOW_FIRE));
             p.push(cuboid([0.5, -0.35, 1.48], [0.6, -0.25, 1.62], BRONZE));
-            p.push(limb([0.05, 0.22, 1.32], [0.1, 0.27, 0.95], 0.06, 0.05, robe));
+            tag(&mut p, start, ARM[0]);
+            p.push(limb([0.05, 0.22, 1.32], [0.1, 0.27, 0.95], 0.06, 0.05, robe).on(ARM[1]));
             // The pack: a frame stacked with a rolled rug, crates, pots and a bundle of tools
+            let start = p.len();
             let back = -0.32;
             p.push(cuboid([back - 0.22, -0.26, 0.6], [back + 0.04, 0.26, 1.45], WOOD));
             p.push(limb([back - 0.1, -0.32, 1.55], [back - 0.1, 0.32, 1.55], 0.1, 0.1, CLOTH));
@@ -2833,6 +2874,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
             for z in [0.85, 1.25] {
                 p.push(cuboid([back - 0.24, -0.27, z], [back + 0.06, 0.27, z + 0.04], LEATHER));
             }
+            tag(&mut p, start, TORSO);
         }
         Look::Villager | Look::Townswoman => villager(&mut p, swing, look == Look::Townswoman),
         Look::Princess => princess(&mut p),
@@ -3139,12 +3181,18 @@ fn villager(p: &mut Vec<Part>, swing: f64, woman: bool) {
 /// the jeweller in a red robe and turban, holding out a tray of glowing stones; and the wingmaker in
 /// sky blue, goggles up, a pair of white wings on the back and a quill in hand
 fn specialist(p: &mut Vec<Part>, look: Look) {
+    // Their shapes are tagged with the bones they're posed by as they stand, see src\baked.rs:
+    // what's on their head goes with it, what's in a hand that's free with that forearm, and what
+    // they hold to the ground or in both hands with their body, so it stays where it is
+    use crate::baked::villager::*;
+    let start = p.len();
     // What they wear and carry first, as earlier shapes win where they overlap
     let (skin, hair, top, legs, boots, robe) = match look {
         Look::Bowyer => {
             p.push(limb([-0.06, 0.09, 1.76], [-0.22, 0.14, 1.95], 0.025, 0.012, FLOWER_RED));
             p.push(ellipsoid([0.0, 0.0, 1.73], [0.15, 0.15, 0.065], MOSS));
             p.push(ellipsoid([0.05, 0.0, 1.69], [0.2, 0.17, 0.025], MOSS));
+            tag(p, start, HEAD);
             // The longbow, upright in the right hand, bending forward, and its string
             let (bx, by) = (0.22, -0.33);
             let mut last = [bx, by, 0.2];
@@ -3170,6 +3218,7 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
             p.push(ellipsoid([0.0, 0.0, 1.745], [0.15, 0.15, 0.03], GOLD));
             p.push(ellipsoid([0.0, 0.0, 1.715], [0.26, 0.26, 0.025], FLOWER_PURPLE));
             p.push(ellipsoid([0.13, 0.0, 1.47], [0.06, 0.1, 0.13], FUR_WHITE));
+            tag(p, start, HEAD);
             // The staff, a crystal glowing at its head between gold prongs
             let (sx, sy) = (0.24, -0.31);
             p.push(ball([sx, sy, 2.03], 0.07, GLOW_ARCANE));
@@ -3186,6 +3235,7 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
             // A red headband, and a short beard
             p.push(ellipsoid([0.0, 0.0, 1.69], [0.14, 0.14, 0.03], CLOTH));
             p.push(ellipsoid([0.12, 0.0, 1.51], [0.05, 0.1, 0.06], FUR_BROWN));
+            tag(p, start, HEAD);
             // The sword, point down in front, both hands resting on its pommel
             let sx = 0.32;
             p.push(ball([sx, 0.0, 1.17], 0.04, GOLD));
@@ -3210,6 +3260,7 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
                 p.push(limb([0.0, 0.0, 1.735], [0.22 * a.cos(), 0.22 * a.sin(), 1.77], 0.06, 0.03, FUR_DARK));
             }
             p.push(ellipsoid([0.13, 0.0, 1.55], [0.035, 0.08, 0.02], FUR_DARK));
+            tag(p, start, HEAD);
             // The musket over the right shoulder, held at its stock, and a powder horn
             p.push(limb([0.18, -0.25, 1.06], [0.02, -0.26, 1.38], 0.05, 0.04, WOOD));
             p.push(limb([0.02, -0.26, 1.38], [-0.3, -0.27, 2.0], 0.028, 0.025, DARK_STEEL));
@@ -3225,6 +3276,7 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
             p.push(ball([0.14, 0.0, 1.76], 0.035, GLOW_BLOOD));
             p.push(ellipsoid([0.0, 0.0, 1.74], [0.15, 0.15, 0.09], LINEN));
             p.push(ball([0.13, 0.05, 1.61], 0.032, BRONZE));
+            tag(p, start, HEAD);
             // The tray of stones held out in both hands
             for (k, gem) in [GLOW_BLOOD, GLOW_POISON, GLOW_FROST, GLOW_HOLY, GLOW_ARCANE].into_iter().enumerate() {
                 p.push(ball([0.33 + 0.04 * (k % 2) as f64, -0.14 + k as f64 * 0.07, 1.08], 0.038, gem));
@@ -3242,7 +3294,8 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
             }
             p.push(ellipsoid([0.0, 0.0, 1.71], [0.14, 0.14, 0.03], BRONZE));
             p.push(ellipsoid([-0.01, 0.0, 1.66], [0.14, 0.145, 0.12], LEATHER));
-            p.push(limb([0.2, -0.3, 1.05], [0.3, -0.36, 1.32], 0.03, 0.015, FUR_WHITE));
+            tag(p, start, HEAD);
+            p.push(limb([0.2, -0.3, 1.05], [0.3, -0.36, 1.32], 0.03, 0.015, FUR_WHITE).on(FORE[0]));
             p.push(limb([-0.1, 0.12, 1.42], [-0.2, 0.18, 1.1], 0.04, 0.03, LINEN));
             p.push(ellipsoid([0.02, 0.0, 1.43], [0.12, 0.17, 0.045], LINEN));
             // A pair of white wings on the back, half spread
@@ -3253,10 +3306,11 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
             (FUR_CREAM, FUR_GINGER, FLOWER_BLUE, LINEN, LEATHER, None)
         }
     };
+    tag(p, start, TORSO);
     // The head, the hair round the back of it, and the neck
-    p.push(ellipsoid([-0.05, 0.0, 1.62], [0.11, 0.135, 0.11], hair));
-    p.push(ball([0.02, 0.0, 1.6], 0.13, skin));
-    p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.05, 0.05, skin));
+    p.push(ellipsoid([-0.05, 0.0, 1.62], [0.11, 0.135, 0.11], hair).on(HEAD));
+    p.push(ball([0.02, 0.0, 1.6], 0.13, skin).on(HEAD));
+    p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.05, 0.05, skin).on(HEAD));
     // The arms: where each hand is, by what they hold
     let hands: [Vec3; 2] = match look {
         Look::Bowyer => [[0.22, -0.33, 1.05], [0.06, 0.26, 0.92]],
@@ -3275,11 +3329,12 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
         let hand = hands[k];
         let shoulder = [0.0, s * 0.2, 1.4];
         let elbow = [0.03 + (hand[0] - 0.03) * 0.3, s * 0.26, 1.14 + (hand[2] - 1.0) * 0.3];
-        p.push(ball(hand, 0.047, skin));
-        p.push(limb(elbow, hand, 0.05, 0.045, fore));
-        p.push(limb(shoulder, elbow, 0.06, 0.052, upper));
+        p.push(ball(hand, 0.047, skin).on(FORE[k]));
+        p.push(limb(elbow, hand, 0.05, 0.045, fore).on(FORE[k]));
+        p.push(limb(shoulder, elbow, 0.06, 0.052, upper).on(ARM[k]));
     }
     // A belt, the body, and a robe flaring to the ground or legs in boots
+    let start = p.len();
     p.push(ellipsoid([0.0, 0.0, 0.99], [0.15, 0.215, 0.04], LEATHER));
     p.push(ellipsoid([0.0, 0.0, 1.21], [0.135, 0.195, 0.24], top));
     match robe {
@@ -3292,6 +3347,7 @@ fn specialist(p: &mut Vec<Part>, look: Look) {
             }
         }
     }
+    tag(p, start, TORSO);
 }
 
 /// The stand a specialist sets up at the base, see src\merchants.rs: a table with a cloth hung down
@@ -3322,6 +3378,7 @@ fn trade_stall(p: &mut Vec<Part>) {
 /// front of her, and her red hair in a long braid down her back under a little gold crown with a
 /// red stone in it
 fn princess(p: &mut Vec<Part>) {
+    use crate::baked::villager::*;
     let (skin, gown, hair) = (FUR_CREAM, TEMPLE_TEAL, FUR_GINGER);
     // The crown: a gold band round the top of her head with points rising from it
     p.push(ball([0.115, 0.0, 1.715], 0.022, GLOW_BLOOD));
@@ -3330,31 +3387,36 @@ fn princess(p: &mut Vec<Part>) {
         p.push(limb([0.09 * a.cos(), 0.09 * a.sin(), 1.71], [0.085 * a.cos(), 0.085 * a.sin(), 1.79], 0.022, 0.008, GOLD));
     }
     p.push(ellipsoid([0.0, 0.0, 1.705], [0.112, 0.112, 0.028], GOLD));
-    // Her hair over the back of her head, and the braid down her back
-    p.push(limb([-0.12, 0.0, 1.55], [-0.17, 0.0, 0.98], 0.045, 0.03, hair));
+    // Her hair over the back of her head, and the braid down her back, which goes with her
+    // body as she turns her head, see src\baked.rs
+    p.push(limb([-0.12, 0.0, 1.55], [-0.17, 0.0, 0.98], 0.045, 0.03, hair).on(TORSO));
     p.push(ellipsoid([-0.035, 0.0, 1.64], [0.12, 0.14, 0.12], hair));
     p.push(ball([0.02, 0.0, 1.6], 0.125, skin));
     p.push(limb([0.0, 0.0, 1.4], [0.01, 0.0, 1.52], 0.045, 0.045, skin));
+    tag(p, 0, HEAD);
     // A white collar, and the arms in their sleeves, hands folded at her waist
-    p.push(ellipsoid([0.02, 0.0, 1.43], [0.1, 0.15, 0.03], LINEN));
-    for s in [-1.0, 1.0] {
+    p.push(ellipsoid([0.02, 0.0, 1.43], [0.1, 0.15, 0.03], LINEN).on(TORSO));
+    for (k, s) in [-1.0, 1.0].into_iter().enumerate() {
         let (shoulder, elbow, hand) = ([0.0, s * 0.19, 1.4], [0.05, s * 0.24, 1.13], [0.18, s * 0.06, 1.04]);
-        p.push(ball(hand, 0.045, skin));
-        p.push(limb(elbow, [0.15, s * 0.1, 1.05], 0.05, 0.075, LINEN));
-        p.push(limb(shoulder, elbow, 0.058, 0.05, LINEN));
+        p.push(ball(hand, 0.045, skin).on(FORE[k]));
+        p.push(limb(elbow, [0.15, s * 0.1, 1.05], 0.05, 0.075, LINEN).on(FORE[k]));
+        p.push(limb(shoulder, elbow, 0.058, 0.05, LINEN).on(ARM[k]));
     }
     // The bodice, a gold girdle, and the gown with its white front and gold hem
+    let start = p.len();
     p.push(ellipsoid([0.0, 0.0, 1.035], [0.13, 0.185, 0.03], GOLD));
     p.push(ellipsoid([0.0, 0.0, 1.22], [0.12, 0.17, 0.21], gown));
     p.push(ellipsoid([0.0, 0.0, 0.06], [0.38, 0.38, 0.045], GOLD));
     p.push(ellipsoid([0.235, 0.0, 0.5], [0.06, 0.13, 0.42], LINEN));
     p.push(limb([0.0, 0.0, 1.02], [0.02, 0.0, 0.05], 0.16, 0.36, gown));
+    tag(p, start, TORSO);
 }
 
 /// A royal guard, about 1.85 meters tall, standing to attention: a steel helm with a red crest, a
 /// breastplate over a red tabard banded in gold, a tall spear upright in one hand and a shield on
 /// the other arm
 fn royal_guard(p: &mut Vec<Part>) {
+    use crate::baked::villager::*;
     let skin = FUR_TAN;
     // The helm, its crest, and the face under its brim
     p.push(limb([0.02, 0.0, 1.89], [-0.15, 0.0, 1.93], 0.045, 0.03, CLOTH));
@@ -3362,7 +3424,10 @@ fn royal_guard(p: &mut Vec<Part>) {
     p.push(ellipsoid([0.01, 0.0, 1.69], [0.165, 0.165, 0.022], STEEL));
     p.push(ball([0.02, 0.0, 1.62], 0.12, skin));
     p.push(limb([0.0, 0.0, 1.42], [0.01, 0.0, 1.54], 0.05, 0.05, skin));
-    // The spear, held upright beside it, and the shield on its other arm
+    tag(p, 0, HEAD);
+    // The spear, held upright beside it, and the shield on its other arm, both with its body, as
+    // it stands to attention, see src\baked.rs
+    let start = p.len();
     let spear = [0.17, -0.31];
     p.push(limb([spear[0], spear[1], 2.27], [spear[0], spear[1], 2.52], 0.04, 0.006, STEEL));
     p.push(limb([spear[0], spear[1], 2.22], [spear[0], spear[1], 2.27], 0.045, 0.045, GOLD));
@@ -3382,8 +3447,10 @@ fn royal_guard(p: &mut Vec<Part>) {
     p.push(ellipsoid([0.02, 0.0, 0.96], [0.15, 0.2, 0.035], LEATHER));
     p.push(ellipsoid([0.035, 0.0, 0.92], [0.13, 0.045, 0.28], GOLD));
     p.push(ellipsoid([0.02, 0.0, 0.92], [0.15, 0.2, 0.3], CLOTH));
+    tag(p, start, TORSO);
     for y in [0.1, -0.1] {
-        leg(p, [0.0, y, 0.88], 0.86, 0.075, 0.0, DARK_STEEL, LEATHER, [0, 0]);
+        let side = (y > 0.0) as usize;
+        leg(p, [0.0, y, 0.88], 0.86, 0.075, 0.0, DARK_STEEL, LEATHER, [THIGH[side], SHIN[side]]);
     }
 }
 
@@ -3781,6 +3848,12 @@ pub const HELD: u32 = 2;
 /// The player's own body, which the eye never sees, only its shadow and reflections, see
 /// character::body. Has to match BODY in shaders\traverse.comp.
 pub const BODY: u32 = 3;
+/// A piece of a townsperson, monster or animal near the camera posed afresh every frame from its
+/// pieces, see src\baked.rs, seen only by rays from the camera; and its frame baked whole, its
+/// stand-in, which only other rays meet, casting its shadow and seen in reflections. See
+/// AnimalInstance::seen(). Have to match SEEN and STAND_IN in shaders\traverse.comp.
+pub const SEEN: u32 = 4;
+pub const STAND_IN: u32 = 5;
 /// Drawn in the player's colours, see AnimalInstance::outfit(). Has to match TINT_OUTFIT in
 /// shaders\traverse.comp.
 pub const TINT_OUTFIT: u32 = 0x100;
@@ -3880,6 +3953,36 @@ impl AnimalInstance {
         self
     }
 
+    /// The same as the stand-in for what's posed live, see STAND_IN: met only by rays that aren't
+    /// from the camera
+    pub fn stand_in(mut self) -> Self {
+        self.info[1] = STAND_IN;
+        self
+    }
+
+    /// The same as a piece of what's posed live, see SEEN: seen only from the camera, the instance
+    /// at `stand_in` standing in for it otherwise, and lit with its own pieces, the `count` from
+    /// `first`, in place of that. None of them past 255.
+    pub fn seen(mut self, stand_in: usize, first: usize, count: usize) -> Self {
+        debug_assert!(stand_in < 256 && first < 256 && count < 256);
+        self.info[1] = SEEN | (stand_in as u32 & 0xFF) << 8 | (first as u32 & 0xFF) << 16 | (count as u32 & 0xFF) << 24;
+        self
+    }
+
+    /// How it's drawn: STILL, MOVING, HELD, BODY, SEEN or STAND_IN
+    #[cfg(test)]
+    pub fn kind(&self) -> u32 {
+        self.info[1] & 0xFF
+    }
+
+    /// For a piece of what's posed live, see seen(): where its stand-in is, and its first piece and
+    /// how many there are, as the shader reads them
+    #[cfg(test)]
+    pub fn seen_of(&self) -> Option<(usize, usize, usize)> {
+        let i = self.info[1];
+        (i & 0xFF == SEEN).then_some(((i >> 8 & 0xFF) as usize, (i >> 16 & 0xFF) as usize, (i >> 24) as usize))
+    }
+
     /// Where it's put, in voxels of the main world
     pub fn sphere_center(&self) -> Vector3<f64> {
         Vector3::new(self.position[0] as f64, self.position[1] as f64, self.position[2] as f64)
@@ -3896,6 +3999,14 @@ impl AnimalInstance {
         self
     }
 
+    /// Where the middle of its bottom is, how it's turned and how big its voxels are, for tests
+    #[cfg(test)]
+    pub fn placed(&self) -> (Vector3<f64>, UnitQuaternion<f64>, f64) {
+        let [x, y, z, _] = self.position.map(f64::from);
+        let [i, j, k, w] = self.rotation.map(f64::from);
+        (Vector3::new(x, y, z), UnitQuaternion::new_normalize(nalgebra::Quaternion::new(w, i, j, k)), self.size as f64)
+    }
+
     /// Where it is and how far it reaches from there, in voxels of the main world, for tests
     /// seeing whether it can be seen
     #[cfg(test)]
@@ -3907,6 +4018,13 @@ impl AnimalInstance {
 
 fn facing(heading: f64) -> UnitQuaternion<f64> {
     UnitQuaternion::from_axis_angle(&Vector3::z_axis(), heading)
+}
+
+/// How far to turn in `dt` seconds towards what's `turn` radians round, at most `most` radians a
+/// second: slower the nearer it's come round, so it eases to a stop rather than stopping dead
+fn eased_turn(turn: f64, most: f64, dt: f64) -> f64 {
+    let rate = most * (0.2 + turn.abs() / 0.7).min(1.0);
+    turn.clamp(-rate * dt, rate * dt)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -3927,6 +4045,13 @@ pub struct Animal {
     pub(crate) target_heading: f64,
     /// Which way it's drawn facing: easing after `heading`, so it doesn't jerk round
     drawn_heading: f64,
+    /// Posed live from its pieces, see src\baked.rs: how much it's striding, 0 standing to 1,
+    /// easing into and out of its walk; which way its head's turned from its body, round to its
+    /// left and down, as townsfolk and merchants look about and at whoever's near; and how much
+    /// it's talking, 0 to 1
+    stride: f64,
+    gaze: [f64; 2],
+    talk: f64,
     pub(crate) speed: f64,
     pub(crate) mood: Mood,
     timer: f64,
@@ -3991,6 +4116,20 @@ const STEPPING: f64 = 0.15;
 const SETTLING: f64 = 0.6;
 /// How quickly what's drawn turns after where it faces: about the time it takes, inverted
 const TURN_EASE: f64 = 12.0;
+/// Turning on the spot faster than this, in radians a second, townsfolk and animals shuffle their
+/// feet round, a step a meter for every so many radians, see Animal::step()
+const SHUFFLE_TURN: f64 = 0.9;
+const SHUFFLE: f64 = 0.35;
+/// Posed live, see src\baked.rs: how quickly it eases into and out of its stride, and its head
+/// turns, about the time each takes, inverted; and how near the player townsfolk and merchants look
+/// at them, and talk to them, in meters
+const STRIDE_EASE: f64 = 9.0;
+const GAZE_EASE: f64 = 4.5;
+const LOOK_AT: f64 = 7.0;
+const TALK_AT: f64 = 3.5;
+/// The quickest merchants, the princess and her guards turn to face whoever's near, in radians a
+/// second, slowing as they come round to them
+const KEEPER_TURN: f64 = 2.2;
 
 /// How much of a blow a shieldbearer's shield lets through, and how far round its front it
 /// catches them, as the cosine of the angle off straight ahead: about 65 degrees either side
@@ -4054,6 +4193,11 @@ fn random(seed: &mut u32) -> f64 {
 /// `up` voxels, down at most `down`. None for walls, cliffs, water and outside the world.
 fn ground_at(world: &World, water: WaterLevel, x: f64, y: f64, z: f64, up: f64, down: f64) -> Option<f64> {
     ground_wading(world, water, x, y, z, up, down, 0.2)
+}
+
+/// The ground under `at`, in voxels, within 60 meters down: its height, if there's any to stand on
+pub fn ground_under(world: &World, water: WaterLevel, at: Vector3<f64>) -> Option<f64> {
+    ground_at(world, water, at.x, at.y, at.z, 0.0, 60.0 * world.voxels_per_meter as f64)
 }
 
 /// The same for something that wades through water up to `wade` meters deep
@@ -4147,6 +4291,9 @@ impl Animal {
             heading,
             target_heading: heading,
             drawn_heading: heading,
+            stride: 0.0,
+            gaze: [0.0; 2],
+            talk: 0.0,
             speed: 0.0,
             mood: Mood::Idle,
             timer: random(&mut rng) * 3.0,
@@ -4230,6 +4377,14 @@ impl Animal {
         let (position, turn) = self.rig_placement(vpm);
         crate::rig::instances(self, rig, position, turn, vpm, out);
         true
+    }
+
+    /// For looking at it: a villager set off strolling along `heading`, radians round from +x, for
+    /// `seconds`, see stroll()
+    pub fn stroll_off(&mut self, heading: f64, seconds: f64) {
+        self.mood = Mood::Walk;
+        self.timer = seconds;
+        self.face(heading);
     }
 
     /// Turned to face `heading`, radians round from +x
@@ -4369,6 +4524,7 @@ impl Animal {
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
         self.act(world, water, player, dt);
         self.step(dt);
+        self.ease_live(world, player, dt);
         // What's drawn turns after where it faces, easing into and out of each turn, so snapping
         // round to face something doesn't jerk it about; quicker the further behind it is, so it
         // keeps up with a boss spinning round
@@ -4517,15 +4673,98 @@ impl Animal {
             return;
         }
         let walking = self.speed > STEPPING;
+        // Turning round on the spot, townsfolk and animals shuffle their feet round with them
+        let shuffling = !walking && self.shuffles() && self.turning().abs() > SHUFFLE_TURN;
         let pace = if walking {
             self.speed
+        } else if shuffling {
+            (self.turning().abs() * SHUFFLE).max(SETTLING * self.look.walk_speed())
         } else if (self.phase * 2.0).fract() != 0.0 {
             self.speed.max(SETTLING * self.look.walk_speed())
         } else {
             return;
         };
         let next = self.phase + pace * dt / self.look.stride();
-        self.phase = if !walking && (next * 2.0).floor() > (self.phase * 2.0).floor() { ((next * 2.0).floor() * 0.5).fract() } else { next.fract() };
+        self.phase = if !walking && !shuffling && (next * 2.0).floor() > (self.phase * 2.0).floor() { ((next * 2.0).floor() * 0.5).fract() } else { next.fract() };
+    }
+
+    /// Whether it shuffles its feet round as it turns on the spot: what walks and isn't a boss
+    fn shuffles(&self) -> bool {
+        self.boss.is_none() && self.look.walks() && crate::baked::baked(self.look)
+    }
+
+    /// Eases what it's drawn doing, posed live from its pieces, see src\baked.rs: into and out of
+    /// its stride, and for townsfolk and merchants their head turning to look about, or at the
+    /// player near them, `player` their feet, and talking once they're close
+    fn ease_live(&mut self, world: &World, player: Option<Vector3<f64>>, dt: f64) {
+        let vpm = world.voxels_per_meter as f64;
+        let stepping = self.speed > STEPPING || (self.phase * 2.0).fract() != 0.0;
+        // Shuffling round or finishing a step, it's a short one
+        let stride = if self.speed > STEPPING { 1.0 } else if stepping { 0.55 } else { 0.0 };
+        self.stride += (stride - self.stride) * (1.0 - (-STRIDE_EASE * dt).exp());
+        let look = self.look;
+        if !(look.is_villager() || look.is_merchant() || look.is_royal()) {
+            return;
+        }
+        // Looking about now and then as it stands, straight ahead as it walks
+        let own = self.id as f64 * 0.73;
+        let about = (self.age * 0.23 + own).sin().powi(3) * 0.55 * (1.0 - self.stride);
+        let mut want = [about, 0.08 * (self.age * 0.17 + own).sin()];
+        let mut talking = 0.0;
+        if let Some(player) = player.filter(|_| self.health > 0.0) {
+            let to = player - self.position;
+            let flat = to.xy().norm() / vpm;
+            let off = (to.y.atan2(to.x) - self.drawn_heading + PI).rem_euclid(TAU) - PI;
+            if flat < LOOK_AT && off.abs() < 1.9 {
+                // At their eyes from its own, which are about as high over their feet
+                want = [off, -(to.z / vpm).atan2(flat.max(0.4)).clamp(-0.5, 0.5)];
+                if flat < TALK_AT {
+                    talking = 1.0;
+                }
+            }
+        }
+        // Not so far round walking past, only a glance
+        let most = 1.1 - 0.5 * self.stride;
+        let ease = 1.0 - (-GAZE_EASE * dt).exp();
+        for (now, to) in self.gaze.iter_mut().zip(want) {
+            *now += (to.clamp(-most, most) - *now) * ease;
+        }
+        self.talk += (talking - self.talk) * (1.0 - (-2.5 * dt).exp());
+    }
+
+    /// What it's up to, to pose it live from its pieces, see baked::Rig::live()
+    pub fn doing(&self) -> crate::baked::Doing {
+        let (phase, stride) = match self.beating() {
+            Some(phase) => (phase, 1.0),
+            None if self.look.walks() => (self.phase, self.stride),
+            None => (0.0, 0.0),
+        };
+        crate::baked::Doing { phase, stride, pose: self.boss.as_ref().and_then(Boss::pose_path), gaze: self.gaze, talk: self.talk, age: self.age, seed: self.id }
+    }
+
+    /// For a look baked from pieces near the camera, each of its pieces posed live as it is now,
+    /// into `out`, see baked::Rig::live(): false if it isn't one that can be
+    pub fn live_instances(&self, world_voxels_per_meter: u32, out: &mut Vec<AnimalInstance>) -> bool {
+        if self.dragon.is_some() || self.winged.is_some() || self.swim.is_some() || !crate::baked::posable(self.look) {
+            return false;
+        }
+        let Some(rig) = crate::baked::rig(self.look) else { return false };
+        let (_, position, rotation, scale) = self.placement(world_voxels_per_meter);
+        let poses = rig.live(&self.doing());
+        if poses.is_empty() {
+            return false;
+        }
+        let start = out.len();
+        rig.draw_live(&poses, position, rotation, scale * self.look.resolution(), out);
+        let skin = match self.demi {
+            Some(k) => crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].skin,
+            None => 0,
+        };
+        let tint = self.status.tint();
+        for piece in &mut out[start..] {
+            *piece = piece.tinted(tint).skinned(skin);
+        }
+        out.len() > start
     }
 
     fn act(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
@@ -4579,7 +4818,7 @@ impl Animal {
                 let to = (player - self.position).xy();
                 if to.norm() < 8.0 * vpm {
                     let turn = (to.y.atan2(to.x) - self.heading + PI).rem_euclid(TAU) - PI;
-                    self.heading += turn.clamp(-2.0 * dt, 2.0 * dt);
+                    self.heading += eased_turn(turn, KEEPER_TURN, dt);
                 }
             }
             return;
@@ -4594,7 +4833,7 @@ impl Animal {
             if to.is_some() || look == Look::RoyalGuard {
                 let want = to.map_or(self.target_heading, |to| to.y.atan2(to.x));
                 let turn = (want - self.heading + PI).rem_euclid(TAU) - PI;
-                self.heading += turn.clamp(-3.0 * dt, 3.0 * dt);
+                self.heading += eased_turn(turn, KEEPER_TURN * 1.3, dt);
             }
             return;
         }
@@ -4661,9 +4900,10 @@ impl Animal {
             return;
         }
 
-        // Turn towards where it's headed, the short way round
+        // Turn towards where it's headed, the short way round: townsfolk and animals slowing as they
+        // come round, rather than stopping dead, as monsters and bosses keep their aim
         let turn = (self.target_heading - self.heading + PI).rem_euclid(TAU) - PI;
-        self.heading += turn.clamp(-3.0 * dt * pace, 3.0 * dt * pace);
+        self.heading += if self.boss.is_none() { eased_turn(turn, 3.0 * pace, dt) } else { turn.clamp(-3.0 * dt * pace, 3.0 * dt * pace) };
 
         // A burrower tunnelling along under the sand, or a beast charging, goes faster than it runs
         let haste = self.boss.as_ref().map_or(1.0, Boss::haste);
@@ -4822,13 +5062,18 @@ impl Animal {
     }
 
     /// Which of its frames it's drawn in, where, turned how and how big
-    fn placement(&self, world_voxels_per_meter: u32) -> (usize, Vector3<f64>, UnitQuaternion<f64>, f64) {
-        // Wings never stop beating, and a wraith's rags never stop stirring, however it's moving
-        let beating = match self.look.build() {
+    /// Wings never stop beating, and a wraith's rags never stop stirring, however it's moving: how
+    /// far through its walk's frames they are, if so
+    fn beating(&self) -> Option<f64> {
+        match self.look.build() {
             Some(Build::Bat) => Some((self.age * 3.4 + self.id as f64 * 0.37).fract()),
             Some(Build::Wraith) if self.speed <= 0.15 => Some((self.age * 0.45 + self.id as f64 * 0.37).fract()),
             _ => None,
-        };
+        }
+    }
+
+    fn placement(&self, world_voxels_per_meter: u32) -> (usize, Vector3<f64>, UnitQuaternion<f64>, f64) {
+        let beating = self.beating();
         // The frame of its walk nearest where it is in it, and on through it till it's finished
         // the step it was taking
         let walk = |phase: f64| 1 + (phase * WALK_FRAMES as f64).round() as usize % WALK_FRAMES;
@@ -4844,7 +5089,9 @@ impl Animal {
         // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
         // less the faster they go, so they're never still as statues between frames; a jointed boss
         // breathes with its own joints
-        if self.look.build().is_some() && !crate::rig::rigged(self.look) {
+        // and so do the townsfolk, merchants, the princess and her guards, shifting their weight
+        let folk = self.look.is_villager() || self.look.is_merchant() || self.look.is_royal();
+        if (self.look.build().is_some() || folk) && !crate::rig::rigged(self.look) {
             let offset = self.id as f64 * 0.7;
             scale *= 1.0 + 0.012 * (self.age * 2.1 + offset).sin();
             let still = (1.0 - self.speed / 0.4).clamp(0.0, 1.0);
@@ -5317,6 +5564,40 @@ mod tests {
                             assert!(shown(look, frame), "{look:?} going from {a} to {b} is drawn in frame {frame}, which it has no model for");
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Posed live, a monster goes from one pose to the next through the very frames its baked frames
+    /// step through, only smoothly: from the first pose to the last, at the moment tween() is in
+    /// each of them, and between poses with no frames between it eases across in a moment
+    #[test]
+    fn tween_paths_go_through_the_tweens() {
+        let poses = [0, POSE_WINDUP, POSE_STRIKE, POSE_SPECIAL];
+        for look in Look::ALL.into_iter().filter(|&l| crate::baked::baked(l) && shown(l, POSE_WINDUP)) {
+            for a in poses {
+                for b in poses.into_iter().filter(|&b| b != a) {
+                    let (path, along) = tween_path(look, a, b, 0.0).unwrap();
+                    assert_eq!((path[0], *path.last().unwrap(), along), (a, b, 0.0), "{look:?} from {a} to {b}");
+                    assert!(path.iter().all(|&f| shown(look, f)), "{look:?} from {a} to {b} goes through {path:?}");
+                    let mut seen = 0;
+                    for k in 1..400 {
+                        // Off the moments exactly halfway between two frames, either of which is
+                        // as near
+                        let since = (k as f64 + 0.37) * 0.002;
+                        match (tween(look, a, b, since), tween_path(look, a, b, since)) {
+                            (Some(frame), Some((path, along))) => {
+                                // The baked frame is the one of the path nearest how far along it is
+                                let nearest = path[(along * (path.len() - 1) as f64).round() as usize];
+                                assert_eq!(frame, nearest, "{look:?} from {a} to {b} after {since} s");
+                                seen += 1;
+                            }
+                            (None, Some((path, _))) => assert_eq!(path.len(), 2, "{look:?} from {a} to {b} only eases across"),
+                            (_, None) => break,
+                        }
+                    }
+                    assert!(seen > 0 || path.len() == 2, "{look:?} from {a} to {b}");
                 }
             }
         }

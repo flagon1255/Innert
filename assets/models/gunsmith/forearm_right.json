@@ -1,0 +1,29 @@
+{
+  "what": "Gunsmith, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    1,
+    2
+  ],
+  "pivot": [
+    1.104,
+    0.33999999999999986,
+    1.6239999999999988
+  ],
+  "anchor": [
+    0.024749999999999994,
+    0.010000000000000009,
+    -0.10149999999999992
+  ],
+  "origin": [
+    -1,
+    0,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1268,
+    "be0a07b24450931f"
+  ]
+}

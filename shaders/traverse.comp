@@ -197,6 +197,14 @@ const uint HELD = 2;
 // The player's own body, round the camera: rays from the camera pass it by, so it's only seen in
 // its shadow and in reflections, see src\character\body.rs
 const uint BODY = 3;
+// A townsperson, monster or animal near the camera posed afresh every frame from its pieces, see
+// src\baked.rs: each piece is SEEN, only by rays from the camera, and its frame baked whole is its
+// STAND_IN, which only other rays meet, casting its shadow and seen in reflections. A piece's info.y
+// also has its stand-in in bits 8 to 15, and the first of its own pieces and how many there are
+// in bits 16 to 23 and 24 to 31, so the light on it looks at its own pieces rather than its
+// stand-in. Has to match SEEN and STAND_IN in src\animals.rs.
+const uint SEEN = 4;
+const uint STAND_IN = 5;
 // Drawn in the player's colours, a flag over the rest: its leather in the colour in the low half of
 // info.w, its cloth in that in the high half, each 5, 6 and 5 bits of red, green and blue
 const uint TINT_OUTFIT = 0x100u;
@@ -1094,6 +1102,11 @@ const uint SECONDARY_ANIMALS = 24;
 uint g_animal_limit = 0xFFFFFFFFu;
 // Set while lighting what's held, so the player's own body round it doesn't shade it
 bool g_no_body = false;
+// Set while lighting a piece of something posed live, see SEEN: its stand-in, which other rays
+// pass by, and its own pieces, which they look at after the rest
+uint g_stand_in = 0xFFFFFFFFu;
+uint g_own_from = 0;
+uint g_own_to = 0;
 
 // The animals and props whose bounding spheres the camera's rays through this workgroup's tile of
 // pixels might pass through, a bit each, worked out by all its invocations together before any
@@ -1132,7 +1145,8 @@ void cullTileAnimals() {
                 float cos_a = sqrt(max(1 - sin_a * sin_a, 0));
                 keep = dot(to, axis) / d >= cos_cone * cos_a - sin_cone * sin_a;
             }
-            if (keep && animals[i].info.y != BODY)
+            uint kind = animals[i].info.y & 0xFFu;
+            if (keep && kind != BODY && kind != STAND_IN)
             atomicOr(s_tile_animals[i / 32], 1u << (i % 32));
         }
     }
@@ -1151,6 +1165,10 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
     uint word = 0;
     uint bits = tiled ? s_tile_animals[0] : 0;
     uint next = 0;
+    // Other rays, lighting a piece posed live, look at its own pieces after the rest, see SEEN
+    uint own_from = from_camera ? 0 : g_own_from;
+    uint own_to = from_camera ? 0 : g_own_to;
+    bool own = false;
     while (true) {
         uint i;
         if (tiled) {
@@ -1163,12 +1181,24 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
             i = word * 32 + findLSB(bits);
             bits &= bits - 1;
         } else {
+            if (next >= count && !own && own_from < own_to) {
+                own = true;
+                next = own_from;
+                count = min(own_to, animalCount());
+            }
             if (next >= count)
             break;
             i = next++;
         }
         Animal a = animals[i];
-        if (a.info.y == BODY && (from_camera || g_no_body))
+        uint kind = a.info.y & 0xFFu;
+        if (kind == BODY && (from_camera || g_no_body))
+        continue;
+        // Pieces posed live are seen only from the camera, and their stand-ins only by other rays,
+        // but for the stand-in of what's being lit, whose own pieces stand for it
+        if (kind == SEEN && !from_camera && !own)
+        continue;
+        if (kind == STAND_IN && (from_camera || i == g_stand_in))
         continue;
         float limit = from_camera && a.info.y == HELD ? FLT_MAX : max_t;
         // Only animals whose bounding sphere the ray passes through
@@ -2712,6 +2742,13 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         g_glass_tint *= GLASS_TINT;
     }
     g_animal_limit = SECONDARY_ANIMALS;
+    // A piece of something posed live is shaded by its own pieces, not its stand-in, see SEEN
+    if (solid && hit.level == ANIMAL && (animals[hit.instance].info.y & 0xFFu) == SEEN) {
+        uint info = animals[hit.instance].info.y;
+        g_stand_in = (info >> 8) & 0xFFu;
+        g_own_from = (info >> 16) & 0xFFu;
+        g_own_to = g_own_from + (info >> 24);
+    }
     g_sway = false;
     g_clear_leaves = false;
     // Leaves blown aside are lit as they are where they grow, so their light and shade move with

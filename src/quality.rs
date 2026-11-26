@@ -77,6 +77,10 @@ pub struct Settings {
     /// How many voxels to a meter the world's built with. Fewer would take a quarter of the memory
     /// and be quicker to draw, but blockier, see the screenshots of Low at 8 a meter.
     pub voxels_per_meter: u32,
+    /// How near, in meters, townsfolk, merchants, monsters and animals are posed afresh every frame
+    /// from their pieces, moving smoothly, rather than drawn in their baked frames, see src\baked.rs:
+    /// about a twentieth more of tracing a busy town square's rays at 40 meters
+    pub live_npcs: u32,
 }
 
 impl Preset {
@@ -114,6 +118,7 @@ impl Preset {
             flowing_water_m: 64.0,
             world_width_m: 224,
             voxels_per_meter: 16,
+            live_npcs: crate::baked::LIVE_RANGE,
         };
         match self {
             Preset::Low => Settings {
@@ -127,6 +132,8 @@ impl Preset {
                 reflections: false,
                 fast_upscale: true,
                 flowing_water_m: 32.0,
+                // Only those near enough for their stepping to show
+                live_npcs: 18,
                 ..high
             },
             Preset::Medium => Settings {
@@ -134,6 +141,7 @@ impl Preset {
                 sun_shafts: shafts::Quality::Low,
                 fast_upscale: true,
                 flowing_water_m: 48.0,
+                live_npcs: 28,
                 ..high
             },
             Preset::High => high,

@@ -1,0 +1,29 @@
+{
+  "what": "Merchant, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    14,
+    33
+  ],
+  "pivot": [
+    3.7142857142857144,
+    7.12,
+    19.73714285714286
+  ],
+  "anchor": [
+    0.20535714285714285,
+    -0.007499999999999993,
+    -1.2335714285714288
+  ],
+  "origin": [
+    -4,
+    -7,
+    -20
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    9748,
+    "c8c1b0e3750b7ea2"
+  ]
+}

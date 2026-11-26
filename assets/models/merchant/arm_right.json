@@ -1,0 +1,29 @@
+{
+  "what": "Merchant, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    3,
+    12
+  ],
+  "pivot": [
+    0.7999999999999998,
+    2.48,
+    4.120000000000001
+  ],
+  "anchor": [
+    0.2625,
+    -0.06125,
+    -0.25750000000000006
+  ],
+  "origin": [
+    -1,
+    -2,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1428,
+    "938fc2b002d2e03d"
+  ]
+}

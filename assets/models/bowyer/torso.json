@@ -1,0 +1,29 @@
+{
+  "what": "Bowyer, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    9,
+    32
+  ],
+  "pivot": [
+    7.147039168849416,
+    2.228888888888887,
+    19.142857142857142
+  ],
+  "anchor": [
+    -0.07168994805308845,
+    0.14194444444444457,
+    -1.1964285714285714
+  ],
+  "origin": [
+    -7,
+    -2,
+    -19
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    4445,
+    "5f2816de98b11408"
+  ]
+}

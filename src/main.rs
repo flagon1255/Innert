@@ -2714,6 +2714,10 @@ impl App {
         // Avians and gargoyles made from here on making only `--set boss_move=snatch` or another of
         // their own moves, in a screenshot run, see avians.rs
         avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
+        // `--set live_npcs=0` draws townsfolk, merchants, monsters and animals in their baked frames
+        // however near, rather than posed afresh from their pieces, to compare, and `live_npcs=25`
+        // poses only those within 25 meters
+        baked::set_live(setting("live_npcs").and_then(|v| v.parse().ok()).unwrap_or(preset.live_npcs));
         // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
         // try fighting it
         let boss = setting("boss").and_then(|name| {
@@ -2862,6 +2866,10 @@ impl App {
         if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             game.summon_villagers(&world, &water_level, start, ahead, distance);
+            // And `villager_walk=1` sets them off strolling across in front, to see them walk
+            if flag("villager_walk", false) {
+                game.walk_villagers(ahead.x.atan2(-ahead.y), 30.0);
+            }
         }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
@@ -4813,6 +4821,7 @@ impl App {
         self.reflections = s.reflections;
         self.fast_upscale = s.fast_upscale;
         self.shafts.quality = s.sun_shafts;
+        baked::set_live(s.live_npcs);
         water::set_flowing_area((s.flowing_water_m * self.world.voxels_per_meter as f32) as u32);
     }
 
@@ -5286,7 +5295,13 @@ impl App {
                 static HELD: std::sync::Mutex<Option<(Vector3<f64>, Vector3<f64>)>> = std::sync::Mutex::new(None);
                 let placing = f <= 20 || number("view_follow", 0.0) > 0.5;
                 let mut held = HELD.lock().unwrap();
-                if let Some(target) = self.game.nearest_boss(feet).filter(|_| placing) {
+                // Or `watch=villager`, `watch=merchant` and the like, the nearest of that look, to see
+                // how townsfolk, merchants and animals move
+                let watched = match settings_from_args().into_iter().find(|(k, _)| k == "watch") {
+                    Some((_, name)) => self.game.nearest_named(feet, &name),
+                    None => self.game.nearest_boss(feet),
+                };
+                if let Some(target) = watched.filter(|_| placing) {
                     let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
                     let from = number("view_from", 1.4);
                     let distance = number("view_distance", 12.0);
@@ -5307,6 +5322,9 @@ impl App {
                     let tries = [0.0, -2.0 * from, 0.5, -2.0 * from - 0.5, -0.5, -2.0 * from + 0.5, 1.0, -2.0 * from - 1.0];
                     let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
                     *held = Some((at, target));
+                    if f == 20 {
+                        println!("frame {frame}: watching from {:.1} m off what's at {:?}", (at - target).norm() / vpm, (target / vpm).map(|v| (v * 10.0).round() / 10.0));
+                    }
                 }
                 // Looking at its feet, or `view_look=2.5` that many meters up from them, at the middle
                 // of something that floats
