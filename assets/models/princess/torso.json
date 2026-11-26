@@ -1,0 +1,29 @@
+{
+  "what": "Princess, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    11,
+    26
+  ],
+  "pivot": [
+    5.281818181818181,
+    5.5,
+    14.02909090909091
+  ],
+  "anchor": [
+    0.04488636363636364,
+    0.0,
+    -0.8768181818181818
+  ],
+  "origin": [
+    -5,
+    -6,
+    -14
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    5653,
+    "905b00ae40bb0b48"
+  ]
+}

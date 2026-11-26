@@ -2705,6 +2705,9 @@ impl App {
         // Avians and gargoyles made from here on making only `--set boss_move=snatch` or another of
         // their own moves, in a screenshot run, see avians.rs
         avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
+        // `--set live_npcs=0` draws townsfolk, merchants, monsters and animals in their baked frames
+        // however near, rather than posed afresh from their pieces, to compare
+        baked::set_live(flag("live_npcs", true));
         // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
         // try fighting it
         let boss = setting("boss").and_then(|name| {
@@ -2853,6 +2856,10 @@ impl App {
         if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             game.summon_villagers(&world, &water_level, start, ahead, distance);
+            // And `villager_walk=1` sets them off strolling across in front, to see them walk
+            if flag("villager_walk", false) {
+                game.walk_villagers(ahead.x.atan2(-ahead.y), 30.0);
+            }
         }
         if capture.is_some() {
             println!("{}", game.describe_weapons());

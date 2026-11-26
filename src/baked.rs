@@ -20,6 +20,7 @@
 //! holding those places, see legacy(), so it goes with them too.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
@@ -31,8 +32,10 @@ use crate::worldgen::material::AIR;
 pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
-/// Every look drawn in frames baked from pieces, in the order their pieces are among the models
-pub const KINDS: [Look; 26] = [
+/// Every look drawn in frames baked from pieces, in the order their pieces are among the models:
+/// the merchants, the princess and her guards last, which only stand, so they've only their
+/// standing frame, but are posed live from their pieces as the rest are, see Rig::live()
+pub const KINDS: [Look; 35] = [
     Look::Bear,
     Look::Dog,
     Look::GrayCat,
@@ -59,6 +62,15 @@ pub const KINDS: [Look; 26] = [
     Look::Ghoul,
     Look::GraveBrute,
     Look::BoneArcher,
+    Look::Merchant,
+    Look::Bowyer,
+    Look::Wandwright,
+    Look::Bladesmith,
+    Look::Gunsmith,
+    Look::Jeweller,
+    Look::Wingmaker,
+    Look::Princess,
+    Look::RoyalGuard,
 ];
 
 /// Pieces each has room for among the models, those it doesn't have left empty
@@ -220,6 +232,9 @@ enum Build {
     Lurker,
     Gloomwing,
     Villager,
+    /// Those who stand where they are, the merchants, the princess and her guards: boned as the
+    /// townsfolk are, with clips of their own
+    Keeper,
 }
 
 fn build_of(look: Look) -> Build {
@@ -234,6 +249,7 @@ fn build_of(look: Look) -> Build {
         Look::MireLurker => Build::Lurker,
         Look::Gloomwing => Build::Gloomwing,
         Look::Villager | Look::Townswoman => Build::Villager,
+        _ if look.is_merchant() || look.is_royal() => Build::Keeper,
         _ => Build::Undead,
     }
 }
@@ -253,6 +269,7 @@ fn build_name(b: Build) -> &'static str {
         Build::Lurker => "lurker",
         Build::Gloomwing => "gloomwing",
         Build::Villager => "villager",
+        Build::Keeper => "keeper",
     }
 }
 
@@ -445,7 +462,7 @@ fn skeleton(look: Look) -> Vec<Bone> {
                 add(&format!("wing_{}_outer", sides[s]), Some(INNER[s]));
             }
         }
-        Build::Villager => {
+        Build::Villager | Build::Keeper => {
             use villager::*;
             add("torso", None);
             add("head", Some(TORSO));
@@ -1124,9 +1141,16 @@ const WALK: usize = animals::POSE_WINDUP - 1;
 /// rags stirring, even as it stands.
 pub const CLIPS: [&str; 5] = ["idle", "walk", "windup", "strike", "special"];
 
-/// How many of CLIPS `look` has: animals and the folk of the towns only stand and walk
+/// How many of CLIPS `look` has: animals and the folk of the towns only stand and walk, and the
+/// merchants, the princess and her guards only stand
 fn clips(look: Look) -> usize {
-    if look.build().is_some() { CLIPS.len() } else { 2 }
+    if look.build().is_some() {
+        CLIPS.len()
+    } else if look.walks() {
+        2
+    } else {
+        1
+    }
 }
 
 /// Seconds a cycle of `look`'s walk takes at its walking pace, the length of its walk clip
@@ -1388,6 +1412,273 @@ pub fn legacy(rig: &Rig, pieces: &mut [Piece], dir: &Path, name: &str) -> Result
         pieces[who] = pieces[who].with(m, lo);
     }
     Ok(changed)
+}
+
+// Posed live
+
+/// Whether those near the camera are posed afresh every frame from their pieces, see Rig::live(),
+/// rather than drawn in their baked frames: `--set live_npcs=0` draws every one in its frames
+static LIVE: AtomicBool = AtomicBool::new(true);
+
+pub fn set_live(on: bool) {
+    LIVE.store(on, Ordering::Relaxed);
+}
+
+/// Which looks have frames replaced outright by files, `<look>/walk_03.vox` and the like, by KINDS:
+/// they're drawn in those, as the files have them, never posed live
+static REPLACED: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+
+/// Tells the game whether `look` has frames replaced outright by files, see src\assets.rs
+pub fn replaced(look: Look, yes: bool) {
+    let Some(k) = kind(look) else { return };
+    let mut r = REPLACED.lock().unwrap_or_else(|e| e.into_inner());
+    if r.len() < KINDS.len() {
+        r.resize(KINDS.len(), false);
+    }
+    r[k] = yes;
+}
+
+/// Whether `look` can be posed live from its pieces: baked from them, none of them swelling, which
+/// a piece drawn whole can't, and none of its frames replaced by a file
+pub fn posable(look: Look) -> bool {
+    if !LIVE.load(Ordering::Relaxed) {
+        return false;
+    }
+    let Some(k) = kind(look) else { return false };
+    if REPLACED.lock().unwrap_or_else(|e| e.into_inner()).get(k).copied().unwrap_or(false) {
+        return false;
+    }
+    rig(look).is_some_and(|r| !r.bones.iter().any(|b| b.swells))
+}
+
+/// What a look baked from pieces is up to, to pose it live, see Rig::live()
+#[derive(Clone, Debug, Default)]
+pub struct Doing {
+    /// How far through its walk it is, 0 to 1, and how much it's striding, 0 standing to 1
+    pub phase: f64,
+    pub stride: f64,
+    /// The poses it's going between and how far along them it is, see animals::tween_path(), 0
+    /// being what its feet are doing; or the one pose it's in
+    pub pose: Option<(Vec<usize>, f64)>,
+    /// Which way its head's turned from how its body faces, radians round to its left and down,
+    /// as townsfolk and merchants look at whoever's near
+    pub gaze: [f64; 2],
+    /// How much it's talking, 0 to 1: nodding, and a free hand going as it does
+    pub talk: f64,
+    /// Seconds it's been about, and a number of its own, so no two breathe or fidget together
+    pub age: f64,
+    pub seed: u32,
+}
+
+/// Each frame's poses with the animation files on top, as its frames are baked: by KINDS, and the
+/// animation files' generation they were worked out for, see anim::generation()
+type Posed = std::sync::Arc<Vec<Option<Vec<Pose>>>>;
+static POSED: Mutex<Vec<Option<(u64, Posed)>>> = Mutex::new(Vec::new());
+
+/// Where each bone goes in each frame of `rig`, the animation files' clips on top, as its frames are
+/// baked from: worked out again only once the files change
+fn posed(rig: &Rig) -> Posed {
+    let generation = anim::generation();
+    let k = kind(rig.look).unwrap_or(0);
+    {
+        let cache = POSED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(Some((g, p))) = cache.get(k)
+            && *g == generation
+        {
+            return p.clone();
+        }
+    }
+    let deltas = rig.deltas();
+    let defs = rig.bone_defs();
+    let made: Posed = std::sync::Arc::new(
+        rig.poses
+            .iter()
+            .enumerate()
+            .map(|(f, frame)| {
+                frame.as_ref().map(|(_, poses)| match deltas.as_ref().and_then(|d| d.get(f)) {
+                    Some(d) => moved(&defs, poses, d),
+                    None => poses.clone(),
+                })
+            })
+            .collect(),
+    );
+    let mut cache = POSED.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() < KINDS.len() {
+        cache.resize(KINDS.len(), None);
+    }
+    cache[k] = Some((generation, made.clone()));
+    made
+}
+
+/// Where `child` is from `parent`, in the parent's own frame
+fn local(parent: &Pose, child: &Pose) -> (V, Q) {
+    let back = parent.turn.inverse();
+    (back * (child.at - parent.at), back * child.turn)
+}
+
+/// `f` of the way from poses `a` to `b` of a look of `bones`: each bone mixed as it hangs from its
+/// parent, then hung from its parent as that's mixed, so limbs stay on as they swing between two
+/// frames, however far apart. What's hidden in one is as it is in the other, shown from halfway.
+fn blend(bones: &[Bone], a: &[Pose], b: &[Pose], f: f64) -> Vec<Pose> {
+    if f <= 0.0 {
+        return a.to_vec();
+    }
+    if f >= 1.0 {
+        return b.to_vec();
+    }
+    let mut out: Vec<Pose> = Vec::with_capacity(a.len());
+    for i in 0..a.len().min(b.len()) {
+        let shown = if f < 0.5 { a[i].shown } else { b[i].shown };
+        let (pa, pb) = match (a[i].shown, b[i].shown) {
+            (true, false) => (a[i], a[i]),
+            (false, true) => (b[i], b[i]),
+            _ => (a[i], b[i]),
+        };
+        let parent = bones.get(i).and_then(|bone| bone.parent).filter(|&p| p < i && a[p].shown && b[p].shown);
+        let mixed = match parent {
+            Some(p) => {
+                let ((at_a, turn_a), (at_b, turn_b)) = (local(&a[p], &pa), local(&b[p], &pb));
+                let turn = turn_a.try_slerp(&turn_b, f, 1e-9).unwrap_or(if f < 0.5 { turn_a } else { turn_b });
+                let up = out[p];
+                Pose { at: up.at + up.turn * at_a.lerp(&at_b, f), turn: up.turn * turn, scale: pa.scale.lerp(&pb.scale, f), shown }
+            }
+            None => Pose { shown, ..pa.mix(&pb, f) },
+        };
+        out.push(mixed);
+    }
+    out
+}
+
+/// Bone `b` of `poses` turned by `turn` about its joint, in its own frame, everything hanging from
+/// it carried round with it
+fn turn_bone(bones: &[Bone], poses: &mut [Pose], b: usize, turn: Q) {
+    let Some(&joint) = poses.get(b) else { return };
+    let r = joint.turn * turn * joint.turn.inverse();
+    let under = |mut i: usize| loop {
+        if i == b {
+            break true;
+        }
+        match bones[i].parent {
+            Some(p) if p < i => i = p,
+            _ => break false,
+        }
+    };
+    for i in b..poses.len().min(bones.len()) {
+        if under(i) {
+            poses[i].at = joint.at + r * (poses[i].at - joint.at);
+            poses[i].turn = r * poses[i].turn;
+        }
+    }
+}
+
+/// The hand townsfolk and merchants move as they talk, 0 the right and 1 the left, as `look` has
+/// one free: not one holding a spear, a sword in both hands or a tray of stones
+fn free_hand(look: Look) -> Option<usize> {
+    match look {
+        Look::Villager | Look::Wingmaker => Some(0),
+        Look::Townswoman | Look::Merchant | Look::Bowyer | Look::Wandwright | Look::Gunsmith => Some(1),
+        _ => None,
+    }
+}
+
+impl Rig {
+    /// How it's posed doing `doing`: partway between the frames of its walk either side of where it
+    /// is in it, eased into and out of its stride, and between the frames of the poses it goes
+    /// through as it fights, as smoothly as time goes, rather than in steps from frame to frame. The
+    /// animation files' clips are on top, as its frames are baked; and townsfolk and merchants
+    /// breathe, look about and at whoever's near, and talk with their hands.
+    pub fn live(&self, doing: &Doing) -> Vec<Pose> {
+        let posed = posed(self);
+        let frame = |f: usize| posed.get(f).and_then(|p| p.as_deref());
+        let Some(stand) = frame(0) else { return Vec::new() };
+        let mut base = stand.to_vec();
+        if doing.stride > 1e-3 {
+            let x = doing.phase.rem_euclid(1.0) * WALK as f64;
+            let k = (x.floor() as usize).min(WALK - 1);
+            if let (Some(a), Some(b)) = (frame(1 + k), frame(1 + (k + 1) % WALK)) {
+                let walk = blend(&self.bones, a, b, x - k as f64);
+                base = blend(&self.bones, stand, &walk, doing.stride.min(1.0));
+            }
+        }
+        let mut out = match &doing.pose {
+            Some((path, along)) if !path.is_empty() => {
+                let at = |f: usize| if f == 0 { base.as_slice() } else { frame(f).unwrap_or(base.as_slice()) };
+                if path.len() == 1 {
+                    at(path[0]).to_vec()
+                } else {
+                    let n = path.len() - 1;
+                    let x = along.clamp(0.0, 1.0) * n as f64;
+                    let k = (x.floor() as usize).min(n - 1);
+                    blend(&self.bones, at(path[k]), at(path[k + 1]), x - k as f64)
+                }
+            }
+            _ => base,
+        };
+        self.fidget(&mut out, doing);
+        out
+    }
+
+    /// Townsfolk and merchants never quite still: breathing, their arms going out and in with it and
+    /// their head rising and settling; turning their head to look about, or at whoever's near; and
+    /// nodding as they talk, a free hand going
+    fn fidget(&self, poses: &mut [Pose], d: &Doing) {
+        if !matches!(build_of(self.look), Build::Villager | Build::Keeper) || poses.is_empty() {
+            return;
+        }
+        let bone = |name: &str| self.bones.iter().position(|b| b.name == name);
+        let own = (d.seed % 997) as f64 * 0.61;
+        let breath = (d.age * (1.7 + 0.1 * (own % 1.0)) + own).sin();
+        let rx = |a: f64| Q::from_axis_angle(&V::x_axis(), a);
+        let ry = |a: f64| Q::from_axis_angle(&V::y_axis(), a);
+        let rz = |a: f64| Q::from_axis_angle(&V::z_axis(), a);
+        let still = 1.0 - d.stride.clamp(0.0, 1.0);
+        // Not arms holding something with both hands
+        let arms = if free_hand(self.look).is_some() { ["arm_right", "arm_left"].as_slice() } else { &[] };
+        for (side, name) in arms.iter().enumerate() {
+            if let Some(b) = bone(name) {
+                let out = if side == 0 { -1.0 } else { 1.0 };
+                turn_bone(&self.bones, poses, b, rx(out * 0.03 * breath * still));
+            }
+        }
+        // Talking, a hand comes up now and then as it makes a point
+        if let Some(hand) = free_hand(self.look).filter(|_| d.talk > 0.01) {
+            let point = (d.age * 0.9 + own).sin().max(0.0).powf(0.7) * d.talk;
+            let wave = 0.12 * (d.age * 4.3 + own).sin() * point;
+            let sides = ["right", "left"];
+            let (arm, fore) = (bone(&format!("arm_{}", sides[hand])), bone(&format!("forearm_{}", sides[hand])));
+            if let Some(a) = arm {
+                let lift = if fore.is_some() { 0.3 } else { 0.75 };
+                turn_bone(&self.bones, poses, a, ry(-lift * point));
+            }
+            if let Some(f) = fore {
+                turn_bone(&self.bones, poses, f, ry(-1.0 * point + wave) * rz((if hand == 0 { 0.25 } else { -0.25 }) * point));
+            }
+        }
+        if let Some(head) = bone("head") {
+            let nod = 0.07 * d.talk * (d.age * 4.1 + own).sin().max(0.0);
+            let yaw = d.gaze[0].clamp(-1.1, 1.1);
+            let pitch = d.gaze[1].clamp(-0.5, 0.5) + 0.012 * breath + nod;
+            turn_bone(&self.bones, poses, head, rz(yaw) * ry(pitch));
+        }
+    }
+
+    /// Its pieces posed as `poses`, the middle of its feet at `at` in voxels of the world, turned
+    /// `turn`, a meter of it `meter` voxels of the world across, as a piece each into `out`
+    pub fn draw_live(&self, poses: &[Pose], at: V, turn: Q, meter: f64, out: &mut Vec<AnimalInstance>) {
+        let Some(k) = kind(self.look) else { return };
+        let layout = layout_of(self);
+        for (p, pose) in poses.iter().enumerate().take(PIECES) {
+            let Some(&(anchor, size)) = layout.get(p) else { continue };
+            if !pose.shown || size == [1, 1, 1] {
+                continue;
+            }
+            let [x, y, z] = size.map(|v| v as f64 / MODEL_RES);
+            let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * meter;
+            let piece = turn * pose.turn;
+            let place = at + turn * pose.at * meter + piece * anchor * meter;
+            out.push(AnimalInstance::new((animals::BAKED_MODELS_AT + k * PIECES + p) as u32, place, piece, meter / MODEL_RES, reach, MOVING));
+        }
+    }
 }
 
 // The editor
@@ -1656,6 +1947,130 @@ mod tests {
         image.save(&path).unwrap();
         println!("{}", path.display());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn alike(a: &[Pose], b: &[Pose], within: f64) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(p, q)| p.shown != q.shown || !p.shown || ((p.at - q.at).norm() < within && p.turn.angle_to(&q.turn) < within))
+    }
+
+    fn doing(phase: f64, stride: f64, pose: Option<(Vec<usize>, f64)>) -> Doing {
+        Doing { phase, stride, pose, ..Default::default() }
+    }
+
+    /// How far the furthest moved of the pieces shown in both `a` and `b` goes from one to the other,
+    /// in meters, a turn counted as far as the end of a limb half a meter long goes
+    fn furthest(a: &[Pose], b: &[Pose]) -> f64 {
+        a.iter().zip(b).filter(|(p, q)| p.shown && q.shown).map(|(p, q)| (p.at - q.at).norm() + 0.5 * p.turn.angle_to(&q.turn)).fold(0.0, f64::max)
+    }
+
+    /// Posed live at the moments its frames were baked for, every look is posed as it is in those
+    /// frames: standing, every frame of its walk, each pose it strikes, and each frame between
+    #[test]
+    fn posed_live_as_its_frames_are() {
+        for &look in &KINDS {
+            let rig = rig(look).unwrap();
+            let posed = posed(rig);
+            let at = |f: usize| posed[f].as_deref().unwrap();
+            assert!(alike(&rig.live(&doing(0.0, 0.0, None)), at(0), 1e-9), "{look:?} standing");
+            if posed[1].is_some() {
+                for k in 0..WALK {
+                    assert!(alike(&rig.live(&doing(k as f64 / WALK as f64, 1.0, None)), at(1 + k), 1e-6), "{look:?} walking, frame {}", k + 1);
+                }
+            }
+            for pose in [animals::POSE_WINDUP, animals::POSE_STRIKE, animals::POSE_SPECIAL].into_iter().filter(|&p| animals::shown_in(look, p)) {
+                assert!(alike(&rig.live(&doing(0.0, 0.0, Some((vec![pose], 0.0)))), at(pose), 1e-9), "{look:?} in pose {pose}");
+                // Halfway from standing into it, among the frames between
+                let (path, _) = animals::tween_path(look, 0, pose, 0.0).unwrap();
+                if path.len() == 5 {
+                    assert!(alike(&rig.live(&doing(0.0, 0.0, Some((path.clone(), 0.5)))), at(path[2]), 1e-9), "{look:?} halfway into {pose}");
+                }
+            }
+        }
+    }
+
+    /// Posed live, nothing jumps: going round its walk a little at a time, round from its end to
+    /// its start again, and from walking into a blow and out of it, no piece moves much further
+    /// from one moment to the next than it should between baked frames that far apart
+    #[test]
+    fn posed_live_moves_smoothly() {
+        for look in [Look::Villager, Look::Townswoman, Look::Skeleton, Look::Wolf, Look::Bear, Look::Spiderling] {
+            let rig = rig(look).unwrap();
+            let posed = posed(rig);
+            // The most a piece moves from one of its walk's baked frames to the next
+            let baked = (0..WALK).map(|k| furthest(posed[1 + k].as_deref().unwrap(), posed[1 + (k + 1) % WALK].as_deref().unwrap())).fold(0.0, f64::max);
+            let steps = WALK * 20;
+            let mut worst = 0.0f64;
+            let mut last = rig.live(&doing(0.9, 1.0, None));
+            for s in 0..=steps + 40 {
+                let now = rig.live(&doing(0.9 + s as f64 / steps as f64, 1.0, None));
+                worst = worst.max(furthest(&last, &now));
+                last = now;
+            }
+            println!("{look:?}: walking, at most {worst:.4} m a moment, {baked:.4} m from frame to frame");
+            assert!(worst <= baked / 20.0 * 2.5 + 1e-4, "{look:?} walking jumps {worst:.4} m, its frames {baked:.4} m apart");
+            // Into a blow from its stride, and getting over it back into its stride
+            if animals::shown_in(look, animals::POSE_WINDUP) {
+                for (a, b) in [(0, animals::POSE_WINDUP), (animals::POSE_WINDUP, animals::POSE_STRIKE), (animals::POSE_STRIKE, 0)] {
+                    let (path, _) = animals::tween_path(look, a, b, 0.0).unwrap();
+                    let at = |f: usize| if f == 0 { rig.live(&doing(0.25, 1.0, None)) } else { posed[f].clone().unwrap() };
+                    let apart = path.windows(2).map(|w| furthest(&at(w[0]), &at(w[1]))).fold(0.0, f64::max);
+                    let steps = 100 * (path.len() - 1);
+                    let mut worst = 0.0f64;
+                    let mut last = at(path[0]);
+                    for s in 0..=steps {
+                        let now = rig.live(&doing(0.25, 1.0, Some((path.clone(), s as f64 / steps as f64))));
+                        worst = worst.max(furthest(&last, &now));
+                        last = now;
+                    }
+                    println!("{look:?}: from {a} to {b}, at most {worst:.4} m a moment, {apart:.4} m from frame to frame");
+                    assert!(worst <= apart / 100.0 * 2.5 + 1e-4, "{look:?} from {a} to {b} jumps {worst:.4} m, its frames {apart:.4} m apart");
+                }
+            }
+        }
+    }
+
+    /// Its pieces drawn as they're posed live standing are where its standing frame has them: so
+    /// what's seen near, posed live, is what's seen further off, in its frames
+    #[test]
+    fn pieces_posed_live_are_its_frame() {
+        for &look in &KINDS {
+            let rig = rig(look).unwrap();
+            let mut out = Vec::new();
+            rig.draw_live(&rig.live(&doing(0.0, 0.0, None)), V::zeros(), Q::identity(), MODEL_RES, &mut out);
+            let mut drawn = std::collections::HashSet::new();
+            for instance in &out {
+                let (at, turn, size) = instance.placed();
+                let p = instance.model() as usize - animals::BAKED_MODELS_AT - kind(look).unwrap() * PIECES;
+                let m = &rig.pieces[p].model;
+                let [sx, sy, sz] = m.size;
+                for z in 0..sz {
+                    for y in 0..sy {
+                        for x in 0..sx {
+                            if m.voxels[(x + (y + z * sy) * sx) as usize] != AIR {
+                                let c = at + turn * V::new(x as f64 + 0.5 - sx as f64 * 0.5, y as f64 + 0.5 - sy as f64 * 0.5, z as f64 + 0.5) * size;
+                                drawn.insert([(c.x * 2.0).round() as i64, (c.y * 2.0).round() as i64, c.z.floor() as i64]);
+                            }
+                        }
+                    }
+                }
+            }
+            let frame = &rig.frames[0];
+            let [sx, sy, sz] = frame.size;
+            let mut solid = 0;
+            let mut found = 0;
+            for z in 0..sz {
+                for y in 0..sy {
+                    for x in 0..sx {
+                        if frame.voxels[(x + (y + z * sy) * sx) as usize] != AIR {
+                            solid += 1;
+                            let c = V::from(animals::frame_voxel(frame.size, MODEL_RES, x, y, z)) * MODEL_RES;
+                            found += drawn.contains(&[(c.x * 2.0).round() as i64, (c.y * 2.0).round() as i64, c.z.floor() as i64]) as usize;
+                        }
+                    }
+                }
+            }
+            assert!(found as f64 >= solid as f64 * 0.99, "{look:?}: {found} of its {solid} voxels where its pieces are");
+        }
     }
 
     /// Every bone's tagged on some shape, and every shape of a baked look is part of a bone

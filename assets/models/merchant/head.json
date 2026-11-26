@@ -1,0 +1,29 @@
+{
+  "what": "Merchant, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    7
+  ],
+  "pivot": [
+    5.2,
+    2.2,
+    3.6000000000000014
+  ],
+  "anchor": [
+    -0.1375,
+    0.05,
+    -0.2250000000000001
+  ],
+  "origin": [
+    -5,
+    -2,
+    -4
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1765,
+    "e2c781c101bd584c"
+  ]
+}

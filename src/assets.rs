@@ -696,6 +696,7 @@ pub const PIECE_NOTE: &str = "A piece its frames are baked from: the pivot is it
 /// nothing of it's changed.
 fn baked_look(dir: &Path, files: &HashSet<String>, look: Look) -> Option<(Vec<Model>, Vec<Model>)> {
     let rig = crate::baked::rig(look)?;
+    crate::baked::replaced(look, false);
     let own = has_files(files, look);
     let source = crate::baked::skin_of(look).filter(|&(from, _)| !own && !crate::baked::files_of(from, files).is_empty());
     if !own && source.is_none() && !crate::baked::has_anims(look) {
@@ -713,7 +714,11 @@ fn baked_look(dir: &Path, files: &HashSet<String>, look: Look) -> Option<(Vec<Mo
         let name = format!("{folder}/{}", frame_name(f));
         if !is_empty(frame) && files.contains(&name) {
             match read_edit(&file_of(dir, &name), pivot_of(frame.size, None, MODEL_RES)) {
-                Ok(edit) => *frame = conform(&edit, frame.size, Grow::Fixed { cap: 255 }).0,
+                Ok(edit) => {
+                    *frame = conform(&edit, frame.size, Grow::Fixed { cap: 255 }).0;
+                    // Drawn as the file has it, so never posed live from its pieces
+                    crate::baked::replaced(look, true);
+                }
                 Err(e) => log(format!("{name}.vox: {e}")),
             }
         }
@@ -1885,8 +1890,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("innert-export-test-{}", std::process::id()));
         export_all(&dir, false).unwrap();
         let files = scan(&dir);
-        assert!(files.contains("merchant/base"), "the merchant's standing frame");
+        assert!(files.contains("chest/base"), "a chest's one frame");
         assert!(!files.contains("wolf/base"), "the wolf's baked from pieces");
+        assert!(files.contains("merchant/head") && !files.contains("merchant/base"), "and so is the merchant");
         assert!(files.contains("dragon/ashwing/head"));
         assert!(files.contains("wings/gull"));
         CODE_ONLY.store(true, Ordering::Relaxed);

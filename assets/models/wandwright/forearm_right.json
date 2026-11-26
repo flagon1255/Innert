@@ -1,0 +1,29 @@
+{
+  "what": "Wandwright, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    2,
+    3
+  ],
+  "pivot": [
+    0.488,
+    0.8399999999999999,
+    1.815999999999999
+  ],
+  "anchor": [
+    0.06325,
+    0.010000000000000009,
+    -0.11349999999999993
+  ],
+  "origin": [
+    0,
+    -1,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1276,
+    "c3c26ad18fd8399a"
+  ]
+}

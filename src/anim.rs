@@ -218,6 +218,15 @@ fn clips() -> std::sync::MutexGuard<'static, HashMap<(String, String), Option<Ar
 pub fn forget() {
     clips().clear();
     CHECKED.store(false, Ordering::Relaxed);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many times the files have been forgotten, so what's worked out from them can tell when to
+/// work it out again, see baked::posed()
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
 }
 
 /// Whether there are animation files to look in, so rigs need only ask for them when there are

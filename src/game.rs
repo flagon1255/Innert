@@ -53,6 +53,36 @@ const FISH_RANGE: f64 = 40.0;
 const TONGUE_RANGE: f64 = 25.0;
 /// The most animals, bits of food, props and things flying drawn at once, nearest first
 const MAX_INSTANCES: usize = 140;
+/// Townsfolk, merchants, monsters and animals nearer than this, in meters, are posed afresh from
+/// their pieces every frame, see baked::Rig::live(), as many as LIVE_PIECES pieces between them, and
+/// never more than MOST_INSTANCES drawn in all: shaders\traverse.comp sorts no more than 256 by the
+/// tiles of the screen, and the hook's rope, wings and wards come after
+const LIVE_RANGE: f64 = 40.0;
+const LIVE_PIECES: usize = 110;
+const MOST_INSTANCES: usize = 224;
+
+/// Those of `out` at `stand_ins` posed live, the first of each pair where its frame is in `out`
+/// and the second which it is, nearest first: each one's pieces from `pieces_of` put after the
+/// rest, seen only from the camera, and its frame left standing in for it, see animals::SEEN, as
+/// many as there's room for, LIVE_PIECES pieces at most and never more than MOST_INSTANCES in all
+fn pose_live(out: &mut Vec<AnimalInstance>, stand_ins: &[(usize, usize)], pieces_of: &mut dyn FnMut(usize, &mut Vec<AnimalInstance>) -> bool) {
+    let mut room = LIVE_PIECES;
+    let mut pieces = Vec::new();
+    for &(at, k) in stand_ins {
+        pieces.clear();
+        if at > 255 || !pieces_of(k, &mut pieces) {
+            continue;
+        }
+        let first = out.len();
+        if pieces.is_empty() || pieces.len() > room || first + pieces.len() > MOST_INSTANCES {
+            continue;
+        }
+        room -= pieces.len();
+        out[at] = out[at].stand_in();
+        let count = pieces.len();
+        out.extend(pieces.iter().map(|p| p.seen(at, first, count)));
+    }
+}
 /// About this many animals live around the player
 const ANIMALS: usize = 38;
 /// How many flocks and perches of what flies are about the player at once, see
@@ -4624,6 +4654,14 @@ impl Game {
         }
     }
 
+    /// For trying them out: every villager about set off strolling along `heading`, radians round
+    /// from +x, for `seconds`, turning back once they've gone as far from home as they go
+    pub fn walk_villagers(&mut self, heading: f64, seconds: f64) {
+        for villager in self.animals.iter_mut().filter(|a| a.look.is_villager()) {
+            villager.stroll_off(heading, seconds);
+        }
+    }
+
     /// For trying it out: trades with the nearest merchant to `near`
     pub fn open_nearest_shop(&mut self, near: Vector3<f64>) {
         let nearest = self.merchants.iter().filter_map(|&(id, key)| Some((self.animals.iter().find(|a| a.id == id)?, key))).min_by(|a, b| (a.0.position - near).norm().total_cmp(&(b.0.position - near).norm()));
@@ -6322,6 +6360,8 @@ impl Game {
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
         let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
+        // Those among `creatures` near enough to be posed live, and which animal each is
+        let mut live: Vec<(usize, usize)> = Vec::new();
         let mut pieces = Vec::new();
         // A dragon's drawn in pieces, all of them or none, see dragons::instances(), as one creature
         // among the rest, by how near it is
@@ -6350,6 +6390,10 @@ impl Game {
                 // A fish is small, and the water's murky: only drawn near
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+                // Near enough, posed live from its pieces, see below
+                if d < LIVE_RANGE * vpm && crate::baked::posable(animal.look) {
+                    live.push((creatures.len() - 1, k));
+                }
                 // A serpent's tongue flicking, near enough to be seen
                 if d < TONGUE_RANGE * vpm
                     && let Some(tongue) = animal.tongue_instance(world.voxels_per_meter)
@@ -6358,13 +6402,24 @@ impl Game {
                 }
             }
         }
-        let mut order: Vec<(f64, Option<AnimalInstance>, usize)> = creatures.into_iter().map(|(d, i)| (d, Some(i), 0)).chain(dragons.into_iter().map(|(d, k)| (d, None, k))).collect();
+        // Which animal each creature's frame is, if it's one to be posed live
+        let mut live_of = vec![None; creatures.len()];
+        for &(c, k) in &live {
+            live_of[c] = Some(k);
+        }
+        let mut order: Vec<(f64, Option<AnimalInstance>, usize, Option<usize>)> =
+            creatures.into_iter().zip(live_of).map(|((d, i), l)| (d, Some(i), 0, l)).chain(dragons.into_iter().map(|(d, k)| (d, None, k, None))).collect();
         order.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut room = MAX_INSTANCES / 2;
-        for (_, one, k) in order {
+        // Where the frames of those to be posed live are among what's drawn, nearest first
+        let mut stand_ins: Vec<(usize, usize)> = Vec::new();
+        for (_, one, k, l) in order {
             match one {
                 Some(instance) if room > 0 => {
                     room -= 1;
+                    if let Some(l) = l {
+                        stand_ins.push((out.len(), l));
+                    }
                     out.push(instance);
                 }
                 Some(_) => {}
@@ -6452,6 +6507,11 @@ impl Game {
         let taken = near.len().min(budget - leaves.len().min(budget / 3));
         out.extend(near.into_iter().take(taken).map(|(_, i)| i));
         out.extend(leaves.into_iter().take(budget - taken));
+        // Townsfolk, merchants, monsters and animals near the camera posed afresh from their pieces
+        // every frame, see baked::Rig::live(), nearest first, as many as there's room for. Their
+        // pieces come last, seen only from the camera; each one's frame stays where it was among the
+        // rest, standing in for it in its shadow and reflections, see animals::SEEN.
+        pose_live(&mut out, &stand_ins, &mut |k, pieces| self.animals[k].live_instances(world.voxels_per_meter, pieces));
         out
     }
 
@@ -8428,6 +8488,43 @@ fn placed(model: u32, (m, anchor): &(Model, Vector3<f64>), res: f64, point: Vect
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A crowded town square posed live: the nearest as many as there's room for, each one's frame
+    /// standing in for it and its pieces after everything else, telling the shader where its
+    /// stand-in and its own pieces are; never more drawn than the shader sorts by tiles
+    #[test]
+    fn a_crowd_is_posed_live_within_its_room() {
+        let one = |k: usize| AnimalInstance::new(k as u32, Vector3::new(k as f64, 0.0, 0.0), UnitQuaternion::identity(), 1.0, 1.0, animals::MOVING);
+        let mut out: Vec<AnimalInstance> = (0..90).map(one).collect();
+        // Thirty townsfolk among them, every third, eleven pieces each, and one that can't be posed
+        let stand_ins: Vec<(usize, usize)> = (0..30).map(|k| (k * 3, k)).collect();
+        pose_live(&mut out, &stand_ins, &mut |k, pieces| {
+            if k == 2 {
+                return false;
+            }
+            pieces.extend((0..11).map(|p| one(1000 + k * 11 + p)));
+            true
+        });
+        let live: Vec<usize> = (0..90).filter(|&i| out[i].kind() == animals::STAND_IN).collect();
+        assert_eq!(live.len(), LIVE_PIECES / 11, "as many as there's room for: {live:?}");
+        assert_eq!(live[..3], [0, 3, 9], "nearest first, passing over one that can't be posed");
+        assert!(out.len() <= MOST_INSTANCES && out.len() == 90 + live.len() * 11);
+        for (n, &at) in live.iter().enumerate() {
+            let first = 90 + n * 11;
+            for piece in &out[first..first + 11] {
+                assert_eq!(piece.seen_of(), Some((at, first, 11)));
+            }
+        }
+        assert!(out[..90].iter().all(|i| i.seen_of().is_none()));
+        // With little room left, those whose pieces wouldn't all fit are drawn in their frames
+        let mut full: Vec<AnimalInstance> = (0..MOST_INSTANCES - 15).map(one).collect();
+        pose_live(&mut full, &[(0, 0), (1, 1)], &mut |_, pieces| {
+            pieces.extend((0..11).map(one));
+            true
+        });
+        assert_eq!(full.len(), MOST_INSTANCES - 4);
+        assert_eq!((full[0].kind(), full[1].kind()), (animals::STAND_IN, animals::MOVING));
+    }
 
     /// A princess's armoury always has its full stock of weapons, legendary and mythic ones only,
     /// no two of a family

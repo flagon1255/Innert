@@ -65,8 +65,8 @@ grow a model in any direction and it still sits where it did. Keep the `.json` b
 
 | File | What it is |
 | --- | --- |
-| `<creature>/<piece>.vox` | A monster's, animal's or townsperson's pieces, which its frames are baked from, for example `armored_skeleton/blade.vox`, `wolf/upper_fore_left.vox` or `villager/head.vox`. See the note below. |
-| `<thing>/base.vox` | Something that never moves, drawn in one frame: the merchant, the princess and the royal guards, things lying about, chests, the Innert Gate and the portals, for example `chest/base.vox`. |
+| `<creature>/<piece>.vox` | A monster's, animal's, townsperson's or merchant's pieces, which its frames are baked from and it's posed from up close, for example `armored_skeleton/blade.vox`, `wolf/upper_fore_left.vox`, `villager/head.vox` or `merchant/arm_right.vox`. The princess and the royal guards have pieces too. See the note below. |
+| `<thing>/base.vox` | Something that never moves, drawn in one frame: things lying about, chests, the Innert Gate and the portals, for example `chest/base.vox`. |
 | `<creature>/walk_03.vox`, `strike.vox`, ... | One frame each, written with `--export-models --export-frames`. Each replaces its frame outright. |
 | `dragon/<kind>/<piece>.vox` | A dragon's or drake's jointed pieces, for example `dragon/ashwing/head.vox` or `dragon/drake/wing_left_outer.vox`. |
 | `boss/<kind>/<piece>.vox` | A jointed boss's pieces, for example `boss/golem/chest.vox` or `boss/ironhide/upper_fore_left.vox`. |
@@ -83,11 +83,19 @@ grow a model in any direction and it still sits where it did. Keep the `.json` b
 **Effects, wards, and the dragons' and avians' effects** keep the code's anchor. They can grow
 round it, but not below their bottom. Their `.json` doesn't know their real voxels per meter.
 
-**Monsters, animals and the townsfolk are drawn in baked frames, baked from pieces.** Each is still
-drawn as one model a frame (standing, walking, each attack pose and the frames between), so dozens
-on screen cost no more than before. But the frames are baked from jointed pieces: a head, a torso,
-upper arms and forearms, thighs and shins, a tail, what's held in a hand. Each piece is its own
-file, `<creature>/<piece>.vox`, with its joint at the scene's middle.
+**Monsters, animals, the townsfolk and the merchants are drawn in baked frames, baked from pieces,
+and posed from their pieces up close.** Further off each is drawn as one model a frame (standing,
+walking, each attack pose and the frames between), so dozens on screen cost no more than before.
+The frames are baked from jointed pieces: a head, a torso, upper arms and forearms, thighs and
+shins, a tail, what's held in a hand. Each piece is its own file, `<creature>/<piece>.vox`, with
+its joint at the scene's middle.
+
+Within 40 meters, the nearest ten or so are posed afresh every frame from those same pieces, as
+smoothly as time goes, rather than stepping from one baked frame to the next: partway between the
+frames of their walk, easing into and out of it, and partway between the frames of each blow. The
+townsfolk and merchants breathe, look about, turn their heads to whoever comes near, and talk with
+their hands. Their shadows and reflections are still their baked frames. `--set live_npcs=0` draws
+every one in its frames, however near.
 
 - **Edit a piece** and it goes with that limb in every frame: paint the skeleton's `blade.vox` red
   and the blade is red in its hand as it walks, raised over its head as it winds up, and swung down
@@ -168,8 +176,8 @@ the rest, and the gathering tools too. For example: `weapons/sword/iron_blade.vo
    - A boss's are `idle`, `walk`, `run`, each of its moves, `reel` and `death`, played as the game
      plays them.
    - A monster's are `idle`, `walk`, and its three poses, `windup`, `strike` and `special`. An animal
-     or a townsperson has only `idle` and `walk`. A gloomwing's `walk` is its wings beating, and a
-     rime wraith's is its rags stirring.
+     or a townsperson has only `idle` and `walk`, and a merchant, the princess or a royal guard only
+     `idle`. A gloomwing's `walk` is its wings beating, and a rime wraith's is its rags stirring.
    - **Play** plays it at the speed slider's pace.
    - Drag on the bar to scrub through it.
 3. Pick a bone on the right. It lights up. Turn it about its x, y or z axis, or move it, with:
@@ -184,8 +192,9 @@ the rest, and the gathering tools too. For example: `weapons/sword/iron_blade.vo
    - The ease box sets how the bone eases from that key to the next: smooth, linear, in, out, or
      step.
 5. **Save** writes `assets/anims/dragon/<kind>/<clip>.json`, `assets/anims/boss/<kind>/<clip>.json`,
-   or for a monster, animal or townsperson `assets/anims/<build>/<creature>/<clip>.json`, for example
-   `assets/anims/undead/armored_skeleton/walk.json`.
+   or for a monster, animal, townsperson or merchant `assets/anims/<build>/<creature>/<clip>.json`,
+   for example `assets/anims/undead/armored_skeleton/walk.json` or
+   `assets/anims/keeper/merchant/idle.json`.
    - With **for all of its kind** ticked it writes `assets/anims/dragon/<clip>.json`,
      `assets/anims/boss/<clip>.json` or `assets/anims/<build>/<clip>.json` instead. That file is used
      by every dragon, boss, or creature of that build without one of its own: `undead/walk.json`
