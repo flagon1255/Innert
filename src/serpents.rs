@@ -659,6 +659,10 @@ enum Crest {
     Spines,
     /// A crown of gold-tipped horns, and plates of bone down its back
     Crown,
+    /// A wyrm's: no eyes at all, a round maw of three lips ringed with teeth, its throat glowing
+    /// in it, and its body ringed with plates, a knob down its back on each, see
+    /// src\bosses\wyrms.rs
+    Maw,
 }
 
 /// A great serpent: how thick its body is at its thickest, in meters across from its middle, how
@@ -685,8 +689,8 @@ const fn great(look: Look, girth: f64, head: f64, pieces: usize, spacing: f64, c
 }
 
 /// The great serpents: the lesser bosses of each realm, the Water realm's three raid bosses, and the
-/// ultra boss, the Coil Unending
-pub const GREATS: [Great; 8] = [
+/// ultra boss, the Coil Unending; and the wyrms that bore through the ground, after them
+pub const GREATS: [Great; 10] = [
     // The Meremaw: a lake serpent seventeen meters long, mossy green blotched darker, a pale belly, a
     // teal fin down its back, venom glowing in its eyes; it rises out of the water to spray venom
     great(Look::Meremaw, 0.85, 2.1, 16, 1.05, [MOSS, PINE, FUR_CREAM, GLOW_POISON, TEMPLE_TEAL], Crest::Fins, Medium::Water, 0.0),
@@ -711,6 +715,13 @@ pub const GREATS: [Great; 8] = [
     // back, its body taking on each realm's element in turn, see ELEMENT_SKINS: green and bone at
     // first, its venom stage, in the colors it's made in
     great(Look::Ysveth, 1.55, 3.6, 28, 1.7, [MOSS, PINE, BONE, GLOW_HOLY, GOLD], Crest::Crown, Medium::Water, 0.0),
+    // The wyrms, see src\bosses\wyrms.rs. The Dune Wyrm, twenty meters of sand-pale plates ringed
+    // darker, a pale belly, acid glowing green in its throat and teeth of bone, boring through the
+    // desert
+    great(Look::DuneWyrm, 1.05, 2.0, 18, 1.1, [SANDSTONE, SANDSTONE_DARK, FUR_TAN, GLOW_POISON, BONE], Crest::Maw, Medium::Land, 0.0),
+    // The Caldera Wyrm, plates of black glass with fire glowing between them, a belly of rock and
+    // fire in its throat, boring through the ash of the Cinder Crown
+    great(Look::CalderaWyrm, 1.15, 2.2, 18, 1.15, [OBSIDIAN, GLOW_FIRE, ROCK, GLOW_FIRE, MORTAR], Crest::Maw, Medium::Land, 0.0),
 ];
 
 /// The great serpent `look` is, if it is one
@@ -927,6 +938,10 @@ struct Shape {
 fn skull(g: &Great, skin: [u8; 5]) -> Vec<Part> {
     let [back, pattern, _, eye, extra] = skin;
     let (h, r) = (g.head, g.girth);
+    // A wyrm's is all its own, see maw()
+    if g.crest == Crest::Maw {
+        return maw(g, skin);
+    }
     let mut p = Vec::new();
     // Eyes under heavy brows, or glowing pits where its eyes should be
     for s in [-1.0, 1.0] {
@@ -987,6 +1002,7 @@ fn skull(g: &Great, skin: [u8; 5]) -> Vec<Part> {
                 p.push(limb([x, 0.0, 0.6 * r], [x - 0.25 * h, 0.0, (1.3 - 0.08 * k as f64) * r], 0.1 * r, 0.03, extra));
             }
         }
+        Crest::Maw => {}
     }
     // The roof of its mouth, showing as its jaw drops
     p.push(ellipsoid([0.5 * h, 0.0, -0.3 * r], [0.38 * h, 0.5 * r, 0.1 * r], MEAT));
@@ -996,10 +1012,70 @@ fn skull(g: &Great, skin: [u8; 5]) -> Vec<Part> {
     p
 }
 
+/// Where round a wyrm's maw each of its three lips is, radians round from straight up, to its left
+/// first: two up either side, and its lower lip, hinged as a jaw is, straight down
+const LIPS: [f64; 2] = [1.15, -1.15];
+
+/// One of a wyrm's lips, `turn` radians round its maw from straight up: a flared plate out from
+/// the rim of its maw, teeth along its edge hooked in to the middle
+fn lip(p: &mut Vec<Part>, h: f64, r: f64, turn: f64, plate: u8, drop: f64) {
+    let at = |x: f64, out: f64| [x * h, turn.sin() * out * r, turn.cos() * out * r - drop * r];
+    p.push(limb(at(0.62, 0.72), at(1.02, 1.12), 0.36 * r, 0.14 * r, plate));
+    for k in 0..3 {
+        let side = (k as f64 - 1.0) * 0.32;
+        let root = [0.98 * h, (turn + side).sin() * 0.95 * r, (turn + side).cos() * 0.95 * r - drop * r];
+        let tip = [0.92 * h, (turn + side * 0.6).sin() * 0.45 * r, (turn + side * 0.6).cos() * 0.45 * r - drop * r];
+        p.push(limb(root, tip, 0.09 * r, 0.02 * r, BONE));
+    }
+}
+
+/// The shapes of a wyrm's head, about where its neck joins it, facing +x: a barrel ringed with
+/// plates, no eyes, ending in a round maw, two of its three lips flared out round it and a ring of
+/// teeth inside, its throat glowing behind them; the third lip's its jaw, see maw_jaw()
+fn maw(g: &Great, skin: [u8; 5]) -> Vec<Part> {
+    let [back, pattern, _, eye, extra] = skin;
+    let (h, r) = (g.head, g.girth);
+    let mut p = Vec::new();
+    for turn in LIPS {
+        lip(&mut p, h, r, turn, pattern, 0.0);
+    }
+    // A ring of teeth deeper in, hooked in to the middle
+    for k in 0..9 {
+        let a = k as f64 / 9.0 * TAU;
+        p.push(limb([0.84 * h, a.sin() * 0.78 * r, a.cos() * 0.78 * r], [0.9 * h, a.sin() * 0.34 * r, a.cos() * 0.34 * r], 0.08 * r, 0.02 * r, extra));
+    }
+    // Its throat, glowing with what it spews
+    p.push(ball([0.78 * h, 0.0, 0.0], 0.66 * r, eye));
+    // Knobs down the top of its head, and the plates ringing it
+    for (k, x) in [0.12, 0.38, 0.62].into_iter().enumerate() {
+        p.push(limb([x * h, 0.0, 0.0], [x * h + 0.06 * h, 0.0, 0.0], 1.1 * r, 1.12 * r, pattern));
+        if k < 2 {
+            p.push(limb([x * h + 0.12 * h, 0.0, 0.9 * r], [x * h - 0.02 * h, 0.0, 1.28 * r], 0.17 * r, 0.05 * r, extra));
+        }
+    }
+    p.push(limb([0.0, 0.0, 0.0], [0.8 * h, 0.0, 0.0], 1.0 * r, 1.08 * r, back));
+    p
+}
+
+/// A wyrm's jaw: its lower lip, hinged about the point it's made round under its head, and the
+/// plate of its throat under that
+fn maw_jaw(g: &Great, skin: [u8; 5]) -> Vec<Part> {
+    let [_, pattern, belly, _, _] = skin;
+    let (h, r) = (g.head, g.girth);
+    let mut p = Vec::new();
+    // Made round the hinge, which is a little under the middle of its head, see Coils::pieces()
+    lip(&mut p, h, r, PI, pattern, -0.18);
+    p.push(limb([0.1 * h, 0.0, -0.62 * r], [0.66 * h, 0.0, -0.66 * r], 0.48 * r, 0.42 * r, belly).stretched([1.0, 1.25, 0.55]));
+    p
+}
+
 /// The shapes of a great serpent's lower jaw, hinged about the point it's made round, facing +x
 fn jaw(g: &Great, skin: [u8; 5]) -> Vec<Part> {
     let [_, pattern, belly, _, _] = skin;
     let (h, r) = (g.head, g.girth);
+    if g.crest == Crest::Maw {
+        return maw_jaw(g, skin);
+    }
     let mut p = Vec::new();
     for s in [-1.0, 1.0] {
         p.push(limb([0.78 * h, s * 0.3 * r, -0.3 * r], [0.8 * h, s * 0.3 * r, 0.08 * r], 0.07 * r, 0.03 * r, BONE));
@@ -1066,6 +1142,12 @@ fn piece(g: &Great, skin: [u8; 5]) -> Vec<Part> {
             p.push(limb([0.2 * half, 0.0, 0.7 * r], [-0.55 * half, 0.0, 1.6 * r], 0.12 * r, 0.03, extra));
             p.push(limb([0.12 * half, 0.0, 0.0], [-0.12 * half, 0.0, 0.0], 1.04 * r, 1.04 * r, pattern));
             p.push(limb([0.82 * half, 0.0, 0.0], [0.7 * half, 0.0, 0.0], 1.03 * r, 1.03 * r, pattern));
+        }
+        // A wyrm's ringed in a plate overlapping the one behind it, its edge showing, and a knob
+        // on its back
+        Crest::Maw => {
+            p.push(limb([0.5 * half, 0.0, 0.03 * r], [0.32 * half, 0.0, 0.0], 1.08 * r, 1.05 * r, pattern));
+            p.push(limb([0.25 * half, 0.0, 0.85 * r], [-0.35 * half, 0.0, 1.28 * r], 0.2 * r, 0.06 * r, extra));
         }
     }
     p.push(limb([-half, 0.0, -0.36 * r], [half, 0.0, -0.36 * r], 0.74 * r, 0.74 * r, belly));
@@ -1189,6 +1271,12 @@ pub struct Coils {
     /// it or dies, and where it's going
     pub sunk: f64,
     pub sunk_to: f64,
+    /// A wyrm arcing up through the air, see src\bosses\wyrms.rs: its body follows its head through
+    /// the air rather than lying on the ground behind it
+    pub soar: bool,
+    /// A wyrm's tail swept round low across the ground, radians round its middle to its left, see
+    /// src\bosses\wyrms.rs
+    pub sweep: Option<f64>,
     pitch: f64,
     laid: bool,
     /// Which of its pieces are under the ground or the water
@@ -1209,6 +1297,12 @@ const WAVE_PIECES: f64 = 8.0;
 
 /// How many pieces back from its head a great serpent's neck bends up as it rears
 const NECK: f64 = 5.0;
+
+/// Which of `n` pieces of a wyrm's body its tail sweeps round about as it thrashes: two fifths of
+/// the way back
+fn sweep_pivot(n: usize) -> usize {
+    (n * 2 / 5).min(n.saturating_sub(2))
+}
 
 impl Coils {
     pub fn new(look: Look) -> Option<Coils> {
@@ -1232,6 +1326,8 @@ impl Coils {
             shifted: n as f64,
             sunk: 0.0,
             sunk_to: 0.0,
+            soar: false,
+            sweep: None,
             pitch: 0.0,
             laid: false,
             under: vec![false; n],
@@ -1351,8 +1447,9 @@ impl Coils {
             let mut p = prev + way * gap;
             let rest = rest_height(world, water, g.medium, p.x, p.y, p.z, r * vpm);
             // What's under the ground follows where its head went down; what flies follows its head
-            // through the air; the rest lies on the ground or the water, its neck rearing up
-            if g.medium == Medium::Air {
+            // through the air, as a wyrm does arcing up through it; the rest lies on the ground or
+            // the water, its neck rearing up
+            if g.medium == Medium::Air || self.soar {
                 p.z = p.z.max(rest);
             } else if !under_ahead {
                 let neck = (1.0 - (k as f64 + 1.0) / NECK).max(0.0).powi(2);
@@ -1398,7 +1495,7 @@ impl Coils {
         self.feet = Some(feet);
         self.travelled += gone;
         let speed = gone / dt.max(1e-3);
-        let about = self.lift_to < 1.6 * g.girth && self.dive_to <= 0.0 && self.dive < 0.5 * g.girth && self.tail.is_none() && self.sunk_to <= 0.0;
+        let about = self.lift_to < 1.6 * g.girth && self.dive_to <= 0.0 && self.dive < 0.5 * g.girth && self.tail.is_none() && self.sunk_to <= 0.0 && self.sweep.is_none();
         let want = if about { smooth((speed - 0.4) / 3.0) } else { 0.0 };
         self.weave += (want - self.weave) * (1.0 - (-1.8 * dt).exp());
         let n = self.points.len();
@@ -1414,6 +1511,28 @@ impl Coils {
             let out = WEAVE * g.girth * self.weave * smooth((k as f64 + 0.5) / 4.0) * (0.5 + 0.5 * taper(k, n)) * (TAU * (self.travelled - along) / wave).sin();
             self.bend[k] = Vector3::new(-way.y, way.x, 0.0) * out * vpm;
         }
+        // A wyrm's tail swept round across the ground about the middle of it, all of it behind
+        // there turning round with it, more of the turn the further back
+        if let Some(angle) = self.sweep {
+            let pivot = sweep_pivot(n);
+            let middle = self.points[pivot];
+            for k in pivot + 1..n {
+                let a = angle * smooth((k - pivot) as f64 / 3.0);
+                let off = self.points[k] - middle;
+                let (c, s) = (a.cos(), a.sin());
+                let turned = Vector3::new(off.x * c - off.y * s, off.x * s + off.y * c, off.z);
+                self.bend[k] += turned - off;
+            }
+        }
+    }
+
+    /// Where a wyrm's tail sweeps round from as it thrashes, and how far its tip reaches from there,
+    /// in voxels, see sweep
+    pub fn sweep_reach(&self, vpm: f64) -> (Vector3<f64>, f64) {
+        let n = self.points.len();
+        let pivot = sweep_pivot(n);
+        let reach = (pivot + 1..n).map(|k| (self.points[k] - self.points[pivot]).xy().norm()).fold(0.0, f64::max);
+        (self.points[pivot], reach.max(1.0 * vpm))
     }
 
     /// Its head, its jaw and every piece of its body, to draw, tinted as weapons have left it, see

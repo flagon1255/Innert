@@ -1,0 +1,29 @@
+{
+  "what": "Skymane, fore thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    7,
+    18
+  ],
+  "pivot": [
+    3.8304000000000005,
+    3.4496000000000007,
+    14.0896
+  ],
+  "anchor": [
+    0.04184999999999997,
+    0.0031499999999999584,
+    -0.8806
+  ],
+  "origin": [
+    -4,
+    -3,
+    -14
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3152,
+    "2654dd6a1f16e2aa"
+  ]
+}

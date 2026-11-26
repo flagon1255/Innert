@@ -1,0 +1,29 @@
+{
+  "what": "Tidewrack Kraken, mantle",
+  "voxels_per_meter": 16.0,
+  "size": [
+    114,
+    48,
+    70
+  ],
+  "pivot": [
+    93.6,
+    23.519999999999996,
+    21.6
+  ],
+  "anchor": [
+    -2.2874999999999996,
+    0.03000000000000025,
+    -1.35
+  ],
+  "origin": [
+    -94,
+    -24,
+    -22
+  ],
+  "note": "A piece placed along the kraken's body and arms: the pivot is the point it's made round.",
+  "written": [
+    311590,
+    "74ec2e7cad8d02a5"
+  ]
+}

@@ -6470,3 +6470,34 @@ jewels/magic_epic.vox: Epic Skyglass
 jewels/magic_legendary.vox: Legendary Skyglass
 jewels/magic_mythic.vox: Mythic Skyglass
 C:\Users\Andrej\Desktop\Innert\.claude\worktrees\charcreate\assets\trees.json: the trees' numbers
+dragon/skymane/torso.vox: Skymane, torso
+dragon/skymane/neck_1.vox: Skymane, neck 1
+dragon/skymane/neck_2.vox: Skymane, neck 2
+dragon/skymane/head.vox: Skymane, head
+dragon/skymane/jaw.vox: Skymane, jaw
+dragon/skymane/tail_1.vox: Skymane, tail 1
+dragon/skymane/tail_2.vox: Skymane, tail 2
+dragon/skymane/tail_3.vox: Skymane, tail 3
+dragon/skymane/tail_4.vox: Skymane, tail 4
+dragon/skymane/wing_left_inner.vox: Skymane, wing left inner
+dragon/skymane/wing_left_outer.vox: Skymane, wing left outer
+dragon/skymane/wing_right_inner.vox: Skymane, wing right inner
+dragon/skymane/wing_right_outer.vox: Skymane, wing right outer
+dragon/skymane/hind_thigh.vox: Skymane, hind thigh
+dragon/skymane/hind_shin.vox: Skymane, hind shin
+dragon/skymane/fore_thigh.vox: Skymane, fore thigh
+dragon/skymane/fore_shin.vox: Skymane, fore shin
+serpent/dune_wyrm/head.vox: Dune Wyrm, head
+serpent/dune_wyrm/jaw.vox: Dune Wyrm, jaw
+serpent/dune_wyrm/body.vox: Dune Wyrm, body
+serpent/caldera_wyrm/head.vox: Caldera Wyrm, head
+serpent/caldera_wyrm/jaw.vox: Caldera Wyrm, jaw
+serpent/caldera_wyrm/body.vox: Caldera Wyrm, body
+boss/kraken/mantle.vox: Tidewrack Kraken, mantle
+boss/kraken/head.vox: Tidewrack Kraken, head
+boss/kraken/arm.vox: Tidewrack Kraken, arm
+boss/kraken/club.vox: Tidewrack Kraken, club
+boss/grotto_squid/mantle.vox: Grotto Squid, mantle
+boss/grotto_squid/head.vox: Grotto Squid, head
+boss/grotto_squid/arm.vox: Grotto Squid, arm
+boss/grotto_squid/club.vox: Grotto Squid, club

@@ -128,6 +128,7 @@ enum Target {
     WaterGround,
     WaterDepth,
     WaterFlux,
+    WaterRest,
 }
 
 /// A piece of a strip on its way to the GPU: the host memory it's in, how much of it, and where it
@@ -464,6 +465,27 @@ fn send(staging: &Staging, to_main: &Sender<FromJob>, strip: &Strip, room: [u32;
         {
             return false;
         }
+        // Where its water was laid, four columns to a word, see water.rs: strips and the room being
+        // whole numbers of them across, the columns going round do so between words
+        let rest = |i: usize| crate::water::rest_byte(at(ground, i), at(surface, i));
+        for &((kx, ix, nx), (ky, iy, ny)) in &column_rects {
+            debug_assert!(kx % 4 == 0 && ix % 4 == 0 && nx % 4 == 0);
+            let row = (nx / 4) as usize;
+            let fill = |piece: &mut [u32], first: usize| {
+                for (k, word) in piece.iter_mut().enumerate() {
+                    let (x, y) = ((first + k) % row, (first + k) / row);
+                    let i = ix as usize + 4 * x + (iy as usize + y) * sx as usize;
+                    *word = u32::from_le_bytes([rest(i), rest(i + 1), rest(i + 2), rest(i + 3)]);
+                }
+            };
+            let copies = |first: usize, n: usize| {
+                let (y, rows) = ((first / row) as u32, (n / row) as u32);
+                (vec![BufferImageCopy { image_offset: [kx / 4, ky + y, 0], image_extent: [nx / 4, rows, 1], ..Default::default() }], Vec::new())
+            };
+            if !stage(staging, to_main, row * ny as usize, row, Target::WaterRest, fill, copies) {
+                return false;
+            }
+        }
     }
     true
 }
@@ -796,6 +818,7 @@ impl Stream {
                 Target::WaterGround => Some(water.ground.clone()),
                 Target::WaterDepth => Some(water.depth.clone()),
                 Target::WaterFlux => Some(water.flux.clone()),
+                Target::WaterRest => Some(water.rest.clone()),
                 Target::Bricks => None,
             };
             match image {
@@ -987,9 +1010,11 @@ impl App {
             }
         }
         if let Some((lo, hi)) = ground {
-            for (at, extent, words) in self.water.take_ground(&self.world, lo, hi) {
-                let images = vec![BufferImageCopy { image_offset: [at[0], at[1], 0], image_extent: [extent[0], extent[1], 1], ..Default::default() }];
-                uploads.push(Upload { words: words.len(), piece: host(words), target: Target::WaterGround, images, buffers: Vec::new(), pooled: false });
+            for p in self.water.take_ground(&self.world, lo, hi) {
+                let images = vec![BufferImageCopy { image_offset: [p.at[0], p.at[1], 0], image_extent: [p.extent[0], p.extent[1], 1], ..Default::default() }];
+                uploads.push(Upload { words: p.ground.len(), piece: host(p.ground), target: Target::WaterGround, images, buffers: Vec::new(), pooled: false });
+                let images = vec![BufferImageCopy { image_offset: [p.rest_at[0], p.rest_at[1], 0], image_extent: [p.rest_extent[0], p.rest_extent[1], 1], ..Default::default() }];
+                uploads.push(Upload { words: p.rest.len(), piece: host(p.rest), target: Target::WaterRest, images, buffers: Vec::new(), pooled: false });
             }
         }
         if uploads.is_empty() {

@@ -857,6 +857,13 @@ pub fn boss_file(i: usize) -> Option<String> {
     Some(format!("boss/{}/{}", snake(&format!("{look:?}")), crate::rig::edit::piece_name(look, i % crate::rig::PIECES)))
 }
 
+/// A kraken's or a squid's part, in boss\, see bosses::kraken::PART_NAMES
+fn kraken_file(i: usize) -> Option<String> {
+    use crate::bosses::kraken::{LOOKS, PART_NAMES};
+    let look = *LOOKS.get(i / PART_NAMES.len())?;
+    Some(format!("boss/{}/{}", snake(&format!("{look:?}")), PART_NAMES[i % PART_NAMES.len()]))
+}
+
 fn serpent_file(i: usize) -> Option<String> {
     let g = crate::serpents::GREATS.get(i / 3)?;
     Some(format!("serpent/{}/{}", snake(&format!("{:?}", g.look)), SERPENT_PARTS[i % 3]))
@@ -1037,6 +1044,15 @@ pub fn serpents(made: &mut [(Model, Vector3<f64>)]) {
     let changed = apply_anchored(made, MODEL_RES, &serpent_file);
     if changed > 0 {
         log(format!("Model files: {changed} great serpent pieces read"));
+    }
+}
+
+/// The krakens' mantles, heads and pieces of arm, with the files read in, see
+/// bosses::kraken::parts_made()
+pub fn krakens(made: &mut [(Model, Vector3<f64>)]) {
+    let changed = apply_anchored(made, MODEL_RES, &kraken_file);
+    if changed > 0 {
+        log(format!("Model files: {changed} kraken pieces read"));
     }
 }
 
@@ -1282,6 +1298,16 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
         let name = serpent_file(i).unwrap();
         let what = format!("{}, {}", crate::serpents::GREATS[i / 3].look.name(), SERPENT_PARTS[i % 3]);
         write_model(dir, &name, &models[first + i], MODEL_RES, Some(serpent_anchors[i]), &what, "A piece placed along the serpent's body: the pivot is the point it's made round.")?;
+        lines.push(format!("{name}.vox: {what}"));
+    }
+    // The krakens' pieces
+    let first = animals::KRAKEN_MODELS_AT;
+    let kraken_anchors = crate::bosses::kraken::anchors();
+    for i in 0..crate::bosses::kraken::MODELS {
+        let name = kraken_file(i).unwrap();
+        let parts = crate::bosses::kraken::PART_NAMES.len();
+        let what = format!("{}, {}", crate::bosses::kraken::LOOKS[i / parts].name(), crate::bosses::kraken::PART_NAMES[i % parts]);
+        write_model(dir, &name, &models[first + i], MODEL_RES, Some(kraken_anchors[i]), &what, "A piece placed along the kraken's body and arms: the pivot is the point it's made round.")?;
         lines.push(format!("{name}.vox: {what}"));
     }
     // Wings
@@ -1903,7 +1929,13 @@ mod tests {
         // models, each with its effects after it, which have no files
         let dragon_fx = crate::dragons::MODELS - crate::dragons::KINDS.len() * dragon_pieces();
         let winged_fx = crate::avians::MODELS - crate::avians::KINDS.len() * avian_pieces();
-        let anchors: Vec<Vector3<f64>> = crate::rig::edit::anchors().into_iter().chain(crate::dragons::anchors()).chain(crate::avians::anchors()).collect();
+        let anchors: Vec<Vector3<f64>> = crate::rig::edit::anchors()
+            .into_iter()
+            .chain(crate::dragons::anchors())
+            .chain(crate::avians::anchors())
+            .chain(std::iter::repeat_n(Vector3::zeros(), crate::baked::MODELS))
+            .chain(crate::bosses::kraken::anchors())
+            .collect();
         let base = animals::RIG_MODELS_AT;
         let names: Vec<Option<String>> = (0..crate::rig::MODELS)
             .map(boss_file)
@@ -1912,6 +1944,7 @@ mod tests {
             .chain((0..crate::avians::KINDS.len() * avian_pieces()).map(avian_file))
             .chain((0..winged_fx).map(|_| None))
             .chain((0..crate::baked::MODELS).map(|_| None))
+            .chain((0..crate::bosses::kraken::MODELS).map(kraken_file))
             .collect();
         assert_eq!(names.len(), animals::ANIMAL_MODELS - crate::serpents::PART_MODELS - base);
         assert!(files.contains("avian/harpy/torso"), "the avians' pieces");

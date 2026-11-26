@@ -1,0 +1,29 @@
+{
+  "what": "Tidewrack Kraken, arm",
+  "voxels_per_meter": 16.0,
+  "size": [
+    41,
+    14,
+    15
+  ],
+  "pivot": [
+    6.799999999999999,
+    6.8,
+    7.344
+  ],
+  "anchor": [
+    0.8562500000000001,
+    0.012500000000000011,
+    -0.459
+  ],
+  "origin": [
+    -7,
+    -7,
+    -7
+  ],
+  "note": "A piece placed along the kraken's body and arms: the pivot is the point it's made round.",
+  "written": [
+    20020,
+    "2ddbd3356a03a35e"
+  ]
+}

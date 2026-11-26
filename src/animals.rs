@@ -201,6 +201,21 @@ pub enum Look {
     Jeweller,
     Wingmaker,
     TradeStall,
+    // Bosses of the wild places, see src\bosses\wilds.rs: the Tidewrack Kraken of the deep water
+    // and the Grotto Squid of the flooded caves and the smaller lakes, drawn a piece at a time, see
+    // src\bosses\kraken.rs; the Dune Wyrm of the desert and the Caldera Wyrm of the Cinder Crown,
+    // great serpents that bore through the ground, see src\bosses\wyrms.rs; and the Skymane, a
+    // maned lion on wings of feathers, flown as the dragons are, see src\dragons\skymane.rs
+    Kraken,
+    GrottoSquid,
+    DuneWyrm,
+    CalderaWyrm,
+    Skymane,
+    // Bosses of the Sky Isles' own, drifting over their floating islands, drawn jointed, see
+    // src\bosses\roster.rs and src\rig\drifter.rs: the Aeolith, a spirit of the wind bound in rings of
+    // carved stone, and the Stormbell, a jelly of thundercloud trailing crackling tendrils
+    Aeolith,
+    Stormbell,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -230,6 +245,9 @@ pub enum Build {
     Serpent,
     /// An avian or a gargoyle: drawn and flown by src\avians.rs, out of jointed pieces
     Winged,
+    /// A kraken or a squid: a mantle, a head and arms, swimming in deep water, see
+    /// src\bosses\kraken.rs
+    Kraken,
 }
 
 /// What a walking dead or a bandit has in its hands
@@ -257,7 +275,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 125] = [
+    pub const ALL: [Look; 132] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -383,6 +401,13 @@ impl Look {
         Look::Jeweller,
         Look::Wingmaker,
         Look::TradeStall,
+        Look::Kraken,
+        Look::GrottoSquid,
+        Look::DuneWyrm,
+        Look::CalderaWyrm,
+        Look::Skymane,
+        Look::Aeolith,
+        Look::Stormbell,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -424,7 +449,12 @@ impl Look {
 
     /// One of the great serpents, a boss drawn a piece at a time, see serpents::Coils
     pub fn is_great_serpent(self) -> bool {
-        matches!(self, Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth)
+        matches!(self, Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth) || crate::bosses::wyrms::has(self)
+    }
+
+    /// A kraken or a squid, kept to deep water, see src\bosses\kraken.rs
+    pub fn is_kraken(self) -> bool {
+        crate::bosses::kraken::has(self)
     }
 
     /// The ultra boss, far bigger and harder than any raid boss: the Coil Unending. The Worldpyre
@@ -452,12 +482,12 @@ impl Look {
 
     /// Swimming, along the top of deep water, with only its back above it
     pub fn swims(self) -> bool {
-        self == Look::SiltCoiler || serpents::great_of(self).is_some_and(|g| g.medium == serpents::Medium::Water)
+        self == Look::SiltCoiler || serpents::great_of(self).is_some_and(|g| g.medium == serpents::Medium::Water) || self.is_kraken()
     }
 
     /// Digging along under the sand, the snow or the ice, to come up under the player
     pub fn burrows(self) -> bool {
-        matches!(self, Look::DuneBurrower | Look::DriftSerpent | Look::Shatterfang | Look::Hollowtide)
+        matches!(self, Look::DuneBurrower | Look::DriftSerpent | Look::Shatterfang | Look::Hollowtide) || crate::bosses::wyrms::has(self)
     }
 
     /// Lying low in wait till something comes near: in the shallows, the reeds or deep water
@@ -536,6 +566,8 @@ impl Look {
             Look::Dreadmare => Build::Wolf,
             Look::Sunstinger => Build::Spider,
             Look::Hoarback | Look::GildedSphinx => Build::Bear,
+            // The Sky Isles' own drift light as the casting dead walk, never shaking the ground
+            Look::Aeolith | Look::Stormbell => Build::Undead,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
@@ -552,6 +584,7 @@ impl Look {
             _ if self.is_dragon() => Build::Dragon,
             _ if self.is_serpent() || self.is_great_serpent() => Build::Serpent,
             _ if self.is_winged() => Build::Winged,
+            _ if self.is_kraken() => Build::Kraken,
             _ => return None,
         })
     }
@@ -675,6 +708,7 @@ impl Look {
             Look::BogHag | Look::Elderhorn => Some(Element::Poison),
             Look::HollowMother | Look::BleedingHart => Some(Element::Blood),
             _ if crate::bosses::roster::has(self) => crate::bosses::roster::element(self),
+            _ if crate::bosses::wilds::has(self) => crate::bosses::wilds::element(self),
             Look::VenomDrake | Look::Spider | Look::Treant | Look::Spiderling | Look::Zombie | Look::ArmoredZombie | Look::DuneBurrower | Look::Bloater => Some(Element::Poison),
             Look::Necromancer => Some(Element::Void),
             Look::RimeWraith => Some(Element::Frost),
@@ -708,6 +742,11 @@ impl Look {
             Look::Ogre if desert => Look::Slagwright,
             Look::Ironhide if desert => Look::Sunstinger,
             Look::Treant | Look::Direwolf if jungle => Look::Grovemaul,
+            // A wyrm boring through the sand out in front of the desert's colonnades and towers,
+            // and the Skymane keeping the towers and colonnades up on the bare rock of the
+            // mountains, see src\bosses\wilds.rs
+            Look::Direwolf if desert => Look::DuneWyrm,
+            Look::Direwolf if stony => Look::Skymane,
             Look::Golem if cold => Look::FrostGolem,
             Look::Golem if desert => Look::MagmaGolem,
             Look::Drake if cold => Look::FrostWyrm,
@@ -725,11 +764,17 @@ impl Look {
 
     /// The kind of `self`, a boss, that lives in land `land`: the Dreaming Red has its own, the
     /// Lantern Widow where a drake would be, in its flooded churches and towers, and the Dreadmare
-    /// where an alpha wolf would roam, see src\bosses\roster.rs
+    /// where an alpha wolf would roam; and the Sky Isles theirs, the Aeolith where a great bear would
+    /// be and the Stormbell where a treant would, see src\bosses\roster.rs
     pub fn for_land(self, land: Land) -> Look {
         match (self, land) {
             (Look::Drake, Land::Dream) => Look::LanternWidow,
             (Look::Direwolf, Land::Dream) => Look::Dreadmare,
+            // The Caldera Wyrm boring through the ash of the Cinder Crown where a wolf or a spider
+            // would be, see src\bosses\wilds.rs
+            (Look::Direwolf | Look::Spider, Land::Dragon) => Look::CalderaWyrm,
+            (Look::Ironhide, Land::Sky) => Look::Aeolith,
+            (Look::Treant, Land::Sky) => Look::Stormbell,
             _ => self,
         }
     }
@@ -895,7 +940,13 @@ impl Look {
             // Its head lunged out ahead of it, see serpents::spine()
             Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => serpents::kind(self).map_or(2.5, serpents::reach),
             // Only its head, as the rest of it's drawn a piece at a time, see serpents::Coils
-            Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => serpents::great_of(self).map_or(4.0, |g| g.head + 2.0 * g.girth),
+            Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth | Look::DuneWyrm | Look::CalderaWyrm => {
+                serpents::great_of(self).map_or(4.0, |g| g.head + 2.0 * g.girth)
+            }
+            // Its arms spread out round it, see src\bosses\kraken.rs; its wings spread, see
+            // src\dragons\skymane.rs
+            Look::Kraken | Look::GrottoSquid => crate::bosses::kraken::reach(self),
+            Look::Skymane => crate::dragons::reach(self),
             Look::ShedSkin => 2.0,
             Look::SerpentBones => 3.0,
             Look::SerpentTongue => 0.3,
@@ -903,6 +954,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::reach(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::reach(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::reach(self),
             // Up to the top of a hat, a staff or a bow held upright, or wings on the back
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => 2.2,
             Look::TradeStall => 2.0,
@@ -961,9 +1013,12 @@ impl Look {
             // the blow's aimed, see serpents::focus()
             Look::ReedViper | Look::SiltCoiler | Look::GaleSerpent | Look::BloodAdder | Look::DriftSerpent => (0.3, 0.42),
             // Its head and neck, or wherever along its body the blow's aimed, see serpents::focus()
-            Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth => {
+            Look::Meremaw | Look::Galecoil | Look::Veinbinder | Look::Shatterfang | Look::Hollowtide | Look::Reefcoil | Look::Gyremaw | Look::Ysveth | Look::DuneWyrm | Look::CalderaWyrm => {
                 serpents::great_of(self).map_or((1.0, 1.0), |g| (g.girth + g.hover, g.girth * 1.2))
             }
+            // Its head and mantle, over the water, see src\bosses\kraken.rs
+            Look::Kraken | Look::GrottoSquid => crate::bosses::kraken::body(self),
+            Look::Skymane => crate::dragons::body(self),
             Look::ShedSkin => (0.05, 0.3),
             Look::SerpentBones => (0.3, 0.6),
             Look::SerpentTongue => (0.0, 0.05),
@@ -971,6 +1026,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::body(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::body(self),
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => (0.95, 0.42),
             Look::TradeStall => (0.5, 0.6),
         }
@@ -1067,6 +1123,7 @@ impl Look {
             Look::Harpy | Look::Skyhunter | Look::Stormtalon | Look::Harridan | Look::Roc | Look::Thunderbird | Look::HarpyQueen => crate::avians::name(self),
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::name(self),
+            Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::name(self),
             Look::Bowyer => "bowyer",
             Look::Wandwright => "wandwright",
             Look::Bladesmith => "weaponsmith",
@@ -1074,6 +1131,7 @@ impl Look {
             Look::Jeweller => "jeweller",
             Look::Wingmaker => "wingmaker",
             Look::TradeStall => "merchant's stand",
+            Look::Kraken | Look::GrottoSquid | Look::DuneWyrm | Look::CalderaWyrm | Look::Skymane => crate::bosses::wilds::name(self),
         }
     }
 
@@ -1109,6 +1167,7 @@ impl Look {
         match self {
             // As tough as the bosses of their tier, see src\bosses\roster.rs
             _ if crate::bosses::roster::has(self) => crate::bosses::roster::health(self),
+            _ if crate::bosses::wilds::has(self) => crate::bosses::wilds::health(self),
             Look::Bear => 140.0,
             Look::Dog => 60.0,
             Look::GrayCat | Look::GingerCat => 30.0,
@@ -1241,6 +1300,7 @@ impl Look {
             Some(Build::Dragon) => crate::dragons::speeds(self).0,
             Some(Build::Serpent) => 1.3,
             Some(Build::Winged) => crate::avians::speeds(self).0,
+            Some(Build::Kraken) => crate::bosses::kraken::speeds(self).0,
             None => match self {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
@@ -1316,6 +1376,7 @@ impl Look {
             Some(Build::Dragon) => crate::dragons::speeds(self).1,
             Some(Build::Serpent) => 4.2,
             Some(Build::Winged) => crate::avians::speeds(self).1,
+            Some(Build::Kraken) => crate::bosses::kraken::speeds(self).1,
             None => match self {
                 Look::Bear => 3.2,
                 Look::Dog => 4.5,
@@ -1352,6 +1413,8 @@ impl Look {
             // As far as its S-curve's waves are apart, see serpents::stride()
             Some(Build::Serpent) => serpents::kind(self).map_or(1.7, serpents::stride),
             Some(Build::Winged) => crate::avians::stride(self),
+            // A pull of its arms through the water
+            Some(Build::Kraken) => 3.0,
             None => match self {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
@@ -1489,8 +1552,9 @@ fn shown(look: Look, frame: usize) -> bool {
     match frame {
         // A great serpent's drawn a piece at a time, with models of its own, see serpents::Coils
         _ if look.is_great_serpent() => false,
-        // And the bosses drawn out of jointed pieces, see src\rig.rs
-        _ if crate::rig::rigged(look) => false,
+        // And the bosses drawn out of jointed pieces, see src\rig.rs, and a kraken's, a piece at
+        // a time, see src\bosses\kraken.rs
+        _ if crate::rig::rigged(look) || look.is_kraken() => false,
         0 => true,
         // Dragons are drawn out of jointed pieces of their own, see src\dragons.rs, and so are
         // avians and gargoyles, see src\avians.rs
@@ -3444,11 +3508,14 @@ pub const WINGED_MODELS_AT: usize = DRAGON_MODELS_AT + crate::dragons::MODELS;
 /// see src\baked.rs: drawn only in the model editor, as the frames are baked from them
 pub const BAKED_MODELS_AT: usize = WINGED_MODELS_AT + crate::avians::MODELS;
 
+/// Where the krakens' pieces start, after those, see src\bosses\kraken.rs
+pub const KRAKEN_MODELS_AT: usize = BAKED_MODELS_AT + crate::baked::MODELS;
+
 /// How many models animal_models() makes: every frame of every look, then the jointed bosses'
 /// pieces, then the dragons' pieces and what they breathe, then the avians' and gargoyles' and
 /// what they throw, then the pieces the baked frames are made of, then the great serpents'
 /// pieces, last, see serpents::part_models(). Other models come after them.
-pub const ANIMAL_MODELS: usize = BAKED_MODELS_AT + crate::baked::MODELS + serpents::PART_MODELS;
+pub const ANIMAL_MODELS: usize = KRAKEN_MODELS_AT + crate::bosses::kraken::MODELS + serpents::PART_MODELS;
 
 /// Frame `frame` of `look` as it was drawn before it was baked from pieces, straight from its
 /// shapes, see WALK_FRAMES: empty if it's never drawn in it. What every look not baked from pieces
@@ -3530,6 +3597,7 @@ pub fn animal_models() -> Vec<Model> {
     models.extend(crate::dragons::models());
     models.extend(crate::avians::models());
     models.extend(crate::baked::models());
+    models.extend(crate::bosses::kraken::models());
     models.extend(serpents::part_models());
     models
 }
@@ -3838,6 +3906,8 @@ pub struct Animal {
     /// For a serpent lying on the ground, how its body's tipped to lie along the slope under it, in
     /// radians: its head down, and over onto its right, eased towards the ground it's on
     lie: [f64; 2],
+    /// For a demi-boss, which of demis::KINDS it is: drawn bigger and tinted, see src\demis.rs
+    pub demi: Option<u8>,
     /// And how much longer and wider than its model it's drawn: its S-curve tight and quick going
     /// fast, fleeing or coming on to strike, loose and lazy going slowly, see serpents::stretch()
     stretch: [f64; 2],
@@ -4033,6 +4103,7 @@ impl Animal {
             rng,
             focus: None,
             lie: [0.0; 2],
+            demi: None,
             stretch: [1.0; 2],
             drape: [0.0; 4],
         }
@@ -4124,7 +4195,7 @@ impl Animal {
             return self.position + focus;
         }
         let lifted = self.boss.as_ref().map_or(0.0, |b| b.sway()[2]);
-        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 + lifted) * world_voxels_per_meter as f64)
+        self.position + Vector3::new(0.0, 0.0, (self.look.body().0 * self.grown() + lifted) * world_voxels_per_meter as f64)
     }
 
     /// Where the boulder the Earthbreaker Colossus is tearing up out of the ground is, in voxels,
@@ -4174,6 +4245,11 @@ impl Animal {
     pub fn roams(&self) -> bool {
         let wandering = self.boss.as_ref().is_some_and(|b| b.key[2] == -2);
         self.look.is_wild() || wandering && matches!(self.look, Look::Zombie | Look::Ghoul | Look::Bloater | Look::Skeleton | Look::BoneArcher)
+    }
+
+    /// How much bigger it's drawn than its kind: a demi-boss's grown, see src\demis.rs
+    pub fn grown(&self) -> f64 {
+        self.demi.map_or(1.0, |k| crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].grown)
     }
 
     /// How much health it has left, 0-1
@@ -4264,6 +4340,15 @@ impl Animal {
                 boss.coils = Some(coils);
             }
         }
+        // A kraken's arms reaching for what it's doing, see src\bosses\kraken.rs
+        if self.look.is_kraken() {
+            crate::bosses::kraken::animate(self, world, water, player, dt);
+        }
+    }
+
+    /// A kraken's or a squid's body and arms, see bosses::kraken::Body
+    pub fn kraken(&self) -> Option<&crate::bosses::kraken::Body> {
+        self.boss.as_ref().and_then(|b| b.kraken.as_deref())
     }
 
     /// A great serpent's long body, see serpents::Coils
@@ -4549,6 +4634,8 @@ impl Animal {
             } else {
                 ground
             };
+            // A kraken keeps to water deep enough to hide it, never coming out of it
+            let ground = if look.is_kraken() { ground.filter(|_| water(x, y) - (ground_at_floor(world, x, y, z) as f64) > crate::bosses::kraken::SHALLOW * 0.8 * vpm) } else { ground };
             match ground {
                 Some(z) if clear => {
                     self.position.x = x;
@@ -4631,7 +4718,7 @@ impl Animal {
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let vpm = world_voxels_per_meter as f64;
-        let mut radius = (self.look.reach() + on.abs() + up.abs()) * vpm;
+        let mut radius = (self.look.reach() * self.grown() + on.abs() + up.abs()) * vpm;
         // An ordinary serpent's S-curve stretched or squeezed for how fast it goes, and its body
         // draped over the ground under it, see AnimalInstance::shaped()
         let shaped = serpents::kind(self.look).is_some() && (self.stretch != [1.0; 2] || self.drape != [0.0; 4]);
@@ -4640,8 +4727,14 @@ impl Animal {
             radius = radius * self.stretch[0].max(self.stretch[1]).max(1.0) + most * vpm;
         }
         let instance = AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint());
-        if shaped { instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale)) } else { instance }
-    }
+        if shaped {
+            return instance.shaped(self.stretch, self.drape.map(|d| d * vpm / scale));
+        }
+        // A demi-boss in the skin it's taken on down in the dark
+        match self.demi {
+            Some(k) => instance.skinned(crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].skin),
+            None => instance,
+        }    }
 
     /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's
     /// drawn, in voxels: where it can be hit, see serpents::focus()
@@ -4671,7 +4764,7 @@ impl Animal {
             None => 0,
         };
         let frame = self.boss.as_ref().and_then(Boss::pose).unwrap_or(walking);
-        let mut scale = world_voxels_per_meter as f64 / self.look.resolution();
+        let mut scale = world_voxels_per_meter as f64 / self.look.resolution() * self.grown();
         let mut heading = self.drawn_heading;
         // Bosses and monsters breathe, swelling a little and settling, and sway as they stand,
         // less the faster they go, so they're never still as statues between frames; a jointed boss
@@ -5212,4 +5305,12 @@ mod tests {
             }
         }
     }
+}
+
+/// The bottom under `x`, `y`, in voxels: the first solid voxel looking down from `z`, or the bottom
+/// of the world
+fn ground_at_floor(world: &World, x: f64, y: f64, z: f64) -> i64 {
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
+    let top = z.floor() as i64 + 1;
+    (0..=top).rev().find(|&k| !is_passable(world.material_at(xi, yi, k))).map_or(0, |k| k + 1)
 }

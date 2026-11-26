@@ -184,6 +184,8 @@ impl App {
         }
         // The great serpents' lairs, see serpent_lairs.rs
         lairs.extend(self.serpent_marks());
+        // The demi-bosses down in the ravines come near, see src\demis.rs
+        lairs.extend(self.game.demi_marks());
         Marks {
             title,
             player: self.feet_m(),

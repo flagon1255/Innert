@@ -293,6 +293,14 @@ impl Game {
                         Cue::at(Sound::Roar, at, 1.0).pitched(0.8 * voice)
                     }
                     Move::Roar => return,
+                    // The Skymane's: a growl as it draws back a paw or crouches to spring, breath
+                    // drawn in to roar, and its wings creaking up to fling their feathers
+                    Move::Rake | Move::Pounce => Cue::at(Sound::Growl, at, 0.9).pitched(voice * 0.75),
+                    Move::Shockroar => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 0.8),
+                    Move::Featherstorm => {
+                        self.cues.push(Cue::at(cast, at, 0.7).pitched(0.8));
+                        Cue::at(Sound::Flap, at, 1.0).pitched(0.75 * voice)
+                    }
                 };
                 self.cues.push(cue);
             }

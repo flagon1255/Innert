@@ -1,0 +1,29 @@
+{
+  "what": "Skymane, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    4,
+    5
+  ],
+  "pivot": [
+    1.8200000000000003,
+    1.82,
+    2.9400000000000004
+  ],
+  "anchor": [
+    0.32375,
+    0.011249999999999996,
+    -0.18375000000000002
+  ],
+  "origin": [
+    -2,
+    -2,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1632,
+    "f8c896befd62603e"
+  ]
+}
