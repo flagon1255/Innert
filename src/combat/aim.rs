@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::weapons::Power;
+use super::signatures::arsenal::{RUNE_ROUND, SPECTRUM_FAN, SPECTRUM_REACH, STAR_REACH, STEP_REACH};
 use super::signatures::powers::{
     ANVIL_REACH, BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, FISTS_REACH, GALE_FROM, GALE_STEP, GALE_STEPS, HOOK_REACH, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, RING_REACH, SEEKER_REACH, SHRAPNEL_REACH, STAKE_REACH, WHEEL_REACH, power_timing, wave_of,
 };
@@ -85,6 +86,7 @@ pub(super) fn power_aim(power: Power, profile: &Profile) -> Option<SpotAim> {
         Power::Shrapnel => Some(SpotAim { reach: profile.stat("range").max(6.0), least: 0.0, radius: SHRAPNEL_REACH }),
         // Where the dead are to rise, the ring as wide as they're raised round it
         Power::RaiseDead => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: crate::combat::signatures::faith::RAISE_ROUND }),
+        Power::Runeburst => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: RUNE_ROUND }),
         _ => None,
     }
 }
@@ -428,6 +430,13 @@ pub(super) fn power_way(power: Power) -> PowerWay {
         Power::LashWave => PowerWay::Line { from: LASH_FROM, step: LASH_STEP, steps: (wave(power) / LASH_STEP) as usize + 1 },
         Power::Seekers => PowerWay::Seek { reach: SEEKER_REACH },
         Power::Nova => PowerWay::Round { reach: NOVA_REACH },
+        // The third batch's, see arsenal.rs: a star of cracks all round, a step behind what the
+        // crosshair's on, three rings in a fan, five rays in a wider one, and a circle of runes
+        Power::Starbreak => PowerWay::Round { reach: STAR_REACH },
+        Power::Shadowstep => PowerWay::Ray { reach: STEP_REACH, fan: &[0.0], radius: 1.2 },
+        Power::Ringstorm => PowerWay::Ray { reach: WHEEL_REACH, fan: &FAN, radius: 1.0 },
+        Power::Spectrum => PowerWay::Ray { reach: SPECTRUM_REACH, fan: &SPECTRUM_FAN, radius: 0.9 },
+        Power::Runeburst => PowerWay::Spot,
     }
 }
 

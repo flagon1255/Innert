@@ -1,0 +1,37 @@
+{
+  "what": "Throwing Knives, guard: Wyrm Guard",
+  "voxels_per_meter": 192.0,
+  "size": [
+    27,
+    7,
+    23
+  ],
+  "pivot": [
+    13.4,
+    3.4559999999999995,
+    -26.0
+  ],
+  "anchor": null,
+  "origin": [
+    -13,
+    -3,
+    26
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07332
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.33532
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4008,
+    "bf22070ebf016ec7"
+  ]
+}

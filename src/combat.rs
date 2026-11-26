@@ -30,6 +30,8 @@ use signatures::{Sig, SigAct, SigZone, signature_move, signature_release};
 mod stones;
 /// Aiming at a spot, the ring on the ground showing where it comes down, see aim.rs
 mod aim;
+/// Throwing knives and a chakram, thrown by hand
+mod thrown;
 use aim::{spot_aim, way_to};
 /// Special ammo flying each kind its own way, see ammo.rs
 mod ammo;
@@ -2096,6 +2098,10 @@ pub struct Combat {
     mines: Vec<Mine>,
     sweep: Option<Sweep>,
     thrown: Option<Thrown>,
+    /// How the throwing knives or chakram in hand are drawn flying, kept as they're drawn in the
+    /// hand, and whether the throw going on is a heavy one, see thrown.rs
+    flung: std::cell::Cell<Option<thrown::Flung>>,
+    throw_heavy: bool,
     shackle: Option<Shackle>,
     blood_moon: Option<BloodMoon>,
     /// Cluster Volley's bombs waiting to be fired, see Lob
@@ -2697,14 +2703,14 @@ fn moves_like(style: Style) -> Style {
 /// The kind of weapon one of `profile`'s goes through its special attack's moves as: a battle
 /// staff and bombs as a weapon in the hand, the rest as what they are
 fn moves_kind(profile: &Profile) -> Kind {
-    if matches!(profile.style, Style::Glaive | Style::Lob) { Kind::Melee } else { profile.kind }
+    if profile.style == Style::Glaive || profile.style.thrown() { Kind::Melee } else { profile.kind }
 }
 
 /// Which blow of a combo in `style` is its finisher: a blade's chain goes four blows, each a
 /// different way, a whip's, a flail's and a maul's three
 fn finisher(style: Style) -> u8 {
     match style {
-        Style::Slash | Style::Chop | Style::Smash | Style::Stab | Style::Thrust | Style::Reap | Style::Fan | Style::Punch | Style::Pole => FINISHER + 1,
+        Style::Slash | Style::Chop | Style::Smash | Style::Stab | Style::Thrust | Style::Reap | Style::Fan | Style::Punch | Style::Pole | Style::Pick => FINISHER + 1,
         _ => FINISHER,
     }
 }
@@ -3123,6 +3129,7 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Fan => (0.24, 0.38),
             Style::Punch => (0.2, 0.32),
             Style::Pole => (0.28, 0.42),
+            Style::Pick => (0.3, 0.44),
             _ => (0.32, 0.48),
         };
     }
@@ -3135,6 +3142,8 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             // A fan's and a naginata's spun right round, as Finish::Spin's, a katar's uppercut
             Style::Fan | Style::Pole => finish_timing(Finish::Spin),
             Style::Punch => (0.3, 0.45),
+            // A war pick's two-handed drive, held a beat at the top
+            Style::Pick => (0.5, 0.62),
             // Time for the lash to go round in a loop overhead first
             Style::Lash => (0.5, 0.6),
             Style::Whirl => (0.3, 0.5),
@@ -3160,6 +3169,9 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
         (Style::Pole, false) => (0.3, 0.46),
         // As Heavy::Sweep's, which it swings, see newer_swing()
         (Style::Pole, true) => (0.4, 0.55),
+        // A war pick's peck over the top, and its heavy blow hauled back, held and driven home
+        (Style::Pick, false) => (0.34, 0.5),
+        (Style::Pick, true) => (0.5, 0.6),
         (_, true) => (0.4, 0.52),
         _ => (0.3, 0.45),
     }
@@ -3177,6 +3189,9 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
     }
     if matches!(style, Style::Fan | Style::Punch | Style::Pole) {
         return newer_swing(style, heavy, combo);
+    }
+    if style == Style::Pick {
+        return pick_swing(heavy, combo);
     }
     let (comes, lands) = timing(style, heavy, combo);
     let flip = combo == 1;
@@ -3532,6 +3547,86 @@ fn newer_swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
                 }
             }
         }
+    }
+}
+
+/// A war pick's swings, for swing(): a peck brought over the top, its beak driven down and biting,
+/// then wrenched free; a hook swung round from the right, beak first; a beak hooked up from low on
+/// the left; and to finish, both hands on the haft, raised high, held a beat and driven down with
+/// everything behind it, levered free after. Its heavy blow is hauled right back over the shoulder,
+/// held, and driven down and in on a long step, then twisted out.
+fn pick_swing(heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
+    let (comes, lands) = timing(Style::Pick, heavy, combo);
+    let last = combo == finisher(Style::Pick) && !heavy;
+    let midway = comes + 0.55 * (lands - comes);
+    // Brought over the top from `raised` down through `struck`, biting in to `bitten`, held there
+    // a moment and wrenched free to `freed`
+    let peck = |gathered: Pose, raised: Pose, struck: Pose, bitten: Pose, freed: Pose, push: [f64; 3], hold: f64| {
+        vec![
+            (comes * 0.4, gathered, false),
+            (comes, raised.clone(), false),
+            (midway, through(&raised, &struck, 0.5, push), false),
+            (lands, struck, true),
+            (lands + 0.05 + hold, bitten, false),
+            (lands + 0.17 + hold, freed, false),
+        ]
+    };
+    if heavy {
+        let mut keys = peck(
+            pose([0.3, 0.3, -0.2], [0.1, -0.2, 0.97], [0.0, 1.0, 0.2]),
+            pose([0.24, 0.2, 0.06], [0.12, -0.5, 0.86], [0.0, 0.86, 0.5]),
+            pose([0.04, 0.7, -0.3], [0.0, 0.88, -0.48], [0.0, -0.48, -0.88]),
+            pose([0.04, 0.76, -0.5], [0.0, 0.58, -0.81], [0.0, -0.81, -0.58]),
+            pose([0.2, 0.5, -0.32], [0.3, 0.6, 0.74], [-0.3, 0.8, -0.5]),
+            [0.0, 0.05, 0.1],
+            0.03,
+        );
+        // Hauled back and held a beat at the top before it comes
+        keys.insert(1, (comes - 0.12, pose([0.25, 0.2, 0.05], [0.13, -0.47, 0.87], [0.0, 0.87, 0.47]), false));
+        return keys;
+    }
+    if last {
+        return peck(
+            pose([0.2, 0.36, -0.24], [0.0, 0.3, 0.95], [0.0, 1.0, -0.3]),
+            pose([0.14, 0.3, 0.02], [0.08, 0.08, 0.99], [0.0, 1.0, -0.08]),
+            pose([0.02, 0.64, -0.3], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]),
+            pose([0.02, 0.67, -0.46], [0.0, 0.6, -0.8], [0.0, -0.8, -0.6]),
+            pose([0.06, 0.5, -0.3], [0.1, 0.55, 0.83], [0.0, 0.83, -0.55]),
+            [0.0, 0.03, 0.09],
+            0.03,
+        );
+    }
+    match combo {
+        // Hooked round from the right, the beak leading across to the left
+        1 => arc_keys(
+            comes,
+            lands,
+            pose([0.34, 0.34, -0.1], [0.75, 0.3, 0.6], [-0.3, 0.95, 0.0]),
+            [0.04, 0.08, 0.0],
+            pose([0.12, 0.6, -0.2], [0.25, 0.94, 0.2], [-1.0, 0.25, 0.0]),
+            pose([-0.12, 0.52, -0.26], [-0.75, 0.6, 0.0], [-0.6, -0.75, 0.0]),
+            pose([-0.16, 0.46, -0.3], [-0.85, 0.45, -0.15], [-0.45, -0.88, 0.0]),
+        ),
+        // Hooked up from low on the left, the beak turned up
+        2 => arc_keys(
+            comes,
+            lands,
+            pose([-0.02, 0.36, -0.44], [-0.5, 0.5, -0.7], [0.3, 0.3, 0.9]),
+            [0.0, 0.06, -0.05],
+            pose([0.12, 0.62, -0.14], [0.15, 0.92, 0.36], [0.1, -0.36, 0.93]),
+            pose([0.3, 0.5, 0.04], [0.5, 0.45, 0.74], [0.0, -0.86, 0.5]),
+            pose([0.34, 0.46, -0.04], [0.56, 0.36, 0.75], [0.0, -0.9, 0.44]),
+        ),
+        // Pecked down over the top
+        _ => peck(
+            pose([0.31, 0.43, -0.3], [-0.02, 0.58, 0.81], [0.0, 1.0, 0.0]),
+            pose([0.22, 0.32, -0.04], [0.12, 0.05, 0.99], [0.0, 1.0, -0.05]),
+            pose([0.1, 0.62, -0.3], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]),
+            pose([0.1, 0.63, -0.38], [0.0, 0.7, -0.71], [0.0, -0.71, -0.7]),
+            pose([0.18, 0.5, -0.3], [0.08, 0.5, 0.86], [0.0, 0.86, -0.5]),
+            [0.0, 0.03, 0.09],
+            0.03,
+        ),
     }
 }
 
@@ -4936,7 +5031,7 @@ fn flourish_turns(grade: usize, last: bool) -> f64 {
 fn special_twirl(grade: usize, style: Style, keys: &[(f64, Pose, bool)], f: f64) -> (f64, f64) {
     let turns = flourish_turns(grade, true);
     let from = keys.last().map_or(1.0, |k| k.0) + 0.02;
-    if turns <= 0.0 || 0.97 - from < 0.22 || matches!(style, Style::Lash | Style::Whirl | Style::Lob) {
+    if turns <= 0.0 || 0.97 - from < 0.22 || matches!(style, Style::Lash | Style::Whirl | Style::Lob | Style::Ring) {
         return (0.0, 0.0);
     }
     let to = from + 0.8 * (0.97 - from);
@@ -5221,7 +5316,7 @@ fn flourish_of(weapon: &Weapon, began: f64) -> Flourish {
         (Kind::Melee, Style::Thrust) | (Kind::Magic, Style::Glaive | Style::Cast | Style::Hex) => [Flourish::Tap, Flourish::Twirl],
         (Kind::Melee, Style::Lash) => [Flourish::Twirl, Flourish::Twirl],
         (Kind::Melee, _) => [Flourish::Twirl, Flourish::Inspect],
-        (Kind::Ranged, Style::Lob) | (Kind::Magic, Style::Channel) => [Flourish::Toss, Flourish::Toss],
+        (Kind::Ranged, Style::Lob | Style::Knife | Style::Ring) | (Kind::Magic, Style::Channel) => [Flourish::Toss, Flourish::Toss],
         (Kind::Ranged, _) if matches!(profile.build, Build::Pistol | Build::Hand) => [Flourish::Spin, Flourish::Inspect],
         (Kind::Ranged, _) if profile.build == Build::None => [Flourish::Check, Flourish::Inspect],
         (Kind::Ranged, _) => [Flourish::Inspect, Flourish::Check],
@@ -5365,6 +5460,8 @@ impl Combat {
             mines: Vec::new(),
             sweep: None,
             thrown: None,
+            flung: std::cell::Cell::new(None),
+            throw_heavy: false,
             shackle: None,
             blood_moon: None,
             lobs: Vec::new(),
@@ -5966,6 +6063,9 @@ impl Combat {
             Kind::Magic if profile.style == Style::Toll => self.toll(arena, weapon, controls, dt),
             Kind::Magic if profile.style == Style::Censer => self.swing_censer(arena, weapon, controls, dt),
             Kind::Ranged if profile.style == Style::Lob => self.lob(arena, weapon, controls, dt),
+            // Throwing knives flicked one after another, a chakram hurled and caught again, see
+            // thrown.rs
+            Kind::Ranged if profile.style.thrown() => self.throw_by_hand(arena, weapon, controls, dt),
             Kind::Melee => {
                 if let Action::Swing { t, length, heavy, struck, combo } = self.action {
                     // A heavy weapon gathers longer and comes down harder, a light one snaps out,
@@ -5991,6 +6091,8 @@ impl Combat {
                             Style::Fan => (Sound::Swing, if heavy || finisher { 1.1 } else { 1.35 }),
                             Style::Punch => (Sound::Stab, if heavy || finisher { 0.95 } else { 1.2 }),
                             Style::Pole => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, 0.8),
+                            // A war pick's short, heavy whoosh, its beak whistling
+                            Style::Pick => (Sound::HeavySwing, if heavy || finisher { 0.75 } else { 0.95 }),
                             _ => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, if combo == 1 { 1.08 } else { 1.0 }),
                         };
                         // Lower the heavier it swings
@@ -11537,6 +11639,7 @@ impl Combat {
             Style::Fan => 1.2,
             Style::Punch => 1.3,
             Style::Pole => 0.95,
+            Style::Pick => 0.8,
             _ => 1.0,
         };
         let mut any_crit = false;
@@ -14961,6 +15064,8 @@ impl Combat {
                     Style::Fan => pose([0.3, 0.48, -0.25], [-0.15, 0.45, 0.88], [1.0, 0.0, 0.1]),
                     Style::Punch => pose([0.26, 0.4, -0.27], [0.0, 0.95, 0.3], [1.0, 0.0, 0.0]),
                     Style::Pole => pose([0.34, 0.3, -0.33], [0.05, 0.97, 0.2], [-1.0, 0.0, 0.0]),
+                    // A war pick held up at the shoulder, its beak forward over the top
+                    Style::Pick => pose([0.3, 0.44, -0.27], [-0.05, 0.5, 0.86], [0.0, 1.0, -0.1]),
                     _ => pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]),
                 };
                 match self.action {
@@ -15005,6 +15110,8 @@ impl Combat {
                     _ => rest,
                 }
             }
+            // Throwing knives and a chakram, see thrown.rs
+            Kind::Ranged if weapon.profile.style.thrown() => self.thrown_pose(weapon),
             Kind::Ranged if weapon.profile.build != Build::None => self.shouldered(weapon),
             Kind::Ranged => {
                 // Held low at the left, then raised and drawn back to the cheek
@@ -15525,8 +15632,10 @@ impl Combat {
                 return out;
             }
             let frame = self.held_frame(weapon);
-            // A bomb's gone from the hand once it's thrown, till the next comes up
-            let thrown = matches!(self.action, Action::Throw { thrown: true, .. });
+            // A bomb's gone from the hand once it's thrown, till the next comes up, and a knife;
+            // a chakram's gone till it's back in the hand
+            self.remember_flung(weapon, first_model + frame as u32);
+            let thrown = matches!(self.action, Action::Throw { thrown: true, .. }) || self.chakram_out(weapon);
             if !thrown {
                 out.push(place(first_model + frame as u32, &look.frames[frame], look.res, look.grip, hand, rotation, vpm, 1.0, HELD));
             }
@@ -15539,7 +15648,7 @@ impl Combat {
                 return out;
             }
             // A bow or a tome in the left hand
-            let left = (weapon.kind() == Kind::Ranged && weapon.profile.style != Style::Lob) || weapon.profile.style == Style::Summon;
+            let left = (weapon.kind() == Kind::Ranged && !weapon.profile.style.thrown()) || weapon.profile.style == Style::Summon;
             out.push(self.arm(left as usize, hand, axis, if left { elbow(-0.3, 0.12, -0.7) } else { elbow(0.37, 0.12, -0.7) }, vpm));
             // Gathering a big spell, the other hand takes the staff a little higher up, till it's
             // pushed out
@@ -16390,7 +16499,7 @@ impl Combat {
 mod tests {
     use super::*;
 
-    const STYLES: [Style; 11] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash, Style::Whirl, Style::Fan, Style::Punch, Style::Pole];
+    const STYLES: [Style; 12] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash, Style::Whirl, Style::Fan, Style::Punch, Style::Pole, Style::Pick];
     const FINISHES: [Finish; 5] = [Finish::Lunge, Finish::Rising, Finish::Spin, Finish::Slam, Finish::Cross];
     const CASTINGS: [Casting; 7] = [Casting::Thrust, Casting::Flick, Casting::Gather, Casting::Overhead, Casting::Sweep, Casting::Scoop, Casting::Present];
     /// Each family's own heavy blow, with the style it's swung in
@@ -17242,7 +17351,7 @@ mod tests {
                 continue;
             };
             for (family, f) in library.families.iter().enumerate() {
-                if c.fits(&f.id) && !out.iter().any(|&(s, g, _)| s == special && g == family) {
+                if c.fits(&f.id) && crate::weapons::special_counts(f, c) && !out.iter().any(|&(s, g, _)| s == special && g == family) {
                     out.push((special, family, part));
                 }
             }

@@ -1,0 +1,37 @@
+{
+  "what": "Throwing Knives, guard: Steel Basket",
+  "voxels_per_meter": 192.0,
+  "size": [
+    15,
+    15,
+    40
+  ],
+  "pivot": [
+    7.395770586643918,
+    9.168277022737705,
+    8.098560000000003
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -9,
+    -8
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07332
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.33532
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5885,
+    "9098781f7016b3be"
+  ]
+}

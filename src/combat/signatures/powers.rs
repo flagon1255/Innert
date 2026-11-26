@@ -80,6 +80,19 @@ pub(in crate::combat) enum Shape {
     Spear { big: bool },
     /// A skull focus's shade, drifting to the ring to raise the dead there, see faith.rs
     Shade,
+    /// A throwing knife turning end over end, see thrown.rs
+    Knife,
+    /// A chakram spinning flat out to as far as it goes and back to the hand, glancing on from
+    /// what it cuts to the next near this many more times first, see thrown.rs
+    Chakram { back: bool, glances: u8 },
+    /// The shade a Shadowstep steps through, flying at what it's aimed at, see arsenal.rs
+    Step,
+    /// One of a Spectrum's rays, through everything in a line
+    Ray,
+    /// A runestone's glyph cast down onto the ring, to write its circle there
+    Glyph,
+    /// A runestone's cast, a mote of its light flying to where it's aimed to write a rune there
+    Sigil,
 }
 
 /// What they leave going a while
@@ -113,6 +126,15 @@ pub(in crate::combat) enum Lasting {
     /// A beacon set down at `position`, tolling every BEACON_TOLL seconds, `owed` tolls so far,
     /// `hit` what this toll's ring has reached
     Beacon,
+    /// A throwing knife stuck in the ground pointing `way`, sinking away when its time's out
+    Knife { way: [f32; 3] },
+    /// One of a Starbreak's cracks, a short fissure, see arsenal.rs
+    Crack,
+    /// A runestone's circle of runes being written round `position`, `owed` of them so far,
+    /// blasting up once `dwell` is set, see arsenal.rs
+    Runes,
+    /// A runestone's one rune, written where its cast came down and blasting up a moment later
+    Sigil,
 }
 
 /// How many steps a fissure takes, how far apart, in meters, and seconds between each, and how far
@@ -202,6 +224,9 @@ pub(in crate::combat) fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
 /// How long a power's own move takes, for those shot, thrown or cast with a move of their own, and
 /// when what it lets go leaves the weapon, as part of it
 pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
+    if let Some(timing) = super::arsenal::arsenal_timing(power) {
+        return timing;
+    }
     match power {
         Power::Mortar => (0.7, 0.4),
         Power::BurstBolt => (0.6, 0.34),
@@ -253,6 +278,9 @@ fn topping_out(from: Vector3<f64>, top: Vector3<f64>, vpm: f64) -> (Vector3<f64>
 
 /// The move a power's shot, thrown or cast with, from where the weapon's held at rest
 fn power_keys(power: Power, profile: &Profile) -> Vec<(f64, Pose, bool)> {
+    if let Some(keys) = super::arsenal::arsenal_keys(power, profile) {
+        return keys;
+    }
     let (_, release) = power_timing(power);
     match power {
         // Levelled and steadied, then kicking back hard as it goes off, a crossbow less so; a
@@ -702,7 +730,12 @@ impl Combat {
                 p.size = size;
             }
         };
+        // The third batch's, see arsenal.rs
+        if self.unleash_arsenal(arena, weapon, power, base) {
+            return;
+        }
         match power {
+            Power::Starbreak | Power::Shadowstep | Power::Ringstorm | Power::Spectrum | Power::Runeburst => {}
             // Crescents flying on from the blow, out of the chest, or a whip's low over the ground
             // Each at what the crosshair, or its fan either side, first meets within its reach, or
             // as far as that, as its rings showed, see aim.rs; a whip's on along the ground
@@ -1178,7 +1211,7 @@ impl Combat {
     /// what's in it struck and its element doing what it does, but none of an explosion's lightning
     /// out of the sky, ice, pools and the rest, which a handful going off together would cost too
     /// much to draw
-    fn power_pop(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, skip: Option<usize>) {
+    pub(super) fn power_pop(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, skip: Option<usize>) {
         let vpm = arena.view.vpm;
         let look = Element::look(profile.element);
         self.blasts.push(Blast { position: at, look, radius: radius * 0.6, life: 0.25, lifetime: 0.25 });
@@ -1206,6 +1239,7 @@ impl Combat {
             Shape::Stake => Some(0.05),
             Shape::Fist | Shape::Shard => Some(0.025),
             Shape::Spear { .. } => Some(0.07),
+            Shape::Ray | Shape::Step => Some(0.04),
             _ => None,
         };
         if let Some(seconds) = tracer
@@ -1240,6 +1274,15 @@ impl Combat {
         }
         if shape == Shape::Shade {
             self.shade_trails(p, dt);
+        }
+        // A chakram out and back, a shade of shadow streaming off a Shadowstep, see thrown.rs and
+        // arsenal.rs
+        if let Shape::Chakram { back, glances } = shape {
+            return self.chakram_flies(arena, p, back, glances, dt);
+        }
+        if shape == Shape::Step && random(&mut self.rng) < dt * 40.0 {
+            let at = p.position + self.any_direction() * 0.25 * vpm;
+            self.mote(at, Some(Element::Void), 1.3);
         }
         match shape {
             // Flung out as far as it goes, and turning back empty
@@ -1505,6 +1548,26 @@ impl Combat {
                 self.spear_strikes(arena, p, big, i, at);
                 false
             }
+            // A knife sunk in what it struck; a chakram's cut does it as it flies, see thrown.rs
+            Shape::Knife => {
+                self.knife_strikes(arena, p, i, at);
+                true
+            }
+            Shape::Chakram { .. } => false,
+            // Struck in the back out of the dark, see arsenal.rs
+            Shape::Step => {
+                self.step_strikes(arena, p, i, at);
+                true
+            }
+            Shape::Ray => {
+                p.hit.push(id);
+                self.power_hit(arena, &profile, i, at, p.damage, from);
+                false
+            }
+            Shape::Glyph | Shape::Sigil => {
+                self.glyph_lands(arena, p, at);
+                true
+            }
         }
     }
 
@@ -1524,6 +1587,22 @@ impl Combat {
             // see faith.rs
             Shape::Spear { big } => self.spear_lands(arena, p, big, at),
             Shape::Shade => self.raise_dead(arena, p, at),
+            // A knife stuck in the ground; a chakram glancing off and coming back, see thrown.rs
+            Shape::Knife => self.knife_lands(p, at),
+            Shape::Chakram { back: false, .. } => {
+                self.sparks(at, 8, 3.0, Element::look(None), 0.6, 0.3);
+                self.cues.push(Cue::at(Sound::Clang, at, 0.6).pitched(1.3));
+                let damage = p.damage;
+                self.launch(&profile, None, Form::Bolt, at - way * 0.3 * vpm, -way * p.velocity.norm(), damage, 0.0);
+                self.signed(Sig::Power(Shape::Chakram { back: true, glances: 0 }));
+            }
+            Shape::Chakram { back: true, .. } => self.sparks(at, 8, 2.5, Element::look(None), 0.3, 0.3),
+            Shape::Step => {
+                self.step_out(at);
+                self.power_pop(arena, &profile, at, 1.2, p.damage * 0.3, None);
+            }
+            Shape::Ray => self.power_pop(arena, &profile, at, 1.4, p.damage * 0.5, None),
+            Shape::Glyph | Shape::Sigil => self.glyph_lands(arena, p, at),
             // Breaking up into sparks and a flash where it ends
             Shape::Wave { .. } => {
                 self.sparks(at, 16, 3.5, look, 0.3, 0.45);
@@ -1791,6 +1870,50 @@ impl Combat {
                 }
                 self.cap_sparks();
             }
+            // A knife stuck in the ground, see thrown.rs; a circle of runes being written, see
+            // arsenal.rs
+            Lasting::Knife { .. } => {}
+            Lasting::Runes | Lasting::Sigil => self.runes_go_on(arena, z, kind == Lasting::Sigil),
+            // A Starbreak's crack, a short fissure, see arsenal.rs
+            Lasting::Crack => {
+                while z.owed < super::arsenal::STAR_STEPS && age >= z.owed * FISSURE_GAP {
+                    let at = ground_under(arena.world, z.position + z.velocity * z.owed + up * 1.5 * vpm, vpm);
+                    self.landed(at);
+                    z.owed += 1.0;
+                    // A pillar thrown up every other step, not right in front of the eye
+                    if z.owed as usize % 2 == 0 && (at - arena.view.eye).norm() > 4.5 * vpm {
+                        let model = match element {
+                            Some(Element::Frost) => ICE_BURST,
+                            Some(Element::Holy) => PILLAR,
+                            _ => STONE_PILLAR,
+                        };
+                        self.swells.push(Swell { model, position: at, radius: 0.6, life: 0.6, lifetime: 0.6 });
+                    }
+                    self.blasts.push(Blast { position: at + up * 0.3 * vpm, look, radius: 0.6, life: 0.3, lifetime: 0.3 });
+                    for _ in 0..2 {
+                        let v = (self.any_direction() * 0.6 + up * 1.4) * 4.0 * vpm;
+                        self.drop(at, v, DROP_MUD, 0.9);
+                    }
+                    self.cues.push(Cue::at(Sound::Quake, at, 0.3).pitched(1.4 + 0.05 * z.owed as f32));
+                    for i in Combat::foes_round(arena, at, z.radius) {
+                        let id = arena.animals[i].id;
+                        if z.hit.contains(&id) {
+                            continue;
+                        }
+                        z.hit.push(id);
+                        let center = arena.animals[i].center(vpm as u32);
+                        self.power_hit(arena, &profile, i, center, z.damage, at);
+                        if arena.animals[i].health > 0.0 && arena.animals[i].boss.is_none() {
+                            let s = &mut arena.animals[i].status;
+                            s.push = (up * 5.0 + flat_of(z.velocity) * 2.0) * vpm;
+                            s.staggered = s.staggered.max(0.6);
+                        }
+                    }
+                }
+                if z.owed >= super::arsenal::STAR_STEPS {
+                    z.life = z.life.min(0.3);
+                }
+            }
             // Hanging there crackling till it bursts along its length
             Lasting::Line => {
                 if z.tick <= 0.0 && z.dwell <= 0.0 {
@@ -2036,6 +2159,7 @@ impl Combat {
                 self.sparks(z.position, 14, 4.0, Element::look(profile.element), 0.4, 0.4);
             }
             Lasting::Fissure | Lasting::Line | Lasting::Nova | Lasting::BladeRing | Lasting::Downpour | Lasting::Bound | Lasting::Flare | Lasting::Beacon => {}
+            Lasting::Knife { .. } | Lasting::Crack | Lasting::Runes | Lasting::Sigil => {}
         }
     }
 
@@ -2187,6 +2311,20 @@ impl Combat {
             }
             Shape::Spear { big } => out.extend(self.spear_instances(p, big, view)),
             Shape::Shade => out.extend(self.shade_instances(p, view)),
+            // The knife or chakram itself, as it's drawn in the hand, see thrown.rs, a little
+            // bigger the further off it is
+            Shape::Knife | Shape::Chakram { .. } => {
+                if let Some(f) = self.flung() {
+                    let turn = if shape == Shape::Knife { crate::combat::thrown::knife_turn(way, self.time) } else { crate::combat::thrown::chakram_turn(way, self.time) };
+                    out.push((eye + (p.position - eye) * 0.1, f.instance(p.position, turn, vpm, far.min(1.6), MOVING)));
+                } else {
+                    out.extend(self.streak_at(eye, p.position, way, look, 1.0 * far));
+                }
+                if matches!(shape, Shape::Chakram { .. }) && p.profile.element.is_some() {
+                    out.extend(self.circle_instances(eye, p.position, 0.32, look, 0.5 * far, self.time * 20.0));
+                }
+            }
+            Shape::Step | Shape::Ray | Shape::Glyph | Shape::Sigil => out.extend(self.arsenal_shot_instances(p, shape, view)),
         }
         out
     }
@@ -2200,8 +2338,18 @@ impl Combat {
         let up = Vector3::z();
         let mut out = Vec::new();
         match kind {
+            // A knife stuck in the ground, sinking away at the last, see thrown.rs
+            Lasting::Knife { way } => {
+                if let Some(f) = self.flung() {
+                    let way = Vector3::new(way[0] as f64, way[1] as f64, way[2] as f64);
+                    let sunk = smooth(1.0 - z.life / 0.4) * 0.12 * vpm;
+                    let lying = UnitQuaternion::rotation_between(&Vector3::z(), &way).unwrap_or_else(UnitQuaternion::identity);
+                    out.push((z.position, f.instance(z.position - way * 0.05 * vpm + way * sunk, lying, vpm, 1.0, if z.life < 0.4 { MOVING } else { STILL })));
+                }
+            }
+            Lasting::Runes | Lasting::Sigil => out.extend(self.runes_instances(z, view, kind == Lasting::Sigil)),
             // A glowing crack along the ground as far as it's split
-            Lasting::Fissure => {
+            Lasting::Fissure | Lasting::Crack => {
                 let to = z.position + z.velocity * z.owed.max(0.5) + up * 0.15 * vpm;
                 out.extend(self.line_bolts(eye, z.position + up * 0.15 * vpm, to, look, 1.2, 1.3, 0.15));
             }
@@ -2305,7 +2453,12 @@ impl Combat {
             Lasting::Stake | Lasting::Beacon => Some((z.position + Vector3::new(0.0, 0.0, self.vpm), 7.0, color, (0.35 + 0.65 * (1.0 - (age - z.dwell) / 0.4).max(0.0)) as f32 * fade)),
             // A flare lighting up the ground all round under it
             Lasting::Flare => Some((z.position, 16.0, color, 1.2 * fade)),
-            Lasting::Fissure | Lasting::Line | Lasting::Downpour | Lasting::Bound => None,
+            Lasting::Fissure | Lasting::Line | Lasting::Downpour | Lasting::Bound | Lasting::Knife { .. } | Lasting::Crack => None,
+            // A circle of runes glowing as it's written, blazing as it blasts up
+            Lasting::Runes | Lasting::Sigil => {
+                let blaze = if z.dwell > 0.0 { (1.0 - (age - z.dwell) / 0.4).max(0.0) * 2.0 } else { 0.25 + 0.1 * z.owed };
+                Some((z.position + Vector3::new(0.0, 0.0, self.vpm), 8.0, z.profile.element.map_or(Element::Arcane.light(), Element::light), blaze as f32 * fade))
+            }
         }
     }
 }

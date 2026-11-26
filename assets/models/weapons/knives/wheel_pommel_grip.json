@@ -1,0 +1,37 @@
+{
+  "what": "Throwing Knives, hilt: Wheel-Pommel Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    10,
+    7,
+    29
+  ],
+  "pivot": [
+    5.134399999999999,
+    3.6864,
+    1.371628219740367
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -4,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07808000000000001
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.34008000000000005
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5285,
+    "4cf50016c7673b4c"
+  ]
+}

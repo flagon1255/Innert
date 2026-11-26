@@ -7640,6 +7640,11 @@ impl Game {
             Style::Lob => Some("Click to lob a bomb onto the crosshair; it bounces and bursts a moment after it lands. Hold right click to see where it'll come down."),
             Style::Arc => Some("Click to loose lightning at whatever's nearest the crosshair; it leaps on through everything near it."),
             Style::Censer => Some("Hold to swing the censer: each swing billows out a cloud that settles on the crosshair and hangs there, hurting what's in it."),
+            Style::Pick => Some("Its beak's driven in over the top, hooked round and hooked up; its finisher and heavy blows are brought down two-handed, hard."),
+            Style::Knife => Some("Click to flick a knife at the crosshair, as fast as the hand goes; right click, while its Shadowstep comes round, flings a fan of three."),
+            Style::Ring => Some("Click to hurl the chakram at the crosshair; it cuts everything it passes, out and back, and comes back to the hand. Right click glances it from one enemy to the next first."),
+            _ if profile.rite == crate::weapons::Rite::Prism => Some("Each cast is a shard of crystal that splits partway into a fan of splinters, each splitting again where it strikes."),
+            _ if profile.rite == crate::weapons::Rite::Rune => Some("Each cast writes a rune on the ground at the crosshair that blasts up a moment later."),
             _ => None,
         };
         if let Some(how) = how {

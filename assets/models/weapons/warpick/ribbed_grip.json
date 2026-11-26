@@ -1,0 +1,37 @@
+{
+  "what": "War Pick, hilt: Ribbed Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    11,
+    11,
+    127
+  ],
+  "pivot": [
+    5.600000000000005,
+    5.664042708571534,
+    0.7199999999999998
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2276
+    ],
+    "tip": [
+      0.24,
+      0.0,
+      0.5526
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    13774,
+    "6c875b434df6a1da"
+  ]
+}

@@ -108,6 +108,16 @@ impl Combat {
         let vpm = arena.view.vpm;
         match profile.rite {
             Rite::None => false,
+            // A prism's crystal shard splitting apart, a runestone's rune written where it's aimed,
+            // see arsenal.rs
+            Rite::Prism => {
+                self.cast_prism(arena, profile, from, target, damage);
+                true
+            }
+            Rite::Rune => {
+                self.cast_rune(arena, profile, from, target, damage);
+                true
+            }
             // A spear of holy lightning, at what the crosshair's on
             Rite::Spear => {
                 let range = ((target - from).norm() / vpm + 2.5).min(CAST_REACH);
