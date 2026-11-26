@@ -1790,7 +1790,9 @@ impl Combat {
             }
             Shape::Ember | Shape::Mote => self.power_pop(arena, &profile, at, 1.1, p.damage * 0.5, None),
             Shape::Shell => {
+                self.powder = 1.0;
                 self.power_burst(arena, &profile, at, 3.5, p.damage, None);
+                self.powder = 0.0;
                 for _ in 0..10 {
                     let v = (self.any_direction() + up * 1.4) * 4.0 * vpm;
                     self.drop(at, v, DROP_MUD, 1.0);
@@ -1900,7 +1902,8 @@ impl Combat {
                         s.size = 0.8;
                     }
                 }
-                self.cues.push(Cue::at(Sound::Burst, ground, 1.0).pitched(1.0));
+                // A pot of powder going off, smaller than a shell
+                self.cues.push(Cue::at(Sound::Shellburst, ground, 0.9).pitched(1.15));
                 self.shake = self.shake.max(0.4);
             }
         }

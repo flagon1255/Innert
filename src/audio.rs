@@ -112,8 +112,19 @@ pub enum Sound {
     Skitter,
     /// An attack rushing just past the ear
     Dodge,
-    /// A gun going off: a crack, a boom, and the roll of it dying away
-    Gunshot,
+    /// A pistol going off: a tight, snappy crack, over quickly
+    Pistol,
+    /// A musket going off: a sharp crack, the powdery blast of its charge, and a short echo coming
+    /// back off the hills
+    Musket,
+    /// A blunderbuss going off: a wide, coarse blast, a crackle of powder under it
+    Blunderbuss,
+    /// A hand cannon going off: a deep, heavy boom with a low thump under it, rolling away a long
+    /// while after
+    Cannon,
+    /// A shell, bomb or keg bursting: black powder going up with a crackle and a deep thump, the
+    /// boom rolling away
+    Shellburst,
     /// A crossbow loosed: its prod slamming forward and the string's slap
     Release,
     /// One click of a windlass's ratchet, or of a bolt dropped into a magazine
@@ -435,6 +446,18 @@ fn muffle(meters: f32) -> f32 {
     1.0 - (-2.0 * PI * cutoff / RATE as f32).exp()
 }
 
+/// How much further than most a sound carries: a cannon's boom and a shell bursting are heard a
+/// long way off, dull and rolling as the air takes the top off them, a musket's or blunderbuss's
+/// crack further than a footstep. 1 for most.
+fn carry(sound: Sound) -> f32 {
+    match sound {
+        Sound::Cannon | Sound::Shellburst => 3.0,
+        Sound::Musket | Sound::Blunderbuss => 2.0,
+        Sound::Pistol => 1.5,
+        _ => 1.0,
+    }
+}
+
 /// The whole mix on its way out, brought down smoothly whenever it would go past CEILING, so that
 /// however many sounds play at once it never clips: the level is followed quickly up and slowly
 /// back down, and what still gets past in the first instant of a blow is rounded off gently
@@ -584,7 +607,7 @@ impl Audio {
         if let Some(at) = cue.at {
             let to = at - view.eye;
             meters = (to.norm() / view.vpm) as f32;
-            volume /= 1.0 + meters / 5.0;
+            volume /= 1.0 + meters / (5.0 * carry(cue.sound));
             if meters > 0.1 {
                 let right = view.rotation * Vector3::x();
                 pan = (to.normalize().dot(&right) as f32).clamp(-1.0, 1.0) * 0.8;
@@ -654,6 +677,13 @@ impl Audio {
             }
         }
     }
+}
+
+/// Whether `sound` has a recording that decodes, for other modules' tests to check what they play
+/// will be heard
+#[cfg(test)]
+pub fn recorded(sound: Sound) -> bool {
+    RECORDINGS.iter().any(|&(s, bytes, _)| s == sound && decode(bytes).is_some_and(|samples| !samples.is_empty()))
 }
 
 /// Every recording: what it's the sound of, the file, and how much louder or quieter to play it so
@@ -728,9 +758,18 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Chain, include_bytes!("../assets/sounds/chain_1.ogg"), 0.71),
     (Sound::Chain, include_bytes!("../assets/sounds/chain_2.ogg"), 2.20),
     (Sound::Chain, include_bytes!("../assets/sounds/chain_3.ogg"), 2.81),
-    (Sound::Gunshot, include_bytes!("../assets/sounds/gunshot_1.ogg"), 1.89),
-    (Sound::Gunshot, include_bytes!("../assets/sounds/gunshot_2.ogg"), 1.77),
-    (Sound::Gunshot, include_bytes!("../assets/sounds/gunshot_3.ogg"), 1.68),
+    (Sound::Pistol, include_bytes!("../assets/sounds/pistol_1.ogg"), 1.36),
+    (Sound::Pistol, include_bytes!("../assets/sounds/pistol_2.ogg"), 1.37),
+    (Sound::Pistol, include_bytes!("../assets/sounds/pistol_3.ogg"), 1.22),
+    (Sound::Musket, include_bytes!("../assets/sounds/musket_1.ogg"), 1.79),
+    (Sound::Musket, include_bytes!("../assets/sounds/musket_2.ogg"), 2.09),
+    (Sound::Musket, include_bytes!("../assets/sounds/musket_3.ogg"), 1.09),
+    (Sound::Blunderbuss, include_bytes!("../assets/sounds/blunderbuss_1.ogg"), 1.90),
+    (Sound::Blunderbuss, include_bytes!("../assets/sounds/blunderbuss_2.ogg"), 1.97),
+    (Sound::Blunderbuss, include_bytes!("../assets/sounds/blunderbuss_3.ogg"), 1.21),
+    (Sound::Cannon, include_bytes!("../assets/sounds/cannon_1.ogg"), 1.61),
+    (Sound::Cannon, include_bytes!("../assets/sounds/cannon_2.ogg"), 1.68),
+    (Sound::Cannon, include_bytes!("../assets/sounds/cannon_3.ogg"), 1.88),
     (Sound::Cock, include_bytes!("../assets/sounds/cock_1.ogg"), 0.71),
     (Sound::Cock, include_bytes!("../assets/sounds/cock_2.ogg"), 0.57),
     (Sound::Powder, include_bytes!("../assets/sounds/powder_1.ogg"), 1.39),
@@ -772,6 +811,9 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Burst, include_bytes!("../assets/sounds/burst_4.ogg"), 0.94),
     (Sound::Boom, include_bytes!("../assets/sounds/boom_1.ogg"), 0.73),
     (Sound::Boom, include_bytes!("../assets/sounds/boom_2.ogg"), 0.81),
+    (Sound::Shellburst, include_bytes!("../assets/sounds/shellburst_1.ogg"), 1.79),
+    (Sound::Shellburst, include_bytes!("../assets/sounds/shellburst_2.ogg"), 1.43),
+    (Sound::Shellburst, include_bytes!("../assets/sounds/shellburst_3.ogg"), 1.37),
     (Sound::Quake, include_bytes!("../assets/sounds/quake_1.ogg"), 1.26),
     (Sound::Quake, include_bytes!("../assets/sounds/quake_2.ogg"), 1.16),
     (Sound::Slam, include_bytes!("../assets/sounds/slam_1.ogg"), 1.36),
@@ -947,7 +989,7 @@ mod tests {
         use Sound::*;
         let mut all = vec![
             Swing, HeavySwing, Stab, Flick, Hit, Draw, Twang, ArrowHit, Burst, Equip, Crackle, Chest, Pickup, Eat, Bird, Roar, Rumble, Breath, Hurt, Fanfare, Splash, Quake,
-            Whistle, Claw, Web, Creak, Crack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Gunshot, Release, Ratchet, Latch, Powder, Ram, Cock,
+            Whistle, Claw, Web, Creak, Crack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Pistol, Musket, Blunderbuss, Cannon, Shellburst, Release, Ratchet, Latch, Powder, Ram, Cock,
             Ricochet, Beam, Toll, Summon, Hex, Snap, Volley, Harpoon, Taut, Brace, Reel, Net, Chain, Chitter, Wail, Croak, Screech, Snort, Whirr, Slam, Fuse, Zap, Thunder,
             Gale, Buzz, Bubble, Billow, Shing, Chime, Rocket, Rush, Lasso, Squeeze, Boom, Slither, Sear, Swoop, Thorns, Coins, Wind, Water,
             Chop, Mine, Dig, Timber, Place, DoorOpen, DoorClose, Bang, Splinter,
@@ -1011,7 +1053,7 @@ mod tests {
         let library = decode_all(decoders());
         let (bus, mut mix) = bus(48000);
         let playing = Arc::new(AtomicUsize::new(0));
-        let loud = [Sound::Gunshot, Sound::Boom, Sound::Roar, Sound::Burst, Sound::Hit, Sound::Clang];
+        let loud = [Sound::Cannon, Sound::Musket, Sound::Blunderbuss, Sound::Pistol, Sound::Shellburst, Sound::Boom, Sound::Roar, Sound::Burst, Sound::Hit, Sound::Clang];
         for (k, sound) in loud.iter().cycle().take(60).enumerate() {
             let versions = &library[sound];
             bus.add(voice(versions[k % versions.len()].clone(), 1.0, (k as f32 * 0.7).sin(), 0.9 + 0.01 * k as f32, 0.0, &playing));
@@ -1033,6 +1075,10 @@ mod tests {
         assert_eq!(muffle(0.0), 1.0);
         assert_eq!(muffle(9.0), 1.0);
         assert!(muffle(20.0) < 1.0 && muffle(60.0) < muffle(20.0) && muffle(1000.0) > 0.2);
+        // A cannon's boom and a shell bursting are heard furthest, a musket's crack further than
+        // a pistol's, and a pistol's further than a footstep
+        assert!(carry(Sound::Cannon) == carry(Sound::Shellburst) && carry(Sound::Cannon) > carry(Sound::Musket));
+        assert!(carry(Sound::Musket) > carry(Sound::Pistol) && carry(Sound::Pistol) > carry(Sound::Step(Ground::Grass)));
     }
 
     /// `INNERT_SOUND_DUMP=<folder> cargo test --release dump_sounds -- --ignored` writes every

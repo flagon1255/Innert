@@ -2159,6 +2159,9 @@ pub struct Combat {
     /// While set, explosions blow no holes and leave no stains, for a special attack's many small
     /// ones going off together
     scarless: bool,
+    /// While over 0, explosions are gunpowder going off, a shell, a bomb or a keg, and boom as one
+    /// rather than bursting as a spell does, see burst()
+    powder: f64,
     /// Beams to draw solid this frame: from, to and look
     rays: Vec<(Vector3<f64>, Vector3<f64>, usize)>,
     /// How fast the player is going in meters a second, and how far they've walked, to bob what's
@@ -5152,6 +5155,18 @@ fn kick_of(build: Build) -> f64 {
     }
 }
 
+/// What a gun built `build` sounds like going off, each its own: a pistol's snap, a musket's crack,
+/// a blunderbuss's blast and a hand cannon's boom. Anything else shooting a ball, as a special or a
+/// power might, as a musket.
+fn report_of(build: Build) -> Sound {
+    match build {
+        Build::Pistol => Sound::Pistol,
+        Build::Blunderbuss => Sound::Blunderbuss,
+        Build::Cannon => Sound::Cannon,
+        _ => Sound::Musket,
+    }
+}
+
 /// How long a crossbow or gun takes to settle again after a shot, in seconds: a repeater's lever
 /// spanning it again, as long as its cycle
 fn fire_length(profile: &Profile) -> f64 {
@@ -5520,6 +5535,7 @@ impl Combat {
             puff: 0.0,
             scar_timer: 0.0,
             scarless: false,
+            powder: 0.0,
             rays: Vec::new(),
             speed: 0.0,
             stride: 0.0,
@@ -6530,20 +6546,16 @@ impl Combat {
     }
 
     /// The gun in hand going off at `muzzle`, shooting along `ahead`, `power` times as hard as an
-    /// ordinary shot: a bang, the bigger the gun the deeper, a flash lighting everything round, the
-    /// flame at the muzzle, sparks and a cloud of smoke rolling out ahead and hanging there, a
-    /// puff from the pan, and the view shaking
+    /// ordinary shot: a bang, its own for each kind of gun and the harder the deeper and louder, a
+    /// flash lighting everything round, the flame at the muzzle, sparks and a cloud of smoke
+    /// rolling out ahead and hanging there, a puff from the pan, and the view shaking
     fn gun_report(&mut self, weapon: &Weapon, view: &View, profile: &Profile, muzzle: Vector3<f64>, ahead: Vector3<f64>, power: f64) {
         let vpm = view.vpm;
         let base = &weapon.profile;
         let bore = base.caliber / 0.009 * power.sqrt();
-        let pitch = match base.build {
-            Build::Pistol => 1.2,
-            Build::Blunderbuss => 0.85,
-            Build::Cannon => 0.62,
-            _ => 1.0,
-        } / power.sqrt() as f32;
-        self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(pitch));
+        let pitch = 1.0 / power.powf(0.35) as f32;
+        let volume = (1.0 + 0.15 * (power - 1.0)).clamp(0.9, 1.2) as f32;
+        self.cues.push(Cue::here(report_of(base.build), volume).pitched(pitch));
         self.shake = self.shake.max(0.18 * kick_of(base.build) * power);
         self.flare = FLARE * power.min(2.0);
         self.flare_roll = random(&mut self.rng) * TAU;
@@ -6816,7 +6828,10 @@ impl Combat {
         let bomblet = p.size < 0.9;
         let radius = BOMB_BLAST * profile.stat("area").max(0.8) * p.size.min(1.3) * if bomblet { 0.9 } else { 1.0 };
         self.scarless = true;
+        // A bomb booming as a shell does, its bomblets only popping
+        self.powder = if bomblet { 0.0 } else { 1.0 };
         self.burst(arena, &profile, at, radius, p.damage, bomblet as u32, false, profile.element.or(Some(Element::Fire)), None);
+        self.powder = 0.0;
         self.scarless = false;
         // A bomblet blows its own small hole, and a bomb packed with them a bigger one
         if hole {
@@ -7913,7 +7928,9 @@ impl Combat {
             ZoneKind::Keg => {
                 let at = z.position + Vector3::new(0.0, 0.0, 0.5 * vpm);
                 self.scarless = true;
+                self.powder = 1.0;
                 self.burst(arena, &profile, at, z.radius * 0.8, z.damage, 0, false, profile.element.or(Some(Element::Fire)), None);
+                self.powder = 0.0;
                 self.scarless = false;
                 for i in Combat::under(arena, z.position, z.radius, 4.0) {
                     if arena.animals[i].health <= 0.0 || arena.animals[i].boss.is_some() {
@@ -8689,7 +8706,7 @@ impl Combat {
                 let sound = match m.shot {
                     Some(Shot::Arrow) => Sound::Twang,
                     Some(Shot::Quarrel) => Sound::Release,
-                    Some(_) => Sound::Gunshot,
+                    Some(_) => report_of(weapon.map_or(Build::None, |w| w.profile.build)),
                     None => Sound::Cast(blood as u8),
                 };
                 self.cues.push(Cue::here(sound, 0.9).pitched(0.75));
@@ -8855,8 +8872,10 @@ impl Combat {
                 self.sparks.push(Spark { position: from, velocity, look: 0, life, lifetime: life, gravity: -0.03, slot: SLOT_SMOKE });
             }
             self.sparks(from, 4, 3.0, Element::look(Some(Element::Fire)), 0.2, 0.2);
-            let sound = if l.profile.build.crossbow() { Sound::Release } else { Sound::Gunshot };
-            self.cues.push(Cue::here(sound, 0.8).pitched(0.6 + 0.04 * l.k as f32));
+            let sound = if l.profile.build.crossbow() { Sound::Release } else { report_of(l.profile.build) };
+            // A crossbow's release taken deep for the weight of a bomb; a gun's own boom only a little
+            let pitch = if sound == Sound::Release { 0.6 } else { 0.85 };
+            self.cues.push(Cue::here(sound, 0.8).pitched(pitch + 0.04 * l.k as f32));
             self.kick_speed += 1.6;
         }
     }
@@ -9171,10 +9190,13 @@ impl Combat {
             (Style::Lob, _) => (Sound::Swoop, 0.9),
             (_, Some(Shot::Arrow)) => (Sound::Twang, 0.85),
             (_, Some(Shot::Quarrel)) => (Sound::Release, 0.9),
-            (_, Some(_)) => (Sound::Gunshot, 0.8),
+            (_, Some(_)) => (report_of(profile.build), 0.9),
             (_, None) => (Sound::Cast(look as u8), 0.85),
         };
-        self.cues.push(Cue::here(sound, 0.9).pitched(pitch));
+        // A gun's charged shot sounds as its report below has it, once
+        if profile.style != Style::Powder {
+            self.cues.push(Cue::here(sound, 0.9).pitched(pitch));
+        }
         if missile.is_some_and(|m| m.shot != Shot::Shell) || profile.build != Build::None {
             self.kick += 0.03;
         }
@@ -10061,7 +10083,9 @@ impl Combat {
                 self.kick += 0.09;
                 self.shake = self.shake.max(0.9);
                 self.flashes.push(Flash { position: from, color: [1.0, 0.75, 0.4], reach: 10.0, life: 0.25, lifetime: 0.25 });
-                self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(0.55));
+                // A blunderbuss's coarse blast, deeper, whatever it's fired from but a cannon
+                let blast = if profile.build == Build::Cannon { Sound::Cannon } else { Sound::Blunderbuss };
+                self.cues.push(Cue::here(blast, 1.1).pitched(0.8));
                 self.cues.push(Cue::here(Sound::Slam, 0.7).pitched(1.2));
                 // What's in front thrown back as the shot gets to it
                 for a in arena.animals.iter() {
@@ -11006,7 +11030,7 @@ impl Combat {
                         let from = view.eye + view.rotation * Vector3::new(0.15 * side, 0.75, -0.15) * vpm;
                         let shot = Missile { shot: if profile.build.crossbow() { Shot::Quarrel } else { Shot::Ball }, head: 0, power: true, size: 1.2 };
                         self.tracer(&profile, profile.element, Some(shot), from, view.eye + view.forward() * 40.0 * vpm, 140.0);
-                        self.cues.push(Cue::here(if profile.build.crossbow() { Sound::Release } else { Sound::Gunshot }, 0.7).pitched(1.15));
+                        self.cues.push(Cue::here(if profile.build.crossbow() { Sound::Release } else { report_of(profile.build) }, 0.7).pitched(1.1));
                         continue;
                     };
                     let view = arena.view;
@@ -11029,7 +11053,7 @@ impl Combat {
                             self.sparks.push(Spark { position: from, velocity: v, look: Element::look(None), life: 0.8, lifetime: 0.8, gravity: -0.05, slot: SLOT_SMOKE });
                         }
                     }
-                    self.cues.push(Cue::here(if gun { Sound::Gunshot } else { Sound::Release }, 0.85).pitched(1.1));
+                    self.cues.push(Cue::here(if gun { report_of(profile.build) } else { Sound::Release }, 0.85).pitched(1.05));
                     self.kick += 0.025;
                     self.shake = self.shake.max(0.2);
                 }
@@ -12884,7 +12908,10 @@ impl Combat {
             let radius = profile.param(Effect::Explosive, "radius", 2.2) * profile.stat("area").max(1.0) * packed;
             let damage = p.damage * profile.param(Effect::Explosive, "power", 0.7) * profile.potency(Effect::Explosive).max(1.0);
             let holes = self.craters.len();
+            // A shell's powder booming, where a bursting bolt or arrow only bursts
+            self.powder = if p.shot == Shot::Shell { 1.0 } else { 0.0 };
             self.burst(arena, profile, at, radius, damage, 1, false, profile.element.or(Some(Element::Fire)), None);
+            self.powder = 0.0;
             for hole in &mut self.craters[holes..] {
                 hole.1 /= packed;
             }
@@ -13036,9 +13063,13 @@ impl Combat {
     fn burst(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, depth: u32, pull: bool, element: Option<Element>, skip: Option<usize>) {
         let vpm = arena.view.vpm;
         let look = Element::look(element);
-        // Bigger ones boom deeper
-        let pitch = if pull { 1.3 } else { (1.25 - radius * 0.12).clamp(0.6, 1.2) as f32 };
-        self.cues.push(Cue::at(Sound::Burst, at, if pull { 0.6 } else { (0.5 + radius * 0.25).min(1.2) as f32 }).pitched(pitch));
+        // Bigger ones boom deeper, and gunpowder's heavy boom is its own
+        if self.powder > 0.0 && !pull {
+            self.cues.push(Cue::at(Sound::Shellburst, at, (0.55 + radius * 0.2).min(1.4) as f32).pitched((1.15 - radius * 0.07).clamp(0.62, 1.25) as f32));
+        } else {
+            let pitch = if pull { 1.3 } else { (1.25 - radius * 0.12).clamp(0.6, 1.2) as f32 };
+            self.cues.push(Cue::at(Sound::Burst, at, if pull { 0.6 } else { (0.5 + radius * 0.25).min(1.2) as f32 }).pitched(pitch));
+        }
         self.flashes.push(Flash { position: at, color: element.map_or([1.0, 0.8, 0.5], Element::light), reach: radius * 3.0 + 4.0, life: 0.35, lifetime: 0.35 });
         if pull {
             self.sparks(at, (16.0 + radius * 12.0) as usize, -4.0, look, 0.4, 0.6 + radius * 0.1);
@@ -18533,6 +18564,45 @@ mod tests {
         assert!(water_crossing(&water, at(5.0, 8.0), at(5.0, 12.0), f64::MAX).is_some_and(|(t, into)| !into && (t - 0.5).abs() < 1e-6));
     }
 
+    /// Every kind of gun goes off with a sound of its own, a pistol's snap, a musket's crack, a
+    /// blunderbuss's blast and a hand cannon's boom, none of them another's, each with a recording
+    /// to play; and a hand cannon's shell bursting booms as powder does, not as a spell bursts
+    #[test]
+    fn every_gun_sounds_its_own_and_a_shell_booms() {
+        let library = crate::weapons::Library::load();
+        let vpm = 8.0;
+        let world = open_ground(64, 8);
+        let feet = Vector3::new(32.0, 10.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let mut heard = Vec::new();
+        for (family, build) in [("pistol", Build::Pistol), ("musket", Build::Musket), ("blunderbuss", Build::Blunderbuss), ("handcannon", Build::Cannon)] {
+            let gun = library.generate(1, library.family(family), 1.0);
+            assert_eq!(gun.profile.build, build, "{family}");
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            combat.gun_report(&gun, &view, &gun.profile, eye, view.forward(), 1.0);
+            let sounds: Vec<Sound> = combat.cues.iter().map(|c| c.sound).collect();
+            assert_eq!(sounds, [report_of(build)], "a {family} going off");
+            assert!(!heard.contains(&sounds[0]), "a {family} sounds as another gun does");
+            assert!(crate::audio::recorded(sounds[0]), "a {family}'s sound has no recording");
+            heard.push(sounds[0]);
+        }
+        // A shell landing on open ground
+        let cannon = library.generate(1, library.family("handcannon"), 1.0);
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        let mut animals = Vec::new();
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+        combat.launch(&cannon.profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.0 }), Form::Bolt, feet, Vector3::zeros(), 20.0, 1.0);
+        let shell = combat.projectiles.pop().unwrap();
+        combat.impact(&mut arena, &shell, feet + Vector3::new(0.0, 12.0, 0.0) * vpm);
+        assert!(combat.cues.iter().any(|c| c.sound == Sound::Shellburst), "the shell didn't boom");
+        assert!(!combat.cues.iter().any(|c| c.sound == Sound::Burst), "the shell burst as a spell does");
+        assert!(crate::audio::recorded(Sound::Shellburst));
+    }
+
     /// A hand cannon's shell shot into the shallows splashes as it goes into the water, and only
     /// after that, sinking on down through it, strikes the bottom and goes off there, throwing a
     /// plume of water up out of the top over where it did; an arrow splashes in the same way, then
@@ -18569,7 +18639,7 @@ mod tests {
                             splashed = Some(frame);
                         }
                         Sound::Splash => plume |= (z - level).abs() < 0.1 * vpm,
-                        Sound::Burst => {
+                        Sound::Burst | Sound::Shellburst => {
                             assert!(z < level - 0.5 * vpm, "{shot:?} went off {:.2} m under the top of the water", (level - z) / vpm);
                             struck = Some(frame);
                         }
