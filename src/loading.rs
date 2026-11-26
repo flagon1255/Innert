@@ -642,6 +642,8 @@ impl Loading {
                 ..Default::default()
             },
         );
+        // Its look, the same in every window, see theme.rs
+        crate::theme::apply(&gui.context());
         self.screen = Some(Screen {
             window: window.clone(),
             swapchain,

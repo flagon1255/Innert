@@ -116,6 +116,7 @@ mod skips;
 mod staging;
 mod startup;
 mod stream;
+mod theme;
 mod tools;
 mod voxelize;
 mod vox;
