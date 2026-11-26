@@ -1048,7 +1048,7 @@ fn maw(g: &Great, skin: [u8; 5]) -> Vec<Part> {
     p.push(ball([0.78 * h, 0.0, 0.0], 0.66 * r, eye));
     // Knobs down the top of its head, and the plates ringing it
     for (k, x) in [0.12, 0.38, 0.62].into_iter().enumerate() {
-        p.push(limb([x * h, 0.0, 0.0], [x * h + 0.1 * h, 0.0, 0.0], 1.1 * r, 1.13 * r, pattern));
+        p.push(limb([x * h, 0.0, 0.0], [x * h + 0.06 * h, 0.0, 0.0], 1.1 * r, 1.12 * r, pattern));
         if k < 2 {
             p.push(limb([x * h + 0.12 * h, 0.0, 0.9 * r], [x * h - 0.02 * h, 0.0, 1.28 * r], 0.17 * r, 0.05 * r, extra));
         }
@@ -1146,7 +1146,7 @@ fn piece(g: &Great, skin: [u8; 5]) -> Vec<Part> {
         // A wyrm's ringed in a plate overlapping the one behind it, its edge showing, and a knob
         // on its back
         Crest::Maw => {
-            p.push(limb([0.55 * half, 0.0, 0.03 * r], [0.15 * half, 0.0, 0.0], 1.09 * r, 1.04 * r, pattern));
+            p.push(limb([0.5 * half, 0.0, 0.03 * r], [0.32 * half, 0.0, 0.0], 1.08 * r, 1.05 * r, pattern));
             p.push(limb([0.25 * half, 0.0, 0.85 * r], [-0.35 * half, 0.0, 1.28 * r], 0.2 * r, 0.06 * r, extra));
         }
     }
