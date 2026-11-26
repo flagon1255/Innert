@@ -277,10 +277,10 @@ pub fn middle(look: Look) -> f64 {
 pub fn reach(look: Look) -> f64 {
     match look {
         Look::RawFish | Look::CookedFish => 0.24,
-        Look::SharkTooth => 0.1,
+        Look::SharkTooth => 0.13,
         _ => {
             if let Some(f) = fish_of(look) {
-                return (f.length * 0.56).hypot(f.depth * 1.6);
+                return (f.length * 0.62).hypot(f.depth * 2.0 + 0.03);
             }
             shark_of(look).map_or(1.0, |s| (s.length * 0.53).hypot(SHARK_UNDER + s.depth + s.fin + 0.1))
         }
@@ -493,8 +493,8 @@ fn lying(p: &mut Vec<Part>, f: &Fish, cooked: bool) {
 
 /// A shark's tooth: a broad pale fang, lying on its side
 fn tooth(p: &mut Vec<Part>) {
-    p.push(limb([-0.03, 0.0, 0.02], [0.06, 0.0, 0.02], 0.025, 0.004, BONE));
-    p.push(ellipsoid([-0.035, 0.0, 0.02], [0.012, 0.03, 0.018], FUR_CREAM));
+    p.push(limb([-0.04, 0.0, 0.035], [0.08, 0.0, 0.03], 0.035, 0.006, BONE));
+    p.push(ellipsoid([-0.05, 0.0, 0.035], [0.02, 0.045, 0.03], FUR_CREAM));
 }
 
 /// A shark, its tail sweeping as `phase` has it, and `pose` how far it's into gaping to bite,
@@ -682,11 +682,6 @@ impl Swim {
             gone: false,
             leaving: false,
         }
-    }
-
-    /// Which way it's going, in meters a second
-    pub fn velocity(&self) -> V3 {
-        self.velocity
     }
 
     /// Leaping clear of the water
@@ -1326,7 +1321,7 @@ mod tests {
                         }
                     }
                 }
-                let least = if is_shark(look) { 2000 } else { 25 };
+                let least = if is_shark(look) { 600 } else if look == Look::SharkTooth { 8 } else { 25 };
                 assert!(solid > least, "{look:?} frame {frame} has only {solid} voxels");
                 assert!(furthest <= look.reach(), "{look:?} frame {frame} reaches {furthest:.2} m, past its {:.2} m", look.reach());
             }

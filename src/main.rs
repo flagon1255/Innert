@@ -124,6 +124,8 @@ mod weapons;
 mod wings;
 mod worldgen;
 mod guardians;
+/// Fish and sharks as the app has them, see seas.rs
+mod seas;
 
 use crate::animals::AnimalInstance;
 use crate::camera::Camera;
@@ -4333,8 +4335,9 @@ impl App {
         if !self.menu_open && !self.editor.open && !self.skills_open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
-            let water = &self.water;
             let start = Instant::now();
+            self.tell_sea();
+            let water = &self.water;
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
             // A tool's blow landing gathers what it struck, see tools.rs
@@ -4531,6 +4534,12 @@ impl App {
             self.last_feet = Some(feet);
             let wading = self.water.depth_at(feet.x, feet.y) > 0.1 * vpm;
             self.wake = (wading && !self.menu_open).then_some(([feet.x, feet.y], [moved.x, moved.y]));
+            // And a shark's fin cutting the top of the water, see seas.rs
+            if let Some(fin) = self.game.fin_wake(feet)
+                && (self.wake.is_none() || seas::fin_turn())
+            {
+                self.wake = Some(fin);
+            }
 
             // How fast they're going over the ground and how far they've walked, to bob what's in hand
             let over_ground = if player.on_ground() { (feet - before).xy().norm() / vpm } else { 0.0 };
@@ -4675,6 +4684,8 @@ impl App {
             ("play", f) => self.play_step(f, run_time, eye),
             ("bucket", 1) => self.stand_in_water(0.6, false),
             ("wade", 1) => self.stand_in_water(0.5, true),
+            // Out in the water among the fish, and a shark, see seas.rs
+            ("sea", f) => self.sea_step(f),
             ("bucket", 40) => {
                 let depth = |w: &Water| w.raycast(&self.world, eye, look, game::REACH * vpm).map(|(p, _)| w.depth_at(p.x, p.y) / vpm);
                 println!("frame {frame}: water depth where looking {:?} m, bucket {:.2} m³", depth(&self.water), self.game.bucket());
@@ -5331,7 +5342,8 @@ impl App {
 
         if t >= self.play.next_pack {
             self.play.next_pack = t + 120.0;
-            let monsters: Vec<animals::Look> = animals::Look::ALL.into_iter().filter(|l| l.is_monster()).collect();
+            // Not sharks, which only ever swim, see animals\sealife.rs
+            let monsters: Vec<animals::Look> = animals::Look::ALL.into_iter().filter(|l| l.is_monster() && !l.is_sea()).collect();
             if !monsters.is_empty() {
                 let look = monsters[self.play.leg as usize * 7 % monsters.len()];
                 let ahead = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
