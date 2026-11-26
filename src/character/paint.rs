@@ -797,6 +797,26 @@ mod tests {
         assert!(PAINT_FIRST as usize + PAINT_COUNT <= 256);
     }
 
+    /// Exported, each piece is a MagicaVoxel file of it as painted, in the colours it's drawn in
+    #[test]
+    fn exports_the_painted_pieces() {
+        let looks = Looks { skin: 4, ..Default::default() };
+        let body = painted(&looks, &demo(&looks));
+        let dir = std::env::temp_dir().join(format!("innert_paint_export_{}", std::process::id()));
+        export(&body, &looks, &dir).unwrap();
+        for (p, name) in body::PIECE_NAMES.iter().enumerate() {
+            let file = crate::vox::read(&std::fs::read(dir.join(format!("{name}.vox"))).unwrap()).unwrap();
+            assert_eq!(file.grid.size, body[p].0.size, "{name}");
+            if p == HEAD {
+                let woad = EXTRA_PAINT + 17;
+                assert!(file.grid.voxels.contains(&woad));
+                assert_eq!(file.palette[woad as usize][..3], paint(woad).unwrap().1);
+                assert_eq!(file.palette[LEATHER as usize][..3], looks.skin_rgb());
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Painted on a forearm, the paint's on the arm held before the eye too, the glove's on the
     /// hand and the sleeve's on the sleeve; unpainted, the arms are left as they are
     #[test]
