@@ -1,0 +1,37 @@
+{
+  "what": "Talisman, focus: Ashen Icon",
+  "voxels_per_meter": 192.0,
+  "size": [
+    3,
+    20,
+    21
+  ],
+  "pivot": [
+    1.456,
+    9.904,
+    -22.240000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -1,
+    -10,
+    22
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.06
+    ],
+    "tip": [
+      0.02,
+      0.0,
+      0.16999999999999998
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4500,
+    "f0b516d5d9001fa4"
+  ]
+}

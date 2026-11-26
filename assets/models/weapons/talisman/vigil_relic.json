@@ -1,0 +1,37 @@
+{
+  "what": "Talisman, crystal: Vigil Relic",
+  "voxels_per_meter": 192.0,
+  "size": [
+    7,
+    12,
+    12
+  ],
+  "pivot": [
+    3.456,
+    5.904,
+    -26.240000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -6,
+    26
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.06
+    ],
+    "tip": [
+      0.02,
+      0.0,
+      0.16999999999999998
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    3360,
+    "ea29d6c76b753e91"
+  ]
+}

@@ -20,6 +20,8 @@ use crate::weapon_parts::{ball, cuboid, ellipsoid, limb, slot, voxelize};
 mod ammo;
 /// How a skull focus and a talisman look
 mod relics;
+/// How the third batch's weapons look: a war pick's head, a chakram, a prism and a runestone
+mod foci;
 pub use ammo::{AMMO_RES, AMMO_SHOT_RES, AMMO_STYLES, Puff, Trail, ammo_style};
 use crate::worldgen::material::*;
 
@@ -90,6 +92,20 @@ pub enum Style {
     /// A naginata, its long curved blade swept down in great arcs, the haft turned over between
     /// them, and driven out on its point
     Pole,
+    /// A war pick, its beak hooked down over the top and driven in, the haft levered round
+    Pick,
+    /// Throwing knives, flicked from the hand one after another, a fan of them for a heavy throw
+    Knife,
+    /// A chakram, its sharpened ring hurled spinning flat out ahead and curving back to the hand
+    Ring,
+}
+
+impl Style {
+    /// Whether it's thrown by hand, a fresh one coming up into the hand after: bombs, throwing
+    /// knives, and a chakram, which comes back to it
+    pub fn thrown(self) -> bool {
+        matches!(self, Style::Lob | Style::Knife | Style::Ring)
+    }
 }
 
 /// How a crossbow or gun is built, and so how it's loaded, see crossbow() and gun()
@@ -572,6 +588,11 @@ pub enum Rite {
     Drain,
     /// A talisman's: a spear of holy lightning, through all it meets, arcing on
     Spear,
+    /// A prism's: a shard of crystal that splits apart in flight into a fan of glittering
+    /// splinters, see combat\foci.rs
+    Prism,
+    /// A runestone's: a rune written on the ground where it's aimed, blasting up a moment later
+    Rune,
 }
 
 impl Rite {
@@ -580,6 +601,8 @@ impl Rite {
         match family {
             "skullfocus" => Rite::Drain,
             "talisman" => Rite::Spear,
+            "prism" => Rite::Prism,
+            "runestone" => Rite::Rune,
             _ => Rite::None,
         }
     }
@@ -645,6 +668,7 @@ impl Family {
             (Kind::Melee, Style::Smash | Style::Quake | Style::Chop | Style::Whirl) => ["Light", "Short", "", "Heavy", "Great"],
             (Kind::Melee, Style::Thrust | Style::Reap | Style::Pole) => ["Short", "Light", "", "Long", "Great"],
             (Kind::Melee, Style::Lash) => ["Light", "Short", "", "Long", "Heavy"],
+            (Kind::Melee, Style::Pick) => ["Light", "Short", "", "Heavy", "Great"],
             (Kind::Melee, _) => ["Light", "Short", "", "Long", "Great"],
             (Kind::Ranged, Style::Lob) => ["Small", "Light", "", "Heavy", "Great"],
             (Kind::Ranged, _) if self.build == Build::None => ["Short", "Light", "", "Long", "Great"],
@@ -1066,7 +1090,8 @@ impl Library {
         let odds = self.odds(luck);
         let mut next = seed;
         for _ in 0..SPECIAL_TRIES {
-            if self.special_in(&self.roll_with(next, family, &odds).1).is_some() {
+            let (f, parts) = self.roll_with(next, family, &odds);
+            if self.special_in(f, &parts).is_some() {
                 return next;
             }
             next = hash(next ^ 0x5bec_1a1);
@@ -1133,12 +1158,14 @@ impl Library {
     /// its parts alone, without building it: as work_out() picks it, the rarest part's that has one.
     /// Of family `family` if that's given, otherwise whichever the seed rolls.
     pub fn special_of(&self, seed: u32, family: Option<usize>, luck: f64) -> Option<Special> {
-        self.special_in(&self.roll(seed, family, luck).1)
+        let (f, parts) = self.roll(seed, family, luck);
+        self.special_in(f, &parts)
     }
 
     /// The special attack a weapon made of `parts` has, as work_out() picks it
-    fn special_in(&self, parts: &[usize]) -> Option<Special> {
-        parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some()).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
+    fn special_in(&self, family: usize, parts: &[usize]) -> Option<Special> {
+        let fam = &self.families[family];
+        parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some() && special_counts(fam, c)).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
     }
 
     /// For looking at a part: a weapon made with the part with id `part`, of the first family it
@@ -1856,12 +1883,53 @@ pub enum Power {
     /// A shade of death sent to the ring, raising skeletons out of the ground there, or out of
     /// the slain lying near, to fight for a while: on a skull focus, at any rarity
     RaiseDead,
+    /// A war pick's: driven down into the ground, splitting it open in a star of short cracks all
+    /// round, each erupting step by step
+    Starbreak,
+    /// Throwing knives': stepping through the shadows to behind what's aimed at and striking it in
+    /// the back, at any rarity
+    Shadowstep,
+    /// A chakram's: three rings of its element hurled out in a fan, each curving back
+    Ringstorm,
+    /// A prism's: the light split into a fan of rays, each of another element
+    Spectrum,
+    /// A runestone's: a circle of runes written on the ring one by one, then blasting up together
+    Runeburst,
+    /// A spear of holy lightning hurled to stick in the ground or in what it strikes, erupting a
+    /// moment later into lightning leaping all round: on a talisman's rarest parts
+    Vigil,
+    /// Spears of holy lightning raining down out of the sky onto the ring one after another: on a
+    /// talisman's rarest parts
+    Heavenfall,
+    /// Three quick spears of holy lightning hurled one after another: on a talisman's rarest parts
+    Triune,
+    /// Lightning called down out of the sky onto the ring, striking again and again round it
+    Stormcall,
+    /// Ice bursting up out of the ground in a line of spikes, leaving the ground frozen
+    Glacier,
+    /// Tendrils of shadow reaching up out of the ground at the ring, holding what they catch
+    Shadowgrasp,
+    /// Two orbs of its element wheeling round the hand, then flying off spiralling round each other
+    Helix,
+    /// A bolt of lightning splitting at each enemy it strikes into two leaping on to the next, see
+    /// combat/signatures/tempest.rs
+    Forkbolt,
+    /// A ball of lightning drifting slowly out, lashing whatever comes near it, bursting at the end
+    CracklingOrb,
+    /// A crackling tether of lightning from the hand to what it strikes, wringing it till it snaps
+    Stormlash,
+    /// A charge of lightning cast onto the ground, shocking whatever walks onto it
+    StaticField,
+    /// A dash on ahead in a flash, lightning striking all along the way
+    Thunderstep,
+    /// Held to gather a charge, then let go all round in lightning leaping out to everything near
+    Overcharge,
 }
 
 impl Power {
     /// Every one of them
     #[cfg(test)]
-    pub const ALL: [Power; 31] = [
+    pub const ALL: [Power; 49] = [
         Power::Crescent,
         Power::Rending,
         Power::WindCut,
@@ -1893,21 +1961,67 @@ impl Power {
         Power::Shrapnel,
         Power::Thunderspear,
         Power::RaiseDead,
+        Power::Starbreak,
+        Power::Shadowstep,
+        Power::Ringstorm,
+        Power::Spectrum,
+        Power::Runeburst,
+        Power::Vigil,
+        Power::Heavenfall,
+        Power::Triune,
+        Power::Stormcall,
+        Power::Glacier,
+        Power::Shadowgrasp,
+        Power::Helix,
+        Power::Forkbolt,
+        Power::CracklingOrb,
+        Power::Stormlash,
+        Power::StaticField,
+        Power::Thunderstep,
+        Power::Overcharge,
     ];
 
     /// Whether it has a move of its own on right click, rather than being carried by a melee
     /// weapon's heavy blow or a bow drawn full: the ones parts bring, and the new families'
     pub fn own_move(self) -> bool {
-        matches!(
+        !matches!(
             self,
-            Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Cloudburst | Power::Bolas | Power::Starshell | Power::Beacon | Power::Shrapnel | Power::Thunderspear | Power::RaiseDead
+            Power::Crescent
+                | Power::Rending
+                | Power::WindCut
+                | Power::BladeFan
+                | Power::LashWave
+                | Power::Wheel
+                | Power::Javelin
+                | Power::Fissure
+                | Power::CometArrow
+                | Power::BurstBolt
+                | Power::Ricochet
+                | Power::LanceShot
+                | Power::Breath
+                | Power::Mortar
+                | Power::Vortex
+                | Power::Comet
+                | Power::Seekers
+                | Power::Nova
         )
     }
 
+    /// Whether it's one of a talisman's spears of holy lightning, formed in the hand while it's
+    /// aimed, see faith.rs
+    pub fn spear(self) -> bool {
+        matches!(self, Power::Thunderspear | Power::Vigil | Power::Triune)
+    }
+
+    /// Whether it's lightning whatever's in the weapon, see combat/signatures/tempest.rs
+    pub fn lightning(self) -> bool {
+        matches!(self, Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge)
+    }
+
     /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
-    /// ones: what a necromancer and a priest are about, see character::Class
+    /// ones: what a necromancer, a priest and a rogue are about, see character::Class
     pub fn innate(family: &str) -> bool {
-        matches!(family, "skullfocus" | "talisman")
+        matches!(family, "skullfocus" | "talisman" | "knives")
     }
 
     /// The one a family's legendary and mythic weapons have, by its id
@@ -1936,11 +2050,17 @@ impl Power {
             "naginata" => Power::BladeRing,
             "talisman" => Power::Thunderspear,
             "skullfocus" => Power::RaiseDead,
+            "warpick" => Power::Starbreak,
+            "knives" => Power::Shadowstep,
+            "chakram" => Power::Ringstorm,
+            "prism" => Power::Spectrum,
+            "runestone" => Power::Runeburst,
             _ => return None,
         })
     }
 
-    fn noun(self) -> &'static str {
+    /// What it is, whatever its element
+    pub fn noun(self) -> &'static str {
         match self {
             Power::Crescent => "Crescent",
             Power::Rending => "Rending Wave",
@@ -1973,6 +2093,24 @@ impl Power {
             Power::Shrapnel => "Shrapnel",
             Power::Thunderspear => "Thunderspear",
             Power::RaiseDead => "Raising",
+            Power::Starbreak => "Starbreak",
+            Power::Shadowstep => "Shadowstep Strike",
+            Power::Ringstorm => "Ringstorm",
+            Power::Spectrum => "Spectrum",
+            Power::Runeburst => "Runeburst",
+            Power::Vigil => "Vigil",
+            Power::Heavenfall => "Heavenfall",
+            Power::Triune => "Triune",
+            Power::Stormcall => "Stormcall",
+            Power::Glacier => "Glacier",
+            Power::Shadowgrasp => "Grasp",
+            Power::Helix => "Helix",
+            Power::Forkbolt => "Forking Bolt",
+            Power::CracklingOrb => "Crackling Orb",
+            Power::Stormlash => "Stormlash Tether",
+            Power::StaticField => "Static Field",
+            Power::Thunderstep => "Thunderstep Dash",
+            Power::Overcharge => "Overcharge Discharge",
         }
     }
 
@@ -1984,6 +2122,17 @@ impl Power {
             (Power::Thunderspear, _) => return "Sanctified Thunderspear".to_owned(),
             (Power::RaiseDead, Some(Element::Blood)) => return "Blood Raising".to_owned(),
             (Power::RaiseDead, _) => return "Grave Raising".to_owned(),
+            // A priest's spears are holy lightning whatever's in the talisman
+            (Power::Shadowstep, _) => return "Shadowstep Strike".to_owned(),
+            // A priest's spears are holy lightning whatever's in the talisman
+            (Power::Vigil, _) => return "Vigil Spear".to_owned(),
+            (Power::Heavenfall, _) => return "Heavenfall Spears".to_owned(),
+            (Power::Triune, _) => return "Triune Spears".to_owned(),
+            (Power::Stormcall, _) => return "Stormcall Thunderhead".to_owned(),
+            (Power::Shadowgrasp, Some(Element::Void) | None) => return "Grasping Shadows".to_owned(),
+            (Power::Glacier, Some(Element::Frost) | None) => return "Rising Glacier".to_owned(),
+            // Lightning whatever's in the weapon
+            (p, _) if p.lightning() => return p.noun().to_owned(),
             _ => {}
         }
         let adjective = match element {
@@ -2009,6 +2158,14 @@ impl Power {
             Power::Cloudburst | Power::Shrapnel => 9.0,
             Power::Thunderspear => 7.0,
             Power::RaiseDead => 14.0,
+            Power::Shadowstep | Power::Triune | Power::Helix => 6.0,
+            Power::Heavenfall | Power::Stormcall => 10.0,
+            Power::Vigil | Power::Glacier | Power::Shadowgrasp => 8.0,
+            Power::Forkbolt | Power::Thunderstep => 6.0,
+            Power::CracklingOrb | Power::Stormlash | Power::StaticField => 8.0,
+            Power::Overcharge => 9.0,
+            Power::Runeburst => 10.0,
+            Power::Spectrum => 8.0,
             _ => 8.0,
         }
     }
@@ -2016,9 +2173,10 @@ impl Power {
     /// How many times its spell's mana it costs, for a weapon that casts
     pub fn mana(self) -> f64 {
         match self {
-            Power::Comet | Power::Seekers | Power::Nova => 2.0,
-            Power::Beacon | Power::Thunderspear => 2.5,
-            Power::RaiseDead => 3.0,
+            Power::Comet | Power::Seekers | Power::Nova | Power::Spectrum | Power::Helix | Power::Forkbolt | Power::Thunderstep => 2.0,
+            Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Overcharge => 2.5,
+            Power::Beacon | Power::Thunderspear | Power::Vigil | Power::Triune | Power::Glacier | Power::Shadowgrasp => 2.5,
+            Power::RaiseDead | Power::Runeburst | Power::Heavenfall | Power::Stormcall => 3.0,
             _ => 0.0,
         }
     }
@@ -2030,7 +2188,10 @@ impl Power {
             Power::CometArrow => "Right click to draw, and loose drawn full",
             Power::BurstBolt if build == Build::Siege => "Right click to brace: the first bolt loosed braced is it",
             Power::Vortex | Power::Shrapnel => "Hold right click to aim, let go to throw it",
-            Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake => "Right click: a move of its own when it's ready, a heavy blow while it comes round",
+            Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Starbreak => "Right click: a move of its own when it's ready, a heavy blow while it comes round",
+            Power::Shadowstep | Power::Ringstorm => "Hold right click to aim, let go to use it",
+            Power::Thunderspear => "Hold right click to aim, the spear forming in the hand, longer for a greater spear; let go to hurl it",
+            Power::Overcharge => "Hold right click to gather the charge, longer for a harder discharge; let go to set it loose",
             Power::Cloudburst => "Right click: loosed high when it's ready, a draw while it comes round",
             _ => "Right click",
         }
@@ -2070,11 +2231,35 @@ impl Power {
             Power::Shrapnel => "A pot of {e} lobbed onto the ring bursts into a wheel of twelve shards skimming out 7 meters along the ground, each bursting where it strikes.",
             Power::Thunderspear => "Aimed while right click's held, a great spear of holy lightning is hurled from the talisman as it's let go, through everything in a line 30 meters on, lightning arcing off all it strikes to what's near, a bolt coming down where it ends.",
             Power::RaiseDead => "Aimed while right click's held, a shade of death flies to the ring as it's let go and raises three skeletons out of the ground, or out of the slain lying near, to fight for you for 16 s.",
+            Power::Starbreak => "The pick driven down into the ground splits it open in a star of five cracks running 7 meters out all round, {e} erupting from each step by step, throwing up what stands on them.",
+            Power::Shadowstep => "Aimed while right click's held, you step through the shadows as it's let go to behind the enemy nearest the crosshair, up to 16 meters off, and strike it in the back for three times a throw, unseen.",
+            Power::Ringstorm => "Three rings of {e} hurled out in a fan, 15 meters, each curving back to you, cutting everything both ways.",
+            Power::Spectrum => "The light split into a fan of five rays, fire, frost, lightning, arcane and holy, 28 meters, each bursting where it strikes.",
+            Power::Runeburst => "Six runes of {e} written round the ring one after another, 3.5 meters round, blasting up together once the circle's whole.",
+            Power::Vigil => "Aimed while right click's held, a spear of holy lightning hurled as it's let go sticks fast in what it strikes or the ground, crackling, and a moment later erupts, lightning coming down onto it and leaping to everything within 8 meters.",
+            Power::Heavenfall => "Aimed while right click's held, a spear of holy lightning hurled into the sky as it's let go, and nine come down out of it onto the ring one after another, each bursting where it lands.",
+            Power::Triune => "Aimed while right click's held, three quick spears of holy lightning hurled one after another as it's let go, each through everything in its way, lightning arcing off what it strikes.",
+            Power::Stormcall => "An orb of {e} sent up over the ring gathers into a thunderhead, and lightning comes down out of it six times, onto what's under it or anywhere 4 meters round, each bolt leaping on to the next.",
+            Power::Glacier => "Ice bursts up out of the ground in a line of spikes 14 meters ahead, step by step, freezing what it catches, the ground along it frozen 3 s, slowing what stands on it.",
+            Power::Shadowgrasp => "A knot of {e} cast onto the ring, where tendrils reach up out of the ground, holding everything within 3.5 meters fast for 3 s and wringing it.",
+            Power::Helix => "Two orbs of {e} wheel round the hand, then fly off at the crosshair spiralling round each other, 30 meters, each bursting where it strikes.",
+            Power::Forkbolt => "A bolt of lightning hurled at the crosshair, 30 meters, splitting at each enemy it strikes into two that leap on to the next nearest, twice over.",
+            Power::CracklingOrb => "A ball of lightning drifts slowly off at the crosshair, 16 meters, lashing out at whatever comes within 4.5 meters of it, and bursts under a bolt from the sky at the end.",
+            Power::Stormlash => "A crackling tether of lightning lashed at the crosshair, 18 meters, holds fast to what it strikes for 2.6 s, shocking and slowing it, till it snaps.",
+            Power::StaticField => "A charge of lightning cast onto the ring charges the ground 3.5 meters round for 4 s, a bolt leaping up into whatever walks onto it, shocking and slowing it.",
+            Power::Thunderstep => "You dash 9 meters on ahead in a flash, sparks streaming off behind, lightning striking down five times along the way you went.",
+            Power::Overcharge => "Held, lightning gathers crackling in the weapon; let go, it breaks out all round, 10 meters, leaping to every enemy as it reaches it and throwing it back, harder the longer it was held.",
         };
-        // Both of these are theirs whatever's in them
-        if matches!(self, Power::Thunderspear | Power::RaiseDead) {
-            let rider = if self == Power::Thunderspear { "Every enemy it strikes heals you a little." } else { "Each blow they land drains life back to you." };
+        // These are theirs whatever's in them
+        if matches!(self, Power::Thunderspear | Power::RaiseDead | Power::Vigil | Power::Heavenfall | Power::Triune) {
+            let rider = if self == Power::RaiseDead { "Each blow they land drains life back to you." } else { "Every enemy it strikes heals you a little, and it strikes harder at what's standing in water." };
             return format!("{what} {rider} Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
+        }
+        if self.lightning() {
+            return format!("{what} Strikes harder at what's standing in water. Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
+        }
+        if self == Power::Shadowstep {
+            return format!("{what} Every {:.0} s.", self.cooldown());
         }
         let rider = match element {
             Some(Element::Fire) => "What it hits is set burning.",
@@ -2088,7 +2273,11 @@ impl Power {
             None => "What it hits is staggered.",
         };
         let stuff = element.map_or("steel".to_string(), |e| e.name().to_lowercase());
-        let cost = if self.mana() > 0.0 { format!(" Costs twice a spell's mana; every {:.0} s.", self.cooldown()) } else { format!(" Every {:.0} s.", self.cooldown()) };
+        let cost = match self.mana() {
+            m if m == 2.0 => format!(" Costs twice a spell's mana; every {:.0} s.", self.cooldown()),
+            m if m > 0.0 => format!(" Costs {m} times a spell's mana; every {:.0} s.", self.cooldown()),
+            _ => format!(" Every {:.0} s.", self.cooldown()),
+        };
         format!("{} {rider}{cost}", what.replace("{e}", &stuff))
     }
 }
@@ -2125,7 +2314,7 @@ impl Profile {
 
     /// What it shoots, for a bow, crossbow or gun. Bombs are thrown, and take no ammo.
     pub fn shot(&self) -> Option<Shot> {
-        (self.kind == Kind::Ranged && self.style != Style::Lob).then(|| self.build.shot())
+        (self.kind == Kind::Ranged && !self.style.thrown()).then(|| self.build.shot())
     }
 
     /// How many shots a crossbow or gun holds loaded
@@ -2408,7 +2597,7 @@ impl Weapon {
             }
         }
         // The rarest part with a special attack gives it its own
-        let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
+        let special = by_rarity.iter().filter(|c| special_counts(fam, c)).find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
         // A power on right click for a legendary or mythic weapon, or one with a part that is
         let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(4);
         // Its family's, or the rarest part's that brings one of its own
@@ -2466,6 +2655,13 @@ impl Weapon {
 
 /// How far either way a weapon can come out of the forge better or worse than its parts make it
 pub const FORGE_SPREAD: f64 = 0.08;
+
+/// Whether part `c`'s special attack is one a weapon of `family` gets from it: any part's, but
+/// for throwing knives and a chakram, only its blade's, as what they share with blades swung in
+/// the hand is meant for blows struck with it
+pub fn special_counts(family: &Family, c: &Component) -> bool {
+    !matches!(family.style, Style::Knife | Style::Ring) || c.slot_type == "blade"
+}
 
 /// How much of a weapon a part in `slot` is, for how much its rarity and make count for, see
 /// Weapon::forging(): what strikes or shoots most, what powers or channels it next, what it's
@@ -2660,8 +2856,12 @@ fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element
     }
     // A talisman's held up and shown, then levelled at the crosshair: raised overhead as a staff
     // is, a thing so small comes right up into the eye
-    if family.id == "talisman" {
+    if family.id == "talisman" || family.id == "runestone" {
         return Casting::Present;
+    }
+    // A prism's levelled at the crosshair and thrust out, so its splinters fan out from it
+    if family.id == "prism" {
+        return Casting::Thrust;
     }
     let wand = family.style == Style::Flick;
     let focus = components.iter().find(|c| c.slot_type == "focus").and_then(|c| c.visual_profile.shape.as_deref()).unwrap_or("");
@@ -2695,7 +2895,7 @@ fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element
 /// with a flourish, a doglock quick; a crossbow with a pistol grip or a skeleton stock spanned
 /// quick, a cheek-stocked one hauled, a lacquered or gilded one with a flourish
 fn knack_of(family: &Family, components: &[&Component]) -> Knack {
-    if family.kind != Kind::Ranged || family.style == Style::Lob {
+    if family.kind != Kind::Ranged || family.style.thrown() {
         return Knack::Plain;
     }
     let part = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
@@ -2897,7 +3097,7 @@ impl WeaponLook {
 fn held_scale(family: &Family, size: usize, longest: f64) -> f64 {
     let s = SIZES[size.min(SIZES.len() - 1)].scale;
     let damped = match family.kind {
-        Kind::Ranged if family.style != Style::Lob => 0.5,
+        Kind::Ranged if !family.style.thrown() => 0.5,
         _ if longest > 1.2 => 0.6,
         _ => 1.0,
     };
@@ -2908,7 +3108,13 @@ fn held_scale(family: &Family, size: usize, longest: f64) -> f64 {
 /// size it was made: a talisman's broad icon held up near the eye looks bigger than the rest of
 /// the one-handed foci, a wand's thin length or a skull, so it's drawn a little smaller
 fn held_size(family: &Family) -> f64 {
-    if family.id == "talisman" { 0.8 } else { 1.0 }
+    match family.id.as_str() {
+        "talisman" => 0.8,
+        // A throwing knife's a small thing, and a chakram a broad ring held by its rim
+        "knives" => 0.85,
+        "chakram" => 0.9,
+        _ => 1.0,
+    }
 }
 
 /// A part of a crossbow or gun drawn apart from the rest, as it moves while it's loaded: a lever
@@ -2987,6 +3193,16 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, tip) = bomb(v("casing"), v("fuse"), v("filling"), v("core"));
             plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
+        // A throwing knife in the hand, a fresh one each throw, made as a little dagger is
+        Kind::Ranged if family.style == Style::Knife => {
+            let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        // A chakram held by its rim, see foci.rs
+        Kind::Ranged if family.style == Style::Ring => {
+            let (parts, grip, tip) = foci::chakram(v("blade"), v("hilt"), v("core"));
+            WeaponLook { hold: Vector3::x(), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip) }
+        }
         Kind::Ranged if family.build.crossbow() => crossbow(family, v("prod"), v("stock"), v("lock"), v("sight"), v("core")),
         Kind::Ranged if family.build != Build::None => gun(family, v("barrel"), v("stock"), v("lock"), v("core")),
         Kind::Ranged => {
@@ -3028,6 +3244,15 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
         }
         Kind::Magic if family.id == "talisman" => {
             let (parts, grip, tip) = relics::talisman(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        // A prism's great crystal in its cradle, a runestone's carved stone, see foci.rs
+        Kind::Magic if family.id == "prism" => {
+            let (parts, grip, tip) = foci::prism(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.id == "runestone" => {
+            let (parts, grip, tip) = foci::runestone(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
         Kind::Magic if family.style == Style::Censer => {
@@ -3978,8 +4203,14 @@ fn curve(p: &mut Vec<Part>, points: &[[f64; 3]], ra: f64, rb: f64, material: u8)
 /// crossguard.
 fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &Family) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
     let mut p = Vec::new();
-    let pommel = hilt.pommel_size.unwrap_or(0.028);
-    let grip_length = hilt.length.unwrap_or(0.2);
+    // A throwing knife's grip is short, its guard and pommel small, the rest of it as the blade's
+    // made, so a shared hilt or guard fits it
+    let knife = family.style == Style::Knife;
+    let small = if knife { 0.5 } else { 1.0 };
+    let small_guard = Visual { width: Some(guard.width.unwrap_or(0.22) * 0.42), ..guard.clone() };
+    let guard = if knife { &small_guard } else { guard };
+    let pommel = hilt.pommel_size.unwrap_or(0.028) * if knife { 0.7 } else { 1.0 };
+    let grip_length = hilt.length.unwrap_or(0.2) * small;
     let handle = grip_length.max(family.haft);
     let z_grip = pommel * 1.7;
     let z_top = z_grip + handle;
@@ -4007,6 +4238,8 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
         // A war fan's leaf, and a katar's blade over its fist
         shape @ ("fan" | "fan_blades" | "fan_feather") => fan_head(&mut p, blade, z_top, shape),
         shape @ ("katar" | "katar_split" | "katar_wavy") => katar_blade(&mut p, blade, z_top, infuse, shape),
+        // A war pick's beak, see foci.rs
+        shape if shape.starts_with("warpick") => foci::warpick_head(&mut p, blade, z_top, infuse, shape),
         shape if shape.starts_with("scythe") => scythe_head(&mut p, blade, z_top),
         shape if shape.starts_with("halberd") => halberd_head(&mut p, blade, z_top, infuse),
         shape if shape.starts_with("flail") => flail_head(&mut p, blade, z_top, infuse),
@@ -8039,6 +8272,57 @@ mod tests {
         let power = w.profile.power;
         w.set_level(30, 0);
         assert_eq!(w.profile.power, power, "a part's power kept at another item level");
+    }
+
+    /// The third batch's families: a war pick swung, throwing knives and a chakram thrown by hand,
+    /// a prism and a runestone each casting its own way. Each has parts of every rarity for what
+    /// strikes or casts, something to see in the hand, a power of its own on right click, takes
+    /// jewels, and is sold by the merchant it should be; and what's thrown by hand takes no ammo.
+    #[test]
+    fn third_batch_is_there_to_be_had() {
+        use crate::merchants::{Trade, trade_of};
+        let library = Library::parse(BUILT_IN).unwrap();
+        for (id, kind, style, rite, trade, main) in [
+            ("warpick", Kind::Melee, Style::Pick, Rite::None, Trade::Bladesmith, "blade"),
+            ("knives", Kind::Ranged, Style::Knife, Rite::None, Trade::Bladesmith, "blade"),
+            ("chakram", Kind::Ranged, Style::Ring, Rite::None, Trade::Bladesmith, "blade"),
+            ("prism", Kind::Magic, Style::Cast, Rite::Prism, Trade::Wandwright, "focus"),
+            ("runestone", Kind::Magic, Style::Cast, Rite::Rune, Trade::Wandwright, "focus"),
+        ] {
+            let f = library.family(id).unwrap_or_else(|| panic!("no {id}"));
+            let family = &library.families[f];
+            assert_eq!((family.kind, family.style, family.batch), (kind, style, 3), "{id}");
+            assert_eq!(trade_of(&library, f), Some(trade), "{id}");
+            assert!(crate::jewels::category_of(kind).is_some(), "{id} takes jewels");
+            let power = Power::of(id).unwrap_or_else(|| panic!("{id} has no power"));
+            assert!(power.own_move(), "{id}'s power has a move of its own");
+            // Every rarity, for its blade or focus
+            for tier in 0..library.rarities.len() {
+                assert!(library.components.iter().any(|c| c.slot_type == main && c.tier == tier && c.fits(id)), "{id} has no {main} of rarity {tier}");
+            }
+            let mut parts = BTreeSet::new();
+            for seed in 0..40 {
+                let weapon = library.generate(seed, Some(f), 4.0);
+                assert_eq!((weapon.profile.style, weapon.profile.rite), (style, rite), "{id}");
+                assert!(weapon.look.frames.iter().all(|(m, _)| m.voxels.iter().any(|&v| v != AIR)), "{id} has something to see");
+                assert!(weapon.look.longest() < 1.4, "{id} is {:.2} m long", weapon.look.longest());
+                if kind == Kind::Ranged {
+                    assert!(weapon.shot().is_none(), "{id} takes ammo");
+                }
+                parts.extend(weapon.parts.iter().copied());
+            }
+            assert!(parts.len() >= 14, "{id} rolls only {} parts", parts.len());
+        }
+        // Throwing knives' Shadowstep is a rogue's at any rarity, as a priest's spear is theirs
+        let knives = library.generate(3, library.family("knives"), 0.0);
+        assert_eq!(knives.profile.power, Some(Power::Shadowstep));
+        // A chakram's held across its rim, its middle up over the hand
+        let chakram = library.generate(3, library.family("chakram"), 0.0);
+        assert_eq!(chakram.look.hold, Vector3::x());
+        assert!(chakram.look.tip.z > chakram.look.grip.z + 0.08);
+        // A war pick's beak reaches out from its haft, its point hooked down
+        let pick = library.with_part("crowbill_head", None).unwrap();
+        assert!(pick.look.tip.x > 0.15 * pick.look.scale, "{:?}", pick.look.tip);
     }
 
     /// Contact sheets of the second batch's parts, each on its family's reference weapon, drawn on

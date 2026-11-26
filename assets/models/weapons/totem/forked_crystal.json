@@ -1,0 +1,37 @@
+{
+  "what": "Totem, crystal: Forked Crystal",
+  "voxels_per_meter": 150.0,
+  "size": [
+    14,
+    13,
+    76
+  ],
+  "pivot": [
+    6.500000000000001,
+    6.300000000000001,
+    -45.89999999999999
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -6,
+    46
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.14
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.77
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    6560,
+    "e5c3cd10ed1e00fe"
+  ]
+}

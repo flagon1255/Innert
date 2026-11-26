@@ -1,0 +1,37 @@
+{
+  "what": "Runestone, binding: Cloth Wraps",
+  "voxels_per_meter": 192.0,
+  "size": [
+    18,
+    9,
+    12
+  ],
+  "pivot": [
+    8.930304000000001,
+    4.3759999999999994,
+    -16.432000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -9,
+    -4,
+    16
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.196
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2648,
+    "332093aca43a3e8e"
+  ]
+}

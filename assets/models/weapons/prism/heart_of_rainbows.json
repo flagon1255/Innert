@@ -1,0 +1,37 @@
+{
+  "what": "Prism, focus: Heart of the Sunbow",
+  "voxels_per_meter": 192.0,
+  "size": [
+    26,
+    26,
+    50
+  ],
+  "pivot": [
+    13.056000000000001,
+    13.046345834234366,
+    -25.240000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -13,
+    -13,
+    25
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.39
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    22016,
+    "30a7dc291f28907f"
+  ]
+}

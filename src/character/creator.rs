@@ -47,12 +47,16 @@ pub enum Pick {
 impl Creator {
     /// For a new game of `mode`, starting from a character made up from `seed`
     pub fn new(mode: Mode, seed: u32) -> Creator {
-        let character = Character { name: super::random_name(seed), ..Default::default() };
+        // A fighter to start with: the wanderer of old saves isn't offered any longer
+        let character = Character { name: super::random_name(seed), class: Class::Fighter, ..Default::default() };
         Creator { mode, character, turn: 0.45, spinning: true, models: None, texture: None, studio: None, rolls: seed, families: family_names(), scroll_to: None }
     }
 
     /// For screenshot runs: starting with `character`, turned `turn` radians round, still
-    pub fn with(mode: Mode, character: Character, turn: f64) -> Creator {
+    pub fn with(mode: Mode, mut character: Character, turn: f64) -> Creator {
+        if !character.class.offered() {
+            character.class = Class::Fighter;
+        }
         Creator { mode, character, turn, spinning: false, models: None, texture: None, studio: None, rolls: 1, families: family_names(), scroll_to: None }
     }
 
@@ -278,7 +282,7 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
 
     heading(ui, "Starting class");
     ui.columns(2, |columns| {
-        for (k, class) in Class::ALL.into_iter().enumerate() {
+        for (k, class) in Class::OFFERED.into_iter().enumerate() {
             let ui = &mut columns[k % 2];
             let chosen = creator.character.class == class;
             let frame = egui::Frame::new()
@@ -302,6 +306,7 @@ fn choose(ui: &mut egui::Ui, creator: &mut Creator) {
                     ui.label(RichText::new(format!("Starts with: {kit}")).size(12.5).color(gray));
                     let lean: Vec<String> = class.lean().iter().map(|&(stat, value)| stat.describe(value)).collect();
                     ui.label(RichText::new(format!("Leans: {}", lean.join(", "))).size(12.5).color(Color32::from_rgb(160, 210, 255)));
+                    ui.label(RichText::new(format!("Signature: {}", class.signature())).size(12.5).color(Color32::from_rgb(235, 205, 130)));
                 })
                 .response
                 .interact(Sense::click());
