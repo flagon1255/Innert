@@ -936,6 +936,11 @@ impl Combat {
                         self.keep_power_ring(weapon, aim, time);
                         self.launch(&profile, Some(Missile { shot: Shot::Shell, head: 0, power: true, size: 1.4 }), Form::Bolt, from, thrown(from, aim, time, 1.0, vpm), base * 2.2, 1.0);
                         set(self, Shape::Shell, f64::INFINITY, 1.4);
+                        // Bursting its own size, as the gun's shells do
+                        let boom = shell_size(&weapon.profile, weapon.item_level(), &mut self.rng);
+                        if let Some(p) = self.projectiles.last_mut() {
+                            p.boom = boom;
+                        }
                         self.gun_report(weapon, view, &profile, from, flat, 1.8);
                     }
                 }
@@ -1789,15 +1794,16 @@ impl Combat {
                 self.power_burst(arena, &profile, at, 1.5, p.damage * 0.4, None);
             }
             Shape::Ember | Shape::Mote => self.power_pop(arena, &profile, at, 1.1, p.damage * 0.5, None),
+            // As big as its powder went up, see shell_size()
             Shape::Shell => {
-                self.powder = 1.0;
-                self.power_burst(arena, &profile, at, 3.5, p.damage, None);
+                self.powder = p.boom;
+                self.power_burst(arena, &profile, at, 3.5 * p.boom, p.damage, None);
                 self.powder = 0.0;
-                for _ in 0..10 {
-                    let v = (self.any_direction() + up * 1.4) * 4.0 * vpm;
+                for _ in 0..(10.0 * p.boom) as usize {
+                    let v = (self.any_direction() + up * 1.4) * 4.0 * p.boom.sqrt() * vpm;
                     self.drop(at, v, DROP_MUD, 1.0);
                 }
-                self.shake = self.shake.max(0.6);
+                self.shake = self.shake.max(0.6 * p.boom.sqrt());
             }
             Shape::Orb => {
                 self.power_burst(arena, &profile, at, 3.5, p.damage, None);
