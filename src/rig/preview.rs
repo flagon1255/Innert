@@ -79,6 +79,8 @@ fn the_move(rig: &mut Rig, m: Move, frames: usize) -> Vec<Frame> {
         } else {
             None
         };
+        // Aimed at the ground a little way ahead, near enough to be in the picture
+        moment.aim = moment.doing.map(|_| V::new(3.0, 0.0, 0.0));
         if m == Move::Throw && look == Look::Colossus && (0.0..wind).contains(&t) {
             let tear = bosses::TEAR_PRY;
             moment.carry = Some(if t < tear { Carry::Prying(t / tear) } else { Carry::Held });

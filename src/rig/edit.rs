@@ -21,6 +21,8 @@ pub fn bone_defs(look: Look) -> Vec<anim::BoneDef> {
             }
             v
         }
+        // Each hangs from the first, its heart or its bell, but a tendril's tip from the rest of it
+        Family::Drifter => drifter::piece_names(look).iter().enumerate().map(|(p, (name, parent))| named(name, if p == 0 { None } else { Some(*parent) })).collect(),
         Family::Crawler => {
             let mut v = vec![named("body", None), named("abdomen", Some(0))];
             let legs: Vec<String> = (0..8).map(|k| format!("{}_{}", if k < 4 { "right" } else { "left" }, k % 4 + 1)).collect();

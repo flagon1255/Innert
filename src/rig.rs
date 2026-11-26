@@ -1,6 +1,7 @@
 //! Bosses drawn out of jointed pieces rather than baked frames: the golems, the great bears, the
 //! Broodmother and the Rimeweaver, the Ancient Treant, the alpha wolves, the knights of the dead,
-//! the warlord and the necromancer, and the bosses with builds of their own. Each piece, a torso,
+//! the warlord and the necromancer, the bosses with builds of their own, and the Sky Isles' bosses
+//! that float rather than walk, see drifter.rs. Each piece, a torso,
 //! a head, an upper arm, a thigh, is voxelized once at its size, see models(), and every frame each
 //! is turned about its joint and drawn where the pose puts it, see instances(), as a dragon's are,
 //! see src\dragons.rs. So they're posed afresh every frame: walking with their weight going from
@@ -28,6 +29,7 @@ mod beast;
 mod biped;
 mod caster;
 mod crawler;
+mod drifter;
 /// For the model and animation editor, see src\anim.rs
 pub mod edit;
 mod giant;
@@ -39,7 +41,7 @@ pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 31] = [
+pub const KINDS: [Look; 33] = [
     Look::Treant,
     Look::Spider,
     Look::Rimeweaver,
@@ -71,6 +73,8 @@ pub const KINDS: [Look; 31] = [
     Look::Grovemaul,
     Look::Hoarback,
     Look::GildedSphinx,
+    Look::Aeolith,
+    Look::Stormbell,
 ];
 
 /// Pieces each has room for among the models, those it doesn't have left empty
@@ -100,6 +104,8 @@ enum Family {
     Beast,
     Treant,
     Crawler,
+    /// What floats rather than walks, see drifter.rs
+    Drifter,
 }
 
 fn family(look: Look) -> Family {
@@ -111,6 +117,7 @@ fn family(look: Look) -> Family {
         Look::SandPharaoh | Look::BogHag | Look::HollowMother | Look::Warlord | Look::Necromancer | Look::LanternWidow => Family::Caster,
         Look::Elderhorn | Look::BleedingHart | Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => Family::Beast,
         Look::Cinderback | Look::Dreadmare | Look::Hoarback | Look::GildedSphinx => Family::Beast,
+        Look::Aeolith | Look::Stormbell => Family::Drifter,
         _ => Family::Golem,
     }
 }
@@ -306,6 +313,8 @@ pub struct Moment {
     pub doing: Option<Doing>,
     /// What it's watching, in meters at its build's size from its feet, +x ahead
     pub target: Option<V>,
+    /// Where the move it's making is aimed, on the ground, in the same meters, while it's making one
+    pub aim: Option<V>,
     pub engaged: bool,
     pub enraged: bool,
     /// For a raid boss, which phase of its fight it's in
@@ -329,6 +338,7 @@ impl Moment {
             turning: 0.0,
             doing: None,
             target: None,
+            aim: None,
             engaged: false,
             enraged: false,
             stage: 0,
@@ -386,6 +396,7 @@ enum Pose {
     Biped(biped::Stance),
     Beast(beast::Stance),
     Crawler(crawler::Stance),
+    Drifter(drifter::State),
 }
 
 /// The state of a jointed boss's pose, kept from frame to frame
@@ -440,6 +451,7 @@ impl Rig {
             Family::Beast => Pose::Beast(beast::rest(look)),
             Family::Treant => Pose::Biped(treant::rest(look)),
             Family::Crawler => Pose::Crawler(crawler::rest(look)),
+            Family::Drifter => Pose::Drifter(drifter::State::new(look)),
         };
         let mut start = hash(seed);
         let mut rig = Rig {
@@ -484,6 +496,14 @@ impl Rig {
         match &mut self.pose {
             Pose::Crawler(s) => s,
             _ => panic!("{:?} isn't a crawler", self.look),
+        }
+    }
+
+    /// The pose of something that floats, to ease, and how far round its rings have turned
+    fn drifter(&mut self) -> &mut drifter::State {
+        match &mut self.pose {
+            Pose::Drifter(s) => s,
+            _ => panic!("{:?} doesn't float", self.look),
         }
     }
 
@@ -549,6 +569,7 @@ impl Rig {
             Family::Beast => beast::animate(self, m),
             Family::Treant => treant::animate(self, m),
             Family::Crawler => crawler::animate(self, m),
+            Family::Drifter => drifter::animate(self, m),
         }
         self.posed = true;
     }
@@ -570,6 +591,7 @@ fn pieces(look: Look) -> Vec<Vec<Part>> {
         Family::Beast => beast::pieces(look),
         Family::Treant => treant::pieces(look),
         Family::Crawler => crawler::pieces(look),
+        Family::Drifter => drifter::pieces(look),
     }
 }
 
@@ -696,6 +718,7 @@ pub fn death_seconds(look: Look) -> f64 {
         Family::Beast => beast::DEATH,
         Family::Treant => treant::DEATH,
         Family::Crawler => crawler::DEATH,
+        Family::Drifter => drifter::DEATH,
     }
 }
 
@@ -716,6 +739,7 @@ pub fn thuds(look: Look) -> &'static [f64] {
         Family::Beast => &beast::THUDS,
         Family::Treant => &treant::THUDS,
         Family::Crawler => &crawler::THUDS,
+        Family::Drifter => &drifter::THUDS,
     }
 }
 

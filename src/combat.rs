@@ -2308,6 +2308,9 @@ fn ichor(look: Look) -> (usize, Option<u8>) {
         Look::GildedSphinx => (DROP_ASH, None),
         Look::LanternWidow => (DROP_VOID, None),
         Look::Sunstinger => (DROP_VENOM, Some(MOSS)),
+        // Chips of carved stone off the Aeolith's rings, and rain out of the Stormbell's cloud
+        Look::Aeolith => (DROP_MUD, None),
+        Look::Stormbell => (DROP_WATER, None),
         Look::Spider | Look::Spiderling | Look::Rimeweaver | Look::DuneBurrower => (DROP_VENOM, Some(MOSS)),
         // Shards of frost off a wraith, and the swamp water a lurker's full of
         Look::RimeWraith => (DROP_ICE, None),
@@ -14356,6 +14359,11 @@ impl Combat {
             self.flashes.push(Flash { position: at + Vector3::new(0.0, 0.0, 0.6 * self.vpm), color: e.light(), reach: 4.0 + 2.0 * radius, life: 0.25, lifetime: 0.25 });
             // A ball of it swelling up out of the ground, bright enough to see in the sun
             self.blasts.push(Blast { position: at + Vector3::new(0.0, 0.0, 0.4 * self.vpm), look: Element::look(Some(e)), radius: 0.6 + 0.5 * radius, life: 0.35, lifetime: 0.35 });
+            // Lightning leaping up out of the ground there, a thread of it, so it shows in the sun
+            if e == Element::Storm {
+                let top = at + Vector3::new((random(&mut self.rng) - 0.5) * self.vpm, (random(&mut self.rng) - 0.5) * self.vpm, (2.2 + random(&mut self.rng)) * self.vpm);
+                self.arc(at, top);
+            }
         }
         self.cap_sparks();
     }
@@ -14510,6 +14518,35 @@ impl Combat {
         }
         self.glow(from + direction * 2.5 * vpm, 9.0, element.light(), 1.3, 0.2);
         self.glow(from + direction * 7.0 * vpm, 7.0, element.light(), 0.8, 0.25);
+    }
+
+    /// A whirlwind round `at`, on the ground, `reach` meters round, for `dt` seconds, see
+    /// bosses::Deed::Gust: streaks of `element` and dust whirling round and in towards the middle,
+    /// rising as they go, and its light at the heart of it
+    pub fn gust(&mut self, at: Vector3<f64>, reach: f64, dt: f64, element: Option<Element>) {
+        let vpm = self.vpm;
+        let look = Element::look(element);
+        let mut owed = dt * 70.0;
+        while owed > 0.0 {
+            if random(&mut self.rng) < owed {
+                let a = random(&mut self.rng) * TAU;
+                let r = (0.35 + 0.65 * random(&mut self.rng).sqrt()) * reach;
+                let out = Vector3::new(a.cos(), a.sin(), 0.0);
+                let round = Vector3::new(-a.sin(), a.cos(), 0.0);
+                let from = at + out * r * vpm + Vector3::new(0.0, 0.0, (0.2 + 2.4 * random(&mut self.rng)) * vpm);
+                let velocity = (round * (5.0 + 0.6 * r) - out * (2.5 + 0.3 * r) + Vector3::new(0.0, 0.0, 1.2)) * vpm;
+                if random(&mut self.rng) < 0.6 {
+                    self.sparks.push(Spark { position: from, velocity, look, life: 0.45, lifetime: 0.45, gravity: -0.05, slot: SLOT_SPARK });
+                } else {
+                    self.drop(from - Vector3::new(0.0, 0.0, 0.15 * vpm), velocity * 0.7 + Vector3::new(0.0, 0.0, 2.0 * vpm), DROP_MUD, 0.5);
+                }
+            }
+            owed -= 1.0;
+        }
+        self.cap_sparks();
+        if let Some(e) = element {
+            self.glow(at + Vector3::new(0.0, 0.0, 1.5 * vpm), reach + 3.0, e.light(), 0.9, 0.25);
+        }
     }
 
     /// What a boss threw going off at `at`, and what it leaves on the ground
