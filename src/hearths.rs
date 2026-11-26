@@ -216,10 +216,13 @@ impl App {
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         let view = self.view();
         if fuel > 0.0 && self.game.holding_raw_meat() {
+            let fish = self.game.holding_raw_fish();
             let left = self.game.cook_selected();
-            self.game.say(match left {
-                0 => "You roast the meat over the fire.".to_owned(),
-                n => format!("You roast a piece of meat over the fire. {n} raw left."),
+            self.game.say(match (left, fish) {
+                (0, false) => "You roast the meat over the fire.".to_owned(),
+                (n, false) => format!("You roast a piece of meat over the fire. {n} raw left."),
+                (0, true) => "You cook the fish over the fire.".to_owned(),
+                (n, true) => format!("You cook a fish over the fire. {n} raw left."),
             });
             if let Some(audio) = &mut self.audio {
                 audio.play(audio::Cue::at(audio::Sound::Crackle, at - origin, 0.9).pitched(1.45), &view);
@@ -261,7 +264,13 @@ impl App {
     pub(super) fn hearth_note(&self) -> Option<String> {
         let piece = self.hearth_looked_at()?;
         Some(if piece.fuel > 0.0 {
-            let roast = if self.game.holding_raw_meat() { "E  roast the meat" } else { "E  add a log" };
+            let roast = if self.game.holding_raw_fish() {
+                "E  cook the fish"
+            } else if self.game.holding_raw_meat() {
+                "E  roast the meat"
+            } else {
+                "E  add a log"
+            };
             format!("Fire burning, {} left\n{roast} ({} wood)", minutes(piece.fuel), self.bases.materials.wood)
         } else {
             format!("Fireplace, unlit\nE  light it with a log ({} wood)", self.bases.materials.wood)

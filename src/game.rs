@@ -34,6 +34,8 @@ mod aerie;
 mod brine;
 /// The specialist merchants, talked to and asked to the base, see src\merchants.rs
 mod specialists;
+/// Fish and sharks about the player, see src\animals\sealife.rs
+mod sea;
 mod demi;
 pub use demi::DemiLair;
 
@@ -45,6 +47,8 @@ const HUNGER_SECONDS: f64 = 600.0;
 const ANIMAL_RANGE: f64 = 90.0;
 const FOOD_RANGE: f64 = 60.0;
 const PROP_RANGE: f64 = 30.0;
+/// Fish aren't drawn further off than this
+const FISH_RANGE: f64 = 40.0;
 /// A serpent's tongue, a hand long, isn't drawn further off than this
 const TONGUE_RANGE: f64 = 25.0;
 /// The most animals, bits of food, props and things flying drawn at once, nearest first
@@ -68,6 +72,12 @@ pub enum Item {
     Meat,
     /// Meat roasted over a fireplace: more filling than raw, see src\hearths.rs
     RoastMeat,
+    /// A fish caught, see src\animals\sealife.rs, and one cooked over a fireplace: more filling,
+    /// and it heals
+    RawFish,
+    CookedFish,
+    /// A shark's tooth, a trophy for a merchant to buy
+    SharkTooth,
     Bread,
     /// Heals when drunk
     Potion,
@@ -98,6 +108,9 @@ impl Item {
             Item::Apple => Some(Look::Apple),
             Item::Meat | Item::RoastMeat => Some(Look::Meat),
             Item::Bread => Some(Look::Bread),
+            Item::RawFish => Some(Look::RawFish),
+            Item::CookedFish => Some(Look::CookedFish),
+            Item::SharkTooth => Some(Look::SharkTooth),
             Item::Potion => Some(Look::Potion),
             Item::Gold(_) => Some(Look::Coins),
             Item::InnertBlock(_) => Some(Look::InnertBlock),
@@ -118,6 +131,9 @@ impl Item {
             Item::Apple => "Apple",
             Item::Meat => "Raw Meat",
             Item::RoastMeat => "Roast Meat",
+            Item::RawFish => "Raw Fish",
+            Item::CookedFish => "Cooked Fish",
+            Item::SharkTooth => "Shark Tooth",
             Item::Bread => "Bread",
             Item::Potion => "Healing Potion",
             Item::Gold(_) => "Gold",
@@ -145,6 +161,8 @@ impl Item {
             Item::Apple => 12.0,
             Item::Meat => 30.0,
             Item::RoastMeat => 55.0,
+            Item::RawFish => 14.0,
+            Item::CookedFish => 34.0,
             Item::Bread => 22.0,
             _ => 0.0,
         }
@@ -154,6 +172,7 @@ impl Item {
     fn heal(self) -> f64 {
         match self {
             Item::Potion => 50.0,
+            Item::CookedFish => 15.0,
             _ => 0.0,
         }
     }
@@ -170,6 +189,9 @@ fn food_price(item: Item) -> u32 {
         Item::Apple => 4,
         Item::Meat => 6,
         Item::RoastMeat => 14,
+        Item::RawFish => 4,
+        Item::CookedFish => 11,
+        Item::SharkTooth => 24,
         Item::Bread => 10,
         Item::Potion => 35,
         // The hook's sold in the normal world once the way to the sky isles is open, see
@@ -908,6 +930,8 @@ pub struct Game {
     loaded: Option<((usize, usize), Loaded)>,
     combat: Combat,
     leaves: Leaves,
+    /// Fish and sharks coming and going about the player, see game\sea.rs
+    sea: sea::Sea,
     /// The models of animals and things lying around, see animals::animal_models(), with those
     /// drawn from files read in, see src\assets.rs: shared with the thread reading them again
     models: std::sync::Arc<Vec<Model>>,
@@ -1190,6 +1214,7 @@ impl Game {
             loaded: None,
             combat: Combat::new(seed, ANIMAL_MODELS as u32),
             leaves: Leaves::new(seed),
+            sea: sea::Sea::default(),
             models: std::sync::Arc::new(crate::assets::apply_looks(animals::animal_models())),
             models_version: 0,
             seed,
@@ -1411,25 +1436,33 @@ impl Game {
         self.selected = 0;
     }
 
-    /// Whether what's in hand is raw meat, to roast over a fire, see src\hearths.rs
+    /// Whether what's in hand is raw meat or raw fish, to cook over a fire, see src\hearths.rs
     pub fn holding_raw_meat(&self) -> bool {
-        self.slots.get(self.selected).is_some_and(|(item, _)| *item == Item::Meat)
+        self.slots.get(self.selected).is_some_and(|(item, _)| matches!(item, Item::Meat | Item::RawFish))
     }
 
-    /// Roasts a piece of the raw meat in hand into roast meat: how many raw are left
+    /// Whether what's in hand is raw fish, rather than meat
+    pub fn holding_raw_fish(&self) -> bool {
+        self.slots.get(self.selected).is_some_and(|(item, _)| *item == Item::RawFish)
+    }
+
+    /// Roasts a piece of the raw meat in hand into roast meat, or cooks a raw fish: how many raw are
+    /// left
     pub fn cook_selected(&mut self) -> u32 {
-        let Some(&(Item::Meat, count)) = self.slots.get(self.selected) else {
-            return 0;
+        let (cooked, count) = match self.slots.get(self.selected) {
+            Some(&(Item::Meat, count)) => (Item::RoastMeat, count),
+            Some(&(Item::RawFish, count)) => (Item::CookedFish, count),
+            _ => return 0,
         };
         if count > 1 {
             self.slots[self.selected].1 -= 1;
         } else {
             self.remove_slot(self.selected);
         }
-        self.add_item(Item::RoastMeat, 1);
-        // The roast meat in hand next, once the raw's all done
+        self.add_item(cooked, 1);
+        // What's cooked in hand next, once the raw's all done
         if count == 1
-            && let Some(at) = self.slots.iter().position(|(item, _)| *item == Item::RoastMeat)
+            && let Some(at) = self.slots.iter().position(|(item, _)| *item == cooked)
             && at < HOTBAR
         {
             self.selected = at;
@@ -2128,7 +2161,7 @@ impl Game {
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
         // pop up right in front of them. Bosses, dungeon monsters, merchants and villagers have
         // homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && !a.look.is_merchant() && a.look != Look::TradeStall && !a.look.is_villager() && !a.look.is_royal()).count());
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && !a.look.is_sea() && !a.look.is_merchant() && a.look != Look::TradeStall && !a.look.is_villager() && !a.look.is_royal()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| a.look.is_bandit()).count();
         // The packs of the country the player's come into, as the old ones are left behind
@@ -2292,6 +2325,7 @@ impl Game {
             }
         }
         self.aim_at_serpents(view);
+        self.tend_sea(world, water, player, view, dt);
 
         // The dead don't fight
         let held = match self.slots.get(self.selected) {
@@ -2610,6 +2644,14 @@ impl Game {
                     (look, Some(Move::Burrow)) if look.is_serpent() => Cue::at(Sound::Slither, at, 0.8).pitched(0.8),
                     (look, None) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.95).pitched(serpents::voice(look) * vary),
                     (look, _) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.7).pitched(serpents::voice(look) * vary * 1.1),
+                    // A shark surging in, the water churning off its tail
+                    (look, _) if look.is_sea() => {
+                        let top = water(at.x, at.y);
+                        if top.is_finite() && top < at.z + 1.2 * vpm {
+                            self.combat.splash_up(Vector3::new(at.x, at.y, top), 0.35);
+                        }
+                        Cue::at(Sound::Splash, at, 0.8).pitched(0.55 * vary)
+                    }
                     _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
                 };
                 self.cues.push(cue);
@@ -2751,6 +2793,15 @@ impl Game {
                     Look::GraveBrute => {
                         self.shake = self.shake.max(0.35 * felt(at));
                         Cue::at(Sound::Burst, at, 0.8).pitched(0.55)
+                    }
+                    // A shark's jaws snapping shut, the water thrown up if it's near the top
+                    _ if look.is_sea() => {
+                        let top = water(at.x, at.y);
+                        if top.is_finite() && top < at.z + 1.0 * vpm {
+                            self.combat.splash_up(Vector3::new(at.x, at.y, top), 0.6);
+                        }
+                        self.cues.push(Cue::at(Sound::Swing, at, 0.4).pitched(0.7));
+                        Cue::at(Sound::Bite, at, 1.0).pitched(if look == Look::Ghostmaw { 0.45 } else { 0.6 })
                     }
                     // A serpent's jaws snapping shut where its head lunged to
                     _ if look.is_serpent() => {
@@ -3712,11 +3763,16 @@ impl Game {
                     }
                 }
             }
+            // A fish caught, or a shark's teeth, see game\sea.rs
+            let sea = look.is_sea();
+            if sea {
+                self.sea_spoils(&animal);
+            }
             // A demi-boss leaves what it hoarded down there, see game\demi.rs
             if let Some(kind) = animal.demi {
                 self.demi_spoils(world, &animal, kind, from);
             }
-            if look.is_monster() && !burst && animal.demi.is_none() {
+            if look.is_monster() && !burst && !sea && animal.demi.is_none() {
                 let mut loot = Vec::new();
                 // People and the dead had a little gold on them; what spiders and burrowers caught
                 // now and then did; wolves, gloomwings, lurkers and tuskers have nothing
@@ -3855,7 +3911,7 @@ impl Game {
                 self.say("A bloater bursts in a cloud of venom!");
             } else if look.is_monster() && animal.demi.is_none() {
                 self.say(format!("You slew a {}.", look.name()));
-            } else if !look.is_boss() {
+            } else if !look.is_boss() && !sea {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
             }
             // The last of a den's keepers dead leaves it clear for good: a dungeon hall, a nest, or a
@@ -5032,6 +5088,9 @@ impl Game {
             Item::Apple => S::Apple,
             Item::Meat => S::Meat,
             Item::RoastMeat => S::RoastMeat,
+            Item::RawFish => S::RawFish,
+            Item::CookedFish => S::CookedFish,
+            Item::SharkTooth => S::SharkTooth,
             Item::Bread => S::Bread,
             Item::Potion => S::Potion,
             Item::Gold(amount) => S::Gold { amount },
@@ -5052,6 +5111,9 @@ impl Game {
             S::Apple => Item::Apple,
             S::Meat => Item::Meat,
             S::RoastMeat => Item::RoastMeat,
+            S::RawFish => Item::RawFish,
+            S::CookedFish => Item::CookedFish,
+            S::SharkTooth => Item::SharkTooth,
             S::Bread => Item::Bread,
             S::Potion => Item::Potion,
             S::Gold { amount } => Item::Gold(*amount),
@@ -6161,7 +6223,7 @@ impl Game {
         if !item.consumable() {
             return;
         }
-        if item.heal() > 0.0 && self.health >= self.max_health() {
+        if item.heal() > 0.0 && item.food() <= 0.0 && self.health >= self.max_health() {
             self.say("You're not hurt.");
             return;
         }
@@ -6172,13 +6234,20 @@ impl Game {
         // Food heals a little too
         self.hunger = (self.hunger + item.food()).min(100.0);
         self.health = (self.health + item.food() * 0.6 + item.heal() * self.potion_boost()).min(self.max_health());
-        self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if item.heal() > 0.0 { 1.5 } else { 1.0 }));
+        let drink = item == Item::Potion;
+        self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if drink { 1.5 } else { 1.0 }));
         if count > 1 {
             self.slots[slot].1 -= 1;
         } else {
             self.remove_slot(slot);
         }
-        self.say(if item.heal() > 0.0 { format!("You drink the potion. +{:.0} health", item.heal()) } else { format!("You ate the {}.", item.name().to_lowercase()) });
+        self.say(if drink {
+            format!("You drink the potion. +{:.0} health", item.heal())
+        } else if item.heal() > 0.0 {
+            format!("You ate the {}. +{:.0} health", item.name().to_lowercase(), item.food() * 0.6 + item.heal() * self.potion_boost())
+        } else {
+            format!("You ate the {}.", item.name().to_lowercase())
+        });
     }
 
     /// What to draw for the shader: the weapon in hand first, then the nearest animals, food,
@@ -6253,6 +6322,8 @@ impl Game {
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                     dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
                 }
+            } else if crate::animals::sealife::is_fish(animal.look) && d > FISH_RANGE * vpm {
+                // A fish is small, and the water's murky: only drawn near
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
                 // A serpent's tongue flicking, near enough to be seen
@@ -6420,6 +6491,8 @@ impl Game {
                     "E  talk to the villager".to_owned()
                 } else if look.is_pet() {
                     format!("E  pet the {}", look.name())
+                } else if crate::animals::sealife::is_fish(look) && !self.holding_weapon() {
+                    format!("Click  catch the {}", look.name())
                 } else if self.holding_weapon() {
                     format!("Attack the {}", look.name())
                 } else {
@@ -8007,6 +8080,29 @@ impl Game {
                     painter.circle_filled(at - vec2(0.0, r * 0.06), r * 0.44, GOLD);
                     painter.circle_stroke(at - vec2(0.0, r * 0.06), r * 0.28, Stroke::new(r * 0.07, Color32::from_rgb(220, 165, 40)));
                 }
+            }
+            // A fish side on: silver raw, browned and charred cooked; and a shark's tooth
+            Item::RawFish | Item::CookedFish => {
+                let (body, back) = if item == Item::CookedFish { (Color32::from_rgb(196, 128, 62), Color32::from_rgb(110, 64, 32)) } else { (Color32::from_rgb(196, 208, 220), Color32::from_rgb(92, 116, 150)) };
+                let tail = center + vec2(r * 0.55, 0.0);
+                painter.add(egui::Shape::convex_polygon(vec![tail, center + vec2(r * 0.95, -r * 0.42), center + vec2(r * 0.95, r * 0.42)], back, Stroke::NONE));
+                let points: Vec<Pos2> = (0..24).map(|k| {
+                    let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                    center + vec2(-r * 0.12 + a.cos() * r * 0.68, a.sin() * r * 0.36)
+                }).collect();
+                painter.add(egui::Shape::convex_polygon(points, body, Stroke::new(r * 0.06, back)));
+                if item == Item::CookedFish {
+                    for k in 0..3 {
+                        let x = -r * 0.3 + k as f32 * r * 0.25;
+                        painter.line_segment([center + vec2(x, -r * 0.3), center + vec2(x + r * 0.12, r * 0.3)], Stroke::new(r * 0.08, back));
+                    }
+                }
+                painter.circle_filled(center + vec2(-r * 0.52, -r * 0.06), r * 0.08, if item == Item::CookedFish { Color32::from_rgb(240, 232, 214) } else { Color32::from_rgb(20, 20, 30) });
+            }
+            Item::SharkTooth => {
+                let bone = Color32::from_rgb(240, 234, 216);
+                painter.add(egui::Shape::convex_polygon(vec![center + vec2(0.0, r * 0.9), center + vec2(-r * 0.55, -r * 0.55), center + vec2(r * 0.55, -r * 0.55)], bone, Stroke::new(r * 0.06, Color32::from_rgb(170, 160, 140))));
+                painter.line_segment([center + vec2(-r * 0.6, -r * 0.6), center + vec2(r * 0.6, -r * 0.6)], Stroke::new(r * 0.12, Color32::from_rgb(120, 90, 60)));
             }
             Item::Meat | Item::RoastMeat => {
                 let bone = Color32::from_rgb(240, 232, 214);

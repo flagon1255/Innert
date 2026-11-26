@@ -176,6 +176,10 @@ pub enum ItemSave {
     Meat,
     /// Meat roasted over a fireplace, see hearths.rs
     RoastMeat,
+    /// A fish caught, and cooked, and a shark's tooth, see animals\sealife.rs
+    RawFish,
+    CookedFish,
+    SharkTooth,
     Bread,
     Potion,
     Gold {

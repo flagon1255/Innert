@@ -246,6 +246,7 @@ pub fn look_res(look: Look) -> f64 {
     match look {
         Look::GrappleHook => 3.0 * MODEL_RES,
         Look::Wings => 4.0 * MODEL_RES,
+        _ if animals::sealife::is_small(look) => animals::sealife::FINE * MODEL_RES,
         _ => MODEL_RES,
     }
 }
