@@ -30,10 +30,14 @@ use crate::tools;
 mod dragonfire;
 /// What avians and gargoyles throw, call down and break into, see src\avians.rs
 mod aerie;
+/// What the krakens do to the player, see bosses::kraken
+mod brine;
 /// The specialist merchants, talked to and asked to the base, see src\merchants.rs
 mod specialists;
 /// Fish and sharks about the player, see src\animals\sealife.rs
 mod sea;
+mod demi;
+pub use demi::DemiLair;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -848,6 +852,8 @@ pub struct Game {
     /// So the sound of being hurt doesn't go off every frame
     hurt_sound: f64,
     breath_sound: f64,
+    /// Seconds till a whirlwind's howl is heard again, see bosses::Deed::Gust
+    gust_sound: f64,
     /// So the whoosh of something just missing doesn't go off over and over
     dodge_sound: f64,
     /// The boss bar: which boss, how much health it showed last, a trail lagging behind that,
@@ -875,6 +881,11 @@ pub struct Game {
     /// Bosses' lairs in this piece of the world, and those beaten, by where they are in the landscape
     lairs: Vec<Lair>,
     defeated: HashSet<[i64; 3]>,
+    /// The demi-bosses' lairs down in the ravines in this piece of the world, see src\demis.rs;
+    /// those beaten are among defeated
+    demis: Vec<DemiLair>,
+    /// Those the player's come near, marked on the map, see game\demi.rs
+    demis_seen: HashSet<[i64; 3]>,
     /// Dungeon halls in this piece of the world, and those cleared of monsters
     dens: Vec<[i64; 3]>,
     cleared: HashSet<[i64; 3]>,
@@ -1013,6 +1024,8 @@ pub struct Game {
     packed_weapons: std::cell::RefCell<Option<(u32, Vec<u32>)>>,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
+    /// The krakens' ink and the rest, see game\brine.rs
+    brine: brine::Deep,
     /// The specialist merchants: who keeps which stall, who's being talked to and who lives at the
     /// base, see game\specialists.rs
     trades: specialists::Trades,
@@ -1161,6 +1174,7 @@ impl Game {
             fumes: Vec::new(),
             hurt_sound: 0.0,
             breath_sound: 0.0,
+            gust_sound: 0.0,
             dodge_sound: 0.0,
             boss_bar: ("", 1.0, 1.0, 0.0, 0.0),
             knockback: Vector3::zeros(),
@@ -1174,6 +1188,8 @@ impl Game {
             safe_for: 0.0,
             lairs: Vec::new(),
             defeated: HashSet::new(),
+            demis: Vec::new(),
+            demis_seen: HashSet::new(),
             dens: Vec::new(),
             cleared: HashSet::new(),
             boss_chests: Vec::new(),
@@ -1241,6 +1257,7 @@ impl Game {
             one_off_changes: 0,
             packed_weapons: std::cell::RefCell::new(None),
             aerie: Default::default(),
+            brine: Default::default(),
             trades: Default::default(),
             omens: Vec::new(),
             gloom: 0.0,
@@ -1841,7 +1858,19 @@ impl Game {
             };
             // A great serpent that swims lies in the deep water by its lair, out from the shore, the
             // rest on the ground
-            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, if look.is_ultra() { 2.5 } else { 1.5 })).flatten();
+            let least = match look {
+                _ if look.is_ultra() => 2.5,
+                Look::Kraken => 3.0,
+                Look::GrottoSquid => bosses::kraken::SHALLOW,
+                _ => 1.5,
+            };
+            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, least)).flatten();
+            // A kraken's only ever in the water, looked for further off if there's none near; but a
+            // realm's guardian has to be somewhere, as its raid bosses are warded till it's slain
+            let deep = deep.or_else(|| look.is_kraken().then(|| animals::deep_water_near(world, water, lair.position, 120.0, 1.2)).flatten());
+            if look.is_kraken() && deep.is_none() && !realms::is_guardian_key(&lair.key) {
+                continue;
+            }
             let swimming = deep.map(|at| Animal::boss(look, Vector3::new(at.x, at.y, water(at.x, at.y) - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
             if let Some(mut boss) = swimming.or_else(|| animals::spawn_boss(world, water, look, lair.position, lair.key, seed)) {
                 // The Coil Unending's as hard as it is already, whether it's the Water realm's finale
@@ -2055,6 +2084,18 @@ impl Game {
         let at = near + flat * distance * vpm;
         let ground = floor_near(world, at.x, at.y, near.z);
         let key = [at.x as i64, at.y as i64, -1];
+        // What swims in deep water nearby, out from the shore, a kraken only there
+        if look.swims() {
+            let least = if look.is_kraken() { if look == Look::Kraken { 3.0 } else { bosses::kraken::SHALLOW } } else { 1.5 };
+            if let Some(deep) = animals::deep_water_near(world, water, Vector3::new(at.x, at.y, ground), 45.0, least) {
+                let top = water(deep.x, deep.y) - serpents::draft(look) * vpm;
+                self.animals.push(Animal::boss(look, Vector3::new(deep.x, deep.y, top), key, self.rng));
+                return;
+            }
+            if look.is_kraken() {
+                return;
+            }
+        }
         if let Some(boss) = animals::spawn_boss(world, water, look, Vector3::new(at.x, at.y, ground), key, self.rng) {
             self.animals.push(boss);
         }
@@ -2082,6 +2123,7 @@ impl Game {
         }
         self.dragonfire.recenter(shift);
         self.aerie.recenter(shift);
+        self.brine.recenter(shift);
         for root in &mut self.roots {
             root.at -= shift;
         }
@@ -2267,7 +2309,7 @@ impl Game {
             if !animal.toughened && animal.look.build().is_some() {
                 animal.toughened = true;
                 if animal.level == 0 {
-                    let slain = slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
+                    let slain = if animal.demi.is_some() { Slain::Demi } else { slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs) };
                     let mut roll = hash(animal.id ^ 0x1e7e1);
                     animal.level = levels::foe_level(band, player_level, slain, random(&mut roll));
                 }
@@ -2336,6 +2378,7 @@ impl Game {
         }
         self.tend_dragonfire(world, player, view, dt);
         self.tend_aerie(world, player, view, dt);
+        self.tend_brine(player, dt);
         self.watch_for_lairs(player);
         self.watch_for_shrines(player);
         self.grow_roots(world, player, view, dt);
@@ -2357,10 +2400,13 @@ impl Game {
         self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, water, player, dt);
         // The boss bar's trail catching up with what it's lost, a moment after each blow
-        if let Some((foe, health, ..)) = self.foe(view.eye) {
-            let name = foe.name();
+        if let Some((foe, health, .., name)) = self.foe(view.eye) {
+            // A demi-boss stirring from among the bones, see src\demis.rs
+            if foe.is_monster() && name != self.boss_bar.0 {
+                self.say(format!("{name} stirs among the bones and comes for you!"));
+            }
             // A boss newly come for the player taunts them by name
-            if name != self.boss_bar.0 && !name.is_empty() {
+            if !foe.is_monster() && name != self.boss_bar.0 && !name.is_empty() {
                 const TAUNTS: [&str; 5] = ["So, {}. You came at last.", "Kneel, {}, and it will be quick.", "Another fool. Your name, {}, dies with you.", "I smell your fear, {}.", "{}... they will sing nothing of you."];
                 let taunt = TAUNTS[hash(name.len() as u32 ^ self.seed ^ self.level) as usize % TAUNTS.len()].replace("{}", &self.character.name);
                 self.say(format!("The {name}: \"{taunt}\""));
@@ -2377,6 +2423,9 @@ impl Game {
                 trail -= 0.6 * dt;
             }
             self.boss_bar = (name, health, trail.max(health), hold, (flash - dt / 0.18).max(0.0));
+        }
+        if let Some(feet) = player {
+            self.note_demis(feet, world.voxels_per_meter as f64);
         }
         self.reap(world);
         self.leaves.update(world, water, view.eye, dt);
@@ -2476,10 +2525,12 @@ impl Game {
     /// aiming at, see serpents::focus()
     fn aim_at_serpents(&mut self, view: &View) {
         let vpm = view.vpm;
-        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent()) {
+        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent() || a.look.is_kraken()) {
             a.focus = None;
             let points = match a.coils() {
                 Some(coils) => Some(coils.hit_points(vpm)),
+                // A kraken's head, its mantle and its arms near it, see bosses::kraken::Body
+                None if a.look.is_kraken() => a.kraken().map(|k| k.hit_points(vpm)),
                 None if (a.position - view.eye).norm() < 70.0 * vpm => a.spine(vpm as u32),
                 None => None,
             };
@@ -2514,6 +2565,8 @@ impl Game {
             Deed::Phase { at, stage } if look.is_dragon() => return self.dragon_phase(look, at, stage, view),
             // And what avians and gargoyles do, see game\aerie.rs
             Deed::Aerie(act) => return self.aerie_act(look, act, world, player, view),
+            // And what krakens do, see game\brine.rs
+            Deed::Kraken(act) => return self.kraken_act(look, element, act, world, water, player, view),
             Deed::Phase { at, stage } if look.is_winged() => return self.aerie_phase(look, at, stage, view),
             _ => {}
         }
@@ -2676,6 +2729,12 @@ impl Game {
                         Cue::at(Sound::Flap, at, 0.8).pitched(0.85)
                     }
                     Move::Maul => Cue::at(Sound::Roar, at, 0.5).pitched(voice * 1.8),
+                    // The Aeolith's rings whirring up, its wind rising; the Stormbell's thunder
+                    // gathering and lightning crackling down its tendrils
+                    Move::Ringcast | Move::Shardfall => Cue::at(Sound::Whirr, at, 0.9).pitched(0.6),
+                    Move::Gyre => Cue::at(Sound::Gale, at, 1.0).pitched(0.9),
+                    Move::Staticfall | Move::Overcharge => Cue::at(Sound::Thunder, at, 0.8).pitched(0.7),
+                    Move::Thunderlash => Cue::at(Sound::Zap, at, 0.9).pitched(0.7),
                     _ => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.2),
                 };
                 self.cues.push(cue);
@@ -2801,9 +2860,13 @@ impl Game {
                 self.combat.hurl(HostileKind::Spell(element), from, to, time, damage, radius);
                 self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element)) as u8), from, 1.0).pitched(0.6));
             }
-            Deed::Breath { from, direction, dt: seconds } => {
+            Deed::Breath { from, direction, dt: seconds } | Deed::Jet { from, direction, dt: seconds } => {
                 let element = element.unwrap_or(Element::Fire);
-                self.combat.breathe(from, direction, seconds, element);
+                if matches!(deed, Deed::Jet { .. }) {
+                    self.combat.jet(from, direction, seconds, element);
+                } else {
+                    self.combat.breathe(from, direction, seconds, element);
+                }
                 if self.breath_sound <= 0.0 {
                     self.breath_sound = 1.8;
                     self.cues.push(Cue::at(Sound::Breath, from, 1.0).pitched(if element == Element::Fire { 1.0 } else { 1.25 }));
@@ -3077,7 +3140,7 @@ impl Game {
                 }
             }
             // Seen to above
-            Deed::Dragon(_) | Deed::Aerie(_) => {}
+            Deed::Dragon(_) | Deed::Aerie(_) | Deed::Kraken(_) => {}
             // The Colossus working stone, see combat/stones.rs: the boulder it tore up and lifted
             // hurled out of its hands, with a grunt
             Deed::Hurl { id, from, to } => {
@@ -3122,9 +3185,32 @@ impl Game {
                     Some(Element::Poison) => DROP_VENOM,
                     Some(Element::Blood) => DROP_BLOOD,
                     Some(Element::Void) => DROP_VOID,
+                    // Rain thrown up out of a thundercloud's lightning striking
+                    Some(Element::Storm) => DROP_WATER,
                     _ => DROP_MUD,
                 };
                 self.roots.push(Root { at, left: delay, radius, damage, drag: Vector3::zeros(), element, flare: Some(kind) });
+            }
+            // A whirlwind round a boss: dust and its element whirling in to it, howling, and
+            // whoever's within it drawn in, harder the nearer, but never off their feet
+            Deed::Gust { at, reach, pull, dt: seconds } => {
+                self.combat.gust(at, reach, seconds, element);
+                self.gust_sound -= seconds;
+                if self.gust_sound <= 0.0 {
+                    self.gust_sound = 1.6;
+                    self.cues.push(Cue::at(Sound::Gale, at, 0.9).pitched(0.8));
+                }
+                if let Some(feet) = player {
+                    let off = (at - feet).xy();
+                    let d = off.norm() / vpm;
+                    if d < reach && d > 0.8 && (feet.z - at.z).abs() < 4.0 * vpm {
+                        let inward = off / off.norm();
+                        let round = Vector2::new(-inward.y, inward.x);
+                        let strength = pull * (0.45 + 0.55 * (1.0 - d / reach));
+                        let drawn = (inward + round * 0.35) * strength;
+                        self.thrown += Vector3::new(drawn.x, drawn.y, 0.0) * vpm * seconds * 4.0;
+                    }
+                }
             }
             // Its element, or a burning rock of it, lobbed to come down where it shows
             Deed::Lob { from, to, time, damage, radius, rock } => {
@@ -3370,6 +3456,7 @@ impl Game {
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
+        self.brine.clear();
         self.burning = 0.0;
         self.poisoned = 0.0;
         self.chilled = 0.0;
@@ -3454,6 +3541,7 @@ impl Game {
             self.roots.clear();
             self.webs.clear();
             self.fumes.clear();
+        self.brine.clear();
             self.safe_for = 0.0;
             return;
         };
@@ -3499,15 +3587,23 @@ impl Game {
         }
     }
 
-    /// The boss fighting the player, if any, nearest first: which it is, how much health it has
-    /// left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>, u32)> {
+    /// The boss fighting the player, if any, nearest first, or a demi-boss, see src\demis.rs:
+    /// which it is, how much health it has left, 0-1, whether it's enraged, where its middle is,
+    /// whether it's warded, its level, and what it's called
+    #[allow(clippy::type_complexity)]
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>, u32, &'static str)> {
         let vpm = self.combat.vpm() as u32;
         self.animals
             .iter()
-            .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
+            .filter(|a| a.health > 0.0 && (a.look.is_boss() || a.demi.is_some()) && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded, a.level))
+            .map(|a| {
+                let name = match (a.demi, &a.boss) {
+                    (Some(kind), Some(b)) => crate::demis::name(kind, b.key),
+                    _ => a.look.name(),
+                };
+                (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded, a.level, name)
+            })
     }
 
     /// Whether a boss being fought has its bar up along the bottom of the view, see hud()
@@ -3522,7 +3618,7 @@ impl Game {
 
     /// For trying them out: every boss about down to `fraction` of its health
     pub fn hurt_bosses(&mut self, fraction: f64) {
-        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss()) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss() || a.demi.is_some()) {
             animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
         }
     }
@@ -3613,7 +3709,7 @@ impl Game {
             // And a dragon falls out of the sky and lies a moment where it fell first, a jointed
             // boss falls, see rig::dying(), and an avian or a gargoyle comes down, see avians::dying()
             let a = &self.animals[k];
-            if a.health > 0.0 || writhing(a) || crate::dragons::dying(a) || crate::rig::dying(a) || crate::avians::dying(a) {
+            if a.health > 0.0 || writhing(a) || crate::dragons::dying(a) || crate::rig::dying(a) || crate::avians::dying(a) || bosses::kraken::dying(a) {
                 k += 1;
                 continue;
             }
@@ -3621,7 +3717,7 @@ impl Game {
             let look = animal.look;
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
             // Experience for every monster and boss slain, by its level and what it was
-            let slain = slain_of(look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs);
+            let slain = self.slain(&animal);
             if look.is_monster() || look.is_boss() {
                 let more = self.experience_boost();
                 self.gain_experience((levels::experience(animal.level.max(1), slain) * more).round(), Some(middle + Vector3::new(0.0, 0.0, 1.2 * vpm)));
@@ -3636,6 +3732,7 @@ impl Game {
             }
             let from = (animal.level.max(1), match slain {
                 Slain::Monster => Source::Found,
+                Slain::Demi => Source::Demi,
                 Slain::Boss => Source::Boss,
                 Slain::Raid | Slain::Finale => Source::Raid,
             });
@@ -3671,7 +3768,11 @@ impl Game {
             if sea {
                 self.sea_spoils(&animal);
             }
-            if look.is_monster() && !burst && !sea {
+            // A demi-boss leaves what it hoarded down there, see game\demi.rs
+            if let Some(kind) = animal.demi {
+                self.demi_spoils(world, &animal, kind, from);
+            }
+            if look.is_monster() && !burst && !sea && animal.demi.is_none() {
                 let mut loot = Vec::new();
                 // People and the dead had a little gold on them; what spiders and burrowers caught
                 // now and then did; wolves, gloomwings, lurkers and tuskers have nothing
@@ -3775,7 +3876,7 @@ impl Game {
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
                 // What its hoard's called, for those with one of their own, see bosses::roster
-                let hoard_name = bosses::roster::hoard(look).unwrap_or("hoard");
+                let hoard_name = bosses::roster::hoard(look).or_else(|| bosses::wilds::hoard(look)).unwrap_or("hoard");
                 if ultra {
                     self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
                 } else if let Some(realm) = block {
@@ -3783,7 +3884,7 @@ impl Game {
                     self.say(format!("Raid boss slain! The {} falls before {}, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name(), self.character.name));
                 } else if raid {
                     self.say(format!("Raid boss slain! The {} falls before {}, and its {hoard_name} spills out. Some of it's {rarity}!", look.name(), self.character.name));
-                } else if bosses::roster::has(look) {
+                } else if bosses::roster::has(look) || bosses::wilds::has(look) {
                     self.say(format!("{} defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 } else {
                     self.say(format!("{} defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
@@ -3808,7 +3909,7 @@ impl Game {
             }
             if burst {
                 self.say("A bloater bursts in a cloud of venom!");
-            } else if look.is_monster() {
+            } else if look.is_monster() && animal.demi.is_none() {
                 self.say(format!("You slew a {}.", look.name()));
             } else if !look.is_boss() && !sea {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
@@ -5075,6 +5176,8 @@ impl Game {
         let mut done = save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() };
         // What's known of the dragons' lairs, see game\dragonfire.rs
         done.set_section(crate::dragons::WORLD_SECTION, &self.dragonfire.lore);
+        // The demi-bosses' lairs come near, for the map, see game\demi.rs
+        done.set_section(demi::SEEN_SECTION, &sorted(&self.demis_seen));
         done
     }
 
@@ -5106,6 +5209,7 @@ impl Game {
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
+        self.brine.clear();
         self.rest = None;
         self.safe_for = 0.0;
         self.knockback = Vector3::zeros();
@@ -5194,6 +5298,7 @@ impl Game {
         self.defeated = world.defeated.iter().copied().collect();
         self.cleared = world.cleared.iter().copied().collect();
         self.dragonfire.lore = world.section(crate::dragons::WORLD_SECTION).unwrap_or_default();
+        self.demis_seen = world.section::<Vec<[i64; 3]>>(demi::SEEN_SECTION).unwrap_or_default().into_iter().collect();
         self.stocks.clear();
         for stock in &world.stocks {
             let mut wares = Vec::new();
@@ -6205,6 +6310,12 @@ impl Game {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
                 creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+            } else if let Some(body) = animal.kraken() {
+                // A kraken's mantle, head and every piece of its arms, the same way, see
+                // bosses::kraken::Body
+                pieces.clear();
+                body.instances(vpm, animal.status.tint(), &mut pieces);
+                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
             } else if animal.dragon.is_some() || animal.winged.is_some() || crate::rig::rigged(animal.look) {
                 // A jointed boss, avian or gargoyle too, see rig::instances() and avians::instances()
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
@@ -6334,7 +6445,7 @@ impl Game {
             .iter()
             .filter(|a| a.health > 0.0 && (a.position - view.eye).norm() < 60.0 * vpm)
             .filter_map(|a| {
-                let (at, element, strength) = bosses::glow(a, vpm)?;
+                let (at, element, strength) = bosses::glow(a, vpm).or_else(|| crate::dragons::glow(a))?;
                 let c = element.light();
                 let s = strength as f32;
                 Some([at.x as f32, at.y as f32, at.z as f32, ((4.0 + 4.0 * strength) * vpm) as f32, c[0] * s, c[1] * s, c[2] * s, 1.0])
@@ -6536,7 +6647,7 @@ impl Game {
         let (eye, look) = (view.eye, view.forward());
         let mut aimed: Option<(u32, f64)> = None;
         for animal in &self.animals {
-            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() {
+            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() || animal.demi.is_some() {
                 continue;
             }
             let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
@@ -6624,6 +6735,8 @@ impl Game {
         let faint = Color32::from_white_alpha(140);
         let on_screen = |p: Vector3<f64>| view.project(p).map(|[x, y]| pos2(screen.left() + x as f32 * screen.width(), screen.top() + y as f32 * screen.height()));
 
+        // Blinded by a kraken's ink, see game\brine.rs
+        self.ink_veil(&painter, screen);
         // The sky darkening over the Coil Unending's lair, a bruised gloom closing in from above
         if self.gloom > 0.01 {
             let g = self.gloom as f32;
@@ -6843,7 +6956,7 @@ impl Game {
         self.level_hud(&painter, panel, pad);
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((foe, vitality, enraged, middle, ward, level)) = self.foe(view.eye) {
+        if let Some((foe, vitality, enraged, middle, ward, level, title)) = self.foe(view.eye) {
             // Off the edge of the screen or behind, an arrow round the edge points the way to it,
             // with how far
             let inner = screen.shrink(50.0);
@@ -6873,10 +6986,11 @@ impl Game {
             } else if foe.is_raid() {
                 format!("RAID  ·  {}", foe.name())
             } else {
-                foe.name().to_string()
+                title.to_string()
             };
-            // A raid boss's bar is longer
-            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
+            // A raid boss's bar is longer, a demi-boss's shorter
+            let demi = foe.is_monster();
+            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else if demi { 0.32 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
             let tall = if ultra { 18.0 } else { 12.0 };
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
@@ -6914,7 +7028,8 @@ impl Game {
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
             let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
-            let [r, g, b] = element.map_or([190, 40, 35], |e| e.color().map(|c| (c as f32 * 0.85) as u8));
+            // A demi-boss's bar the colour of dusk, so it's not taken for a boss's
+            let [r, g, b] = element.map_or(if demi { [150, 60, 190] } else { [190, 40, 35] }, |e| e.color().map(|c| (c as f32 * 0.85) as u8));
             painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
             // Where a raid boss goes into its next phases, marked across the bar
             let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {

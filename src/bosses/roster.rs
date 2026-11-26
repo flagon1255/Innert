@@ -20,20 +20,26 @@ use crate::animals::Skin;
 use crate::worldgen::material::*;
 
 /// Every one of them, in the order they're added among the looks
+/// The Sky Isles' own, kept apart, see sky.rs, and asked about first by what's here
+pub mod sky;
+
 pub const LOOKS: [Look; 8] = [Look::Slagwright, Look::Cinderback, Look::LanternWidow, Look::Dreadmare, Look::Sunstinger, Look::Grovemaul, Look::Hoarback, Look::GildedSphinx];
 
 /// Whether `look` is one of them
 pub fn has(look: Look) -> bool {
-    LOOKS.contains(&look)
+    LOOKS.contains(&look) || sky::has(look)
 }
 
 /// Whether `m` is one of their own moves, played out here
 pub fn owns(m: Move) -> bool {
-    matches!(m, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel)
+    matches!(m, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) || sky::owns(m)
 }
 
 /// How much bigger its model is than its build's
 pub fn scale(look: Look) -> f64 {
+    if sky::has(look) {
+        return sky::scale(look);
+    }
     match look {
         Look::Slagwright => 1.6,
         Look::Cinderback => 1.5,
@@ -51,6 +57,9 @@ pub fn scale(look: Look) -> f64 {
 /// the heavy ones as the giants and golems, the widow and the mare as the casters and the beasts,
 /// the scorpion as the spiders; the mammoth as the Colossus, the sphinx as the Dreaming Red's
 pub fn health(look: Look) -> f64 {
+    if sky::has(look) {
+        return sky::health(look);
+    }
     match look {
         Look::Slagwright | Look::Cinderback | Look::Grovemaul => 3000.0,
         Look::LanternWidow | Look::Dreadmare => 2600.0,
@@ -63,6 +72,9 @@ pub fn health(look: Look) -> f64 {
 
 /// How fast it walks and runs, in meters a second
 pub fn speeds(look: Look) -> (f64, f64) {
+    if sky::has(look) {
+        return sky::speeds(look);
+    }
     match look {
         Look::Slagwright => (1.4, 3.0),
         // Slow as a tortoise is, but it gets there
@@ -79,6 +91,9 @@ pub fn speeds(look: Look) -> (f64, f64) {
 
 /// Meters covered by one cycle of its walk, at its build's size
 pub fn stride(look: Look) -> f64 {
+    if sky::has(look) {
+        return sky::stride(look);
+    }
     match look {
         Look::Slagwright | Look::Grovemaul => 1.7,
         Look::Cinderback => 1.0,
@@ -94,6 +109,9 @@ pub fn stride(look: Look) -> f64 {
 /// Radius of a sphere round the whole of it, however it's posed, in meters: weapons raised high,
 /// rearing up, a tail curled over its back
 pub fn reach(look: Look) -> f64 {
+    if sky::has(look) {
+        return sky::reach(look);
+    }
     let s = look.scale();
     s * match look {
         Look::Slagwright => 4.6,
@@ -110,6 +128,9 @@ pub fn reach(look: Look) -> f64 {
 
 /// The body to aim at: how high its middle is, and how big it is, in meters
 pub fn body(look: Look) -> (f64, f64) {
+    if sky::has(look) {
+        return sky::body(look);
+    }
     let s = look.scale();
     let (high, round) = match look {
         Look::Slagwright => (1.5, 0.55),
@@ -126,6 +147,9 @@ pub fn body(look: Look) -> (f64, f64) {
 }
 
 pub fn name(look: Look) -> &'static str {
+    if sky::has(look) {
+        return sky::name(look);
+    }
     match look {
         Look::Slagwright => "Slagwright",
         Look::Cinderback => "Cinderback Tortoise",
@@ -141,6 +165,9 @@ pub fn name(look: Look) -> &'static str {
 
 /// What its attacks are made of
 pub fn element(look: Look) -> Option<Element> {
+    if sky::has(look) {
+        return sky::element(look);
+    }
     match look {
         Look::Slagwright | Look::Cinderback | Look::GildedSphinx => Some(Element::Fire),
         Look::LanternWidow => Some(Element::Void),
@@ -153,6 +180,9 @@ pub fn element(look: Look) -> Option<Element> {
 
 /// What it's made of: its body, darker parts, things on it, what glows, and one more
 pub(crate) fn skin(look: Look) -> Skin {
+    if sky::has(look) {
+        return sky::skin(look);
+    }
     let make = |body, dark, accent, glow, extra| Skin { body, dark, accent, glow, extra };
     match look {
         // Black iron, darker steel, a leather apron, the forge's fire in its seams, bronze bands
@@ -181,6 +211,9 @@ pub(crate) fn skin(look: Look) -> Skin {
 /// mare's whips and naginatas, the scorpion's katars, the ape's mauls and totems, the mammoth's
 /// heavy polearms and the sphinx's war fans and sceptres
 pub fn taste(look: Look) -> &'static [&'static str] {
+    if sky::has(look) {
+        return sky::taste(look);
+    }
     match look {
         Look::Slagwright => &["hammer", "maul", "handcannon", "flail"],
         Look::Cinderback => &["bombs", "maul", "blunderbuss", "hammer"],
@@ -196,6 +229,9 @@ pub fn taste(look: Look) -> &'static [&'static str] {
 
 /// What its hoard's called, as it spills out of it, see Game::reap()
 pub fn hoard(look: Look) -> Option<&'static str> {
+    if sky::has(look) {
+        return Some(sky::hoard(look));
+    }
     Some(match look {
         Look::Slagwright => "forge-hoard",
         Look::Cinderback => "ember-hoard",
@@ -212,6 +248,9 @@ pub fn hoard(look: Look) -> Option<&'static str> {
 /// A blow at what's in front: how far ahead it lands and how far round it reaches in meters, how
 /// hard it hits, and how big a hole it blows
 pub fn slam(look: Look) -> (f64, f64, f64, f64) {
+    if sky::has(look) {
+        return sky::slam(look);
+    }
     match look {
         // A forge hammer, a tortoise's forefeet, a crook, a mare's hooves, pincers, an ape's fists.
         // Those of fire and frost leave no hole, as a hole leaves the ground scorched or frosted
@@ -287,6 +326,9 @@ pub fn timing(look: Look, m: Move) -> (f64, f64, f64, f64) {
 /// it does, its own first so it makes them whenever they're ready; a raid boss's in meters at its
 /// build's size
 pub fn menu(look: Look) -> &'static [(Move, f64, f64)] {
+    if sky::has(look) {
+        return sky::menu(look);
+    }
     match look {
         Look::Slagwright => &[(Move::Slagrain, 3.6, 26.0), (Move::Swat, 0.0, 3.6), (Move::Slam, 0.0, 4.6)],
         Look::Cinderback => &[(Move::Vents, 0.0, 12.0), (Move::Slam, 0.0, 3.8), (Move::Spit, 4.5, 26.0)],
@@ -384,6 +426,9 @@ fn stab(boss: &mut Boss, at: Vector3<f64>) {
 /// Shown on the ground as boss `a` gets ready to make move `m`, `t` seconds into getting ready of
 /// `whole`: where it'll come down, a ring closing in on each place
 pub fn winding(m: Move, t: f64, whole: f64, a: &Animal, boss: &mut Boss, forward: Vector3<f64>, vpm: f64) {
+    if sky::owns(m) {
+        return sky::winding(m, t, whole, a, boss, forward, vpm);
+    }
     let look = a.look;
     let s = look.scale();
     let closing = (1.0 - t / whole.max(0.1)).clamp(0.0, 1.0);
@@ -580,7 +625,7 @@ pub fn during(m: Move, t: f64, dt: f64, a: &mut Animal, boss: &mut Boss, player:
                 let from = jet_from(a, turn, vpm);
                 let way = Vector3::new(turn.cos(), turn.sin(), 0.0);
                 let direction = Vector3::new(way.x, way.y, -0.07).normalize();
-                boss.deeds.push(Deed::Breath { from, direction, dt });
+                boss.deeds.push(Deed::Jet { from, direction, dt });
                 if flaring {
                     let out = 2.0 + 2.6 * (beat(t) % 4) as f64;
                     let at = from + way * out * vpm;
@@ -635,7 +680,7 @@ mod tests {
         use crate::worldgen::Land;
         let bases = [Look::Golem, Look::Drake, Look::Ironhide, Look::Treant, Look::Direwolf, Look::Spider, Look::Ogre, Look::Colossus, Look::Elderhorn];
         let grounds = [GRASS, SNOW, SAND, JUNGLE_GRASS, STONE];
-        let lands = [Land::Normal, Land::Dream, Land::Ice];
+        let lands = [Land::Normal, Land::Dream, Land::Ice, Land::Sky];
         for look in LOOKS {
             let in_land = bases.iter().any(|b| lands.iter().any(|&l| grounds.iter().any(|&g| b.for_land(l).for_ground(g) == look)));
             let in_realm = crate::realms::REALMS.iter().any(|r| r.raid_bosses.iter().any(|(l, _)| *l == look) || r.guardians.contains(&look));

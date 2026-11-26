@@ -1,0 +1,29 @@
+{
+  "what": "Aeolith, wind",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    23,
+    32
+  ],
+  "pivot": [
+    11.138826366465262,
+    11.61976125628123,
+    30.336
+  ],
+  "anchor": [
+    0.05382335209592115,
+    -0.007485078517576849,
+    -1.896
+  ],
+  "origin": [
+    -11,
+    -12,
+    -30
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3350,
+    "ba0725e0b1d1a003"
+  ]
+}

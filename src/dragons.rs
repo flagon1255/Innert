@@ -29,7 +29,7 @@ use crate::weapons::Element;
 use crate::worldgen::{World, is_passable, material::*};
 
 /// Every dragon there is
-pub const KINDS: [Look; 13] = [
+pub const KINDS: [Look; 14] = [
     Look::Ashwing,
     Look::Sleetwing,
     Look::Squallwing,
@@ -43,6 +43,7 @@ pub const KINDS: [Look; 13] = [
     Look::FrostWyrm,
     Look::StormDrake,
     Look::ElderWyrm,
+    Look::Skymane,
 ];
 
 /// The small ones, monsters going about in pairs and threes, an element each
@@ -83,6 +84,7 @@ fn kind(look: Look) -> usize {
 pub fn element(look: Look) -> Element {
     match look {
         Look::Sleetwing | Look::FrostWyrm => Element::Frost,
+        Look::Skymane => Element::Holy,
         Look::Squallwing | Look::GildscaleHoardwarden | Look::StormDrake => Element::Storm,
         Look::Blightwing | Look::VenomDrake => Element::Poison,
         _ => Element::Fire,
@@ -103,6 +105,7 @@ pub fn name(look: Look) -> &'static str {
         Look::FrostWyrm => "Frost Wyrm",
         Look::StormDrake => "Thunder Drake",
         Look::ElderWyrm => "Elder Cinder Wyrm",
+        Look::Skymane => "Skymane",
         _ => "Worldpyre Ancient",
     }
 }
@@ -122,6 +125,7 @@ pub fn lore(look: Look) -> &'static str {
         Look::VenomDrake => "It spreads its frill and spits, and the jungle round its lair has rotted black.",
         Look::FrostWyrm => "Long and pale, crowned with ice, it coils on the high snows and breathes the cold of the deep winter.",
         Look::StormDrake => "Two legs and wings far too long for them: it rides the thunderheads over the high rock and calls them down.",
+        Look::Skymane => "A lion on wings of feathers, gold in its mane and the holy light in its eyes. It keeps the high places, and it roars the ground out from under whoever climbs to it.",
         Look::ElderWyrm => "Old as the burn it lies in, black as soot with embers in its scales, its wings in tatters and its horns gone to gold.",
         _ => "The first fire took wing, and it is still burning. Every dragon there is was hatched from the embers it shed.",
     }
@@ -138,7 +142,7 @@ pub fn health(look: Look) -> f64 {
         Look::CindermawTyrant => 15500.0,
         Look::GildscaleHoardwarden => 14500.0,
         // The drakes are as hard to kill as they always were, see Look::health()
-        Look::Drake | Look::VenomDrake | Look::FrostWyrm | Look::StormDrake | Look::ElderWyrm => look.health(),
+        Look::Drake | Look::VenomDrake | Look::FrostWyrm | Look::StormDrake | Look::ElderWyrm | Look::Skymane => look.health(),
         // The Worldpyre Ancient, a finale wherever it is, raised to 46000 as one, see
         // realms::FINALE_PROMOTION
         _ => 18400.0,
@@ -219,6 +223,8 @@ enum Crown {
     Forked,
     /// Horns curled round like a ram's, gone to gold with age, embers in its scales
     Elder,
+    /// No horns at all but a lion's mane, see src\dragons\skymane.rs
+    Mane,
 }
 
 /// How the edge of a wing's skin runs between its fingers
@@ -234,6 +240,8 @@ enum WingShape {
     Tattered,
     /// The fingers spiked out past the skin
     Barbed,
+    /// Feathers rather than skin, see src\dragons\skymane.rs
+    Feathered,
 }
 
 /// How a dragon's built, in units of a drakeling's meters
@@ -330,6 +338,7 @@ fn spec(look: Look) -> Spec {
         Look::StormDrake => Spec { four: false, girth: 1.0, span: 1.3, tail: 0.56, ..drake(1.3, hide(STEEL, OBSIDIAN, LINEN, MORTAR, BONE, GLOW_STORM, GLOW_STORM), Crown::Forked, WingShape::Long) },
         // The Elder Cinder Wyrm, black as soot and huge, embers in its scales, its wings in tatters
         // and its curled horns gone to gold
+        Look::Skymane => skymane::spec(),
         Look::ElderWyrm => Spec { girth: 1.3, span: 1.05, neck: 0.36, tail: 0.56, ..drake(2.4, hide(OBSIDIAN, BARK_DARK, TEMPLE_RED, LEATHER, GOLD, GLOW_FIRE, FLAME), Crown::Elder, WingShape::Tattered) },
         // Ash-grey as its brood, veined with fire, crowned with bone, wings of deep ember
         _ => Spec {
@@ -494,6 +503,9 @@ pub fn fx_shape(fx: usize) -> (Vector3<f64>, [u32; 3]) {
 // mirrored from the left's by `side`
 
 fn torso(p: &mut Vec<Part>, sp: &Spec) {
+    if sp.crown == Crown::Mane {
+        return skymane::torso(p, sp);
+    }
     let (h, g) = (sp.hide, sp.girth);
     // Fire glowing along its belly between the plates, as through cracks
     for side in [-1.0, 1.0] {
@@ -584,6 +596,9 @@ fn neck_radius(sp: &Spec, f: f64) -> f64 {
 }
 
 fn neck(p: &mut Vec<Part>, sp: &Spec, k: usize) {
+    if sp.crown == Crown::Mane {
+        return skymane::neck(p, sp, k);
+    }
     let h = sp.hide;
     let n = sp.necks as f64;
     let (r0, r1) = (neck_radius(sp, k as f64 / n), neck_radius(sp, (k + 1) as f64 / n));
@@ -618,6 +633,9 @@ fn neck(p: &mut Vec<Part>, sp: &Spec, k: usize) {
 }
 
 fn head(p: &mut Vec<Part>, sp: &Spec) {
+    if sp.crown == Crown::Mane {
+        return skymane::head(p, sp);
+    }
     let h = sp.hide;
     for side in [-1.0, 1.0] {
         p.push(ball([0.22, side * 0.105, 0.06], 0.036, h.eye));
@@ -702,6 +720,8 @@ fn head(p: &mut Vec<Part>, sp: &Spec) {
                 }
                 p.push(limb([0.1, side * 0.12, -0.04], [-0.1, side * 0.2, -0.1], 0.03, 0.008, h.dark));
             }
+            // Drawn in skymane.rs
+            Crown::Mane => {}
         }
     }
     match sp.crown {
@@ -717,6 +737,9 @@ fn head(p: &mut Vec<Part>, sp: &Spec) {
 }
 
 fn jaw(p: &mut Vec<Part>, sp: &Spec) {
+    if sp.crown == Crown::Mane {
+        return skymane::jaw(p, sp);
+    }
     let h = sp.hide;
     for side in [-1.0, 1.0] {
         for k in 0..3 {
@@ -735,6 +758,9 @@ fn tail_radius(sp: &Spec, f: f64) -> f64 {
 }
 
 fn tail(p: &mut Vec<Part>, sp: &Spec, k: usize) {
+    if sp.crown == Crown::Mane {
+        return skymane::tail(p, sp, k);
+    }
     let h = sp.hide;
     let n = sp.tails as f64;
     let (r0, r1) = (tail_radius(sp, k as f64 / n), tail_radius(sp, (k + 1) as f64 / n));
@@ -776,6 +802,9 @@ fn skin(a: Vec3, b: Vec3, width: f64, material: u8) -> Part {
 /// The inner piece of a wing, from the shoulder out to the wrist: the bone of its arm, a claw at the
 /// wrist, and the skin back from it to the body
 fn wing_in(p: &mut Vec<Part>, sp: &Spec, side: f64) {
+    if sp.wing == WingShape::Feathered {
+        return skymane::wing_in(p, sp, side);
+    }
     let h = sp.hide;
     let w = wrist(sp);
     let w = [w.x, side * w.y, w.z];
@@ -836,6 +865,9 @@ fn fingers(shape: WingShape) -> [(f64, f64); 3] {
 /// The outer piece, from the wrist out to the tip: the long bones of its fingers and the skin
 /// between them
 fn wing_out(p: &mut Vec<Part>, sp: &Spec, side: f64) {
+    if sp.wing == WingShape::Feathered {
+        return skymane::wing_out(p, sp, side);
+    }
     let h = sp.hide;
     let l = WING_OUT * sp.span;
     let tip = [-0.32, side * l, 0.03];
@@ -870,6 +902,9 @@ fn wing_out(p: &mut Vec<Part>, sp: &Spec, side: f64) {
 
 /// A thigh, from the hip down to the knee
 fn thigh(p: &mut Vec<Part>, sp: &Spec, hind: bool) {
+    if sp.crown == Crown::Mane {
+        return skymane::thigh(p, sp, hind);
+    }
     let (h, g) = (sp.hide, sp.girth);
     let (lt, _) = leg_lengths(hind);
     p.push(ellipsoid([0.03, 0.0, -lt * 0.35], [0.13 * g, 0.11 * g, 0.2], h.scale));
@@ -900,6 +935,9 @@ fn shin(p: &mut Vec<Part>, sp: &Spec, hind: bool) {
     // Built with the knee at its joint and the shin straight down, the foot turned so it's flat on
     // the ground as the leg stands
     let (swing, knee) = if hind { STAND_HIND } else { STAND_FORE };
+    if sp.crown == Crown::Mane {
+        return skymane::shin_and_paw(p, sp, hind, swing - knee);
+    }
     shin_and_foot(p, sp, hind, [0.0, 0.0, 0.0], 0.0, swing - knee);
 }
 
@@ -1445,9 +1483,19 @@ pub enum Move {
     Dive,
     /// A great one climbing high and raining its element down all round the player
     Rain,
+    // The Skymane's own, see src\dragons\skymane.rs
+    /// Its forepaws raking down across in front of it, one and then the other
+    Rake,
+    /// Springing through the air onto the player, claws first
+    Pounce,
+    /// Rearing up and roaring, the holy light in it rolling out across the ground in rings, to be
+    /// jumped
+    Shockroar,
+    /// Its wings beaten forward, flinging a storm of feathers at the player
+    Featherstorm,
 }
 
-const MOVES: usize = 12;
+const MOVES: usize = 16;
 
 /// Something a dragon does: in the air or on the ground, from how near to how far in meters, how
 /// many seconds till it can again, getting ready and getting over it, from which phase of a great
@@ -1590,6 +1638,7 @@ fn skills(look: Look) -> &'static [Skill] {
         Look::GildscaleHoardwarden => &WARDEN,
         Look::WorldpyreAncient => &ANCIENT,
         Look::ElderWyrm => &ELDER,
+        Look::Skymane => &skymane::SKILLS,
         _ if is_drake(look) => &DRAKE,
         _ => &DRAKELING,
     }
@@ -1624,6 +1673,8 @@ fn budgets(look: Look, stage: u8) -> ([f64; 2], [f64; 2]) {
         Look::ElderWyrm => ([8.0, 11.0], [10.0, 14.0]),
         // A drake fights mostly on foot, and flies a while now and then
         _ if is_drake(look) => ([5.0, 8.0], [12.0, 18.0]),
+        // The Skymane fights on the ground mostly, and goes up only to come down on the player
+        Look::Skymane => ([4.0, 7.0], [11.0, 16.0]),
         _ => ([9.0, 14.0], [5.0, 8.0]),
     }
 }
@@ -1648,6 +1699,7 @@ fn flight(look: Look) -> Flight {
         Look::ElderWyrm => Flight { cruise: 12.0, dash: 21.0, orbit: 19.0, altitude: 12.0, turn: 1.3, accel: 9.0, beat: 1.15 },
         // Long in the wing, quick through the air, its beats slow and deep
         Look::StormDrake => Flight { cruise: 12.0, dash: 20.0, orbit: 17.0, altitude: 10.0, turn: 2.0, accel: 12.0, beat: 1.35 },
+        Look::Skymane => Flight { cruise: 11.5, dash: 20.0, orbit: 14.0, altitude: 9.0, turn: 2.1, accel: 12.0, beat: 1.5 },
         _ if is_drake(look) => Flight { cruise: 10.5, dash: 18.0, orbit: 15.0, altitude: 9.0, turn: 1.8, accel: 11.0, beat: 1.6 },
         _ => Flight { cruise: 12.0, dash: 22.0, orbit: 21.0, altitude: 13.0, turn: 1.2, accel: 9.0, beat: 1.1 },
     }
@@ -1670,6 +1722,8 @@ struct Power {
 
 fn power(look: Look) -> Power {
     match look {
+        // Its claws, its dive and its feathers; no breath, nor anything spat
+        Look::Skymane => Power { bite: 20.0, claw: 24.0, tail: 16.0, stomp: 28.0, crack: 0.0, breath: 0.0, ball: 0.0, rain: 0.0, gust: 6.0, push: 8.0 },
         _ if is_drakeling(look) => Power { bite: 11.0, claw: 13.0, tail: 12.0, stomp: 0.0, crack: 0.0, breath: 16.0, ball: 12.0, rain: 0.0, gust: 4.0, push: 7.0 },
         Look::WorldpyreAncient => Power { bite: 34.0, claw: 32.0, tail: 36.0, stomp: 38.0, crack: 22.0, breath: 28.0, ball: 22.0, rain: 20.0, gust: 11.0, push: 12.0 },
         // A raid boss's blows, a third again as hard as a drake's, as they always were
@@ -1702,7 +1756,7 @@ fn senses(look: Look) -> (f64, f64, f64) {
         Look::WorldpyreAncient => (80.0, 180.0, 260.0),
         Look::ElderWyrm => (34.0, 70.0, 90.0),
         // A little further than the bosses on foot, as it can fly after them
-        _ if is_drake(look) => (28.0, 58.0, 72.0),
+        _ if is_drake(look) || look == Look::Skymane => (28.0, 58.0, 72.0),
         _ => (55.0, 110.0, 160.0),
     }
 }
@@ -2185,7 +2239,7 @@ pub static FORCED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsi
 
 impl Move {
     /// Every move, in the order they're numbered
-    pub const ALL: [Move; MOVES] = [Bite, Tail, Breath, Gust, Stomp, Roar, Swoop, Strafe, Hover, Spit, Dive, Rain];
+    pub const ALL: [Move; MOVES] = [Bite, Tail, Breath, Gust, Stomp, Roar, Swoop, Strafe, Hover, Spit, Dive, Rain, Rake, Pounce, Shockroar, Featherstorm];
 
     /// The move called `name`, as it's written here, `breath` or `Swoop`
     pub fn named(name: &str) -> Option<Move> {
@@ -2227,7 +2281,7 @@ pub fn act(a: &mut Animal, d: &mut Dragon, world: &World, water: WaterLevel, pla
     d.recent = d.recent * (-dt / 1.5).exp() + lost;
     d.flinch = (d.flinch - here.dt).max(0.0);
     d.flinch_wait -= here.dt;
-    let heavy = a.max_health * if is_drakeling(look) { 0.07 } else if is_drake(look) { 0.018 } else { 0.006 };
+    let heavy = a.max_health * if is_drakeling(look) { 0.07 } else if is_drake(look) || look == Look::Skymane { 0.018 } else { 0.006 };
     if lost > heavy && a.health > 0.0 && d.flinch_wait <= 0.0 {
         flinch(d, (lost / heavy).min(3.0));
     }
@@ -2387,7 +2441,7 @@ fn notice(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here) {
     }
     // A drake hurt badly enough rears up and roars, enraged, and is quicker about everything after,
     // as every boss of its kind is
-    if boss.engaged && is_drake(h.look) && marks.is_empty() && !boss.enraged && a.vitality() < 0.5 && !busy {
+    if boss.engaged && (is_drake(h.look) || h.look == Look::Skymane) && marks.is_empty() && !boss.enraged && a.vitality() < 0.5 && !busy {
         boss.enraged = true;
         begin(d, h, Roar, true);
     }
@@ -2437,9 +2491,10 @@ fn begin(d: &mut Dragon, h: &Here, m: Move, forced: bool) {
     match m {
         Hover => d.again = 2,
         Stomp | Dive => {
-            // The ground's to crack open straight at the player and fanned out either side
+            // The ground's to crack open straight at the player and fanned out either side, but
+            // for under the Skymane, which has no fire in it
             let at = toward.y.atan2(toward.x);
-            let n = if h.look == ULTRA { 6 } else { 4 };
+            let n = if h.look == ULTRA { 6 } else if h.look == Look::Skymane { 0 } else { 4 };
             for k in 0..6 {
                 d.cracks[k] = if k < n { at + (k as f64 - (n - 1) as f64 * 0.5) * 0.55 + (d.roll() - 0.5) * 0.2 } else { f64::NAN };
             }
@@ -3038,6 +3093,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     }
                     mark(boss, Vector3::new(d.aim.x, d.aim.y, ground_of(h, d.aim)), stomp_r * 1.15, 1.0 - 0.7 * t / wind);
                 }
+                Rake | Pounce | Shockroar | Featherstorm => skymane::wind(m, t, wind, d, h, boss, goal, want, wings),
                 Rain => {
                     // Climbing high, rearing back and roaring at the sky
                     let e = ease(p);
@@ -3197,7 +3253,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     if !d.struck {
                         d.struck = true;
                         let brood = brood(h.look).filter(|_| d.stage >= if h.look == ULTRA { 2 } else { 1 }).map(|b| (b, if h.look == ULTRA { 3 } else { 2 }));
-                        let angry = is_drake(h.look) && phases(h.look).is_empty() && boss.enraged;
+                        let angry = (is_drake(h.look) || h.look == Look::Skymane) && phases(h.look).is_empty() && boss.enraged;
                         act_out(boss, Act::Roar { at: d.mouth, brood, first: false, angry });
                     }
                     done = t >= length;
@@ -3347,6 +3403,7 @@ fn think(a: &mut Animal, d: &mut Dragon, boss: &mut Boss, h: &Here, goal: &mut G
                     }
                     done = false;
                 }
+                Rake | Pounce | Shockroar | Featherstorm => done = skymane::act(m, t, d, h, boss, goal, want, wings),
                 Rain => {
                     let (length, every) = rain_of(h.look, boss.stage);
                     let spread = if h.look == ULTRA { 18.0 } else if is_drake(h.look) && boss.stage == 0 { 6.0 } else { 13.0 };
@@ -4034,6 +4091,25 @@ pub fn roost(material: u8, z: f64, height: f64) -> bool {
 
 #[cfg(test)]
 mod sheets;
+
+/// The Skymane, a lion on wings of feathers: its shapes and its own moves
+mod skymane;
+
+/// The moves of a dragon's own that no other dragon makes: the Skymane's, see skymane.rs
+#[cfg(test)]
+pub fn own_moves(look: Look) -> Vec<Move> {
+    if look == Look::Skymane { skymane::OWN.to_vec() } else { Vec::new() }
+}
+
+/// The light of what dragon `a` is gathering or letting loose of its element, if it's at that and
+/// it's of its own moves: where, in voxels, of what and how bright, 0 to 1, see bosses::glow()
+pub fn glow(a: &Animal) -> Option<(Vector3<f64>, Element, f64)> {
+    let d = a.dragon.as_ref()?;
+    if a.look != Look::Skymane || a.health <= 0.0 {
+        return None;
+    }
+    skymane::glow(d).map(|(at, strength)| (at, element(a.look), strength))
+}
 
 #[cfg(test)]
 mod tests {

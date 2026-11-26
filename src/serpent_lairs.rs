@@ -40,6 +40,12 @@ fn free_roam_lair(settings: &TerrainSettings, cell: [i64; 2]) -> Option<(Look, [
             let near = [(cell[0] as f64 + 0.2 + 0.6 * fx) * FREE_ROAM_CELL, (cell[1] as f64 + 0.2 + 0.6 * fy) * FREE_ROAM_CELL];
             let spot = serpents::water_near(settings, near, 180.0, 1.5, 24.0)?;
             let cold = worldgen::climate(settings, spot[0] as f32, spot[1] as f32).snow > 0.5;
+            // A kraken in a third of the rest, or a squid where the water's not so deep, see
+            // bosses::kraken::for_water()
+            if !cold && (roll >> 24) % 3 == 0 {
+                let depth = -worldgen::seen_from_above(settings, spot[0] as f32, spot[1] as f32).unwrap_or(0.0) as f64;
+                return Some((crate::bosses::kraken::for_water(depth, roll), spot));
+            }
             Some((if cold { Look::Shatterfang } else { Look::Meremaw }, spot))
         })
         .flatten();
@@ -143,7 +149,7 @@ impl App {
                 .found
                 .iter()
                 .filter_map(|(name, spot)| {
-                    let look = Look::ALL.into_iter().find(|l| l.is_great_serpent() && l.name() == name)?;
+                    let look = Look::ALL.into_iter().find(|l| (l.is_great_serpent() || l.is_kraken()) && l.name() == name)?;
                     let mut key = key_of(*spot);
                     if look.is_ultra() {
                         key[2] = serpents::ULTRA_KEY;

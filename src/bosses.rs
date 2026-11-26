@@ -13,6 +13,12 @@ use crate::worldgen::{World, is_passable};
 
 /// The bosses added for where there were fewest: what they are and their own moves
 pub mod roster;
+/// The bosses of the wild places: what they are, see kraken.rs and wyrms.rs for how they fight
+pub mod wilds;
+/// The Tidewrack Kraken and the Grotto Squid: their bodies and their moves
+pub mod kraken;
+/// The wyrms that bore through the ground: their moves
+pub mod wyrms;
 
 /// How near the player has to come before a boss turns on them, and how far off they can get
 /// before it gives up, in meters
@@ -122,9 +128,45 @@ pub enum Move {
     Rimestomp,
     /// The Gilded Sphinx sitting up with the sun in its eyes, jets of fire wheeling round it
     Sunwheel,
+    // The moves of the bosses of src\bosses\wilds.rs
+    /// The Tidewrack Kraken's arms bursting up out of the water all round the player, to slam down
+    /// where they showed
+    Lashrise,
+    /// A tentacle flung out to seize the player and drag them in to its beak
+    Ensnare,
+    /// A cloud of ink squirted over the player, blinding them
+    Inkveil,
+    /// Water jetted out of its siphon in a stream, knocking the player back
+    Brinejet,
+    /// The water spun round it in a whirlpool, drawing whoever's in it in to its beak
+    Maelstrom,
+    /// A wyrm arcing up out of the ground through the air over the player, to plunge back into it
+    /// beyond them
+    Breach,
+    /// A wyrm's tail swept round low across the ground, to be jumped
+    Thrash,
+    /// A wyrm spewing its element up out of its maw, to come down all round the player where it
+    /// shows
+    Spout,
+    /// The Aeolith hurling its great ring at the player like a discus: spinning out to come down
+    /// where it shows, bursting, and sweeping back to it
+    Ringcast,
+    /// The Aeolith's rings laid level and spun up into a whirlwind that draws the player in, then
+    /// bursting out from it
+    Gyre,
+    /// The Aeolith's stone shards raised high over it and flung down on and round the player
+    Shardfall,
+    /// The Stormbell swelling dark and raining lightning from its rim where it shows round the player,
+    /// and once more where they've gone
+    Staticfall,
+    /// The Stormbell's tendrils lashed out at the player, lightning running on along the ground
+    Thunderlash,
+    /// The Stormbell drawing its tendrils up and charging till it crackles, then letting it all go in
+    /// rings of lightning running out over the ground round it
+    Overcharge,
 }
 
-const MOVES: usize = 41;
+const MOVES: usize = 55;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -170,6 +212,20 @@ impl Move {
         Move::Pounce,
         Move::Rimestomp,
         Move::Sunwheel,
+        Move::Lashrise,
+        Move::Ensnare,
+        Move::Inkveil,
+        Move::Brinejet,
+        Move::Maelstrom,
+        Move::Breach,
+        Move::Thrash,
+        Move::Spout,
+        Move::Ringcast,
+        Move::Gyre,
+        Move::Shardfall,
+        Move::Staticfall,
+        Move::Thunderlash,
+        Move::Overcharge,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -236,6 +292,9 @@ pub enum Deed {
     Spit { from: Vector3<f64>, to: Vector3<f64> },
     /// Breathing fire for `dt` seconds
     Breath { from: Vector3<f64>, direction: Vector3<f64>, dt: f64 },
+    /// A jet of its element roaring out for `dt` seconds, as a breath but thicker and brighter, to
+    /// be seen in full sun: the Gilded Sphinx's, wheeling round it
+    Jet { from: Vector3<f64>, direction: Vector3<f64>, dt: f64 },
     /// Charging into the player, who's thrown along `direction`
     Ram { damage: f64, direction: Vector3<f64> },
     /// A heavy footfall
@@ -303,6 +362,11 @@ pub enum Deed {
     /// Its element, or a burning `rock` of it, lobbed from `from` to come down on `to` in `time`
     /// seconds, its ring showing where, hurting what's within `radius` meters for `damage`
     Lob { from: Vector3<f64>, to: Vector3<f64>, time: f64, damage: f64, radius: f64, rock: bool },
+    /// What a kraken or a squid does that no other boss does, see src\bosses\kraken.rs
+    Kraken(kraken::Act),
+    /// Wind whirling round `at` for `dt` seconds, out to `reach` meters, drawing whoever's within it
+    /// in towards it, `pull` meters a second at the most
+    Gust { at: Vector3<f64>, reach: f64, pull: f64, dt: f64 },
 }
 
 /// What the Earthbreaker Colossus has hold of, tearing a boulder up out of the ground to throw
@@ -405,6 +469,8 @@ pub struct Boss {
     pub dying: Option<f64>,
     /// A great serpent's long body, see serpents::Coils
     pub coils: Option<Box<serpents::Coils>>,
+    /// A kraken's or a squid's body and arms, see kraken::Body
+    pub kraken: Option<Box<kraken::Body>>,
     /// Where a great serpent's coiling round, in voxels, how far round it started in meters, and
     /// which way round it's going, 1 or -1
     ring: (Vector3<f64>, f64, f64),
@@ -567,6 +633,8 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Thunderclap) => 1.1,
         (_, Move::Bellow) => 0.8,
         (_, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) => roster::timing(look, m).0,
+        (_, Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout) => wilds::timing(look, m).0,
+        (_, Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge) => roster::sky::timing(look, m).0,
     }
 }
 
@@ -613,6 +681,8 @@ fn duration(look: Look, m: Move) -> f64 {
         // A pounce is a leap, see leap()
         Move::Pounce => leap(look).0,
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).1,
+        Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).1,
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).1,
     }
 }
 
@@ -674,6 +744,8 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Thunderclap => 1.0,
         Move::Bellow => 0.7,
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).2,
+        Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).2,
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).2,
     }
 }
 
@@ -738,6 +810,8 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Thunderclap => 9.0,
         Move::Bellow => 8.0,
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).3,
+        Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).3,
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).3,
     }
 }
 
@@ -785,6 +859,7 @@ fn closeness(look: Look) -> (f64, f64) {
         _ if look.is_serpent() => (1.8, 1.6),
         // A great serpent's head stops short of the player, its jaws reaching the rest
         _ if look.is_great_serpent() => serpents::great_of(look).map_or((4.0, 3.0), |g| (g.head + 2.0 + 0.6 * g.girth, g.head + 1.0)),
+        _ if look.is_kraken() => kraken::closeness(look),
         _ => (3.0, look.body().1 + 1.0),
     }
 }
@@ -844,6 +919,7 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::HollowMother => (3.4, 3.8, 36.0, 0.0),
         Look::BleedingHart => (3.4, 3.6, 36.0, 0.9),
         _ if roster::has(look) => roster::slam(look),
+        _ if look.is_kraken() => kraken::slam(look),
         // A raid boss's blows reach as far further as it's bigger, and hit harder still
         _ if look.is_raid() => {
             let base = if look == Look::CryptTitan { Look::GraveKnight } else if look.build() == Some(Build::Golem) { Look::Golem } else { Look::Drake };
@@ -1036,6 +1112,7 @@ pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
         Look::HollowMother => &["scythe", "whip", "tome", "dagger"],
         Look::BleedingHart => &["spear", "bow", "halberd", "whip"],
         _ if roster::has(look) => roster::taste(look),
+        _ if wilds::has(look) => wilds::taste(look),
         _ => match look.build() {
             Some(Build::Golem) => &["hammer", "maul", "flail"],
             Some(Build::Bear) => &["axe", "hammer", "maul"],
@@ -1054,6 +1131,12 @@ pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
 pub fn repertoire(look: Look) -> Vec<Move> {
     let boss = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
     let mut moves: Vec<Move> = boss.menu().iter().map(|&(m, _, _)| m).collect();
+    // What a burrower lying in wait does once it's up out of the ground too
+    if boss.buried {
+        let mut up = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
+        up.buried = false;
+        moves.extend(up.menu().iter().map(|&(m, _, _)| m).filter(|m| !moves.contains(m)).collect::<Vec<_>>());
+    }
     if look.is_raid() {
         let mut later = boss;
         later.stage = 2;
@@ -1134,6 +1217,7 @@ impl Boss {
             crumble: 2.0,
             dying: None,
             coils: serpents::Coils::new(look).map(Box::new),
+            kraken: kraken::Body::new(look).map(Box::new),
             ring: (home, 0.0, 1.0),
             only: None,
             stuck: 0.0,
@@ -1247,6 +1331,9 @@ impl Boss {
         if let Some(coils) = &mut self.coils {
             coils.recenter(shift);
         }
+        if let Some(body) = &mut self.kraken {
+            body.recenter(shift);
+        }
     }
 
     /// Gives up the fight, as when the player's beaten, and goes home. Partway through a leap, it
@@ -1327,6 +1414,7 @@ impl Boss {
             _ if self.look == Look::Elderhorn => &[(Move::Bellow, 0.0, 6.0), (Move::Slam, 0.0, 4.2), (Move::Maul, 2.5, 7.0), (Move::Trample, 7.0, 30.0), (Move::Volley, 8.0, 30.0)],
             // And those of src\bosses\roster.rs
             _ if roster::has(self.look) => roster::menu(self.look),
+            _ if self.look.is_kraken() => kraken::menu(self.look),
             // Monsters bite or swing at what's in reach, and some pounce
             Some(Build::Wolf) if monster => &[(Move::Slam, 0.0, 2.2), (Move::Leap, 4.0, 11.0)],
             Some(Build::Spider) if monster => &[(Move::Slam, 0.0, 1.5), (Move::Leap, 3.5, 9.0)],
@@ -1376,7 +1464,7 @@ impl Boss {
             Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
             // Only ever monsters, all seen to above; and dragons, avians and gargoyles, which think
             // for themselves, see src\dragons.rs and src\avians.rs
-            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon | Build::Winged | Build::Fish) | None => &[],
+            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon | Build::Winged | Build::Kraken | Build::Fish) | None => &[],
         }
     }
 
@@ -1472,6 +1560,9 @@ impl Boss {
             Look::DriftSerpent if self.buried => (0.75, 2.5),
             Look::GaleSerpent if diving => (1.05, 6.0),
             Look::GaleSerpent => (0.0, 3.0),
+            // A kraken lying in wait sunk under the water, rising slowly up out of it once it's roused
+            Look::Kraken | Look::GrottoSquid if !self.engaged => (2.2 * kraken::size(self.look), 0.8),
+            Look::Kraken | Look::GrottoSquid => (0.0, 1.4),
             _ => (0.0, 6.0),
         }
     }
@@ -1534,6 +1625,10 @@ impl Boss {
             };
         }
         let air = g.medium == serpents::Medium::Air;
+        // A wyrm's own moves, see wyrms.rs
+        if let Some(pose) = wyrms::has(self.look).then(|| wyrms::pose(self.phase, r)).flatten() {
+            return pose;
+        }
         match self.phase {
             Phase::Roam => (0.3 * r, 0.0, 0.0),
             Phase::Chase => (1.2 * r, 0.12, 0.0),
@@ -1652,6 +1747,8 @@ impl Boss {
 /// something; a raid boss's Summon and Cataclysm only once it's hurt, see unlocked()
 fn great_moves(look: Look, buried: bool, stage: u8) -> &'static [(Move, f64, f64)] {
     match look {
+        // The wyrms, see wyrms.rs
+        _ if wyrms::has(look) => wyrms::moves(buried),
         // Coming up under the player, where it's shown on the ground a moment before
         Look::Meremaw | Look::Shatterfang | Look::Hollowtide if buried => &[(Move::Erupt, 0.0, 6.5)],
         Look::Ysveth if buried => &[(Move::Erupt, 0.0, 9.0)],
@@ -1710,6 +1807,8 @@ fn mouth(a: &Animal, vpm: f64) -> Vector3<f64> {
         Some(Build::Boar) => [1.3, 0.0, 0.62],
         // Its snout, reared up to spit, see serpents::mouth()
         Some(Build::Serpent) => serpents::mouth(a.look),
+        // Already as big as it is
+        Some(Build::Kraken) => return on_body(a, kraken::mouth(a.look), vpm),
         _ => [2.3, 0.0, 1.55],
     };
     on_body(a, point.map(|v| v * a.look.scale()), vpm)
@@ -1867,6 +1966,7 @@ fn moment(a: &Animal, boss: &Boss, player: Option<Vector3<f64>>, vpm: f64, dt: f
         turning: a.turning(),
         doing: if a.health > 0.0 { boss.doing() } else { None },
         target: player.map(|p| local(p + Vector3::new(0.0, 0.0, 1.5 * vpm))),
+        aim: boss.doing().map(|_| local(boss.aim)),
         engaged: boss.engaged,
         enraged: boss.enraged,
         stage: boss.stage,
@@ -1890,6 +1990,10 @@ pub fn elemental(m: Move, element: Option<Element>) -> bool {
     };
     match m {
         Move::Breath | Move::Spit | Move::Storm | Move::Cataclysm | Move::Hex | Move::Weep | Move::Gloomgate | Move::Slagrain | Move::Vents | Move::Hoofbrand | Move::Sunwheel | Move::Thunderclap | Move::Blink | Move::Rimestomp | Move::Avalanche => true,
+        Move::Inkveil | Move::Maelstrom | Move::Spout => true,
+        // The Sky Isles' own: the Aeolith's runes blazing as it flings its ring, spins its gyre and
+        // calls its shards down, the Stormbell crackling as it rains, lashes and lets go
+        Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => true,
         Move::Slam | Move::Quake => e == Element::Fire,
         _ => false,
     }
@@ -1979,6 +2083,20 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
         a.boss = Some(boss);
         return;
     }
+    // A kraken's: rearing up with a last cry, then sinking away under the water, its arms trailing,
+    // see kraken::pose()
+    if a.health <= 0.0 && look.is_kraken() {
+        let t = boss.dying.map_or(0.0, |t| t + dt);
+        if boss.dying.is_none() {
+            boss.deeds.push(Deed::WindUp(Move::Roar, a.position));
+        }
+        boss.dying = Some(t);
+        boss.phase = Phase::Recover(1.0);
+        a.mood = Mood::Idle;
+        a.speed = 0.0;
+        a.boss = Some(boss);
+        return;
+    }
     // A great serpent's: rearing up with a last cry, crashing down, the ground shaking, thrashing,
     // then sinking away into the ground or the water, or falling out of the sky
     if a.health <= 0.0 && look.is_great_serpent() {
@@ -2002,6 +2120,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             let fallen = if g.medium == serpents::Medium::Air { -g.hover + 0.2 } else { -0.6 * g.girth };
             (coils.lift_to, coils.gape_to) = if t < 0.8 { (3.6 * g.girth, 1.0) } else { (fallen, 0.35) };
             coils.tail = None;
+            (coils.soar, coils.sweep) = (false, None);
             coils.sunk_to = if t > 1.4 { 3.0 * g.girth + 0.5 } else { 0.0 };
         }
         a.boss = Some(boss);
@@ -2044,6 +2163,8 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
         // A great serpent rises to whoever comes near its lair, and follows them a long way
         Look::Ysveth => (60.0, 140.0, 160.0),
         _ if look.is_great_serpent() => (26.0, 60.0, 75.0),
+        // A kraken out in the deep water sees whoever comes down to the shore
+        _ if look.is_kraken() => (34.0, 60.0, 75.0),
         Look::Wolf => (22.0, 34.0, 50.0),
         Look::Spiderling => (14.0, 24.0, 32.0),
         // Keeping watch with a crossbow, they see further
@@ -2379,6 +2500,15 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                 let whole = windup(look, m) * quick.max(0.8) + boss.hold;
                 roster::winding(m, t, whole, a, &mut boss, forward, vpm);
             }
+            // And those of wilds.rs
+            if kraken::owns(m) {
+                let whole = windup(look, m) * quick.max(0.8) + boss.hold;
+                kraken::winding(m, t, whole, a, &mut boss, vpm);
+            }
+            if wyrms::owns(m) {
+                let whole = windup(look, m) * quick.max(0.8) + boss.hold;
+                wyrms::winding(m, t, whole, a, &mut boss, world, forward, vpm);
+            }
             // Where a knight's blow will land, showing on the ground, the ring closing in on it
             // as it comes: in front of it, all round it, or where it'll leap to
             if look.is_knight() {
@@ -2494,8 +2624,13 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         let (_, _, damage, _) = slam(look);
                         boss.deeds.push(Deed::Erupt { at: a.position });
                         // The frost serpent breaks a hole up through the ice
-                        let crater = if look == Look::Shatterfang { 1.7 } else { 0.0 };
+                        // and a wyrm breaks up out of the ground, rocks flying, see wyrms.rs
+                        let crater = if look == Look::Shatterfang { 1.7 } else if wyrms::has(look) { wyrms::UPHEAVAL_CRATER } else { 0.0 };
                         boss.deeds.push(Deed::Slam { at: boss.aim, radius: erupt_radius(look), damage, crater });
+                        if wyrms::has(look) {
+                            let aim = boss.aim;
+                            wyrms::erupted(a, &mut boss, aim, vpm);
+                        }
                         if look.is_great_serpent() {
                             a.heading = heading_to(a.position, boss.aim) + PI;
                             a.target_heading = a.heading;
@@ -2679,6 +2814,9 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         }
                     }
                     Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::begin(m, a, &mut boss, player, forward, vpm),
+                    Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom => kraken::begin(m, a, &mut boss, forward, vpm),
+                    Move::Breach | Move::Thrash | Move::Spout => wyrms::begin(m, a, &mut boss, world, forward, vpm),
+                    Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::begin(m, a, &mut boss, player, forward, vpm),
                 }
                 Phase::Act(m, 0.0)
             }
@@ -2781,6 +2919,9 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     }
                 }
                 Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::during(m, t, dt, a, &mut boss, player, vpm),
+                Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom => kraken::during(m, t, dt, a, &mut boss, player, vpm),
+                Move::Breach | Move::Thrash | Move::Spout => wyrms::during(m, t, dt, a, &mut boss, player, vpm),
+                Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::during(m, t, dt, a, &mut boss, player, vpm),
                 // A knight's greatsword sweeping round low: out of the crouch across in front,
                 // then on round with its whole body, all the way round once, or twice when it's
                 // angry, hitting whoever's within its reach and not jumping as it passes them.
@@ -2967,6 +3108,10 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
     // Lying in wait under the ice or deep in the water, the whole of it under; and the Coil Unending
     // circling half under the water at first
     let waiting = boss.buried && boss.phase == Phase::Roam;
+    if wyrms::has(look) {
+        let phase = boss.phase;
+        wyrms::settle(phase, &mut boss, dt);
+    }
     let circling = look.is_ultra() && boss.stage == 0 && boss.phase == Phase::Chase;
     if let Some(coils) = &mut boss.coils {
         (coils.lift_to, coils.gape_to, coils.dive_to) = (lift, gape, dive);
@@ -2983,6 +3128,9 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
 /// Where what boss `a` spits, sprays or breathes comes out of it: a great serpent's snout, see
 /// serpents::Coils, or its mouth
 fn spout(a: &Animal, boss: &Boss, vpm: f64) -> Vector3<f64> {
+    if let Some(body) = boss.kraken.as_deref().filter(|b| b.placed()) {
+        return body.siphon;
+    }
     boss.coils.as_ref().map_or_else(|| mouth(a, vpm), |c| c.snout(vpm))
 }
 

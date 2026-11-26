@@ -1,0 +1,29 @@
+{
+  "what": "Skymane, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    43,
+    25,
+    25
+  ],
+  "pivot": [
+    21.0,
+    12.4823484649356,
+    10.348800000000002
+  ],
+  "anchor": [
+    0.03125,
+    0.0011032209415250405,
+    -0.6468000000000002
+  ],
+  "origin": [
+    -21,
+    -12,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    45055,
+    "cc5757e65a16230e"
+  ]
+}

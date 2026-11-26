@@ -1,0 +1,29 @@
+{
+  "what": "Caldera Wyrm, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    68,
+    51,
+    48
+  ],
+  "pivot": [
+    19.871999999999996,
+    25.434239280888814,
+    20.608
+  ],
+  "anchor": [
+    0.8830000000000002,
+    0.004110044944449109,
+    -1.288
+  ],
+  "origin": [
+    -20,
+    -25,
+    -21
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    269704,
+    "f2a615ebf9acb52a"
+  ]
+}

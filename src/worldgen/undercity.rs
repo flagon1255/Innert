@@ -251,6 +251,22 @@ impl Terrain {
         (objects, rects, shafts)
     }
 
+    /// Where the fallen cities reaching into rectangle `r` are, each x0, y0, x1, y1 in meters, as
+    /// the ravines that give way to them see them, see ravines.rs
+    pub(super) fn cities_near(&self, r: [f32; 4], cache: &RiverCache) -> Vec<[f32; 4]> {
+        let first = [0, 1].map(|i| ((r[i] - CITY_REACH) / CITY_CELL).floor() as i32);
+        let last = [0, 1].map(|i| ((r[i + 2] + CITY_REACH) / CITY_CELL).floor() as i32);
+        let mut found = Vec::new();
+        for cy in first[1]..=last[1] {
+            for cx in first[0]..=last[0] {
+                if let Some(city) = self.undercity_in(cx, cy, cache).filter(|c| overlaps(c.bounds, r, 0.0)) {
+                    found.push(city.bounds);
+                }
+            }
+        }
+        found
+    }
+
     /// The nearest fallen city to `near` within a few kilometers, for trying them out
     #[allow(dead_code)]
     pub fn nearest_undercity(&self, near: [f32; 2]) -> Option<Sunken> {

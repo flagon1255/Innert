@@ -1,0 +1,29 @@
+{
+  "what": "Caldera Wyrm, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    56,
+    40,
+    48
+  ],
+  "pivot": [
+    27.599999999999998,
+    19.872,
+    20.24
+  ],
+  "anchor": [
+    0.025000000000000133,
+    0.008000000000000007,
+    -1.265
+  ],
+  "origin": [
+    -28,
+    -20,
+    -20
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    194219,
+    "fd1938408bb0f64c"
+  ]
+}
