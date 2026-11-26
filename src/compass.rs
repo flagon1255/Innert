@@ -323,7 +323,7 @@ pub fn draw_compass(ctx: &egui::Context, bearing: &Bearing) {
     let lift = if bearing.raised { 82.0 } else { 0.0 };
     let middle = pos2(screen.center().x, screen.bottom() - 74.0 - lift);
     let strip = Rect::from_center_size(middle, vec2(width, 24.0));
-    painter.rect_filled(strip, 12.0, Color32::from_black_alpha(120));
+    crate::theme::hud_panel(&painter, strip, 12.0);
     let x_of = |turn: f64| middle.x + (turn / COMPASS_SPAN) as f32 * width * 0.5;
     for k in 0..16 {
         let way = k as f64 * FRAC_PI_4 / 2.0;

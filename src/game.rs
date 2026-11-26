@@ -24,6 +24,7 @@ use crate::save;
 use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
 use crate::worldgen::{self, World, is_passable, material::*};
 use crate::serpents;
+use crate::theme;
 use crate::tools;
 
 /// What dragons breathe and leave burning, see src\dragons.rs
@@ -6541,25 +6542,28 @@ impl Game {
     fn level_hud(&self, painter: &egui::Painter, panel: Rect, pad: f32) {
         let (level, toward) = self.level();
         let shadow = Color32::from_black_alpha(160);
-        let blue = Color32::from_rgb(120, 200, 255);
+        // The gold of how far they are to the next level
+        let xp = Color32::from_rgb(240, 196, 100);
         let middle = pos2(panel.right() + 12.0 + 27.0, panel.center().y);
-        painter.circle_filled(middle, 27.0 + pad * 0.4, Color32::from_black_alpha(120));
-        painter.circle_filled(middle, 22.0, Color32::from_rgba_unmultiplied(40, 60, 90, 200));
+        let outer = 27.0 + pad * 0.4;
+        painter.circle_filled(middle, outer, theme::hud_fill());
+        painter.circle_stroke(middle, outer, Stroke::new(1.0f32, theme::BRONZE.gamma_multiply(0.75)));
+        painter.circle_filled(middle, 22.0, Color32::from_rgba_unmultiplied(46, 34, 22, 225));
+        painter.circle_stroke(middle, 22.0, Stroke::new(1.0f32, theme::BRONZE));
         // How far to the next, round it from the top
-        painter.circle_stroke(middle, 24.5, Stroke::new(3.0f32, Color32::from_white_alpha(28)));
+        painter.circle_stroke(middle, 25.0, Stroke::new(3.0f32, Color32::from_white_alpha(24)));
         if toward > 0.0 {
-            let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * toward as f32 * std::f32::consts::TAU).map(|a| middle + vec2(a.sin(), -a.cos()) * 24.5).collect();
-            painter.add(egui::Shape::line(points, Stroke::new(3.0f32, blue)));
+            let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * toward as f32 * std::f32::consts::TAU).map(|a| middle + vec2(a.sin(), -a.cos()) * 25.0).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(3.0f32, xp)));
         }
         let number = level.to_string();
-        painter.text(middle + vec2(1.0, 4.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), shadow);
-        painter.text(middle + vec2(0.0, 3.0), Align2::CENTER_CENTER, &number, FontId::proportional(21.0), Color32::WHITE);
-        painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", FontId::proportional(9.0), Color32::from_white_alpha(170));
+        painter.text(middle + vec2(1.0, 5.0), Align2::CENTER_CENTER, &number, theme::display(20.0), shadow);
+        painter.text(middle + vec2(0.0, 4.0), Align2::CENTER_CENTER, &number, theme::display(20.0), Color32::WHITE);
+        painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", theme::display(8.5), theme::HEADING.gamma_multiply(0.85));
         // Who's playing, and as what, beside it
         let name = &self.character.name;
         let at = pos2(middle.x + 33.0, middle.y - 8.0);
-        painter.text(at + vec2(1.0, 1.0), Align2::LEFT_CENTER, name, FontId::proportional(15.0), shadow);
-        painter.text(at, Align2::LEFT_CENTER, name, FontId::proportional(15.0), Color32::WHITE);
+        theme::shadowed(painter, at, Align2::LEFT_CENTER, name, theme::display(15.0), theme::HEADING);
         let [r, g, b] = self.character.class.color();
         let class = format!("{} · {}", self.character.class.name(), self.character.difficulty.name());
         painter.text(at + vec2(1.0, 17.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), shadow);
@@ -6572,12 +6576,12 @@ impl Game {
             // From the badge's left on, clear of the gold under the panel
             let at = pos2(middle.x - 26.0, middle.y + 34.0);
             painter.text(at + vec2(1.0, 1.0), Align2::LEFT_TOP, &text, FontId::proportional(13.0), shadow);
-            painter.text(at, Align2::LEFT_TOP, &text, FontId::proportional(13.0), Color32::from_rgb(140, 220, 255).gamma_multiply(pulse));
+            painter.text(at, Align2::LEFT_TOP, &text, FontId::proportional(13.0), theme::INFO.gamma_multiply(pulse));
         }
         // And along the foot of the panel
         let bar = Rect::from_min_size(pos2(panel.left() + 12.0, panel.bottom() - 5.0), vec2(panel.width() - 24.0, 3.0));
-        painter.rect_filled(bar, 1.5, Color32::from_white_alpha(22));
-        painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * toward as f32, bar.height())), 1.5, blue.gamma_multiply(0.85));
+        painter.rect_filled(bar, 1.5, Color32::from_black_alpha(90));
+        theme::gradient(painter, Rect::from_min_size(bar.min, vec2(bar.width() * toward as f32, bar.height())), theme::lighter(xp, 0.3), theme::darker(xp, 0.75));
 
         // Just gone up a level
         let t = self.levelled as f32;
@@ -6630,9 +6634,12 @@ impl Game {
         };
         let aloft = self.aloft.unwrap_or_default();
         let tint = self.wings_color(k);
-        painter.rect_filled(rect.expand(pad), 12.0, Color32::from_black_alpha(120));
-        painter.rect_filled(rect, 8.0, tint.gamma_multiply(if aloft.gliding { 0.5 } else { 0.18 }));
-        painter.rect_stroke(rect, 8.0, Stroke::new(if aloft.gliding { 2.5f32 } else { 1.5 }, tint), StrokeKind::Inside);
+        theme::hud_panel(painter, rect.expand(pad), 12.0);
+        theme::slot(painter, rect, Some(tint), false);
+        if aloft.gliding {
+            painter.rect_filled(rect, 7.0, tint.gamma_multiply(0.35));
+            painter.rect_stroke(rect, 7.0, Stroke::new(2.5f32, tint), StrokeKind::Inside);
+        }
         self.draw_icon(painter, Item::Wings(k), rect.center() + vec2(0.0, 2.0), slot * 0.62);
         painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, "Back", FontId::proportional(10.0), faint);
         let mut under = rect.bottom() + pad + 5.0;
@@ -6920,41 +6927,30 @@ impl Game {
         let bars_width = 170.0;
         let width = pad + slots_width + 20.0 + bars_width + pad;
         let panel = Rect::from_min_size(pos2(center.x - width / 2.0, screen.top() + 14.0), vec2(width, slot + 2.0 * pad));
-        painter.rect_filled(panel, 12.0, Color32::from_black_alpha(120));
+        theme::hud_panel(&painter, panel, 12.0);
 
         let left = panel.left() + pad;
         if self.slots.is_empty() {
             painter.text(pos2(left + slots_width / 2.0, panel.center().y), Align2::CENTER_CENTER, "Nothing yet", FontId::proportional(14.0), faint);
         }
+        // Each in its slot, edged in the colour of its rarity, the one in hand ringed in gold, with
+        // the key that picks it and how many there are
         for (i, &(item, count)) in self.slots.iter().enumerate().take(HOTBAR) {
             let rect = Rect::from_min_size(pos2(left + i as f32 * (slot + gap), panel.top() + pad), vec2(slot, slot));
-            let selected = i == self.selected;
-            let fill = match item {
-                Item::Weapon(w) => {
-                    let [r, g, b] = self.library.rarities[self.weapons[w].grade].color;
-                    Color32::from_rgba_unmultiplied(r, g, b, if selected { 70 } else { 34 })
-                }
-                Item::Wings(k) => self.wings_color(k).gamma_multiply(if selected { 0.3 } else { 0.15 }),
-                Item::Jewel(j) => crate::jewels::tint(j).gamma_multiply(if selected { 0.3 } else { 0.15 }),
-                _ => Color32::from_white_alpha(if selected { 40 } else { 14 }),
-            };
-            painter.rect_filled(rect, 8.0, fill);
-            if selected {
-                painter.rect_stroke(rect, 8.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
-            }
+            theme::slot(&painter, rect, self.slot_tint(item), i == self.selected);
             self.draw_icon(&painter, item, rect.center() - vec2(0.0, 2.0), slot * 0.58);
             if let Some(n) = item.shown(count) {
-                painter.text(rect.right_bottom() - vec2(5.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(13.0), Color32::WHITE);
+                theme::shadowed(&painter, rect.right_bottom() - vec2(5.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(13.0), Color32::WHITE);
             }
-            painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), faint);
+            theme::key_number(&painter, rect, &(i + 1).to_string());
         }
 
+        // Each bar framed, with how much there is on it
         let bars_left = left + slots_width + 20.0;
-        let bar = |y: f32, label: &str, fraction: f64, fill: Color32| {
-            painter.text(pos2(bars_left, y), Align2::LEFT_TOP, label, FontId::proportional(11.0), faint);
-            let back = Rect::from_min_size(pos2(bars_left + 52.0, y + 2.0), vec2(bars_width - 52.0, 9.0));
-            painter.rect_filled(back, 4.5, Color32::from_white_alpha(25));
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(back.width() * fraction.clamp(0.0, 1.0) as f32, 9.0)), 4.5, fill);
+        let bar = |y: f32, label: &str, fraction: f64, fill: Color32, value: String| {
+            painter.text(pos2(bars_left, y + 6.5), Align2::LEFT_CENTER, label, FontId::proportional(11.0), theme::TEXT.gamma_multiply(0.75));
+            let back = Rect::from_min_size(pos2(bars_left + 52.0, y + 1.0), vec2(bars_width - 52.0, 11.0));
+            theme::bar(&painter, back, fraction as f32, fill, Some(&value));
         };
         let hunger = if self.hunger > 25.0 { Color32::from_rgb(232, 160, 60) } else { Color32::from_rgb(200, 90, 40) };
         // Health turns green while poisoned and orange while burning, saying so
@@ -6969,12 +6965,16 @@ impl Game {
         } else {
             ("Health", Color32::from_rgb(225, 55, 60))
         };
-        bar(panel.top() + pad - 4.0, label, self.health / self.max_health(), fill);
-        bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger);
-        bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255));
+        let of = |now: f64, most: f64| format!("{:.0} / {:.0}", now.max(0.0).ceil(), most);
+        bar(panel.top() + pad - 4.0, label, self.health / self.max_health(), fill, of(self.health, self.max_health()));
+        bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger, format!("{:.0}", self.hunger.max(0.0).ceil()));
+        bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255), of(self.combat.mana, MAX_MANA));
         // Gold under the bars, and how much more there is in the pack under the quick bar
         let purse = pos2(panel.right() - 12.0, panel.bottom() + 5.0);
-        painter.circle_filled(purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5), 6.0, GOLD);
+        let coin = purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5);
+        painter.circle_filled(coin, 6.0, GOLD);
+        painter.circle_stroke(coin, 6.0, Stroke::new(1.0f32, theme::darker(GOLD, 0.55)));
+        painter.circle_filled(coin - vec2(1.5, 1.5), 1.8, Color32::from_rgb(255, 240, 190));
         painter.text(purse + vec2(1.0, 1.0), Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), shadow);
         painter.text(purse, Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), GOLD);
         if self.slots.len() > HOTBAR {
@@ -7044,9 +7044,15 @@ impl Game {
                 painter.text(left + vec2(1.0, 1.0), Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), shadow);
                 painter.text(left, Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), foe_level_tint(level, self.level));
             }
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(size), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(size), if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
-            painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
+            // Its name in the headings' font, over a bar framed in bronze with a gold diamond at
+            // either end
+            let font = theme::display(size - 1.0);
+            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, font.clone(), shadow);
+            painter.text(at, Align2::CENTER_BOTTOM, &title, font, if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
+            painter.rect(back.expand(2.0), 4.0, Color32::from_black_alpha(160), Stroke::new(1.0f32, theme::BRONZE), StrokeKind::Outside);
+            for end in [back.left() - 9.0, back.right() + 9.0] {
+                theme::diamond(&painter, pos2(end, back.center().y), 4.5, theme::ACCENT);
+            }
             if ward.is_some() {
                 let pulse = 0.6 + 0.4 * (self.combat.time() * 3.0).sin() as f32;
                 painter.rect_stroke(back.expand(4.0), 7.0, Stroke::new(2.0f32, warded.gamma_multiply(pulse)), StrokeKind::Outside);
@@ -7054,12 +7060,16 @@ impl Game {
             if flash > 0.0 {
                 painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
             }
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 2.0, Color32::from_rgb(255, 225, 150));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
             let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
             // A demi-boss's bar the colour of dusk, so it's not taken for a boss's
             let [r, g, b] = element.map_or(if demi { [150, 60, 190] } else { [190, 40, 35] }, |e| e.color().map(|c| (c as f32 * 0.85) as u8));
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(r), red(g), red(b)));
+            // Shaded light to dark down it, a glint along its top
+            let fill = Color32::from_rgb(red(r), red(g), red(b));
+            let left = Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height()));
+            theme::gradient(&painter, left, theme::lighter(fill, 0.2), theme::darker(fill, 0.62));
+            painter.line_segment([left.left_top() + vec2(0.0, 0.5), left.right_top() + vec2(0.0, 0.5)], Stroke::new(1.0f32, Color32::from_white_alpha(70)));
             // Where a raid boss goes into its next phases, marked across the bar
             let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {
                 crate::dragons::phases(foe)
@@ -7157,13 +7167,16 @@ impl Game {
         if let Some((_, weapon)) = self.held().filter(|_| !self.covered) {
             let rarity = &self.library.rarities[weapon.grade];
             let at = pos2(center.x, below);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), shadow);
-            painter.text(at, Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), color(rarity.color));
             let kind = &self.library.families[weapon.family].display_name;
             let detail = match self.combat.frenzy() {
                 Some((bonus, left)) => format!("{} {}  ·  Frenzy +{:.0}% ({:.0} s)", rarity.display_name, kind, bonus * 100.0, left.ceil()),
                 None => format!("{} {}", rarity.display_name, kind),
             };
+            // On a soft dark backing, so it reads over snow and sky at noon
+            let name = painter.layout_no_wrap(weapon.name.clone(), theme::display(17.0), Color32::WHITE).size().x;
+            let wide = name.max(galley_width(&painter, &detail, 12.0)) + 40.0;
+            painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 19.0), vec2(wide, 40.0)), 14.0, Color32::from_black_alpha(55));
+            theme::shadowed(&painter, at, Align2::CENTER_TOP, &weapon.name, theme::display(17.0), color(rarity.color));
             painter.text(at + vec2(0.0, 21.0), Align2::CENTER_TOP, detail, FontId::proportional(12.0), faint);
             below += 42.0;
             // What it's loaded with, how many are left, and how to switch
@@ -7189,9 +7202,7 @@ impl Game {
                 let tint = if ready { color(rarity.color) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(14.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(14.0), tint);
-                let back = Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0));
-                painter.rect_filled(back, 2.5, Color32::from_white_alpha(30));
-                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * charge, 5.0)), 2.5, color(rarity.color));
+                theme::bar(&painter, Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0)), charge, color(rarity.color), None);
                 below += 32.0;
             }
             // Its power on right click, filling as it comes ready again
@@ -7202,9 +7213,7 @@ impl Game {
                 let tint = if ready >= 1.0 { weapon.profile.element.map_or(color(rarity.color), |e| color(e.color())) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(13.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(13.0), tint);
-                let back = Rect::from_center_size(pos2(center.x, below + 20.0), vec2(150.0, 4.0));
-                painter.rect_filled(back, 2.0, Color32::from_white_alpha(30));
-                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * ready, 4.0)), 2.0, tint);
+                theme::bar(&painter, Rect::from_center_size(pos2(center.x, below + 20.0), vec2(150.0, 4.0)), ready, tint, None);
                 below += 28.0;
             }
         }
@@ -7411,31 +7420,25 @@ impl Game {
                     clicked = Some(action);
                 }
                 let painter = ui.painter();
-                let tint = match item {
-                    Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
-                    Item::Wings(k) => Some(self.wings_color(k)),
-                    Item::Jewel(j) => Some(crate::jewels::tint(j)),
-                    _ => None,
-                };
-                let fill = tint.map_or(Color32::from_white_alpha(if i < HOTBAR { 22 } else { 12 }), |c| c.gamma_multiply(if i < HOTBAR { 0.3 } else { 0.2 }));
-                painter.rect_filled(rect, 7.0, fill);
-                if let Some(c) = tint {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(1.0f32, c.gamma_multiply(0.8)), StrokeKind::Inside);
+                // The quick bar's row a little lighter than the pack's
+                let inspected = self.inspected == Some(i);
+                theme::slot(painter, rect, self.slot_tint(item), self.selected == i && !inspected);
+                if i < HOTBAR && self.slot_tint(item).is_none() {
+                    painter.rect_filled(rect, 7.0, Color32::from_white_alpha(8));
                 }
                 if response.hovered() {
                     painter.rect_filled(rect, 7.0, Color32::from_white_alpha(18));
+                    painter.rect_stroke(rect, 7.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.8)), StrokeKind::Inside);
                 }
-                if self.inspected == Some(i) {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, GOLD), StrokeKind::Inside);
-                } else if self.selected == i {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
+                if inspected {
+                    painter.rect_stroke(rect.expand(2.0), 9.0, Stroke::new(2.0f32, GOLD), StrokeKind::Inside);
                 }
                 self.draw_icon(painter, item, rect.center() - vec2(0.0, 1.0), cell * 0.56);
                 if let Some(n) = item.shown(count) {
-                    painter.text(rect.right_bottom() - vec2(4.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(12.0), Color32::WHITE);
+                    theme::shadowed(painter, rect.right_bottom() - vec2(4.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(12.0), Color32::WHITE);
                 }
                 if i < HOTBAR {
-                    painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
+                    theme::key_number(painter, rect, &(i + 1).to_string());
                 }
                 // No card while something's being dragged about, it'd only get in the way
                 let card = |ui: &mut egui::Ui| {
@@ -7549,15 +7552,29 @@ impl Game {
         self.cues.push(Cue::here(Sound::Equip, 0.5));
     }
 
-    /// The frame round an item's card: dark, edged in the color of a weapon's rarity
-    fn card_frame(&self, item: Item) -> egui::Frame {
-        let edge = match item {
-            Item::Weapon(w) => color(self.library.rarities[self.weapons[w].grade].color),
+    /// The colour a slot holding `item` is edged in: a weapon's rarity, wings' and a jewel's own,
+    /// and none for the rest
+    fn slot_tint(&self, item: Item) -> Option<Color32> {
+        match item {
+            Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
+            Item::Wings(k) => Some(self.wings_color(k)),
+            Item::Jewel(j) => Some(crate::jewels::tint(j)),
+            _ => None,
+        }
+    }
+
+    /// The colour an item's card is edged and ruled in: a weapon's rarity, gold's, wings' and a
+    /// jewel's own, bronze for the rest
+    fn card_edge(&self, item: Item) -> Color32 {
+        match item {
             Item::Gold(_) => GOLD,
-            Item::Jewel(j) => crate::jewels::tint(j),
-            _ => Color32::from_gray(150),
-        };
-        egui::Frame::new().fill(Color32::from_rgba_unmultiplied(14, 16, 22, 232)).stroke(Stroke::new(1.5f32, edge)).corner_radius(8.0).inner_margin(12.0)
+            _ => self.slot_tint(item).unwrap_or(theme::BRONZE),
+        }
+    }
+
+    /// The frame round an item's card: deep, edged in the color of a weapon's rarity
+    fn card_frame(&self, item: Item) -> egui::Frame {
+        theme::panel(12.0, 8.0).stroke(Stroke::new(1.5f32, self.card_edge(item)))
     }
 
     /// Everything about `item`, `count` of them: what it is, what it does, and what it's worth. A

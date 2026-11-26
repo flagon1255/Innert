@@ -370,7 +370,7 @@ pub fn hud(ctx: &egui::Context, note: Option<&str>) {
     };
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("hearth")));
     let at = ctx.screen_rect().center() + egui::vec2(0.0, 120.0);
-    painter.rect_filled(egui::Rect::from_center_size(at + egui::vec2(0.0, 9.0), egui::vec2(300.0, 52.0)), 8.0, egui::Color32::from_black_alpha(140));
+    crate::theme::hud_panel(&painter, egui::Rect::from_center_size(at + egui::vec2(0.0, 9.0), egui::vec2(300.0, 52.0)), 8.0);
     for (k, line) in note.lines().enumerate() {
         let color = if k == 0 { egui::Color32::from_rgb(255, 190, 120) } else { egui::Color32::from_gray(225) };
         painter.text(at + egui::vec2(0.0, k as f32 * 19.0), egui::Align2::CENTER_CENTER, line, egui::FontId::proportional(if k == 0 { 16.0 } else { 14.0 }), color);
