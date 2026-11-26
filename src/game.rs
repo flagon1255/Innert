@@ -308,6 +308,22 @@ pub static HOLD_LEVEL_UP: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// Seconds the moment of going up a level shows for, see Game::level_hud()
 const LEVEL_UP_SECONDS: f32 = 3.2;
 
+/// The words over a boss's bar, all in `color`: its `name` in blackletter, a good deal bigger than
+/// `size`, what `kind` it is before it and a `note` on how it stands after it, as "enraged", in the
+/// headings' font smaller, so the name's what's seen first and the rest still reads
+fn boss_title(kind: &str, name: &str, note: &str, size: f32, color: Color32) -> egui::text::LayoutJob {
+    let small = egui::text::TextFormat::simple(theme::display(size - 5.0), color);
+    let mut job = egui::text::LayoutJob::default();
+    if !kind.is_empty() {
+        job.append(&format!("{kind}  ·  "), 0.0, small.clone());
+    }
+    job.append(name, 0.0, egui::text::TextFormat::simple(theme::blackletter(size + 7.0), color));
+    if !note.is_empty() {
+        job.append(&format!("  —  {note}"), 0.0, small);
+    }
+    job
+}
+
 /// The color a foe's level is shown in, by how it stands to the player's `player`: red well over,
 /// orange over, white the same, grey under
 fn foe_level_tint(level: u32, player: u32) -> Color32 {
@@ -7089,14 +7105,15 @@ impl Game {
             // the color of the element its body's taken on, its stages marked across it, and the
             // Worldpyre Ancient's with its phases
             let ultra = foe.is_ultra() || foe == crate::dragons::ULTRA;
-            let name = if foe == Look::Ysveth {
-                "ULTRA  ·  YSVETH, THE COIL UNENDING".to_owned()
+            // What it is before its name, as an ultra or a raid boss
+            let (kind, name) = if foe == Look::Ysveth {
+                ("Ultra", "Ysveth, the Coil Unending".to_owned())
             } else if ultra {
-                format!("ULTRA  ·  {}", foe.name())
+                ("Ultra", foe.name().to_string())
             } else if foe.is_raid() {
-                format!("RAID  ·  {}", foe.name())
+                ("Raid", foe.name().to_string())
             } else {
-                title.to_string()
+                ("", title.to_string())
             };
             // A raid boss's bar is longer, a demi-boss's shorter
             let demi = foe.is_monster();
@@ -7109,12 +7126,12 @@ impl Game {
             let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, tall));
             // Warded by its realm's guardians, see guardians.rs: its bar ringed in the ward's light
             let warded = Color32::from_rgb(205, 165, 255);
-            let title = match ward {
-                Some((slain, of)) => format!("{name}  —  warded: slay the guardians ({slain}/{of})"),
+            let note = match ward {
+                Some((slain, of)) => format!("warded: slay the guardians ({slain}/{of})"),
                 // A gargoyle turned to stone, shrugging off blows, see src\gargoyles.rs
-                None if self.foe_hardened(foe) => format!("{name}  —  turned to stone"),
-                None if enraged => format!("{name}  —  enraged"),
-                None => name.to_string(),
+                None if self.foe_hardened(foe) => "turned to stone".to_owned(),
+                None if enraged => "enraged".to_owned(),
+                None => String::new(),
             };
             let at = pos2(center.x, back.top() - 6.0);
             let size = if ultra { 23.0 } else { 19.0 };
@@ -7125,11 +7142,14 @@ impl Game {
                 painter.text(left + vec2(1.0, 1.0), Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), shadow);
                 painter.text(left, Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), foe_level_tint(level, self.level));
             }
-            // Its name in the headings' font, over a bar framed in bronze with a gold diamond at
-            // either end
-            let font = theme::display(size - 1.0);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, font.clone(), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, font, if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
+            // Its name in blackletter, what it is and how it stands in the headings' font either
+            // side, over a bar framed in bronze with a gold diamond at either end
+            let tint = if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE };
+            let words = |color: Color32| boss_title(kind, &name, &note, size, color);
+            let shown = painter.layout_job(words(shadow));
+            let from = at - vec2(shown.size().x * 0.5, shown.size().y);
+            painter.galley(from + vec2(1.0, 1.0), shown, shadow);
+            painter.galley(from, painter.layout_job(words(tint)), tint);
             painter.rect(back.expand(2.0), 4.0, Color32::from_black_alpha(160), Stroke::new(1.0f32, theme::BRONZE), StrokeKind::Outside);
             for end in [back.left() - 9.0, back.right() + 9.0] {
                 theme::diamond(&painter, pos2(end, back.center().y), 4.5, theme::ACCENT);
@@ -7201,7 +7221,7 @@ impl Game {
             }
             let words = ((*since - 0.5) / 1.3).clamp(0.0, 1.0) as f32;
             let at = pos2(center.x, screen.center().y - 34.0);
-            let title = FontId::proportional(64.0);
+            let title = theme::blackletter(88.0);
             painter.text(at + vec2(3.0, 3.0), Align2::CENTER_CENTER, "Slain", title.clone(), Color32::from_black_alpha((words * 220.0) as u8));
             painter.text(at, Align2::CENTER_CENTER, "Slain", title, Color32::from_rgba_unmultiplied(196, 30, 28, (words * 255.0) as u8));
             let below = Color32::from_rgba_unmultiplied(225, 212, 200, (words * 230.0) as u8);

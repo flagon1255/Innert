@@ -652,7 +652,7 @@ pub fn window(ctx: &egui::Context, studio: &mut Studio, character: &mut Characte
             ui.set_width(wide - 40.0);
             ui.set_max_height(tall - 40.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Paint your character").font(crate::theme::display(25.0)).color(crate::theme::HEADING));
+                ui.label(RichText::new("Paint your character").font(crate::theme::blackletter(31.0)).color(crate::theme::HEADING));
                 ui.add_space(10.0);
                 ui.label(RichText::new("voxel by voxel: war paint, scars, tattoos, a beard. Changing your looks after keeps what's painted.").size(14.0).color(crate::theme::WEAK));
             });

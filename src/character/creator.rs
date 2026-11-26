@@ -177,7 +177,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
             ui.set_width(wide - 40.0);
             ui.set_max_height(tall - 40.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("A new character").font(theme::display(27.0)).color(theme::HEADING));
+                ui.label(RichText::new("A new character").font(theme::blackletter(34.0)).color(theme::HEADING));
                 ui.add_space(10.0);
                 ui.label(RichText::new(format!("for a new {} game", creator.mode.name())).size(15.0).color(theme::WEAK));
             });

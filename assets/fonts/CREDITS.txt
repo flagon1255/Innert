@@ -1,8 +1,22 @@
 INNERT FONT CREDITS
 ===================
 
-The headings and titles of Innert's interface, the name on the menu, window titles, item names and
-the like, are set in Cinzel Bold. Everything else is in egui's own fonts, which come with egui.
+The name on the menu and the biggest titles of Innert's interface, as window titles, the names of
+the modes on the menu, the boss's name over its bar and "Slain", are set in UnifrakturCook, a
+blackletter. The smaller headings, item names and the like are set in Cinzel Bold. Everything else
+is in egui's own fonts, which come with egui.
+
+"UnifrakturCook" by j. 'mach' wust, after Peter Wiegel's Koch fette deutsche Schrift, itself after
+Rudolf Koch's typeface of 1910
+  https://fonts.google.com/specimen/UnifrakturCook
+  https://github.com/google/fonts/tree/main/ofl/unifrakturcook
+  File: UnifrakturCook-Bold.ttf, unchanged, built into the game
+  Licence: SIL Open Font License 1.1 (https://openfontlicense.org), copied in full with its
+  copyright in OFL-UnifrakturCook.txt beside it, and below. Free to use, bundle and give away
+  with a program; it can't be sold on its own.
+
+Copyright (c) 2010, j. 'mach' wust, with Reserved Font Name UnifrakturCook.
+Copyright (c) 2009, Peter Wiegel.
 
 "Cinzel" by Natanael Gama and the Cinzel Project Authors
   https://github.com/NDISCOVER/Cinzel

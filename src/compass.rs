@@ -378,7 +378,7 @@ pub fn draw_map(ctx: &egui::Context, map: &mut Map, marks: &Marks) {
     let frame = Rect::from_min_max(rect.min - vec2(14.0, 44.0), rect.max + vec2(14.0, 34.0));
     painter.rect(frame, 14.0, crate::theme::panel_fill(), Stroke::new(1.0f32, crate::theme::BRONZE), StrokeKind::Inside);
     crate::theme::accent(&painter, frame, 1.0);
-    painter.text(pos2(rect.center().x, rect.top() - 22.0), Align2::CENTER_CENTER, &marks.title, crate::theme::display(21.0), crate::theme::HEADING);
+    painter.text(pos2(rect.center().x, rect.top() - 22.0), Align2::CENTER_CENTER, &marks.title, crate::theme::blackletter(27.0), crate::theme::HEADING);
     painter.text(pos2(rect.center().x, rect.bottom() + 18.0), Align2::CENTER_CENTER, "M to close", FontId::proportional(13.0), crate::theme::WEAK);
     let Some(image) = &map.image else {
         painter.text(rect.center(), Align2::CENTER_CENTER, "Drawing the map...", FontId::proportional(18.0), Color32::from_gray(200));

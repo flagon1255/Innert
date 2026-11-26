@@ -486,10 +486,10 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
 
         // Across the top: what it is, the points, and how
         let top = rect.top() + 18.0;
-        painter.text(pos2(rect.center().x, top), Align2::CENTER_TOP, "Skill Web", crate::theme::display(30.0), crate::theme::HEADING);
-        crate::theme::flourish(&painter, pos2(rect.center().x, top + 37.0), 110.0);
+        painter.text(pos2(rect.center().x, top), Align2::CENTER_TOP, "Skill Web", crate::theme::blackletter(40.0), crate::theme::HEADING);
+        crate::theme::flourish(&painter, pos2(rect.center().x, top + 53.0), 110.0);
         let points = if free == 1 { "1 point to spend".to_owned() } else { format!("{free} points to spend") };
-        painter.text(pos2(rect.center().x, top + 46.0), Align2::CENTER_TOP, format!("Level {level}  ·  {points}"), FontId::proportional(18.0), if free > 0 { crate::theme::INFO } else { crate::theme::TEXT });
+        painter.text(pos2(rect.center().x, top + 61.0), Align2::CENTER_TOP, format!("Level {level}  ·  {points}"), FontId::proportional(18.0), if free > 0 { crate::theme::INFO } else { crate::theme::TEXT });
         painter.text(
             pos2(rect.center().x, rect.bottom() - 16.0),
             Align2::CENTER_BOTTOM,

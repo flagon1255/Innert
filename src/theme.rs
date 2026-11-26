@@ -1,7 +1,10 @@
 //! The look of the whole interface, set in one place, see apply(): warm and dark, deep panels a
 //! little see-through, edged in bronze with a thin line of gold along their tops and rounded, and
-//! the same colours everywhere for words, headings, what's better and what's worse. Headings and
-//! titles are in Cinzel, see assets\fonts\CREDITS.txt, the rest in egui's own font.
+//! the same colours everywhere for words, headings, what's better and what's worse.
+//!
+//! The name on the menu and the biggest titles are in UnifrakturCook, a blackletter, the other
+//! headings in Cinzel, see assets\fonts\CREDITS.txt, the rest in egui's own font: blackletter's
+//! hard to read small, so it's only ever big.
 //!
 //! And what the HUD and the windows draw by hand with, to look the same: panels, bars, slots, the
 //! gold line, and the title, rule, rows and bullets of an item's card. All of it's a few shapes,
@@ -32,8 +35,12 @@ pub const INFO: Color32 = Color32::from_rgb(140, 212, 250);
 /// The fill of a button that goes on, as Start
 pub const PRIMARY: Color32 = Color32::from_rgb(118, 84, 36);
 
-/// The name the headings' font goes by, see display()
+/// How big windows' titles are, in blackletter
+const HEADING_SIZE: f32 = 23.0;
+
+/// The names the headings' fonts go by, see display() and blackletter()
 const DISPLAY: &str = "display";
+const BLACKLETTER: &str = "blackletter";
 
 /// The fill of windows and panels, deep and a little see-through
 pub fn panel_fill() -> Color32 {
@@ -51,6 +58,12 @@ pub fn display(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(DISPLAY.into()))
 }
 
+/// The blackletter at `size`, for the name on the menu and the biggest titles only: under about 20
+/// it's hard to read
+pub fn blackletter(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(BLACKLETTER.into()))
+}
+
 /// `c` lighter, `t` of the way to white
 pub fn lighter(c: Color32, t: f32) -> Color32 {
     c.lerp_to_gamma(Color32::WHITE, t)
@@ -62,13 +75,19 @@ pub fn darker(c: Color32, k: f32) -> Color32 {
     Color32::from_rgba_premultiplied((c.r() as f32 * k) as u8, (c.g() as f32 * k) as u8, (c.b() as f32 * k) as u8, c.a())
 }
 
-/// The fonts: egui's own, and Cinzel for headings, falling back on egui's for anything it hasn't
+/// The fonts: egui's own, Cinzel for headings and UnifrakturCook for the biggest titles, each
+/// falling back on the ones after it for anything it hasn't
 fn fonts() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert("Cinzel".to_owned(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Cinzel-Bold.ttf"))));
+    fonts.font_data.insert("UnifrakturCook".to_owned(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/UnifrakturCook-Bold.ttf"))));
+    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut display = vec!["Cinzel".to_owned()];
-    display.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
+    display.extend(proportional.iter().cloned());
+    let mut blackletter = vec!["UnifrakturCook".to_owned()];
+    blackletter.extend(display.iter().cloned());
     fonts.families.insert(FontFamily::Name(DISPLAY.into()), display);
+    fonts.families.insert(FontFamily::Name(BLACKLETTER.into()), blackletter);
     fonts
 }
 
@@ -92,7 +111,8 @@ pub fn style(style: &mut egui::Style) {
         (TextStyle::Small, FontId::proportional(10.0)),
         (TextStyle::Body, FontId::proportional(13.0)),
         (TextStyle::Button, FontId::proportional(13.5)),
-        (TextStyle::Heading, display(19.0)),
+        // Window titles, in blackletter
+        (TextStyle::Heading, blackletter(HEADING_SIZE)),
         (TextStyle::Monospace, FontId::monospace(12.5)),
     ]
     .into();
@@ -365,21 +385,26 @@ mod tests {
         }
     }
 
-    /// Set on a context, the headings are in Cinzel, which has every letter and number of its
-    /// own, and the rest's as big as it's meant to be
+    /// Set on a context, the headings are in Cinzel and the window titles in the blackletter, each
+    /// with every letter and number, each of its own, and the rest's as big as it's meant to be
     #[test]
     fn the_theme_sets_the_fonts() {
         let ctx = egui::Context::default();
         apply(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| ui.heading("INNERT"));
+            egui::CentralPanel::default().show(ctx, |ui| ui.heading("Innert"));
         });
-        assert_eq!(ctx.style().text_styles[&TextStyle::Heading], display(19.0));
+        assert_eq!(ctx.style().text_styles[&TextStyle::Heading], blackletter(HEADING_SIZE));
         assert_eq!(ctx.style().text_styles[&TextStyle::Body].size, 13.0);
         let letters: String = ('A'..='Z').chain('a'..='z').chain('0'..='9').collect();
         assert!(ctx.fonts(|f| f.has_glyphs(&display(18.0), &letters)));
-        // Its own: a heading's letters aren't as wide as the body font's
-        let wide = |font: FontId| ctx.fonts(|f| f.layout_no_wrap("THE INNERT GATE".to_owned(), font, Color32::WHITE).size().x);
-        assert_ne!(wide(display(18.0)), wide(FontId::proportional(18.0)));
+        assert!(ctx.fonts(|f| f.has_glyphs(&blackletter(18.0), &letters)));
+        // Their own: a heading's letters aren't as wide as the body font's, nor the blackletter's
+        // as either
+        let wide = |text: &str, font: FontId| ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x);
+        assert_ne!(wide("THE INNERT GATE", display(18.0)), wide("THE INNERT GATE", FontId::proportional(18.0)));
+        for other in [display(40.0), FontId::proportional(40.0)] {
+            assert_ne!(wide("Innert", blackletter(40.0)), wide("Innert", other));
+        }
     }
 }

@@ -1315,7 +1315,7 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     let list = egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(width + 10.0, 34.0 + tab_rows * 26.0 + 8.0 + entries.len() as f32 * 26.0 + 58.0));
     painter.rect(list, 10.0, Color32::from_rgba_unmultiplied(14, 11, 8, 190), Stroke::new(1.0f32, crate::theme::BRONZE), egui::StrokeKind::Inside);
     crate::theme::accent(&painter, list, 1.0);
-    painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "Building", crate::theme::display(16.0), crate::theme::HEADING);
+    painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "Building", crate::theme::blackletter(21.0), crate::theme::HEADING);
     painter.text(pos2(x + width - 14.0, y - 14.0), Align2::RIGHT_CENTER, "C next tab  ·  B to stop", FontId::proportional(12.0), crate::theme::WEAK);
     let cell = (width - 14.0) / 3.0;
     for (k, (title, kinds)) in TABS.iter().enumerate() {
