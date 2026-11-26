@@ -202,45 +202,81 @@ impl Looks {
 }
 
 /// What the player sets out as: what they start with to fight, and a little of what the skill web
-/// gives, see kit() and lean()
+/// gives, see kit() and lean(). Kept in saves by the names they were first given, so a fighter's
+/// still a warrior there and an archer a ranger, and a save from before there were any comes out a
+/// wanderer, who's no longer offered but plays on as ever.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Class {
-    Warrior,
-    Ranger,
+    #[serde(rename = "warrior", alias = "fighter")]
+    Fighter,
+    #[serde(rename = "ranger", alias = "archer")]
+    Archer,
     Mage,
     Wanderer,
     Necromancer,
     Priest,
+    Rogue,
 }
 
 impl Class {
-    pub const ALL: [Class; 6] = [Class::Warrior, Class::Ranger, Class::Mage, Class::Wanderer, Class::Necromancer, Class::Priest];
+    /// Every one there is, the wanderer of old saves among them
+    pub const ALL: [Class; 7] = [Class::Archer, Class::Fighter, Class::Priest, Class::Mage, Class::Rogue, Class::Necromancer, Class::Wanderer];
+    /// What a new character can set out as, in the order they're offered
+    pub const OFFERED: [Class; 6] = [Class::Archer, Class::Fighter, Class::Priest, Class::Mage, Class::Rogue, Class::Necromancer];
 
     pub fn name(self) -> &'static str {
         match self {
-            Class::Warrior => "Warrior",
-            Class::Ranger => "Ranger",
+            Class::Fighter => "Fighter",
+            Class::Archer => "Archer",
             Class::Mage => "Mage",
             Class::Wanderer => "Wanderer",
             Class::Necromancer => "Necromancer",
             Class::Priest => "Priest",
+            Class::Rogue => "Rogue",
         }
     }
 
+    /// By its name, or by the name it was kept under before it was renamed
     pub fn parse(name: &str) -> Option<Class> {
-        Class::ALL.into_iter().find(|c| c.name().eq_ignore_ascii_case(name.trim()))
+        let name = name.trim();
+        match name.to_ascii_lowercase().as_str() {
+            "warrior" => return Some(Class::Fighter),
+            "ranger" => return Some(Class::Archer),
+            _ => {}
+        }
+        Class::ALL.into_iter().find(|c| c.name().eq_ignore_ascii_case(name))
+    }
+
+    /// Whether a new character can set out as it, see OFFERED
+    pub fn offered(self) -> bool {
+        Class::OFFERED.contains(&self)
     }
 
     /// What it's like, in a line or two
     pub fn about(self) -> &'static str {
         match self {
-            Class::Warrior => "Steel and nerve. Hits hard up close and takes a beating that would fell anyone else.",
-            Class::Ranger => "Keen-eyed and quick. Strikes from afar with bow, crossbow and gun before anything gets near.",
+            Class::Fighter => "Steel and nerve. Hits hard up close and takes a beating that would fell anyone else.",
+            Class::Archer => "Keen-eyed and steady. Looses arrow after arrow from the bow before anything gets near, a crossbow to back it.",
             Class::Mage => "A student of the elements. Hurls spells from staff and wand, and makes every drop of mana count.",
             Class::Wanderer => "A bit of everything. Sets out with one of every weapon, gathers fast and travels light.",
             Class::Necromancer => "Bends death to their will. A skull focus drains the life of what it strikes, and raises the slain as skeletons to fight for them.",
-            Class::Priest => "Faith made thunder. A talisman hurls spears of holy lightning that pierce and arc through the pack, mending the priest as they strike.",
+            Class::Priest => "Faith made thunder. A talisman hurls spears of holy lightning that pierce and arc through the pack, mending the priest as they strike. Held, the great spear forms in the hand.",
+            Class::Rogue => "Quick, light and unseen. Throwing knives, a dagger and a katar, every blow surer and deadlier from behind, and a step through the shadows behind what's aimed at.",
+        }
+    }
+
+    /// Its signature power on right click, and what it does, in a line: the first weapon of its
+    /// kit's, at any rarity for a priest, a rogue and a necromancer, a legendary one's for the rest
+    pub fn signature(self) -> &'static str {
+        match self {
+            Class::Archer => "Comet Arrow: a bow drawn full looses an arrow through everything, bursting where it comes down. On a legendary bow.",
+            Class::Fighter => "Crescent: the sword's heavy blow flies on as a crescent, cutting through everything in its way. On a legendary sword.",
+            Class::Priest => "Sanctified Thunderspear: hold right click and a great spear of holy lightning forms in the hand, hurled as it's let go.",
+            Class::Mage => "Comet: a great slow orb from the staff, bursting wide where it lands. On a legendary staff.",
+            Class::Rogue => "Shadowstep Strike: a step through the shadows to behind what's aimed at, striking it in the back.",
+            Class::Necromancer => "Grave Raising: a shade sent to the ring raises three skeletons out of the ground to fight for you.",
+            Class::Wanderer => "None of its own: one of every weapon, each with its own once it's legendary.",
         }
     }
 
@@ -248,12 +284,13 @@ impl Class {
     /// wanderer's are every one a new player had before there were classes
     pub fn kit(self) -> &'static [&'static str] {
         match self {
-            Class::Warrior => &["sword", "axe", "hammer", "greatsword", "spear", "bow"],
-            Class::Ranger => &["bow", "crossbow", "musket", "dagger", "spear"],
+            Class::Fighter => &["sword", "axe", "hammer", "greatsword", "spear", "bow"],
+            Class::Archer => &["bow", "crossbow", "dagger", "spear"],
             Class::Mage => &["staff", "wand", "scepter", "tome", "dagger"],
             Class::Wanderer => &["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"],
             Class::Necromancer => &["skullfocus", "scythe", "tome", "dagger"],
             Class::Priest => &["talisman", "hammer", "bell", "scepter"],
+            Class::Rogue => &["knives", "dagger", "katar", "chakram"],
         }
     }
 
@@ -261,24 +298,26 @@ impl Class {
     /// on it: percent for most, see skills::Stat
     pub fn lean(self) -> &'static [(Stat, f64)] {
         match self {
-            Class::Warrior => &[(Stat::MeleeDamage, 10.0), (Stat::Armour, 8.0), (Stat::MaxHealth, 20.0)],
-            Class::Ranger => &[(Stat::RangedDamage, 10.0), (Stat::RangedSpeed, 8.0), (Stat::MoveSpeed, 4.0)],
+            Class::Fighter => &[(Stat::MeleeDamage, 10.0), (Stat::Armour, 8.0), (Stat::MaxHealth, 20.0)],
+            Class::Archer => &[(Stat::RangedDamage, 10.0), (Stat::RangedSpeed, 10.0), (Stat::ProjectileSpeed, 8.0)],
             Class::Mage => &[(Stat::MagicDamage, 10.0), (Stat::ManaCost, -12.0), (Stat::MagicSpeed, 5.0)],
             Class::Wanderer => &[(Stat::GatherSpeed, 20.0), (Stat::MoveSpeed, 6.0), (Stat::GoldFind, 10.0)],
             Class::Necromancer => &[(Stat::MagicDamage, 8.0), (Stat::Leech, 2.0), (Stat::StatusPotency, 10.0)],
             Class::Priest => &[(Stat::MagicDamage, 6.0), (Stat::ElementalDamage, 10.0), (Stat::Regen, 20.0)],
+            Class::Rogue => &[(Stat::CritChance, 6.0), (Stat::CritDamage, 0.3), (Stat::MoveSpeed, 8.0), (Stat::Backstab, 20.0)],
         }
     }
 
     /// Its colour in the window
     pub fn color(self) -> [u8; 3] {
         match self {
-            Class::Warrior => [230, 120, 90],
-            Class::Ranger => [130, 210, 110],
+            Class::Fighter => [230, 120, 90],
+            Class::Archer => [130, 210, 110],
             Class::Mage => [120, 170, 255],
             Class::Wanderer => [220, 200, 150],
             Class::Necromancer => [190, 90, 200],
             Class::Priest => [255, 225, 130],
+            Class::Rogue => [150, 150, 170],
         }
     }
 }
@@ -429,7 +468,7 @@ mod tests {
             for id in class.kit() {
                 assert!(library.family(id).is_some(), "{class:?}'s {id} isn't a family of weapons");
             }
-            assert!(!class.lean().is_empty() && class.lean().len() <= 3);
+            assert!(!class.lean().is_empty() && class.lean().len() <= 4);
             for &(stat, value) in class.lean() {
                 assert!(value.abs() <= 20.0, "{class:?} leans {value} into {stat:?}");
             }
@@ -437,11 +476,44 @@ mod tests {
         }
         let first = |c: Class| library.families[library.family(c.kit()[0]).unwrap()].kind;
         use crate::weapons::Kind;
-        assert_eq!(first(Class::Warrior), Kind::Melee);
-        assert_eq!(first(Class::Ranger), Kind::Ranged);
+        assert_eq!(first(Class::Fighter), Kind::Melee);
+        assert_eq!(first(Class::Archer), Kind::Ranged);
+        assert_eq!(Class::Archer.kit()[0], "bow");
         assert_eq!(first(Class::Mage), Kind::Magic);
         assert_eq!(Class::Necromancer.kit()[0], "skullfocus");
         assert_eq!(Class::Priest.kit()[0], "talisman");
+        // A rogue sets out with throwing knives in hand, its Shadowstep theirs from the start, and
+        // leans towards crits, speed and striking from behind
+        assert_eq!(Class::Rogue.kit()[0], "knives");
+        let knives = library.generate(1, library.family("knives"), 0.0);
+        assert_eq!(knives.profile.power, Some(crate::weapons::Power::Shadowstep));
+        for stat in [Stat::CritChance, Stat::CritDamage, Stat::MoveSpeed, Stat::Backstab] {
+            assert!(Class::Rogue.lean().iter().any(|&(s, v)| s == stat && v > 0.0), "a rogue doesn't lean into {stat:?}");
+        }
+        // Each card's signature power is its first weapon's, by the name it goes by
+        for class in Class::OFFERED {
+            let power = crate::weapons::Power::of(class.kit()[0]).unwrap_or_else(|| panic!("{class:?}'s first weapon has no power"));
+            let named = class.signature().split(':').next().unwrap_or_default();
+            assert!(named.ends_with(power.noun()), "{class:?}'s signature is {named}, not {}", power.noun());
+        }
+    }
+
+    /// The six classes on offer, in the order they're offered, the wanderer of old saves not
+    /// among them; and a warrior or a ranger saved before they were renamed comes back a fighter or
+    /// an archer, a wanderer a wanderer still, with everything else as it was
+    #[test]
+    fn classes_on_offer_and_old_names_still_load() {
+        let names: Vec<&str> = Class::OFFERED.iter().map(|c| c.name()).collect();
+        assert_eq!(names, ["Archer", "Fighter", "Priest", "Mage", "Rogue", "Necromancer"]);
+        assert!(!Class::Wanderer.offered() && Class::ALL.contains(&Class::Wanderer));
+        for (saved, class) in [("warrior", Class::Fighter), ("ranger", Class::Archer), ("wanderer", Class::Wanderer), ("rogue", Class::Rogue), ("fighter", Class::Fighter), ("archer", Class::Archer)] {
+            let c: Character = serde_json::from_str(&format!(r#"{{"name": "Old Hand", "class": "{saved}", "difficulty": "hard"}}"#)).unwrap();
+            assert_eq!((c.class, c.difficulty, c.name.as_str()), (class, Difficulty::Hard, "Old Hand"), "{saved}");
+            assert_eq!(Class::parse(saved), Some(class));
+        }
+        // Saved under the names they always were, so an older game reads a new save's class too
+        assert_eq!(serde_json::to_string(&Class::Fighter).unwrap(), r#""warrior""#);
+        assert_eq!(serde_json::to_string(&Class::Archer).unwrap(), r#""ranger""#);
     }
 
     /// Story is gentler than Normal, and Hard harder, in all three ways

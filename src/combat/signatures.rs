@@ -10,6 +10,12 @@ use super::*;
 
 pub(super) mod powers;
 use powers::{Lasting, Shape};
+/// The third batch's powers: a war pick's, throwing knives', a chakram's, a prism's and a
+/// runestone's
+pub(super) mod arsenal;
+/// New magic powers: a priest's spears, a thunderhead, a glacier, grasping shadows and a helix
+pub(super) mod miracles;
+pub(super) mod tempest;
 /// A talisman's spears and a skull focus's dead raised, see weapons::Rite
 pub(in crate::combat) mod faith;
 
@@ -596,27 +602,27 @@ fn tinted(profile: &Rc<Profile>, element: Element) -> Rc<Profile> {
 }
 
 /// `v` along the ground
-fn flat_of(v: Vector3<f64>) -> Vector3<f64> {
+pub(super) fn flat_of(v: Vector3<f64>) -> Vector3<f64> {
     Vector3::new(v.x, v.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x)
 }
 
 /// How fast to throw something from `from` so it gets to `to` in `time` seconds, falling
 /// `gravity` as fast as things do, in voxels a second
-fn thrown(from: Vector3<f64>, to: Vector3<f64>, time: f64, gravity: f64, vpm: f64) -> Vector3<f64> {
+pub(super) fn thrown(from: Vector3<f64>, to: Vector3<f64>, time: f64, gravity: f64, vpm: f64) -> Vector3<f64> {
     let g = Vector3::new(0.0, 0.0, -9.8 * gravity * vpm);
     (to - from - g * 0.5 * time * time) / time
 }
 
 /// Which way to shoot from `from` at `speed` meters a second to come down on `to`, falling
 /// `gravity` as fast as things do: a little over it
-fn lead(from: Vector3<f64>, to: Vector3<f64>, speed: f64, gravity: f64, vpm: f64) -> Vector3<f64> {
+pub(super) fn lead(from: Vector3<f64>, to: Vector3<f64>, speed: f64, gravity: f64, vpm: f64) -> Vector3<f64> {
     let t = (to - from).norm() / (speed * vpm);
     let drop = 0.5 * 9.8 * gravity * vpm * t * t;
     (to + Vector3::new(0.0, 0.0, drop) - from).try_normalize(1e-6).unwrap_or_else(Vector3::y)
 }
 
 /// How far `p` is from the line from `a` to `b`
-fn off_line(p: Vector3<f64>, a: Vector3<f64>, b: Vector3<f64>) -> f64 {
+pub(super) fn off_line(p: Vector3<f64>, a: Vector3<f64>, b: Vector3<f64>) -> f64 {
     let line = b - a;
     let along = ((p - a).dot(&line) / line.norm_squared().max(1e-9)).clamp(0.0, 1.0);
     (p - (a + line * along)).norm()
@@ -675,7 +681,7 @@ fn runes_written(age: f64) -> usize {
 impl Combat {
     /// The last projectile set off given `sig`. Like anything in flight it flies on till it
     /// strikes something or leaves the world.
-    fn signed(&mut self, sig: Sig) {
+    pub(super) fn signed(&mut self, sig: Sig) {
         if let Some(p) = self.projectiles.last_mut() {
             p.trick = Trick::Signature(sig);
         }
@@ -698,7 +704,7 @@ impl Combat {
     }
 
     /// The living animals within `within` meters of `at`, the nearest first, by index
-    fn foes_round(arena: &Arena, at: Vector3<f64>, within: f64) -> Vec<usize> {
+    pub(super) fn foes_round(arena: &Arena, at: Vector3<f64>, within: f64) -> Vec<usize> {
         let vpm = arena.view.vpm;
         let mut near: Vec<(f64, usize)> = (0..arena.animals.len())
             .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
@@ -717,7 +723,7 @@ impl Combat {
     }
 
     /// What's under `at` to land on or run along: the ground, or the top of the water over it
-    fn floor_at(arena: &Arena, at: Vector3<f64>) -> Vector3<f64> {
+    pub(super) fn floor_at(arena: &Arena, at: Vector3<f64>) -> Vector3<f64> {
         let vpm = arena.view.vpm;
         let ground = ground_under(arena.world, at + Vector3::new(0.0, 0.0, 0.6 * vpm), vpm);
         let surface = (arena.water)(ground.x, ground.y);

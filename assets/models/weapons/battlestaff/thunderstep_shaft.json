@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, shaft: Thunderstep Rod",
+  "voxels_per_meter": 150.0,
+  "size": [
+    6,
+    6,
+    167
+  ],
+  "pivot": [
+    2.899380165289256,
+    2.982758620689655,
+    2.2544827586206906
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.44
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.591034482758621
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    15572,
+    "0de3963b4765ff18"
+  ]
+}

@@ -30,6 +30,12 @@ use signatures::{Sig, SigAct, SigZone, signature_move, signature_release};
 mod stones;
 /// Aiming at a spot, the ring on the ground showing where it comes down, see aim.rs
 mod aim;
+/// Throwing knives and a chakram, thrown by hand
+mod thrown;
+/// Lightning drawn as jagged, branching bolts that flicker and strike again
+mod lightning;
+/// What a spell of each element leaves where it goes off
+mod marks;
 use aim::{spot_aim, way_to};
 /// Special ammo flying each kind its own way, see ammo.rs
 mod ammo;
@@ -79,6 +85,9 @@ pub fn light_rank(light: &[f32; 8], eye: Vector3<f64>) -> f64 {
 const MAX_DEPTH: u32 = 6;
 /// How far a spell's own explosion reaches where it lands, in meters
 const MAGIC_BLAST: f64 = 1.6;
+/// Seconds between one hop of a chain of lightning and the next, so it's seen leaping on from one
+/// to the next, see lightning.rs
+const HOP_GAP: f64 = 0.045;
 
 /// What weapons have done to an animal, wearing off over time
 #[derive(Default)]
@@ -2118,6 +2127,20 @@ pub struct Combat {
     mines: Vec<Mine>,
     sweep: Option<Sweep>,
     thrown: Option<Thrown>,
+    /// How the throwing knives or chakram in hand are drawn flying, kept as they're drawn in the
+    /// hand, and whether the throw going on is a heavy one, see thrown.rs
+    flung: std::cell::Cell<Option<thrown::Flung>>,
+    throw_heavy: bool,
+    /// Lightning crackling a moment, see lightning.rs, where the eye was last, and the weapon in
+    /// hand's profile, for what's left on the ground by what has none of its own
+    bolts: Vec<lightning::Bolt>,
+    /// Seconds till a spell can leave its element's mark on the ground again, see marks.rs
+    mark_timer: f64,
+    /// How much harder the player's blows land from behind or unseen, from the skill web and their
+    /// class, as a share, see set_backstab()
+    backstab: f64,
+    eye_at: Vector3<f64>,
+    last_profile: Option<Rc<Profile>>,
     shackle: Option<Shackle>,
     blood_moon: Option<BloodMoon>,
     /// Cluster Volley's bombs waiting to be fired, see Lob
@@ -2724,14 +2747,14 @@ fn moves_like(style: Style) -> Style {
 /// The kind of weapon one of `profile`'s goes through its special attack's moves as: a battle
 /// staff and bombs as a weapon in the hand, the rest as what they are
 fn moves_kind(profile: &Profile) -> Kind {
-    if matches!(profile.style, Style::Glaive | Style::Lob) { Kind::Melee } else { profile.kind }
+    if profile.style == Style::Glaive || profile.style.thrown() { Kind::Melee } else { profile.kind }
 }
 
 /// Which blow of a combo in `style` is its finisher: a blade's chain goes four blows, each a
 /// different way, a whip's, a flail's and a maul's three
 fn finisher(style: Style) -> u8 {
     match style {
-        Style::Slash | Style::Chop | Style::Smash | Style::Stab | Style::Thrust | Style::Reap | Style::Fan | Style::Punch | Style::Pole => FINISHER + 1,
+        Style::Slash | Style::Chop | Style::Smash | Style::Stab | Style::Thrust | Style::Reap | Style::Fan | Style::Punch | Style::Pole | Style::Pick => FINISHER + 1,
         _ => FINISHER,
     }
 }
@@ -3150,6 +3173,7 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Fan => (0.24, 0.38),
             Style::Punch => (0.2, 0.32),
             Style::Pole => (0.28, 0.42),
+            Style::Pick => (0.3, 0.44),
             _ => (0.32, 0.48),
         };
     }
@@ -3162,6 +3186,8 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             // A fan's and a naginata's spun right round, as Finish::Spin's, a katar's uppercut
             Style::Fan | Style::Pole => finish_timing(Finish::Spin),
             Style::Punch => (0.3, 0.45),
+            // A war pick's two-handed drive, held a beat at the top
+            Style::Pick => (0.5, 0.62),
             // Time for the lash to go round in a loop overhead first
             Style::Lash => (0.5, 0.6),
             Style::Whirl => (0.3, 0.5),
@@ -3187,6 +3213,9 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
         (Style::Pole, false) => (0.3, 0.46),
         // As Heavy::Sweep's, which it swings, see newer_swing()
         (Style::Pole, true) => (0.4, 0.55),
+        // A war pick's peck over the top, and its heavy blow hauled back, held and driven home
+        (Style::Pick, false) => (0.34, 0.5),
+        (Style::Pick, true) => (0.5, 0.6),
         (_, true) => (0.4, 0.52),
         _ => (0.3, 0.45),
     }
@@ -3204,6 +3233,9 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
     }
     if matches!(style, Style::Fan | Style::Punch | Style::Pole) {
         return newer_swing(style, heavy, combo);
+    }
+    if style == Style::Pick {
+        return pick_swing(heavy, combo);
     }
     let (comes, lands) = timing(style, heavy, combo);
     let flip = combo == 1;
@@ -3559,6 +3591,86 @@ fn newer_swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
                 }
             }
         }
+    }
+}
+
+/// A war pick's swings, for swing(): a peck brought over the top, its beak driven down and biting,
+/// then wrenched free; a hook swung round from the right, beak first; a beak hooked up from low on
+/// the left; and to finish, both hands on the haft, raised high, held a beat and driven down with
+/// everything behind it, levered free after. Its heavy blow is hauled right back over the shoulder,
+/// held, and driven down and in on a long step, then twisted out.
+fn pick_swing(heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
+    let (comes, lands) = timing(Style::Pick, heavy, combo);
+    let last = combo == finisher(Style::Pick) && !heavy;
+    let midway = comes + 0.55 * (lands - comes);
+    // Brought over the top from `raised` down through `struck`, biting in to `bitten`, held there
+    // a moment and wrenched free to `freed`
+    let peck = |gathered: Pose, raised: Pose, struck: Pose, bitten: Pose, freed: Pose, push: [f64; 3], hold: f64| {
+        vec![
+            (comes * 0.4, gathered, false),
+            (comes, raised.clone(), false),
+            (midway, through(&raised, &struck, 0.5, push), false),
+            (lands, struck, true),
+            (lands + 0.05 + hold, bitten, false),
+            (lands + 0.17 + hold, freed, false),
+        ]
+    };
+    if heavy {
+        let mut keys = peck(
+            pose([0.3, 0.3, -0.2], [0.1, -0.2, 0.97], [0.0, 1.0, 0.2]),
+            pose([0.24, 0.2, 0.06], [0.12, -0.5, 0.86], [0.0, 0.86, 0.5]),
+            pose([0.04, 0.7, -0.3], [0.0, 0.88, -0.48], [0.0, -0.48, -0.88]),
+            pose([0.04, 0.76, -0.5], [0.0, 0.58, -0.81], [0.0, -0.81, -0.58]),
+            pose([0.2, 0.5, -0.32], [0.3, 0.6, 0.74], [-0.3, 0.8, -0.5]),
+            [0.0, 0.05, 0.1],
+            0.03,
+        );
+        // Hauled back and held a beat at the top before it comes
+        keys.insert(1, (comes - 0.12, pose([0.25, 0.2, 0.05], [0.13, -0.47, 0.87], [0.0, 0.87, 0.47]), false));
+        return keys;
+    }
+    if last {
+        return peck(
+            pose([0.2, 0.36, -0.24], [0.0, 0.3, 0.95], [0.0, 1.0, -0.3]),
+            pose([0.14, 0.3, 0.02], [0.08, 0.08, 0.99], [0.0, 1.0, -0.08]),
+            pose([0.02, 0.64, -0.3], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]),
+            pose([0.02, 0.67, -0.46], [0.0, 0.6, -0.8], [0.0, -0.8, -0.6]),
+            pose([0.06, 0.5, -0.3], [0.1, 0.55, 0.83], [0.0, 0.83, -0.55]),
+            [0.0, 0.03, 0.09],
+            0.03,
+        );
+    }
+    match combo {
+        // Hooked round from the right, the beak leading across to the left
+        1 => arc_keys(
+            comes,
+            lands,
+            pose([0.34, 0.34, -0.1], [0.75, 0.3, 0.6], [-0.3, 0.95, 0.0]),
+            [0.04, 0.08, 0.0],
+            pose([0.12, 0.6, -0.2], [0.25, 0.94, 0.2], [-1.0, 0.25, 0.0]),
+            pose([-0.12, 0.52, -0.26], [-0.75, 0.6, 0.0], [-0.6, -0.75, 0.0]),
+            pose([-0.16, 0.46, -0.3], [-0.85, 0.45, -0.15], [-0.45, -0.88, 0.0]),
+        ),
+        // Hooked up from low on the left, the beak turned up
+        2 => arc_keys(
+            comes,
+            lands,
+            pose([-0.02, 0.36, -0.44], [-0.5, 0.5, -0.7], [0.3, 0.3, 0.9]),
+            [0.0, 0.06, -0.05],
+            pose([0.12, 0.62, -0.14], [0.15, 0.92, 0.36], [0.1, -0.36, 0.93]),
+            pose([0.3, 0.5, 0.04], [0.5, 0.45, 0.74], [0.0, -0.86, 0.5]),
+            pose([0.34, 0.46, -0.04], [0.56, 0.36, 0.75], [0.0, -0.9, 0.44]),
+        ),
+        // Pecked down over the top
+        _ => peck(
+            pose([0.31, 0.43, -0.3], [-0.02, 0.58, 0.81], [0.0, 1.0, 0.0]),
+            pose([0.22, 0.32, -0.04], [0.12, 0.05, 0.99], [0.0, 1.0, -0.05]),
+            pose([0.1, 0.62, -0.3], [0.0, 0.8, -0.6], [0.0, -0.6, -0.8]),
+            pose([0.1, 0.63, -0.38], [0.0, 0.7, -0.71], [0.0, -0.71, -0.7]),
+            pose([0.18, 0.5, -0.3], [0.08, 0.5, 0.86], [0.0, 0.86, -0.5]),
+            [0.0, 0.03, 0.09],
+            0.03,
+        ),
     }
 }
 
@@ -4963,7 +5075,7 @@ fn flourish_turns(grade: usize, last: bool) -> f64 {
 fn special_twirl(grade: usize, style: Style, keys: &[(f64, Pose, bool)], f: f64) -> (f64, f64) {
     let turns = flourish_turns(grade, true);
     let from = keys.last().map_or(1.0, |k| k.0) + 0.02;
-    if turns <= 0.0 || 0.97 - from < 0.22 || matches!(style, Style::Lash | Style::Whirl | Style::Lob) {
+    if turns <= 0.0 || 0.97 - from < 0.22 || matches!(style, Style::Lash | Style::Whirl | Style::Lob | Style::Ring) {
         return (0.0, 0.0);
     }
     let to = from + 0.8 * (0.97 - from);
@@ -5248,7 +5360,7 @@ fn flourish_of(weapon: &Weapon, began: f64) -> Flourish {
         (Kind::Melee, Style::Thrust) | (Kind::Magic, Style::Glaive | Style::Cast | Style::Hex) => [Flourish::Tap, Flourish::Twirl],
         (Kind::Melee, Style::Lash) => [Flourish::Twirl, Flourish::Twirl],
         (Kind::Melee, _) => [Flourish::Twirl, Flourish::Inspect],
-        (Kind::Ranged, Style::Lob) | (Kind::Magic, Style::Channel) => [Flourish::Toss, Flourish::Toss],
+        (Kind::Ranged, Style::Lob | Style::Knife | Style::Ring) | (Kind::Magic, Style::Channel) => [Flourish::Toss, Flourish::Toss],
         (Kind::Ranged, _) if matches!(profile.build, Build::Pistol | Build::Hand) => [Flourish::Spin, Flourish::Inspect],
         (Kind::Ranged, _) if profile.build == Build::None => [Flourish::Check, Flourish::Inspect],
         (Kind::Ranged, _) => [Flourish::Inspect, Flourish::Check],
@@ -5392,6 +5504,13 @@ impl Combat {
             mines: Vec::new(),
             sweep: None,
             thrown: None,
+            flung: std::cell::Cell::new(None),
+            throw_heavy: false,
+            bolts: Vec::new(),
+            mark_timer: 0.0,
+            backstab: 0.0,
+            eye_at: Vector3::zeros(),
+            last_profile: None,
             shackle: None,
             blood_moon: None,
             lobs: Vec::new(),
@@ -5483,6 +5602,9 @@ impl Combat {
         }
         for l in &mut self.lingering {
             l.position -= shift;
+        }
+        for b in &mut self.bolts {
+            b.recenter(shift);
         }
         for p in &mut self.pending {
             match &mut p.act {
@@ -5705,6 +5827,12 @@ impl Combat {
         self.faced.clear();
         self.rays.clear();
         self.vpm = arena.view.vpm;
+        self.eye_at = arena.view.eye;
+        if let Some((_, w)) = weapon
+            && self.last_profile.as_ref().is_none_or(|p| !Rc::ptr_eq(p, &w.profile))
+        {
+            self.last_profile = Some(w.profile.clone());
+        }
         self.seen = seen_within(arena.world);
         self.speed = arena.view.speed;
         self.stride = arena.view.stride;
@@ -5902,6 +6030,8 @@ impl Combat {
             f.life -= dt;
         }
         self.flashes.retain(|f| f.life > 0.0);
+        self.update_bolts(dt);
+        self.mark_timer -= dt;
         for g in &mut self.glows {
             g.life -= dt;
         }
@@ -6006,6 +6136,9 @@ impl Combat {
             Kind::Magic if profile.style == Style::Toll => self.toll(arena, weapon, controls, dt),
             Kind::Magic if profile.style == Style::Censer => self.swing_censer(arena, weapon, controls, dt),
             Kind::Ranged if profile.style == Style::Lob => self.lob(arena, weapon, controls, dt),
+            // Throwing knives flicked one after another, a chakram hurled and caught again, see
+            // thrown.rs
+            Kind::Ranged if profile.style.thrown() => self.throw_by_hand(arena, weapon, controls, dt),
             Kind::Melee => {
                 if let Action::Swing { t, length, heavy, struck, combo } = self.action {
                     // A heavy weapon gathers longer and comes down harder, a light one snaps out,
@@ -6031,6 +6164,8 @@ impl Combat {
                             Style::Fan => (Sound::Swing, if heavy || finisher { 1.1 } else { 1.35 }),
                             Style::Punch => (Sound::Stab, if heavy || finisher { 0.95 } else { 1.2 }),
                             Style::Pole => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, 0.8),
+                            // A war pick's short, heavy whoosh, its beak whistling
+                            Style::Pick => (Sound::HeavySwing, if heavy || finisher { 0.75 } else { 0.95 }),
                             _ => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, if combo == 1 { 1.08 } else { 1.0 }),
                         };
                         // Lower the heavier it swings
@@ -7008,8 +7143,8 @@ impl Combat {
         let (mut at, mut i, mut power) = (from, first, 1.0);
         for hop in 0..=hops {
             let center = arena.animals[i].center(vpm as u32);
-            self.zap_line(at, center, look);
-            self.flashes.push(Flash { position: center, color, reach: 4.0, life: 0.12, lifetime: 0.12 });
+            self.zap_line_after(at, center, look, hop as f64 * HOP_GAP);
+            self.flashes.push(Flash { position: center, color, reach: 4.0, life: 0.12 + hop as f64 * HOP_GAP, lifetime: 0.12 + hop as f64 * HOP_GAP });
             let crit = self.roll_crit(profile);
             let hit = damage * power * if crit { profile.stat("critDamage") } else { 1.0 };
             struck.push(arena.animals[i].id);
@@ -7069,20 +7204,15 @@ impl Combat {
         self.cap_sparks();
     }
 
-    /// A jagged thread of lightning, or of `look`'s element, from `from` to `to`, there a moment
+    /// A jagged thread of lightning, or of `look`'s element, from `from` to `to`, forked, there a
+    /// moment, flickering, see lightning.rs; `delay` seconds after now, as a hop of a chain
+    /// leaping on after the last
     fn zap_line(&mut self, from: Vector3<f64>, to: Vector3<f64>, look: usize) {
-        let vpm = self.vpm;
-        let steps = ((to - from).norm() / (0.35 * vpm)).clamp(4.0, 26.0) as usize;
-        for k in 0..=steps {
-            let jitter = if k == 0 || k == steps { Vector3::zeros() } else { self.any_direction() * 0.22 * vpm };
-            let at = from.lerp(&to, k as f64 / steps as f64) + jitter;
-            if (at - from).norm() < 1.2 * vpm && k < 3 {
-                self.fine(at, Vector3::zeros(), look, 0.12, 0.0);
-            } else {
-                self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.16, lifetime: 0.16, gravity: 0.0, slot: SLOT_SPARK });
-            }
-        }
-        self.cap_sparks();
+        self.zap_line_after(from, to, look, 0.0);
+    }
+
+    fn zap_line_after(&mut self, from: Vector3<f64>, to: Vector3<f64>, look: usize, delay: f64) {
+        self.lightning(from, to, look, 0.055, 1, 2, delay, 0.0);
     }
 
     /// Swinging the censer in hand back and forth on its chains while the button's held: each
@@ -11577,6 +11707,7 @@ impl Combat {
             Style::Fan => 1.2,
             Style::Punch => 1.3,
             Style::Pole => 0.95,
+            Style::Pick => 0.8,
             _ => 1.0,
         };
         let mut any_crit = false;
@@ -12770,6 +12901,8 @@ impl Combat {
                 self.burst(arena, profile, at, MAGIC_BLAST * reach * 1.5, 0.0, 1, true, Some(Element::Void), None);
             }
             self.burst(arena, profile, at, MAGIC_BLAST * reach, p.damage * 0.5, 1, false, profile.element.or(Some(Element::Arcane)), None);
+            // And leaves its element's mark there, see marks.rs
+            self.spell_mark(arena, profile, at, p.form, p.damage);
         } else {
             self.sparks(at, 4, 1.5, look, 1.0, 0.3);
             if profile.element.is_some() {
@@ -13416,34 +13549,45 @@ impl Combat {
         self.waves.push((at, size));
     }
 
-    /// A thread of lightning from `from` to `to`, a few sparks along it, cheaper than a bolt_line
-    /// for stringing a lot of them at once
+    /// A thread of lightning from `from` to `to`, forked once, striking twice, a few sparks
+    /// crackling off where it ends: cheap enough to string a lot of them at once, see lightning.rs
     fn arc(&mut self, from: Vector3<f64>, to: Vector3<f64>) {
-        let vpm = self.vpm;
         let look = Element::look(Some(Element::Storm));
-        let steps = ((to - from).norm() / (0.45 * vpm)).clamp(3.0, 18.0) as usize;
-        for k in 0..=steps {
-            let jitter = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5) * 0.3 * vpm;
-            let at = from.lerp(&to, k as f64 / steps as f64) + if k == 0 || k == steps { Vector3::zeros() } else { jitter };
-            self.sparks.push(Spark { position: at, velocity: Vector3::zeros(), look, life: 0.2, lifetime: 0.2, gravity: 0.0, slot: SLOT_SPARK });
-        }
-        self.cap_sparks();
-        self.flashes.push(Flash { position: to, color: Element::Storm.light(), reach: 4.0, life: 0.12, lifetime: 0.12 });
+        self.lightning(from, to, look, 0.045, 1, 2, 0.0, 0.5);
+        self.sparks(to, 3, 3.0, look, 0.3, 0.2);
     }
 
-    /// Lightning from `from` to `to`, jagged, there for a moment
+    /// Lightning from `from` to `to`, jagged and forked, flickering and striking again a moment,
+    /// crackling, see lightning.rs
     fn bolt_line(&mut self, from: Vector3<f64>, to: Vector3<f64>, look: usize) {
-        let vpm = self.vpm;
-        let steps = ((to - from).norm() / (0.2 * vpm)).clamp(8.0, 120.0) as usize;
-        let mut offset = Vector3::zeros();
-        for k in 0..=steps {
-            let f = k as f64 / steps as f64;
-            // Wandering off and back, pinned at both ends
-            offset = (offset + self.any_direction() * 0.12 * vpm) * (1.0 - f).min(f * 4.0).min(1.0);
-            self.sparks.push(Spark { position: from.lerp(&to, f) + offset, velocity: Vector3::zeros(), look, life: 0.25, lifetime: 0.25, gravity: 0.0, slot: SLOT_SPARK });
-        }
-        self.cap_sparks();
+        self.lightning(from, to, look, 0.075, 2, 3, 0.0, 0.8);
+        self.sparks(to, 4, 3.5, look, 0.4, 0.25);
         self.cues.push(Cue::at(Sound::Crackle, to, 0.8));
+    }
+
+    /// How much harder the player's blows land from behind or at what hasn't seen them, in
+    /// percent, see skills::Stat::Backstab
+    pub fn set_backstab(&mut self, percent: f64) {
+        self.backstab = (percent / 100.0).max(0.0);
+    }
+
+    /// How much harder, as a share, see set_backstab()
+    #[cfg(test)]
+    pub fn backstab(&self) -> f64 {
+        self.backstab
+    }
+
+    /// Whether the player's behind animal `i`, or it's not yet seen them: unhurt, and not running
+    fn unseen_or_behind(&self, arena: &Arena, i: usize) -> bool {
+        let a = &arena.animals[i];
+        let Some(feet) = arena.player else {
+            return false;
+        };
+        let to = (feet - a.position).xy();
+        let facing = nalgebra::Vector2::new(a.heading.cos(), a.heading.sin());
+        let behind = to.try_normalize(1e-6).is_some_and(|t| t.dot(&facing) < -0.35);
+        let unseen = a.health >= a.max_health && a.mood != crate::animals::Mood::Run && !a.look.is_boss();
+        behind || unseen
     }
 
     /// One hit landing on animal `i`: its damage, then the weapon's effects and synergies
@@ -13468,6 +13612,11 @@ impl Combat {
         }
         if arena.animals[i].status.marked > 0.0 {
             damage *= 1.0 + arena.animals[i].status.mark_bonus;
+        }
+        // A rogue's own blow from behind, or at what's not yet seen them: unhurt and not coming on
+        // at them, see skills::Stat::Backstab
+        if blow.depth == 0 && self.backstab > 0.0 && self.unseen_or_behind(arena, i) {
+            damage *= 1.0 + self.backstab;
         }
         // Rupture: a hit on something bleeding hard tears its wounds open, all the bleeding still
         // to come landing at once
@@ -14016,20 +14165,16 @@ impl Combat {
                     self.fine(at, Vector3::new(a.cos(), a.sin(), 0.08) * 1.8 * vpm, look, 0.45, 0.0);
                 }
             }
-            // Crackling, and on a hard hit lightning striking down from the sky onto it
+            // Crackling, little forks of it jumping off, and on a hard hit lightning striking down
+            // from the sky onto it, see lightning.rs
             Some(Element::Storm) => {
-                self.sparks(at, n(8.0), 4.5, look, 0.0, 0.2);
+                self.sparks(at, n(6.0), 4.5, look, 0.0, 0.2);
+                for _ in 0..n(1.5).min(3) {
+                    let jag = at + (self.any_direction() + Vector3::new(0.0, 0.0, -0.3)) * 0.9 * vpm;
+                    self.lightning(at, jag, look, 0.03, 0, 2, 0.0, 0.0);
+                }
                 if strength >= 1.4 {
-                    let top = at + Vector3::new(0.0, 0.0, 10.0 * vpm);
-                    let steps = 50;
-                    for k in 0..=steps {
-                        let f = k as f64 / steps as f64;
-                        let jitter = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.0) * (1.0 - f) * 0.9 * vpm;
-                        self.sparks.push(Spark { position: top.lerp(&at, f) + jitter, velocity: Vector3::zeros(), look, life: 0.28, lifetime: 0.28, gravity: 0.0, slot: SLOT_SPARK });
-                    }
-                    self.flashes.push(Flash { position: at, color: Element::Storm.light(), reach: 8.0, life: 0.18, lifetime: 0.18 });
-                    self.cues.push(Cue::at(Sound::Crackle, at, 0.9).pitched(0.8));
-                    self.shake = self.shake.max(0.3);
+                    self.sky_bolt(at, look, 0.8, 0.0);
                 }
             }
             // Bubbles rising slowly
@@ -15091,6 +15236,8 @@ impl Combat {
                     Style::Fan => pose([0.3, 0.48, -0.25], [-0.15, 0.45, 0.88], [1.0, 0.0, 0.1]),
                     Style::Punch => pose([0.26, 0.4, -0.27], [0.0, 0.95, 0.3], [1.0, 0.0, 0.0]),
                     Style::Pole => pose([0.34, 0.3, -0.33], [0.05, 0.97, 0.2], [-1.0, 0.0, 0.0]),
+                    // A war pick held up at the shoulder, its beak forward over the top
+                    Style::Pick => pose([0.3, 0.44, -0.27], [-0.05, 0.5, 0.86], [0.0, 1.0, -0.1]),
                     _ => pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]),
                 };
                 match self.action {
@@ -15135,6 +15282,8 @@ impl Combat {
                     _ => rest,
                 }
             }
+            // Throwing knives and a chakram, see thrown.rs
+            Kind::Ranged if weapon.profile.style.thrown() => self.thrown_pose(weapon),
             Kind::Ranged if weapon.profile.build != Build::None => self.shouldered(weapon),
             Kind::Ranged => {
                 // Held low at the left, then raised and drawn back to the cheek
@@ -15324,6 +15473,10 @@ impl Combat {
         // it's held at rest, see powers.rs
         if let Action::Power { t, length } = self.action {
             p = self.power_pose(weapon, &p, t / length);
+        } else if self.power.aiming && weapon.profile.power.is_some_and(crate::weapons::Power::spear) {
+            // A priest's spear aimed: drawn back over the shoulder, held, trembling the more the
+            // longer it's held, see faith.rs
+            p = self.spear_aim_pose(&p);
         }
         // A flourish now and then, standing about with it
         if self.action == Action::Idle && self.idle > IDLE_AFTER {
@@ -15655,10 +15808,16 @@ impl Combat {
                 return out;
             }
             let frame = self.held_frame(weapon);
-            // A bomb's gone from the hand once it's thrown, till the next comes up
-            let thrown = matches!(self.action, Action::Throw { thrown: true, .. });
+            // A bomb's gone from the hand once it's thrown, till the next comes up, and a knife;
+            // a chakram's gone till it's back in the hand
+            self.remember_flung(weapon, first_model + frame as u32);
+            let thrown = matches!(self.action, Action::Throw { thrown: true, .. }) || self.chakram_out(weapon);
             if !thrown {
                 out.push(place(first_model + frame as u32, &look.frames[frame], look.res, look.grip, hand, rotation, vpm, 1.0, HELD));
+            }
+            // A priest's spear forming in the hand as it's aimed and wound up, see faith.rs
+            if let Some(formed) = self.spear_forming(weapon) {
+                out.extend(self.forming_spear(hand, view, formed));
             }
             let build = weapon.profile.build;
             if build != Build::None {
@@ -15669,7 +15828,7 @@ impl Combat {
                 return out;
             }
             // A bow or a tome in the left hand
-            let left = (weapon.kind() == Kind::Ranged && weapon.profile.style != Style::Lob) || weapon.profile.style == Style::Summon;
+            let left = (weapon.kind() == Kind::Ranged && !weapon.profile.style.thrown()) || weapon.profile.style == Style::Summon;
             out.push(self.arm(left as usize, hand, axis, if left { elbow(-0.3, 0.12, -0.7) } else { elbow(0.37, 0.12, -0.7) }, vpm));
             // Gathering a big spell, the other hand takes the staff a little higher up, till it's
             // pushed out
@@ -15895,6 +16054,7 @@ impl Combat {
     fn other_instances(&self, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
         let vpm = view.vpm;
         self.stone_instances(view, out);
+        self.bolt_instances(view, out);
         let mut add = |at: Vector3<f64>, instance: AnimalInstance| out.push(((at - view.eye).norm(), instance));
         for s in &self.stuck {
             // Sinking away into what it's stuck in as it goes, point first, never just gone, and
@@ -16243,6 +16403,8 @@ impl Combat {
                     let flicker = 1.0 + 0.07 * (self.time * 41.0 + i.position.x).sin();
                     (PILLAR_STAGES + (t > 0.55) as usize, PILLAR_RES, grow.sqrt() * flicker, self.time * 1.5)
                 }
+                // Tendrils of shadow writhing as they reach up and sink back, see effects::tendrils()
+                crate::effects::TENDRILS => (i.model, MODEL_RES, grow.sqrt(), (self.time * 0.9 + i.position.y * 0.01).sin() * 0.4),
                 _ => (i.model, MODEL_RES, grow, 0.0),
             };
             let (model, shape) = self.model_at(index);
@@ -16530,7 +16692,7 @@ impl Combat {
 mod tests {
     use super::*;
 
-    const STYLES: [Style; 11] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash, Style::Whirl, Style::Fan, Style::Punch, Style::Pole];
+    const STYLES: [Style; 12] = [Style::Slash, Style::Chop, Style::Reap, Style::Smash, Style::Stab, Style::Thrust, Style::Lash, Style::Whirl, Style::Fan, Style::Punch, Style::Pole, Style::Pick];
     const FINISHES: [Finish; 5] = [Finish::Lunge, Finish::Rising, Finish::Spin, Finish::Slam, Finish::Cross];
     const CASTINGS: [Casting; 7] = [Casting::Thrust, Casting::Flick, Casting::Gather, Casting::Overhead, Casting::Sweep, Casting::Scoop, Casting::Present];
     /// Each family's own heavy blow, with the style it's swung in
@@ -17382,7 +17544,7 @@ mod tests {
                 continue;
             };
             for (family, f) in library.families.iter().enumerate() {
-                if c.fits(&f.id) && !out.iter().any(|&(s, g, _)| s == special && g == family) {
+                if c.fits(&f.id) && crate::weapons::special_counts(f, c) && !out.iter().any(|&(s, g, _)| s == special && g == family) {
                     out.push((special, family, part));
                 }
             }
@@ -17947,6 +18109,16 @@ mod tests {
                 out.push((format!("{power:?} on a {}", f.id), weapon));
             }
         }
+        // And each a part of the third batch on brings, see weapons::Component::power
+        for c in library.components.iter().filter(|c| c.power().is_some_and(|p| p as usize >= crate::weapons::Power::Starbreak as usize)) {
+            let power = c.power();
+            if !all && out.iter().any(|(_, w)| w.profile.power == power) {
+                continue;
+            }
+            if let Some(weapon) = library.with_part(&c.id, None).filter(|w| w.profile.power == power) {
+                out.push((format!("{:?} with {}", power.unwrap(), c.id), weapon));
+            }
+        }
         out
     }
 
@@ -17964,6 +18136,44 @@ mod tests {
         }
         let _ = vpm;
         out
+    }
+
+    /// A rogue's blows land harder from behind, or at what's not yet seen them, unhurt and not
+    /// coming on; anyone else's as hard from wherever
+    #[test]
+    fn blows_from_behind_land_harder_for_a_rogue() {
+        let library = crate::weapons::Library::load();
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(48.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let weapon = library.generate(3, library.family("dagger"), 0.0);
+        // How much a blow of 10 takes off the bandit ahead, facing `heading`, hurt already or not
+        let hit = |backstab: f64, heading: f64, hurt: bool| {
+            let mut animals = bandit_ahead(&world, feet, 0.0);
+            animals[0].heading = heading;
+            // Standing about, not coming on at the player yet
+            animals[0].mood = crate::animals::Mood::Idle;
+            if hurt {
+                animals[0].health -= 1.0;
+            }
+            let before = animals[0].health;
+            let mut combat = Combat::new(1, 0);
+            combat.set_backstab(backstab);
+            {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.strike(&mut arena, &weapon.profile, 0, Blow { damage: 10.0, crit: false, heavy: false, from: feet, depth: 0, element: None });
+            }
+            before - animals[0].health
+        };
+        // The player's at -y from it: facing +y it's turned away
+        let (away, facing) = (FRAC_PI_2, -FRAC_PI_2);
+        let plain = hit(20.0, facing, true);
+        assert!(plain > 0.0);
+        assert!(hit(20.0, away, true) > plain * 1.15, "from behind");
+        assert!(hit(20.0, facing, false) > plain * 1.15, "unseen");
+        assert!((hit(0.0, away, true) - hit(0.0, facing, true)).abs() < 1e-6, "no rogue, no difference");
     }
 
     /// One bandit 12 m ahead of `feet`, `lift` meters up off the ground, hale enough not to die

@@ -74,10 +74,12 @@ pub enum Stat {
     GoldFind,
     /// More experience, percent
     Experience,
+    /// More damage struck from behind, or at what hasn't seen the player, percent
+    Backstab,
 }
 
 impl Stat {
-    pub const ALL: [Stat; 33] = [
+    pub const ALL: [Stat; 34] = [
         Stat::MeleeDamage,
         Stat::RangedDamage,
         Stat::MagicDamage,
@@ -111,6 +113,7 @@ impl Stat {
         Stat::Leech,
         Stat::GoldFind,
         Stat::Experience,
+        Stat::Backstab,
     ];
 
     /// What `value` of it says, as on a node's card: "+4% melee damage"
@@ -150,6 +153,7 @@ impl Stat {
             Stat::Leech => format!("{value:+.0} health for every kill"),
             Stat::GoldFind => pct("gold found"),
             Stat::Experience => pct("experience"),
+            Stat::Backstab => pct("damage from behind or unseen"),
         }
     }
 }

@@ -89,6 +89,13 @@ pub const SPECIALITIES: &[(&str, Trade)] = &[
     ("warfan", Trade::Bladesmith),
     ("katar", Trade::Bladesmith),
     ("naginata", Trade::Bladesmith),
+    // The third batch: a war pick's forged as a blade is, and throwing knives and a chakram are
+    // blades for throwing; a prism and a runestone are a wandwright's
+    ("warpick", Trade::Bladesmith),
+    ("knives", Trade::Bladesmith),
+    ("chakram", Trade::Bladesmith),
+    ("prism", Trade::Wandwright),
+    ("runestone", Trade::Wandwright),
     ("pistol", Trade::Gunsmith),
     ("musket", Trade::Gunsmith),
     ("blunderbuss", Trade::Gunsmith),
