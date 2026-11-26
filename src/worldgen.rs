@@ -4249,10 +4249,19 @@ impl Terrain {
         // Ravines and such cut into the ground: water lies on whatever's left, and falls in
         let sea_voxels = ((sea_level_m(&self.settings) * vpm) as i32 + 1) as f32;
         let is_wood = |m: u8| matches!(m, WOOD | BIRCH_BARK | PALM_WOOD | BARK_DARK | DEAD_WOOD);
-        for cut in &self.features.recuts {
+        // Each column looked down once, from the highest of the cuts over it, as those along a
+        // ravine overlap many times over
+        let mut cuts: Vec<&[f32; 5]> = self.features.recuts.iter().collect();
+        cuts.sort_by(|a, b| b[4].total_cmp(&a[4]));
+        let mut done = vec![0u64; ((sx * sy) as usize).div_ceil(64)];
+        for cut in cuts {
             let top = (cut[4] * vpm).ceil() as i64;
             for (x, y) in columns([cut[0], cut[1]], [cut[2], cut[3]]) {
                 let i = (x + y * sx) as usize;
+                if done[i / 64] >> (i % 64) & 1 == 1 {
+                    continue;
+                }
+                done[i / 64] |= 1 << (i % 64);
                 if let Some(z) = (0..=top).rev().find(|&z| {
                     let m = world.material_at(x, y, z);
                     !is_passable(m) && !is_wood(m)

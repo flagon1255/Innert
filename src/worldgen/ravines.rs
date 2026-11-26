@@ -425,21 +425,23 @@ impl Terrain {
         // A wide upper part and a narrower deeper one, leaving ledges down the sides, over a flat
         // floor. Each reaches its floor a meter and a half either side of its middle, so on the way
         // down from the land there's a slab between each two, and no step's higher than a stride.
-        let cut = |shapes: &mut Vec<Shape>, at: [f32; 2], along: [f32; 2], top: f32, floor: f32, w: f32| {
+        let cut = |shapes: &mut Vec<Shape>, at: [f32; 2], along: [f32; 2], top: f32, floor: f32, w: f32, upper: bool| {
             let h = top - floor;
             if h < 0.5 {
                 return;
             }
             let along = [along[0], along[1], 0.0];
-            shapes.push(Shape::slab([at[0], at[1], floor + 0.675 * h], along, STEP * 2.0, w, 0.75 * h).floored(floor));
+            if upper {
+                shapes.push(Shape::slab([at[0], at[1], floor + 0.675 * h], along, STEP * 2.0, w, 0.75 * h).floored(floor));
+            }
             shapes.push(Shape::slab([at[0], at[1], floor + 0.35 * h], along, STEP * 2.0, w * 0.7, 1.2 * h).floored(floor));
         };
         for (i, s) in steps.iter().enumerate() {
-            cut(&mut shapes, [s.x, s.y], s.along, s.top, s.floor, s.width);
+            cut(&mut shapes, [s.x, s.y], s.along, s.top, s.floor, s.width, true);
             if course.open && i < course.ramp_end && i + 1 < steps.len() {
                 let next = &steps[i + 1];
                 let mid = |a: f32, b: f32| (a + b) * 0.5;
-                cut(&mut shapes, [mid(s.x, next.x), mid(s.y, next.y)], s.along, mid(s.top, next.top), mid(s.floor, next.floor), mid(s.width, next.width));
+                cut(&mut shapes, [mid(s.x, next.x), mid(s.y, next.y)], s.along, mid(s.top, next.top), mid(s.floor, next.floor), mid(s.width, next.width), false);
             }
             features.recuts.push([s.x - s.width - STEP, s.y - s.width - STEP, s.x + s.width + STEP, s.y + s.width + STEP, s.ground + 3.0]);
         }
