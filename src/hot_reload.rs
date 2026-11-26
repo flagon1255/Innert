@@ -133,19 +133,19 @@ fn write_cached(file: &Path, words: &[u32]) {
     }
 }
 
-/// Whether the shader at `path` was compiled before as it is now, so getting it is quick
+/// Whether the shader built in for `path` was compiled before, so getting it is quick
 pub fn is_cached(path: &Path, built_in: &str) -> bool {
-    cache_file(path, &source(path, built_in), shaderc::ShaderKind::Compute, "main").exists()
+    cache_file(path, built_in, shaderc::ShaderKind::Compute, "main").exists()
 }
 
-/// The shader at `path` compiled, as it was kept from before if it was, see cache_dir()
-fn spirv(path: &Path, built_in: &str, kind: shaderc::ShaderKind, entry_point_name: &str) -> Result<Vec<u32>, shaderc::Error> {
-    let source_text = source(path, built_in);
-    let file = cache_file(path, &source_text, kind, entry_point_name);
+/// `source_text`, the shader for `path`, compiled, as it was kept from before if it was, see
+/// cache_dir()
+fn spirv(path: &Path, source_text: &str, kind: shaderc::ShaderKind, entry_point_name: &str) -> Result<Vec<u32>, shaderc::Error> {
+    let file = cache_file(path, source_text, kind, entry_point_name);
     if let Some(words) = read_cached(&file) {
         return Ok(words);
     }
-    let words = compile_source(&source_text, path, kind, entry_point_name)?.as_binary().to_vec();
+    let words = compile_source(source_text, path, kind, entry_point_name)?.as_binary().to_vec();
     write_cached(&file, &words);
     Ok(words)
 }
@@ -201,7 +201,10 @@ impl Deref for HotReloadComputePipeline {
 }
 
 impl HotReloadComputePipeline {
-    /// The shader at `path`, reloaded whenever it changes, or `built_in` if there's no such file
+    /// The shader `built_in`, the copy of `path` built into the program, reloaded from `path`
+    /// whenever that file changes while the game runs. It starts from the built-in copy, never
+    /// the file: a build older than the shaders folder it was built from would read shaders
+    /// wanting what its code doesn't give them, as water.comp's binding 6 did, and fall over.
     pub fn new(device: Arc<Device>, path: &Path, built_in: &'static str) -> Self {
         let reload = Arc::<AtomicBool>::default();
         let cloned_reload = reload.clone();
@@ -243,7 +246,7 @@ impl HotReloadComputePipeline {
     /// Returns true if the pipeline was replaced.
     pub fn maybe_reload(&mut self) -> bool {
         if self.reload.swap(false, Ordering::Relaxed) {
-            let words = match spirv(&self.path, self.built_in, shaderc::ShaderKind::Compute, "main") {
+            let words = match spirv(&self.path, &source(&self.path, self.built_in), shaderc::ShaderKind::Compute, "main") {
                 Ok(words) => words,
                 Err(e) => {
                     eprint!("{}", e);
