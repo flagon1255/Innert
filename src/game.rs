@@ -1689,6 +1689,13 @@ impl Game {
         self.combat.ammo_sheet(&self.library, &bow.profile, eye, forward);
     }
 
+    /// A hand cannon's shell coming down on `at` and bursting `size` times as big as usual, see
+    /// Combat::drop_shell()
+    pub fn drop_shell(&mut self, at: Vector3<f64>, size: f64) {
+        let cannon = self.library.generate(7, self.library.family("handcannon"), 0.0);
+        self.combat.drop_shell(&cannon.profile, at, size);
+    }
+
     pub fn give_ammo(&mut self, id: &str) {
         if let Some(k) = self.library.ammo.iter().position(|a| a.id == id) {
             self.add_item(Item::Ammo(k, self.library.ammo[k].bundle * 3), 1);

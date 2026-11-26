@@ -358,6 +358,9 @@ struct Projectile {
     /// How far round it bursts where it lands, in meters, whatever its weapon does, for shells
     /// falling in a barrage
     blast: f64,
+    /// How big it bursts next to the usual, for a gun's shell: rolled as it's fired, from what
+    /// fired it and the luck of the shot, see bore_blast() and blast_roll(). 1 for anything else.
+    boom: f64,
     /// What else it does, for a harpoon or a special attack's bolt
     trick: Trick,
     /// Special ammo's own look, which of weapons::AMMO_STYLES, see ammo.rs
@@ -494,9 +497,10 @@ fn water_splash(p: &Projectile) -> f64 {
     }
     // A heavy ball or a shell slams into it, throwing up a tall column, an arrow only flicks it
     match (p.trick, p.shot) {
-        (Trick::Bomb { .. }, _) => 1.4,
+        (Trick::Bomb { .. }, _) => 1.4 * p.boom,
         (Trick::Fragment, _) => 0.3,
-        (_, Shot::Shell) => 2.0,
+        // A shell as big as its powder, see shell_size()
+        (_, Shot::Shell) => 2.0 * p.boom,
         (_, Shot::Ball) => 0.9 * p.size.clamp(0.6, 1.6),
         _ => 0.6,
     }
@@ -2159,6 +2163,9 @@ pub struct Combat {
     /// While set, explosions blow no holes and leave no stains, for a special attack's many small
     /// ones going off together
     scarless: bool,
+    /// While over 0, explosions are gunpowder going off, a shell, a bomb or a keg, and boom as one
+    /// rather than bursting as a spell does, see burst()
+    powder: f64,
     /// Beams to draw solid this frame: from, to and look
     rays: Vec<(Vector3<f64>, Vector3<f64>, usize)>,
     /// How fast the player is going in meters a second, and how far they've walked, to bob what's
@@ -5152,6 +5159,80 @@ fn kick_of(build: Build) -> f64 {
     }
 }
 
+/// What a gun built `build` sounds like going off, each its own: a pistol's snap, a musket's crack,
+/// a blunderbuss's blast and a hand cannon's boom. Anything else shooting a ball, as a special or a
+/// power might, as a musket.
+fn report_of(build: Build) -> Sound {
+    match build {
+        Build::Pistol => Sound::Pistol,
+        Build::Blunderbuss => Sound::Blunderbuss,
+        Build::Cannon => Sound::Cannon,
+        _ => Sound::Musket,
+    }
+}
+
+/// How much a gun's shell bursting varies in size, shot to shot, see blast_roll(): most within a
+/// quarter either way of the usual; now and then one whose powder hardly catches, a pop, and now
+/// and then one going up far bigger
+const BLAST_SPREAD: f64 = 0.25;
+const DUD_CHANCE: f64 = 0.08;
+const DUD_SIZE: f64 = 0.55;
+const BIG_CHANCE: f64 = 0.08;
+const BIG_SIZE: f64 = 1.45;
+/// What the sizes above come to on average, as the area they cover goes, so that dividing by it
+/// they cover as much ground on average as a shell always did
+const BLAST_MEAN: f64 = 1.02;
+/// The most a shell's blast grows to next to the usual, and the most the hole it blows does, a
+/// big hole taking a while to blow
+const BIGGEST_BLAST: f64 = 1.6;
+const BIGGEST_HOLE: f64 = 1.3;
+/// A hand cannon's usual bore, in meters, as assets\weapons.json has it
+const CANNON_BORE: f64 = 0.032;
+
+/// The luck of one shell's powder, how big it bursts next to the usual, see BLAST_SPREAD: on
+/// average it covers as much ground as ever, only spread round that
+fn blast_roll(rng: &mut u32) -> f64 {
+    let near = 1.0 + BLAST_SPREAD * (random(rng) + random(rng) - 1.0);
+    let luck = random(rng);
+    let odd = if luck < DUD_CHANCE {
+        DUD_SIZE
+    } else if luck > 1.0 - BIG_CHANCE {
+        BIG_SIZE
+    } else {
+        1.0
+    };
+    (near * odd / BLAST_MEAN).min(BIGGEST_BLAST)
+}
+
+/// How big a gun's shells burst next to the usual for what fired them, whatever the luck of the
+/// shot: a little bigger for a hand cannon of a wider bore, a gun made bigger, of a rarer grade or
+/// a higher item level, a little smaller the other way, about the usual one gun with another
+fn bore_blast(profile: &Profile, level: u32) -> f64 {
+    let bore = if profile.build == Build::Cannon { (profile.caliber / CANNON_BORE).max(0.1).sqrt() } else { 1.0 };
+    let made = profile.heft.max(0.1).powf(0.35);
+    let grade = 1.0 + 0.03 * (profile.grade as f64 - 1.0);
+    let level = 1.0 + 0.08 * (level as f64 / crate::levels::ITEM_CAP as f64 - 0.5);
+    (bore * made * grade * level).clamp(0.8, 1.3)
+}
+
+/// While set, every gun's shell bursts this big next to the usual, for screenshot runs showing a
+/// small, an ordinary and a big one, `--set blast_size=0.5`. 0 for as luck has it.
+static FORCED_BLAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn force_blast_size(size: f64) {
+    FORCED_BLAST.store(size.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How big a gun's shell fired now bursts next to the usual: what fired it, `profile` at item
+/// level `level`, times the luck of the shot
+fn shell_size(profile: &Profile, level: u32, rng: &mut u32) -> f64 {
+    let forced = f64::from_bits(FORCED_BLAST.load(std::sync::atomic::Ordering::Relaxed));
+    if forced > 0.0 {
+        return forced;
+    }
+    (bore_blast(profile, level) * blast_roll(rng)).min(BIGGEST_BLAST)
+}
+
 /// How long a crossbow or gun takes to settle again after a shot, in seconds: a repeater's lever
 /// spanning it again, as long as its cycle
 fn fire_length(profile: &Profile) -> f64 {
@@ -5520,6 +5601,7 @@ impl Combat {
             puff: 0.0,
             scar_timer: 0.0,
             scarless: false,
+            powder: 0.0,
             rays: Vec::new(),
             speed: 0.0,
             stride: 0.0,
@@ -6498,6 +6580,12 @@ impl Combat {
                 p.pin = p.pin.max(0.9);
             }
         }
+        // Each of a hand cannon's shells bursting its own size, see shell_size()
+        if shot == Shot::Shell {
+            for k in before..self.projectiles.len() {
+                self.projectiles[k].boom = shell_size(&base, weapon.item_level(), &mut self.rng);
+            }
+        }
 
         let kick = kick_of(base.build);
         self.kick_speed += 3.4 * kick * if shot == Shot::Quarrel { 0.3 } else { 1.0 };
@@ -6530,20 +6618,16 @@ impl Combat {
     }
 
     /// The gun in hand going off at `muzzle`, shooting along `ahead`, `power` times as hard as an
-    /// ordinary shot: a bang, the bigger the gun the deeper, a flash lighting everything round, the
-    /// flame at the muzzle, sparks and a cloud of smoke rolling out ahead and hanging there, a
-    /// puff from the pan, and the view shaking
+    /// ordinary shot: a bang, its own for each kind of gun and the harder the deeper and louder, a
+    /// flash lighting everything round, the flame at the muzzle, sparks and a cloud of smoke
+    /// rolling out ahead and hanging there, a puff from the pan, and the view shaking
     fn gun_report(&mut self, weapon: &Weapon, view: &View, profile: &Profile, muzzle: Vector3<f64>, ahead: Vector3<f64>, power: f64) {
         let vpm = view.vpm;
         let base = &weapon.profile;
         let bore = base.caliber / 0.009 * power.sqrt();
-        let pitch = match base.build {
-            Build::Pistol => 1.2,
-            Build::Blunderbuss => 0.85,
-            Build::Cannon => 0.62,
-            _ => 1.0,
-        } / power.sqrt() as f32;
-        self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(pitch));
+        let pitch = 1.0 / power.powf(0.35) as f32;
+        let volume = (1.0 + 0.15 * (power - 1.0)).clamp(0.9, 1.2) as f32;
+        self.cues.push(Cue::here(report_of(base.build), volume).pitched(pitch));
         self.shake = self.shake.max(0.18 * kick_of(base.build) * power);
         self.flare = FLARE * power.min(2.0);
         self.flare_roll = random(&mut self.rng) * TAU;
@@ -6814,13 +6898,18 @@ impl Combat {
         };
         let profile = p.profile.clone();
         let bomblet = p.size < 0.9;
-        let radius = BOMB_BLAST * profile.stat("area").max(0.8) * p.size.min(1.3) * if bomblet { 0.9 } else { 1.0 };
+        // As big as its powder went up, for one shot out of a gun, see shell_size()
+        let radius = BOMB_BLAST * profile.stat("area").max(0.8) * p.size.min(1.3) * if bomblet { 0.9 } else { 1.0 } * p.boom;
         self.scarless = true;
+        // A bomb booming as a shell does, its bomblets only popping
+        self.powder = if bomblet { 0.0 } else { p.boom };
         self.burst(arena, &profile, at, radius, p.damage, bomblet as u32, false, profile.element.or(Some(Element::Fire)), None);
+        self.powder = 0.0;
         self.scarless = false;
         // A bomblet blows its own small hole, and a bomb packed with them a bigger one
         if hole {
-            self.craters.push((at, if bomblet { BOMBLET_HOLE } else if cluster > 0 { BOMB_HOLE * CLUSTER_BLAST } else { BOMB_HOLE }));
+            let size = if bomblet { BOMBLET_HOLE } else if cluster > 0 { BOMB_HOLE * CLUSTER_BLAST } else { BOMB_HOLE };
+            self.craters.push((at, size * p.boom.min(BIGGEST_HOLE)));
         }
         if !bomblet {
             self.landing(arena, &profile, at, p.damage, None, false);
@@ -7913,7 +8002,9 @@ impl Combat {
             ZoneKind::Keg => {
                 let at = z.position + Vector3::new(0.0, 0.0, 0.5 * vpm);
                 self.scarless = true;
+                self.powder = 1.0;
                 self.burst(arena, &profile, at, z.radius * 0.8, z.damage, 0, false, profile.element.or(Some(Element::Fire)), None);
+                self.powder = 0.0;
                 self.scarless = false;
                 for i in Combat::under(arena, z.position, z.radius, 4.0) {
                     if arena.animals[i].health <= 0.0 || arena.animals[i].boss.is_some() {
@@ -8689,7 +8780,7 @@ impl Combat {
                 let sound = match m.shot {
                     Some(Shot::Arrow) => Sound::Twang,
                     Some(Shot::Quarrel) => Sound::Release,
-                    Some(_) => Sound::Gunshot,
+                    Some(_) => report_of(weapon.map_or(Build::None, |w| w.profile.build)),
                     None => Sound::Cast(blood as u8),
                 };
                 self.cues.push(Cue::here(sound, 0.9).pitched(0.75));
@@ -8838,8 +8929,11 @@ impl Combat {
             let from = weapon.map_or(view.eye + view.rotation * Vector3::new(0.15, 0.5, 0.1) * vpm, |w| self.held_point(w, view, false));
             let (velocity, time) = lobbed(from, l.to, vpm);
             self.launch(&l.profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.25 }), Form::Bolt, from, velocity, l.damage, BOMB_GRAVITY);
+            // Out of a gun, each its own size, as its shells are
+            let boom = if l.profile.style == Style::Powder { shell_size(&l.profile, weapon.map_or(1, |w| w.item_level()), &mut self.rng) } else { 1.0 };
             if let Some(bomb) = self.projectiles.last_mut() {
                 bomb.trick = Trick::Bomb { fuse: time + 0.25 + 0.08 * l.k as f64, cluster: 4, hole: true };
+                bomb.boom = boom;
             }
             if l.profile.style == Style::Lob {
                 if l.k == 0 {
@@ -8855,8 +8949,10 @@ impl Combat {
                 self.sparks.push(Spark { position: from, velocity, look: 0, life, lifetime: life, gravity: -0.03, slot: SLOT_SMOKE });
             }
             self.sparks(from, 4, 3.0, Element::look(Some(Element::Fire)), 0.2, 0.2);
-            let sound = if l.profile.build.crossbow() { Sound::Release } else { Sound::Gunshot };
-            self.cues.push(Cue::here(sound, 0.8).pitched(0.6 + 0.04 * l.k as f32));
+            let sound = if l.profile.build.crossbow() { Sound::Release } else { report_of(l.profile.build) };
+            // A crossbow's release taken deep for the weight of a bomb; a gun's own boom only a little
+            let pitch = if sound == Sound::Release { 0.6 } else { 0.85 };
+            self.cues.push(Cue::here(sound, 0.8).pitched(pitch + 0.04 * l.k as f32));
             self.kick_speed += 1.6;
         }
     }
@@ -9171,10 +9267,13 @@ impl Combat {
             (Style::Lob, _) => (Sound::Swoop, 0.9),
             (_, Some(Shot::Arrow)) => (Sound::Twang, 0.85),
             (_, Some(Shot::Quarrel)) => (Sound::Release, 0.9),
-            (_, Some(_)) => (Sound::Gunshot, 0.8),
+            (_, Some(_)) => (report_of(profile.build), 0.9),
             (_, None) => (Sound::Cast(look as u8), 0.85),
         };
-        self.cues.push(Cue::here(sound, 0.9).pitched(pitch));
+        // A gun's charged shot sounds as its report below has it, once
+        if profile.style != Style::Powder {
+            self.cues.push(Cue::here(sound, 0.9).pitched(pitch));
+        }
         if missile.is_some_and(|m| m.shot != Shot::Shell) || profile.build != Build::None {
             self.kick += 0.03;
         }
@@ -10061,7 +10160,9 @@ impl Combat {
                 self.kick += 0.09;
                 self.shake = self.shake.max(0.9);
                 self.flashes.push(Flash { position: from, color: [1.0, 0.75, 0.4], reach: 10.0, life: 0.25, lifetime: 0.25 });
-                self.cues.push(Cue::here(Sound::Gunshot, 1.0).pitched(0.55));
+                // A blunderbuss's coarse blast, deeper, whatever it's fired from but a cannon
+                let blast = if profile.build == Build::Cannon { Sound::Cannon } else { Sound::Blunderbuss };
+                self.cues.push(Cue::here(blast, 1.1).pitched(0.8));
                 self.cues.push(Cue::here(Sound::Slam, 0.7).pitched(1.2));
                 // What's in front thrown back as the shot gets to it
                 for a in arena.animals.iter() {
@@ -10306,6 +10407,18 @@ impl Combat {
             .map(|(_, i)| i)
     }
 
+    /// A hand cannon's shell, `profile`'s, coming straight down onto `at` from just over it and
+    /// bursting `size` times as big as usual, for screenshot runs of each size, see `--script
+    /// blasts`
+    pub fn drop_shell(&mut self, profile: &Rc<Profile>, at: Vector3<f64>, size: f64) {
+        let vpm = self.vpm;
+        let damage = profile.stat("physicalDamage") + profile.stat("elementalDamage");
+        self.launch(profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.0 }), Form::Bolt, at + Vector3::new(0.0, 0.0, 1.5 * vpm), Vector3::new(0.0, 0.0, -20.0 * vpm), damage, SHELL_GRAVITY);
+        if let Some(p) = self.projectiles.last_mut() {
+            p.boom = size;
+        }
+    }
+
     /// A projectile set off as it is, without multishot or echo
     #[allow(clippy::too_many_arguments)]
     fn launch(&mut self, profile: &Rc<Profile>, arrow: Option<Missile>, form: Form, from: Vector3<f64>, velocity: Vector3<f64>, damage: f64, gravity: f64) {
@@ -10332,6 +10445,7 @@ impl Combat {
             pin: 0.0,
             seek: 0.0,
             blast: 0.0,
+            boom: 1.0,
             trick: Trick::None,
             ammo: None,
             sinking: None,
@@ -11006,7 +11120,7 @@ impl Combat {
                         let from = view.eye + view.rotation * Vector3::new(0.15 * side, 0.75, -0.15) * vpm;
                         let shot = Missile { shot: if profile.build.crossbow() { Shot::Quarrel } else { Shot::Ball }, head: 0, power: true, size: 1.2 };
                         self.tracer(&profile, profile.element, Some(shot), from, view.eye + view.forward() * 40.0 * vpm, 140.0);
-                        self.cues.push(Cue::here(if profile.build.crossbow() { Sound::Release } else { Sound::Gunshot }, 0.7).pitched(1.15));
+                        self.cues.push(Cue::here(if profile.build.crossbow() { Sound::Release } else { report_of(profile.build) }, 0.7).pitched(1.1));
                         continue;
                     };
                     let view = arena.view;
@@ -11029,7 +11143,7 @@ impl Combat {
                             self.sparks.push(Spark { position: from, velocity: v, look: Element::look(None), life: 0.8, lifetime: 0.8, gravity: -0.05, slot: SLOT_SMOKE });
                         }
                     }
-                    self.cues.push(Cue::here(if gun { Sound::Gunshot } else { Sound::Release }, 0.85).pitched(1.1));
+                    self.cues.push(Cue::here(if gun { report_of(profile.build) } else { Sound::Release }, 0.85).pitched(1.05));
                     self.kick += 0.025;
                     self.shake = self.shake.max(0.2);
                 }
@@ -12194,6 +12308,7 @@ impl Combat {
             pin: 0.0,
             seek: 0.0,
             blast: 0.0,
+            boom: 1.0,
             trick: Trick::None,
             ammo,
             sinking: None,
@@ -12881,12 +12996,18 @@ impl Combat {
             // takes as much longer as there's more in it, and it's the bomblets' own holes that
             // tear the ground up round about
             let packed = if profile.has(Effect::Cluster) { CLUSTER_BLAST } else { 1.0 };
-            let radius = profile.param(Effect::Explosive, "radius", 2.2) * profile.stat("area").max(1.0) * packed;
+            // A shell bursts as big as its powder went up, see shell_size(): everything about it,
+            // what it catches too, bigger or smaller, but the hole it blows only so much bigger
+            let size = if p.shot == Shot::Shell { p.boom } else { 1.0 };
+            let radius = profile.param(Effect::Explosive, "radius", 2.2) * profile.stat("area").max(1.0) * packed * size;
             let damage = p.damage * profile.param(Effect::Explosive, "power", 0.7) * profile.potency(Effect::Explosive).max(1.0);
             let holes = self.craters.len();
+            // A shell's powder booming, where a bursting bolt or arrow only bursts
+            self.powder = if p.shot == Shot::Shell { size } else { 0.0 };
             self.burst(arena, profile, at, radius, damage, 1, false, profile.element.or(Some(Element::Fire)), None);
+            self.powder = 0.0;
             for hole in &mut self.craters[holes..] {
-                hole.1 /= packed;
+                hole.1 *= size.min(BIGGEST_HOLE) / size / packed;
             }
             // Bomblets scattering out of it
             if profile.has(Effect::Cluster) {
@@ -12937,6 +13058,7 @@ impl Combat {
             pin: 0.0,
             seek: 0.0,
             blast: 0.0,
+            boom: p.boom,
             trick,
             ammo: p.ammo,
             // Under water still, if it's set off from under water
@@ -13036,9 +13158,21 @@ impl Combat {
     fn burst(&mut self, arena: &mut Arena, profile: &Rc<Profile>, at: Vector3<f64>, radius: f64, damage: f64, depth: u32, pull: bool, element: Option<Element>, skip: Option<usize>) {
         let vpm = arena.view.vpm;
         let look = Element::look(element);
-        // Bigger ones boom deeper
-        let pitch = if pull { 1.3 } else { (1.25 - radius * 0.12).clamp(0.6, 1.2) as f32 };
-        self.cues.push(Cue::at(Sound::Burst, at, if pull { 0.6 } else { (0.5 + radius * 0.25).min(1.2) as f32 }).pitched(pitch));
+        // Bigger ones boom deeper, and gunpowder's heavy boom is its own: the bigger its powder
+        // went up the louder, deeper and so longer, a small one only a pop, and a big one rolling
+        // on a long while after
+        if self.powder > 0.0 && !pull {
+            let size = self.powder;
+            let volume = ((0.55 + radius * 0.2 / size) * size.powf(0.6)).clamp(0.3, 1.5);
+            let pitch = ((1.15 - radius * 0.07 / size) / size.powf(0.45)).clamp(0.55, 1.6);
+            self.cues.push(Cue::at(Sound::Shellburst, at, volume as f32).pitched(pitch as f32));
+            if size > 1.2 {
+                self.cues.push(Cue::at(Sound::Quake, at, (0.6 * (size - 1.0)).min(0.5) as f32).pitched(0.8));
+            }
+        } else {
+            let pitch = if pull { 1.3 } else { (1.25 - radius * 0.12).clamp(0.6, 1.2) as f32 };
+            self.cues.push(Cue::at(Sound::Burst, at, if pull { 0.6 } else { (0.5 + radius * 0.25).min(1.2) as f32 }).pitched(pitch));
+        }
         self.flashes.push(Flash { position: at, color: element.map_or([1.0, 0.8, 0.5], Element::light), reach: radius * 3.0 + 4.0, life: 0.35, lifetime: 0.35 });
         if pull {
             self.sparks(at, (16.0 + radius * 12.0) as usize, -4.0, look, 0.4, 0.6 + radius * 0.1);
@@ -18533,6 +18667,120 @@ mod tests {
         assert!(water_crossing(&water, at(5.0, 8.0), at(5.0, 12.0), f64::MAX).is_some_and(|(t, into)| !into && (t - 0.5).abs() < 1e-6));
     }
 
+    /// Every kind of gun goes off with a sound of its own, a pistol's snap, a musket's crack, a
+    /// blunderbuss's blast and a hand cannon's boom, none of them another's, each with a recording
+    /// to play; and a hand cannon's shell bursting booms as powder does, not as a spell bursts
+    #[test]
+    fn every_gun_sounds_its_own_and_a_shell_booms() {
+        let library = crate::weapons::Library::load();
+        let vpm = 8.0;
+        let world = open_ground(64, 8);
+        let feet = Vector3::new(32.0, 10.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let mut heard = Vec::new();
+        for (family, build) in [("pistol", Build::Pistol), ("musket", Build::Musket), ("blunderbuss", Build::Blunderbuss), ("handcannon", Build::Cannon)] {
+            let gun = library.generate(1, library.family(family), 1.0);
+            assert_eq!(gun.profile.build, build, "{family}");
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            combat.gun_report(&gun, &view, &gun.profile, eye, view.forward(), 1.0);
+            let sounds: Vec<Sound> = combat.cues.iter().map(|c| c.sound).collect();
+            assert_eq!(sounds, [report_of(build)], "a {family} going off");
+            assert!(!heard.contains(&sounds[0]), "a {family} sounds as another gun does");
+            assert!(crate::audio::recorded(sounds[0]), "a {family}'s sound has no recording");
+            heard.push(sounds[0]);
+        }
+        // A shell landing on open ground
+        let cannon = library.generate(1, library.family("handcannon"), 1.0);
+        let mut combat = Combat::new(1, 0);
+        combat.vpm = vpm;
+        let mut animals = Vec::new();
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+        combat.launch(&cannon.profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.0 }), Form::Bolt, feet, Vector3::zeros(), 20.0, 1.0);
+        let shell = combat.projectiles.pop().unwrap();
+        combat.impact(&mut arena, &shell, feet + Vector3::new(0.0, 12.0, 0.0) * vpm);
+        assert!(combat.cues.iter().any(|c| c.sound == Sound::Shellburst), "the shell didn't boom");
+        assert!(!combat.cues.iter().any(|c| c.sound == Sound::Burst), "the shell burst as a spell does");
+        assert!(crate::audio::recorded(Sound::Shellburst));
+    }
+
+    /// A hand cannon's shells burst bigger or smaller shot to shot, now and then hardly at all or
+    /// far bigger, but on average cover as much ground as they always did; and one gun with
+    /// another, of every size, grade and level, about the usual too
+    #[test]
+    fn shell_blasts_vary_but_average_the_old_size() {
+        let mut rng = 12345u32;
+        let n = 40000;
+        let sizes: Vec<f64> = (0..n).map(|_| blast_roll(&mut rng)).collect();
+        let mean = sizes.iter().sum::<f64>() / n as f64;
+        let area = sizes.iter().map(|s| s * s).sum::<f64>() / n as f64;
+        let spread = (sizes.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+        let share = |f: &dyn Fn(f64) -> bool| sizes.iter().filter(|&&s| f(s)).count() as f64 / n as f64;
+        println!("mean size {mean:.3}, mean area {area:.3}, spread {spread:.3}, pops {:.3}, big {:.3}", share(&|s| s < 0.7), share(&|s| s > 1.3));
+        assert!((area - 1.0).abs() < 0.03, "shells cover {area:.3} times the ground they did on average");
+        assert!((mean - 1.0).abs() < 0.04, "shells average {mean:.3} times the size they were");
+        assert!(spread > 0.15, "shells hardly vary: {spread:.3}");
+        assert!(share(&|s| s < 0.7) > 0.04 && share(&|s| s > 1.3) > 0.03, "too few small pops or big blasts");
+        assert!(sizes.iter().all(|&s| s > 0.3 && s <= BIGGEST_BLAST));
+        // What fired it: hand cannons as they drop, of every size, grade and level
+        let library = crate::weapons::Library::load();
+        let mut sum = 0.0;
+        let guns = 300;
+        for k in 0..guns {
+            let cannon = library.generate(k as u32 * 7919 + 3, library.family("handcannon"), 1.0);
+            let level = 1 + (k as u32 * 37) % crate::levels::ITEM_CAP;
+            let size = bore_blast(&cannon.profile, level);
+            assert!((0.8..=1.3).contains(&size));
+            sum += size * size;
+        }
+        let area = sum / guns as f64;
+        println!("hand cannons' own mean area {area:.3}");
+        assert!((area - 1.0).abs() < 0.05, "hand cannons' shells cover {area:.3} times the ground on average for what fired them");
+    }
+
+    /// A shell whose powder went up bigger bursts bigger in every way: a bigger fireball, lighting
+    /// further round, a bigger hole up to a point, the view shaking harder, and a louder, deeper
+    /// boom, a big one rolling on with a quake under it; a small one only pops
+    #[test]
+    fn a_bigger_shell_bursts_bigger_in_every_way() {
+        let library = crate::weapons::Library::load();
+        let vpm = 8.0;
+        let world = open_ground(64, 8);
+        let feet = Vector3::new(32.0, 10.0, 4.0) * vpm;
+        let eye = feet + Vector3::new(0.0, 0.0, 1.6 * vpm);
+        let view = View { eye, rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let cannon = library.generate(1, library.family("handcannon"), 1.0);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut seen = Vec::new();
+        for size in [0.55, 1.0, 1.5] {
+            let mut combat = Combat::new(1, 0);
+            combat.vpm = vpm;
+            let mut animals = Vec::new();
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.launch(&cannon.profile, Some(Missile { shot: Shot::Shell, head: 0, power: false, size: 1.0 }), Form::Bolt, feet, Vector3::zeros(), 20.0, 1.0);
+            let mut shell = combat.projectiles.pop().unwrap();
+            shell.boom = size;
+            combat.impact(&mut arena, &shell, feet + Vector3::new(0.0, 8.0, 0.0) * vpm);
+            let fireball = combat.blasts.iter().map(|b| b.radius).fold(0.0, f64::max);
+            let light = combat.flashes.iter().map(|f| f.reach).fold(0.0, f64::max);
+            let hole = combat.craters.iter().map(|c| c.1).fold(0.0, f64::max);
+            let boom = combat.cues.iter().find(|c| c.sound == Sound::Shellburst).copied().expect("no boom");
+            let quake = combat.cues.iter().any(|c| c.sound == Sound::Quake);
+            println!("size {size}: fireball {fireball:.2}, light {light:.1}, hole {hole:.2}, shake {:.2}, boom {:.2} at pitch {:.2}, quake {quake}", combat.shake, boom.volume, boom.pitch);
+            seen.push((fireball, light, hole, combat.shake, boom.volume, boom.pitch, quake));
+        }
+        let (small, usual, big) = (seen[0], seen[1], seen[2]);
+        assert!(small.0 < usual.0 && usual.0 < big.0, "the fireball's no bigger");
+        assert!(small.1 < usual.1 && usual.1 < big.1, "the light reaches no further");
+        assert!(small.2 < usual.2 && usual.2 < big.2 && big.2 <= usual.2 * BIGGEST_HOLE + 1e-9, "the hole's not bigger, or too big");
+        assert!(small.3 <= usual.3 && usual.3 < big.3, "the view shakes no harder");
+        assert!(small.4 < usual.4 && usual.4 < big.4, "the boom's no louder");
+        assert!(small.5 > usual.5 && usual.5 > big.5, "the boom's no deeper");
+        assert!(!small.6 && !usual.6 && big.6, "only a big one rolls on with a quake");
+    }
+
     /// A hand cannon's shell shot into the shallows splashes as it goes into the water, and only
     /// after that, sinking on down through it, strikes the bottom and goes off there, throwing a
     /// plume of water up out of the top over where it did; an arrow splashes in the same way, then
@@ -18569,7 +18817,7 @@ mod tests {
                             splashed = Some(frame);
                         }
                         Sound::Splash => plume |= (z - level).abs() < 0.1 * vpm,
-                        Sound::Burst => {
+                        Sound::Burst | Sound::Shellburst => {
                             assert!(z < level - 0.5 * vpm, "{shot:?} went off {:.2} m under the top of the water", (level - z) / vpm);
                             struck = Some(frame);
                         }

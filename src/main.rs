@@ -2653,6 +2653,11 @@ impl App {
         if let Some(family) = setting("weapon") {
             game.select_family(family);
         }
+        // `--set blast_size=0.5` has every gun's shell burst that big next to the usual, for a
+        // shot of a small, an ordinary or a big one, see combat::shell_size()
+        if let Some(size) = setting("blast_size").and_then(|v| v.parse::<f64>().ok()) {
+            combat::force_blast_size(size);
+        }
         // `--set jewels=melee_rare:3,magic_common:1` gives those jewels, see jewels.rs, and
         // `socket=1` sets one of each into the first weapon carried it fits
         if let Some(list) = setting("jewels") {
@@ -5425,9 +5430,40 @@ impl App {
                         None => {}
                     }
                 }
-                self.script_controls = combat::Controls { attack: f >= 30, holding: f >= 30, ..Default::default() };
+                // `--set fire_once=1` shoots once, and `fire_turn=0.2` then turns that far to the side,
+                // so where the shot lands isn't behind the gun, for shots of a shell bursting
+                let setting = |key: &str| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok());
+                let firing = f >= 30 && (setting("fire_once") != Some(1.0) || f <= 31);
+                self.script_controls = combat::Controls { attack: firing, holding: firing, ..Default::default() };
+                if f == 34
+                    && let Some(turn) = setting("fire_turn")
+                {
+                    self.camera.rotation.z += turn;
+                }
                 if f % 100 == 0 {
                     println!("frame {frame}: {} holes blown", self.craters.len());
+                }
+            }
+            // Three hand cannon shells coming down on the ground ahead one after another, a small,
+            // an ordinary and a big one, left to right, `--set blasts_every=60` frames apart, for
+            // shots of each size, see Combat::drop_shell()
+            ("blasts", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.3;
+                }
+                // Stirred too little to see, so the picture isn't built up over still frames, which
+                // would blur away a blast that's over in a moment
+                self.camera.rotation.z += if f % 2 == 0 { 1e-5 } else { -1e-5 };
+                let every = settings_from_args().into_iter().find(|(k, _)| k == "blasts_every").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(60);
+                for (k, size) in [0.55, 1.0, 1.5].into_iter().enumerate() {
+                    if f == 30 + every * k {
+                        let flat = Vector3::new(look.x, look.y, 0.0).normalize();
+                        let right = Vector3::new(flat.y, -flat.x, 0.0);
+                        let at = eye + flat * 10.0 * vpm + right * (k as f64 - 1.0) * 6.0 * vpm;
+                        let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                        self.game.drop_shell(Vector3::new(at.x, at.y, ground + 1.0), size);
+                        println!("frame {frame}: a shell {size} times as big coming down");
+                    }
                 }
             }
             // Draws all the way and shoots at the ground a little way ahead, over and over
