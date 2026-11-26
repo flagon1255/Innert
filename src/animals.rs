@@ -3493,11 +3493,14 @@ pub const WINGED_MODELS_AT: usize = DRAGON_MODELS_AT + crate::dragons::MODELS;
 /// see src\baked.rs: drawn only in the model editor, as the frames are baked from them
 pub const BAKED_MODELS_AT: usize = WINGED_MODELS_AT + crate::avians::MODELS;
 
+/// Where the krakens' pieces start, after those, see src\bosses\kraken.rs
+pub const KRAKEN_MODELS_AT: usize = BAKED_MODELS_AT + crate::baked::MODELS;
+
 /// How many models animal_models() makes: every frame of every look, then the jointed bosses'
 /// pieces, then the dragons' pieces and what they breathe, then the avians' and gargoyles' and
 /// what they throw, then the pieces the baked frames are made of, then the great serpents'
 /// pieces, last, see serpents::part_models(). Other models come after them.
-pub const ANIMAL_MODELS: usize = BAKED_MODELS_AT + crate::baked::MODELS + serpents::PART_MODELS;
+pub const ANIMAL_MODELS: usize = KRAKEN_MODELS_AT + crate::bosses::kraken::MODELS + serpents::PART_MODELS;
 
 /// Frame `frame` of `look` as it was drawn before it was baked from pieces, straight from its
 /// shapes, see WALK_FRAMES: empty if it's never drawn in it. What every look not baked from pieces
@@ -3579,6 +3582,7 @@ pub fn animal_models() -> Vec<Model> {
     models.extend(crate::dragons::models());
     models.extend(crate::avians::models());
     models.extend(crate::baked::models());
+    models.extend(crate::bosses::kraken::models());
     models.extend(serpents::part_models());
     models
 }
@@ -4313,6 +4317,15 @@ impl Animal {
                 boss.coils = Some(coils);
             }
         }
+        // A kraken's arms reaching for what it's doing, see src\bosses\kraken.rs
+        if self.look.is_kraken() {
+            crate::bosses::kraken::animate(self, world, water, player, dt);
+        }
+    }
+
+    /// A kraken's or a squid's body and arms, see bosses::kraken::Body
+    pub fn kraken(&self) -> Option<&crate::bosses::kraken::Body> {
+        self.boss.as_ref().and_then(|b| b.kraken.as_deref())
     }
 
     /// A great serpent's long body, see serpents::Coils
@@ -4598,6 +4611,8 @@ impl Animal {
             } else {
                 ground
             };
+            // A kraken keeps to water deep enough to hide it, never coming out of it
+            let ground = if look.is_kraken() { ground.filter(|_| water(x, y) - (ground_at_floor(world, x, y, z) as f64) > crate::bosses::kraken::SHALLOW * 0.8 * vpm) } else { ground };
             match ground {
                 Some(z) if clear => {
                     self.position.x = x;
@@ -5261,4 +5276,12 @@ mod tests {
             }
         }
     }
+}
+
+/// The bottom under `x`, `y`, in voxels: the first solid voxel looking down from `z`, or the bottom
+/// of the world
+fn ground_at_floor(world: &World, x: f64, y: f64, z: f64) -> i64 {
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
+    let top = z.floor() as i64 + 1;
+    (0..=top).rev().find(|&k| !is_passable(world.material_at(xi, yi, k))).map_or(0, |k| k + 1)
 }

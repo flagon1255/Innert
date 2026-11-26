@@ -480,6 +480,11 @@ impl Body {
         }
     }
 
+    /// Whether it's been posed where it is yet, see pose()
+    pub fn placed(&self) -> bool {
+        self.laid
+    }
+
     /// Where along it to try hitting, in voxels: its head, its mantle and its arms near it
     pub fn hit_points(&self, vpm: f64) -> Vec<V3> {
         let k = size(self.look);
@@ -691,7 +696,8 @@ fn pose(a: &Animal, boss: &mut Boss, body: &mut Body, world: &World, water: Wate
                 *p = root + out * (j as f64 * longest / n as f64);
             }
         }
-        body.tips[c] += (want - body.tips[c]) * (1.0 - (-quick * dt).exp());
+        let was = body.tips[c];
+        body.tips[c] = was + (want - was) * (1.0 - (-quick * dt).exp());
         let joints = &mut body.chains[c];
         joints[0] = root;
         // A little weight in it, sagging down to the water between its ends

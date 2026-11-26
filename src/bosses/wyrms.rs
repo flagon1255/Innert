@@ -74,7 +74,7 @@ pub fn moves(buried: bool) -> &'static [(Move, f64, f64)] {
 
 /// How high it rears its head in meters, how wide its maw gapes, 0 to 1, and how far under the
 /// ground it's sunk its head, for its own moves, see Boss::great_pose(); `r` its body's thickness
-pub fn pose(phase: Phase, r: f64) -> Option<(f64, f64, f64)> {
+pub(super) fn pose(phase: Phase, r: f64) -> Option<(f64, f64, f64)> {
     Some(match phase {
         // Reared high, swaying, its maw opening; then arcing through the air maw first
         Phase::WindUp(Move::Breach, t) => (3.0 * r + 0.1 * (t * 24.0).sin(), 0.6, 0.0),
@@ -269,7 +269,7 @@ pub fn erupted(a: &Animal, boss: &mut Boss, at: Vector3<f64>, vpm: f64) {
 
 /// A wyrm's tail eased back once it's swept it, and let go of after, and nothing left of an arc
 /// through the air it's not making: at the end of each time it thinks
-pub fn settle(phase: Phase, boss: &mut Boss, dt: f64) {
+pub(super) fn settle(phase: Phase, boss: &mut Boss, dt: f64) {
     let Some(coils) = &mut boss.coils else {
         return;
     };

@@ -18,11 +18,6 @@ pub fn has(look: Look) -> bool {
     LOOKS.contains(&look)
 }
 
-/// Whether `m` is one of their own moves, played out in kraken.rs or wyrms.rs
-pub fn owns(m: Move) -> bool {
-    kraken::owns(m) || wyrms::owns(m)
-}
-
 pub fn name(look: Look) -> &'static str {
     match look {
         Look::Kraken => "Tidewrack Kraken",
@@ -39,8 +34,8 @@ pub fn name(look: Look) -> &'static str {
 /// great serpents and the Skymane as the Elder Cinder Wyrm's lesser kin
 pub fn health(look: Look) -> f64 {
     match look {
-        Look::Kraken => 3200.0,
-        Look::GrottoSquid => 2200.0,
+        Look::Kraken => 3000.0,
+        Look::GrottoSquid => 2400.0,
         Look::DuneWyrm => 2800.0,
         Look::CalderaWyrm => 3000.0,
         Look::Skymane => 2900.0,
@@ -97,6 +92,7 @@ pub fn timing(look: Look, m: Move) -> (f64, f64, f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worldgen::material::*;
 
     /// Each is a boss with a name and an element of its own, leaving weapons of families there are,
     /// with a hoard of its own, and makes three moves at least of its own no boss or monster before
@@ -119,7 +115,7 @@ mod tests {
                 continue;
             }
             let own: Vec<Move> = repertoire(look).into_iter().filter(|m| !older.contains(m)).collect();
-            assert!(own.len() >= 3 && own.iter().all(|&m| owns(m)), "{look:?}: {own:?}");
+            assert!(own.len() >= 3 && own.iter().all(|&m| kraken::owns(m) || wyrms::owns(m)), "{look:?}: {own:?}");
             assert!((3..=8).contains(&repertoire(look).len()), "{look:?}");
         }
     }
@@ -135,7 +131,10 @@ mod tests {
         for look in LOOKS {
             let in_land = bases.iter().any(|b| lands.iter().any(|&l| grounds.iter().any(|&g| b.for_land(l).for_ground(g) == look)));
             let in_realm = crate::realms::REALMS.iter().any(|r| r.raid_bosses.iter().any(|(l, _)| *l == look) || r.guardians.contains(&look));
-            assert!(in_land || in_realm, "{look:?} is nowhere");
+            // The squid in the pools of the waterfall caves, see main.rs, and in Free Roam's shallower
+            // waters, see below
+            let at_sites = look == Look::GrottoSquid;
+            assert!(in_land || in_realm || at_sites, "{look:?} is nowhere");
         }
         // And the kraken and the squid in Free Roam's waters, see serpent_lairs.rs
         assert_eq!(kraken::for_water(6.0, 0), Look::Kraken);
