@@ -1,0 +1,37 @@
+{
+  "what": "Mason's Hammer, blade: Obsidian Mallet and Chisel",
+  "voxels_per_meter": 192.0,
+  "size": [
+    29,
+    18,
+    21
+  ],
+  "pivot": [
+    14.592000000000002,
+    9.216000000000001,
+    -66.0
+  ],
+  "anchor": null,
+  "origin": [
+    -15,
+    -9,
+    66
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.11959999999999998
+    ],
+    "tip": [
+      0.07,
+      0.0,
+      0.39759999999999995
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    39477,
+    "4177046d4747621b"
+  ]
+}

@@ -15,6 +15,28 @@ use crate::weapons::Rite;
 pub(in crate::combat) const SPEAR_REACH: f64 = 30.0;
 const CAST_REACH: f64 = 24.0;
 const SPEAR_SPEED: f64 = 32.0;
+/// How far a spear's drawn tipped back towards the hand it left as it leaves it, in radians, and
+/// still once it's well off, see spear_axis()
+const SPEAR_TILT: f64 = 0.5;
+const SPEAR_TILT_FAR: f64 = 0.14;
+
+/// Which way a spear's drawn pointing, flying `way`, `flown` meters from the hand it left, which is
+/// `hand` from the eye, `fallback` being out to the side and down from the eye in case its hand
+/// was right in line with it: tipped back towards the hand, so it's seen side on rather than end
+/// on, less the further it's gone
+fn spear_axis(way: Vector3<f64>, hand: Vector3<f64>, fallback: Vector3<f64>, flown: f64) -> Vector3<f64> {
+    let across = |v: Vector3<f64>| (v - way * v.dot(&way)).try_normalize(1e-3);
+    let side = across(hand).or_else(|| across(fallback)).unwrap_or_else(|| way.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::y));
+    let tilt = SPEAR_TILT_FAR + (SPEAR_TILT - SPEAR_TILT_FAR) * (-flown / 4.0).exp();
+    // Its butt's the end towards the hand
+    (way * tilt.cos() - side * tilt.sin()).normalize()
+}
+
+/// How long the lightning crackling on behind a spear is, in meters, for the cast one and the great
+/// one
+fn spear_trail(big: bool) -> f64 {
+    if big { 7.0 } else { 4.5 }
+}
 /// How far lightning arcs off what a spear strikes, in meters, and to how many, for the cast one
 /// and the great one
 const ARC_REACH: f64 = 7.0;
@@ -146,8 +168,10 @@ impl Combat {
         let way = p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
         let rate = if big { 70.0 } else { 40.0 };
         let n = (rate * dt + random(&mut self.rng)) as usize;
+        // All along its crackling trail, see spear_instances()
+        let reach = (p.flown / vpm).min(spear_trail(big) + crate::effects::SPEAR_LENGTH).max(0.5);
         for _ in 0..n {
-            let back = random(&mut self.rng) * if big { 2.4 } else { 1.4 } * vpm;
+            let back = random(&mut self.rng) * reach * vpm;
             let at = p.position - way * back;
             let v = self.any_direction() * 1.8 * vpm;
             let look = if random(&mut self.rng) < 0.5 { storm } else { holy };
@@ -225,8 +249,11 @@ impl Combat {
         }
     }
 
-    /// How a spear's drawn: a shaft of holy light, crackling lightning wound round it, its head
-    /// blazing, a jag of lightning trailing behind
+    /// How a spear's drawn: a spear of holy light, lightning wound round its shaft and its blade
+    /// blazing, crackling lightning trailing a long way behind it and fading glimmers of it along
+    /// the way it came. Seen from behind as it flies off it'd be end on, only the glow of its blade
+    /// showing, so it's drawn tipped back towards the hand it left: side on as it leaves the hand,
+    /// and a little all the way, growing to its full length as it clears the hand.
     pub(in crate::combat) fn spear_instances(&self, p: &Projectile, big: bool, view: &View) -> Vec<(Vector3<f64>, AnimalInstance)> {
         let vpm = view.vpm;
         let eye = view.eye;
@@ -234,13 +261,39 @@ impl Combat {
         let storm = Element::look(Some(Element::Storm));
         let way = p.velocity.try_normalize(1e-6).unwrap_or_else(Vector3::x);
         let far = ((p.position - eye).norm() / vpm / 15.0).max(1.0).sqrt();
-        let (length, thick) = if big { (3.0, 2.4) } else { (1.8, 1.5) };
-        let mut out = self.line_bolts(eye, p.position - way * length * vpm, p.position, holy, 0.45, thick * far, 0.0);
-        out.extend(self.line_bolts(eye, p.position - way * (length + 1.6) * vpm, p.position - way * 0.3 * vpm, storm, 0.4, 0.9 * far, if big { 0.22 } else { 0.14 }));
-        out.extend(self.streak_at(eye, p.position + way * 0.25 * vpm, way, holy, (if big { 3.6 } else { 2.4 }) * far));
+        let flown = p.flown / vpm;
+        let axis = spear_axis(way, p.position - way * p.flown - eye, view.rotation * Vector3::new(1.0, 0.0, -0.4), flown);
+        let size = if big { 1.5 } else { 1.0 };
+        let grown = 0.35 + 0.65 * smooth(flown / 2.5);
+        let length = crate::effects::SPEAR_LENGTH * size * grown;
+        let tail = p.position - axis * length * vpm;
+        let mut out = Vec::new();
+        // The spear itself, turning slowly round its length, once it's clear of the eye
+        if (p.position - eye).norm() > 0.8 * vpm {
+            let (model, spear) = self.model_at(crate::effects::HOLY_SPEAR);
+            let across = Vector3::z().cross(&axis).try_normalize(1e-6).unwrap_or_else(Vector3::y);
+            let turn = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_basis_unchecked(&[axis, across, axis.cross(&across)]));
+            let roll = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), self.time * 5.0);
+            out.push((eye, place(model, spear, crate::effects::SPEAR_RES, Vector3::zeros(), p.position, turn * roll, vpm, size * grown * far, MOVING)));
+        }
+        // A thin glow down its shaft, and its blade blazing
+        out.extend(self.line_bolts(eye, tail, p.position - axis * 0.35 * vpm, holy, 0.55, (if big { 1.0 } else { 0.7 }) * far, 0.0));
+        out.extend(self.streak_at(eye, p.position + way * 0.15 * vpm, way, holy, (if big { 2.6 } else { 1.7 }) * far));
         let (model, ball) = self.effect_model(SLOT_FIREBALL, holy);
         let spin = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.time * 9.0);
-        out.push((eye, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, (if big { 0.16 } else { 0.1 }) * far, MOVING)));
+        out.push((eye, place(model, ball, MODEL_RES, Vector3::zeros(), p.position, spin, vpm, (if big { 0.11 } else { 0.07 }) * far, MOVING)));
+        // Lightning crackling on behind it from its butt, back along the way it came
+        let trail = flown.min(spear_trail(big));
+        if trail > 0.3 {
+            out.extend(self.line_bolts(eye, p.position - way * (length + trail) * vpm, tail, storm, 0.45, 0.8 * far, if big { 0.26 } else { 0.18 }));
+        }
+        // Glimmers of it fading along the way it came, as if it were still there
+        for k in 1..=3 {
+            let back = length + 0.9 * k as f64;
+            if back < flown {
+                out.extend(self.streak_at(eye, p.position - way * back * vpm, way, holy, (1.3 - 0.3 * k as f64) * size * far));
+            }
+        }
         out
     }
 
@@ -535,15 +588,30 @@ use crate::weapons::Rite;
         let mut spears = 0;
         let mut seen_for = 0.0;
         let mut healed = 0.0f64;
+        let (mut solid, mut across) = (false, 0.0f64);
         let pack = fight(&talisman, 9.0, 2.0, |_, t| Controls { attack: t < 0.7, holding: t < 0.7, ..Default::default() }, |c, view, _, _| {
-            spears = spears.max(c.projectiles.iter().filter(|p| p.trick == Trick::Signature(Sig::Power(Shape::Spear { big: false }))).count());
+            let flying: Vec<&Projectile> = c.projectiles.iter().filter(|p| p.trick == Trick::Signature(Sig::Power(Shape::Spear { big: false }))).collect();
+            spears = spears.max(flying.len());
             if seen(c, view) {
                 seen_for += 1.0 / 60.0;
             }
             healed = healed.max(c.heal);
+            // Drawn as a spear, and side on enough to be seen as one rather than end on: how far
+            // across the screen what it's drawn with spreads, while it's on the way out
+            for p in flying.iter().filter(|p| p.flown / view.vpm > 1.0 && p.flown / view.vpm < 6.0) {
+                let drawn = c.spear_instances(p, false, view);
+                solid |= drawn.iter().any(|(_, i)| i.model() == c.first_model + crate::effects::HOLY_SPEAR as u32);
+                let on: Vec<[f64; 2]> = drawn.iter().filter_map(|(_, i)| view.project(i.sphere().0)).collect();
+                let spread = |k: usize| on.iter().map(|q| q[k]).fold(f64::MIN, f64::max) - on.iter().map(|q| q[k]).fold(f64::MAX, f64::min);
+                if on.len() > 1 {
+                    across = across.max(spread(0).hypot(spread(1)));
+                }
+            }
         });
         assert!(spears >= 1, "a spear was hurled");
         assert!(seen_for > 0.15, "the spear's to be seen in flight, for {seen_for:.2} s");
+        assert!(solid, "a spear's drawn with a spear");
+        assert!(across > 0.06, "a spear flying off is seen side on, spread {across:.3} of the screen across");
         let hurt = pack.iter().filter(|a| a.health < a.max_health).count();
         assert!(hurt >= 2, "through one and arcing on to the next, {hurt} hurt");
         // The great one, on right click: aimed while it's held, hurled as it's let go
@@ -557,6 +625,22 @@ use crate::weapons::Rite;
             big |= flying;
         });
         assert!(big && held_back, "the great spear's hurled as right click's let go, not as it's pressed");
+    }
+
+    /// A spear's drawn with its butt towards the hand it left, tipped well over as it leaves it
+    /// and less so further off, but never end on
+    #[test]
+    fn a_spear_is_drawn_side_on_from_the_hand() {
+        let way = Vector3::y();
+        let hand = Vector3::new(0.3, 0.5, -0.3);
+        let fallback = Vector3::new(1.0, 0.0, -0.4);
+        let near = spear_axis(way, hand, fallback, 0.5);
+        let far = spear_axis(way, hand, fallback, 20.0);
+        assert!(near.x < 0.0 && near.z > 0.0, "its butt's back towards the hand, out right and down: {near:?}");
+        assert!(near.dot(&way) < far.dot(&way), "it's tipped less the further it's gone");
+        assert!(far.dot(&way) < 0.995, "but never end on");
+        // From right in front of the eye, it's tipped out to the side all the same
+        assert!(spear_axis(way, way * 0.5, fallback, 0.5).x < -0.2);
     }
 
     /// A skull focus's cast drains what it strikes, and its power on right click raises skeletons

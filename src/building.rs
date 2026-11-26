@@ -12,9 +12,10 @@ use std::collections::VecDeque;
 
 use egui_winit_vulkano::egui::{Align2, Color32, FontId, Pos2, Stroke, pos2, vec2};
 
-use crate::bases::{self, BLOCK, Bases, Kind, Materials, Piece};
+use crate::bases::{self, BLOCK, Bases, Kind, Materials, Piece, Res};
 use crate::gather::{self, Yield};
-use crate::tools::{self, Tool};
+use crate::pieces::TABS;
+use crate::tools::{self, Gear, Tool};
 
 use super::*;
 
@@ -66,6 +67,7 @@ pub struct Prompt {
     kind: Yield,
     tree: bool,
     key: [i64; 3],
+    material: u8,
     tool: Option<(String, bool)>,
 }
 
@@ -94,26 +96,16 @@ struct Popup {
     age: f64,
 }
 
-/// What's carried to build with, in the order the HUD shows them: the name, its colour, what it's
-/// for, and where to get it
-const RESOURCES: [(&str, Color32, &str, &str); 3] = [
-    ("Wood", Color32::from_rgb(170, 115, 60), "walls · floors · doors · fire", "hold G at any tree"),
-    ("Stone", Color32::from_rgb(160, 160, 155), "strong walls · fireplaces", "hold G at grey rock, or dig down to it"),
-    ("Clay", Color32::from_rgb(200, 115, 75), "brick walls · lanterns", "hold G at the reddish banks of rivers and lakes"),
-];
-
-/// `m` as wood, stone and clay
-fn amounts(m: Materials) -> [u32; 3] {
-    [m.wood, m.stone, m.clay]
-}
+/// The first of what's carried to build with, always shown in the HUD; the rest of materials::Res
+/// shows once there's any of it
+const ALWAYS: usize = 3;
 
 /// What `have` is short of `cost`, like "2 stone, 1 clay", and where the first of it's to be got
 fn shortfall(cost: Materials, have: Materials) -> Option<(String, &'static str)> {
-    let (cost, have) = (amounts(cost), amounts(have));
-    let short: Vec<usize> = (0..3).filter(|&i| have[i] < cost[i]).collect();
-    let first = *short.first()?;
-    let what = short.iter().map(|&i| format!("{} {}", cost[i] - have[i], RESOURCES[i].0.to_lowercase())).collect::<Vec<_>>().join(", ");
-    Some((what, RESOURCES[first].3))
+    let short: Vec<(Res, u32)> = Res::ALL.iter().map(|&r| (r, cost.get(r).saturating_sub(have.get(r)))).filter(|&(_, n)| n > 0).collect();
+    let first = short.first()?.0;
+    let what = short.iter().map(|(r, n)| format!("{n} {}", r.name().to_lowercase())).collect::<Vec<_>>().join(", ");
+    Some((what, first.from()))
 }
 
 /// The state of building and gathering that isn't saved
@@ -133,9 +125,13 @@ pub struct Building {
     /// What's said under the crosshair about what's looked at, see update_prompt()
     pub(super) prompt: Option<Prompt>,
     /// What's just been gathered, rising off the crosshair, and how long each of what's carried
-    /// is lit up in the HUD for having just gone up
+    /// is lit up in the HUD for having just gone up, by materials::Res
     popups: Vec<Popup>,
-    flash: [f64; 3],
+    flash: [f64; Res::ALL.len()],
+    /// Which of pieces::TABS the pieces are picked from, C going on to the next
+    pub tab: usize,
+    /// Trees coming down, see felling.rs
+    pub(super) felling: crate::felling::Felling,
     /// The hint showing, first, and those waiting after it
     hints: VecDeque<HintCard>,
     /// How far through Bases::version the world as it is has been brought
@@ -224,15 +220,21 @@ impl App {
         if !self.building.on {
             return false;
         }
-        // The pieces, and the gate or a portal home after them where they can be built
-        let kinds = Kind::ALL.len() + self.gate_choice().is_some() as usize;
+        // C goes on to the next tab of pieces, shift and C back
+        if self.input.key_pressed(KeyCode::KeyC) {
+            let back = self.input.key_held(KeyCode::ShiftLeft) || self.input.key_held(KeyCode::ShiftRight);
+            self.pick_tab((self.building.tab as i64 + if back { -1 } else { 1 }).rem_euclid(TABS.len() as i64) as usize);
+        }
+        // The pieces of the tab, and the gate or a portal home after them where they can be built
+        let entries = self.tab_entries();
         let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9, KeyCode::Digit0, KeyCode::Minus];
         if let Some(k) = digits.iter().position(|&k| self.input.key_pressed(k)) {
-            self.pick(k.min(kinds - 1));
+            self.pick(entries[k.min(entries.len() - 1)]);
         }
         let wheel = self.input.scroll_diff().1;
         if wheel != 0.0 {
-            self.pick((self.building.picked as i64 + if wheel < 0.0 { 1 } else { -1 }).rem_euclid(kinds as i64) as usize);
+            let at = entries.iter().position(|&e| e == self.building.picked).unwrap_or(0) as i64;
+            self.pick(entries[(at + if wheel < 0.0 { 1 } else { -1 }).rem_euclid(entries.len() as i64) as usize]);
         }
         if self.input.key_pressed(KeyCode::KeyR) {
             self.building.turn = (self.building.turn + 1) % 4;
@@ -259,9 +261,12 @@ impl App {
         // A door faces the player and spans to their right; stairs go up away from them
         let facing = snapped(look);
         let auto = match kind {
-            // A fireplace and its chimney face the player too
-            Kind::Door | Kind::Hearth | Kind::Chimney => facing + 2,
-            Kind::Stairs => facing,
+            // A fireplace and its chimney face the player too, and a gate, an arch, a furnace and
+            // a banner, and what's set across the way they look
+            Kind::Door | Kind::Hearth | Kind::Chimney | Kind::IronGate | Kind::Arch | Kind::Furnace | Kind::Banner | Kind::HalfWall => facing + 2,
+            Kind::Fence | Kind::GlassWindow | Kind::GlassPane | Kind::IronBars => facing,
+            // Stairs and roofs go up away from them
+            Kind::Stairs | Kind::ThatchRoof | Kind::SlateRoof => facing,
             _ => 0,
         };
         let piece = Piece::new(0, kind, self.block_of(front), auto + self.building.turn);
@@ -330,7 +335,7 @@ impl App {
             Hint::Build,
             "Building",
             vec![
-                "1–9, 0 or the wheel: pick a piece. What it costs is beside it, greyed out till you have enough.".into(),
+                "C: the next tab of pieces, by what they're made of. 1–9, 0 or the wheel: pick a piece. What it costs is beside it, greyed out till you have enough.".into(),
                 "Click: build it where the outline shows, green if it fits, red saying why not.".into(),
                 "Right click: take down what you built, and get it all back.".into(),
                 "R: turn it  ·  E: open a door, or mend  ·  G: gather  ·  B: stop building".into(),
@@ -339,10 +344,31 @@ impl App {
         self.short_hint();
     }
 
-    /// Picks piece `k` of those to build, the gate or portal after them
+    /// Picks piece `k` of those to build, of Kind::ALL, the gate or portal after them
     pub(super) fn pick(&mut self, k: usize) {
         self.building.picked = k;
+        if let Some(&kind) = Kind::ALL.get(k) {
+            self.building.tab = crate::pieces::tab_of(kind);
+        }
         self.short_hint();
+    }
+
+    /// Goes to tab `tab` of the pieces, picking its first
+    pub(super) fn pick_tab(&mut self, tab: usize) {
+        self.building.tab = tab;
+        if let Some(&first) = TABS[tab].1.first() {
+            self.pick(Kind::ALL.iter().position(|&k| k == first).unwrap_or(0));
+        }
+    }
+
+    /// What can be picked in the tab that's open, each by its place in Kind::ALL, and the gate or a
+    /// portal home after them where they can be built
+    fn tab_entries(&self) -> Vec<usize> {
+        let mut entries: Vec<usize> = TABS[self.building.tab.min(TABS.len() - 1)].1.iter().filter_map(|k| Kind::ALL.iter().position(|a| a == k)).collect();
+        if self.gate_choice().is_some() {
+            entries.push(Kind::ALL.len());
+        }
+        entries
     }
 
     /// The name of the piece picked to build and what it costs, the gate or a portal home too
@@ -364,11 +390,11 @@ impl App {
         let Some((name, cost)) = self.picked_cost() else { return };
         let have = self.bases.materials;
         let Some((short, _)) = shortfall(cost, have) else { return };
-        let held: Vec<String> = (0..3).filter(|&i| amounts(cost)[i] > 0).map(|i| format!("{} {}", amounts(have)[i], RESOURCES[i].0.to_lowercase())).collect();
+        let held: Vec<String> = cost.parts().iter().map(|&(r, _)| format!("{} {}", have.get(r), r.name().to_lowercase())).collect();
         let mut lines = vec![format!("{name} costs {}. You have {}: {short} short.", cost.describe(), held.join(", "))];
-        for (i, (resource, _, _, from)) in RESOURCES.iter().enumerate() {
-            if amounts(have)[i] < amounts(cost)[i] {
-                lines.push(format!("{resource}: {from}."));
+        for (r, n) in cost.parts() {
+            if have.get(r) < n {
+                lines.push(format!("{}: {}.", r.name(), r.from()));
             }
         }
         lines.push("What you gather goes straight into your pack, and pieces you can afford light up in the list.".into());
@@ -399,8 +425,10 @@ impl App {
         if self.bases.build(kind, at, turn).is_ok() {
             self.refresh_bases();
             let middle = self.bases.piece_at(at).map(|p| p.middle());
-            self.play_at(audio::Sound::Place, middle, 0.8, if matches!(kind, Kind::StoneWall | Kind::ClayWall | Kind::Hearth | Kind::Chimney) { 0.8 } else { 1.0 });
-            if kind == Kind::Door {
+            use worldgen::material::{CLOTH_BLUE, PLANK_BIRCH, PLANK_DARK, PLANK_PALM, PLANK_PINE, THATCH, WOOD};
+            let soft = matches!(kind.material(), WOOD | THATCH | CLOTH_BLUE | PLANK_BIRCH | PLANK_DARK | PLANK_PINE | PLANK_PALM);
+            self.play_at(audio::Sound::Place, middle, 0.8, if soft { 1.0 } else { 0.8 });
+            if kind.is_door() {
                 self.save_game(false);
             }
         }
@@ -440,7 +468,7 @@ impl App {
             let p = eye + look * t;
             let v = [p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64];
             let block = self.block_of(v);
-            if let Some(door) = self.bases.piece_at(block).filter(|p| p.kind == Kind::Door).map(|p| p.id) {
+            if let Some(door) = self.bases.piece_at(block).filter(|p| p.kind.is_door()).map(|p| p.id) {
                 if let Some((open, _)) = self.bases.toggle_door(door) {
                     self.refresh_bases();
                     let middle = self.bases.piece(door).map(|p| p.middle());
@@ -455,6 +483,38 @@ impl App {
             t += 0.5;
         }
         false
+    }
+
+    /// Smelts what's carried at a furnace the player's looking at, if there's one in reach: ore to
+    /// copper and iron and sand to glass, burning wood, see materials::smelt(). Whether there was.
+    pub(super) fn furnace_here(&mut self) -> bool {
+        let (eye, look) = self.eye_look();
+        let vpm = self.world.voxels_per_meter as f64;
+        let Some((hit, _)) = gather::raycast_by(&self.world, eye, look, REACH_M * vpm, |m| m != worldgen::material::AIR) else {
+            return false;
+        };
+        let Some(middle) = self.bases.piece_at(self.block_of(hit)).filter(|p| p.kind == Kind::Furnace).map(|p| p.middle()) else {
+            return false;
+        };
+        let (used, made) = crate::materials::smelt(self.bases.materials);
+        if made.is_empty() {
+            let has = Res::ALL.iter().any(|r| r.smelts_to().is_some() && self.bases.materials.get(*r) > 0);
+            self.game.say(if has { "The furnace needs wood to burn: a log for every four it smelts." } else { "Bring ore or sand to smelt: copper and iron ore, or two sand for a glass." });
+            return true;
+        }
+        self.bases.materials.take(used);
+        self.gained(made);
+        self.game.say(format!("Smelted {}, burning {} wood.", made.describe(), used.wood));
+        self.play_at(audio::Sound::Sear, Some(middle), 0.9, 0.8);
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        for k in 0..6 {
+            let up = Vector3::new(0.0, 0.0, 0.6 * vpm + k as f64);
+            self.game.wisp(Vector3::from(middle) - origin + up, Vector3::new(0.0, 0.0, 1.2 * vpm), 1.5, k % 2 == 0);
+        }
+        // Bits of what it made spilling out of its mouth
+        let bits: Vec<u8> = made.parts().iter().map(|(r, _)| r.material()).collect();
+        self.game.debris(Vector3::from(middle) - origin - Vector3::new(0.0, 0.0, 0.3 * vpm), &bits, vpm);
+        true
     }
 
     /// Mends what's built where the player's looking, if it's damaged, for half what it cost
@@ -559,30 +619,34 @@ impl App {
         self.building.landed = landed;
         // Not a blow at an animal, which is fought as with any weapon, and only at what the tool's
         // for, not so far off as G reaches
-        if let Some(tool) = self.game.held_tool()
+        if let Some(gear) = self.game.held_gear()
             && !self.game.has_target()
             && !self.building.on
             && let Ok(target) = self.gather_target(TOOL_REACH_M)
-            && Tool::for_yield(target.kind) == Some(tool.0)
+            && Tool::for_yield(target.kind) == Some(gear.tool)
         {
-            self.work_at(target, Some(tool), SWING_SECONDS, true);
+            self.work_at(target, Some(gear), SWING_SECONDS, true);
         }
     }
 
     /// What G would gather where the player's looking, no further than `reach_m`: or what's to be
-    /// said for why there's nothing, if anything
-    fn gather_target(&self, reach_m: f64) -> Result<Target, Option<&'static str>> {
+    /// said for why there's nothing, if anything, as the tool the hardest of it needs
+    fn gather_target(&self, reach_m: f64) -> Result<Target, Option<String>> {
         let (eye, look) = self.eye_look();
         let vpm = self.world.voxels_per_meter as f64;
-        let (hit, normal) = gather::raycast(&self.world, eye, look, reach_m * vpm).ok_or(None)?;
+        // Stopping at reeds and flax, though they're walked through
+        let (hit, normal) = gather::raycast_by(&self.world, eye, look, reach_m * vpm, |m| !worldgen::is_passable(m) || crate::materials::is_crop(m)).ok_or(None)?;
         let block = self.block_of(hit);
         if let Some(piece) = self.bases.piece_at(block) {
-            return Err(Some(if piece.kind.player_built() { "That's built: take it down while building (B), with a right click." } else { "The gate's old foundation stones won't budge." }));
+            return Err(Some(if piece.kind.player_built() { "That's built: take it down while building (B), with a right click." } else { "The gate's old foundation stones won't budge." }.into()));
         }
         let material = self.world.material_at(hit[0], hit[1], hit[2]);
         let kind = gather::yield_of(material);
         if kind == Yield::Nothing {
-            return Err(Some("There's nothing to gather there."));
+            return Err(Some("There's nothing to gather there.".into()));
+        }
+        if let Some((tool, _)) = tools::needs(material) {
+            tools::can_gather(material, self.game.best_tool(tool)).map_err(Some)?;
         }
         let tree = kind == Yield::Wood && gather::is_trunk(material);
         // A tree's struck anywhere up its trunk
@@ -595,9 +659,9 @@ impl App {
     pub(super) fn gather_hold(&mut self, dt: f64, pressed: bool) {
         match self.gather_target(REACH_M) {
             Ok(target) => {
-                let tool = Tool::for_yield(target.kind).and_then(|t| self.game.best_tool(t).map(|grade| (t, grade)));
+                let gear = Tool::for_yield(target.kind).and_then(|t| self.game.best_gear(t));
                 self.building.wait -= dt;
-                self.work_at(target, tool, dt, false);
+                self.work_at(target, gear, dt, false);
             }
             Err(Some(why)) if pressed => self.game.say(why),
             Err(_) => {}
@@ -611,18 +675,25 @@ impl App {
         self.building.prompt = if !shown || self.building.on || self.game.has_target() {
             None
         } else {
-            self.gather_target(REACH_M).ok().map(|t| Prompt { kind: t.kind, tree: t.tree, key: t.key, tool: tools::faster(t.kind, Tool::for_yield(t.kind).and_then(|tool| self.game.best_tool(tool))) })
+            self.gather_target(REACH_M).ok().map(|t| Prompt { kind: t.kind, tree: t.tree, key: t.key, material: t.material, tool: tools::faster(t.kind, Tool::for_yield(t.kind).and_then(|tool| self.game.best_gear(tool))) })
         };
     }
 
     /// `seconds` of work at `target` with `tool`, or bare hands, gathering it once it's done: a
     /// blow struck now and then, its chips flying and its sound, and with `swing`, the tool in
     /// hand's blow landing, one now
-    fn work_at(&mut self, target: Target, tool: Option<(Tool, usize)>, seconds: f64, swing: bool) {
+    fn work_at(&mut self, target: Target, tool: Option<Gear>, seconds: f64, swing: bool) {
         let Target { hit, normal, material, kind, tree, key } = target;
         let Some(power) = tools::power(tool, kind) else {
             return;
         };
+        // Not while the tree's coming down
+        if tree && self.building.felling.busy() {
+            return;
+        }
+        // An axe that fells a whole tree at a blow does so with its first
+        let tool = tool.filter(|g| Tool::for_yield(kind) == Some(g.tool));
+        let power = if tree && swing && tool.is_some_and(|g| g.perks.fell) { 1e6 } else { power };
         // Quicker for the skill web's gathering, see skills::Stat::GatherSpeed
         let power = power * self.game.gather_speed();
         let vpm = self.world.voxels_per_meter as f64;
@@ -641,7 +712,7 @@ impl App {
             vec![
                 "Keep holding G till the ring round the crosshair closes.".into(),
                 "What you gather goes straight into your pack: see the panel at the top right.".into(),
-                format!("Bare hands gather everything. Tools are {:.0}–{:.0}× faster: craft them in I › Craft.", tools::SPEED[tools::CRUDE], tools::SPEED[tools::FINE]),
+                format!("Bare hands gather most things. Tools are {:.0}–{:.1}× faster: craft them in I › Craft.", tools::SPEED[tools::CRUDE], tools::SPEED[tools::OBSIDIAN_TIER]),
             ],
         );
         if swing || self.building.wait <= 0.0 || done {
@@ -652,44 +723,46 @@ impl App {
             let bits: Vec<u8> = match (tool.is_some(), kind) {
                 (false, _) => vec![material; 3],
                 (true, Yield::Wood) => vec![material, material, worldgen::material::DEAD_WOOD, material, worldgen::material::DEAD_WOOD],
-                (true, Yield::Stone) => vec![material, worldgen::material::GRAVEL, material, worldgen::material::GRAVEL, worldgen::material::STONE, material],
+                (true, Yield::Stone | Yield::Ore | Yield::Cut) => vec![material, worldgen::material::GRAVEL, material, worldgen::material::GRAVEL, worldgen::material::STONE, material],
                 (true, _) => vec![material; 5],
             };
             self.game.debris(at, &bits, vpm);
             let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
             let sound = match kind {
                 Yield::Wood => audio::Sound::Chop,
-                Yield::Stone => audio::Sound::Mine,
+                Yield::Stone | Yield::Ore | Yield::Cut => audio::Sound::Mine,
                 _ => audio::Sound::Dig,
             };
             // A better tool rings a little brighter
-            let pitch = 0.94 + 0.06 * tool.map_or(0.0, |(_, grade)| grade as f32);
+            let pitch = 0.94 + 0.05 * tool.map_or(0.0, |g| g.tier as f32);
             self.play_at(sound, Some((at + origin).into()), if tool.is_some() { 0.9 } else { 0.8 }, pitch);
         }
         if done {
             self.building.gathering = None;
-            self.gather_done(target);
+            self.gather_done(target, tool);
         }
     }
 
     /// What's been gathered into the pack, rising off the crosshair, and the first wood's hint
     fn gained(&mut self, gives: Materials) {
         self.bases.materials.add(gives);
-        for (i, n) in amounts(gives).into_iter().enumerate().filter(|&(_, n)| n > 0) {
-            let (name, color, _, _) = RESOURCES[i];
-            self.building.popups.push(Popup { text: format!("+{n} {name}"), color, age: 0.0 });
-            self.building.flash[i] = 1.2;
+        for (r, n) in gives.parts() {
+            self.building.popups.push(Popup { text: format!("+{n} {}", r.name()), color: r.color(), age: 0.0 });
+            if let Some(i) = Res::ALL.iter().position(|&o| o == r) {
+                self.building.flash[i] = 1.2;
+            }
         }
         if gives.wood > 0 {
-            self.hint(Hint::Wood, "Wood", vec!["Wood builds walls, floors, doors, stairs and torches, and feeds a fire.".into(), "Press B to build.".into()]);
+            self.hint(Hint::Wood, "Wood", vec!["Wood builds walls, floors, doors, stairs and torches, and feeds a fire.".into(), "Press B to build, and C there for the tabs of pieces.".into()]);
         }
     }
 
-    /// Takes what `target` is out of the world, once it's been worked at enough: the whole tree
-    /// for a tree's trunk, otherwise the block it's in, into the pack
-    fn gather_done(&mut self, target: Target) {
-        let Target { hit, normal, tree, .. } = target;
-        let vpm = self.world.voxels_per_meter as f64;
+    /// Takes what `target` is out of the world, once it's been worked at enough, with `gear` or
+    /// bare hands: the whole tree for a tree's trunk, coming down, a crop where it grows, otherwise
+    /// the block it's in, and with a wide swing the blocks either side, into the pack, twice over now
+    /// and then with a lucky tool, smelted with one that smelts
+    fn gather_done(&mut self, target: Target, gear: Option<Gear>) {
+        let Target { hit, normal, tree, kind, .. } = target;
         let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
         let at = Vector3::new(hit[0] as f64 + 0.5 + normal[0] as f64, hit[1] as f64 + 0.5 + normal[1] as f64, hit[2] as f64 + 0.5 + normal[2] as f64);
         // Nothing built near, as is mostly so, and what's built isn't looked up for every voxel
@@ -698,31 +771,187 @@ impl App {
         let built = |v: [i64; 3]| near && self.bases.piece_at([(v[0] + self.world.origin[0]).div_euclid(BLOCK), (v[1] + self.world.origin[1]).div_euclid(BLOCK), v[2].div_euclid(BLOCK)]).is_some();
         let started = Instant::now();
         if tree && let Some(felled) = gather::tree_at(&self.world, hit, &built) {
-            self.slow("felling a tree", started);
-            self.cut(&felled.cut);
-            self.gained(Materials::new(felled.wood, 0, 0));
-            // It comes apart all the way up, its leaves flying
-            let steps = 6;
-            for k in 0..steps {
-                let up = felled.height * (k as f64 + 0.5) / steps as f64;
-                let at = felled.foot + Vector3::new(0.0, 0.0, up);
-                let leafy = felled.leaf.filter(|_| k >= steps / 2);
-                let materials: Vec<u8> = (0..6).map(|i| if i % 2 == 0 { felled.bark } else { leafy.unwrap_or(felled.bark) }).collect();
-                self.game.debris(at, &materials, vpm);
-            }
-            self.play_at(audio::Sound::Timber, Some((felled.foot + origin + Vector3::new(0.0, 0.0, felled.height * 0.3)).into()), 1.0, 1.0);
+            self.slow("finding the tree", started);
+            let player = self.player.as_ref().map(|p| p.position);
+            self.fell(felled, player);
             return;
         }
-        let local = hit.map(|v| v.div_euclid(BLOCK));
-        let Some(broken) = gather::block_at(&self.world, local, &built) else {
-            return;
-        };
-        self.cut(&broken.cut);
-        if broken.gives.is_empty() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let luck = bases::hash3(hit[0] as u32, hit[1] as u32, (hit[2] as u32) ^ now);
+        let twice = gear.is_some_and(|g| (luck >> 8) as f64 / 16_777_216.0 < g.perks.double);
+        let mut gives = Materials::default();
+        let mut cut = gather::Cut::new();
+        let mut material = None;
+        if kind == Yield::Plant {
+            if let Some(crop) = gather::crop_at(&self.world, hit, &built) {
+                gives.add(crop.gives);
+                material = Some(crop.material);
+                for (b, v) in crop.cut {
+                    cut.entry(b).or_default().extend(v);
+                }
+            }
+        } else {
+            let local = hit.map(|v| v.div_euclid(BLOCK));
+            let mut blocks = vec![local];
+            // A wide swing takes the blocks either side of the one struck, across the face
+            if gear.is_some_and(|g| g.perks.wide) {
+                let (_, look) = self.eye_look();
+                let side = if normal[2] != 0 { if look.x.abs() > look.y.abs() { [0, 1, 0] } else { [1, 0, 0] } } else { [normal[1].abs(), normal[0].abs(), 0] };
+                blocks.push([local[0] + side[0], local[1] + side[1], local[2]]);
+                blocks.push([local[0] - side[0], local[1] - side[1], local[2]]);
+            }
+            for (k, b) in blocks.into_iter().enumerate() {
+                // What's built, and what the tools carried can't yet break, stays
+                if k > 0 && (self.bases.piece_at(self.block_of(b.map(|v| v * BLOCK))).is_some() || !self.can_break(b)) {
+                    continue;
+                }
+                let Some(broken) = gather::block_at(&self.world, b, &built) else { continue };
+                gives.add(broken.gives);
+                material.get_or_insert(broken.material);
+                for (b, v) in broken.cut {
+                    cut.entry(b).or_default().extend(v);
+                }
+            }
+        }
+        let Some(material) = material else { return };
+        self.cut(&cut);
+        if twice && !gives.is_empty() {
+            let again = gives;
+            gives.add(again);
+            self.building.popups.push(Popup { text: "Twice the yield!".into(), color: Color32::from_rgb(255, 205, 110), age: 0.0 });
+        }
+        if gear.is_some_and(|g| g.perks.smelt) {
+            gives = crate::materials::smelted(gives);
+        }
+        if gives.is_empty() {
             self.building.popups.push(Popup { text: "Dug out".into(), color: Color32::from_gray(190), age: 0.0 });
         }
-        self.gained(broken.gives);
-        self.debris_at((at + origin).into(), broken.material, 5);
+        self.gained(gives);
+        self.debris_at((at + origin).into(), material, 5);
+    }
+
+    /// `tree` cut through: planned to come down away from the player standing at `player`, its
+    /// model built meanwhile, see felling.rs and update_felling()
+    fn fell(&mut self, tree: gather::Tree, player: Option<Vector3<f64>>) {
+        let (_, look) = self.eye_look();
+        let started = Instant::now();
+        let plan = crate::felling::plan(&self.world, tree, player, look);
+        self.slow("planning a tree's fall", started);
+        self.building.felling.start(plan);
+    }
+
+    /// The trees coming down, `dt` seconds on: those whose models are ready taken out of the world
+    /// and set falling, a warning shouted if the player's where one will land; each tipping on over
+    /// till it crashes down, hurting what's under it, throwing the player clear, the ground shaking
+    /// and its leaves and splinters bursting off it; then broken up into its wood, given
+    pub(super) fn update_felling(&mut self, dt: f64) {
+        use crate::felling::{self, Fall, Topple};
+        let vpm = self.world.voxels_per_meter as f64;
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        let player = self.player.as_ref().map(|p| p.position + origin);
+        for (plan, mut built, slot) in self.building.felling.ready() {
+            let started = Instant::now();
+            // Out of the world, as the world is now, which may have moved on since it was planned
+            let shift = [(plan.origin[0] - self.world.origin[0]).div_euclid(BLOCK), (plan.origin[1] - self.world.origin[1]).div_euclid(BLOCK)];
+            let cut: gather::Cut = plan.cut.iter().map(|(b, v)| ([b[0] + shift[0], b[1] + shift[1], b[2]], v.clone())).collect();
+            self.cut(&cut);
+            self.game.set_one_off(slot, std::mem::take(&mut built.packed));
+            self.slow("taking a tree out to fall", started);
+            let topple = Topple::new(plan.kind, plan.height / vpm);
+            let mut fall = Fall { plan, built, topple, slot, warned: false, struck: false };
+            // The crack of it going, and a shout if the player's in the way
+            let foot = fall.point(0.0, 0.0);
+            self.play_at(audio::Sound::Timber, Some((foot + Vector3::new(0.0, 0.0, fall.plan.height * 0.3)).into()), 1.0, if fall.plan.kind == felling::Kind::Dead { 1.25 } else { 1.0 });
+            if player.is_some_and(|p| felling::in_the_way(&fall, p, vpm)) {
+                fall.warned = true;
+                self.game.say("Timber! It's coming down your way: get clear!");
+                self.game.jolt(0.15);
+            }
+            self.building.felling.falls.push(fall);
+        }
+        let mut k = 0;
+        while k < self.building.felling.falls.len() {
+            let fall = &self.building.felling.falls[k];
+            let mut topple = fall.topple;
+            let landed = topple.step(dt, |angle| felling::hits_ground(&self.world, fall, angle));
+            self.building.felling.falls[k].topple = topple;
+            if landed {
+                self.tree_lands(k, player);
+            }
+            if self.building.felling.falls[k].topple.done() {
+                let fall = self.building.felling.falls.remove(k);
+                // Broken up where it lies, into the wood it gives
+                let angle = fall.topple.angle;
+                for s in 0..5 {
+                    let at = fall.point((s as f64 + 0.5) / 5.0, angle) - origin;
+                    self.game.debris(at, &[fall.plan.bark, worldgen::material::DEAD_WOOD, fall.plan.bark], vpm);
+                }
+                self.gained(fall.plan.gives);
+                continue;
+            }
+            k += 1;
+        }
+    }
+
+    /// Tree `k` coming down hits the ground: a thud as heavy as it is, the ground shaking near by,
+    /// leaves and splinters bursting off all along it, what's under it hurt, and the player, if
+    /// it's coming down on them, thrown clear
+    fn tree_lands(&mut self, k: usize, player: Option<Vector3<f64>>) {
+        use crate::felling;
+        let vpm = self.world.voxels_per_meter as f64;
+        let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+        let fall = &self.building.felling.falls[k];
+        let first = !fall.struck;
+        let angle = fall.topple.angle;
+        let heavy = (fall.plan.size as f64 / 60_000.0).sqrt().clamp(0.2, 1.0);
+        let middle = fall.point(0.6, angle);
+        let (bark, leaf, dir) = (fall.plan.bark, fall.plan.leaf, fall.plan.dir);
+        let points: Vec<Vector3<f64>> = (0..8).map(|s| fall.point(0.2 + 0.8 * s as f64 / 7.0, angle)).collect();
+        let harm = felling::harm(fall.plan.size) * if first { 1.0 } else { 0.0 };
+        let in_way: Vec<usize> = self.game.animals_mut().enumerate().filter(|(_, a)| a.health > 0.0 && felling::in_the_way(fall, a.position + origin, vpm)).map(|(i, _)| i).collect();
+        let player_hit = player.is_some_and(|p| felling::in_the_way(fall, p, vpm));
+        let foot = fall.point(0.0, 0.0);
+        self.building.felling.falls[k].struck = true;
+        self.play_at(audio::Sound::Slam, Some(middle.into()), (0.6 + 0.4 * heavy) as f32, (1.05 - 0.35 * heavy) as f32);
+        if heavy > 0.5 {
+            self.play_at(audio::Sound::Rumble, Some(middle.into()), (0.5 * heavy) as f32, 0.8);
+        }
+        // The ground shakes, the nearer and bigger the more
+        if let Some(p) = player {
+            let near = (1.0 - (p - middle).norm() / (25.0 * vpm)).clamp(0.0, 1.0);
+            self.game.jolt((0.2 + 0.7 * heavy) * near * if first { 1.0 } else { 0.4 });
+        }
+        // Leaves and splinters bursting off all along it
+        for (s, at) in points.iter().enumerate() {
+            let crown = s >= 4;
+            let bits: Vec<u8> = (0..if first { 5 } else { 2 }).map(|i| if crown && i % 2 == 0 { leaf.unwrap_or(bark) } else if i % 3 == 0 { worldgen::material::DEAD_WOOD } else { bark }).collect();
+            self.game.debris(at - origin, &bits, vpm);
+        }
+        if harm > 0.0 {
+            let mut hit = 0;
+            for (i, a) in self.game.animals_mut().enumerate() {
+                if in_way.contains(&i) {
+                    a.damage(harm, foot - origin);
+                    hit += 1;
+                }
+            }
+            if hit > 0 {
+                self.game.say(if hit == 1 { "The tree came down on it!".to_owned() } else { format!("The tree came down on {hit} of them!") });
+            }
+        }
+        // Thrown clear, off to the side of the trunk the player's on
+        if first && player_hit && let Some(p) = player {
+            let to = p - foot;
+            let side = if to.x * dir.y - to.y * dir.x > 0.0 { Vector3::new(dir.y, -dir.x, 0.0) } else { Vector3::new(-dir.y, dir.x, 0.0) };
+            self.game.shove(side * 7.0 * vpm + Vector3::new(0.0, 0.0, 3.0 * vpm));
+            self.game.say("The tree crashed down by you and threw you clear!");
+        }
+    }
+
+    /// Whether brick `b` of the world, counted from its first, has nothing in it the tools carried
+    /// can't break yet, for a wide swing taking it with the one struck
+    fn can_break(&self, b: [i64; 3]) -> bool {
+        bases::read_brick(&self.world, b).iter().all(|&m| tools::needs(m).is_none_or(|(tool, _)| tools::can_gather(m, self.game.best_tool(tool)).is_ok()))
     }
 
     /// Takes what's been gathered, `cut`, out of the world for good
@@ -914,12 +1143,21 @@ pub fn base_lights(bases: &Bases, world: &World) -> Vec<[f32; 8]> {
     lights
 }
 
+/// What's drawn of the trees coming down, see felling.rs, in voxels of `world`
+pub fn felling_instances(building: &Building, game: &crate::game::Game, world: &World) -> Vec<crate::animals::AnimalInstance> {
+    building.felling.falls.iter().map(|f| f.instance(game.one_off_model(f.slot), world.origin)).collect()
+}
+
 /// The colour of what `kind` gives, in the HUD
 fn yield_color(kind: Yield) -> Color32 {
     match kind {
-        Yield::Wood => RESOURCES[0].1,
-        Yield::Stone => RESOURCES[1].1,
-        Yield::Clay => RESOURCES[2].1,
+        Yield::Wood => Res::Wood.color(),
+        Yield::Stone => Res::Stone.color(),
+        Yield::Cut => Res::Sandstone.color(),
+        Yield::Ore => Res::IronOre.color(),
+        Yield::Clay => Res::Clay.color(),
+        Yield::Sand => Res::Sand.color(),
+        Yield::Plant => Res::Reed.color(),
         _ => Color32::from_gray(200),
     }
 }
@@ -941,22 +1179,31 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("building")));
     let screen = ctx.screen_rect();
     let c = screen.center();
-    // What's carried, and what each is for, lit up for a moment as it goes up
-    let counts = amounts(bases.materials);
+    // What's carried, and what each is for, lit up for a moment as it goes up: wood, stone and
+    // clay always, the rest once there's any, those after the first few in rows of their own a
+    // little smaller
+    let m = bases.materials;
+    let shown: Vec<(usize, Res)> = Res::ALL.iter().copied().enumerate().filter(|&(k, r)| k < ALWAYS || m.get(r) > 0).collect();
     let top = screen.top() + 150.0;
     let right = screen.right() - 16.0;
-    let (width, row) = (196.0, 34.0);
-    painter.rect_filled(egui::Rect::from_min_size(pos2(right - width, top - 14.0), vec2(width + 8.0, 3.0 * row + 6.0)), 8.0, Color32::from_black_alpha(120));
-    for (k, (name, color, uses, _)) in RESOURCES.iter().enumerate() {
-        let y = top + k as f32 * row;
+    let (width, row, small) = (196.0, 34.0, 20.0);
+    let high = ALWAYS as f32 * row + (shown.len() - ALWAYS) as f32 * small;
+    painter.rect_filled(egui::Rect::from_min_size(pos2(right - width, top - 14.0), vec2(width + 8.0, high + 6.0)), 8.0, Color32::from_black_alpha(120));
+    let mut y = top;
+    for &(k, res) in &shown {
+        let full = k < ALWAYS;
+        let color = res.color();
         let flash = (building.flash[k] / 1.2).clamp(0.0, 1.0) as f32;
         if flash > 0.0 {
-            painter.rect_filled(egui::Rect::from_min_size(pos2(right - width + 3.0, y - 11.0), vec2(width + 2.0, row - 2.0)), 6.0, color.gamma_multiply(0.45 * flash));
+            painter.rect_filled(egui::Rect::from_min_size(pos2(right - width + 3.0, y - 11.0), vec2(width + 2.0, if full { row } else { small } - 2.0)), 6.0, color.gamma_multiply(0.45 * flash));
         }
-        painter.rect_filled(egui::Rect::from_min_size(pos2(right - width + 8.0, y - 6.0), vec2(12.0, 12.0)), 2.0, *color);
-        painter.text(pos2(right - width + 26.0, y), Align2::LEFT_CENTER, *name, FontId::proportional(14.0), Color32::from_gray(225));
-        painter.text(pos2(right, y), Align2::RIGHT_CENTER, counts[k].to_string(), FontId::proportional(15.0), Color32::WHITE);
-        painter.text(pos2(right - width + 26.0, y + 14.0), Align2::LEFT_CENTER, *uses, FontId::proportional(11.0), Color32::from_gray(160));
+        painter.rect_filled(egui::Rect::from_min_size(pos2(right - width + 8.0, y - 6.0), vec2(12.0, 12.0)), 2.0, color);
+        painter.text(pos2(right - width + 26.0, y), Align2::LEFT_CENTER, res.name(), FontId::proportional(if full { 14.0 } else { 13.0 }), Color32::from_gray(225));
+        painter.text(pos2(right, y), Align2::RIGHT_CENTER, m.get(res).to_string(), FontId::proportional(if full { 15.0 } else { 13.5 }), Color32::WHITE);
+        if full {
+            painter.text(pos2(right - width + 26.0, y + 14.0), Align2::LEFT_CENTER, res.uses(), FontId::proportional(11.0), Color32::from_gray(160));
+        }
+        y += if full { row } else { small };
     }
     // How far through what's being gathered, as a ring round the crosshair in the colour of what
     // it gives, fading once it's left off
@@ -974,11 +1221,16 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     }
     // What G does at what's looked at, and what a tool does or would do for it
     if let Some(p) = &building.prompt {
+        let res = crate::materials::res_of(p.material).map(|r| r.name());
         let (verb, gives) = match (p.kind, p.tree) {
             (Yield::Wood, true) => (["chop tree", "Chopping tree"], Some("Wood")),
             (Yield::Wood, false) => (["cut wood", "Cutting wood"], Some("Wood")),
-            (Yield::Stone, _) => (["break stone", "Breaking stone"], Some("Stone")),
+            (Yield::Stone, _) => (["break stone", "Breaking stone"], res),
+            (Yield::Cut, _) => (["cut stone", "Cutting stone"], res),
+            (Yield::Ore, _) => (["mine ore", "Mining ore"], res),
             (Yield::Clay, _) => (["dig clay", "Digging clay"], Some("Clay")),
+            (Yield::Sand, _) => (["dig sand", "Digging sand"], Some("Sand")),
+            (Yield::Plant, _) => (["cut", "Cutting"], res),
             _ => (["dig earth", "Digging earth"], None),
         };
         let busy = working.is_some_and(|g| g.key == p.key && building.since_blow < 0.3);
@@ -998,7 +1250,7 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
             let high = main.size().y + tool.as_ref().map_or(0.0, |t| t.size().y + 2.0);
             painter.rect_filled(egui::Rect::from_min_size(pos2(c.x - wide * 0.5 - 12.0, at.y - 4.0), vec2(wide + 24.0, high + 8.0)), 8.0, Color32::from_black_alpha(140));
             let left = c.x - (main.size().x + swatch) * 0.5;
-            painter.rect_filled(egui::Rect::from_min_size(pos2(left, at.y + main.size().y * 0.5 - 5.0), vec2(10.0, 10.0)), 2.0, yield_color(p.kind));
+            painter.rect_filled(egui::Rect::from_min_size(pos2(left, at.y + main.size().y * 0.5 - 5.0), vec2(10.0, 10.0)), 2.0, crate::materials::res_of(p.material).map_or(yield_color(p.kind), |r| r.color()));
             let main_high = main.size().y;
             painter.galley(pos2(left + swatch, at.y), main, Color32::WHITE);
             if let Some(tool) = tool {
@@ -1044,54 +1296,70 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     if !building.on {
         return;
     }
-    // The pieces, down the right side, and the gate or a portal home after them where they can be
-    // built, see gates.rs
-    let mut entries: Vec<(&str, Materials)> = Kind::ALL.iter().map(|k| (k.name(), k.cost())).collect();
+    // The tabs of pieces along the top of the list, by what they're made of, the one open lit up
+    // and each saying how many of its pieces can be afforded now
+    let tab = building.tab.min(TABS.len() - 1);
+    // Left of what's carried, which runs down the right side
+    let x = screen.right() - 240.0 - 360.0;
+    let width = 354.0;
+    // The pieces of the tab, down the right side, and the gate or a portal home after them where
+    // they can be built, see gates.rs
+    let mut entries: Vec<(usize, &str, Materials)> = TABS[tab].1.iter().map(|k| (Kind::ALL.iter().position(|a| a == k).unwrap_or(0), k.name(), k.cost())).collect();
     match gate {
-        Some(false) => entries.push(("Innert Gate", crate::gates::GATE_COST)),
-        Some(true) => entries.push(("Portal Home", crate::gates::PORTAL_COST)),
+        Some(false) => entries.push((Kind::ALL.len(), "Innert Gate", crate::gates::GATE_COST)),
+        Some(true) => entries.push((Kind::ALL.len(), "Portal Home", crate::gates::PORTAL_COST)),
         None => {}
     }
+    let mut y = (screen.center().y - 170.0).max(screen.top() + 260.0);
+    let tab_rows = TABS.len().div_ceil(3) as f32;
+    painter.rect_filled(egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(width + 10.0, 34.0 + tab_rows * 26.0 + 8.0 + entries.len() as f32 * 26.0 + 58.0)), 10.0, Color32::from_black_alpha(150));
+    painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "BUILDING", FontId::proportional(15.0), Color32::from_rgb(255, 215, 130));
+    painter.text(pos2(x + width - 14.0, y - 14.0), Align2::RIGHT_CENTER, "C next tab  ·  B to stop", FontId::proportional(12.0), Color32::from_gray(170));
+    let cell = (width - 14.0) / 3.0;
+    for (k, (title, kinds)) in TABS.iter().enumerate() {
+        let at = pos2(x + (k % 3) as f32 * cell, y + (k / 3) as f32 * 26.0 + 2.0);
+        let open = k == tab;
+        let rect = egui::Rect::from_min_size(at + vec2(-4.0, 0.0), vec2(cell - 4.0, 22.0));
+        painter.rect_filled(rect, 5.0, if open { Color32::from_rgba_unmultiplied(255, 215, 130, 60) } else { Color32::from_white_alpha(10) });
+        if open {
+            painter.rect_stroke(rect, 5.0, Stroke::new(1.2f32, Color32::from_rgb(255, 215, 130)), egui::StrokeKind::Inside);
+        }
+        let can = kinds.iter().filter(|kind| bases.materials.covers(kind.cost())).count();
+        painter.text(rect.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, *title, FontId::proportional(13.0), if open { Color32::WHITE } else { Color32::from_gray(185) });
+        painter.text(rect.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, format!("{can}/{}", kinds.len()), FontId::proportional(11.0), if can > 0 { Color32::from_rgb(150, 225, 140) } else { Color32::from_gray(120) });
+    }
+    y += tab_rows * 26.0 + 8.0;
     // Each with its key and what it costs, greyed out till there's enough for it, the colour of
     // each of what it costs by it
-    let x = screen.right() - 300.0;
-    let mut y = screen.center().y - 110.0;
-    painter.rect_filled(egui::Rect::from_min_size(pos2(x - 10.0, y - 30.0), vec2(294.0, 34.0 + entries.len() as f32 * 26.0 + 58.0)), 10.0, Color32::from_black_alpha(150));
-    painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "BUILDING", FontId::proportional(15.0), Color32::from_rgb(255, 215, 130));
-    painter.text(pos2(x + 274.0, y - 14.0), Align2::RIGHT_CENTER, "B to stop", FontId::proportional(12.0), Color32::from_gray(170));
-    let have = amounts(bases.materials);
-    for (k, (name, cost)) in entries.iter().enumerate() {
-        let picked = k == building.picked;
-        let afford = bases.materials.covers(*cost);
+    let have = bases.materials;
+    for (k, &(index, name, cost)) in entries.iter().enumerate() {
+        let picked = index == building.picked;
+        let afford = have.covers(cost);
         if picked {
-            painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(286.0, 24.0)), 6.0, Color32::from_white_alpha(if afford { 30 } else { 16 }));
+            painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(width - 4.0, 24.0)), 6.0, Color32::from_white_alpha(if afford { 30 } else { 16 }));
             painter.rect_filled(egui::Rect::from_min_size(pos2(x - 6.0, y + 2.0), vec2(3.0, 24.0)), 1.5, if afford { Color32::from_rgb(110, 240, 140) } else { Color32::from_rgb(250, 90, 80) });
         }
         let grey = Color32::from_gray(125);
         let color = if afford { Color32::from_gray(if picked { 255 } else { 210 }) } else { grey };
         // The gate in gold, being what all of it's for
-        let color = if k >= Kind::ALL.len() && afford { Color32::from_rgb(255, 215, 130) } else { color };
+        let color = if index >= Kind::ALL.len() && afford { Color32::from_rgb(255, 215, 130) } else { color };
         let key = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-"].get(k).copied().unwrap_or(" ");
         painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{key}  {name}"), FontId::proportional(14.0), color);
         // What it costs, from the right: each in its colour if there's enough of it, grey if not
-        let mut cx = x + 274.0;
-        for i in (0..3).rev() {
-            let n = amounts(*cost)[i];
-            if n == 0 {
-                continue;
-            }
-            let text = format!("{n} {}", RESOURCES[i].0.to_lowercase());
-            let enough = have[i] >= n;
+        let mut cx = x + width - 14.0;
+        for (res, n) in cost.parts().into_iter().rev() {
+            let text = format!("{n} {}", res.name().to_lowercase());
+            let enough = have.get(res) >= n;
             let galley = painter.layout_no_wrap(text, FontId::proportional(12.5), if enough { Color32::from_gray(225) } else { Color32::from_rgb(225, 135, 120) });
             let w = galley.size().x;
             painter.galley(pos2(cx - w, y + 14.0 - galley.size().y * 0.5), galley, Color32::WHITE);
-            painter.rect_filled(egui::Rect::from_center_size(pos2(cx - w - 8.0, y + 14.0), vec2(8.0, 8.0)), 1.5, if enough { RESOURCES[i].1 } else { RESOURCES[i].1.gamma_multiply(0.45) });
+            painter.rect_filled(egui::Rect::from_center_size(pos2(cx - w - 8.0, y + 14.0), vec2(8.0, 8.0)), 1.5, if enough { res.color() } else { res.color().gamma_multiply(0.45) });
             cx -= w + 20.0;
         }
         y += 26.0;
     }
-    painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, "Click build  ·  Right click take down", FontId::proportional(12.5), Color32::from_gray(195));
-    painter.text(pos2(x, y + 34.0), Align2::LEFT_CENTER, "R turn  ·  Wheel pick  ·  E door, mend  ·  G gather", FontId::proportional(12.5), Color32::from_gray(195));
+    painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, "Click build  ·  Right click take down  ·  C tab", FontId::proportional(12.5), Color32::from_gray(195));
+    painter.text(pos2(x, y + 34.0), Align2::LEFT_CENTER, "R turn  ·  Wheel pick  ·  E door, mend, smelt  ·  G gather", FontId::proportional(12.5), Color32::from_gray(195));
 
     // Where it'd go: a box round it, green if it can, red if not, and why not
     let Some(ghost) = ghost else {
@@ -1147,7 +1415,7 @@ const AWAY_STEP_M: f64 = 0.05;
 const AWAY_STEPS: usize = 3300;
 
 /// The screenshot scripts of building and gathering, see App::bases_script()
-pub const SCRIPTS: [&str; 13] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal", "tools", "hearth", "gather"];
+pub const SCRIPTS: [&str; 15] = ["chop", "mine", "hut", "away", "moon", "raid", "saved", "clay", "gate", "portal", "tools", "hearth", "gather", "manor", "kit"];
 
 impl App {
     /// Open, level ground near `near`, in voxels of the world, `across` blocks each way with room
@@ -1251,6 +1519,117 @@ impl App {
         count += self.script_build(Kind::StoneWall, [at[0] + 4, at[1] - 1, at[2]], 0) as usize;
         count += self.script_build(Kind::Torch, [at[0] + 4, at[1] - 1, at[2] + 1], 0) as usize;
         count
+    }
+
+    /// A house of the new materials with its corner at block `at`, six blocks a side, its front
+    /// facing -y: marble pillars at its corners, cut stone walls with glass windows in them, birch
+    /// over them and dark oak over the windows, an iron gate in its front, a thatched roof sloping
+    /// up from front and back to a ridge, its gable ends of pine; a cobbled floor inside with a rug
+    /// on it, a banner over the gate, a lamp post and a fence out front and a furnace at its side
+    fn build_manor(&mut self, at: [i64; 3]) -> usize {
+        let (side, high) = (6, 5);
+        let mut count = 0;
+        let mut put = |app: &mut App, kind: Kind, b: [i64; 3], turn: u8| count += app.script_build(kind, b, turn) as usize;
+        for j in 0..side {
+            for i in 0..side {
+                let wall = i == 0 || j == 0 || i == side - 1 || j == side - 1;
+                if !wall {
+                    continue;
+                }
+                // Footings down to the ground where it's lower
+                for down in 1..=3 {
+                    let b = [at[0] + i, at[1] + j, at[2] - down];
+                    let Some(local) = bases::local_block(&self.world, b) else { continue };
+                    if bases::read_brick(&self.world, local).iter().filter(|&&m| !worldgen::is_passable(m)).count() > 384 {
+                        break;
+                    }
+                    put(self, Kind::CutStoneWall, b, 0);
+                }
+                let corner = (i == 0 || i == side - 1) && (j == 0 || j == side - 1);
+                if corner {
+                    put(self, Kind::MarblePillar, [at[0] + i, at[1] + j, at[2]], 0);
+                    put(self, Kind::MarbleWall, [at[0] + i, at[1] + j, at[2] + 4], 0);
+                    continue;
+                }
+                // Facing out of the wall it's in, for the windows
+                let turn = if j == 0 { 3 } else if j == side - 1 { 1 } else if i == 0 { 2 } else { 0 };
+                let window = (i == 1 || i == side - 2 || j == 1 || j == side - 2) && !(j == 0 && (2..=3).contains(&i));
+                for k in 0..high {
+                    if j == 0 && (i == 2 || i == 3) && k < 4 {
+                        continue;
+                    }
+                    let kind = match k {
+                        0 => Kind::CutStoneWall,
+                        1 | 2 if window => Kind::GlassWindow,
+                        1 => Kind::CutStoneWall,
+                        2 => Kind::BirchWall,
+                        3 if window => Kind::DarkWall,
+                        _ => Kind::BirchWall,
+                    };
+                    put(self, kind, [at[0] + i, at[1] + j, at[2] + k], turn);
+                }
+            }
+        }
+        put(self, Kind::IronGate, [at[0] + 2, at[1], at[2]], 3);
+        // The roof: thatch rising from front and back to a ridge, a block out past the walls each
+        // way, its gable ends of pine boards
+        for r in 0..=side / 2 {
+            for i in -1..=side {
+                put(self, Kind::ThatchRoof, [at[0] + i, at[1] - 1 + r, at[2] + high + r], 1);
+                put(self, Kind::ThatchRoof, [at[0] + i, at[1] + side - r, at[2] + high + r], 3);
+            }
+            for i in [0, side - 1] {
+                for j in r..side - r {
+                    put(self, Kind::PineWall, [at[0] + i, at[1] + j, at[2] + high + r], 0);
+                }
+            }
+        }
+        // Inside, a cobbled floor and a rug on it
+        for j in 1..side - 1 {
+            for i in 1..side - 1 {
+                put(self, Kind::CobbleFloor, [at[0] + i, at[1] + j, at[2]], 0);
+            }
+        }
+        for (i, j) in [(2, 2), (3, 2), (2, 3), (3, 3)] {
+            put(self, Kind::Rug, [at[0] + i, at[1] + j, at[2] + 1], 0);
+        }
+        // Out front: a banner over the gate, a lamp post, a fence, iron bars in a stone sill; and a
+        // furnace by its side
+        put(self, Kind::Banner, [at[0] + 3, at[1] - 1, at[2] + 3], 3);
+        put(self, Kind::LampPost, [at[0] + 1, at[1] - 2, at[2]], 0);
+        for i in [-2, -1, 4, 5, 6, 7] {
+            put(self, Kind::Fence, [at[0] + i, at[1] - 3, at[2]], 1);
+            put(self, Kind::Fence, [at[0] + i, at[1] - 3, at[2] + 1], 1);
+        }
+        put(self, Kind::Furnace, [at[0] + side, at[1] + 2, at[2]], 0);
+        put(self, Kind::SlateRoof, [at[0] + side, at[1] + 2, at[2] + 2], 0);
+        count
+    }
+
+    /// See bases_script(): `kit`, with `--set gui=1`, the Craft tab with plenty of everything to
+    /// make every tool at every tier, then a legendary steel axe's card
+    fn kit_script(&mut self, frame: usize) {
+        match frame {
+            5 => {
+                let all = Res::ALL.iter().fold(Materials::new(0, 0, 0), |m, &r| m.with(r, 40));
+                self.bases.materials.add(all);
+                self.inventory_open = true;
+                self.building.craft_open = true;
+            }
+            60 => self.shoot_soon("the Craft tab, every tool at every tier"),
+            80 => {
+                self.building.craft_open = false;
+                let rarity = settings_from_args().into_iter().find(|(k, _)| k == "kit_rarity").and_then(|(_, v)| v.parse().ok()).unwrap_or(4);
+                if let Some(axe) = tools::make_rare(self.game.library(), Tool::Hatchet, tools::STEEL_TIER, rarity, 0x5eed_1e9e) {
+                    println!("frame {frame}: made {}: {:?}", axe.name, tools::gear(self.game.library(), &axe));
+                    self.game.give_weapon(axe);
+                    let slot = self.game.slot_count() - 1;
+                    self.game.inspect(slot);
+                }
+            }
+            140 => self.shoot_soon("a legendary tool's card"),
+            _ => {}
+        }
     }
 
     /// Plays through gathering and building for screenshot runs, see SCRIPTS: `chop` fells the tree
@@ -1446,7 +1825,10 @@ impl App {
             ("tools", f) => self.tools_script(f),
             ("chop", 5) => {
                 let trees = self.trees_near(feet, 30.0);
-                let Some(&(foot, height, _)) = trees.iter().find(|t| t.1 > 3.0) else {
+                // `--set chop_tree=big` the biggest near, rather than the nearest
+                let big = settings_from_args().iter().any(|(k, v)| k == "chop_tree" && v == "big");
+                let pick = if big { trees.iter().filter(|t| t.1 > 3.0).max_by(|a, b| a.1.total_cmp(&b.1)) } else { trees.iter().find(|t| t.1 > 3.0) };
+                let Some(&(foot, height, _)) = pick else {
                     println!("frame {frame}: no tree near");
                     return;
                 };
@@ -1463,16 +1845,43 @@ impl App {
                 println!("frame {frame}: by a tree {height:.1} m tall at {:.0}, {:.0}, carrying {:?}", (foot.x + origin.x) / vpm, (foot.y + origin.y) / vpm, self.bases.materials);
             }
             // G held at it, bare handed, till it comes down
-            ("chop", f) if (30..=150).contains(&f) => {
-                self.gather_hold(1.0 / 30.0, f == 30);
+            ("chop", f) if (30..=150).contains(&f) && self.building.felling.falls.is_empty() && self.building.phase == 0 => {
+                if !self.building.felling.busy() {
+                    self.gather_hold(1.0 / 30.0, f == 30);
+                }
                 if f % 24 == 6 {
                     println!("frame {frame}: holding G, {:.0}% through, {}, carrying {:?}", self.building.gathering.as_ref().map_or(0.0, |g| g.done * 100.0), self.last_popup(), self.bases.materials);
                 }
             }
-            ("chop", 200) => {
-                // Stepped back to see it gone
-                let (eye, look) = self.eye_look();
-                self.look_from(eye - look * 6.0 * vpm + Vector3::new(0.0, 0.0, 1.5 * vpm), eye + look * 2.0 * vpm);
+            // Once it's falling, seen from off to its side, a shot every few frames as it comes down
+            // and after it's down, see felling.rs
+            ("chop", f) if self.building.phase == 0 && !self.building.felling.falls.is_empty() => {
+                let fall = &self.building.felling.falls[0];
+                let foot = fall.point(0.0, 0.0) - origin;
+                let (dir, height, size, model, scale) = (fall.plan.dir, fall.plan.height, fall.plan.size, fall.built.model.size, fall.built.scale);
+                let side = Vector3::new(-dir.y, dir.x, 0.0);
+                let middle = foot + Vector3::new(dir.x, dir.y, 0.0) * height * 0.45 + Vector3::new(0.0, 0.0, height * 0.35);
+                let eye = middle + side * (height * 0.95 + 3.0 * vpm) - Vector3::new(dir.x, dir.y, 0.0) * height * 0.2 + Vector3::new(0.0, 0.0, 0.5 * vpm);
+                self.look_from(eye, middle);
+                println!("frame {frame}: a tree {:.1} m tall of {size} voxels starts coming down, its model {model:?} voxels at {scale} to one", height / vpm);
+                self.building.phase = 1;
+                self.building.mark = f;
+            }
+            ("chop", f) if self.building.phase == 1 => {
+                let since = f - self.building.mark;
+                if let Some(fall) = self.building.felling.falls.first() {
+                    if since % 6 == 0 && since <= 90 {
+                        println!("frame {frame}: {:.2} rad over, going {:.2} rad/s{}", fall.topple.angle, fall.topple.speed, if fall.topple.landed.is_some() { ", down" } else { "" });
+                    }
+                }
+                // `--set chop_shots=1` for the shots, which hold up the frames they're taken in
+                if since <= 84 && since % 12 == 0 && settings_from_args().iter().any(|(k, v)| k == "chop_shots" && v == "1") {
+                    self.shoot_soon("the tree coming down");
+                }
+                if since == 130 {
+                    println!("frame {frame}: carrying {:?}, {}", self.bases.materials, self.last_popup());
+                    self.building.phase = 2;
+                }
             }
             ("mine", 5) => {
                 // Looking down at dry ground in front, away from the water
@@ -1590,6 +1999,55 @@ impl App {
                     _ => {}
                 }
             }
+            // A house of the new materials, see manor(): `--set manor_view=in` from inside its gate,
+            // `menu` the build menu over it, open at its stone tab
+            ("manor", 3) => {
+                let all = Res::ALL.iter().fold(Materials::new(0, 0, 0), |m, &r| m.with(r, 500));
+                self.bases.materials.add(all);
+                let ahead = Vector3::new(-self.camera.rotation.z.sin(), self.camera.rotation.z.cos(), 0.0);
+                let Some(at) = self.open_ground(feet + ahead * 9.0 * vpm, 8) else {
+                    println!("frame {frame}: nowhere open to build");
+                    return;
+                };
+                let started = Instant::now();
+                let count = self.build_manor(at);
+                println!("frame {frame}: a house of {count} pieces at block {at:?} in {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
+                self.building.hut = Some(at);
+                let view = settings_from_args().into_iter().find(|(k, _)| k == "manor_view").map_or("out".to_owned(), |(_, v)| v);
+                match view.as_str() {
+                    "in" => {
+                        let gate = Vector3::new((at[0] + 3) as f64, at[1] as f64, at[2] as f64) * BLOCK as f64 - origin;
+                        self.look_from(gate + Vector3::new(0.0, -2.5 * vpm, 1.6 * vpm), gate + Vector3::new(0.0, 3.0 * vpm, 1.0 * vpm));
+                    }
+                    "side" => {
+                        let middle = Vector3::new((at[0] + 3) as f64, (at[1] + 3) as f64, at[2] as f64) * BLOCK as f64 - origin;
+                        self.look_from(middle + Vector3::new(-7.0 * vpm, -6.0 * vpm, 3.5 * vpm), middle + Vector3::new(0.0, 0.0, 1.5 * vpm));
+                    }
+                    _ => self.look_at_hut(at, -1.0),
+                }
+                if view == "menu" {
+                    self.building.on = true;
+                    self.pick_tab(2);
+                }
+                self.building.phase = 1;
+                self.building.mark = frame;
+            }
+            // Its gate opened, to see in
+            ("manor", f) if self.building.phase == 1 && f == self.building.mark + 60 && settings_from_args().iter().any(|(k, v)| k == "manor_view" && v == "in") => {
+                if let Some(at) = self.building.hut
+                    && let Some(id) = self.bases.piece_at([at[0] + 2, at[1], at[2]]).map(|p| p.id)
+                {
+                    let open = self.bases.toggle_door(id).map(|(open, _)| open);
+                    self.refresh_bases();
+                    println!("frame {frame}: the gate's open: {open:?}");
+                }
+            }
+            ("manor", f) if self.building.phase == 1 && f == self.building.mark + 150 => {
+                self.shoot_soon("the house of the new materials");
+                self.building.phase = 2;
+            }
+            // The Craft tab with every tool at every tier, then a legendary axe's card
+            ("kit", f) => self.kit_script(f),
             // Building the gate and a portal home, see gates.rs
             ("gate" | "portal", f) => self.gate_script(name, f),
             _ => {}
@@ -1627,7 +2085,7 @@ impl App {
             app.look_from(eye, at);
             app.game.give_tool(tool, grade);
             app.game.select_family(tool.family());
-            println!("frame {frame}: a {} {} in hand {:?}, at {:.1}, {:.1}, {:.1} m, carrying {:?}", tools::GRADES[grade], tool.name(), app.game.held_tool(), (at.x + origin.x) / vpm, (at.y + origin.y) / vpm, at.z / vpm, app.bases.materials);
+            println!("frame {frame}: a {} {} in hand {:?}, at {:.1}, {:.1}, {:.1} m, carrying {:?}", tools::TIERS[grade], tool.name(), app.game.held_tool(), (at.x + origin.x) / vpm, (at.y + origin.y) / vpm, at.z / vpm, app.bases.materials);
         };
         let swinging = |f: usize, from: usize, to: usize| f > from + 10 && f < to - 10;
         match frame {
@@ -1930,11 +2388,12 @@ mod tests {
     #[test]
     fn shortfall_says_what_and_where() {
         assert_eq!(shortfall(Materials::new(1, 0, 0), Materials::new(3, 0, 0)), None);
-        assert_eq!(shortfall(Kind::Hearth.cost(), Materials::new(0, 3, 0)), Some(("5 stone, 4 clay".to_owned(), RESOURCES[1].3)));
-        assert_eq!(shortfall(Kind::Door.cost(), Materials::new(1, 9, 9)), Some(("3 wood".to_owned(), RESOURCES[0].3)));
-        // Each says what it's for and where it's got
-        for (name, _, uses, from) in RESOURCES {
-            assert!(!uses.is_empty() && from.starts_with("hold G"), "{name}");
+        assert_eq!(shortfall(Kind::Hearth.cost(), Materials::new(0, 3, 0)), Some(("5 stone, 4 clay".to_owned(), Res::Stone.from())));
+        assert_eq!(shortfall(Kind::Door.cost(), Materials::new(1, 9, 9)), Some(("3 wood".to_owned(), Res::Wood.from())));
+        assert_eq!(shortfall(Kind::LampPost.cost(), Materials::new(1, 9, 9).with(Res::Iron, 1)), Some(("1 iron, 1 glass".to_owned(), Res::Iron.from())));
+        // The first few say what they're for and where they're got
+        for r in &Res::ALL[..ALWAYS] {
+            assert!(!r.uses().is_empty() && r.from().starts_with("hold G"), "{r:?}");
         }
     }
 
@@ -1953,8 +2412,10 @@ mod tests {
     #[test]
     fn every_piece_is_gathered_bare_handed_in_seconds() {
         let smallest_tree = 2.0;
-        for kind in Kind::ALL {
-            let [wood, stone, clay] = amounts(kind.cost()).map(f64::from);
+        // The pieces of wood, stone and clay alone: the rest are of what's got further on
+        for kind in Kind::ALL.into_iter().filter(|k| k.cost().parts().iter().all(|(r, _)| Res::ALL[..ALWAYS].contains(r))) {
+            let m = kind.cost();
+            let [wood, stone, clay] = [m.wood, m.stone, m.clay].map(f64::from);
             let seconds = (wood / smallest_tree).ceil() * gather::work_seconds(Yield::Wood, true)
                 + (stone / gather::PER_BLOCK as f64).ceil() * gather::work_seconds(Yield::Stone, false)
                 + (clay / gather::PER_BLOCK as f64).ceil() * gather::work_seconds(Yield::Clay, false);

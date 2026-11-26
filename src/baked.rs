@@ -1310,7 +1310,9 @@ fn written_from(look: Look, sidecar: Option<&crate::assets::Sidecar>) -> Option<
     }
     let written = sidecar.and_then(|s| s.written.clone());
     let first = candidates[0].clone();
-    Some(candidates.into_iter().find(|m| written.as_ref().is_some_and(|w| crate::assets::written_as(m, MODEL_RES) == *w)).unwrap_or(first))
+    // Written with the palette as it is, or as it was before the building materials were added
+    let was = |m: &Model, w: &(u64, String)| crate::assets::written_as(m, MODEL_RES) == *w || crate::assets::written_as_before(m, MODEL_RES) == *w;
+    Some(candidates.into_iter().find(|m| written.as_ref().is_some_and(|w| was(m, w))).unwrap_or(first))
 }
 
 /// What was changed in `name`.vox, `look`'s standing frame as it was edited before its frames were

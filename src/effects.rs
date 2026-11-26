@@ -44,11 +44,15 @@ pub const STONE_BOULDER: usize = STREAKS + ELEMENT_LOOKS;
 /// A slab of the same stone standing on 0, SLAB_HEIGHT tall, broad along x and thin along y, broken
 /// off jagged at its top, earth clinging to its foot and fire in its seams
 pub const STONE_SLAB: usize = STONE_BOULDER + 1;
+/// A talisman's spear of holy lightning along +x, its point at 0, SPEAR_LENGTH long: a shaft of
+/// light, a gold-collared blade of it, wings spread behind the blade, and lightning wound round
+/// the shaft, so it reads as a spear wherever it's seen from but end on, see faith.rs
+pub const HOLY_SPEAR: usize = STONE_SLAB + 1;
 /// How many effect models there are in all
-#[cfg(test)]
-pub const EFFECT_MODELS: usize = STONE_SLAB + 1;
+pub const EFFECT_MODELS: usize = HOLY_SPEAR + 1;
 pub const STONE_ROUND: f64 = 0.5;
 pub const SLAB_HEIGHT: f64 = 1.6;
+pub const SPEAR_LENGTH: f64 = 1.7;
 
 /// Voxels per meter of each
 pub const BLAST_RES: f64 = MODEL_RES;
@@ -57,6 +61,7 @@ pub const ICE_RES: f64 = 24.0;
 pub const PILLAR_RES: f64 = MODEL_RES;
 pub const MOON_RES: f64 = 32.0;
 pub const STREAK_RES: f64 = 32.0;
+pub const SPEAR_RES: f64 = 32.0;
 /// How far an explosion model reaches from its middle at most, its rays, shards and debris
 /// included, at size 1
 pub const BLAST_REACH: f64 = 1.5;
@@ -1182,6 +1187,33 @@ fn stone_slab() -> (Model, Vector3<f64>) {
     g.model()
 }
 
+/// A spear of holy lightning, see HOLY_SPEAR: a shaft of light, a broad leaf of a blade on a gold
+/// collar, gold wings swept back from it, lightning wound round the shaft and a gold knob at its
+/// butt
+fn holy_spear() -> (Model, Vector3<f64>) {
+    let l = SPEAR_LENGTH;
+    let mut p = vec![
+        // The blade, flat across, its point at 0
+        limb([-0.34, 0.0, 0.0], [-0.16, 0.0, 0.0], 0.03, 0.065, GLOW_HOLY).stretched([1.0, 1.0, 0.4]),
+        limb([-0.16, 0.0, 0.0], [0.0, 0.0, 0.0], 0.065, 0.006, GLOW_HOLY).stretched([1.0, 1.0, 0.4]),
+        limb([-0.4, 0.0, 0.0], [-0.33, 0.0, 0.0], 0.034, 0.03, GOLD),
+        ball([-l, 0.0, 0.0], 0.03, GOLD),
+    ];
+    // Wings swept back from the collar, either side and above and below
+    for (y, z) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        p.push(limb([-0.38, y * 0.03, z * 0.03], [-0.5, y * 0.11, z * 0.11], 0.016, 0.006, GOLD));
+    }
+    // Lightning wound round the shaft, a turn every quarter meter
+    let turns = ((l - 0.45) / 0.25) as usize * 6;
+    for k in 0..turns {
+        let x = -0.45 - k as f64 / turns as f64 * (l - 0.5);
+        let a = k as f64 / 6.0 * TAU;
+        p.push(ball([x, a.cos() * 0.032, a.sin() * 0.032], 0.012, GLOW_STORM));
+    }
+    p.push(limb([-l, 0.0, 0.0], [-0.38, 0.0, 0.0], 0.02, 0.02, GLOW_HOLY));
+    voxelize(&p, SPEAR_RES)
+}
+
 type Job = Box<dyn Fn() -> (Model, Vector3<f64>) + Sync>;
 
 /// The models from BLASTS on, made on every core at once
@@ -1207,6 +1239,7 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
     }
     jobs.push(Box::new(stone_boulder));
     jobs.push(Box::new(stone_slab));
+    jobs.push(Box::new(holy_spear));
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let mut made: Vec<(usize, (Model, Vector3<f64>))> = std::thread::scope(|scope| {

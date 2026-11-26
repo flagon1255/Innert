@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use crate::animals::Look;
-use crate::bases::{BLOCK, Bases, Kind};
+use crate::bases::{BLOCK, Bases};
 use crate::realms::{REALMS, monsters_of};
 
 /// Seconds into the dusk the first wave comes, and between waves after
@@ -185,8 +185,8 @@ impl Nav {
                 }
                 let i = index(b[0], b[1]);
                 match p.kind {
-                    Kind::Door if !p.open => cells[i] = Cell::Door(p.id),
-                    Kind::WoodWall | Kind::ClayWall | Kind::StoneWall | Kind::Hearth | Kind::Chimney => walls[i] += 1,
+                    k if k.is_door() && !p.open => cells[i] = Cell::Door(p.id),
+                    k if k.is_wall() => walls[i] += 1,
                     _ => {}
                 }
             }
@@ -343,7 +343,7 @@ impl Nav {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bases::Materials;
+    use crate::bases::{Kind, Materials};
 
     /// A hut of walls two high, six blocks square, with a door in its front, at block 100, 100, 10
     fn hut(bases: &mut Bases) -> u32 {

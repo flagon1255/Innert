@@ -5026,6 +5026,22 @@ fn fire_length(profile: &Profile) -> f64 {
     }
 }
 
+/// How loud and at what pitch the one click a crossbow or gun built `build` makes as it's loaded
+/// is: small ones' high and light, a hand crossbow's or a pistol's, great ones' lower and heavier,
+/// a siege crossbow's latch or a hand cannon's, and always one short click, never more
+fn reload_click(build: Build) -> (f32, f32) {
+    match build {
+        Build::Hand | Build::Pistol => (0.45, 1.6),
+        Build::Lever | Build::Repeater => (0.5, 1.4),
+        Build::Musket => (0.5, 1.45),
+        Build::Blunderbuss => (0.55, 1.3),
+        Build::Twin | Build::Fan | Build::Harpoon => (0.55, 1.2),
+        Build::Crank | Build::Cannon => (0.6, 1.1),
+        Build::Siege => (0.65, 0.95),
+        Build::None => (0.5, 1.3),
+    }
+}
+
 /// The poses a crossbow or gun goes through being loaded, for animate(): a gun tipped up
 /// muzzle first for the powder and the ramrod, then brought down level and cocked; a light
 /// crossbow dipped while its lever swings over; a heavy one stood on its nose while it's wound
@@ -6192,81 +6208,13 @@ impl Combat {
         }
     }
 
-    /// The sounds of a crossbow or gun built `build` being loaded, from `from` to `to` of the way
-    /// through: a lever creaking over, a windlass's ratchet clicking turn after turn, bolts dropped
-    /// into a magazine, or powder poured, the ball rammed home and the hammer cocked, then the
-    /// string catching on its latch
+    /// The sound of a crossbow or gun built `build` being loaded, from `from` to `to` of the way
+    /// through: nothing while it's at it, then one short click as it's done, the string caught on
+    /// its latch or the hammer cocked, see reload_click()
     fn reload_sounds(&mut self, build: Build, from: f64, to: f64) {
-        let mut at = |f: f64, sound: Sound, volume: f32, pitch: f32| {
-            if from < f && to >= f {
-                self.cues.push(Cue::here(sound, volume).pitched(pitch));
-            }
-        };
-        match build {
-            Build::Lever => {
-                at(0.05, Sound::Draw, 0.35, 1.3);
-                at(0.45, Sound::Draw, 0.45, 0.9);
-                at(0.9, Sound::Latch, 0.6, 1.0);
-            }
-            Build::Crank => {
-                for k in 0..40 {
-                    at(0.08 + 0.8 * k as f64 / 40.0, Sound::Ratchet, 0.35, 0.95 + 0.1 * (k % 2) as f32);
-                }
-                at(0.9, Sound::Latch, 0.7, 0.8);
-            }
-            Build::Repeater => {
-                for k in 0..5 {
-                    at(0.2 + 0.12 * k as f64, Sound::Ratchet, 0.4, 0.6);
-                }
-                at(0.9, Sound::Latch, 0.55, 1.15);
-            }
-            // A light lever unclipped, a quick creak and a snap onto the nut
-            Build::Hand => {
-                at(0.04, Sound::Ratchet, 0.35, 1.6);
-                at(0.2, Sound::Draw, 0.35, 1.6);
-                at(0.48, Sound::Latch, 0.5, 1.5);
-                at(0.85, Sound::Ratchet, 0.3, 1.4);
-            }
-            // The pinion's gears chattering as the rack comes back, both strings catching
-            Build::Twin => {
-                for k in 0..30 {
-                    at(0.06 + 0.8 * k as f64 / 30.0, Sound::Ratchet, 0.28, 1.3 + 0.1 * (k % 3) as f32);
-                }
-                at(0.88, Sound::Latch, 0.55, 1.05);
-                at(0.91, Sound::Latch, 0.5, 0.95);
-            }
-            // The great screw turned and turned, groaning, then the latch dropping heavily
-            Build::Siege => {
-                at(0.05, Sound::Creak, 0.6, 0.7);
-                for k in 0..18 {
-                    at(0.1 + 0.75 * k as f64 / 18.0, Sound::Ratchet, 0.4, 0.7 + 0.05 * (k % 2) as f32);
-                }
-                at(0.5, Sound::Creak, 0.5, 0.6);
-                at(0.9, Sound::Latch, 0.8, 0.6);
-            }
-            // The line wound back onto its reel, the prod spanned with it
-            Build::Harpoon => {
-                at(0.05, Sound::Reel, 0.6, 1.0);
-                at(0.35, Sound::Reel, 0.55, 0.95);
-                at(0.62, Sound::Reel, 0.5, 0.9);
-                at(0.9, Sound::Latch, 0.65, 0.85);
-            }
-            // Five bolts dropped into their grooves, the side lever swung out and hauled back
-            Build::Fan => {
-                for k in 0..5 {
-                    at(0.04 + 0.07 * k as f64, Sound::Ratchet, 0.4, 0.75);
-                }
-                at(0.45, Sound::Draw, 0.5, 0.7);
-                at(0.7, Sound::Creak, 0.45, 0.8);
-                at(0.88, Sound::Latch, 0.7, 0.8);
-            }
-            _ => {
-                at(0.12, Sound::Powder, 0.6, 1.0);
-                at(0.3, Sound::Ram, 0.3, 1.3);
-                at(0.45, Sound::Ram, 0.6, 1.0);
-                at(0.63, Sound::Ram, 0.6, 0.9);
-                at(0.92, Sound::Cock, 0.6, 1.0);
-            }
+        if from < 1.0 && to >= 1.0 {
+            let (volume, pitch) = reload_click(build);
+            self.cues.push(Cue::here(Sound::Latch, volume).pitched(pitch));
         }
     }
 
@@ -18901,5 +18849,60 @@ mod tests {
         let lights = combat.lights(None, &[], &view, 1.0);
         assert_eq!(lights.len(), MAX_LIGHTS);
         assert!(lights.iter().all(|l| (Vector3::new(l[0] as f64, l[1] as f64, l[2] as f64) - eye).norm() < 40.0 * vpm), "far lights kept over near ones");
+    }
+
+    /// Loading a crossbow or gun is quiet but for one short click as it's done, for every build
+    /// there is: shot empty, it's loaded again by itself, and all it says the while is that click
+    #[test]
+    fn a_reload_is_one_click() {
+        let library = crate::weapons::Library::load();
+        let vpm = 8.0;
+        let world = open_ground(96, 8);
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(48.0, 10.0, 4.0) * vpm;
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let mut builds = std::collections::BTreeSet::new();
+        for (f, fam) in library.families.iter().enumerate() {
+            let weapon = library.generate(3, Some(f), 1.0);
+            let build = weapon.profile.build;
+            if build == Build::None {
+                continue;
+            }
+            let mut animals = Vec::new();
+            let mut combat = Combat::new(1, 0);
+            let mut step = |combat: &mut Combat, controls: Controls| {
+                let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+                combat.update(&mut arena, Some((0, &weapon)), None, controls, 1.0 / 60.0);
+            };
+            for _ in 0..30 {
+                step(&mut combat, Controls::default());
+            }
+            // Shot till it's empty, a siege crossbow braced for it first
+            let (mut reloading, mut clicks, mut done) = (false, Vec::new(), false);
+            for _ in 0..60 * 30 {
+                let empty = combat.rounds_in(0, &weapon.profile) == 0;
+                let trigger = !empty && !reloading;
+                step(&mut combat, Controls { attack: trigger, holding: trigger, aiming: trigger, ..Default::default() });
+                let cues = std::mem::take(&mut combat.cues);
+                if matches!(combat.action, Action::Reload { .. }) {
+                    reloading = true;
+                }
+                if reloading {
+                    // What's heard where the player is, not what the shots strike far off
+                    clicks.extend(cues.iter().filter(|c| c.at.is_none()).map(|c| (c.sound, c.pitch)));
+                    if !matches!(combat.action, Action::Reload { .. }) {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            assert!(done, "{} never loaded again", fam.id);
+            assert_eq!(clicks.len(), 1, "{} made {} sounds loading: {:?}", fam.id, clicks.len(), clicks.iter().map(|c| c.0).collect::<Vec<_>>());
+            assert_eq!(clicks[0].0, Sound::Latch, "{} loaded with a {:?}", fam.id, clicks[0].0);
+            assert_eq!(combat.rounds_in(0, &weapon.profile), weapon.profile.magazine(), "{} loaded full", fam.id);
+            builds.insert(format!("{build:?}"));
+        }
+        // Every crossbow and every gun, eight and four
+        assert_eq!(builds.len(), 12, "{builds:?}");
     }
 }
