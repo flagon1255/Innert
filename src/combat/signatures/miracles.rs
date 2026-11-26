@@ -241,7 +241,7 @@ impl Combat {
                 let time = ((aim - from).norm() / (18.0 * vpm)).max(0.3);
                 self.keep_power_ring(weapon, aim, time + 0.4);
                 let shadow = Rc::new(Profile { element: profile.element.or(Some(Element::Void)), ..(*profile).clone() });
-                self.launch(&shadow, None, Form::Bolt, from, thrown(from, aim, time, 0.3, vpm), base * 0.55, 0.3);
+                self.launch(&shadow, None, Form::Bolt, from, thrown(from, aim, time, 1.0, vpm), base * 0.55, 1.0);
                 self.signed(Sig::Power(Shape::Grasp));
                 self.cues.push(Cue::here(Sound::Hex, 0.8).pitched(0.6));
                 self.cues.push(Cue::here(Sound::Wail, 0.3).pitched(1.4));
@@ -273,17 +273,19 @@ impl Combat {
     }
 
     /// A Helix orb on its way: wheeling round the line it flies along, round the other, further out
-    /// as it leaves the hand
+    /// as it leaves the hand, and closing in again as it nears the end of its flight
     pub(in crate::combat) fn helix_flies(&mut self, p: &mut Projectile, phase: u8, dt: f64) {
         let vpm = self.vpm;
         let speed = p.velocity.norm().max(1.0);
         let way = p.velocity / speed;
         let side = way.cross(&Vector3::z()).try_normalize(1e-6).unwrap_or_else(Vector3::x);
         let over = side.cross(&way);
+        let range = p.range;
         let offset = |flown: f64| {
             let meters = (flown / vpm).max(0.0);
             let a = meters * HELIX_TURNS * TAU + phase as f64 * PI;
-            (side * a.cos() + over * a.sin()) * HELIX_RADIUS * (meters / 1.2).min(1.0) * vpm
+            let left = (range - flown).max(0.0) / vpm;
+            (side * a.cos() + over * a.sin()) * HELIX_RADIUS * (meters / 1.2).min(left / 10.0).min(1.0) * vpm
         };
         p.position += offset(p.flown) - offset(p.flown - speed * dt);
         if random(&mut self.rng) < dt * 35.0 {

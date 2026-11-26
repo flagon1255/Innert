@@ -377,6 +377,10 @@
     {
      "stat": "crit_damage",
      "value": 0.25
+    },
+    {
+     "stat": "backstab",
+     "value": 10
     }
    ],
    "links": [

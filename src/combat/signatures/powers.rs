@@ -1343,6 +1343,7 @@ impl Combat {
         match shape {
             // Flung out as far as it goes, and turning back empty
             Shape::Hook { back: false, .. } if p.flown >= p.range => {
+                self.landed(p.position);
                 p.trick = Trick::Signature(Sig::Power(Shape::Hook { back: true, caught: None }));
                 p.hit.clear();
                 self.cues.push(Cue::at(Sound::Clang, p.position, 0.4).pitched(1.5));
