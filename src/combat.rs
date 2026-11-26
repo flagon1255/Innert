@@ -15572,6 +15572,11 @@ impl Combat {
         place(model, arm, ARM_RES, Vector3::zeros(), grip, rotation, vpm, 1.0, HELD).outfit(self.outfit)
     }
 
+    /// Where the model of the arm held before the eye is among all models, `which` 0 for the right
+    pub fn arm_model(&self, which: usize) -> u32 {
+        self.first_model + (ARMS + which) as u32
+    }
+
     /// The colours of the player's gloves and sleeves, for the arms held before the eye, see
     /// character::body::colours()
     pub fn set_outfit(&mut self, colours: u32) {

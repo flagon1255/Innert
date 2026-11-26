@@ -14,6 +14,8 @@ use crate::skills::Stat;
 
 pub mod body;
 pub mod creator;
+pub mod paint;
+pub mod studio;
 
 /// What the character's kept under in a save, see Save::section()
 pub const SECTION: &str = "character";
@@ -28,13 +30,17 @@ pub struct Character {
     pub looks: Looks,
     pub class: Class,
     pub difficulty: Difficulty,
+    /// What's painted on their body over how they look, see paint.rs: said nothing of in the save
+    /// when there's none
+    #[serde(skip_serializing_if = "paint::Paint::is_empty")]
+    pub paint: paint::Paint,
 }
 
 impl Default for Character {
     /// As in a save from before there were characters: a wanderer on Normal, with everything to
     /// fight with a new player had then
     fn default() -> Self {
-        Character { name: "Wanderer".to_owned(), looks: Looks::default(), class: Class::Wanderer, difficulty: Difficulty::Normal }
+        Character { name: "Wanderer".to_owned(), looks: Looks::default(), class: Class::Wanderer, difficulty: Difficulty::Normal, paint: paint::Paint::default() }
     }
 }
 
@@ -44,13 +50,18 @@ impl Character {
         let name: String = self.name.chars().filter(|c| !c.is_control()).take(NAME_LENGTH).collect();
         self.name = if name.trim().is_empty() { Character::default().name } else { name.trim().to_owned() };
         self.looks.mend();
+        self.paint.mend();
     }
 
     /// From `--set name=Ysolde class=priest difficulty=hard skin=3 hair=1 ...`, for a new game started
-    /// straight away in screenshot runs, everything not given as in a new character
+    /// straight away in screenshot runs, everything not given as in a new character. `paint=` is
+    /// what's painted on them as a save keeps it, and `paint_demo=1` a face painted, see
+    /// paint::demo().
     pub fn from_settings() -> Character {
         let mut c = Character::default();
-        for (key, value) in crate::settings_from_args() {
+        let settings = crate::settings_from_args();
+        let demo = settings.iter().any(|(k, v)| k == "paint_demo" && v == "1");
+        for (key, value) in settings {
             let n = || value.parse::<u8>().ok();
             match key.as_str() {
                 "name" => c.name = value.replace('_', " "),
@@ -64,8 +75,12 @@ impl Character {
                 "tunic" => c.looks.tunic = n().unwrap_or(c.looks.tunic),
                 "sleeves" => c.looks.sleeves = n().unwrap_or(c.looks.sleeves),
                 "gloves" => c.looks.gloves = n().unwrap_or(c.looks.gloves),
+                "paint" => c.paint = paint::Paint::from_text(&value),
                 _ => {}
             }
+        }
+        if demo {
+            c.paint = paint::demo(&c.looks);
         }
         c.mend();
         c
@@ -390,7 +405,7 @@ mod tests {
     /// A character saved comes back the same, through the whole save as it's written
     #[test]
     fn a_character_comes_back_from_its_save() {
-        let character = Character { name: "Ysolde Thornfield".into(), looks: Looks { skin: 5, hair: 4, hair_color: 3, face: 2, build: 2, tunic: 7, sleeves: 1, gloves: 0 }, class: Class::Priest, difficulty: Difficulty::Hard };
+        let character = Character { name: "Ysolde Thornfield".into(), looks: Looks { skin: 5, hair: 4, hair_color: 3, face: 2, build: 2, tunic: 7, sleeves: 1, gloves: 0 }, class: Class::Priest, difficulty: Difficulty::Hard, ..Default::default() };
         let mut s = Save { version: save::VERSION, mode: Mode::Realms, ..Default::default() };
         s.set_section(SECTION, &character);
         let bytes = serde_json::to_vec_pretty(&s).unwrap();

@@ -3885,10 +3885,15 @@ impl AnimalInstance {
         Vector3::new(self.position[0] as f64, self.position[1] as f64, self.position[2] as f64)
     }
 
-    /// Which model it is, for tests
-    #[cfg(test)]
+    /// Which model it is
     pub fn model(&self) -> u32 {
         self.info[0]
+    }
+
+    /// The same drawn with model `model` in its place, alike in size
+    pub fn remodeled(mut self, model: u32) -> Self {
+        self.info[0] = model;
+        self
     }
 
     /// Where it is and how far it reaches from there, in voxels of the main world, for tests
