@@ -8,6 +8,7 @@ use egui_winit_vulkano::egui::{self, Align2, Color32, RichText, Sense, Stroke, T
 use nalgebra::Vector3;
 
 use super::body;
+use super::studio::{self, Focus, Studio};
 use super::{BUILDS, CLOTHS, Character, Class, Difficulty, FACES, GLOVES, HAIR_COLORS, HAIRS, Looks, NAME_LENGTH, SKINS};
 use crate::animals::Model;
 use crate::save::Mode;
@@ -24,8 +25,10 @@ pub struct Creator {
     pub turn: f64,
     /// Turning by itself, till it's dragged
     spinning: bool,
-    models: Option<(Looks, Vec<(Model, Vector3<f64>)>)>,
+    models: Option<(Looks, super::paint::Paint, Vec<(Model, Vector3<f64>)>)>,
     texture: Option<(egui::TextureHandle, Looks, i64)>,
+    /// Painting the body, in place of the rest, see studio.rs
+    pub studio: Option<Studio>,
     /// What the dice give next
     rolls: u32,
     /// What each family of weapons is called, for what each class starts with
@@ -46,7 +49,7 @@ impl Creator {
     pub fn new(mode: Mode, seed: u32) -> Creator {
         // A fighter to start with: the wanderer of old saves isn't offered any longer
         let character = Character { name: super::random_name(seed), class: Class::Fighter, ..Default::default() };
-        Creator { mode, character, turn: 0.45, spinning: true, models: None, texture: None, rolls: seed, families: family_names(), scroll_to: None }
+        Creator { mode, character, turn: 0.45, spinning: true, models: None, texture: None, studio: None, rolls: seed, families: family_names(), scroll_to: None }
     }
 
     /// For screenshot runs: starting with `character`, turned `turn` radians round, still
@@ -54,7 +57,17 @@ impl Creator {
         if !character.class.offered() {
             character.class = Class::Fighter;
         }
-        Creator { mode, character, turn, spinning: false, models: None, texture: None, rolls: 1, families: family_names(), scroll_to: None }
+        Creator { mode, character, turn, spinning: false, models: None, texture: None, studio: None, rolls: 1, families: family_names(), scroll_to: None }
+    }
+
+    /// Opens the painting, looking at `focus`
+    pub fn paint(&mut self, focus: Focus) {
+        self.studio = Some(Studio::new(focus));
+    }
+
+    /// Back from the painting to the rest, as Escape goes: whether it was open
+    pub fn close_paint(&mut self) -> bool {
+        self.studio.take().is_some()
     }
 
     fn roll(&mut self) -> u32 {
@@ -67,12 +80,14 @@ impl Creator {
     fn picture(&mut self, ctx: &egui::Context) -> egui::TextureId {
         let looks = self.character.looks;
         let step = (self.turn * 48.0).round() as i64;
-        if self.models.as_ref().is_none_or(|(l, _)| *l != looks) {
-            self.models = Some((looks, body::models(&looks)));
+        let paint = &self.character.paint;
+        let changed = self.models.as_ref().is_none_or(|(l, p, _)| *l != looks || p != paint);
+        if changed {
+            self.models = Some((looks, paint.clone(), super::paint::painted(&looks, paint)));
         }
-        let fresh = self.texture.as_ref().is_some_and(|(_, l, s)| *l == looks && *s == step);
+        let fresh = !changed && self.texture.as_ref().is_some_and(|(_, l, s)| *l == looks && *s == step);
         if !fresh {
-            let models = &self.models.as_ref().unwrap().1;
+            let models = &self.models.as_ref().unwrap().2;
             let (rgba, size) = body::picture(models, &looks, step as f64 / 48.0, PICTURE);
             let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
             match &mut self.texture {
@@ -138,6 +153,12 @@ fn choices(ui: &mut egui::Ui, label: &str, names: &[&str], picked: &mut u8) {
 
 /// The window, over everything, its picks given back
 pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
+    if let Some(s) = &mut creator.studio {
+        if studio::window(ctx, s, &mut creator.character) {
+            creator.studio = None;
+        }
+        return None;
+    }
     let mut picked = None;
     let screen = ctx.screen_rect();
     // Dim the world behind it, more than the menu does, as there's more to read
@@ -168,7 +189,7 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(picture_width);
-                    let (rect, response) = ui.allocate_exact_size(vec2(picture_width, picture_height - 34.0), Sense::drag());
+                    let (rect, response) = ui.allocate_exact_size(vec2(picture_width, picture_height - 70.0), Sense::drag());
                     ui.painter().image(texture, rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                     ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0f32, Color32::from_gray(60)), egui::StrokeKind::Inside);
                     if response.dragged() {
@@ -190,6 +211,10 @@ pub fn window(ctx: &egui::Context, creator: &mut Creator) -> Option<Pick> {
                             creator.character.looks = Looks::random(seed);
                         }
                     });
+                    let paint = egui::Button::new(RichText::new("Paint face and body…").size(15.0)).fill(Color32::from_rgb(70, 60, 100));
+                    if ui.add_sized([picture_width, 30.0], paint).on_hover_text("Paint the voxels of your body: war paint, scars, a beard").clicked() {
+                        creator.paint(Focus::Face);
+                    }
                 });
                 ui.add_space(14.0);
                 ui.vertical(|ui| {

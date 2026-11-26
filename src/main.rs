@@ -3124,6 +3124,15 @@ impl App {
             let mut creator = character::creator::Creator::with(mode, character::Character::from_settings(), turn);
             // And `creator_scroll=600` scrolled that far down what's chosen, to see the bottom of it
             creator.scroll_to = setting("creator_scroll").and_then(|v| v.parse().ok());
+            // And `paint_view=face` painting, looking at the face, `paint_hover=0.4,0.5` the mouse
+            // taken to be that far across and down the picture, see character\studio.rs
+            if let Some(focus) = setting("paint_view").and_then(character::studio::Focus::parse) {
+                creator.paint(focus);
+                if let (Some(studio), Some(at)) = (&mut creator.studio, setting("paint_hover")) {
+                    let v: Vec<f32> = at.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                    studio.hover_at = (v.len() == 2).then(|| [v[0], v[1]]);
+                }
+            }
             app.session.creator = Some(creator);
         }
         // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
@@ -4347,8 +4356,10 @@ impl App {
                 self.inventory_open = false;
                 self.set_focus(true);
             } else if self.menu_open && self.session.creator.is_some() {
-                // Back from making a new character to the menu
-                self.session.creator = None;
+                // Back from painting to making a new character, or from that to the menu
+                if !self.session.creator.as_mut().is_some_and(|c| c.close_paint()) {
+                    self.session.creator = None;
+                }
             } else if self.menu_open && self.started {
                 self.menu_open = false;
                 self.set_focus(true);
@@ -5009,6 +5020,14 @@ impl App {
             // Stands in the shallows nearest, looking straight down into the water, to see the
             // player's own body there, see character::body
             ("mirror", 1) => self.stand_in_water(0.35, true),
+            // Looks down at the shadow the player's own body casts, the sun behind them
+            ("shadow", _) => {
+                let vpm = self.world.voxels_per_meter as f64;
+                let key = self.sky().key;
+                let away = -Vector3::new(key.x, key.y, 0.0).normalize();
+                let eye = camera_to_voxels(self.camera.position, self.world.size);
+                self.camera.look_at(voxels_to_camera(eye + away * 2.0 * vpm - Vector3::new(0.0, 0.0, 1.7 * vpm), self.world.size));
+            }
             ("mirror", f) if f > 1 => self.camera.rotation.x = -1.35,
             // Casts with what's in hand at the nearest of a pack `--set arrive_enemy` put there, again
             // and again from frame `--set cast_from=40`, facing it, as a priest hurls spears

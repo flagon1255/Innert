@@ -8,7 +8,7 @@
 //! and in water and what shines. Its pieces are drawn in two colours each, chosen by the player:
 //! what's leather on a piece in one, what's cloth in the other, see AnimalInstance::outfit(). So
 //! the head's leather is its skin and its cloth its hair, an arm's leather its glove and its cloth
-//! its sleeve.
+//! its sleeve. What the player's painted on it, voxel by voxel, goes over that, see paint.rs.
 //!
 //! Its pieces are written to assets\models\player\ for the editor, in the look a new character has,
 //! see export(); edited there, they're read back for every look, see assets::player().
@@ -53,8 +53,8 @@ const UPPER: f64 = 0.28;
 const STRIDE: f64 = 1.5;
 
 /// A belt and boots are leather of their own, not the gloves'
-const BELT: [u8; 3] = [88, 56, 34];
-const BOOTS: [u8; 3] = [70, 46, 30];
+pub const BELT: [u8; 3] = [88, 56, 34];
+pub const BOOTS: [u8; 3] = [70, 46, 30];
 
 /// How much wider than average each build is
 fn width(looks: &Looks) -> f64 {
@@ -274,7 +274,7 @@ pub fn instances(models: &[(Model, V)], colours: &[u32; PIECES], first_model: u3
 
 /// The colours of every material, read out of the shader, see PALETTE in shaders\traverse.comp:
 /// as they look, 0 to 1
-fn palette() -> &'static [[f64; 3]] {
+pub(super) fn palette() -> &'static [[f64; 3]] {
     static PALETTE: OnceLock<Vec<[f64; 3]>> = OnceLock::new();
     PALETTE.get_or_init(|| {
         let text = include_str!("../../shaders/traverse.comp");
@@ -380,6 +380,7 @@ pub fn picture(models: &[(Model, V)], looks: &Looks, turn: f64, size: usize) -> 
                     let base = match m {
                         LEATHER => leather,
                         CLOTH => cloth,
+                        m if m >= super::paint::PAINT_FIRST => paint(super::paint::material_rgb(m, None, looks)),
                         m => palette.get(m as usize).copied().unwrap_or([1.0, 0.0, 1.0]).map(|v| v.powf(2.2)),
                     };
                     points.push((world, spin * piece_turn * normal.normalize(), base));

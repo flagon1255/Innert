@@ -396,6 +396,88 @@ const uint MAT_CLOTH = 74;
 const uint MAT_GLOW_FIRE = 79;
 const uint MAT_GLOW_HOLY = 86;
 
+// The paints the player paints their own body in, see src\character\paint.rs: materials of
+// their own from PAINT_FIRST, past the world's, only ever on the player's body and the arms held
+// before the eye, drawn in these colours whatever colours the player chose their clothes in. Has
+// to match PAINT_FIRST and paint() there.
+const uint PAINT_FIRST = 160u;
+const uint PAINT_SIZE = 73u;
+const vec3 PAINT[PAINT_SIZE] = vec3[PAINT_SIZE](
+    vec3(0.949, 0.839, 0.769), // Porcelain skin
+    vec3(0.918, 0.753, 0.627), // Fair skin
+    vec3(0.839, 0.651, 0.494), // Light skin
+    vec3(0.745, 0.557, 0.384), // Olive skin
+    vec3(0.651, 0.439, 0.282), // Tan skin
+    vec3(0.502, 0.329, 0.212), // Brown skin
+    vec3(0.361, 0.227, 0.149), // Dark skin
+    vec3(0.243, 0.157, 0.110), // Deep skin
+    vec3(0.118, 0.102, 0.094), // Black hair
+    vec3(0.275, 0.173, 0.110), // Dark brown hair
+    vec3(0.463, 0.275, 0.149), // Chestnut hair
+    vec3(0.588, 0.243, 0.133), // Auburn hair
+    vec3(0.839, 0.690, 0.431), // Blond hair
+    vec3(0.667, 0.627, 0.573), // Ash hair
+    vec3(0.910, 0.894, 0.863), // White hair
+    vec3(0.141, 0.173, 0.306), // Raven blue hair
+    vec3(0.769, 0.714, 0.588), // Undyed cloth
+    vec3(0.588, 0.275, 0.157), // Russet cloth
+    vec3(0.627, 0.118, 0.141), // Crimson cloth
+    vec3(0.204, 0.376, 0.204), // Forest cloth
+    vec3(0.408, 0.463, 0.235), // Moss cloth
+    vec3(0.314, 0.510, 0.745), // Sky cloth
+    vec3(0.133, 0.188, 0.376), // Navy cloth
+    vec3(0.376, 0.180, 0.408), // Plum cloth
+    vec3(0.204, 0.204, 0.220), // Charcoal cloth
+    vec3(0.769, 0.588, 0.204), // Ochre cloth
+    vec3(0.408, 0.243, 0.141), // Brown leather gloves
+    vec3(0.157, 0.133, 0.125), // Black leather gloves
+    vec3(0.690, 0.541, 0.361), // Tan suede gloves
+    vec3(0.510, 0.157, 0.133), // Red leather gloves
+    vec3(0.502, 0.494, 0.478), // Grey wool gloves
+    vec3(0.345, 0.220, 0.133), // belt
+    vec3(0.275, 0.180, 0.118), // boots
+    vec3(0.439, 0.412, 0.349), // Undyed trousers
+    vec3(0.349, 0.192, 0.133), // Russet trousers
+    vec3(0.369, 0.114, 0.125), // Crimson trousers
+    vec3(0.157, 0.243, 0.157), // Forest trousers
+    vec3(0.259, 0.286, 0.173), // Moss trousers
+    vec3(0.212, 0.310, 0.427), // Sky trousers
+    vec3(0.122, 0.149, 0.243), // Navy trousers
+    vec3(0.243, 0.145, 0.259), // Plum trousers
+    vec3(0.157, 0.157, 0.165), // Charcoal trousers
+    vec3(0.439, 0.349, 0.157), // Ochre trousers
+    vec3(0.063, 0.055, 0.055), // soot
+    vec3(0.235, 0.243, 0.275), // slate
+    vec3(0.478, 0.478, 0.486), // grey
+    vec3(0.753, 0.761, 0.776), // silver
+    vec3(0.949, 0.941, 0.918), // chalk
+    vec3(0.886, 0.831, 0.714), // bone
+    vec3(0.502, 0.055, 0.071), // blood
+    vec3(0.808, 0.149, 0.133), // scarlet
+    vec3(0.690, 0.376, 0.361), // scar
+    vec3(0.902, 0.557, 0.596), // rose
+    vec3(0.651, 0.322, 0.149), // rust
+    vec3(0.910, 0.502, 0.141), // orange
+    vec3(0.902, 0.722, 0.243), // gold
+    vec3(0.965, 0.878, 0.361), // yellow
+    vec3(0.588, 0.792, 0.275), // lime
+    vec3(0.204, 0.541, 0.227), // green
+    vec3(0.133, 0.502, 0.502), // teal
+    vec3(0.149, 0.275, 0.635), // woad
+    vec3(0.314, 0.588, 0.910), // azure
+    vec3(0.675, 0.855, 0.949), // ice
+    vec3(0.227, 0.149, 0.502), // indigo
+    vec3(0.510, 0.275, 0.714), // violet
+    vec3(0.753, 0.227, 0.596), // magenta
+    vec3(0.306, 0.196, 0.125), // umber
+    vec3(0.714, 0.471, 0.243), // clay
+    vec3(0.596, 0.557, 0.518), // ash
+    vec3(0.345, 0.392, 0.188), // moss
+    vec3(0.086, 0.110, 0.204), // ink
+    vec3(1.000, 0.659, 0.227), // ember
+    vec3(0.698, 0.839, 0.627)  // pale green
+);
+
 // Light given off by glowing materials
 vec3 emission(uint material) {
     if (material == MAT_FLAME)
@@ -1572,12 +1654,14 @@ vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
     vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
     // The player's body and arms in the colours they chose: leather in one, cloth in the other,
-    // each voxel as much lighter or darker as it was than its material, see TINT_OUTFIT
-    if (hit.level == ANIMAL && (material == MAT_LEATHER || material == MAT_CLOTH) && (animals[hit.instance].info.z & TINT_OUTFIT) != 0u) {
+    // each voxel as much lighter or darker as it was than its material, see TINT_OUTFIT; and
+    // what they've painted on it in its paint's own colour, see PAINT
+    if (hit.level == ANIMAL && (material == MAT_LEATHER || material == MAT_CLOTH || material >= PAINT_FIRST) && (animals[hit.instance].info.z & TINT_OUTFIT) != 0u) {
         uint packed = animals[hit.instance].info.w;
         uint c = material == MAT_LEATHER ? packed & 0xFFFFu : packed >> 16;
-        vec3 to = pow(vec3(float(c >> 11), float((c >> 5) & 63u), float(c & 31u)) / vec3(31, 63, 31), vec3(2.2));
-        vec3 base = pow(PALETTE[material], vec3(2.2));
+        vec3 to = material >= PAINT_FIRST ? PAINT[min(material - PAINT_FIRST, PAINT_SIZE - 1u)] : vec3(float(c >> 11), float((c >> 5) & 63u), float(c & 31u)) / vec3(31, 63, 31);
+        to = pow(to, vec3(2.2));
+        vec3 base = pow(PALETTE[min(material, PALETTE_SIZE - 1)], vec3(2.2));
         const vec3 LUMA = vec3(0.299, 0.587, 0.114);
         albedo = to * (dot(albedo, LUMA) / dot(base, LUMA));
     }

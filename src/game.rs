@@ -1031,7 +1031,9 @@ pub struct Game {
     trades: specialists::Trades,
     /// Who's playing, see character.rs: their name, class and how hard it is, and their body's
     /// pieces made for how they look, drawn after the weapons, in the colours each piece is drawn
-    /// in, see character::body
+    /// in, see character::body: painted as they've painted it, and after its pieces the arms held
+    /// before the eye with the paint of the forearms, if any's painted there, see
+    /// character::paint::arms()
     character: crate::character::Character,
     body_models: Vec<(Model, Vector3<f64>)>,
     body_colours: [u32; crate::character::body::PIECES],
@@ -1283,10 +1285,18 @@ impl Game {
     /// skill web's and whose kit a new character starts with, see new_character(), how hard it is,
     /// and their body made for how they look, its colours on the arms held before the eye too
     pub fn set_character(&mut self, character: &crate::character::Character) {
-        let looks_changed = self.body_models.is_empty() || self.character.looks != character.looks;
+        use crate::character::paint;
+        let looks_changed = self.body_models.is_empty() || self.character.looks != character.looks || self.character.paint != character.paint;
         self.character = character.clone();
         if looks_changed {
-            self.body_models = crate::character::body::models(&character.looks);
+            self.body_models = paint::painted(&character.looks, &character.paint);
+            let held = [crate::weapons::ARMS, crate::weapons::ARMS + 1].map(|k| self.combat.models.get(k));
+            if let [Some(right), Some(left)] = held
+                && let Some(arms) = paint::arms(&character.paint, &character.looks, &self.body_models, [right, left])
+            {
+                let anchors = [right.1, left.1];
+                self.body_models.extend(arms.into_iter().zip(anchors));
+            }
             self.body_colours = crate::character::body::colours(&character.looks);
             self.models_version += 1;
         }
@@ -6111,7 +6121,21 @@ impl Game {
 
     /// The player's arm holding something that isn't a weapon, see Combat::held_arm()
     pub fn held_arm(&self, which: usize, grip: Vector3<f64>, axis: Vector3<f64>, elbow: Vector3<f64>) -> AnimalInstance {
-        self.combat.held_arm(which, grip, axis, elbow)
+        self.painted_arm(self.combat.held_arm(which, grip, axis, elbow))
+    }
+
+    /// `instance`, if it's an arm held before the eye, drawn with the paint of the forearms when
+    /// they're painted, see set_character()
+    fn painted_arm(&self, instance: AnimalInstance) -> AnimalInstance {
+        let pieces = crate::character::body::PIECES;
+        if self.body_models.len() < pieces + 2 {
+            return instance;
+        }
+        let first = self.weapon_model(self.weapons.len()) + (self.preview.len() + pieces) as u32;
+        match (0..2).find(|&k| instance.model() == self.combat.arm_model(k)) {
+            Some(k) => instance.remodeled(first + k as u32),
+            None => instance,
+        }
     }
 
     /// Whether the map, the inventory, the Gate's window or a merchant's is open over the middle of
@@ -6258,7 +6282,7 @@ impl Game {
         // Nothing in hand while lying dead
         let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
         let holding = held.is_some();
-        let mut out = self.combat.held_instances(held, view);
+        let mut out: Vec<AnimalInstance> = self.combat.held_instances(held, view).into_iter().map(|i| self.painted_arm(i)).collect();
         // The player's own body where they stand, for its shadow and reflections, among the first
         // so it's always in them, see character::body. Not while lying dead, nor flying.
         // Flying, the feet are taken to be at the eye, and there's no body
@@ -8658,6 +8682,28 @@ mod tests {
         assert!(!other.animals.iter().any(|a| a.look.is_ultra()));
         other.set_lairs(&world, &dry, vec![lair([1, 2, serpents::ULTRA_KEY])]);
         assert!(other.animals.iter().any(|a| a.look.is_ultra()));
+    }
+
+    /// The player's body is painted as they painted it, and with the forearms painted the arms
+    /// held before the eye are drawn with models of their own painted the same; unpainted, as
+    /// they always were
+    #[test]
+    fn the_painted_body_is_drawn() {
+        use crate::character::{Character, body::PIECES, paint};
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let arm = |g: &Game| g.held_arm(0, Vector3::new(1.0, 0.0, 0.0), Vector3::z(), Vector3::zeros()).model();
+        game.set_character(&Character::default());
+        assert_eq!(game.body_models.len(), PIECES);
+        assert_eq!(arm(&game), game.combat.arm_model(0));
+        let character = Character { paint: paint::demo(&Default::default()), ..Default::default() };
+        game.set_character(&character);
+        assert_eq!(game.body_models.len(), PIECES + 2);
+        assert_eq!(game.body_models[..PIECES].iter().map(|(m, _)| m.voxels.clone()).collect::<Vec<_>>(), paint::painted(&character.looks, &character.paint).iter().map(|(m, _)| m.voxels.clone()).collect::<Vec<_>>());
+        assert_eq!(arm(&game), game.weapon_model(game.weapons.len()) + (game.preview.len() + PIECES) as u32);
+        game.set_character(&Character::default());
+        assert_eq!(arm(&game), game.combat.arm_model(0));
     }
 
     /// What's carried and what's been done, saved and restored into another game, is all there
