@@ -1054,8 +1054,10 @@ struct EditUpload {
     words: Subbuffer<[u32]>,
     grid: Vec<BufferImageCopy>,
     bricks: Vec<BufferCopy>,
-    /// The ground the water lies on where it changed, a piece for each part of the room it's in
-    ground: Vec<(Subbuffer<[u32]>, BufferImageCopy)>,
+    /// The ground the water lies on where it changed, and where the water was laid on it, a piece
+    /// of each for each part of the room it's in
+    #[allow(clippy::type_complexity)]
+    ground: Vec<((Subbuffer<[u32]>, BufferImageCopy), (Subbuffer<[u32]>, BufferImageCopy))>,
 }
 
 /// Host memory for `words`, to be copied from with a frame
@@ -3482,11 +3484,18 @@ impl App {
             }
         }
         let ground = match self.edited_ground.take() {
+            // The ground, and where the water was laid on it, for each part of the room
             Some((lo, hi)) => self
                 .water
                 .take_ground(&self.world, lo, hi)
                 .into_iter()
-                .map(|(at, extent, words)| (host_words(&self.memory_allocator, words), BufferImageCopy { image_offset: [at[0], at[1], 0], image_extent: [extent[0], extent[1], 1], ..Default::default() }))
+                .map(|p| {
+                    let region = |at: [u32; 2], extent: [u32; 2]| BufferImageCopy { image_offset: [at[0], at[1], 0], image_extent: [extent[0], extent[1], 1], ..Default::default() };
+                    (
+                        (host_words(&self.memory_allocator, p.ground), region(p.at, p.extent)),
+                        (host_words(&self.memory_allocator, p.rest), region(p.rest_at, p.rest_extent)),
+                    )
+                })
                 .collect(),
             None => Vec::new(),
         };
@@ -3510,7 +3519,7 @@ impl App {
             return;
         }
         let grid = voxel_set.grid.clone();
-        let ground = water.images().ground;
+        let images = water.images();
         for edit in std::mem::take(edits) {
             if !edit.grid.is_empty() {
                 let regions: Vec<BufferImageCopy> = edit.grid.into_iter().map(|r| BufferImageCopy { image_subresource: grid.subresource_layers(), ..r }).collect();
@@ -3519,9 +3528,11 @@ impl App {
             if !edit.bricks.is_empty() {
                 builder.copy_buffer(CopyBufferInfo { regions: edit.bricks.into(), ..CopyBufferInfo::buffers(edit.words, voxel_set.bricks.clone()) }).unwrap();
             }
-            for (words, region) in edit.ground {
-                let region = BufferImageCopy { image_subresource: ground.subresource_layers(), ..region };
-                builder.copy_buffer_to_image(CopyBufferToImageInfo { regions: [region].into(), ..CopyBufferToImageInfo::buffer_image(words, ground.clone()) }).unwrap();
+            for pair in edit.ground {
+                for ((words, region), image) in [(pair.0, &images.ground), (pair.1, &images.rest)] {
+                    let region = BufferImageCopy { image_subresource: image.subresource_layers(), ..region };
+                    builder.copy_buffer_to_image(CopyBufferToImageInfo { regions: [region].into(), ..CopyBufferToImageInfo::buffer_image(words, image.clone()) }).unwrap();
+                }
             }
         }
     }
