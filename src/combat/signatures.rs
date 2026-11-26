@@ -15,6 +15,7 @@ use powers::{Lasting, Shape};
 pub(super) mod arsenal;
 /// New magic powers: a priest's spears, a thunderhead, a glacier, grasping shadows and a helix
 pub(super) mod miracles;
+pub(super) mod tempest;
 /// A talisman's spears and a skull focus's dead raised, see weapons::Rite
 pub(in crate::combat) mod faith;
 

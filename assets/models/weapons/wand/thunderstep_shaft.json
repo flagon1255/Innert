@@ -1,0 +1,37 @@
+{
+  "what": "Wand, shaft: Thunderstep Rod",
+  "voxels_per_meter": 192.0,
+  "size": [
+    2,
+    3,
+    57
+  ],
+  "pivot": [
+    1.3426758620689654,
+    1.390344827586207,
+    1.1361103448275862
+  ],
+  "anchor": null,
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.075
+    ],
+    "tip": [
+      0.014482758620689656,
+      0.0,
+      0.3248275862068965
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1756,
+    "ee8db67df3c93017"
+  ]
+}

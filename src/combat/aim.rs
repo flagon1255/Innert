@@ -9,6 +9,7 @@ use super::*;
 use crate::weapons::Power;
 use super::signatures::arsenal::{RUNE_ROUND, SPECTRUM_FAN, SPECTRUM_REACH, STAR_REACH, STEP_REACH};
 use super::signatures::miracles::{GLACIER_FROM, GLACIER_STEP, GLACIER_STEPS, GRASP_ROUND, HEAVEN_ROUND, HELIX_REACH, STORM_ROUND, TRIUNE_FAN};
+use super::signatures::tempest::{CHARGE_REACH, FIELD_ROUND, FORK_REACH, ORB_REACH, STEP_FROM, STEP_GAP, STEP_STRIKES, TETHER_REACH};
 use super::signatures::powers::{
     ANVIL_REACH, BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, FISTS_REACH, GALE_FROM, GALE_STEP, GALE_STEPS, HOOK_REACH, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, RING_REACH, SEEKER_REACH, SHRAPNEL_REACH, STAKE_REACH, WHEEL_REACH, power_timing, wave_of,
 };
@@ -91,6 +92,7 @@ pub(super) fn power_aim(power: Power, profile: &Profile) -> Option<SpotAim> {
         Power::Heavenfall => Some(SpotAim { reach: SPOT_REACH, least: 3.0, radius: HEAVEN_ROUND }),
         Power::Stormcall => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: STORM_ROUND }),
         Power::Shadowgrasp => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: GRASP_ROUND }),
+        Power::StaticField => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: FIELD_ROUND }),
         _ => None,
     }
 }
@@ -447,6 +449,14 @@ pub(super) fn power_way(power: Power) -> PowerWay {
         Power::Heavenfall | Power::Stormcall | Power::Shadowgrasp => PowerWay::Spot,
         Power::Glacier => PowerWay::Line { from: GLACIER_FROM, step: GLACIER_STEP, steps: GLACIER_STEPS },
         Power::Helix => PowerWay::Ray { reach: HELIX_REACH, fan: &[0.0], radius: 1.5 },
+        // Lightning, see tempest.rs: bolts and a tether at what the crosshair meets, an orb drifting
+        // off at it, a field onto the ring, a dash along the ground, a discharge all round
+        Power::Forkbolt => PowerWay::Ray { reach: FORK_REACH, fan: &[0.0], radius: 1.5 },
+        Power::CracklingOrb => PowerWay::Ray { reach: ORB_REACH, fan: &[0.0], radius: 2.0 },
+        Power::Stormlash => PowerWay::Ray { reach: TETHER_REACH, fan: &[0.0], radius: 1.2 },
+        Power::StaticField => PowerWay::Spot,
+        Power::Thunderstep => PowerWay::Line { from: STEP_FROM, step: STEP_GAP, steps: STEP_STRIKES },
+        Power::Overcharge => PowerWay::Round { reach: CHARGE_REACH },
     }
 }
 

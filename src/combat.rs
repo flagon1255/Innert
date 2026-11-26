@@ -18109,6 +18109,16 @@ mod tests {
                 out.push((format!("{power:?} on a {}", f.id), weapon));
             }
         }
+        // And each a part of the third batch on brings, see weapons::Component::power
+        for c in library.components.iter().filter(|c| c.power().is_some_and(|p| p as usize >= crate::weapons::Power::Starbreak as usize)) {
+            let power = c.power();
+            if !all && out.iter().any(|(_, w)| w.profile.power == power) {
+                continue;
+            }
+            if let Some(weapon) = library.with_part(&c.id, None).filter(|w| w.profile.power == power) {
+                out.push((format!("{:?} with {}", power.unwrap(), c.id), weapon));
+            }
+        }
         out
     }
 

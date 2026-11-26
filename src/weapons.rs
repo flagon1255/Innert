@@ -1911,12 +1911,25 @@ pub enum Power {
     Shadowgrasp,
     /// Two orbs of its element wheeling round the hand, then flying off spiralling round each other
     Helix,
+    /// A bolt of lightning splitting at each enemy it strikes into two leaping on to the next, see
+    /// combat/signatures/tempest.rs
+    Forkbolt,
+    /// A ball of lightning drifting slowly out, lashing whatever comes near it, bursting at the end
+    CracklingOrb,
+    /// A crackling tether of lightning from the hand to what it strikes, wringing it till it snaps
+    Stormlash,
+    /// A charge of lightning cast onto the ground, shocking whatever walks onto it
+    StaticField,
+    /// A dash on ahead in a flash, lightning striking all along the way
+    Thunderstep,
+    /// Held to gather a charge, then let go all round in lightning leaping out to everything near
+    Overcharge,
 }
 
 impl Power {
     /// Every one of them
     #[cfg(test)]
-    pub const ALL: [Power; 43] = [
+    pub const ALL: [Power; 49] = [
         Power::Crescent,
         Power::Rending,
         Power::WindCut,
@@ -1960,6 +1973,12 @@ impl Power {
         Power::Glacier,
         Power::Shadowgrasp,
         Power::Helix,
+        Power::Forkbolt,
+        Power::CracklingOrb,
+        Power::Stormlash,
+        Power::StaticField,
+        Power::Thunderstep,
+        Power::Overcharge,
     ];
 
     /// Whether it has a move of its own on right click, rather than being carried by a melee
@@ -1992,6 +2011,11 @@ impl Power {
     /// aimed, see faith.rs
     pub fn spear(self) -> bool {
         matches!(self, Power::Thunderspear | Power::Vigil | Power::Triune)
+    }
+
+    /// Whether it's lightning whatever's in the weapon, see combat/signatures/tempest.rs
+    pub fn lightning(self) -> bool {
+        matches!(self, Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge)
     }
 
     /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
@@ -2080,6 +2104,12 @@ impl Power {
             Power::Glacier => "Glacier",
             Power::Shadowgrasp => "Grasp",
             Power::Helix => "Helix",
+            Power::Forkbolt => "Forking Bolt",
+            Power::CracklingOrb => "Crackling Orb",
+            Power::Stormlash => "Stormlash Tether",
+            Power::StaticField => "Static Field",
+            Power::Thunderstep => "Thunderstep Dash",
+            Power::Overcharge => "Overcharge Discharge",
         }
     }
 
@@ -2100,6 +2130,8 @@ impl Power {
             (Power::Stormcall, _) => return "Stormcall Thunderhead".to_owned(),
             (Power::Shadowgrasp, Some(Element::Void) | None) => return "Grasping Shadows".to_owned(),
             (Power::Glacier, Some(Element::Frost) | None) => return "Rising Glacier".to_owned(),
+            // Lightning whatever's in the weapon
+            (p, _) if p.lightning() => return p.noun().to_owned(),
             _ => {}
         }
         let adjective = match element {
@@ -2128,6 +2160,9 @@ impl Power {
             Power::Shadowstep | Power::Triune | Power::Helix => 6.0,
             Power::Heavenfall | Power::Stormcall => 10.0,
             Power::Vigil | Power::Glacier | Power::Shadowgrasp => 8.0,
+            Power::Forkbolt | Power::Thunderstep => 6.0,
+            Power::CracklingOrb | Power::Stormlash | Power::StaticField => 8.0,
+            Power::Overcharge => 9.0,
             Power::Runeburst => 10.0,
             Power::Spectrum => 8.0,
             _ => 8.0,
@@ -2137,7 +2172,8 @@ impl Power {
     /// How many times its spell's mana it costs, for a weapon that casts
     pub fn mana(self) -> f64 {
         match self {
-            Power::Comet | Power::Seekers | Power::Nova | Power::Spectrum | Power::Helix => 2.0,
+            Power::Comet | Power::Seekers | Power::Nova | Power::Spectrum | Power::Helix | Power::Forkbolt | Power::Thunderstep => 2.0,
+            Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Overcharge => 2.5,
             Power::Beacon | Power::Thunderspear | Power::Vigil | Power::Triune | Power::Glacier | Power::Shadowgrasp => 2.5,
             Power::RaiseDead | Power::Runeburst | Power::Heavenfall | Power::Stormcall => 3.0,
             _ => 0.0,
@@ -2154,6 +2190,7 @@ impl Power {
             Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Starbreak => "Right click: a move of its own when it's ready, a heavy blow while it comes round",
             Power::Shadowstep | Power::Ringstorm => "Hold right click to aim, let go to use it",
             Power::Thunderspear => "Hold right click to aim, the spear forming in the hand, longer for a greater spear; let go to hurl it",
+            Power::Overcharge => "Hold right click to gather the charge, longer for a harder discharge; let go to set it loose",
             Power::Cloudburst => "Right click: loosed high when it's ready, a draw while it comes round",
             _ => "Right click",
         }
@@ -2205,11 +2242,20 @@ impl Power {
             Power::Glacier => "Ice bursts up out of the ground in a line of spikes 14 meters ahead, step by step, freezing what it catches, the ground along it frozen 3 s, slowing what stands on it.",
             Power::Shadowgrasp => "A knot of {e} cast onto the ring, where tendrils reach up out of the ground, holding everything within 3.5 meters fast for 3 s and wringing it.",
             Power::Helix => "Two orbs of {e} wheel round the hand, then fly off at the crosshair spiralling round each other, 30 meters, each bursting where it strikes.",
+            Power::Forkbolt => "A bolt of lightning hurled at the crosshair, 30 meters, splitting at each enemy it strikes into two that leap on to the next nearest, twice over.",
+            Power::CracklingOrb => "A ball of lightning drifts slowly off at the crosshair, 16 meters, lashing out at whatever comes within 4.5 meters of it, and bursts under a bolt from the sky at the end.",
+            Power::Stormlash => "A crackling tether of lightning lashed at the crosshair, 18 meters, holds fast to what it strikes for 2.6 s, shocking and slowing it, till it snaps.",
+            Power::StaticField => "A charge of lightning cast onto the ring charges the ground 3.5 meters round for 4 s, a bolt leaping up into whatever walks onto it, shocking and slowing it.",
+            Power::Thunderstep => "You dash 9 meters on ahead in a flash, sparks streaming off behind, lightning striking down five times along the way you went.",
+            Power::Overcharge => "Held, lightning gathers crackling in the weapon; let go, it breaks out all round, 10 meters, leaping to every enemy as it reaches it and throwing it back, harder the longer it was held.",
         };
         // These are theirs whatever's in them
         if matches!(self, Power::Thunderspear | Power::RaiseDead | Power::Vigil | Power::Heavenfall | Power::Triune) {
             let rider = if self == Power::RaiseDead { "Each blow they land drains life back to you." } else { "Every enemy it strikes heals you a little, and it strikes harder at what's standing in water." };
             return format!("{what} {rider} Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
+        }
+        if self.lightning() {
+            return format!("{what} Strikes harder at what's standing in water. Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
         }
         if self == Power::Shadowstep {
             return format!("{what} Every {:.0} s.", self.cooldown());
