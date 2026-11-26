@@ -12,6 +12,9 @@ use vulkano::buffer::BufferContents;
 use crate::bosses::{self, Boss};
 use crate::combat::Status;
 use crate::serpents;
+
+/// Fish and sharks: how they look, swim in schools and hunt, see Look::Silverfin
+pub mod sealife;
 use crate::weapons::Element;
 use crate::player::WaterLevel;
 use crate::worldgen::{Land, PropKind, World, is_passable, material::*};
@@ -201,6 +204,21 @@ pub enum Look {
     Jeweller,
     Wingmaker,
     TradeStall,
+    // Life in the water, see src\animals\sealife.rs: fish swimming in schools, silverfins in the
+    // open sea, reeflings in its warm shallows, brookbacks in the rivers and lakes, pale gloamfins
+    // in the dim water under the rock and frostfins in the cold; the saltjaw shark of the open sea
+    // and the great pale ghostmaw hunting it by night; and a cooked fish and a shark's tooth lying
+    // about, raw and cooked
+    Silverfin,
+    Reefling,
+    Brookback,
+    Gloamfin,
+    Frostfin,
+    Saltjaw,
+    Ghostmaw,
+    RawFish,
+    CookedFish,
+    SharkTooth,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -230,6 +248,9 @@ pub enum Build {
     Serpent,
     /// An avian or a gargoyle: drawn and flown by src\avians.rs, out of jointed pieces
     Winged,
+    /// A shark: a long body sweeping its tail from side to side, never leaving the water, steered
+    /// by src\animals\sealife.rs
+    Fish,
 }
 
 /// What a walking dead or a bandit has in its hands
@@ -257,7 +278,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 125] = [
+    pub const ALL: [Look; 135] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -383,6 +404,16 @@ impl Look {
         Look::Jeweller,
         Look::Wingmaker,
         Look::TradeStall,
+        Look::Silverfin,
+        Look::Reefling,
+        Look::Brookback,
+        Look::Gloamfin,
+        Look::Frostfin,
+        Look::Saltjaw,
+        Look::Ghostmaw,
+        Look::RawFish,
+        Look::CookedFish,
+        Look::SharkTooth,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -414,7 +445,12 @@ impl Look {
 
     /// A beast rather than a person or the dead, with nothing on it worth taking
     pub fn is_beast(self) -> bool {
-        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker | Look::Skyhunter) || crate::dragons::is_drakeling(self) || self.is_serpent()
+        matches!(self, Look::Wolf | Look::Spiderling | Look::DuneBurrower | Look::MireLurker | Look::Gloomwing | Look::Tusker | Look::Skyhunter) || crate::dragons::is_drakeling(self) || self.is_serpent() || sealife::is_shark(self)
+    }
+
+    /// A fish or a shark, living in the water and never leaving it, see src\animals\sealife.rs
+    pub fn is_sea(self) -> bool {
+        sealife::is_sea(self)
     }
 
     /// One of the ordinary serpents, see src\serpents.rs
@@ -496,6 +532,7 @@ impl Look {
             || crate::dragons::is_drakeling(self)
             || self.is_serpent()
             || crate::avians::is_monster(self)
+            || sealife::is_shark(self)
     }
 
     /// One of the dead added for the fallen cities, see Look::Bloater
@@ -552,6 +589,7 @@ impl Look {
             _ if self.is_dragon() => Build::Dragon,
             _ if self.is_serpent() || self.is_great_serpent() => Build::Serpent,
             _ if self.is_winged() => Build::Winged,
+            _ if sealife::is_shark(self) => Build::Fish,
             _ => return None,
         })
     }
@@ -642,6 +680,7 @@ impl Look {
             self,
             Look::Apple | Look::Meat | Look::Candle | Look::Skull | Look::Chest | Look::OpenChest | Look::Coins | Look::Potion | Look::Bread | Look::Merchant | Look::Princess | Look::RoyalGuard | Look::ShedSkin | Look::SerpentBones | Look::SerpentTongue
         ) && !self.is_shrine()
+            && !matches!(self, Look::RawFish | Look::CookedFish | Look::SharkTooth)
             && !self.is_merchant()
             && self != Look::TradeStall
     }
@@ -826,6 +865,8 @@ impl Look {
         match self {
             Look::GrappleHook => 3.0 * MODEL_RES,
             Look::Wings => 4.0 * MODEL_RES,
+            // Fish are small, and finer, so a tail has room to sway
+            _ if sealife::is_small(self) => sealife::FINE * MODEL_RES,
             _ => MODEL_RES,
         }
     }
@@ -906,6 +947,7 @@ impl Look {
             // Up to the top of a hat, a staff or a bow held upright, or wings on the back
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => 2.2,
             Look::TradeStall => 2.0,
+            Look::Silverfin | Look::Reefling | Look::Brookback | Look::Gloamfin | Look::Frostfin | Look::Saltjaw | Look::Ghostmaw | Look::RawFish | Look::CookedFish | Look::SharkTooth => sealife::reach(self),
         }
     }
 
@@ -973,6 +1015,7 @@ impl Look {
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => (0.95, 0.42),
             Look::TradeStall => (0.5, 0.6),
+            Look::Silverfin | Look::Reefling | Look::Brookback | Look::Gloamfin | Look::Frostfin | Look::Saltjaw | Look::Ghostmaw | Look::RawFish | Look::CookedFish | Look::SharkTooth => sealife::body(self),
         }
     }
 
@@ -1074,6 +1117,7 @@ impl Look {
             Look::Jeweller => "jeweller",
             Look::Wingmaker => "wingmaker",
             Look::TradeStall => "merchant's stand",
+            Look::Silverfin | Look::Reefling | Look::Brookback | Look::Gloamfin | Look::Frostfin | Look::Saltjaw | Look::Ghostmaw | Look::RawFish | Look::CookedFish | Look::SharkTooth => sealife::name(self),
         }
     }
 
@@ -1109,6 +1153,8 @@ impl Look {
         match self {
             // As tough as the bosses of their tier, see src\bosses\roster.rs
             _ if crate::bosses::roster::has(self) => crate::bosses::roster::health(self),
+            // A fish dies to any blow; a shark's as tough as the armored or the brutes
+            _ if sealife::is_sea(self) => sealife::health(self),
             Look::Bear => 140.0,
             Look::Dog => 60.0,
             Look::GrayCat | Look::GingerCat => 30.0,
@@ -1241,6 +1287,7 @@ impl Look {
             Some(Build::Dragon) => crate::dragons::speeds(self).0,
             Some(Build::Serpent) => 1.3,
             Some(Build::Winged) => crate::avians::speeds(self).0,
+            Some(Build::Fish) => sealife::speeds(self).0,
             None => match self {
                 Look::Bear => 1.1,
                 Look::Dog => 1.6,
@@ -1316,6 +1363,7 @@ impl Look {
             Some(Build::Dragon) => crate::dragons::speeds(self).1,
             Some(Build::Serpent) => 4.2,
             Some(Build::Winged) => crate::avians::speeds(self).1,
+            Some(Build::Fish) => sealife::speeds(self).1,
             None => match self {
                 Look::Bear => 3.2,
                 Look::Dog => 4.5,
@@ -1352,6 +1400,8 @@ impl Look {
             // As far as its S-curve's waves are apart, see serpents::stride()
             Some(Build::Serpent) => serpents::kind(self).map_or(1.7, serpents::stride),
             Some(Build::Winged) => crate::avians::stride(self),
+            // A sweep of its tail, see sealife::act(), which keeps its own time
+            Some(Build::Fish) => 2.0,
             None => match self {
                 Look::Bear => 1.5,
                 Look::Dog => 0.9,
@@ -2538,6 +2588,8 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
     let swing = angle.sin() * moving;
     let mut p = Vec::new();
     match look {
+        // Fish and sharks, and what's left of them, see src\animals\sealife.rs
+        _ if sealife::is_sea(look) || matches!(look, Look::RawFish | Look::CookedFish | Look::SharkTooth) => sealife::parts(&mut p, look, phase, [pose.windup, pose.strike, pose.special]),
         // Bosses and monsters, made at the size of their build, then grown or shrunk to their own
         _ if look.build().is_some() => {
             match look.build() {
@@ -3802,8 +3854,12 @@ pub struct Animal {
     /// voxels: where blows on it land, see center() and serpents::focus()
     pub focus: Option<Vector3<f64>>,
     /// For a serpent lying on the ground, how its body's tipped to lie along the slope under it, in
-    /// radians: its head down, and over onto its right, eased towards the ground it's on
+    /// radians: its head down, and over onto its right, eased towards the ground it's on; and for
+    /// a fish or a shark, how it's pitched and rolled as it swims
     lie: [f64; 2],
+    /// How a fish or a shark swims, see src\animals\sealife.rs: it steers itself by that rather
+    /// than walking about
+    pub swim: Option<Box<sealife::Swim>>,
 }
 
 /// How hard a bare-handed hit is
@@ -3988,6 +4044,7 @@ impl Animal {
             rng,
             focus: None,
             lie: [0.0; 2],
+            swim: None,
         }
     }
 
@@ -4268,6 +4325,10 @@ impl Animal {
         if self.status.pace() <= 0.0 {
             return;
         }
+        // A fish's tail beats as fast as it's swimming, see sealife::act()
+        if self.swim.is_some() {
+            return;
+        }
         // A serpent's S-curve goes on just as far as it goes, so its body slides along the curve
         // and never over the ground; stopping, it lies where it stopped, still in the curve
         if self.look.is_serpent() {
@@ -4290,6 +4351,12 @@ impl Animal {
         let vpm = world.voxels_per_meter as f64;
         let look = self.look;
         self.age += dt;
+        // A fish or a shark swims by its own lights, see src\animals\sealife.rs
+        if let Some(mut swim) = self.swim.take() {
+            sealife::act(self, &mut swim, world, water, player, dt);
+            self.swim = Some(swim);
+            return;
+        }
 
         // Bosses shrug off most of what would knock an animal about, monsters don't
         if look.is_boss() {
@@ -4540,7 +4607,9 @@ impl Animal {
         let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
         let [_, on, up] = self.boss.as_ref().map_or([0.0; 3], Boss::sway);
         let radius = (self.look.reach() + on.abs() + up.abs()) * world_voxels_per_meter as f64;
-        AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint())
+        // A school of reef fish in its own colours, see sealife::Swim::skin
+        let skin = self.swim.as_ref().map_or(0, |s| s.skin);
+        AnimalInstance::new(model_index(self.look, frame), position, rotation, scale, radius, MOVING).tinted(self.status.tint()).skinned(skin)
     }
 
     /// For an ordinary serpent, points along its spine from its snout to the tip of its tail as it's

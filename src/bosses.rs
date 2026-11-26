@@ -816,6 +816,8 @@ fn slam(look: Look) -> (f64, f64, f64, f64) {
         Look::GaleSerpent => (1.7, 1.0, 11.0, 0.0),
         Look::BloodAdder => (1.6, 1.0, 12.0, 0.0),
         Look::DriftSerpent => (1.8, 1.1, 12.0, 0.0),
+        // A shark's jaws snapping shut where it lunged to, see srcnimals\sealife.rs
+        Look::Saltjaw | Look::Ghostmaw => crate::animals::sealife::shark_of(look).map_or((1.5, 1.5, 15.0, 0.0), |k| (k.length * 0.45, 1.5, k.bite, 0.0)),
         // A great serpent's jaws snapping shut out where its head lunged to
         _ if look.is_great_serpent() => {
             let g = serpents::great_of(look).map_or(1.0, |g| g.head);
@@ -1374,7 +1376,7 @@ impl Boss {
             Some(Build::Undead) => &[(Move::Slam, 0.0, 4.6), (Move::Summon, 0.0, 30.0), (Move::Quake, 3.0, 12.0), (Move::Spit, 4.6, 30.0)],
             // Only ever monsters, all seen to above; and dragons, avians and gargoyles, which think
             // for themselves, see src\dragons.rs and src\avians.rs
-            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon | Build::Winged) | None => &[],
+            Some(Build::Burrower | Build::Wraith | Build::Lurker | Build::Bat | Build::Boar | Build::Dragon | Build::Winged | Build::Fish) | None => &[],
         }
     }
 
