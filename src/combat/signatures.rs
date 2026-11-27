@@ -614,6 +614,10 @@ fn tinted(profile: &Rc<Profile>, element: Element) -> Rc<Profile> {
     if profile.element == Some(element) { profile.clone() } else { Rc::new(Profile { element: Some(element), ..(**profile).clone() }) }
 }
 
+/// How big a swell of WAVE's ring of rubble is to be for it to reach as far as a ripple of the
+/// same radius does: swells are drawn at MODEL_RES, and it's made at RING_RES
+pub(super) const WAVE_SWELL: f64 = MODEL_RES / RING_RES;
+
 /// `v` along the ground
 pub(super) fn flat_of(v: Vector3<f64>) -> Vector3<f64> {
     Vector3::new(v.x, v.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x)

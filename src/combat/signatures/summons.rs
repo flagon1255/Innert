@@ -360,7 +360,7 @@ impl Combat {
                 self.drop(f.position + up * 0.3 * vpm, v, DROP_MUD, 1.1);
             }
             if (f.position - arena.view.eye).norm() > 3.0 * vpm {
-                self.swells.push(Swell { model: WAVE, position: f.position, radius: COLOSSUS_ROUND, life: 0.5, lifetime: 0.5 });
+                self.swells.push(Swell { model: WAVE, position: f.position, radius: COLOSSUS_ROUND * WAVE_SWELL, life: 0.5, lifetime: 0.5 });
             }
             self.cues.push(Cue::at(Sound::Quake, f.position, 0.9).pitched(0.7));
             self.shake = self.shake.max(0.3);
@@ -397,7 +397,7 @@ impl Combat {
                         self.drop(ground + up * 0.2 * vpm, v, DROP_MUD, 1.0);
                     }
                     if (ground - arena.view.eye).norm() > 3.0 * vpm {
-                        self.swells.push(Swell { model: WAVE, position: ground, radius: COLOSSUS_ROUND, life: 0.5, lifetime: 0.5 });
+                        self.swells.push(Swell { model: WAVE, position: ground, radius: COLOSSUS_ROUND * WAVE_SWELL, life: 0.5, lifetime: 0.5 });
                     }
                     self.sparks(ground, 14, 4.0, Element::look(None), 1.2, 0.5);
                     self.cues.push(Cue::at(Sound::Slam, ground, 0.9).pitched(0.6));

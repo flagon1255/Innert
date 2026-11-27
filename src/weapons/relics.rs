@@ -89,11 +89,11 @@ pub(super) fn skull(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &
         // Stubs of grave candles standing on a collar round its neck, wax run down them, their
         // flames' wicks glowing
         "candles" => {
+            // A wide collar, so the candles stand clear of the skull either side and behind it
             p.push(limb([0.0, 0.0, top - 0.04], [0.0, 0.0, top - 0.012], 0.026, 0.028, trim));
-            for k in 0..3 {
-                let a = k as f64 / 3.0 * TAU + 0.5;
-                let (x, y) = (a.cos() * 0.03, a.sin() * 0.03);
-                let tall = 0.03 + 0.012 * k as f64;
+            p.push(ellipsoid([-0.03, 0.0, top - 0.02], [0.06, 0.085, 0.008], trim));
+            for (k, (x, y)) in [(-0.02, 0.075), (-0.02, -0.075), (-0.075, 0.0)].into_iter().enumerate() {
+                let tall = 0.07 + 0.02 * k as f64;
                 p.push(limb([x, y, top - 0.015], [x, y, top - 0.015 + tall], 0.008, 0.007, band));
                 p.push(ball([x, y, top - 0.012 + tall], 0.004, GLOW_FIRE));
                 p.push(limb([x + 0.006, y, top - 0.012 + tall * 0.8], [x + 0.008, y, top - 0.015 + tall * 0.3], 0.003, 0.002, band));

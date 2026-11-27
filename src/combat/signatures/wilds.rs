@@ -367,7 +367,7 @@ impl Combat {
                     self.drop(start, v, DROP_MUD, 1.1);
                 }
                 if (start - view.eye).norm() > 2.5 * vpm {
-                    self.swells.push(Swell { model: WAVE, position: start - up * BOULDER_ROUND * vpm, radius: 1.6, life: 0.5, lifetime: 0.5 });
+                    self.swells.push(Swell { model: WAVE, position: start - up * BOULDER_ROUND * vpm, radius: 1.6 * WAVE_SWELL, life: 0.5, lifetime: 0.5 });
                 }
                 self.sparks(start, 18, 4.5, dust, 1.2, 0.5);
                 self.cues.push(Cue::here(Sound::Slam, 0.9).pitched(0.7));
@@ -783,7 +783,7 @@ impl Combat {
                 }
                 let dust = Element::look(None);
                 if (ground - arena.view.eye).norm() > 3.0 * vpm {
-                    self.swells.push(Swell { model: WAVE, position: ground, radius: 2.0, life: 0.55, lifetime: 0.55 });
+                    self.swells.push(Swell { model: WAVE, position: ground, radius: 2.0 * WAVE_SWELL, life: 0.55, lifetime: 0.55 });
                 }
                 for _ in 0..6 {
                     let v = (self.any_direction() * 2.5 + up * 3.0) * vpm;
