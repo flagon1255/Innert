@@ -522,6 +522,7 @@ impl Launcher {
             next_frame: now,
             preview,
             loaded: None,
+            cost: Cost::default(),
         };
         Launcher { progress, messages, loader: Some(loader), state: State::Loading(Box::new(loading)), timed: false }
     }
@@ -586,10 +587,13 @@ impl Launcher {
             return;
         };
         // The window and the graphics card are there by the time the game's loaded
-        let Loading { loaded: Some(loaded), screen: Some(screen), look, drawn, .. } = *loading else {
+        let Loading { loaded: Some(loaded), screen: Some(screen), look, drawn, cost, out_of_sight, .. } = *loading else {
             event_loop.exit();
             return;
         };
+        if out_of_sight {
+            cost.say();
+        }
         let mut app = Box::new(App::new(*loaded));
         self.progress.end(Step::Creatures);
         // The game's from here on
@@ -694,6 +698,32 @@ struct Loading {
     preview: Option<Preview>,
     /// Handed to the game at the start of the next turn of the event loop, see Launcher::take_over()
     loaded: Option<Box<Loaded>>,
+    /// How long drawing it takes, said in screenshot runs
+    cost: Cost,
+}
+
+/// How long the loading screen's taken to draw, with the land on it, over how many frames: painting
+/// it with the GUI, and that and readying it for the graphics card
+#[derive(Default)]
+struct Cost {
+    frames: u32,
+    painting: Duration,
+    drawing: Duration,
+}
+
+impl Cost {
+    fn add(&mut self, painting: Duration, drawing: Duration) {
+        self.frames += 1;
+        self.painting += painting;
+        self.drawing += drawing;
+    }
+
+    fn say(&self) {
+        if self.frames > 0 {
+            let each = |d: Duration| d.as_secs_f64() * 1000.0 / self.frames as f64;
+            println!("Loading screen drawn {} times with the land, {:.3} ms painting it and {:.3} ms in all a frame", self.frames, each(self.painting), each(self.drawing));
+        }
+    }
 }
 
 impl Loading {
@@ -842,7 +872,9 @@ impl Loading {
         let appearing = smoothstep(look.start.elapsed().as_secs_f32() / FADE_IN_SECONDS);
         let land = progress.land();
         let words = Words { title: "Innert", subtitle: None };
+        let painting = Instant::now();
         screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None, land.as_deref(), &words));
+        let painted = painting.elapsed();
 
         let view = screen.image_views[image_index as usize].clone();
         let image = view.image().clone();
@@ -856,6 +888,9 @@ impl Loading {
             .unwrap();
         let cleared = screen.previous_frame_end.take().unwrap().join(acquired).then_execute(gpu.queue.clone(), builder.build().unwrap()).unwrap();
         let drawn = screen.gui.draw_on_image(cleared, view);
+        if land.is_some() {
+            self.cost.add(painted, painting.elapsed());
+        }
 
         // Copied off for a shot of it, when previewed
         let shot = self.preview.as_mut().and_then(|p| p.next(look.fraction, appearing >= 1.0, last)).map(|path| {
