@@ -6111,7 +6111,6 @@ impl App {
                     if picked.is_some() {
                         session.action = picked;
                     }
-                    session::menu_help(ui);
                 });
             }
 
