@@ -55,8 +55,12 @@ pub const BOLT_BARS: usize = HOLY_SPEAR + 1;
 /// Tendrils of shadow reaching up out of the ground, a meter and a half high, curling, their
 /// middle at 0
 pub const TENDRILS: usize = BOLT_BARS + ELEMENT_LOOKS;
+/// Spikes of bone bursting up out of the ground in a ring, curving in over its middle, a meter
+/// and a half high, standing on 0, a glow of the void at their roots: a Bone Cage's, see
+/// combat/signatures/arcana.rs
+pub const BONE_SPIKES: usize = TENDRILS + 1;
 /// How many effect models there are in all
-pub const EFFECT_MODELS: usize = TENDRILS + 1;
+pub const EFFECT_MODELS: usize = BONE_SPIKES + 1;
 pub const STONE_ROUND: f64 = 0.5;
 pub const SLAB_HEIGHT: f64 = 1.6;
 pub const SPEAR_LENGTH: f64 = 1.7;
@@ -1275,6 +1279,32 @@ fn tendrils() -> (Model, Vector3<f64>) {
     voxelize(&p, MODEL_RES)
 }
 
+/// Spikes of bone, see BONE_SPIKES: seven rising round a ring and curving in, knuckled where they
+/// bend, yellowed at their roots and whitening to their points, over a dark crack glowing with the
+/// void
+fn bone_spikes() -> (Model, Vector3<f64>) {
+    let mut seed = 0xb07e;
+    let mut p = vec![ellipsoid_part([0.0, 0.0, 0.02], [0.55, 0.55, 0.05], OBSIDIAN), ellipsoid_part([0.0, 0.0, 0.05], [0.3, 0.3, 0.04], GLOW_VOID)];
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.3;
+        let out = 0.42 + 0.08 * random(&mut seed);
+        let height = 1.1 + 0.45 * random(&mut seed);
+        let (c, s) = (a.cos(), a.sin());
+        let at = |r: f64, z: f64| [c * r, s * r, z];
+        let points = [at(out, 0.0), at(out * 0.98, height * 0.45), at(out * 0.8, height * 0.8), at(out * 0.45, height)];
+        for (j, pair) in points.windows(2).enumerate() {
+            let r = 0.075 * (1.0 - j as f64 * 0.3);
+            p.push(limb(pair[0], pair[1], r, (r * 0.7).max(0.012), if j == 0 { FUR_CREAM } else { BONE }));
+            // A knuckle where it bends
+            p.push(ball(pair[1], r * 0.85, if j == 0 { FUR_CREAM } else { BONE }));
+        }
+        // A barb off its side, pointing in
+        let b = at(out * 0.9, height * 0.6);
+        p.push(limb(b, [b[0] * 0.7 - s * 0.08, b[1] * 0.7 + c * 0.08, b[2] + 0.12], 0.025, 0.008, BONE));
+    }
+    voxelize(&p, MODEL_RES)
+}
+
 fn ellipsoid_part(c: [f64; 3], radii: [f64; 3], material: u8) -> crate::animals::Part {
     crate::animals::ellipsoid(c, radii, material)
 }
@@ -1309,6 +1339,7 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
         jobs.push(Box::new(move || bolt_bar(look)));
     }
     jobs.push(Box::new(tendrils));
+    jobs.push(Box::new(bone_spikes));
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let mut made: Vec<(usize, (Model, Vector3<f64>))> = std::thread::scope(|scope| {

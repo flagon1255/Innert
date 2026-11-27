@@ -29,10 +29,23 @@ pub(super) fn skull(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &
         let y = (k as f64 - 2.0) * 0.011;
         p.push(cuboid([0.047, y - 0.004, c[2] - 0.05], [0.055, y + 0.004, c[2] - 0.038], if k % 2 == 0 { BONE } else { tooth(bone) }));
     }
-    p.push(ellipsoid([0.024, 0.0, c[2] - 0.048], [0.034, 0.036, 0.018], bone));
+    let shape = focus.shape.as_deref().unwrap_or("skull");
+    // A beast's: a long snout reaching forward under its brow, fangs hooking down out of it
+    if shape == "fanged" {
+        p.push(limb([0.03, 0.0, c[2] - 0.022], [0.115, 0.0, c[2] - 0.034], 0.03, 0.017, bone).stretched([1.0, 0.95, 0.8]));
+        p.push(limb([0.04, 0.0, c[2] - 0.05], [0.11, 0.0, c[2] - 0.052], 0.02, 0.012, bone).stretched([1.0, 0.95, 0.6]));
+        for s in [-1.0, 1.0] {
+            p.push(limb([0.1, s * 0.012, c[2] - 0.036], [0.106, s * 0.013, c[2] - 0.062], 0.006, 0.002, tooth(bone)));
+            p.push(limb([0.07, s * 0.018, c[2] - 0.036], [0.072, s * 0.019, c[2] - 0.052], 0.004, 0.0015, tooth(bone)));
+            // Its cheekbones flaring out
+            p.push(limb([0.02, s * 0.05, c[2] - 0.01], [0.06, s * 0.034, c[2] - 0.024], 0.01, 0.007, accent));
+        }
+    } else {
+        p.push(ellipsoid([0.024, 0.0, c[2] - 0.048], [0.034, 0.036, 0.018], bone));
+    }
     p.push(limb([0.046, -0.03, c[2] + 0.024], [0.046, 0.03, c[2] + 0.024], 0.01, 0.01, bone));
     p.push(ellipsoid([0.0, 0.0, c[2]], [0.062, 0.052, 0.058], bone));
-    match focus.shape.as_deref().unwrap_or("skull") {
+    match shape {
         // Horns curling back and out from its brow
         "horned" => {
             for s in [-1.0, 1.0] {
@@ -48,6 +61,18 @@ pub(super) fn skull(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &
                 p.push(limb([x, y, c[2] + 0.04], [x * 1.1, y * 1.1, c[2] + 0.075], 0.008, 0.003, accent));
             }
         }
+        // A stag's antlers branching up and out from its brow, three tines each
+        "antlered" => {
+            for s in [-1.0, 1.0] {
+                // Kept short, so they don't fill the view held up before the eye
+                let beam = [[0.01, s * 0.035, c[2] + 0.045], [-0.005, s * 0.06, c[2] + 0.08], [-0.02, s * 0.078, c[2] + 0.115], [-0.04, s * 0.085, c[2] + 0.145]];
+                curve(&mut p, &beam, 0.009, 0.004, accent);
+                for (k, t) in [(1usize, 0.035), (2, 0.04), (3, 0.028)] {
+                    let b = beam[k];
+                    p.push(limb(b, [b[0] + t, b[1] + s * 0.008, b[2] + 0.03], 0.006, 0.002, accent));
+                }
+            }
+        }
         _ => {}
     }
     // Its binding round its neck, and what hangs from it
@@ -59,6 +84,19 @@ pub(super) fn skull(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &
             }
             if trim != band {
                 p.push(ball([0.024, 0.0, top - 0.024], 0.007, trim));
+            }
+        }
+        // Stubs of grave candles standing on a collar round its neck, wax run down them, their
+        // flames' wicks glowing
+        "candles" => {
+            p.push(limb([0.0, 0.0, top - 0.04], [0.0, 0.0, top - 0.012], 0.026, 0.028, trim));
+            for k in 0..3 {
+                let a = k as f64 / 3.0 * TAU + 0.5;
+                let (x, y) = (a.cos() * 0.03, a.sin() * 0.03);
+                let tall = 0.03 + 0.012 * k as f64;
+                p.push(limb([x, y, top - 0.015], [x, y, top - 0.015 + tall], 0.008, 0.007, band));
+                p.push(ball([x, y, top - 0.012 + tall], 0.004, GLOW_FIRE));
+                p.push(limb([x + 0.006, y, top - 0.012 + tall * 0.8], [x + 0.008, y, top - 0.015 + tall * 0.3], 0.003, 0.002, band));
             }
         }
         "bones" => {
@@ -75,6 +113,15 @@ pub(super) fn skull(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &
     }
     // The grip: plain, or a spine of knuckled bones, with a knob at its foot
     slot("shaft");
+    // A root, gnarled and knotted, twisting up to the skull
+    if shaft.shape.as_deref() == Some("gnarled") {
+        for k in 0..5 {
+            let z = 0.02 + k as f64 * 0.04;
+            let a = k as f64 * 1.7;
+            p.push(ball([a.cos() * 0.012, a.sin() * 0.012, z], 0.013 + 0.003 * (k % 2) as f64, pommel));
+        }
+        curve(&mut p, &[[0.0, 0.0, -0.01], [0.012, 0.006, 0.06], [-0.01, -0.008, 0.12], [0.004, 0.01, top - 0.02]], 0.019, 0.016, grip);
+    }
     if shaft.shape.as_deref() == Some("spine") {
         for k in 0..7 {
             let z = 0.01 + k as f64 * 0.026;
@@ -153,6 +200,29 @@ pub(super) fn talisman(shaft: &Visual, focus: &Visual, crystal: &Visual, binding
             ring(&mut p, c, y, z, r * 0.8, 0.008, metal);
             p.push(ellipsoid(c, [0.01, r * 0.8, r * 0.8], metal));
         }
+        // A moon on its back, horns up, its heart burning between them
+        "crescent" => {
+            for k in 0..11 {
+                let a = PI * (0.1 + 0.8 * k as f64 / 10.0) + PI;
+                let thick = 0.012 + 0.01 * (1.0 - ((k as f64 - 5.0) / 5.0).abs());
+                p.push(ball([0.0, a.cos() * r * 1.15, c[2] + 0.01 + a.sin() * r * 1.15], thick, if k % 5 == 0 { accent } else { metal }));
+            }
+            ring(&mut p, c, y, z, r * 0.42, 0.005, accent);
+        }
+        // An eye in a ring of rays, its heart its pupil
+        "eye" => {
+            for s in [-1.0, 1.0] {
+                for k in 0..7 {
+                    let t = k as f64 / 6.0 * 2.0 - 1.0;
+                    p.push(ball([0.0, t * r * 1.1, c[2] + s * (1.0 - t * t) * r * 0.5], 0.008, metal));
+                }
+            }
+            p.push(ellipsoid(c, [0.008, r * 0.95, r * 0.45], LINEN));
+            for k in 0..8 {
+                let a = k as f64 / 8.0 * TAU;
+                p.push(limb([0.0, a.cos() * r * 1.2, c[2] + a.sin() * r * 0.8], [0.0, a.cos() * r * 1.55, c[2] + a.sin() * r * 1.15], 0.006, 0.002, accent));
+            }
+        }
         // A plain disc, rimmed
         _ => {
             ring(&mut p, c, y, z, r, 0.008, accent);
@@ -174,6 +244,16 @@ pub(super) fn talisman(shaft: &Visual, focus: &Visual, crystal: &Visual, binding
                 p.push(ellipsoid([0.014, s * 0.041, top - 0.085], [0.006, 0.016, 0.016], trim));
             }
         }
+        // Feathers hanging on cords, a bead at each one's quill
+        "feathers" => {
+            for k in 0..3 {
+                let yk = (k as f64 - 1.0) * 0.028;
+                let drop = 0.05 + 0.015 * (k % 2) as f64;
+                p.push(limb([0.004, yk, top + 0.01], [0.006, yk * 1.2, top - drop * 0.5], 0.0025, 0.0025, LINEN));
+                p.push(ball([0.006, yk * 1.2, top - drop * 0.5], 0.005, trim));
+                p.push(limb([0.006, yk * 1.25, top - drop * 0.5], [0.01, yk * 1.4, top - drop - 0.04], 0.011, 0.004, band).stretched([0.3, 1.0, 1.0]));
+            }
+        }
         "bells" => {
             for s in [-1.0, 1.0] {
                 p.push(limb([0.0, s * 0.03, top + 0.01], [0.004, s * 0.04, top - 0.05], 0.003, 0.003, DARK_STEEL));
@@ -189,6 +269,16 @@ pub(super) fn talisman(shaft: &Visual, focus: &Visual, crystal: &Visual, binding
     }
     // The grip it's held by: cord wound round it, or a chain
     slot("shaft");
+    // Three cords braided round each other
+    if shaft.shape.as_deref() == Some("braid") {
+        for k in 0..9 {
+            let zk = k as f64 * 0.014;
+            for j in 0..3 {
+                let a = j as f64 / 3.0 * TAU + k as f64 * 0.9;
+                p.push(ball([a.cos() * 0.01, a.sin() * 0.01, zk], 0.008, if j == 0 { link } else { cord }));
+            }
+        }
+    }
     if shaft.shape.as_deref() == Some("chain") {
         for k in 0..6 {
             let zk = 0.005 + k as f64 * 0.022;

@@ -88,6 +88,9 @@ const MAGIC_BLAST: f64 = 1.6;
 /// Seconds between one hop of a chain of lightning and the next, so it's seen leaping on from one
 /// to the next, see lightning.rs
 const HOP_GAP: f64 = 0.045;
+/// The most of the dead a necromancer can have raised at once, all kinds together, see
+/// signatures\summons.rs: the oldest crumble away for the new
+pub const MINIONS: usize = 8;
 
 /// What weapons have done to an animal, wearing off over time
 #[derive(Default)]
@@ -2234,6 +2237,15 @@ pub struct Combat {
     /// Seconds the blade in hand stays charged by the Stormbrand, each blow it lands calling
     /// lightning down, and a Galvanic Torrent's sparks owed while it's poured, see thunder.rs
     charged_blade: f64,
+    /// The animal Arcane Missiles last struck, by id, and how many of them have struck it running,
+    /// each harder than the last, see arcana.rs
+    missiled: (u32, u32),
+    /// Where the crosshair was as Arcane Missiles were cast, for them to come down on with nothing
+    /// there to go for
+    missile_aim: Vector3<f64>,
+    /// The animal a necromancer's dead were last sent at, by id, and for how much longer they go
+    /// after it, see summons.rs
+    ordered: Option<(u32, f64)>,
     poured: f64,
     /// Health a special attack gives back, and how it throws the player, for game.rs to see to
     pub heal: f64,
@@ -5638,6 +5650,9 @@ impl Combat {
             charge_scale: 1.0,
             power: PowerState::default(),
             charged_blade: 0.0,
+            missiled: (u32::MAX, 0),
+            missile_aim: Vector3::zeros(),
+            ordered: None,
             poured: 0.0,
             heal: 0.0,
             dash: Vector3::zeros(),
@@ -5783,8 +5798,15 @@ impl Combat {
         for l in &mut self.lobs {
             l.to -= shift;
         }
+        self.missile_aim -= shift;
         for f in &mut self.familiars {
             f.position -= shift;
+            // Where a phalanx's skeleton stands its ground, not a wraith's speed
+            if let Some(r) = &mut f.risen
+                && r.kind != signatures::faith::Minion::Wraith
+            {
+                r.post -= shift;
+            }
         }
         for s in &mut self.stases {
             s.position -= shift;
@@ -8180,6 +8202,13 @@ impl Combat {
     fn conjured(&mut self, arena: &mut Arena, weapon: Option<&Weapon>, dt: f64) {
         let vpm = arena.view.vpm;
         let feet = arena.player.unwrap_or(arena.view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
+        // What the dead were sent at, for a while, see signatures\summons.rs
+        if let Some((_, left)) = &mut self.ordered {
+            *left -= dt;
+            if *left <= 0.0 {
+                self.ordered = None;
+            }
+        }
         for mut f in std::mem::take(&mut self.familiars) {
             f.life -= dt;
             // The dead a skull focus raised walk and strike rather than cast, see faith.rs
@@ -16690,10 +16719,15 @@ impl Combat {
         for (at, reach, color, strength) in self.signature_lights() {
             lights.push(light(at, reach, color, strength));
         }
+        let mut glowing = 0;
         for f in &self.familiars {
-            // The dead raised glowing faintly red in the chest
+            // The dead raised glowing faintly red in the chest, the first few of them, so a crowd
+            // of them never takes all the lights there are
             if f.risen.is_some() {
-                lights.push(light(f.position + Vector3::new(0.0, 0.0, 1.25 * vpm), 2.5, [0.9, 0.12, 0.2], 0.35));
+                glowing += 1;
+                if glowing <= 3 {
+                    lights.push(light(f.position + Vector3::new(0.0, 0.0, 1.25 * vpm), 2.5, [0.9, 0.12, 0.2], 0.35));
+                }
                 continue;
             }
             let color = if f.phantom { Element::Holy.light() } else { f.profile.element.map_or([0.7, 0.5, 1.0], Element::light) };

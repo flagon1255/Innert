@@ -124,6 +124,34 @@ pub(super) fn chakram(blade: &Visual, hilt: &Visual, core: &Visual) -> (Vec<Part
                 p.push(limb([right * radius, 0.0, radius + right_z * radius], [c * (radius + 0.06), 0.0, radius + s * (radius + 0.06)], 0.007, 0.002, edge));
             }
         }
+        // Sixteen teeth all round, raked back the way it spins, as a saw's
+        "chakram_saw" => {
+            for k in 0..16 {
+                let a = (k as f64 + 0.5) / 16.0 * TAU;
+                let b = a + 0.16;
+                let (s, c) = (a.sin(), -a.cos());
+                if c < -0.88 {
+                    continue;
+                }
+                p.push(limb([s * radius, 0.0, radius + c * radius], [b.sin() * (radius + 0.03), 0.0, radius - b.cos() * (radius + 0.03)], 0.008, 0.002, edge));
+            }
+        }
+        // Four hooked blades curving out off the rim the same way round, a pinwheel of them
+        "chakram_hooked" => {
+            for k in 0..4 {
+                let a = k as f64 / 4.0 * TAU + TAU / 8.0;
+                let at = |r: f64, t: f64| [t.sin() * r, 0.0, radius - t.cos() * r];
+                curve(&mut p, &[at(radius, a), at(radius + 0.035, a + 0.2), at(radius + 0.05, a + 0.45), at(radius + 0.035, a + 0.7)], 0.011, 0.002, edge);
+            }
+        }
+        // A cross of spokes inside the ring, a boss where they meet
+        "chakram_crossed" => {
+            for k in 0..4 {
+                let a = k as f64 / 4.0 * TAU + TAU / 8.0;
+                p.push(limb(middle, [a.sin() * (radius - band), 0.0, radius - a.cos() * (radius - band)], 0.008, 0.006, accent).stretched([1.0, 0.6, 1.0]));
+            }
+            p.push(ball(middle, band * 0.5, accent));
+        }
         "chakram_twin" => {
             ring(&mut p, middle, u, w, radius * 0.55, band * 0.28, accent);
             for k in 0..6 {

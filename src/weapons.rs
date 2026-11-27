@@ -1269,7 +1269,18 @@ impl Library {
         let c = &self.components[index];
         let family = self.family(c.compatible_families.first()?)?;
         let luck = [1.0, 2.0, 3.0, 5.0, 8.0, 12.0][c.tier.min(5)];
-        (0..400_000u32).map(hash).find(|&seed| size.is_none_or(|s| roll_size(seed) == s) && self.roll(seed, Some(family), luck).1.contains(&index)).map(|seed| self.generate(seed, Some(family), luck))
+        // A part that brings a power on a weapon none of whose other parts brings one, so it's
+        // its power that's seen
+        let shows = |parts: &[usize]| c.power.is_none() || parts.iter().all(|&p| p == index || self.components[p].power.is_none());
+        (0..400_000u32)
+            .map(hash)
+            .find(|&seed| {
+                size.is_none_or(|s| roll_size(seed) == s) && {
+                    let parts = self.roll(seed, Some(family), luck).1;
+                    parts.contains(&index) && shows(&parts)
+                }
+            })
+            .map(|seed| self.generate(seed, Some(family), luck))
     }
 
     /// The synergies a weapon with `tags` has
@@ -2025,12 +2036,67 @@ pub enum Power {
     Torrent,
     /// Lightning breaking up out of the ground round the ring, draining what it strikes
     Gravebolt,
+    /// A burning rock called down out of the sky onto the ring, leaving the ground burning: on a
+    /// staff, scepter or lightning rod, see combat/signatures/wilds.rs
+    Meteor,
+    /// The weapon swung round twice through fire, flinging cinders out in a wide fan with each
+    /// sweep: on a sword, greatsword, axe, halberd, dagger or katar
+    CinderWhirl,
+    /// An arrow loosed low, leaving a line of fire burning along the ground it flies over: on a
+    /// bow or crossbow
+    Kindling,
+    /// A lance of ice formed in front of the hand and thrust out, through three, shattering at
+    /// the end: on a wand, staff, orb or lightning rod
+    IceLance,
+    /// Three shards of rime thrown in a fan, each freezing what it strikes solid, or lying in wait
+    /// on the ground as a snare: on throwing knives, a chakram, a katar or a dagger
+    RimeSnare,
+    /// A seed thrown to the ring, a wall of brambles bursting up across the way there, holding and
+    /// tearing at what crosses it: on a totem, staff, spear or battle staff
+    Bramble,
+    /// A boulder heaved up out of the ground and hurled, bouncing and rolling on over what's in its
+    /// way: on a hammer, maul, war pick or flail
+    Boulder,
+    /// Seven missiles of arcane light let go one after another, weaving in onto what's aimed at,
+    /// each harder than the last: on a tome, orb, wand or prism, see combat/signatures/arcana.rs
+    Missiles,
+    /// An hourglass of arcane light thrown to the ring, time running slow round it, what's there
+    /// slowed and laid open to every blow: on a runestone, prism, staff or tome
+    Hourglass,
+    /// An orb of death through everything in a line, tearing a wisp of soul out of each that flies
+    /// back to heal you: on a skull focus, scythe or tome
+    SoulHarvest,
+    /// A shard of bone flung at what's aimed at, a cage of bone spikes bursting up round it,
+    /// holding it, then crashing in on it: on a skull focus, scythe, totem or dagger
+    BoneCage,
+    /// A mote of holy light thrown to the ring, a circle of it standing there a while, healing you
+    /// in it and searing what's in it: on a censer, talisman, scepter or orb
+    Sanctuary,
+    /// A brand of light thrown at what's aimed at, a pillar of light coming down on it, healing you:
+    /// on a hammer, scepter, talisman or maul
+    Smite,
+    /// Four armored skeletons raised in a line across the ring, standing their ground there and
+    /// striking what comes near it: a necromancer's, on a skull focus or tome, see
+    /// combat/signatures/summons.rs
+    Phalanx,
+    /// Three skeletons with bows raised at the ring, keeping back and shooting: on a skull focus
+    /// or totem
+    Archers,
+    /// A grave brute raised at the ring, slow and huge, its gravestone of a club striking all round
+    /// where it lands: on a skull focus's rarest skull
+    Colossus,
+    /// Three wraiths raised at the ring, flying at what's near and swooping through it again and
+    /// again: on a skull focus, scythe or dagger
+    Wraiths,
+    /// The slain lying round the ring raised as what they were, to fight for you: on a skull focus,
+    /// tome, scythe or dagger
+    Corpses,
 }
 
 impl Power {
     /// Every one of them
     #[cfg(test)]
-    pub const ALL: [Power; 57] = [
+    pub const ALL: [Power; 75] = [
         Power::Crescent,
         Power::Rending,
         Power::WindCut,
@@ -2088,6 +2154,24 @@ impl Power {
         Power::Judgment,
         Power::Torrent,
         Power::Gravebolt,
+        Power::Meteor,
+        Power::CinderWhirl,
+        Power::Kindling,
+        Power::IceLance,
+        Power::RimeSnare,
+        Power::Bramble,
+        Power::Boulder,
+        Power::Missiles,
+        Power::Hourglass,
+        Power::SoulHarvest,
+        Power::BoneCage,
+        Power::Sanctuary,
+        Power::Smite,
+        Power::Phalanx,
+        Power::Archers,
+        Power::Colossus,
+        Power::Wraiths,
+        Power::Corpses,
     ];
 
     /// Whether it has a move of its own on right click, rather than being carried by a melee
@@ -2130,6 +2214,39 @@ impl Power {
     /// Whether it's of the second storm of lightning, see combat/signatures/thunder.rs
     pub fn thunder(self) -> bool {
         matches!(self, Power::Stormbrand | Power::Stormrunners | Power::Thundersplit | Power::Railshot | Power::TwinArc | Power::Judgment | Power::Torrent | Power::Gravebolt)
+    }
+
+    /// The school of magic it's of, whatever's in the weapon, for the powers of other schools than
+    /// lightning, see combat/signatures/wilds.rs and arcana.rs: fire, frost, the wild's thorns,
+    /// arcane light, death and holy light; the Boulder Heave is the earth's own, of no element
+    pub fn school(self) -> Option<Element> {
+        Some(match self {
+            Power::Meteor | Power::CinderWhirl | Power::Kindling => Element::Fire,
+            Power::IceLance | Power::RimeSnare => Element::Frost,
+            Power::Bramble => Element::Poison,
+            Power::Missiles | Power::Hourglass => Element::Arcane,
+            Power::SoulHarvest | Power::BoneCage => Element::Void,
+            Power::Sanctuary | Power::Smite => Element::Holy,
+            _ => return None,
+        })
+    }
+
+    /// Whether it's one of the powers of fire, frost, earth and the wild, see
+    /// combat/signatures/wilds.rs
+    pub fn wild(self) -> bool {
+        matches!(self, Power::Meteor | Power::CinderWhirl | Power::Kindling | Power::IceLance | Power::RimeSnare | Power::Bramble | Power::Boulder)
+    }
+
+    /// Whether it raises a necromancer's dead to fight, see combat/signatures/summons.rs: used again
+    /// while it comes round, it sends what it raised at what's aimed at
+    pub fn summons(self) -> bool {
+        matches!(self, Power::Phalanx | Power::Archers | Power::Colossus | Power::Wraiths | Power::Corpses)
+    }
+
+    /// Whether it's one of the powers of arcane light, death and holy light, see
+    /// combat/signatures/arcana.rs
+    pub fn arcane(self) -> bool {
+        matches!(self, Power::Missiles | Power::Hourglass | Power::SoulHarvest | Power::BoneCage | Power::Sanctuary | Power::Smite)
     }
 
     /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
@@ -2233,6 +2350,24 @@ impl Power {
             Power::Judgment => "Judgment Bolt",
             Power::Torrent => "Galvanic Torrent",
             Power::Gravebolt => "Grave Lightning",
+            Power::Meteor => "Cinder Meteor",
+            Power::CinderWhirl => "Cinder Whirl",
+            Power::Kindling => "Kindling Arrow",
+            Power::IceLance => "Ice Lance",
+            Power::RimeSnare => "Rime Snares",
+            Power::Bramble => "Bramble Wall",
+            Power::Boulder => "Boulder Heave",
+            Power::Missiles => "Arcane Missiles",
+            Power::Hourglass => "Hourglass Field",
+            Power::SoulHarvest => "Soul Harvest",
+            Power::BoneCage => "Bone Cage",
+            Power::Sanctuary => "Sanctuary Circle",
+            Power::Smite => "Radiant Smite",
+            Power::Phalanx => "Bone Phalanx",
+            Power::Archers => "Bone Archers",
+            Power::Colossus => "Grave Colossus",
+            Power::Wraiths => "Wraith Flight",
+            Power::Corpses => "Corpse Rising",
         }
     }
 
@@ -2253,8 +2388,8 @@ impl Power {
             (Power::Stormcall, _) => return "Stormcall Thunderhead".to_owned(),
             (Power::Shadowgrasp, Some(Element::Void) | None) => return "Grasping Shadows".to_owned(),
             (Power::Glacier, Some(Element::Frost) | None) => return "Rising Glacier".to_owned(),
-            // Lightning whatever's in the weapon
-            (p, _) if p.lightning() => return p.noun().to_owned(),
+            // Lightning whatever's in the weapon, and the other schools' their own
+            (p, _) if p.lightning() || p.wild() || p.arcane() || p.summons() => return p.noun().to_owned(),
             _ => {}
         }
         let adjective = match element {
@@ -2291,6 +2426,19 @@ impl Power {
             Power::Stormrunners | Power::Torrent => 9.0,
             Power::Stormbrand | Power::Gravebolt => 10.0,
             Power::Judgment => 12.0,
+            Power::Smite => 6.0,
+            Power::IceLance | Power::Missiles => 7.0,
+            Power::CinderWhirl | Power::RimeSnare => 8.0,
+            Power::Kindling | Power::Boulder | Power::SoulHarvest => 9.0,
+            Power::Bramble | Power::BoneCage => 10.0,
+            Power::Hourglass => 11.0,
+            Power::Meteor => 12.0,
+            Power::Sanctuary => 14.0,
+            Power::Wraiths => 12.0,
+            Power::Corpses => 14.0,
+            Power::Archers => 15.0,
+            Power::Phalanx => 16.0,
+            Power::Colossus => 24.0,
             Power::Runeburst => 10.0,
             Power::Spectrum => 8.0,
             _ => 8.0,
@@ -2307,6 +2455,13 @@ impl Power {
             Power::Torrent => 2.0,
             Power::Gravebolt => 3.0,
             Power::Judgment => 3.5,
+            Power::Smite => 2.0,
+            Power::IceLance | Power::Missiles | Power::SoulHarvest => 2.5,
+            Power::Bramble | Power::BoneCage | Power::Hourglass => 3.0,
+            Power::Meteor | Power::Sanctuary => 3.5,
+            Power::Wraiths | Power::Corpses | Power::Archers => 3.0,
+            Power::Phalanx => 3.5,
+            Power::Colossus => 4.5,
             _ => 0.0,
         }
     }
@@ -2325,6 +2480,9 @@ impl Power {
             Power::Torrent => "Hold right click to pour it out, up to 3 s while the mana lasts; let go for a last surge",
             Power::Stormbrand | Power::Stormrunners | Power::TwinArc => "Right click: a move of its own when it's ready, aimed while it's held",
             Power::Thundersplit => "Right click: loosed when it's ready, aimed while it's held, a draw while it comes round",
+            Power::Kindling if build == Build::None => "Right click: loosed when it's ready, aimed while it's held, a draw while it comes round",
+            Power::CinderWhirl | Power::RimeSnare | Power::Boulder | Power::Bramble | Power::BoneCage | Power::Smite | Power::SoulHarvest => "Right click: a move of its own when it's ready, aimed while it's held",
+            p if p.summons() => "Hold right click to aim, let go to raise them; while it comes round, right click sends all you've raised at what's aimed at",
             Power::Cloudburst => "Right click: loosed high when it's ready, a draw while it comes round",
             _ => "Right click",
         }
@@ -2390,7 +2548,37 @@ impl Power {
             Power::Judgment => "A mote sent up over the ring gathers a storm there, lightning crawling in over the ground under it, and a moment later one great bolt comes down, striking everything within 5 meters, hardest within 2.5, and throwing it back.",
             Power::Torrent => "Held, lightning pours out of the weapon at what's ahead, 11 meters, as long as there's mana, up to 3 s; let go, it ends in a surge of six bolts at once.",
             Power::Gravebolt => "A mote of storm sent to the ring, and lightning breaks up out of the ground round it, 4 meters, eight times, under each enemy there first; whatever it strikes gives a little of its life back to you.",
+            Power::Meteor => "Raised to the sky, it calls a burning rock down onto the ring, 30 meters off at most, striking everything within 4 meters, hardest within 2, throwing it back and setting it burning; the ground there burns on for 5 s.",
+            Power::CinderWhirl => "Swung round twice through fire, the weapon flings five burning cinders out across the way ahead with each sweep, 10 meters, each bursting where it strikes, and sears everything within 3 meters as it passes.",
+            Power::Kindling => "An arrow of fire loosed low at the crosshair, leaving a line of fire burning along the ground it flies over for 5 s, ten fires at most, and bursting where it strikes.",
+            Power::IceLance => "A lance of ice forms in front of the hand and is thrust out at the crosshair, 35 meters, through the first three things in its way, freezing what's chilled already, and shatters into a spray of shards at the end.",
+            Power::RimeSnare => "Three shards of rime thrown in a fan, 18 meters: one that strikes something bursts into ice, freezing it and holding it fast for 2 s; one that lands on the ground lies there as a snare for 12 s and does the same to the first thing that comes near it.",
+            Power::Bramble => "A seed thrown to the ring, 12 meters off at most, where a wall of brambles bursts up across the way, 9 meters wide, for 6 s, holding fast a moment whatever comes into it and tearing at it, poisoning it.",
+            Power::Boulder => "Slammed down, the weapon heaves a boulder up out of the ground and hurls it onto the ring, 24 meters off at most; where it comes down it bounces and rolls on 6 meters, crushing and throwing aside everything in its way, then breaks apart.",
+            Power::Missiles => "Seven missiles of arcane light let go one after another at what the crosshair's on, 30 meters, weaving in onto it, each striking an eighth harder than the last that struck the same.",
+            Power::Hourglass => "An hourglass of arcane light thrown to the ring, where time runs slow for 5 s: everything within 4.5 meters goes at a third of its pace and takes 25% more from every blow, and as time snaps back it's all struck at once.",
+            Power::SoulHarvest => "An orb of death hurled at the crosshair, 24 meters, through everything in its way, tearing a wisp of soul out of each it passes that flies back to you and heals you, twice as much for what it kills.",
+            Power::BoneCage => "A shard of bone flung at what the crosshair first meets, 22 meters, and a cage of bone spikes bursts up round it, holding fast everything within 2.5 meters, then a moment later crashing in on it, making it bleed.",
+            Power::Sanctuary => "A mote of holy light thrown to the ring, 20 meters off at most, where a circle of light stands 5 meters round for 6 s: standing in it heals you, and whatever's in it is seared and staggered every half second.",
+            Power::Smite => "A brand of light thrown at what the crosshair first meets, 30 meters, and a pillar of light comes down on it, staggering it and healing you a little; what it slays bursts into light striking the two nearest.",
+            Power::Phalanx => "A shade sent to the ring, 10 meters off at most, raises four armored skeletons in a line across the way there for 20 s; they stand their ground, striking and staggering whatever comes within 7 meters of where they stand, and their blows drain life back to you.",
+            Power::Archers => "A shade sent to the ring, 10 meters off at most, raises three skeletons with bows there for 18 s; they keep back and shoot whatever's within 26 meters, and follow you when there's nothing.",
+            Power::Colossus => "A shade sent to the ring, 10 meters off at most, raises a grave brute there for 22 s, slow and huge, its gravestone of a club striking everything within 2.6 meters of where it lands and throwing it back.",
+            Power::Wraiths => "A shade sent to the ring, 10 meters off at most, raises three wraiths there for 12 s; they fly at whatever's near and swoop through it again and again, chilling it.",
+            Power::Corpses => "A shade sent to the ring, 10 meters off at most, raises the slain lying within 12 meters of it as what they were, five at most, to fight for you for 16 s, or two of the long dead out of the ground if none lie there; their blows drain life back to you.",
         };
+        // The other schools' are their own whatever's in the weapon, and so are the dead raised,
+        // which count among the eight that can be up at once
+        if self.summons() {
+            return format!("{what} No more than {} of the dead raised can be up at once, the oldest crumbling for the new. Costs {} times a spell's mana when cast; every {:.0} s.", crate::combat::MINIONS, self.mana(), self.cooldown());
+        }
+        if self.wild() || self.arcane() {
+            let cost = match self.mana() {
+                m if m > 0.0 => format!(" Costs {m} times a spell's mana when cast; every {:.0} s.", self.cooldown()),
+                _ => format!(" Every {:.0} s.", self.cooldown()),
+            };
+            return format!("{what}{cost}");
+        }
         // These are theirs whatever's in them
         if matches!(self, Power::Thunderspear | Power::RaiseDead | Power::Vigil | Power::Heavenfall | Power::Triune) {
             let rider = if self == Power::RaiseDead { "Each blow they land drains life back to you." } else { "Every enemy it strikes heals you a little, and it strikes harder at what's standing in water." };
@@ -8847,7 +9035,8 @@ mod tests {
         let later = library.families[..weapons].iter().filter(|f| f.batch > 0).count() as f64 / weapons as f64;
         assert!((share(new_family) - later).abs() < 0.03, "new families {:.3}, for {later:.3} of them", share(new_family));
         assert!((0.08..0.35).contains(&share(new_parts)), "new parts {:.3}", share(new_parts));
-        assert!(share(same) > 0.62, "only {:.3} the same", share(same));
+        // With the fifth batch's parts, a little more again are of later parts
+        assert!(share(same) > 0.58, "only {:.3} the same", share(same));
         // Every part of the second batch turns up, in lucky loot
         let mut seen = BTreeSet::new();
         for seed in 0..60_000u32 {
