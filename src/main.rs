@@ -3149,6 +3149,17 @@ impl App {
         }
         // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
         app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
+        // `--set map_of=new:realms` or `continue:freeroam` has the map beside the menu show that
+        // game, as pointing at its button does
+        app.session.menu.looking = setting("map_of").and_then(|v| {
+            let (which, mode) = v.split_once(':')?;
+            let mode = save::Mode::parse(mode)?;
+            match which {
+                "new" => Some(session::MenuAction::New(mode)),
+                "continue" => Some(session::MenuAction::Continue(mode)),
+                _ => None,
+            }
+        });
         // `--set creator=freeroam` opens the window a new character's made in, as New does, with
         // what `--set class=priest`, `name=`, `skin=` and the rest say chosen, turned `creator_turn`
         // radians round, to see it in a screenshot with `menu=1 gui=1`
@@ -5982,6 +5993,8 @@ impl App {
         // Lower resolution while the view changes, full detail once it settles, as much as the
         // GPU's memory has room for
         self.update_render_images(window_size.into());
+        // What the map beside the menu's to show, as the menu was last frame, see loading::Backdrop
+        let map_wanted = self.backdrop.as_ref().filter(|_| self.menu_open && !self.started).map(|_| self.map_wanted());
         let rcx = self.rcx.as_mut().unwrap();
 
         let acquiring = Instant::now();
@@ -6097,9 +6110,9 @@ impl App {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
-                // And the land the game's starting on over it, see loading::Backdrop
-                if let Some(backdrop) = &mut self.backdrop {
-                    backdrop.paint(&ctx);
+                // And the map of the world about to be entered over it, see loading::Backdrop
+                if let (Some(backdrop), Some(wanted)) = (&mut self.backdrop, &map_wanted) {
+                    backdrop.paint(&ctx, wanted);
                 }
                 // Resume, each mode with Continue and New, Settings and Quit, done at the start of
                 // the next frame, see menu_picked(), and how to play under them

@@ -11,10 +11,9 @@ use std::time::{Duration, Instant};
 
 use egui_winit_vulkano::egui::{self, Pos2, pos2};
 
-use super::land::{COLUMNS, HEADROOM, Land, Spot};
+use super::land::{HEADROOM, Land, Spot};
 use crate::settings_from_args;
 
-const N: usize = COLUMNS;
 /// How high the column under the mouse is lifted, in columns, and how far round it the hump
 /// spreads, in columns
 const HOVER_LIFT: f32 = 1.1;
@@ -44,6 +43,8 @@ const LIVELY: Duration = Duration::from_millis(1200);
 
 /// How the land's been touched: how far each column's lifted, row after row as Land has them
 pub struct Touch {
+    /// Columns across each way of the land it's for
+    n: usize,
     /// Lifted by the mouse being over or near it, in columns
     raised: Vec<f32>,
     /// Lifted by the ripples going through it, in columns, and how fast that's changing
@@ -76,9 +77,10 @@ impl Default for Touch {
 impl Touch {
     fn new(script: Option<Script>) -> Self {
         Touch {
-            raised: vec![0.0; N * N],
-            wave: vec![0.0; N * N],
-            speed: vec![0.0; N * N],
+            n: 0,
+            raised: Vec::new(),
+            wave: Vec::new(),
+            speed: Vec::new(),
             over: None,
             pointer: None,
             owed: 0.0,
@@ -111,17 +113,42 @@ impl Touch {
 
     /// How far column `k` is lifted, in columns
     pub fn lift(&self, k: usize) -> f32 {
-        (self.raised[k] + self.wave[k]).clamp(-0.6, HEADROOM + 0.6)
+        match (self.raised.get(k), self.wave.get(k)) {
+            (Some(r), Some(w)) => (r + w).clamp(-0.6, HEADROOM + 0.6),
+            _ => 0.0,
+        }
     }
 
     /// How far a ripple's lifted column `k`, in columns, to ripple the sea over it
     pub fn ripple(&self, k: usize) -> f32 {
-        self.wave[k]
+        self.wave.get(k).copied().unwrap_or(0.0)
     }
 
     /// How much column `k`'s lit by the mouse being over it or a ripple lifting it, 0 to 1
     pub fn glow(&self, k: usize) -> f32 {
-        (self.raised[k] / HOVER_LIFT).clamp(0.0, 1.0).powf(1.5)
+        (self.raised.get(k).copied().unwrap_or(0.0) / HOVER_LIFT).clamp(0.0, 1.0).powf(1.5)
+    }
+
+    /// Where on the land the mouse is, if it's over it
+    pub fn over(&self) -> Option<Spot> {
+        self.over
+    }
+
+    /// Where on the screen the mouse is, if it's over the land or near it, as a scripted one too
+    pub fn pointer(&self) -> Option<Pos2> {
+        self.pointer
+    }
+
+    /// Made for a land `n` columns across, all settled, if it was for another
+    fn fit(&mut self, n: usize) {
+        if self.n != n {
+            self.n = n;
+            for v in [&mut self.raised, &mut self.wave, &mut self.speed] {
+                *v = vec![0.0; n * n];
+            }
+            self.over = None;
+            self.awake = false;
+        }
     }
 
     /// Whether the mouse has lately moved over it, or a ripple's still big, when it's worth drawing
@@ -149,6 +176,7 @@ impl Touch {
     /// Moves it on to now, or by `dt` seconds if given, the mouse at `pointer` on the screen and
     /// over `over` on the land, which it's just `pressed` on
     fn step(&mut self, land: &Land, pointer: Option<Pos2>, over: Option<Spot>, pressed: bool, dt: Option<f32>) {
+        self.fit(land.across());
         let now = Instant::now();
         let dt = dt.unwrap_or(if self.script.is_some() { 1.0 / 60.0 } else { self.last.map_or(0.0, |l| (now - l).as_secs_f32()).min(0.1) });
         self.last = Some(now);
@@ -161,7 +189,7 @@ impl Touch {
             // Coming onto a column sets it bobbing
             if self.over.is_none_or(|was| was.column != spot.column) {
                 let (i, j) = spot.column;
-                self.speed[(i + j * N as i32) as usize] += NUDGE;
+                self.speed[(i + j * self.n as i32) as usize] += NUDGE;
                 self.awake = true;
             }
             // And a click knocks a ring out round it
@@ -195,8 +223,8 @@ impl Touch {
     /// A click at `at`, in columns from the middle: the columns round it knocked upward, the more
     /// the nearer
     fn knock(&mut self, land: &Land, at: (f32, f32)) {
-        for k in 0..N * N {
-            let (x, y) = middle_of(k);
+        for k in 0..self.n * self.n {
+            let (x, y) = middle_of(self.n, k);
             let d = (x - at.0).hypot(y - at.1);
             if d < KNOCK_REACH && land.solid(k) {
                 self.speed[k] += KNOCK * (1.0 - d / KNOCK_REACH).powi(2);
@@ -207,14 +235,14 @@ impl Touch {
 
     /// Works it all out `h` seconds on, giving back how far anything's still from resting
     fn tick(&mut self, land: &Land, h: f32) -> f32 {
-        let n = N as i32;
+        let n = self.n as i32;
         let (rise, settle) = (1.0 - (-RISE_RATE * h).exp(), 1.0 - (-SETTLE_RATE * h).exp());
         let mut most = 0.0f32;
         // The hump under the mouse
-        for k in 0..N * N {
+        for k in 0..self.n * self.n {
             let target = match self.over {
                 Some(spot) if land.solid(k) => {
-                    let (x, y) = middle_of(k);
+                    let (x, y) = middle_of(self.n, k);
                     let d2 = (x - spot.at.0).powi(2) + (y - spot.at.1).powi(2);
                     if d2 < 16.0 * HOVER_SPREAD * HOVER_SPREAD { HOVER_LIFT * (-d2 / (2.0 * HOVER_SPREAD * HOVER_SPREAD)).exp() } else { 0.0 }
                 }
@@ -226,11 +254,11 @@ impl Touch {
         }
         // The ripples: each column pulled level with those round it that are there, so a ripple
         // comes back off the land's edges, and back to where it rests
-        for k in 0..N * N {
+        for k in 0..self.n * self.n {
             if !land.solid(k) {
                 continue;
             }
-            let (i, j) = ((k % N) as i32, (k / N) as i32);
+            let (i, j) = ((k % self.n) as i32, (k / self.n) as i32);
             let mut level = 0.0;
             for (a, b) in [(i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)] {
                 if a >= 0 && b >= 0 && a < n && b < n && land.solid((a + b * n) as usize) {
@@ -239,7 +267,7 @@ impl Touch {
             }
             self.speed[k] += (PULL * level - SPRING * self.wave[k] - DAMPING * self.speed[k]) * h;
         }
-        for k in 0..N * N {
+        for k in 0..self.n * self.n {
             self.wave[k] += self.speed[k] * h;
             most = most.max(self.wave[k].abs()).max(self.speed[k].abs() * 0.1);
         }
@@ -247,10 +275,10 @@ impl Touch {
     }
 }
 
-/// The middle of column `k`, in columns from the middle of the land
-fn middle_of(k: usize) -> (f32, f32) {
-    let half = N as f32 * 0.5;
-    ((k % N) as f32 + 0.5 - half, (k / N) as f32 + 0.5 - half)
+/// The middle of column `k` of a land `n` columns across, in columns from its middle
+fn middle_of(n: usize, k: usize) -> (f32, f32) {
+    let half = n as f32 * 0.5;
+    ((k % n) as f32 + 0.5 - half, (k / n) as f32 + 0.5 - half)
 }
 
 /// A mouse moved by a script, to see the land answer it in screenshot runs, where there's no
@@ -313,6 +341,9 @@ impl Script {
 mod tests {
     use super::*;
 
+    /// Columns across each way of the loading screen's land
+    const N: usize = 34;
+
     fn flat() -> Land {
         Land::flat_for_tests(6.0)
     }
@@ -322,7 +353,7 @@ mod tests {
     }
 
     fn over(k: (i32, i32)) -> Option<Spot> {
-        let (x, y) = middle_of(column(k));
+        let (x, y) = middle_of(N, column(k));
         Some(Spot { column: k, at: (x, y) })
     }
 
