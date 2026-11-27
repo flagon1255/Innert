@@ -6,7 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
+The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), each in `.claude\worktrees\<name>`.
 
 4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
    this"). RUNNING in `menumap`.
@@ -14,6 +14,11 @@ The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\
      to enter (Continue: round the saved position; New: round the seed's spawn, redrawn as the seed
      changes), towns, castles and camps marked, roads once the roads item lands, the hover naming
      the place under the cursor. Black and white, free once playing.
+
+5. **Lamp posts on some roads** (2026-11-27, "Some roads could have lamp posts"). RUNNING in
+   `roads` (the roads agent again).
+   - Lanterns on posts along the busier roads, near towns and castles, on bridges and at
+     signposts; lit at night through the night-lights system, dark by day, within the light cap.
 
 ## Loose ends (found along the way, not yet asked for)
 
