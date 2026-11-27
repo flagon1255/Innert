@@ -760,7 +760,7 @@ fn rows(group: Group) -> Vec<Row> {
         Group::Menus => vec![
             One(Map), One(Skills), One(Settings),
             Kept("Menu", "Closes a window first, if one's open", "Esc"),
-            Kept("Screenshot", "Saved beside the game", "F12"),
+            Kept("Screenshot", "Saved in the screenshots folder where the game's started from", "F12"),
         ],
     }
 }
