@@ -6,7 +6,23 @@ the commit it landed in.
 
 ## Queued
 
-Nothing queued. (2026-11-27: all six items from "go with backlog now" are done, see below.)
+All three RUNNING from AVI c7055b8d (2026-11-27), each in `.claude\worktrees\<name>`.
+
+1. **Menu and loading cubes react to the mouse** (2026-11-27, "Make main menu cubes and loading
+   cube animation interactible with mouse hover"). RUNNING in `hovercubes`.
+   - The voxel columns on the loading screen (src/loading/land.rs) and the cubes on the main menu
+     respond when the mouse passes over them: rise, light up, ripple. No cost once playing.
+
+2. **Roads between towns and castles, with road signs** (2026-11-27, "add roads that connect npc
+   cities, castles, road signs"). RUNNING in `roads`.
+   - Roads laid by worldgen that link NPC towns and castles (and camps where it fits), following
+     the land, bridging or skirting water; signposts at junctions and near each place naming where
+     each way leads.
+
+3. **More weapon parts, more magic** (2026-11-27, "add more weapon parts, more magic").
+   RUNNING in `moremagic`.
+   - New weapon parts across the weapon families, and new spells/powers for the casting classes,
+     beyond the eight lightning powers just added.
 
 ## Loose ends (found along the way, not yet asked for)
 
