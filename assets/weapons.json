@@ -253,9 +253,9 @@
     {
       "id": "flail", "displayName": "Flail", "kind": "melee", "style": "whirl", "heavy": "overhead",
       "slots": ["blade", "hilt", "guard", "core"],
-      "haft": 0.42, "grip": 0.3, "guard": false, "cone": -1.0, "targets": 6,
+      "haft": 0.42, "grip": 0.3, "guard": false, "cone": 0.95, "targets": 6,
       "synergyTags": ["melee", "heavy", "area"],
-      "baseStats": { "physicalDamage": 16, "attackSpeed": 0.95, "range": 2.9, "critChance": 0.05, "critDamage": 1.6, "knockback": 3, "area": 1.0, "statusPotency": 1 },
+      "baseStats": { "physicalDamage": 16, "attackSpeed": 0.9, "range": 3.8, "critChance": 0.05, "critDamage": 1.6, "knockback": 3, "area": 1.0, "statusPotency": 1 },
       "nouns": ["flail", "morningstar", "thresher", "whirler", "chainmace"]
     },
     {

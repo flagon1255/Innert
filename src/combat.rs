@@ -1902,6 +1902,9 @@ const LASH_THIN: f64 = 0.5;
 /// How close to the eye the lash can come, in meters, so it goes round the player's head and
 /// never sweeps right across the view up close
 const LASH_HEAD: f64 = 0.4;
+/// How readily a flail's head on the end of its chain moves, against a link of it: it's heavy, so
+/// it lags as the chain's thrown, and swings on hard once it's going
+const FLAIL_TIP: f64 = 0.3;
 
 /// Whether `p` is in something solid
 fn solid(world: &World, p: Vector3<f64>) -> bool {
@@ -1948,11 +1951,15 @@ struct Lash {
     /// through this frame's
     root: Vector3<f64>,
     eye: Vector3<f64>,
+    /// How readily its tip moves against the rest, 1 for a whip's light fall, FLAIL_TIP for a
+    /// flail's heavy head
+    tip: f64,
 }
 
 impl Lash {
-    /// Hanging from `root` down to the ground and lying along it ahead
-    fn hanging(arena: &Arena, root: Vector3<f64>, segment: f64) -> Lash {
+    /// Hanging from `root` down to the ground and lying along it ahead, its tip moving `tip` as
+    /// readily as the rest
+    fn hanging(arena: &Arena, root: Vector3<f64>, segment: f64, tip: f64) -> Lash {
         let view = arena.view;
         let ahead = Vector3::new(view.forward().x, view.forward().y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
         let down = (ahead * 0.35 - Vector3::z()).normalize();
@@ -1962,7 +1969,7 @@ impl Lash {
             let next = [last + down * segment, last + ahead * segment].into_iter().find(|&p| !solid(arena.world, p)).unwrap_or(last + Vector3::new(0.0, 0.0, segment));
             points.push(next);
         }
-        Lash { before: points.clone(), points, segment, root, eye: view.eye }
+        Lash { before: points.clone(), points, segment, root, eye: view.eye, tip }
     }
 
     fn tip(&self) -> Vector3<f64> {
@@ -1995,7 +2002,9 @@ impl Lash {
                     // A critically damped pull, a little under, so it snaps there with a hint of
                     // overshoot
                     let pull = LASH_PULL * strength;
-                    a += (r + offset - p) * pull - (moved / h - carried) * (1.2 * pull.sqrt());
+                    let steer = (r + offset - p) * pull - (moved / h - carried) * (1.2 * pull.sqrt());
+                    // A heavy tip's pulled round as hard, but goes less for it
+                    a += if i == LASH_POINTS - 1 { steer * self.tip } else { steer };
                 }
                 self.before[i] = p;
                 self.points[i] = p + moved + a * h * h;
@@ -2014,8 +2023,10 @@ impl Lash {
                     if i == 0 {
                         self.points[1] -= fix;
                     } else {
-                        self.points[i] += fix * 0.5;
-                        self.points[i + 1] -= fix * 0.5;
+                        // The tip moving as little as it's heavy, the link before it the rest
+                        let give = if i + 1 == LASH_POINTS - 1 { self.tip / (1.0 + self.tip) } else { 0.5 };
+                        self.points[i] += fix * (1.0 - give);
+                        self.points[i + 1] -= fix * give;
                     }
                 }
             }
@@ -2993,11 +3004,25 @@ fn weighted_keys(keys: Vec<(f64, Pose, bool)>, timing: (f64, f64), weight: f64) 
     out
 }
 
+/// Whether a weapon swung in `style` throws a lash out and cracks it, see lash_swing(): a whip, or
+/// a flail, its chain lashed out with its head on the end
+fn lashes(style: Style) -> bool {
+    matches!(style, Style::Lash | Style::Whirl)
+}
+
+/// What a weapon with `profile` can do with its lash, as a whip of that grade can, see LASH_LINE
+/// and the rest. A flail's head is too heavy for a whip's tricks: whatever its rarity it hits all
+/// along the line it's lashed down, and its finisher, whirled round overhead first, all round.
+fn lash_grade(profile: &Profile) -> usize {
+    if profile.style == Style::Whirl { LASH_LINE } else { profile.grade }
+}
+
 /// When a blow of the weapon with `profile` starts coming down and lands, as parts of the whole
-/// swing, for how heavy it swings. A whip's is when its first crack lands, see lash_swing().
+/// swing, for how heavy it swings. A whip's and a flail's is when the first crack lands, see
+/// lash_swing().
 fn blow_times(profile: &Profile, heavy: bool, combo: u8) -> (f64, f64) {
-    if profile.style == Style::Lash {
-        let swing = lash_swing(heavy, combo, profile.grade, weight(profile));
+    if lashes(profile.style) {
+        let swing = lash_swing(heavy, combo, lash_grade(profile), weight(profile));
         return (swing.comes, swing.lands);
     }
     weighted(blow_timing(moves_like(profile.style), profile.heavy, profile.finish, heavy, combo), weight(profile))
@@ -3006,8 +3031,8 @@ fn blow_times(profile: &Profile, heavy: bool, combo: u8) -> (f64, f64) {
 /// The poses a blow of the weapon with `profile` goes through, for animate(), for how heavy it
 /// swings, landing as blow_times() has it
 fn blow_poses(profile: &Profile, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
-    if profile.style == Style::Lash {
-        return lash_swing(heavy, combo, profile.grade, weight(profile)).keys;
+    if lashes(profile.style) {
+        return lash_swing(heavy, combo, lash_grade(profile), weight(profile)).keys;
     }
     let style = moves_like(profile.style);
     let timing = blow_timing(style, profile.heavy, profile.finish, heavy, combo);
@@ -3192,19 +3217,14 @@ fn timing(style: Style, heavy: bool, combo: u8) -> (f64, f64) {
             Style::Punch => (0.3, 0.45),
             // A war pick's two-handed drive, held a beat at the top
             Style::Pick => (0.5, 0.62),
-            // Time for the lash to go round in a loop overhead first
-            Style::Lash => (0.5, 0.6),
-            Style::Whirl => (0.3, 0.5),
+            // Time for the lash, or a flail's chain, to go round in a loop overhead first
+            Style::Lash | Style::Whirl => (0.5, 0.6),
             _ => (0.4, 0.52),
         };
     }
     match (style, heavy) {
-        // A flail whirled round lands as its head comes round in front, or is brought down
-        // overhead
-        (Style::Whirl, false) => (0.3, 0.5),
-        (Style::Whirl, true) => (0.45, 0.6),
-        // A whip's wound back slowly and snapped forward fast
-        (Style::Lash, false) => (0.3, 0.4),
+        // A whip's, and a flail's chain, wound back slowly and snapped forward fast
+        (Style::Lash | Style::Whirl, false) => (0.3, 0.4),
         (Style::Stab | Style::Thrust, false) => (0.25, 0.4),
         (Style::Stab | Style::Thrust, true) => (0.35, 0.5),
         (Style::Smash, false) => (0.4, 0.58),
@@ -3232,8 +3252,9 @@ fn swing(style: Style, heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
     if style == Style::Lash {
         return lash_keys(heavy, combo, LASH_DOUBLE);
     }
+    // A flail's lashed out as a whip of the first grade is, see lash_grade()
     if style == Style::Whirl {
-        return whirl_keys(heavy, combo);
+        return lash_keys(heavy, combo, LASH_LINE);
     }
     if matches!(style, Style::Fan | Style::Punch | Style::Pole) {
         return newer_swing(style, heavy, combo);
@@ -3678,33 +3699,6 @@ fn pick_swing(heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
     }
 }
 
-/// A flail's swing, for swing(). A light blow whirls it right round: wound back out to the right
-/// and up, swept round through in front as it lands, on out to the left and round behind, then
-/// brought back up from below. The second goes the other way round. A heavy one's raised and
-/// brought down overhead, as a hammer's is.
-fn whirl_keys(heavy: bool, combo: u8) -> Vec<(f64, Pose, bool)> {
-    if heavy {
-        return swing(Style::Smash, true, 0);
-    }
-    let (comes, lands) = timing(Style::Whirl, false, combo);
-    let flip = |p: Pose| if combo == 1 { mirrored(&p) } else { p };
-    let wound = flip(pose([0.42, 0.28, -0.12], [0.75, -0.25, 0.6], [0.3, 1.0, 0.0]));
-    let right = flip(pose([0.5, 0.36, -0.22], [0.92, 0.3, 0.2], [-0.3, 1.0, 0.0]));
-    let middle = flip(pose([0.05, 0.62, -0.22], [0.08, 0.99, 0.08], [-1.0, 0.1, 0.0]));
-    let left = flip(pose([-0.55, 0.36, -0.28], [-0.92, 0.32, 0.1], [-0.3, -1.0, 0.0]));
-    let behind = flip(pose([-0.7, 0.12, -0.34], [-0.85, -0.45, 0.1], [0.4, -1.0, 0.0]));
-    let below = flip(pose([0.32, 0.3, -0.7], [0.0, 0.5, -0.85], [1.0, 0.0, 0.0]));
-    vec![
-        (comes * 0.45, wound, false),
-        (comes, right, false),
-        (lands, middle, true),
-        (lands + 0.13, left, false),
-        (lands + 0.22, behind, false),
-        // Gone round behind, out of sight, and back up from below
-        (lands + 0.23, below, false),
-    ]
-}
-
 /// The poses of a heavy blow that goes its own way, `move_`, for a weapon swung in `style`, for
 /// animate(): each gathered a moment before it goes, so it reads as heavy, and carried on through
 /// after it lands rather than stopping dead
@@ -4037,9 +4031,24 @@ fn lash_cracks(heavy: bool, combo: u8, grade: usize) -> Vec<Crack> {
 
 /// How a whip's lash is steered through a special attack, crack by crack, to go with
 /// special_move(): flung out at what it's thrown round, cracked down onto the ground, swept round
-/// low, or caught on something to swing from. The rest leave the lash to follow the hand.
-fn special_cracks(special: Special) -> Vec<Crack> {
+/// low, or caught on something to swing from. The rest leave the lash to follow the hand. A
+/// flail's chain, `style` Whirl, is lashed out as its move lets go, whirled round overhead first
+/// if there's time.
+fn special_cracks(special: Special, style: Style) -> Vec<Crack> {
     let crack = |from: f64, at: f64, wind: Wind, hold: f64| Crack { from, at, wind, hold, sweep: 0.0 };
+    if style == Style::Whirl {
+        let (_, keys) = special_move(special, Kind::Melee, style);
+        let Some(at) = keys.iter().find(|k| k.2).map(|k| k.0) else {
+            return Vec::new();
+        };
+        let wind = (at - 0.12).max(0.0);
+        let mut cracks = Vec::new();
+        if wind > 0.25 {
+            cracks.push(crack(0.04, wind - 0.04, Wind::Twirl((wind * 4.0).round().max(1.0)), 0.0));
+        }
+        cracks.push(crack(wind, at, Wind::Back([0.1, -0.55, 0.85]), 0.1));
+        return cracks;
+    }
     match special {
         Special::LassoPull => vec![crack(0.04, 0.42, Wind::Whirl, 0.22)],
         Special::CoilBind => vec![crack(0.1, 0.36, Wind::Back([0.1, -0.5, 0.86]), 0.3)],
@@ -6231,9 +6240,11 @@ impl Combat {
                             Style::Reap => (if heavy || finisher { Sound::HeavySwing } else { Sound::Swing }, 0.75),
                             // A thin, high whistle as the lash comes round. It cracks in lash().
                             Style::Lash => (Sound::Swing, if heavy || finisher { 1.25 } else { 1.45 }),
-                            // A flail's chain whirring round, its head humming through the air
+                            // A flail's chain whirring round overhead, or its head rushing out on
+                            // it as it's lashed, deep. It cracks in lash().
                             Style::Whirl if heavy => (Sound::HeavySwing, 0.75),
-                            Style::Whirl => (Sound::Whirr, if finisher { 0.85 } else { 1.0 }),
+                            Style::Whirl if finisher => (Sound::Whirr, 0.85),
+                            Style::Whirl => (Sound::Swing, 0.95),
                             // A fan's quick hiss, a katar's punch, a naginata's long whoosh
                             Style::Fan => (Sound::Swing, if heavy || finisher { 1.1 } else { 1.35 }),
                             Style::Punch => (Sound::Stab, if heavy || finisher { 0.95 } else { 1.2 }),
@@ -6245,6 +6256,10 @@ impl Combat {
                         // Lower the heavier it swings
                         let deeper = 1.0 - 0.08 * weight(&profile) as f32;
                         self.cues.push(Cue::here(sound, if finisher { 0.75 } else { 0.6 }).pitched(pitch * deeper * if finisher { 0.9 } else { 1.0 }));
+                        // A flail's links rattling as its chain's thrown out
+                        if style == Style::Whirl {
+                            self.cues.push(Cue::here(Sound::Chain, 0.35).pitched(1.35));
+                        }
                     }
                     let before = t;
                     let t = t + dt;
@@ -6284,7 +6299,7 @@ impl Combat {
                         // A heavy blow that winds up longer takes a little longer all told, and so
                         // does a rare whip's finisher, twirling its lash round after it cracks
                         let gather = if heavy && matches!(profile.heavy, Heavy::Heave | Heavy::Twirl | Heavy::Overhead | Heavy::Lunge) { 1.12 } else { 1.0 };
-                        let stretch = if profile.style == Style::Lash { lash_swing(heavy, combo, profile.grade, weight(&profile)).stretch } else { 1.0 };
+                        let stretch = if lashes(profile.style) { lash_swing(heavy, combo, lash_grade(&profile), weight(&profile)).stretch } else { 1.0 };
                         let length = (if heavy { 1.6 * gather } else if finisher { 1.25 } else { 1.0 }) * stretch / (profile.stat("attackSpeed") * speedup).max(0.1);
                         // Light blows go one way, then another, then finish with a harder one. A
                         // maul's all come down overhead: a light one, then a crushing one.
@@ -11680,7 +11695,7 @@ impl Combat {
     /// right in front of the eye, so it's kept small.
     fn melee(&mut self, arena: &mut Arena, profile: &Rc<Profile>, heavy: bool, power: f64, finisher: bool) {
         self.close = true;
-        if profile.style == Style::Lash {
+        if lashes(profile.style) {
             self.lash(arena, profile, heavy, power, finisher);
         } else {
             self.blade(arena, profile, heavy, power, finisher);
@@ -11700,15 +11715,12 @@ impl Combat {
         // takes in a wide arc, and a finisher turned right round everything round about.
         let sweep = finisher && profile.style == Style::Thrust && profile.finish == Finish::Style;
         let spun = finisher && profile.finish == Finish::Spin;
-        // A flail whirled round hits all round, but brought down overhead only what's in front
         let cone = if spun {
             -1.0
         } else if lunge {
             0.85
         } else if sweep {
             profile.cone - 0.45
-        } else if heavy && profile.style == Style::Whirl {
-            0.5
         } else {
             (profile.cone + if heavy { 0.15 } else { 0.0 }).min(0.95)
         };
@@ -11733,7 +11745,6 @@ impl Combat {
             Style::Chop | Style::Reap => 0.85,
             Style::Stab => 1.25,
             Style::Thrust => 1.1,
-            Style::Whirl => 0.9,
             Style::Quake => 0.6,
             Style::Fan => 1.2,
             Style::Punch => 1.3,
@@ -11761,51 +11772,8 @@ impl Combat {
                 s.staggered = s.staggered.max(0.6);
             }
         }
-        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
-        // A flail whirled round leaves a ring of its trail all round
-        if profile.style == Style::Whirl && !heavy && power >= 1.0 {
-            let look = Element::look(profile.element);
-            let r = profile.stat("range").max(1.5) * 0.8;
-            for k in 0..30 {
-                let a = k as f64 / 30.0 * TAU;
-                let at = feet + Vector3::new(a.cos() * r * vpm, a.sin() * r * vpm, 1.1 * vpm);
-                self.fine(at, Vector3::new(-a.sin(), a.cos(), 0.0) * 3.0 * vpm, look, 0.25, 0.0);
-            }
-        }
-        // Cleaving on into what's next to the first thing it hit
-        if power >= 1.0
-            && profile.has(Effect::Cleave)
-            && let Some(&(_, first)) = targets.first()
-        {
-            let center = arena.animals[first].center(vpm as u32);
-            let r = profile.param(Effect::Cleave, "radius", 2.0) * profile.stat("area").max(1.0);
-            let share = profile.param(Effect::Cleave, "power", 0.5) * profile.potency(Effect::Cleave).max(1.0);
-            let others: Vec<usize> = (0..arena.animals.len())
-                .filter(|&j| !targets.iter().any(|&(_, t)| t == j) && arena.animals[j].health > 0.0 && !arena.animals[j].look.is_pet())
-                .filter(|&j| (arena.animals[j].center(vpm as u32) - center).norm() < (r + arena.animals[j].look.body().1) * vpm)
-                .collect();
-            let look = Element::look(profile.element);
-            for j in others {
-                let there = arena.animals[j].center(vpm as u32);
-                for k in 1..8 {
-                    self.fine(center.lerp(&there, k as f64 / 8.0), Vector3::zeros(), look, 0.2, 0.0);
-                }
-                self.sparks(there, 5, 2.5, Element::look(None), 0.8, 0.3);
-                self.strike(arena, profile, j, Blow { damage: base * share, crit: false, heavy, from: center, depth: 1, element: profile.element });
-            }
-        }
-        // Heavy blows drag what's round in, and leave a pool where they land
-        if power >= 1.0
-            && let Some(&(_, first)) = targets.first()
-        {
-            let at = arena.animals[first].center(vpm as u32);
-            if (heavy || finisher) && profile.has(Effect::Vortex) {
-                self.vortex(arena, profile, at);
-            }
-            if profile.has(Effect::Pool) {
-                self.leave_pool(arena, profile, at, base);
-            }
-        }
+        self.cleave_on(arena, profile, &targets, base, heavy, power);
+        self.drag_and_pool(arena, profile, &targets, base, heavy || finisher, power);
         // The blade stops dead a moment as it bites, jolts back, and a big one shakes the view: a
         // heavy weapon's longer and harder, a light one's hardly at all
         if !targets.is_empty() && power >= 1.0 {
@@ -11817,40 +11785,14 @@ impl Combat {
             self.shake = self.shake.max(if big { 0.6 } else { 0.25 } * (1.0 + 0.35 * w.max(0.0)));
         }
         let flat = Vector3::new(forward.x, forward.y, 0.0);
-        // A maul's every blow, a flail brought down overhead, and with the shockwave effect a
-        // heavy blow or a finisher, send a ring rolling out along the ground from where they
-        // come down, passing over what the blow itself hit
+        // A maul's every blow, and with the shockwave effect a heavy blow or a finisher, send a ring
+        // rolling out along the ground from where they come down, passing over what the blow itself
+        // hit
         let quake = profile.style == Style::Quake;
-        let slam = heavy && profile.style == Style::Whirl;
         let shockwave = (heavy || finisher) && profile.has(Effect::Shockwave);
-        if power >= 1.0 && (quake || slam || shockwave) && flat.norm() > 0.2 {
-            let ahead = view.eye + flat.normalize() * reach * 0.6;
-            let down = Vector3::new(0.0, 0.0, -2.8 * vpm);
-            if let Some(t) = solid_along(arena.world, ahead, ahead + down) {
-                let at = ahead + down * t;
-                let area = profile.stat("area").max(0.7) * (1.0 + 0.3 * profile.potency(Effect::Shockwave)).sqrt();
-                let (reach, share) = if quake {
-                    (if heavy { 5.0 } else if finisher { 4.0 } else { 2.8 }, if heavy { 0.8 } else { 0.6 })
-                } else if slam {
-                    (3.2, 0.6)
-                } else {
-                    (profile.param(Effect::Shockwave, "radius", 4.0), profile.param(Effect::Shockwave, "power", 0.5))
-                };
-                let hit: Vec<u32> = targets.iter().map(|&(_, i)| arena.animals[i].id).collect();
-                self.ripple(profile, at, reach * area, base * share, hit, true, quake && (heavy || finisher));
-                let big = heavy || finisher;
-                self.cues.push(Cue::at(Sound::Slam, at, if big { 1.0 } else { 0.75 }).pitched(if big { 0.8 } else { 1.0 }));
-                if quake && heavy {
-                    self.cues.push(Cue::at(Sound::Quake, at, 0.7).pitched(1.2));
-                    self.craters.push((at, 0.35));
-                }
-                self.sparks(at, 12, 2.5, Element::look(profile.element), 1.0, 0.4);
-                for _ in 0..10 {
-                    let v = (self.any_direction() + Vector3::new(0.0, 0.0, 1.5)) * 3.0 * vpm;
-                    self.drop(at, v, DROP_MUD, 0.9);
-                }
-                self.shake = self.shake.max(if big { 0.9 } else { 0.55 });
-            }
+        if power >= 1.0 && (quake || shockwave) && flat.norm() > 0.2 {
+            let hit: Vec<u32> = targets.iter().map(|&(_, i)| arena.animals[i].id).collect();
+            self.ground_wave(arena, profile, view.eye + flat.normalize() * reach * 0.6, hit, base, heavy, finisher);
         }
         // A heavy hammer blow dents the ground in front, knocking back what's around it, and a
         // finishing one a little
@@ -11885,18 +11827,101 @@ impl Combat {
         }
     }
 
+    /// Cleaving on into what's next to the first of `targets` a blow hit, for some of its `base`
+    /// damage
+    fn cleave_on(&mut self, arena: &mut Arena, profile: &Rc<Profile>, targets: &[(f64, usize)], base: f64, heavy: bool, power: f64) {
+        let vpm = arena.view.vpm;
+        if power >= 1.0
+            && profile.has(Effect::Cleave)
+            && let Some(&(_, first)) = targets.first()
+        {
+            let center = arena.animals[first].center(vpm as u32);
+            let r = profile.param(Effect::Cleave, "radius", 2.0) * profile.stat("area").max(1.0);
+            let share = profile.param(Effect::Cleave, "power", 0.5) * profile.potency(Effect::Cleave).max(1.0);
+            let others: Vec<usize> = (0..arena.animals.len())
+                .filter(|&j| !targets.iter().any(|&(_, t)| t == j) && arena.animals[j].health > 0.0 && !arena.animals[j].look.is_pet())
+                .filter(|&j| (arena.animals[j].center(vpm as u32) - center).norm() < (r + arena.animals[j].look.body().1) * vpm)
+                .collect();
+            let look = Element::look(profile.element);
+            for j in others {
+                let there = arena.animals[j].center(vpm as u32);
+                for k in 1..8 {
+                    self.fine(center.lerp(&there, k as f64 / 8.0), Vector3::zeros(), look, 0.2, 0.0);
+                }
+                self.sparks(there, 5, 2.5, Element::look(None), 0.8, 0.3);
+                self.strike(arena, profile, j, Blow { damage: base * share, crit: false, heavy, from: center, depth: 1, element: profile.element });
+            }
+        }
+    }
+
+    /// A heavy blow or a finisher, `big`, dragging what's round the first of `targets` it hit in,
+    /// and any blow leaving a pool where it lands, as its effects have it
+    fn drag_and_pool(&mut self, arena: &mut Arena, profile: &Rc<Profile>, targets: &[(f64, usize)], base: f64, big: bool, power: f64) {
+        let vpm = arena.view.vpm;
+        if power >= 1.0
+            && let Some(&(_, first)) = targets.first()
+        {
+            let at = arena.animals[first].center(vpm as u32);
+            if big && profile.has(Effect::Vortex) {
+                self.vortex(arena, profile, at);
+            }
+            if profile.has(Effect::Pool) {
+                self.leave_pool(arena, profile, at, base);
+            }
+        }
+    }
+
+    /// A ring rolling out along the ground under `ahead` where a blow came down, passing over what
+    /// it hit itself, `hit`: a maul's every blow, harder heavy or finishing, a flail's head lashed
+    /// down onto the ground heavy, and with the shockwave effect any other heavy blow or finisher
+    #[allow(clippy::too_many_arguments)]
+    fn ground_wave(&mut self, arena: &mut Arena, profile: &Rc<Profile>, ahead: Vector3<f64>, hit: Vec<u32>, base: f64, heavy: bool, finisher: bool) {
+        let vpm = arena.view.vpm;
+        let quake = profile.style == Style::Quake;
+        let slam = heavy && profile.style == Style::Whirl;
+        let down = Vector3::new(0.0, 0.0, -2.8 * vpm);
+        if let Some(t) = solid_along(arena.world, ahead, ahead + down) {
+            let at = ahead + down * t;
+            let area = profile.stat("area").max(0.7) * (1.0 + 0.3 * profile.potency(Effect::Shockwave)).sqrt();
+            let (reach, share) = if quake {
+                (if heavy { 5.0 } else if finisher { 4.0 } else { 2.8 }, if heavy { 0.8 } else { 0.6 })
+            } else if slam {
+                (3.2, 0.6)
+            } else {
+                (profile.param(Effect::Shockwave, "radius", 4.0), profile.param(Effect::Shockwave, "power", 0.5))
+            };
+            self.ripple(profile, at, reach * area, base * share, hit, true, quake && (heavy || finisher));
+            let big = heavy || finisher;
+            self.cues.push(Cue::at(Sound::Slam, at, if big { 1.0 } else { 0.75 }).pitched(if big { 0.8 } else { 1.0 }));
+            if quake && heavy {
+                self.cues.push(Cue::at(Sound::Quake, at, 0.7).pitched(1.2));
+                self.craters.push((at, 0.35));
+            }
+            self.sparks(at, 12, 2.5, Element::look(profile.element), 1.0, 0.4);
+            for _ in 0..10 {
+                let v = (self.any_direction() + Vector3::new(0.0, 0.0, 1.5)) * 3.0 * vpm;
+                self.drop(at, v, DROP_MUD, 0.9);
+            }
+            self.shake = self.shake.max(if big { 0.9 } else { 0.55 });
+        }
+    }
+
     /// A whip cracking, for melee(). What it hits grows with its grade, see LASH_LINE and the rest:
     /// the first thing along the line it cracks down, everything along it, a wide fan, or all
     /// round. A double crack's second crack comes back through here as an echo, with `power` under
-    /// 1 as for other echoes.
+    /// 1 as for other echoes. A flail's head lashed out on its chain hits as a whip of the first
+    /// grade does, everything along its line, see lash_grade(), but its finisher, whirled round
+    /// overhead first, all round; brought down heavy it sends a ring rolling out along the ground
+    /// from where its head lands.
     fn lash(&mut self, arena: &mut Arena, profile: &Rc<Profile>, heavy: bool, power: f64, finisher: bool) {
         let view = arena.view;
         let vpm = view.vpm;
-        let grade = profile.grade;
+        let grade = lash_grade(profile);
+        let flail = profile.style == Style::Whirl;
         let forward = view.forward();
         let reach = profile.stat("range").max(1.0) * vpm;
         let snare = heavy && grade >= LASH_SNARE;
-        let circle = finisher && grade >= LASH_CIRCLE;
+        let circle = finisher && (flail || grade >= LASH_CIRCLE);
         let fan = !snare && !circle && grade >= LASH_FAN;
         // Where the tip of the lash is as it cracks
         let tip = self.lash.as_ref().map_or_else(|| view.eye + view.rotation * Vector3::new(0.12, 1.5, -0.15) * vpm, Lash::tip);
@@ -11927,7 +11952,7 @@ impl Combat {
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
         let most = if snare || grade < LASH_LINE {
             1
-        } else if circle {
+        } else if circle && !flail {
             profile.targets * 2
         } else {
             profile.targets + heavy as usize + finisher as usize
@@ -11958,7 +11983,8 @@ impl Combat {
             let center = arena.animals[i].center(vpm as u32);
             let at = center + (view.eye - center).normalize() * arena.animals[i].look.body().1 * vpm;
             if k == 0 {
-                self.cues.push(Cue::at(Sound::Hit, at, if heavy || finisher { 0.9 } else { 0.7 }).pitched(1.2));
+                // A flail's iron head landing a deeper thud than a whip's lash
+                self.cues.push(Cue::at(Sound::Hit, at, if heavy || finisher { 0.9 } else { 0.7 }).pitched(if flail { 0.9 } else { 1.2 }));
             }
             let strength = 1.0 + 0.5 * (crit as u8 + heavy as u8 + finisher as u8 + at_tip as u8) as f64;
             self.sparks(at, (5.0 * strength) as usize, 3.0, Element::look(None), 0.8, 0.3);
@@ -11994,7 +12020,13 @@ impl Combat {
         self.flashes.push(Flash { position: tip, color: profile.element.map_or([1.0, 0.92, 0.75], Element::light), reach: 2.5 + 1.2 * w.max(0.0), life: 0.07, lifetime: 0.07 });
         let short = |to: Vector3<f64>| (to - tip).norm() > 0.75 * vpm;
         let loud = if heavy || finisher { 0.9 } else { 0.7 } * (1.0 + 0.15 * w.max(0.0));
-        self.cues.push(Cue::at(Sound::Crack, tip, loud as f32).pitched(1.55 - 0.28 * w as f32 + 0.2 * random(&mut self.rng) as f32));
+        if flail {
+            // A flail's chain snapping straight behind its head: a whip's crack, and its links
+            self.cues.push(Cue::at(Sound::WhipCrack, tip, loud as f32).pitched(1.1 - 0.15 * w as f32 + 0.15 * random(&mut self.rng) as f32));
+            self.cues.push(Cue::at(Sound::Chain, tip, 0.5).pitched(1.2));
+        } else {
+            self.cues.push(Cue::at(Sound::Crack, tip, loud as f32).pitched(1.55 - 0.28 * w as f32 + 0.2 * random(&mut self.rng) as f32));
+        }
         if circle {
             let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x);
             for k in 0..28 {
@@ -12022,6 +12054,16 @@ impl Combat {
             self.lash_line(tip, end, look);
         }
         self.cap_sparks();
+        // A flail's head cleaves on, drags in and pools as a blade's blow does, and brought down
+        // heavy, or with the shockwave effect, sends a ring out from where it lands
+        if flail {
+            self.cleave_on(arena, profile, &hits, base, heavy, power);
+            self.drag_and_pool(arena, profile, &hits, base, heavy || finisher, power);
+            if power >= 1.0 && (heavy || ((heavy || finisher) && profile.has(Effect::Shockwave))) {
+                let hit: Vec<u32> = hits.iter().map(|&(_, i)| arena.animals[i].id).collect();
+                self.ground_wave(arena, profile, tip + Vector3::new(0.0, 0.0, 0.8 * vpm), hit, base, heavy, finisher);
+            }
+        }
 
         // A heavy whip's crack bites longer and shakes the view more, as a heavy blade's does
         if !hits.is_empty() && power >= 1.0 {
@@ -14946,10 +14988,12 @@ impl Combat {
         let vpm = view.vpm;
         let segment = (weapon.profile.stat("range").max(1.0) - LASH_SHORT).max(1.5) * vpm / (LASH_POINTS - 1) as f64;
         let root = self.held_at(weapon, view, look.root);
-        // Laid out afresh when first held, if it's grown, or if the hand jumped far
-        let fresh = self.lash.as_ref().is_none_or(|l| (l.segment - segment).abs() > 1e-6 || (l.root - root).norm() > 2.5 * vpm);
+        // A flail's head heavy on the end of its chain
+        let tip = if look.head.is_some() { FLAIL_TIP } else { 1.0 };
+        // Laid out afresh when first held, if it's grown, if it's another, or if the hand jumped far
+        let fresh = self.lash.as_ref().is_none_or(|l| (l.segment - segment).abs() > 1e-6 || l.tip != tip || (l.root - root).norm() > 2.5 * vpm);
         if fresh {
-            self.lash = Some(Lash::hanging(arena, root, segment));
+            self.lash = Some(Lash::hanging(arena, root, segment, tip));
         }
         // In slow motion with the swing as a blow lands
         let frame = dt.min(0.05);
@@ -14973,8 +15017,8 @@ impl Combat {
     /// whatever's there or full stretch. It's held out a moment, then let go.
     fn lash_guide(&self, arena: &Arena, weapon: &Weapon, root: Vector3<f64>, segment: f64) -> Option<Vec<(Vector3<f64>, f64)>> {
         let (t, length, cracks, special) = match self.action {
-            Action::Swing { t, length, heavy, combo, .. } => (t, length, lash_swing(heavy, combo, weapon.grade, weight(&weapon.profile)).cracks, false),
-            Action::Special { t, length, special } => (t, length, special_cracks(special), true),
+            Action::Swing { t, length, heavy, combo, .. } => (t, length, lash_swing(heavy, combo, lash_grade(&weapon.profile), weight(&weapon.profile)).cracks, false),
+            Action::Special { t, length, special } => (t, length, special_cracks(special, weapon.profile.style), true),
             _ => return None,
         };
         let view = arena.view;
@@ -15007,9 +15051,13 @@ impl Combat {
         let (mut aim, distance) = if t < at - lead {
             (view.forward(), f64::MAX)
         } else {
+            let reach = weapon.profile.stat("range").max(1.0) * view.vpm;
+            let slam = weapon.profile.style == Style::Whirl && matches!(self.action, Action::Swing { heavy: true, .. });
             let target = match self.lash_aim {
                 Some(p) if special => p,
-                _ => self.crack_point(arena, weapon.profile.stat("range").max(1.0) * view.vpm),
+                // A flail's head brought down heavy onto the ground ahead
+                _ if slam => self.slam_point(arena, reach),
+                _ => self.crack_point(arena, reach),
             };
             ((target - root).try_normalize(1e-9)?, (target - root).norm())
         };
@@ -15078,6 +15126,23 @@ impl Combat {
         out
     }
 
+    /// Where a flail reaching `reach` voxels brings its head down heavy: on what's along the
+    /// crosshair if it's nearer, otherwise on the ground ahead at most of its stretch, or out at
+    /// full stretch if there's no ground there
+    fn slam_point(&self, arena: &Arena, reach: f64) -> Vector3<f64> {
+        let view = arena.view;
+        let vpm = view.vpm;
+        let crack = self.crack_point(arena, reach);
+        let flat = Vector3::new(view.forward().x, view.forward().y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::y);
+        let ahead = view.eye + flat * reach * 0.7;
+        let down = Vector3::new(0.0, 0.0, -3.0 * vpm);
+        let ground = solid_along(arena.world, ahead, ahead + down).map(|t| ahead + down * t + Vector3::new(0.0, 0.0, 0.15 * vpm));
+        match ground {
+            Some(g) if (g - view.eye).norm() < (crack - view.eye).norm() => g,
+            _ => crack,
+        }
+    }
+
     /// Where a whip reaching `reach` voxels cracks: at the first thing along the crosshair, or out
     /// at full stretch
     fn crack_point(&self, arena: &Arena, reach: f64) -> Vector3<f64> {
@@ -15121,10 +15186,11 @@ impl Combat {
         let profile = &weapon.profile;
         let look = Element::look(profile.element);
         let swinging = match self.action {
-            // A whip's lash from as it's thrown till it's let go, each crack, and its twirl
-            Action::Swing { t, length, heavy, combo, .. } if profile.style == Style::Lash => {
+            // A whip's lash or a flail's chain from as it's thrown till it's let go, each crack, and
+            // its twirl
+            Action::Swing { t, length, heavy, combo, .. } if lashes(profile.style) => {
                 let f = t / length;
-                lash_swing(heavy, combo, weapon.grade, weight(profile)).cracks.iter().any(|c| match c.wind {
+                lash_swing(heavy, combo, lash_grade(profile), weight(profile)).cracks.iter().any(|c| match c.wind {
                     Wind::Twirl(_) => (c.from..c.at).contains(&f),
                     _ => (c.at - 0.12..c.at + 0.08).contains(&f),
                 })
@@ -15280,8 +15346,8 @@ impl Combat {
                     Style::Reap => pose([0.31, 0.4, -0.4], [-0.2, 0.45, 0.86], [-1.0, 0.0, 0.25]),
                     // A whip held out a little raised, its lash hanging from the end of the handle
                     Style::Lash => grip(LASH_REST.0, LASH_REST.1),
-                    // A flail held low, its head out ahead on its chain
-                    Style::Whirl => pose([0.3, 0.42, -0.32], [-0.1, 0.88, 0.46], [1.0, 0.0, 0.0]),
+                    // A flail held low, its chain hanging from the end of its haft
+                    Style::Whirl => grip([0.3, 0.44, -0.27], [-0.1, 0.8, 0.55]),
                     // A war fan held up open at the side, its leaf to be seen; a katar's fist
                     // ready, its point on ahead; a naginata levelled as a spear is
                     Style::Fan => pose([0.3, 0.48, -0.25], [-0.15, 0.45, 0.88], [1.0, 0.0, 0.1]),
@@ -15292,8 +15358,8 @@ impl Combat {
                     _ => pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]),
                 };
                 match self.action {
-                    // A whip's handle as heavy as it cracks, see lash_swing()
-                    Action::Swing { t, length, heavy, combo, .. } if style == Style::Lash => animate(&rest, &blow_poses(&weapon.profile, heavy, combo), t / length),
+                    // A whip's handle, or a flail's haft, as heavy as it cracks, see lash_swing()
+                    Action::Swing { t, length, heavy, combo, .. } if lashes(style) => animate(&rest, &blow_poses(&weapon.profile, heavy, combo), t / length),
                     // As heavy as it swings, and a rare one twirled in the hand as it follows
                     // through, see twirl()
                     Action::Swing { t, length, heavy, combo, .. } => {
@@ -15660,6 +15726,10 @@ impl Combat {
         if frames <= 1 {
             return 0;
         }
+        // A flail's haft, its chain and head drawn on their own, once its chain's hanging from it
+        if weapon.look.lash.as_ref().is_some_and(|l| l.head.is_some()) {
+            return if self.lash.is_some() { 1 } else { 0 };
+        }
         match weapon.profile.build {
             // A tome's open as it conjures
             Build::None if weapon.profile.style == Style::Summon => matches!(self.action, Action::Cast { .. } | Action::Special { .. }) as usize,
@@ -15890,7 +15960,11 @@ impl Combat {
             // A whip's lash, a stretch at a time from one of its points to the next, each drawn
             // with the segment model as near as thick as it should be there for how long it is,
             // tapering to the cracker at its tip
-            if let (Some(lash), Some(look)) = (&self.lash, &look.lash) {
+            // A flail's chain the same, its head on the end in place of a cracker; not while the head's
+            // flung out round the player on a chain of its own, see orbit()
+            let weapon_look = look;
+            let orbiting = look.lash.as_ref().is_some_and(|l| l.head.is_some()) && self.zones.iter().any(|z| z.kind == ZoneKind::Orbit);
+            if let (Some(lash), Some(look), false) = (&self.lash, &look.lash, orbiting) {
                 // A little thicker than it really is, so it still shows out at full stretch
                 let thick = look.thickness.max(0.009) * 1.4;
                 for i in 0..LASH_POINTS - 1 {
@@ -15901,7 +15975,7 @@ impl Combat {
                     }
                     let rotation = UnitQuaternion::rotation_between(&Vector3::z(), &((b - a) / length)).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI));
                     let meters = length / vpm;
-                    let index = if i == LASH_POINTS - 2 {
+                    let index = if i == LASH_POINTS - 2 && look.head.is_none() {
                         LASH_CRACKERS + look.cracker
                     } else {
                         let u = (i as f64 + 0.5) / (LASH_POINTS - 1) as f64;
@@ -15912,6 +15986,13 @@ impl Combat {
                     };
                     let (model, shape) = self.model_at(index);
                     out.push(place(model, shape, LASH_RES, Vector3::zeros(), a, rotation, vpm, meters, HELD));
+                }
+                // The head on the end, on along the way the last link points
+                if let Some(head) = look.head.filter(|&h| h < weapon_look.frames.len()) {
+                    let (a, b) = (lash.points[LASH_POINTS - 2], lash.points[LASH_POINTS - 1]);
+                    let way = (b - a).try_normalize(1e-9).unwrap_or_else(|| -Vector3::z());
+                    let rotation = UnitQuaternion::rotation_between(&Vector3::z(), &way).unwrap_or_else(|| UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI));
+                    out.push(place(first_model + head as u32, &weapon_look.frames[head], weapon_look.res, Vector3::zeros(), b, rotation, vpm, 1.0, HELD));
                 }
             }
         }
@@ -17126,9 +17207,9 @@ mod tests {
     #[test]
     fn swings_keep_moving_into_the_blow() {
         let rest = pose([0.3, 0.46, -0.27], [-0.05, 0.62, 0.78], [0.0, 1.0, 0.0]);
-        // Not a whip: its hand checks as it cracks, which is what snaps the lash out
+        // Not a whip or a flail: its hand checks as it cracks, which is what snaps the lash out
         let mut blows: Vec<(String, Vec<(f64, Pose, bool)>, (f64, f64))> = Vec::new();
-        for style in STYLES.into_iter().filter(|&s| s != Style::Lash) {
+        for style in STYLES.into_iter().filter(|&s| !lashes(s)) {
             for heavy in [false, true] {
                 for combo in 0..=finisher(style) {
                     blows.push((format!("{style:?} heavy {heavy} combo {combo}"), swing(style, heavy, combo), timing(style, heavy, combo)));
@@ -17268,22 +17349,110 @@ mod tests {
         assert!(arcs[4] > arcs[3] * 2.0, "{arcs:?}");
     }
 
+    /// A flail's chain lashes out as a whip's does: idle it hangs slack from the haft and sways as
+    /// the player walks; swung, the head snaps out past where its old whirl reached, hits at the
+    /// tip what's along the line it's lashed down, not what's behind, cracks as it lands, then falls
+    /// and follows through; brought down heavy, it lands on the ground ahead and a ring rolls out
     #[test]
-    fn a_flail_whirls_round_through_in_front_as_it_lands() {
-        let rest = pose([0.3, 0.42, -0.32], [-0.1, 0.88, 0.46], [1.0, 0.0, 0.0]);
-        for combo in 0..=FINISHER {
-            let keys = swing(Style::Whirl, false, combo);
-            let (comes, lands) = timing(Style::Whirl, false, combo);
-            let along = |f: f64| animate(&rest, &keys, f).turn * Vector3::z();
-            // Out to one side as it comes round, straight ahead as it lands, out the other side after
-            let (before, at, after) = (along(comes), along(lands), along(lands + 0.13));
-            assert!(at.y > 0.9, "combo {combo}: pointing {at:?} as it lands");
-            assert!(before.x * after.x < -0.5, "combo {combo}: from {before:?} round to {after:?}");
+    fn a_flail_lashes_out_as_a_whip_does() {
+        let library = crate::weapons::Library::load();
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(48.0, 10.0, 4.0) * vpm;
+        let weapon = library.generate(5, library.family("flail"), 0.0);
+        let reach = weapon.profile.stat("range");
+        assert!(reach > 3.4, "a whip's reach, not {reach:.2}");
+        let dt = 1.0 / 120.0;
+        // A bandit at `ahead` meters in front, one as far behind, the flail swung `heavy` or not
+        // after it's come up and settled; how much each lost, how far out the tip got, whether it
+        // cracked, and how many rings rolled out
+        let swing = |ahead: f64, heavy: bool| {
+            let mut animals = bandit_ahead(&world, feet, 0.0);
+            let mut behind = bandit_ahead(&world, feet, 0.0);
+            animals[0].position = feet + Vector3::new(0.0, ahead, 0.0) * vpm;
+            behind[0].position = feet - Vector3::new(0.0, ahead, 0.0) * vpm;
+            animals.truncate(1);
+            animals.push(behind.swap_remove(0));
+            let health: Vec<f64> = animals.iter().map(|a| a.health).collect();
+            let mut combat = Combat::new(1, 0);
+            let mut view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+            let (mut furthest, mut cracked, mut slack, mut swayed, mut rings) = (0.0f64, false, false, 0.0f64, 0);
+            for frame in 0..(3.2 / dt) as usize {
+                let t = frame as f64 * dt;
+                // Walking on a little first, then standing to swing
+                if t < 0.8 {
+                    view.eye.x += 1.4 * vpm * dt;
+                }
+                let controls = Controls { attack: !heavy && (1.2..1.21).contains(&t), heavy: heavy && (1.2..1.21).contains(&t), ..Default::default() };
+                let before = combat.lash.as_ref().map(|l| l.tip());
+                {
+                    let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm)), water: &water };
+                    combat.update(&mut arena, Some((0, &weapon)), None, controls, dt);
+                }
+                let lash = combat.lash.as_ref().expect("a flail in hand has its chain");
+                if t > 0.5 && t < 0.8 {
+                    swayed = swayed.max(before.map_or(0.0, |b| (lash.tip() - b).norm()));
+                }
+                if (1.0..1.2).contains(&t) {
+                    slack |= lash.tip().z < lash.points[0].z - 0.5 * vpm;
+                }
+                furthest = furthest.max((lash.tip() - view.eye).xy().norm() / vpm);
+                assert!(lash.points.iter().all(|p| p.iter().all(|v| v.is_finite())));
+                cracked |= combat.cues.iter().any(|c| c.sound == Sound::WhipCrack);
+                combat.cues.clear();
+                rings = rings.max(combat.ripples.len());
+            }
+            let lost: Vec<f64> = animals.iter().zip(&health).map(|(a, h)| h - a.health).collect();
+            (lost, furthest, cracked, slack, swayed, rings)
+        };
+        let (lost, furthest, cracked, slack, swayed, _) = swing(reach - 0.6, false);
+        assert!(slack, "hangs slack from the haft before it's swung");
+        assert!(swayed > 0.0, "sways as the player walks");
+        assert!(lost[0] > 0.0 && lost[1] == 0.0, "hits what's ahead, not behind: {lost:?}");
+        assert!(cracked, "cracks as it lands");
+        assert!(furthest > 2.9, "its head snaps out {furthest:.2} m");
+        // Past where its whirl used to reach, nothing's hit up close in front
+        let (far, ..) = swing(reach - 0.3, false);
+        let (near, ..) = swing(1.8, false);
+        assert!(far[0] > near[0], "harder at the tip: {far:?} {near:?}");
+        let (heavy, _, cracked, _, _, rings) = swing(reach - 0.8, true);
+        assert!(heavy[0] > lost[0] && cracked && rings > 0, "heavy: {heavy:?}, {rings} rings");
+    }
+
+    /// Where a flail's head goes through a light, a finishing and a heavy blow, every few frames,
+    /// to look at: cargo test --release flail_lash_path -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn flail_lash_path() {
+        let library = crate::weapons::Library::load();
+        let world = wide_field();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(48.0, 10.0, 4.0) * vpm;
+        let weapon = library.generate(5, library.family("flail"), 0.0);
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm, speed: 0.0, stride: 0.0 };
+        let dt = 1.0 / 60.0;
+        let mut combat = Combat::new(1, 0);
+        let mut animals = Vec::new();
+        let starts = [(0.8, false), (2.2, false), (3.6, false), (5.2, true)];
+        for frame in 0..(7.0 / dt) as usize {
+            let t = frame as f64 * dt;
+            let go = |at: f64| (at..at + dt * 0.5).contains(&t);
+            let controls = Controls { attack: starts.iter().any(|&(at, h)| !h && go(at)), heavy: starts.iter().any(|&(at, h)| h && go(at)), ..Default::default() };
+            let mut arena = Arena { world: &world, animals: &mut animals, view: &view, player: Some(feet), water: &water };
+            combat.update(&mut arena, Some((0, &weapon)), None, controls, dt);
+            let crack = combat.cues.iter().any(|c| c.sound == Sound::WhipCrack);
+            combat.cues.clear();
+            if let (Some(lash), true) = (&combat.lash, t > 0.7 && (frame % 3 == 0 || crack)) {
+                let d = (lash.tip() - view.eye) / vpm;
+                let action = match combat.action {
+                    Action::Swing { t, length, heavy, combo, .. } => format!("{} {combo} {:.2}", if heavy { "heavy" } else { "light" }, t / length),
+                    _ => "idle".into(),
+                };
+                println!("{t:5.2}  tip ahead {:5.2} right {:5.2} up {:5.2}  {action}{}", d.y, d.x, d.z, if crack { "  CRACK" } else { "" });
+            }
         }
-        // The second goes round the other way
-        let first = animate(&rest, &swing(Style::Whirl, false, 0), timing(Style::Whirl, false, 0).0).turn * Vector3::z();
-        let second = animate(&rest, &swing(Style::Whirl, false, 1), timing(Style::Whirl, false, 1).0).turn * Vector3::z();
-        assert!(first.x * second.x < 0.0);
     }
 
     #[test]

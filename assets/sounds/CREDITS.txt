@@ -179,7 +179,7 @@ packs say CC0 on their pages and in their own licence files.
 "whip and crack sound by JayRom01" by JayRom01
   https://freesound.org/people/JayRom01/sounds/615761/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: crack_2.ogg, boom_2.ogg
+  Used in: crack_2.ogg, boom_2.ogg (crack_2.ogg is also the flail's whip crack)
 
 "Fire Ignite.wav by Jo000" by Jo000
   https://freesound.org/people/Jo000/sounds/687010/
@@ -429,7 +429,7 @@ packs say CC0 on their pages and in their own licence files.
 "Whip Crack.m4a by SciFiSounds" by SciFiSounds
   https://freesound.org/people/SciFiSounds/sounds/529925/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: crack_1.ogg, boom_1.ogg, lasso_1.ogg
+  Used in: crack_1.ogg, boom_1.ogg, lasso_1.ogg (crack_1.ogg is also the flail's whip crack)
 
 "FUSE.wav by Seidolon" by Seidolon
   https://freesound.org/people/Seidolon/sounds/372186/
