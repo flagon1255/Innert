@@ -8,8 +8,8 @@ use super::*;
 
 /// At most one town in each TOWN_CELL square, nothing of it further than TOWN_REACH from where
 /// it's planned round, in meters
-const TOWN_CELL: f32 = 500.0;
-const TOWN_REACH: f32 = 100.0;
+pub(super) const TOWN_CELL: f32 = 500.0;
+pub(super) const TOWN_REACH: f32 = 100.0;
 /// How far out from the middle of its square the streets of a town on the land go
 const TOWN_RADIUS: f32 = 28.0;
 /// Half how wide streets are, and how big the stones squares are paved with
@@ -357,6 +357,19 @@ impl Terrain {
                 [px, py, height_at(&self.settings, px, py)]
             }
         }
+    }
+
+    /// The town in one TOWN_CELL square as the roads see it, see roads.rs: the middle of its
+    /// square, where each way out of it leaves the town, and where it all is
+    pub(super) fn town_place(&self, cx: i32, cy: i32, cache: &RiverCache) -> Option<roads::Place> {
+        let t = self.town_in(cx, cy, cache)?;
+        let [x, y, _] = t.square;
+        let doors = match &t.cavern {
+            // Out of the cutting the tunnel comes out of the hill into
+            Some(c) => vec![([x + c.way[0] * (c.mouth + 7.0), y + c.way[1] * (c.mouth + 7.0)], c.way)],
+            None => t.streets.iter().map(|&(way, length)| ([x + way[0] * length, y + way[1] * length], way)).collect(),
+        };
+        Some(roads::Place::new(roads::PlaceKey { castle: false, cx, cy }, &self.settings, [x, y], doors, t.bounds))
     }
 
     /// The town in one TOWN_CELL square, if there's room for one at any of a few spots in it. Some
@@ -823,8 +836,9 @@ impl Terrain {
                     let d = rng.range(t.radius + 6.0, TOWN_RADIUS + 2.0);
                     let (px, py) = (x + a.cos() * d, y + a.sin() * d);
                     let spot = around([px, py], [1.0, 1.0]);
+                    // Nor where a road goes on from the end of a street, see roads.rs
                     let crowded = t.houses.iter().any(|h| overlaps(h.rect(), spot, 3.5))
-                        || t.streets.iter().any(|&(way, length)| overlaps(street_rect(t.square, way, [0.0, length], STREET_HALF), spot, 3.0));
+                        || t.streets.iter().any(|&(way, length)| overlaps(street_rect(t.square, way, [0.0, length + 16.0], STREET_HALF), spot, 3.0));
                     if !crowded {
                         objects.push(self.tree(px, py, height_at(&self.settings, px, py), hash(rng.0 ^ 0x7ee)));
                     }
