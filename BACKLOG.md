@@ -6,7 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), each in `.claude\worktrees\<name>`.
+The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
 
 4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
    this"). RUNNING in `menumap`.
@@ -25,13 +25,6 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
      to left, and map to right"): no hint line; menu panel on the left, map on the right.
    - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
      it myself the text").
-
-5. **Lamp posts on some roads** (2026-11-27, "Some roads could have lamp posts"). RUNNING in
-   `roads` (the roads agent again).
-   - Lanterns on posts along the busier roads, near towns and castles, on bridges and at
-     signposts; lit at night through the night-lights system, dark by day, within the light cap.
-   - Kind by surface (2026-11-27, "roads that are made from stones, one type of ligsthing, gravel
-     roads oher tpe"): stone/rocky roads one kind of lamp, gravel roads a clearly different kind.
 
 6. **An Options window in game to see the controls and change the key bindings** (2026-11-27,
    "Just add options windows in game, to see these", "just add options window", "to in game",
@@ -76,6 +69,12 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- Road lamps: iron lamps with glass lanterns along the stone roads, oil lanterns on wooden poles
+  along the gravel (sand only near places), within 170 m of every town and castle, along about
+  half the town roads, at both ends of bridges; lit at night, no light by day (9f70b020,
+  2026-11-27). Night cost about +0.2–0.5 ms near lamps on a busy machine; check on a GTX 960.
+- The start-up menu without the controls list, new mode blurbs (the user's own edit, 018720ec).
 
 - More magic and parts: 13 new powers (fire, frost, nature, earth, arcane, death, holy), a
   Necromancer kit of five summonings (Bone Phalanx, Bone Archers, Grave Colossus, Wraith Flight,

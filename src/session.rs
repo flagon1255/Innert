@@ -1477,8 +1477,8 @@ pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
 mod tests {
     use super::*;
 
-    /// At the size of the window played in, all of the menu shows, Quit and how to play at its
-    /// foot with nothing to scroll; in a shorter one it's all on screen, the rest scrolling
+    /// All of the menu shows, Quit at its foot with nothing to scroll, even in the shortest window
+    /// played in, now that how to play has its own window
     #[test]
     fn the_menu_fits_and_scrolls() {
         for [w, h] in [[1548.0, 872.0], [1600.0, 734.0], [1280.0, 600.0]] {
@@ -1497,11 +1497,7 @@ mod tests {
             }
             let shown = ctx.memory(|m| m.area_rect(egui::Id::new("menu"))).expect("the menu's drawn");
             assert!(shown.min.y >= 0.0 && shown.max.y <= h && shown.min.x >= 0.0 && shown.max.x <= w, "at {w}×{h} it's at {shown:?}");
-            if h >= 872.0 {
-                assert!(end.max.y <= shown.max.y, "at {w}×{h} its foot's at {:.0}, under the window's at {:.0}", end.max.y, shown.max.y);
-            } else if h <= 600.0 {
-                assert!(end.max.y > shown.max.y, "at {w}×{h} the rest scrolls");
-            }
+            assert!(end.max.y <= shown.max.y, "at {w}×{h} its foot's at {:.0}, under the window's at {:.0}", end.max.y, shown.max.y);
         }
     }
 }
