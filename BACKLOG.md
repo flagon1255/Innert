@@ -17,6 +17,8 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
    - Then (2026-11-27, "Maybe lets not load any world at start"): no world built at launch; the
      start-up menu opens straight after the GPU/shaders, with the map as its backdrop, and the
      world is built behind the loading screen on New or Continue. Same agent, separate commit.
+     (2026-11-27, "dont load the world instantly, jsut show the cubes": at launch only the cubes
+     and the menu, no world behind them.)
    - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
      it myself the text").
 
