@@ -6,7 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
+The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
 
 4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
    this"). RUNNING in `menumap`.
@@ -14,14 +14,6 @@ Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each i
      to enter (Continue: round the saved position; New: round the seed's spawn, redrawn as the seed
      changes), towns, castles and camps marked, roads once the roads item lands, the hover naming
      the place under the cursor. Black and white, free once playing.
-
-3. **More weapon parts, more magic** (2026-11-27, "add more weapon parts, more magic").
-   RUNNING in `moremagic`.
-   - New weapon parts across the weapon families, and new spells/powers for the casting classes,
-     beyond the eight lightning powers just added.
-   - More summoning for the Necromancer (2026-11-27, "addd more summoning capability for
-     necromancer"): several summon kinds (skeleton warriors, archers, a big golem, wraiths,
-     raising fresh corpses), animated rising and attacks, a cap on how many, simple commands.
 
 ## Loose ends (found along the way, not yet asked for)
 
@@ -59,6 +51,12 @@ Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each i
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- More magic and parts: 13 new powers (fire, frost, nature, earth, arcane, death, holy), a
+  Necromancer kit of five summonings (Bone Phalanx, Bone Archers, Grave Colossus, Wraith Flight,
+  Corpse Rising; 8 raised dead at once, right click on cooldown sends them), 46 new weapon parts
+  (cd59efdb, 2026-11-27). Left: talisman cord/feathers sit inside the fist in hand; skull-focus
+  candles barely show; summons can't be hurt; FPS to settle in the quiet A/B.
 
 - Roads: gravel, sand and rocky roads between towns and from each castle to its town, timber and
   stone bridges, signposts naming where each way leads (floating labels within 14 m), towns and
