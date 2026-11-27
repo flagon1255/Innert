@@ -49,9 +49,11 @@ use crate::worldgen::{self, TerrainSettings};
 use crate::{App, Capture, Gpu, Loaded, get_swapchain_images, save_screen, settings_from_args, startup, window_attributes};
 
 mod land;
+mod map;
 mod touch;
 
 use land::{Land, Phase};
+pub use map::{Realm as MapRealm, Wanted as MapWanted};
 use touch::Touch;
 
 /// The loading screen's drawn this often
@@ -326,6 +328,7 @@ impl Progress {
             rise: 1.0 - left / total.max(1.0),
             grow: 1.0 - self.left(&times, Step::Grass) / self.expected(Step::Grass).max(1.0),
             fill: if times[Step::Grass as usize].1.is_some() { 1.0 } else { 0.0 },
+            built: 1.0,
         }
     }
 }
@@ -607,13 +610,14 @@ impl Launcher {
         *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // The game runs as it always has
         hurry(false);
+        // Beside the menu the game starts on, if it does, still answering the mouse, and becoming
+        // the map of the world about to be entered
+        let land = self.progress.land().filter(|_| drawn);
+        if app.menu_open && !app.started && !settings_from_args().iter().any(|(k, v)| k == "menu_map" && v == "0") {
+            app.backdrop = Some(Backdrop::new(land.clone(), touch.behind_menu(), look.clone(), app.bare));
+        }
         if drawn {
-            // Behind the menu the game starts on, if it does, still answering the mouse
-            let land = self.progress.land();
-            if app.menu_open && !app.started {
-                app.backdrop = land.clone().map(|land| Backdrop { land, touch: touch.behind_menu(), look: look.clone(), began: None });
-            }
-            let behind = app.backdrop.is_some();
+            let behind = app.backdrop.as_ref().is_some_and(|b| b.glides);
             fade_away(&screen.gui.context(), look, land, behind);
         }
         app.attach(screen, event_loop);
@@ -1059,7 +1063,7 @@ impl Look {
         // The land comes up, the woods grow and the seas fill no faster than this many times a
         // second, so it's seen however quickly they're made
         let follow = |shown: f32, wanted: f32, most: f32| (shown + ((wanted - shown) * (1.0 - (-dt * 5.0).exp())).min(most * dt)).max(shown).min(1.0);
-        self.phase = Phase { rise: follow(self.phase.rise, phase.rise, 0.8), grow: follow(self.phase.grow, phase.grow, 1.0), fill: follow(self.phase.fill, phase.fill, 0.7) };
+        self.phase = Phase { rise: follow(self.phase.rise, phase.rise, 0.8), grow: follow(self.phase.grow, phase.grow, 1.0), fill: follow(self.phase.fill, phase.fill, 0.7), built: 1.0 };
     }
 }
 
@@ -1106,44 +1110,282 @@ impl Board {
 
 /// How bright the land is behind the menu, against on the loading screen
 const BEHIND_BRIGHT: f32 = 0.82;
+/// How the map's looked down on from, in radians over the level, and from how much higher up
+/// while the mouse is over it, more as a map's seen
+const MAP_ELEVATION: f32 = 0.6;
+const MAP_ELEVATION_HOVERED: f32 = 0.98;
+/// How long a map takes to sink away, and the next to rise in its place, in seconds
+const SINK_SECONDS: f32 = 0.35;
+const RISE_SECONDS: f32 = 1.1;
+/// How far a drag across the map turns it, in radians a point
+const DRAG_TURN: f32 = 0.009;
 
-/// The land the game starts on, behind the menu it starts with, see App::render(): the loading
-/// screen's, gliding aside into the room left of the menu as the loading screen gives way to it,
-/// a little dimmed, still turning and still answering the mouse. Gone once a game's begun, so it
-/// costs nothing while playing.
+/// The map of the world about to be entered, beside the menu Innert starts with, see map.rs and
+/// App::render(): at first the loading screen's land, gliding aside into the room left of the menu
+/// as the loading screen gives way to it, then once it's been worked out the map in its place,
+/// a little dimmed, turning and answering the mouse, naming what's under it. As what's pointed at
+/// in the menu changes, or the seed of a new world, it's worked out afresh on threads of its own,
+/// and the one shown sinks away for the new one to rise. Gone once a game's begun, so it costs
+/// nothing while playing.
 pub struct Backdrop {
-    land: Arc<Land>,
+    /// What's shown, and when it began to rise
+    shown: Option<(Shown, Instant)>,
+    /// A map to rise once what's shown has sunk away, and since when that's sinking
+    next: Option<Shown>,
+    sinking: Option<Instant>,
+    /// What's wanted, the map being worked out and the places further off round one, see map::far()
+    asked: Option<map::Wanted>,
+    building: Option<mpsc::Receiver<(map::Wanted, map::Map, Duration, bool)>>,
+    /// Set once the map being worked out isn't wanted any more
+    unwanted: Arc<AtomicBool>,
+    farther: Option<(Arc<AtomicBool>, mpsc::Receiver<(map::Wanted, Option<map::Far>, Duration)>)>,
     /// How the land's been touched by the mouse, since the loading screen
     touch: Touch,
     /// The loading screen's look as it gave way, whose start the land's turning is timed from
     look: Look,
-    /// When it was first drawn behind the menu
+    /// When it was first drawn behind the menu, and last
     began: Option<Instant>,
+    last: Option<Instant>,
+    /// How far round it's turned, how far it's tilted towards how it's seen with the mouse over it,
+    /// and whether it's being dragged round
+    turn: f32,
+    tilt: f32,
+    dragging: bool,
+    /// Whether the loading screen was seen, for the land to glide aside from it
+    glides: bool,
+    /// Whether it's on the loading screen's page rather than over the world, as when Innert starts
+    /// with no world built, see empty_world()
+    paged: bool,
+    /// How long it's taken to draw, said in screenshot runs
+    cost: Cost,
+}
+
+/// What's shown beside the menu: the loading screen's land, or a map
+enum Shown {
+    Loading(Arc<Land>),
+    /// Since `came`, when what's on it was put in
+    Map { map: Arc<map::Map>, wanted: map::Wanted, far: bool, came: Instant },
+}
+
+impl Shown {
+    fn land(&self) -> &Land {
+        match self {
+            Shown::Loading(land) => land,
+            Shown::Map { map, .. } => &map.land,
+        }
+    }
+
+    fn is(&self, wanted: &map::Wanted) -> bool {
+        matches!(self, Shown::Map { wanted: w, .. } if w == wanted)
+    }
 }
 
 impl Backdrop {
-    /// Draws it behind everything else in `ctx`
-    pub fn paint(&mut self, ctx: &egui::Context) {
-        let since = self.began.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
+    /// Beside the menu, the loading screen's `land` gliding aside if it was seen, touched by the
+    /// mouse as `touch` has it, the loading screen as `look`
+    fn new(land: Option<Arc<Land>>, touch: Touch, look: Look, paged: bool) -> Self {
+        let now = Instant::now();
+        let glides = land.is_some();
+        Backdrop {
+            shown: land.map(|l| (Shown::Loading(l), now)),
+            next: None,
+            sinking: None,
+            asked: None,
+            building: None,
+            unwanted: Arc::new(AtomicBool::new(false)),
+            farther: None,
+            touch,
+            turn: land::turned_by(look.start.elapsed().as_secs_f32()),
+            look,
+            began: None,
+            last: None,
+            tilt: 0.0,
+            dragging: false,
+            glides,
+            paged,
+            cost: Cost::default(),
+        }
+    }
+
+    /// Has the map `wanted` worked out, if it isn't shown or on its way, and takes up what's been
+    /// worked out
+    fn want(&mut self, wanted: &map::Wanted) {
+        if self.asked.as_ref() != Some(wanted) {
+            self.asked = Some(wanted.clone());
+            // What's on another, and further off round it, isn't wanted now
+            self.unwanted.store(true, Ordering::Relaxed);
+            if let Some((stale, _)) = &self.farther {
+                stale.store(true, Ordering::Relaxed);
+            }
+        }
+        let asked = self.asked.clone().unwrap();
+        // Its land first, which rises straight away, then what's on it, put in as it comes
+        while let Some(building) = &self.building {
+            match building.try_recv() {
+                Ok((wanted, map, took, done)) => {
+                    if Capture::from_args().is_some() {
+                        let what = if done { "what's on it" } else { "its land" };
+                        println!("Menu map of seed {} round {:.0}, {:.0}: {what} worked out in {:.0} ms, {} places on it", wanted.settings.seed, map.player[0], map.player[1], took.as_secs_f64() * 1000.0, map.places.len());
+                    }
+                    if wanted != asked {
+                        continue;
+                    }
+                    let map = Arc::new(map);
+                    if !done {
+                        // Nothing further off's worked out round it till what's on it is there
+                        self.next = Some(Shown::Map { map, wanted, far: true, came: Instant::now() });
+                        if self.shown.is_some() {
+                            self.sinking.get_or_insert_with(Instant::now);
+                        }
+                        continue;
+                    }
+                    self.building = None;
+                    for shown in self.shown.iter_mut().map(|(s, _)| s).chain(self.next.iter_mut()) {
+                        if shown.is(&wanted) {
+                            *shown = Shown::Map { map: map.clone(), wanted: wanted.clone(), far: false, came: Instant::now() };
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => self.building = None,
+            }
+        }
+        // One at a time, the latest wanted once one's done, so the seed box can be typed in as
+        // fast as it likes
+        let have = self.shown.as_ref().is_some_and(|(s, _)| s.is(&asked)) || self.next.as_ref().is_some_and(|s| s.is(&asked));
+        if self.building.is_none() && !have {
+            let (send, receive) = mpsc::channel();
+            let wanted = asked.clone();
+            let stale = Arc::new(AtomicBool::new(false));
+            let gone = stale.clone();
+            self.unwanted = stale;
+            let _ = std::thread::Builder::new().name("menu map".into()).spawn(move || {
+                worldgen::give_way();
+                let started = Instant::now();
+                let land = map::build_land(&wanted);
+                // What's on it only if it's still wanted
+                if send.send((wanted.clone(), land.clone(), started.elapsed(), false)).is_ok() && !gone.load(Ordering::Relaxed) {
+                    let full = land.with_sites();
+                    let _ = send.send((wanted, full, started.elapsed(), true));
+                }
+            });
+            self.building = Some(receive);
+        }
+        // Then what's further off round it
+        if let Some((_, receive)) = &self.farther {
+            match receive.try_recv() {
+                Ok((wanted, far, took)) => {
+                    self.farther = None;
+                    if let Some(far) = far {
+                        if Capture::from_args().is_some() {
+                            println!("Menu map of seed {}: what's further off worked out in {:.0} ms, {} roads, {} named, {} pointed to", wanted.settings.seed, took.as_secs_f64() * 1000.0, far.roads.len(), far.named.len(), far.beyond.len());
+                        }
+                        for shown in self.shown.iter_mut().map(|(s, _)| s).chain(self.next.iter_mut()) {
+                            if let Shown::Map { map, wanted: w, .. } = shown
+                                && *w == wanted
+                            {
+                                *map = Arc::new(map.with(&far));
+                            }
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.farther = None,
+            }
+        }
+        if self.farther.is_none() {
+            let unfinished = self.next.iter_mut().chain(self.shown.iter_mut().map(|(s, _)| s)).find(|s| s.is(&asked) && matches!(s, Shown::Map { far: false, .. }));
+            if let Some(Shown::Map { map, wanted, far, .. }) = unfinished {
+                *far = true;
+                let (send, receive) = mpsc::channel();
+                let stale = Arc::new(AtomicBool::new(false));
+                let (map, wanted, gone) = (map.clone(), wanted.clone(), stale.clone());
+                let _ = std::thread::Builder::new().name("menu map, further off".into()).spawn(move || {
+                    worldgen::give_way();
+                    let started = Instant::now();
+                    let far = map::far(&map, &|| gone.load(Ordering::Relaxed));
+                    let _ = send.send((wanted, far, started.elapsed()));
+                });
+                self.farther = Some((stale, receive));
+            }
+        }
+        // The one shown sunk away, the next rises
+        if self.sinking.is_some_and(|s| s.elapsed().as_secs_f32() >= SINK_SECONDS) || (self.shown.is_none() && self.next.is_some()) {
+            if let Some(next) = self.next.take() {
+                self.shown = Some((next, Instant::now()));
+            }
+            self.sinking = None;
+        }
+    }
+
+    /// Draws it behind everything else in `ctx`, the map `wanted` worked out for it
+    pub fn paint(&mut self, ctx: &egui::Context, wanted: &map::Wanted) {
+        let painting = Instant::now();
+        self.want(wanted);
+        let now = Instant::now();
+        let since = self.began.get_or_insert(now).elapsed().as_secs_f32();
+        let dt = self.last.map_or(0.0, |l| (now - l).as_secs_f32()).min(0.1);
+        self.last = Some(now);
         let painter = ctx.layer_painter(LayerId::background());
         let screen = ctx.screen_rect();
         let t = self.look.start.elapsed().as_secs_f32();
-        // Finished as it is on the loading screen fading away, see fade_away()
-        let phase = self.look.phase.towards_done(smoothstep(since / (FADE_SECONDS * 0.3)));
         // The loading screen's page, fading away from under it as it glides back
-        let veil = 1.0 - smoothstep(since / FADE_SECONDS);
+        let veil = if self.paged { 1.0 } else if self.glides { 1.0 - smoothstep(since / FADE_SECONDS) } else { 0.0 };
         if veil > 0.0 {
             page(&painter, screen, veil);
         }
-        let glide = smoothstep(since / (FADE_SECONDS * 0.9));
-        // Beside the menu, or gone where there's no room for it
+        let glide = if self.glides { smoothstep(since / (FADE_SECONDS * 0.9)) } else { 1.0 };
+        let Some((shown, risen)) = &self.shown else {
+            return;
+        };
+        let land = shown.land();
+        // Finished as it is on the loading screen fading away, see fade_away(), or rising, and
+        // sinking away for the next
+        let phase = match shown {
+            Shown::Loading(_) => self.look.phase.towards_done(smoothstep(since / (FADE_SECONDS * 0.3))),
+            Shown::Map { came, .. } => {
+                let e = risen.elapsed().as_secs_f32() / RISE_SECONDS;
+                // What's on it springing up as it comes, if it's after the land
+                let grow = (e - 0.35) / 0.65;
+                let built = grow.min(came.elapsed().as_secs_f32() / 0.7);
+                Phase { rise: e.min(1.0), grow: grow.clamp(0.0, 1.0), fill: ((e - 0.2) / 0.6).clamp(0.0, 1.0), built: built.clamp(0.0, 1.0) }
+            }
+        };
+        let sunk = self.sinking.map_or(0.0, |s| (s.elapsed().as_secs_f32() / SINK_SECONDS).min(1.0));
+        let phase = Phase { rise: phase.rise.min(1.0 - sunk), grow: phase.grow.min(1.0 - sunk * 1.5), fill: phase.fill.min(1.0 - sunk), built: phase.built.min(1.0 - sunk * 1.5) };
+
+        // Turning slowly, and less while the mouse is over it, tilted up more as a map's seen,
+        // and turned round by a drag across it
+        let over = self.touch.over().is_some();
+        let pressed = ctx.input(|i| i.pointer.primary_pressed());
+        if pressed && over {
+            self.dragging = true;
+        }
+        if self.dragging {
+            if ctx.input(|i| i.pointer.primary_down()) {
+                self.turn -= ctx.input(|i| i.pointer.delta().x) * DRAG_TURN;
+            } else {
+                self.dragging = false;
+            }
+        }
+        let hovered = matches!(shown, Shown::Map { .. }) && (over || self.dragging);
+        self.tilt += ((if hovered { 1.0 } else { 0.0 }) - self.tilt) * (1.0 - (-dt * 3.5).exp());
+        self.turn += dt * land::TURNING * (1.0 - self.tilt).max(0.0);
+        let (from_e, to_e) = match shown {
+            Shown::Loading(_) => (land::LOOKED_AT_FROM + (MAP_ELEVATION - land::LOOKED_AT_FROM) * glide, MAP_ELEVATION_HOVERED),
+            Shown::Map { .. } => (MAP_ELEVATION, MAP_ELEVATION_HOVERED),
+        };
+        let elevation = from_e + (to_e - from_e) * smoothstep(self.tilt);
+
+        // Beside the menu, or gone where there's no room for it, its caption under it
         let menu = ctx.memory(|m| m.area_rect(egui::Id::new("menu")));
         let beside = beside_menu(screen, menu);
-        let from = land_area(screen, innert_below(screen));
-        let (view, alpha) = match (from, beside) {
-            (Some(from), Some(beside)) => (self.land.view(from, t).lerp(&self.land.view(beside, t), glide), 1.0),
-            (None, Some(beside)) => (self.land.view(beside, t), 1.0),
-            (Some(from), None) => (self.land.view(from, t), 1.0 - glide),
+        let room = beside.map(|b| Rect::from_min_max(b.min, pos2(b.max.x, b.max.y - 30.0)));
+        let from = land_area(screen, innert_below(screen)).filter(|_| self.glides && matches!(shown, Shown::Loading(_)));
+        let (view, alpha) = match (from, room) {
+            (Some(from), Some(room)) => (land.view(from, t).lerp(&land.seen(room, self.turn, elevation, MAP_ELEVATION_HOVERED), glide), 1.0),
+            (None, Some(room)) => (land.seen(room, self.turn, elevation, MAP_ELEVATION_HOVERED), 1.0),
+            (Some(from), None) => (land.view(from, t), 1.0 - glide),
             (None, None) => return,
         };
         if alpha <= 0.0 {
@@ -1151,23 +1393,112 @@ impl Backdrop {
         }
         // Stood in a little of the loading screen's dark, so it reads over the world behind
         let mut mesh = Mesh::default();
-        let (middle, reach) = (view.middle - vec2(0.0, view.scale * 4.0), view.scale * land::COLUMNS as f32);
+        let (middle, reach) = (view.middle - vec2(0.0, view.scale * 4.0 * land.across() as f32 / 34.0), view.scale * land.across() as f32);
         glow(&mut mesh, middle, vec2(reach * 0.95, reach * 0.7), Color32::from_black_alpha((170.0 * glide * alpha) as u8));
         painter.add(Shape::mesh(mesh));
-        self.touch.feel(ctx, &self.land, &view, phase, true);
-        self.land.paint(&painter, &view, t, phase, alpha, 1.0 + (BEHIND_BRIGHT - 1.0) * glide, Some(&self.touch));
+        self.touch.feel(ctx, land, &view, phase, true);
+        let bright = 1.0 + (BEHIND_BRIGHT - 1.0) * glide;
+        land.paint(&painter, &view, t, phase, alpha * (1.0 - sunk * 0.6), bright, Some(&self.touch));
+        if let (Shown::Map { map, .. }, Some(room)) = (shown, room) {
+            self.mark_up(&painter, map, &view, phase, room, 1.0 - sunk);
+            // `--set menu_aim=town` in screenshot runs takes a scripted mouse onto the pin of the
+            // first town on the map once it's all there, or the first place whose kind's called that
+            if let Some(aim) = settings_from_args().iter().find(|(k, _)| k == "menu_aim").map(|(_, v)| v.to_lowercase()).filter(|_| Capture::from_args().is_some() && phase.grow >= 1.0 && sunk == 0.0) {
+                let tip = map.places.iter().find(|p| p.kind.title().to_lowercase().contains(&aim)).and_then(|p| {
+                    let top = land.top_of(&view, phase, land.column(land.columns(p.at))?, None, 0.0)?;
+                    Some(top - vec2(0.0, 10.0 + view.scale * 1.2) + vec2(1.0, 1.0))
+                });
+                self.touch.aim(tip);
+            }
+        }
         self.touch.mark(&painter);
+        self.cost.add(painting.elapsed(), painting.elapsed());
+        if Capture::from_args().is_some() && self.cost.frames % 300 == 0 {
+            let each = self.cost.painting.as_secs_f64() * 1000.0 / self.cost.frames as f64;
+            println!("Menu map drawn {} times, {each:.3} ms a frame working it out and painting it", self.cost.frames);
+        }
+    }
+
+    /// Over `map` as it's drawn, seen as `view`, `phase` of the way built, in `room`: north, which
+    /// way the nearest towns and castles are if they're further off, what's under the mouse, and
+    /// what it's a map of under it, `alpha` of the way opaque
+    #[allow(clippy::too_many_arguments)]
+    fn mark_up(&self, painter: &egui::Painter, map: &map::Map, view: &land::View, phase: Phase, room: Rect, alpha: f32) {
+        let land = &map.land;
+        let half = land.across() as f32 * 0.5;
+        let fade = |c: Color32| c.gamma_multiply(alpha * phase.rise.clamp(0.0, 1.0));
+        // North, off the plate's edge
+        painter.text(land.on_plate(view, (0.0, half + 1.6)), Align2::CENTER_CENTER, "N", crate::theme::display(13.0), fade(crate::theme::WEAK));
+        // A pin over each place, a little diamond on a fine stem, as they spring up
+        let pinned = smoothstep(phase.built.min(phase.grow));
+        let mut pins = Vec::new();
+        if pinned > 0.0 {
+            for place in &map.places {
+                let Some((size, light)) = place.kind.pin() else { continue };
+                let Some(column) = land.column(land.columns(place.at)) else { continue };
+                let Some(top) = land.top_of(view, phase, column, Some(&self.touch), 0.0) else { continue };
+                let tip = top - vec2(0.0, (10.0 + view.scale * 1.2) * pinned);
+                painter.line_segment([top, tip], Stroke::new(1.0f32, fade(Color32::from_white_alpha(120)).gamma_multiply(pinned)));
+                let points = vec![tip + vec2(0.0, -size), tip + vec2(size * 0.8, 0.0), tip + vec2(0.0, size), tip + vec2(-size * 0.8, 0.0)];
+                let edge = if light < 128 { Color32::from_gray(235) } else { Color32::from_black_alpha(200) };
+                painter.add(Shape::convex_polygon(points, fade(Color32::from_gray(light)).gamma_multiply(pinned), Stroke::new(1.0f32, fade(edge).gamma_multiply(pinned))));
+                pins.push((tip, place));
+            }
+        }
+        // Further off, a mark at the plate's edge the way each is
+        let pointer = self.touch.pointer();
+        let mut named: Option<(Pos2, String, String)> = None;
+        for place in &map.far {
+            let (dx, dy) = land.columns(place.at);
+            let out = (half + 0.6) / dx.abs().max(dy.abs()).max(1e-3);
+            let at = land.on_plate(view, (dx * out, dy * out));
+            let hot = pointer.is_some_and(|p| (p - at).length() < 11.0);
+            let points = vec![at + vec2(0.0, -5.0), at + vec2(4.0, 0.0), at + vec2(0.0, 5.0), at + vec2(-4.0, 0.0)];
+            painter.add(Shape::convex_polygon(points, fade(if hot { crate::theme::HEADING } else { Color32::from_gray(30) }), Stroke::new(1.2f32, fade(crate::theme::ACCENT))));
+            if hot {
+                named = Some((at, place.title(), map.under_far(place)));
+            }
+        }
+        // A pin the mouse is on, for the place under it
+        if named.is_none()
+            && let Some(p) = pointer
+            && let Some((tip, place)) = pins.iter().filter(|(tip, _)| (*tip - p).length() < 9.0).min_by(|a, b| (a.0 - p).length().total_cmp(&(b.0 - p).length()))
+        {
+            let (title, about) = map.under(land.columns(place.at));
+            named = Some((*tip, title, about));
+        }
+        // What's under the mouse, over it
+        if named.is_none()
+            && let Some(spot) = self.touch.over()
+            && phase.rise >= 1.0
+        {
+            let (title, about) = map.under(spot.at);
+            let column = map.place_at(spot.at).and_then(|p| land.column(land.columns(p.at))).unwrap_or(spot.column);
+            if let Some(at) = land.top_of(view, phase, column, Some(&self.touch), 0.2) {
+                named = Some((at, title, about));
+            }
+        }
+        if let Some((at, title, about)) = named {
+            map::label(painter, at, room.expand2(vec2(0.0, 20.0)), &title, &about, alpha);
+        }
+        let below = pos2(room.center().x, room.bottom() + 14.0);
+        painter.text(below, Align2::CENTER_CENTER, &map.caption, crate::theme::display(14.0), fade(crate::theme::TEXT));
     }
 }
 
-/// Where the land's drawn behind the menu, in a window `screen` big, the menu at `menu`: in the
-/// room left of it, as big as fits, unless there's too little
+/// How far in from the left of the window the menu Innert starts with is, with the map to the right
+/// of it, see session::menu_window()
+pub const MENU_LEFT: f32 = 60.0;
+
+/// Where the land's drawn beside the menu, in a window `screen` big, the menu at `menu`: in the
+/// room right of it, as big as fits, with as much room either side of it as the menu has to its
+/// left, unless there's too little
 fn beside_menu(screen: Rect, menu: Option<Rect>) -> Option<Rect> {
-    let menu = menu.unwrap_or_else(|| Rect::from_center_size(screen.center(), vec2(436.0, screen.height() * 0.9)));
-    let page = page_rect(screen);
-    let (left, right) = (page.left() + 14.0, menu.left() - 22.0);
-    let tall = (screen.height() * 0.62).min((right - left) * 0.9);
-    let middle = screen.center().y + screen.height() * 0.04;
+    let menu = menu.unwrap_or_else(|| Rect::from_min_size(pos2(screen.left() + MENU_LEFT, screen.top()), vec2(436.0, screen.height())));
+    let gap = (menu.left() - screen.left()).clamp(24.0, MENU_LEFT);
+    let (left, right) = (menu.right() + gap, screen.right() - gap);
+    let tall = (screen.height() * 0.7).min((right - left) * 1.0);
+    let middle = screen.center().y + screen.height() * 0.03;
     (right - left >= 170.0).then(|| Rect::from_min_max(pos2(left, middle - tall * 0.5), pos2(right, middle + tall * 0.5)))
 }
 

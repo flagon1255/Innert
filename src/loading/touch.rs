@@ -11,10 +11,9 @@ use std::time::{Duration, Instant};
 
 use egui_winit_vulkano::egui::{self, Pos2, pos2};
 
-use super::land::{COLUMNS, HEADROOM, Land, Spot};
+use super::land::{HEADROOM, Land, Spot};
 use crate::settings_from_args;
 
-const N: usize = COLUMNS;
 /// How high the column under the mouse is lifted, in columns, and how far round it the hump
 /// spreads, in columns
 const HOVER_LIFT: f32 = 1.1;
@@ -38,17 +37,29 @@ const DAMPING: f32 = 2.6;
 const STEPS_PER_SECOND: f32 = 120.0;
 /// Less than this up or down, it's all settled
 const STILL: f32 = 2e-3;
+/// How far round the mouse the land shows its real colours, in columns, how quickly they come
+/// up under it, and how slowly they fade back to grey once it's moved on, each a second, so a
+/// sweep of the mouse leaves a trail of colour fading behind it
+const TINT_SPREAD: f32 = 2.2;
+const TINT_RISE: f32 = 9.0;
+const TINT_FADE: f32 = 0.9;
+/// How much colour a ripple flashes up as it passes, a column's lift by it
+const TINT_FLASH: f32 = 2.2;
 /// How long after the mouse last moved over it the land's still drawn as often as the screen
 /// shows, see lively()
 const LIVELY: Duration = Duration::from_millis(1200);
 
 /// How the land's been touched: how far each column's lifted, row after row as Land has them
 pub struct Touch {
+    /// Columns across each way of the land it's for
+    n: usize,
     /// Lifted by the mouse being over or near it, in columns
     raised: Vec<f32>,
     /// Lifted by the ripples going through it, in columns, and how fast that's changing
     wave: Vec<f32>,
     speed: Vec<f32>,
+    /// How far each column's shown in its real colours, 0 to 1, see tint()
+    tinted: Vec<f32>,
     /// Where on the land the mouse is, if it's over it
     over: Option<Spot>,
     /// Where on the screen the mouse was last
@@ -65,6 +76,8 @@ pub struct Touch {
     /// A mouse moved by a script, in screenshot runs, and where it is, over a window or not
     script: Option<Script>,
     scripted: Option<Pos2>,
+    /// Where a scripted mouse's been sent, see aim()
+    aimed: Option<Pos2>,
 }
 
 impl Default for Touch {
@@ -76,9 +89,11 @@ impl Default for Touch {
 impl Touch {
     fn new(script: Option<Script>) -> Self {
         Touch {
-            raised: vec![0.0; N * N],
-            wave: vec![0.0; N * N],
-            speed: vec![0.0; N * N],
+            n: 0,
+            raised: Vec::new(),
+            wave: Vec::new(),
+            speed: Vec::new(),
+            tinted: Vec::new(),
             over: None,
             pointer: None,
             owed: 0.0,
@@ -88,6 +103,7 @@ impl Touch {
             clock: 0.0,
             script,
             scripted: None,
+            aimed: None,
         }
     }
 
@@ -101,9 +117,15 @@ impl Touch {
         self
     }
 
+    /// Has a scripted mouse go to `at` from the next frame on, in screenshot runs, as onto a place
+    /// on the map, see Backdrop
+    pub fn aim(&mut self, at: Option<Pos2>) {
+        self.aimed = at;
+    }
+
     /// Marks where a scripted mouse is, in screenshot runs, where no real one's drawn
     pub fn mark(&self, painter: &egui::Painter) {
-        if let (Some(_), Some(p)) = (&self.script, self.scripted) {
+        if let Some(p) = self.scripted {
             let arrow = [p, p + egui::vec2(0.0, 16.0), p + egui::vec2(11.0, 11.0)];
             painter.add(egui::Shape::convex_polygon(arrow.to_vec(), egui::Color32::WHITE, egui::Stroke::new(1.0f32, egui::Color32::BLACK)));
         }
@@ -111,23 +133,55 @@ impl Touch {
 
     /// How far column `k` is lifted, in columns
     pub fn lift(&self, k: usize) -> f32 {
-        (self.raised[k] + self.wave[k]).clamp(-0.6, HEADROOM + 0.6)
+        match (self.raised.get(k), self.wave.get(k)) {
+            (Some(r), Some(w)) => (r + w).clamp(-0.6, HEADROOM + 0.6),
+            _ => 0.0,
+        }
     }
 
     /// How far a ripple's lifted column `k`, in columns, to ripple the sea over it
     pub fn ripple(&self, k: usize) -> f32 {
-        self.wave[k]
+        self.wave.get(k).copied().unwrap_or(0.0)
     }
 
     /// How much column `k`'s lit by the mouse being over it or a ripple lifting it, 0 to 1
     pub fn glow(&self, k: usize) -> f32 {
-        (self.raised[k] / HOVER_LIFT).clamp(0.0, 1.0).powf(1.5)
+        (self.raised.get(k).copied().unwrap_or(0.0) / HOVER_LIFT).clamp(0.0, 1.0).powf(1.5)
+    }
+
+    /// How far column `k`'s shown in its real colours rather than grey, 0 to 1: under and round
+    /// the mouse, fading back once it's moved on, and flashing up as a click's ripple goes by
+    pub fn tint(&self, k: usize) -> f32 {
+        let flash = (self.ripple(k).abs() * TINT_FLASH).min(0.85);
+        self.tinted.get(k).copied().unwrap_or(0.0).max(flash).min(1.0)
+    }
+
+    /// Where on the land the mouse is, if it's over it
+    pub fn over(&self) -> Option<Spot> {
+        self.over
+    }
+
+    /// Where on the screen the mouse is, if it's over the land or near it, as a scripted one too
+    pub fn pointer(&self) -> Option<Pos2> {
+        self.pointer
+    }
+
+    /// Made for a land `n` columns across, all settled, if it was for another
+    fn fit(&mut self, n: usize) {
+        if self.n != n {
+            self.n = n;
+            for v in [&mut self.raised, &mut self.wave, &mut self.speed, &mut self.tinted] {
+                *v = vec![0.0; n * n];
+            }
+            self.over = None;
+            self.awake = false;
+        }
     }
 
     /// Whether the mouse has lately moved over it, or a ripple's still big, when it's worth drawing
     /// as often as the screen shows rather than as it's drawn while nothing's touched
     pub fn lively(&self) -> bool {
-        self.awake && (self.stirred.is_some_and(|s| s.elapsed() < LIVELY) || self.wave.iter().any(|w| w.abs() > 0.05))
+        self.awake && (self.stirred.is_some_and(|s| s.elapsed() < LIVELY) || self.wave.iter().any(|w| w.abs() > 0.05) || self.tinted.iter().any(|&c| c > 0.05))
     }
 
     /// Feels the mouse over `land` seen as `view`, `phase` of the way built, and moves on to now.
@@ -135,11 +189,12 @@ impl Touch {
     /// over a window, as the menu.
     pub fn feel(&mut self, ctx: &egui::Context, land: &Land, view: &super::land::View, phase: super::land::Phase, free: bool) {
         let (pointer, pressed) = match &self.script {
+            _ if self.aimed.is_some() => (self.aimed, false),
             Some(script) => script.at(self.clock, ctx.screen_rect()),
             None if free => ctx.input(|i| (i.pointer.hover_pos(), i.pointer.primary_pressed())),
             None => (None, false),
         };
-        self.scripted = pointer.filter(|_| self.script.is_some());
+        self.scripted = pointer.filter(|_| self.script.is_some() || self.aimed.is_some());
         // What's on the background, as the land itself, doesn't count
         let pointer = pointer.filter(|&p| ctx.layer_id_at(p).is_none_or(|layer| layer.order == egui::Order::Background));
         let over = pointer.and_then(|p| land.hit(view, phase, p));
@@ -149,6 +204,7 @@ impl Touch {
     /// Moves it on to now, or by `dt` seconds if given, the mouse at `pointer` on the screen and
     /// over `over` on the land, which it's just `pressed` on
     fn step(&mut self, land: &Land, pointer: Option<Pos2>, over: Option<Spot>, pressed: bool, dt: Option<f32>) {
+        self.fit(land.across());
         let now = Instant::now();
         let dt = dt.unwrap_or(if self.script.is_some() { 1.0 / 60.0 } else { self.last.map_or(0.0, |l| (now - l).as_secs_f32()).min(0.1) });
         self.last = Some(now);
@@ -161,7 +217,7 @@ impl Touch {
             // Coming onto a column sets it bobbing
             if self.over.is_none_or(|was| was.column != spot.column) {
                 let (i, j) = spot.column;
-                self.speed[(i + j * N as i32) as usize] += NUDGE;
+                self.speed[(i + j * self.n as i32) as usize] += NUDGE;
                 self.awake = true;
             }
             // And a click knocks a ring out round it
@@ -189,14 +245,15 @@ impl Touch {
             self.raised.fill(0.0);
             self.wave.fill(0.0);
             self.speed.fill(0.0);
+            self.tinted.fill(0.0);
         }
     }
 
     /// A click at `at`, in columns from the middle: the columns round it knocked upward, the more
     /// the nearer
     fn knock(&mut self, land: &Land, at: (f32, f32)) {
-        for k in 0..N * N {
-            let (x, y) = middle_of(k);
+        for k in 0..self.n * self.n {
+            let (x, y) = middle_of(self.n, k);
             let d = (x - at.0).hypot(y - at.1);
             if d < KNOCK_REACH && land.solid(k) {
                 self.speed[k] += KNOCK * (1.0 - d / KNOCK_REACH).powi(2);
@@ -207,14 +264,15 @@ impl Touch {
 
     /// Works it all out `h` seconds on, giving back how far anything's still from resting
     fn tick(&mut self, land: &Land, h: f32) -> f32 {
-        let n = N as i32;
+        let n = self.n as i32;
         let (rise, settle) = (1.0 - (-RISE_RATE * h).exp(), 1.0 - (-SETTLE_RATE * h).exp());
+        let (bloom, fade) = (1.0 - (-TINT_RISE * h).exp(), 1.0 - (-TINT_FADE * h).exp());
         let mut most = 0.0f32;
         // The hump under the mouse
-        for k in 0..N * N {
+        for k in 0..self.n * self.n {
             let target = match self.over {
                 Some(spot) if land.solid(k) => {
-                    let (x, y) = middle_of(k);
+                    let (x, y) = middle_of(self.n, k);
                     let d2 = (x - spot.at.0).powi(2) + (y - spot.at.1).powi(2);
                     if d2 < 16.0 * HOVER_SPREAD * HOVER_SPREAD { HOVER_LIFT * (-d2 / (2.0 * HOVER_SPREAD * HOVER_SPREAD)).exp() } else { 0.0 }
                 }
@@ -223,14 +281,28 @@ impl Touch {
             let r = &mut self.raised[k];
             *r += (target - *r) * if target > *r { rise } else { settle };
             most = most.max(r.abs());
+            // Its colours, in a wider, softer patch, lingering after
+            let colour = match self.over {
+                Some(spot) if land.solid(k) => {
+                    let (x, y) = middle_of(self.n, k);
+                    let d2 = (x - spot.at.0).powi(2) + (y - spot.at.1).powi(2);
+                    // As wide on the screen however many columns the land has
+                    let spread = TINT_SPREAD * (self.n as f32 / 34.0).max(1.0);
+                    if d2 < 9.0 * spread * spread { (1.25 * (-d2 / (2.0 * spread * spread)).exp()).min(1.0) } else { 0.0 }
+                }
+                _ => 0.0,
+            };
+            let c = &mut self.tinted[k];
+            *c += (colour - *c) * if colour > *c { bloom } else { fade };
+            most = most.max(*c);
         }
         // The ripples: each column pulled level with those round it that are there, so a ripple
         // comes back off the land's edges, and back to where it rests
-        for k in 0..N * N {
+        for k in 0..self.n * self.n {
             if !land.solid(k) {
                 continue;
             }
-            let (i, j) = ((k % N) as i32, (k / N) as i32);
+            let (i, j) = ((k % self.n) as i32, (k / self.n) as i32);
             let mut level = 0.0;
             for (a, b) in [(i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)] {
                 if a >= 0 && b >= 0 && a < n && b < n && land.solid((a + b * n) as usize) {
@@ -239,7 +311,7 @@ impl Touch {
             }
             self.speed[k] += (PULL * level - SPRING * self.wave[k] - DAMPING * self.speed[k]) * h;
         }
-        for k in 0..N * N {
+        for k in 0..self.n * self.n {
             self.wave[k] += self.speed[k] * h;
             most = most.max(self.wave[k].abs()).max(self.speed[k].abs() * 0.1);
         }
@@ -247,10 +319,10 @@ impl Touch {
     }
 }
 
-/// The middle of column `k`, in columns from the middle of the land
-fn middle_of(k: usize) -> (f32, f32) {
-    let half = N as f32 * 0.5;
-    ((k % N) as f32 + 0.5 - half, (k / N) as f32 + 0.5 - half)
+/// The middle of column `k` of a land `n` columns across, in columns from its middle
+fn middle_of(n: usize, k: usize) -> (f32, f32) {
+    let half = n as f32 * 0.5;
+    ((k % n) as f32 + 0.5 - half, (k / n) as f32 + 0.5 - half)
 }
 
 /// A mouse moved by a script, to see the land answer it in screenshot runs, where there's no
@@ -313,6 +385,9 @@ impl Script {
 mod tests {
     use super::*;
 
+    /// Columns across each way of the loading screen's land
+    const N: usize = 34;
+
     fn flat() -> Land {
         Land::flat_for_tests(6.0)
     }
@@ -322,7 +397,7 @@ mod tests {
     }
 
     fn over(k: (i32, i32)) -> Option<Spot> {
-        let (x, y) = middle_of(column(k));
+        let (x, y) = middle_of(N, column(k));
         Some(Spot { column: k, at: (x, y) })
     }
 
@@ -346,6 +421,44 @@ mod tests {
         }
         assert!(!touch.awake);
         assert!((0..N * N).all(|k| touch.lift(k) == 0.0));
+    }
+
+    #[test]
+    fn the_land_shows_its_colours_where_the_mouse_goes_and_they_fade_after() {
+        let land = flat();
+        let mut touch = Touch::new(None);
+        // Swept from one side to the other
+        for frame in 0..60 {
+            let i = 5 + frame / 3;
+            touch.step(&land, Some(pos2(frame as f32, 1.0)), over((i, 17)), false, Some(1.0 / 60.0));
+        }
+        let under = touch.tint(column((24, 17)));
+        assert!(under > 0.6, "under it: {under}");
+        // Round it less, and none far off
+        assert!(touch.tint(column((24, 19))) < under && touch.tint(column((24, 19))) > 0.1);
+        assert!(touch.tint(column((24, 30))) < 0.01);
+        // Along the way it came, still some, less the longer ago
+        let (near, far) = (touch.tint(column((20, 17))), touch.tint(column((8, 17))));
+        assert!(near > far && far > 0.05, "{near} then {far}");
+        // Gone, it all fades back to grey
+        for _ in 0..600 {
+            touch.step(&land, None, None, false, Some(1.0 / 60.0));
+        }
+        assert!((0..N * N).all(|k| touch.tint(k) == 0.0));
+    }
+
+    #[test]
+    fn a_click_flashes_colour_out_as_it_ripples() {
+        let land = flat();
+        let mut touch = Touch::new(None);
+        touch.step(&land, Some(pos2(1.0, 1.0)), over((17, 17)), true, Some(1.0 / 60.0));
+        let far = column((23, 17));
+        let mut most = 0.0f32;
+        for _ in 0..120 {
+            touch.step(&land, None, None, false, Some(1.0 / 60.0));
+            most = most.max(touch.tint(far));
+        }
+        assert!(most > 0.03, "{most}");
     }
 
     #[test]

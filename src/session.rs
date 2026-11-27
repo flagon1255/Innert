@@ -33,6 +33,10 @@ pub struct ModeMenu {
     /// A new game asked for that would take the place of a saved one, waiting to be said yes to.
     /// `--set confirm=freeroam` asks straight away, to see it in a screenshot.
     pub confirm: Option<Mode>,
+    /// The game whose Continue or New was last pointed at, or whose seed was changed, which the
+    /// map beside the menu shows, see App::map_wanted(). `--set map_of=new:realms` points at one
+    /// to start with, to see it in a screenshot.
+    pub looking: Option<MenuAction>,
 }
 
 /// What's picked at the Innert Gate or a portal home, done at the start of the next frame
@@ -324,7 +328,8 @@ impl App {
         }
         let margin = 2.0 * self.stream.as_ref().map_or(0.0, |s| s.strip as f64);
         let inside = (0..2).all(|i| at[i] > margin && at[i] < self.world.size[i] as f64 - margin);
-        let rebuild = seed_changed || scarred || !inside;
+        // Built afresh, too, from the empty world Innert starts on, see empty_world()
+        let rebuild = seed_changed || scarred || !inside || std::mem::take(&mut self.bare);
         self.camera.rotation.z = save.player.yaw;
         self.camera.rotation.x = save.player.pitch.clamp(-FRAC_PI_2, FRAC_PI_2);
         let eye = Vector3::new(0.0, 0.0, 1.6 * vpm);
@@ -372,6 +377,61 @@ impl App {
             self.save_game(false);
         }
         println!("Starting {} took {:.0} ms{}", mode.name(), began.elapsed().as_secs_f64() * 1000.0, if rebuild { ", the world to be built afresh" } else { "" });
+    }
+
+    /// What the map beside the menu Innert starts with is to show, see loading::Backdrop: the game
+    /// whose Continue or New was last pointed at in the menu, or whose seed was changed, at first
+    /// the Free Roam game saved, if there is one, or else a new one on the seed in the seed box.
+    /// Going on, round where it was saved, in the realm it was in; a new Free Roam game round where
+    /// it sets out, on that seed; a new journey in front of the Innert Gate.
+    pub(super) fn map_wanted(&self) -> crate::loading::MapWanted {
+        use crate::loading::{MapRealm, MapWanted};
+        let saves = &self.session.saves;
+        let looking = self.session.menu.looking.unwrap_or(if saves.saved(Mode::FreeRoam).is_some() { MenuAction::Continue(Mode::FreeRoam) } else { MenuAction::New(Mode::FreeRoam) });
+        let vpm = self.world.voxels_per_meter;
+        let start = default_start(&self.terrain, vpm) / vpm as f64;
+        let yaw = Scene::Terrain.initial_camera().rotation.z;
+        let ahead = [-yaw.sin(), yaw.cos()];
+        let settings = self.terrain_settings();
+        let saved = match looking {
+            MenuAction::Continue(mode) => saves.saved(mode).filter(|_| saves.enabled()),
+            _ => None,
+        };
+        match (looking, saved) {
+            (MenuAction::Continue(Mode::Realms), Some(save)) => {
+                let progress = save.realms.clone().unwrap_or_default();
+                let realm = (progress.realm as usize).min(REALMS.len() - 1);
+                let p = save.player.position;
+                MapWanted {
+                    settings: TerrainSettings { seed: REALMS[realm].seed, ..settings },
+                    at: Some([p[0] as f32, p[1] as f32]),
+                    realm: Some(MapRealm { realm, start: [start.x, start.y], ahead, progress: Some(progress) }),
+                    caption: format!("Realms · {}, where you left off", REALMS[realm].name),
+                    saved: true,
+                }
+            }
+            (MenuAction::Continue(_), Some(save)) => {
+                let p = save.player.position;
+                MapWanted {
+                    settings: TerrainSettings { seed: save.seed, ..settings },
+                    at: Some([p[0] as f32, p[1] as f32]),
+                    realm: None,
+                    caption: format!("Free Roam · seed {}, where you left off", save.seed),
+                    saved: true,
+                }
+            }
+            (MenuAction::Continue(Mode::Realms) | MenuAction::New(Mode::Realms), _) => MapWanted {
+                settings: TerrainSettings { seed: REALMS[0].seed, ..settings },
+                at: None,
+                realm: Some(MapRealm { realm: 0, start: [start.x, start.y], ahead, progress: None }),
+                caption: format!("Realms · a new journey from {}", REALMS[0].name),
+                saved: false,
+            },
+            _ => {
+                let seed = self.new_seed.min(realms::FREE_ROAM_SEEDS);
+                MapWanted { settings: TerrainSettings { seed, ..settings }, at: Some([start.x as f32, start.y as f32]), realm: None, caption: format!("Free Roam · a new world, seed {seed}"), saved: false }
+            }
+        }
     }
 
     /// Where things are in realm `realm`: as for Places::find(), round where Innert starts, looking
@@ -1407,12 +1467,20 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
             ui.add_space((ui.available_width() - if continuing { 260.0 } else { 126.0 }).max(0.0) * 0.5);
             if continuing {
                 // Going on, the likelier, lit as the button that goes on
-                if ui.add_sized(half, theme::primary("Continue", 17.0)).clicked() {
+                let button = ui.add_sized(half, theme::primary("Continue", 17.0));
+                if button.hovered() {
+                    menu.looking = Some(MenuAction::Continue(mode));
+                }
+                if button.clicked() {
                     picked = Some(MenuAction::Continue(mode));
                 }
                 ui.add_space(8.0);
             }
-            if ui.add_sized(half, egui::Button::new(RichText::new("New").size(18.0))).clicked() {
+            let button = ui.add_sized(half, egui::Button::new(RichText::new("New").size(18.0)));
+            if button.hovered() {
+                menu.looking = Some(MenuAction::New(mode));
+            }
+            if button.clicked() {
                 if saved.is_some() {
                     menu.confirm = Some(mode);
                 } else {
@@ -1423,10 +1491,15 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         if mode == Mode::FreeRoam {
             ui.horizontal(|ui| {
                 ui.add_space(70.0);
-                ui.add(egui::DragValue::new(seed).prefix("New world's seed: "));
-                if ui.button("Random").clicked() {
+                let typed = ui.add(egui::DragValue::new(seed).prefix("New world's seed: "));
+                let random = ui.button("Random");
+                if random.clicked() {
                     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
                     *seed = nanos % 100_000;
+                }
+                // The map beside the menu shows the new world's, to look it over before it's begun
+                if typed.hovered() || typed.changed() || random.hovered() || random.clicked() {
+                    menu.looking = Some(MenuAction::New(Mode::FreeRoam));
                 }
             });
         }
@@ -1455,11 +1528,13 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
     picked
 }
 
-/// The menu's window in the middle of the screen, `add` filling it: as tall as the window lets it
-/// be, scrolling through the rest when it's short
-pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
+/// The menu's window in the middle of the screen, or at the `left` of it for the map beside it, see
+/// loading::Backdrop, `add` filling it: as tall as the window lets it be, scrolling through the
+/// rest when it's short
+pub fn menu_window(ctx: &egui::Context, left: bool, add: impl FnOnce(&mut egui::Ui)) {
     let room = (ctx.screen_rect().height() - 2.0 * MENU_MARGIN - 24.0).max(120.0);
-    egui::Area::new(egui::Id::new("menu")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    let (anchor, x) = if left { (Align2::LEFT_CENTER, crate::loading::MENU_LEFT) } else { (Align2::CENTER_CENTER, 0.0) };
+    egui::Area::new(egui::Id::new("menu")).anchor(anchor, [x, 0.0]).show(ctx, |ui| {
         theme::framed(ui, theme::panel(MENU_MARGIN, 6.0), |ui| {
             ui.set_width(376.0);
             // Room for all of it, not only for as much as there was the frame before: an Area lays
@@ -1489,7 +1564,7 @@ mod tests {
             let mut end = egui::Rect::NOTHING;
             for _ in 0..4 {
                 let _ = ctx.run(input.clone(), |ctx| {
-                    menu_window(ctx, |ui| {
+                    menu_window(ctx, false, |ui| {
                         menu(&mut ModeMenu::default(), ui, true, Some(Mode::Realms), &saves, &mut 7, false);
                         end = ui.label("end").rect;
                     });

@@ -1507,6 +1507,9 @@ struct App {
     /// The land the loading screen showed, behind the menu until a game's started, answering the
     /// mouse, see loading::Backdrop
     backdrop: Option<loading::Backdrop>,
+    /// Whether the world's the empty one Innert starts on, with nothing built in it yet, see
+    /// empty_world(): not drawn behind the menu, and built afresh when a game's begun
+    bare: bool,
     /// The mode being played, Free Roam or Realms, and its save, see session.rs
     session: session::Session,
     /// The seed a new Free Roam game's landscape is to have, picked in the menu
@@ -1959,6 +1962,8 @@ struct Placed {
     indoors: bool,
     /// How the graphics card's memory is shared out, see memory.rs
     memory: memory::Plan,
+    /// Whether it's the empty world Innert starts its menu on, see empty_world()
+    bare: bool,
 }
 
 impl Placed {
@@ -2151,7 +2156,21 @@ impl Placed {
             let vpm = terrain.voxels_per_meter as f32;
             progress.show_land(terrain, start_in.unwrap_or([start_at.x as f32 / vpm, start_at.y as f32 / vpm]));
         }
-        let (world, landscape) = progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers));
+        // Innert starts on its menu with no world built, only the map of the one about to be
+        // entered beside it: the world's built once a game's begun, behind the loading screen, see
+        // App::begin(). Screenshot runs go straight into the world as they always have, as does
+        // one that starts a game straight away with `--set mode=`, and `--set world_at_start=1`
+        // builds it as before behind the menu.
+        let bare = scene.is_terrain()
+            && setting("menu").map_or(Capture::from_args().is_none() || loading::previewing(), |v| v == "1" || v == "true")
+            && setting("mode").is_none()
+            && setting("world_at_start").is_none_or(|v| v != "1" && v != "true");
+        let (world, landscape) = if bare {
+            progress.world_built();
+            (empty_world(&terrain, origin, &rivers), None)
+        } else {
+            progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers))
+        };
         // The first piece of the world is built with every core, the rest in the background while
         // the game goes on, leaving it some
         worldgen::leave_cores(2);
@@ -2466,8 +2485,18 @@ impl Placed {
             Some(landscape) => into_window(world, landscape),
             None => (world, Vec::new(), Vec::new()),
         };
-        Placed { scene, terrain, rivers, world, pieces, river_springs, camera, indoors, memory }
+        Placed { scene, terrain, rivers, world, pieces, river_springs, camera, indoors, memory, bare }
     }
+}
+
+/// A world with nothing in it yet, the size and at the place the landscape's would be, `origin` in
+/// voxels from the corner of the whole landscape, for Innert to start on with no world built, see
+/// Placed::place(): built afresh once a game's begun, at the level of the sea it would have
+fn empty_world(terrain: &TerrainSettings, origin: [i64; 2], rivers: &RiverCache) -> World {
+    // The sea's level as a world built there has it, from a few columns of one
+    let (_, few) = worldgen::generate_area(terrain, origin, [8, 8], rivers);
+    let strip = stream::STRIP_M * terrain.voxels_per_meter;
+    World::window(terrain.size(), strip, origin, terrain.voxels_per_meter, few.sea_level)
 }
 
 /// What App::new() puts the game together from: everything that takes a while, made on the loader
@@ -2595,7 +2624,7 @@ impl App {
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
         let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline, builds: builds_pipeline } = pipelines;
-        let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory } = placed;
+        let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory, bare } = placed;
         let stream = scene.is_terrain().then(|| stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, memory_allocator.clone()));
         // The water has what it needs of it now
         world.forget_water_surface();
@@ -2618,7 +2647,8 @@ impl App {
         let capture = Capture::from_args();
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
-        let walk = scene.is_terrain() && flag("walk", capture.is_none());
+        // No one's stood in the empty world Innert starts on till a game's begun
+        let walk = scene.is_terrain() && flag("walk", capture.is_none()) && !bare;
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
         let player = walk.then(|| if indoors { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
@@ -3089,6 +3119,7 @@ impl App {
             menu_open,
             started: !menu_open,
             backdrop: None,
+            bare,
             session,
             // `--set new_seed=42` for a new Free Roam game on that seed
             new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
@@ -3172,6 +3203,17 @@ impl App {
         }
         // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
         app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
+        // `--set map_of=new:realms` or `continue:freeroam` has the map beside the menu show that
+        // game, as pointing at its button does
+        app.session.menu.looking = setting("map_of").and_then(|v| {
+            let (which, mode) = v.split_once(':')?;
+            let mode = save::Mode::parse(mode)?;
+            match which {
+                "new" => Some(session::MenuAction::New(mode)),
+                "continue" => Some(session::MenuAction::Continue(mode)),
+                _ => None,
+            }
+        });
         // `--set creator=freeroam` opens the window a new character's made in, as New does, with
         // what `--set class=priest`, `name=`, `skin=` and the rest say chosen, turned `creator_turn`
         // radians round, to see it in a screenshot with `menu=1 gui=1`
@@ -4400,7 +4442,34 @@ impl App {
         if let Some(pick) = self.session.creator_pick.take() {
             self.creator_picked(pick);
         }
+        // `--set pick=new:freeroam@120` or `continue:realms@120` in a screenshot run starts that
+        // game at that frame, as its button would, a new one with the character the settings make,
+        // and says how long it took till its world was there to play in
+        static PICK: std::sync::OnceLock<Option<(bool, save::Mode, usize)>> = std::sync::OnceLock::new();
+        static PICKED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+        let pick = *PICK.get_or_init(|| {
+            let v = settings_from_args().into_iter().find(|(k, _)| k == "pick")?.1;
+            let (what, at) = v.split_once('@')?;
+            let (which, mode) = what.split_once(':')?;
+            Some((which == "new", save::Mode::parse(mode)?, at.parse().ok()?))
+        });
+        if let (Some((new, mode, at)), Some(frame)) = (pick, self.capture.as_ref().map(|c| c.frame_times.len()))
+            && frame == at
+        {
+            *PICKED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            let save = if new { None } else { self.session.saves.saved(mode).cloned() };
+            self.begin(mode, save);
+        }
         self.update_session(delta_time.min(0.25));
+        let mut picked = PICKED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(when) = *picked
+            && !self.session.arriving
+            && !self.session.find_ground
+        {
+            println!("PICKED: the world there to play in, the loading screen gone, {:.0} ms after the game was started", when.elapsed().as_secs_f64() * 1000.0);
+            *picked = None;
+        }
+        drop(picked);
         // `--set save_at=300` saves at that frame of a screenshot run, saying what it saved
         static SAVE_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
         let save_at = *SAVE_AT.get_or_init(|| settings_from_args().into_iter().find(|(k, _)| k == "save_at").and_then(|(_, v)| v.parse().ok()));
@@ -6024,6 +6093,8 @@ impl App {
         // Lower resolution while the view changes, full detail once it settles, as much as the
         // GPU's memory has room for
         self.update_render_images(window_size.into());
+        // What the map beside the menu's to show, as the menu was last frame, see loading::Backdrop
+        let map_wanted = self.backdrop.as_ref().filter(|_| self.menu_open && !self.started).map(|_| self.map_wanted());
         // For the signposts' words, see compass.rs
         let landscape = self.terrain_settings();
         let rcx = self.rcx.as_mut().unwrap();
@@ -6141,13 +6212,13 @@ impl App {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
-                // And the land the game's starting on over it, see loading::Backdrop
-                if let Some(backdrop) = &mut self.backdrop {
-                    backdrop.paint(&ctx);
+                // And the map of the world about to be entered over it, see loading::Backdrop
+                if let (Some(backdrop), Some(wanted)) = (&mut self.backdrop, &map_wanted) {
+                    backdrop.paint(&ctx, wanted);
                 }
                 // Resume, each mode with Continue and New, Settings and Quit, done at the start of
                 // the next frame, see menu_picked(), and how to play under them
-                session::menu_window(&ctx, |ui| {
+                session::menu_window(&ctx, map_wanted.is_some(), |ui| {
                     let session = &mut self.session;
                     let picked = session::menu(&mut session.menu, ui, self.started, session.mode, &session.saves, &mut self.new_seed, self.show_settings);
                     if picked.is_some() {
@@ -6784,7 +6855,10 @@ impl App {
             )
             .unwrap();
 
-        let shaded = self.render_mode == RenderMode::Shaded;
+        // The empty world Innert starts on isn't drawn at all behind its menu, which has the
+        // loading screen's page behind the map instead, see loading::Backdrop
+        let bare = self.bare && self.menu_open;
+        let shaded = self.render_mode == RenderMode::Shaded && !bare;
         // The sun map only changes with the sun or the world
         if shaded && sunbeams && self.haze > 0.0 && self.sun_map_for != Some(sun_direction) {
             let sun_map_constants = PushConstants {
@@ -6805,14 +6879,16 @@ impl App {
         builder
             .push_constants(self.render_pipeline.layout().clone(), 0, push_constants)
             .unwrap();
-        unsafe {
-            builder
-                .dispatch([
-                    render_extent[0].div_ceil(8),
-                    render_extent[1].div_ceil(8),
-                    1,
-                ])
-                .unwrap();
+        if !bare {
+            unsafe {
+                builder
+                    .dispatch([
+                        render_extent[0].div_ceil(8),
+                        render_extent[1].div_ceil(8),
+                        1,
+                    ])
+                    .unwrap();
+            }
         }
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "trace");
