@@ -1266,7 +1266,7 @@ impl Game {
             combat: Combat::new(seed, ANIMAL_MODELS as u32),
             leaves: Leaves::new(seed),
             sea: sea::Sea::default(),
-            models: std::sync::Arc::new(crate::assets::apply_looks(animals::animal_models())),
+            models: std::sync::Arc::new(animals::made_ahead()),
             models_version: 0,
             seed,
             rng: hash(seed ^ 0x9a3e),

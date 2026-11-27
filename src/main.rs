@@ -2140,6 +2140,11 @@ impl Placed {
         };
         // Where the camera starts in that world
         let start_camera = voxels_to_camera(start_at - Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), terrain.size());
+        // The land round there's shown rising on the loading screen as it's built
+        if scene.is_terrain() {
+            let vpm = terrain.voxels_per_meter as f32;
+            progress.show_land(terrain, start_in.unwrap_or([start_at.x as f32 / vpm, start_at.y as f32 / vpm]));
+        }
         let (world, landscape) = progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers));
         // The first piece of the world is built with every core, the rest in the background while
         // the game goes on, leaving it some
@@ -2511,6 +2516,9 @@ impl Loaded {
         if progress.cancelled() {
             return None;
         }
+        // The creatures are made meanwhile, on every core now the world's built, rather than
+        // once the game's put together, which held the loading screen still for a second or more
+        let creatures = std::thread::Builder::new().name("creatures".into()).spawn(animals::make_ahead).ok();
 
         let settings = settings_from_args();
         let flag = |key: &str, default: bool| settings.iter().find(|(k, _)| k == key).map_or(default, |(_, v)| v == "true" || v == "1");
@@ -2558,6 +2566,10 @@ impl Loaded {
         });
 
         note_vram(&gpu.device, "the water made");
+        progress.run(Step::Creatures, || creatures.map(|c| c.join()));
+        if progress.cancelled() {
+            return None;
+        }
         let sun_map = get_history_image_view(
             memory_allocator.clone(),
             [SUN_MAP_SIZE, SUN_MAP_SIZE],
@@ -5958,16 +5970,16 @@ impl App {
 
             // Dark while the world's built afresh round the camera, gone too fast for the strips to
             // keep up, see stream.rs
-            if let Some(dark) = self.stream.as_ref().and_then(|s| s.teleport.as_ref()).map(|t| t.dark)
-                && dark > 0.0
+            if let Some(teleport) = self.stream.as_mut().and_then(|s| s.teleport.as_mut())
+                && teleport.dark > 0.0
             {
+                let dark = teleport.dark.clamp(0.0, 1.0);
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("moving on")));
-                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark.clamp(0.0, 1.0) * 255.0) as u8));
-                // Going on with a game somewhere the world wasn't, it says so, as that takes a
-                // moment or two
-                if self.session.arriving {
-                    let shade = (dark.clamp(0.0, 1.0) * 200.0) as u8;
-                    painter.text(ctx.screen_rect().center(), Align2::CENTER_CENTER, "The world takes shape...", egui::FontId::proportional(22.0), Color32::from_gray(shade));
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark * 255.0) as u8));
+                // Going on with a game somewhere the world wasn't, which takes a few seconds, the
+                // loading screen's shown, the land there rising on it as it's built
+                if let Some(board) = &mut teleport.board {
+                    board.paint(&ctx, dark);
                 }
             }
             // Wings spread, said under the crosshair too

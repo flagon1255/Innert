@@ -2,15 +2,20 @@
 //! is made on other threads, see Loaded::load(). Once it's all there the game takes over the same
 //! window, with what's drawn to it, the swapchain and the GUI, and the loading screen fades away
 //! over the menu.
+//!
+//! It's black and white as the rest of the interface, see theme.rs: the name in blackletter, and
+//! under it the very land the player will stand on rising as the world's built, see land.rs, then
+//! the bar, what's being made and a tip. The same screen's shown over the game while the world's
+//! built afresh round where it goes on, a game started or a realm gone to, see Board.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, LayerId, Mesh, Pos2, Rect, Shape, Stroke, pos2, vec2};
+use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, LayerId, Mesh, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2};
 use egui_winit_vulkano::{Gui, GuiConfig};
 use std::ops::Range;
 
@@ -37,11 +42,16 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{App, Capture, Gpu, Loaded, get_swapchain_images, save_screen, settings_from_args, startup, window_attributes, worldgen};
+use crate::worldgen::{self, TerrainSettings};
+use crate::{App, Capture, Gpu, Loaded, get_swapchain_images, save_screen, settings_from_args, startup, window_attributes};
+
+mod land;
+
+use land::{Land, Phase};
 
 /// The loading screen's drawn this often
 const FRAME_TIME: Duration = Duration::from_micros(16_667);
-/// How long the loading screen takes to fade in over the night sky's color the window's filled with
+/// How long the loading screen takes to fade in over the black the window's filled with
 const FADE_IN_SECONDS: f32 = 0.35;
 /// How long the loading screen takes to fade away over the menu
 const FADE_SECONDS: f32 = 0.8;
@@ -63,6 +73,9 @@ pub enum Step {
 
 const STEPS: usize = 10;
 
+/// The steps of building the world, in the order generate_terrain() goes through them
+const WORLD: [Step; 5] = [Step::Ground, Step::Rivers, Step::Land, Step::Voxels, Step::Grass];
+
 impl Step {
     const ALL: [Step; STEPS] = [
         Step::Graphics,
@@ -81,14 +94,14 @@ impl Step {
         match self {
             Step::Graphics => "Starting the graphics card",
             Step::Shaders => "Preparing the shaders",
-            Step::Ground => "Shaping the land",
-            Step::Rivers => "Carving rivers",
-            Step::Land => "Raising towns and castles",
-            Step::Voxels => "Laying down voxels",
-            Step::Grass => "Growing grass",
+            Step::Ground => "Raising the land",
+            Step::Rivers => "Carving the rivers",
+            Step::Land => "Founding towns and castles",
+            Step::Voxels => "Laying the land voxel by voxel",
+            Step::Grass => "Growing the grass and the forests",
             Step::Upload => "Sending the world to the graphics card",
-            Step::Water => "Filling the water",
-            Step::Creatures => "Carving creatures",
+            Step::Water => "Filling the seas",
+            Step::Creatures => "Waking the beasts",
         }
     }
 
@@ -127,19 +140,44 @@ const COMPILING_SHADERS_MS: u32 = 15_000;
 pub struct Progress {
     /// When each step started and finished
     times: Mutex<[(Option<Instant>, Option<Instant>); STEPS]>,
+    /// About how long each step should take, in milliseconds, see Step::expected()
+    expected: [f32; STEPS],
     /// How long the shaders should take
     shaders_ms: AtomicU32,
     /// Set once the window's closed while loading, to stop where it can
     cancelled: AtomicBool,
+    /// The land round where the player's to stand, to show it being built, once it's been read
+    /// off the landscape, see show_land()
+    land: Mutex<Option<Arc<Land>>>,
+    /// Whether it's the game starting, whose steps are timed, see startup.rs
+    starting: bool,
 }
 
 impl Progress {
     fn new() -> Self {
         Progress {
             times: Mutex::new([(None, None); STEPS]),
+            expected: Step::ALL.map(Step::expected),
             shaders_ms: AtomicU32::new(Step::Shaders.expected() as u32),
             cancelled: AtomicBool::new(false),
+            land: Mutex::new(None),
+            starting: true,
         }
+    }
+
+    /// For the world being built afresh round where a game goes on, see stream.rs: the graphics
+    /// card and the creatures are there already, and what's built goes over to it with the frames
+    pub fn arriving() -> Arc<Self> {
+        let mut progress = Progress { starting: false, ..Progress::new() };
+        progress.expected[Step::Upload as usize] = 600.0;
+        progress.expected[Step::Water as usize] = 150.0;
+        let now = Instant::now();
+        for step in [Step::Graphics, Step::Shaders, Step::Creatures] {
+            progress.expected[step as usize] = 0.0;
+            progress.times()[step as usize] = (Some(now), Some(now));
+        }
+        progress.shaders_ms.store(0, Ordering::Relaxed);
+        Arc::new(progress)
     }
 
     fn times(&self) -> std::sync::MutexGuard<'_, [(Option<Instant>, Option<Instant>); STEPS]> {
@@ -156,7 +194,10 @@ impl Progress {
         if done.is_none() {
             let now = Instant::now();
             *done = Some(now);
-            startup::finished(step.label(), now - started.unwrap_or(now));
+            let took = now - *started.get_or_insert(now);
+            if self.starting {
+                startup::finished(step.label(), took);
+            }
         }
     }
 
@@ -180,7 +221,15 @@ impl Progress {
     /// What `build` builds, with each step generate_terrain() goes through on the way counted, see
     /// worldgen::on_step()
     pub fn building_world<T>(self: &Arc<Self>, build: impl FnOnce() -> T) -> T {
-        const WORLD: [Step; 5] = [Step::Ground, Step::Rivers, Step::Land, Step::Voxels, Step::Grass];
+        self.watch_world();
+        let built = build();
+        self.world_built();
+        built
+    }
+
+    /// Has each step generate_terrain() goes through on this thread from here on counted, until
+    /// world_built()
+    pub fn watch_world(self: &Arc<Self>) {
         let progress = self.clone();
         worldgen::on_step(Some(Box::new(move |n| {
             if let Some(&before) = n.checked_sub(1).and_then(|n| WORLD.get(n)) {
@@ -190,12 +239,28 @@ impl Progress {
                 progress.begin(step);
             }
         })));
-        let built = build();
+    }
+
+    /// The world's built, see watch_world(), with all it takes besides on this thread
+    pub fn world_built(&self) {
         worldgen::on_step(None);
         for step in WORLD {
             self.end(step);
         }
-        built
+    }
+
+    /// Reads the land round `middle`, in meters from the corner of the whole landscape, off the
+    /// landscape `settings` build, on a thread of its own, to show it being built
+    pub fn show_land(self: &Arc<Self>, settings: TerrainSettings, middle: [f32; 2]) {
+        let progress = self.clone();
+        let _ = std::thread::Builder::new().name("land shown".into()).spawn(move || {
+            let land = Land::around(&settings, middle);
+            *progress.land.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(land));
+        });
+    }
+
+    fn land(&self) -> Option<Arc<Land>> {
+        self.land.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn cancel(&self) {
@@ -206,27 +271,36 @@ impl Progress {
         self.cancelled.load(Ordering::Relaxed)
     }
 
+    fn expected(&self, step: Step) -> f32 {
+        if step == Step::Shaders { self.shaders_ms.load(Ordering::Relaxed) as f32 } else { self.expected[step as usize] }
+    }
+
+    /// About how many milliseconds `step` has still to go, at `times`: what's expected less what's
+    /// gone, then less and less of what's left the longer it takes past that, so it always seems
+    /// to be getting on
+    fn left(&self, times: &[(Option<Instant>, Option<Instant>); STEPS], step: Step) -> f32 {
+        let expected = self.expected(step);
+        match times[step as usize] {
+            (_, Some(_)) => 0.0,
+            (Some(started), None) => expected * still_to_go(started.elapsed().as_secs_f32() * 1000.0 / expected.max(1.0)),
+            (None, None) => expected,
+        }
+    }
+
     /// How far along it all is, from 0 to 1, by how long what's left should take, and what's being
     /// made meanwhile
     fn estimate(&self) -> (f32, Step) {
         let times = self.times();
-        let shaders = self.shaders_ms.load(Ordering::Relaxed) as f32;
         let (mut total, mut left, mut current) = ([0.0f32; 3], [0.0f32; 3], [None; 3]);
         for step in Step::ALL {
-            let expected = if step == Step::Shaders { shaders } else { step.expected() };
             let track = step.track();
-            total[track] += expected;
-            left[track] += match times[step as usize] {
-                (_, Some(_)) => 0.0,
-                // Taking longer than expected, it's still not done
-                (Some(started), None) => (expected - started.elapsed().as_secs_f32() * 1000.0).max(expected * 0.15),
-                (None, None) => expected,
-            };
+            total[track] += self.expected(step);
+            left[track] += self.left(&times, step);
             if times[step as usize].1.is_none() && current[track].is_none() {
                 current[track] = Some(step);
             }
         }
-        let fraction = 1.0 - (left[0].max(left[1]) + left[2]) / (total[0].max(total[1]) + total[2]);
+        let fraction = 1.0 - (left[0].max(left[1]) + left[2]) / (total[0].max(total[1]) + total[2]).max(1.0);
         // Whichever of the graphics card and the world has longer to go, then the rest in turn
         let step = match current {
             [None, None, rest] => rest,
@@ -235,6 +309,27 @@ impl Progress {
         };
         (fraction.clamp(0.0, 1.0), step.unwrap_or(Step::Creatures))
     }
+
+    /// How far the land's built, see land.rs: risen as the ground, the rivers, what's on it and
+    /// its voxels are made, its woods grown with the grass, and the seas filling once that's done
+    fn phase(&self) -> Phase {
+        let times = self.times();
+        let rising = [Step::Ground, Step::Rivers, Step::Land, Step::Voxels];
+        let total: f32 = rising.iter().map(|&s| self.expected(s)).sum();
+        let left: f32 = rising.iter().map(|&s| self.left(&times, s)).sum();
+        Phase {
+            rise: 1.0 - left / total.max(1.0),
+            grow: 1.0 - self.left(&times, Step::Grass) / self.expected(Step::Grass).max(1.0),
+            fill: if times[Step::Grass as usize].1.is_some() { 1.0 } else { 0.0 },
+        }
+    }
+}
+
+/// How much of a step's expected time it has still to go, `x` times its expected time in: in step
+/// with the time till then, then ever less of the last part, never quite none
+fn still_to_go(x: f32) -> f32 {
+    const LAST: f32 = 0.15;
+    if x < 1.0 { 1.0 - (1.0 - LAST) * x.max(0.0) } else { LAST * (-(x - 1.0) * 1.5).exp() }
 }
 
 /// `--set loading_preview=1` in screenshot runs: the loading screen's drawn as it is in play,
@@ -414,7 +509,7 @@ impl Launcher {
         // Until the game takes over, see take_over()
         hurry(true);
         let out_of_sight = Capture::from_args().is_some();
-        let preview = previewing().then(|| Preview { path: Capture::from_args().unwrap().path, taken: 0 });
+        let preview = previewing().then(|| Preview::new(Capture::from_args().unwrap().path));
         let now = Instant::now();
         let loading = Loading {
             out_of_sight,
@@ -423,7 +518,7 @@ impl Launcher {
             drawn_once: false,
             gpu: None,
             screen: None,
-            look: Look { start: now, last: now, fraction: 0.0, step: Step::Graphics, compiling: false },
+            look: Look::new(),
             next_frame: now,
             preview,
             loaded: None,
@@ -502,7 +597,7 @@ impl Launcher {
         // The game runs as it always has
         hurry(false);
         if drawn {
-            fade_away(&screen.gui.context(), look);
+            fade_away(&screen.gui.context(), look, self.progress.land());
         }
         app.attach(screen, event_loop);
         self.state = State::Playing(app);
@@ -602,7 +697,7 @@ struct Loading {
 }
 
 impl Loading {
-    /// Makes the window and shows it straight away, filled with the night sky's color until the
+    /// Makes the window and shows it straight away, filled with the loading screen's black until the
     /// graphics card's going and the loading screen can be drawn in it
     fn open(&mut self, event_loop: &ActiveEventLoop, progress: &Progress) {
         if self.window.is_some() {
@@ -654,7 +749,7 @@ impl Loading {
             presented: Presented::default(),
         });
         if self.drawn {
-            // Everything moving in it starts from now, fading in over the night sky's color
+            // Everything moving in it starts from now, fading in over the black
             let now = Instant::now();
             (self.look.start, self.look.last) = (now, now);
             self.draw(progress, false);
@@ -742,10 +837,12 @@ impl Loading {
         }
 
         let (fraction, step) = progress.estimate();
-        self.look.advance(fraction, step, progress.shaders_compiling());
+        self.look.advance(fraction, step, progress.shaders_compiling(), progress.phase());
         let look = self.look.clone();
         let appearing = smoothstep(look.start.elapsed().as_secs_f32() / FADE_IN_SECONDS);
-        screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None));
+        let land = progress.land();
+        let words = Words { title: "Innert", subtitle: None };
+        screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None, land.as_deref(), &words));
 
         let view = screen.image_views[image_index as usize].clone();
         let image = view.image().clone();
@@ -753,7 +850,7 @@ impl Loading {
         let mut builder = AutoCommandBufferBuilder::primary(gpu.command_buffer_allocator.clone(), gpu.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
         builder
             .clear_color_image(ClearColorImageInfo {
-                clear_value: [NIGHT[0] as f32 / 255.0, NIGHT[1] as f32 / 255.0, NIGHT[2] as f32 / 255.0, 1.0].into(),
+                clear_value: [INK[0] as f32 / 255.0, INK[1] as f32 / 255.0, INK[2] as f32 / 255.0, 1.0].into(),
                 ..ClearColorImageInfo::image(image.clone())
             })
             .unwrap();
@@ -809,28 +906,50 @@ impl Loading {
     }
 }
 
-/// Shots of the loading screen, see previewing()
+//// Shots of the loading screen, see previewing()
 struct Preview {
     /// The screenshot's, which they're named after
     path: PathBuf,
     taken: usize,
+    /// With `--set loading_shots=12`, that many shots as the bar fills, one each time it's gone
+    /// another twelfth of the way, as well as the last: for a sheet of it all through a load
+    every: usize,
 }
 
 impl Preview {
+    fn new(path: PathBuf) -> Self {
+        let every = settings_from_args().iter().find(|(k, _)| k == "loading_shots").and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
+        Preview { path, taken: 0, every }
+    }
+
     /// Where the next shot goes if it's time for one: once it's faded in, once loading's halfway
-    /// and on the `last`, before the game takes over
+    /// and on the `last`, before the game takes over, or with `every` as the bar fills
     fn next(&mut self, fraction: f32, appeared: bool, last: bool) -> Option<PathBuf> {
-        let name = match self.taken {
-            0 if appeared && !last => "early",
-            0..3 if last => "loaded",
-            1 if fraction >= 0.45 => "middle",
-            _ => return None,
+        const DONE: usize = usize::MAX;
+        let name = if self.taken == DONE {
+            return None;
+        } else if last {
+            "loaded".to_owned()
+        } else if self.every > 0 {
+            if !appeared || fraction * (self.every as f32) < self.taken as f32 {
+                return None;
+            }
+            format!("{:02}", self.taken)
+        } else {
+            match self.taken {
+                0 if appeared => "early".to_owned(),
+                1 if fraction >= 0.45 => "middle".to_owned(),
+                _ => return None,
+            }
         };
-        self.taken = if last { 3 } else { self.taken + 1 };
+        self.taken = if last { DONE } else { self.taken + 1 };
         let stem = self.path.file_stem().map_or("innert".into(), |s| s.to_string_lossy());
         Some(self.path.with_file_name(format!("{stem}-loading-{name}.png")))
     }
 }
+
+/// How many loading screens have been shown, so each starts on another tip
+static SHOWN: AtomicU32 = AtomicU32::new(0);
 
 /// What the loading screen shows, changing as loading goes on
 #[derive(Clone)]
@@ -843,23 +962,75 @@ struct Look {
     step: Step,
     /// Whether the shaders are being compiled, which only takes so long the first time
     compiling: bool,
+    /// How far the land's built, see land.rs, following loading at a pace that can be seen
+    phase: Phase,
+    /// The tip it starts on
+    tip: usize,
 }
 
 impl Look {
-    fn advance(&mut self, target: f32, step: Step, compiling: bool) {
+    fn new() -> Self {
+        let now = Instant::now();
+        let tip = SHOWN.fetch_add(1, Ordering::Relaxed) as usize;
+        Look { start: now, last: now, fraction: 0.0, step: Step::Graphics, compiling: false, phase: Phase::default(), tip }
+    }
+
+    fn advance(&mut self, target: f32, step: Step, compiling: bool, phase: Phase) {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
         self.fraction = (self.fraction + (target - self.fraction) * (1.0 - (-dt * 4.0).exp())).max(self.fraction);
         self.step = step;
         self.compiling = compiling;
+        // The land comes up, the woods grow and the seas fill no faster than this many times a
+        // second, so it's seen however quickly they're made
+        let follow = |shown: f32, wanted: f32, most: f32| (shown + ((wanted - shown) * (1.0 - (-dt * 5.0).exp())).min(most * dt)).max(shown).min(1.0);
+        self.phase = Phase { rise: follow(self.phase.rise, phase.rise, 0.8), grow: follow(self.phase.grow, phase.grow, 1.0), fill: follow(self.phase.fill, phase.fill, 0.7) };
+    }
+}
+
+/// The words over the loading screen: its title, in blackletter, and under it what's being loaded
+struct Words<'a> {
+    title: &'a str,
+    subtitle: Option<&'a str>,
+}
+
+/// The loading screen over the game while the world's built afresh round where it goes on, behind
+/// the dark, see stream.rs: as the one Innert starts with, with the land round where the player's
+/// to stand rising on it
+pub struct Board {
+    progress: Arc<Progress>,
+    look: Look,
+    title: String,
+    subtitle: String,
+}
+
+impl Board {
+    /// Showing how far `progress` has got, under `title` and `subtitle`
+    pub fn new(progress: Arc<Progress>, title: String, subtitle: String) -> Self {
+        Board { progress, look: Look::new(), title, subtitle }
+    }
+
+    pub fn progress(&self) -> &Arc<Progress> {
+        &self.progress
+    }
+
+    /// Draws it over everything else in `ctx`, `alpha` of the way opaque, fading in as it's first
+    /// shown
+    pub fn paint(&mut self, ctx: &egui::Context, alpha: f32) {
+        let (fraction, step) = self.progress.estimate();
+        self.look.advance(fraction, step, false, self.progress.phase());
+        let appearing = smoothstep(self.look.start.elapsed().as_secs_f32() / FADE_IN_SECONDS);
+        let land = self.progress.land();
+        let words = Words { title: &self.title, subtitle: Some(&self.subtitle) };
+        paint(ctx, &self.look, alpha * appearing, LayerId::new(egui::Order::Tooltip, egui::Id::new("loading screen")), None, land.as_deref(), &words);
     }
 }
 
 /// Fades the loading screen away over the game's first frames: it's drawn over them by the GUI
-/// the game goes on drawing with, the bar filling up as it goes, and the name gliding over to
-/// where the menu has it
-fn fade_away(ctx: &egui::Context, look: Look) {
+/// the game goes on drawing with, the bar filling up and the land finishing as it goes, and the
+/// name gliding over to where the menu has it
+fn fade_away(ctx: &egui::Context, look: Look, land: Option<Arc<Land>>) {
     let began = Mutex::new(None::<Instant>);
     ctx.on_end_pass(
         "loading screen fading away",
@@ -870,17 +1041,21 @@ fn fade_away(ctx: &egui::Context, look: Look) {
                 return;
             }
             let mut look = look.clone();
-            look.fraction += (1.0 - look.fraction) * smoothstep(t / (FADE_SECONDS * 0.3));
+            let done = smoothstep(t / (FADE_SECONDS * 0.3));
+            look.fraction += (1.0 - look.fraction) * done;
+            let p = look.phase;
+            look.phase = Phase { rise: p.rise + (1.0 - p.rise) * done, grow: p.grow + (1.0 - p.grow) * done, fill: p.fill + (1.0 - p.fill) * done };
             let alpha = 1.0 - smoothstep(t / FADE_SECONDS);
             // Where the menu is, see App::render(), if it's up
             let menu = ctx.memory(|m| m.area_rect(egui::Id::new("menu")));
             let glide = menu.map(|menu| (menu, t / (FADE_SECONDS * 0.55)));
-            paint(ctx, &look, alpha, LayerId::new(egui::Order::Foreground, egui::Id::new("loading screen")), glide);
+            let words = Words { title: "Innert", subtitle: None };
+            paint(ctx, &look, alpha, LayerId::new(egui::Order::Foreground, egui::Id::new("loading screen")), glide, land.as_deref(), &words);
         }),
     );
 }
 
-/// Puts this thread ahead of the world being built while loading, which keeps every core busy,
+// Puts this thread ahead of the world being built while loading, which keeps every core busy,
 /// or back level with it. The graphics card started half again as slowly without, and the loading
 /// screen would have to wait its turn to be drawn.
 #[cfg(windows)]
@@ -900,11 +1075,11 @@ fn hurry(ahead: bool) {
 #[cfg(not(windows))]
 fn hurry(_ahead: bool) {}
 
-/// The color the window's filled with until the loading screen's drawn in it, its night sky's at
-/// the top, which it fades in over
-const NIGHT: [u8; 3] = [7, 10, 26];
+/// The near black of the loading screen, which the window's filled with until it's drawn in it,
+/// and it fades in over
+const INK: [u8; 3] = [8, 8, 8];
 
-/// Fills the window with the night sky's color, before anything can be drawn in it with the
+/// Fills the window with the loading screen's black, before anything can be drawn in it with the
 /// graphics card, so it can be shown straight away rather than with whatever's left in it
 #[cfg(windows)]
 fn fill(window: &Window) {
@@ -940,7 +1115,7 @@ fn fill(window: &Window) {
         }
         let mut rect = WinRect::default();
         GetClientRect(hwnd, &mut rect);
-        let brush = CreateSolidBrush(NIGHT[0] as u32 | (NIGHT[1] as u32) << 8 | (NIGHT[2] as u32) << 16);
+        let brush = CreateSolidBrush(INK[0] as u32 | (INK[1] as u32) << 8 | (INK[2] as u32) << 16);
         if !brush.is_null() {
             FillRect(dc, &rect, brush);
             DeleteObject(brush);
@@ -972,15 +1147,6 @@ fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// Between `a` and `b`, `t` of the way
-fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    [0, 1, 2].map(|i| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).round() as u8)
-}
-
-fn shade(c: [u8; 3], by: f32) -> [u8; 3] {
-    c.map(|v| (v as f32 * by).round().clamp(0.0, 255.0) as u8)
-}
-
 /// A glow, `color` in the middle fading out to nothing `radius` away
 fn glow(mesh: &mut Mesh, center: Pos2, radius: egui::Vec2, color: Color32) {
     const SIDES: u32 = 40;
@@ -995,126 +1161,51 @@ fn glow(mesh: &mut Mesh, center: Pos2, radius: egui::Vec2, color: Color32) {
     }
 }
 
-/// A rectangle shading from `top` to `bottom`
-fn gradient(mesh: &mut Mesh, rect: Rect, top: Color32, bottom: Color32) {
-    let first = mesh.vertices.len() as u32;
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(rect.right_bottom(), bottom);
-    mesh.colored_vertex(rect.left_bottom(), bottom);
-    mesh.add_triangle(first, first + 1, first + 2);
-    mesh.add_triangle(first, first + 2, first + 3);
-}
+/// Tips shown along the foot of the loading screen, a few seconds each
+const TIPS: [&str; 12] = [
+    "Hold G at a tree, rock or clay to gather it. Tools gather two to four times as fast.",
+    "Press B to build, then 1 to 9 and 0 to pick a piece, its cost beside it. R turns it.",
+    "Once you have wings, jump, then hold Space in the air to glide.",
+    "Merchants sell wings, and bosses and chests leave them.",
+    "Press E to pick things up, open chests, trade and pet animals.",
+    "Right click swings heavily, or eats what's in your hand.",
+    "A legendary weapon has a special on R, and right click calls on its power.",
+    "Crossbows and guns reload with Q or right click. T changes what they shoot.",
+    "Press I for your inventory, and craft tools there. M opens the map.",
+    "Draw a bow by holding right click, then click to loose the arrow.",
+    "Shift runs and F flies. F1 opens the settings, Esc the menu.",
+    "In Realms, beat a realm's three raid bosses for its Innert blocks, and set them in the gate.",
+];
+/// How long each tip's shown, in seconds
+const TIP_SECONDS: f32 = 7.0;
 
-/// Draws the loading screen over the whole window in `layer`, `alpha` of the way opaque. Night
-/// gives way to dawn over a blocky landscape as loading goes on, with a little cube turning over
-/// the name. With `glide`, the menu and how far from 0 to 1 the name's moved over to where it has
-/// it, staying solid until it's there.
-fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>) {
+/// Draws the loading screen over the whole window in `layer`, `alpha` of the way opaque: on near
+/// black, framed as a printed page, the title in blackletter, under it `land` rising as it's
+/// built, then the bar, what's being made and a tip. With `glide`, the menu and how far from 0 to
+/// 1 the name's moved over to where it has it, staying solid until it's there.
+fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>, land: Option<&Land>, words: &Words) {
+    use crate::theme;
     let painter = ctx.layer_painter(layer);
     let screen = ctx.screen_rect();
     let (w, h) = (screen.width(), screen.height());
     let t = look.start.elapsed().as_secs_f32();
-    let dawn = smoothstep(look.fraction);
     let fade = |c: Color32| c.gamma_multiply(alpha);
+
+    // Near black, lit a little behind the land, framed in two fine rules as a printed page
+    painter.rect_filled(screen, 0.0, fade(rgb(INK)));
     let mut mesh = Mesh::default();
+    glow(&mut mesh, pos2(w * 0.5, h * 0.5), vec2(w * 0.46, h * 0.42), fade(Color32::from_gray(18)));
+    painter.add(Shape::mesh(mesh));
+    let page = screen.shrink((w.min(h) * 0.025).clamp(10.0, 22.0));
+    painter.rect_stroke(page, 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(40))), StrokeKind::Inside);
+    painter.rect_stroke(page.shrink(4.0), 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(16))), StrokeKind::Inside);
 
-    // The sky, night giving way to dawn
-    let horizon = h * 0.64;
-    let sky = [
-        (0.0, mix(NIGHT, [30, 46, 92], dawn)),
-        (0.42, mix([17, 24, 52], [84, 104, 158], dawn)),
-        (0.64, mix([46, 38, 74], [236, 168, 116], dawn)),
-        (1.0, mix([24, 20, 40], [120, 84, 80], dawn)),
-    ];
-    for pair in sky.windows(2) {
-        let rect = Rect::from_min_max(pos2(0.0, pair[0].0 * h), pos2(w, pair[1].0 * h));
-        gradient(&mut mesh, rect, fade(rgb(pair[0].1)), fade(rgb(pair[1].1)));
-    }
-
-    // Stars, fading as it gets light
-    let starlight = (1.0 - look.fraction * 1.4).max(0.0);
-    for i in 0..110 {
-        let at = pos2(hash(i, 1) * w, hash(i, 2).powf(1.5) * horizon * 0.95);
-        let twinkle = 0.55 + 0.45 * (t * (0.6 + hash(i, 3) * 2.2) + hash(i, 4) * TAU).sin();
-        let brightness = starlight * twinkle * (0.3 + 0.7 * hash(i, 5));
-        let size = 1.0 + (hash(i, 6) * 1.6).floor();
-        mesh.add_colored_rect(Rect::from_center_size(at, vec2(size, size)), fade(Color32::from_white_alpha((brightness * 230.0) as u8)));
-    }
-
-    // The sun, coming up off to one side, just peeking over the hills by the end
-    let sun = pos2(w * 0.8, horizon + h * (0.06 - 0.1 * dawn));
-    let reach = w.max(h);
-    glow(&mut mesh, sun, vec2(reach * 0.55, reach * 0.38), fade(Color32::from_rgba_unmultiplied(255, 180, 120, (20.0 + 70.0 * dawn) as u8)));
-    glow(&mut mesh, sun, vec2(reach * 0.12, reach * 0.12), fade(Color32::from_rgba_unmultiplied(255, 214, 160, (30.0 + 120.0 * dawn) as u8)));
-    let disc = (w.min(h) * 0.035).max(10.0);
-    glow(&mut mesh, sun, vec2(disc * 2.2, disc * 2.2), fade(Color32::from_rgba_unmultiplied(255, 236, 200, (160.0 * dawn) as u8)));
-    painter.add(Shape::mesh(std::mem::take(&mut mesh)));
-    painter.circle_filled(sun, disc, fade(Color32::from_rgba_unmultiplied(255, 238, 206, (255.0 * dawn) as u8)));
-
-    // Blocky hills drifting by, the farthest hazy with the sky's light, the nearest made of voxels
-    // with grass on top
-    struct Hills {
-        block: f32,
-        base: f32,
-        height: f32,
-        speed: f32,
-        seed: f32,
-        night: [u8; 3],
-        day: [u8; 3],
-    }
-    let layers = [
-        Hills { block: 9.0, base: 0.665, height: 0.075, speed: 4.0, seed: 1.3, night: [34, 30, 62], day: [166, 128, 140] },
-        Hills { block: 14.0, base: 0.76, height: 0.07, speed: 9.0, seed: 4.1, night: [20, 21, 44], day: [86, 84, 104] },
-        Hills { block: 22.0, base: 0.875, height: 0.06, speed: 17.0, seed: 7.7, night: [10, 12, 25], day: [36, 46, 48] },
-    ];
-    for (n, hills) in layers.iter().enumerate() {
-        let front = n == layers.len() - 1;
-        let color = mix(hills.night, hills.day, dawn);
-        let grass = mix([22, 44, 34], [86, 140, 74], dawn);
-        let scrolled = t * hills.speed;
-        let first = (scrolled / hills.block).floor();
-        let offset = scrolled - first * hills.block;
-        for k in 0..(w / hills.block) as i64 + 2 {
-            let column = first as i64 + k;
-            let x = column as f32 * hills.block;
-            let wave = 0.55 * (x * 0.0045 + hills.seed).sin() + 0.3 * (x * 0.0113 + hills.seed * 2.3).sin() + 0.15 * (x * 0.029 + hills.seed * 5.1).sin();
-            let top = ((hills.base - hills.height * wave) * h / hills.block).round() * hills.block;
-            let left = k as f32 * hills.block - offset;
-            if !front {
-                mesh.add_colored_rect(Rect::from_min_max(pos2(left, top), pos2(left + hills.block, h)), fade(rgb(color)));
-                continue;
-            }
-            // Each voxel a little lighter or darker than the next
-            let mut y = top;
-            let mut row = 0;
-            while y < h {
-                let tone = if row == 0 { grass } else { shade(color, 0.85 + 0.3 * hash(column as u32, row)) };
-                mesh.add_colored_rect(Rect::from_min_max(pos2(left, y), pos2(left + hills.block, y + hills.block)), fade(rgb(tone)));
-                y += hills.block;
-                row += 1;
-            }
-        }
-    }
-
-    // Fireflies drifting up out of the hills, fewer once it's light
-    for i in 0..30 {
-        let span = h * 0.42;
-        let speed = 6.0 + hash(i, 7) * 14.0;
-        let risen = (t * speed + hash(i, 8) * span) % span;
-        let at = pos2(hash(i, 9) * w + (t * (0.4 + hash(i, 10)) + hash(i, 11) * TAU).sin() * 14.0, h - risen);
-        let flicker = 0.6 + 0.4 * (t * (2.0 + hash(i, 12) * 3.0) + i as f32).sin();
-        let a = (risen / span * PI).sin() * flicker * (1.0 - 0.6 * dawn);
-        glow(&mut mesh, at, vec2(7.0, 7.0), fade(Color32::from_rgba_unmultiplied(255, 200, 110, (a * 60.0) as u8)));
-        mesh.add_colored_rect(Rect::from_center_size(at, vec2(2.0, 2.0)), fade(Color32::from_rgba_unmultiplied(255, 226, 150, (a * 255.0) as u8)));
-    }
-    painter.add(Shape::mesh(std::mem::take(&mut mesh)));
-
-    // The middle of the screen: the cube, the name, the bar and what's being made
-    let middle = h * 0.42;
+    // The title, gliding over to the menu's own once that's up
     let center = w * 0.5;
-    cube(&painter, pos2(center, middle - 118.0 + (t * 1.7).sin() * 3.0), t, alpha);
-    let (mut name, mut solid) = (pos2(center, middle - 18.0), alpha);
+    let innert = glide.is_some() || words.title == "Innert";
+    let size = if innert { crate::session::TITLE_SIZE } else { (crate::session::TITLE_SIZE * 0.7).min(w / (words.title.len() as f32 * 0.42).max(1.0)) };
+    let at = pos2(center, (h * 0.15).max(size * 0.5 + 24.0));
+    let (mut name, mut solid) = (at, alpha);
     if let Some((menu, along)) = glide {
         // Where the menu has it, see session::menu()
         name = name.lerp(crate::session::title_at(menu), smoothstep(along));
@@ -1122,76 +1213,156 @@ fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Op
             solid = 1.0;
         }
     }
-    // In blackletter, as the menu has it
-    painter.text(name, Align2::CENTER_CENTER, "Innert", crate::theme::blackletter(crate::session::TITLE_SIZE), Color32::WHITE.gamma_multiply(solid));
+    // Shadowed, as the menu has it
+    painter.text(name + vec2(2.0, 3.0), Align2::CENTER_CENTER, words.title, theme::blackletter(size), Color32::from_black_alpha((190.0 * solid) as u8));
+    painter.text(name, Align2::CENTER_CENTER, words.title, theme::blackletter(size), theme::HEADING.gamma_multiply(solid));
+    // Under its letters' tails
+    let mut below = at.y + size * if innert { 0.5 } else { 0.62 } + 6.0;
+    ornament(&painter, pos2(center, below), 120.0, fade(theme::ACCENT));
+    if let Some(subtitle) = words.subtitle.filter(|s| !s.is_empty()) {
+        below += 20.0;
+        painter.text(pos2(center, below), Align2::CENTER_CENTER, subtitle, theme::display(16.0), fade(theme::WEAK));
+    }
 
-    let width = (w * 0.56).min(360.0);
-    let bar = Rect::from_min_size(pos2(center - width * 0.5, middle + 78.0), vec2(width, 4.0));
-    painter.rect_filled(bar.expand(2.0), 4.0, fade(Color32::from_black_alpha(70)));
-    painter.rect_filled(bar, 2.0, fade(Color32::from_white_alpha(34)));
+    // The bar, what's being made and how far along, and a tip under them
+    let bar_y = h * 0.82;
+    let tip_y = (h * 0.905).max(bar_y + 50.0).min(page.bottom() - 18.0);
+
+    // The land being built, in what's left between
+    if let Some(land) = land {
+        let top = below + 16.0;
+        let bottom = bar_y - 24.0;
+        let across = (w * 0.64).min((bottom - top) * 1.9);
+        // Coming later and gone sooner than the rest as it fades in and away, so it isn't seen
+        // through the menu or the game, the more so over the menu
+        let shown = if glide.is_some() { alpha.powi(3) } else { alpha * alpha };
+        if bottom > top + 40.0 {
+            land.paint(&painter, Rect::from_min_max(pos2(center - across * 0.5, top), pos2(center + across * 0.5, bottom)), t, look.phase, shown);
+        }
+    }
+
+    let width = (w * 0.42).clamp(220.0, 440.0);
+    let bar = Rect::from_min_size(pos2(center - width * 0.5, bar_y), vec2(width, 3.0));
+    painter.rect_filled(bar.expand(2.0), 0.0, fade(Color32::from_black_alpha(200)));
+    painter.rect_stroke(bar.expand(2.0), 0.0, Stroke::new(1.0f32, fade(theme::EDGE.gamma_multiply(0.7))), StrokeKind::Outside);
     let filled = Rect::from_min_max(bar.min, pos2(bar.min.x + width * look.fraction, bar.max.y));
+    let mut mesh = Mesh::default();
     let first = mesh.vertices.len() as u32;
     // Grey to white, as the menu it gives way to
-    let (cool, warm) = (fade(Color32::from_gray(140)), fade(Color32::from_gray(250)));
+    let (cool, warm) = (fade(Color32::from_gray(120)), fade(Color32::from_gray(248)));
     mesh.colored_vertex(filled.left_top(), cool);
     mesh.colored_vertex(filled.right_top(), warm);
     mesh.colored_vertex(filled.right_bottom(), warm);
     mesh.colored_vertex(filled.left_bottom(), cool);
     mesh.add_triangle(first, first + 1, first + 2);
     mesh.add_triangle(first, first + 2, first + 3);
-    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_white_alpha(80)));
+    // A glint running along it, so it's plainly going even while a step takes its time
+    let glint = bar.min.x + filled.width() * ((t * 0.6) % 1.0);
+    glow(&mut mesh, pos2(glint, bar.center().y), vec2(18.0, 4.0), fade(Color32::from_white_alpha(90)));
+    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_white_alpha(70)));
     painter.add(Shape::mesh(mesh));
+    theme::diamond(&painter, pos2(filled.max.x, bar.center().y), 3.5, fade(theme::ACCENT));
 
-    let below = bar.max.y + 12.0;
-    painter.text(pos2(bar.min.x, below), Align2::LEFT_TOP, format!("{}…", look.step.label()), FontId::proportional(14.0), fade(Color32::from_gray(218)));
-    painter.text(pos2(bar.max.x, below), Align2::RIGHT_TOP, format!("{:.0}%", look.fraction * 100.0), FontId::proportional(13.0), fade(Color32::from_gray(150)));
+    let words_y = bar.max.y + 12.0;
+    painter.text(pos2(bar.min.x, words_y), Align2::LEFT_TOP, format!("{}…", look.step.label()), theme::display(14.0), fade(theme::TEXT));
+    painter.text(pos2(bar.max.x, words_y), Align2::RIGHT_TOP, format!("{:.0}%", look.fraction * 100.0), FontId::proportional(13.0), fade(theme::WEAK));
     if look.compiling && look.step == Step::Shaders {
-        painter.text(pos2(center, below + 26.0), Align2::CENTER_TOP, "It only takes this long the first time", FontId::proportional(12.5), fade(Color32::from_gray(160)));
+        painter.text(pos2(center, words_y + 22.0), Align2::CENTER_TOP, "It only takes this long the first time", FontId::proportional(12.5), fade(theme::WEAK));
+    }
+
+    // A tip, each in turn, fading from one to the next
+    let turn = t / TIP_SECONDS;
+    let within = (turn.fract()) * TIP_SECONDS;
+    let shown = smoothstep(within / 0.6) * smoothstep((TIP_SECONDS - within) / 0.6);
+    let tip = TIPS[(look.tip + turn as usize) % TIPS.len()];
+    if tip_y > words_y + 30.0 {
+        painter.text(pos2(center, tip_y), Align2::CENTER_CENTER, tip, FontId::proportional(13.5), fade(theme::WEAK).gamma_multiply(shown));
     }
 }
 
-/// A cube turning slowly over the name, its sides the colors of the game's icon
-fn cube(painter: &egui::Painter, center: Pos2, t: f32, alpha: f32) {
-    let size = 24.0;
-    let (turn, tilt) = (t * 0.55, 0.5f32);
-    // Turned about the upright, then tipped towards the viewer, who's looking down +z
-    let place = |[x, y, z]: [f32; 3]| {
-        let (x, z) = (x * turn.cos() + z * turn.sin(), -x * turn.sin() + z * turn.cos());
-        let (y, z) = (y * tilt.cos() - z * tilt.sin(), y * tilt.sin() + z * tilt.cos());
-        (center + vec2(x, -y) * size, z)
-    };
-    let (red, green, blue) = ([224, 84, 72], [80, 190, 102], [78, 116, 226]);
-    let faces: [([f32; 3], [[f32; 3]; 4], [u8; 3]); 5] = [
-        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]], blue),
-        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]], red),
-        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [-1.0, -1.0, 1.0]], red),
-        ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]], green),
-        ([0.0, 0.0, -1.0], [[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0]], green),
-    ];
-
-    // Its shadow on the ground under it
+/// A printer's ornament under a title, as theme::flourish() but in `color`, to fade with the rest
+fn ornament(painter: &egui::Painter, at: Pos2, half: f32, color: Color32) {
     let mut mesh = Mesh::default();
-    glow(&mut mesh, center + vec2(0.0, size * 2.3), vec2(size * 1.7, size * 0.45), Color32::from_black_alpha((90.0 * alpha) as u8));
-    for (normal, corners, color) in faces {
-        let (_, facing) = place(normal);
-        // Only the sides facing the viewer
-        if facing <= 0.0 {
-            continue;
-        }
-        let color = rgb(shade(color, 0.55 + 0.45 * facing)).gamma_multiply(alpha);
-        let points = corners.map(|c| place(c).0);
+    for side in [-1.0, 1.0f32] {
+        let (a, b) = (at.x + side * 15.0, at.x + side * half);
         let first = mesh.vertices.len() as u32;
-        for p in points {
-            mesh.colored_vertex(p, color);
-        }
+        mesh.colored_vertex(pos2(a, at.y - 0.6), color);
+        mesh.colored_vertex(pos2(a, at.y + 0.6), color);
+        mesh.colored_vertex(pos2(b, at.y - 0.6), Color32::TRANSPARENT);
+        mesh.colored_vertex(pos2(b, at.y + 0.6), Color32::TRANSPARENT);
         mesh.add_triangle(first, first + 1, first + 2);
-        mesh.add_triangle(first, first + 2, first + 3);
+        mesh.add_triangle(first + 1, first + 3, first + 2);
     }
     painter.add(Shape::mesh(mesh));
-    // Edges, faintly
-    for (normal, corners, _) in faces {
-        if place(normal).1 > 0.0 {
-            painter.add(Shape::closed_line(corners.map(|c| place(c).0).to_vec(), Stroke::new(1.0f32, Color32::from_black_alpha((60.0 * alpha) as u8))));
+    for side in [-1.0, 1.0f32] {
+        crate::theme::diamond(painter, at + vec2(side * 9.5, 0.0), 2.0, color);
+    }
+    crate::theme::diamond(painter, at, 4.5, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_step_taking_longer_still_seems_to_get_on() {
+        // In step with the time at first, then ever slower, never stopping or going back
+        assert!((still_to_go(0.0) - 1.0).abs() < 1e-6);
+        assert!((still_to_go(0.5) - 0.575).abs() < 1e-3);
+        let mut last = 2.0;
+        for k in 0..400 {
+            let left = still_to_go(k as f32 * 0.025);
+            assert!(left < last && left > 0.0, "at {k}: {left} after {last}");
+            last = left;
         }
+    }
+
+    #[test]
+    fn the_bar_follows_the_steps() {
+        let progress = Progress::arriving();
+        let (fraction, step) = progress.estimate();
+        assert!(fraction < 0.05, "nothing's built yet: {fraction}");
+        assert_eq!(step, Step::Ground);
+        for step in [Step::Ground, Step::Rivers, Step::Land, Step::Voxels] {
+            progress.run(step, || ());
+        }
+        let (built, step) = progress.estimate();
+        assert!(built > fraction && built < 1.0, "{built}");
+        assert_eq!(step, Step::Grass);
+        assert_eq!(progress.phase().rise, 1.0);
+        assert_eq!(progress.phase().fill, 0.0);
+        for step in [Step::Grass, Step::Upload, Step::Water] {
+            progress.run(step, || ());
+        }
+        let (done, _) = progress.estimate();
+        assert_eq!(done, 1.0);
+        assert_eq!(progress.phase(), Phase::DONE);
+    }
+
+    #[test]
+    fn the_land_is_built_at_a_pace_that_can_be_seen() {
+        let mut look = Look::new();
+        look.last -= Duration::from_millis(100);
+        look.advance(1.0, Step::Grass, false, Phase::DONE);
+        assert!(look.phase.rise > 0.0 && look.phase.rise <= 0.081, "{:?}", look.phase);
+        assert!(look.fraction > 0.0 && look.fraction < 1.0);
+    }
+
+    #[test]
+    fn every_tip_fits_a_small_window() {
+        for tip in TIPS {
+            assert!(tip.len() < 100, "{tip}");
+        }
+    }
+
+    #[test]
+    fn previews_are_named_in_turn() {
+        let mut preview = Preview { path: PathBuf::from("shot.png"), taken: 0, every: 4 };
+        assert!(preview.next(0.0, false, false).is_none());
+        assert_eq!(preview.next(0.0, true, false).unwrap(), PathBuf::from("shot-loading-00.png"));
+        assert!(preview.next(0.1, true, false).is_none());
+        assert_eq!(preview.next(0.3, true, false).unwrap(), PathBuf::from("shot-loading-01.png"));
+        assert_eq!(preview.next(0.4, true, true).unwrap(), PathBuf::from("shot-loading-loaded.png"));
+        assert!(preview.next(1.0, true, true).is_none());
     }
 }

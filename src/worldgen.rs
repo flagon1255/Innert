@@ -3607,6 +3607,28 @@ pub fn land_height_m(settings: &TerrainSettings, x: f32, y: f32) -> Option<f32> 
     (h > SKY_VOID).then_some(h)
 }
 
+/// About how thick with trees the land is at a spot, 0 to 1, as Terrain::place() plants them:
+/// thick in the jungle, pines in the snow, broad-leaved woods where the forest noise is high,
+/// nothing in the desert or on the Dragon realm's ash. Only what it comes to over a stretch, for
+/// the loading screen's picture of the land being built, see loading\land.rs, not where each tree
+/// stands.
+pub fn woods_at(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
+    if land_of(settings.seed) == Land::Dragon {
+        return 0.0;
+    }
+    let forest = smoothstep(-0.15, 0.25, fbm(x / 80.0, y / 80.0, 3, settings.seed.wrapping_add(4)));
+    let c = climate(settings, x, y);
+    if c.jungle > 0.5 {
+        0.95
+    } else if c.desert > 0.5 {
+        0.0
+    } else if c.snow > 0.5 {
+        forest * 0.7 + 0.08
+    } else {
+        forest * 0.85 + 0.03
+    }
+}
+
 /// The nearest dry land to `near` within `within` meters with `room` round it, see is_dry_land(),
 /// that's `also` fine, looking in rings four meters apart
 pub fn dry_land_near(settings: &TerrainSettings, near: [f32; 2], within: f32, room: f32, also: &dyn Fn([f32; 2]) -> bool) -> Option<[f32; 2]> {
