@@ -3139,6 +3139,11 @@ const STAFF_RES: f64 = 150.0;
 /// Crossbows are wide, so a little coarser, and guns finer, for their locks
 const CROSSBOW_RES: f64 = 128.0;
 const GUN_RES: f64 = 144.0;
+/// How many times finer than that the weapon in hand is drawn, as it's seen right before the eye:
+/// only the one, made again on a thread of its own each time another's taken in hand, see
+/// Game::fine_held(). Every weapon at this grid would take about eight times the memory and the
+/// time to make, see weapon_models_fit().
+pub const HELD_FINE: f64 = 2.0;
 /// How far a bow's string comes back drawn all the way, in meters
 const DRAW_LENGTH: f64 = 0.24;
 
@@ -3153,6 +3158,17 @@ pub const GUN_FIRED: usize = 1;
 pub fn look_of(library: &Library, family: usize, parts: &[usize]) -> WeaponLook {
     let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
     build_look(&library.families[family], &components)
+}
+
+/// The look of a weapon of `family` made of `parts`, drawn `scale` times as big as its parts make
+/// it, as Weapon::assemble() makes it but `k` times finer, as the weapon in hand is drawn: the same
+/// shapes, held and tipped where they were, with the finer detail the builders add at a finer
+/// grid, see weapon_parts::fine(). Takes about `k` cubed times as long to make.
+pub fn fine_look(library: &Library, family: usize, parts: &[usize], scale: f64, k: f64) -> WeaponLook {
+    let fam = &library.families[family];
+    let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+    let look = crate::weapon_parts::finer(k, || crate::weapon_parts::build(library, family, parts, || build_look(fam, &components)));
+    look.scaled(scale)
 }
 
 impl Library {
@@ -4121,7 +4137,8 @@ fn inlay(p: &mut Vec<Part>, v: &Visual, row: usize, t: f64, x0: f64, x1: f64, y:
     if width <= 0.0 {
         return;
     }
-    let voxel = 1.0 / SWORD_RES;
+    // Its lines a voxel wide, finer made finer
+    let voxel = 1.0 / (SWORD_RES * crate::weapon_parts::fine());
     let faces = |p: &mut Vec<Part>, a: f64, b: f64, material: u8| {
         p.push(cuboid([a, y * 0.55, za], [b, y * 1.05, zb], material));
         p.push(cuboid([a, -y * 1.05, za], [b, -y * 0.55, zb], material));
@@ -4195,6 +4212,100 @@ fn curve(p: &mut Vec<Part>, points: &[[f64; 3]], ra: f64, rb: f64, material: u8)
     for (k, pair) in points.windows(2).enumerate() {
         let (r0, r1) = (ra + (rb - ra) * k as f64 / n, ra + (rb - ra) * (k + 1) as f64 / n);
         p.push(limb(pair[0], pair[1], r0, r1, material));
+    }
+}
+
+// The detail only the weapon in hand has, made finer, see HELD_FINE: too fine for the usual grid,
+// where it would only be voxels here and there. Each goes before what it's on, so it takes its
+// place on its surface.
+
+/// Whether the weapon being made is made finer, with room for detail that only shows then
+fn finer_now() -> bool {
+    crate::weapon_parts::fine() > 1.0 + 1e-9
+}
+
+/// A unit vector across `axis`, and another across both
+fn across(axis: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let a = Vector3::from(axis).try_normalize(1e-9).unwrap_or_else(Vector3::z);
+    let u = if a.z.abs() < 0.9 { a.cross(&Vector3::z()) } else { a.cross(&Vector3::x()) }.normalize();
+    let w = a.cross(&u);
+    ([u.x, u.y, u.z], [w.x, w.y, w.z])
+}
+
+/// The grain of wood along a haft, limb or stock from `a` to `b`, `ra` round at a and `rb` at b:
+/// streaks of `dark` running along it here and there round it, a few long and the rest short, just
+/// under its surface, as `seed` lays them
+fn grain(p: &mut Vec<Part>, a: [f64; 3], b: [f64; 3], ra: f64, rb: f64, dark: u8, seed: u32) {
+    grain_squashed(p, a, b, ra, rb, [1.0, 1.0], dark, seed);
+}
+
+/// The same along what's squashed or stretched across it, `squash` times as wide each way across,
+/// see across(): along z, the first's about y and the second about x
+#[allow(clippy::too_many_arguments)]
+fn grain_squashed(p: &mut Vec<Part>, a: [f64; 3], b: [f64; 3], ra: f64, rb: f64, squash: [f64; 2], dark: u8, seed: u32) {
+    if !finer_now() {
+        return;
+    }
+    let (u, w) = across([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+    let (u, w) = (u.map(|v| v * squash[0]), w.map(|v| v * squash[1]));
+    let length = (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt();
+    let streaks = ((length / 0.05) as usize).clamp(4, 40);
+    for k in 0..streaks {
+        let h = hash(seed.wrapping_mul(31).wrapping_add(k as u32 * 7919 + 1));
+        let turn = (h & 0xFFFF) as f64 / 65536.0 * TAU;
+        let from = ((h >> 16) & 0xFF) as f64 / 255.0 * 0.9;
+        let to = (from + 0.08 + ((h >> 24) & 0xFF) as f64 / 255.0 * 0.35).min(1.0);
+        let (c, s) = (turn.cos(), turn.sin());
+        let at = |t: f64| {
+            let r = (ra + (rb - ra) * t) * 0.84;
+            [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t + (u[i] * c + w[i] * s) * r)
+        };
+        let thick = (ra.min(rb) * 0.16 * squash[0].min(squash[1])).max(0.0012);
+        p.push(limb(at(from), at(to), thick, thick, dark));
+    }
+}
+
+/// A grip from `z` up `length`, `r` round, bound in cord of `material` wound both ways round it,
+/// crossing in diamonds and standing a little proud of it
+fn cross_wrap(p: &mut Vec<Part>, at: [f64; 2], z: f64, length: f64, r: f64, material: u8) {
+    let turns = (length / 0.028).max(2.0);
+    let steps = (turns * 16.0) as usize;
+    for way in [1.0, -1.0] {
+        let points: Vec<[f64; 3]> = (0..=steps)
+            .map(|k| {
+                let t = k as f64 / steps as f64;
+                let a = way * t * turns * TAU;
+                [at[0] + a.cos() * r * 1.02, at[1] + a.sin() * r * 1.02, z + length * t]
+            })
+            .collect();
+        curve(p, &points, r * 0.2, r * 0.2, material);
+    }
+}
+
+/// The darker wood a wood's grain shows in, if it's wood
+fn grain_of(m: u8) -> Option<u8> {
+    match m {
+        WOOD => Some(FUR_BROWN),
+        DEAD_WOOD => Some(PLANK_DARK),
+        PALM_WOOD | PLANK_PINE => Some(WOOD),
+        PLANK_BIRCH => Some(PALM_WOOD),
+        BIRCH_BARK => Some(BARK_DARK),
+        BARK_DARK | PLANK_DARK => Some(FUR_DARK),
+        _ => None,
+    }
+}
+
+/// grain() on what's made of `m`, if it's wood
+fn wood_grain(p: &mut Vec<Part>, a: [f64; 3], b: [f64; 3], ra: f64, rb: f64, m: u8, seed: u32) {
+    if let Some(dark) = grain_of(m) {
+        grain(p, a, b, ra, rb, dark, seed);
+    }
+}
+
+/// A rivet's head standing out of a face at `at`, `r` round
+fn rivet(p: &mut Vec<Part>, at: [f64; 3], r: f64, material: u8) {
+    if finer_now() {
+        p.push(ball(at, r, material));
     }
 }
 
@@ -4294,6 +4405,10 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
                     for s in [-1.0, 1.0] {
                         p.push(ball([s * 0.072, 0.0, z_top + 0.005], 0.013, lug));
                     }
+                }
+                // Made finer, the socket's pinned to the haft through either side
+                for s in [-1.0, 1.0] {
+                    rivet(&mut p, [0.0, s * 0.0205, z_top - 0.042], 0.0035, STEEL);
                 }
                 p.push(limb([0.0, 0.0, z_top - 0.06], [0.0, 0.0, z_top + 0.02], 0.022, 0.014, DARK_STEEL));
             }
@@ -4844,13 +4959,18 @@ fn sword_blade(p: &mut Vec<Part>, v: &Visual, z0: f64, infuse: Option<u8>) -> Ve
     let voxel = 1.0 / SWORD_RES;
     let half_thick = 0.008;
     let bevel = 2.5 * voxel;
-    let rows = (length * SWORD_RES).ceil() as usize;
+    // Made finer, a row for each of its finer voxels up it, so its outline's as fine as the rest;
+    // what's every so many rows still every so many of the usual ones
+    let fine = crate::weapon_parts::fine();
+    let finer = finer_now();
+    let rows = (length * SWORD_RES * fine).ceil() as usize;
     // A club edged with teeth of stone, or a crystal broken out, has no groove down it
     let macuahuitl = shape == "macuahuitl";
     let plain = macuahuitl || shape == "shard";
     let (mut grooves, mut bodies, mut edges) = (Vec::new(), Vec::new(), Vec::new());
-    for r in 0..rows {
-        let t = (r as f64 + 0.5) / rows as f64;
+    for fine_row in 0..rows {
+        let r = (fine_row as f64 / fine) as usize;
+        let t = (fine_row as f64 + 0.5) / rows as f64;
         let (mut center, mut half) = blade_profile(shape, t, width);
         half = half.max(0.6 * voxel);
         // Teeth along the edges, or barbs at the foot of a spearhead
@@ -4872,17 +4992,23 @@ fn sword_blade(p: &mut Vec<Part>, v: &Visual, z0: f64, infuse: Option<u8>) -> Ve
         if nicked {
             half -= 2.5 * voxel;
         }
-        let (za, zb) = (z0 + r as f64 * length / rows as f64, z0 + (r + 1) as f64 * length / rows as f64);
+        let (za, zb) = (z0 + fine_row as f64 * length / rows as f64, z0 + (fine_row + 1) as f64 * length / rows as f64);
         // A forked one's tip split down the middle
         if shape == "forked" && t > 0.8 {
             let w = half * 0.55 * ((t - 0.8) / 0.2).sqrt();
             grooves.push(cuboid([center - w, -half_thick * 2.0, za], [center + w, half_thick * 2.0, zb], AIR));
         }
-        // A groove down the middle of each side, glowing at the bottom if it's infused
+        // A groove down the middle of each side, glowing at the bottom if it's infused. Made
+        // finer, its sides slope down to it, a narrower groove deeper in a broader shallow one.
         if t < 0.78 && half > 5.0 * voxel && !plain {
             let w = half * 0.22;
+            let wide = if finer { w * 1.45 } else { w };
             grooves.push(cuboid([center - w, half_thick * 0.45, za], [center + w, half_thick * 1.5, zb], AIR));
             grooves.push(cuboid([center - w, -half_thick * 1.5, za], [center + w, -half_thick * 0.45, zb], AIR));
+            if finer {
+                grooves.push(cuboid([center - wide, half_thick * 0.78, za], [center + wide, half_thick * 1.5, zb], AIR));
+                grooves.push(cuboid([center - wide, -half_thick * 1.5, za], [center + wide, -half_thick * 0.78, zb], AIR));
+            }
             if let Some(f) = fuller {
                 grooves.push(cuboid([center - w, -half_thick * 0.45, za], [center + w, half_thick * 0.45, zb], f));
             }
@@ -4892,6 +5018,11 @@ fn sword_blade(p: &mut Vec<Part>, v: &Visual, z0: f64, infuse: Option<u8>) -> Ve
         }
         if half > bevel {
             bodies.push(cuboid([center - half + bevel, -half_thick, za], [center + half - bevel, half_thick, zb], body));
+        }
+        // Made finer, ground down to its edge in steps rather than at once: a shoulder between
+        // the full thickness and the thin edge
+        if finer && half > bevel * 0.5 {
+            bodies.push(cuboid([center - half + bevel * 0.45, -half_thick * 0.75, za], [center + half - bevel * 0.45, half_thick * 0.75, zb], body));
         }
         // The edges are ground thinner. A blade only a voxel or so wide is all blade.
         let edge = if half > 1.5 * voxel && (tooth || !macuahuitl) { edge } else { body };
@@ -5028,7 +5159,29 @@ fn sword_guard(p: &mut Vec<Part>, v: &Visual, z: f64, h: f64) {
         _ => {
             p.push(ball([w / 2.0, 0.0, mid], 0.017, accent));
             p.push(ball([-w / 2.0, 0.0, mid], 0.017, accent));
+            // Made finer, a raised boss in the middle of each face and the bar's edges
+            // chamfered, studded either side
+            if finer_now() {
+                for y in [-1.0, 1.0] {
+                    p.push(ellipsoid([0.0, y * 0.014, mid], [0.012, 0.0035, h * 0.42], accent));
+                    for x in [-1.0, 1.0] {
+                        rivet(p, [x * w * 0.3, y * 0.014, mid], 0.0032, accent);
+                    }
+                }
+                let c = 0.0024;
+                for y in [-0.014, 0.014] {
+                    for zz in [z, z + h] {
+                        p.push(cuboid([-w / 2.0, y - c, zz - c], [w / 2.0, y + c, zz + c], AIR));
+                    }
+                }
+            }
             p.push(cuboid([-w / 2.0, -0.014, z], [w / 2.0, 0.014, z + h], m));
+        }
+    }
+    // The block under the blade made finer: a rivet through either face
+    if finer_now() && matches!(v.shape.as_deref(), Some("swept" | "horns" | "ring" | "serpent" | "crescent" | "antler" | "wings")) {
+        for y in [-1.0, 1.0] {
+            rivet(p, [0.0, y * 0.016, mid], 0.0035, accent);
         }
     }
 }
@@ -5065,18 +5218,42 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
         }
         _ => {}
     }
+    let finer = finer_now();
     if let Some(wrap) = v.wrap.as_deref().and_then(material) {
-        // Bands of it every other row of voxels
-        let row = (1.0 / SWORD_RES).max(0.012);
-        for k in (0..(length / row) as usize).step_by(2) {
-            let z = z_grip + k as f64 * row;
-            p.push(limb([0.0, 0.0, z + row * 0.1], [0.0, 0.0, z + row * 0.9], r * 1.2, r * 1.2, wrap));
+        if finer {
+            // Made finer, cord wound both ways round it, crossing in diamonds, a band at either end
+            cross_wrap(p, [0.0, 0.0], z_grip + 0.004, length - 0.008, r, wrap);
+            for z in [z_grip + 0.003, z_grip + length - 0.003] {
+                p.push(ellipsoid([0.0, 0.0, z], [r * 1.28, r * 1.28, 0.0035], wrap));
+            }
+        } else {
+            // Bands of it every other row of voxels
+            let row = (1.0 / SWORD_RES).max(0.012);
+            for k in (0..(length / row) as usize).step_by(2) {
+                let z = z_grip + k as f64 * row;
+                p.push(limb([0.0, 0.0, z + row * 0.1], [0.0, 0.0, z + row * 0.9], r * 1.2, r * 1.2, wrap));
+            }
         }
+    } else if finer && v.shape.is_none() && m == LEATHER {
+        // A leather grip made finer: its strap wound round in a spiral, its edges showing
+        let turns = (length / 0.022).max(2.0);
+        let points: Vec<[f64; 3]> = (0..=(turns * 16.0) as usize).map(|k| {
+            let a = k as f64 / 16.0 * TAU;
+            [a.cos() * r * 1.0, a.sin() * r * 1.0, z_grip + 0.003 + (length - 0.006) * k as f64 / (turns * 16.0)]
+        }).collect();
+        curve(p, &points, r * 0.09, r * 0.09, FUR_BROWN);
     }
     p.push(limb([0.0, 0.0, z_grip], [0.0, 0.0, z_grip + length], r, r * 1.05, m));
     if handle > length + 0.01 {
-        p.push(ellipsoid([0.0, 0.0, z_grip + length], [r * 1.25, r * 1.25, 0.008], DARK_STEEL));
-        p.push(limb([0.0, 0.0, z_grip + length], [0.0, 0.0, z_grip + handle], r * 0.95, r * 0.85, WOOD));
+        // Made finer, a collar riveted on where the grip ends, and the haft's grain
+        let collar = z_grip + length;
+        for k in 0..4 {
+            let a = k as f64 / 4.0 * TAU + 0.4;
+            rivet(p, [a.cos() * r * 1.25, a.sin() * r * 1.25, collar], 0.0026, STEEL);
+        }
+        p.push(ellipsoid([0.0, 0.0, collar], [r * 1.25, r * 1.25, if finer { 0.011 } else { 0.008 }], DARK_STEEL));
+        wood_grain(p, [0.0, 0.0, collar], [0.0, 0.0, z_grip + handle], r * 0.95, r * 0.85, WOOD, (handle * 1000.0) as u32);
+        p.push(limb([0.0, 0.0, collar], [0.0, 0.0, z_grip + handle], r * 0.95, r * 0.85, WOOD));
     }
     let c = pommel * 0.85;
     match v.pommel.as_deref().unwrap_or("ball") {
@@ -5138,6 +5315,11 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
             p.push(limb([0.0, 0.0, c], [0.0, 0.0, z_grip], pommel * 0.85, r, pm));
         }
         _ => {
+            // Made finer, a band of its accent round it and the tang peened over its end
+            if finer_now() {
+                ring(p, [0.0, 0.0, c], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], pommel * 0.84, 0.0022, accent);
+                p.push(ball([0.0, 0.0, c - pommel * 0.84], pommel * 0.22, accent));
+            }
             p.push(ball([0.0, 0.0, c], pommel * 0.85, pm));
             p.push(limb([0.0, 0.0, c], [0.0, 0.0, z_grip], r * 0.8, r, pm));
         }
@@ -5474,8 +5656,13 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
             p.push(ball(at(s), 0.015, tips));
         }
     }
-    // The grip, wrapped in leather, and the riser
+    // The grip, wrapped in leather, and the riser. Made finer, the leather's bound on with cord
+    // wound both ways round it, and the limbs show their wood's grain.
+    if finer_now() {
+        cross_wrap(&mut p, [-0.003, 0.0], mid - 0.068, 0.126, 0.024, FUR_BROWN);
+    }
     p.push(limb([-0.003, 0.0, mid - 0.07], [-0.003, 0.0, mid + 0.06], 0.024, 0.024, LEATHER));
+    wood_grain(&mut p, at(-0.2), at(0.2), 0.02, 0.02, wood, 3);
     p.push(limb(at(-0.2), at(0.2), 0.02, 0.02, wood));
     let steps = 14;
     for half in [-1.0, 1.0] {
@@ -5519,9 +5706,13 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
             }
         }
         let flat = if shape == "flat" { 1.9 } else { 1.35 };
-        for pair in points.windows(2) {
+        for (j, pair) in points.windows(2).enumerate() {
             let k = (pair[0][2] - mid).abs() / mid;
-            p.push(limb(pair[0], pair[1], 0.017 - 0.008 * k, 0.017 - 0.008 * k, wood).stretched([0.7, flat, 1.0]));
+            let r = 0.017 - 0.008 * k;
+            if let Some(dark) = grain_of(wood) {
+                grain_squashed(&mut p, pair[0], pair[1], r, r, [flat, 0.7], dark, j as u32 * 2 + (half > 0.0) as u32);
+            }
+            p.push(limb(pair[0], pair[1], r, r, wood).stretched([0.7, flat, 1.0]));
         }
     }
     (p, v3(0.0, 0.0, mid), v3(nock[0], 0.0, nock[2]))
@@ -6352,8 +6543,11 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
                 curve(&mut p, &[pivot, elbow, jaw], 0.0045, 0.0035, metal);
             }
         }
-        // The pan, and the plate
+        // The pan, and the plate, made finer screwed on at either end
         p.push(cuboid([x_b - 0.02, w, -0.001], [x_b - 0.004, w + 0.011, 0.005], metal));
+        for x in [plate + 0.009, x_b + 0.008] {
+            rivet(&mut p, [x, w + 0.004, -0.011], 0.0024, flourish);
+        }
         p.push(cuboid([plate, w, -0.02], [x_b + 0.015, w + 0.004, 0.009], metal));
         slot("core");
         if let Some(stone) = core.gem.as_deref().and_then(material) {
@@ -6407,9 +6601,18 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
             _ => {
                 p.push(cuboid([0.0, -0.022, -0.128], [0.012, 0.022, -0.026], trim));
                 p.push(limb([fore - 0.006, 0.0, -outer * 0.85], [fore + 0.006, 0.0, -outer * 0.85], 0.016, 0.016, trim));
-                p.push(limb([x_b - 0.02, 0.0, -outer * 0.85], [fore, 0.0, -outer * 0.8], 0.017, 0.015, wood).stretched([1.0, 1.15, 0.9]));
-                p.push(limb([x_b, 0.0, -0.012], [x_b - 0.12, 0.0, -0.03], 0.019, 0.018, wood).stretched([1.0, 0.85, 1.0]));
-                p.push(limb([x_b - 0.11, 0.0, -0.032], [0.03, 0.0, -0.077], 0.021, 0.052, wood).stretched([1.0, 0.45, 1.0]));
+                // Made finer, each piece of the stock shows its wood's grain
+                let pieces = [
+                    ([x_b - 0.02, 0.0, -outer * 0.85], [fore, 0.0, -outer * 0.8], 0.017, 0.015, [1.15, 0.9]),
+                    ([x_b, 0.0, -0.012], [x_b - 0.12, 0.0, -0.03], 0.019, 0.018, [0.85, 1.0]),
+                    ([x_b - 0.11, 0.0, -0.032], [0.03, 0.0, -0.077], 0.021, 0.052, [0.45, 1.0]),
+                ];
+                for (k, &(a, b, ra, rb, squash)) in pieces.iter().enumerate() {
+                    if let Some(dark) = grain_of(wood) {
+                        grain_squashed(&mut p, a, b, ra, rb, squash, dark, 20 + k as u32);
+                    }
+                    p.push(limb(a, b, ra, rb, wood).stretched([1.0, squash[0], squash[1]]));
+                }
             }
         }
         p
@@ -6781,6 +6984,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
                     p.push(ellipsoid([0.0, 0.0, k as f64 * every], [thick * 1.3, thick * 1.3, 0.011], accent));
                 }
             }
+            wood_grain(&mut p, [0.0, 0.0, 0.0], [0.0, 0.0, top], thick * 0.85, thick, wood, 11);
             p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], thick * 0.85, thick, wood));
         }
     }
@@ -7642,7 +7846,9 @@ pub const HELD_ARROW_RES: f64 = 160.0;
 /// Finer, so the ring stays thin however big it's drawn
 pub const RING_RES: f64 = 48.0;
 pub const FINE_SPARK_RES: f64 = 128.0;
-pub const ARM_RES: f64 = 128.0;
+/// The arms are always right before the eye, the nearest thing to it, so as fine as the weapon in
+/// hand is made, see HELD_FINE
+pub const ARM_RES: f64 = 256.0;
 /// Finer for balls and shells, which are small, smoke for being lumpy, and a muzzle flash, which
 /// is right in front of the eye
 pub const SHOT_RES: f64 = 64.0;
@@ -7663,13 +7869,20 @@ fn arm(left: bool) -> Vec<Part> {
     for z in [-0.03, -0.01, 0.01, 0.03] {
         p.push(ellipsoid([0.0, 0.007, z], [0.027, 0.031, 0.0095], LEATHER));
     }
-    // The back of the hand and the wrist
+    // The back of the hand and the wrist, a seam stitched down the glove's back
+    p.push(limb([-side * 0.004, -0.0555, -0.026], [-side * 0.004, -0.0555, 0.032], 0.0017, 0.0017, FUR_BROWN));
     p.push(ellipsoid([-side * 0.004, -0.026, 0.004], [0.028, 0.031, 0.042], LEATHER));
     p.push(limb([0.0, -0.042, 0.0], [0.0, -0.09, -0.01], 0.023, 0.025, LEATHER));
-    // A bracer with metal bands, then the sleeve
+    // A bracer with metal bands riveted round, then the sleeve, stitched on at its cuff
     for y in [-0.1, -0.18] {
-        p.push(ellipsoid([0.0, y, -0.016 + (y + 0.1) * 0.2], [0.033, 0.007, 0.033], BRONZE));
+        let z = -0.016 + (y + 0.1) * 0.2;
+        for k in 0..6 {
+            let a = k as f64 / 6.0 * TAU + 0.3;
+            p.push(ball([a.cos() * 0.033, y, z + a.sin() * 0.033], 0.0032, STEEL));
+        }
+        p.push(ellipsoid([0.0, y, z], [0.033, 0.007, 0.033], BRONZE));
     }
+    ring(&mut p, [0.0, -0.188, -0.029], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0305, 0.0017, FUR_BROWN);
     p.push(limb([0.0, -0.09, -0.01], [0.0, -0.19, -0.03], 0.029, 0.031, LEATHER));
     p.push(limb([0.0, -0.19, -0.03], [0.0, -0.34, -0.06], 0.035, 0.039, CLOTH));
     p
@@ -7724,6 +7937,177 @@ mod tests {
             assert_eq!(a.name, b.name);
             assert_eq!(a.grade, b.grade);
         }
+    }
+
+    /// What weapons' models take, packed as they're sent to the graphics card, and how long they take
+    /// to make: a few hundred of every family, as a pack, stalls and loot might hold. `cargo test
+    /// --release weapon_models_fit -- --nocapture`
+    #[test]
+    fn weapon_models_fit() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let start = std::time::Instant::now();
+        let weapons: Vec<Weapon> = (0..300u32).map(|seed| library.generate(hash(seed ^ 0x51ce), None, 2.0)).collect();
+        let took = start.elapsed().as_secs_f64() * 1000.0 / weapons.len() as f64;
+        let models: Vec<&Model> = weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).collect();
+        let start = std::time::Instant::now();
+        let bytes = crate::animals::pack_models(&models).len() * 4;
+        let packing = start.elapsed().as_secs_f64() * 1000.0;
+        let side = models.iter().flat_map(|m| m.size).max().unwrap_or(0);
+        let mut by_family: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for w in &weapons {
+            let e = by_family.entry(library.families[w.family].id.clone()).or_default();
+            e.0 += 1;
+            e.1 += crate::animals::pack_models(&w.look.frames.iter().map(|(m, _)| m).collect::<Vec<_>>()).len() * 4;
+        }
+        let heaviest: Vec<String> = {
+            let mut v: Vec<(&String, f64)> = by_family.iter().map(|(f, (n, b))| (f, *b as f64 / *n as f64)).collect();
+            v.sort_by(|a, b| b.1.total_cmp(&a.1));
+            v.iter().take(6).map(|(f, b)| format!("{f} {:.0} KB", b / 1e3)).collect()
+        };
+        println!(
+            "{} weapons, {:.1} MB packed, {:.0} KB each, made in {took:.1} ms each, packed in {packing:.0} ms, longest side {side}; heaviest: {}",
+            weapons.len(),
+            bytes as f64 / 1e6,
+            bytes as f64 / weapons.len() as f64 / 1e3,
+            heaviest.join(", ")
+        );
+        assert!(side <= 1023, "a side of {side} voxels is more than the shader can hold");
+    }
+
+    /// The weapon in hand made finer, see HELD_FINE: of every family, the same frames, held, tipped
+    /// and scaled where its look is, each model about HELD_FINE times as big a side and none past
+    /// what the shader holds; and what one takes to make and send. `cargo test --release
+    /// held_weapons_are_finer -- --nocapture`
+    #[test]
+    fn held_weapons_are_finer() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let (mut most, mut slowest, mut all) = ((0usize, String::new()), (0.0f64, String::new()), 0usize);
+        for family in 0..library.families.len() {
+            let w = library.generate(hash(family as u32 ^ 0xf1e), Some(family), 3.0);
+            let start = std::time::Instant::now();
+            let fine = fine_look(&library, w.family, &w.parts, w.look.scale, HELD_FINE);
+            let took = start.elapsed().as_secs_f64() * 1000.0;
+            let id = &library.families[family].id;
+            assert_eq!(fine.frames.len(), w.look.frames.len(), "{id}");
+            assert!((fine.res / w.look.res - HELD_FINE).abs() < 1e-9, "{id}");
+            assert!((fine.grip - w.look.grip).norm() < 1e-9 && (fine.tip - w.look.tip).norm() < 1e-9 && (fine.scale - w.look.scale).abs() < 1e-9, "{id}");
+            for ((m, a), (c, b)) in fine.frames.iter().zip(&w.look.frames) {
+                for k in 0..3 {
+                    let want = c.size[k] as f64 * HELD_FINE;
+                    assert!((m.size[k] as f64 - want).abs() <= HELD_FINE + 2.0, "{id}: {:?} from {:?}", m.size, c.size);
+                    assert!(m.size[k] <= 1023, "{id}");
+                }
+                // The same place for its voxels, near enough
+                assert!((a - b).norm() < 2.0 / w.look.res * w.look.scale.max(1.0), "{id}: anchored at {a:?}, not {b:?}");
+            }
+            let bytes = crate::animals::pack_models(&fine.frames.iter().map(|(m, _)| m).collect::<Vec<_>>()).len() * 4;
+            all += bytes;
+            if bytes > most.0 {
+                most = (bytes, id.clone());
+            }
+            if took > slowest.0 {
+                slowest = (took, id.clone());
+            }
+        }
+        println!(
+            "held weapons at {HELD_FINE}x: {:.1} MB each on average, the most {:.1} MB ({}), the slowest made in {:.0} ms ({})",
+            all as f64 / library.families.len() as f64 / 1e6,
+            most.0 as f64 / 1e6,
+            most.1,
+            slowest.0,
+            slowest.1
+        );
+        assert!(most.0 < 40_000_000, "a weapon in hand takes {} bytes", most.0);
+    }
+
+    /// Weapons as they're usually made beside the same made finer for the hand, see HELD_FINE,
+    /// drawn on the processor from the side, whole and up close round where they're held:
+    /// `FINE_SHEET=dir cargo test --release fine_sheet -- --ignored`
+    #[test]
+    #[ignore]
+    fn fine_sheet() {
+        let Ok(dir) = std::env::var("FINE_SHEET") else {
+            return;
+        };
+        let library = Library::parse(BUILT_IN).unwrap();
+        let palette = crate::assets::palette();
+        let px = 300usize;
+        // The look `look`'s first frame from -y, `span` meters across round `centre`
+        let draw = |look: &WeaponLook, frame: usize, centre: Vector3<f64>, span: f64, top: bool| -> Vec<[u8; 3]> {
+            let (m, anchor) = &look.frames[frame];
+            let [sx, sy, sz] = m.size.map(|s| s as i64);
+            let res = look.res;
+            let corner = anchor * res - Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, 0.0);
+            let mut depth = vec![i64::MAX; px * px];
+            let mut out = vec![[24u8, 26, 32]; px * px];
+            for j in 0..px {
+                for i in 0..px {
+                    let u = centre.x + (i as f64 / px as f64 - 0.5) * span;
+                    let v = (0.5 - j as f64 / px as f64) * span;
+                    let cu = (u * res - corner.x).floor() as i64;
+                    let cv = if top { ((centre.y + v) * res - corner.y).floor() as i64 } else { ((centre.z + v) * res - corner.z).floor() as i64 };
+                    let range = if top { sz } else { sy };
+                    for d in 0..range {
+                        let (x, y, z) = if top { (cu, cv, sz - 1 - d) } else { (cu, d, cv) };
+                        if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
+                            continue;
+                        }
+                        let k = m.voxels[(x + (y + z * sy) * sx) as usize];
+                        if k != AIR {
+                            let c = palette[k as usize];
+                            let shade = 1.0 - 0.6 * d as f64 / range.max(1) as f64;
+                            out[i + j * px] = [0, 1, 2].map(|q| (c[q] as f64 * shade).min(255.0) as u8);
+                            depth[i + j * px] = d;
+                            break;
+                        }
+                    }
+                }
+            }
+            // Edges where the depth steps, lit from the top left
+            for j in 1..px {
+                for i in 1..px {
+                    let (d, l, t) = (depth[i + j * px], depth[i - 1 + j * px], depth[i + (j - 1) * px]);
+                    if d != i64::MAX && (l != d || t != d) {
+                        let f = if l > d || t > d { 1.25 } else { 0.7 };
+                        out[i + j * px] = out[i + j * px].map(|c| (c as f64 * f).min(255.0) as u8);
+                    }
+                }
+            }
+            out
+        };
+        let families = ["sword", "greatsword", "axe", "spear", "mace", "katana", "bow", "staff", "musket", "crossbow"];
+        let mut rows = Vec::new();
+        for id in families {
+            let Some(f) = library.family(id) else { continue };
+            let w = library.generate(hash(f as u32 ^ 0xf1e), Some(f), 6.0);
+            let fine = fine_look(&library, w.family, &w.parts, w.look.scale, HELD_FINE);
+            let fam = &library.families[f];
+            let top = fam.build.crossbow();
+            let frame = if fam.kind == Kind::Ranged && fam.build == Build::None { 2 } else { 0 };
+            // The middle of its box, and up close round its grip, or its guard for what has one
+            let (m, anchor) = &w.look.frames[frame];
+            let whole = anchor + Vector3::new(0.0, 0.0, m.size[2] as f64 * 0.5 / w.look.res);
+            let close = if fam.guard { w.look.grip + Vector3::new(0.0, 0.0, 0.07 * w.look.scale) } else { w.look.grip };
+            let mut row = Vec::new();
+            for look in [&w.look, &fine] {
+                row.push(draw(look, frame.min(look.frames.len() - 1), whole, w.look.longest() * 1.05, top));
+            }
+            for look in [&w.look, &fine] {
+                row.push(draw(look, frame.min(look.frames.len() - 1), close, 0.16 * w.look.scale, top));
+            }
+            println!("{id}: {}", w.name);
+            rows.push(row);
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = image::RgbImage::new((4 * px) as u32, (rows.len() * px) as u32);
+        for (r, row) in rows.iter().enumerate() {
+            for (c, tile) in row.iter().enumerate() {
+                for (q, pixel) in tile.iter().enumerate() {
+                    image.put_pixel((c * px + q % px) as u32, (r * px + q / px) as u32, image::Rgb(*pixel));
+                }
+            }
+        }
+        image.save(std::path::Path::new(&dir).join("fine_sheet.png")).unwrap();
     }
 
     #[test]

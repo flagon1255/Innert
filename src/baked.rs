@@ -542,11 +542,13 @@ pub struct Piece {
     size: [u32; 3],
     /// Its joint in that frame, in meters from the middle of the feet
     pub joint: V,
+    /// Its voxels a meter, its look's, see Look::resolution()
+    pub res: f64,
 }
 
 impl Piece {
     fn empty() -> Piece {
-        Piece { model: Model { size: [1, 1, 1], voxels: vec![AIR] }, order: vec![u16::MAX], lo: [0; 3], size: [1, 1, 1], joint: V::zeros() }
+        Piece { model: Model { size: [1, 1, 1], voxels: vec![AIR] }, order: vec![u16::MAX], lo: [0; 3], size: [1, 1, 1], joint: V::zeros(), res: MODEL_RES }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -556,14 +558,14 @@ impl Piece {
     /// Where its first voxel's corner is, in meters from the middle of the feet in the frame it
     /// came from
     fn corner(&self) -> V {
-        V::new((self.lo[0] as f64 - self.size[0] as f64 * 0.5) / MODEL_RES, (self.lo[1] as f64 - self.size[1] as f64 * 0.5) / MODEL_RES, self.lo[2] as f64 / MODEL_RES)
+        V::new((self.lo[0] as f64 - self.size[0] as f64 * 0.5) / self.res, (self.lo[1] as f64 - self.size[1] as f64 * 0.5) / self.res, self.lo[2] as f64 / self.res)
     }
 
     /// Where the middle of its model's bottom is from its joint, in meters: what its file's placed
     /// by, as a jointed boss's pieces are
     pub fn anchor(&self) -> V {
         let s = self.model.size;
-        self.corner() + V::new(s[0] as f64 * 0.5, s[1] as f64 * 0.5, 0.0) / MODEL_RES - self.joint
+        self.corner() + V::new(s[0] as f64 * 0.5, s[1] as f64 * 0.5, 0.0) / self.res - self.joint
     }
 
     /// The same with its voxels `model`, whose first voxel's `lo` from where this one's is, as read
@@ -587,7 +589,7 @@ impl Piece {
                 }
             }
         }
-        Piece { model, order, lo: [0, 1, 2].map(|a| self.lo[a] + lo[a]), size: self.size, joint: self.joint }
+        Piece { model, order, lo: [0, 1, 2].map(|a| self.lo[a] + lo[a]), size: self.size, joint: self.joint, res: self.res }
     }
 
     /// The same in other materials
@@ -629,10 +631,10 @@ fn points(parts: &[Part], tag: u8) -> Vec<V> {
 }
 
 /// The box round the shapes of bone `tag`, as they reach at least a voxel thick, as they're drawn
-fn bounds(parts: &[Part], tag: u8) -> Option<(V, V)> {
+fn bounds(parts: &[Part], tag: u8, res: f64) -> Option<(V, V)> {
     let mut out: Option<(V, V)> = None;
     for p in parts.iter().filter(|p| p.bones().0 == tag || p.bones().1 == tag) {
-        let (a, b) = p.thickened(MODEL_RES).reach();
+        let (a, b) = p.thickened(res).reach();
         let (a, b) = (V::from(a), V::from(b));
         out = Some(match out {
             None => (a, b),
@@ -697,8 +699,7 @@ fn fit(from: &[V], to: &[V]) -> Q {
 
 /// The voxels of bone `tag`'s shapes in a frame `size` big, `parts` thickened: each taken by the
 /// first of the bone's shapes it's in, as the whole frame's are by the first of all its shapes
-fn cut(parts: &[Part], size: [u32; 3], tag: u8, joint: V) -> Piece {
-    let res = MODEL_RES;
+fn cut(parts: &[Part], size: [u32; 3], tag: u8, joint: V, res: f64) -> Piece {
     let n = (size[0] * size[1] * size[2]) as usize;
     let mut voxels = vec![AIR; n];
     let mut order = vec![u16::MAX; n];
@@ -759,13 +760,14 @@ fn cut(parts: &[Part], size: [u32; 3], tag: u8, joint: V) -> Piece {
             }
         }
     }
-    Piece { model, order: kept, lo: lo.map(|v| v as i32), size, joint }
+    Piece { model, order: kept, lo: lo.map(|v| v as i32), size, joint, res }
 }
 
 /// Makes `look`'s rig: its bones, their pieces as the code shapes them standing, where they go in
 /// every frame, and every frame baked from them
 pub fn build(look: Look) -> Rig {
-    let res = MODEL_RES;
+    // At the look's own grid, finer for some, see Look::resolution()
+    let res = look.resolution();
     let frames: Vec<Option<Vec<Part>>> = (0..animals::FRAMES).map(|f| animals::shown_in(look, f).then(|| animals::frame_parts(look, f))).collect();
     let all = skeleton(look);
     // Only the bones it has shapes for
@@ -818,7 +820,7 @@ pub fn build(look: Look) -> Rig {
         match joints[i] {
             Joint::Point(k) => pts.get(k).copied().unwrap_or_else(|| middle(pts)),
             Joint::Middle => middle(pts),
-            Joint::Swelling => bounds(parts, bones[i].tag).map_or_else(|| middle(pts), |(lo, hi)| (lo + hi) * 0.5),
+            Joint::Swelling => bounds(parts, bones[i].tag, res).map_or_else(|| middle(pts), |(lo, hi)| (lo + hi) * 0.5),
             Joint::At(j) => middle(pts) + turn * (j - middle(&rest_points[i])),
         }
     };
@@ -826,7 +828,7 @@ pub fn build(look: Look) -> Rig {
     // The pieces, each cut from the frame it stands in
     let sizes: Vec<[u32; 3]> = frames.iter().map(|f| f.as_ref().map_or([1, 1, 1], |parts| animals::frame_size(&parts.iter().map(|p| p.thickened(res)).collect::<Vec<_>>(), res))).collect();
     let thick: Vec<Option<Vec<Part>>> = (0..frames.len()).map(|f| rest.contains(&f).then(|| frames[f].as_ref().map(|parts| parts.iter().map(|p| p.thickened(res)).collect())).flatten()).collect();
-    let pieces: Vec<Piece> = bones.iter().enumerate().map(|(i, b)| thick[rest[i]].as_ref().map_or_else(Piece::empty, |parts| cut(parts, sizes[rest[i]], b.tag, rest_joint[i]))).collect();
+    let pieces: Vec<Piece> = bones.iter().enumerate().map(|(i, b)| thick[rest[i]].as_ref().map_or_else(Piece::empty, |parts| cut(parts, sizes[rest[i]], b.tag, rest_joint[i], res))).collect();
     // Where each bone goes in every frame
     let poses: Vec<Option<([u32; 3], Vec<Pose>)>> = frames
         .iter()
@@ -842,7 +844,7 @@ pub fn build(look: Look) -> Rig {
                     out[i] = Pose { at: rest_joint[i], turn: Q::identity(), scale: V::repeat(1.0), shown: true };
                 } else if ok {
                     let (turn, scale) = if bones[i].swells {
-                        let grown = match (bounds(parts, bones[i].tag), bounds(frames[rest[i]].as_deref().unwrap_or(&[]), bones[i].tag)) {
+                        let grown = match (bounds(parts, bones[i].tag, res), bounds(frames[rest[i]].as_deref().unwrap_or(&[]), bones[i].tag, res)) {
                             (Some((a, b)), Some((c, d))) => (b - a).component_div(&(d - c).sup(&V::repeat(1e-6))),
                             _ => V::repeat(1.0),
                         };
@@ -909,7 +911,7 @@ fn reach(out: &mut [Pose], upper: usize, lower: usize, rest_joint: &[V], rest_po
 /// voxel drawn over it is, and saying whose it is in `owner` if asked
 #[allow(clippy::too_many_arguments)]
 fn place(piece: &Piece, pose: &Pose, size: [u32; 3], voxels: &mut [u8], order: &mut [u16], owner: &mut Option<&mut Vec<usize>>, who: usize) {
-    let res = MODEL_RES;
+    let res = piece.res;
     let [sx, sy, sz] = piece.model.size;
     let mut put = |d: usize, m: u8, o: u16, voxels: &mut [u8], order: &mut [u16]| {
         if o < order[d] {
@@ -980,7 +982,8 @@ fn place(piece: &Piece, pose: &Pose, size: [u32; 3], voxels: &mut [u8], order: &
 /// A frame `size` big at least, with `pieces` put where `poses` has them, grown the same either
 /// side of its middle if they reach past it, and whose voxel each is in `owner` if asked
 fn compose(pieces: &[Piece], poses: &[Pose], size: [u32; 3], mut owner: Option<&mut Vec<usize>>) -> Model {
-    let res = MODEL_RES;
+    // Its pieces' grid, its look's
+    let res = pieces.iter().find(|p| !p.is_empty()).map_or(MODEL_RES, |p| p.res);
     let mut size = size;
     for (piece, pose) in pieces.iter().zip(poses) {
         if !pose.shown || piece.is_empty() {
@@ -1298,7 +1301,7 @@ pub fn read_pieces(look: Look, dir: &Path, files: &std::collections::HashSet<Str
             continue;
         }
         let piece = &pieces[p];
-        match crate::assets::read_edit(&crate::assets::file_of(dir, &name), crate::assets::pivot_of(piece.model.size, Some(piece.anchor()), MODEL_RES)) {
+        match crate::assets::read_edit(&crate::assets::file_of(dir, &name), crate::assets::pivot_of(piece.model.size, Some(piece.anchor()), piece.res), piece.res) {
             Ok(edit) => {
                 let (m, lo) = crate::assets::conform(&edit, piece.model.size, crate::assets::Grow::Free);
                 pieces[p] = piece.with(m, lo);
@@ -1347,8 +1350,8 @@ pub fn legacy(rig: &Rig, pieces: &mut [Piece], dir: &Path, name: &str) -> Result
     let path = crate::assets::file_of(dir, name);
     let sidecar: Option<crate::assets::Sidecar> = std::fs::read_to_string(path.with_extension("json")).ok().and_then(|t| serde_json::from_str(&t).ok());
     let base = written_from(rig.look, sidecar.as_ref()).ok_or("nothing to compare it with")?;
-    let res = MODEL_RES;
-    let edit = crate::assets::read_edit(&path, crate::assets::pivot_of(base.size, None, res))?;
+    let res = rig.look.resolution();
+    let edit = crate::assets::read_edit(&path, crate::assets::pivot_of(base.size, None, res), res)?;
     let (edited, lo) = crate::assets::conform(&edit, base.size, crate::assets::Grow::Fixed { cap: 255 });
     let changes = crate::assets::changes(&base, &edited, lo);
     if changes.is_empty() {
@@ -1681,11 +1684,12 @@ impl Rig {
             if !pose.shown || size == [1, 1, 1] {
                 continue;
             }
-            let [x, y, z] = size.map(|v| v as f64 / MODEL_RES);
+            let res = self.look.resolution();
+            let [x, y, z] = size.map(|v| v as f64 / res);
             let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * meter;
             let piece = turn * pose.turn;
             let place = at + turn * pose.at * meter + piece * anchor * meter;
-            out.push(AnimalInstance::new((animals::BAKED_MODELS_AT + k * PIECES + p) as u32, place, piece, meter / MODEL_RES, reach, MOVING));
+            out.push(AnimalInstance::new((animals::BAKED_MODELS_AT + k * PIECES + p) as u32, place, piece, meter / res, reach, MOVING));
         }
     }
 }
@@ -1760,11 +1764,12 @@ impl anim::Rig for EditorRig {
             if !j.shown || size == [1, 1, 1] {
                 continue;
             }
-            let [x, y, z] = size.map(|v| v as f64 / MODEL_RES);
+            let res = self.0.resolution();
+            let [x, y, z] = size.map(|v| v as f64 / res);
             let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
             let piece = turn * j.turn;
             let place = at + turn * j.at * vpm + piece * anchor * vpm;
-            let mut instance = AnimalInstance::new((animals::BAKED_MODELS_AT + k * PIECES + p) as u32, place, piece, vpm / MODEL_RES, reach, MOVING);
+            let mut instance = AnimalInstance::new((animals::BAKED_MODELS_AT + k * PIECES + p) as u32, place, piece, vpm / res, reach, MOVING);
             if lit == Some(p) {
                 instance = instance.skinned(0xA0_30_D0_FF);
             }
@@ -1845,7 +1850,8 @@ mod tests {
     /// Frames drawn on the processor into `image` at `ox`, `oy`, `size` pixels square, seen from in
     /// front, round to its left and a little above, as the jointed bosses' sheets are, see
     /// rig::preview
-    fn draw(model: &Model, reach: f64, size: u32, ox: u32, oy: u32, palette: &[[f64; 3]], image: &mut image::RgbImage) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw(model: &Model, res: f64, reach: f64, size: u32, ox: u32, oy: u32, palette: &[[f64; 3]], image: &mut image::RgbImage) {
         let (yaw, pitch) = (1.0f64, 0.22f64);
         let forward = V::new(-yaw.cos() * pitch.cos(), -yaw.sin() * pitch.cos(), -pitch.sin());
         let right = V::new(-yaw.sin(), yaw.cos(), 0.0);
@@ -1862,7 +1868,7 @@ mod tests {
         }
         let [sx, sy, sz] = model.size;
         let at = |x: i64, y: i64, z: i64| if x < 0 || y < 0 || z < 0 || x >= sx as i64 || y >= sy as i64 || z >= sz as i64 { AIR } else { model.voxels[(x + (y + z * sy as i64) * sx as i64) as usize] };
-        let splat = (scale / MODEL_RES * 1.25).ceil().max(1.0) as i64;
+        let splat = (scale / res * 1.25).ceil().max(1.0) as i64;
         for z in 0..sz as i64 {
             for y in 0..sy as i64 {
                 for x in 0..sx as i64 {
@@ -1879,7 +1885,7 @@ mod tests {
                     if normal == V::zeros() {
                         continue;
                     }
-                    let w = V::from(animals::frame_voxel(model.size, MODEL_RES, x as u32, y as u32, z as u32)) - middle;
+                    let w = V::from(animals::frame_voxel(model.size, res, x as u32, y as u32, z as u32)) - middle;
                     let (px, py, d) = (size as f64 * 0.5 + w.dot(&right) * scale, size as f64 * 0.55 - w.dot(&up) * scale, w.dot(&forward));
                     let base = palette.get(m as usize).copied().unwrap_or([1.0, 0.0, 1.0]);
                     let shade = 0.42 + 0.75 * normal.normalize().dot(&light).max(0.0);
@@ -1927,8 +1933,8 @@ mod tests {
             frames.extend([animals::POSE_WINDUP, animals::POSE_STRIKE, animals::POSE_SPECIAL].into_iter().filter(|&f| animals::shown_in(look, f)));
             let mut image = image::RgbImage::new(size * frames.len() as u32, size * 2);
             for (c, &f) in frames.iter().enumerate() {
-                draw(&animals::drawn_frame(look, f), look.reach() * 0.75, size, c as u32 * size, 0, &palette, &mut image);
-                draw(&rig.frames[f], look.reach() * 0.75, size, c as u32 * size, size, &palette, &mut image);
+                draw(&animals::drawn_frame(look, f), look.resolution(), look.reach() * 0.75, size, c as u32 * size, 0, &palette, &mut image);
+                draw(&rig.frames[f], look.resolution(), look.reach() * 0.75, size, c as u32 * size, size, &palette, &mut image);
             }
             let path = std::path::Path::new(&folder).join(format!("{look:?}.png"));
             image.save(&path).unwrap();
@@ -1949,8 +1955,8 @@ mod tests {
         frames.extend([animals::POSE_WINDUP, animals::POSE_STRIKE, animals::POSE_SPECIAL]);
         let mut image = image::RgbImage::new(size * frames.len() as u32, size * 2);
         for (c, &f) in frames.iter().enumerate() {
-            draw(&rig.frames[f], 1.6, size, c as u32 * size, 0, &palette, &mut image);
-            draw(&edited[f], 1.6, size, c as u32 * size, size, &palette, &mut image);
+            draw(&rig.frames[f], MODEL_RES, 1.6, size, c as u32 * size, 0, &palette, &mut image);
+            draw(&edited[f], MODEL_RES, 1.6, size, c as u32 * size, size, &palette, &mut image);
         }
         let path = std::path::Path::new(&folder).join("ArmoredSkeleton_old_edit.png");
         image.save(&path).unwrap();
@@ -2045,7 +2051,8 @@ mod tests {
         for &look in &KINDS {
             let rig = rig(look).unwrap();
             let mut out = Vec::new();
-            rig.draw_live(&rig.live(&doing(0.0, 0.0, None)), V::zeros(), Q::identity(), MODEL_RES, &mut out);
+            let res = look.resolution();
+            rig.draw_live(&rig.live(&doing(0.0, 0.0, None)), V::zeros(), Q::identity(), res, &mut out);
             let mut drawn = std::collections::HashSet::new();
             for instance in &out {
                 let (at, turn, size) = instance.placed();
@@ -2072,7 +2079,7 @@ mod tests {
                     for x in 0..sx {
                         if frame.voxels[(x + (y + z * sy) * sx) as usize] != AIR {
                             solid += 1;
-                            let c = V::from(animals::frame_voxel(frame.size, MODEL_RES, x, y, z)) * MODEL_RES;
+                            let c = V::from(animals::frame_voxel(frame.size, res, x, y, z)) * res;
                             found += drawn.contains(&[(c.x * 2.0).round() as i64, (c.y * 2.0).round() as i64, c.z.floor() as i64]) as usize;
                         }
                     }

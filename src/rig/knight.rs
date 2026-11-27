@@ -180,6 +180,30 @@ pub fn pieces(look: Look) -> Vec<Vec<Part>> {
             out[SPIKES + ring].push(ellipsoid(foot, [0.07, 0.07, 0.025], DIRT));
         }
     }
+    // Made finer, see rig::res(), what only shows then, each before what it's on so it takes its
+    // place on its surface: a stone of void set in the front of its crown, rivets round the rims
+    // of its pauldrons, bands of trim round its armored forearms and shins, and its sword's grip
+    // ridged with trim
+    if super::finer(look) {
+        let mut before = |piece: usize, parts: Vec<Part>| {
+            let rest = std::mem::take(&mut out[piece]);
+            out[piece] = parts.into_iter().chain(rest).collect();
+        };
+        before(HEAD, vec![ball(at([0.122, 0.0, 1.866], h), 0.016, glow)]);
+        let mut rivets = Vec::new();
+        for side in [-1.0, 1.0] {
+            for k in 0..12 {
+                let a = k as f64 / 12.0 * TAU;
+                rivets.push(ball(at([0.165 * a.cos(), side * 0.28 + 0.145 * a.sin(), 1.585], c), 0.011, dark));
+            }
+        }
+        before(CHEST, rivets);
+        for k in 0..2 {
+            before(FORE[k], [-0.1, -0.22].map(|z| ellipsoid([0.0, 0.0, z], [0.047, 0.047, 0.014], trim)).into());
+            before(SHIN[k], [-0.14, -0.3].map(|z| ellipsoid([0.0, 0.0, z], [0.053, 0.053, 0.016], trim)).into());
+        }
+        before(TOOL, [0.0, 0.06, 0.12, 0.18].map(|z| ellipsoid([0.0, 0.0, z], [0.031, 0.031, 0.01], trim)).into());
+    }
     out
 }
 

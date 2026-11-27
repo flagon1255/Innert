@@ -243,12 +243,7 @@ pub fn frame_name(frame: usize) -> String {
 
 /// Voxels a meter of a look's model, see Look::resolution()
 pub fn look_res(look: Look) -> f64 {
-    match look {
-        Look::GrappleHook => 3.0 * MODEL_RES,
-        Look::Wings => 4.0 * MODEL_RES,
-        _ if animals::sealife::is_small(look) => animals::sealife::FINE * MODEL_RES,
-        _ => MODEL_RES,
-    }
+    look.resolution()
 }
 
 /// Voxels a meter of the wings' models, see wings::RES
@@ -327,17 +322,55 @@ impl Edit {
     }
 }
 
-/// Reads `path` and the .json beside it as an edit of a model `size` big, held still at `pivot`
-pub(crate) fn read_edit(path: &Path, pivot: [f64; 3]) -> Result<Edit, String> {
+/// Reads `path` and the .json beside it as an edit of a model held still at `pivot`, made at `res`
+/// voxels a meter. A file made at another grid, its .json saying how many voxels a meter it has,
+/// is put on the model's, see regrid(): so a model made finer than it was still takes the files
+/// made for it before, each of their voxels a block of the finer ones, and a file saved at the
+/// finer grid is read just as it was saved.
+pub(crate) fn read_edit(path: &Path, pivot: [f64; 3], res: f64) -> Result<Edit, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let file = vox::read(&bytes)?;
     let sidecar: Option<Sidecar> = std::fs::read_to_string(path.with_extension("json")).ok().and_then(|t| serde_json::from_str(&t).ok());
-    let origin = sidecar.map_or_else(|| origin_of(pivot), |s| s.origin);
+    let origin = sidecar.as_ref().map_or_else(|| origin_of(pivot), |s| s.origin);
     let map = material_map(&file.palette);
     // Placed in the scene, a file's voxels are where it put them; a file with no scene, as other
     // programs write, is taken to be where it was written
     let first = if file.placed { file.grid.origin } else { origin };
-    Ok(Edit { lo: [0, 1, 2].map(|a| first[a] - origin[a]), size: file.grid.size, voxels: file.grid.voxels.iter().map(|&i| map[i as usize]).collect() })
+    let edit = Edit { lo: [0, 1, 2].map(|a| first[a] - origin[a]), size: file.grid.size, voxels: file.grid.voxels.iter().map(|&i| map[i as usize]).collect() };
+    match sidecar {
+        Some(s) if s.voxels_per_meter > 0.0 && (s.voxels_per_meter / res - 1.0).abs() > 1e-6 => {
+            // Where the file's pivot is in its own voxels: at the scene's middle, as far off it as
+            // it was from a whole voxel when written
+            let from_pivot = [0, 1, 2].map(|a| s.pivot[a] - s.pivot[a].round() - origin[a] as f64);
+            Ok(regrid(&edit, from_pivot, s.voxels_per_meter, pivot, res))
+        }
+        _ => Ok(edit),
+    }
+}
+
+/// `edit`, whose voxels are `from` a meter with the pivot at `from_pivot` among them, put on a grid
+/// of `to` voxels a meter round `to_pivot`, the pivot staying where it is: each voxel of the new
+/// grid whatever the file has at its middle. Made twice as fine, each of the file's voxels becomes
+/// exactly a block of two by two by two; made coarser, each new voxel takes the file's nearest.
+pub(crate) fn regrid(edit: &Edit, from_pivot: [f64; 3], from: f64, to_pivot: [f64; 3], to: f64) -> Edit {
+    let k = to / from;
+    // A hair inside, so a block lining up with the new grid exactly doesn't take in a voxel more
+    let lo = [0, 1, 2].map(|a| (to_pivot[a] + (edit.lo[a] as f64 - from_pivot[a]) * k + 1e-6).floor() as i32);
+    let hi = [0, 1, 2].map(|a| (to_pivot[a] + ((edit.lo[a] + edit.size[a] as i32) as f64 - from_pivot[a]) * k - 1e-6).ceil() as i32);
+    let size = [0, 1, 2].map(|a| (hi[a] - lo[a]).max(1) as u32);
+    let mut voxels = vec![AIR; (size[0] * size[1] * size[2]) as usize];
+    for z in 0..size[2] {
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                let q = [x, y, z];
+                let f = [0, 1, 2].map(|a| (from_pivot[a] + ((lo[a] + q[a] as i32) as f64 + 0.5 - to_pivot[a]) / k).floor() as i32 - edit.lo[a]);
+                if (0..3).all(|a| f[a] >= 0 && f[a] < edit.size[a] as i32) {
+                    voxels[(x + (y + z * size[1]) * size[0]) as usize] = edit.voxels[(f[0] as u32 + (f[1] as u32 + f[2] as u32 * edit.size[1]) * edit.size[0]) as usize];
+                }
+            }
+        }
+    }
+    Edit { lo, size, voxels }
 }
 
 /// How a model can grow to take in what's put in it
@@ -642,7 +675,7 @@ fn look_frames(dir: &Path, files: &HashSet<String>, look: Look, code: &[&Model])
     let mut out: Vec<Model> = code.iter().map(|m| copy(m)).collect();
     let base = format!("{folder}/base");
     if files.contains(&base) {
-        match read_edit(&file_of(dir, &base), pivot_of(code[0].size, None, res)) {
+        match read_edit(&file_of(dir, &base), pivot_of(code[0].size, None, res), res) {
             Ok(edit) => {
                 let (edited, lo) = conform(&edit, code[0].size, cap);
                 let changed = changes(code[0], &edited, lo);
@@ -664,7 +697,7 @@ fn look_frames(dir: &Path, files: &HashSet<String>, look: Look, code: &[&Model])
     for (f, frame) in code.iter().enumerate().skip(1) {
         let name = format!("{folder}/{}", frame_name(f));
         if !is_empty(frame) && files.contains(&name) {
-            match read_edit(&file_of(dir, &name), pivot_of(frame.size, None, res)) {
+            match read_edit(&file_of(dir, &name), pivot_of(frame.size, None, res), res) {
                 Ok(edit) => out[f] = conform(&edit, frame.size, cap).0,
                 Err(e) => log(format!("{name}.vox: {e}")),
             }
@@ -713,7 +746,8 @@ fn baked_look(dir: &Path, files: &HashSet<String>, look: Look) -> Option<(Vec<Mo
     for (f, frame) in frames.iter_mut().enumerate().skip(1) {
         let name = format!("{folder}/{}", frame_name(f));
         if !is_empty(frame) && files.contains(&name) {
-            match read_edit(&file_of(dir, &name), pivot_of(frame.size, None, MODEL_RES)) {
+            let res = look_res(look);
+            match read_edit(&file_of(dir, &name), pivot_of(frame.size, None, res), res) {
                 Ok(edit) => {
                     *frame = conform(&edit, frame.size, Grow::Fixed { cap: 255 }).0;
                     // Drawn as the file has it, so never posed live from its pieces
@@ -825,9 +859,9 @@ pub fn apply_looks(mut models: Vec<Model>) -> Vec<Model> {
 }
 
 /// Models placed by an anchor, each with its file if there is one: `name(i)` gives the file of
-/// model i, if it has one. Used for dragons' and great serpents' pieces and wings, which are each
-/// read whole.
-fn apply_anchored(made: &mut [(Model, Vector3<f64>)], res: f64, name: &dyn Fn(usize) -> Option<String>) -> usize {
+/// model i, if it has one, and `res_of(i)` its voxels a meter. Used for dragons' and great
+/// serpents' pieces and wings, which are each read whole.
+fn apply_anchored(made: &mut [(Model, Vector3<f64>)], res_of: &dyn Fn(usize) -> f64, name: &dyn Fn(usize) -> Option<String>) -> usize {
     if !enabled() {
         return 0;
     }
@@ -839,7 +873,8 @@ fn apply_anchored(made: &mut [(Model, Vector3<f64>)], res: f64, name: &dyn Fn(us
         if is_empty(model) {
             continue;
         }
-        match read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), res)) {
+        let res = res_of(i);
+        match read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), res), res) {
             Ok(edit) => {
                 let (m, lo) = conform(&edit, model.size, Grow::Free);
                 *anchor = moved_anchor(*anchor, model.size, lo, m.size, res);
@@ -937,7 +972,7 @@ fn apply_fixed(made: &mut [(Model, Vector3<f64>)], name: &dyn Fn(usize) -> Optio
     let mut changed = 0;
     for (i, (model, anchor)) in made.iter_mut().enumerate() {
         let Some(name) = name(i).filter(|n| files.contains(n)) else { continue };
-        match read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES)) {
+        match read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES), MODEL_RES) {
             Ok(edit) => {
                 *model = conform(&edit, model.size, Grow::Fixed { cap: 1023 }).0;
                 changed += 1;
@@ -980,21 +1015,21 @@ pub fn wards(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)>
 /// skin_map().
 pub fn dragons(made: &mut [(Model, Vector3<f64>)]) {
     let kinds = crate::dragons::KINDS.len();
-    jointed(made, kinds, dragon_pieces(), "dragon/", &dragon_file, "dragon pieces");
+    jointed(made, kinds, dragon_pieces(), "dragon/", &dragon_file, &|_| MODEL_RES, "dragon pieces");
     apply_fixed(&mut made[kinds * dragon_pieces()..], &dragon_fx_file);
 }
 
 /// Every jointed boss's pieces, with the files read in, see rig::build_models(). Bosses drawn
 /// alike but for their colours, as the golems are, share their files.
 pub fn bosses(made: &mut [(Model, Vector3<f64>)]) {
-    jointed(made, crate::rig::KINDS.len(), crate::rig::PIECES, "boss/", &boss_file, "boss pieces");
+    jointed(made, crate::rig::KINDS.len(), crate::rig::PIECES, "boss/", &boss_file, &|i| crate::rig::res(crate::rig::KINDS[i / crate::rig::PIECES]), "boss pieces");
 }
 
 /// Every avian's and gargoyle's pieces, and after them what they throw, with the files read in,
 /// see avians::build_models()
 pub fn avians(made: &mut [(Model, Vector3<f64>)]) {
     let kinds = crate::avians::KINDS.len();
-    jointed(made, kinds, avian_pieces(), "avian/", &avian_file, "avian and gargoyle pieces");
+    jointed(made, kinds, avian_pieces(), "avian/", &avian_file, &|_| MODEL_RES, "avian and gargoyle pieces");
     apply_fixed(&mut made[kinds * avian_pieces()..], &avian_fx_file);
 }
 
@@ -1011,7 +1046,7 @@ pub fn avian_file(i: usize) -> Option<String> {
 /// The pieces of `kinds` kinds of jointed things, `pieces` each, with the files read in: `file`
 /// gives a piece's file, all under `prefix`. A kind with no files of its own that's another drawn
 /// in other colours is drawn from that one's files, recoloured, see skin_map().
-fn jointed(made: &mut [(Model, Vector3<f64>)], kinds: usize, pieces: usize, prefix: &str, file: &dyn Fn(usize) -> Option<String>, what: &str) {
+fn jointed(made: &mut [(Model, Vector3<f64>)], kinds: usize, pieces: usize, prefix: &str, file: &dyn Fn(usize) -> Option<String>, res: &dyn Fn(usize) -> f64, what: &str) {
     if !enabled() || !edited(&root()).iter().any(|f| f.starts_with(prefix)) {
         return;
     }
@@ -1027,7 +1062,7 @@ fn jointed(made: &mut [(Model, Vector3<f64>)], kinds: usize, pieces: usize, pref
         .collect();
     let files = edited(&root());
     let owns = |k: usize| (0..pieces).any(|p| file(k * pieces + p).is_some_and(|f| files.contains(&f)));
-    let changed = apply_anchored(&mut made[..kinds * pieces], MODEL_RES, &|i| file(i).filter(|_| shares[i / pieces].is_none_or(|_| owns(i / pieces))));
+    let changed = apply_anchored(&mut made[..kinds * pieces], res, &|i| file(i).filter(|_| shares[i / pieces].is_none_or(|_| owns(i / pieces))));
     for (k, share) in shares.iter().enumerate() {
         if let Some((j, map)) = share
             && !owns(k)
@@ -1047,7 +1082,7 @@ fn jointed(made: &mut [(Model, Vector3<f64>)], kinds: usize, pieces: usize, pref
 /// The great serpents' heads, jaws and pieces of body, with the files read in, see
 /// serpents::parts_made()
 pub fn serpents(made: &mut [(Model, Vector3<f64>)]) {
-    let changed = apply_anchored(made, MODEL_RES, &serpent_file);
+    let changed = apply_anchored(made, &|_| MODEL_RES, &serpent_file);
     if changed > 0 {
         log(format!("Model files: {changed} great serpent pieces read"));
     }
@@ -1056,7 +1091,7 @@ pub fn serpents(made: &mut [(Model, Vector3<f64>)]) {
 /// The krakens' mantles, heads and pieces of arm, with the files read in, see
 /// bosses::kraken::parts_made()
 pub fn krakens(made: &mut [(Model, Vector3<f64>)]) {
-    let changed = apply_anchored(made, MODEL_RES, &kraken_file);
+    let changed = apply_anchored(made, &|_| MODEL_RES, &kraken_file);
     if changed > 0 {
         log(format!("Model files: {changed} kraken pieces read"));
     }
@@ -1066,7 +1101,7 @@ pub fn krakens(made: &mut [(Model, Vector3<f64>)]) {
 pub fn wings(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)> {
     if enabled() && edited(&root()).iter().any(|f| f.starts_with("wings/")) {
         let code: Vec<(Model, Vector3<f64>)> = made.iter().map(|(m, a)| (copy(m), *a)).collect();
-        let changed = apply_anchored(&mut made, WING_RES, &wing_file);
+        let changed = apply_anchored(&mut made, &|_| WING_RES, &wing_file);
         if changed > 0 {
             state().code_wings = Some(code);
             log(format!("Model files: {changed} wings read"));
@@ -1080,7 +1115,7 @@ pub fn wings(mut made: Vec<(Model, Vector3<f64>)>) -> Vec<(Model, Vector3<f64>)>
 /// still in the colour of their skin, gloves or boots, and its cloth in that of their hair or clothes
 pub fn player(mut made: Vec<(Model, Vector3<f64>)>, _looks: &crate::character::Looks) -> Vec<(Model, Vector3<f64>)> {
     if enabled() && edited(&root()).iter().any(|f| f.starts_with("player/")) {
-        let changed = apply_anchored(&mut made, crate::character::body::BODY_RES, &player_file);
+        let changed = apply_anchored(&mut made, &|_| crate::character::body::BODY_RES, &player_file);
         if changed > 0 {
             log(format!("Model files: {changed} pieces of the player's body read"));
         }
@@ -1221,13 +1256,13 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
                 }
                 let name = format!("{folder}/{}", rig.bones[p].name);
                 let what = format!("{}, {}", look_title(look), rig.bones[p].name.replace('_', " "));
-                write_model(dir, &name, &piece.model, MODEL_RES, Some(piece.anchor()), &what, PIECE_NOTE)?;
+                write_model(dir, &name, &piece.model, piece.res, Some(piece.anchor()), &what, PIECE_NOTE)?;
                 lines.push(format!("{name}.vox: {what}"));
             }
             if all_frames {
                 for (f, m) in frames.iter().enumerate().skip(1).filter(|(_, m)| !is_empty(m)) {
                     let name = format!("{folder}/{}", frame_name(f));
-                    write_model(dir, &name, m, MODEL_RES, None, &format!("{}, frame {f}: {}", look_title(look), frame_name(f)), "Replaces this frame outright.")?;
+                    write_model(dir, &name, m, look_res(look), None, &format!("{}, frame {f}: {}", look_title(look), frame_name(f)), "Replaces this frame outright.")?;
                     lines.push(format!("{name}.vox"));
                 }
             }
@@ -1258,11 +1293,11 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
     }
     // Dragons' and jointed bosses' pieces, those alike but for colour once
     let dragon_name = |k: usize, p: usize| format!("{}, {}", crate::dragons::name(crate::dragons::KINDS[k]), dragon_piece_name(p).replace('_', " "));
-    export_jointed(dir, &models, animals::DRAGON_MODELS_AT, &crate::dragons::KINDS, dragon_pieces(), &crate::dragons::anchors(), &dragon_file, &dragon_name, &mut lines)?;
+    export_jointed(dir, &models, animals::DRAGON_MODELS_AT, &crate::dragons::KINDS, dragon_pieces(), &crate::dragons::anchors(), &dragon_file, &dragon_name, &|_| MODEL_RES, &mut lines)?;
     let boss_name = |k: usize, p: usize| format!("{}, {}", look_title(crate::rig::KINDS[k]), crate::rig::edit::piece_name(crate::rig::KINDS[k], p).replace('_', " "));
-    export_jointed(dir, &models, animals::RIG_MODELS_AT, &crate::rig::KINDS, crate::rig::PIECES, &crate::rig::edit::anchors(), &boss_file, &boss_name, &mut lines)?;
+    export_jointed(dir, &models, animals::RIG_MODELS_AT, &crate::rig::KINDS, crate::rig::PIECES, &crate::rig::edit::anchors(), &boss_file, &boss_name, &crate::rig::res, &mut lines)?;
     let avian_name = |k: usize, p: usize| format!("{}, {}", look_title(crate::avians::KINDS[k]), crate::avians::PIECE_NAMES[p].replace('_', " "));
-    export_jointed(dir, &models, animals::WINGED_MODELS_AT, &crate::avians::KINDS, avian_pieces(), &crate::avians::anchors(), &avian_file, &avian_name, &mut lines)?;
+    export_jointed(dir, &models, animals::WINGED_MODELS_AT, &crate::avians::KINDS, avian_pieces(), &crate::avians::anchors(), &avian_file, &avian_name, &|_| MODEL_RES, &mut lines)?;
     // What dragons breathe and avians throw, the effects of fighting, the wards and the motes the
     // wings leave behind
     let dragon_fx = animals::DRAGON_MODELS_AT + crate::dragons::KINDS.len() * dragon_pieces();
@@ -1333,7 +1368,13 @@ pub fn export_all(dir: &Path, all_frames: bool) -> Result<Exported, String> {
         lines.push(format!("{file}.vox: {what}"));
     }
     // Weapons' parts
-    crate::weapon_parts::export(dir, &library, &mut lines)?;
+    // At the finer grid the weapon in hand is drawn at with `--set fine_parts=1`, to work on its
+    // finer detail; either is read the same, see read_edit()
+    if setting("fine_parts").is_some_and(|v| v == "1") {
+        crate::weapon_parts::at_fine(crate::weapons::HELD_FINE, || crate::weapon_parts::export(dir, &library, &mut lines))?;
+    } else {
+        crate::weapon_parts::export(dir, &library, &mut lines)?;
+    }
     // Jewels, see jewels.rs
     crate::jewels::export(dir, &mut lines)?;
     // The trees' numbers, beside assets\models as the game reads them, see worldgen\trees.rs
@@ -1357,6 +1398,7 @@ fn export_jointed(
     anchors: &[Vector3<f64>],
     file: &dyn Fn(usize) -> Option<String>,
     what: &dyn Fn(usize, usize) -> String,
+    res: &dyn Fn(Look) -> f64,
     lines: &mut Vec<String>,
 ) -> Result<(), String> {
     for k in 0..kinds.len() {
@@ -1376,7 +1418,7 @@ fn export_jointed(
             }
             let name = file(k * pieces + p).unwrap();
             let what = what(k, p);
-            write_model(dir, &name, m, MODEL_RES, Some(anchors[k * pieces + p]), &what, "A jointed piece: the pivot is its joint.")?;
+            write_model(dir, &name, m, res(kinds[k]), Some(anchors[k * pieces + p]), &what, "A jointed piece: the pivot is its joint.")?;
             lines.push(format!("{name}.vox: {what}"));
         }
     }
@@ -1678,8 +1720,10 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
         let Some(name) = name.filter(|n| names.contains(n)) else { return };
         let code = code_of(i, s);
         let now = &base[i];
+        // A boss's pieces at their own grid, see rig::res(), the rest the world's
+        let res = if (first_boss..first_boss + crate::rig::MODELS).contains(&i) { crate::rig::res(crate::rig::KINDS[(i - first_boss) / crate::rig::PIECES]) } else { MODEL_RES };
         let model = if files.contains(&name) {
-            match read_edit(&file_of(&dir, &name), pivot_of(now.size, anchor_of(i), MODEL_RES)) {
+            match read_edit(&file_of(&dir, &name), pivot_of(now.size, anchor_of(i), res), res) {
                 Ok(edit) => conform(&edit, now.size, Grow::Fixed { cap: 1023 }).0,
                 Err(e) => {
                     log(format!("{name}.vox: {e}"));
@@ -1731,7 +1775,7 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
         let code = s.code_wings.get_or_insert_with(|| lists.wings.iter().map(|(m, a)| (copy(m), *a)).collect());
         let mut made: Vec<(Model, Vector3<f64>)> = code.iter().map(|(m, a)| (copy(m), *a)).collect();
         drop(s);
-        apply_anchored(&mut made, WING_RES, &wing_file);
+        apply_anchored(&mut made, &|_| WING_RES, &wing_file);
         out.wings = Some(made);
     } else {
         drop(s);
@@ -1751,7 +1795,7 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
         for (i, (model, anchor)) in made.iter_mut().enumerate() {
             let name = effect_file(i).unwrap();
             if files.contains(&name)
-                && let Ok(edit) = read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES))
+                && let Ok(edit) = read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES), MODEL_RES)
             {
                 *model = conform(&edit, model.size, Grow::Fixed { cap: 1023 }).0;
             }
@@ -1766,7 +1810,7 @@ fn reread(paths: &[PathBuf], lists: &Lists, over: &Mutex<HashMap<usize, Model>>)
         for (i, (model, anchor)) in made.iter_mut().enumerate() {
             let name = ward_file(i).unwrap();
             if files.contains(&name)
-                && let Ok(edit) = read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES))
+                && let Ok(edit) = read_edit(&file_of(&dir, &name), pivot_of(model.size, Some(*anchor), MODEL_RES), MODEL_RES)
             {
                 *model = conform(&edit, model.size, Grow::Fixed { cap: 1023 }).0;
             }
@@ -1817,7 +1861,7 @@ mod tests {
         ];
         let (model, anchor) = animals::voxelize(&parts, MODEL_RES);
         write_model(&dir, "test/piece", &model, MODEL_RES, Some(anchor), "a test", "").unwrap();
-        let edit = read_edit(&file_of(&dir, "test/piece"), pivot_of(model.size, Some(anchor), MODEL_RES)).unwrap();
+        let edit = read_edit(&file_of(&dir, "test/piece"), pivot_of(model.size, Some(anchor), MODEL_RES), MODEL_RES).unwrap();
         let (back, lo) = conform(&edit, model.size, Grow::Free);
         assert_eq!(back.size, model.size);
         assert_eq!(back.voxels, model.voxels);
@@ -1842,7 +1886,7 @@ mod tests {
         voxels[0] = crate::worldgen::material::FLAME;
         g = Grid { size, voxels, origin: [g.origin[0] - 3, g.origin[1], g.origin[2] - 2] };
         std::fs::write(file_of(&dir, "test/piece"), vox::write(&g, &palette())).unwrap();
-        let edit = read_edit(&file_of(&dir, "test/piece"), pivot_of(model.size, Some(anchor), MODEL_RES)).unwrap();
+        let edit = read_edit(&file_of(&dir, "test/piece"), pivot_of(model.size, Some(anchor), MODEL_RES), MODEL_RES).unwrap();
         let (grown, lo) = conform(&edit, model.size, Grow::Free);
         assert_eq!(lo, [-3, 0, -2]);
         assert_eq!(grown.size, [model.size[0] + 3, model.size[1], model.size[2] + 2]);
@@ -1858,6 +1902,61 @@ mod tests {
         let moved = moved_anchor(anchor, model.size, lo, grown.size, MODEL_RES);
         let world = |a: Vector3<f64>, s: [u32; 3], p: [i32; 3]| a + Vector3::new((p[0] as f64 + 0.5 - s[0] as f64 * 0.5) / MODEL_RES, (p[1] as f64 + 0.5 - s[1] as f64 * 0.5) / MODEL_RES, (p[2] as f64 + 0.5) / MODEL_RES);
         assert!((world(anchor, model.size, [1, 2, 3]) - world(moved, grown.size, [4, 2, 5])).norm() < 1e-9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A model made finer than its file: the file, made at the world's grid, is read onto the finer
+    /// one as it was, each of its voxels a block of two by two by two where the model's own voxels
+    /// would be; and saved again at the finer grid, its .json saying so, it reads back exactly
+    #[test]
+    fn files_follow_their_models_to_a_finer_grid() {
+        use crate::worldgen::material::{GOLD, STONE};
+        let dir = std::env::temp_dir().join(format!("innert-finer-test-{}", std::process::id()));
+        // A model at the world's grid held by an anchor off its middle, a voxel here and there
+        let mut coarse = air([7, 5, 9]);
+        for (i, v) in coarse.voxels.iter_mut().enumerate() {
+            *v = match (i * 7919) % 11 {
+                0..=3 => STONE,
+                4 => GOLD,
+                _ => AIR,
+            };
+        }
+        let anchor = Vector3::new(0.11, -0.04, 0.3);
+        write_model(&dir, "test/coarse", &coarse, MODEL_RES, Some(anchor), "a test", "").unwrap();
+        // The same box made twice as fine, as the code would make it then: twice as big a side,
+        // held by the same anchor
+        let fine_res = 2.0 * MODEL_RES;
+        let mut fine = air(coarse.size.map(|s| s * 2));
+        for z in 0..fine.size[2] {
+            for y in 0..fine.size[1] {
+                for x in 0..fine.size[0] {
+                    let i = (x + (y + z * fine.size[1]) * fine.size[0]) as usize;
+                    fine.voxels[i] = if (x + y + z) % 3 == 0 { GOLD } else { at(&coarse, [x as i32 / 2, y as i32 / 2, z as i32 / 2]) };
+                }
+            }
+        }
+        let fine_anchor = anchor;
+        let edit = read_edit(&file_of(&dir, "test/coarse"), pivot_of(fine.size, Some(fine_anchor), fine_res), fine_res).unwrap();
+        let (read, lo) = conform(&edit, fine.size, Grow::Free);
+        assert_eq!(read.size, coarse.size.map(|s| s * 2), "every voxel two a side");
+        let moved = moved_anchor(fine_anchor, fine.size, lo, read.size, fine_res);
+        assert!((moved - anchor).norm() < 1e-9, "where it was, at {moved:?}, not {anchor:?}");
+        for z in 0..read.size[2] {
+            for y in 0..read.size[1] {
+                for x in 0..read.size[0] {
+                    assert_eq!(at(&read, [x as i32, y as i32, z as i32]), at(&coarse, [x as i32 / 2, y as i32 / 2, z as i32 / 2]), "at {x}, {y}, {z}");
+                }
+            }
+        }
+        // Saved at the finer grid, read at it, exactly as it was
+        write_model(&dir, "test/fine", &fine, fine_res, Some(fine_anchor), "a test", "").unwrap();
+        let edit = read_edit(&file_of(&dir, "test/fine"), pivot_of(fine.size, Some(fine_anchor), fine_res), fine_res).unwrap();
+        let (back, lo) = conform(&edit, fine.size, Grow::Free);
+        assert!(back.size == fine.size && back.voxels == fine.voxels && lo == [0, 0, 0]);
+        // And read at the world's grid again, every other voxel of it, where it was
+        let edit = read_edit(&file_of(&dir, "test/fine"), pivot_of(coarse.size, Some(anchor), MODEL_RES), MODEL_RES).unwrap();
+        let (down, _) = conform(&edit, coarse.size, Grow::Free);
+        assert!(down.size.iter().zip(coarse.size).all(|(a, b)| a.abs_diff(b) <= 1), "{:?} near {:?}", down.size, coarse.size);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1963,12 +2062,13 @@ mod tests {
                 continue;
             }
             let m = &models[base + i];
-            let edit = read_edit(&file_of(&dir, &name), pivot_of(m.size, Some(anchors[i]), MODEL_RES)).unwrap();
+            let res = if i < crate::rig::MODELS { crate::rig::res(crate::rig::KINDS[i / crate::rig::PIECES]) } else { MODEL_RES };
+            let edit = read_edit(&file_of(&dir, &name), pivot_of(m.size, Some(anchors[i]), res), res).unwrap();
             let (back, lo) = conform(&edit, m.size, Grow::Free);
             assert!(back.size == m.size && back.voxels == m.voxels && lo == [0, 0, 0], "{name}");
         }
         let fixed = |name: &str, m: &Model, a: Vector3<f64>| {
-            let edit = read_edit(&file_of(&dir, name), pivot_of(m.size, Some(a), MODEL_RES)).unwrap();
+            let edit = read_edit(&file_of(&dir, name), pivot_of(m.size, Some(a), MODEL_RES), MODEL_RES).unwrap();
             let (back, _) = conform(&edit, m.size, Grow::Fixed { cap: 1023 });
             assert!(back.size == m.size && back.voxels == m.voxels, "{name}");
         };
@@ -1986,7 +2086,7 @@ mod tests {
         }
         for (i, (m, a)) in wings.iter().enumerate() {
             let name = wing_file(i).unwrap();
-            let edit = read_edit(&file_of(&dir, &name), pivot_of(m.size, Some(*a), WING_RES)).unwrap();
+            let edit = read_edit(&file_of(&dir, &name), pivot_of(m.size, Some(*a), WING_RES), WING_RES).unwrap();
             let (back, _) = conform(&edit, m.size, Grow::Free);
             assert!(back.voxels == m.voxels, "{name}");
         }

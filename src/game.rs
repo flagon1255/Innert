@@ -39,6 +39,8 @@ mod specialists;
 mod sea;
 mod demi;
 pub use demi::DemiLair;
+/// The weapon in hand drawn finer than the rest, see weapons::HELD_FINE
+mod fine;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -1071,6 +1073,8 @@ pub struct Game {
     /// models packed as of the rest of it, see weapon_model_words()
     one_off_changes: u32,
     packed_weapons: std::cell::RefCell<Option<(u32, Vec<u32>)>>,
+    /// The weapon in hand drawn finer, its models after the one-off models, see game\fine.rs
+    fine: fine::Fine,
     /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
     aerie: aerie::Sky,
     /// The krakens' ink and the rest, see game\brine.rs
@@ -1308,6 +1312,7 @@ impl Game {
             one_offs: Vec::new(),
             one_off_changes: 0,
             packed_weapons: std::cell::RefCell::new(None),
+            fine: Default::default(),
             aerie: Default::default(),
             brine: Default::default(),
             trades: Default::default(),
@@ -1459,7 +1464,9 @@ impl Game {
             *cache = Some((key, pack_models(&models)));
         }
         let mut words = vec![self.weapon_model(0)];
-        words.extend(crate::animals::splice_packed(cache.as_ref().map_or(&[][..], |(_, w)| w.as_slice()), &self.one_offs));
+        // The one-off models, then the weapon in hand's fine look, see game\fine.rs
+        let alone: Vec<&[u32]> = self.one_offs.iter().chain(&self.fine.packed).map(|w| w.as_slice()).collect();
+        words.extend(crate::animals::splice_packed(cache.as_ref().map_or(&[][..], |(_, w)| w.as_slice()), &alone));
         words
     }
 
@@ -6140,6 +6147,8 @@ impl Game {
                 w.look = look;
             }
         }
+        // The weapon in hand's fine look made again from them too, see game\fine.rs
+        self.fine.version += 1;
         self.models_version += 1;
     }
 
@@ -6360,7 +6369,11 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let camera = view.eye;
         // Nothing in hand while lying dead
-        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
+        // Drawn finer once it's been made so, see game\fine.rs
+        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| {
+            let (look, model) = self.held_look(w, self.weapon_model(i));
+            (w, look, model)
+        });
         let holding = held.is_some();
         let mut out: Vec<AnimalInstance> = self.combat.held_instances(held, view).into_iter().map(|i| self.painted_arm(i)).collect();
         // The player's own body where they stand, for its shadow and reflections, among the first

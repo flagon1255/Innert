@@ -1069,7 +1069,10 @@ bool marchModel(vec3 o, vec3 d, uvec3 size, vec2 along, float limit, bool weapon
     vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
     vec3 delta = abs(inv);
     float end = min(limit, t_exit);
-    for (int k = 0; k < 512 && t <= end; k++) {
+    // No ray crosses more of its voxels than its sides together, however fine it's made: a model
+    // finer than the world's, as the weapon in hand, can be more than 512 long
+    int steps = int(size.x + size.y + size.z);
+    for (int k = 0; k < steps && t <= end; k++) {
         if (keptVoxel(weapon, start, kept, uvec3(c) - kept_from) != 0) {
             t_hit = t;
             c_hit = c;
