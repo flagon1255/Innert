@@ -6,17 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-Roads and magic RUNNING from AVI c7055b8d, the menu map from 89a0c35e (2026-11-27), each in `.claude\worktrees\<name>`.
-
-2. **Roads between towns and castles, with road signs** (2026-11-27, "add roads that connect npc
-   cities, castles, road signs"). RUNNING in `roads`.
-   - Roads laid by worldgen that link NPC towns and castles (and camps where it fits), following
-     the land, bridging or skirting water; signposts at junctions and near each place naming where
-     each way leads.
-   - Surfaces (2026-11-27, "roads can be gravel, sandm pavement, rocks", then "pavement maybe
-     not", "but rocky"): gravel, sand and rocky roads (rough uneven stones, also on the main roads
-     near towns and castles where pavement would have gone), no smooth pavement; picked per
-     stretch from the land and how important the road is.
+Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
 
 4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
    this"). RUNNING in `menumap`.
@@ -69,6 +59,12 @@ Roads and magic RUNNING from AVI c7055b8d, the menu map from 89a0c35e (2026-11-2
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- Roads: gravel, sand and rocky roads between towns and from each castle to its town, timber and
+  stone bridges, signposts naming where each way leads (floating labels within 14 m), towns and
+  castles named, roads on the map (38f1c36b, 2026-11-27). Left: a grass patch on one bridge end,
+  a small step where two roads run side by side out of a town; roads only in the normal and
+  frozen lands.
 
 - Menu and loading cubes answer the mouse: columns rise and whiten under the cursor, a click
   ripples out; the land stays beside the start-up menu (9adf54e6, 2026-11-27). Lift/brightness
