@@ -6,7 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
+Four RUNNING (2026-11-27), each in `.claude\worktrees\<name>`.
 
 7. **More bosses, and bosses that don't get stuck** (2026-11-27, "add more bosses", "also dont
    let bosses to get stuck in holes, let them jump out", "add more demi bosses too"). RUNNING in
