@@ -1515,11 +1515,13 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
     picked
 }
 
-/// The menu's window in the middle of the screen, `add` filling it: as tall as the window lets it
-/// be, scrolling through the rest when it's short
-pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
+/// The menu's window in the middle of the screen, or at the `left` of it for the map beside it, see
+/// loading::Backdrop, `add` filling it: as tall as the window lets it be, scrolling through the
+/// rest when it's short
+pub fn menu_window(ctx: &egui::Context, left: bool, add: impl FnOnce(&mut egui::Ui)) {
     let room = (ctx.screen_rect().height() - 2.0 * MENU_MARGIN - 24.0).max(120.0);
-    egui::Area::new(egui::Id::new("menu")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    let (anchor, x) = if left { (Align2::LEFT_CENTER, crate::loading::MENU_LEFT) } else { (Align2::CENTER_CENTER, 0.0) };
+    egui::Area::new(egui::Id::new("menu")).anchor(anchor, [x, 0.0]).show(ctx, |ui| {
         theme::framed(ui, theme::panel(MENU_MARGIN, 6.0), |ui| {
             ui.set_width(376.0);
             // Room for all of it, not only for as much as there was the frame before: an Area lays
@@ -1582,7 +1584,7 @@ mod tests {
             let mut end = egui::Rect::NOTHING;
             for _ in 0..4 {
                 let _ = ctx.run(input.clone(), |ctx| {
-                    menu_window(ctx, |ui| {
+                    menu_window(ctx, false, |ui| {
                         menu(&mut ModeMenu::default(), ui, true, Some(Mode::Realms), &saves, &mut 7, false);
                         menu_help(ui);
                         end = ui.label("end").rect;

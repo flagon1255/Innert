@@ -1479,16 +1479,20 @@ impl Backdrop {
         }
         let below = pos2(room.center().x, room.bottom() + 14.0);
         painter.text(below, Align2::CENTER_CENTER, &map.caption, crate::theme::display(14.0), fade(crate::theme::TEXT));
-        painter.text(below + vec2(0.0, 18.0), Align2::CENTER_CENTER, "Point at a place to name it · drag to turn", FontId::proportional(11.5), fade(crate::theme::WEAK));
     }
 }
 
-/// Where the land's drawn behind the menu, in a window `screen` big, the menu at `menu`: in the
-/// room left of it, as big as fits, unless there's too little
+/// How far in from the left of the window the menu Innert starts with is, with the map to the right
+/// of it, see session::menu_window()
+pub const MENU_LEFT: f32 = 60.0;
+
+/// Where the land's drawn beside the menu, in a window `screen` big, the menu at `menu`: in the
+/// room right of it, as big as fits, with as much room either side of it as the menu has to its
+/// left, unless there's too little
 fn beside_menu(screen: Rect, menu: Option<Rect>) -> Option<Rect> {
-    let menu = menu.unwrap_or_else(|| Rect::from_center_size(screen.center(), vec2(436.0, screen.height() * 0.9)));
-    let page = page_rect(screen);
-    let (left, right) = (page.left() + 14.0, menu.left() - 22.0);
+    let menu = menu.unwrap_or_else(|| Rect::from_min_size(pos2(screen.left() + MENU_LEFT, screen.top()), vec2(436.0, screen.height())));
+    let gap = (menu.left() - screen.left()).clamp(24.0, MENU_LEFT);
+    let (left, right) = (menu.right() + gap, screen.right() - gap);
     let tall = (screen.height() * 0.7).min((right - left) * 1.0);
     let middle = screen.center().y + screen.height() * 0.03;
     (right - left >= 170.0).then(|| Rect::from_min_max(pos2(left, middle - tall * 0.5), pos2(right, middle + tall * 0.5)))

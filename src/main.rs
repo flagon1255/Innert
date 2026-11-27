@@ -6118,7 +6118,7 @@ impl App {
                 }
                 // Resume, each mode with Continue and New, Settings and Quit, done at the start of
                 // the next frame, see menu_picked(), and how to play under them
-                session::menu_window(&ctx, |ui| {
+                session::menu_window(&ctx, map_wanted.is_some(), |ui| {
                     let session = &mut self.session;
                     let picked = session::menu(&mut session.menu, ui, self.started, session.mode, &session.saves, &mut self.new_seed, self.show_settings);
                     if picked.is_some() {
