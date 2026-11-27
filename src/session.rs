@@ -326,7 +326,8 @@ impl App {
         }
         let margin = 2.0 * self.stream.as_ref().map_or(0.0, |s| s.strip as f64);
         let inside = (0..2).all(|i| at[i] > margin && at[i] < self.world.size[i] as f64 - margin);
-        let rebuild = seed_changed || scarred || !inside;
+        // Built afresh, too, from the empty world Innert starts on, see empty_world()
+        let rebuild = seed_changed || scarred || !inside || std::mem::take(&mut self.bare);
         self.camera.rotation.z = save.player.yaw;
         self.camera.rotation.x = save.player.pitch.clamp(-FRAC_PI_2, FRAC_PI_2);
         let eye = Vector3::new(0.0, 0.0, 1.6 * vpm);

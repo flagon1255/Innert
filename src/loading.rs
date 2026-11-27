@@ -614,7 +614,7 @@ impl Launcher {
         // the map of the world about to be entered
         let land = self.progress.land().filter(|_| drawn);
         if app.menu_open && !app.started && !settings_from_args().iter().any(|(k, v)| k == "menu_map" && v == "0") {
-            app.backdrop = Some(Backdrop::new(land.clone(), touch.behind_menu(), look.clone()));
+            app.backdrop = Some(Backdrop::new(land.clone(), touch.behind_menu(), look.clone(), app.bare));
         }
         if drawn {
             let behind = app.backdrop.as_ref().is_some_and(|b| b.glides);
@@ -1153,6 +1153,9 @@ pub struct Backdrop {
     dragging: bool,
     /// Whether the loading screen was seen, for the land to glide aside from it
     glides: bool,
+    /// Whether it's on the loading screen's page rather than over the world, as when Innert starts
+    /// with no world built, see empty_world()
+    paged: bool,
     /// How long it's taken to draw, said in screenshot runs
     cost: Cost,
 }
@@ -1180,7 +1183,7 @@ impl Shown {
 impl Backdrop {
     /// Beside the menu, the loading screen's `land` gliding aside if it was seen, touched by the
     /// mouse as `touch` has it, the loading screen as `look`
-    fn new(land: Option<Arc<Land>>, touch: Touch, look: Look) -> Self {
+    fn new(land: Option<Arc<Land>>, touch: Touch, look: Look, paged: bool) -> Self {
         let now = Instant::now();
         let glides = land.is_some();
         Backdrop {
@@ -1199,6 +1202,7 @@ impl Backdrop {
             tilt: 0.0,
             dragging: false,
             glides,
+            paged,
             cost: Cost::default(),
         }
     }
@@ -1326,7 +1330,7 @@ impl Backdrop {
         let screen = ctx.screen_rect();
         let t = self.look.start.elapsed().as_secs_f32();
         // The loading screen's page, fading away from under it as it glides back
-        let veil = if self.glides { 1.0 - smoothstep(since / FADE_SECONDS) } else { 0.0 };
+        let veil = if self.paged { 1.0 } else if self.glides { 1.0 - smoothstep(since / FADE_SECONDS) } else { 0.0 };
         if veil > 0.0 {
             page(&painter, screen, veil);
         }
