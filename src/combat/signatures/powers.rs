@@ -719,7 +719,7 @@ impl Combat {
             }
             // Cast with a move of its own, for its mana
             Kind::Magic => {
-                if controls.heavy && self.cooldown <= 0.0 && !matches!(self.action, Action::Channel { .. } | Action::Charge { .. }) {
+                if controls.heavy && self.cooldown <= 0.0 && !matches!(self.action, Action::Channel { .. }) {
                     let cost = profile.stat("manaCost") * power.mana();
                     if !ready {
                         self.not_ready(power, profile);

@@ -5146,16 +5146,20 @@ impl Game {
     }
 
     /// Makes a saved weapon again, kept among Game::weapons: None if the parts it was made of are
-    /// no more, or don't fit its family any more
+    /// no more, or don't fit its family any more. One of a family since taken out of the game, a
+    /// bell, comes back as one of another as rare, see Library::retired().
     fn weapon_from(&mut self, saved: &save::WeaponSave) -> Option<usize> {
-        let family = self.library.family(&saved.family)?;
-        let slots = &self.library.families[family].slots;
         let components = &self.library.components;
         let part = |name: &String| {
             let (id, twin) = name.split_once('#').map_or((name.as_str(), 0), |(id, n)| (id, n.parse().unwrap_or(0)));
             components.iter().enumerate().filter(|(_, c)| c.id == id).nth(twin).map(|(p, _)| p)
         };
         let parts: Vec<usize> = saved.parts.iter().map(part).collect::<Option<_>>()?;
+        let (family, parts) = match self.library.family(&saved.family) {
+            Some(family) => (family, parts),
+            None => self.library.retired(&saved.family, &parts, saved.seed)?,
+        };
+        let slots = &self.library.families[family].slots;
         if parts.len() != slots.len() || parts.iter().zip(slots).any(|(&p, slot)| self.library.components[p].slot_type != *slot) {
             return None;
         }
@@ -7470,7 +7474,7 @@ impl Game {
                     });
                 });
                 ui.separator();
-                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
+                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Censer: hold to swing it, a cloud billowing out.").weak().small());
                 ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
                 ui.label(RichText::new("Wings go on your back, above: jump, then hold Space in the air to glide; some flap with Space, some dash with Shift. Every merchant sells a pair, and bosses and chests leave them.").weak().small());
                 });
@@ -7994,7 +7998,6 @@ impl Game {
             Style::Channel => Some("Hold the button to pour a beam out at the crosshair; its mana cost goes each second."),
             Style::Summon => Some("Click to conjure a familiar that hangs in the air casting at whatever's near, up to three at once."),
             Style::Hex => Some("Click to cast a hex that drifts after what's near and eats away at it, slowing it; it passes on when it dies."),
-            Style::Toll => Some("Hold to raise the bell, longer for a harder toll; let go to ring out a shockwave all round."),
             Style::Glaive => Some("Swung like a polearm; its finishing blow and heavy blows loose a spell too, for mana."),
             Style::Whirl => Some("Whirled right round, hitting everything about you. Right click brings it down overhead, a shockwave rolling out from where it lands."),
             Style::Quake => Some("Every blow comes down on the ground and sends a shockwave rolling out; every second one, and heavy blows, hit harder and further."),
@@ -8503,18 +8506,6 @@ impl Game {
                         for s in [-1.0, 1.0] {
                             painter.line_segment([center - vec2(0.0, r * 0.65), center + vec2(s * r * 0.45, -r * 0.95)], Stroke::new(r * 0.1, Color32::from_rgb(235, 228, 210)));
                         }
-                    }
-                    // A handbell, its clapper glowing under it
-                    Kind::Magic if family == "bell" => {
-                        painter.line_segment([center - vec2(0.0, r * 0.95), center - vec2(0.0, r * 0.45)], Stroke::new(r * 0.18, wood));
-                        let bell = Color32::from_rgb(205, 150, 70);
-                        painter.add(egui::Shape::convex_polygon(
-                            vec![center + vec2(-r * 0.25, -r * 0.45), center + vec2(r * 0.25, -r * 0.45), center + vec2(r * 0.7, r * 0.5), center + vec2(-r * 0.7, r * 0.5)],
-                            bell,
-                            Stroke::NONE,
-                        ));
-                        painter.circle_filled(center - vec2(0.0, r * 0.45), r * 0.27, bell);
-                        painter.circle_filled(center + vec2(0.0, r * 0.68), r * 0.17, glow);
                     }
                     // A rod forking at its top, lightning between the prongs
                     Kind::Magic if family == "rod" => {
@@ -9237,6 +9228,42 @@ mod tests {
         // A new character starts at the first again
         legacy.new_character(3);
         assert_eq!(legacy.level(), (1, 0.0));
+    }
+
+    /// A bell in a save from before bells were taken out comes back a sceptre of the same rarity
+    /// and level, its jewels still in it, in the bag and on a merchant's stall alike
+    #[test]
+    fn saved_bells_come_back_as_sceptres() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let library = &game.library;
+        let censer = library.family("censer").unwrap();
+        let scepter = library.family("scepter").unwrap();
+        // A legendary bell rung with the Knelling Geode, which a sceptre can't take, and a plain one
+        let pick = |id: &str| library.components.iter().position(|c| c.id == id).unwrap();
+        let bells = [
+            (vec!["crystal_shaft", "halo_focus", "knelling_crystal", "rune_bands"], 0x00be_11u32, 23u32, 1u32),
+            (vec!["oak_shaft", "brazen_focus", "quartz_crystal", "leather_bands"], 0x7011, 4, 0),
+        ];
+        let mut carried = game.carried_save();
+        for (k, (parts, seed, level, jewels)) in bells.iter().enumerate() {
+            carried.slots[k] = save::SlotSave { item: save::ItemSave::Weapon(save::WeaponSave { family: "bell".into(), parts: parts.iter().map(|p| p.to_string()).collect(), seed: *seed, name: None, level: Some(*level), jewels: *jewels }), count: 1 };
+        }
+        let text = serde_json::to_string(&carried).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&serde_json::from_str(&text).unwrap(), &game.world_save(), game.vitals());
+        for (k, (parts, seed, level, jewels)) in bells.iter().enumerate() {
+            let Item::Weapon(w) = other.slots[k].0 else { panic!("bell {k} didn't come back") };
+            let back = &other.weapons[w];
+            // As rare as the same parts make a censer, whose tags bring the same synergies a
+            // bell's did
+            let was = Weapon::assemble(library, censer, parts.iter().map(|p| pick(p)).collect(), *seed).grade;
+            assert_eq!(back.family, scepter);
+            assert_eq!(back.grade, was, "bell {k}");
+            assert_eq!((back.item_level(), back.jewels), (*level + *jewels, *jewels));
+            assert!(back.parts.iter().all(|&p| library.components[p].fits("scepter")));
+        }
     }
 
     /// What's slain gives experience by its level and what it was, and drops weapons of about its

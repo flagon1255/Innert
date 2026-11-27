@@ -276,8 +276,6 @@ enum Action {
     Brace { t: f64, loose: bool },
     /// An orb pouring out its beam, for `t` seconds so far
     Channel { t: f64 },
-    /// A bell being raised to ring, harder the longer it's held, `t` seconds so far
-    Charge { t: f64 },
     /// A spell being cast, `length` seconds in all, see cast_length(), and whether it's been let go
     Cast { t: f64, length: f64, cast: bool },
     /// A special attack being unleashed, see special_move()
@@ -2728,7 +2726,6 @@ fn new_move(before: Action, now: Action) -> bool {
         | (Action::Reload { t: a, .. }, Action::Reload { t: b, .. })
         | (Action::Fire { t: a, .. }, Action::Fire { t: b, .. })
         | (Action::Channel { t: a }, Action::Channel { t: b })
-        | (Action::Charge { t: a }, Action::Charge { t: b })
         | (Action::Loose { t: a }, Action::Loose { t: b })
         | (Action::Throw { t: a, .. }, Action::Throw { t: b, .. })
         | (Action::Power { t: a, .. }, Action::Power { t: b, .. }) => b < a,
@@ -4520,7 +4517,6 @@ fn spell_rest(style: Style) -> Pose {
         Style::Channel => pose([0.24, 0.52, -0.24], [-0.05, 0.1, 0.99], [1.0, 0.0, 0.0]),
         Style::Summon => pose([-0.24, 0.52, -0.3], [0.1, 0.3, 0.95], [1.0, 0.0, -0.1]),
         Style::Hex => pose([0.3, 0.46, -0.34], [-0.03, 0.4, 0.92], [-0.2, -0.92, 0.4]),
-        Style::Toll => pose([0.24, 0.55, -0.1], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]),
         Style::Censer => pose([0.24, 0.55, -0.08], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]),
         Style::Arc => pose([0.3, 0.44, -0.33], [-0.03, 0.42, 0.9], [1.0, 0.0, 0.0]),
         Style::Flick => pose([0.29, 0.44, -0.24], [-0.04, 0.55, 0.83], [1.0, 0.0, 0.0]),
@@ -4560,7 +4556,7 @@ enum Gesture {
 
 /// What a weapon that casts, held in `style`, goes through letting go of `special`: how long it
 /// takes, and the poses, let go on the quick one as the gesture fitting it has it, see
-/// Combat::let_go(). A staff, wand or rod points with it, an orb, a tome or a bell only leans.
+/// Combat::let_go(). A staff, wand or rod points with it, an orb, a tome or a censer only leans.
 fn spell_special(special: Special, style: Style) -> (f64, Vec<(f64, Pose, bool)>) {
     let (gesture, length, s) = match special {
         Special::Singularity => (Gesture::Hurl, 1.0, 0.45),
@@ -4591,7 +4587,7 @@ fn spell_special(special: Special, style: Style) -> (f64, Vec<(f64, Pose, bool)>
     let tip = match style {
         Style::Channel => 0.3,
         Style::Summon => 0.45,
-        Style::Toll | Style::Censer => 0.35,
+        Style::Censer => 0.35,
         Style::Hex => 0.8,
         _ => 1.0,
     };
@@ -4961,8 +4957,6 @@ fn place(model: u32, look: &(Model, Vector3<f64>), res: f64, grip: Vector3<f64>,
 /// Where an arrow's head is on its model
 const ARROW_HEAD: f64 = 0.68;
 
-/// How long a bell's ring follows through, in seconds
-const CAST_TIME: f64 = 0.45;
 /// How much of the time from one cast to the next casting takes, and the longest and shortest a
 /// cast can be, in seconds
 const CAST_SHARE: f64 = 0.9;
@@ -4983,7 +4977,6 @@ fn cast_times(casting: Casting, style: Style) -> (f64, f64) {
         Style::Summon => (0.08, 0.15),
         Style::Hex => (0.16, 0.3),
         Style::Arc => (0.09, 0.22),
-        Style::Toll => (0.0, 0.0),
         _ => match casting {
             Casting::Thrust => (0.14, 0.3),
             Casting::Flick => (0.2, 0.4),
@@ -6215,7 +6208,6 @@ impl Combat {
         let kind = if profile.style == Style::Glaive { Kind::Melee } else { weapon.kind() };
         match kind {
             Kind::Magic if profile.style == Style::Channel => self.channel(arena, weapon, controls, dt),
-            Kind::Magic if profile.style == Style::Toll => self.toll(arena, weapon, controls, dt),
             Kind::Magic if profile.style == Style::Censer => self.swing_censer(arena, weapon, controls, dt),
             Kind::Ranged if profile.style == Style::Lob => self.lob(arena, weapon, controls, dt),
             // Throwing knives flicked one after another, a chakram hurled and caught again, see
@@ -6741,81 +6733,6 @@ impl Combat {
             self.heal += damage * drain;
         }
         hit.filter(|&i| arena.animals[i].health > 0.0)
-    }
-
-    /// Ringing the bell in hand: held, it's raised to ring harder, up to a full toll in a second or
-    /// so; let go, it rings out in a shockwave all round, as wide and hard as it was rung
-    fn toll(&mut self, arena: &mut Arena, weapon: &Weapon, controls: Controls, dt: f64) {
-        let profile = weapon.profile.clone();
-        let full = 1.0 / (profile.stat("castSpeed") * self.speedup()).max(0.2);
-        match self.action {
-            Action::Charge { t } if controls.holding || controls.attack => {
-                let t = t + dt;
-                // Light gathering in to the bell as it's raised
-                if random(&mut self.rng) < dt * 30.0 {
-                    let mouth = self.held_point(weapon, arena.view, false);
-                    let out = self.any_direction() * 0.5 * arena.view.vpm;
-                    self.fine(mouth + out, -out * 3.0, Element::look(profile.element), 0.3, 0.0);
-                }
-                if t < full && t + dt >= full {
-                    self.cues.push(Cue::here(Sound::Pickup, 0.4).pitched(0.7));
-                }
-                self.action = Action::Charge { t };
-            }
-            Action::Charge { t } => {
-                let rung = (t / full).clamp(0.25, 1.0);
-                let cost = profile.stat("manaCost") * rung;
-                if self.mana >= cost {
-                    self.mana -= cost;
-                    self.ring_out(arena, &profile, rung);
-                } else if self.mana_warning <= 0.0 {
-                    self.messages.push("Not enough mana.".into());
-                    self.mana_warning = 2.0;
-                }
-                self.action = Action::Cast { t: 0.0, length: CAST_TIME, cast: true };
-                self.cooldown = 0.35;
-            }
-            Action::Cast { t, length, cast } => self.action = if t + dt >= length { Action::Idle } else { Action::Cast { t: t + dt, length, cast } },
-            _ => {
-                if controls.attack && self.cooldown <= 0.0 && self.raise >= 1.0 {
-                    self.action = Action::Charge { t: 0.0 };
-                }
-            }
-        }
-    }
-
-    /// A bell's toll, rung `rung` of the way, 0-1: a ring of light and a shockwave sweeping out
-    /// round the player, hurting and throwing back everything it reaches
-    fn ring_out(&mut self, arena: &mut Arena, profile: &Rc<Profile>, rung: f64) {
-        let view = arena.view;
-        let vpm = view.vpm;
-        let feet = arena.player.unwrap_or(view.eye - Vector3::new(0.0, 0.0, 1.6 * vpm));
-        let middle = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
-        let radius = (3.0 + 4.5 * rung) * profile.stat("area").max(0.5);
-        let look = Element::look(profile.element);
-        for k in 0..36 {
-            let a = k as f64 / 36.0 * TAU;
-            let out = Vector3::new(a.cos(), a.sin(), 0.0);
-            self.sparks.push(Spark { position: middle + out * 0.6 * vpm, velocity: out * radius * 2.2 * vpm, look, life: 0.45, lifetime: 0.45, gravity: 0.0, slot: SLOT_SPARK });
-        }
-        self.cap_sparks();
-        self.flashes.push(Flash { position: middle, color: profile.element.map_or([0.9, 0.85, 0.7], Element::light), reach: radius + 6.0, life: 0.3, lifetime: 0.3 });
-        self.cues.push(Cue::here(Sound::Toll, (0.6 + 0.4 * rung) as f32).pitched((1.2 - 0.35 * rung) as f32));
-        self.shake = self.shake.max(0.25 + 0.4 * rung);
-        let damage = (profile.stat("spellDamage") + profile.stat("elementalDamage")) * rung;
-        let push = profile.stat("knockback").max(3.0) * (0.5 + rung);
-        let near: Vec<(usize, f64)> = (0..arena.animals.len())
-            .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
-            .map(|i| (i, ((arena.animals[i].position - feet).norm() / vpm - arena.animals[i].look.body().1).max(0.0)))
-            .filter(|&(_, d)| d < radius)
-            .collect();
-        for (i, d) in near {
-            let away = arena.animals[i].position - feet;
-            let at = arena.animals[i].center(vpm as u32);
-            self.element_hit(at, profile.element, 0.8 + rung);
-            self.strike(arena, profile, i, Blow { damage: damage * (1.0 - 0.5 * d / radius), crit: false, heavy: rung > 0.8, from: feet, depth: 0, element: profile.element });
-            arena.animals[i].status.push = Vector3::new(away.x, away.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x()) * push * vpm;
-        }
     }
 
     /// The bombs in hand: one drawn back and lobbed in an arc to come down on the crosshair, as
@@ -15518,26 +15435,6 @@ impl Combat {
                     _ => rest,
                 }
             }
-            // A bell hanging from the hand, raised and trembling as it's held, swung down and out
-            // as it rings
-            Kind::Magic if style == Style::Toll => {
-                let rest = pose([0.24, 0.55, -0.1], [0.0, 0.05, 1.0], [1.0, 0.0, 0.0]);
-                let raised = pose([0.2, 0.5, 0.02], [0.0, -0.35, 0.94], [1.0, 0.0, 0.0]);
-                match self.action {
-                    Action::Charge { t } => {
-                        let k = smooth(t * 2.5);
-                        let mut p = blend(&rest, &raised, k);
-                        p.hand.x += 0.006 * k * (self.time * 31.0).sin();
-                        p
-                    }
-                    Action::Cast { t, length, .. } => {
-                        let keys = [(0.18, pose([0.16, 0.58, -0.1], [0.0, 0.75, 0.66], [1.0, 0.0, 0.0]), true), (0.5, pose([0.2, 0.52, -0.14], [0.0, 0.4, 0.92], [1.0, 0.0, 0.0]), false)];
-                        animate(&raised, &keys, t / length)
-                    }
-                    Action::Special { t, length, special } => animate(&rest, &special_move(special, Kind::Magic, style).1, t / length),
-                    _ => rest,
-                }
-            }
             // A censer hanging from the hand on its chains, swung back and forth on them as it's
             // held, out forward as each cloud billows from it
             Kind::Magic if style == Style::Censer => {
@@ -17026,7 +16923,6 @@ mod tests {
                 (Kind::Magic, Style::Channel),
                 (Kind::Magic, Style::Summon),
                 (Kind::Magic, Style::Hex),
-                (Kind::Magic, Style::Toll),
                 (Kind::Magic, Style::Arc),
                 (Kind::Magic, Style::Censer),
             ] {

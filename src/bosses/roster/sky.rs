@@ -81,9 +81,9 @@ pub(crate) fn skin(look: Look) -> Skin {
 }
 
 /// The kinds of weapon it leaves most of the time: war fans, orbs, battlestaves and rods from the
-/// one, rods, twin prods, bells and sceptres from the other
+/// one, rods, twin prods, talismans and sceptres from the other
 pub fn taste(look: Look) -> &'static [&'static str] {
-    if look == Look::Aeolith { &["warfan", "orb", "battlestaff", "rod"] } else { &["rod", "twinprod", "bell", "scepter"] }
+    if look == Look::Aeolith { &["warfan", "orb", "battlestaff", "rod"] } else { &["rod", "twinprod", "talisman", "scepter"] }
 }
 
 /// What its hoard's called, as it spills out of it

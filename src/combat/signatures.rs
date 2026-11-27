@@ -529,13 +529,13 @@ fn anvil_move(style: Style) -> SpecialMove {
 }
 
 /// Where a weapon that casts, held in `style`, is held `by` meters off its rest and pointing
-/// `toward`, as spell_special() moves it: an orb, a tome, a bell or a totem only leaning
+/// `toward`, as spell_special() moves it: an orb, a tome, a censer or a totem only leaning
 fn spell_at(style: Style) -> impl Fn([f64; 3], [f64; 3]) -> Pose {
     let rest = spell_rest(style);
     let tip = match style {
         Style::Channel => 0.3,
         Style::Summon => 0.45,
-        Style::Toll | Style::Censer => 0.35,
+        Style::Censer => 0.35,
         Style::Hex => 0.8,
         _ => 1.0,
     };
@@ -562,7 +562,7 @@ fn litany_move(style: Style) -> SpecialMove {
     (1.3, keys)
 }
 
-/// An ember knell's: the bell or censer raised high, held trembling, swung down and out hard as
+/// An ember knell's: the censer raised high, held trembling, swung down and out hard as
 /// it rings and flings its flame, swung back and out again as it rings on
 fn knell_move(style: Style) -> SpecialMove {
     let at = spell_at(style);
@@ -971,7 +971,7 @@ impl Combat {
                 self.cues.push(Cue::here(Sound::Cast(Element::look(Some(Element::Holy)) as u8), 0.9).pitched(1.2));
                 self.cues.push(Cue::here(Sound::Chime, 0.6).pitched(1.5));
             }
-            // A ball of flame flung out of the bell as it rings, coming down where it's aimed
+            // A ball of flame flung out of the censer as it rings, coming down where it's aimed
             Special::EmberKnell => {
                 let fire = tinted(&profile, Element::Fire);
                 let from = self.held_point(weapon, view, false);
@@ -2662,7 +2662,7 @@ mod tests {
         (Special::Stormanvil, &["hammer", "maul", "flail"]),
         (Special::Stormstakes, &["crossbow", "arbalest", "repeater", "handcrossbow", "twinprod", "siegecrossbow", "harpoon", "boltthrower"]),
         (Special::Litany, &["tome"]),
-        (Special::EmberKnell, &["bell", "censer"]),
+        (Special::EmberKnell, &["censer"]),
         (Special::Bloodthread, &["totem", "orb"]),
     ];
 
@@ -2712,7 +2712,7 @@ mod tests {
         let (length, keys) = special_move(Special::Stormstakes, Kind::Ranged, Style::Crank);
         let first = first_release(length, &keys);
         check(Special::Stormstakes, Kind::Ranged, Style::Crank, &(0..STAKES).map(|k| first + STAKE_GAP * k as f64).collect::<Vec<_>>());
-        for (special, style, at) in [(Special::Litany, Style::Summon, LITANY_RELEASE), (Special::EmberKnell, Style::Toll, KNELL_RELEASE), (Special::EmberKnell, Style::Censer, KNELL_RELEASE), (Special::Bloodthread, Style::Hex, THREAD_RELEASE), (Special::Bloodthread, Style::Channel, THREAD_RELEASE)] {
+        for (special, style, at) in [(Special::Litany, Style::Summon, LITANY_RELEASE), (Special::EmberKnell, Style::Censer, KNELL_RELEASE), (Special::Bloodthread, Style::Hex, THREAD_RELEASE), (Special::Bloodthread, Style::Channel, THREAD_RELEASE)] {
             let (length, keys) = special_move(special, Kind::Magic, style);
             assert!((first_release(length, &keys) - at * length).abs() < 1e-9, "{special:?} with {style:?}");
         }

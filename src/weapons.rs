@@ -70,8 +70,6 @@ pub enum Style {
     Summon,
     /// A totem, casting slow hexes that home in and eat away at what they catch
     Hex,
-    /// A bell, rung harder the longer the button's held, its toll a shockwave all round
-    Toll,
     /// A battle staff, swung like a polearm, its finishing blow loosing a spell
     Glaive,
     /// A flail, whirled right round so its head sweeps through everything about, and brought down
@@ -842,7 +840,9 @@ impl Component {
     pub fn batch(&self) -> u32 {
         self.batch
     }
+}
 
+impl Component {
     /// Whether it fits a weapon of the family with id `family`
     pub fn fits(&self, family: &str) -> bool {
         self.compatible_families.iter().any(|f| f == family)
@@ -938,6 +938,11 @@ pub struct Library {
 }
 
 const BUILT_IN: &str = include_str!("../assets/weapons.json");
+
+/// Families taken out of the game: each one's id, the family a weapon of it from an older save
+/// comes back as, and the tags it had, for it to come back as rare as it was, see
+/// Library::retired(). Bells, which rang, come back as sceptres.
+const RETIRED: [(&str, &str, &[&str]); 1] = [("bell", "scepter", &["spell", "area", "knockback"])];
 
 /// The most seeds Library::special_seed() tries for a weapon with a special attack: as lucky as
 /// loot that's sure to have one is rolled, it's found in a few
@@ -1038,6 +1043,82 @@ impl Library {
 
     pub fn family(&self, id: &str) -> Option<usize> {
         self.families.iter().position(|f| f.id == id)
+    }
+
+    /// A weapon of a family since taken out of the game, saved as one of `family` made of `parts`,
+    /// as one of the family it's made as now, see RETIRED: the family, and its parts, those that
+    /// fit it kept and each of the rest swapped for one of the same slot and rarity that does,
+    /// picked by `seed`. If that leaves it rarer or less rare than it was, as the new family's tags
+    /// bring other synergies, as few of the rest as it takes are swapped for others of their
+    /// rarity too, so it comes back as rare as it was. None for a family that was never taken out.
+    pub fn retired(&self, family: &str, parts: &[usize], seed: u32) -> Option<(usize, Vec<usize>)> {
+        let &(_, now, tags) = RETIRED.iter().find(|r| r.0 == family)?;
+        let to = self.family(now)?;
+        let fam = &self.families[to];
+        let grade = |parts: &[usize], own: &[String], effects: &[usize]| {
+            let components: Vec<&Component> = parts.iter().map(|&p| &self.components[p]).collect();
+            let tags = Weapon::tags_of(self, own, effects, &components, Weapon::element_of(&components));
+            Weapon::grade_of(self, &components, self.synergies_for(&tags).len())
+        };
+        let was = grade(parts, &tags.iter().map(|&t| t.to_owned()).collect::<Vec<_>>(), &[]);
+        // For each part, the parts of its slot that fit and are of its rarity, or as near it as
+        // there are, starting from one picked by the seed: itself first if it fits
+        let mut options: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
+        for (k, &p) in parts.iter().enumerate() {
+            let part = &self.components[p];
+            let fitting = |c: &Component| c.fits(now) && c.slot_type == part.slot_type;
+            let nearest = self.components.iter().filter(|c| fitting(c)).map(|c| c.tier.abs_diff(part.tier)).min()?;
+            let mut could: Vec<usize> = (0..self.components.len()).filter(|&c| c != p && fitting(&self.components[c]) && self.components[c].tier.abs_diff(part.tier) == nearest).collect();
+            if !could.is_empty() {
+                let first = hash(seed ^ (k as u32).wrapping_mul(0x9e37_79b9)) as usize % could.len();
+                could.rotate_left(first);
+            }
+            if part.fits(now) {
+                could.insert(0, p);
+            }
+            options.push(could);
+        }
+        let misfits: Vec<bool> = parts.iter().map(|&p| !self.components[p].fits(now)).collect();
+        if misfits.iter().zip(&options).any(|(&m, o)| m && o.is_empty()) {
+            return None;
+        }
+        // Each way of swapping the parts that don't fit and as few of the rest as can be, the first
+        // that leaves it as rare as it was, or the first of all if none does in a good many tries
+        let first: Vec<usize> = options.iter().map(|o| o[0]).collect();
+        let mut tries = 0;
+        let mut masks: Vec<u32> = (0..1u32 << parts.len()).collect();
+        masks.sort_by_key(|m| m.count_ones());
+        for mask in masks {
+            // Each slot's choices: just its part, or what could take its place
+            let choices: Vec<&[usize]> = (0..parts.len())
+                .map(|k| match (mask >> k & 1 == 1, misfits[k]) {
+                    (false, false) => std::slice::from_ref(&parts[k]),
+                    (false, true) => &options[k][..],
+                    (true, false) => &options[k][1..],
+                    // A part that doesn't fit is swapped whatever
+                    (true, true) => &[][..],
+                })
+                .collect();
+            if choices.iter().any(|c| c.is_empty()) {
+                continue;
+            }
+            let ways: usize = choices.iter().map(|c| c.len()).product();
+            for mut way in 0..ways {
+                let mut out = Vec::with_capacity(parts.len());
+                for c in &choices {
+                    out.push(c[way % c.len()]);
+                    way /= c.len();
+                }
+                if grade(&out, &fam.synergy_tags, &fam.effect_defs) == was {
+                    return Some((to, out));
+                }
+                tries += 1;
+                if tries > 20_000 {
+                    return Some((to, first));
+                }
+            }
+        }
+        Some((to, first))
     }
 
     /// How likely each rarity is to roll for a part, from common up, the more likely the rarer
@@ -1844,7 +1925,7 @@ pub enum Power {
     Comet,
     /// A wand's, tome's or totem's: motes seeking out what's near
     Seekers,
-    /// An orb's, bell's or censer's: a ring of its element rolling out all round
+    /// An orb's or censer's: a ring of its element rolling out all round
     Nova,
     /// A war fan's: a whirling funnel of its element sent off along the ground, sweeping up what
     /// it passes and carrying it along, flinging it off at the end
@@ -2044,7 +2125,7 @@ impl Power {
             "bombs" => Power::Vortex,
             "staff" | "scepter" | "rod" => Power::Comet,
             "wand" | "tome" | "totem" => Power::Seekers,
-            "orb" | "bell" | "censer" => Power::Nova,
+            "orb" | "censer" => Power::Nova,
             "warfan" => Power::Gale,
             "katar" => Power::Fists,
             "naginata" => Power::BladeRing,
@@ -2490,6 +2571,43 @@ impl Weapon {
         (quality, quickness / heft.powf(0.8), forged)
     }
 
+    /// The element of a weapon made of `components`: the rarest part's that has one, the core or
+    /// crystal first
+    fn element_of(components: &[&Component]) -> Option<Element> {
+        let mut by_rarity: Vec<&Component> = components.to_vec();
+        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
+        by_rarity.iter().filter(|c| matches!(c.slot_type.as_str(), "core" | "crystal")).chain(by_rarity.iter()).find_map(|c| c.element)
+    }
+
+    /// The tags synergies come of on a weapon of a family with tags `own` and effects
+    /// `own_effects`, made of `components`, its element `element`: the family's, its parts', its
+    /// effects' and their elements', and its element's
+    fn tags_of(library: &Library, own: &[String], own_effects: &[usize], components: &[&Component], element: Option<Element>) -> BTreeSet<String> {
+        let mut tags: BTreeSet<String> = own.iter().cloned().collect();
+        tags.extend(components.iter().flat_map(|c| c.synergy_tags.iter().cloned()));
+        for &def in own_effects.iter().chain(components.iter().flat_map(|c| c.effect_defs.iter())) {
+            let e = &library.effects[def];
+            if e.effect.is_some() {
+                tags.extend(e.synergy_tags.iter().cloned());
+                tags.extend(e.element.map(|e| e.tag().to_owned()));
+            }
+        }
+        tags.extend(element.map(|e| e.tag().to_owned()));
+        tags
+    }
+
+    /// The grade of a weapon made of `components` with `synergies` synergies. It reflects how much
+    /// the weapon can do, not the average of its parts: rare parts and synergies add up, and one
+    /// very rare part lifts the whole weapon close to it. The parts count as if there were four,
+    /// so a crossbow's sight doesn't make it rarer.
+    fn grade_of(library: &Library, components: &[&Component], synergies: usize) -> usize {
+        let parts = components.len().max(1) as f64;
+        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies as f64;
+        let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
+        let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
+        by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1)
+    }
+
     /// What a weapon made of `components` from `seed`, `size` of SIZES big, does: its stats,
     /// effects and synergies, its tags, and its grade
     fn work_out(library: &Library, family: usize, components: &[&Component], size: usize, seed: u32) -> (Profile, BTreeSet<String>, usize) {
@@ -2547,14 +2665,7 @@ impl Weapon {
             }
         }
 
-        // The element comes from the highest rarity part that has one, the core or crystal first
-        let mut by_rarity: Vec<&Component> = components.to_vec();
-        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
-        let element = by_rarity
-            .iter()
-            .filter(|c| matches!(c.slot_type.as_str(), "core" | "crystal"))
-            .chain(by_rarity.iter())
-            .find_map(|c| c.element);
+        let element = Weapon::element_of(components);
         // Elemental damage without an element is just more of the plain kind
         if element.is_none() {
             let elemental = stats.remove("elementalDamage").unwrap_or(0.0);
@@ -2574,23 +2685,12 @@ impl Weapon {
             }
         }
 
-        let mut tags: BTreeSet<String> = fam.synergy_tags.iter().cloned().collect();
-        tags.extend(components.iter().flat_map(|c| c.synergy_tags.iter().cloned()));
-        tags.extend(effects.iter().flat_map(|e| library.effects[e.def].synergy_tags.iter().cloned()));
-        tags.extend(effects.iter().filter_map(|e| library.effects[e.def].element).map(|e| e.tag().to_owned()));
-        if let Some(e) = element {
-            tags.insert(e.tag().into());
-        }
+        let tags = Weapon::tags_of(library, &fam.synergy_tags, &fam.effect_defs, components, element);
         let synergies = library.synergies_for(&tags);
-
-        // The grade reflects how much the weapon can do, not the average of its parts: rare parts
-        // and synergies add up, and one very rare part lifts the whole weapon close to it. The
-        // parts count as if there were four, so a crossbow's sight doesn't make it rarer.
-        let parts = components.len().max(1) as f64;
-        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies.len() as f64;
-        let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
+        let grade = Weapon::grade_of(library, components, synergies.len());
+        let mut by_rarity: Vec<&Component> = components.to_vec();
+        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
         let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
-        let grade = by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1);
         for (name, by_grade) in &fam.grade_stats {
             if let Some(value) = by_grade.get(grade).or(by_grade.last()) {
                 *stats.entry(name.clone()).or_insert(0.0) += value;
@@ -2848,7 +2948,7 @@ fn newer_moves(family: &Family, shape: &str) -> Option<(Heavy, Finish)> {
 
 /// How a staff, scepter or wand made of `components` casts: what comes down on a place is called
 /// down from overhead, big slow spells gathered in both hands first, and otherwise its focus and
-/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, bells and
+/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, censers and
 /// the rest cast each their own way whatever they're made of, see combat.rs's target_pose().
 fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element: Option<Element>) -> Casting {
     if !matches!(family.style, Style::Cast | Style::Flick) {
@@ -3229,10 +3329,6 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, tip) = totem(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
         }
-        Kind::Magic if family.style == Style::Toll => {
-            let (parts, grip, tip) = bell(v("shaft"), v("focus"), v("crystal"), v("binding"));
-            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
-        }
         Kind::Magic if family.style == Style::Arc => {
             let (parts, grip, tip) = rod(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
@@ -3448,45 +3544,6 @@ fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.026, 0.034, wood));
     (p, v3(0.0, 0.0, 0.14), Vector3::from(c))
-}
-
-/// A handbell: a handle held upright, the bell hanging under the hand, its mouth down, a glowing
-/// clapper inside it made of its crystal, a band of its binding round its shoulder. Returns its
-/// parts, where it's held, and its mouth.
-fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
-    let mut p = Vec::new();
-    let wood = mat(&shaft.material, WOOD);
-    let metal = match mat(&focus.material, BRONZE) {
-        WOOD | BIRCH_BARK | BARK_DARK | LEATHER | LINEN | CLOTH => BRONZE,
-        m => m,
-    };
-    let gem = mat(&crystal.gem, CRYSTAL);
-    let band = mat(&binding.material, mat(&binding.accent, GOLD));
-    // Hollow, the clapper hanging inside it, seen from under
-    // A domed crown, a waist widening slowly, then flaring out to a thick lip
-    let mouth = -0.13;
-    let flare = |t: f64| 0.026 + 0.016 * t + 0.032 * t.powi(4);
-    slot("crystal");
-    p.push(ball([0.0, 0.0, mouth + 0.018], crystal.size.unwrap_or(0.05).clamp(0.014, 0.022), gem));
-    slot("focus");
-    p.push(limb([0.0, 0.0, mouth - 0.01], [0.0, 0.0, -0.03], flare(1.0) - 0.008, flare(0.2) - 0.008, AIR));
-    slot("crystal");
-    p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, mouth + 0.012], 0.003, 0.003, DARK_STEEL));
-    slot("binding");
-    p.push(limb([0.0, 0.0, -0.04], [0.0, 0.0, -0.028], flare(0.15) + 0.004, flare(0.1) + 0.004, band));
-    slot("focus");
-    let steps = 8;
-    for k in 0..steps {
-        let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
-        p.push(limb([0.0, 0.0, -0.012 + (mouth + 0.012) * t0], [0.0, 0.0, -0.012 + (mouth + 0.012) * t1], flare(t0), flare(t1), metal));
-    }
-    p.push(ellipsoid([0.0, 0.0, -0.012], [0.027, 0.027, 0.016], metal));
-    p.push(limb([0.0, 0.0, mouth - 0.003], [0.0, 0.0, mouth + 0.006], flare(1.0) + 0.004, flare(1.0), metal));
-    // The handle over it, and a knob on top
-    slot("shaft");
-    p.push(ball([0.0, 0.0, 0.17], 0.02, metal));
-    p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.16], 0.015, 0.018, wood));
-    (p, v3(0.0, 0.0, 0.09), v3(0.0, 0.0, mouth))
 }
 
 /// The metal a part made of `m` is drawn in where it has to be metal: bronze for wood, cloth and
@@ -7847,11 +7904,49 @@ mod tests {
         assert!(library.ammo.iter().filter(|a| a.burst.is_some()).count() == 2, "only bursting ammo bursts");
     }
 
+    /// Bells are no more, and any made of what a bell could be comes back a sceptre as rare, made
+    /// of parts as rare, those a sceptre can't take swapped
+    #[test]
+    fn bells_are_gone_and_come_back_as_sceptres() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        assert!(library.family("bell").is_none());
+        assert!(library.components.iter().all(|c| !c.fits("bell")));
+        // A censer takes every part a bell did, and its tags bring the same synergies a bell's
+        // did, so what the same parts make a censer is what they made a bell
+        assert!(library.synergies.iter().all(|s| !s.requires.iter().any(|t| t == "cloud" || t == "knockback")));
+        let censer = library.family("censer").unwrap();
+        let scepter = library.family("scepter").unwrap();
+        assert_eq!(library.retired("sword", &[0], 1), None);
+        let mut swapped = 0;
+        for seed in 0..600u32 {
+            let parts: Vec<usize> = library.families[censer]
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(k, slot)| {
+                    let could: Vec<usize> = (0..library.components.len()).filter(|&c| library.components[c].fits("censer") && library.components[c].slot_type == *slot).collect();
+                    could[hash(seed * 7 + k as u32) as usize % could.len()]
+                })
+                .collect();
+            let was = Weapon::assemble(&library, censer, parts.clone(), seed).grade;
+            let (family, now) = library.retired("bell", &parts, seed).expect("a bell comes back");
+            assert_eq!(family, scepter);
+            for (k, (&a, &b)) in parts.iter().zip(&now).enumerate() {
+                assert!(library.components[b].fits("scepter") && library.components[b].slot_type == library.families[scepter].slots[k]);
+                assert!(library.components[a].fits("scepter") || a != b);
+                assert_eq!(library.components[a].tier, library.components[b].tier, "a part as rare");
+                swapped += (a != b) as usize;
+            }
+            assert_eq!(Weapon::assemble(&library, scepter, now, seed).grade, was, "seed {seed}");
+        }
+        assert!(swapped > 0, "some bells had parts a sceptre can't take");
+    }
+
     #[test]
     fn new_magic_weapons_and_specials_turn_up() {
         let library = Library::parse(BUILT_IN).unwrap();
         // Each kind of magic weapon has its own way of casting, and a model to hold
-        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("bell", Style::Toll, 1), ("battlestaff", Style::Glaive, 1)] {
+        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("battlestaff", Style::Glaive, 1)] {
             let family = library.family(id).expect("there's such a family");
             for seed in 0..30 {
                 let weapon = library.generate(seed, Some(family), 4.0);
@@ -8208,12 +8303,12 @@ mod tests {
         let share = |n: usize| n as f64 / seeds as f64;
         // The later batches' families as often as there are of them, the second's three and the
         // third's skull focus and talisman, and a part of a later batch on about one weapon in five
-        // of the rest
+        // of the rest; with the bells gone, a little more of the rest are of families with later parts
         let weapons = library.weapon_families();
         let later = library.families[..weapons].iter().filter(|f| f.batch > 0).count() as f64 / weapons as f64;
         assert!((share(new_family) - later).abs() < 0.03, "new families {:.3}, for {later:.3} of them", share(new_family));
         assert!((0.08..0.35).contains(&share(new_parts)), "new parts {:.3}", share(new_parts));
-        assert!(share(same) > 0.65, "only {:.3} the same", share(same));
+        assert!(share(same) > 0.62, "only {:.3} the same", share(same));
         // Every part of the second batch turns up, in lucky loot
         let mut seen = BTreeSet::new();
         for seed in 0..60_000u32 {
