@@ -459,10 +459,12 @@ impl Combat {
             // Struck by lightning out of the sky as it's held up, and crackling till it's swung
             Power::Stormbrand => {
                 if f < BRAND_STRUCK && f + step >= BRAND_STRUCK {
-                    // Out of the sky ahead, so it's seen coming down across it into the blade
-                    let ahead = flat_of(view.forward()) * 6.0 * vpm;
+                    // Out of the sky well ahead and off to the left, so it's seen coming down across
+                    // it into the blade, striking twice
+                    let flat = flat_of(view.forward());
+                    let ahead = (flat * 10.0 + up.cross(&flat) * 3.0) * vpm;
                     let lean = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.0) * 2.0 * vpm;
-                    self.lightning(tip + up * 9.0 * vpm + ahead + lean, tip, storm, 0.11, 3, 3, 0.0, 1.6);
+                    self.lightning(tip + up * 8.0 * vpm + ahead + lean, tip, storm, 0.11, 3, 2, 0.0, 1.6);
                     self.sparks(tip, 14, 4.0, storm, 0.6, 0.35);
                     self.cues.push(Cue::here(Sound::Thunder, 0.8).pitched(1.1));
                     self.cues.push(Cue::here(Sound::Crackle, 0.7).pitched(1.2));
