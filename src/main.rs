@@ -6522,7 +6522,20 @@ impl App {
         let camera_voxels = camera_to_voxels(self.camera.position, self.world.size).cast::<f32>();
         let vpm = self.world.voxels_per_meter as f32;
         let seconds = self.start_time.elapsed().as_secs_f32();
-        let still = still_lights(self.lights.iter().chain(base_lights.iter()).map(|l| flicker(*l, seconds, vpm)), camera_voxels, vpm);
+        // The roads' lamps only after dark, see worldgen\roads.rs, so by day they take none of the
+        // lights there's room for
+        let day = daynight::daylight(sky.sun.z) as f32;
+        let lit = |l: &[f32; 8]| {
+            let k = worldgen::by_night([l[4], l[5], l[6]], day);
+            (k > 0.0).then(|| {
+                let mut l = *l;
+                for c in &mut l[4..7] {
+                    *c *= k;
+                }
+                l
+            })
+        };
+        let still = still_lights(self.lights.iter().chain(base_lights.iter()).filter_map(lit).map(|l| flicker(l, seconds, vpm)), camera_voxels, vpm);
         let mut fighting = if playing { self.game.lights(&view, sky.night) } else { Vec::new() };
         fighting.extend(rope_lights);
         fighting.sort_by(|a, b| combat::light_rank(a, view.eye).total_cmp(&combat::light_rank(b, view.eye)));

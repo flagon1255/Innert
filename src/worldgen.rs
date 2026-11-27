@@ -19,7 +19,7 @@ pub use aeries::{SHRINE, SHRINE_KEY, aeries, way_up as way_up_to_shrine};
 
 pub use camps::{Camp, CampKind, camp_spots};
 #[allow(unused_imports)]
-pub use roads::{Arm, Signpost, map_roads, signposts_near};
+pub use roads::{Arm, IRON_LAMP_LIGHT, OIL_LAMP_LIGHT, Signpost, by_night, map_roads, signposts_near};
 #[allow(unused_imports)]
 pub use dragonlair::{DRAGON_ARENA_FLOOR, DRAGON_ARENA_REACH, LairKind, dragon_arena_way, far_lair, lairs_set, set_lairs};
 #[allow(unused_imports)]
@@ -147,8 +147,12 @@ pub mod material {
     pub const PLANK_PALM: u8 = 100;
     pub const CUT_STONE: u8 = 101;
     pub const CLOTH_BLUE: u8 = 102;
+    /// The lamps along the roads, see worldgen\roads.rs: the panes of an iron lamp's lantern, and
+    /// an oil lantern's flame. Only alight after dark, see emission() in shaders\traverse.comp.
+    pub const LAMP_GLASS: u8 = 103;
+    pub const OIL_FLAME: u8 = 104;
     /// The last material there is: every id up to it has a colour in the palette
-    pub const LAST: u8 = CLOTH_BLUE;
+    pub const LAST: u8 = OIL_FLAME;
 }
 
 use material::*;
