@@ -637,10 +637,12 @@ mod tests {
     #[test]
     fn the_map_is_round_where_the_player_is() {
         let at = [1500.0, 1500.0];
+        // Its land quick enough to follow the seed box, what's on it coming after, see Backdrop
         let started = std::time::Instant::now();
-        let map = build(&wanted(1, at));
-        // Quick enough to follow the seed box
-        assert!(started.elapsed().as_millis() < 2500, "took {:?}", started.elapsed());
+        let land = build_land(&wanted(1, at));
+        assert!(started.elapsed().as_millis() < 400, "took {:?}", started.elapsed());
+        assert_eq!(land.player, at);
+        let map = land.with_sites();
         assert_eq!(map.player, at);
         assert_eq!(map.land.across(), ACROSS);
         // Its middle column is the land there
