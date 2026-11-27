@@ -14,6 +14,9 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
      to enter (Continue: round the saved position; New: round the seed's spawn, redrawn as the seed
      changes), towns, castles and camps marked, roads once the roads item lands, the hover naming
      the place under the cursor. Black and white, free once playing.
+   - Then (2026-11-27, "Maybe lets not load any world at start"): no world built at launch; the
+     start-up menu opens straight after the GPU/shaders, with the map as its backdrop, and the
+     world is built behind the loading screen on New or Continue. Same agent, separate commit.
 
 5. **Lamp posts on some roads** (2026-11-27, "Some roads could have lamp posts"). RUNNING in
    `roads` (the roads agent again).
