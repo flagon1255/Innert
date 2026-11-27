@@ -4437,6 +4437,11 @@ impl Animal {
         self.face(heading);
     }
 
+    /// Setting off to turn `by` radians round to its left, as it turns of itself
+    pub fn turn_by(&mut self, by: f64) {
+        self.target_heading = self.heading + by;
+    }
+
     /// Turned to face `heading`, radians round from +x
     pub fn face(&mut self, heading: f64) {
         (self.heading, self.target_heading, self.drawn_heading) = (heading, heading, heading);

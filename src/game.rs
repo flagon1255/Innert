@@ -3710,18 +3710,19 @@ impl Game {
         }
     }
 
-    /// The middle of the body of the boss or monster nearest `near`, if there's one about
     /// For looking at it: where the nearest of the look named `name`, or whose name ends so, is, its
-    /// feet, in voxels
+    /// feet, in voxels. `summon` is the nearest of the dead the player's raised, and until there
+    /// are any the nearest boss or monster, to look at what they'll be raised to fight.
     pub fn nearest_named(&self, near: Vector3<f64>, name: &str) -> Option<Vector3<f64>> {
         let wanted = name.to_lowercase();
-        self.animals
-            .iter()
-            .filter(|a| a.health > 0.0 && format!("{:?}", a.look).to_lowercase().ends_with(&wanted))
-            .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| a.position)
+        let nearest = |spots: &mut dyn Iterator<Item = Vector3<f64>>| spots.min_by(|a, b| (a - near).norm().total_cmp(&(b - near).norm()));
+        if wanted == "summon" {
+            return nearest(&mut self.combat.raised().into_iter().map(|(_, at)| at)).or_else(|| self.nearest_boss(near));
+        }
+        nearest(&mut self.animals.iter().filter(|a| a.health > 0.0 && format!("{:?}", a.look).to_lowercase().ends_with(&wanted)).map(|a| a.position))
     }
 
+    /// The middle of the body of the boss or monster nearest `near`, if there's one about
     pub fn nearest_boss(&self, near: Vector3<f64>) -> Option<Vector3<f64>> {
         let vpm = self.combat.vpm();
         self.animals
@@ -4718,6 +4719,14 @@ impl Game {
     pub fn walk_villagers(&mut self, heading: f64, seconds: f64) {
         for villager in self.animals.iter_mut().filter(|a| a.look.is_villager()) {
             villager.stroll_off(heading, seconds);
+        }
+    }
+
+    /// For trying them out: every villager about turned `by` radians round to its left, coming
+    /// round as it would of itself
+    pub fn turn_villagers(&mut self, by: f64) {
+        for villager in self.animals.iter_mut().filter(|a| a.look.is_villager()) {
+            villager.turn_by(by);
         }
     }
 

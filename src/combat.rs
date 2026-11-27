@@ -16045,6 +16045,11 @@ impl Combat {
         out
     }
 
+    /// Where each of the dead raised is, its feet, and what it was raised as, for looking at them
+    pub fn raised(&self) -> Vec<(Look, Vector3<f64>)> {
+        self.familiars.iter().filter_map(|f| f.risen.map(|r| (r.look, f.position))).collect()
+    }
+
     /// What to draw for everything flying about, and arrows stuck where they landed, with how far
     /// each is from the camera
     pub fn flying_instances(&self, view: &View) -> Vec<(f64, AnimalInstance)> {
