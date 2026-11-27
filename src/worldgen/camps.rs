@@ -185,6 +185,7 @@ impl Terrain {
                             && !footprints.iter().any(|f| overlaps([f[0], f[1], f[2], f[3]], area, 2.0))
                             && !dug.iter().any(|s| opens(s, area))
                             && !ravines::over_ravine(&self.settings, area, 3.0)
+                            && !self.roads.near_rect(area, 2.0)
                     };
                     self.plan_camp(cx, cy, &ground, &clear)
                 };
