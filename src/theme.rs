@@ -92,12 +92,77 @@ pub fn darker(c: Color32, k: f32) -> Color32 {
     Color32::from_rgba_premultiplied((c.r() as f32 * k) as u8, (c.g() as f32 * k) as u8, (c.b() as f32 * k) as u8, c.a())
 }
 
+/// How wide a space is in the headings' fonts, of the letters' height: Cinzel's own and the
+/// blackletter's are so narrow next to their wide capitals that "A new game" read "Anew game"
+const SPACE_EM: f32 = 0.36;
+
+fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*bytes.get(at)?, *bytes.get(at + 1)?]))
+}
+
+/// Where the table `tag` starts in the TrueType font `bytes`
+fn table(bytes: &[u8], tag: &[u8; 4]) -> Option<usize> {
+    (0..u16_at(bytes, 4)? as usize).map(|i| 12 + 16 * i).find(|&at| bytes.get(at..at + 4) == Some(tag)).and_then(|at| {
+        let offset = bytes.get(at + 8..at + 12)?;
+        Some(u32::from_be_bytes(offset.try_into().ok()?) as usize)
+    })
+}
+
+/// The glyph the font `bytes` draws `c` with, from its Windows Unicode character map (format 4)
+fn glyph_of(bytes: &[u8], c: u16) -> Option<u16> {
+    let cmap = table(bytes, b"cmap")?;
+    let sub = (0..u16_at(bytes, cmap + 2)? as usize).map(|i| cmap + 4 + 8 * i).find_map(|at| {
+        let (platform, encoding) = (u16_at(bytes, at)?, u16_at(bytes, at + 2)?);
+        let offset = u32::from_be_bytes(bytes.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+        ((platform, encoding) == (3, 1) && u16_at(bytes, cmap + offset)? == 4).then_some(cmap + offset)
+    })?;
+    let segs = u16_at(bytes, sub + 6)? as usize / 2;
+    let (ends, starts) = (sub + 14, sub + 16 + 2 * segs);
+    let (deltas, ranges) = (starts + 2 * segs, starts + 4 * segs);
+    let seg = (0..segs).find(|&s| u16_at(bytes, ends + 2 * s).is_some_and(|end| end >= c))?;
+    let start = u16_at(bytes, starts + 2 * seg)?;
+    if start > c {
+        return None;
+    }
+    let (delta, range) = (u16_at(bytes, deltas + 2 * seg)?, u16_at(bytes, ranges + 2 * seg)?);
+    let glyph = if range == 0 {
+        c
+    } else {
+        let at = ranges + 2 * seg + range as usize + 2 * (c - start) as usize;
+        match u16_at(bytes, at)? {
+            0 => return Some(0),
+            g => g,
+        }
+    };
+    Some(glyph.wrapping_add(delta))
+}
+
+/// The TrueType font `bytes` with its space at least `em` of its letters' height wide, all else as
+/// it was. Unchanged if it isn't laid out as expected.
+fn wider_space(bytes: &[u8], em: f32) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    let widen = || -> Option<(usize, u16)> {
+        let units = u16_at(bytes, table(bytes, b"head")? + 18)?;
+        let metrics = u16_at(bytes, table(bytes, b"hhea")? + 34)?;
+        let space = glyph_of(bytes, ' ' as u16)?;
+        // A glyph past the last with an advance of its own shares that one's, so isn't changed
+        (space != 0 && space < metrics).then_some(())?;
+        let at = table(bytes, b"hmtx")? + 4 * space as usize;
+        Some((at, u16_at(bytes, at)?.max((em * units as f32).round() as u16)))
+    };
+    if let Some((at, advance)) = widen() {
+        out[at..at + 2].copy_from_slice(&advance.to_be_bytes());
+    }
+    out
+}
+
 /// The fonts: egui's own, Cinzel for headings and UnifrakturCook for the biggest titles, each
-/// falling back on the ones after it for anything it hasn't
+/// falling back on the ones after it for anything it hasn't, the headings' spaces made wider
 fn fonts() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("Cinzel".to_owned(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Cinzel-Bold.ttf"))));
-    fonts.font_data.insert("UnifrakturCook".to_owned(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/UnifrakturCook-Bold.ttf"))));
+    let heading = |bytes: &[u8]| Arc::new(egui::FontData::from_owned(wider_space(bytes, SPACE_EM)));
+    fonts.font_data.insert("Cinzel".to_owned(), heading(include_bytes!("../assets/fonts/Cinzel-Bold.ttf")));
+    fonts.font_data.insert("UnifrakturCook".to_owned(), heading(include_bytes!("../assets/fonts/UnifrakturCook-Bold.ttf")));
     let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut display = vec!["Cinzel".to_owned()];
     display.extend(proportional.iter().cloned());
@@ -505,6 +570,40 @@ mod tests {
         assert_ne!(wide("THE INNERT GATE", display(18.0)), wide("THE INNERT GATE", FontId::proportional(18.0)));
         for other in [display(40.0), FontId::proportional(40.0)] {
             assert_ne!(wide("Innert", blackletter(40.0)), wide("Innert", other));
+        }
+    }
+
+    /// The blackletter's titles show the gaps between their words, "A new game" never reading
+    /// "Anew game": a space is a good part of a letter wide in every heading font
+    #[test]
+    fn titles_show_their_spaces() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        // The gap that shows: from where the ink of the letter before a space ends to where the
+        // ink of the one after it starts
+        let gaps = |text: &str, font: FontId| -> Vec<f32> {
+            let galley = ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE));
+            let glyphs: Vec<_> = galley.rows.iter().flat_map(|r| r.glyphs.iter()).collect();
+            let ink = |i: usize| {
+                let g = glyphs[i];
+                (g.pos.x + g.uv_rect.offset.x, g.pos.x + g.uv_rect.offset.x + g.uv_rect.size.x)
+            };
+            (1..glyphs.len().saturating_sub(1)).filter(|&i| glyphs[i].chr == ' ').map(|i| ink(i + 1).0 - ink(i - 1).1).collect()
+        };
+        for text in ["Start a new Realms game?", "A new character", "Free Roam", "Customize your character", "Skill Web", "Ember Drake"] {
+            for (name, font) in [("blackletter", blackletter(30.0)), ("display", display(30.0))] {
+                let shown = gaps(text, font);
+                eprintln!("{name} {text:?}: gaps {shown:.1?} px at 30 px");
+                assert!(shown.iter().all(|&g| g >= 0.25 * 30.0),"{name} {text:?} shows gaps of only {shown:.1?} px at 30 px");
+            }
+        }
+        // Each font's space found and widened, nothing else of it changed
+        for bytes in [&include_bytes!("../assets/fonts/Cinzel-Bold.ttf")[..], &include_bytes!("../assets/fonts/UnifrakturCook-Bold.ttf")[..]] {
+            let wider = wider_space(bytes, SPACE_EM);
+            assert_eq!(wider.len(), bytes.len());
+            let changed = bytes.iter().zip(&wider).filter(|(a, b)| a != b).count();
+            assert!((1..=2).contains(&changed), "{changed} bytes changed");
         }
     }
 }

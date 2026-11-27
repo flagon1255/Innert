@@ -1353,13 +1353,13 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         ui.label(RichText::new(format!("It takes the place of the one you have{when}, which can't be had back.")).size(14.0).color(gray));
         ui.add_space(14.0);
         ui.horizontal(|ui| {
-            ui.add_space((ui.available_width() - 260.0).max(0.0) * 0.5);
-            if ui.add_sized([126.0, 40.0], egui::Button::new(RichText::new("Start anew").size(18.0))).clicked() {
+            ui.add_space((ui.available_width() - 300.0).max(0.0) * 0.5);
+            if ui.add_sized([146.0, 40.0], egui::Button::new(RichText::new("Start new game").size(18.0))).clicked() {
                 picked = Some(MenuAction::New(mode));
                 menu.confirm = None;
             }
             ui.add_space(8.0);
-            if ui.add_sized([126.0, 40.0], egui::Button::new(RichText::new("Keep it").size(18.0))).clicked() {
+            if ui.add_sized([146.0, 40.0], egui::Button::new(RichText::new("Keep it").size(18.0))).clicked() {
                 menu.confirm = None;
             }
         });
