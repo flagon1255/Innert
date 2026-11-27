@@ -200,6 +200,10 @@ pub struct Water {
     ground_changed: bool,
     /// The top of the water where worldgen put it, NaN where it's dry, see REPORT
     laid: Option<Vec<f32>>,
+    /// The world's first column in the landscape, and the area kept flowing last frame, from x and
+    /// y to x and y, for report()
+    origin: [i64; 2],
+    flowing: [u32; 4],
 }
 
 /// The top of the water in each column, NaN where there's too little to be drawn
@@ -245,6 +249,14 @@ fn kept(lo: [u32; 2], hi: [u32; 2], room: [u32; 2], wrap: [u32; 2]) -> Vec<([u32
         }
     }
     rects
+}
+
+/// Whether any of `rects`, each where it's kept in the images and how many across, is anywhere in
+/// the runs of columns `xs` by rows `ys`, each where it's kept, where in the strip and how many, as
+/// worldgen::runs() gives them
+fn covers(rects: &[([u32; 2], [u32; 2])], xs: &[(usize, usize, usize)], ys: &[(usize, usize, usize)]) -> bool {
+    let meet = |a: u32, n: u32, b: usize, m: usize| (a as usize) < b + m && b < (a + n) as usize;
+    rects.iter().any(|(at, extent)| xs.iter().any(|&(x, _, nx)| meet(at[0], extent[0], x, nx)) && ys.iter().any(|&(y, _, ny)| meet(at[1], extent[1], y, ny)))
 }
 
 fn storage_image(memory_allocator: &Arc<StandardMemoryAllocator>, extent: [u32; 2], format: Format) -> Arc<Image> {
@@ -515,6 +527,8 @@ impl Water {
             drawn_once: false,
             ground_changed: false,
             laid,
+            origin: [world.origin[0], world.origin[1]],
+            flowing: [0; 4],
         }
     }
 
@@ -578,6 +592,94 @@ impl Water {
         let behind = self.depth.iter().zip(&depth).filter(|(a, b)| (*a - *b).abs() > 0.1 * vpm).count();
         let moved = laid.iter().zip(&now).filter(|(a, b)| a.is_nan() != b.is_nan() || (!a.is_nan() && (*a - *b).abs() > 0.1 * vpm)).count();
         println!("Water on the CPU: {behind} columns more than 10 cm off the GPU's, of {moved} that have moved that much since laid");
+        self.report_drawn(command_buffer_allocator, queue, &depth);
+    }
+
+    /// What's drawn, for screenshot runs, see REPORT: from the surface traverse.comp draws, where the
+    /// water shows a face more than 25 cm high over lower water beside it, or over lower dry ground,
+    /// as it never would once it had flowed, other than where it's falling, and the columns drawn
+    /// other than their depth says. Each the worst few, in meters of the landscape.
+    fn report_drawn(&self, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>, depth: &[f32]) {
+        let columns = self.room[0] as u64 * self.room[1] as u64;
+        let buffer = Buffer::new_slice::<u16>(
+            self.memory_allocator.clone(),
+            BufferCreateInfo { usage: BufferUsage::TRANSFER_DST, ..Default::default() },
+            AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS, ..Default::default() },
+            columns * 4,
+        )
+        .unwrap();
+        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+        builder.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(self.surface_view.image().clone(), buffer.clone())).unwrap();
+        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        let Ok(halves) = buffer.read() else {
+            return;
+        };
+        // Half floats, as they're kept
+        let half = |h: u16| -> f32 {
+            let (sign, exp, frac) = ((h >> 15) as u32, ((h >> 10) & 0x1f) as u32, (h & 0x3ff) as u32);
+            let v = if exp == 0 { frac as f32 * 2f32.powi(-24) } else if exp == 31 { f32::INFINITY } else { (1.0 + frac as f32 / 1024.0) * 2f32.powi(exp as i32 - 15) };
+            if sign == 1 { -v } else { v }
+        };
+        let vpm = self.voxels_per_meter as f32;
+        let [sx, sy] = self.size;
+        let index = |x: u32, y: u32| (((x + self.wrap[0]) % self.room[0]) + ((y + self.wrap[1]) % self.room[1]) * self.room[0]) as usize;
+        // The drawn top of the water lying in a column, as traverse.comp has it, None for dry, and
+        // whether water's falling through it
+        let top = |i: usize| -> (Option<f32>, bool) {
+            let (s, z, w) = (half(halves[i * 4]), half(halves[i * 4 + 2]), half(halves[i * 4 + 3]));
+            let t = if s >= 0.0 { Some((self.ground[i] + s + 0.5).floor()) } else { None };
+            (t.filter(|&t| t > self.ground[i]), w >= z)
+        };
+        // Where, in meters of the landscape
+        let meters = |x: u32, y: u32| [(self.origin[0] + x as i64) as f32 / vpm, (self.origin[1] + y as i64) as f32 / vpm];
+        let mut steps: Vec<(f32, [f32; 2], bool)> = Vec::new();
+        let mut walls: Vec<(f32, [f32; 2], bool)> = Vec::new();
+        let mut stale: Vec<(f32, [f32; 2])> = Vec::new();
+        // Whether a column's on the edge of the area kept flowing
+        let f = self.flowing;
+        let on_edge = |x: u32, y: u32| (x == f[0] || x + 1 == f[2] || y == f[1] || y + 1 == f[3]) && x + 1 >= f[0] && x <= f[2] && y + 1 >= f[1] && y <= f[3];
+        for y in 0..sy {
+            for x in 0..sx {
+                let i = index(x, y);
+                let (a, fall_a) = top(i);
+                let wet = depth[i] > 0.05;
+                let should = if wet { Some(((self.ground[i] + depth[i]) + 0.5).floor()).filter(|&t| t > self.ground[i]) } else { None };
+                if a.is_some() != should.is_some() || a.zip(should).is_some_and(|(a, b)| (a - b).abs() > 0.25 * vpm) {
+                    stale.push((a.unwrap_or(self.ground[i]) - should.unwrap_or(self.ground[i]), meters(x, y)));
+                }
+                // The face the water in this column shows its neighbors, over their water or ground
+                let Some(a) = a else {
+                    continue;
+                };
+                for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+                    if nx >= sx || ny >= sy {
+                        continue;
+                    }
+                    let j = index(nx, ny);
+                    let (b, fall_b) = top(j);
+                    if fall_a || fall_b {
+                        continue;
+                    }
+                    let face = a - self.ground[i].max(b.unwrap_or(self.ground[j]));
+                    if face > 0.25 * vpm {
+                        let what = (face / vpm, meters(x, y), on_edge(x, y) || on_edge(nx, ny));
+                        if b.is_some() { steps.push(what) } else { walls.push(what) }
+                    }
+                }
+            }
+        }
+        let worst = |v: &mut Vec<(f32, [f32; 2], bool)>| {
+            v.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let edge = v.iter().filter(|s| s.2).count();
+            let shown: Vec<String> = v.iter().take(8).map(|(d, p, e)| format!("{d:.2} m at {:.1},{:.1}{}", p[0], p[1], if *e { " (flowing edge)" } else { "" })).collect();
+            format!("{} ({} on the flowing area's edge): {}", v.len(), edge, shown.join("; "))
+        };
+        println!("Drawn water faces over 25 cm over lower water: {}", worst(&mut steps));
+        println!("Drawn water faces over 25 cm over dry ground: {}", worst(&mut walls));
+        stale.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+        let shown: Vec<String> = stale.iter().take(8).map(|(d, p)| format!("{:.2} m at {:.1},{:.1}", d / vpm, p[0], p[1])).collect();
+        println!("Drawn other than its depth: {}: {}", stale.len(), shown.join("; "));
+        println!("Flowing area: {:?} of {:?}, the world's corner at {:.1},{:.1}", self.flowing, self.size, self.origin[0] as f32 / vpm, self.origin[1] as f32 / vpm);
     }
 
     /// Where water wells up, rivers' springs and inside buildings: x, y, cubic meters a second and
@@ -592,6 +694,7 @@ impl Water {
     /// nothing in the images moves, only what's counted from the world's first column
     pub fn moved(&mut self, shift: [i64; 2], wrap: [u32; 2]) {
         self.wrap = wrap;
+        self.origin = [self.origin[0] + shift[0], self.origin[1] + shift[1]];
         self.dirty = self.dirty.and_then(|region| shifted(region, shift, self.size));
         self.resurface = self.resurface.iter().filter_map(|&region| shifted(region, shift, self.size)).collect();
     }
@@ -612,6 +715,12 @@ impl Water {
         // A row at a time, in a run or two where it goes round: hundreds of thousands of columns
         let width = self.room[0] as usize;
         let xs: Vec<(usize, usize, usize)> = crate::worldgen::runs(origin[0], size[0], self.room[0]).collect();
+        // Depths on their way back from the GPU from where it goes are of the water there was, as
+        // when the whole world's built afresh somewhere else: they'd be put over these
+        let ys: Vec<(usize, usize, usize)> = crate::worldgen::runs(origin[1], size[1], self.room[1]).collect();
+        if self.readback_pending && covers(&self.readback_rects, &xs, &ys) {
+            self.readback_rects.clear();
+        }
         for y in 0..size[1] as usize {
             let row = (origin[1] + y as i64).rem_euclid(self.room[1] as i64) as usize * width;
             for &(at, along, n) in &xs {
@@ -761,14 +870,16 @@ impl Water {
         let wake = wake.map_or([0.0; 4], |(p, v)| [p[0] as f32, p[1] as f32, v[0] as f32, v[1] as f32]);
         let room = [self.size[0], self.size[1], self.wrap[0], self.wrap[1]];
         let flowing = [corner[0], corner[1], corner[0] + area[0], corner[1] + area[1]];
-        let constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2]| Constants {
+        self.flowing = flowing;
+        let fresh_constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2], fresh: bool| Constants {
             brush,
             wake,
-            params: [STEP as f32, self.sea_level, self.voxels_per_meter as f32, 0.0],
+            params: [STEP as f32, self.sea_level, self.voxels_per_meter as f32, if fresh { 1.0 } else { 0.0 }],
             info: [stage as u32, self.spring_count, corner[0], corner[1]],
             room,
             flowing,
         };
+        let constants = |stage: Stage, brush: [f32; 4], corner: [u32; 2]| fresh_constants(stage, brush, corner, false);
 
         builder
             .bind_pipeline_compute(pipeline.clone())
@@ -795,18 +906,21 @@ impl Water {
         // Round the camera only when the water's moved since, or the ground has: it steps 120 times
         // a second, so on faster frames than that it often hasn't, and the surface would come out
         // the same as last frame's.
+        // Water that's just been laid, all of it the first time round and each strip as it comes
+        // in, is fresh: what's kept of the blocks round it isn't its own yet, and none of it's flowed,
+        // see surface() in shaders\water.comp
         let mut surfaces = Vec::new();
         if steps > 0 || first || std::mem::take(&mut self.ground_changed) {
-            surfaces.push((surface_corner, surface_area));
+            surfaces.push((surface_corner, surface_area, first));
         }
         for [x0, y0, x1, y1] in std::mem::take(&mut self.resurface) {
             let (lo, hi) = ([x0 / BLOCK * BLOCK, y0 / BLOCK * BLOCK], [x1, y1]);
-            surfaces.push((lo, [hi[0] - lo[0], hi[1] - lo[1]]));
+            surfaces.push((lo, [hi[0] - lo[0], hi[1] - lo[1]], true));
         }
-        for &(corner, area) in &surfaces {
-            dispatch(builder, constants(Stage::Surface, [0.0; 4], corner), groups(area));
+        for &(corner, area, fresh) in &surfaces {
+            dispatch(builder, fresh_constants(Stage::Surface, [0.0; 4], corner, fresh), groups(area));
         }
-        for &(corner, area) in &surfaces {
+        for &(corner, area, _) in &surfaces {
             let blocks = area.map(|n| n.div_ceil(BLOCK).div_ceil(8));
             dispatch(builder, constants(Stage::Blocks, [0.0; 4], corner), [blocks[0], blocks[1], 1]);
         }
@@ -1094,6 +1208,78 @@ mod tests {
         let unheld = lake_through_the_day(false);
         println!("most off where it was laid, not held: {unheld:?} m");
         assert!(unheld[2] > 0.1, "{unheld:?}");
+    }
+
+    /// Has to match MIN_DEPTH, LEDGE and LEAST_FALL in shaders\water.comp
+    const MIN_DEPTH: f32 = 0.05;
+    const LEDGE: f32 = 0.25;
+    const LEAST_FALL: f32 = 0.015;
+
+    /// stillOver() in shaders\water.comp: what would pour over a ledge from water lying `depth`
+    /// deep on ground `ground` high into water or onto ground `beside` high, at `vpm` voxels a meter
+    fn still_over(ground: f32, depth: f32, beside: f32, vpm: f32) -> f32 {
+        if depth <= MIN_DEPTH || ground + depth < beside + LEDGE * vpm {
+            return 0.0;
+        }
+        let head = depth.min(2.0 * vpm) * (2.0 / 3.0);
+        (9.8 * vpm * head).sqrt() * head
+    }
+
+    /// A river's pool laid by worldgen, 40 cm deep over a ledge a meter over the pool below, never
+    /// flowed, as it is further off than the water kept flowing: its fall's drawn all the same, about
+    /// as thick as once the water's flowed over it a while. Before, nothing went over a ledge in
+    /// water that had never flowed, so the falls weren't drawn till the camera came near and the
+    /// upper pool stood over the lower as a slab of clear water with a straight face.
+    #[test]
+    fn falls_are_drawn_in_water_that_has_never_flowed() {
+        let vpm = 16.0;
+        let (w, h) = (96i64, 16i64);
+        // A channel 10 columns wide, walled either side, the ledge at x = 48
+        let lip = 48;
+        let ground: Vec<f32> = (0..w * h)
+            .map(|i| {
+                let [x, y] = [i % w, i / w];
+                if !(3..13).contains(&y) { 400.0 } else if x < lip { 200.0 } else { 184.0 }
+            })
+            .collect();
+        let laid = |c: [i64; 2]| if !(3..13).contains(&c[1]) { 0.0 } else if c[0] < lip { 206.4 } else { 190.4 };
+        let surface: Vec<f32> = (0..w * h).map(|i| laid([i % w, i / w])).collect();
+        let mut sim = Sim::new([w as usize, h as usize], vpm, ground, &surface, 0.0);
+        let (at, beside) = (sim.i([lip - 1, 8]), sim.i([lip, 8]));
+        let still = still_over(sim.ground[at], sim.depth[at], sim.ground[beside] + sim.depth[beside], vpm);
+        assert!(still > LEAST_FALL * vpm * vpm * 10.0, "{still}");
+        // And as it is once it's flowed, a river pouring in from upstream as a spring would, 2 m³ a
+        // second, which the lower pool lets out at its far end into the open
+        sim.springs = vec![[8.0, 8.0, 2.0 * vpm.powi(3), 3.0]];
+        for _ in 0..(20.0 / STEP) as usize {
+            sim.step([1, 1], [w - 1, h - 1]);
+            for y in 3..13 {
+                let i = sim.i([w - 2, y]);
+                sim.depth[i] = sim.depth[i].min(6.4);
+            }
+        }
+        let flowed: f32 = (3..13).map(|y| sim.flux[sim.i([lip - 1, y])][1]).sum::<f32>() / 10.0;
+        println!("over the ledge, never flowed {still:.0}, flowed {flowed:.0} square voxels a second");
+        assert!(flowed > LEAST_FALL * vpm * vpm, "{flowed}");
+        assert!(still > flowed * 0.25 && still < flowed * 4.0, "never flowed {still}, flowed {flowed}");
+        // None where the water beside is as high, nor from a film too thin to be drawn
+        assert_eq!(still_over(200.0, 6.4, 206.0, vpm), 0.0);
+        assert_eq!(still_over(200.0, 0.04, 100.0, vpm), 0.0);
+    }
+
+    /// Depths coming back from where a strip's just been put, as when the world's built afresh
+    /// somewhere else all at once, are of the water there was before, and are let go; those from
+    /// anywhere else are kept
+    #[test]
+    fn depths_coming_back_from_under_a_new_strip_are_let_go() {
+        let room = [1000, 1000];
+        let xs: Vec<_> = crate::worldgen::runs(900, 200, room[0]).collect();
+        let ys: Vec<_> = crate::worldgen::runs(0, 1000, room[1]).collect();
+        // The strip goes round, from 900 to 999 and 0 to 99
+        assert!(covers(&[([50, 400], [20, 20])], &xs, &ys));
+        assert!(covers(&[([950, 0], [10, 10])], &xs, &ys));
+        assert!(!covers(&[([100, 400], [700, 600])], &xs, &ys));
+        assert!(!covers(&[], &xs, &ys));
     }
 
     /// Where the water was laid is kept in a byte a column: how far over the ground, or as high as

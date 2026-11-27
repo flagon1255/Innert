@@ -44,7 +44,8 @@ layout(push_constant) uniform PushConstants {
     vec4 brush;
     // Something wading through the water: xy column, zw velocity in columns per second
     vec4 wake;
-    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter
+    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter, w: 1 for
+    // the surface of water just laid, see main()
     vec4 params;
     // x: stage, y: how many springs, zw: the corner of the area around the camera that's kept
     // flowing, in columns. Water further away keeps still until the camera comes near.
@@ -335,6 +336,17 @@ bool nearWater(ivec2 b, ivec2 size) {
     return highest >= 0;
 }
 
+// How much pours over a ledge, in square voxels a second per voxel of it, from water lying `depth`
+// deep on ground `ground` high into water or onto ground `beside` high past it, were it flowing:
+// as over a weir, the water going over as deep as two thirds of what's on the lip, as fast as a
+// wave travels in water that deep. None where the water beside stands as high.
+float stillOver(float ground, float depth, float beside) {
+    if (depth <= MIN_DEPTH || ground + depth < beside + LEDGE * pc.params.z)
+    return 0;
+    float head = min(depth, 2 * pc.params.z) * (2.0 / 3.0);
+    return sqrt(9.8 * pc.params.z * head) * head;
+}
+
 // What traverse.comp draws: the top of the water lying in a column, how white it is, and any water
 // falling through it. `g` is the first column of its group, `near_water` whether there's water in the
 // blocks round it, and `tiled` whether where the ledges are is marked in shared memory.
@@ -391,6 +403,13 @@ void surface(ivec2 c, ivec2 size, ivec2 g, bool near_water, bool tiled) {
             ivec2 lip_at = at(lip);
             float lip_ground = tiled ? lineGround(lip, g, along_x) : imageLoad(groundImage, lip_at).r;
             float over = imageLoad(fluxImage, lip_at)[i];
+            // Still water that's never flowed, as worldgen laid it further off than the area kept
+            // flowing, has nothing going over its ledges yet, though a river's falls are there: what
+            // would, so they're drawn before the camera comes near and not only once it has
+            if (over < LEAST_FALL * vpm * vpm && !flowing(lip)) {
+                ivec2 beside_at = at(lip + dir);
+                over = stillOver(lip_ground, imageLoad(depthImage, lip_at).r, imageLoad(groundImage, beside_at).r + imageLoad(depthImage, beside_at).r);
+            }
             if (over < LEAST_FALL * vpm * vpm)
             continue;
             float lip_depth = max(imageLoad(depthImage, lip_at).r, FALL_THICKNESS * vpm);
@@ -475,7 +494,11 @@ void main() {
         // A group at a time, its columns all in one block as the corner's on a block's, so every
         // invocation of it gets to the barrier
         ivec2 g = corner + ivec2(gl_WorkGroupID.xy) * GROUP;
-        bool near_water = nearWater(g / BLOCK, size);
+        // What's kept of the blocks round water that's just been laid, the whole world's at first
+        // and a strip's as it comes in, is still of what was there before, if anything: falls are
+        // looked for all over it, the once
+        bool fresh = pc.params.w > 0.5;
+        bool near_water = fresh || nearWater(g / BLOCK, size);
         bool tiled = int(FALL_REACH * pc.params.z) <= HALO;
         for (int n = int(gl_LocalInvocationIndex); n < 4 * CROSS * 2; n += GROUP * GROUP)
         s_ledges[n] = 0;
