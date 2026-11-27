@@ -5978,6 +5978,8 @@ impl App {
         // Lower resolution while the view changes, full detail once it settles, as much as the
         // GPU's memory has room for
         self.update_render_images(window_size.into());
+        // For the signposts' words, see compass.rs
+        let landscape = self.terrain_settings();
         let rcx = self.rcx.as_mut().unwrap();
 
         let acquiring = Instant::now();
@@ -6112,6 +6114,7 @@ impl App {
                     self.cycle.hud(&ctx, raid_note.as_deref());
                 }
                 night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
+                compass::draw_signposts(&ctx, &view, &self.world, &landscape);
                 building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
                 hearths::hud(&ctx, hearth_note.as_deref());
                 // A merchant's stall closed, or walked away from: back to playing
