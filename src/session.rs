@@ -207,6 +207,7 @@ impl App {
     /// was being played first. Where the game goes on is built afresh behind the dark if it's not
     /// in the world as it is, see rebuild_world().
     pub(super) fn begin(&mut self, mode: Mode, save: Option<Save>) {
+        let began = Instant::now();
         if self.session.mode.is_some() {
             self.save_game(false);
         }
@@ -368,6 +369,7 @@ impl App {
         if !self.session.find_ground {
             self.save_game(false);
         }
+        println!("Starting {} took {:.0} ms{}", mode.name(), began.elapsed().as_secs_f64() * 1000.0, if rebuild { ", the world to be built afresh" } else { "" });
     }
 
     /// Where things are in realm `realm`: as for Places::find(), round where Innert starts, looking
@@ -578,6 +580,7 @@ impl App {
         if self.session.realms.is_none() {
             return;
         }
+        let began = Instant::now();
         let realm = &REALMS[to];
         // What's been done in the realm left, kept for coming back
         let mut left = self.game.world_save();
@@ -635,6 +638,7 @@ impl App {
         if first_time && to > 0 {
             self.game.gain_experience(crate::levels::first_visit(to), None);
         }
+        println!("Going through to {} took {:.0} ms before the world's built afresh", realm.name, began.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// For trying out the journey: as if it had got as far as realm `realm`, each realm before it

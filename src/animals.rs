@@ -3656,6 +3656,23 @@ fn frame_model(look: Look, frame: usize) -> Model {
     }
 }
 
+/// Every animal's models with their files read in, made ahead while the loading screen's up, see
+/// Loaded::load(), for the game to take as it's put together, see made_ahead()
+static MADE_AHEAD: std::sync::Mutex<Option<Vec<Model>>> = std::sync::Mutex::new(None);
+
+/// Makes the models the game starts with ahead of it, see MADE_AHEAD
+pub fn make_ahead() {
+    let models = crate::assets::apply_looks(animal_models());
+    *MADE_AHEAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(models);
+}
+
+/// The models made ahead, if they were and haven't been taken, or else made now: every frame of
+/// every animal with their files read in
+pub fn made_ahead() -> Vec<Model> {
+    let made = MADE_AHEAD.lock().unwrap_or_else(|e| e.into_inner()).take();
+    made.unwrap_or_else(|| crate::assets::apply_looks(animal_models()))
+}
+
 /// Every frame of every animal, and of everything else drawn like one: made on every core at once,
 /// a frame at a time, so the big ones don't hold up the rest. The monsters and animals baked from
 /// pieces are each one job, their pieces made and every frame baked from them, see src\baked.rs,
