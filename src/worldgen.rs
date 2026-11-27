@@ -8,6 +8,7 @@ mod camps;
 mod castles;
 mod dragonlair;
 mod ravines;
+mod roads;
 mod towns;
 mod trees;
 /// The trees' numbers, see assets	rees.json
@@ -17,6 +18,8 @@ mod undercity;
 pub use aeries::{SHRINE, SHRINE_KEY, aeries, way_up as way_up_to_shrine};
 
 pub use camps::{Camp, CampKind, camp_spots};
+#[allow(unused_imports)]
+pub use roads::{Arm, Signpost, map_roads, signposts_near};
 #[allow(unused_imports)]
 pub use dragonlair::{DRAGON_ARENA_FLOOR, DRAGON_ARENA_REACH, LairKind, dragon_arena_way, far_lair, lairs_set, set_lairs};
 #[allow(unused_imports)]
@@ -1994,6 +1997,10 @@ impl Shape {
         }
         let d = sub(p, self.a);
         if let Some(half) = &self.boxed {
+            // A box turned along its own axes, see beam()
+            if let Some((axes, _)) = &self.flat {
+                return (0..3).any(|i| dot(axes[i], d).abs() > half[i] + m);
+            }
             return (0..3).any(|i| d[i].abs() > half[i] + m);
         }
         if let Some((axes, half)) = &self.flat {
@@ -2006,6 +2013,30 @@ impl Shape {
         let t = if length2 > 0.0 { (dot(d, ab) / length2).clamp(0.0, 1.0) } else { 0.0 };
         let e = sub(d, scale(ab, t));
         dot(e, e).sqrt() > self.radius_a.max(self.radius_b) + m
+    }
+
+    /// A box turned any way: its middle, its three axes, at right angles to each other, and its
+    /// half-size along each, like a plank of a bridge or the arm of a signpost
+    fn beam(center: Vec3, axes: [Vec3; 3], half: Vec3, material: u8, accent: u8) -> Self {
+        let reach = [0, 1, 2].map(|i| (0..3).map(|k| (axes[k][i] * half[k]).abs()).sum::<f32>());
+        let radius = (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt();
+        Shape {
+            a: center,
+            b: center,
+            radius_a: radius,
+            radius_b: radius,
+            flat: Some((axes, half)),
+            boxed: Some(half),
+            material,
+            accent,
+            ragged: false,
+            placement: Placement::Above,
+            pattern: Pattern::Plain,
+            rough: 0.0,
+            floor: f32::MIN,
+            min: [0, 1, 2].map(|i| center[i] - reach[i]),
+            max: [0, 1, 2].map(|i| center[i] + reach[i]),
+        }
     }
 
     /// A long, thin, upright ellipsoid going `along` (level), `length` long, `width` wide and
@@ -2139,6 +2170,9 @@ impl Shape {
     fn depth(&self, p: Vec3, voxel: f32) -> f32 {
         let d = sub(p, self.a);
         if let Some(half) = &self.boxed {
+            if let Some((axes, _)) = &self.flat {
+                return (0..3).map(|i| dot(axes[i], d).abs() / half[i].max(0.5 * voxel)).fold(0.0, f32::max).powi(2);
+            }
             return (0..3).map(|i| d[i].abs() / half[i].max(0.5 * voxel)).fold(0.0, f32::max).powi(2);
         }
         if let Some((axes, half)) = &self.flat {
@@ -2618,6 +2652,8 @@ struct Column {
     under: i32,
     /// Built of courses of stone all the way down, as the Drowned Ring is, see Terrain::masonry()
     built: bool,
+    /// A road's laid over it, its top and what's under it as the road has them, see roads.rs
+    paved: bool,
 }
 
 /// The ground under a rectangle of voxel columns, at some resolution. Columns outside it are
@@ -2638,6 +2674,8 @@ struct Heights {
     settings: TerrainSettings,
     paths: Vec<Arc<Vec<RiverPoint>>>,
     runs: Vec<RiverRun>,
+    /// The roads laid into it, see lay()
+    roads: Arc<roads::Laid>,
 }
 
 /// A few points next to each other along a river in the same pool, so the same wobble, see
@@ -2739,6 +2777,7 @@ impl Heights {
             settings: *settings,
             paths: Vec::new(),
             runs: Vec::new(),
+            roads: Arc::new(roads::Laid::empty()),
         }
     }
 
@@ -2762,7 +2801,49 @@ impl Heights {
         if nearest != NO_RIVER {
             shape_column(&self.paths[nearest.0 as usize][nearest.1 as usize], distance, xm, ym, self.seed, &mut g, &mut r);
         }
+        if !r.is_finite()
+            && let Some(spot) = self.roads.spot(xm, ym)
+        {
+            g = spot.ground(g);
+        }
         (g, r)
+    }
+
+    /// What a road makes of column `gx`, `gy` of the whole landscape, if one's near, see roads.rs
+    fn road_at(&self, gx: i64, gy: i64) -> Option<roads::Spot> {
+        let vpm = self.voxels_per_meter;
+        self.roads.spot(gx as f32 / vpm, gy as f32 / vpm)
+    }
+
+    /// Lays `roads` into the ground, once the rivers are cut, see roads.rs: each column a road
+    /// reaches but those under a river's water brought to the road's height across it, and eased
+    /// back to the land's over its verges
+    fn lay(&mut self, roads: Arc<roads::Laid>) {
+        self.roads = roads;
+        if self.roads.roads.is_empty() {
+            return;
+        }
+        let (vpm, origin, [sx, _]) = (self.voxels_per_meter, self.origin, self.size);
+        let rows = self.size[1].div_ceil(threads()).max(1);
+        let laid = &self.roads;
+        thread::scope(|s| {
+            for (band, (ground, river)) in self.ground.chunks_mut(rows * sx).zip(self.river.chunks(rows * sx)).enumerate() {
+                s.spawn(move || {
+                    give_way();
+                    for (i, (g, r)) in ground.iter_mut().zip(river).enumerate() {
+                        if r.is_finite() {
+                            continue;
+                        }
+                        let j = band * rows * sx + i;
+                        let xm = (origin[0] + (j % sx) as i64) as f32 / vpm;
+                        let ym = (origin[1] + (j / sx) as i64) as f32 / vpm;
+                        if let Some(spot) = laid.spot(xm, ym) {
+                            *g = spot.ground(*g);
+                        }
+                    }
+                });
+            }
+        });
     }
 
     /// The same at a point in meters
@@ -3962,6 +4043,8 @@ pub struct Terrain {
     features: Features,
     /// The Drowned Ring, if the landscape has one, see arena_of()
     arena: Option<Arena>,
+    /// The roads reaching this piece and round it, see roads.rs
+    roads: Arc<roads::Laid>,
 }
 
 const OBJECT_CELL: f32 = 8.0;
@@ -3997,13 +4080,17 @@ impl Terrain {
             cells_across: [0; 2],
             features: Features::default(),
             arena: arena_of(settings),
+            roads: Arc::new(roads::Laid::empty()),
         }
     }
 
-    /// Cuts the rivers running through this piece into `heights`
+    /// Cuts the rivers running through this piece into `heights`, then lays the roads, which
+    /// cross them on bridges, see roads.rs
     fn carve_rivers(&mut self, heights: &mut Heights, rivers: &RiverCache) {
         self.rivers = self.rivers_in(rivers);
         heights.carve(&self.rivers);
+        self.roads = self.find_roads(rivers);
+        heights.lay(self.roads.clone());
     }
 
     /// Puts everything that's out on the land, or under it, once the rivers are in. Of the props,
@@ -4237,6 +4324,7 @@ impl Terrain {
     pub fn build(&self, origin: [i64; 3], size: [u32; 3], voxels_per_meter: u32) -> World {
         let mut heights = Heights::new(&self.settings, [origin[0], origin[1]], [size[0] as usize, size[1] as usize], voxels_per_meter);
         heights.carve(&self.rivers);
+        heights.lay(self.roads.clone());
         let mut world = self.build_from(&heights, origin[2], size[2]);
         world.sea_level = None;
         world
@@ -4549,12 +4637,22 @@ impl Terrain {
             Some(burnt) if !frozen && river <= h && h > sea_level + v => burnt,
             _ => top,
         };
+        // A road laid over it, of gravel, sand or rough stones, see roads.rs
+        let laid = heights
+            .road_at(gx, gy)
+            .filter(|_| river <= h && !frozen && !molten)
+            .and_then(|s| roads::road_top(&s, self.settings.seed, xm, ym, gx, gy, vpm, desert, snowy || h >= snow_line + snow_jitter, h <= sea_level + 2 * v));
+        let (top, h) = match laid {
+            Some((m, _, bump)) => (m, h + bump as i32),
+            None => (top, h),
+        };
         let below = match top {
             SAND | STONE | GRAVEL | CLAY | CLAY_BANK | ICE | ROCK | OBSIDIAN => top,
             GLOW_BLOOD | GLOW_FIRE | GLOW_HOLY => OBSIDIAN,
             _ => DIRT,
         };
         // The Drowned Ring's own stone, mosaic and rubble, laid in courses all the way down
+        let below = laid.map_or(below, |(_, under, _)| under);
         let built = self.arena.and_then(|a| a.ground_material(self.settings.seed, xm, ym));
         let (top, below) = built.map_or((top, below), |b| (b, BRICK_STONE));
 
@@ -4581,7 +4679,7 @@ impl Terrain {
                 blade = ((unit(tuft >> 16) * tallest).round() as i32).max(1);
                 blade_top = GRASS_TIP;
             }
-        } else if top == SAND && desert && self.settings.grass_tufts && unit(tuft) < 0.04 {
+        } else if top == SAND && desert && laid.is_none() && self.settings.grass_tufts && unit(tuft) < 0.04 {
             blade = ((unit(tuft >> 16) * 0.25 * vpm).round() as i32).max(1);
             (blade_body, blade_top) = (DRY_GRASS, DRY_GRASS);
         }
@@ -4606,6 +4704,7 @@ impl Terrain {
             blade_top,
             under,
             built: built.is_some(),
+            paved: laid.is_some() && built.is_none(),
         }
     }
 
@@ -4686,6 +4785,8 @@ impl Terrain {
             let depth = column.height - z;
             if column.built && depth > 0 {
                 self.masonry(column, z)
+            } else if column.paved && depth <= dirt_depth {
+                if depth == 0 { column.top } else { column.below }
             } else if depth == 0 && column.top == STONE || depth > 0 && column.below == STONE || depth > dirt_depth {
                 self.rock(column, z, depth)
             } else if depth == 0 {
@@ -5071,6 +5172,8 @@ impl Terrain {
             objects.extend(self.caves(&mut features, &royal, &cities));
             objects.extend(self.waterfall_caves(&mut features));
             objects.extend(self.ravines(&mut features, &shut));
+            // The roads' bridges and signposts, see roads.rs
+            objects.extend(self.road_works(&mut features, rivers));
             if peopled {
                 let camps = self.camps(heights, &mut features, &keep_out, &objects);
                 objects.extend(camps);
@@ -5108,6 +5211,10 @@ impl Terrain {
                         continue;
                     }
                     if footprints.iter().any(|f| x > f[0] - 1.5 && y > f[1] - 1.5 && x < f[2] + 1.5 && y < f[3] + 1.5) || over_gap(x, y) {
+                        continue;
+                    }
+                    // Nor on a road, nor so near one its trunk or stem stands in it, see roads.rs
+                    if self.roads.near(x, y, (reach * 0.5).clamp(0.8, 2.5)) {
                         continue;
                     }
                     // Nor on the Drowned Ring or its causeway, nor anywhere it'd reach over them
@@ -5515,6 +5622,10 @@ impl Terrain {
                     continue;
                 };
                 if keep_out.iter().any(|k| overlaps(*k, [x - half - 1.0, y - half - 1.0, x + half + 1.0, y + half + 1.0], 0.0)) {
+                    continue;
+                }
+                // Nor across a road, nor where its torches would stand in one
+                if self.roads.near_rect([x - half - 3.0, y - half - 3.0, x + half + 3.0, y + half + 3.0], 1.0) {
                     continue;
                 }
 

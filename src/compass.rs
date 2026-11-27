@@ -47,11 +47,14 @@ pub struct Map {
 }
 
 /// The land seen from above: its pixels, the middle of what they show in meters of the landscape,
-/// and of which landscape
+/// and of which landscape, with the roads on it, each the points along it, and the towns and
+/// castles, where each is, its name, and whether it's a castle, see worldgen\roads.rs
 struct MapImage {
     pixels: Vec<u8>,
     middle: [f64; 2],
     seed: u32,
+    roads: Vec<Vec<[f32; 2]>>,
+    places: Vec<([f32; 2], String, bool)>,
 }
 
 /// What's marked on the map, in meters of the landscape: the player and which way they face, the
@@ -227,7 +230,9 @@ impl Map {
             let (sender, receiver) = mpsc::channel();
             let (settings, middle) = (marks.settings, marks.player);
             std::thread::spawn(move || {
-                let _ = sender.send(MapImage { pixels: land_seen_from_above(&settings, middle), middle, seed: settings.seed });
+                let pixels = land_seen_from_above(&settings, middle);
+                let (roads, places) = worldgen::map_roads(&settings, [middle[0] as f32, middle[1] as f32], MAP_ACROSS_M as f32 + 80.0);
+                let _ = sender.send(MapImage { pixels, middle, seed: settings.seed, roads, places });
             });
             self.drawing = Some(receiver);
         }
@@ -361,6 +366,59 @@ pub fn draw_compass(ctx: &egui::Context, bearing: &Bearing) {
     }
 }
 
+/// How near a signpost has to be for what's written on it to be read, in meters
+const SIGN_READ: f64 = 14.0;
+
+/// What's written on the signposts near, see worldgen\roads.rs: by each arm's pointed end where
+/// to and how far, and over the board at the edge of a place its name, fading in as they're come
+/// up to, as the voxels of the boards are too few to letter
+pub fn draw_signposts(ctx: &egui::Context, view: &combat::View, world: &World, settings: &TerrainSettings) {
+    let vpm = view.vpm;
+    let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
+    let feet = [((view.eye.x + origin.x) / vpm) as f32, ((view.eye.y + origin.y) / vpm) as f32];
+    let signs = worldgen::signposts_near(settings, feet, SIGN_READ as f32 + 3.0);
+    if signs.is_empty() {
+        return;
+    }
+    let painter = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("signposts")));
+    let screen = ctx.screen_rect();
+    let on_screen = |p: Vector3<f64>| view.project(p).filter(|[u, v]| (-0.1..=1.1).contains(u) && (-0.1..=1.1).contains(v)).map(|[u, v]| pos2(screen.left() + u as f32 * screen.width(), screen.top() + v as f32 * screen.height()));
+    let at = |x: f32, y: f32, z: f32| Vector3::new(x as f64 * vpm, y as f64 * vpm, z as f64 * vpm) - origin;
+    for sign in signs {
+        let [x, y, z] = sign.at;
+        let post = at(x, y, z + 1.8);
+        let distance = (post - view.eye).norm() / vpm;
+        if distance > SIGN_READ {
+            continue;
+        }
+        let alpha = ((SIGN_READ - distance) / 3.0).clamp(0.0, 1.0) as f32;
+        let size = (16.0 - distance as f32 * 0.25).clamp(12.0, 16.0);
+        let Some(middle) = on_screen(post) else {
+            continue;
+        };
+        let ink = Color32::from_rgb(250, 244, 226).gamma_multiply(alpha);
+        let shadow = Color32::from_black_alpha((190.0 * alpha) as u8);
+        for arm in &sign.arms {
+            let Some(tip) = on_screen(at(x + arm.way[0] * 1.2, y + arm.way[1] * 1.2, z + arm.height)) else {
+                continue;
+            };
+            // Out past its end, whichever way it points on the screen
+            let right = tip.x >= middle.x;
+            let (align, nudge) = if right { (Align2::LEFT_CENTER, vec2(6.0, 0.0)) } else { (Align2::RIGHT_CENTER, vec2(-6.0, 0.0)) };
+            let text = format!("{}  {}", arm.to, arm.how_far());
+            painter.text(tip + nudge + vec2(1.0, 1.0), align, &text, FontId::proportional(size), shadow);
+            painter.text(tip + nudge, align, &text, FontId::proportional(size), ink);
+        }
+        if let Some((name, out)) = &sign.home
+            && let Some(board) = on_screen(at(x + out[0] * 0.2, y + out[1] * 0.2, z + 1.3))
+        {
+            let font = crate::theme::blackletter(size + 6.0);
+            painter.text(board + vec2(1.5, 1.5), Align2::CENTER_CENTER, name, font.clone(), shadow);
+            painter.text(board, Align2::CENTER_CENTER, name, font, Color32::from_rgb(255, 226, 160).gamma_multiply(alpha));
+        }
+    }
+}
+
 /// The violet of the wards round raid bosses, for the guardians and wards marked, see guardians.rs
 const WARD_COLOR: Color32 = Color32::from_rgb(205, 165, 255);
 
@@ -398,6 +456,34 @@ pub fn draw_map(ctx: &egui::Context, map: &mut Map, marks: &Marks) {
         painter.text(at + vec2(0.0, 15.0), Align2::CENTER_CENTER, text, FontId::proportional(13.0), Color32::from_black_alpha(200));
         painter.text(at + vec2(0.0, 14.0), Align2::CENTER_CENTER, text, FontId::proportional(13.0), color);
     };
+    // The roads, a pale track edged dark, cut off at the edge of the map, then the towns and
+    // castles they join, by name, see worldgen\roads.rs
+    let clip = painter.with_clip_rect(rect.shrink(1.0));
+    let tracks: Vec<Vec<Pos2>> = image.roads.iter().map(|road| road.iter().step_by(3).chain(road.last()).map(|p| to_screen([p[0] as f64, p[1] as f64])).collect()).collect();
+    for (width, color) in [(4.5f32, Color32::from_black_alpha(150)), (2.2, Color32::from_rgb(228, 206, 160))] {
+        for track in &tracks {
+            clip.add(Shape::line(track.clone(), Stroke::new(width, color)));
+        }
+    }
+    for (spot, name, castle) in &image.places {
+        let at = to_screen([spot[0] as f64, spot[1] as f64]);
+        if !inside(at) {
+            continue;
+        }
+        let ink = Color32::from_rgb(250, 246, 232);
+        if *castle {
+            // A tower with battlements
+            painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 1.0), vec2(10.0, 11.0)), 0.0, Color32::from_black_alpha(200));
+            painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 1.5), vec2(7.0, 8.0)), 0.0, ink);
+            for dx in [-3.0, 0.0, 3.0] {
+                painter.rect_filled(Rect::from_center_size(at + vec2(dx, -4.0), vec2(2.0, 3.0)), 0.0, ink);
+            }
+        } else {
+            painter.circle_filled(at, 6.0, Color32::from_black_alpha(200));
+            painter.circle_filled(at, 4.0, ink);
+        }
+        label(at, name, ink);
+    }
     if let Some((spot, name)) = marks.gate {
         let at = to_screen(spot);
         if inside(at) {

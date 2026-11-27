@@ -154,6 +154,18 @@ impl Kind {
         }
     }
 
+    /// The pin over it on the map: how big, and how light, the lightest for where people live, dark
+    /// for where what's to be feared is
+    pub fn pin(self) -> (f32, u8) {
+        match self {
+            Kind::Town | Kind::CaveTown | Kind::Castle | Kind::Gate | Kind::Portal => (4.5, 250),
+            Kind::FallenCastle | Kind::RaidBoss(..) | Kind::Finale(..) | Kind::DragonLair => (4.5, 20),
+            Kind::Guardian(_) | Kind::Crypt | Kind::Undercity => (3.5, 20),
+            Kind::Camp(_) => (3.5, 120),
+            _ => (3.0, 190),
+        }
+    }
+
     /// Whether it's a town or a castle, which have names, see far()
     fn named(self) -> Option<bool> {
         match self {
@@ -205,11 +217,10 @@ pub struct Map {
 
 /// The roads over the land within the square `across` meters across round `middle`, and the
 /// towns and castles in it with their names, for the map: each road as the points along it in
-/// meters, and each place where its middle is, its name, and whether it's a castle. None until
-/// worldgen has roads, see worldgen\roads.rs on the roads branch, whose map_roads() is this.
+/// meters, and each place where its middle is, its name, and whether it's a castle, see
+/// worldgen\roads.rs. Worked out if they haven't been, which can take a second or two.
 fn roads_near(settings: &TerrainSettings, middle: [f32; 2], across: f32) -> (Vec<Vec<[f32; 2]>>, Vec<([f32; 2], String, bool)>) {
-    let _ = (settings, middle, across);
-    (Vec::new(), Vec::new())
+    worldgen::map_roads(settings, middle, across)
 }
 
 /// How much further round than the map reaches the roads and the named towns and castles are
@@ -362,11 +373,16 @@ pub fn far(map: &Map, stale: &dyn Fn() -> bool) -> Option<Far> {
     let (roads, named) = roads_near(&map.settings, map.player, across * FAR_ACROSS);
     let half = across * 0.5;
     let on_map = |at: [f32; 2]| (at[0] - map.player[0]).abs() < half && (at[1] - map.player[1]).abs() < half;
-    let mut beyond: Vec<Place> = named
-        .iter()
-        .filter(|(at, ..)| !on_map(*at))
-        .map(|(at, name, castle)| Place { kind: if *castle { Kind::Castle } else { Kind::Town }, name: Some(name.clone()), at: *at })
-        .collect();
+    // The nearest town and the nearest castle of those named, if they're off the map
+    let mut beyond: Vec<Place> = Vec::new();
+    for castle in [false, true] {
+        let nearest = named.iter().filter(|(_, _, c)| *c == castle).min_by(|a, b| distance(a.0, map.player).total_cmp(&distance(b.0, map.player)));
+        if let Some((at, name, _)) = nearest
+            && !on_map(*at)
+        {
+            beyond.push(Place { kind: if castle { Kind::Castle } else { Kind::Town }, name: Some(name.clone()), at: *at });
+        }
+    }
     // Till then, or where there are no roads, the nearest of each kind by itself, if it's not on the
     // map already: there may be none on the land for kilometers
     if named.is_empty() && !matches!(worldgen::land_of(map.settings.seed), worldgen::Land::Dream | worldgen::Land::Water | worldgen::Land::Dragon | worldgen::Land::Sky) {
@@ -684,8 +700,33 @@ mod tests {
         }
         let square = named.land.column(named.land.columns([60.0, 40.0])).unwrap();
         assert_eq!(named.land.stand(square), Stand::Square);
-        // Till roads are, none
-        assert!(roads_near(&SETTINGS, [0.0, 0.0], 500.0).0.is_empty());
+    }
+
+    #[test]
+    fn the_towns_and_castles_are_called_what_the_signposts_call_them() {
+        // Round where Free Roam starts, as far off as the roads are looked for
+        let settings = TerrainSettings { voxels_per_meter: 1, ..SETTINGS };
+        let middle = worldgen::FREE_ROAM_START;
+        let across = ACROSS as f32 * CELL * FAR_ACROSS;
+        let (roads, named) = roads_near(&settings, middle, across);
+        assert!(!roads.is_empty() && !named.is_empty(), "{} roads, {} places", roads.len(), named.len());
+        let wanted = Wanted { settings, at: Some(middle), realm: None, caption: String::new(), saved: false };
+        let map = build(&wanted);
+        let far = far(&map, &|| false).unwrap();
+        let map = map.with(&far);
+        // Those named on the map by the names worldgen gives them, the rest pointed to from its edge
+        for (at, name, _) in &named {
+            if let Some(place) = map.places.iter().find(|p| p.name.as_ref() == Some(name)) {
+                assert!(distance(place.at, *at) < 70.0, "{name}");
+                assert_eq!(map.under(map.land.columns(place.at)).0, *name);
+            }
+        }
+        for place in &map.far {
+            let name = place.name.as_ref().expect("named");
+            assert!(named.iter().any(|(_, n, _)| n == name), "{name}");
+            assert!(map.under_far(place).starts_with("the nearest "), "{}", map.under_far(place));
+        }
+        assert!(!map.far.is_empty() || map.places.iter().any(|p| p.name.is_some()));
     }
 
     #[test]

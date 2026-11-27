@@ -1387,6 +1387,22 @@ impl Backdrop {
         let fade = |c: Color32| c.gamma_multiply(alpha * phase.rise.clamp(0.0, 1.0));
         // North, off the plate's edge
         painter.text(land.on_plate(view, (0.0, half + 1.6)), Align2::CENTER_CENTER, "N", crate::theme::display(13.0), fade(crate::theme::WEAK));
+        // A pin over each place, a little diamond on a fine stem, as they spring up
+        let pinned = smoothstep(phase.grow);
+        let mut pins = Vec::new();
+        if pinned > 0.0 {
+            for place in &map.places {
+                let Some(column) = land.column(land.columns(place.at)) else { continue };
+                let Some(top) = land.top_of(view, phase, column, Some(&self.touch), 0.0) else { continue };
+                let (size, light) = place.kind.pin();
+                let tip = top - vec2(0.0, (10.0 + view.scale * 1.2) * pinned);
+                painter.line_segment([top, tip], Stroke::new(1.0f32, fade(Color32::from_white_alpha(120)).gamma_multiply(pinned)));
+                let points = vec![tip + vec2(0.0, -size), tip + vec2(size * 0.8, 0.0), tip + vec2(0.0, size), tip + vec2(-size * 0.8, 0.0)];
+                let edge = if light < 128 { Color32::from_gray(235) } else { Color32::from_black_alpha(200) };
+                painter.add(Shape::convex_polygon(points, fade(Color32::from_gray(light)).gamma_multiply(pinned), Stroke::new(1.0f32, fade(edge).gamma_multiply(pinned))));
+                pins.push((tip, place));
+            }
+        }
         // Further off, a mark at the plate's edge the way each is
         let pointer = self.touch.pointer();
         let mut named: Option<(Pos2, String, String)> = None;
@@ -1400,6 +1416,14 @@ impl Backdrop {
             if hot {
                 named = Some((at, place.title(), map.under_far(place)));
             }
+        }
+        // A pin the mouse is on, for the place under it
+        if named.is_none()
+            && let Some(p) = pointer
+            && let Some((tip, place)) = pins.iter().filter(|(tip, _)| (*tip - p).length() < 9.0).min_by(|a, b| (a.0 - p).length().total_cmp(&(b.0 - p).length()))
+        {
+            let (title, about) = map.under(land.columns(place.at));
+            named = Some((*tip, title, about));
         }
         // What's under the mouse, over it
         if named.is_none()

@@ -5995,6 +5995,8 @@ impl App {
         self.update_render_images(window_size.into());
         // What the map beside the menu's to show, as the menu was last frame, see loading::Backdrop
         let map_wanted = self.backdrop.as_ref().filter(|_| self.menu_open && !self.started).map(|_| self.map_wanted());
+        // For the signposts' words, see compass.rs
+        let landscape = self.terrain_settings();
         let rcx = self.rcx.as_mut().unwrap();
 
         let acquiring = Instant::now();
@@ -6137,6 +6139,7 @@ impl App {
                     self.cycle.hud(&ctx, raid_note.as_deref());
                 }
                 night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
+                compass::draw_signposts(&ctx, &view, &self.world, &landscape);
                 building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
                 hearths::hud(&ctx, hearth_note.as_deref());
                 // A merchant's stall closed, or walked away from: back to playing

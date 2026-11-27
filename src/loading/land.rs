@@ -575,8 +575,10 @@ impl Land {
 
             // A tree on it, in the woods, once the grass is growing
             let woods = self.woods[k];
-            if !wet && r >= 1.0 && woods > 0.0 && stand == Stand::Nothing && hash(i as u32, j as u32, 3) < woods * 0.55 {
-                let size = ease_out_back(((phase.grow * 1.25 - hash(i as u32, j as u32, 4)) / 0.25).clamp(0.0, 1.0));
+            // Fewer, and smaller, on the map, so what's built on it stands out
+            let (thick, big) = if self.cell > CELL_M { (0.28, 0.75) } else { (0.55, 1.0) };
+            if !wet && r >= 1.0 && woods > 0.0 && stand == Stand::Nothing && hash(i as u32, j as u32, 3) < woods * thick {
+                let size = big * ease_out_back(((phase.grow * 1.25 - hash(i as u32, j as u32, 4)) / 0.25).clamp(0.0, 1.0));
                 if size > 0.0 {
                     let side = 0.3 * size;
                     let (ox, oy) = ((hash(i as u32, j as u32, 5) - 0.5) * 0.3, (hash(i as u32, j as u32, 6) - 0.5) * 0.3);
