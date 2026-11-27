@@ -263,17 +263,19 @@ impl App {
     /// what E does at it
     pub(super) fn hearth_note(&self) -> Option<String> {
         let piece = self.hearth_looked_at()?;
+        // The key as it's bound, see bindings.rs
+        let e = crate::bindings::key(crate::bindings::Action::Interact);
         Some(if piece.fuel > 0.0 {
             let roast = if self.game.holding_raw_fish() {
-                "E  cook the fish"
+                "cook the fish"
             } else if self.game.holding_raw_meat() {
-                "E  roast the meat"
+                "roast the meat"
             } else {
-                "E  add a log"
+                "add a log"
             };
-            format!("Fire burning, {} left\n{roast} ({} wood)", minutes(piece.fuel), self.bases.materials.wood)
+            format!("Fire burning, {} left\n{e}  {roast} ({} wood)", minutes(piece.fuel), self.bases.materials.wood)
         } else {
-            format!("Fireplace, unlit\nE  light it with a log ({} wood)", self.bases.materials.wood)
+            format!("Fireplace, unlit\n{e}  light it with a log ({} wood)", self.bases.materials.wood)
         })
     }
 

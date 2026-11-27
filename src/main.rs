@@ -68,6 +68,7 @@ mod audio;
 mod avians;
 mod baked;
 mod bases;
+mod bindings;
 mod building;
 mod bosses;
 mod camera;
@@ -1521,6 +1522,8 @@ struct App {
     /// The wards round raid bosses breaking, see guardians.rs
     wards: guardians::Wards,
     show_settings: bool,
+    /// The keys every action's on, and their Controls window, see bindings.rs
+    keys: bindings::Keys,
     inventory_open: bool,
     /// The skill web's window is open, over everything, the world held still behind it, see skills.rs
     skills_open: bool,
@@ -2933,6 +2936,25 @@ impl App {
             setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(preset.sun_shafts),
             setting("sun_shafts_strength").and_then(|v| v.parse().ok()).unwrap_or(1.0),
         );
+        // The keys, kept in %LOCALAPPDATA%\Innert\keys.txt; screenshot runs play on the ones they
+        // had to begin with and keep them only with `--set keys=<file>`. `--set controls=1` opens
+        // their window, `rebind=jump:G` puts that action on that key as the window does, and
+        // `rebinding=jump` has it waiting for a key for one, see bindings.rs
+        let keys = {
+            let mut keys = bindings::Keys::new(setting("keys").map(PathBuf::from).or_else(|| capture.is_none().then(bindings::kept_file)));
+            keys.open = flag("controls", false);
+            // `--set controls_scroll=900` that far down its list
+            keys.scroll_to = setting("controls_scroll").and_then(|v| v.parse().ok());
+            if let Some((action, key)) = setting("rebind").and_then(|v| v.split_once(':'))
+                && let (Some(action), Some(key)) = (bindings::Action::by_id(action), bindings::Input::parse(key))
+            {
+                keys.bind(action, 0, key);
+            }
+            if let Some(action) = setting("rebinding").and_then(bindings::Action::by_id) {
+                keys.change(action, 0);
+            }
+            keys
+        };
 
         let mut app = App {
             device,
@@ -3077,6 +3099,7 @@ impl App {
             wards: guardians::Wards::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
+            keys,
             // `--set inventory=1` shows the inventory, to see how it looks
             inventory_open: flag("inventory", false),
             skills_open: flag("skills", false),
@@ -3309,6 +3332,17 @@ impl App {
         if let Some(rcx) = &self.rcx {
             grab_cursor(&rcx.window, focused);
         }
+    }
+
+    /// Whether one of `action`'s keys went down this frame, as the Controls window has them, see
+    /// bindings.rs
+    fn pressed(&self, action: bindings::Action) -> bool {
+        self.keys.map.pressed(&self.input, action)
+    }
+
+    /// Whether one of `action`'s keys is held down
+    fn held(&self, action: bindings::Action) -> bool {
+        self.keys.map.held(&self.input, action)
     }
 
     /// Takes the lights and props of what the world's made of, `landscape`, in its voxels: every
@@ -4380,8 +4414,16 @@ impl App {
         // Screenshot runs from the command line ignore input, so they always show the same view
         let interactive = self.capture.is_none();
 
-        if interactive && self.input.key_pressed(KeyCode::Escape) && !editor::is_app() {
-            if self.session.gate_open {
+        // A key being changed in the Controls window takes what's pressed, Esc too, and nothing
+        // else does meanwhile, see bindings.rs
+        let rebinding = interactive && self.keys.take(&self.input);
+        if interactive && !rebinding && self.input.key_pressed(KeyCode::Escape) && !editor::is_app() {
+            if self.keys.open {
+                self.keys.close();
+                if !self.menu_open && !self.inventory_open {
+                    self.set_focus(true);
+                }
+            } else if self.session.gate_open {
                 self.session.gate_action = Some(session::GateAction::Close);
             } else if self.skills_open {
                 self.skills_open = false;
@@ -4411,8 +4453,10 @@ impl App {
                 self.save_game(false);
             }
         }
-        let playing = interactive && !self.menu_open;
-        if playing && !self.game.shopping() && !self.skills_open && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
+        use bindings::Action;
+        // Nor while the Controls window's open, the world held still behind it
+        let playing = interactive && !self.menu_open && !self.keys.open;
+        if playing && !self.game.shopping() && !self.skills_open && self.pressed(Action::Inventory) {
             self.inventory_open = !self.inventory_open;
             self.set_focus(!self.inventory_open);
         }
@@ -4420,7 +4464,7 @@ impl App {
         if std::mem::take(&mut self.skills_closed) {
             self.set_focus(true);
         }
-        if playing && !self.game.shopping() && self.loaded_scene.is_terrain() && self.input.key_pressed(KeyCode::KeyP) {
+        if playing && !self.game.shopping() && self.loaded_scene.is_terrain() && self.pressed(Action::Skills) {
             self.skills_open = !self.skills_open;
             self.inventory_open = false;
             self.set_focus(!self.skills_open);
@@ -4432,10 +4476,10 @@ impl App {
             self.set_focus(false);
         }
         let playing = playing && !self.editor.open;
-        if playing && self.input.key_pressed(KeyCode::F1) {
+        if playing && self.pressed(Action::Settings) {
             self.show_settings = !self.show_settings;
         }
-        if playing && self.input.key_pressed(KeyCode::KeyM) {
+        if playing && self.pressed(Action::Map) {
             self.toggle_map();
         }
 
@@ -4454,14 +4498,14 @@ impl App {
             if building {
             } else if armed {
                 controls = combat::Controls {
-                    attack: self.input.mouse_pressed(MouseButton::Left),
-                    holding: self.input.mouse_held(MouseButton::Left),
-                    heavy: self.input.mouse_pressed(MouseButton::Right),
-                    aiming: self.input.mouse_held(MouseButton::Right),
-                    special: self.input.key_pressed(KeyCode::KeyR) || self.input.mouse_pressed(MouseButton::Middle),
-                    reload: self.input.key_pressed(KeyCode::KeyQ),
+                    attack: self.pressed(Action::Attack),
+                    holding: self.held(Action::Attack),
+                    heavy: self.pressed(Action::Heavy),
+                    aiming: self.held(Action::Heavy),
+                    special: self.pressed(Action::Special),
+                    reload: self.pressed(Action::Reload),
                 };
-            } else if self.input.mouse_pressed(MouseButton::Left) {
+            } else if self.pressed(Action::Attack) {
                 if bucket {
                     self.scoop_water(eye, look);
                 } else if self.game.holding_hook() && !self.game.has_target() {
@@ -4471,31 +4515,27 @@ impl App {
                     self.game.primary(eye);
                 }
             }
-            if self.input.key_pressed(KeyCode::KeyT) {
+            if self.pressed(Action::Ammo) {
                 self.game.switch_ammo();
             }
             // Building, E mends what's damaged
-            if self.input.key_pressed(KeyCode::KeyE) && building {
+            if self.pressed(Action::Mend) && building {
                 self.mend_here();
-            } else if self.input.key_pressed(KeyCode::KeyE) && !self.door_here() && !self.furnace_here() && !self.hearth_here() {
+            } else if self.pressed(Action::Interact) && !building && !self.door_here() && !self.furnace_here() && !self.hearth_here() {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
                 if self.game.shopping() {
                     self.set_focus(false);
                 }
             }
-            if self.input.mouse_pressed(MouseButton::Right) && !armed && !building {
+            if self.pressed(Action::Heavy) && !armed && !building {
                 if self.game.holding_bucket() {
                     self.pour_water(eye, look);
                 } else {
                     self.game.eat_selected();
                 }
             }
-            let digits = [
-                KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5,
-                KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
-            ];
-            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)).filter(|_| !building) {
+            if let Some(slot) = self.keys.map.hotbar_pressed(&self.input).filter(|_| !building) {
                 self.game.select(slot);
             }
             // On foot the wheel goes through what's carried, flying it zooms
@@ -4599,7 +4639,7 @@ impl App {
             {
                 println!("DIED at frame {}: {}", capture.frame_times.len(), self.game.last_message().unwrap_or(""));
             }
-            let rise = (interactive && self.focused && (self.input.key_pressed(KeyCode::Space) || self.input.mouse_pressed(MouseButton::Left)))
+            let rise = (interactive && self.focused && (self.pressed(Action::Jump) || self.pressed(Action::Attack)))
                 || (self.capture.is_some() && self.game.dead_for() > 4.0);
             if self.game.can_rise() && rise {
                 let spot = self.game.rise();
@@ -4638,7 +4678,7 @@ impl App {
             }
         }
 
-        if playing && self.input.key_pressed(KeyCode::KeyF) {
+        if playing && self.pressed(Action::Fly) {
             self.player = match self.player {
                 Some(_) => None,
                 None => Some(Player::new(camera_to_voxels(self.camera.position, self.world.size), &self.world)),
@@ -4648,8 +4688,8 @@ impl App {
         // The grappling hook hauling the player along its rope, which jump lets go of, wings
         // spread while jump's held in the air, and the winds bringing the player back after a
         // fall below the sky isles, see rope.rs
-        let jump_held = self.focused && interactive && !self.game.dead() && self.input.key_held(KeyCode::Space);
-        let let_go = self.focused && interactive && self.input.key_pressed(KeyCode::Space);
+        let jump_held = self.focused && interactive && !self.game.dead() && self.held(Action::Jump);
+        let let_go = self.focused && interactive && self.pressed(Action::Jump);
         self.update_hook(delta_time.min(0.05), let_go);
         self.update_fall();
         let gliding = self.gliding(jump_held || self.session.trial_glides());
@@ -4660,14 +4700,17 @@ impl App {
         // wings.rs. Worn on the back, they leave the hands free for what's in them.
         // A flap is jump pressed in the air, a dash Shift, for wings that do
         let tried = self.session.trial_flaps();
-        let shift = self.focused && interactive && (self.input.key_pressed(KeyCode::ShiftLeft) || self.input.key_pressed(KeyCode::ShiftRight));
+        let shift = self.focused && interactive && self.pressed(Action::Run);
         self.update_wings(delta_time.min(0.05), gliding, let_go || tried, shift || tried);
         // The realm's raid bosses warded while its guardians stand, see guardians.rs
         self.update_guardians(delta_time.min(0.05));
 
         // The dead don't walk
         let alive = !self.game.dead();
-        let t = |k: KeyCode| (self.focused && interactive && alive && self.input.key_held(k)) as u8 as f64;
+        let t = |a: Action| (self.focused && interactive && alive && self.keys.map.held(&self.input, a)) as u8 as f64;
+        // Which way they're walking, and whether they jump, as the keys have it
+        let walk = if self.focused && interactive && alive { self.keys.map.walk(&self.input) } else { bindings::Walk::default() };
+        let running = self.focused && self.held(Action::Run);
         let mut footstep = None;
         // Nor does anyone while the world's built afresh round them, see stream.rs
         let held = self.held_still();
@@ -4678,7 +4721,7 @@ impl App {
             let yaw = self.camera.rotation.z;
             let forward = Vector2::new(-yaw.sin(), yaw.cos());
             let right = Vector2::new(yaw.cos(), yaw.sin());
-            let mut wish = forward * (t(KeyCode::KeyW) - t(KeyCode::KeyS)) + right * (t(KeyCode::KeyD) - t(KeyCode::KeyA));
+            let mut wish = forward * walk.forward + right * walk.right;
             if self.scripted_walk && alive {
                 wish = forward;
             }
@@ -4687,8 +4730,8 @@ impl App {
             }
             // Slowed by frost
             wish *= self.game.pace();
-            let jump = t(KeyCode::Space) > 0.0;
-            let sprint = alive && (self.focused && self.input.held_shift() || self.scripted_sprint);
+            let jump = walk.jump;
+            let sprint = alive && (running || self.scripted_sprint);
             // Long hitches, like generating a world, shouldn't fling the player through the floor
             let water = &self.water;
             let before = player.position;
@@ -4737,10 +4780,9 @@ impl App {
             self.wake = None;
             self.walk_speed = 0.0;
             if self.focused && interactive {
-                let v = Vector3::new(KeyCode::KeyD, KeyCode::KeyW, KeyCode::KeyQ).map(t)
-                    - Vector3::new(KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyE).map(t);
+                let v = Vector3::new(t(Action::Right) - t(Action::Left), t(Action::Forward) - t(Action::Back), t(Action::FlyUp) - t(Action::FlyDown));
 
-                let sprint = if self.input.held_shift() { 4.0 } else { 1.0 };
+                let sprint = if running { 4.0 } else { 1.0 };
                 let step = (self.camera.rotation_matrix() * v.push(0.0) * delta_time * self.move_speed * sprint).xyz();
                 // No faster out to the edge of the world than it moves on, see stream.rs
                 let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
@@ -6156,6 +6198,15 @@ impl App {
                 }
             }
 
+            // The Controls window, over the menu or the game, see bindings.rs; shut while playing,
+            // the mouse is taken back
+            if self.keys.open {
+                self.keys.window(&ctx);
+                if !self.keys.open && !self.menu_open && !self.inventory_open && self.capture.is_none() {
+                    focus_change = Some(true);
+                }
+            }
+
             if !self.show_settings {
                 return;
             }
@@ -6166,10 +6217,17 @@ impl App {
                         ui.selectable_value(&mut self.render_mode, mode, format!("{:?}", mode));
                     }
                 });
+                // The keys as they're bound, changed in the Controls window, see bindings.rs
+                use bindings::{Action as A, key, keys_together};
+                if ui.button(RichText::new("Controls").size(15.0)).clicked() {
+                    self.keys.open = true;
+                    focus_change = Some(false);
+                }
+                let wasd = keys_together(&[A::Forward, A::Left, A::Back, A::Right]);
                 ui.label(if self.player.is_some() {
-                    "Walking: WASD to move, Space to jump or swim up, Shift to run, F to fly. With wings on, hold Space in the air to glide."
+                    format!("Walking: {wasd} to move, {} to jump or swim up, {} to run, {} to fly. With wings on, hold {} in the air to glide.", key(A::Jump), key(A::Run), key(A::Fly), key(A::Jump))
                 } else {
-                    "Flying: WASDQE to move, Shift to go faster, F to walk"
+                    format!("Flying: {} to move, {} to go faster, {} to walk", keys_together(&[A::Forward, A::Left, A::Back, A::Right, A::FlyUp, A::FlyDown]), key(A::Run), key(A::Fly))
                 });
                 ui.separator();
                 // Sets the render scale and the lighting below, and is kept for next time
@@ -6189,7 +6247,7 @@ impl App {
                 ui.add(
                     egui::Slider::new(&mut self.move_speed, 0.01..=4.0)
                         .logarithmic(true)
-                        .text("Move Speed (hold Shift to go faster)"),
+                        .text(format!("Move Speed (hold {} to go faster)", key(A::Run))),
                 );
 
                 egui::CollapsingHeader::new("Lighting")

@@ -22,6 +22,8 @@ pub enum MenuAction {
     Continue(Mode),
     New(Mode),
     Settings,
+    /// The keys, in a window of their own, see bindings.rs
+    Controls,
     Quit,
 }
 
@@ -1195,6 +1197,7 @@ impl App {
                 self.session.creator = Some(crate::character::creator::Creator::new(mode, seed));
             }
             MenuAction::Settings => self.show_settings = !self.show_settings,
+            MenuAction::Controls => self.keys.open = true,
             MenuAction::Quit => {
                 self.save_game(true);
                 event_loop.exit();
@@ -1429,9 +1432,18 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         }
     }
     ui.add_space(18.0);
-    if big(ui, if show_settings { "Hide Settings" } else { "Settings" }).clicked() {
-        picked = Some(MenuAction::Settings);
-    }
+    // Settings, lit while they're shown, and the keys beside them, see bindings.rs
+    ui.horizontal(|ui| {
+        ui.add_space((ui.available_width() - 260.0).max(0.0) * 0.5);
+        let half = [126.0, 44.0];
+        if ui.add_sized(half, egui::Button::new(RichText::new("Settings").font(theme::display(17.0))).selected(show_settings)).clicked() {
+            picked = Some(MenuAction::Settings);
+        }
+        ui.add_space(8.0);
+        if ui.add_sized(half, egui::Button::new(RichText::new("Controls").font(theme::display(17.0)))).clicked() {
+            picked = Some(MenuAction::Controls);
+        }
+    });
     ui.add_space(8.0);
     if big(ui, "Quit").clicked() {
         picked = Some(MenuAction::Quit);

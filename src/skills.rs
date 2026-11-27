@@ -493,7 +493,7 @@ pub fn window(ctx: &egui::Context, web: &Web, view: &mut View, taken: &[bool], f
         painter.text(
             pos2(rect.center().x, rect.bottom() - 16.0),
             Align2::CENTER_BOTTOM,
-            "Click a lit node next to one taken to take it  ·  right click to give it back  ·  drag to look about, scroll to come closer  ·  P or Esc to close",
+            format!("Click a lit node next to one taken to take it  ·  right click to give it back  ·  drag to look about, scroll to come closer  ·  {} or Esc to close", crate::bindings::key(crate::bindings::Action::Skills)),
             FontId::proportional(14.0),
             crate::theme::WEAK,
         );
