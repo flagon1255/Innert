@@ -452,7 +452,8 @@ pub fn craft_tab(ui: &mut egui::Ui, crafting: &Crafting, best: &dyn Fn(Tool) -> 
     ui.set_min_width(900.0);
     let carried: Vec<String> = m.parts().iter().map(|(r, n)| format!("{n} {}", r.name().to_lowercase())).collect();
     ui.label(RichText::new(format!("Carried:  {}", if carried.is_empty() { "nothing yet".to_owned() } else { carried.join("   ") })).strong());
-    ui.label(RichText::new("Hold G at what you want to gather. Bare hands gather most things; the best tool you carry for it is used and makes it quicker, and the hardest stone and ore need a good enough one. Smelt ore and sand at a furnace (E). Each tool crafted rolls a rarity: the rarer, the more it does.").weak().small());
+    let key = crate::bindings::key;
+    ui.label(RichText::new(format!("Hold {} at what you want to gather. Bare hands gather most things; the best tool you carry for it is used and makes it quicker, and the hardest stone and ore need a good enough one. Smelt ore and sand at a furnace ({}). Each tool crafted rolls a rarity: the rarer, the more it does.", key(crate::bindings::Action::Gather), key(crate::bindings::Action::Interact))).weak().small());
     ui.add_space(6.0);
     // As tall as there's room for under the quick bar, at most 560
     let room = (ui.ctx().screen_rect().height() - 310.0).clamp(160.0, 560.0);

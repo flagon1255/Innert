@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use egui_winit_vulkano::egui::{Align2, Color32, FontId, Pos2, Stroke, pos2, vec2};
 
 use crate::bases::{self, BLOCK, Bases, Kind, Materials, Piece, Res};
+use crate::bindings::{self, Action};
 use crate::gather::{self, Yield};
 use crate::pieces::TABS;
 use crate::tools::{self, Gear, Tool};
@@ -210,25 +211,24 @@ impl App {
         if self.held_still() {
             return false;
         }
-        if self.input.key_pressed(KeyCode::KeyB) {
+        if self.pressed(Action::Build) {
             self.toggle_building();
         }
         // Holding G gathers what's looked at
-        if self.input.key_held(KeyCode::KeyG) {
-            self.gather_hold(dt, self.input.key_pressed(KeyCode::KeyG));
+        if self.held(Action::Gather) {
+            self.gather_hold(dt, self.pressed(Action::Gather));
         }
         if !self.building.on {
             return false;
         }
         // C goes on to the next tab of pieces, shift and C back
-        if self.input.key_pressed(KeyCode::KeyC) {
-            let back = self.input.key_held(KeyCode::ShiftLeft) || self.input.key_held(KeyCode::ShiftRight);
+        if self.pressed(Action::NextTab) {
+            let back = self.held(Action::Run);
             self.pick_tab((self.building.tab as i64 + if back { -1 } else { 1 }).rem_euclid(TABS.len() as i64) as usize);
         }
         // The pieces of the tab, and the gate or a portal home after them where they can be built
         let entries = self.tab_entries();
-        let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9, KeyCode::Digit0, KeyCode::Minus];
-        if let Some(k) = digits.iter().position(|&k| self.input.key_pressed(k)) {
+        if let Some(k) = self.keys.map.piece_pressed(&self.input) {
             self.pick(entries[k.min(entries.len() - 1)]);
         }
         let wheel = self.input.scroll_diff().1;
@@ -236,13 +236,13 @@ impl App {
             let at = entries.iter().position(|&e| e == self.building.picked).unwrap_or(0) as i64;
             self.pick(entries[(at + if wheel < 0.0 { 1 } else { -1 }).rem_euclid(entries.len() as i64) as usize]);
         }
-        if self.input.key_pressed(KeyCode::KeyR) {
+        if self.pressed(Action::Turn) {
             self.building.turn = (self.building.turn + 1) % 4;
         }
-        if self.input.mouse_pressed(MouseButton::Left) {
+        if self.pressed(Action::Place) {
             self.build_here();
         }
-        if self.input.mouse_pressed(MouseButton::Right) {
+        if self.pressed(Action::TakeDown) {
             self.take_down_here();
         }
         true
@@ -330,15 +330,17 @@ impl App {
             self.game.say("Stopped building.");
             return;
         }
-        self.game.say("Building: pick a piece, click to build it. B to stop.");
+        let key = bindings::key;
+        self.game.say(format!("Building: pick a piece, {} to build it. {} to stop.", key(Action::Place).to_lowercase(), key(Action::Build)));
+        let pieces = format!("{}–{}, {}", key(Action::Piece(0)), key(Action::Piece(8)), key(Action::Piece(9)));
         self.hint(
             Hint::Build,
             "Building",
             vec![
-                "C: the next tab of pieces, by what they're made of. 1–9, 0 or the wheel: pick a piece. What it costs is beside it, greyed out till you have enough.".into(),
-                "Click: build it where the outline shows, green if it fits, red saying why not.".into(),
-                "Right click: take down what you built, and get it all back.".into(),
-                "R: turn it  ·  E: open a door, or mend  ·  G: gather  ·  B: stop building".into(),
+                format!("{}: the next tab of pieces, by what they're made of. {pieces} or the wheel: pick a piece. What it costs is beside it, greyed out till you have enough.", key(Action::NextTab)),
+                format!("{}: build it where the outline shows, green if it fits, red saying why not.", key(Action::Place)),
+                format!("{}: take down what you built, and get it all back.", key(Action::TakeDown)),
+                format!("{}: turn it  ·  {}: mend  ·  {}: gather  ·  {}: stop building", key(Action::Turn), key(Action::Mend), key(Action::Gather), key(Action::Build)),
             ],
         );
         self.short_hint();
@@ -638,7 +640,11 @@ impl App {
         let (hit, normal) = gather::raycast_by(&self.world, eye, look, reach_m * vpm, |m| !worldgen::is_passable(m) || crate::materials::is_crop(m)).ok_or(None)?;
         let block = self.block_of(hit);
         if let Some(piece) = self.bases.piece_at(block) {
-            return Err(Some(if piece.kind.player_built() { "That's built: take it down while building (B), with a right click." } else { "The gate's old foundation stones won't budge." }.into()));
+            return Err(Some(if piece.kind.player_built() {
+                format!("That's built: take it down while building ({}), with {}.", bindings::key(Action::Build), bindings::key(Action::TakeDown).to_lowercase())
+            } else {
+                "The gate's old foundation stones won't budge.".into()
+            }));
         }
         let material = self.world.material_at(hit[0], hit[1], hit[2]);
         let kind = gather::yield_of(material);
@@ -753,7 +759,7 @@ impl App {
             }
         }
         if gives.wood > 0 {
-            self.hint(Hint::Wood, "Wood", vec!["Wood builds walls, floors, doors, stairs and torches, and feeds a fire.".into(), "Press B to build, and C there for the tabs of pieces.".into()]);
+            self.hint(Hint::Wood, "Wood", vec!["Wood builds walls, floors, doors, stairs and torches, and feeds a fire.".into(), format!("Press {} to build, and {} there for the tabs of pieces.", bindings::key(Action::Build), bindings::key(Action::NextTab))]);
         }
     }
 
@@ -1236,8 +1242,8 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         let busy = working.is_some_and(|g| g.key == p.key && building.since_blow < 0.3);
         let line = match (busy, gives) {
             (true, _) => format!("{}…", verb[1]),
-            (false, Some(gives)) => format!("Hold G — {} ({gives})", verb[0]),
-            (false, None) => format!("Hold G — {} (gives nothing)", verb[0]),
+            (false, Some(gives)) => format!("Hold {} — {} ({gives})", bindings::key(Action::Gather), verb[0]),
+            (false, None) => format!("Hold {} — {} (gives nothing)", bindings::key(Action::Gather), verb[0]),
         };
         let at = c + vec2(0.0, 36.0);
         if gives.is_some() {
@@ -1316,7 +1322,8 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
     painter.rect(list, 4.0, Color32::from_rgba_unmultiplied(6, 6, 6, 196), Stroke::new(1.0f32, crate::theme::EDGE), egui::StrokeKind::Inside);
     crate::theme::accent(&painter, list, 1.0);
     painter.text(pos2(x, y - 14.0), Align2::LEFT_CENTER, "Building", crate::theme::blackletter(21.0), crate::theme::HEADING);
-    painter.text(pos2(x + width - 14.0, y - 14.0), Align2::RIGHT_CENTER, "C next tab  ·  B to stop", FontId::proportional(12.0), crate::theme::WEAK);
+    let key = bindings::key;
+    painter.text(pos2(x + width - 14.0, y - 14.0), Align2::RIGHT_CENTER, format!("{} next tab  ·  {} to stop", key(Action::NextTab), key(Action::Build)), FontId::proportional(12.0), crate::theme::WEAK);
     let cell = (width - 14.0) / 3.0;
     for (k, (title, kinds)) in TABS.iter().enumerate() {
         let at = pos2(x + (k % 3) as f32 * cell, y + (k / 3) as f32 * 26.0 + 2.0);
@@ -1347,8 +1354,8 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         let color = if afford { Color32::from_gray(if picked { 255 } else { 205 }) } else { grey };
         // The gate in white, being what all of it's for
         let color = if index >= Kind::ALL.len() && afford { crate::theme::HEADING } else { color };
-        let key = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-"].get(k).copied().unwrap_or(" ");
-        painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{key}  {name}"), FontId::proportional(14.0), color);
+        let on = if k < bindings::PIECE_KEYS { key(Action::Piece(k as u8)) } else { " ".into() };
+        painter.text(pos2(x, y + 14.0), Align2::LEFT_CENTER, format!("{on}  {name}"), FontId::proportional(14.0), color);
         // What it costs, from the right: each in its colour if there's enough of it, grey if not
         let mut cx = x + width - 14.0;
         for (res, n) in cost.parts().into_iter().rev() {
@@ -1362,8 +1369,8 @@ pub fn hud(building: &Building, bases: &Bases, ghost: Option<&Ghost>, gate: Opti
         }
         y += 26.0;
     }
-    painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, "Click build  ·  Right click take down  ·  C tab", FontId::proportional(12.5), crate::theme::WEAK);
-    painter.text(pos2(x, y + 34.0), Align2::LEFT_CENTER, "R turn  ·  Wheel pick  ·  E door, mend, smelt  ·  G gather", FontId::proportional(12.5), crate::theme::WEAK);
+    painter.text(pos2(x, y + 16.0), Align2::LEFT_CENTER, format!("{} build  ·  {} take down  ·  {} tab", key(Action::Place), key(Action::TakeDown), key(Action::NextTab)), FontId::proportional(12.5), crate::theme::WEAK);
+    painter.text(pos2(x, y + 34.0), Align2::LEFT_CENTER, format!("{} turn  ·  Wheel pick  ·  {} mend  ·  {} gather", key(Action::Turn), key(Action::Mend), key(Action::Gather)), FontId::proportional(12.5), crate::theme::WEAK);
 
     // Where it'd go: a box round it, green if it can, red if not, and why not
     let Some(ghost) = ghost else {

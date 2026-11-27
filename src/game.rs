@@ -1092,6 +1092,12 @@ pub struct Game {
     body_colours: [u32; crate::character::body::PIECES],
 }
 
+/// How to glide, with the jump key as it's bound, see bindings.rs: "jump, then hold Space in the
+/// air to glide"
+fn glide_tip() -> String {
+    format!("jump, then hold {} in the air to glide", crate::bindings::words(crate::bindings::Action::Jump))
+}
+
 /// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
 /// whether they're gliding, and have been for a moment, how ready their move in the air is, from
 /// 0 to 1, with how it's done, and what their perk's doing, if it's worth saying
@@ -4403,7 +4409,7 @@ impl Game {
                         // The first wings seen for sale, how they're worn
                         if !self.wings_told && self.sells_wings(key) {
                             self.wings_told = true;
-                            self.say("Wings for sale! Bought, they're put on your back: jump, then hold Space in the air to glide.");
+                            self.say(format!("Wings for sale! Bought, they're put on your back: {}.", glide_tip()));
                         }
                     }
                 } else if look == Look::RoyalGuard {
@@ -4573,7 +4579,11 @@ impl Game {
         self.milestone = true;
         self.wings_told = true;
         let name = wings::KINDS[k as usize].name;
-        self.say(if worn { format!("You put on the {name}: jump, then hold Space in the air to glide.") } else { format!("The {name} are in your pack: press I and Wear them to change wings.") });
+        self.say(if worn {
+            format!("You put on the {name}: {}.", glide_tip())
+        } else {
+            format!("The {name} are in your pack: press {} and Wear them to change wings.", crate::bindings::key(crate::bindings::Action::Inventory))
+        });
     }
 
     /// Whether the player's trading with a merchant, or talking to one
@@ -6047,7 +6057,7 @@ impl Game {
         }
         self.inspected = None;
         self.cues.push(Cue::here(Sound::Equip, 0.8));
-        self.say(format!("You put on the {}: jump, then hold Space in the air to glide.", wings::KINDS[k as usize].name));
+        self.say(format!("You put on the {}: {}.", wings::KINDS[k as usize].name, glide_tip()));
     }
 
     /// Takes off the wings worn, into the pack
@@ -6613,33 +6623,36 @@ impl Game {
 
     /// What to do with what the crosshair is on. What's lying about has a card of its own instead.
     fn target_hint(&self) -> Option<String> {
+        // Said with the keys as they're bound, see bindings.rs
+        let e = crate::bindings::key(crate::bindings::Action::Interact);
+        let click = crate::bindings::key(crate::bindings::Action::Attack);
         let Some(target) = self.target else {
             let shrine = self.feet.and_then(|feet| self.shrine_near(feet))?;
-            return Some(if shrine.gate { "E  the Innert Gate" } else { "E  the portal home" }.into());
+            return Some(if shrine.gate { format!("{e}  the Innert Gate") } else { format!("{e}  the portal home") });
         };
         match target {
             Target::Pickup(_) => None,
-            Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
+            Target::Chest(i) => Some(if self.chests[i].hoard { format!("{e}  open the bandits' hoard") } else { format!("{e}  open the chest") }),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
                 Some(if let Some(trade) = crate::merchants::Trade::of_look(look) {
-                    format!("E  talk to the {}", trade.title().to_lowercase())
+                    format!("{e}  talk to the {}", trade.title().to_lowercase())
                 } else if look == Look::Merchant {
-                    "E  trade with the merchant".to_owned()
+                    format!("{e}  trade with the merchant")
                 } else if look == Look::Princess {
-                    "E  trade with the princess".to_owned()
+                    format!("{e}  trade with the princess")
                 } else if look == Look::RoyalGuard {
-                    "E  talk to the guard".to_owned()
+                    format!("{e}  talk to the guard")
                 } else if look.is_villager() {
-                    "E  talk to the villager".to_owned()
+                    format!("{e}  talk to the villager")
                 } else if look.is_pet() {
-                    format!("E  pet the {}", look.name())
+                    format!("{e}  pet the {}", look.name())
                 } else if crate::animals::sealife::is_fish(look) && !self.holding_weapon() {
-                    format!("Click  catch the {}", look.name())
+                    format!("{click}  catch the {}", look.name())
                 } else if self.holding_weapon() {
                     format!("Attack the {}", look.name())
                 } else {
-                    format!("Click  hunt the {}", look.name())
+                    format!("{click}  hunt the {}", look.name())
                 })
             }
         }
@@ -6742,7 +6755,7 @@ impl Game {
         };
         let Some(k) = self.worn_wings() else {
             if self.dead.is_none() && self.slots.iter().any(|(i, _)| matches!(i, Item::Wings(_))) {
-                say(panel.bottom() + 6.0, "Wings in your pack: I, then Wear", 13.0, theme::HEADING.gamma_multiply(pulse));
+                say(panel.bottom() + 6.0, &format!("Wings in your pack: {}, then Wear", crate::bindings::key(crate::bindings::Action::Inventory)), 13.0, theme::HEADING.gamma_multiply(pulse));
             }
             return;
         };
@@ -6762,7 +6775,13 @@ impl Game {
             let back = Rect::from_min_size(pos2(rect.left(), under), vec2(slot, 4.0));
             painter.rect_filled(back, 2.0, Color32::from_white_alpha(30));
             painter.rect_filled(Rect::from_min_size(back.min, vec2(slot * ready, 4.0)), 2.0, if ready >= 1.0 { tint } else { faint });
-            say(under + 7.0, how, 11.0, if ready >= 1.0 { Color32::WHITE } else { faint });
+            // Named by the key it's on now, see bindings.rs
+            let how = match how.split_once("  ") {
+                Some(("Shift", what)) => format!("{}  {what}", crate::bindings::key(crate::bindings::Action::Run)),
+                Some(("Space", what)) => format!("{}  {what}", crate::bindings::key(crate::bindings::Action::Jump)),
+                _ => how.to_owned(),
+            };
+            say(under + 7.0, &how, 11.0, if ready >= 1.0 { Color32::WHITE } else { faint });
             under += 22.0;
         }
         if let Some(note) = aloft.note {
@@ -6771,7 +6790,8 @@ impl Game {
         }
         // Till they've glided once, how to
         if !self.glided && !self.covered {
-            say(under, "Jump, then hold Space in the air to glide", 14.0, theme::HEADING.gamma_multiply(pulse));
+            let tip = glide_tip();
+            say(under, &(tip[..1].to_uppercase() + &tip[1..]), 14.0, theme::HEADING.gamma_multiply(pulse));
         }
     }
 
@@ -7027,7 +7047,8 @@ impl Game {
                     ui.set_width(290.0);
                     self.item_card(ui, item, 1);
                     ui.add_space(4.0);
-                    ui.label(RichText::new(if matches!(item, Item::Weapon(_)) { "E  take it" } else { "E  pick it up" }).strong().color(Color32::WHITE));
+                    let e = crate::bindings::key(crate::bindings::Action::Interact);
+                    ui.label(RichText::new(if matches!(item, Item::Weapon(_)) { format!("{e}  take it") } else { format!("{e}  pick it up") }).strong().color(Color32::WHITE));
                 });
             });
         }
@@ -7056,7 +7077,7 @@ impl Game {
             if let Some(n) = item.shown(count) {
                 theme::shadowed(&painter, rect.right_bottom() - vec2(5.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(13.0), Color32::WHITE);
             }
-            theme::key_number(&painter, rect, &(i + 1).to_string());
+            theme::key_number(&painter, rect, &crate::bindings::hotbar_tab(i));
         }
 
         // Each bar framed, with how much there is on it
@@ -7092,7 +7113,7 @@ impl Game {
         painter.text(purse + vec2(1.0, 1.0), Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), shadow);
         painter.text(purse, Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), GOLD);
         if self.slots.len() > HOTBAR {
-            let more = format!("+{} in the pack  ·  I", self.slots.len() - HOTBAR);
+            let more = format!("+{} in the pack  ·  {}", self.slots.len() - HOTBAR, crate::bindings::key(crate::bindings::Action::Inventory));
             painter.text(pos2(panel.left() + 12.0, panel.bottom() + 6.0), Align2::LEFT_TOP, more, FontId::proportional(12.0), faint);
         }
         self.wings_hud(&painter, panel, slot, pad);
@@ -7248,7 +7269,8 @@ impl Game {
             }
             if self.can_rise() {
                 let pulse = 0.65 + 0.35 * (self.combat.time() * 3.0).sin() as f32;
-                let prompt = if self.rest.is_some() { "Space  rise again where you last stood safe" } else { "Space  rise again" };
+                let jump = crate::bindings::key(crate::bindings::Action::Jump);
+                let prompt = if self.rest.is_some() { format!("{jump}  rise again where you last stood safe") } else { format!("{jump}  rise again") };
                 painter.text(pos2(center.x, band.bottom() + 40.0), Align2::CENTER_CENTER, prompt, FontId::proportional(18.0), Color32::from_white_alpha((pulse * 220.0) as u8));
             }
         } else if self.down < DOWN_SECONDS {
@@ -7307,7 +7329,7 @@ impl Game {
                     }
                     None => (format!("Plain {}  ∞", shot.plural()), faint),
                 };
-                let text = if others { format!("{text}   ·   T") } else { text };
+                let text = if others { format!("{text}   ·   {}", crate::bindings::key(crate::bindings::Action::Ammo)) } else { text };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &text, FontId::proportional(14.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &text, FontId::proportional(14.0), tint);
                 below += 20.0;
@@ -7316,7 +7338,8 @@ impl Game {
             if let Some((special, _)) = &weapon.profile.special {
                 let charge = self.combat.charge as f32;
                 let ready = charge >= 1.0;
-                let label = if ready { format!("R — {} ready!", special.name()) } else { format!("R — {}", special.name()) };
+                let r = crate::bindings::key(crate::bindings::Action::Special);
+                let label = if ready { format!("{r} — {} ready!", special.name()) } else { format!("{r} — {}", special.name()) };
                 let tint = if ready { color(rarity.color) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(14.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(14.0), tint);
@@ -7327,7 +7350,8 @@ impl Game {
             if let Some(power) = weapon.profile.power {
                 let ready = (1.0 - self.combat.power_cooldown() / power.cooldown()).clamp(0.0, 1.0) as f32;
                 let name = power.name(weapon.profile.element);
-                let label = if ready >= 1.0 { format!("Right click — {name} ready") } else { format!("Right click — {name}") };
+                let heavy = crate::bindings::key(crate::bindings::Action::Heavy);
+                let label = if ready >= 1.0 { format!("{heavy} — {name} ready") } else { format!("{heavy} — {name}") };
                 let tint = if ready >= 1.0 { weapon.profile.element.map_or(color(rarity.color), |e| color(e.color())) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(13.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(13.0), tint);
@@ -7487,9 +7511,12 @@ impl Game {
                     });
                 });
                 ui.separator();
-                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Censer: hold to swing it, a cloud billowing out.").weak().small());
-                ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
-                ui.label(RichText::new("Wings go on your back, above: jump, then hold Space in the air to glide; some flap with Space, some dash with Shift. Every merchant sells a pair, and bosses and chests leave them.").weak().small());
+                // Said with the keys as they're bound, see bindings.rs
+                use crate::bindings::{Action as A, words};
+                let (click, right) = (words(A::Attack), words(A::Heavy));
+                ui.label(RichText::new(format!("Melee: {click} to swing, three in a row for a combo, {right} for a heavy blow. Bow: hold {right} to draw, {click} to shoot. Crossbow or gun: {click} to shoot, it reloads once empty, {right} or {} reloads early. {} switches ammo. Staff, scepter or wand: {click} to cast. Orb: hold for a beam. Tome: {click} to conjure. Totem: {click} to hex. Censer: hold to swing it, a cloud billowing out.", words(A::Reload), words(A::Ammo))).weak().small());
+                ui.label(RichText::new(format!("{}: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.", words(A::Special))).weak().small());
+                ui.label(RichText::new(format!("Wings go on your back, above: {}; some flap with {}, some dash with {}. Every merchant sells a pair, and bosses and chests leave them.", glide_tip(), words(A::Jump), words(A::Run))).weak().small());
                 });
                 });
             });
@@ -7566,7 +7593,7 @@ impl Game {
                     theme::shadowed(painter, rect.right_bottom() - vec2(4.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(12.0), Color32::WHITE);
                 }
                 if i < HOTBAR {
-                    theme::key_number(painter, rect, &(i + 1).to_string());
+                    theme::key_number(painter, rect, &crate::bindings::hotbar_tab(i));
                 }
                 // No card while something's being dragged about, it'd only get in the way
                 let card = |ui: &mut egui::Ui| {
@@ -7575,7 +7602,8 @@ impl Game {
                     if selling && item != Item::Bucket {
                         ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
                     } else {
-                        ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
+                        let (first, last) = (crate::bindings::key(crate::bindings::Action::Hotbar(0)), crate::bindings::key(crate::bindings::Action::Hotbar(HOTBAR as u8 - 1)));
+                        ui.label(RichText::new(format!("Drag it to another slot, or press {first} to {last} for the quick bar. Right click to hold it or eat it.")).weak().small());
                     }
                 };
                 let response = if dragging {
@@ -7626,8 +7654,9 @@ impl Game {
             return Some(SlotClick::Moved(*from, i));
         }
         if response.hovered() {
-            let keys = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9];
-            if let Some(k) = keys.iter().position(|&key| ui.input(|input| input.key_pressed(key))).filter(|&k| k != i) {
+            // The quick bar's keys, as they're bound, see bindings.rs
+            let keys = crate::bindings::hotbar_egui_keys();
+            if let Some(k) = keys.iter().position(|&key| key.is_some_and(|key| ui.input(|input| input.key_pressed(key)))).filter(|&k| k != i) {
                 return Some(SlotClick::Moved(i, k));
             }
         }
@@ -7804,7 +7833,7 @@ impl Game {
                 ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
                 ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
                 if let Some((lift, wait)) = kind.flap {
-                    ui.label(RichText::new(format!("Press Space in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s")).color(good));
+                    ui.label(RichText::new(format!("Press {} in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s", crate::bindings::words(crate::bindings::Action::Jump))).color(good));
                 }
                 if let Some((perk, [r, g, b])) = wings::perk_text(kind.perk) {
                     theme::bullet(ui, "★", theme::ACCENT, &perk, Color32::from_rgb(r, g, b), "", theme::TEXT);
@@ -7812,7 +7841,8 @@ impl Game {
                 ui.label(RichText::new(kind.about).italics());
                 ui.separator();
                 let worn = self.worn == Some(k);
-                ui.label(RichText::new(if worn { "Worn on your back. Jump, then hold Space in the air to glide." } else { "Worn on the back: jump, then hold Space in the air to glide. Kept for good once found." }).weak());
+                let tip = glide_tip();
+                ui.label(RichText::new(if worn { format!("Worn on your back. {}{}.", tip[..1].to_uppercase(), &tip[1..]) } else { format!("Worn on the back: {tip}. Kept for good once found.") }).weak());
                 ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
                 return;
             }
