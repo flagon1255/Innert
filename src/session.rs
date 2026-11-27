@@ -1381,8 +1381,8 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         let now = started && playing == Some(mode);
         ui.label(RichText::new(mode.name()).font(theme::blackletter(26.0)).color(theme::HEADING));
         let about = match mode {
-            Mode::FreeRoam => "The endless wilderness, on any seed",
-            Mode::Realms => "A journey from the normal world through the realms",
+            Mode::FreeRoam => "Free to explore",
+            Mode::Realms => "Travel through different worlds, each with its own challenges",
         };
         ui.label(RichText::new(about).size(13.0).color(gray));
         ui.add_space(4.0);
@@ -1473,39 +1473,6 @@ pub fn menu_window(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// How to play, under the menu
-pub fn menu_help(ui: &mut egui::Ui) {
-    ui.add_space(18.0);
-    ui.label(
-        RichText::new(
-            "WASD move · Space jump · Shift run · F fly\n\
-             Click swing or cast · bow: hold right click, click to shoot\n\
-             Crossbow, gun: click to shoot, Q or right click reloads · T ammo\n\
-             Right click heavy swing, or eat · E pick up, open, trade, pet\n\
-             Legendary: R special · right click its power, Q reloads\n\
-             Number keys pick what's in hand · I inventory · M map\n\
-             Wings: jump, then hold Space in the air to glide\n\
-             Merchants sell wings; bosses and chests leave them\n\
-             F1 settings · Esc menu",
-        )
-        .size(13.0)
-        .color(theme::WEAK),
-    );
-    // Gathering and building, see building.rs
-    ui.add_space(10.0);
-    theme::heading(ui, "Gathering and building", 15.0);
-    ui.label(
-        RichText::new(
-            "Hold G at a tree, rock or clay to gather it\n\
-             Bare hands work; tools are 2–4× faster (I › Craft)\n\
-             B build · 1–9, 0 pick a piece, its cost beside it\n\
-             Click build · right click take down · R turn",
-        )
-        .size(13.0)
-        .color(theme::WEAK),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1524,7 +1491,6 @@ mod tests {
                 let _ = ctx.run(input.clone(), |ctx| {
                     menu_window(ctx, |ui| {
                         menu(&mut ModeMenu::default(), ui, true, Some(Mode::Realms), &saves, &mut 7, false);
-                        menu_help(ui);
                         end = ui.label("end").rect;
                     });
                 });
