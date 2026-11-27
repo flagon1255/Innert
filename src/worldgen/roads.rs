@@ -1322,7 +1322,7 @@ fn bridge(b: &Bridge) -> Object {
         for side in [-1.0f32, 1.0] {
             s.push(Shape::beam(point(middle, side * (b.half + 0.25), deck + 0.1), [u, v, up], [half_long, 0.25, 0.8], BRICK_STONE, MOSS));
         }
-        s.push(Shape::beam(point(middle, 0.0, deck - 0.35), [u, v, up], [half_long, b.half, 0.35], CUT_STONE, STONE));
+        s.push(Shape::beam(point(middle, 0.0, deck - 0.35), [u, v, up], [half_long, b.half, 0.35], CUT_STONE, STONE).placed(Placement::Clear));
         let piers = ((length - 4.0) / 7.0).floor().max(0.0) as usize;
         for k in 1..=piers {
             let a = length * k as f32 / (piers + 1) as f32;
@@ -1334,7 +1334,8 @@ fn bridge(b: &Bridge) -> Object {
         let mut k = 0;
         while a < end - 0.05 {
             let m = if k % 3 == 1 { WOOD } else { PLANK_PINE };
-            s.push(Shape::beam(point(a + 0.15, 0.0, deck - 0.06), [u, v, up], [0.15, b.half + 0.12, 0.06], m, AIR));
+            // Over the ground where a bank comes up level with it, so it's not lost under the grass
+            s.push(Shape::beam(point(a + 0.15, 0.0, deck - 0.06), [u, v, up], [0.15, b.half + 0.12, 0.06], m, AIR).placed(Placement::Clear));
             a += 0.34;
             k += 1;
         }
