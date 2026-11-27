@@ -663,26 +663,25 @@ impl Combat {
     }
 
     /// How one of the dead raised is drawn: a skeleton, climbing up out of the ground, walking and
-    /// striking, and sinking back into it as it crumbles; and its eyes' glow over its head
+    /// striking, and sinking back into it as it crumbles, in the baked frame nearest how it's posed,
+    /// see combat\raised.rs, where game.rs poses it live near the camera; and its eyes' glow over its
+    /// head. The game draws each among the animals, see Game::instances(); this is for the tests.
+    #[cfg(test)]
     pub(in crate::combat) fn risen_instances(&self, f: &Familiar, r: &Risen, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
-        let vpm = view.vpm;
-        // A grave brute's as tall again as a skeleton
-        let height = if r.look == Look::GraveBrute { 3.3 } else { 1.9 } * vpm;
-        let rising = (r.age / RISE_SECONDS).clamp(0.0, 1.0);
-        let sinking = (f.life / CRUMBLE_SECONDS).clamp(0.0, 1.0);
-        let shown = rising.min(sinking);
-        if shown <= 0.0 {
-            return;
+        if let Some(body) = self.raised_body(f, r, view) {
+            out.push((body.distance, body.frame));
         }
-        let ease = 1.0 - (1.0 - shown) * (1.0 - shown);
-        let feet = f.position - Vector3::new(0.0, 0.0, (1.0 - ease) * height);
-        let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), r.heading);
-        let instance = crate::animals::posed_instance(r.look, feet, rotation, r.moving.then_some(r.phase), r.swing, vpm as u32);
-        out.push(((f.position - view.eye).norm(), instance.tinted(if f.life < 2.0 && (f.life * 8.0).fract() < 0.5 { TINT_HIT } else { TINT_NONE })));
-        // The glow of what raised it, hanging in its chest
+        self.risen_glow(f, r, view, out);
+    }
+
+    /// The glow of what raised one of the dead, hanging in its chest
+    pub(in crate::combat) fn risen_glow(&self, f: &Familiar, r: &Risen, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
+        let vpm = view.vpm;
+        let Some(body) = self.raised_body(f, r, view) else { return };
+        let shown = (r.age / RISE_SECONDS).clamp(0.0, 1.0).min((f.life / CRUMBLE_SECONDS).clamp(0.0, 1.0));
         let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(Element::Blood)));
-        let chest = feet + Vector3::new(0.0, 0.0, 1.25 * vpm);
-        out.push(((chest - view.eye).norm(), place(model, ball, MODEL_RES, Vector3::zeros(), chest, rotation, vpm, 0.05 * shown, MOVING)));
+        let chest = body.feet + body.turn * Vector3::new(0.0, 0.0, 1.25 * vpm);
+        out.push(((chest - view.eye).norm(), place(model, ball, MODEL_RES, Vector3::zeros(), chest, body.turn, vpm, 0.05 * shown, MOVING)));
     }
 }
 

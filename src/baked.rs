@@ -1436,6 +1436,31 @@ pub fn live_range() -> f64 {
     LIVE.load(Ordering::Relaxed) as f64
 }
 
+/// How quickly one coming near enough to be posed live eases into it from its baked frame, or
+/// out of it into its baked frame as it goes, see Rig::live_from(): the share of the way a second
+pub const LIVE_FADE: f64 = 4.0;
+
+/// How much something posed live, `live` of the way from its baked frame, is posed live `dt`
+/// seconds on, easing into it if it's `wanted` posed live and out of it if not
+pub fn fade_live(live: f64, wanted: bool, dt: f64) -> f64 {
+    if wanted { (live + LIVE_FADE * dt).min(1.0) } else { (live - LIVE_FADE * dt).max(0.0) }
+}
+
+/// How many pieces `look` is drawn in posed live, see Rig::draw_live(): 0 if it can't be
+pub fn live_pieces(look: Look) -> usize {
+    if !posable(look) {
+        return 0;
+    }
+    rig(look).map_or(0, |r| r.pieces.iter().filter(|p| p.model.size != [1, 1, 1]).count())
+}
+
+/// How far the furthest moved of the pieces shown in both `a` and `b` goes from one to the other,
+/// in meters, a turn counted as far as the end of a limb half a meter long goes
+#[cfg(test)]
+pub(crate) fn furthest(a: &[Pose], b: &[Pose]) -> f64 {
+    a.iter().zip(b).filter(|(p, q)| p.shown && q.shown).map(|(p, q)| (p.at - q.at).norm() + 0.5 * p.turn.angle_to(&q.turn)).fold(0.0, f64::max)
+}
+
 /// Which looks have frames replaced outright by files, `<look>/walk_03.vox` and the like, by KINDS:
 /// they're drawn in those, as the files have them, never posed live
 static REPLACED: Mutex<Vec<bool>> = Mutex::new(Vec::new());
@@ -1628,6 +1653,22 @@ impl Rig {
         };
         self.fidget(&mut out, doing);
         out
+    }
+
+    /// The same, `live` of the way from how it's posed in its baked frame `frame`, 0 to 1, eased
+    /// in and out: so something coming near enough to be posed live eases into it from the frame
+    /// it was drawn in, and out of it into the frame it'll be drawn in, rather than snapping
+    pub fn live_from(&self, doing: &Doing, frame: usize, live: f64) -> Vec<Pose> {
+        let out = self.live(doing);
+        if live >= 1.0 {
+            return out;
+        }
+        let posed = posed(self);
+        let w = live.clamp(0.0, 1.0);
+        match posed.get(frame).and_then(|p| p.as_deref()) {
+            Some(baked) if baked.len() == out.len() => blend(&self.bones, baked, &out, w * w * (3.0 - 2.0 * w)),
+            _ => out,
+        }
     }
 
     /// Townsfolk and merchants never quite still: breathing, their arms going out and in with it and
@@ -1972,11 +2013,6 @@ mod tests {
         Doing { phase, stride, pose, ..Default::default() }
     }
 
-    /// How far the furthest moved of the pieces shown in both `a` and `b` goes from one to the other,
-    /// in meters, a turn counted as far as the end of a limb half a meter long goes
-    fn furthest(a: &[Pose], b: &[Pose]) -> f64 {
-        a.iter().zip(b).filter(|(p, q)| p.shown && q.shown).map(|(p, q)| (p.at - q.at).norm() + 0.5 * p.turn.angle_to(&q.turn)).fold(0.0, f64::max)
-    }
 
     /// Posed live at the moments its frames were baked for, every look is posed as it is in those
     /// frames: standing, every frame of its walk, each pose it strikes, and each frame between
@@ -2039,6 +2075,36 @@ mod tests {
                     }
                     println!("{look:?}: from {a} to {b}, at most {worst:.4} m a moment, {apart:.4} m from frame to frame");
                     assert!(worst <= apart / 100.0 * 2.5 + 1e-4, "{look:?} from {a} to {b} jumps {worst:.4} m, its frames {apart:.4} m apart");
+                }
+            }
+        }
+    }
+
+    /// Easing into being posed live from its baked frame, and out again, nothing jumps: at the
+    /// start it's as its frame has it, at the end as it's posed live, and between no piece moves
+    /// much from one moment to the next, walking, standing about or striking
+    #[test]
+    fn easing_into_being_posed_live_goes_smoothly() {
+        for look in [Look::Villager, Look::Townswoman, Look::Merchant, Look::Wolf, Look::Skeleton, Look::GraveBrute] {
+            let rig = rig(look).unwrap();
+            let posed = posed(rig);
+            let mut cases = vec![(Doing { age: 3.0, gaze: [0.6, 0.2], talk: 1.0, seed: 4, ..Default::default() }, 0)];
+            if posed[1].is_some() {
+                cases.push((doing(0.33, 1.0, None), animals::walk_frame(0.33)));
+            }
+            if animals::shown_in(look, animals::POSE_WINDUP) {
+                let (path, _) = animals::tween_path(look, 0, animals::POSE_WINDUP, 0.0).unwrap();
+                cases.push((doing(0.0, 0.0, Some((path.clone(), 0.4))), path[2]));
+            }
+            for (d, frame) in cases {
+                assert!(alike(&rig.live_from(&d, frame, 0.0), posed[frame].as_deref().unwrap(), 1e-9), "{look:?} starts in its frame {frame}");
+                assert!(alike(&rig.live_from(&d, frame, 1.0), &rig.live(&d), 1e-9), "{look:?} ends posed live");
+                let mut last = rig.live_from(&d, frame, 0.0);
+                for k in 1..=60 {
+                    let now = rig.live_from(&d, frame, k as f64 / 60.0);
+                    let jump = furthest(&last, &now);
+                    assert!(jump < 0.03, "{look:?} easing in from frame {frame} jumps {jump:.3} m");
+                    last = now;
                 }
             }
         }

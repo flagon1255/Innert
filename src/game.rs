@@ -62,6 +62,41 @@ const MAX_INSTANCES: usize = 140;
 /// more than 256 by the tiles of the screen, and the hook's rope, wings and wards come after
 const LIVE_PIECES: usize = 110;
 const MOST_INSTANCES: usize = 224;
+/// Those already posed live are chosen to go on being as if they were this much nearer, see
+/// choose_near(), and go on being out to this much further than the rest are chosen
+const LIVE_STICK: f64 = 0.85;
+const LIVE_REACH: f64 = 1.05;
+/// The dead raised, among what's posed live, are by this on from the animals, see
+/// Game::choose_live()
+const RAISED_AT: usize = 1 << 20;
+
+/// Of `near`, each how far it is from the camera, how many pieces it's posed live in, how much it's
+/// posed live now, 0 to 1, and which it is, which are to be posed live, see Game::choose_live():
+/// the nearest within `range` of the camera, as many as LIVE_PIECES pieces between them. Those
+/// posed live already count as a little nearer, so two about as near don't change places back
+/// and forth, and keep their room till they've eased out of it, so one newly come near only starts
+/// to ease in once there's room enough for it as well as for every one still posed live.
+fn choose_near(near: &mut [(f64, usize, f64, usize)], range: f64) -> Vec<usize> {
+    let rank = |&(d, _, live, _): &(f64, usize, f64, usize)| if live > 0.0 { d * LIVE_STICK } else { d };
+    near.sort_by(|a, b| rank(a).total_cmp(&rank(b)));
+    let mut held: usize = near.iter().filter(|n| n.2 > 0.0).map(|n| n.1).sum();
+    let mut taken = 0;
+    let mut wanted = Vec::new();
+    for &(d, pieces, live, k) in near.iter() {
+        let within = if live > 0.0 { range * LIVE_REACH } else { range };
+        if d >= within || pieces == 0 || taken + pieces > LIVE_PIECES {
+            continue;
+        }
+        taken += pieces;
+        if live > 0.0 {
+            wanted.push(k);
+        } else if held + pieces <= LIVE_PIECES {
+            held += pieces;
+            wanted.push(k);
+        }
+    }
+    wanted
+}
 
 /// Those of `out` at `stand_ins` posed live, the first of each pair where its frame is in `out`
 /// and the second which it is, nearest first: each one's pieces from `pieces_of` put after the
@@ -2508,6 +2543,8 @@ impl Game {
             self.note_demis(feet, world.voxels_per_meter as f64);
         }
         self.reap(world);
+        // Who near the camera is posed live from their pieces, easing in and out of it
+        self.choose_live(view, dt);
         self.leaves.update(world, water, view.eye, dt);
         self.look_over_loot(world, player, view, dt);
 
@@ -6468,8 +6505,9 @@ impl Game {
                 // A fish is small, and the water's murky: only drawn near
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
                 creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
-                // Near enough, posed live from its pieces, see below
-                if d < crate::baked::live_range() * vpm && crate::baked::posable(animal.look) {
+                // Near enough, posed live from its pieces, or easing into it or out of it, see
+                // choose_live() and below
+                if animal.live > 0.0 && animal.posable() {
                     live.push((creatures.len() - 1, k));
                 }
                 // A serpent's tongue flicking, near enough to be seen
@@ -6477,6 +6515,17 @@ impl Game {
                     && let Some(tongue) = animal.tongue_instance(world.voxels_per_meter)
                 {
                     creatures.push((d, tongue));
+                }
+            }
+        }
+        // The dead the player's raised, among the rest, posed live as they are, see
+        // combat::raised.rs: by RAISED_AT on from the animals
+        let raised = self.combat.raised_bodies(view);
+        for (k, body) in raised.iter().enumerate() {
+            if body.distance < ANIMAL_RANGE * vpm {
+                creatures.push((body.distance, body.frame));
+                if body.live > 0.0 {
+                    live.push((creatures.len() - 1, RAISED_AT + k));
                 }
             }
         }
@@ -6589,8 +6638,51 @@ impl Game {
         // every frame, see baked::Rig::live(), nearest first, as many as there's room for. Their
         // pieces come last, seen only from the camera; each one's frame stays where it was among the
         // rest, standing in for it in its shadow and reflections, see animals::SEEN.
-        pose_live(&mut out, &stand_ins, &mut |k, pieces| self.animals[k].live_instances(world.voxels_per_meter, pieces));
+        pose_live(&mut out, &stand_ins, &mut |k, pieces| match k.checked_sub(RAISED_AT) {
+            Some(r) => raised[r].live_instances(pieces),
+            None => self.animals[k].live_instances(world.voxels_per_meter, pieces),
+        });
         out
+    }
+
+    /// Which of the townsfolk, merchants, monsters, animals and dead raised near the camera,
+    /// `view`, are posed live from their pieces, see baked::Rig::live(): the nearest within
+    /// baked::live_range(), as many as LIVE_PIECES pieces between them, each easing into it from
+    /// its baked frame and out of it again over a moment, see baked::fade_live(), rather than
+    /// snapping as it comes near enough or goes too far, or nearer ones crowd it out. Those already
+    /// posed live, or still easing out of it, keep their room till they're out of it, so one newly
+    /// come near only starts to ease in once there's room for it: never more than LIVE_PIECES
+    /// between them, so none is ever dropped all at once for want of room, see pose_live().
+    fn choose_live(&mut self, view: &View, dt: f64) {
+        let vpm = view.vpm;
+        let range = crate::baked::live_range() * vpm;
+        // How near each is, how many pieces it's drawn in, how much it's posed live now, and which
+        // it is: an animal, or by RAISED_AT on one of the dead raised
+        let mut near: Vec<(f64, usize, f64, usize)> = Vec::new();
+        for (k, a) in self.animals.iter().enumerate() {
+            if a.posable() {
+                near.push(((a.position - view.eye).norm(), crate::baked::live_pieces(a.look), a.live, k));
+            }
+        }
+        for body in self.combat.raised_bodies(view) {
+            if let Some(slot) = body.slot {
+                near.push((body.distance, crate::baked::live_pieces(body.look), body.live, RAISED_AT + slot));
+            }
+        }
+        let wanted: std::collections::HashSet<usize> = choose_near(&mut near, range).into_iter().collect();
+        let mut raised = Vec::new();
+        for &(_, _, _, k) in &near {
+            match k.checked_sub(RAISED_AT) {
+                Some(slot) if wanted.contains(&k) => raised.push(slot),
+                Some(_) => {}
+                None => self.animals[k].live = crate::baked::fade_live(self.animals[k].live, wanted.contains(&k), dt),
+            }
+        }
+        // Those that can't be posed live, as a merchant turned into something else, never are
+        for a in self.animals.iter_mut().filter(|a| a.live > 0.0 && !a.posable()) {
+            a.live = 0.0;
+        }
+        self.combat.pose_raised_live(&raised, dt);
     }
 
     /// Lights from the fighting, in the form main.rs keeps the world's lights in: brighter and
@@ -8620,6 +8712,46 @@ fn placed(model: u32, (m, anchor): &(Model, Vector3<f64>), res: f64, point: Vect
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Choosing who's posed live in a crowd: the nearest, as many as there's room for, none out of
+    /// range; one posed live keeps its place against one about as near, and a little past the
+    /// edge of the range; and one newly come near waits for its room while the one it crowds out
+    /// eases out of it, so there's never more than room for between them
+    #[test]
+    fn the_nearest_are_posed_live_with_room_kept_for_those_easing_out() {
+        let range = 40.0;
+        let n = LIVE_PIECES / 11;
+        // Twenty townsfolk of eleven pieces each, a meter apart from 2 m off, none posed live yet
+        let mut near: Vec<(f64, usize, f64, usize)> = (0..20).map(|k| (2.0 + k as f64, 11, 0.0, k)).collect();
+        assert_eq!(choose_near(&mut near, range), (0..n).collect::<Vec<_>>());
+        assert!(choose_near(&mut [(41.0, 11, 0.0, 0)], range).is_empty(), "none out of range");
+        assert_eq!(choose_near(&mut [(41.0, 11, 0.5, 0)], range), vec![0], "one posed live stays so a little past it");
+        // A crowd posed live keeps its places against one a little nearer than the furthest
+        let mut crowd: Vec<_> = (0..n).map(|k| (2.0 + k as f64, 11, 1.0, k)).collect();
+        crowd.push((n as f64 + 0.5, 11, 0.0, 99));
+        assert!(!choose_near(&mut crowd, range).contains(&99), "the crowd keeps its places");
+        // One much nearer crowds out the furthest, but waits to ease in till that's eased out
+        let mut crowd: Vec<_> = (0..n).map(|k| (10.0 + k as f64, 11, 1.0, k)).collect();
+        crowd.push((1.0, 11, 0.0, 99));
+        let wanted = choose_near(&mut crowd, range);
+        assert!(!wanted.contains(&(n - 1)) && !wanted.contains(&99), "the furthest eases out while the nearer waits: {wanted:?}");
+        let mut crowd: Vec<_> = (0..n).map(|k| (10.0 + k as f64, 11, if k + 1 == n { 0.0 } else { 1.0 }, k)).collect();
+        crowd.push((1.0, 11, 0.0, 99));
+        let wanted = choose_near(&mut crowd, range);
+        assert!(wanted.contains(&99) && !wanted.contains(&(n - 1)), "once it's out, the nearer's in: {wanted:?}");
+        // However they come and go, never more than room for posed live between them
+        let mut rng = 5u32;
+        let mut live: Vec<f64> = vec![0.0; 30];
+        for _ in 0..600 {
+            let mut near: Vec<_> = (0..30).map(|k| (random(&mut rng) * 50.0, 6 + k % 9, live[k], k)).collect();
+            let wanted = choose_near(&mut near, range);
+            for (k, l) in live.iter_mut().enumerate() {
+                *l = crate::baked::fade_live(*l, wanted.contains(&k), 1.0 / 60.0);
+            }
+            let held: usize = (0..30).filter(|&k| live[k] > 0.0).map(|k| 6 + k % 9).sum();
+            assert!(held <= LIVE_PIECES, "{held} pieces posed live");
+        }
+    }
 
     /// A crowded town square posed live: the nearest as many as there's room for, each one's frame
     /// standing in for it and its pieces after everything else, telling the shader where its
