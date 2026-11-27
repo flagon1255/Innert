@@ -305,7 +305,8 @@ impl Combat {
         let stretch = length / (scale * sx);
         let position = (a + b) * 0.5 - rotation * Vector3::new(0.0, 0.0, sz * 0.5 * scale);
         let reach = length * 0.5 + thick * vpm;
-        Some(AnimalInstance::new(model, position, rotation, scale, reach, MOVING).shaped([stretch, 1.0], [0.0; 4]))
+        // White-hot enough to be seen by day, see TINT_BOLT
+        Some(AnimalInstance::new(model, position, rotation, scale, reach, MOVING).shaped([stretch, 1.0], [0.0; 4]).tinted(crate::animals::TINT_BOLT))
     }
 }
 

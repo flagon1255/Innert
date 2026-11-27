@@ -3870,6 +3870,9 @@ pub const TINT_HIT: u32 = 6;
 /// Lit by its own light, as something hanging in the sky is: as clear by night as by day, and never
 /// faded into the sky with what's on the land as far off, as Blood Moon's moon
 pub const TINT_LIT: u32 = 7;
+/// Lightning: white-hot whatever light's on it, brighter the brighter the day round it so a bolt
+/// reads as clearly against sunlit ground as against the night, and never faded into the haze
+pub const TINT_BOLT: u32 = 8;
 
 /// One animal as traverse.comp reads it, see the Animal struct there
 #[derive(BufferContents, Clone, Copy)]
