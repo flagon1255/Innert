@@ -21,6 +21,8 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
      and the menu, no world behind them.)
    - Hover reveals colour (2026-11-27, "When i hover on the cubes, they should reveal real
      color"): grey at rest, the true surface colours fading in round the cursor and out behind it.
+   - Layout (2026-11-27, "Remove the point a place to name it drag to turn, also , move the menu
+     to left, and map to right"): no hint line; menu panel on the left, map on the right.
    - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
      it myself the text").
 
