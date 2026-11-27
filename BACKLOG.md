@@ -6,7 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-Four RUNNING (2026-11-27), each in `.claude\worktrees\<name>`.
+Five RUNNING (2026-11-27), each in `.claude\worktrees\<name>`.
 
 7. **More bosses, and bosses that don't get stuck** (2026-11-27, "add more bosses", "also dont
    let bosses to get stuck in holes, let them jump out", "add more demi bosses too"). RUNNING in
@@ -27,6 +27,9 @@ Four RUNNING (2026-11-27), each in `.claude\worktrees\<name>`.
     sometimes"). RUNNING in `cavecamps` from e438038f.
     - With sounds (2026-11-27, "we could add sounds"): fire crackle, camp murmurs, skeleton rattle,
       from the existing sound files.
+
+11. **Dropped items easier to find, shown as themselves** (2026-11-27, "also dropped item beams
+    should be easier findable, and their models could be actual models"). RUNNING in `lootdrops`.
 
 ## Loose ends (found along the way, not yet asked for)
 
