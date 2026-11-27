@@ -70,7 +70,6 @@ pub const SPECIALITIES: &[(&str, Trade)] = &[
     ("orb", Trade::Wandwright),
     ("tome", Trade::Wandwright),
     ("totem", Trade::Wandwright),
-    ("bell", Trade::Wandwright),
     ("battlestaff", Trade::Wandwright),
     ("rod", Trade::Wandwright),
     ("censer", Trade::Wandwright),

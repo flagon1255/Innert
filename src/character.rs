@@ -304,7 +304,7 @@ impl Class {
             Class::Mage => &["staff", "wand", "scepter", "tome", "dagger"],
             Class::Wanderer => &["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"],
             Class::Necromancer => &["skullfocus", "scythe", "tome", "dagger"],
-            Class::Priest => &["talisman", "hammer", "bell", "scepter"],
+            Class::Priest => &["talisman", "hammer", "censer", "scepter"],
             Class::Rogue => &["knives", "dagger", "katar", "chakram"],
         }
     }

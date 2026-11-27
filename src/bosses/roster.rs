@@ -207,7 +207,7 @@ pub(crate) fn skin(look: Look) -> Skin {
 }
 
 /// The kinds of weapon it leaves most of the time, as weapon families' ids, see bosses::taste():
-/// the smith's hammers and hand cannons, the tortoise's bombs, the widow's censers and bells, the
+/// the smith's hammers and hand cannons, the tortoise's bombs, the widow's censers and sceptres, the
 /// mare's whips and naginatas, the scorpion's katars, the ape's mauls and totems, the mammoth's
 /// heavy polearms and the sphinx's war fans and sceptres
 pub fn taste(look: Look) -> &'static [&'static str] {
@@ -217,7 +217,7 @@ pub fn taste(look: Look) -> &'static [&'static str] {
     match look {
         Look::Slagwright => &["hammer", "maul", "handcannon", "flail"],
         Look::Cinderback => &["bombs", "maul", "blunderbuss", "hammer"],
-        Look::LanternWidow => &["censer", "bell", "tome", "wand"],
+        Look::LanternWidow => &["censer", "scepter", "tome", "wand"],
         Look::Dreadmare => &["whip", "naginata", "scythe", "spear"],
         Look::Sunstinger => &["katar", "dagger", "whip", "crossbow"],
         Look::Grovemaul => &["maul", "totem", "axe", "hammer"],

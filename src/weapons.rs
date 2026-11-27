@@ -70,8 +70,6 @@ pub enum Style {
     Summon,
     /// A totem, casting slow hexes that home in and eat away at what they catch
     Hex,
-    /// A bell, rung harder the longer the button's held, its toll a shockwave all round
-    Toll,
     /// A battle staff, swung like a polearm, its finishing blow loosing a spell
     Glaive,
     /// A flail, whirled right round so its head sweeps through everything about, and brought down
@@ -842,7 +840,9 @@ impl Component {
     pub fn batch(&self) -> u32 {
         self.batch
     }
+}
 
+impl Component {
     /// Whether it fits a weapon of the family with id `family`
     pub fn fits(&self, family: &str) -> bool {
         self.compatible_families.iter().any(|f| f == family)
@@ -938,6 +938,11 @@ pub struct Library {
 }
 
 const BUILT_IN: &str = include_str!("../assets/weapons.json");
+
+/// Families taken out of the game: each one's id, the family a weapon of it from an older save
+/// comes back as, and the tags it had, for it to come back as rare as it was, see
+/// Library::retired(). Bells, which rang, come back as sceptres.
+const RETIRED: [(&str, &str, &[&str]); 1] = [("bell", "scepter", &["spell", "area", "knockback"])];
 
 /// The most seeds Library::special_seed() tries for a weapon with a special attack: as lucky as
 /// loot that's sure to have one is rolled, it's found in a few
@@ -1038,6 +1043,82 @@ impl Library {
 
     pub fn family(&self, id: &str) -> Option<usize> {
         self.families.iter().position(|f| f.id == id)
+    }
+
+    /// A weapon of a family since taken out of the game, saved as one of `family` made of `parts`,
+    /// as one of the family it's made as now, see RETIRED: the family, and its parts, those that
+    /// fit it kept and each of the rest swapped for one of the same slot and rarity that does,
+    /// picked by `seed`. If that leaves it rarer or less rare than it was, as the new family's tags
+    /// bring other synergies, as few of the rest as it takes are swapped for others of their
+    /// rarity too, so it comes back as rare as it was. None for a family that was never taken out.
+    pub fn retired(&self, family: &str, parts: &[usize], seed: u32) -> Option<(usize, Vec<usize>)> {
+        let &(_, now, tags) = RETIRED.iter().find(|r| r.0 == family)?;
+        let to = self.family(now)?;
+        let fam = &self.families[to];
+        let grade = |parts: &[usize], own: &[String], effects: &[usize]| {
+            let components: Vec<&Component> = parts.iter().map(|&p| &self.components[p]).collect();
+            let tags = Weapon::tags_of(self, own, effects, &components, Weapon::element_of(&components));
+            Weapon::grade_of(self, &components, self.synergies_for(&tags).len())
+        };
+        let was = grade(parts, &tags.iter().map(|&t| t.to_owned()).collect::<Vec<_>>(), &[]);
+        // For each part, the parts of its slot that fit and are of its rarity, or as near it as
+        // there are, starting from one picked by the seed: itself first if it fits
+        let mut options: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
+        for (k, &p) in parts.iter().enumerate() {
+            let part = &self.components[p];
+            let fitting = |c: &Component| c.fits(now) && c.slot_type == part.slot_type;
+            let nearest = self.components.iter().filter(|c| fitting(c)).map(|c| c.tier.abs_diff(part.tier)).min()?;
+            let mut could: Vec<usize> = (0..self.components.len()).filter(|&c| c != p && fitting(&self.components[c]) && self.components[c].tier.abs_diff(part.tier) == nearest).collect();
+            if !could.is_empty() {
+                let first = hash(seed ^ (k as u32).wrapping_mul(0x9e37_79b9)) as usize % could.len();
+                could.rotate_left(first);
+            }
+            if part.fits(now) {
+                could.insert(0, p);
+            }
+            options.push(could);
+        }
+        let misfits: Vec<bool> = parts.iter().map(|&p| !self.components[p].fits(now)).collect();
+        if misfits.iter().zip(&options).any(|(&m, o)| m && o.is_empty()) {
+            return None;
+        }
+        // Each way of swapping the parts that don't fit and as few of the rest as can be, the first
+        // that leaves it as rare as it was, or the first of all if none does in a good many tries
+        let first: Vec<usize> = options.iter().map(|o| o[0]).collect();
+        let mut tries = 0;
+        let mut masks: Vec<u32> = (0..1u32 << parts.len()).collect();
+        masks.sort_by_key(|m| m.count_ones());
+        for mask in masks {
+            // Each slot's choices: just its part, or what could take its place
+            let choices: Vec<&[usize]> = (0..parts.len())
+                .map(|k| match (mask >> k & 1 == 1, misfits[k]) {
+                    (false, false) => std::slice::from_ref(&parts[k]),
+                    (false, true) => &options[k][..],
+                    (true, false) => &options[k][1..],
+                    // A part that doesn't fit is swapped whatever
+                    (true, true) => &[][..],
+                })
+                .collect();
+            if choices.iter().any(|c| c.is_empty()) {
+                continue;
+            }
+            let ways: usize = choices.iter().map(|c| c.len()).product();
+            for mut way in 0..ways {
+                let mut out = Vec::with_capacity(parts.len());
+                for c in &choices {
+                    out.push(c[way % c.len()]);
+                    way /= c.len();
+                }
+                if grade(&out, &fam.synergy_tags, &fam.effect_defs) == was {
+                    return Some((to, out));
+                }
+                tries += 1;
+                if tries > 20_000 {
+                    return Some((to, first));
+                }
+            }
+        }
+        Some((to, first))
     }
 
     /// How likely each rarity is to roll for a part, from common up, the more likely the rarer
@@ -1844,7 +1925,7 @@ pub enum Power {
     Comet,
     /// A wand's, tome's or totem's: motes seeking out what's near
     Seekers,
-    /// An orb's, bell's or censer's: a ring of its element rolling out all round
+    /// An orb's or censer's: a ring of its element rolling out all round
     Nova,
     /// A war fan's: a whirling funnel of its element sent off along the ground, sweeping up what
     /// it passes and carrying it along, flinging it off at the end
@@ -2044,7 +2125,7 @@ impl Power {
             "bombs" => Power::Vortex,
             "staff" | "scepter" | "rod" => Power::Comet,
             "wand" | "tome" | "totem" => Power::Seekers,
-            "orb" | "bell" | "censer" => Power::Nova,
+            "orb" | "censer" => Power::Nova,
             "warfan" => Power::Gale,
             "katar" => Power::Fists,
             "naginata" => Power::BladeRing,
@@ -2490,6 +2571,43 @@ impl Weapon {
         (quality, quickness / heft.powf(0.8), forged)
     }
 
+    /// The element of a weapon made of `components`: the rarest part's that has one, the core or
+    /// crystal first
+    fn element_of(components: &[&Component]) -> Option<Element> {
+        let mut by_rarity: Vec<&Component> = components.to_vec();
+        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
+        by_rarity.iter().filter(|c| matches!(c.slot_type.as_str(), "core" | "crystal")).chain(by_rarity.iter()).find_map(|c| c.element)
+    }
+
+    /// The tags synergies come of on a weapon of a family with tags `own` and effects
+    /// `own_effects`, made of `components`, its element `element`: the family's, its parts', its
+    /// effects' and their elements', and its element's
+    fn tags_of(library: &Library, own: &[String], own_effects: &[usize], components: &[&Component], element: Option<Element>) -> BTreeSet<String> {
+        let mut tags: BTreeSet<String> = own.iter().cloned().collect();
+        tags.extend(components.iter().flat_map(|c| c.synergy_tags.iter().cloned()));
+        for &def in own_effects.iter().chain(components.iter().flat_map(|c| c.effect_defs.iter())) {
+            let e = &library.effects[def];
+            if e.effect.is_some() {
+                tags.extend(e.synergy_tags.iter().cloned());
+                tags.extend(e.element.map(|e| e.tag().to_owned()));
+            }
+        }
+        tags.extend(element.map(|e| e.tag().to_owned()));
+        tags
+    }
+
+    /// The grade of a weapon made of `components` with `synergies` synergies. It reflects how much
+    /// the weapon can do, not the average of its parts: rare parts and synergies add up, and one
+    /// very rare part lifts the whole weapon close to it. The parts count as if there were four,
+    /// so a crossbow's sight doesn't make it rarer.
+    fn grade_of(library: &Library, components: &[&Component], synergies: usize) -> usize {
+        let parts = components.len().max(1) as f64;
+        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies as f64;
+        let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
+        let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
+        by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1)
+    }
+
     /// What a weapon made of `components` from `seed`, `size` of SIZES big, does: its stats,
     /// effects and synergies, its tags, and its grade
     fn work_out(library: &Library, family: usize, components: &[&Component], size: usize, seed: u32) -> (Profile, BTreeSet<String>, usize) {
@@ -2547,14 +2665,7 @@ impl Weapon {
             }
         }
 
-        // The element comes from the highest rarity part that has one, the core or crystal first
-        let mut by_rarity: Vec<&Component> = components.to_vec();
-        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
-        let element = by_rarity
-            .iter()
-            .filter(|c| matches!(c.slot_type.as_str(), "core" | "crystal"))
-            .chain(by_rarity.iter())
-            .find_map(|c| c.element);
+        let element = Weapon::element_of(components);
         // Elemental damage without an element is just more of the plain kind
         if element.is_none() {
             let elemental = stats.remove("elementalDamage").unwrap_or(0.0);
@@ -2574,23 +2685,12 @@ impl Weapon {
             }
         }
 
-        let mut tags: BTreeSet<String> = fam.synergy_tags.iter().cloned().collect();
-        tags.extend(components.iter().flat_map(|c| c.synergy_tags.iter().cloned()));
-        tags.extend(effects.iter().flat_map(|e| library.effects[e.def].synergy_tags.iter().cloned()));
-        tags.extend(effects.iter().filter_map(|e| library.effects[e.def].element).map(|e| e.tag().to_owned()));
-        if let Some(e) = element {
-            tags.insert(e.tag().into());
-        }
+        let tags = Weapon::tags_of(library, &fam.synergy_tags, &fam.effect_defs, components, element);
         let synergies = library.synergies_for(&tags);
-
-        // The grade reflects how much the weapon can do, not the average of its parts: rare parts
-        // and synergies add up, and one very rare part lifts the whole weapon close to it. The
-        // parts count as if there were four, so a crossbow's sight doesn't make it rarer.
-        let parts = components.len().max(1) as f64;
-        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies.len() as f64;
-        let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
+        let grade = Weapon::grade_of(library, components, synergies.len());
+        let mut by_rarity: Vec<&Component> = components.to_vec();
+        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
         let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
-        let grade = by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1);
         for (name, by_grade) in &fam.grade_stats {
             if let Some(value) = by_grade.get(grade).or(by_grade.last()) {
                 *stats.entry(name.clone()).or_insert(0.0) += value;
@@ -2848,7 +2948,7 @@ fn newer_moves(family: &Family, shape: &str) -> Option<(Heavy, Finish)> {
 
 /// How a staff, scepter or wand made of `components` casts: what comes down on a place is called
 /// down from overhead, big slow spells gathered in both hands first, and otherwise its focus and
-/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, bells and
+/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, censers and
 /// the rest cast each their own way whatever they're made of, see combat.rs's target_pose().
 fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element: Option<Element>) -> Casting {
     if !matches!(family.style, Style::Cast | Style::Flick) {
@@ -3180,7 +3280,19 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, root) = whip(v("lash"), v("handle"), v("core"), family);
             let (set, cracker) = lash_models(v("lash"), v("fall"));
             let thickness = v("lash").thickness.unwrap_or(0.011);
-            WeaponLook { lash: Some(LashLook { root, set, cracker, thickness }), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, root) }
+            WeaponLook { lash: Some(LashLook { root, set, cracker, thickness, head: None }), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, root) }
+        }
+        // A flail as a whole, its head out on its chain, to be seen lying about or in the bag; then
+        // just its haft with the cap its chain hangs from, and just its head, for it in hand, the
+        // chain between them simulated as a whip's lash is and the head drawn on its end
+        Kind::Melee if family.style == Style::Whirl => {
+            let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
+            let cap = Visual { shape: Some(FLAIL_CAP.to_owned()), ..v("blade").clone() };
+            let (haft, _, root) = sword(&cap, v("hilt"), v("guard"), v("core"), family);
+            let head = flail_loose(v("blade"), v("core").infuse.as_deref().and_then(material));
+            let frames = vec![voxelize(&parts, SWORD_RES), voxelize(&haft, SWORD_RES), voxelize(&head, SWORD_RES)];
+            let lash = LashLook { root, set: LASH_CHAIN, cracker: CRACKER_WEIGHT, thickness: FLAIL_CHAIN, head: Some(FLAIL_HEAD) };
+            WeaponLook { lash: Some(lash), ..plain(frames, SWORD_RES, grip, tip) }
         }
         Kind::Melee => {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
@@ -3228,10 +3340,6 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
         Kind::Magic if family.style == Style::Hex => {
             let (parts, grip, tip) = totem(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
-        }
-        Kind::Magic if family.style == Style::Toll => {
-            let (parts, grip, tip) = bell(v("shaft"), v("focus"), v("crystal"), v("binding"));
-            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
         Kind::Magic if family.style == Style::Arc => {
             let (parts, grip, tip) = rod(v("shaft"), v("focus"), v("crystal"), v("binding"));
@@ -3450,45 +3558,6 @@ fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     (p, v3(0.0, 0.0, 0.14), Vector3::from(c))
 }
 
-/// A handbell: a handle held upright, the bell hanging under the hand, its mouth down, a glowing
-/// clapper inside it made of its crystal, a band of its binding round its shoulder. Returns its
-/// parts, where it's held, and its mouth.
-fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
-    let mut p = Vec::new();
-    let wood = mat(&shaft.material, WOOD);
-    let metal = match mat(&focus.material, BRONZE) {
-        WOOD | BIRCH_BARK | BARK_DARK | LEATHER | LINEN | CLOTH => BRONZE,
-        m => m,
-    };
-    let gem = mat(&crystal.gem, CRYSTAL);
-    let band = mat(&binding.material, mat(&binding.accent, GOLD));
-    // Hollow, the clapper hanging inside it, seen from under
-    // A domed crown, a waist widening slowly, then flaring out to a thick lip
-    let mouth = -0.13;
-    let flare = |t: f64| 0.026 + 0.016 * t + 0.032 * t.powi(4);
-    slot("crystal");
-    p.push(ball([0.0, 0.0, mouth + 0.018], crystal.size.unwrap_or(0.05).clamp(0.014, 0.022), gem));
-    slot("focus");
-    p.push(limb([0.0, 0.0, mouth - 0.01], [0.0, 0.0, -0.03], flare(1.0) - 0.008, flare(0.2) - 0.008, AIR));
-    slot("crystal");
-    p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, mouth + 0.012], 0.003, 0.003, DARK_STEEL));
-    slot("binding");
-    p.push(limb([0.0, 0.0, -0.04], [0.0, 0.0, -0.028], flare(0.15) + 0.004, flare(0.1) + 0.004, band));
-    slot("focus");
-    let steps = 8;
-    for k in 0..steps {
-        let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
-        p.push(limb([0.0, 0.0, -0.012 + (mouth + 0.012) * t0], [0.0, 0.0, -0.012 + (mouth + 0.012) * t1], flare(t0), flare(t1), metal));
-    }
-    p.push(ellipsoid([0.0, 0.0, -0.012], [0.027, 0.027, 0.016], metal));
-    p.push(limb([0.0, 0.0, mouth - 0.003], [0.0, 0.0, mouth + 0.006], flare(1.0) + 0.004, flare(1.0), metal));
-    // The handle over it, and a knob on top
-    slot("shaft");
-    p.push(ball([0.0, 0.0, 0.17], 0.02, metal));
-    p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.16], 0.015, 0.018, wood));
-    (p, v3(0.0, 0.0, 0.09), v3(0.0, 0.0, mouth))
-}
-
 /// The metal a part made of `m` is drawn in where it has to be metal: bronze for wood, cloth and
 /// the like
 fn metal_or_bronze(m: u8) -> u8 {
@@ -3510,16 +3579,97 @@ fn sphere_points(n: usize) -> Vec<[f64; 3]> {
         .collect()
 }
 
+/// The shape a flail's blade is given to build just its haft and the cap on its end, see
+/// build_look(), which frame of a flail's look is its head alone, and how thick its chain is drawn
+/// in hand, in meters
+const FLAIL_CAP: &str = "flail_cap";
+pub const FLAIL_HEAD: usize = 2;
+const FLAIL_CHAIN: f64 = 0.02;
+
+/// How far off the middle each of a flail's heads with `shape` is, side by side on their own
+/// chains, and how big each is against a single head
+fn flail_heads(shape: &str) -> (&'static [f64], f64) {
+    match shape {
+        "flail_twin" => (&[-0.06, 0.06], 0.72),
+        "flail_triple" => (&[-0.085, 0.0, 0.085], 0.58),
+        _ => (&[0.0], 1.0),
+    }
+}
+
 /// A flail's head on its chain, rising from a cap on the end of the haft at `z_top`: the chain
 /// flung out straight, as it is while it's whirled, its links turned one way then the other, and
 /// on its end a spiked ball, a star of long spikes, two balls on two chains, a caged brazier
-/// glowing inside, or a lump of stone bound with iron. Returns the middle of the head.
+/// glowing inside, or a lump of stone bound with iron. Returns the middle of the head. Shaped
+/// FLAIL_CAP, just the cap, returning where its chain hangs from.
 fn flail_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> Vector3<f64> {
     let chain = v.length.unwrap_or(0.3);
     let shape = v.shape.as_deref().unwrap_or("flail");
-    let twin = shape == "flail_twin";
-    let triple = shape == "flail_triple";
-    let r = v.width.unwrap_or(0.14) * 0.5 * if twin { 0.72 } else if triple { 0.58 } else { 1.0 };
+    let links = mat(&v.accent, DARK_STEEL);
+    let base = z_top + 0.015;
+    if shape == FLAIL_CAP {
+        flail_cap(p, z_top, links);
+        return v3(0.0, 0.0, base);
+    }
+    let (offsets, small) = flail_heads(shape);
+    let r = v.width.unwrap_or(0.14) * 0.5 * small;
+    let mut middle = Vector3::zeros();
+    for (k, &off) in offsets.iter().enumerate() {
+        // Three on chains of three lengths, so they don't knock together
+        let chain = if offsets.len() == 3 { chain * (0.85 + 0.15 * k as f64) } else { chain };
+        let c = [off, 0.0, base + chain + r];
+        // The head first, so its spikes and bands show over it
+        flail_ball(p, v, c, r, infuse);
+        // The chain, from the cap out to the head
+        flail_links(p, v3(0.0, 0.0, base), v3(off, 0.0, chain), links);
+        middle += v3(c[0], c[1], c[2]);
+    }
+    flail_cap(p, z_top, links);
+    middle / offsets.len() as f64
+}
+
+/// A cap on the end of a flail's haft at `z_top`, a ring through it the chain hangs from
+fn flail_cap(p: &mut Vec<Part>, z_top: f64, links: u8) {
+    ring(p, [0.0, 0.0, z_top + 0.015], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
+    p.push(limb([0.0, 0.0, z_top - 0.045], [0.0, 0.0, z_top + 0.008], 0.021, 0.017, links));
+}
+
+/// A flail's chain from `from` along `along`, its links turned one way then the other
+fn flail_links(p: &mut Vec<Part>, from: Vector3<f64>, along: Vector3<f64>, links: u8) {
+    let d = along.normalize();
+    let across = [d.z, 0.0, -d.x];
+    let n = ((along.norm() / 0.026).round() as usize).max(3);
+    for k in 0..n {
+        let at = from + along * ((k as f64 + 0.5) / n as f64);
+        let w = if k % 2 == 0 { across } else { [0.0, 1.0, 0.0] };
+        ring(p, [at.x, at.y, at.z], [d.x, d.y, d.z], w, 0.015, 0.0042, links);
+    }
+}
+
+/// A flail's head alone, for it on the end of its chain in hand, see build_look(): from where the
+/// chain meets it at the origin, on up z, the head on a last link, or for two or three heads a
+/// short chain out to each from a ring
+fn flail_loose(v: &Visual, infuse: Option<u8>) -> Vec<Part> {
+    let mut p = Vec::new();
+    slot("blade");
+    let shape = v.shape.as_deref().unwrap_or("flail");
+    let links = mat(&v.accent, DARK_STEEL);
+    let (offsets, small) = flail_heads(shape);
+    let r = v.width.unwrap_or(0.14) * 0.5 * small;
+    for (k, &off) in offsets.iter().enumerate() {
+        let stub = if offsets.len() > 1 { 0.07 + 0.02 * k as f64 } else { 0.012 };
+        let c = [off * 1.4, 0.0, stub + r];
+        flail_ball(&mut p, v, c, r, infuse);
+        if offsets.len() > 1 {
+            flail_links(&mut p, Vector3::zeros(), v3(off * 1.4, 0.0, stub), links);
+        }
+    }
+    ring(&mut p, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
+    p
+}
+
+/// One of a flail's heads, `r` big round `c`, as its blade's shape and stuff say
+fn flail_ball(p: &mut Vec<Part>, v: &Visual, c: [f64; 3], r: f64, infuse: Option<u8>) {
+    let shape = v.shape.as_deref().unwrap_or("flail");
     let body = mat(&v.material, match shape {
         "flail_stone" => ROCK,
         "flail_skull" => BONE,
@@ -3527,126 +3677,95 @@ fn flail_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> 
         _ => DARK_STEEL,
     });
     let spikes = mat(&v.edge, STEEL);
-    let links = mat(&v.accent, DARK_STEEL);
-    let base = z_top + 0.015;
-    let offsets: &[f64] = if twin {
-        &[-0.06, 0.06]
-    } else if triple {
-        &[-0.085, 0.0, 0.085]
-    } else {
-        &[0.0]
-    };
-    let mut middle = Vector3::zeros();
-    for (k, &off) in offsets.iter().enumerate() {
-        // Three on chains of three lengths, so they don't knock together
-        let chain = if triple { chain * (0.85 + 0.15 * k as f64) } else { chain };
-        let c = [off, 0.0, base + chain + r];
-        // The head first, so its spikes and bands show over it
-        match shape {
-            // A skull, its eyes glowing, its jaw bound shut with iron
-            "flail_skull" => {
-                let glow = mat(&v.gem, infuse.unwrap_or(GLOW_BLOOD));
-                for s in [-1.0, 1.0] {
-                    p.push(ball([c[0] + s * r * 0.38, c[1] + r * 0.82, c[2] + r * 0.15], r * 0.24, glow));
-                }
-                ring(p, [c[0], c[1], c[2] - r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.82, 0.006, spikes);
-                p.push(ellipsoid([c[0], c[1] + r * 0.25, c[2] - r * 0.6], [r * 0.62, r * 0.6, r * 0.35], body));
-                p.push(ellipsoid(c, [r * 0.95, r * 1.05, r], body));
+    match shape {
+        // A skull, its eyes glowing, its jaw bound shut with iron
+        "flail_skull" => {
+            let glow = mat(&v.gem, infuse.unwrap_or(GLOW_BLOOD));
+            for s in [-1.0, 1.0] {
+                p.push(ball([c[0] + s * r * 0.38, c[1] + r * 0.82, c[2] + r * 0.15], r * 0.24, glow));
             }
-            // A cluster of crystals growing out of an iron core, glowing
-            "flail_crystal" => {
-                for (j, d) in sphere_points(9).into_iter().enumerate() {
-                    let long = if j % 3 == 0 { 1.7 } else { 1.3 };
-                    let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
-                    p.push(limb(at(0.3), at(long), r * 0.32, 0.003, body));
-                }
-                p.push(ball(c, r * 0.7, spikes));
+            ring(p, [c[0], c[1], c[2] - r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.82, 0.006, spikes);
+            p.push(ellipsoid([c[0], c[1] + r * 0.25, c[2] - r * 0.6], [r * 0.62, r * 0.6, r * 0.35], body));
+            p.push(ellipsoid(c, [r * 0.95, r * 1.05, r], body));
+        }
+        // A cluster of crystals growing out of an iron core, glowing
+        "flail_crystal" => {
+            for (j, d) in sphere_points(9).into_iter().enumerate() {
+                let long = if j % 3 == 0 { 1.7 } else { 1.3 };
+                let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
+                p.push(limb(at(0.3), at(long), r * 0.32, 0.003, body));
             }
-            "flail_brazier" => {
-                let glow = mat(&v.gem, infuse.unwrap_or(GLOW_FIRE));
-                for k in 0..5 {
-                    let a = k as f64 / 5.0 * TAU;
-                    let points: Vec<[f64; 3]> = (0..=8)
-                        .map(|j| {
-                            let b = -PI * 0.5 + PI * j as f64 / 8.0;
-                            [c[0] + a.cos() * b.cos() * r * 1.06, c[1] + a.sin() * b.cos() * r * 1.06, c[2] + b.sin() * r * 1.06]
-                        })
-                        .collect();
-                    curve(p, &points, 0.006, 0.006, body);
-                }
-                ring(p, [c[0], c[1], c[2] + r * 0.2], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.08, 0.006, spikes);
-                p.push(ball(c, r * 0.84, glow));
-            }
-            // A wheel of iron on edge, spokes in it, spikes standing out all round its rim
-            "flail_wheel" => {
-                for k in 0..10 {
-                    let a = k as f64 / 10.0 * TAU;
-                    let (x, z) = (a.cos(), a.sin());
-                    p.push(limb([c[0] + x * r * 1.0, c[1], c[2] + z * r * 1.0], [c[0] + x * r * 1.5, c[1], c[2] + z * r * 1.5], 0.012, 0.002, spikes));
-                }
-                ring(p, c, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], r * 0.95, 0.013, body);
-                for k in 0..5 {
-                    let a = k as f64 / 5.0 * TAU + 0.3;
-                    p.push(limb(c, [c[0] + a.cos() * r * 0.9, c[1], c[2] + a.sin() * r * 0.9], 0.006, 0.006, body));
-                }
-                p.push(limb([c[0], c[1] - 0.02, c[2]], [c[0], c[1] + 0.02, c[2]], r * 0.25, r * 0.25, spikes));
-            }
-            // A drill of iron winding round and round to a point, like a shell's spiral
-            "flail_spiral" => {
-                let points: Vec<[f64; 3]> = (0..=36)
-                    .map(|k| {
-                        let t = k as f64 / 36.0;
-                        let a = t * 3.0 * TAU;
-                        let w = r * (1.0 - t * 0.92);
-                        [c[0] + a.cos() * w, c[1] + a.sin() * w, c[2] - r * 0.8 + 2.2 * r * t]
+            p.push(ball(c, r * 0.7, spikes));
+        }
+        "flail_brazier" => {
+            let glow = mat(&v.gem, infuse.unwrap_or(GLOW_FIRE));
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU;
+                let points: Vec<[f64; 3]> = (0..=8)
+                    .map(|j| {
+                        let b = -PI * 0.5 + PI * j as f64 / 8.0;
+                        [c[0] + a.cos() * b.cos() * r * 1.06, c[1] + a.sin() * b.cos() * r * 1.06, c[2] + b.sin() * r * 1.06]
                     })
                     .collect();
-                curve(p, &points, 0.013, 0.004, spikes);
-                p.push(limb([c[0], c[1], c[2] - r * 0.85], [c[0], c[1], c[2] + r * 1.35], r * 0.8, 0.004, body));
+                curve(p, &points, 0.006, 0.006, body);
             }
-            "flail_stone" => {
-                for w in [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-                    ring(p, c, [1.0, 0.0, 0.0], w, r * 1.02, 0.007, spikes);
-                }
-                let mut seed = 0x5707;
-                for k in 0..6 {
-                    let d = sphere_points(6)[k];
-                    let s = 0.45 + 0.15 * random(&mut seed);
-                    p.push(ball([c[0] + d[0] * r * 0.5, c[1] + d[1] * r * 0.5, c[2] + d[2] * r * 0.5], r * s, if k % 2 == 0 { GRAVEL } else { body }));
-                }
-                p.push(ellipsoid(c, [r * 1.05, r * 0.92, r], body));
-            }
-            _ => {
-                let star = shape == "flail_star";
-                for (k, d) in sphere_points(if star { 8 } else { 14 }).into_iter().enumerate() {
-                    let long = if star { 2.1 } else if k % 2 == 0 { 1.55 } else { 1.4 };
-                    let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
-                    p.push(limb(at(0.8), at(long), if star { 0.016 } else { 0.012 }, 0.002, spikes));
-                }
-                if star {
-                    for d in sphere_points(12) {
-                        p.push(ball([c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r], 0.009, spikes));
-                    }
-                }
-                p.push(ball(c, r, body));
-            }
+            ring(p, [c[0], c[1], c[2] + r * 0.2], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.08, 0.006, spikes);
+            p.push(ball(c, r * 0.84, glow));
         }
-        // The chain, from the cap out to the head
-        let along = v3(off, 0.0, chain);
-        let d = along.normalize();
-        let across = [d.z, 0.0, -d.x];
-        let n = ((chain / 0.026).round() as usize).max(3);
-        for k in 0..n {
-            let at = v3(0.0, 0.0, base) + along * ((k as f64 + 0.5) / n as f64);
-            let w = if k % 2 == 0 { across } else { [0.0, 1.0, 0.0] };
-            ring(p, [at.x, at.y, at.z], [d.x, d.y, d.z], w, 0.015, 0.0042, links);
+        // A wheel of iron on edge, spokes in it, spikes standing out all round its rim
+        "flail_wheel" => {
+            for k in 0..10 {
+                let a = k as f64 / 10.0 * TAU;
+                let (x, z) = (a.cos(), a.sin());
+                p.push(limb([c[0] + x * r * 1.0, c[1], c[2] + z * r * 1.0], [c[0] + x * r * 1.5, c[1], c[2] + z * r * 1.5], 0.012, 0.002, spikes));
+            }
+            ring(p, c, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], r * 0.95, 0.013, body);
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU + 0.3;
+                p.push(limb(c, [c[0] + a.cos() * r * 0.9, c[1], c[2] + a.sin() * r * 0.9], 0.006, 0.006, body));
+            }
+            p.push(limb([c[0], c[1] - 0.02, c[2]], [c[0], c[1] + 0.02, c[2]], r * 0.25, r * 0.25, spikes));
         }
-        middle += v3(c[0], c[1], c[2]);
+        // A drill of iron winding round and round to a point, like a shell's spiral
+        "flail_spiral" => {
+            let points: Vec<[f64; 3]> = (0..=36)
+                .map(|k| {
+                    let t = k as f64 / 36.0;
+                    let a = t * 3.0 * TAU;
+                    let w = r * (1.0 - t * 0.92);
+                    [c[0] + a.cos() * w, c[1] + a.sin() * w, c[2] - r * 0.8 + 2.2 * r * t]
+                })
+                .collect();
+            curve(p, &points, 0.013, 0.004, spikes);
+            p.push(limb([c[0], c[1], c[2] - r * 0.85], [c[0], c[1], c[2] + r * 1.35], r * 0.8, 0.004, body));
+        }
+        "flail_stone" => {
+            for w in [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+                ring(p, c, [1.0, 0.0, 0.0], w, r * 1.02, 0.007, spikes);
+            }
+            let mut seed = 0x5707;
+            for k in 0..6 {
+                let d = sphere_points(6)[k];
+                let s = 0.45 + 0.15 * random(&mut seed);
+                p.push(ball([c[0] + d[0] * r * 0.5, c[1] + d[1] * r * 0.5, c[2] + d[2] * r * 0.5], r * s, if k % 2 == 0 { GRAVEL } else { body }));
+            }
+            p.push(ellipsoid(c, [r * 1.05, r * 0.92, r], body));
+        }
+        _ => {
+            let star = shape == "flail_star";
+            for (k, d) in sphere_points(if star { 8 } else { 14 }).into_iter().enumerate() {
+                let long = if star { 2.1 } else if k % 2 == 0 { 1.55 } else { 1.4 };
+                let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
+                p.push(limb(at(0.8), at(long), if star { 0.016 } else { 0.012 }, 0.002, spikes));
+            }
+            if star {
+                for d in sphere_points(12) {
+                    p.push(ball([c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r], 0.009, spikes));
+                }
+            }
+            p.push(ball(c, r, body));
+        }
     }
-    // A cap on the end of the haft, a ring through it the chain hangs from
-    ring(p, [0.0, 0.0, base], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
-    p.push(limb([0.0, 0.0, z_top - 0.045], [0.0, 0.0, z_top + 0.008], 0.021, 0.017, links));
-    middle / offsets.len() as f64
 }
 
 /// A maul's great head across the end of its haft at `z_top`, its striking faces ±x: a block of
@@ -5156,6 +5275,9 @@ pub struct LashLook {
     pub cracker: usize,
     /// How thick it is where it leaves the handle, in meters
     pub thickness: f64,
+    /// Which of the weapon's frames is drawn on its tip in place of a cracker, if one is: a
+    /// flail's head, its chain lashed out as a whip's lash is
+    pub head: Option<usize>,
 }
 
 // The sets of lash segment models among effect_models(), by what a lash is made of: braided
@@ -7847,11 +7969,49 @@ mod tests {
         assert!(library.ammo.iter().filter(|a| a.burst.is_some()).count() == 2, "only bursting ammo bursts");
     }
 
+    /// Bells are no more, and any made of what a bell could be comes back a sceptre as rare, made
+    /// of parts as rare, those a sceptre can't take swapped
+    #[test]
+    fn bells_are_gone_and_come_back_as_sceptres() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        assert!(library.family("bell").is_none());
+        assert!(library.components.iter().all(|c| !c.fits("bell")));
+        // A censer takes every part a bell did, and its tags bring the same synergies a bell's
+        // did, so what the same parts make a censer is what they made a bell
+        assert!(library.synergies.iter().all(|s| !s.requires.iter().any(|t| t == "cloud" || t == "knockback")));
+        let censer = library.family("censer").unwrap();
+        let scepter = library.family("scepter").unwrap();
+        assert_eq!(library.retired("sword", &[0], 1), None);
+        let mut swapped = 0;
+        for seed in 0..600u32 {
+            let parts: Vec<usize> = library.families[censer]
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(k, slot)| {
+                    let could: Vec<usize> = (0..library.components.len()).filter(|&c| library.components[c].fits("censer") && library.components[c].slot_type == *slot).collect();
+                    could[hash(seed * 7 + k as u32) as usize % could.len()]
+                })
+                .collect();
+            let was = Weapon::assemble(&library, censer, parts.clone(), seed).grade;
+            let (family, now) = library.retired("bell", &parts, seed).expect("a bell comes back");
+            assert_eq!(family, scepter);
+            for (k, (&a, &b)) in parts.iter().zip(&now).enumerate() {
+                assert!(library.components[b].fits("scepter") && library.components[b].slot_type == library.families[scepter].slots[k]);
+                assert!(library.components[a].fits("scepter") || a != b);
+                assert_eq!(library.components[a].tier, library.components[b].tier, "a part as rare");
+                swapped += (a != b) as usize;
+            }
+            assert_eq!(Weapon::assemble(&library, scepter, now, seed).grade, was, "seed {seed}");
+        }
+        assert!(swapped > 0, "some bells had parts a sceptre can't take");
+    }
+
     #[test]
     fn new_magic_weapons_and_specials_turn_up() {
         let library = Library::parse(BUILT_IN).unwrap();
         // Each kind of magic weapon has its own way of casting, and a model to hold
-        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("bell", Style::Toll, 1), ("battlestaff", Style::Glaive, 1)] {
+        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("battlestaff", Style::Glaive, 1)] {
             let family = library.family(id).expect("there's such a family");
             for seed in 0..30 {
                 let weapon = library.generate(seed, Some(family), 4.0);
@@ -7927,6 +8087,25 @@ mod tests {
         }
     }
 
+    /// How much a flail's models take, whole as it's seen lying about and with its haft and head
+    /// on their own for it in hand, over many of them. To look at:
+    /// cargo test --release flail_model_memory -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn flail_model_memory() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let flail = library.family("flail");
+        let (mut whole, mut all) = (0usize, 0usize);
+        let n = 200;
+        for seed in 0..n {
+            let weapon = library.generate(seed, flail, 3.0);
+            let bytes = |m: &Model| m.voxels.len();
+            whole += bytes(&weapon.look.frames[0].0);
+            all += weapon.look.frames.iter().map(|f| bytes(&f.0)).sum::<usize>();
+        }
+        println!("a flail's models, unpacked: {:.1} KB whole, {:.1} KB with its haft and head too", whole as f64 / n as f64 / 1e3, all as f64 / n as f64 / 1e3);
+    }
+
     #[test]
     fn area_weapons_are_each_built_and_used_their_own_way() {
         let library = Library::parse(BUILT_IN).unwrap();
@@ -7938,8 +8117,19 @@ mod tests {
                 let profile = &weapon.profile;
                 assert_eq!((profile.kind, profile.style), (kind, style), "{id}");
                 let look = &weapon.look;
-                assert_eq!(look.frames.len(), 1, "{id}");
-                assert!(look.frames[0].0.voxels.iter().any(|&v| v != AIR), "{id} has something to see");
+                // A flail's whole, then its haft, then its head on its own for the end of its chain
+                let frames = if style == Style::Whirl { 3 } else { 1 };
+                assert_eq!(look.frames.len(), frames, "{id}");
+                assert!(look.frames.iter().all(|f| f.0.voxels.iter().any(|&v| v != AIR)), "{id} has something to see");
+                if style == Style::Whirl {
+                    let lash = look.lash.as_ref().expect("a flail's chain is lashed out as a whip's is");
+                    assert_eq!(lash.head, Some(FLAIL_HEAD));
+                    // Its haft's shorter than the whole, the head smaller, and the chain hangs from
+                    // over the hand
+                    let long = |k: usize| look.frames[k].0.size[2];
+                    assert!(long(1) < long(0) && long(2) < long(0), "{id}");
+                    assert!(lash.root.z > look.grip.z, "{id}");
+                }
                 // Where what it does comes from, next to where it's held, as big as its parts make it
                 let (grip, tip) = (look.grip / look.scale, look.tip / look.scale);
                 match style {
@@ -8208,12 +8398,12 @@ mod tests {
         let share = |n: usize| n as f64 / seeds as f64;
         // The later batches' families as often as there are of them, the second's three and the
         // third's skull focus and talisman, and a part of a later batch on about one weapon in five
-        // of the rest
+        // of the rest; with the bells gone, a little more of the rest are of families with later parts
         let weapons = library.weapon_families();
         let later = library.families[..weapons].iter().filter(|f| f.batch > 0).count() as f64 / weapons as f64;
         assert!((share(new_family) - later).abs() < 0.03, "new families {:.3}, for {later:.3} of them", share(new_family));
         assert!((0.08..0.35).contains(&share(new_parts)), "new parts {:.3}", share(new_parts));
-        assert!(share(same) > 0.65, "only {:.3} the same", share(same));
+        assert!(share(same) > 0.62, "only {:.3} the same", share(same));
         // Every part of the second batch turns up, in lucky loot
         let mut seen = BTreeSet::new();
         for seed in 0..60_000u32 {

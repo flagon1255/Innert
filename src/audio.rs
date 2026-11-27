@@ -92,6 +92,9 @@ pub enum Sound {
     Creak,
     /// Ice or stone cracking, or a whip
     Crack,
+    /// A whip's crack and only that, sharp and clean: a flail's chain snapping straight behind its
+    /// head
+    WhipCrack,
     /// One beat of a great leathery wing
     Flap,
     /// A spider or a snake hissing
@@ -728,6 +731,9 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Crack, include_bytes!("../assets/sounds/crack_2.ogg"), 0.72),
     (Sound::Crack, include_bytes!("../assets/sounds/crack_3.ogg"), 1.94),
     (Sound::Crack, include_bytes!("../assets/sounds/crack_4.ogg"), 1.55),
+    // The two of the cracks made from whips' cracks, see CREDITS.txt
+    (Sound::WhipCrack, include_bytes!("../assets/sounds/crack_1.ogg"), 0.75),
+    (Sound::WhipCrack, include_bytes!("../assets/sounds/crack_2.ogg"), 0.72),
     (Sound::Draw, include_bytes!("../assets/sounds/draw_1.ogg"), 1.98),
     (Sound::Twang, include_bytes!("../assets/sounds/twang_1.ogg"), 2.00),
     (Sound::Twang, include_bytes!("../assets/sounds/twang_2.ogg"), 2.14),
@@ -989,7 +995,7 @@ mod tests {
         use Sound::*;
         let mut all = vec![
             Swing, HeavySwing, Stab, Flick, Hit, Draw, Twang, ArrowHit, Burst, Equip, Crackle, Chest, Pickup, Eat, Bird, Roar, Rumble, Breath, Hurt, Fanfare, Splash, Quake,
-            Whistle, Claw, Web, Creak, Crack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Pistol, Musket, Blunderbuss, Cannon, Shellburst, Release, Ratchet, Latch, Powder, Ram, Cock,
+            Whistle, Claw, Web, Creak, Crack, WhipCrack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Pistol, Musket, Blunderbuss, Cannon, Shellburst, Release, Ratchet, Latch, Powder, Ram, Cock,
             Ricochet, Beam, Toll, Summon, Hex, Snap, Volley, Harpoon, Taut, Brace, Reel, Net, Chain, Chitter, Wail, Croak, Screech, Snort, Whirr, Slam, Fuse, Zap, Thunder,
             Gale, Buzz, Bubble, Billow, Shing, Chime, Rocket, Rush, Lasso, Squeeze, Boom, Slither, Sear, Swoop, Thorns, Coins, Wind, Water,
             Chop, Mine, Dig, Timber, Place, DoorOpen, DoorClose, Bang, Splinter,
