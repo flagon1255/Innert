@@ -66,6 +66,8 @@ pub struct Touch {
     /// A mouse moved by a script, in screenshot runs, and where it is, over a window or not
     script: Option<Script>,
     scripted: Option<Pos2>,
+    /// Where a scripted mouse's been sent, see aim()
+    aimed: Option<Pos2>,
 }
 
 impl Default for Touch {
@@ -90,6 +92,7 @@ impl Touch {
             clock: 0.0,
             script,
             scripted: None,
+            aimed: None,
         }
     }
 
@@ -103,9 +106,15 @@ impl Touch {
         self
     }
 
+    /// Has a scripted mouse go to `at` from the next frame on, in screenshot runs, as onto a place
+    /// on the map, see Backdrop
+    pub fn aim(&mut self, at: Option<Pos2>) {
+        self.aimed = at;
+    }
+
     /// Marks where a scripted mouse is, in screenshot runs, where no real one's drawn
     pub fn mark(&self, painter: &egui::Painter) {
-        if let (Some(_), Some(p)) = (&self.script, self.scripted) {
+        if let Some(p) = self.scripted {
             let arrow = [p, p + egui::vec2(0.0, 16.0), p + egui::vec2(11.0, 11.0)];
             painter.add(egui::Shape::convex_polygon(arrow.to_vec(), egui::Color32::WHITE, egui::Stroke::new(1.0f32, egui::Color32::BLACK)));
         }
@@ -162,11 +171,12 @@ impl Touch {
     /// over a window, as the menu.
     pub fn feel(&mut self, ctx: &egui::Context, land: &Land, view: &super::land::View, phase: super::land::Phase, free: bool) {
         let (pointer, pressed) = match &self.script {
+            _ if self.aimed.is_some() => (self.aimed, false),
             Some(script) => script.at(self.clock, ctx.screen_rect()),
             None if free => ctx.input(|i| (i.pointer.hover_pos(), i.pointer.primary_pressed())),
             None => (None, false),
         };
-        self.scripted = pointer.filter(|_| self.script.is_some());
+        self.scripted = pointer.filter(|_| self.script.is_some() || self.aimed.is_some());
         // What's on the background, as the land itself, doesn't count
         let pointer = pointer.filter(|&p| ctx.layer_id_at(p).is_none_or(|layer| layer.order == egui::Order::Background));
         let over = pointer.and_then(|p| land.hit(view, phase, p));

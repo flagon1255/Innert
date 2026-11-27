@@ -328,6 +328,7 @@ impl Progress {
             rise: 1.0 - left / total.max(1.0),
             grow: 1.0 - self.left(&times, Step::Grass) / self.expected(Step::Grass).max(1.0),
             fill: if times[Step::Grass as usize].1.is_some() { 1.0 } else { 0.0 },
+            built: 1.0,
         }
     }
 }
@@ -1062,7 +1063,7 @@ impl Look {
         // The land comes up, the woods grow and the seas fill no faster than this many times a
         // second, so it's seen however quickly they're made
         let follow = |shown: f32, wanted: f32, most: f32| (shown + ((wanted - shown) * (1.0 - (-dt * 5.0).exp())).min(most * dt)).max(shown).min(1.0);
-        self.phase = Phase { rise: follow(self.phase.rise, phase.rise, 0.8), grow: follow(self.phase.grow, phase.grow, 1.0), fill: follow(self.phase.fill, phase.fill, 0.7) };
+        self.phase = Phase { rise: follow(self.phase.rise, phase.rise, 0.8), grow: follow(self.phase.grow, phase.grow, 1.0), fill: follow(self.phase.fill, phase.fill, 0.7), built: 1.0 };
     }
 }
 
@@ -1134,7 +1135,9 @@ pub struct Backdrop {
     sinking: Option<Instant>,
     /// What's wanted, the map being worked out and the places further off round one, see map::far()
     asked: Option<map::Wanted>,
-    building: Option<mpsc::Receiver<(map::Wanted, map::Map, Duration)>>,
+    building: Option<mpsc::Receiver<(map::Wanted, map::Map, Duration, bool)>>,
+    /// Set once the map being worked out isn't wanted any more
+    unwanted: Arc<AtomicBool>,
     farther: Option<(Arc<AtomicBool>, mpsc::Receiver<(map::Wanted, Option<map::Far>, Duration)>)>,
     /// How the land's been touched by the mouse, since the loading screen
     touch: Touch,
@@ -1157,7 +1160,8 @@ pub struct Backdrop {
 /// What's shown beside the menu: the loading screen's land, or a map
 enum Shown {
     Loading(Arc<Land>),
-    Map { map: Arc<map::Map>, wanted: map::Wanted, far: bool },
+    /// Since `came`, when what's on it was put in
+    Map { map: Arc<map::Map>, wanted: map::Wanted, far: bool, came: Instant },
 }
 
 impl Shown {
@@ -1185,6 +1189,7 @@ impl Backdrop {
             sinking: None,
             asked: None,
             building: None,
+            unwanted: Arc::new(AtomicBool::new(false)),
             farther: None,
             touch,
             turn: land::turned_by(look.start.elapsed().as_secs_f32()),
@@ -1203,27 +1208,41 @@ impl Backdrop {
     fn want(&mut self, wanted: &map::Wanted) {
         if self.asked.as_ref() != Some(wanted) {
             self.asked = Some(wanted.clone());
-            // What's further off round another isn't wanted now
+            // What's on another, and further off round it, isn't wanted now
+            self.unwanted.store(true, Ordering::Relaxed);
             if let Some((stale, _)) = &self.farther {
                 stale.store(true, Ordering::Relaxed);
             }
         }
         let asked = self.asked.clone().unwrap();
-        if let Some(building) = &self.building {
+        // Its land first, which rises straight away, then what's on it, put in as it comes
+        while let Some(building) = &self.building {
             match building.try_recv() {
-                Ok((wanted, map, took)) => {
-                    self.building = None;
+                Ok((wanted, map, took, done)) => {
                     if Capture::from_args().is_some() {
-                        println!("Menu map of seed {} round {:.0}, {:.0} worked out in {:.0} ms: {} places on it", wanted.settings.seed, map.player[0], map.player[1], took.as_secs_f64() * 1000.0, map.places.len());
+                        let what = if done { "what's on it" } else { "its land" };
+                        println!("Menu map of seed {} round {:.0}, {:.0}: {what} worked out in {:.0} ms, {} places on it", wanted.settings.seed, map.player[0], map.player[1], took.as_secs_f64() * 1000.0, map.places.len());
                     }
-                    if wanted == asked {
-                        self.next = Some(Shown::Map { map: Arc::new(map), wanted, far: false });
+                    if wanted != asked {
+                        continue;
+                    }
+                    let map = Arc::new(map);
+                    if !done {
+                        // Nothing further off's worked out round it till what's on it is there
+                        self.next = Some(Shown::Map { map, wanted, far: true, came: Instant::now() });
                         if self.shown.is_some() {
                             self.sinking.get_or_insert_with(Instant::now);
                         }
+                        continue;
+                    }
+                    self.building = None;
+                    for shown in self.shown.iter_mut().map(|(s, _)| s).chain(self.next.iter_mut()) {
+                        if shown.is(&wanted) {
+                            *shown = Shown::Map { map: map.clone(), wanted: wanted.clone(), far: false, came: Instant::now() };
+                        }
                     }
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => self.building = None,
             }
         }
@@ -1233,11 +1252,18 @@ impl Backdrop {
         if self.building.is_none() && !have {
             let (send, receive) = mpsc::channel();
             let wanted = asked.clone();
+            let stale = Arc::new(AtomicBool::new(false));
+            let gone = stale.clone();
+            self.unwanted = stale;
             let _ = std::thread::Builder::new().name("menu map".into()).spawn(move || {
                 worldgen::give_way();
                 let started = Instant::now();
-                let map = map::build(&wanted);
-                let _ = send.send((wanted, map, started.elapsed()));
+                let land = map::build_land(&wanted);
+                // What's on it only if it's still wanted
+                if send.send((wanted.clone(), land.clone(), started.elapsed(), false)).is_ok() && !gone.load(Ordering::Relaxed) {
+                    let full = land.with_sites();
+                    let _ = send.send((wanted, full, started.elapsed(), true));
+                }
             });
             self.building = Some(receive);
         }
@@ -1265,7 +1291,7 @@ impl Backdrop {
         }
         if self.farther.is_none() {
             let unfinished = self.next.iter_mut().chain(self.shown.iter_mut().map(|(s, _)| s)).find(|s| s.is(&asked) && matches!(s, Shown::Map { far: false, .. }));
-            if let Some(Shown::Map { map, wanted, far }) = unfinished {
+            if let Some(Shown::Map { map, wanted, far, .. }) = unfinished {
                 *far = true;
                 let (send, receive) = mpsc::channel();
                 let stale = Arc::new(AtomicBool::new(false));
@@ -1313,13 +1339,16 @@ impl Backdrop {
         // sinking away for the next
         let phase = match shown {
             Shown::Loading(_) => self.look.phase.towards_done(smoothstep(since / (FADE_SECONDS * 0.3))),
-            Shown::Map { .. } => {
+            Shown::Map { came, .. } => {
                 let e = risen.elapsed().as_secs_f32() / RISE_SECONDS;
-                Phase { rise: e.min(1.0), grow: ((e - 0.35) / 0.65).clamp(0.0, 1.0), fill: ((e - 0.2) / 0.6).clamp(0.0, 1.0) }
+                // What's on it springing up as it comes, if it's after the land
+                let grow = (e - 0.35) / 0.65;
+                let built = grow.min(came.elapsed().as_secs_f32() / 0.7);
+                Phase { rise: e.min(1.0), grow: grow.clamp(0.0, 1.0), fill: ((e - 0.2) / 0.6).clamp(0.0, 1.0), built: built.clamp(0.0, 1.0) }
             }
         };
         let sunk = self.sinking.map_or(0.0, |s| (s.elapsed().as_secs_f32() / SINK_SECONDS).min(1.0));
-        let phase = Phase { rise: phase.rise.min(1.0 - sunk), grow: phase.grow.min(1.0 - sunk * 1.5), fill: phase.fill.min(1.0 - sunk) };
+        let phase = Phase { rise: phase.rise.min(1.0 - sunk), grow: phase.grow.min(1.0 - sunk * 1.5), fill: phase.fill.min(1.0 - sunk), built: phase.built.min(1.0 - sunk * 1.5) };
 
         // Turning slowly, and less while the mouse is over it, tilted up more as a map's seen,
         // and turned round by a drag across it
@@ -1368,6 +1397,15 @@ impl Backdrop {
         land.paint(&painter, &view, t, phase, alpha * (1.0 - sunk * 0.6), bright, Some(&self.touch));
         if let (Shown::Map { map, .. }, Some(room)) = (shown, room) {
             self.mark_up(&painter, map, &view, phase, room, 1.0 - sunk);
+            // `--set menu_aim=town` in screenshot runs takes a scripted mouse onto the pin of the
+            // first town on the map once it's all there, or the first place whose kind's called that
+            if let Some(aim) = settings_from_args().iter().find(|(k, _)| k == "menu_aim").map(|(_, v)| v.to_lowercase()).filter(|_| Capture::from_args().is_some() && phase.grow >= 1.0 && sunk == 0.0) {
+                let tip = map.places.iter().find(|p| p.kind.title().to_lowercase().contains(&aim)).and_then(|p| {
+                    let top = land.top_of(&view, phase, land.column(land.columns(p.at))?, None, 0.0)?;
+                    Some(top - vec2(0.0, 10.0 + view.scale * 1.2) + vec2(1.0, 1.0))
+                });
+                self.touch.aim(tip);
+            }
         }
         self.touch.mark(&painter);
         self.cost.add(painting.elapsed(), painting.elapsed());
@@ -1388,13 +1426,13 @@ impl Backdrop {
         // North, off the plate's edge
         painter.text(land.on_plate(view, (0.0, half + 1.6)), Align2::CENTER_CENTER, "N", crate::theme::display(13.0), fade(crate::theme::WEAK));
         // A pin over each place, a little diamond on a fine stem, as they spring up
-        let pinned = smoothstep(phase.grow);
+        let pinned = smoothstep(phase.built.min(phase.grow));
         let mut pins = Vec::new();
         if pinned > 0.0 {
             for place in &map.places {
+                let Some((size, light)) = place.kind.pin() else { continue };
                 let Some(column) = land.column(land.columns(place.at)) else { continue };
                 let Some(top) = land.top_of(view, phase, column, Some(&self.touch), 0.0) else { continue };
-                let (size, light) = place.kind.pin();
                 let tip = top - vec2(0.0, (10.0 + view.scale * 1.2) * pinned);
                 painter.line_segment([top, tip], Stroke::new(1.0f32, fade(Color32::from_white_alpha(120)).gamma_multiply(pinned)));
                 let points = vec![tip + vec2(0.0, -size), tip + vec2(size * 0.8, 0.0), tip + vec2(0.0, size), tip + vec2(-size * 0.8, 0.0)];

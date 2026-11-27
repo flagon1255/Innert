@@ -154,15 +154,17 @@ impl Kind {
         }
     }
 
-    /// The pin over it on the map: how big, and how light, the lightest for where people live, dark
-    /// for where what's to be feared is
-    pub fn pin(self) -> (f32, u8) {
+    /// The pin over it on the map, if it has one: how big, and how light, the lightest for where
+    /// people live, dark for where what's to be feared is. Ruins and caves have none, so the map
+    /// isn't stuck all over with them; they're named under the mouse all the same.
+    pub fn pin(self) -> Option<(f32, u8)> {
         match self {
-            Kind::Town | Kind::CaveTown | Kind::Castle | Kind::Gate | Kind::Portal => (4.5, 250),
-            Kind::FallenCastle | Kind::RaidBoss(..) | Kind::Finale(..) | Kind::DragonLair => (4.5, 20),
-            Kind::Guardian(_) | Kind::Crypt | Kind::Undercity => (3.5, 20),
-            Kind::Camp(_) => (3.5, 120),
-            _ => (3.0, 190),
+            Kind::Town | Kind::CaveTown | Kind::Castle | Kind::Gate | Kind::Portal | Kind::Foundations => Some((4.5, 250)),
+            Kind::FallenCastle | Kind::RaidBoss(..) | Kind::Finale(..) | Kind::DragonLair => Some((4.5, 20)),
+            Kind::Guardian(_) | Kind::Crypt | Kind::Undercity => Some((3.5, 20)),
+            Kind::Camp(_) => Some((3.5, 120)),
+            Kind::Shrine => Some((3.0, 190)),
+            Kind::Ruin(_) | Kind::WaterfallCave => None,
         }
     }
 
@@ -202,6 +204,7 @@ impl Place {
 }
 
 /// The map of a world, see build()
+#[derive(Clone)]
 pub struct Map {
     pub land: Land,
     /// What's marked on it, and further off, which way the nearest towns and castles are
@@ -228,8 +231,16 @@ fn roads_near(settings: &TerrainSettings, middle: [f32; 2], across: f32) -> (Vec
 const FAR_ACROSS: f32 = 4.0;
 
 /// The map `wanted` asks for, its land and what's built on it, without the roads, the names or the
-/// places further off, which far() works out
+/// places further off, which far() works out, as Backdrop has it worked out a step at a time
+#[cfg(test)]
 pub fn build(wanted: &Wanted) -> Map {
+    build_land(wanted).with_sites()
+}
+
+/// The map `wanted` asks for, its land alone, and in Realms the realm's own places, the gate and
+/// its raid bosses: a few milliseconds, for the land to rise straight away while the rest of
+/// what's on it is found, see Map::with_sites()
+pub fn build_land(wanted: &Wanted) -> Map {
     let settings = wanted.settings;
     let found = wanted.realm.as_ref().map(|r| realms::Places::find(r.realm, &settings, r.start, r.ahead));
     // The gate or the portal home where the player built it, or its old foundations, see gates.rs
@@ -244,7 +255,7 @@ pub fn build(wanted: &Wanted) -> Map {
     let player = wanted.at.or_else(|| places_in_realm.as_ref().map(|p| [p.arrival[0] as f32, p.arrival[1] as f32])).unwrap_or(worldgen::FREE_ROAM_START);
     let mut land = Land::sample(&settings, player, ACROSS, CELL, 0);
     let across = ACROSS as f32 * CELL;
-    let mut places = sites(&settings, player, across);
+    let mut places = Vec::new();
     if let Some(p) = &places_in_realm {
         let r = &REALMS[p.realm];
         let gate = if !standing {
@@ -411,6 +422,22 @@ pub fn far(map: &Map, stale: &dyn Fn() -> bool) -> Option<Far> {
 }
 
 impl Map {
+    /// The map with what worldgen's placed on its land, towns, castles, camps and the rest, found
+    /// as for a world built there, which takes a second or so
+    pub fn with_sites(&self) -> Map {
+        let mut land = self.land.clone();
+        let mut places = sites(&self.settings, self.player, ACROSS as f32 * CELL);
+        for p in &places {
+            stand_on(&mut land, p);
+        }
+        // The realm's own over what's there
+        for p in &self.places {
+            stand_on(&mut land, p);
+        }
+        places.extend(self.places.iter().cloned());
+        Map { land, places, far: self.far.clone(), player: self.player, settings: self.settings, caption: self.caption.clone(), saved: self.saved }
+    }
+
     /// The map with what's further off, see far(): the roads drawn over it, its towns and castles
     /// named, and those beyond it pointed to
     pub fn with(&self, far: &Far) -> Map {
@@ -600,7 +627,8 @@ pub fn label(painter: &Painter, at: Pos2, room: Rect, title: &str, about: &str, 
 mod tests {
     use super::*;
 
-    const SETTINGS: TerrainSettings = TerrainSettings { width_m: 224, height_m: 128, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+    /// As the game has them
+    const SETTINGS: TerrainSettings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
 
     fn wanted(seed: u32, at: [f32; 2]) -> Wanted {
         Wanted { settings: TerrainSettings { seed, ..SETTINGS }, at: Some(at), realm: None, caption: String::new(), saved: false }

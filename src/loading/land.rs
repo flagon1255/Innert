@@ -94,21 +94,22 @@ pub struct Land {
 }
 
 /// How far each part of building the land's got, 0 to 1: the land rising, the trees growing and
-/// the seas filling
+/// the seas filling, and on the map what's built on it springing up as it's found, see map.rs
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct Phase {
     pub rise: f32,
     pub grow: f32,
     pub fill: f32,
+    pub built: f32,
 }
 
 impl Phase {
     #[cfg(test)]
-    pub const DONE: Phase = Phase { rise: 1.0, grow: 1.0, fill: 1.0 };
+    pub const DONE: Phase = Phase { rise: 1.0, grow: 1.0, fill: 1.0, built: 1.0 };
 
     /// `done` of the way from this to all built
     pub fn towards_done(self, done: f32) -> Phase {
-        Phase { rise: self.rise + (1.0 - self.rise) * done, grow: self.grow + (1.0 - self.grow) * done, fill: self.fill + (1.0 - self.fill) * done }
+        Phase { rise: self.rise + (1.0 - self.rise) * done, grow: self.grow + (1.0 - self.grow) * done, fill: self.fill + (1.0 - self.fill) * done, built: self.built + (1.0 - self.built) * done }
     }
 }
 
@@ -497,7 +498,8 @@ impl Land {
         order.sort_by(|a, b| a.0.total_cmp(&b.0));
         // The light from the north-west, its sides lit by how much they face it
         let light = [-FRAC_1_SQRT_2, FRAC_1_SQRT_2];
-        let outline = scale > 7.0;
+        // Not on the map, where it'd make the land a grid rather than a land
+        let outline = scale > 7.0 && self.cell <= CELL_M;
         let turned = (sin_t, cos_t);
         // How high each column's drawn now, sea and all, to know how much of its neighbours'
         // sides show
@@ -529,8 +531,14 @@ impl Land {
             let land_top = (land_top + swell.clamp(-1.0, 1.0) * if swell > 0.0 { 170.0 } else { 140.0 }).clamp(40.0, 252.0);
             let shimmer = 7.0 * (t * 1.6 + i as f32 * 0.7 + j as f32 * 0.45).sin();
             let stand = self.stands[k];
-            // A road's a darker line over the land, and lit up with it under the mouse
-            let land_top = if stand == Stand::Road && !wet { land_top * (0.5 + 0.35 * lit_up) } else { land_top };
+            // On the map, woods are darker ground, as on a printed map, rather than trees, so
+            // what's built on it stands out
+            let map = self.cell > CELL_M;
+            let land_top = if map && !wet && stand == Stand::Nothing { land_top * (1.0 - 0.42 * self.woods[k].min(1.0) * (1.0 - lit_up)) } else { land_top };
+            // A town's streets paler, as trodden ground
+            let land_top = if matches!(stand, Stand::Houses | Stand::Square) { (land_top + 40.0).min(250.0) } else { land_top };
+            // A road's a dark line over the land, and lit up with it under the mouse
+            let land_top = if stand == Stand::Road && !wet { land_top * (0.3 + 0.5 * lit_up) } else { land_top };
             let top = if wet { (58.0 + shimmer + 110.0 * lit_up + 200.0 * swell).clamp(24.0, 210.0) } else { land_top };
 
             // The sides that face the viewer, down to where the next column's top hides them
@@ -567,7 +575,7 @@ impl Land {
 
             // What's built on it, springing up with the trees
             if !matches!(stand, Stand::Nothing | Stand::Road) && r >= 1.0 {
-                let size = ease_out_back(((phase.grow * 1.25 - hash(i as u32, j as u32, 4) * 0.5) / 0.25).clamp(0.0, 1.0));
+                let size = ease_out_back(((phase.built.min(phase.grow) * 1.25 - hash(i as u32, j as u32, 4) * 0.5) / 0.25).clamp(0.0, 1.0));
                 if size > 0.0 {
                     built(&mut mesh, &project, turned, stand, (x, y), z, size, (i as u32, j as u32), &|v| grey(v + (250.0 - v).max(0.0) * lit_up * 0.6));
                 }
@@ -575,10 +583,8 @@ impl Land {
 
             // A tree on it, in the woods, once the grass is growing
             let woods = self.woods[k];
-            // Fewer, and smaller, on the map, so what's built on it stands out
-            let (thick, big) = if self.cell > CELL_M { (0.28, 0.75) } else { (0.55, 1.0) };
-            if !wet && r >= 1.0 && woods > 0.0 && stand == Stand::Nothing && hash(i as u32, j as u32, 3) < woods * thick {
-                let size = big * ease_out_back(((phase.grow * 1.25 - hash(i as u32, j as u32, 4)) / 0.25).clamp(0.0, 1.0));
+            if !map && !wet && r >= 1.0 && woods > 0.0 && stand == Stand::Nothing && hash(i as u32, j as u32, 3) < woods * 0.55 {
+                let size = ease_out_back(((phase.grow * 1.25 - hash(i as u32, j as u32, 4)) / 0.25).clamp(0.0, 1.0));
                 if size > 0.0 {
                     let side = 0.3 * size;
                     let (ox, oy) = ((hash(i as u32, j as u32, 5) - 0.5) * 0.3, (hash(i as u32, j as u32, 6) - 0.5) * 0.3);
@@ -617,7 +623,9 @@ impl Land {
                 let bob = (t * 2.2).sin() * 0.12 * scale;
                 let tip = foot + vec2(0.0, -2.2 * scale + bob);
                 painter.line_segment([foot, tip], Stroke::new(1.0f32, fade(Color32::from_white_alpha((200.0 * shown) as u8))));
-                crate::theme::diamond(painter, tip, 3.5 + 0.08 * scale, grey(240.0).gamma_multiply(shown));
+                // Bigger on the map, among the pins there
+                let size = if self.cell > CELL_M { 6.5 } else { 3.5 + 0.08 * scale };
+                crate::theme::diamond(painter, tip, size, grey(250.0).gamma_multiply(shown));
             }
         }
     }
@@ -696,12 +704,12 @@ fn built(mesh: &mut Mesh, project: &impl Fn(f32, f32, f32) -> Pos2, turned: (f32
     };
     match stand {
         Stand::Nothing | Stand::Road => {}
-        // Two little houses, white walls under dark roofs
+        // A house, white walls under a dark roof, and a smaller one by it
         Stand::Houses => {
-            for (k, (u, v, half, tall)) in [(-0.2, -0.16, 0.15, 0.26), (0.19, 0.2, 0.13, 0.2)].into_iter().enumerate() {
-                let c = (x + u + h(10 + k as u32) * 0.12, y + v + h(20 + k as u32) * 0.12);
-                put(c, half, 0.0, tall, 236.0, 176.0);
-                put(c, half * 0.8, tall, 0.07, 70.0, 60.0);
+            for (k, (u, v, half, tall)) in [(-0.08, -0.06, 0.27, 0.42), (0.3, 0.3, 0.13, 0.26)].into_iter().enumerate() {
+                let c = (x + u + h(10 + k as u32) * 0.1, y + v + h(20 + k as u32) * 0.1);
+                put(c, half, 0.0, tall, 245.0, 190.0);
+                put(c, half * 0.75, tall, 0.1, 60.0, 50.0);
             }
         }
         // The middle of a town: a white tower over its square
@@ -729,8 +737,8 @@ fn built(mesh: &mut Mesh, project: &impl Fn(f32, f32, f32) -> Pos2, turned: (f32
         }
         // A dark tent, and its fire
         Stand::Camp => {
-            put((x - 0.08 + h(40) * 0.2, y + h(41) * 0.2), 0.17, 0.0, 0.22, 64.0, 34.0);
-            put((x + 0.2, y + 0.16), 0.055, 0.0, 0.06, 255.0, 255.0);
+            put((x - 0.1 + h(40) * 0.1, y + h(41) * 0.1), 0.26, 0.0, 0.3, 54.0, 30.0);
+            put((x + 0.28, y + 0.24), 0.08, 0.0, 0.08, 255.0, 255.0);
         }
         // A black slab, a white stone at its head
         Stand::Crypt => {
