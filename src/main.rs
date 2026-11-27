@@ -4902,6 +4902,72 @@ impl App {
                     println!("frame {frame}: at {:.0}, {:.0}, edge {edge:.0} m off, a strip coming in: {}", at[0], at[1], self.stream.as_ref().is_some_and(|s| s.busy()));
                 }
             }
+            // Goes round the views `--set tour=x,y,up,face,pitch;...`, in meters of the landscape, `up`
+            // over the ground or the water there, facing `face` degrees round as `--set face=` does
+            // and `pitch` degrees up, holding each `--set tour_hold=3` seconds with a shot at its
+            // end. With `--set tour_speed=20` it flies there that many meters a second, so the world
+            // moves on a strip at a time on the way, rather than going there at once. For looking the
+            // water over from everywhere it's seen, see water.rs.
+            ("tour", f) => {
+                let settings = settings_from_args();
+                let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+                let views: Vec<Vec<f64>> = setting("tour").unwrap_or_default().split(';').map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect::<Vec<f64>>()).filter(|v| v.len() == 5).collect();
+                let hold = setting("tour_hold").and_then(|v| v.parse().ok()).unwrap_or(3.0);
+                let speed: Option<f64> = setting("tour_speed").and_then(|v| v.parse().ok());
+                if f <= 1 {
+                    self.player = None;
+                    self.play.leg = 0;
+                    self.play.leg_end = f64::INFINITY;
+                    self.play.fly_last = run_time;
+                }
+                let dt = (run_time - self.play.fly_last).clamp(0.0, 0.1);
+                self.play.fly_last = run_time;
+                let Some(view) = views.get(self.play.leg as usize) else {
+                    return;
+                };
+                let origin = [self.world.origin[0] as f64, self.world.origin[1] as f64];
+                let spot = Vector3::new(view[0] * vpm - origin[0], view[1] * vpm - origin[1], 0.0);
+                let top = |x: f64, y: f64| {
+                    let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(x as i64, y as i64, z))).map_or(0.0, |z| z as f64 + 1.0);
+                    ground.max(self.water.surface_at(x, y))
+                };
+                let there = Vector3::new(spot.x, spot.y, top(spot.x, spot.y) + view[2] * vpm);
+                let to = there - eye;
+                let arrived = self.play.leg_end.is_finite();
+                if !arrived {
+                    let step = match speed {
+                        Some(s) if to.xy().norm() > s * vpm * dt => self.keep_up(Vector3::new(to.x, to.y, 0.0).normalize() * s * vpm * dt),
+                        _ => Vector3::new(to.x, to.y, 0.0),
+                    };
+                    let mut at = eye + step;
+                    // Over the land on the way, and down to the view's height once there
+                    at.z = if step.xy().norm() < to.xy().norm() { (top(at.x, at.y) + view[2].max(6.0) * vpm).min(self.world.size[2] as f64 - 2.0 * vpm) } else { there.z };
+                    self.camera.position = voxels_to_camera(at, self.world.size);
+                    self.camera.rotation.z = view[3].to_radians() - std::f64::consts::FRAC_PI_2;
+                    self.camera.rotation.x = view[4].to_radians();
+                    if (at - there).xy().norm() < 0.5 && !self.stream.as_ref().is_some_and(|s| s.teleport.is_some()) {
+                        self.play.leg_end = run_time + hold;
+                        println!("frame {frame}: tour view {} at {:.1}, {:.1}, {:.1} m up", self.play.leg, view[0], view[1], at.z / vpm);
+                    }
+                } else {
+                    // Kept there, as the water under it may still be moving
+                    self.camera.position = voxels_to_camera(Vector3::new(there.x, there.y, eye.z), self.world.size);
+                    if run_time >= self.play.leg_end {
+                        if let Some(capture) = &mut self.capture {
+                            capture.shots.push(f + 2);
+                        }
+                        println!("frame {frame}: tour shot {} at frame {}", self.play.leg, f + 2);
+                        self.water.report(&self.command_buffer_allocator, &self.queue);
+                        self.play.leg += 1;
+                        self.play.leg_end = f64::INFINITY;
+                        if self.play.leg as usize >= views.len()
+                            && let Some(capture) = &mut self.capture
+                        {
+                            capture.frames = (f + 4) as u32;
+                        }
+                    }
+                }
+            }
             // Flies over the land `--set fly_speed=27` meters a second, as flying with shift held is,
             // turning sharply round every `--set fly_turn=8` seconds or so, to see the world keeps up
             // as it moves on a strip at a time, see stream.rs
