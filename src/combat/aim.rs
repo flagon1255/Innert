@@ -11,6 +11,9 @@ use super::signatures::arsenal::{RUNE_ROUND, SPECTRUM_FAN, SPECTRUM_REACH, STAR_
 use super::signatures::miracles::{GLACIER_FROM, GLACIER_STEP, GLACIER_STEPS, GRASP_ROUND, HEAVEN_ROUND, HELIX_REACH, STORM_ROUND, TRIUNE_FAN};
 use super::signatures::tempest::{CHARGE_REACH, FIELD_ROUND, FORK_REACH, ORB_REACH, STEP_FROM, STEP_GAP, STEP_STRIKES, TETHER_REACH};
 use super::signatures::thunder::{BRAND_REACH, GRAVE_ROUND, JUDGE_ROUND, RAIL_REACH, RUNNER_REACH, RUNNER_ROUND, TORRENT_FAN, TORRENT_REACH, TWIN_REACH};
+use super::signatures::wilds::{BOULDER_REACH, BRAMBLE_REACH, CINDER_FAN, ICE_REACH, KINDLE_REACH, METEOR_ROUND, SNARE_FAN, SNARE_REACH, WHIRL_REACH};
+use super::signatures::summons::CALL_REACH;
+use super::signatures::arcana::{CAGE_REACH, CAGE_ROUND, GLASS_ROUND, HARVEST_REACH, MISSILE_REACH, SANCTUM_REACH, SANCTUM_ROUND, SMITE_REACH};
 use super::signatures::powers::{
     ANVIL_REACH, BREATH_REACH, FISSURE_FROM, FISSURE_STEP, FISSURE_STEPS, FISTS_REACH, GALE_FROM, GALE_STEP, GALE_STEPS, HOOK_REACH, JAVELIN_REACH, LANCE_REACH, LASH_FROM, NOVA_REACH, RING_REACH, SEEKER_REACH, SHRAPNEL_REACH, STAKE_REACH, WHEEL_REACH, power_timing, wave_of,
 };
@@ -99,6 +102,16 @@ pub(super) fn power_aim(power: Power, profile: &Profile) -> Option<SpotAim> {
         Power::Judgment => Some(SpotAim { reach: SPOT_REACH, least: 3.0, radius: JUDGE_ROUND }),
         Power::Stormrunners => Some(SpotAim { reach: RUNNER_REACH, least: 3.0, radius: RUNNER_ROUND }),
         Power::Gravebolt => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: GRAVE_ROUND }),
+        // The other schools', see wilds.rs and arcana.rs: as wide as the meteor strikes, the
+        // hourglass slows and the sanctuary stands, and a bramble wall's seed, which comes down
+        // nearer, the wall bursting up across the way there
+        Power::Meteor => Some(SpotAim { reach: SPOT_REACH, least: 4.0, radius: METEOR_ROUND }),
+        Power::Bramble => Some(SpotAim { reach: BRAMBLE_REACH, least: 3.0, radius: 1.5 }),
+        Power::Boulder => Some(SpotAim { reach: BOULDER_REACH, least: 4.0, radius: 2.0 }),
+        Power::Hourglass => Some(SpotAim { reach: SPOT_REACH, least: 2.0, radius: GLASS_ROUND }),
+        Power::Sanctuary => Some(SpotAim { reach: SANCTUM_REACH, least: 0.0, radius: SANCTUM_ROUND }),
+        // Where a necromancer's dead are to rise, see summons.rs
+        Power::Phalanx | Power::Archers | Power::Colossus | Power::Wraiths | Power::Corpses => Some(SpotAim { reach: CALL_REACH, least: 2.0, radius: 2.5 }),
         _ => None,
     }
 }
@@ -474,6 +487,21 @@ pub(super) fn power_way(power: Power) -> PowerWay {
         Power::TwinArc => PowerWay::Ray { reach: TWIN_REACH, fan: &[0.0], radius: 2.4 },
         Power::Torrent => PowerWay::Ray { reach: TORRENT_REACH, fan: &TORRENT_FAN, radius: 1.0 },
         Power::Judgment | Power::Gravebolt => PowerWay::Spot,
+        // The other schools', see wilds.rs and arcana.rs: a meteor, a bramble wall, an hourglass
+        // and a sanctuary onto the ring; cinders fanned out wide, an arrow of fire, a lance of
+        // ice, rime snares in a fan, a boulder, an orb of death, a shard of bone and a brand of
+        // light at what each first meets; missiles at what's round what the crosshair's on
+        Power::Meteor | Power::Bramble | Power::Hourglass | Power::Sanctuary => PowerWay::Spot,
+        Power::CinderWhirl => PowerWay::Ray { reach: WHIRL_REACH, fan: &CINDER_FAN, radius: 0.8 },
+        Power::Kindling => PowerWay::Ray { reach: KINDLE_REACH, fan: &[0.0], radius: 1.5 },
+        Power::IceLance => PowerWay::Ray { reach: ICE_REACH, fan: &[0.0], radius: 1.5 },
+        Power::RimeSnare => PowerWay::Ray { reach: SNARE_REACH, fan: &SNARE_FAN, radius: 1.0 },
+        Power::Boulder => PowerWay::Spot,
+        Power::Missiles => PowerWay::Seek { reach: MISSILE_REACH },
+        Power::SoulHarvest => PowerWay::Ray { reach: HARVEST_REACH, fan: &[0.0], radius: 1.5 },
+        Power::BoneCage => PowerWay::Ray { reach: CAGE_REACH, fan: &[0.0], radius: CAGE_ROUND },
+        Power::Smite => PowerWay::Ray { reach: SMITE_REACH, fan: &[0.0], radius: 1.5 },
+        Power::Phalanx | Power::Archers | Power::Colossus | Power::Wraiths | Power::Corpses => PowerWay::Spot,
     }
 }
 

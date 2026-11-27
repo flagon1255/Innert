@@ -61,13 +61,13 @@ const GRAVES: usize = 16;
 /// fast it walks, in meters a second, how far off it hunts and how far it reaches, in meters, how
 /// long its blow takes, when in that it lands, and how much of what it does drains back
 pub(in crate::combat) const RISE_SECONDS: f64 = 0.9;
-const CRUMBLE_SECONDS: f64 = 0.6;
+pub(in crate::combat) const CRUMBLE_SECONDS: f64 = 0.6;
 const RISEN_SPEED: f64 = 4.2;
 const RISEN_HUNT: f64 = 22.0;
 const RISEN_REACH: f64 = 1.3;
 const BLOW_SECONDS: f64 = 0.6;
 const BLOW_LANDS: f64 = 0.55;
-const RISEN_DRAIN: f64 = 0.15;
+pub(in crate::combat) const RISEN_DRAIN: f64 = 0.15;
 /// A risen skeleton's blow next to what the skull focus's spell does
 const RISEN_POWER: f64 = 0.55;
 
@@ -84,25 +84,58 @@ pub(in crate::combat) struct Risen {
     pub(in crate::combat) age: f64,
     /// How far through its blow it is, if it's swinging
     pub(in crate::combat) swing: Option<f64>,
+    /// What it was raised as, and how it fights, see summons.rs
+    pub(in crate::combat) kind: Minion,
+    /// Where a phalanx's skeleton stands its ground, or how fast a wraith's flying, in voxels
+    pub(in crate::combat) post: Vector3<f64>,
+}
+
+/// What one of the dead raised fights as: Raise Dead's skeletons and the corpses of the slain hunt
+/// down what's near; the rest are a necromancer's summons, see summons.rs
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::combat) enum Minion {
+    /// Raised by Raise Dead
+    Raised,
+    /// Armored skeletons standing their ground in a line, striking what comes near it
+    Phalanx,
+    /// Skeletons with bows, keeping back and shooting
+    Archer,
+    /// A grave brute, slow and huge, its slab of a gravestone striking all round where it lands
+    Colossus,
+    /// Wraiths flying at what they're after and swooping through it
+    Wraith,
+    /// One of the slain, risen as what it was
+    Corpse,
 }
 
 /// Where the slain lie, to be raised, and for how much longer, and whose they were, so none is
 /// counted twice
 #[derive(Default)]
 pub(in crate::combat) struct Graves {
-    spots: Vec<(Vector3<f64>, f64)>,
+    /// Where each lies, for how much longer, and what it was
+    spots: Vec<(Vector3<f64>, f64, Look)>,
     seen: Vec<u32>,
 }
 
 impl Graves {
     pub(in crate::combat) fn recenter(&mut self, shift: Vector3<f64>) {
-        for (at, _) in &mut self.spots {
+        for (at, _, _) in &mut self.spots {
             *at -= shift;
         }
     }
+
+    /// The slain lying within `reach` voxels of `at`, the nearest first, `most` at most, taken up
+    /// to be raised: where each lies and what it was
+    pub(in crate::combat) fn take_near(&mut self, at: Vector3<f64>, reach: f64, most: usize) -> Vec<(Vector3<f64>, Look)> {
+        let mut near: Vec<(Vector3<f64>, Look)> = self.spots.iter().filter(|(g, _, _)| (g - at).xy().norm() < reach).map(|(g, _, l)| (*g, *l)).collect();
+        near.sort_by(|a, b| (a.0 - at).norm().total_cmp(&(b.0 - at).norm()));
+        near.truncate(most);
+        self.spots.retain(|(g, _, _)| !near.iter().any(|(n, _)| (n - g).norm() < 1e-6));
+        near
+    }
 }
 
-fn hostile(a: &Animal) -> bool {
+pub(in crate::combat) fn hostile(a: &Animal) -> bool {
     a.health > 0.0 && !a.look.is_pet() && a.look.build().is_some()
 }
 
@@ -460,7 +493,7 @@ impl Combat {
         let ground = Combat::floor_at(arena, at);
         let profile = p.profile.clone();
         // The slain lying nearest first, then round the ring
-        let mut spots: Vec<(Vector3<f64>, bool)> = self.graves.spots.iter().filter(|(g, _)| (g - ground).xy().norm() < GRAVE_REACH * vpm).map(|(g, _)| (*g, true)).collect();
+        let mut spots: Vec<(Vector3<f64>, bool)> = self.graves.spots.iter().filter(|(g, _, _)| (g - ground).xy().norm() < GRAVE_REACH * vpm).map(|(g, _, _)| (*g, true)).collect();
         spots.sort_by(|a, b| (a.0 - ground).norm().total_cmp(&(b.0 - ground).norm()));
         spots.truncate(RAISED);
         let turn = random(&mut self.rng) * TAU;
@@ -483,7 +516,7 @@ impl Combat {
         for (k, (spot, grave)) in spots.into_iter().enumerate() {
             let feet = Combat::floor_at(arena, spot);
             if grave {
-                self.graves.spots.retain(|(g, _)| (g - spot).norm() > 0.1 * vpm);
+                self.graves.spots.retain(|(g, _, _)| (g - spot).norm() > 0.1 * vpm);
             }
             let look = if grave || k == 1 { Look::ArmoredSkeleton } else { Look::Skeleton };
             let heading = (-toward.y).atan2(-toward.x) + (random(&mut self.rng) - 0.5) * 0.8;
@@ -494,7 +527,7 @@ impl Combat {
                 profile: profile.clone(),
                 damage,
                 phantom: false,
-                risen: Some(Risen { look, heading, phase: 0.0, moving: false, age: -0.2 * k as f64, swing: None }),
+                risen: Some(Risen { look, heading, phase: 0.0, moving: false, age: -0.2 * k as f64, swing: None, kind: Minion::Raised, post: feet }),
             });
             self.sparks(feet + up * 0.2 * vpm, 12, 2.4, Element::look(Some(Element::Void)), 0.6, 0.6);
             for _ in 0..6 {
@@ -512,16 +545,16 @@ impl Combat {
 
     /// Where the slain are lying, for the dead to be raised from: anything that fights, as it falls
     pub(in crate::combat) fn mark_graves(&mut self, arena: &Arena, dt: f64) {
-        for (_, life) in &mut self.graves.spots {
+        for (_, life, _) in &mut self.graves.spots {
             *life -= dt;
         }
-        self.graves.spots.retain(|(_, life)| *life > 0.0);
+        self.graves.spots.retain(|(_, life, _)| *life > 0.0);
         let alive: Vec<u32> = arena.animals.iter().filter(|a| a.health > 0.0).map(|a| a.id).collect();
         self.graves.seen.retain(|id| !alive.contains(id) && arena.animals.iter().any(|a| a.id == *id));
         for a in arena.animals.iter().filter(|a| a.health <= 0.0 && a.look.build().is_some() && !a.look.is_pet()) {
             if !self.graves.seen.contains(&a.id) {
                 self.graves.seen.push(a.id);
-                self.graves.spots.push((a.position, GRAVE_SECONDS));
+                self.graves.spots.push((a.position, GRAVE_SECONDS, a.look));
             }
         }
         if self.graves.spots.len() > GRAVES {
@@ -561,6 +594,12 @@ impl Combat {
             f.risen = Some(r);
             return;
         }
+        // A necromancer's summons fight each their own way, see summons.rs
+        if !matches!(r.kind, Minion::Raised | Minion::Corpse) {
+            f.risen = Some(r);
+            self.walk_minion(arena, f, dt);
+            return;
+        }
         // A blow going on, landing partway through
         if let Some(s) = r.swing {
             let next = s + dt / BLOW_SECONDS;
@@ -588,11 +627,14 @@ impl Combat {
         // What it's after: the nearest thing that fights within its hunting reach, or else the
         // player, to keep near
         let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
-        let prey = (0..arena.animals.len())
-            .filter(|&i| hostile(&arena.animals[i]))
-            .map(|i| ((arena.animals[i].position - f.position).xy().norm(), i))
-            .filter(|&(d, _)| d < RISEN_HUNT * vpm)
-            .min_by(|a, b| a.0.total_cmp(&b.0));
+        // What it's been sent at, if it has been and that's still up, see summons.rs
+        let prey = self.ordered_prey(arena).map(|i| ((arena.animals[i].position - f.position).xy().norm(), i)).or_else(|| {
+            (0..arena.animals.len())
+                .filter(|&i| hostile(&arena.animals[i]))
+                .map(|i| ((arena.animals[i].position - f.position).xy().norm(), i))
+                .filter(|&(d, _)| d < RISEN_HUNT * vpm)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+        });
         let (goal, stop) = match prey {
             Some((_, i)) => (arena.animals[i].position, (RISEN_REACH + arena.animals[i].look.body().1 * 0.7) * vpm),
             None => (feet, 2.5 * vpm),
@@ -624,7 +666,8 @@ impl Combat {
     /// striking, and sinking back into it as it crumbles; and its eyes' glow over its head
     pub(in crate::combat) fn risen_instances(&self, f: &Familiar, r: &Risen, view: &View, out: &mut Vec<(f64, AnimalInstance)>) {
         let vpm = view.vpm;
-        let height = 1.9 * vpm;
+        // A grave brute's as tall again as a skeleton
+        let height = if r.look == Look::GraveBrute { 3.3 } else { 1.9 } * vpm;
         let rising = (r.age / RISE_SECONDS).clamp(0.0, 1.0);
         let sinking = (f.life / CRUMBLE_SECONDS).clamp(0.0, 1.0);
         let shown = rising.min(sinking);
