@@ -17,6 +17,9 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
    - Then (2026-11-27, "Maybe lets not load any world at start"): no world built at launch; the
      start-up menu opens straight after the GPU/shaders, with the map as its backdrop, and the
      world is built behind the loading screen on New or Continue. Same agent, separate commit.
+   - And (2026-11-27, screenshot of the menu's controls text, "Just add options windows in game,
+     to see these"): the controls list leaves the start-up menu for a Controls window opened from
+     the Esc menu and the F1 settings, grouped, checked against the real bindings.
 
 5. **Lamp posts on some roads** (2026-11-27, "Some roads could have lamp posts"). RUNNING in
    `roads` (the roads agent again).
