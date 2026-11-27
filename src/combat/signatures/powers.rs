@@ -116,6 +116,20 @@ pub(in crate::combat) enum Shape {
     Lash,
     /// The Static Field's charge cast onto the ring
     Static,
+    /// A Stormrunner racing off along the ground after what's near, see thunder.rs
+    Runner,
+    /// A Thundersplit Arrow, `split`ting at what it strikes, or one of the four it splits into
+    Volt { split: bool },
+    /// A Railshot's slug, through everything in its line
+    Rail,
+    /// A Twin Arc's two chakrams, out `reach` meters and, once `back`, coming back to the hand
+    Twin { back: bool, reach: u8 },
+    /// A Judgment Bolt's mote sent up over the ring
+    Summon,
+    /// One spark of a Galvanic Torrent
+    Spark,
+    /// Grave Lightning's mote cast onto the ring
+    Grave,
 }
 
 /// What they leave going a while
@@ -178,6 +192,13 @@ pub(in crate::combat) enum Lasting {
     /// Overcharge breaking out from `position` to `radius` meters, `hit` what it's reached, `owed`
     /// how charged it was
     Discharge,
+    /// A Railshot's rail hanging from `position` along `velocity`, coils of it fading, see
+    /// thunder.rs
+    Rail,
+    /// A Judgment Bolt's storm gathering over the ring, its bolt come down once `owed` is set
+    Judgment,
+    /// Grave Lightning breaking up out of the ground round `position`, `owed` times so far
+    Grave,
 }
 
 /// How many steps a fissure takes, how far apart, in meters, and seconds between each, and how far
@@ -267,7 +288,7 @@ pub(in crate::combat) fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
 /// How long a power's own move takes, for those shot, thrown or cast with a move of their own, and
 /// when what it lets go leaves the weapon, as part of it
 pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
-    if let Some(timing) = super::arsenal::arsenal_timing(power).or_else(|| super::miracles::miracle_timing(power)).or_else(|| super::tempest::tempest_timing(power)) {
+    if let Some(timing) = super::arsenal::arsenal_timing(power).or_else(|| super::miracles::miracle_timing(power)).or_else(|| super::tempest::tempest_timing(power)).or_else(|| super::thunder::thunder_timing(power)) {
         return timing;
     }
     match power {
@@ -324,7 +345,11 @@ pub(super) fn topping_out(from: Vector3<f64>, top: Vector3<f64>, vpm: f64) -> (V
 
 /// The move a power's shot, thrown or cast with, from where the weapon's held at rest
 fn power_keys(power: Power, profile: &Profile) -> Vec<(f64, Pose, bool)> {
-    if let Some(keys) = super::arsenal::arsenal_keys(power, profile).or_else(|| super::miracles::miracle_keys(power, profile)).or_else(|| super::tempest::tempest_keys(power, profile)) {
+    if let Some(keys) = super::arsenal::arsenal_keys(power, profile)
+        .or_else(|| super::miracles::miracle_keys(power, profile))
+        .or_else(|| super::tempest::tempest_keys(power, profile))
+        .or_else(|| super::thunder::thunder_keys(power, profile))
+    {
         return keys;
     }
     let (_, release) = power_timing(power);
@@ -570,7 +595,13 @@ impl Combat {
         };
         // Its own move going on, what it lets go leaving the weapon as the move lets it go: once,
         // or a katar's fists one after another
+        // A blade charged by the Stormbrand crackling on, see thunder.rs
+        self.stormbrand_crackles(arena, weapon, power, dt);
         if let Action::Power { t, length } = self.action {
+            // The second storm's gathering in the weapon through its move, see thunder.rs
+            if power.thunder() {
+                self.thunder_gathers(arena, weapon, power, t / length, dt);
+            }
             for (shot, at) in power_releases(power).into_iter().enumerate() {
                 let at = at * length;
                 if t <= at && t + dt > at {
@@ -595,7 +626,9 @@ impl Combat {
         let shouldered = kind == Kind::Ranged && profile.build != Build::None && profile.build != Build::Siege && profile.style != Style::Lob && !line_out;
         if own || shouldered || kind == Kind::Magic {
             if self.power.aiming {
-                if controls.aiming {
+                // A torrent pours out only so long, then lets go of itself, see thunder.rs
+                let spent = power == Power::Torrent && self.power.aimed >= super::thunder::TORRENT_MOST;
+                if controls.aiming && !spent {
                     // Held, aiming: right click does nothing else meanwhile, no heavy blow, no draw;
                     // a priest's spear forming in the hand meanwhile, greater the longer it's held
                     self.power.aimed += dt;
@@ -609,6 +642,10 @@ impl Combat {
                         let hand = self.held_point(weapon, arena.view, false);
                         let charge = self.spear_charge();
                         self.overcharge_gathers(arena, hand, charge, dt);
+                    }
+                    // A torrent pouring out of it, see thunder.rs
+                    if power == Power::Torrent {
+                        self.torrent_pours(arena, weapon, dt);
                     }
                     controls.heavy = false;
                     controls.aiming = false;
@@ -793,13 +830,14 @@ impl Combat {
             }
         };
         // The third batch's, see arsenal.rs
-        if self.unleash_arsenal(arena, weapon, power, base) || self.unleash_miracle(arena, weapon, power, shot, base) || self.unleash_tempest(arena, weapon, power, base) {
+        if self.unleash_arsenal(arena, weapon, power, base) || self.unleash_miracle(arena, weapon, power, shot, base) || self.unleash_tempest(arena, weapon, power, base) || self.unleash_thunder(arena, weapon, power, base) {
             return;
         }
         match power {
             Power::Starbreak | Power::Shadowstep | Power::Ringstorm | Power::Spectrum | Power::Runeburst => {}
             Power::Vigil | Power::Heavenfall | Power::Triune | Power::Stormcall | Power::Glacier | Power::Shadowgrasp | Power::Helix => {}
             Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge => {}
+            Power::Stormbrand | Power::Stormrunners | Power::Thundersplit | Power::Railshot | Power::TwinArc | Power::Judgment | Power::Torrent | Power::Gravebolt => {}
             // Crescents flying on from the blow, out of the chest, or a whip's low over the ground
             // Each at what the crosshair, or its fan either side, first meets within its reach, or
             // as far as that, as its rings showed, see aim.rs; a whip's on along the ground
@@ -1362,6 +1400,11 @@ impl Combat {
         if matches!(shape, Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static) && self.tempest_flies(arena, p, shape, dt) {
             return true;
         }
+        // The second storm's, see thunder.rs: runners skimming the ground, the twin chakrams out
+        // and back with their line between them, sparks crackling off the rest
+        if let Some(gone) = self.thunder_flies(arena, p, shape, dt) {
+            return gone;
+        }
         if shape == Shape::Shade {
             self.shade_trails(p, dt);
         }
@@ -1675,6 +1718,7 @@ impl Combat {
                 true
             }
             Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static => self.tempest_strikes(arena, p, shape, i, at),
+            Shape::Runner | Shape::Volt { .. } | Shape::Rail | Shape::Twin { .. } | Shape::Summon | Shape::Spark | Shape::Grave => self.thunder_strikes(arena, p, shape, i, at),
         }
     }
 
@@ -1742,6 +1786,7 @@ impl Combat {
             }
             Shape::Helix { .. } => self.power_pop(arena, &profile, at, 1.2, p.damage * 0.5, None),
             Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static => self.tempest_lands(arena, p, shape, at),
+            Shape::Runner | Shape::Volt { .. } | Shape::Rail | Shape::Twin { .. } | Shape::Summon | Shape::Spark | Shape::Grave => self.thunder_lands(arena, p, shape, at),
             // Breaking up into sparks and a flash where it ends
             Shape::Wave { .. } => {
                 self.sparks(at, 16, 3.5, look, 0.3, 0.45);
@@ -2022,6 +2067,7 @@ impl Combat {
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => {
                 self.tempest_zone(arena, z, kind, dt);
             }
+            Lasting::Rail | Lasting::Judgment | Lasting::Grave => self.thunder_zone(arena, z, kind, dt),
             Lasting::Runes | Lasting::Sigil => self.runes_go_on(arena, z, kind == Lasting::Sigil),
             // A Starbreak's crack, a short fissure, see arsenal.rs
             Lasting::Crack => {
@@ -2311,6 +2357,7 @@ impl Combat {
             Lasting::Knife { .. } | Lasting::Crack | Lasting::Runes | Lasting::Sigil => {}
             Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => self.miracle_zone_ends(arena, z, kind),
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => {}
+            Lasting::Rail | Lasting::Judgment | Lasting::Grave => {}
         }
     }
 
@@ -2478,6 +2525,7 @@ impl Combat {
             Shape::Step | Shape::Ray | Shape::Glyph | Shape::Sigil => out.extend(self.arsenal_shot_instances(p, shape, view)),
             Shape::Vigil | Shape::Ascent | Shape::Storm | Shape::Grasp | Shape::Helix { .. } => out.extend(self.miracle_shot_instances(p, shape, view)),
             Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static => out.extend(self.tempest_shot_instances(p, shape, view)),
+            Shape::Runner | Shape::Volt { .. } | Shape::Rail | Shape::Twin { .. } | Shape::Summon | Shape::Spark | Shape::Grave => out.extend(self.thunder_shot_instances(p, shape, view)),
         }
         out
     }
@@ -2503,6 +2551,7 @@ impl Combat {
             Lasting::Runes | Lasting::Sigil => out.extend(self.runes_instances(z, view, kind == Lasting::Sigil)),
             Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => out.extend(self.miracle_zone_instances(z, kind, view)),
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => out.extend(self.tempest_zone_instances(z, kind, view)),
+            Lasting::Rail | Lasting::Judgment | Lasting::Grave => out.extend(self.thunder_zone_instances(z, kind, view)),
             // A glowing crack along the ground as far as it's split
             Lasting::Fissure | Lasting::Crack => {
                 let to = z.position + z.velocity * z.owed.max(0.5) + up * 0.15 * vpm;
@@ -2611,6 +2660,7 @@ impl Combat {
             Lasting::Fissure | Lasting::Line | Lasting::Downpour | Lasting::Bound | Lasting::Knife { .. } | Lasting::Crack => None,
             Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => self.miracle_light(z, kind),
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => self.tempest_light(z, kind),
+            Lasting::Rail | Lasting::Judgment | Lasting::Grave => self.thunder_light(z, kind),
             // A circle of runes glowing as it's written, blazing as it blasts up
             Lasting::Runes | Lasting::Sigil => {
                 let blaze = if z.dwell > 0.0 { (1.0 - (age - z.dwell) / 0.4).max(0.0) * 2.0 } else { 0.25 + 0.1 * z.owed };

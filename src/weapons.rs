@@ -1924,12 +1924,32 @@ pub enum Power {
     Thunderstep,
     /// Held to gather a charge, then let go all round in lightning leaping out to everything near
     Overcharge,
+    /// A blade raised for lightning to strike it, slashed down to throw the bolt on into what's
+    /// ahead, and left charged a while, each blow calling lightning down: on a sword, greatsword,
+    /// katana, axe or dagger, see combat/signatures/thunder.rs
+    Stormbrand,
+    /// A slam sending lightning racing off along the ground after what's near: on a hammer, maul
+    /// or war pick
+    Stormrunners,
+    /// An arrow of lightning splitting at the first thing it strikes into four leaping on to the
+    /// next: on a bow
+    Thundersplit,
+    /// A dead straight rail of lightning shot through everything in a line: on a gun or crossbow
+    Railshot,
+    /// Two chakrams thrown wide and back with lightning strung between them: on a chakram
+    TwinArc,
+    /// A storm gathering over the ring and one great bolt coming down out of it
+    Judgment,
+    /// Lightning poured out of the hand while right click's held, a last surge as it's let go
+    Torrent,
+    /// Lightning breaking up out of the ground round the ring, draining what it strikes
+    Gravebolt,
 }
 
 impl Power {
     /// Every one of them
     #[cfg(test)]
-    pub const ALL: [Power; 49] = [
+    pub const ALL: [Power; 57] = [
         Power::Crescent,
         Power::Rending,
         Power::WindCut,
@@ -1979,6 +1999,14 @@ impl Power {
         Power::StaticField,
         Power::Thunderstep,
         Power::Overcharge,
+        Power::Stormbrand,
+        Power::Stormrunners,
+        Power::Thundersplit,
+        Power::Railshot,
+        Power::TwinArc,
+        Power::Judgment,
+        Power::Torrent,
+        Power::Gravebolt,
     ];
 
     /// Whether it has a move of its own on right click, rather than being carried by a melee
@@ -2015,7 +2043,12 @@ impl Power {
 
     /// Whether it's lightning whatever's in the weapon, see combat/signatures/tempest.rs
     pub fn lightning(self) -> bool {
-        matches!(self, Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge)
+        matches!(self, Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge) || self.thunder()
+    }
+
+    /// Whether it's of the second storm of lightning, see combat/signatures/thunder.rs
+    pub fn thunder(self) -> bool {
+        matches!(self, Power::Stormbrand | Power::Stormrunners | Power::Thundersplit | Power::Railshot | Power::TwinArc | Power::Judgment | Power::Torrent | Power::Gravebolt)
     }
 
     /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
@@ -2111,6 +2144,14 @@ impl Power {
             Power::StaticField => "Static Field",
             Power::Thunderstep => "Thunderstep Dash",
             Power::Overcharge => "Overcharge Discharge",
+            Power::Stormbrand => "Stormbrand Edge",
+            Power::Stormrunners => "Stormrunner Slam",
+            Power::Thundersplit => "Thundersplit Arrow",
+            Power::Railshot => "Galvanic Railshot",
+            Power::TwinArc => "Twin Arc",
+            Power::Judgment => "Judgment Bolt",
+            Power::Torrent => "Galvanic Torrent",
+            Power::Gravebolt => "Grave Lightning",
         }
     }
 
@@ -2164,6 +2205,11 @@ impl Power {
             Power::Forkbolt | Power::Thunderstep => 6.0,
             Power::CracklingOrb | Power::Stormlash | Power::StaticField => 8.0,
             Power::Overcharge => 9.0,
+            Power::TwinArc => 7.0,
+            Power::Thundersplit | Power::Railshot => 8.0,
+            Power::Stormrunners | Power::Torrent => 9.0,
+            Power::Stormbrand | Power::Gravebolt => 10.0,
+            Power::Judgment => 12.0,
             Power::Runeburst => 10.0,
             Power::Spectrum => 8.0,
             _ => 8.0,
@@ -2177,6 +2223,9 @@ impl Power {
             Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Overcharge => 2.5,
             Power::Beacon | Power::Thunderspear | Power::Vigil | Power::Triune | Power::Glacier | Power::Shadowgrasp => 2.5,
             Power::RaiseDead | Power::Runeburst | Power::Heavenfall | Power::Stormcall => 3.0,
+            Power::Torrent => 2.0,
+            Power::Gravebolt => 3.0,
+            Power::Judgment => 3.5,
             _ => 0.0,
         }
     }
@@ -2192,6 +2241,9 @@ impl Power {
             Power::Shadowstep | Power::Ringstorm => "Hold right click to aim, let go to use it",
             Power::Thunderspear => "Hold right click to aim, the spear forming in the hand, longer for a greater spear; let go to hurl it",
             Power::Overcharge => "Hold right click to gather the charge, longer for a harder discharge; let go to set it loose",
+            Power::Torrent => "Hold right click to pour it out, up to 3 s while the mana lasts; let go for a last surge",
+            Power::Stormbrand | Power::Stormrunners | Power::TwinArc => "Right click: a move of its own when it's ready, aimed while it's held",
+            Power::Thundersplit => "Right click: loosed when it's ready, aimed while it's held, a draw while it comes round",
             Power::Cloudburst => "Right click: loosed high when it's ready, a draw while it comes round",
             _ => "Right click",
         }
@@ -2249,6 +2301,14 @@ impl Power {
             Power::StaticField => "A charge of lightning cast onto the ring charges the ground 3.5 meters round for 4 s, a bolt leaping up into whatever walks onto it, shocking and slowing it.",
             Power::Thunderstep => "You dash 9 meters on ahead in a flash, sparks streaming off behind, lightning striking down five times along the way you went.",
             Power::Overcharge => "Held, lightning gathers crackling in the weapon; let go, it breaks out all round, 10 meters, leaping to every enemy as it reaches it and throwing it back, harder the longer it was held.",
+            Power::Stormbrand => "The blade raised to the sky is struck by lightning and slashed down, the bolt leaping on off it into what the crosshair's on and two more near it, 14 meters; for 8 s after, the blade crackles charged and every blow it lands calls lightning down onto what it strikes.",
+            Power::Stormrunners => "Slammed into the ground, the weapon sends five runners of lightning racing off along it to the ring, 16 meters at most, each turning after an enemy within 6 meters of it and bursting up into it.",
+            Power::Thundersplit => "An arrow of lightning loosed at the crosshair splits at the first thing it strikes into four that leap on to the nearest within 12 meters; where it strikes the ground, lightning comes down onto it.",
+            Power::Railshot => "Lightning winds round the muzzle and goes off as a dead straight rail of it, 45 meters, through everything in the line, coils of it hanging along the way it went.",
+            Power::TwinArc => "Two chakrams thrown wide, 15 meters out and back, lightning strung between them up to 5 meters across, shocking everything the line crosses each way.",
+            Power::Judgment => "A mote sent up over the ring gathers a storm there, lightning crawling in over the ground under it, and a moment later one great bolt comes down, striking everything within 5 meters, hardest within 2.5, and throwing it back.",
+            Power::Torrent => "Held, lightning pours out of the weapon at what's ahead, 11 meters, as long as there's mana, up to 3 s; let go, it ends in a surge of six bolts at once.",
+            Power::Gravebolt => "A mote of storm sent to the ring, and lightning breaks up out of the ground round it, 4 meters, eight times, under each enemy there first; whatever it strikes gives a little of its life back to you.",
         };
         // These are theirs whatever's in them
         if matches!(self, Power::Thunderspear | Power::RaiseDead | Power::Vigil | Power::Heavenfall | Power::Triune) {
