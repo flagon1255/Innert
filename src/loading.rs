@@ -7,6 +7,9 @@
 //! under it the very land the player will stand on rising as the world's built, see land.rs, then
 //! the bar, what's being made and a tip. The same screen's shown over the game while the world's
 //! built afresh round where it goes on, a game started or a realm gone to, see Board.
+//!
+//! The land answers the mouse, see touch.rs, and once the game's loaded it glides back behind the
+//! menu Innert starts on and stays there, dimmed, until a game's begun, see Backdrop.
 
 use std::f32::consts::TAU;
 use std::path::PathBuf;
@@ -46,8 +49,10 @@ use crate::worldgen::{self, TerrainSettings};
 use crate::{App, Capture, Gpu, Loaded, get_swapchain_images, save_screen, settings_from_args, startup, window_attributes};
 
 mod land;
+mod touch;
 
 use land::{Land, Phase};
+use touch::Touch;
 
 /// The loading screen's drawn this often
 const FRAME_TIME: Duration = Duration::from_micros(16_667);
@@ -523,6 +528,8 @@ impl Launcher {
             preview,
             loaded: None,
             cost: Cost::default(),
+            touch: Touch::default(),
+            display_frame: FRAME_TIME,
         };
         Launcher { progress, messages, loader: Some(loader), state: State::Loading(Box::new(loading)), timed: false }
     }
@@ -587,7 +594,7 @@ impl Launcher {
             return;
         };
         // The window and the graphics card are there by the time the game's loaded
-        let Loading { loaded: Some(loaded), screen: Some(screen), look, drawn, cost, out_of_sight, .. } = *loading else {
+        let Loading { loaded: Some(loaded), screen: Some(screen), look, drawn, cost, out_of_sight, touch, .. } = *loading else {
             event_loop.exit();
             return;
         };
@@ -601,7 +608,13 @@ impl Launcher {
         // The game runs as it always has
         hurry(false);
         if drawn {
-            fade_away(&screen.gui.context(), look, self.progress.land());
+            // Behind the menu the game starts on, if it does, still answering the mouse
+            let land = self.progress.land();
+            if app.menu_open && !app.started {
+                app.backdrop = land.clone().map(|land| Backdrop { land, touch: touch.behind_menu(), look: look.clone(), began: None });
+            }
+            let behind = app.backdrop.is_some();
+            fade_away(&screen.gui.context(), look, land, behind);
         }
         app.attach(screen, event_loop);
         self.state = State::Playing(app);
@@ -700,6 +713,11 @@ struct Loading {
     loaded: Option<Box<Loaded>>,
     /// How long drawing it takes, said in screenshot runs
     cost: Cost,
+    /// How the land's been touched by the mouse
+    touch: Touch,
+    /// How long a frame's shown on the screen the window's on, which it's drawn as often as while
+    /// the mouse is stirring the land
+    display_frame: Duration,
 }
 
 /// How long the loading screen's taken to draw, with the land on it, over how many frames: painting
@@ -769,6 +787,9 @@ impl Loading {
         );
         // Its look, the same in every window, see theme.rs
         crate::theme::apply(&gui.context());
+        // At most 240 times a second, and never less often than otherwise
+        let refresh = window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
+        self.display_frame = refresh.map_or(FRAME_TIME, |mhz| Duration::from_secs_f64(1000.0 / mhz.max(1) as f64)).clamp(Duration::from_micros(4_167), FRAME_TIME);
         self.screen = Some(Screen {
             window: window.clone(),
             swapchain,
@@ -815,7 +836,10 @@ impl Loading {
         }
         let now = Instant::now();
         if now >= self.next_frame {
-            self.next_frame = (self.next_frame + FRAME_TIME).max(now);
+            // As often as the screen shows while the mouse is stirring the land, so it follows
+            // smoothly, otherwise no more than sixty times a second, to leave the rest to loading
+            let frame = if self.touch.lively() && !self.out_of_sight { self.display_frame } else { FRAME_TIME };
+            self.next_frame = (self.next_frame + frame).max(now);
             // A window that's never shown is never asked to redraw
             if self.out_of_sight {
                 self.draw(progress, false);
@@ -873,7 +897,8 @@ impl Loading {
         let land = progress.land();
         let words = Words { title: "Innert", subtitle: None };
         let painting = Instant::now();
-        screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None, land.as_deref(), &words));
+        let touch = &mut self.touch;
+        screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None, land.as_deref().map(|land| (land, Some((touch, true)))), &words));
         let painted = painting.elapsed();
 
         let view = screen.image_views[image_index as usize].clone();
@@ -949,22 +974,36 @@ struct Preview {
     /// With `--set loading_shots=12`, that many shots as the bar fills, one each time it's gone
     /// another twelfth of the way, as well as the last: for a sheet of it all through a load
     every: usize,
+    /// With `--set loading_frames=300,310`, shots as it's drawn those times, to see it moving
+    frames: Vec<usize>,
+    /// How many times it's been drawn
+    drawn: usize,
 }
 
 impl Preview {
     fn new(path: PathBuf) -> Self {
-        let every = settings_from_args().iter().find(|(k, _)| k == "loading_shots").and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
-        Preview { path, taken: 0, every }
+        let settings = settings_from_args();
+        let get = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let every = get("loading_shots").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let frames = get("loading_frames").map_or(Vec::new(), |v| v.split(',').filter_map(|f| f.trim().parse().ok()).collect());
+        Preview { path, taken: 0, every, frames, drawn: 0 }
     }
 
     /// Where the next shot goes if it's time for one: once it's faded in, once loading's halfway
-    /// and on the `last`, before the game takes over, or with `every` as the bar fills
+    /// and on the `last`, before the game takes over, or with `every` as the bar fills, or at the
+    /// frames asked for
     fn next(&mut self, fraction: f32, appeared: bool, last: bool) -> Option<PathBuf> {
         const DONE: usize = usize::MAX;
+        self.drawn += 1;
         let name = if self.taken == DONE {
             return None;
         } else if last {
             "loaded".to_owned()
+        } else if !self.frames.is_empty() {
+            if !self.frames.contains(&self.drawn) {
+                return None;
+            }
+            format!("f{:04}", self.drawn)
         } else if self.every > 0 {
             if !appeared || fraction * (self.every as f32) < self.taken as f32 {
                 return None;
@@ -1038,12 +1077,14 @@ pub struct Board {
     look: Look,
     title: String,
     subtitle: String,
+    /// How the land's been touched by the mouse
+    touch: Touch,
 }
 
 impl Board {
     /// Showing how far `progress` has got, under `title` and `subtitle`
     pub fn new(progress: Arc<Progress>, title: String, subtitle: String) -> Self {
-        Board { progress, look: Look::new(), title, subtitle }
+        Board { progress, look: Look::new(), title, subtitle, touch: Touch::default() }
     }
 
     pub fn progress(&self) -> &Arc<Progress> {
@@ -1051,21 +1092,90 @@ impl Board {
     }
 
     /// Draws it over everything else in `ctx`, `alpha` of the way opaque, fading in as it's first
-    /// shown
-    pub fn paint(&mut self, ctx: &egui::Context, alpha: f32) {
+    /// shown, the land answering the mouse if it's `free`, not taken by the game to look round with
+    pub fn paint(&mut self, ctx: &egui::Context, alpha: f32, free: bool) {
         let (fraction, step) = self.progress.estimate();
         self.look.advance(fraction, step, false, self.progress.phase());
         let appearing = smoothstep(self.look.start.elapsed().as_secs_f32() / FADE_IN_SECONDS);
         let land = self.progress.land();
         let words = Words { title: &self.title, subtitle: Some(&self.subtitle) };
-        paint(ctx, &self.look, alpha * appearing, LayerId::new(egui::Order::Tooltip, egui::Id::new("loading screen")), None, land.as_deref(), &words);
+        let layer = LayerId::new(egui::Order::Tooltip, egui::Id::new("loading screen"));
+        paint(ctx, &self.look, alpha * appearing, layer, None, land.as_deref().map(|land| (land, Some((&mut self.touch, free)))), &words);
     }
+}
+
+/// How bright the land is behind the menu, against on the loading screen
+const BEHIND_BRIGHT: f32 = 0.82;
+
+/// The land the game starts on, behind the menu it starts with, see App::render(): the loading
+/// screen's, gliding aside into the room left of the menu as the loading screen gives way to it,
+/// a little dimmed, still turning and still answering the mouse. Gone once a game's begun, so it
+/// costs nothing while playing.
+pub struct Backdrop {
+    land: Arc<Land>,
+    /// How the land's been touched by the mouse, since the loading screen
+    touch: Touch,
+    /// The loading screen's look as it gave way, whose start the land's turning is timed from
+    look: Look,
+    /// When it was first drawn behind the menu
+    began: Option<Instant>,
+}
+
+impl Backdrop {
+    /// Draws it behind everything else in `ctx`
+    pub fn paint(&mut self, ctx: &egui::Context) {
+        let since = self.began.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
+        let painter = ctx.layer_painter(LayerId::background());
+        let screen = ctx.screen_rect();
+        let t = self.look.start.elapsed().as_secs_f32();
+        // Finished as it is on the loading screen fading away, see fade_away()
+        let phase = self.look.phase.towards_done(smoothstep(since / (FADE_SECONDS * 0.3)));
+        // The loading screen's page, fading away from under it as it glides back
+        let veil = 1.0 - smoothstep(since / FADE_SECONDS);
+        if veil > 0.0 {
+            page(&painter, screen, veil);
+        }
+        let glide = smoothstep(since / (FADE_SECONDS * 0.9));
+        // Beside the menu, or gone where there's no room for it
+        let menu = ctx.memory(|m| m.area_rect(egui::Id::new("menu")));
+        let beside = beside_menu(screen, menu);
+        let from = land_area(screen, innert_below(screen));
+        let (view, alpha) = match (from, beside) {
+            (Some(from), Some(beside)) => (self.land.view(from, t).lerp(&self.land.view(beside, t), glide), 1.0),
+            (None, Some(beside)) => (self.land.view(beside, t), 1.0),
+            (Some(from), None) => (self.land.view(from, t), 1.0 - glide),
+            (None, None) => return,
+        };
+        if alpha <= 0.0 {
+            return;
+        }
+        // Stood in a little of the loading screen's dark, so it reads over the world behind
+        let mut mesh = Mesh::default();
+        let (middle, reach) = (view.middle - vec2(0.0, view.scale * 4.0), view.scale * land::COLUMNS as f32);
+        glow(&mut mesh, middle, vec2(reach * 0.95, reach * 0.7), Color32::from_black_alpha((170.0 * glide * alpha) as u8));
+        painter.add(Shape::mesh(mesh));
+        self.touch.feel(ctx, &self.land, &view, phase, true);
+        self.land.paint(&painter, &view, t, phase, alpha, 1.0 + (BEHIND_BRIGHT - 1.0) * glide, Some(&self.touch));
+        self.touch.mark(&painter);
+    }
+}
+
+/// Where the land's drawn behind the menu, in a window `screen` big, the menu at `menu`: in the
+/// room left of it, as big as fits, unless there's too little
+fn beside_menu(screen: Rect, menu: Option<Rect>) -> Option<Rect> {
+    let menu = menu.unwrap_or_else(|| Rect::from_center_size(screen.center(), vec2(436.0, screen.height() * 0.9)));
+    let page = page_rect(screen);
+    let (left, right) = (page.left() + 14.0, menu.left() - 22.0);
+    let tall = (screen.height() * 0.62).min((right - left) * 0.9);
+    let middle = screen.center().y + screen.height() * 0.04;
+    (right - left >= 170.0).then(|| Rect::from_min_max(pos2(left, middle - tall * 0.5), pos2(right, middle + tall * 0.5)))
 }
 
 /// Fades the loading screen away over the game's first frames: it's drawn over them by the GUI
 /// the game goes on drawing with, the bar filling up and the land finishing as it goes, and the
-/// name gliding over to where the menu has it
-fn fade_away(ctx: &egui::Context, look: Look, land: Option<Arc<Land>>) {
+/// name gliding over to where the menu has it. With the `land` gone `behind` the menu, see
+/// Backdrop, which fades the page away from under it, only the words and the bar fade here.
+fn fade_away(ctx: &egui::Context, look: Look, land: Option<Arc<Land>>, behind: bool) {
     let began = Mutex::new(None::<Instant>);
     ctx.on_end_pass(
         "loading screen fading away",
@@ -1078,14 +1188,18 @@ fn fade_away(ctx: &egui::Context, look: Look, land: Option<Arc<Land>>) {
             let mut look = look.clone();
             let done = smoothstep(t / (FADE_SECONDS * 0.3));
             look.fraction += (1.0 - look.fraction) * done;
-            let p = look.phase;
-            look.phase = Phase { rise: p.rise + (1.0 - p.rise) * done, grow: p.grow + (1.0 - p.grow) * done, fill: p.fill + (1.0 - p.fill) * done };
+            look.phase = look.phase.towards_done(done);
             let alpha = 1.0 - smoothstep(t / FADE_SECONDS);
             // Where the menu is, see App::render(), if it's up
             let menu = ctx.memory(|m| m.area_rect(egui::Id::new("menu")));
             let glide = menu.map(|menu| (menu, t / (FADE_SECONDS * 0.55)));
             let words = Words { title: "Innert", subtitle: None };
-            paint(ctx, &look, alpha, LayerId::new(egui::Order::Foreground, egui::Id::new("loading screen")), glide, land.as_deref(), &words);
+            let layer = LayerId::new(egui::Order::Foreground, egui::Id::new("loading screen"));
+            if behind {
+                paint_words(ctx, &look, alpha, layer, glide, &words);
+            } else {
+                paint(ctx, &look, alpha, layer, glide, land.as_deref().map(|land| (land, None)), &words);
+            }
         }),
     );
 }
@@ -1214,32 +1328,105 @@ const TIPS: [&str; 12] = [
 /// How long each tip's shown, in seconds
 const TIP_SECONDS: f32 = 7.0;
 
+/// How far down the loading screen the bar is
+const BAR_Y: f32 = 0.82;
+
 /// Draws the loading screen over the whole window in `layer`, `alpha` of the way opaque: on near
 /// black, framed as a printed page, the title in blackletter, under it `land` rising as it's
-/// built, then the bar, what's being made and a tip. With `glide`, the menu and how far from 0 to
-/// 1 the name's moved over to where it has it, staying solid until it's there.
-fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>, land: Option<&Land>, words: &Words) {
+/// built, answering the mouse as its touch has it if that's given, and if it's free, not taken by
+/// the game, then the bar, what's being made and a tip. With `glide`, the menu and how far from 0
+/// to 1 the name's moved over to where it has it, staying solid until it's there.
+fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>, land: Option<(&Land, Option<(&mut Touch, bool)>)>, words: &Words) {
+    let painter = ctx.layer_painter(layer);
+    let screen = ctx.screen_rect();
+    page(&painter, screen, alpha);
+
+    // The land being built, in what's left between the title and the bar, under the words should
+    // a column lifted by the mouse reach them
+    let (.., below) = heading(screen, words, glide.is_some());
+    if let Some((land, touch)) = land
+        && let Some(area) = land_area(screen, below)
+    {
+        let t = look.start.elapsed().as_secs_f32();
+        // Coming later and gone sooner than the rest as it fades in and away, so it isn't seen
+        // through the menu or the game, the more so over the menu
+        let shown = if glide.is_some() { alpha.powi(3) } else { alpha * alpha };
+        let view = land.view(area, t);
+        let touch = touch.map(|(touch, free)| -> &Touch {
+            touch.feel(ctx, land, &view, look.phase, free);
+            touch
+        });
+        land.paint(&painter, &view, t, look.phase, shown, 1.0, touch);
+        if let Some(touch) = touch {
+            touch.mark(&painter);
+        }
+    }
+    paint_words(ctx, look, alpha, layer, glide, words);
+}
+
+/// The loading screen's page in `screen`, `alpha` of the way opaque: near black, lit a little
+/// behind the land, framed in two fine rules as a printed page
+fn page(painter: &egui::Painter, screen: Rect, alpha: f32) {
+    let (w, h) = (screen.width(), screen.height());
+    let fade = |c: Color32| c.gamma_multiply(alpha);
+    painter.rect_filled(screen, 0.0, fade(rgb(INK)));
+    let mut mesh = Mesh::default();
+    glow(&mut mesh, pos2(w * 0.5, h * 0.5), vec2(w * 0.46, h * 0.42), fade(Color32::from_gray(18)));
+    painter.add(Shape::mesh(mesh));
+    let page = page_rect(screen);
+    painter.rect_stroke(page, 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(40))), StrokeKind::Inside);
+    painter.rect_stroke(page.shrink(4.0), 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(16))), StrokeKind::Inside);
+}
+
+/// Where the page's frame is, in `screen`
+fn page_rect(screen: Rect) -> Rect {
+    screen.shrink((screen.width().min(screen.height()) * 0.025).clamp(10.0, 22.0))
+}
+
+/// Where the loading screen's title is, `words` its words, in a window `screen` big: how big, how
+/// far down its middle is, how far down the ornament under it is, and how far down all that's
+/// under it reaches, the subtitle too. Gliding over to the menu, it's the menu's own name.
+fn heading(screen: Rect, words: &Words, gliding: bool) -> (f32, f32, f32, f32) {
+    let innert = gliding || words.title == "Innert";
+    let size = if innert { crate::session::TITLE_SIZE } else { (crate::session::TITLE_SIZE * 0.7).min(screen.width() / (words.title.len() as f32 * 0.42).max(1.0)) };
+    let y = (screen.height() * 0.15).max(size * 0.5 + 24.0);
+    // Under its letters' tails
+    let ornament = y + size * if innert { 0.5 } else { 0.62 } + 6.0;
+    let below = if words.subtitle.is_some_and(|s| !s.is_empty()) { ornament + 20.0 } else { ornament };
+    (size, y, ornament, below)
+}
+
+/// How far down what's under the name Innert reaches on the loading screen Innert starts with
+fn innert_below(screen: Rect) -> f32 {
+    heading(screen, &Words { title: "Innert", subtitle: None }, false).3
+}
+
+/// Where the land's drawn on a loading screen `screen` big, its title reaching `below`: in what's
+/// left between that and the bar, if there's room
+fn land_area(screen: Rect, below: f32) -> Option<Rect> {
+    let (w, h) = (screen.width(), screen.height());
+    let center = w * 0.5;
+    let top = below + 16.0;
+    let bottom = h * BAR_Y - 24.0;
+    let across = (w * 0.64).min((bottom - top) * 1.9);
+    (bottom > top + 40.0).then(|| Rect::from_min_max(pos2(center - across * 0.5, top), pos2(center + across * 0.5, bottom)))
+}
+
+/// The loading screen's words, over the page and the land, as paint() has them: the title, the
+/// bar, what's being made and a tip
+fn paint_words(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>, words: &Words) {
     use crate::theme;
     let painter = ctx.layer_painter(layer);
     let screen = ctx.screen_rect();
     let (w, h) = (screen.width(), screen.height());
     let t = look.start.elapsed().as_secs_f32();
     let fade = |c: Color32| c.gamma_multiply(alpha);
-
-    // Near black, lit a little behind the land, framed in two fine rules as a printed page
-    painter.rect_filled(screen, 0.0, fade(rgb(INK)));
-    let mut mesh = Mesh::default();
-    glow(&mut mesh, pos2(w * 0.5, h * 0.5), vec2(w * 0.46, h * 0.42), fade(Color32::from_gray(18)));
-    painter.add(Shape::mesh(mesh));
-    let page = screen.shrink((w.min(h) * 0.025).clamp(10.0, 22.0));
-    painter.rect_stroke(page, 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(40))), StrokeKind::Inside);
-    painter.rect_stroke(page.shrink(4.0), 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(16))), StrokeKind::Inside);
+    let page = page_rect(screen);
 
     // The title, gliding over to the menu's own once that's up
     let center = w * 0.5;
-    let innert = glide.is_some() || words.title == "Innert";
-    let size = if innert { crate::session::TITLE_SIZE } else { (crate::session::TITLE_SIZE * 0.7).min(w / (words.title.len() as f32 * 0.42).max(1.0)) };
-    let at = pos2(center, (h * 0.15).max(size * 0.5 + 24.0));
+    let (size, y, below, _) = heading(screen, words, glide.is_some());
+    let at = pos2(center, y);
     let (mut name, mut solid) = (at, alpha);
     if let Some((menu, along)) = glide {
         // Where the menu has it, see session::menu()
@@ -1251,31 +1438,14 @@ fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Op
     // Shadowed, as the menu has it
     painter.text(name + vec2(2.0, 3.0), Align2::CENTER_CENTER, words.title, theme::blackletter(size), Color32::from_black_alpha((190.0 * solid) as u8));
     painter.text(name, Align2::CENTER_CENTER, words.title, theme::blackletter(size), theme::HEADING.gamma_multiply(solid));
-    // Under its letters' tails
-    let mut below = at.y + size * if innert { 0.5 } else { 0.62 } + 6.0;
     ornament(&painter, pos2(center, below), 120.0, fade(theme::ACCENT));
     if let Some(subtitle) = words.subtitle.filter(|s| !s.is_empty()) {
-        below += 20.0;
-        painter.text(pos2(center, below), Align2::CENTER_CENTER, subtitle, theme::display(16.0), fade(theme::WEAK));
+        painter.text(pos2(center, below + 20.0), Align2::CENTER_CENTER, subtitle, theme::display(16.0), fade(theme::WEAK));
     }
 
     // The bar, what's being made and how far along, and a tip under them
-    let bar_y = h * 0.82;
+    let bar_y = h * BAR_Y;
     let tip_y = (h * 0.905).max(bar_y + 50.0).min(page.bottom() - 18.0);
-
-    // The land being built, in what's left between
-    if let Some(land) = land {
-        let top = below + 16.0;
-        let bottom = bar_y - 24.0;
-        let across = (w * 0.64).min((bottom - top) * 1.9);
-        // Coming later and gone sooner than the rest as it fades in and away, so it isn't seen
-        // through the menu or the game, the more so over the menu
-        let shown = if glide.is_some() { alpha.powi(3) } else { alpha * alpha };
-        if bottom > top + 40.0 {
-            land.paint(&painter, Rect::from_min_max(pos2(center - across * 0.5, top), pos2(center + across * 0.5, bottom)), t, look.phase, shown);
-        }
-    }
-
     let width = (w * 0.42).clamp(220.0, 440.0);
     let bar = Rect::from_min_size(pos2(center - width * 0.5, bar_y), vec2(width, 3.0));
     painter.rect_filled(bar.expand(2.0), 0.0, fade(Color32::from_black_alpha(200)));
@@ -1392,7 +1562,7 @@ mod tests {
 
     #[test]
     fn previews_are_named_in_turn() {
-        let mut preview = Preview { path: PathBuf::from("shot.png"), taken: 0, every: 4 };
+        let mut preview = Preview { path: PathBuf::from("shot.png"), taken: 0, every: 4, frames: Vec::new(), drawn: 0 };
         assert!(preview.next(0.0, false, false).is_none());
         assert_eq!(preview.next(0.0, true, false).unwrap(), PathBuf::from("shot-loading-00.png"));
         assert!(preview.next(0.1, true, false).is_none());

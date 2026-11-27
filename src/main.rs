@@ -1503,6 +1503,9 @@ struct App {
     menu_open: bool,
     // Whether the game has started, so the menu says Resume instead of Play
     started: bool,
+    /// The land the loading screen showed, behind the menu until a game's started, answering the
+    /// mouse, see loading::Backdrop
+    backdrop: Option<loading::Backdrop>,
     /// The mode being played, Free Roam or Realms, and its save, see session.rs
     session: session::Session,
     /// The seed a new Free Roam game's landscape is to have, picked in the menu
@@ -3063,6 +3066,7 @@ impl App {
 
             menu_open,
             started: !menu_open,
+            backdrop: None,
             session,
             // `--set new_seed=42` for a new Free Roam game on that seed
             new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
@@ -6028,6 +6032,10 @@ impl App {
         });
 
         let mut reread_models = false;
+        // The land behind the menu's gone for good once a game's begun
+        if self.started {
+            self.backdrop = None;
+        }
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
             if self.editor.open {
@@ -6045,7 +6053,7 @@ impl App {
                 // Going on with a game somewhere the world wasn't, which takes a few seconds, the
                 // loading screen's shown, the land there rising on it as it's built
                 if let Some(board) = &mut teleport.board {
-                    board.paint(&ctx, dark);
+                    board.paint(&ctx, dark, !self.focused);
                 }
             }
             // Wings spread, said under the crosshair too
@@ -6089,6 +6097,10 @@ impl App {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
+                // And the land the game's starting on over it, see loading::Backdrop
+                if let Some(backdrop) = &mut self.backdrop {
+                    backdrop.paint(&ctx);
+                }
                 // Resume, each mode with Continue and New, Settings and Quit, done at the start of
                 // the next frame, see menu_picked(), and how to play under them
                 session::menu_window(&ctx, |ui| {
