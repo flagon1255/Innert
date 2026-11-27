@@ -59,14 +59,13 @@ pub(super) fn chakram_turn(way: Vector3<f64>, t: f64) -> UnitQuaternion<f64> {
 }
 
 impl Combat {
-    /// The knives or chakram in hand, `weapon`, drawn with model `model`: remembered, so what's
-    /// thrown of it is drawn as it is, see Flung
-    pub(super) fn remember_flung(&self, weapon: &Weapon, model: u32) {
+    /// The knives or chakram in hand, `weapon`, drawn with `look` and model `model`: remembered, so
+    /// what's thrown of it is drawn as it is, see Flung
+    pub(super) fn remember_flung(&self, weapon: &Weapon, look: &crate::weapons::WeaponLook, model: u32) {
         let style = weapon.profile.style;
         if !matches!(style, Style::Knife | Style::Ring) {
             return;
         }
-        let look = &weapon.look;
         let (m, anchor) = &look.frames[0];
         let middle = if style == Style::Ring { look.tip } else { (look.grip + look.tip) * 0.5 };
         self.flung.set(Some(Flung { model, size: m.size, anchor: *anchor, res: look.res, middle }));

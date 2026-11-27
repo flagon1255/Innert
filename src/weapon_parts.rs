@@ -29,6 +29,31 @@ thread_local! {
     static SLOT: Cell<u8> = const { Cell::new(0) };
     /// The weapon being built, if one is
     static BUILDING: RefCell<Option<Building>> = const { RefCell::new(None) };
+    /// How many times finer than its usual voxels what's made now is voxelized, see finer()
+    static FINE: Cell<f64> = const { Cell::new(1.0) };
+}
+
+/// How many times finer than usual the weapon being made now is voxelized: 1 but while finer()
+/// makes one, for the builders to add what only shows at a finer grid
+pub fn fine() -> f64 {
+    FINE.get()
+}
+
+/// What `f` makes, a weapon's look, voxelized `k` times finer than usual: its shapes the same and
+/// where it's held, its tip and the rest where they were, only its voxels smaller, `k` times as
+/// many a meter. The look's `res` says so.
+pub fn finer(k: f64, f: impl FnOnce() -> WeaponLook) -> WeaponLook {
+    let mut look = at_fine(k, f);
+    look.res *= k;
+    look
+}
+
+/// What `f` makes with weapons voxelized `k` times finer than usual, see fine()
+pub fn at_fine<R>(k: f64, f: impl FnOnce() -> R) -> R {
+    let before = FINE.replace(k);
+    let r = f();
+    FINE.set(before);
+    r
 }
 
 struct Building {
@@ -82,6 +107,7 @@ pub fn cuboid(lo: [f64; 3], hi: [f64; 3], material: u8) -> Part {
 /// animals::voxelize(), for a weapon being built: each frame's voxels tagged with their slots, and
 /// changed as asked, see building()
 pub fn voxelize(parts: &[Part], res: f64) -> (Model, Vector3<f64>) {
+    let res = res * fine();
     if BUILDING.with_borrow(|b| b.is_none()) {
         return animals::voxelize(parts, res);
     }
@@ -157,7 +183,7 @@ pub fn part_file(family: &str, component: &str, frame: usize) -> String {
 
 /// Where the weapon's own middle, its foot or pommel, is in the voxels of a frame `size` big with
 /// its anchor at `anchor`, from the corner `lo`: the pivot of a part whose box starts at `lo`
-fn part_pivot(size: [u32; 3], anchor: Vector3<f64>, res: f64, lo: [i32; 3]) -> [f64; 3] {
+pub fn part_pivot(size: [u32; 3], anchor: Vector3<f64>, res: f64, lo: [i32; 3]) -> [f64; 3] {
     let p = assets::pivot_of(size, Some(anchor), res);
     [p[0] - lo[0] as f64, p[1] - lo[1] as f64, p[2] - lo[2] as f64]
 }
@@ -201,10 +227,13 @@ fn part_jobs(library: &Library) -> Vec<(usize, usize, usize)> {
 fn on_every_core<T: Send>(jobs: &[(usize, usize, usize)], each: impl Fn(&Library, (usize, usize, usize)) -> T + Sync) -> Vec<T> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    // As fine on every core as here, see finer()
+    let k = fine();
     let mut done: Vec<(usize, T)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
+                    FINE.set(k);
                     let library = Library::load();
                     let mut out = Vec::new();
                     loop {
@@ -255,16 +284,18 @@ pub fn export_part(dir: &Path, library: &Library, f: usize, s: usize, c: usize) 
     let fam = &library.families[f];
     let comp = &library.components[c];
     let (look, frames) = part_frames(library, f, s, c);
+    // Exported finer, its voxels are that many more a meter, see finer()
+    let res = look.res * fine();
     let mut out = Vec::new();
     for (j, frame) in frames.into_iter().enumerate() {
         let Some((part, lo, name)) = frame else { continue };
         let (model, anchor) = &look.frames[j];
-        let pivot = part_pivot(model.size, *anchor, look.res, lo);
+        let pivot = part_pivot(model.size, *anchor, res, lo);
         let n = look.frames.len();
         let what = format!("{}, {}: {}{}", fam.display_name, fam.slots[s], comp.display_name, if j > 0 { format!(", frame {} of {n}", j + 1) } else { String::new() });
         let sidecar = Sidecar {
             what: what.clone(),
-            voxels_per_meter: look.res,
+            voxels_per_meter: res,
             size: part.size,
             pivot,
             anchor: None,
@@ -297,7 +328,8 @@ pub struct PartEdit {
 #[derive(Default)]
 struct Known {
     files: Option<Arc<HashSet<String>>>,
-    parts: HashMap<(usize, usize), Option<Arc<PartEdit>>>,
+    /// By family, part and how much finer, see fine()
+    parts: HashMap<(usize, usize, u64), Option<Arc<PartEdit>>>,
 }
 
 fn known() -> std::sync::MutexGuard<'static, Known> {
@@ -352,6 +384,8 @@ fn read_part(dir: &Path, files: &HashSet<String>, library: &Library, f: usize, s
     let mut parts = library.reference_parts(f);
     parts[s] = c;
     let (look, tags) = tagged_look(library, f, &parts);
+    // Made finer, as the weapon in hand is, the code's part is too, see finer()
+    let res = look.res * fine();
     let mut first: Option<Model> = None;
     let mut frames = Vec::new();
     for (j, (model, anchor)) in look.frames.iter().enumerate() {
@@ -371,7 +405,7 @@ fn read_part(dir: &Path, files: &HashSet<String>, library: &Library, f: usize, s
             continue;
         };
         let code = solid(&part);
-        match assets::read_edit(&assets::file_of(dir, &name), part_pivot(model.size, *anchor, look.res, lo)) {
+        match assets::read_edit(&assets::file_of(dir, &name), part_pivot(model.size, *anchor, res, lo), res) {
             Ok(e) => {
                 let mut edited = e.solid();
                 edited.sort_unstable();
@@ -387,11 +421,12 @@ fn read_part(dir: &Path, files: &HashSet<String>, library: &Library, f: usize, s
 }
 
 fn part_edit(library: &Library, f: usize, s: usize, c: usize) -> Option<Arc<PartEdit>> {
-    if let Some(e) = known().parts.get(&(f, c)) {
+    let key = (f, c, fine().to_bits());
+    if let Some(e) = known().parts.get(&key) {
         return e.clone();
     }
     let edit = read_part(&assets::root(), &files(), library, f, s, c).map(Arc::new);
-    known().parts.insert((f, c), edit.clone());
+    known().parts.insert(key, edit.clone());
     edit
 }
 

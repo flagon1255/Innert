@@ -230,11 +230,12 @@ impl anim::Rig for EditorRig {
             if !j.shown || size == [1, 1, 1] {
                 continue;
             }
-            let [x, y, z] = size.map(|v| v as f64 / MODEL_RES);
+            let r = super::res(look);
+            let [x, y, z] = size.map(|v| v as f64 / r);
             let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
             let piece = turn * j.turn;
             let place = at + turn * j.at * s * vpm + piece * anchor * vpm;
-            let mut instance = AnimalInstance::new((base + p) as u32, place, piece, vpm / MODEL_RES, reach, MOVING);
+            let mut instance = AnimalInstance::new((base + p) as u32, place, piece, vpm / r, reach, MOVING);
             if lit == Some(p) {
                 instance = instance.skinned(0xA0_30_D0_FF);
             }

@@ -129,7 +129,9 @@ pub struct Editor {
     parts: Vec<usize>,
     part_only: bool,
     first_person: bool,
-    built: Option<(usize, Vec<usize>, bool, Option<usize>)>,
+    /// Whether the weapon's drawn as fine as in the hand, see weapons::HELD_FINE
+    fine: bool,
+    built: Option<(usize, Vec<usize>, bool, Option<usize>, bool)>,
     preview_res: f64,
     preview_count: usize,
     /// The look each look's drawn from in its own colours, if it's drawn from another's, by Look::ALL
@@ -167,6 +169,7 @@ impl Default for Editor {
             parts: Vec::new(),
             part_only: false,
             first_person: false,
+            fine: false,
             built: None,
             preview_res: 192.0,
             preview_count: 1,
@@ -537,31 +540,36 @@ impl Editor {
     /// The weapon picked made of the parts picked, or the part picked alone, for drawing
     fn build_weapon(&mut self, game: &mut Game) {
         let (Some(Subject::Weapon(f)), Some(library)) = (self.subject(), &self.library) else { return };
-        let want = (f, self.parts.clone(), self.part_only, self.piece);
+        let want = (f, self.parts.clone(), self.part_only, self.piece, self.fine);
         if self.built.as_ref() == Some(&want) {
             return;
         }
-        let look = weapon_parts::build(library, f, &self.parts, || crate::weapons::look_of(library, f, &self.parts));
+        // As fine as the weapon in hand is drawn, if asked, see weapons::HELD_FINE
+        let k = if self.fine { crate::weapons::HELD_FINE } else { 1.0 };
+        let look = weapon_parts::finer(k, || weapon_parts::build(library, f, &self.parts, || crate::weapons::look_of(library, f, &self.parts)));
         let mut frames: Vec<(Model, Vector3<f64>)> = look.frames.iter().map(|(m, a)| (assets::copy(m), *a)).collect();
         if self.part_only
             && let Some(s) = self.piece
         {
             // The part alone, from its file if it has one, where it is on the weapon
-            let (code, tags) = weapon_parts::tagged_look(library, f, &self.parts);
+            let (code, tags) = weapon_parts::at_fine(k, || weapon_parts::tagged_look(library, f, &self.parts));
+            // Where the weapon's foot is from the part's box in the first frame, for a file made
+            // at another grid, see assets::read_edit()
+            let pivot = code.frames.first().and_then(|(m, a)| weapon_parts::part_of(m, &tags[0], s as u8 + 1).map(|(_, lo)| weapon_parts::part_pivot(m.size, *a, look.res, lo)));
             frames = code
                 .frames
                 .iter()
                 .enumerate()
                 .filter_map(|(j, (m, a))| {
                     let (part, lo) = weapon_parts::part_of(m, &tags[j], s as u8 + 1)?;
-                    Some((assets::copy(&part), assets::moved_anchor(*a, m.size, lo, part.size, code.res)))
+                    Some((assets::copy(&part), assets::moved_anchor(*a, m.size, lo, part.size, look.res)))
                 })
                 .collect();
             if let Some(name) = self.piece_file()
                 && let Some(first) = frames.first_mut()
             {
                 let path = assets::file_of(&assets::root(), &name);
-                if let Ok(edit) = assets::read_edit(&path, [0.0; 3])
+                if let Ok(edit) = assets::read_edit(&path, pivot.unwrap_or([0.0; 3]), look.res)
                     && path.with_extension("json").exists()
                 {
                     let (m, lo) = assets::conform(&edit, first.0.size, assets::Grow::Free);
@@ -639,13 +647,13 @@ impl Editor {
             Subject::Boss(look) => {
                 let i = crate::rig::kind(look).unwrap_or(0) * crate::rig::PIECES + self.piece.unwrap_or(0);
                 let m = game.base_model(animals::RIG_MODELS_AT + i);
-                assets::write_model(&dir, &name, m, MODEL_RES, crate::rig::edit::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
+                assets::write_model(&dir, &name, m, crate::rig::res(look), crate::rig::edit::anchors().get(i).copied(), &name, "A jointed piece: the pivot is its joint.")?;
             }
             Subject::Baked(look) => {
                 let from = crate::baked::skin_of(look).map_or(look, |(from, _)| from);
                 let rig = crate::baked::rig(from).ok_or("not baked from pieces")?;
                 let piece = rig.pieces.get(self.piece.unwrap_or(0)).filter(|p| !p.is_empty()).ok_or("no such piece")?;
-                assets::write_model(&dir, &name, &piece.model, MODEL_RES, Some(piece.anchor()), &name, assets::PIECE_NOTE)?;
+                assets::write_model(&dir, &name, &piece.model, piece.res, Some(piece.anchor()), &name, assets::PIECE_NOTE)?;
             }
             Subject::Winged(look) => {
                 let i = crate::avians::KINDS.iter().position(|&l| l == look).unwrap_or(0) * assets::avian_pieces() + winged_piece(self.piece.unwrap_or(0));
@@ -926,6 +934,7 @@ impl Editor {
                         });
                     }
                     ui.checkbox(&mut self.part_only, "Show only the part picked");
+                    ui.checkbox(&mut self.fine, "As fine as in the hand");
                     ui.checkbox(&mut self.first_person, "Held in first person");
                     if ui.button("Reference weapon").clicked() {
                         self.parts = library.reference_parts(f);

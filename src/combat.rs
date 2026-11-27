@@ -15840,9 +15840,9 @@ impl Combat {
     /// What else to draw for the crossbow or gun in hand, its models from `first_model`, held at
     /// `hand` turned by `rotation`: the lever, cranks or ramrod that load it, the other hand
     /// working them or steadying it, the bolt lying in a crossbow's groove, and a gun's flash
-    fn shouldered_instances(&self, weapon: &Weapon, first_model: u32, hand: Vector3<f64>, rotation: UnitQuaternion<f64>, view: &View, out: &mut Vec<AnimalInstance>) {
+    #[allow(clippy::too_many_arguments)]
+    fn shouldered_instances(&self, weapon: &Weapon, look: &crate::weapons::WeaponLook, first_model: u32, hand: Vector3<f64>, rotation: UnitQuaternion<f64>, view: &View, out: &mut Vec<AnimalInstance>) {
         let vpm = view.vpm;
-        let look = &weapon.look;
         let at = |point: Vector3<f64>| hand + rotation * (point - look.grip) * vpm;
         let mut other = None;
         if let (Some(m), Some((turn, slide, held))) = (&look.mover, self.mover_state(weapon)) {
@@ -15888,14 +15888,13 @@ impl Combat {
         }
     }
 
-    /// What to draw for the weapon in hand and the arms holding it, `first_model` being where the
-    /// weapon's models are
-    pub fn held_instances(&self, weapon: Option<(&Weapon, u32)>, view: &View) -> Vec<AnimalInstance> {
+    /// What to draw for the weapon in hand and the arms holding it, drawn with `look`, its own or
+    /// the same made finer, see game\fine.rs, `first_model` being where that look's models are
+    pub fn held_instances(&self, weapon: Option<(&Weapon, &crate::weapons::WeaponLook, u32)>, view: &View) -> Vec<AnimalInstance> {
         let vpm = view.vpm;
         let mut out = Vec::new();
-        if let Some((weapon, first_model)) = weapon {
+        if let Some((weapon, look, first_model)) = weapon {
             let p = self.pose(weapon);
-            let look = &weapon.look;
             let rotation = view.rotation * p.turn;
             let hand = view.eye + view.rotation * p.hand * vpm;
             // Where the elbows are, in the camera's frame
@@ -15916,7 +15915,7 @@ impl Combat {
             let frame = self.held_frame(weapon);
             // A bomb's gone from the hand once it's thrown, till the next comes up, and a knife;
             // a chakram's gone till it's back in the hand
-            self.remember_flung(weapon, first_model + frame as u32);
+            self.remember_flung(weapon, look, first_model + frame as u32);
             let thrown = matches!(self.action, Action::Throw { thrown: true, .. }) || self.chakram_out(weapon);
             if !thrown {
                 out.push(place(first_model + frame as u32, &look.frames[frame], look.res, look.grip, hand, rotation, vpm, 1.0, HELD));
@@ -15930,7 +15929,7 @@ impl Combat {
                 // A hand crossbow's held in the left hand, the rest in the right
                 let off = build == Build::Hand;
                 out.push(self.arm(off as usize, hand, axis, if off { elbow(-0.32, 0.12, -0.7) } else { elbow(0.37, 0.12, -0.7) }, vpm));
-                self.shouldered_instances(weapon, first_model, hand, rotation, view, &mut out);
+                self.shouldered_instances(weapon, look, first_model, hand, rotation, view, &mut out);
                 return out;
             }
             // A bow or a tome in the left hand
@@ -17915,7 +17914,7 @@ mod tests {
                 let moon = combat.blood_moon.as_ref().map_or(Vec::new(), |m| combat.blood_moon_instances(m, &view));
                 let chains = combat.shackle.as_ref().map_or(Vec::new(), |s| combat.shackle_instances(s, &view));
                 let shot = combat.projectiles.iter().filter_map(|p| combat.projectile_instance(p, &view)).any(|i| on(&i)) || moon.iter().chain(&chains).any(|i| away(&i.sphere().0) && on(i));
-                let drawn = combat.flying_instances(&view).into_iter().map(|(_, i)| i).chain(combat.fine_instances(&view)).chain(combat.held_instances(Some((weapon, 0)), &view));
+                let drawn = combat.flying_instances(&view).into_iter().map(|(_, i)| i).chain(combat.fine_instances(&view)).chain(combat.held_instances(Some((weapon, &weapon.look, 0)), &view));
                 let visible = shot || drawn.filter(|i| away(&i.sphere().0)).any(|i| on(&i));
                 out.visible += if visible { 4.0 * dt } else { 0.0 };
                 out.shot_visible += if shot { 4.0 * dt } else { 0.0 };

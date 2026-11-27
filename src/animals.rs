@@ -906,14 +906,23 @@ impl Look {
 
     /// Voxels per meter of its model: the same size as the world's, like everything else but what's
     /// held right in front of the eye, a grappling hook or wings, finer like a weapon in hand
-    fn resolution(self) -> f64 {
+    pub(crate) fn resolution(self) -> f64 {
         match self {
             Look::GrappleHook => 3.0 * MODEL_RES,
             Look::Wings => 4.0 * MODEL_RES,
             // Fish are small, and finer, so a tail has room to sway
             _ if sealife::is_small(self) => sealife::FINE * MODEL_RES,
+            // Wolves made finer, to see what that costs and how it looks: their frames baked
+            // again from their shapes at the finer grid, see src\baked.rs, smoother, with a little
+            // more on them that only shows then
+            Look::Wolf => FINER * MODEL_RES,
             _ => MODEL_RES,
         }
+    }
+
+    /// Whether its model's made finer than the world's for what only shows then, see FINER
+    pub(crate) fn finer(self) -> bool {
+        self.resolution() >= FINER * MODEL_RES && !matches!(self, Look::GrappleHook | Look::Wings) && !sealife::is_small(self)
     }
 
     /// Radius of a sphere around the whole model wherever it's turned, in meters
@@ -1733,6 +1742,10 @@ pub(crate) fn frame_shape(frame: usize) -> (Option<f64>, [f64; 4]) {
 /// world's, so every voxel is the same size
 pub const MODEL_RES: f64 = 16.0;
 
+/// How many times finer than the world's the creatures made finer are, see Look::resolution(): their
+/// voxels a meter, as the world's stay MODEL_RES
+pub const FINER: f64 = 2.0;
+
 type Vec3 = [f64; 3];
 
 /// A capsule whose radius goes from `ra` at `a` to `rb` at `b`, stretched by `stretch` around its
@@ -1979,7 +1992,7 @@ fn spider(p: &mut Vec<Part>, angle: f64, moving: f64, pose: Pose, skin: Skin) {
 
 /// A wolf, lean and grey, eyes glowing. It crouches to spring, lunges with its jaws open, and
 /// throws its head back to howl.
-fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin) {
+fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin: Skin, fine: bool) {
     let (fur, dark) = (skin.body, skin.dark);
     let crouch = pose.mix(0.0, 0.14, 0.0, 0.04);
     let lunge = pose.mix(0.0, -0.08, 0.22, 0.0);
@@ -1989,6 +2002,22 @@ fn wolf(p: &mut Vec<Part>, angle: f64, swing: f64, moving: f64, pose: Pose, skin
     // Its muzzle points on ahead, or up at the sky
     let snout = [head[0] + 0.2 - 0.12 * howl, 0.0, head[2] - 0.04 + 0.2 * howl];
     use crate::baked::wolf::*;
+    // Made finer, see FINER, what only shows then, before what it's on: fangs showing at the front
+    // of its muzzle, a darker saddle of fur down its back and a ruff at its neck
+    if fine {
+        for s in [-1.0, 1.0] {
+            p.push(limb([snout[0] - 0.03, s * 0.028, snout[2] - 0.035], [snout[0] - 0.025, s * 0.026, snout[2] - 0.075], 0.011, 0.004, BONE).on(MUZZLE));
+        }
+        for k in 0..5 {
+            // Just under the top of its back there, so it darkens it without standing out of it
+            let u = -0.3 + 0.13 * k as f64;
+            let top = 0.6 - crouch + 0.19 * (1.0 - (u / 0.5).powi(2)).max(0.0).sqrt();
+            p.push(ellipsoid([u + lunge * 0.3, 0.0, top - 0.02], [0.075, 0.07, 0.03], dark).on(BODY));
+        }
+        for s in [-1.0, 1.0] {
+            p.push(ellipsoid([0.5 + lunge * 0.5, s * 0.1, 0.7 - crouch], [0.06, 0.04, 0.09], skin.accent).on(NECK));
+        }
+    }
     for s in [-1.0, 1.0] {
         p.push(ball([head[0] + 0.09, s * 0.07, head[2] + 0.05], 0.025, skin.glow).on(HEAD));
         p.push(limb([head[0] - 0.03, s * 0.07, head[2] + 0.1], [head[0] - 0.05, s * 0.09, head[2] + 0.24], 0.04, 0.01, dark).on(HEAD));
@@ -2692,7 +2721,7 @@ fn parts(look: Look, phase: Option<f64>, pose: Pose) -> Vec<Part> {
         _ if look.build().is_some() => {
             match look.build() {
                 Some(Build::Spider) => spider(&mut p, angle, moving, pose, look.skin()),
-                Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin()),
+                Some(Build::Wolf) => wolf(&mut p, angle, swing, moving, pose, look.skin(), look.finer()),
                 Some(Build::Undead) if look == Look::Bloater => bloater(&mut p, swing, pose, look.skin()),
                 Some(Build::Undead) if look == Look::Ghoul => ghoul(&mut p, angle, swing, moving, pose, look.skin()),
                 Some(Build::Undead) => undead(&mut p, swing, pose, look.skin(), look.bony(), look.armored(), look.living(), look.arms()),
@@ -3787,10 +3816,11 @@ pub fn pack_models(models: &[&Model]) -> Vec<u32> {
 /// as one list of them all, the same as packing all of them at once would make but for sharing
 /// voxels: so a big model that comes and goes, as a tree coming down, is packed on a thread of its
 /// own and only copied in here, see felling.rs
-pub fn splice_packed(packed: &[u32], alone: &[Vec<u32>]) -> Vec<u32> {
+pub fn splice_packed<A: AsRef<[u32]>>(packed: &[u32], alone: &[A]) -> Vec<u32> {
     // How many headers there are: the first model's voxels start right after them
     let headers = if packed.is_empty() { 0 } else { packed[0] as usize / HEADER_WORDS };
     let shift = alone.len() * HEADER_WORDS;
+    let alone: Vec<&[u32]> = alone.iter().map(|w| w.as_ref()).collect();
     let mut out = Vec::with_capacity(packed.len() + shift + alone.iter().map(|w| w.len() - w[0] as usize).sum::<usize>());
     out.extend_from_slice(&packed[..headers * HEADER_WORDS]);
     for k in 0..headers {
@@ -5557,7 +5587,7 @@ mod tests {
                                 continue;
                             }
                             solid += 1;
-                            let at = Vector3::new(x as f64 + 0.5 - model.size[0] as f64 * 0.5, y as f64 + 0.5 - model.size[1] as f64 * 0.5, z as f64 + 0.5) / MODEL_RES;
+                            let at = Vector3::new(x as f64 + 0.5 - model.size[0] as f64 * 0.5, y as f64 + 0.5 - model.size[1] as f64 * 0.5, z as f64 + 0.5) / look.resolution();
                             furthest = furthest.max(at.norm());
                         }
                     }
@@ -5640,6 +5670,18 @@ mod tests {
             took.as_secs_f64() * 1000.0,
             of(Look::GraveKnight) as f64 / 1e6,
             of(Look::CryptTitan) as f64 / 1e6
+        );
+        // What the models made finer take, packed, see FINER and rig::res(): the wolves' frames and
+        // the Grave Knight's pieces
+        let packed = |from: usize, to: usize| pack_models(&models[from..to].iter().collect::<Vec<_>>()).len() * 4;
+        let wolf = Look::ALL.iter().position(|&l| l == Look::Wolf).unwrap();
+        let knight = RIG_MODELS_AT + crate::rig::kind(Look::GraveKnight).unwrap() * crate::rig::PIECES;
+        let wolf_pieces = BAKED_MODELS_AT + crate::baked::kind(Look::Wolf).unwrap() * crate::baked::PIECES;
+        println!(
+            "made finer: the wolves' frames {:.2} MB packed and their pieces {:.2} MB, the Grave Knight's pieces {:.2} MB",
+            packed(wolf * FRAMES, (wolf + 1) * FRAMES) as f64 / 1e6,
+            packed(wolf_pieces, wolf_pieces + crate::baked::PIECES) as f64 / 1e6,
+            packed(knight, knight + crate::rig::PIECES) as f64 / 1e6
         );
         assert!(bytes < 150_000_000, "the models take {bytes} bytes");
     }

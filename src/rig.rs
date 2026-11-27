@@ -84,6 +84,26 @@ pub const PIECES: usize = 24;
 /// animals::RIG_MODELS_AT
 pub const MODELS: usize = KINDS.len() * PIECES;
 
+/// Voxels a meter of a jointed boss's pieces: the world's, or finer for those made finer, the Grave
+/// Knight's, to see what that costs and how it looks, see Look::resolution(). Its pieces are made
+/// again from their shapes at the finer grid, so it's the boss it was, only smoother, with a little
+/// more on it that only shows then; and its files, if they're changed, are read at either grid, see
+/// assets::read_edit().
+pub fn res(look: Look) -> f64 {
+    match look {
+        Look::GraveKnight => FINE * MODEL_RES,
+        _ => MODEL_RES,
+    }
+}
+
+/// How many times finer than the world's the bosses made finer are, see res()
+pub const FINE: f64 = 2.0;
+
+/// Whether `look`'s pieces are made finer than the world's, for what only shows then, see res()
+pub fn finer(look: Look) -> bool {
+    res(look) > MODEL_RES
+}
+
 /// Which of KINDS `look` is, if it's drawn jointed
 pub fn kind(look: Look) -> Option<usize> {
     KINDS.iter().position(|&k| k == look)
@@ -655,7 +675,7 @@ fn build_models() -> Vec<(Model, V)> {
                         let (k, p) = (job / PIECES, job % PIECES);
                         let s = KINDS[k].scale();
                         let parts: Vec<Part> = looks[k].get(p).map_or(Vec::new(), |parts| parts.iter().map(|part| part.scaled(s)).collect());
-                        out.push((job, bake(&parts, MODEL_RES)));
+                        out.push((job, bake(&parts, res(KINDS[k]))));
                     }
                 })
             })
@@ -699,11 +719,12 @@ pub fn instances(a: &Animal, rig: &Rig, position: V, turn: Q, vpm: f64, out: &mu
         if size == [1, 1, 1] {
             continue;
         }
-        let [x, y, z] = size.map(|v| v as f64 / MODEL_RES);
+        let r = res(a.look);
+        let [x, y, z] = size.map(|v| v as f64 / r);
         let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
         let piece = turn * bone.turn;
         let at = position + turn * bone.at * s * vpm + piece * anchor * vpm;
-        out.push(AnimalInstance::new((base + p) as u32, at, piece, vpm / MODEL_RES, reach, MOVING).tinted(tint));
+        out.push(AnimalInstance::new((base + p) as u32, at, piece, vpm / r, reach, MOVING).tinted(tint));
     }
 }
 
@@ -857,8 +878,8 @@ mod tests {
             if size == [1, 1, 1] {
                 continue;
             }
-            let half = V::new(size[0] as f64, size[1] as f64, 0.0) * 0.5 / MODEL_RES;
-            let high = size[2] as f64 / MODEL_RES;
+            let half = V::new(size[0] as f64, size[1] as f64, 0.0) * 0.5 / res(rig.look);
+            let high = size[2] as f64 / res(rig.look);
             for c in 0..8 {
                 let corner = anchor + V::new(if c & 1 == 0 { -half.x } else { half.x }, if c & 2 == 0 { -half.y } else { half.y }, if c & 4 == 0 { 0.0 } else { high });
                 far = far.max((bone.at * s + bone.turn * corner).norm());

@@ -6462,6 +6462,8 @@ impl App {
             }
         }
 
+        // The weapon in hand drawn finer once it's made so, see game\fine.rs
+        self.game.fine_held();
         // A weapon was found, so there's a new model to draw
         if self.game.models_version() != self.models_version {
             let start = Instant::now();

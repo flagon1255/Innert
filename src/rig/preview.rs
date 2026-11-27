@@ -223,7 +223,7 @@ fn draw(look: Look, k: usize, models: &[Model], frame: &Frame, size: usize, reac
         }
     }
     let s = look.scale();
-    let res = MODEL_RES;
+    let res = super::res(look);
     let splat = (scale / res * 1.25).ceil().max(1.0) as i64;
     let light = V::new(0.3, -0.5, 0.8).normalize();
     let layout = layout();
