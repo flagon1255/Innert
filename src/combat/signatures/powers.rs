@@ -130,6 +130,38 @@ pub(in crate::combat) enum Shape {
     Spark,
     /// Grave Lightning's mote cast onto the ring
     Grave,
+    /// A Cinder Meteor coming down out of the sky onto the ring, see wilds.rs
+    Meteor,
+    /// One of a Cinder Whirl's cinders flung out ahead
+    Cinder,
+    /// A Kindling Arrow, fire left burning along the ground it flies over
+    Kindle,
+    /// An Ice Lance, through the first three it meets, or one of the shards it shatters into
+    Icicle { shard: bool },
+    /// A shard of rime thrown to freeze what it strikes, or lie in wait as a snare
+    Rime,
+    /// A Bramble Wall's seed thrown to the ring
+    Seed,
+    /// A boulder hurled, and once it's come down, `rolling` on over the ground
+    Boulder { rolling: bool },
+    /// One of the Arcane Missiles, weaving in onto the animal with id `target`, see arcana.rs
+    Missile { target: u32 },
+    /// An Hourglass Field's hourglass thrown to the ring
+    Glass,
+    /// A Soul Harvest's orb of death, through everything in its way
+    Reaper,
+    /// A wisp of soul torn out of what the orb passed through, flying back to heal, `slain` if
+    /// what it was torn from died
+    Wisp { slain: bool },
+    /// A Bone Cage's shard of bone flung at what's aimed at
+    Bone,
+    /// A Sanctuary Circle's mote of holy light thrown to the ring
+    Hallow,
+    /// A Radiant Smite's brand of light
+    Brand,
+    /// A shade sent to the ring to raise a necromancer's dead there, `kind` which of the summoning
+    /// powers' it is, see summons.rs
+    Calling { kind: u8 },
 }
 
 /// What they leave going a while
@@ -199,6 +231,17 @@ pub(in crate::combat) enum Lasting {
     Judgment,
     /// Grave Lightning breaking up out of the ground round `position`, `owed` times so far
     Grave,
+    /// A rime snare lying on the ground at `position`, going off on what comes near, see wilds.rs
+    Snare,
+    /// A Bramble Wall across the way at `position`, along `velocity` either side, what it's held
+    /// in `hit`
+    Bramble,
+    /// An Hourglass Field's slow time round `position`, see arcana.rs
+    Hourglass,
+    /// A Bone Cage's spikes round `position`, holding what's in it, crashing in once `owed` is set
+    Cage,
+    /// A Sanctuary Circle's light standing round `position`
+    Sanctuary,
 }
 
 /// How many steps a fissure takes, how far apart, in meters, and seconds between each, and how far
@@ -288,7 +331,7 @@ pub(in crate::combat) fn wave_of(power: Power) -> (usize, f64, f64, f64, f64) {
 /// How long a power's own move takes, for those shot, thrown or cast with a move of their own, and
 /// when what it lets go leaves the weapon, as part of it
 pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
-    if let Some(timing) = super::arsenal::arsenal_timing(power).or_else(|| super::miracles::miracle_timing(power)).or_else(|| super::tempest::tempest_timing(power)).or_else(|| super::thunder::thunder_timing(power)) {
+    if let Some(timing) = super::arsenal::arsenal_timing(power).or_else(|| super::miracles::miracle_timing(power)).or_else(|| super::tempest::tempest_timing(power)).or_else(|| super::thunder::thunder_timing(power)).or_else(|| super::wilds::wild_timing(power)).or_else(|| super::arcana::arcane_timing(power)).or_else(|| super::summons::summon_timing(power)) {
         return timing;
     }
     match power {
@@ -317,7 +360,7 @@ pub(in crate::combat) fn power_timing(power: Power) -> (f64, f64) {
 /// Every moment, as a part of its move, a power's own move lets something go: a katar's five fists,
 /// one each, everything else once
 pub(in crate::combat) fn power_releases(power: Power) -> Vec<f64> {
-    if let Some(releases) = super::miracles::miracle_releases(power) {
+    if let Some(releases) = super::miracles::miracle_releases(power).or_else(|| super::wilds::wild_releases(power)).or_else(|| super::arcana::arcane_releases(power)) {
         return releases;
     }
     match power {
@@ -349,6 +392,9 @@ fn power_keys(power: Power, profile: &Profile) -> Vec<(f64, Pose, bool)> {
         .or_else(|| super::miracles::miracle_keys(power, profile))
         .or_else(|| super::tempest::tempest_keys(power, profile))
         .or_else(|| super::thunder::thunder_keys(power, profile))
+        .or_else(|| super::wilds::wild_keys(power, profile))
+        .or_else(|| super::arcana::arcane_keys(power, profile))
+        .or_else(|| super::summons::summon_keys(power, profile))
     {
         return keys;
     }
@@ -602,6 +648,16 @@ impl Combat {
             if power.thunder() {
                 self.thunder_gathers(arena, weapon, power, t / length, dt);
             }
+            // The other schools' gathering in the weapon, see wilds.rs and arcana.rs
+            if power.wild() {
+                self.wild_gathers(arena, weapon, power, t / length, dt);
+            }
+            if power.arcane() {
+                self.arcane_gathers(arena, weapon, power, t / length, dt);
+            }
+            if power.summons() {
+                self.summon_gathers(arena, weapon, power, t / length, dt);
+            }
             for (shot, at) in power_releases(power).into_iter().enumerate() {
                 let at = at * length;
                 if t <= at && t + dt > at {
@@ -622,6 +678,13 @@ impl Combat {
         // their own way below, nor the heavy blow or the bow drawn full that carry it, nor a
         // braced siege crossbow, nor letting go of a harpoon's line.
         let own = power.own_move() && (kind == Kind::Melee || (kind == Kind::Ranged && profile.build == Build::None && profile.style != Style::Lob));
+        // A necromancer's dead sent at what's aimed at by right click while it comes round, see
+        // summons.rs
+        if power.summons() && !ready && controls.heavy && !self.power.aiming && self.command_minions(arena) {
+            controls.heavy = false;
+            controls.aiming = false;
+            return false;
+        }
         let line_out = profile.build == Build::Harpoon && (self.tether.is_some() || self.projectiles.iter().any(|p| p.trick == Trick::Harpoon));
         let shouldered = kind == Kind::Ranged && profile.build != Build::None && profile.build != Build::Siege && profile.style != Style::Lob && !line_out;
         if own || shouldered || kind == Kind::Magic {
@@ -830,7 +893,7 @@ impl Combat {
             }
         };
         // The third batch's, see arsenal.rs
-        if self.unleash_arsenal(arena, weapon, power, base) || self.unleash_miracle(arena, weapon, power, shot, base) || self.unleash_tempest(arena, weapon, power, base) || self.unleash_thunder(arena, weapon, power, base) {
+        if self.unleash_arsenal(arena, weapon, power, base) || self.unleash_miracle(arena, weapon, power, shot, base) || self.unleash_tempest(arena, weapon, power, base) || self.unleash_thunder(arena, weapon, power, base) || self.unleash_wild(arena, weapon, power, shot, base) || self.unleash_arcane(arena, weapon, power, shot, base) || self.unleash_summons(arena, weapon, power, base) {
             return;
         }
         match power {
@@ -838,6 +901,9 @@ impl Combat {
             Power::Vigil | Power::Heavenfall | Power::Triune | Power::Stormcall | Power::Glacier | Power::Shadowgrasp | Power::Helix => {}
             Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge => {}
             Power::Stormbrand | Power::Stormrunners | Power::Thundersplit | Power::Railshot | Power::TwinArc | Power::Judgment | Power::Torrent | Power::Gravebolt => {}
+            Power::Meteor | Power::CinderWhirl | Power::Kindling | Power::IceLance | Power::RimeSnare | Power::Bramble | Power::Boulder => {}
+            Power::Missiles | Power::Hourglass | Power::SoulHarvest | Power::BoneCage | Power::Sanctuary | Power::Smite => {}
+            Power::Phalanx | Power::Archers | Power::Colossus | Power::Wraiths | Power::Corpses => {}
             // Crescents flying on from the blow, out of the chest, or a whip's low over the ground
             // Each at what the crosshair, or its fan either side, first meets within its reach, or
             // as far as that, as its rings showed, see aim.rs; a whip's on along the ground
@@ -1405,6 +1471,14 @@ impl Combat {
         if let Some(gone) = self.thunder_flies(arena, p, shape, dt) {
             return gone;
         }
+        // The other schools', see wilds.rs and arcana.rs: a kindling arrow setting the ground
+        // alight, a boulder rolling, missiles weaving, wisps flying home, the rest trailing
+        if let Some(gone) = self.wild_flies(arena, p, shape, dt) {
+            return gone;
+        }
+        if let Some(gone) = self.arcane_flies(arena, p, shape, dt) {
+            return gone;
+        }
         if shape == Shape::Shade {
             self.shade_trails(p, dt);
         }
@@ -1719,6 +1793,12 @@ impl Combat {
             }
             Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static => self.tempest_strikes(arena, p, shape, i, at),
             Shape::Runner | Shape::Volt { .. } | Shape::Rail | Shape::Twin { .. } | Shape::Summon | Shape::Spark | Shape::Grave => self.thunder_strikes(arena, p, shape, i, at),
+            Shape::Meteor | Shape::Cinder | Shape::Kindle | Shape::Icicle { .. } | Shape::Rime | Shape::Seed | Shape::Boulder { .. } => self.wild_strikes(arena, p, shape, i, at),
+            Shape::Missile { .. } | Shape::Glass | Shape::Reaper | Shape::Wisp { .. } | Shape::Bone | Shape::Hallow | Shape::Brand => self.arcane_strikes(arena, p, shape, i, at),
+            Shape::Calling { kind } => {
+                self.summons_land(arena, p, kind, at);
+                true
+            }
         }
     }
 
@@ -1787,6 +1867,9 @@ impl Combat {
             Shape::Helix { .. } => self.power_pop(arena, &profile, at, 1.2, p.damage * 0.5, None),
             Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static => self.tempest_lands(arena, p, shape, at),
             Shape::Runner | Shape::Volt { .. } | Shape::Rail | Shape::Twin { .. } | Shape::Summon | Shape::Spark | Shape::Grave => self.thunder_lands(arena, p, shape, at),
+            Shape::Meteor | Shape::Cinder | Shape::Kindle | Shape::Icicle { .. } | Shape::Rime | Shape::Seed | Shape::Boulder { .. } => self.wild_lands(arena, p, shape, at),
+            Shape::Missile { .. } | Shape::Glass | Shape::Reaper | Shape::Wisp { .. } | Shape::Bone | Shape::Hallow | Shape::Brand => self.arcane_lands(arena, p, shape, at),
+            Shape::Calling { kind } => self.summons_land(arena, p, kind, at),
             // Breaking up into sparks and a flash where it ends
             Shape::Wave { .. } => {
                 self.sparks(at, 16, 3.5, look, 0.3, 0.45);
@@ -2068,6 +2151,8 @@ impl Combat {
                 self.tempest_zone(arena, z, kind, dt);
             }
             Lasting::Rail | Lasting::Judgment | Lasting::Grave => self.thunder_zone(arena, z, kind, dt),
+            Lasting::Snare | Lasting::Bramble => self.wild_zone(arena, z, kind, dt),
+            Lasting::Hourglass | Lasting::Cage | Lasting::Sanctuary => self.arcane_zone(arena, z, kind, dt),
             Lasting::Runes | Lasting::Sigil => self.runes_go_on(arena, z, kind == Lasting::Sigil),
             // A Starbreak's crack, a short fissure, see arsenal.rs
             Lasting::Crack => {
@@ -2358,6 +2443,8 @@ impl Combat {
             Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => self.miracle_zone_ends(arena, z, kind),
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => {}
             Lasting::Rail | Lasting::Judgment | Lasting::Grave => {}
+            Lasting::Snare | Lasting::Bramble => self.wild_zone_ends(arena, z, kind),
+            Lasting::Hourglass | Lasting::Cage | Lasting::Sanctuary => self.arcane_zone_ends(arena, z, kind),
         }
     }
 
@@ -2526,6 +2613,9 @@ impl Combat {
             Shape::Vigil | Shape::Ascent | Shape::Storm | Shape::Grasp | Shape::Helix { .. } => out.extend(self.miracle_shot_instances(p, shape, view)),
             Shape::Fork { .. } | Shape::Crackle | Shape::Lash | Shape::Static => out.extend(self.tempest_shot_instances(p, shape, view)),
             Shape::Runner | Shape::Volt { .. } | Shape::Rail | Shape::Twin { .. } | Shape::Summon | Shape::Spark | Shape::Grave => out.extend(self.thunder_shot_instances(p, shape, view)),
+            Shape::Meteor | Shape::Cinder | Shape::Kindle | Shape::Icicle { .. } | Shape::Rime | Shape::Seed | Shape::Boulder { .. } => out.extend(self.wild_shot_instances(p, shape, view)),
+            Shape::Missile { .. } | Shape::Glass | Shape::Reaper | Shape::Wisp { .. } | Shape::Bone | Shape::Hallow | Shape::Brand => out.extend(self.arcane_shot_instances(p, shape, view)),
+            Shape::Calling { .. } => out.extend(self.calling_instances(p, view)),
         }
         out
     }
@@ -2552,6 +2642,8 @@ impl Combat {
             Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => out.extend(self.miracle_zone_instances(z, kind, view)),
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => out.extend(self.tempest_zone_instances(z, kind, view)),
             Lasting::Rail | Lasting::Judgment | Lasting::Grave => out.extend(self.thunder_zone_instances(z, kind, view)),
+            Lasting::Snare | Lasting::Bramble => out.extend(self.wild_zone_instances(z, kind, view)),
+            Lasting::Hourglass | Lasting::Cage | Lasting::Sanctuary => out.extend(self.arcane_zone_instances(z, kind, view)),
             // A glowing crack along the ground as far as it's split
             Lasting::Fissure | Lasting::Crack => {
                 let to = z.position + z.velocity * z.owed.max(0.5) + up * 0.15 * vpm;
@@ -2661,6 +2753,8 @@ impl Combat {
             Lasting::Vigil | Lasting::Heavenfall | Lasting::Storm | Lasting::Glacier | Lasting::Grasp => self.miracle_light(z, kind),
             Lasting::Tether | Lasting::Field | Lasting::Trail | Lasting::Discharge => self.tempest_light(z, kind),
             Lasting::Rail | Lasting::Judgment | Lasting::Grave => self.thunder_light(z, kind),
+            Lasting::Snare | Lasting::Bramble => self.wild_light(z, kind),
+            Lasting::Hourglass | Lasting::Cage | Lasting::Sanctuary => self.arcane_light(z, kind),
             // A circle of runes glowing as it's written, blazing as it blasts up
             Lasting::Runes | Lasting::Sigil => {
                 let blaze = if z.dwell > 0.0 { (1.0 - (age - z.dwell) / 0.4).max(0.0) * 2.0 } else { 0.25 + 0.1 * z.owed };

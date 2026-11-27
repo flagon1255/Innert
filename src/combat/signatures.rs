@@ -19,6 +19,16 @@ pub(super) mod tempest;
 /// The second storm of lightning: a charged blade, runners along the ground, a splitting arrow, a
 /// rail, twin chakrams, a judgment bolt, a torrent and grave lightning
 pub(super) mod thunder;
+/// Other schools of magic than lightning: fire, frost, earth and the wild's thorns, a meteor, a
+/// whirl of cinders, an arrow kindling the ground, a lance of ice, rime snares, a bramble wall and
+/// a boulder heaved
+pub(super) mod wilds;
+/// Arcane light, death and holy light: missiles, an hourglass of slow time, a harvest of souls, a
+/// cage of bone, a sanctuary and a smite
+pub(super) mod arcana;
+/// A necromancer's summons: a phalanx of skeletons, skeleton archers, a grave colossus, wraiths
+/// and the slain raised as what they were
+pub(super) mod summons;
 /// A talisman's spears and a skull focus's dead raised, see weapons::Rite
 pub(in crate::combat) mod faith;
 
@@ -604,6 +614,10 @@ fn tinted(profile: &Rc<Profile>, element: Element) -> Rc<Profile> {
     if profile.element == Some(element) { profile.clone() } else { Rc::new(Profile { element: Some(element), ..(**profile).clone() }) }
 }
 
+/// How big a swell of WAVE's ring of rubble is to be for it to reach as far as a ripple of the
+/// same radius does: swells are drawn at MODEL_RES, and it's made at RING_RES
+pub(super) const WAVE_SWELL: f64 = MODEL_RES / RING_RES;
+
 /// `v` along the ground
 pub(super) fn flat_of(v: Vector3<f64>) -> Vector3<f64> {
     Vector3::new(v.x, v.y, 0.0).try_normalize(1e-6).unwrap_or_else(Vector3::x)
@@ -614,6 +628,19 @@ pub(super) fn flat_of(v: Vector3<f64>) -> Vector3<f64> {
 pub(super) fn thrown(from: Vector3<f64>, to: Vector3<f64>, time: f64, gravity: f64, vpm: f64) -> Vector3<f64> {
     let g = Vector3::new(0.0, 0.0, -9.8 * gravity * vpm);
     (to - from - g * 0.5 * time * time) / time
+}
+
+/// How fast to lob something from `from` so it comes down on `to`, falling `gravity` as fast as
+/// things do: rising a little first, over the hand or over `to` if that's higher, so it clears a
+/// ledge it's thrown down off rather than diving into its lip
+pub(super) fn arced(from: Vector3<f64>, to: Vector3<f64>, gravity: f64, vpm: f64) -> Vector3<f64> {
+    let g = 9.8 * gravity * vpm;
+    let rise = ((to.z - from.z) / vpm).max(0.0) + 0.6;
+    let vz = (2.0 * g * rise * vpm).sqrt();
+    let fall = from.z + rise * vpm - to.z;
+    let time = (vz + (2.0 * g * fall.max(0.0)).sqrt()) / g;
+    let across = (to - from).xy() / time.max(1e-3);
+    Vector3::new(across.x, across.y, vz)
 }
 
 /// Which way to shoot from `from` at `speed` meters a second to come down on `to`, falling

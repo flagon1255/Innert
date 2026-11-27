@@ -1438,8 +1438,8 @@ pub fn menu(menu: &mut ModeMenu, ui: &mut egui::Ui, started: bool, playing: Opti
         let now = started && playing == Some(mode);
         ui.label(RichText::new(mode.name()).font(theme::blackletter(26.0)).color(theme::HEADING));
         let about = match mode {
-            Mode::FreeRoam => "The endless wilderness, on any seed",
-            Mode::Realms => "A journey from the normal world through the realms",
+            Mode::FreeRoam => "Free to explore",
+            Mode::Realms => "Travel through different worlds, each with its own challenges",
         };
         ui.label(RichText::new(about).size(13.0).color(gray));
         ui.add_space(4.0);
@@ -1536,45 +1536,12 @@ pub fn menu_window(ctx: &egui::Context, left: bool, add: impl FnOnce(&mut egui::
     });
 }
 
-/// How to play, under the menu
-pub fn menu_help(ui: &mut egui::Ui) {
-    ui.add_space(18.0);
-    ui.label(
-        RichText::new(
-            "WASD move · Space jump · Shift run · F fly\n\
-             Click swing or cast · bow: hold right click, click to shoot\n\
-             Crossbow, gun: click to shoot, Q or right click reloads · T ammo\n\
-             Right click heavy swing, or eat · E pick up, open, trade, pet\n\
-             Legendary: R special · right click its power, Q reloads\n\
-             Number keys pick what's in hand · I inventory · M map\n\
-             Wings: jump, then hold Space in the air to glide\n\
-             Merchants sell wings; bosses and chests leave them\n\
-             F1 settings · Esc menu",
-        )
-        .size(13.0)
-        .color(theme::WEAK),
-    );
-    // Gathering and building, see building.rs
-    ui.add_space(10.0);
-    theme::heading(ui, "Gathering and building", 15.0);
-    ui.label(
-        RichText::new(
-            "Hold G at a tree, rock or clay to gather it\n\
-             Bare hands work; tools are 2–4× faster (I › Craft)\n\
-             B build · 1–9, 0 pick a piece, its cost beside it\n\
-             Click build · right click take down · R turn",
-        )
-        .size(13.0)
-        .color(theme::WEAK),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// At the size of the window played in, all of the menu shows, Quit and how to play at its
-    /// foot with nothing to scroll; in a shorter one it's all on screen, the rest scrolling
+    /// All of the menu shows, Quit at its foot with nothing to scroll, even in the shortest window
+    /// played in, now that how to play has its own window
     #[test]
     fn the_menu_fits_and_scrolls() {
         for [w, h] in [[1548.0, 872.0], [1600.0, 734.0], [1280.0, 600.0]] {
@@ -1587,18 +1554,13 @@ mod tests {
                 let _ = ctx.run(input.clone(), |ctx| {
                     menu_window(ctx, false, |ui| {
                         menu(&mut ModeMenu::default(), ui, true, Some(Mode::Realms), &saves, &mut 7, false);
-                        menu_help(ui);
                         end = ui.label("end").rect;
                     });
                 });
             }
             let shown = ctx.memory(|m| m.area_rect(egui::Id::new("menu"))).expect("the menu's drawn");
             assert!(shown.min.y >= 0.0 && shown.max.y <= h && shown.min.x >= 0.0 && shown.max.x <= w, "at {w}×{h} it's at {shown:?}");
-            if h >= 872.0 {
-                assert!(end.max.y <= shown.max.y, "at {w}×{h} its foot's at {:.0}, under the window's at {:.0}", end.max.y, shown.max.y);
-            } else if h <= 600.0 {
-                assert!(end.max.y > shown.max.y, "at {w}×{h} the rest scrolls");
-            }
+            assert!(end.max.y <= shown.max.y, "at {w}×{h} its foot's at {:.0}, under the window's at {:.0}", end.max.y, shown.max.y);
         }
     }
 }

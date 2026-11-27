@@ -6,7 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
+The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
 
 4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
    this"). RUNNING in `menumap`.
@@ -14,14 +14,24 @@ Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each i
      to enter (Continue: round the saved position; New: round the seed's spawn, redrawn as the seed
      changes), towns, castles and camps marked, roads once the roads item lands, the hover naming
      the place under the cursor. Black and white, free once playing.
+   - Then (2026-11-27, "Maybe lets not load any world at start"): no world built at launch; the
+     start-up menu opens straight after the GPU/shaders, with the map as its backdrop, and the
+     world is built behind the loading screen on New or Continue. Same agent, separate commit.
+     (2026-11-27, "dont load the world instantly, jsut show the cubes": at launch only the cubes
+     and the menu, no world behind them.)
+   - Hover reveals colour (2026-11-27, "When i hover on the cubes, they should reveal real
+     color"): grey at rest, the true surface colours fading in round the cursor and out behind it.
+   - Layout (2026-11-27, "Remove the point a place to name it drag to turn, also , move the menu
+     to left, and map to right"): no hint line; menu panel on the left, map on the right.
+   - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
+     it myself the text").
 
-3. **More weapon parts, more magic** (2026-11-27, "add more weapon parts, more magic").
-   RUNNING in `moremagic`.
-   - New weapon parts across the weapon families, and new spells/powers for the casting classes,
-     beyond the eight lightning powers just added.
-   - More summoning for the Necromancer (2026-11-27, "addd more summoning capability for
-     necromancer"): several summon kinds (skeleton warriors, archers, a big golem, wraiths,
-     raising fresh corpses), animated rising and attacks, a cap on how many, simple commands.
+6. **An Options window in game to see the controls and change the key bindings** (2026-11-27,
+   "Just add options windows in game, to see these", "just add options window", "to in game",
+   "To change ey bindings"). RUNNING in `controlswin` from fe9dc3f9.
+   - One bindings table for every action, saved in %LOCALAPPDATA%\Innert\, an Options window from
+     the Esc menu (and/or F1 settings) listing every control grouped with the menu's tips, click
+     to rebind, clashes shown, reset to defaults; prompts show the bound key.
 
 ## Loose ends (found along the way, not yet asked for)
 
@@ -59,6 +69,18 @@ Magic RUNNING from AVI c7055b8d, the menu map from 0b267383 (2026-11-27), each i
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- Road lamps: iron lamps with glass lanterns along the stone roads, oil lanterns on wooden poles
+  along the gravel (sand only near places), within 170 m of every town and castle, along about
+  half the town roads, at both ends of bridges; lit at night, no light by day (9f70b020,
+  2026-11-27). Night cost about +0.2–0.5 ms near lamps on a busy machine; check on a GTX 960.
+- The start-up menu without the controls list, new mode blurbs (the user's own edit, 018720ec).
+
+- More magic and parts: 13 new powers (fire, frost, nature, earth, arcane, death, holy), a
+  Necromancer kit of five summonings (Bone Phalanx, Bone Archers, Grave Colossus, Wraith Flight,
+  Corpse Rising; 8 raised dead at once, right click on cooldown sends them), 46 new weapon parts
+  (cd59efdb, 2026-11-27). Left: talisman cord/feathers sit inside the fist in hand; skull-focus
+  candles barely show; summons can't be hurt; FPS to settle in the quiet A/B.
 
 - Roads: gravel, sand and rocky roads between towns and from each castle to its town, timber and
   stone bridges, signposts naming where each way leads (floating labels within 14 m), towns and

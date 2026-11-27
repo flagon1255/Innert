@@ -289,7 +289,7 @@ const uint FAR_DIRECT_INTERVAL = 16;
 const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 103;
+const uint PALETTE_SIZE = 105;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
     vec3(0.28, 0.48, 0.17), // grass
@@ -393,12 +393,16 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.66, 0.42, 0.24), // pine planks
     vec3(0.76, 0.60, 0.40), // palm planks
     vec3(0.74, 0.73, 0.70), // cut stone
-    vec3(0.14, 0.24, 0.62)  // blue cloth
+    vec3(0.14, 0.24, 0.62), // blue cloth
+    vec3(0.62, 0.60, 0.50), // lamp glass, unlit
+    vec3(0.24, 0.17, 0.12)  // oil lamp wick, unlit
 );
 
 // Has to match the material ids in src\worldgen.rs
 const uint MAT_CRYSTAL = 56;
 const uint MAT_FLAME = 57;
+const uint MAT_LAMP_GLASS = 103;
+const uint MAT_OIL_FLAME = 104;
 const uint MAT_STEEL = 69;
 const uint MAT_BRONZE = 72;
 const uint MAT_LEATHER = 73;
@@ -492,6 +496,12 @@ const vec3 PAINT[PAINT_SIZE] = vec3[PAINT_SIZE](
 vec3 emission(uint material) {
     if (material == MAT_FLAME)
     return vec3(6.0, 3.2, 1.2);
+    // The roads' lamps, lit as the sun goes down and put out as it comes up, see daylight(): an
+    // iron lamp's glass a steady warm white, an oil lantern's flame a deep orange
+    if (material == MAT_LAMP_GLASS || material == MAT_OIL_FLAME) {
+        float dark = 1 - smoothstep(-0.1, 0.25, view.sun.z);
+        return (material == MAT_LAMP_GLASS ? vec3(5.0, 3.9, 2.4) : vec3(5.5, 2.3, 0.6)) * dark;
+    }
     if (material == MAT_CRYSTAL)
     return vec3(0.5, 1.6, 2.2);
     if (material >= MAT_GLOW_FIRE && material <= MAT_GLOW_HOLY)

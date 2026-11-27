@@ -152,6 +152,44 @@ pub(super) struct Bridge {
     pub water: f32,
 }
 
+/// Which kind of lamp stands by a road: an iron one on a stone plinth with a glass lantern on top,
+/// steady and warm white, along the rough stone roads; or a wooden pole with an oil lantern hung
+/// from an arm, dimmer, orange and flickering, along the gravel and sand
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LampKind {
+    Iron,
+    Oil,
+}
+
+/// A lamp by a road: where its foot is, in meters, which kind, and which way the road is from it
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Lamp {
+    pub at: [f32; 2],
+    pub kind: LampKind,
+    pub toward: [f32; 2],
+}
+
+/// The light the iron lamps and the oil lanterns give: lit only after dark, see by_night(). Bright
+/// enough to throw a pool of light on the road under them from up on their posts, the iron lamps'
+/// the brighter. The oil lanterns' redder, so they flicker, see flicker() in main.rs; the iron
+/// lamps' too white to.
+pub const IRON_LAMP_LIGHT: [f32; 3] = [4.2, 3.5, 2.5];
+pub const OIL_LAMP_LIGHT: [f32; 3] = [2.6, 1.3, 0.5];
+
+/// How much of a light of `color` shines, given how much of the day's light there is, `day`, 0
+/// at night to 1 by day, see daynight::daylight(): the roads' lamps none by day, coming up as the
+/// sun goes down; every other light all the time
+pub fn by_night(color: [f32; 3], day: f32) -> f32 {
+    if color == IRON_LAMP_LIGHT || color == OIL_LAMP_LIGHT { (1.0 - day).clamp(0.0, 1.0) } else { 1.0 }
+}
+
+/// How far out from the towns and castles every road is lit, along it, in meters, and how far
+/// apart its lamps stand: iron lamps, oil lanterns, and oil lanterns on the sand, fewer
+const LIT_NEAR: f32 = 170.0;
+const LAMP_EVERY: [f32; 3] = [19.0, 24.0, 38.0];
+/// How far out from the middle of a road a lamp stands, past its edge
+const LAMP_OUT: f32 = 1.05;
+
 /// A road between two places, from the door of the first to the door of the second
 pub(super) struct Road {
     pub ends: [PlaceKey; 2],
@@ -159,6 +197,7 @@ pub(super) struct Road {
     pub doors: [usize; 2],
     pub points: Vec<RoadPoint>,
     pub bridges: Vec<Bridge>,
+    pub lamps: Vec<Lamp>,
     /// Where it all is, and what it touches, x0, y0, x1, y1 in meters
     pub bounds: [f32; 4],
 }
@@ -412,7 +451,79 @@ impl Terrain {
         road.ends = [a.key, b.key];
         road.names = [a.name.clone(), b.name.clone()];
         road.doors = [da, db];
+        road.lamps = self.lamps_along(&road, !a.key.castle && !b.key.castle);
         Some(road)
+    }
+
+    /// The lamps along `road`, `main` if it goes from town to town: near the places at its ends,
+    /// all the way along half the main roads, and either end of each bridge. Iron lamps along its
+    /// rocky stretches, oil lanterns along the gravel, wider apart on the sand; the kind only
+    /// changes where the road's changed and stays changed for a lamp or two on, so each row's of
+    /// one kind. Iron lamps stand either side by turns, oil lanterns down one side.
+    fn lamps_along(&self, road: &Road, main: bool) -> Vec<Lamp> {
+        let settings = &self.settings;
+        let points = &road.points;
+        let length = road.length();
+        let seed = hash3((points[0].x * 4.0) as i32 as u32, (points[0].y * 4.0) as i32 as u32, settings.seed ^ 0x1a3b);
+        let all_along = main && unit(seed) < 0.5;
+        let sea = sea_level_m(settings);
+        let at = |s: f32| points.partition_point(|p| p.s < s).min(points.len() - 1);
+        // 0 iron, 1 oil, 2 oil on the sand
+        let kind_at = |s: f32| {
+            let p = points[at(s)];
+            if p.rocky > 0.5 {
+                0
+            } else if climate(settings, p.x, p.y).desert > 0.5 || height_at(settings, p.x, p.y) < sea + 2.0 {
+                2
+            } else {
+                1
+            }
+        };
+        let near_bridge = |s: f32| road.bridges.iter().any(|b| [b.a, b.b].iter().any(|e| distance([e[0], e[1]], [points[at(s)].x, points[at(s)].y]) < 9.0)) || points[at(s)].bridge;
+        let lit = |s: f32, kind: usize| {
+            let near = s.min(length - s) < if kind == 2 { LIT_NEAR * 0.6 } else { LIT_NEAR };
+            near || all_along && kind != 2
+        };
+        let across = |k: usize| {
+            let (a, b) = (points[k.saturating_sub(1)], points[(k + 1).min(points.len() - 1)]);
+            let (along, _) = heading([a.x, a.y], [b.x, b.y]);
+            [-along[1], along[0]]
+        };
+        let one_side = if hash(seed) & 1 == 0 { 1.0 } else { -1.0 };
+        let mut lamps = Vec::new();
+        let (mut s, mut kind, mut turn) = (14.0, kind_at(14.0), 1.0f32);
+        while s < length - 14.0 {
+            let here = kind_at(s);
+            // Over to the other kind only where the road's still that two lamps on
+            if here != kind && kind_at(s + LAMP_EVERY[here]) == here && kind_at(s + 2.0 * LAMP_EVERY[here]) == here {
+                kind = here;
+            }
+            if !lit(s, kind) || near_bridge(s) {
+                s += 4.0;
+                continue;
+            }
+            let k = at(s);
+            let p = points[k];
+            let side = if kind == 0 { turn } else { one_side };
+            turn = -turn;
+            let out = across(k);
+            let off = p.half + LAMP_OUT;
+            lamps.push(Lamp { at: [p.x + out[0] * side * off, p.y + out[1] * side * off], kind: if kind == 0 { LampKind::Iron } else { LampKind::Oil }, toward: [-out[0] * side, -out[1] * side] });
+            s += LAMP_EVERY[kind];
+        }
+        // Either end of each bridge, on land, on either side
+        for (n, b) in road.bridges.iter().enumerate() {
+            let (along, _) = heading([b.a[0], b.a[1]], [b.b[0], b.b[1]]);
+            let out = [-along[1], along[0]];
+            for (end, back, side) in [(b.a, -1.0f32, 1.0f32), (b.b, 1.0, -1.0)] {
+                let side = side * if n % 2 == 0 { 1.0 } else { -1.0 };
+                let off = b.half + 0.75;
+                let at = [end[0] + along[0] * back * 2.2 + out[0] * side * off, end[1] + along[1] * back * 2.2 + out[1] * side * off];
+                lamps.retain(|l| distance(l.at, at) > 6.0);
+                lamps.push(Lamp { at, kind: if b.stone { LampKind::Iron } else { LampKind::Oil }, toward: [-out[0] * side, -out[1] * side] });
+            }
+        }
+        lamps
     }
 
     /// The cheapest way from any of `starts` to any of `goals` over a grid GRID meters across,
@@ -757,7 +868,7 @@ impl Terrain {
             lo = [lo[0].min(p.x), lo[1].min(p.y)];
             hi = [hi[0].max(p.x), hi[1].max(p.y)];
         }
-        Road { ends: [PlaceKey { castle: false, cx: 0, cy: 0 }; 2], names: Default::default(), doors: [0; 2], points, bridges, bounds: grown([lo[0], lo[1], hi[0], hi[1]], ROAD_TOUCH + 1.0) }
+        Road { ends: [PlaceKey { castle: false, cx: 0, cy: 0 }; 2], names: Default::default(), doors: [0; 2], points, bridges, lamps: Vec::new(), bounds: grown([lo[0], lo[1], hi[0], hi[1]], ROAD_TOUCH + 1.0) }
     }
 }
 
@@ -1095,6 +1206,8 @@ fn clear_spot(roads: &[Arc<Road>], spots: &[[f32; 2]]) -> [f32; 2] {
             .flat_map(|r| r.points.windows(2))
             .map(|w| to_segment(p, [w[0].x, w[0].y], [w[1].x, w[1].y]).0 - w[0].half.max(w[1].half))
             .fold(f32::MAX, f32::min)
+            // Nor by a lamp
+            .min(roads.iter().flat_map(|r| &r.lamps).map(|l| distance(l.at, p) - 1.0).fold(f32::MAX, f32::min))
     };
     spots.iter().copied().find(|&p| clearance(p) > 0.9).unwrap_or_else(|| spots.iter().copied().max_by(|a, b| clearance(*a).total_cmp(&clearance(*b))).unwrap_or(spots[0]))
 }
@@ -1275,6 +1388,29 @@ impl Terrain {
         signs
     }
 
+    /// The lamps of the roads near standing within `r`, x0, y0, x1, y1 in meters: all but those a
+    /// bend of their road or another road comes too near, or that would stand in a town or castle
+    /// or in the water. Every road near one is near enough to have a say, see find_roads().
+    fn road_lamps(&self, r: [f32; 4], cache: &RiverCache) -> Vec<Lamp> {
+        let roads = &self.roads.roads;
+        let places: Vec<Arc<Place>> = self.places_in(grown(r, towns::TOWN_REACH), false, cache).into_iter().chain(self.places_in(grown(r, castles::CASTLE_REACH), true, cache)).collect();
+        let sea = sea_level_m(&self.settings);
+        let mut lamps = Vec::new();
+        for lamp in roads.iter().flat_map(|road| &road.lamps) {
+            let p = lamp.at;
+            if p[0] < r[0] || p[1] < r[1] || p[0] >= r[2] || p[1] >= r[3] {
+                continue;
+            }
+            let on_road = roads.iter().filter(|road| overlaps(road.bounds, [p[0], p[1], p[0], p[1]], 0.0)).flat_map(|road| road.points.windows(2)).any(|w| to_segment(p, [w[0].x, w[0].y], [w[1].x, w[1].y]).0 < w[0].half.max(w[1].half) + 0.6);
+            let in_place = places.iter().any(|place| overlaps(place.bounds, [p[0], p[1], p[0], p[1]], 1.0));
+            let wet = height_at(&self.settings, p[0], p[1]) < sea + 0.4 || self.rivers.iter().any(|river| river.iter().any(|q| (q.x - p[0]).hypot(q.y - p[1]) < q.half_width + RIVER_BANK));
+            if !on_road && !in_place && !wet {
+                lamps.push(*lamp);
+            }
+        }
+        lamps
+    }
+
     /// The bridges and signposts of the roads reaching this piece of the landscape, and where
     /// they stand so nothing grows there. The signposts in the piece itself are kept to be read,
     /// see signposts_near().
@@ -1292,6 +1428,19 @@ impl Terrain {
                     objects.push(bridge(b));
                     features.footprints.push([r[0], r[1], r[2], r[3], 0.0]);
                 }
+            }
+        }
+        for lamp in self.road_lamps(grown(area, 1.5), cache) {
+            let [x, y] = lamp.at;
+            let g = self.ground_by_road(x, y);
+            let (shapes, light) = match lamp.kind {
+                LampKind::Iron => iron_lamp([x, y, g], lamp.toward),
+                LampKind::Oil => oil_lamp([x, y, g], lamp.toward),
+            };
+            objects.push(Object::new(shapes, hash3((x * 4.0) as i32 as u32, (y * 4.0) as i32 as u32, 0x1a4e)));
+            features.footprints.push([x - 1.2, y - 1.2, x + 1.2, y + 1.2, 0.0]);
+            if self.inside(x, y) {
+                features.lights.push(light);
             }
         }
         let net = network(&self.settings);
@@ -1356,6 +1505,55 @@ fn bridge(b: &Bridge) -> Object {
         }
     }
     Object::new(s, hash3((b.a[0] * 4.0) as i32 as u32, (b.a[1] * 4.0) as i32 as u32, 0xb81d))
+}
+
+/// An iron lamp with its foot at `foot`, by a road `toward` it: a square post of dark iron on a
+/// plinth of cut stone, a collar at its head, and on it a lantern of glass in an iron frame under a
+/// little peaked cap, its light a steady warm white after dark
+fn iron_lamp(foot: Vec3, toward: [f32; 2]) -> (Vec<Shape>, Light) {
+    let [x, y, g] = foot;
+    let clear = |lo: Vec3, hi: Vec3, m: u8| Shape::block(lo, hi, m, AIR).placed(Placement::Clear);
+    let c = g + 3.15;
+    let mut s = vec![
+        // The cap, the frame's corners, then the glass, so each wins over what's after
+        clear([x - 0.035, y - 0.035, c + 0.3], [x + 0.035, y + 0.035, c + 0.42], DARK_STEEL),
+        clear([x - 0.1, y - 0.1, c + 0.23], [x + 0.1, y + 0.1, c + 0.3], DARK_STEEL),
+        clear([x - 0.17, y - 0.17, c + 0.17], [x + 0.17, y + 0.17, c + 0.23], DARK_STEEL),
+    ];
+    for (dx, dy) in [(-0.12, -0.12), (0.12, -0.12), (-0.12, 0.12), (0.12, 0.12)] {
+        s.push(clear([x + dx - 0.03, y + dy - 0.03, c - 0.18], [x + dx + 0.03, y + dy + 0.03, c + 0.17], DARK_STEEL));
+    }
+    s.push(clear([x - 0.11, y - 0.11, c - 0.16], [x + 0.11, y + 0.11, c + 0.16], LAMP_GLASS));
+    s.push(clear([x - 0.15, y - 0.15, c - 0.24], [x + 0.15, y + 0.15, c - 0.17], DARK_STEEL));
+    s.push(clear([x - 0.1, y - 0.1, g + 2.78], [x + 0.1, y + 0.1, g + 2.88], DARK_STEEL));
+    s.push(clear([x - 0.055, y - 0.055, g + 0.3], [x + 0.055, y + 0.055, c - 0.24], DARK_STEEL));
+    s.push(clear([x - 0.09, y - 0.09, g + 0.3], [x + 0.09, y + 0.09, g + 0.55], DARK_STEEL));
+    s.push(clear([x - 0.21, y - 0.21, g - 0.45], [x + 0.21, y + 0.21, g + 0.3], CUT_STONE));
+    // Just out towards the road and under the lantern, so it doesn't stand in its own light's way
+    let light = Light { position: [x + toward[0] * 0.35, y + toward[1] * 0.35, c - 0.45], color: IRON_LAMP_LIGHT, reach: 9.0 };
+    (s, light)
+}
+
+/// An oil lantern with the foot of its pole at `foot`, by a road `toward` it: a wooden pole with
+/// an arm braced out over the road's edge, and hung from it on a short chain a small lantern of
+/// dark wood and iron round its flame, orange and flickering after dark
+fn oil_lamp(foot: Vec3, toward: [f32; 2]) -> (Vec<Shape>, Light) {
+    let [x, y, g] = foot;
+    let clear = |lo: Vec3, hi: Vec3, m: u8| Shape::block(lo, hi, m, AIR).placed(Placement::Clear);
+    let tip = [x + toward[0] * 0.8, y + toward[1] * 0.8];
+    let c = g + 2.22;
+    let mut s = vec![clear([tip[0] - 0.06, tip[1] - 0.06, c + 0.1], [tip[0] + 0.06, tip[1] + 0.06, c + 0.15], BARK_DARK)];
+    for (dx, dy) in [(-0.055, -0.055), (0.055, -0.055), (-0.055, 0.055), (0.055, 0.055)] {
+        s.push(clear([tip[0] + dx - 0.018, tip[1] + dy - 0.018, c - 0.1], [tip[0] + dx + 0.018, tip[1] + dy + 0.018, c + 0.1], DARK_STEEL));
+    }
+    s.push(clear([tip[0] - 0.04, tip[1] - 0.04, c - 0.07], [tip[0] + 0.04, tip[1] + 0.04, c + 0.06], OIL_FLAME));
+    s.push(clear([tip[0] - 0.07, tip[1] - 0.07, c - 0.14], [tip[0] + 0.07, tip[1] + 0.07, c - 0.09], BARK_DARK));
+    s.push(clear([tip[0] - 0.012, tip[1] - 0.012, c + 0.15], [tip[0] + 0.012, tip[1] + 0.012, g + 2.62], DARK_STEEL));
+    s.push(Shape::capsule([x, y, g + 2.58], [tip[0] + toward[0] * 0.08, tip[1] + toward[1] * 0.08, g + 2.66], 0.045, 0.04, WOOD, BARK_DARK, false));
+    s.push(Shape::capsule([x, y, g + 2.05], [x + toward[0] * 0.45, y + toward[1] * 0.45, g + 2.6], 0.03, 0.03, WOOD, AIR, false));
+    s.push(Shape::capsule([x, y, g - 0.45], [x, y, g + 2.75], 0.075, 0.065, WOOD, BARK_DARK, false));
+    let light = Light { position: [tip[0], tip[1], c - 0.4], color: OIL_LAMP_LIGHT, reach: 7.0 };
+    (s, light)
 }
 
 /// Signpost `sign`: a post with its arms, each a board pointed at its end with dark marks along it
@@ -1668,6 +1866,67 @@ mod tests {
                 assert_eq!(*p, [q.x, q.y, q.z]);
             }
         }
+        // And their lamps
+        for (a, b) in roads.iter().zip(&again) {
+            assert_eq!(a.lamps.len(), b.lamps.len());
+            for (p, q) in a.lamps.iter().zip(&b.lamps) {
+                assert!(p.at == q.at && p.kind == q.kind);
+            }
+        }
+    }
+
+    /// Lamps stand beside the roads, never in one nor on a bridge's deck: iron lamps along the
+    /// rough stone, oil lanterns along the gravel and sand, a row of one kind at a time; some roads
+    /// lit all along, some only near the places they join; and which stand where is the same
+    /// whichever piece of the landscape they're built for
+    #[test]
+    fn lamps_stand_off_the_road() {
+        let (mut terrain, cache, roads, _, _) = region();
+        let r = REGION;
+        terrain.roads = Arc::new(Laid::new(roads.clone(), [r[0] - 40.0, r[1] - 40.0], [r[2] + 40.0, r[3] + 40.0]));
+        let lamps = terrain.road_lamps(r, &cache);
+        let (mut iron, mut oil, mut matched) = (0, 0, 0);
+        for lamp in &lamps {
+            let mut nearest: Option<(f32, RoadPoint)> = None;
+            for road in &roads {
+                for w in road.points.windows(2) {
+                    let off = to_segment(lamp.at, [w[0].x, w[0].y], [w[1].x, w[1].y]).0;
+                    assert!(off > w[0].half.max(w[1].half) + 0.5, "a lamp at {:?} on the road", lamp.at);
+                    if nearest.is_none_or(|(d, _)| off < d) {
+                        nearest = Some((off, w[0]));
+                    }
+                }
+                for b in &road.bridges {
+                    assert!(to_segment(lamp.at, [b.a[0], b.a[1]], [b.b[0], b.b[1]]).0 > b.half + 0.3, "a lamp on a bridge");
+                }
+            }
+            let (off, by) = nearest.unwrap();
+            assert!(off < 4.0, "a lamp {off} m off the road");
+            match lamp.kind {
+                LampKind::Iron => iron += 1,
+                LampKind::Oil => oil += 1,
+            }
+            matched += ((lamp.kind == LampKind::Iron) == (by.rocky > 0.5)) as usize;
+            // Facing the road
+            assert!((lamp.toward[0].hypot(lamp.toward[1]) - 1.0).abs() < 1e-3);
+        }
+        println!("{} lamps along {} roads: {iron} iron, {oil} oil, {matched} of the kind the road is where they stand", lamps.len(), roads.len());
+        assert!(iron > 0 && oil > 0);
+        assert!(matched * 10 >= lamps.len() * 8);
+        // Some roads lit all along their way, and some dark out in the country
+        let lit_all = roads.iter().filter(|road| road.lamps.len() as f32 > road.length() / 40.0).count();
+        assert!(lit_all > 0 && lit_all < roads.len());
+        // The same for a piece of the region as for the whole, where they meet
+        let [x, y] = lamps[lamps.len() / 2].at;
+        let p = [x - 100.0, y - 100.0, x + 124.0, y + 124.0];
+        let mut piece = Terrain::around(&SETTINGS, [p[0], p[1]], [p[2], p[3]]);
+        piece.roads = piece.find_roads(&cache);
+        let mut near: Vec<[f32; 2]> = piece.road_lamps(p, &cache).iter().map(|l| l.at).collect();
+        let mut whole: Vec<[f32; 2]> = lamps.iter().map(|l| l.at).filter(|q| q[0] >= p[0] && q[1] >= p[1] && q[0] < p[2] && q[1] < p[3]).collect();
+        near.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        whole.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(!near.is_empty());
+        assert_eq!(near, whole);
     }
 
     /// A map of the roads over a few kilometers, two meters a pixel: towns white, castles red, roads
@@ -1754,6 +2013,16 @@ mod tests {
             println!("sign at {:.0}, {:.0}: {}{}", sign.at[0], sign.at[1], sign.home.as_ref().map_or(String::new(), |h| format!("[{}] ", h.0)), sign.arms.iter().map(|a| format!("{} {}", a.to, a.how_far())).collect::<Vec<_>>().join(", "));
         }
         println!("{signs} signposts");
+        for road in &roads {
+            let first: Vec<String> = road.lamps.iter().take(6).map(|l| format!("{:?} {:.1},{:.1} facing {:.2},{:.2}", l.kind, l.at[0], l.at[1], l.toward[0], l.toward[1])).collect();
+            println!("lamps of {} to {}: {} of them, first {}", road.names[0], road.names[1], road.lamps.len(), first.join("; "));
+            for (k, l) in road.lamps.iter().enumerate() {
+                dot(l.at[0], l.at[1], 1, if l.kind == LampKind::Iron { [255, 255, 255] } else { [255, 140, 0] });
+                if road.lamps.get(k + 1).is_some_and(|m| m.kind != l.kind) {
+                    println!("lamps change from {:?} at {:.0}, {:.0} to {:?} at {:.0}, {:.0}", l.kind, l.at[0], l.at[1], road.lamps[k + 1].kind, road.lamps[k + 1].at[0], road.lamps[k + 1].at[1]);
+                }
+            }
+        }
         let path = std::env::var("ROAD_MAP").map_or(std::env::temp_dir().join("road_map.png"), std::path::PathBuf::from);
         map.save(&path).unwrap();
         println!("map in {}", path.display());
