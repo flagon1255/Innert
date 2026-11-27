@@ -6,30 +6,48 @@ the commit it landed in.
 
 ## Queued
 
-Five RUNNING (2026-11-27), each in `.claude\worktrees\<name>`.
+**PAUSED 2026-11-27 late evening** ("save to backlog everything, continue tomorrow"). Items 7–11
+were in progress, each on its own branch in `.claude\worktrees\<name>`. Each agent was told to
+commit its work (unfinished commits start "Unfinished:") and leave a handoff note at
+`<scratchpad>\<name>\handoff.md`, where the scratchpad is
+C:\Users\Andrej\AppData\Local\Temp\claude\c46ed4f726b1f982\23fd8364-88b7-4af6-99ec-df0cd51069f0\scratchpad.
+To continue: read each handoff, pick the branch up in its worktree (merge AVI into it first), finish,
+then merge into AVI one at a time with the full `cargo test --release`.
+
+Agents' house rules for this repo (from the brief): absolute paths under their own worktree only
+(several wrote into the main checkout by relative paths); never `git stash` (shared across
+worktrees, one agent popped the coordinator's stash); never push; commit as flagon1255 with no
+trailers; hidden GPU runs only, under the GPU lock, never while League of Legends or CS2 runs.
+
+Also owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24 (the first try was
+cut off by a restart).
 
 7. **More bosses, and bosses that don't get stuck** (2026-11-27, "add more bosses", "also dont
-   let bosses to get stuck in holes, let them jump out", "add more demi bosses too"). RUNNING in
-   `bosses4` from a1428251: 4–6 new bosses and 4–6 new demi-bosses.
+   let bosses to get stuck in holes, let them jump out", "add more demi bosses too"). PAUSED in
+   `bosses4` (from e438038f): 4–6 new bosses and 4–6 new demi-bosses.
    - Boss kill sound (2026-11-27, "when whe kill bosses , dont play that sound", then "lets leave
      only the boss sound itself"): on a boss or demi-boss kill only its own death sound plays, no
      fanfare, level-up fanfare, loot or toll on top.
 
 8. **Smoother animation for every NPC and summon** (2026-11-27, "make smoother animations for
-   all npcs", "and summmons"). RUNNING in `npcanim` from a1428251.
+   all npcs", "and summmons"). PAUSED in `npcanim` (from e438038f): blend baked frames, cross-fade
+   actions, ease turns, interpolate between ticks, smooth ground-following, for every kind.
 
 9. **Summons that stay and fight the right foe** (2026-11-27, "summons sometimes vanish, they
-   should priotize what i attack, and if not, whoattacks me"). RUNNING in `summonai` from
-   a1428251.
+   should priotize what i attack, and if not, whoattacks me"). PAUSED (or finished, see its
+   handoff) in `summonai` (from e438038f): find why summons vanish and fix it; target what the
+   player attacks, else who attacks the player, else the nearest foe; never neutrals.
 
 10. **Camps in caves instead of the orbs** (2026-11-27, "remove the orbs in caves, instead of
     them just make camps where a bonfire or fire burns, and there are some bandits or skeletoons
-    sometimes"). RUNNING in `cavecamps` from e438038f.
+    sometimes"). PAUSED in `cavecamps` (from e438038f).
     - With sounds (2026-11-27, "we could add sounds"): fire crackle, camp murmurs, skeleton rattle,
       from the existing sound files.
 
 11. **Dropped items easier to find, shown as themselves** (2026-11-27, "also dropped item beams
-    should be easier findable, and their models could be actual models"). RUNNING in `lootdrops`.
+    should be easier findable, and their models could be actual models"). PAUSED in
+    `lootdrops` (from 38ed7a93), just started: taller, brighter rarity-coloured beams that
+    survive the draw cap, and the dropped item shown as its real model.
 
 ## Loose ends (found along the way, not yet asked for)
 
