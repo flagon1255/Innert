@@ -32,7 +32,7 @@ const BRAND_BLOW: f64 = 0.4;
 /// second, and how high over the ground
 pub(in crate::combat) const RUNNER_REACH: f64 = 16.0;
 /// How far round the ring the runners look for what to turn after, in meters
-pub(in crate::combat) const RUNNER_ROUND: f64 = 6.0;
+pub(in crate::combat) const RUNNER_ROUND: f64 = 5.0;
 const RUNNERS: usize = 5;
 const RUNNER_SPEED: f64 = 13.0;
 const RUNNER_HIGH: f64 = 0.35;
@@ -464,7 +464,8 @@ impl Combat {
                     let flat = flat_of(view.forward());
                     let ahead = (flat * 10.0 + up.cross(&flat) * 3.0) * vpm;
                     let lean = Vector3::new(random(&mut self.rng) - 0.5, random(&mut self.rng) - 0.5, 0.0) * 2.0 * vpm;
-                    self.lightning(tip + up * 8.0 * vpm + ahead + lean, tip, storm, 0.11, 3, 2, 0.0, 1.6);
+                    // Thin, as it comes down right by the eye, where it'd fill the view
+                    self.lightning(tip + up * 8.0 * vpm + ahead + lean, tip, storm, 0.045, 3, 2, 0.0, 1.6);
                     self.sparks(tip, 14, 4.0, storm, 0.6, 0.35);
                     self.cues.push(Cue::here(Sound::Thunder, 0.8).pitched(1.1));
                     self.cues.push(Cue::here(Sound::Crackle, 0.7).pitched(1.2));
@@ -1166,7 +1167,7 @@ impl Combat {
                 let (a, b) = twin_ends(p, back, reach, vpm);
                 for end in [a, b] {
                     // Not right at the eye as they leave the hand or come back to it
-                    if (end - eye).norm() < 1.3 * vpm {
+                    if (end - eye).norm() < 2.0 * vpm {
                         continue;
                     }
                     match self.flung() {
