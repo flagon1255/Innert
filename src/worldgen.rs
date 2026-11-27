@@ -17,7 +17,7 @@ mod undercity;
 
 pub use aeries::{SHRINE, SHRINE_KEY, aeries, way_up as way_up_to_shrine};
 
-pub use camps::{Camp, CampKind, camp_spots};
+pub use camps::{CAVE_CAMP_SITE, Camp, CampKind, CaveCamp, Folk, GHOST_FIRE_LIGHT, camp_spots};
 #[allow(unused_imports)]
 pub use roads::{Arm, IRON_LAMP_LIGHT, OIL_LAMP_LIGHT, Signpost, by_night, map_roads, signposts_near};
 #[allow(unused_imports)]
@@ -1717,6 +1717,7 @@ pub struct PieceFeatures {
     pub lights: Vec<Light>,
     pub sites: Vec<Site>,
     pub camps: Vec<Camp>,
+    pub cave_camps: Vec<CaveCamp>,
     /// Where water wells up of its own, see Terrain::piece_springs()
     pub springs: Vec<[f32; 4]>,
     /// See Terrain::waterfalls()
@@ -1774,6 +1775,14 @@ impl Rng {
 
     fn range(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo) * self.next()
+    }
+
+    /// Rolls `n` numbers that aren't used, for what's no longer built, so what's built after is
+    /// just as it was
+    fn skip(&mut self, n: usize) {
+        for _ in 0..n {
+            self.next();
+        }
     }
 
     /// A random direction, flattened out by `flat` towards the ground plane
@@ -2342,19 +2351,45 @@ const DUNGEON_REACH: f32 = 56.0;
 const CAVE_CELL: f32 = 60.0;
 const CAVE_REACH: f32 = 310.0;
 
-/// A cave: what's cut out of the ground for it and what grows in the hollow, the crystals
-/// glowing in it, its caverns, and how far it reaches, x0, y0, x1, y1, in meters. Each cavern is
-/// the middle of its floor, the way in from there, and how far out there's room all round: the
-/// great ones bosses make their lairs in, the one at the end last, and the rest where cave
-/// spiders nest.
+/// A cave: what's cut out of the ground for it and what grows in the hollow, the torches and
+/// crystals lighting it, its caverns, and how far it reaches, x0, y0, x1, y1, in meters. Each
+/// cavern is the middle of its floor, the way in from there, and how far out there's room all
+/// round: the great ones bosses make their lairs in, the one at the end last, and the rest where
+/// cave spiders nest. And where in it there might be camps, see camps\cave.rs, built with it in
+/// Terrain::caves().
 struct Cave {
     shapes: Vec<Shape>,
     lights: Vec<Light>,
     lairs: Vec<(Vec3, [f32; 2], f32)>,
     nests: Vec<(Vec3, [f32; 2], f32)>,
+    camps: Vec<camps::cave::CampSpot>,
     bounds: [f32; 4],
     seed: u32,
 }
+
+/// The crystals hanging from the roof of a cavern, and their light, see Terrain::cavern()
+struct Roof {
+    shapes: Vec<Shape>,
+    light: Light,
+}
+
+impl Roof {
+    fn put(self, cave: &mut Cave, inside: &mut Vec<Shape>) {
+        inside.extend(self.shapes);
+        cave.lights.push(self.light);
+    }
+}
+
+/// Camps in caves, see camps\cave.rs: at most CAVE_CAMPS in a cave, at least CAVE_CAMP_APART
+/// meters apart, in a cavern at least CAVERN_CAMP_WIDE meters out from its middle to its narrower
+/// side, in CAVERN_CAMP_CHANCE of those, and in TUNNEL_CAMP_CHANCE of the stretches of tunnel
+/// TUNNEL_CAMP_RADIUS wide, where crystals once glowed
+const CAVE_CAMPS: usize = 3;
+const CAVE_CAMP_APART: f32 = 40.0;
+const CAVERN_CAMP_WIDE: f32 = 3.4;
+const CAVERN_CAMP_CHANCE: f32 = 0.5;
+const TUNNEL_CAMP_CHANCE: f32 = 0.2;
+const TUNNEL_CAMP_RADIUS: f32 = 2.5;
 /// How thick the brick round the halls and passages of dungeons is
 const DUNGEON_WALL: f32 = 0.6;
 /// At least how much ground there is over the brick roofs of halls
@@ -4012,6 +4047,8 @@ struct Features {
     sites: Vec<Site>,
     /// Bandits' camps, see camps.rs
     camps: Vec<Camp>,
+    /// Camps down in the caves, see camps\cave.rs
+    cave_camps: Vec<CaveCamp>,
     /// The ravines cut out of the ground reaching into this piece, see ravines.rs
     ravines: Vec<Arc<ravines::Course>>,
 }
@@ -4108,6 +4145,7 @@ impl Terrain {
         features.springs.retain(|s| own(s));
         features.sites.retain(|s| own(&s.position));
         features.camps.retain(|c| own(&c.fire));
+        features.cave_camps.retain(|c| own(&c.fire));
         self.objects = objects;
         self.features = features;
 
@@ -4241,6 +4279,7 @@ impl Terrain {
             lights: self.features.lights.clone(),
             sites: self.features.sites.clone(),
             camps: self.features.camps.clone(),
+            cave_camps: self.features.cave_camps.clone(),
             springs: self.piece_springs(),
             waterfalls: self.waterfalls(),
         }
@@ -4319,6 +4358,29 @@ impl Terrain {
             }
         }
         best.map(|(_, lair)| lair)
+    }
+
+    /// The nearest camp in a cave to `near` kept by `folk`, if it says, within a kilometer or so,
+    /// see camps\cave.rs. For trying them out.
+    #[allow(dead_code)]
+    pub fn nearest_cave_camp(&self, near: [f32; 2], folk: Option<Folk>) -> Option<CaveCamp> {
+        let home = near.map(|v| (v / CAVE_CELL).floor() as i32);
+        let mut best: Option<(f32, CaveCamp)> = None;
+        for cy in home[1] - 8..=home[1] + 8 {
+            for cx in home[0] - 8..=home[0] + 8 {
+                let Some(cave) = self.cave_in(cx, cy) else {
+                    continue;
+                };
+                for built in cave.camps.iter().filter_map(|spot| camps::cave::cave_camp(&self.settings, &cave.shapes, spot)) {
+                    let c = built.camp;
+                    let distance = (c.fire[0] - near[0]).hypot(c.fire[1] - near[1]);
+                    if folk.is_none_or(|f| f == c.folk) && best.is_none_or(|(b, _)| distance < b) {
+                        best = Some((distance, c));
+                    }
+                }
+            }
+        }
+        best.map(|(_, c)| c)
     }
 
     /// Builds a box of the landscape into voxels. `origin` and `size` are in voxels at
@@ -6125,7 +6187,7 @@ impl Terrain {
         let last = [((hi[0] + CAVE_REACH) / CAVE_CELL).ceil() as i32, ((hi[1] + CAVE_REACH) / CAVE_CELL).ceil() as i32];
         for cy in first[1]..last[1] {
             for cx in first[0]..last[0] {
-                let Some(cave) = self.cave_in(cx, cy) else {
+                let Some(mut cave) = self.cave_in(cx, cy) else {
                     continue;
                 };
                 // Far out, it's only what reaches into this piece that matters. None breaks out of
@@ -6145,6 +6207,23 @@ impl Terrain {
                 for &(floor, facing, _) in cave.nests.iter().filter(|(f, ..)| self.inside(f[0], f[1])) {
                     features.sites.push(Site { kind: "cave nest", position: floor, facing });
                 }
+                // Its camps, built in every piece it reaches, and their fires, who keeps them and
+                // what's left there in the piece each is in
+                let mut pitched = Vec::new();
+                for spot in &cave.camps {
+                    let Some(built) = camps::cave::cave_camp(&self.settings, &cave.shapes, spot) else {
+                        continue;
+                    };
+                    pitched.extend(built.shapes);
+                    let c = built.camp;
+                    if self.inside(c.fire[0], c.fire[1]) {
+                        features.lights.extend(built.lights);
+                        features.props.extend(built.props);
+                        features.sites.push(Site { kind: CAVE_CAMP_SITE, position: c.fire, facing: c.way });
+                        features.cave_camps.push(c);
+                    }
+                }
+                cave.shapes.extend(pitched);
                 objects.push(Object::new(cave.shapes, cave.seed));
             }
         }
@@ -6194,19 +6273,22 @@ impl Terrain {
                 let cavern = Shape::ellipsoid(middle, [3.2, 3.2, 1.9], AIR, AIR).placed(Placement::Carve);
                 shapes.push(cavern.roughened(0.35, floor - 0.05));
                 shapes.push(Shape::capsule(path[4], middle, radius, 1.3, AIR, AIR, false).placed(Placement::Carve).roughened(0.12, floor - 0.05));
-                let mut crystals = Vec::new();
-                for k in 0..3 {
-                    let a = rng.next() * TAU + k as f32 * 2.1;
-                    let c = [middle[0] + a.cos() * 2.4, middle[1] + a.sin() * 2.4, floor];
-                    for _ in 0..4 {
-                        let offset = [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), rng.range(0.0, 0.4)];
-                        crystals.push(Shape::sphere(add(c, offset), rng.range(0.15, 0.3), CRYSTAL, AIR, false).placed(Placement::Inside));
-                    }
-                    if self.inside(c[0], c[1]) {
-                        features.lights.push(Light { position: [c[0], c[1], c[2] + 0.7], color: [0.4, 0.85, 1.0], reach: 8.0 });
+                // Where crystals glowed once, the numbers they were laid out by still rolled so the
+                // rest's as it was: a little camp at the back, left with its fire burning, whose
+                // chest it is, see camps\cave.rs
+                rng.skip(3 * 17);
+                let back = normalize([middle[0] - lip[0], middle[1] - lip[1], 0.0]);
+                let spot = camps::cave::CampSpot { at: [middle[0] + back[0] * 1.2, middle[1] + back[1] * 1.2, floor], way: [-back[0], -back[1]], folk: Some(Folk::Nobody), chest: false };
+                if let Some(built) = camps::cave::cave_camp(&self.settings, &shapes, &spot) {
+                    shapes.extend(built.shapes);
+                    let c = built.camp;
+                    if self.inside(c.fire[0], c.fire[1]) {
+                        features.lights.extend(built.lights);
+                        features.props.extend(built.props);
+                        features.sites.push(Site { kind: CAVE_CAMP_SITE, position: c.fire, facing: c.way });
+                        features.cave_camps.push(c);
                     }
                 }
-                shapes.extend(crystals);
                 // Rolled whichever piece of the landscape it's in, so the random numbers run on the
                 // same way, and the cave's the same, in every piece it's built for
                 let luck = 3.0 + rng.next() * 2.0;
@@ -6238,7 +6320,7 @@ impl Terrain {
         let mut yaw = rng.next() * TAU;
         let mut pitch: f32 = if mouth { -0.4 } else { 0.0 };
         let mut radius = rng.range(1.8, 2.5);
-        let mut cave = Cave { shapes: Vec::new(), lights: Vec::new(), lairs: Vec::new(), nests: Vec::new(), bounds: [p[0], p[1], p[0], p[1]], seed: 0 };
+        let mut cave = Cave { shapes: Vec::new(), lights: Vec::new(), lairs: Vec::new(), nests: Vec::new(), camps: Vec::new(), bounds: [p[0], p[1], p[0], p[1]], seed: 0 };
         let mut inside = Vec::new();
         let segments = 70 + (rng.next() * 60.0) as usize;
         let mut next_cavern = rng.range(10.0, 18.0) as usize;
@@ -6260,7 +6342,7 @@ impl Terrain {
             cave.shapes.push(tunnel.roughened(0.3 * radius.max(next_radius), floor));
             // In a cave there's a way into, someone's lit the way: a torch just inside, and one
             // every twenty meters or so after, on one wall then the other, in pools with the dark
-            // between, and none by the crystals, which light their own stretch
+            // between, and none where crystals once lit their own stretch
             since_torch += 1;
             if mouth && (i == 2 || since_torch >= 9 && !(3..=5).contains(&(i % 8))) {
                 let mid = [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, floor];
@@ -6268,21 +6350,31 @@ impl Terrain {
                 since_torch = 0;
             }
             end = ([(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, floor], dir);
+            // Where a cluster of crystals glowed on the floor once, the numbers they were laid out
+            // by still rolled so the rest of the cave's as it was. In a cave with a way in, a camp
+            // in some of the wider, flatter of those stretches, see camps\cave.rs.
             if i % 8 == 4 {
-                let at = [q[0] + rng.range(-0.6, 0.6), q[1] + rng.range(-0.6, 0.6), q[2] - next_radius * 0.8];
-                for _ in 0..3 {
-                    let offset = [rng.range(-0.4, 0.4), rng.range(-0.4, 0.4), rng.range(0.0, 0.3)];
-                    inside.push(Shape::sphere(add(at, offset), rng.range(0.15, 0.32), CRYSTAL, AIR, false).placed(Placement::Inside));
+                rng.skip(14);
+                let mid = [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, floor];
+                if mouth && radius.min(next_radius) >= TUNNEL_CAMP_RADIUS && dir[2].abs() < 0.12 && self.camp_here(&cave.camps, mid, TUNNEL_CAMP_CHANCE) {
+                    cave.camps.push(camps::cave::CampSpot { at: mid, way: [-dir[0], -dir[1]], folk: None, chest: true });
                 }
-                cave.lights.push(Light { position: [at[0], at[1], at[2] + 0.5], color: [0.35, 0.85, 1.0], reach: 8.0 });
             }
-            // Opening out into a cavern now and then, on the way down, where cave spiders nest.
-            // Deep in a long cave, some are great caverns a boss of its own makes its lair in.
+            // Opening out into a cavern now and then, on the way down, where cave spiders nest or
+            // someone's made camp. Deep in a long cave, some are great caverns a boss of its own
+            // makes its lair in.
             if i == next_cavern && i > 4 {
                 let floor = [q[0], q[1], q[2] - next_radius * 0.75];
                 let great = mouth && i > 30 && rng.next() < 0.35;
-                if let Some((at, wide)) = self.cavern(&mut cave, &mut inside, floor, great, &mut rng) {
-                    (if great { &mut lairs } else { &mut caverns }).push((at, [-dir[0], -dir[1]], wide));
+                if let Some((at, wide, roof)) = self.cavern(&mut cave, &mut inside, floor, great, &mut rng) {
+                    let way = [-dir[0], -dir[1]];
+                    if mouth && !great && wide >= CAVERN_CAMP_WIDE && self.camp_here(&cave.camps, at, CAVERN_CAMP_CHANCE) {
+                        // Lit by the camp's fire rather than crystals, and no spiders nest there
+                        cave.camps.push(camps::cave::CampSpot { at, way, folk: None, chest: true });
+                    } else {
+                        roof.put(&mut cave, &mut inside);
+                        (if great { &mut lairs } else { &mut caverns }).push((at, way, wide));
+                    }
                 }
                 next_cavern += rng.range(14.0, 24.0) as usize;
             }
@@ -6302,13 +6394,20 @@ impl Terrain {
             let floor = [p[0], p[1], p[2] - radius * 0.75];
             let way_in = [-yaw.cos(), -yaw.sin()];
             match self.cavern(&mut cave, &mut inside, floor, true, &mut rng) {
-                Some((at, wide)) => lairs.push((at, way_in, wide)),
+                Some((at, wide, roof)) => {
+                    roof.put(&mut cave, &mut inside);
+                    lairs.push((at, way_in, wide));
+                }
                 None => lairs.extend(caverns.pop()),
             }
         }
         // Only where there's a way in
         cave.nests = if mouth { caverns } else { Vec::new() };
         cave.lairs = lairs;
+        // No camp in a boss's lair or by where spiders nest
+        let clear = |c: &camps::cave::CampSpot, (at, _, wide): &(Vec3, [f32; 2], f32), by: f32| (c.at[0] - at[0]).hypot(c.at[1] - at[1]) > wide + by || (c.at[2] - at[2]).abs() > 8.0;
+        let (lairs, nests) = (&cave.lairs, &cave.nests);
+        cave.camps.retain(|c| lairs.iter().all(|l| clear(c, l, 10.0)) && nests.iter().all(|n| clear(c, n, 6.0)));
         if mouth {
             // Either side of the way into the great cavern at its end, and either side of its
             // mouth out on the hillside, so it's found in the dark
@@ -6326,10 +6425,10 @@ impl Terrain {
 
     /// Hollows a cavern out of the ground with its floor round `floor`, in meters: wide and high,
     /// a great one for a boss's lair, with rocks hanging from its roof and rising from its floor
-    /// round the sides and crystals glowing among them. Smaller if there isn't ground enough over
-    /// it, None if there isn't room at all. Gives the middle of its floor, and how far out there's
-    /// room all round.
-    fn cavern(&self, cave: &mut Cave, inside: &mut Vec<Shape>, floor: Vec3, great: bool, rng: &mut Rng) -> Option<(Vec3, f32)> {
+    /// round the sides. Smaller if there isn't ground enough over it, None if there isn't room at
+    /// all. Gives the middle of its floor, how far out there's room all round, and the crystals
+    /// to hang from its roof to light it, if nothing else will.
+    fn cavern(&self, cave: &mut Cave, inside: &mut Vec<Shape>, floor: Vec3, great: bool, rng: &mut Rng) -> Option<(Vec3, f32, Roof)> {
         // How far out its sides are from the middle, and how high its roof is over that
         let (mut wide, mut high) = if great { (rng.range(11.0, 14.0), rng.range(6.0, 7.5)) } else { (rng.range(5.0, 8.5), rng.range(3.5, 5.0)) };
         let stretch = rng.range(0.75, 1.0);
@@ -6389,32 +6488,32 @@ impl Terrain {
                 inside.push(Shape::capsule([x, y, top + 0.5], [x, y, top - long], thick, 0.05, LIMESTONE, STONE, false).placed(Placement::Inside));
             }
         }
-        // Crystals glowing on the floor round the sides, and lighting it
+        // Where crystals glowed on the floor round the sides once, the numbers they were laid out
+        // by still rolled so the rest of the cave's as it was; the cavern's lit from its roof, or
+        // by the fire of a camp in it, see cave_in()
         let colors = [[0.35, 0.85, 1.0], [0.7, 0.45, 1.0], [0.4, 1.0, 0.7]];
         let tint = colors[(rng.next() * 3.0) as usize % 3];
-        for _ in 0..if great { 4 } else { 2 } {
-            let a = rng.next() * TAU;
-            let r = rng.range(0.5, 0.75);
-            let at = [middle[0] + a.cos() * wide * r, middle[1] + a.sin() * wide * r, ground(r).max(floor[2] - 0.4)];
-            for _ in 0..5 {
-                let offset = [rng.range(-0.6, 0.6), rng.range(-0.6, 0.6), rng.range(0.0, 0.5)];
-                inside.push(Shape::sphere(add(at, offset), rng.range(0.2, 0.45), CRYSTAL, AIR, false).placed(Placement::Inside));
-            }
-            cave.lights.push(Light { position: [at[0], at[1], at[2] + 0.8], color: tint, reach: if great { 14.0 } else { 10.0 } });
-        }
+        rng.skip(if great { 4 } else { 2 } * 22);
         // A great cluster of crystals hanging from the middle of the roof, lighting the whole of
         // it, so what's in there can be seen to fight
         let top = roof(0.0);
         let hang = if great { 2.2 } else { 1.2 };
-        inside.push(Shape::capsule([middle[0], middle[1], top + 0.5], [middle[0], middle[1], top - hang], hang * 0.45, 0.15, CRYSTAL, AIR, false).placed(Placement::Inside));
+        let mut shapes = vec![Shape::capsule([middle[0], middle[1], top + 0.5], [middle[0], middle[1], top - hang], hang * 0.45, 0.15, CRYSTAL, AIR, false).placed(Placement::Inside)];
         for _ in 0..if great { 6 } else { 3 } {
             let a = rng.next() * TAU;
             let tip = [middle[0] + a.cos() * hang * 0.6, middle[1] + a.sin() * hang * 0.6, top - hang * rng.range(0.4, 0.8)];
-            inside.push(Shape::capsule([middle[0], middle[1], top + 0.3], tip, hang * 0.22, 0.08, CRYSTAL, AIR, false).placed(Placement::Inside));
+            shapes.push(Shape::capsule([middle[0], middle[1], top + 0.3], tip, hang * 0.22, 0.08, CRYSTAL, AIR, false).placed(Placement::Inside));
         }
         let glow = [tint[0] * 0.6 + 0.4, tint[1] * 0.6 + 0.4, tint[2] * 0.6 + 0.4];
-        cave.lights.push(Light { position: [middle[0], middle[1], top - hang - 0.8], color: glow, reach: if great { 28.0 } else { 15.0 } });
-        Some((floor, wide))
+        let light = Light { position: [middle[0], middle[1], top - hang - 0.8], color: glow, reach: if great { 28.0 } else { 15.0 } };
+        Some((floor, wide, Roof { shapes, light }))
+    }
+
+    /// Whether a camp goes at `at` in a cave whose camps so far are `camps`, by a roll of its own
+    /// coming in under `chance`: no more than CAVE_CAMPS in a cave, CAVE_CAMP_APART apart
+    fn camp_here(&self, camps: &[camps::cave::CampSpot], at: Vec3, chance: f32) -> bool {
+        let roll = unit(hash3((at[0] * 4.0) as i32 as u32, (at[1] * 4.0) as i32 as u32, self.settings.seed ^ 0xca3c));
+        roll < chance && camps.len() < CAVE_CAMPS && camps.iter().all(|c| (0..3).map(|k| (c.at[k] - at[k]).powi(2)).sum::<f32>() > CAVE_CAMP_APART * CAVE_CAMP_APART)
     }
 
     /// Torches in iron brackets on the walls of `cave`, into `inside`, at each of `spots`: the middle

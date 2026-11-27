@@ -41,6 +41,10 @@ mod demi;
 pub use demi::DemiLair;
 /// The weapon in hand drawn finer than the rest, see weapons::HELD_FINE
 mod fine;
+/// The camps in caves: their fires heard and smoking, and the dead rising at theirs, see
+/// src\worldgen\camps\cave.rs
+mod cavecamps;
+pub use cavecamps::CaveFire;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -541,6 +545,9 @@ pub enum DenKind {
     /// A perch on a castle's walls, a ruin's tower or before a fallen city's temple, a gargoyle
     /// asleep on it in stone, see src\gargoyles.rs
     Perch,
+    /// The dead's camp in a cave, the dead lying under its floor until someone comes near, see
+    /// src\game\cavecamps.rs
+    Risen,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -937,6 +944,8 @@ pub struct Game {
     /// Dungeon halls in this piece of the world, and those cleared of monsters
     dens: Vec<[i64; 3]>,
     cleared: HashSet<[i64; 3]>,
+    /// The camps in caves in this piece of the world, see game\cavecamps.rs
+    cave_camps: cavecamps::CaveCamps,
     /// Chests beaten bosses left, kept as the world moves on
     boss_chests: Vec<Chest>,
     /// The hoards of the bandits' camps in this piece of the world, by their dens, and where each
@@ -1253,6 +1262,7 @@ impl Game {
             demis_seen: HashSet::new(),
             dens: Vec::new(),
             cleared: HashSet::new(),
+            cave_camps: Default::default(),
             boss_chests: Vec::new(),
             hoards: HashMap::new(),
             beams: Vec::new(),
@@ -1412,6 +1422,7 @@ impl Game {
         self.defeated.clear();
         self.dens.clear();
         self.cleared.clear();
+        self.cave_camps = Default::default();
         self.boss_chests.clear();
         self.hoards.clear();
         self.beams.clear();
@@ -1982,12 +1993,18 @@ impl Game {
     /// pack to a den.
     pub fn set_dens(&mut self, world: &World, water: WaterLevel, dens: Vec<Den>) {
         self.hoards = dens.iter().filter_map(|d| d.band.as_ref().map(|b| (d.key, (b.hoard.clone(), b.hint)))).collect();
+        self.cave_camps.dead.clear();
         for den in &dens {
             let here = self.animals.iter().any(|a| a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key == den.key));
             if here || self.cleared.contains(&den.key) {
                 continue;
             }
             let seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
+            // The dead of a camp in a cave lie under its floor until someone comes near
+            if den.kind == DenKind::Risen {
+                self.cave_camps.dead.push(cavecamps::Sleeping { position: den.position, key: den.key, looks: cavecamps::risen(seed) });
+                continue;
+            }
             // A camp's band as many as it says, some of its bandits crossbowmen or shieldbearers
             let band: Vec<Look>;
             let haunted: &[Look] = match den.kind {
@@ -2042,6 +2059,8 @@ impl Game {
                     band = vec![crate::gargoyles::of_land(worldgen::land_of(self.seed))];
                     &band
                 }
+                // Not yet, see above
+                DenKind::Risen => &[],
             };
             let spread = match &den.band {
                 Some(b) => b.within,
@@ -2458,6 +2477,7 @@ impl Game {
         }
         self.tend_dragonfire(world, player, view, dt);
         self.tend_aerie(world, player, view, dt);
+        self.tend_cave_camps(world, water, player, view, dt);
         self.tend_brine(player, dt);
         self.watch_for_lairs(player);
         self.watch_for_shrines(player);
@@ -5307,6 +5327,7 @@ impl Game {
         self.chests.clear();
         self.lairs.clear();
         self.dens.clear();
+        self.cave_camps = Default::default();
         self.boss_chests.clear();
         self.hoards.clear();
         self.beams.clear();

@@ -12,6 +12,9 @@
 use super::*;
 use std::f32::consts::PI;
 
+pub(super) mod cave;
+pub use cave::{CAVE_CAMP_SITE, CaveCamp, Folk, GHOST_FIRE_LIGHT};
+
 /// At most one camp in each CAMP_CELL square, in CAMP_CHANCE of them, at the first of SPOTS spots
 /// tried in it that suits
 const CAMP_CELL: f32 = 120.0;
