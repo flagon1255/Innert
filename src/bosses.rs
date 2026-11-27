@@ -19,6 +19,8 @@ pub mod wilds;
 pub mod kraken;
 /// The wyrms that bore through the ground: their moves
 pub mod wyrms;
+/// Bounding up out of a hole or over a ledge it's stuck at, and falling where the ground's gone
+pub mod vault;
 
 /// How near the player has to come before a boss turns on them, and how far off they can get
 /// before it gives up, in meters
@@ -164,9 +166,12 @@ pub enum Move {
     /// The Stormbell drawing its tendrils up and charging till it crackles, then letting it all go in
     /// rings of lightning running out over the ground round it
     Overcharge,
+    /// Crouching and bounding up out of a hole, over a ledge or a wall it's stuck at, onto the
+    /// nearest ground towards the player, see src\bosses\vault.rs
+    Vault,
 }
 
-const MOVES: usize = 55;
+const MOVES: usize = 56;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -226,6 +231,7 @@ impl Move {
         Move::Staticfall,
         Move::Thunderlash,
         Move::Overcharge,
+        Move::Vault,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -488,6 +494,12 @@ pub struct Boss {
     /// seconds into that, while it's at it
     stir: f64,
     shifting: Option<[f64; 2]>,
+    /// Seconds it's been getting nowhere after the player, and the nearest it's got to them in that
+    /// time, in meters, for when it bounds out of where it's stuck; and seconds the bound it's
+    /// making is in the air, see vault.rs
+    mire: f64,
+    closest: f64,
+    vault_len: f64,
 }
 
 /// Seconds a serpent lies still before it coils up to rest
@@ -520,6 +532,10 @@ fn sees(a: &Animal, feet: Vector3<f64>, world: &World) -> bool {
 /// How long each move takes to get ready for, to do, and to get over, in seconds, and then how
 /// long until it can be made again
 fn windup(look: Look, m: Move) -> f64 {
+    // Crouching to bound up out of where it's stuck, see vault.rs
+    if m == Move::Vault {
+        return vault::crouch(look);
+    }
     // Monsters are quick about it, but not so quick it can't be seen coming
     if look.is_monster() {
         return match (look, m) {
@@ -635,11 +651,14 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) => roster::timing(look, m).0,
         (_, Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout) => wilds::timing(look, m).0,
         (_, Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge) => roster::sky::timing(look, m).0,
+        (_, Move::Vault) => vault::crouch(look),
     }
 }
 
 fn duration(look: Look, m: Move) -> f64 {
     match m {
+        // As long as the bound it's making takes, see Boss::doing(); this for posing one
+        Move::Vault => 0.8,
         Move::Coil => COIL_SECONDS,
         Move::Tail => TAIL_SLAM,
         // Bursting up out of the ground, its head rising high
@@ -688,6 +707,8 @@ fn duration(look: Look, m: Move) -> f64 {
 
 fn recovery(look: Look, m: Move) -> f64 {
     match m {
+        // Landing heavily
+        Move::Vault => vault::timing().0 * look.size().max(1.0).sqrt(),
         // A great serpent slow to uncoil, to lift its tail back off the ground, or to raise its
         // head after it's lunged and bitten, and out in the open after bursting up: the moments to
         // hit it
@@ -751,6 +772,7 @@ fn recovery(look: Look, m: Move) -> f64 {
 
 fn cooldown(look: Look, m: Move) -> f64 {
     match m {
+        Move::Vault => vault::timing().1,
         // The Veinbinder's coil is all it's about; the rest only now and then
         Move::Coil if look == Look::Veinbinder => 8.5,
         Move::Coil => 12.0,
@@ -1225,6 +1247,9 @@ impl Boss {
             rest: 0.0,
             stir: 6.0 + 8.0 * ((key[0] ^ (key[1] * 31)) as u32 % 100) as f64 / 100.0,
             shifting: None,
+            mire: 0.0,
+            closest: f64::MAX,
+            vault_len: 0.8,
         }
     }
 
@@ -1342,7 +1367,7 @@ impl Boss {
         self.engaged = false;
         self.enraged = false;
         self.retreat = 0.0;
-        if !matches!(self.phase, Phase::Act(Move::Leap, _)) {
+        if !matches!(self.phase, Phase::Act(Move::Leap | Move::Vault, _)) {
             self.phase = Phase::Roam;
         }
     }
@@ -1375,6 +1400,7 @@ impl Boss {
         let wound = |m: Move| windup(self.look, m) * if self.enraged { 0.8 } else { 1.0 };
         match self.phase {
             Phase::WindUp(m, t) => Some(Doing { m, stage: Stage::Wind, t, len: (wound(m) + self.hold).max(t), held: self.hold }),
+            Phase::Act(Move::Vault, t) => Some(Doing { m: Move::Vault, stage: Stage::Act, t, len: self.vault_seconds(), held: 0.0 }),
             Phase::Act(m, t) => Some(Doing { m, stage: Stage::Act, t, len: duration(self.look, m), held: 0.0 }),
             Phase::Recover(left) => Some(Doing { m: self.last.unwrap_or(Move::Roar), stage: Stage::Recover, t: (self.recover_len - left).max(0.0), len: self.recover_len, held: 0.0 }),
             Phase::Stunned(left) => Some(Doing { m: Move::Charge, stage: Stage::Stun, t: (STUN_SECONDS - left).max(0.0), len: STUN_SECONDS, held: 0.0 }),
@@ -1585,6 +1611,9 @@ impl Boss {
         let serpent = self.look.is_serpent();
         let great = self.look.is_great_serpent();
         match self.phase {
+            // Crouched low to bound, then stretched out in the air, see vault.rs
+            Phase::WindUp(Move::Vault, _) => ([0.14, -0.08, -0.16], 9.0),
+            Phase::Act(Move::Vault, _) => ([-0.08, 0.05, 0.05], 10.0),
             // A great serpent's head drawn back as it rears, then lunging out after what it bites,
             // its whole neck following
             Phase::WindUp(Move::Slam, _) if great => ([0.0, -0.6, 0.0], 4.0),
@@ -1695,6 +1724,9 @@ impl Boss {
             return Some(POSE_COIL);
         }
         match (self.phase, self.look.build()) {
+            // Crouched to spring, then flung up out of where it was stuck, see vault.rs
+            (Phase::WindUp(Move::Vault, _), _) => Some(POSE_WINDUP),
+            (Phase::Act(Move::Vault, _), _) => Some(POSE_STRIKE),
             // A serpent rearing up coiled, then lunging out to bite; raising its head with its
             // hood flared or its throat swelling to spit; diving forward into the snow, and bursting
             // up out of it reared to strike
@@ -2290,6 +2322,15 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
         }
     }
 
+    // Getting nowhere with the player up out of its reach, whatever it's doing about it, for when
+    // it bounds out, see vault.rs
+    if boss.engaged
+        && lure.is_none()
+        && !matches!(boss.phase, Phase::Roam | Phase::Chase | Phase::WindUp(Move::Vault, _) | Phase::Act(Move::Vault, _))
+        && let Some(p) = player
+    {
+        boss.note_mired(a, p, distance, false, vpm, dt);
+    }
     boss.phase = match boss.phase {
         Phase::Roam => {
             // Healing back up, wandering round home, keeping with the rest of its pack. A burrower
@@ -2341,8 +2382,20 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             a.mood = Mood::Run;
             Phase::Chase
         }
-        Phase::Chase => {
+        Phase::Chase => 'chase: {
             let p = player.unwrap_or(boss.home);
+            // Getting nowhere a while, its way blocked or the player up out of its reach: it
+            // crouches to bound out, see vault.rs
+            if player.is_some()
+                && lure.is_none()
+                && let Some(to) = boss.mired(a, world, p, distance, dt)
+            {
+                boss.set_vault(a.position, to, vpm);
+                a.mood = Mood::Idle;
+                a.target_heading = heading_to(a.position, to);
+                boss.deeds.push(Deed::WindUp(Move::Vault, a.position));
+                break 'chase Phase::WindUp(Move::Vault, 0.0);
+            }
             a.target_heading = heading_to(a.position, p);
             // A crossbowman or a wraith the player's got too close to backs off, back towards the
             // rest of its pack, to shoot from further back; for a while, so it can't be run down
@@ -2377,7 +2430,9 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                 _ => distance,
             };
             // At a door it only beats on it
-            let chosen = boss.choose(reach).filter(|m| !breaking || *m == Move::Slam);
+            // About to bound out of where it's stuck, it starts nothing else first
+            let gathering = boss.gathering(look);
+            let chosen = boss.choose(reach).filter(|m| (!breaking || *m == Move::Slam) && !gathering);
             // A great serpent brings its tail down on whoever's got round behind its head
             let rear = boss.coils.as_ref().map(|c| c.points[c.points.len() * 2 / 3]);
             let tail = (look.is_great_serpent() && !boss.buried && boss.cooldowns[Move::Tail as usize] <= 0.0 && distance > 5.0 && boss.only.is_none_or(|o| o == Move::Tail))
@@ -2477,7 +2532,11 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             // taking aim, so there's time to step aside. Where a burrower's coming up is fixed
             // from the first, and shows.
             let settled = matches!(m, Move::Shoot | Move::Lash | Move::Spit) && look.is_monster() && t > windup(look, m) - 0.25;
-            if let Some(p) = player.filter(|_| m != Move::Erupt && !settled) {
+            // Crouched to bound, it looks where it's going
+            if m == Move::Vault {
+                a.target_heading = heading_to(a.position, boss.leap.1);
+            }
+            if let Some(p) = player.filter(|_| m != Move::Erupt && m != Move::Vault && !settled) {
                 boss.aim = p;
                 // Its head stays where it is as its tail comes round behind it; and its fists dug
                 // into the ground, the Colossus doesn't turn till it's torn its boulder free
@@ -2756,6 +2815,14 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         a.target_heading = a.heading;
                         boss.deeds.push(Deed::Stomp(a.position));
                     }
+                    // Springing off the ground it was stuck on, kicking it up
+                    Move::Vault => {
+                        boss.set_vault(a.position, boss.leap.1, vpm);
+                        a.heading = heading_to(a.position, boss.leap.1);
+                        a.target_heading = a.heading;
+                        boss.deeds.push(Deed::Stomp(a.position));
+                        boss.deeds.push(Deed::Burrow { at: a.position });
+                    }
                     Move::Roots => boss.deeds.push(Deed::Roots { at: boss.aim }),
                     Move::Volley => boss.deeds.push(Deed::Volley { from: emit(a, &boss, vpm), to: boss.aim + Vector3::new(0.0, 0.0, 1.0 * vpm) }),
                     // The shockwave runs out from where it stands as it pounds the ground
@@ -2913,7 +2980,12 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     let (from, to) = boss.leap;
                     let (time, high, radius, damage) = leap(look);
                     let f = (t / time).min(1.0);
-                    a.position = from.lerp(&to, f) + Vector3::new(0.0, 0.0, high * vpm * (PI * f).sin());
+                    // Leaping up onto something, up first and then across onto it, as it bounds
+                    a.position = if to.z - from.z > 1.0 * vpm {
+                        vault::along(from, to, f, vpm)
+                    } else {
+                        from.lerp(&to, f) + Vector3::new(0.0, 0.0, high * vpm * (PI * f).sin())
+                    };
                     a.speed = 0.0;
                     boss.deeds.push(Deed::Mark { at: to, radius, closing: 1.0 - f });
                     if over {
@@ -2927,6 +2999,22 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                         if m == Move::Pounce {
                             roster::landed(a, &mut boss, to, vpm);
                         }
+                    }
+                }
+                // Up in an arc out of where it was stuck, coming down heavily on the ground it
+                // looked out, hurting nobody, see vault.rs
+                Move::Vault => {
+                    let (from, to) = boss.leap;
+                    let len = boss.vault_seconds();
+                    a.position = vault::along(from, to, t / len, vpm);
+                    a.speed = 0.0;
+                    over = t >= len;
+                    if over {
+                        a.position = to;
+                        boss.deeds.push(Deed::Stomp(to));
+                        boss.deeds.push(Deed::Slam { at: to, radius: 0.0, damage: 0.0, crater: 0.0 });
+                        boss.mire = 0.0;
+                        boss.closest = f64::MAX;
                     }
                 }
                 Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::during(m, t, dt, a, &mut boss, player, vpm),
@@ -3085,7 +3173,8 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
         }
         Phase::Recover(t) => {
             a.mood = Mood::Idle;
-            if t - dt > 0.0 { Phase::Recover(t - dt) } else { Phase::Chase }
+            // Long stuck where it is, it gets straight up to bound out of it
+            if t - dt > 0.0 && !(boss.engaged && boss.gathering(look) && boss.mire > 2.0 * boss.wait_for(look)) { Phase::Recover(t - dt) } else { Phase::Chase }
         }
         Phase::Stunned(t) => {
             a.mood = Mood::Idle;

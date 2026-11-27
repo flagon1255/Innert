@@ -2792,6 +2792,8 @@ impl Game {
                 let cue = match m {
                     Move::Charge => Cue::at(Sound::Roar, at, 0.7).pitched(voice * 1.3),
                     Move::Leap => Cue::at(Sound::Roar, at, 0.6).pitched(voice * 1.6),
+                    // A grunt as it gathers itself to bound out of where it's stuck
+                    Move::Vault => Cue::at(Sound::Roar, at, 0.4).pitched(voice * 1.9),
                     Move::Breath => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.6),
                     // A spider hissing, or something gathering in a drake's throat in the voice of
                     // its element

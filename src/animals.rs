@@ -4850,6 +4850,13 @@ impl Animal {
         }
         if self.boss.is_some() {
             bosses::think(self, world, player, dt);
+            // Stood on nothing, the ground dug or blown out from under it, it falls to what's
+            // below, see bosses\vault.rs
+            if bosses::vault::falls(self, world)
+                && let Some(ground) = ground_at(world, water, self.position.x, self.position.y, self.position.z, 0.0, 60.0 * vpm)
+            {
+                self.position.z = ground.max(self.position.z - 9.0 * vpm * dt);
+            }
         } else {
             // With the ground gone from under it, blown away, it falls to what's left
             let below = (self.position.z - 1.0).floor() as i64;

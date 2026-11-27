@@ -36,6 +36,8 @@ mod giant;
 mod golem;
 mod knight;
 mod treant;
+/// Bounding up out of where it's stuck, see src\bosses\vault.rs
+mod vault;
 
 pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
@@ -581,6 +583,8 @@ impl Rig {
             self.glance[i] += (want[i] - self.glance[i]) * k;
         }
         self.shuffle = (self.shuffle + m.turning.abs() * dt / 1.4).fract();
+        // A bound out of where it's stuck posed as a leap by those with one
+        let m = &vault::recast(self.look, m);
         match family(self.look) {
             Family::Golem => golem::animate(self, m),
             Family::Knight => knight::animate(self, m),

@@ -248,7 +248,9 @@ pub fn flinch(s: &mut Stance, f: [f64; 3]) {
 /// Biped `r` posed: eased towards `want` as quickly as `rate` says, its walk laid over that as
 /// `free` lets it, its breath, `deep` as idle() has it, and its flinching, unless it's dying; then
 /// worked out into its pieces. Returns the pose it's in.
-pub fn pose(r: &mut Rig, m: &Moment, f: &Frame, gait: &Gait, (want, rate, free): (Stance, f64, f64), deep: f64) -> Stance {
+pub fn pose(r: &mut Rig, m: &Moment, f: &Frame, gait: &Gait, want: (Stance, f64, f64), deep: f64) -> Stance {
+    // Bounding up out of where it's stuck, for those with no leap of their own
+    let (want, rate, free) = super::vault::over(f, m, want);
     if !r.posed {
         *r.biped() = want;
     }
