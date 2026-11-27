@@ -218,6 +218,8 @@ const uint TINT_HIT = 6;
 // Lit by its own light, as something hanging in the sky is, and never faded into the sky, see
 // src\animals.rs
 const uint TINT_LIT = 7;
+// Lightning, white-hot and brighter the brighter the day, see src\animals.rs
+const uint TINT_BOLT = 8;
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
 };
@@ -1765,6 +1767,10 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     // Shining in its own colors, whatever light's on it, its seas and craters still showing
     if (tint == TINT_LIT)
     return albedo * 1.6;
+    // Lightning blazing over the light round it, the more the brighter the day, so it reads by
+    // day as clearly as a flash does by night
+    if (tint == TINT_BOLT)
+    return albedo * (2.5 + 3.0 * dot(sunColor(), vec3(0.2126, 0.7152, 0.0722)));
     return vec3(0);
 }
 
@@ -2829,7 +2835,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     {
         if (hit.level == ANIMAL && animals[hit.instance].info.y != STILL)
         g_dynamic = true;
-        if (hit.level == ANIMAL && animals[hit.instance].info.z == TINT_LIT)
+        if (hit.level == ANIMAL && (animals[hit.instance].info.z == TINT_LIT || animals[hit.instance].info.z == TINT_BOLT))
         g_sky_lit = true;
         // Leaves move in the wind, so they can't be averaged over many frames
         if ((pc.flags & FLAG_WIND) != 0 && hit.level != ANIMAL && sways(material))

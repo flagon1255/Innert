@@ -2231,6 +2231,10 @@ pub struct Combat {
     /// A legendary or mythic weapon's power on right click: how long till it's ready again, see
     /// powers.rs
     power: PowerState,
+    /// Seconds the blade in hand stays charged by the Stormbrand, each blow it lands calling
+    /// lightning down, and a Galvanic Torrent's sparks owed while it's poured, see thunder.rs
+    charged_blade: f64,
+    poured: f64,
     /// Health a special attack gives back, and how it throws the player, for game.rs to see to
     pub heal: f64,
     pub dash: Vector3<f64>,
@@ -5633,6 +5637,8 @@ impl Combat {
             charge_rate: 1.0,
             charge_scale: 1.0,
             power: PowerState::default(),
+            charged_blade: 0.0,
+            poured: 0.0,
             heal: 0.0,
             dash: Vector3::zeros(),
             hunt: 0.0,
@@ -11772,6 +11778,15 @@ impl Combat {
                 s.staggered = s.staggered.max(0.6);
             }
         }
+        // A blade the Stormbrand charged calls lightning down onto the first thing it strikes, see
+        // thunder.rs
+        if power >= 1.0
+            && self.charged_blade > 0.0
+            && profile.power == Some(crate::weapons::Power::Stormbrand)
+            && let Some(&(_, first)) = targets.first()
+        {
+            self.stormbrand_strikes(arena, profile, first, base);
+        }
         self.cleave_on(arena, profile, &targets, base, heavy, power);
         self.drag_and_pool(arena, profile, &targets, base, heavy || finisher, power);
         // The blade stops dead a moment as it bites, jolts back, and a big one shakes the view: a
@@ -15574,6 +15589,9 @@ impl Combat {
             // A priest's spear aimed: drawn back over the shoulder, held, trembling the more the
             // longer it's held, see faith.rs
             p = self.spear_aim_pose(&p);
+        } else if self.power.aiming && weapon.profile.power == Some(crate::weapons::Power::Torrent) {
+            // A torrent poured: held out at it, shaking with it, see thunder.rs
+            p = self.torrent_pose(weapon);
         }
         // A flourish now and then, standing about with it
         if self.action == Action::Idle && self.idle > IDLE_AFTER {

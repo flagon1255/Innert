@@ -24,6 +24,9 @@ const MOST_STRETCHES: usize = 60;
 pub(super) const SKY_BOLT_HEIGHT: f64 = 13.0;
 /// How many scorch marks lightning leaves on the ground at once
 const MOST_SCORCHES: usize = 3;
+/// How near the eye, in meters, a stretch of lightning shines only with its own glow rather than
+/// blazing as it does further off, see TINT_BOLT
+const NEAR_GLOW: f64 = 4.0;
 
 /// A bolt of lightning
 pub(super) struct Bolt {
@@ -279,6 +282,9 @@ impl Combat {
                         let near = (d / 2.0).clamp(0.35, 1.0);
                         let thick = thick * (0.45 + 0.55 * shown) * near * (d / 20.0).max(1.0).sqrt();
                         if let Some(instance) = self.bar(pair[0], pair[1], thick, b.look) {
+                            // Only as bright as its own glow close by, where it's big enough to
+                            // be seen anyway and would only dazzle
+                            let instance = if d < NEAR_GLOW { instance.tinted(crate::animals::TINT_NONE) } else { instance };
                             out.push((d * 0.1, instance));
                             drawn += 1;
                         }
@@ -305,7 +311,8 @@ impl Combat {
         let stretch = length / (scale * sx);
         let position = (a + b) * 0.5 - rotation * Vector3::new(0.0, 0.0, sz * 0.5 * scale);
         let reach = length * 0.5 + thick * vpm;
-        Some(AnimalInstance::new(model, position, rotation, scale, reach, MOVING).shaped([stretch, 1.0], [0.0; 4]))
+        // White-hot enough to be seen by day, see TINT_BOLT
+        Some(AnimalInstance::new(model, position, rotation, scale, reach, MOVING).shaped([stretch, 1.0], [0.0; 4]).tinted(crate::animals::TINT_BOLT))
     }
 }
 

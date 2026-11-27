@@ -16,6 +16,9 @@ pub(super) mod arsenal;
 /// New magic powers: a priest's spears, a thunderhead, a glacier, grasping shadows and a helix
 pub(super) mod miracles;
 pub(super) mod tempest;
+/// The second storm of lightning: a charged blade, runners along the ground, a splitting arrow, a
+/// rail, twin chakrams, a judgment bolt, a torrent and grave lightning
+pub(super) mod thunder;
 /// A talisman's spears and a skull focus's dead raised, see weapons::Rite
 pub(in crate::combat) mod faith;
 
