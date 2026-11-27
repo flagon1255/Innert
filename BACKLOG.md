@@ -17,10 +17,8 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
    - Then (2026-11-27, "Maybe lets not load any world at start"): no world built at launch; the
      start-up menu opens straight after the GPU/shaders, with the map as its backdrop, and the
      world is built behind the loading screen on New or Continue. Same agent, separate commit.
-   - And (2026-11-27, screenshot of the menu's controls text, "Just add options windows in game,
-     to see these"): the controls list leaves the start-up menu for a Controls window opened from
-     the Esc menu and the F1 settings, grouped, checked against the real bindings. **The user is
-     doing this one themselves** ("ill do it myself the text"); agents leave it alone.
+   - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
+     it myself the text").
 
 5. **Lamp posts on some roads** (2026-11-27, "Some roads could have lamp posts"). RUNNING in
    `roads` (the roads agent again).
@@ -28,6 +26,13 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
      signposts; lit at night through the night-lights system, dark by day, within the light cap.
    - Kind by surface (2026-11-27, "roads that are made from stones, one type of ligsthing, gravel
      roads oher tpe"): stone/rocky roads one kind of lamp, gravel roads a clearly different kind.
+
+6. **An Options window in game to see the controls and change the key bindings** (2026-11-27,
+   "Just add options windows in game, to see these", "just add options window", "to in game",
+   "To change ey bindings"). RUNNING in `controlswin` from fe9dc3f9.
+   - One bindings table for every action, saved in %LOCALAPPDATA%\Innert\, an Options window from
+     the Esc menu (and/or F1 settings) listing every control grouped with the menu's tips, click
+     to rebind, clashes shown, reset to defaults; prompts show the bound key.
 
 ## Loose ends (found along the way, not yet asked for)
 
