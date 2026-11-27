@@ -6,12 +6,7 @@ the commit it landed in.
 
 ## Queued
 
-All three RUNNING from AVI c7055b8d (2026-11-27), each in `.claude\worktrees\<name>`.
-
-1. **Menu and loading cubes react to the mouse** (2026-11-27, "Make main menu cubes and loading
-   cube animation interactible with mouse hover"). RUNNING in `hovercubes`.
-   - The voxel columns on the loading screen (src/loading/land.rs) and the cubes on the main menu
-     respond when the mouse passes over them: rise, light up, ripple. No cost once playing.
+Roads and magic RUNNING from AVI c7055b8d, the menu map from 89a0c35e (2026-11-27), each in `.claude\worktrees\<name>`.
 
 2. **Roads between towns and castles, with road signs** (2026-11-27, "add roads that connect npc
    cities, castles, road signs"). RUNNING in `roads`.
@@ -22,6 +17,13 @@ All three RUNNING from AVI c7055b8d (2026-11-27), each in `.claude\worktrees\<na
      not", "but rocky"): gravel, sand and rocky roads (rough uneven stones, also on the main roads
      near towns and castles where pavement would have gone), no smooth pavement; picked per
      stretch from the land and how important the road is.
+
+4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
+   this"). RUNNING in `menumap`.
+   - The voxel land beside the start-up menu becomes a map: a wider area of the world you're about
+     to enter (Continue: round the saved position; New: round the seed's spawn, redrawn as the seed
+     changes), towns, castles and camps marked, roads once the roads item lands, the hover naming
+     the place under the cursor. Black and white, free once playing.
 
 3. **More weapon parts, more magic** (2026-11-27, "add more weapon parts, more magic").
    RUNNING in `moremagic`.
@@ -67,6 +69,10 @@ All three RUNNING from AVI c7055b8d (2026-11-27), each in `.claude\worktrees\<na
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- Menu and loading cubes answer the mouse: columns rise and whiten under the cursor, a click
+  ripples out; the land stays beside the start-up menu (9adf54e6, 2026-11-27). Lift/brightness
+  are single numbers at the top of `src/loading/touch.rs` if it wants to be stronger or softer.
 
 - More lightning: eight new lightning powers (Stormbrand Edge, Stormrunner Slam, Thundersplit
   Arrow, Galvanic Railshot, Twin Arc, Judgment Bolt, Galvanic Torrent, Grave Lightning) across
