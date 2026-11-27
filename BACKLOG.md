@@ -18,11 +18,18 @@ All three RUNNING from AVI c7055b8d (2026-11-27), each in `.claude\worktrees\<na
    - Roads laid by worldgen that link NPC towns and castles (and camps where it fits), following
      the land, bridging or skirting water; signposts at junctions and near each place naming where
      each way leads.
+   - Surfaces (2026-11-27, "roads can be gravel, sandm pavement, rocks", then "pavement maybe
+     not", "but rocky"): gravel, sand and rocky roads (rough uneven stones, also on the main roads
+     near towns and castles where pavement would have gone), no smooth pavement; picked per
+     stretch from the land and how important the road is.
 
 3. **More weapon parts, more magic** (2026-11-27, "add more weapon parts, more magic").
    RUNNING in `moremagic`.
    - New weapon parts across the weapon families, and new spells/powers for the casting classes,
      beyond the eight lightning powers just added.
+   - More summoning for the Necromancer (2026-11-27, "addd more summoning capability for
+     necromancer"): several summon kinds (skeleton warriors, archers, a big golem, wraiths,
+     raising fresh corpses), animated rising and attacks, a cap on how many, simple commands.
 
 ## Loose ends (found along the way, not yet asked for)
 
