@@ -2063,6 +2063,56 @@ impl Game {
         self.dens = dens.iter().map(|d| d.key).collect();
     }
 
+    /// For trying out a necromancer's summons in a screenshot run, see main.rs's `summons` script:
+    /// a weapon made with the part `id` in hand, its power ready and the mana for it. False if
+    /// there's no such part.
+    pub fn hold_part(&mut self, id: &str) -> bool {
+        let Some(weapon) = self.library.with_part(id, None) else {
+            return false;
+        };
+        self.weapons.push(weapon);
+        self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+        self.selected = 0;
+        self.models_version += 1;
+        self.combat.ready_power();
+        true
+    }
+
+    /// The same: one monster, `look`, put down at `at`, leaving the player be till roused; its id
+    pub fn place_foe(&mut self, world: &World, water: WaterLevel, look: Look, at: Vector3<f64>) -> Option<u32> {
+        let at = Vector3::new(at.x, at.y, floor_near(world, at.x, at.y, at.z));
+        let mut monster = animals::spawn_pack(world, water, &[look], at, 0.5, self.rng).pop()?;
+        self.rng = hash(self.rng);
+        if let Some(state) = &mut monster.boss {
+            state.leave_be();
+        }
+        let id = monster.id;
+        self.animals.push(monster);
+        Some(id)
+    }
+
+    /// Rouses the monster `id`, to come for the player, and gives the middle of it, if it's up
+    pub fn rouse(&mut self, id: u32) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        let a = self.animals.iter_mut().find(|a| a.id == id && a.health > 0.0)?;
+        if let Some(state) = &mut a.boss {
+            state.provoke();
+        }
+        Some(a.center(vpm as u32))
+    }
+
+    /// The middle of monster `id`, if it's up
+    pub fn foe_at(&self, id: u32) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        self.animals.iter().find(|a| a.id == id && a.health > 0.0).map(|a| a.center(vpm as u32))
+    }
+
+    /// What a necromancer's dead are after, for a screenshot run to say
+    pub fn summons_line(&self) -> String {
+        let on = self.combat.summons_on().and_then(|(id, why)| self.animals.iter().find(|a| a.id == id).map(|a| format!("the {} {id} ({why}, {:.0} health)", a.look.name(), a.health)));
+        format!("{} of the dead up, after {}", self.combat.raised_count(), on.unwrap_or_else(|| "nothing".into()))
+    }
+
     /// For trying them out: a pack of monsters, `looks`, turns up `distance` meters along `ahead`
     /// from `near`, facing back that way turned `turn` radians further round. With `calm` they
     /// leave the player be, and with `pose` they're held in that frame, see animals::POSE_WINDUP,
@@ -2447,14 +2497,17 @@ impl Game {
                 // Whether what it's doing is made of its element, so the rings showing where it's
                 // coming down glow with it
                 let glowing = boss.doing().is_some_and(|d| bosses::elemental(d.m, element));
-                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d, glowing)));
+                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d, glowing, animal.id)));
             }
         }
-        for (look, element, deed, glowing) in deeds {
+        for (look, element, deed, glowing, id) in deeds {
             if glowing && let Some(e) = element {
                 self.glow_deed(e, deed);
             }
+            // Whose it is, for whatever of it strikes the player to be known as its, see hurt()
+            self.combat.set_doer(Some(id));
             self.carry_out(look, element, deed, world, water, player, view);
+            self.combat.set_doer(None);
         }
         self.tend_dragonfire(world, player, view, dt);
         self.tend_aerie(world, player, view, dt);
@@ -3452,6 +3505,21 @@ impl Game {
         if self.health <= 0.0 || damage <= 0.0 {
             return;
         }
+        // What did it, for a necromancer's dead to turn on: whose doing it is, or else whatever's
+        // fighting the player right where it came from
+        let vpm = world.voxels_per_meter as f64;
+        let culprit = self.combat.doer().or_else(|| {
+            self.animals
+                .iter()
+                .filter(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.engaged))
+                .map(|a| ((a.center(vpm as u32) - from).norm() / vpm - a.look.body().1, a.id))
+                .filter(|&(d, _)| d < 1.5)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, id)| id)
+        });
+        if let Some(id) = culprit {
+            self.combat.blame(id);
+        }
         // Turned aside by a riposte
         if self.combat.parry(from, feet) {
             return;
@@ -3465,7 +3533,6 @@ impl Game {
         // Harder the higher the level of what's about, see levels::damage(), and less for armour
         // from the skill web, never more than ARMOUR_MOST of it
         let damage = damage * self.foe_damage() * self.armoured();
-        let vpm = world.voxels_per_meter as f64;
         self.health -= damage;
         self.since_hurt = 0.0;
         self.hurt_flash = (self.hurt_flash + damage / 25.0).min(1.0);
@@ -5295,6 +5362,15 @@ impl Game {
     /// Health, hunger and mana
     pub fn vitals(&self) -> (f64, f64, f64) {
         (self.health, self.hunger, self.combat.mana)
+    }
+
+    /// The player going through a gate or a portal to another world, landscape `seed`: everything
+    /// of the one left let go of, as leave_world() does, but the dead they've raised come along,
+    /// climbing up out of the ground beside them there
+    pub fn travel(&mut self, seed: u32) {
+        let raised = self.combat.take_raised();
+        self.leave_world(seed);
+        self.combat.bring_raised(raised);
     }
 
     /// Lets go of everything of the world the player was in: its animals, bosses, monsters,
@@ -8902,6 +8978,41 @@ mod tests {
         assert!(!other.animals.iter().any(|a| a.look.is_ultra()));
         other.set_lairs(&world, &dry, vec![lair([1, 2, serpents::ULTRA_KEY])]);
         assert!(other.animals.iter().any(|a| a.look.is_ultra()));
+    }
+
+    /// What strikes the player is known as what did it, for a necromancer's dead to turn on: by
+    /// whose doing it was, a boss's or a monster's, and otherwise by what's fighting the player
+    /// right where it came from; and never what's only standing near
+    #[test]
+    fn what_strikes_the_player_is_blamed() {
+        let size = [256u32, 256, 32];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, crate::worldgen::material::DIRT);
+        world.voxels_per_meter = 8;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(128.0, 128.0, 16.0);
+        let mut game = Game::new(&world, &dry, 5, feet);
+        game.animals.clear();
+        let at = |x: f64| feet + Vector3::new(x * 8.0, 0.0, 0.0);
+        let mut pack = animals::spawn_pack(&world, &dry, &[Look::Bandit, Look::Bandit, Look::Bandit], at(2.0), 0.1, 3);
+        for (k, a) in pack.iter_mut().enumerate() {
+            a.position = at([1.5, 6.0, -1.5][k]);
+        }
+        pack[0].boss.as_mut().unwrap().provoke();
+        let ids: Vec<u32> = pack.iter().map(|a| a.id).collect();
+        game.animals = pack;
+        // A blow carried out as the second's doing, from afar
+        game.combat.set_doer(Some(ids[1]));
+        game.hurt(5.0, at(6.0), feet, &world, "a bandit");
+        game.combat.set_doer(None);
+        assert_eq!(game.combat.blamed(), vec![ids[1]]);
+        // A blow from right where the first, fighting the player, stands; the third stands as
+        // near, but isn't fighting them
+        game.hurt(5.0, at(1.5) + Vector3::new(0.0, 0.0, 8.0), feet, &world, "a blast");
+        assert_eq!(game.combat.blamed(), vec![ids[1], ids[0]]);
+        assert!(!game.combat.blamed().contains(&ids[2]));
     }
 
     /// The player's body is painted as they painted it, and with the forearms painted the arms

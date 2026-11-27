@@ -58,12 +58,12 @@ const GRAVE_REACH: f64 = 9.0;
 const GRAVE_SECONDS: f64 = 40.0;
 const GRAVES: usize = 16;
 /// A risen skeleton: seconds it takes to climb out of the ground and to crumble back into it, how
-/// fast it walks, in meters a second, how far off it hunts and how far it reaches, in meters, how
-/// long its blow takes, when in that it lands, and how much of what it does drains back
+/// fast it walks, in meters a second, how far it reaches, in meters, how long its blow takes, when
+/// in that it lands, and how much of what it does drains back. What it goes after is what all the
+/// dead do, see summons.rs.
 pub(in crate::combat) const RISE_SECONDS: f64 = 0.9;
 pub(in crate::combat) const CRUMBLE_SECONDS: f64 = 0.6;
 const RISEN_SPEED: f64 = 4.2;
-const RISEN_HUNT: f64 = 22.0;
 const RISEN_REACH: f64 = 1.3;
 const BLOW_SECONDS: f64 = 0.6;
 const BLOW_LANDS: f64 = 0.55;
@@ -88,6 +88,9 @@ pub(in crate::combat) struct Risen {
     pub(in crate::combat) kind: Minion,
     /// Where a phalanx's skeleton stands its ground, or how fast a wraith's flying, in voxels
     pub(in crate::combat) post: Vector3<f64>,
+    /// Which of the places round the player it keeps with nothing to fight, see
+    /// summons::GUARD
+    pub(in crate::combat) slot: u8,
 }
 
 /// What one of the dead raised fights as: Raise Dead's skeletons and the corpses of the slain hunt
@@ -501,16 +504,9 @@ impl Combat {
             let a = turn + k as f64 / RAISED as f64 * TAU;
             spots.push((ground + Vector3::new(a.cos(), a.sin(), 0.0) * RAISE_ROUND * 0.7 * vpm, false));
         }
-        // The oldest of those already up crumbling away for these
-        let up_now = self.familiars.iter().filter(|f| f.risen.is_some()).count();
-        let mut over = (up_now + RAISED).saturating_sub(RAISED * 2);
-        self.familiars.retain(|f| {
-            if f.risen.is_some() && over > 0 {
-                over -= 1;
-                return false;
-            }
-            true
-        });
+        // The oldest of those already up crumbling away for these, as a necromancer's summonings
+        // make room, rather than gone all at once
+        self.make_room(RAISED);
         let damage = p.damage * RISEN_POWER;
         let toward = arena.view.eye - ground;
         for (k, (spot, grave)) in spots.into_iter().enumerate() {
@@ -520,6 +516,7 @@ impl Combat {
             }
             let look = if grave || k == 1 { Look::ArmoredSkeleton } else { Look::Skeleton };
             let heading = (-toward.y).atan2(-toward.x) + (random(&mut self.rng) - 0.5) * 0.8;
+            let slot = self.free_slot();
             self.familiars.push(Familiar {
                 position: feet,
                 life: RAISED_SECONDS + k as f64 * 0.25,
@@ -527,7 +524,7 @@ impl Combat {
                 profile: profile.clone(),
                 damage,
                 phantom: false,
-                risen: Some(Risen { look, heading, phase: 0.0, moving: false, age: -0.2 * k as f64, swing: None, kind: Minion::Raised, post: feet }),
+                risen: Some(Risen { look, heading, phase: 0.0, moving: false, age: -0.2 * k as f64, swing: None, kind: Minion::Raised, post: feet, slot }),
             });
             self.sparks(feet + up * 0.2 * vpm, 12, 2.4, Element::look(Some(Element::Void)), 0.6, 0.6);
             for _ in 0..6 {
@@ -572,6 +569,11 @@ impl Combat {
         let Some(mut r) = f.risen else { return };
         r.age += dt;
         f.wait -= dt;
+        // Left far behind, or out of the world now it's moved on: up beside the player again
+        if self.rejoin(arena, f, &mut r) {
+            f.risen = Some(r);
+            return;
+        }
         let bone = Element::look(Some(Element::Void));
         // Still climbing out
         if r.age < RISE_SECONDS {
@@ -605,7 +607,7 @@ impl Combat {
             let next = s + dt / BLOW_SECONDS;
             if s < BLOW_LANDS && next >= BLOW_LANDS {
                 let reach = f.position + Vector3::new(r.heading.cos(), r.heading.sin(), 0.0) * RISEN_REACH * 0.7 * vpm + up * 0.9 * vpm;
-                let struck: Vec<usize> = Combat::foes_round(arena, reach, 0.9).into_iter().filter(|&i| hostile(&arena.animals[i])).take(1).collect();
+                let struck: Vec<usize> = Combat::foes_round(arena, reach, 0.9).into_iter().filter(|&i| self.fair_game(&arena.animals[i])).take(1).collect();
                 for i in struck {
                     let at = arena.animals[i].center(vpm as u32);
                     let profile = f.profile.clone();
@@ -624,27 +626,21 @@ impl Combat {
             f.risen = Some(r);
             return;
         }
-        // What it's after: the nearest thing that fights within its hunting reach, or else the
-        // player, to keep near
+        // What it's after, what all of them are, see summons.rs, or else its place by the player
         let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
-        // What it's been sent at, if it has been and that's still up, see summons.rs
-        let prey = self.ordered_prey(arena).map(|i| ((arena.animals[i].position - f.position).xy().norm(), i)).or_else(|| {
-            (0..arena.animals.len())
-                .filter(|&i| hostile(&arena.animals[i]))
-                .map(|i| ((arena.animals[i].position - f.position).xy().norm(), i))
-                .filter(|&(d, _)| d < RISEN_HUNT * vpm)
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-        });
-        let (goal, stop) = match prey {
-            Some((_, i)) => (arena.animals[i].position, (RISEN_REACH + arena.animals[i].look.body().1 * 0.7) * vpm),
-            None => (feet, 2.5 * vpm),
+        let Some((i, _)) = self.prey() else {
+            self.keep_by(arena, f, &mut r, RISEN_SPEED, dt);
+            f.risen = Some(r);
+            return;
         };
+        let (goal, stop) = (arena.animals[i].position, (RISEN_REACH + arena.animals[i].look.body().1 * 0.7) * vpm);
         let to = (goal - f.position).xy();
         let d = to.norm();
         if d > stop {
             let way = to / d;
             r.heading = way.y.atan2(way.x);
-            let step = (RISEN_SPEED * vpm * dt).min(d - stop);
+            let speed = super::summons::hurried(RISEN_SPEED, (f.position - feet).xy().norm() / vpm);
+            let step = (speed * vpm * dt).min(d - stop);
             let next = f.position + Vector3::new(way.x, way.y, 0.0) * step;
             f.position = Combat::floor_at(arena, next);
             r.phase = (r.phase + step / (1.3 * vpm)).fract();
@@ -654,7 +650,7 @@ impl Combat {
             if d > 1e-6 {
                 r.heading = to.y.atan2(to.x);
             }
-            if prey.is_some() && f.wait <= 0.0 {
+            if f.wait <= 0.0 {
                 r.swing = Some(0.0);
                 f.wait = BLOW_SECONDS + 0.35;
             }

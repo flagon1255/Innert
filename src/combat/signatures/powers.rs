@@ -878,6 +878,10 @@ impl Combat {
         let base = if magic { profile.stat("spellDamage") } else { profile.stat("physicalDamage") } + profile.stat("elementalDamage");
         let feet = arena.player.unwrap_or(view.eye - up * 1.6 * vpm);
         let forward = view.forward();
+        // What it's aimed at, for the necromancer's dead to go after, see summons.rs
+        if let (_, Some(i)) = Combat::ray_point(arena, view.eye, forward, AIM_RANGE) {
+            self.struck_by_player(arena.animals[i].id);
+        }
         let flat = flat_of(forward);
         // Along where it's looked, never much up or down, so it runs on over the ground
         let pitch = forward.z.clamp(-0.18, 0.25);

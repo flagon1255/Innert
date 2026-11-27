@@ -5159,6 +5159,7 @@ impl App {
                     capture.shots.push(f + 2);
                 }
             }
+            ("summons", f) => self.summons_step(f, eye),
             ("hunt", 20) => {
                 println!("frame {frame}: aiming at something: {}", self.game.has_target());
                 self.game.primary(eye);
@@ -5725,6 +5726,100 @@ impl App {
             && let Some(message) = after
         {
             println!("frame {frame}: message \"{message}\"");
+        }
+    }
+
+    /// `--script summons`, a necromancer's dead raised and fighting, for contact sheets, see
+    /// combat\signatures\summons.rs: the Bone Archers, the Bone Phalanx and the Grave Colossus
+    /// raised ahead, eight of the dead, going for the nearest of a gang of bandits there. Then with
+    /// `--set summons_part=strike` the player turns to a bandit off to the right and strikes it with
+    /// a bolt of their own, and all of them turn on it; with `summons_part=behind` a crossbowman
+    /// behind shoots the player in the back, and all of them turn on that, the player turning to
+    /// see. A shot every `--set summons_every=10` frames from frame 280 to 600, and what they're
+    /// after said every 15. Best with `--step 0.016667`.
+    fn summons_step(&mut self, f: usize, eye: Vector3<f64>) {
+        let settings = settings_from_args();
+        let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let part = setting("summons_part").unwrap_or_else(|| "strike".into());
+        let every: usize = setting("summons_every").and_then(|v| v.parse().ok()).unwrap_or(10);
+        let vpm = self.world.voxels_per_meter as f64;
+        let feet = self.player.as_ref().map_or(eye - Vector3::new(0.0, 0.0, 1.6 * vpm), |p| p.position);
+        if f == 1 {
+            if self.player.is_none() {
+                self.player = Some(Player::new(eye, &self.world));
+            }
+            self.camera.rotation.x = -0.32;
+        }
+        if f == 2 {
+            // Which way the player faces, kept for where everything's put
+            self.play.heading = self.camera.rotation.z + std::f64::consts::FRAC_PI_2;
+            let ahead = Vector3::new(self.play.heading.cos(), self.play.heading.sin(), 0.0);
+            let right = Vector3::new(ahead.y, -ahead.x, 0.0);
+            let water = &self.water;
+            let level = |x: f64, y: f64| water.surface_at(x, y);
+            let mut foes = Vec::new();
+            for k in 0..3 {
+                foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (ahead * (11.0 + k as f64) + right * (k as f64 - 1.0) * 1.6) * vpm));
+            }
+            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (right * 10.0 + ahead * 1.0) * vpm));
+            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Crossbowman, feet - ahead * 16.0 * vpm));
+            self.play.foes = foes;
+            println!("frame {f}: foes {:?}", self.play.foes);
+        }
+        let flat_of = |heading: f64| Vector3::new(heading.cos(), heading.sin(), 0.0);
+        // The three summonings, one after another
+        let casting = [(4, "archers_crystal"), (84, "phalanx_binding"), (164, "colossus_focus")];
+        let mut controls = combat::Controls::default();
+        for (from, id) in casting {
+            if f == from && !self.game.hold_part(id) {
+                println!("frame {f}: no part {id}");
+            }
+            if (from + 1..from + 70).contains(&f) {
+                controls = self.game.power_controls((f - from - 1) as f64 / 60.0, 1.0 / 60.0);
+            }
+        }
+        let foe = |k: usize, app: &Self| app.play.foes.get(k).and_then(|&id| app.game.foe_at(id));
+        match part.as_str() {
+            "behind" => {
+                // Roused, shooting the player in the back, and the player turning to see a moment
+                // after
+                if f == 290
+                    && let Some(&id) = self.play.foes.get(4)
+                {
+                    self.game.rouse(id);
+                }
+                if f >= 330
+                    && let Some(at) = foe(4, self)
+                {
+                    self.camera.look_at(voxels_to_camera(at, self.world.size));
+                    self.camera.rotation.x = self.camera.rotation.x.min(-0.12);
+                }
+            }
+            _ => {
+                // Turned to the one off to the right and striking it
+                if f >= 300
+                    && let Some(at) = foe(3, self)
+                {
+                    self.camera.look_at(voxels_to_camera(at, self.world.size));
+                    if (310..322).contains(&f) {
+                        controls = combat::Controls { attack: true, holding: true, ..Default::default() };
+                    }
+                }
+            }
+        }
+        if f < 300 && f > 2 {
+            let face = flat_of(self.play.heading);
+            self.camera.look_at(voxels_to_camera(eye + face * 10.0 * vpm - Vector3::new(0.0, 0.0, 3.2 * vpm), self.world.size));
+        }
+        self.script_controls = controls;
+        if f % 15 == 0 {
+            println!("frame {f}: {}", self.game.summons_line());
+        }
+        if (280..=600).contains(&f)
+            && (f - 280) % every.max(1) == 0
+            && let Some(capture) = &mut self.capture
+        {
+            capture.shots.push(f + 2);
         }
     }
 

@@ -369,6 +369,8 @@ struct Projectile {
     /// How long it's been going down through water, in seconds, once it's splashed into it, see
     /// Combat::fly()
     sinking: Option<f64>,
+    /// Shot by one of the dead raised or a familiar, not the player, see signatures\summons.rs
+    minion: bool,
 }
 
 /// What a bolt does beyond flying and hitting
@@ -1785,6 +1787,9 @@ struct Hostile {
     /// Where it was aimed to come down, and how many seconds it was to take getting there
     target: Vector3<f64>,
     flight: f64,
+    /// What threw it, by id, if that's known, for the necromancer's dead to turn on, see
+    /// signatures\summons.rs
+    by: Option<u32>,
 }
 
 struct Spark {
@@ -2246,6 +2251,9 @@ pub struct Combat {
     /// The animal a necromancer's dead were last sent at, by id, and for how much longer they go
     /// after it, see summons.rs
     ordered: Option<(u32, f64)>,
+    /// What they go for otherwise, and what's known of what the player's fighting for it, see
+    /// summons.rs
+    summons: signatures::summons::Pack,
     poured: f64,
     /// Health a special attack gives back, and how it throws the player, for game.rs to see to
     pub heal: f64,
@@ -5653,6 +5661,7 @@ impl Combat {
             missiled: (u32::MAX, 0),
             missile_aim: Vector3::zeros(),
             ordered: None,
+            summons: Default::default(),
             poured: 0.0,
             heal: 0.0,
             dash: Vector3::zeros(),
@@ -5799,6 +5808,7 @@ impl Combat {
             l.to -= shift;
         }
         self.missile_aim -= shift;
+        self.summons.recenter(shift);
         for f in &mut self.familiars {
             f.position -= shift;
             // Where a phalanx's skeleton stands its ground, not a wraith's speed
@@ -5890,6 +5900,8 @@ impl Combat {
         self.craters.clear();
         self.lash = None;
         self.familiars.clear();
+        self.ordered = None;
+        self.summons = Default::default();
         self.orbit = None;
         self.stases.clear();
         self.siphon = None;
@@ -8209,6 +8221,10 @@ impl Combat {
                 self.ordered = None;
             }
         }
+        // What they all go after this frame
+        self.choose_prey(arena, dt);
+        // And what they strike isn't what the player's going for
+        self.summons.by_minion = true;
         for mut f in std::mem::take(&mut self.familiars) {
             f.life -= dt;
             // The dead a skull focus raised walk and strike rather than cast, see faith.rs
@@ -8234,6 +8250,9 @@ impl Combat {
                 if let Some(to) = near {
                     let speed = f.profile.stat("projectileSpeed").max(20.0) * vpm;
                     self.launch(&f.profile, None, Form::Missile, f.position, (to - f.position).normalize() * speed, f.damage, 0.0);
+                    if let Some(p) = self.projectiles.last_mut() {
+                        p.minion = true;
+                    }
                     self.fine(f.position, Vector3::zeros(), Element::look(f.profile.element), 0.2, 0.0);
                 }
             }
@@ -8243,6 +8262,7 @@ impl Combat {
                 self.sparks(f.position, 8, 1.5, Element::look(f.profile.element), 0.0, 0.4);
             }
         }
+        self.summons.by_minion = false;
         if let Some(mut o) = self.orbit.take() {
             o.left -= dt;
             o.angle += dt * 4.5;
@@ -10416,6 +10436,7 @@ impl Combat {
             trick: Trick::None,
             ammo: None,
             sinking: None,
+            minion: false,
         });
     }
 
@@ -12315,6 +12336,7 @@ impl Combat {
             trick: Trick::None,
             ammo,
             sinking: None,
+            minion: false,
         };
         let mut shots = vec![make(direction, damage)];
         if profile.has(Effect::Multishot) {
@@ -12348,6 +12370,8 @@ impl Combat {
         let mut keep = Vec::new();
         for mut p in projectiles {
             let profile = p.profile.clone();
+            // What one of the dead raised shot strikes isn't what the player's going for
+            self.summons.by_minion = p.minion;
             // The signature special attacks' shots, see signatures.rs: what trails off them, what
             // they do in flight, and coming down where they are rather than ever vanishing
             if let Trick::Signature(s) = p.trick
@@ -12935,6 +12959,7 @@ impl Combat {
                 self.arrive(&p, p.position);
             }
         }
+        self.summons.by_minion = false;
         keep.append(&mut self.projectiles);
         self.projectiles = keep;
         self.keep_projectiles_few(arena.view);
@@ -13066,6 +13091,7 @@ impl Combat {
             ammo: p.ammo,
             // Under water still, if it's set off from under water
             sinking: p.sinking.map(|_| 0.0),
+            minion: p.minion,
         }
     }
 
@@ -13732,6 +13758,11 @@ impl Combat {
         let vpm = arena.view.vpm;
         if arena.animals[i].health <= 0.0 || arena.animals[i].look.is_pet() || blow.depth > MAX_DEPTH {
             return;
+        }
+        // What the player strikes themselves, for the necromancer's dead to go after, see
+        // signatures\summons.rs
+        if blow.depth == 0 {
+            self.struck_by_player(arena.animals[i].id);
         }
         // A raid boss warded by its realm's guardians: the blow glances off, doing nothing
         if let Some((slain, of)) = arena.animals[i].status.warded {
@@ -14633,7 +14664,7 @@ impl Combat {
     pub fn hurl(&mut self, kind: HostileKind, from: Vector3<f64>, to: Vector3<f64>, time: f64, damage: f64, radius: f64) {
         let gravity = kind.gravity() * 9.8 * self.vpm;
         let velocity = (to - from) / time + Vector3::new(0.0, 0.0, 0.5 * gravity * time);
-        self.hostiles.push(Hostile { kind, position: from, velocity, life: time + 3.0, damage, radius, target: to, flight: time });
+        self.hostiles.push(Hostile { kind, position: from, velocity, life: time + 3.0, damage, radius, target: to, flight: time, by: self.summons.doer });
     }
 
     /// For this frame, a red ring on the ground `radius` meters round `at` showing where something's
@@ -14990,11 +15021,17 @@ impl Combat {
                 if h.kind.pierces() {
                     if hit {
                         self.player_hits.push((h.damage, at, None));
+                        if let Some(id) = h.by {
+                            self.blame(id);
+                        }
                     } else if d < 1.5 {
                         self.near_misses.push(at);
                     }
                 } else if d < h.radius {
                     self.player_hits.push((h.damage * (1.0 - 0.5 * d / h.radius), at, h.kind.element()));
+                    if let Some(id) = h.by {
+                        self.blame(id);
+                    }
                 } else if d < h.radius + 1.2 {
                     self.near_misses.push(at);
                 }
@@ -16638,7 +16675,13 @@ impl Combat {
         // Rings and smoke are only extra, so they go after everything else: the first left out
         // when there's too much to draw, and the last to cast shadows
         out.extend(extras.into_iter().map(|(at, instance)| (1e9 + (at - view.eye).norm(), instance)));
-        out.extend(risen);
+        // The dead raised are creatures fighting alongside the player, so they're drawn before
+        // the sparks, drops and shots about them, as if they were a hundredth as far off: in a
+        // busy fight they were the first left out, and seemed to vanish. There are never more
+        // than MINIONS of them, two things drawn each. And the faint mark over what they're
+        // after, as a shot is.
+        out.extend(risen.into_iter().map(|(d, instance)| (d * 0.01, instance)));
+        out.extend(self.mark_instances(view).into_iter().map(|(at, instance)| ((at - view.eye).norm() * 0.1, instance)));
     }
 
     /// What to draw for the fine sparks trailing off the weapon in hand. They don't need to cast
