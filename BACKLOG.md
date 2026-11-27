@@ -19,6 +19,8 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
      world is built behind the loading screen on New or Continue. Same agent, separate commit.
      (2026-11-27, "dont load the world instantly, jsut show the cubes": at launch only the cubes
      and the menu, no world behind them.)
+   - Hover reveals colour (2026-11-27, "When i hover on the cubes, they should reveal real
+     color"): grey at rest, the true surface colours fading in round the cursor and out behind it.
    - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
      it myself the text").
 
