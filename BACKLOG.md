@@ -19,6 +19,8 @@ The menu map RUNNING from AVI 0b267383, lamp posts from e8a457d6 (2026-11-27), e
    `roads` (the roads agent again).
    - Lanterns on posts along the busier roads, near towns and castles, on bridges and at
      signposts; lit at night through the night-lights system, dark by day, within the light cap.
+   - Kind by surface (2026-11-27, "roads that are made from stones, one type of ligsthing, gravel
+     roads oher tpe"): stone/rocky roads one kind of lamp, gravel roads a clearly different kind.
 
 ## Loose ends (found along the way, not yet asked for)
 
