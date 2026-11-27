@@ -104,3 +104,5 @@
   100  c29966   palm planks
   101  bdbab3   cut stone
   102  243d9e   blue cloth
+  103  9e9980   lamp glass, unlit
+  104  3d2b1f   oil lamp wick, unlit
