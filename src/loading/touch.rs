@@ -37,6 +37,14 @@ const DAMPING: f32 = 2.6;
 const STEPS_PER_SECOND: f32 = 120.0;
 /// Less than this up or down, it's all settled
 const STILL: f32 = 2e-3;
+/// How far round the mouse the land shows its real colours, in columns, how quickly they come
+/// up under it, and how slowly they fade back to grey once it's moved on, each a second, so a
+/// sweep of the mouse leaves a trail of colour fading behind it
+const TINT_SPREAD: f32 = 2.2;
+const TINT_RISE: f32 = 9.0;
+const TINT_FADE: f32 = 0.9;
+/// How much colour a ripple flashes up as it passes, a column's lift by it
+const TINT_FLASH: f32 = 2.2;
 /// How long after the mouse last moved over it the land's still drawn as often as the screen
 /// shows, see lively()
 const LIVELY: Duration = Duration::from_millis(1200);
@@ -50,6 +58,8 @@ pub struct Touch {
     /// Lifted by the ripples going through it, in columns, and how fast that's changing
     wave: Vec<f32>,
     speed: Vec<f32>,
+    /// How far each column's shown in its real colours, 0 to 1, see tint()
+    tinted: Vec<f32>,
     /// Where on the land the mouse is, if it's over it
     over: Option<Spot>,
     /// Where on the screen the mouse was last
@@ -83,6 +93,7 @@ impl Touch {
             raised: Vec::new(),
             wave: Vec::new(),
             speed: Vec::new(),
+            tinted: Vec::new(),
             over: None,
             pointer: None,
             owed: 0.0,
@@ -138,6 +149,13 @@ impl Touch {
         (self.raised.get(k).copied().unwrap_or(0.0) / HOVER_LIFT).clamp(0.0, 1.0).powf(1.5)
     }
 
+    /// How far column `k`'s shown in its real colours rather than grey, 0 to 1: under and round
+    /// the mouse, fading back once it's moved on, and flashing up as a click's ripple goes by
+    pub fn tint(&self, k: usize) -> f32 {
+        let flash = (self.ripple(k).abs() * TINT_FLASH).min(0.85);
+        self.tinted.get(k).copied().unwrap_or(0.0).max(flash).min(1.0)
+    }
+
     /// Where on the land the mouse is, if it's over it
     pub fn over(&self) -> Option<Spot> {
         self.over
@@ -152,7 +170,7 @@ impl Touch {
     fn fit(&mut self, n: usize) {
         if self.n != n {
             self.n = n;
-            for v in [&mut self.raised, &mut self.wave, &mut self.speed] {
+            for v in [&mut self.raised, &mut self.wave, &mut self.speed, &mut self.tinted] {
                 *v = vec![0.0; n * n];
             }
             self.over = None;
@@ -163,7 +181,7 @@ impl Touch {
     /// Whether the mouse has lately moved over it, or a ripple's still big, when it's worth drawing
     /// as often as the screen shows rather than as it's drawn while nothing's touched
     pub fn lively(&self) -> bool {
-        self.awake && (self.stirred.is_some_and(|s| s.elapsed() < LIVELY) || self.wave.iter().any(|w| w.abs() > 0.05))
+        self.awake && (self.stirred.is_some_and(|s| s.elapsed() < LIVELY) || self.wave.iter().any(|w| w.abs() > 0.05) || self.tinted.iter().any(|&c| c > 0.05))
     }
 
     /// Feels the mouse over `land` seen as `view`, `phase` of the way built, and moves on to now.
@@ -227,6 +245,7 @@ impl Touch {
             self.raised.fill(0.0);
             self.wave.fill(0.0);
             self.speed.fill(0.0);
+            self.tinted.fill(0.0);
         }
     }
 
@@ -247,6 +266,7 @@ impl Touch {
     fn tick(&mut self, land: &Land, h: f32) -> f32 {
         let n = self.n as i32;
         let (rise, settle) = (1.0 - (-RISE_RATE * h).exp(), 1.0 - (-SETTLE_RATE * h).exp());
+        let (bloom, fade) = (1.0 - (-TINT_RISE * h).exp(), 1.0 - (-TINT_FADE * h).exp());
         let mut most = 0.0f32;
         // The hump under the mouse
         for k in 0..self.n * self.n {
@@ -261,6 +281,20 @@ impl Touch {
             let r = &mut self.raised[k];
             *r += (target - *r) * if target > *r { rise } else { settle };
             most = most.max(r.abs());
+            // Its colours, in a wider, softer patch, lingering after
+            let colour = match self.over {
+                Some(spot) if land.solid(k) => {
+                    let (x, y) = middle_of(self.n, k);
+                    let d2 = (x - spot.at.0).powi(2) + (y - spot.at.1).powi(2);
+                    // As wide on the screen however many columns the land has
+                    let spread = TINT_SPREAD * (self.n as f32 / 34.0).max(1.0);
+                    if d2 < 9.0 * spread * spread { (1.25 * (-d2 / (2.0 * spread * spread)).exp()).min(1.0) } else { 0.0 }
+                }
+                _ => 0.0,
+            };
+            let c = &mut self.tinted[k];
+            *c += (colour - *c) * if colour > *c { bloom } else { fade };
+            most = most.max(*c);
         }
         // The ripples: each column pulled level with those round it that are there, so a ripple
         // comes back off the land's edges, and back to where it rests
@@ -387,6 +421,44 @@ mod tests {
         }
         assert!(!touch.awake);
         assert!((0..N * N).all(|k| touch.lift(k) == 0.0));
+    }
+
+    #[test]
+    fn the_land_shows_its_colours_where_the_mouse_goes_and_they_fade_after() {
+        let land = flat();
+        let mut touch = Touch::new(None);
+        // Swept from one side to the other
+        for frame in 0..60 {
+            let i = 5 + frame / 3;
+            touch.step(&land, Some(pos2(frame as f32, 1.0)), over((i, 17)), false, Some(1.0 / 60.0));
+        }
+        let under = touch.tint(column((24, 17)));
+        assert!(under > 0.6, "under it: {under}");
+        // Round it less, and none far off
+        assert!(touch.tint(column((24, 19))) < under && touch.tint(column((24, 19))) > 0.1);
+        assert!(touch.tint(column((24, 30))) < 0.01);
+        // Along the way it came, still some, less the longer ago
+        let (near, far) = (touch.tint(column((20, 17))), touch.tint(column((8, 17))));
+        assert!(near > far && far > 0.05, "{near} then {far}");
+        // Gone, it all fades back to grey
+        for _ in 0..600 {
+            touch.step(&land, None, None, false, Some(1.0 / 60.0));
+        }
+        assert!((0..N * N).all(|k| touch.tint(k) == 0.0));
+    }
+
+    #[test]
+    fn a_click_flashes_colour_out_as_it_ripples() {
+        let land = flat();
+        let mut touch = Touch::new(None);
+        touch.step(&land, Some(pos2(1.0, 1.0)), over((17, 17)), true, Some(1.0 / 60.0));
+        let far = column((23, 17));
+        let mut most = 0.0f32;
+        for _ in 0..120 {
+            touch.step(&land, None, None, false, Some(1.0 / 60.0));
+            most = most.max(touch.tint(far));
+        }
+        assert!(most > 0.03, "{most}");
     }
 
     #[test]

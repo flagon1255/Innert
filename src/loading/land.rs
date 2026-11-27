@@ -91,6 +91,76 @@ pub struct Land {
     stands: Vec<Stand>,
     /// Where its middle is in the whole landscape, in meters
     middle: [f32; 2],
+    /// Each column's real colour, of grass, sand, snow, rock, woods or what's built on it, shown
+    /// where the mouse has been, see Touch::tint(); and the sea's
+    colors: Vec<[u8; 3]>,
+    sea: [u8; 3],
+}
+
+/// The real colours of the land, as the map on M has them, see compass.rs: grass, the jungle's
+/// deeper green, sand, snow, the woods' canopy, bare rock up high and the sea
+const GRASS: [u8; 3] = [92, 153, 71];
+const JUNGLE: [u8; 3] = [41, 115, 51];
+const DESERT: [u8; 3] = [217, 194, 133];
+const SNOW: [u8; 3] = [237, 242, 247];
+const SAND: [u8; 3] = [217, 204, 153];
+const ROCK: [u8; 3] = [196, 196, 202];
+const CANOPY: [u8; 3] = [42, 88, 38];
+const SEA: [u8; 3] = [38, 96, 150];
+/// A tree's, on the loading screen's land
+const BARK: [u8; 3] = [92, 66, 44];
+const LEAVES: [u8; 3] = [58, 120, 50];
+/// What's built's: gravel roads, a town's plaster and stone, a castle's stone, a camp's trodden earth
+const GRAVEL: [u8; 3] = [150, 138, 116];
+const PLASTER: [u8; 3] = [214, 196, 164];
+const STONE: [u8; 3] = [158, 158, 164];
+const EARTH: [u8; 3] = [124, 96, 68];
+
+/// `a`, `t` of the way to `b`
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [0, 1, 2].map(|i| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).round() as u8)
+}
+
+/// The real colour of the land at `x`, `y`, `h` meters over the sea, `woods` thick with trees
+fn true_color(settings: &TerrainSettings, x: f32, y: f32, h: f32, woods: f32) -> [u8; 3] {
+    use worldgen::Land as Kind;
+    let land = worldgen::land_of(settings.seed);
+    if !h.is_finite() {
+        return SEA;
+    }
+    if h < 0.0 {
+        let deep = (-h / 8.0).min(1.0);
+        return match land {
+            Kind::Ice => [200, 225, 242],
+            Kind::Dragon => [255, 107, 20],
+            Kind::Dream if worldgen::dream_blood(x, y) > 0.5 => [110, 12, 16],
+            _ => mix([46, 115, 168], [20, 70, 120], deep),
+        };
+    }
+    let base = match land {
+        Kind::Dragon => [92, 84, 82],
+        Kind::Dream => mix([199, 179, 230], [150, 30, 36], worldgen::dream_blood(x, y)),
+        Kind::Ice => SNOW,
+        _ => {
+            let c = worldgen::climate(settings, x, y);
+            mix(mix(mix(GRASS, JUNGLE, c.jungle), DESERT, c.desert), SNOW, c.snow)
+        }
+    };
+    let grounded = !matches!(land, Kind::Sky | Kind::Ice | Kind::Dragon);
+    let base = if grounded && h < 1.0 { mix(base, SAND, 0.65) } else { base };
+    let high = if land == Kind::Sky { 0.0 } else { ((h - settings.height_m as f32 * 0.35) / (settings.height_m as f32 * 0.4)).clamp(0.0, 1.0) };
+    let base = mix(base, ROCK, high * 0.7);
+    mix(base, CANOPY, woods.min(1.0) * 0.7)
+}
+
+/// The colour of the sea round the land `settings` build
+fn sea_color(settings: &TerrainSettings) -> [u8; 3] {
+    match worldgen::land_of(settings.seed) {
+        worldgen::Land::Ice => [200, 225, 242],
+        worldgen::Land::Dragon => [255, 107, 20],
+        _ => SEA,
+    }
 }
 
 /// How far each part of building the land's got, 0 to 1: the land rising, the trees growing and
@@ -202,13 +272,21 @@ impl Land {
                 worldgen::seen_from_above(settings, x, y).unwrap_or(f32::NAN)
             })
             .collect();
-        let woods = (0..n * n)
+        let woods: Vec<f32> = (0..n * n)
             .map(|k| {
                 let [x, y] = spot(k % n, k / n);
                 if heights[k] > 0.8 { worldgen::woods_at(settings, x, y) } else { 0.0 }
             })
             .collect();
-        Land { middle, ..Land::from_heights(across, cell, heights, woods, beasts) }
+        // Its real colours, for the mouse to show, see Touch::tint()
+        let colors = (0..n * n)
+            .map(|k| {
+                let [x, y] = spot(k % n, k / n);
+                true_color(settings, x, y, heights[k], woods[k])
+            })
+            .collect();
+        let sea = sea_color(settings);
+        Land { middle, colors, sea, ..Land::from_heights(across, cell, heights, woods, beasts) }
     }
 
     /// The land with these heights and woods, `n` columns each way of `cell` meters, and as many
@@ -243,7 +321,14 @@ impl Land {
         beasts.sort_by(|a, b| hash(a.0 as u32, a.1 as u32, 9).total_cmp(&hash(b.0 as u32, b.1 as u32, 9)));
         beasts.truncate(wandering);
         let stands = vec![Stand::Nothing; heights.len()];
-        Land { across, cell, heights, woods, floor, top: high.max(floor + 4.0), floating, undersides, beasts, stands, middle: [0.0; 2] }
+        let colors = vec![GRASS; heights.len()];
+        Land { across, cell, heights, woods, floor, top: high.max(floor + 4.0), floating, undersides, beasts, stands, middle: [0.0; 2], colors, sea: SEA }
+    }
+
+    /// Column `k`'s real colour
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn color(&self, k: usize) -> [u8; 3] {
+        self.colors.get(k).copied().unwrap_or(GRASS)
     }
 
     /// Level land `h` meters over the sea, for tests
@@ -325,6 +410,17 @@ impl Land {
         let k = (i + j * n) as usize;
         if self.stands[k] == Stand::Nothing || stand != Stand::Road {
             self.stands[k] = stand;
+            // And its ground the colour of what's built there
+            let ground = match stand {
+                Stand::Road => Some(GRAVEL),
+                Stand::Houses | Stand::Square => Some(PLASTER),
+                Stand::Wall(_) | Stand::Keep(_) | Stand::Ruin | Stand::Gate | Stand::Crypt => Some(STONE),
+                Stand::Camp => Some(EARTH),
+                _ => None,
+            };
+            if let Some(c) = ground {
+                self.colors[k] = c;
+            }
         }
     }
 
@@ -469,6 +565,17 @@ impl Land {
             let v = (v * bright).round().clamp(0.0, 255.0) as u8;
             fade(Color32::from_rgb(v, v, v))
         };
+        // The grey `v`, or `t` of the way to its real colour `c`, as light as `shade` makes it, so
+        // a top and its sides keep the light and shade of the grey and read as a block
+        let hue = |v: f32, shade: f32, c: [u8; 3], t: f32| {
+            if t <= 0.003 {
+                return grey(v);
+            }
+            let g = (v * bright).clamp(0.0, 255.0);
+            let s = (shade / 196.0).clamp(0.2, 1.35) * bright;
+            let [r, gr, b] = c.map(|ch| (g + ((ch as f32 * s).min(255.0) - g) * t.min(1.0)).round().clamp(0.0, 255.0) as u8);
+            fade(Color32::from_rgb(r, gr, b))
+        };
         let sea = self.sea(view, phase);
         // The sea over column `k`, rippled where the mouse has stirred it
         let water = |k: usize| if self.floating { 0.0 } else { (sea + WATER_RIPPLE * touch.map_or(0.0, |t| t.ripple(k)) * phase.fill).max(0.0) };
@@ -516,14 +623,20 @@ impl Land {
             let bottom = self.bottom(view, k);
             let wet = !self.floating && water(k) > ground + 1e-3;
             let z = if wet { water(k) } else { ground };
-            // How much the mouse has lit it, whitening it as a block fresh cut
-            let lit_up = touch.map_or(0.0, |t| t.glow(k)) * r;
+            // How far it's shown in its real colours, where the mouse is and has lately been, and
+            // as a click's ripple goes through it
+            let tinted = touch.map_or(0.0, |t| t.tint(k)) * r;
+            // How much the mouse has lit it, whitening it as a block fresh cut, less as it's coloured
+            let lit_up = touch.map_or(0.0, |t| t.glow(k)) * r * (1.0 - 0.8 * tinted);
             // Higher is whiter, and what's only just come up whiter still, fresh from the plate
             let height = ((h - self.floor) / (self.top - self.floor).max(1.0)).clamp(0.0, 1.0);
             let speck = (hash(i as u32, j as u32, 2) - 0.5) * 14.0;
             let fresh = (1.0 - r).max(0.0) * 60.0;
             let under_sea = if h < 0.0 { 0.72 } else { 1.0 };
             let land_top = ((132.0 + 104.0 * height + speck) * under_sea + fresh).min(250.0);
+            // How light its colour's drawn: as the grey before the mouse whitens it, or it's
+            // darkened for the woods or a road, which its colour has of its own
+            let plain = land_top * 0.9;
             let land_top = land_top + (250.0 - land_top).max(0.0) * lit_up;
             // A ripple going through lighter on its crests and darker in its troughs, so its rings
             // read in black and white
@@ -531,6 +644,8 @@ impl Land {
             let land_top = (land_top + swell.clamp(-1.0, 1.0) * if swell > 0.0 { 170.0 } else { 140.0 }).clamp(40.0, 252.0);
             let shimmer = 7.0 * (t * 1.6 + i as f32 * 0.7 + j as f32 * 0.45).sin();
             let stand = self.stands[k];
+            let (color, sea_color) = (self.colors[k], self.sea);
+            let paint = |v: f32, shade: f32, c: [u8; 3]| hue(v, shade, c, tinted);
             // On the map, woods are darker ground, as on a printed map, rather than trees, so
             // what's built on it stands out
             let map = self.cell > CELL_M;
@@ -550,27 +665,28 @@ impl Land {
                 let next = surface(i + di, j + dj).unwrap_or(if self.floating { bottom } else { 0.0 });
                 let lit = 0.36 + 0.3 * (nx * light[0] + ny * light[1]).max(0.0) + if f < 2 { 0.04 } else { 0.0 };
                 let (ax, ay, bx, by) = if nx != 0.0 { (x + nx * 0.5, y - 0.5, x + nx * 0.5, y + 0.5) } else { (x - 0.5, y + ny * 0.5, x + 0.5, y + ny * 0.5) };
-                let mut side = |from: f32, to: f32, shade: f32| {
+                let mut side = |from: f32, to: f32, color: Color32| {
                     if to < from - 1e-3 {
-                        quad(&mut mesh, [project(ax, ay, from), project(bx, by, from), project(bx, by, to), project(ax, ay, to)], grey(shade));
+                        quad(&mut mesh, [project(ax, ay, from), project(bx, by, from), project(bx, by, to), project(ax, ay, to)], color);
                     }
                 };
                 // Under water, as seen through the side of a tank: the water, then the ground
                 if wet {
-                    side(z, next.max(ground), 44.0 + lit * 20.0);
+                    side(z, next.max(ground), paint(44.0 + lit * 20.0, 80.0 + lit * 60.0, sea_color));
                 }
                 // Lit too where the mouse has lifted it, so what's under it lights up whichever
-                // face it's on
-                side(ground, next.max(bottom), land_top * lit + (236.0 - land_top * lit).max(0.0) * lit_up * 0.75);
+                // face it's on, and in its colour shaded as the grey is, so it reads as a block
+                side(ground, next.max(bottom), paint(land_top * lit + (236.0 - land_top * lit).max(0.0) * lit_up * 0.75, plain * lit, color));
             }
             let corners = [project(x - 0.5, y - 0.5, z), project(x + 0.5, y - 0.5, z), project(x + 0.5, y + 0.5, z), project(x - 0.5, y + 0.5, z)];
+            let (top_color, top_shade) = if wet { (sea_color, 170.0 + shimmer * 2.0 + 60.0 * swell) } else { (color, plain) };
             if outline && !wet {
                 // Edged in a darker line, as cut into the block
-                quad(&mut mesh, corners, grey(top * 0.62));
+                quad(&mut mesh, corners, paint(top * 0.62, top_shade * 0.62, top_color));
                 let middle = corners.iter().fold(vec2(0.0, 0.0), |sum, p| sum + p.to_vec2()) / 4.0;
-                quad(&mut mesh, corners.map(|p| p + (middle.to_pos2() - p).normalized() * 1.3), grey(top));
+                quad(&mut mesh, corners.map(|p| p + (middle.to_pos2() - p).normalized() * 1.3), paint(top, top_shade, top_color));
             } else {
-                quad(&mut mesh, corners, grey(top));
+                quad(&mut mesh, corners, paint(top, top_shade, top_color));
             }
 
             // What's built on it, springing up with the trees
@@ -592,8 +708,8 @@ impl Land {
                     let trunk = z + 0.45 * size;
                     let crown = trunk + 0.75 * size;
                     // The trunk, then the crown, a block of dark leaves
-                    block(&mut mesh, &project, turned, (cx, cy), 0.06 * size, z, trunk, grey(40.0), &|_| grey(30.0));
-                    block(&mut mesh, &project, turned, (cx, cy), side, trunk, crown, grey(96.0 + speck + 80.0 * lit_up), &|lit| grey(40.0 + 34.0 * lit + 40.0 * lit_up));
+                    block(&mut mesh, &project, turned, (cx, cy), 0.06 * size, z, trunk, paint(40.0, 120.0, BARK), &|_| paint(30.0, 90.0, BARK));
+                    block(&mut mesh, &project, turned, (cx, cy), side, trunk, crown, paint(96.0 + speck + 80.0 * lit_up, 200.0 + speck, LEAVES), &|lit| paint(40.0 + 34.0 * lit + 40.0 * lit_up, 110.0 + 70.0 * lit, LEAVES));
                 }
             }
 
@@ -980,6 +1096,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn each_column_knows_its_real_colour() {
+        let settings = TerrainSettings { width_m: 224, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        // Round the lake where Innert starts: green land, and blue where it's under water
+        let mut land = Land::around(&settings, [195.0, 169.0]);
+        let n = ACROSS as i32;
+        let green = (0..n * n).filter(|&k| land.height(k % n, k / n).is_some_and(|h| h > 1.0)).map(|k| land.color(k as usize)).filter(|c| c[1] > c[0] && c[1] > c[2]).count();
+        assert!(green > 100, "{green} green");
+        for k in 0..(n * n) as usize {
+            if land.heights[k] < -1.0 {
+                let c = land.color(k);
+                assert!(c[2] > c[0], "under water at {k}: {c:?}");
+            }
+        }
+        // And what's built on it, its own
+        land.build((3, 3), Stand::Road);
+        assert_eq!(land.color((3 + 3 * n) as usize), GRAVEL);
+        // In the desert, sand; on the Cinder Crown, ash and lava
+        let desert = true_color(&settings, 0.0, 0.0, 10.0, 0.0);
+        let dragon = TerrainSettings { seed: crate::realms::REALMS.iter().find(|r| worldgen::land_of(r.seed) == worldgen::Land::Dragon).unwrap().seed, ..settings };
+        assert!(true_color(&dragon, 0.0, 0.0, -2.0, 0.0)[0] > 200);
+        assert!(desert.iter().all(|&c| c > 30));
     }
 
     #[test]
