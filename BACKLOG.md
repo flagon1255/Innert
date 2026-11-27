@@ -33,6 +33,16 @@ The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\
      the Esc menu (and/or F1 settings) listing every control grouped with the menu's tips, click
      to rebind, clashes shown, reset to defaults; prompts show the bound key.
 
+7. **More bosses, and bosses that don't get stuck** (2026-11-27, "add more bosses", "also dont
+   let bosses to get stuck in holes, let them jump out"). RUNNING in `bosses4` from a1428251.
+
+8. **Smoother animation for every NPC and summon** (2026-11-27, "make smoother animations for
+   all npcs", "and summmons"). RUNNING in `npcanim` from a1428251.
+
+9. **Summons that stay and fight the right foe** (2026-11-27, "summons sometimes vanish, they
+   should priotize what i attack, and if not, whoattacks me"). RUNNING in `summonai` from
+   a1428251.
+
 ## Loose ends (found along the way, not yet asked for)
 
 - Distant explosions may not be drawn: the game draws at most 140 objects a frame, nearest first,
