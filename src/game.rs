@@ -2081,7 +2081,8 @@ impl Game {
     /// The same: one monster, `look`, put down at `at`, leaving the player be till roused; its id
     pub fn place_foe(&mut self, world: &World, water: WaterLevel, look: Look, at: Vector3<f64>) -> Option<u32> {
         let at = Vector3::new(at.x, at.y, floor_near(world, at.x, at.y, at.z));
-        let mut monster = animals::spawn_pack(world, water, &[look], at, 0.5, self.rng).pop()?;
+        // Somewhere dry near it, if not right there
+        let mut monster = [0.5, 3.0, 8.0].into_iter().find_map(|within| animals::spawn_pack(world, water, &[look], at, within, self.rng).pop())?;
         self.rng = hash(self.rng);
         if let Some(state) = &mut monster.boss {
             state.leave_be();

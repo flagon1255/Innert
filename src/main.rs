@@ -5764,7 +5764,12 @@ impl App {
             }
             // Further off than the gang, so it's not what they'd go for themselves
             foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (right * 16.0 + ahead * 2.0) * vpm));
-            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Crossbowman, feet - ahead * 16.0 * vpm));
+            // Behind, or behind to one side or the other if that's water
+            let behind = [0.0, 0.6, -0.6, 1.1, -1.1].into_iter().find_map(|side| self.game.place_foe(&self.world, &level, animals::Look::Crossbowman, feet + (right * side - ahead) * 16.0 * vpm));
+            if behind.is_none() {
+                println!("frame {f}: no crossbowman put down behind");
+            }
+            foes.extend(behind);
             self.play.foes = foes;
             println!("frame {f}: foes {:?}", self.play.foes);
         }
