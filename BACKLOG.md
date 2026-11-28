@@ -23,20 +23,9 @@ trailers; hidden GPU runs only, under the GPU lock, never while League of Legend
 Also owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24 (the first try was
 cut off by a restart).
 
-7. **More bosses, and bosses that don't get stuck** (2026-11-27, "add more bosses", "also dont
-   let bosses to get stuck in holes, let them jump out", "add more demi bosses too"). RUNNING in
-   `bosses4` (from e438038f): 4–6 new bosses and 4–6 new demi-bosses.
-   - Boss kill sound (2026-11-27, "when whe kill bosses , dont play that sound", then "lets leave
-     only the boss sound itself"): on a boss or demi-boss kill only its own death sound plays, no
-     fanfare, level-up fanfare, loot or toll on top.
-
 8. **Smoother animation for every NPC and summon** (2026-11-27, "make smoother animations for
    all npcs", "and summmons"). RUNNING in `npcanim` (from e438038f): blend baked frames, cross-fade
    actions, ease turns, interpolate between ticks, smooth ground-following, for every kind.
-
-9. **Summons that stay and fight the right foe** (2026-11-27, "summons sometimes vanish, they
-   should priotize what i attack, and if not, whoattacks me"). RUNNING in `summonai` (from e438038f): find why summons vanish and fix it; target what the
-   player attacks, else who attacks the player, else the nearest foe; never neutrals.
 
 10. **Camps in caves instead of the orbs** (2026-11-27, "remove the orbs in caves, instead of
     them just make camps where a bonfire or fire burns, and there are some bandits or skeletoons
@@ -51,10 +40,6 @@ cut off by a restart).
 
 12. **More tree variety; falling leaves on by default** (2026-11-28, "Add more tree variety, leaf
     falling should enabled by default"). RUNNING in `trees2` from 484fd897+.
-
-13. **A slimmer targeting circle** (2026-11-28, "Change the targeting circle, it covers too much",
-    "make it slimmer maybe", "or just on screen target", then "nvm about on screen"). RUNNING in
-    `aimring`: just a slim ground ring, the same radius.
 
 ## Loose ends (found along the way, not yet asked for)
 
@@ -92,6 +77,19 @@ cut off by a restart).
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- More bosses: the Winterglass Duelist, Hive Matriarch, Gloamdelver and Fenhulk; demi-bosses the
+  Sand-Drinker, Rimeshade, Bog-Tyrant and Barrow-Warden; demi-boss hitboxes grow with their size;
+  everything that walks leaps out of pits and holes; a boss kill plays only its own death cry
+  (804b6a57, 2026-11-28). Left: a road highwayman demi-boss; boss models not at the 2× grid; the
+  Matriarch replaced jungle spider/Ironhide lairs and the Duelist the Grave Knight in snowy
+  castles; ravine demi-bosses by climate change lair ids in old saves.
+- A slim aim ring: a thin soft-red line round the same ground, ticks on rings 2 m and up
+  (1d4b6d67, 2026-11-28).
+- Steadier summons: no longer vanish (draw budget, Raise Dead deleting them, left behind,
+  teleports, gates), go for what the player strikes, then whoever strikes the player, then the
+  nearest foe; never neutrals (1851a5a6, 2026-11-28). A summon on a cliff edge can still walk on
+  air.
 
 - The menu map and no world at launch: Innert opens on the menu in ~1.3–2.2 s (was 11–13 s), the
   menu on the left and a 480 m map of the world to be entered on the right (Continue: where the
