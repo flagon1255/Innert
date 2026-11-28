@@ -6,40 +6,14 @@ the commit it landed in.
 
 ## Queued
 
-**RESUMED 2026-11-28** ("Continue with all items"): all five picked up again by the same agents.
-Was **PAUSED 2026-11-27 late evening** ("save to backlog everything, continue tomorrow"). Items 7–11
-were in progress, each on its own branch in `.claude\worktrees\<name>`. Each agent was told to
-commit its work (unfinished commits start "Unfinished:") and leave a handoff note at
-`<scratchpad>\<name>\handoff.md`, where the scratchpad is
-C:\Users\Andrej\AppData\Local\Temp\claude\c46ed4f726b1f982\23fd8364-88b7-4af6-99ec-df0cd51069f0\scratchpad.
-To continue: read each handoff, pick the branch up in its worktree (merge AVI into it first), finish,
-then merge into AVI one at a time with the full `cargo test --release`.
+Nothing queued. (2026-11-28: items 7–13 are all done, see below.)
 
-Agents' house rules for this repo (from the brief): absolute paths under their own worktree only
-(several wrote into the main checkout by relative paths); never `git stash` (shared across
-worktrees, one agent popped the coordinator's stash); never push; commit as flagon1255 with no
-trailers; hidden GPU runs only, under the GPU lock, never while League of Legends or CS2 runs.
+Still owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24.
 
-Also owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24 (the first try was
-cut off by a restart).
-
-8. **Smoother animation for every NPC and summon** (2026-11-27, "make smoother animations for
-   all npcs", "and summmons"). RUNNING in `npcanim` (from e438038f): blend baked frames, cross-fade
-   actions, ease turns, interpolate between ticks, smooth ground-following, for every kind.
-
-10. **Camps in caves instead of the orbs** (2026-11-27, "remove the orbs in caves, instead of
-    them just make camps where a bonfire or fire burns, and there are some bandits or skeletoons
-    sometimes"). RUNNING in `cavecamps` (from e438038f).
-    - With sounds (2026-11-27, "we could add sounds"): fire crackle, camp murmurs, skeleton rattle,
-      from the existing sound files.
-
-11. **Dropped items easier to find, shown as themselves** (2026-11-27, "also dropped item beams
-    should be easier findable, and their models could be actual models"). RUNNING in
-    `lootdrops` (from 38ed7a93), just started: taller, brighter rarity-coloured beams that
-    survive the draw cap, and the dropped item shown as its real model.
-
-12. **More tree variety; falling leaves on by default** (2026-11-28, "Add more tree variety, leaf
-    falling should enabled by default"). RUNNING in `trees2` from 484fd897+.
+Agents' house rules for this repo: absolute paths under their own worktree only; never `git
+stash` (shared across worktrees); never push; commit as flagon1255 with no trailers; hidden GPU
+runs only, under the GPU lock, never while League of Legends or CS2 runs; poll for the lock rather
+than ending a turn to wait.
 
 ## Loose ends (found along the way, not yet asked for)
 
@@ -77,6 +51,22 @@ cut off by a restart).
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- Cave camps instead of the cave orbs: bandit (40%), risen-dead (30%) and empty camps by a burning
+  fire, one light each, with crackle, gear and rattle sounds; and creatures near the player are
+  now drawn ahead of bosses lying far off in their lairs (they used to fill the draw budget and
+  hide everything near) (1b75ed85, 2026-11-28). Bandits stand rather than sit.
+- Easier-found drops: a beam for every drop, rarity-coloured, 2.4–11 m tall, seen to 90 m, taller
+  and edged by day, slim up close; compass marks; each drop shown as its real model (wings,
+  jewels, bucket); drops never sink (6ad3d33f, 2026-11-28).
+- More trees: 14 new kinds (oak, beech, maple, larch, snag, baobab, Joshua tree, kapok, banyan,
+  mangrove, bald cypress, dreambloom, bloodthorn, rime tree), more variety in the old; felling
+  fixed on slopes and for floating bits; falling leaves seen and on in every preset, with a
+  checkbox (ef74515a, 2026-11-28). Old saves see different kinds where trees stood.
+- Smoother NPCs and summons: summons posed live and eased near the camera, townsfolk and monsters
+  fading between near and far posing, moves carrying on, jointed bosses' weapons swinging over
+  the top (091197a4, 2026-11-28). Fish and plain serpents still baked only; monsters still burst
+  on death.
 
 - More bosses: the Winterglass Duelist, Hive Matriarch, Gloamdelver and Fenhulk; demi-bosses the
   Sand-Drinker, Rimeshade, Bog-Tyrant and Barrow-Warden; demi-boss hitboxes grow with their size;
