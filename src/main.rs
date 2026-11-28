@@ -5735,7 +5735,8 @@ impl App {
     /// `--set summons_part=strike` the player turns to a bandit off to the right and strikes it with
     /// a bolt of their own, and all of them turn on it; with `summons_part=behind` a crossbowman
     /// behind shoots the player in the back, and all of them turn on that, the player turning to
-    /// see. A shot every `--set summons_every=10` frames from frame 280 to 600, and what they're
+    /// see; with `summons_part=none` the same fight without them. A shot every `--set
+    /// summons_every=10` frames from frame 280 to 600, and what they're
     /// after said every 15. Best with `--step 0.016667`.
     fn summons_step(&mut self, f: usize, eye: Vector3<f64>) {
         let settings = settings_from_args();
@@ -5761,21 +5762,24 @@ impl App {
             for k in 0..3 {
                 foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (ahead * (11.0 + k as f64) + right * (k as f64 - 1.0) * 1.6) * vpm));
             }
-            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (right * 10.0 + ahead * 1.0) * vpm));
+            // Further off than the gang, so it's not what they'd go for themselves
+            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (right * 16.0 + ahead * 2.0) * vpm));
             foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Crossbowman, feet - ahead * 16.0 * vpm));
             self.play.foes = foes;
             println!("frame {f}: foes {:?}", self.play.foes);
         }
         let flat_of = |heading: f64| Vector3::new(heading.cos(), heading.sin(), 0.0);
         // The three summonings, one after another
-        let casting = [(4, "archers_crystal"), (84, "phalanx_binding"), (164, "colossus_focus")];
+        // Each used once the weapon's up in hand
+        let casting = [(4, "archers_crystal"), (90, "phalanx_binding"), (176, "colossus_focus")];
         let mut controls = combat::Controls::default();
-        for (from, id) in casting {
+        // `summons_part=none`: the same without any of the dead, to weigh what they cost to draw
+        for (from, id) in casting.into_iter().filter(|_| part != "none") {
             if f == from && !self.game.hold_part(id) {
                 println!("frame {f}: no part {id}");
             }
-            if (from + 1..from + 70).contains(&f) {
-                controls = self.game.power_controls((f - from - 1) as f64 / 60.0, 1.0 / 60.0);
+            if (from + 1..from + 86).contains(&f) {
+                controls = self.game.power_controls((f as f64 - from as f64 - 30.0) / 60.0, 1.0 / 60.0);
             }
         }
         let foe = |k: usize, app: &Self| app.play.foes.get(k).and_then(|&id| app.game.foe_at(id));
