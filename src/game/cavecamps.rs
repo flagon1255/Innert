@@ -213,6 +213,41 @@ mod tests {
         }
     }
 
+    /// The dead risen near the player are drawn, though bosses lie in their lairs further off, a
+    /// Grave Knight, a Slagwright and the Grotto Squid in its pool as by the dead's camp in the cave
+    /// the risen weren't seen at: their many pieces don't take all the room there is to draw in
+    #[test]
+    fn the_risen_are_drawn_though_bosses_lie_further_off() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let vpm = 4.0;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let fire = Vector3::new(32.0, 32.0, 16.0);
+        let mut game = Game::new(&world, &dry, 5, fire);
+        game.animals.clear();
+        let off = |m: f64, a: f64| fire + Vector3::new(a.cos(), a.sin(), 0.0) * m * vpm;
+        for (look, at) in [(Look::GraveKnight, off(98.0, 0.3)), (Look::Slagwright, off(26.0, 1.9)), (Look::GrottoSquid, off(30.0, 3.4))] {
+            game.animals.push(Animal::boss(look, at, [at.x as i64, at.y as i64, 1], 9));
+        }
+        let key = [123, -456, 78];
+        game.set_dens(&world, &dry, vec![Den { position: fire, key, kind: DenKind::Risen, band: None }]);
+        let feet = fire + Vector3::new(4.0 * vpm, 0.0, 0.0);
+        game.wake_the_dead(&world, &dry, Some(feet), vpm);
+        let view = View { eye: feet + Vector3::new(0.0, 0.0, 1.6 * vpm), rotation: UnitQuaternion::identity(), tan: [1.2445, 0.7002], vpm, speed: 0.0, stride: 0.0 };
+        let drawn = game.instances(&world, &view);
+        let risen: Vec<&Animal> = game.animals.iter().filter(|a| a.boss.as_ref().is_some_and(|b| b.key == key)).collect();
+        assert!(risen.len() >= 2);
+        for a in risen {
+            let model = a.instance(world.voxels_per_meter).model();
+            assert!(drawn.iter().any(|i| i.model() == model), "a risen {:?} {:.1} m off isn't drawn, of {} drawn", a.look, (a.position - view.eye).norm() / vpm, drawn.len());
+        }
+        // The bosses still drawn too, room allowing
+        assert!(drawn.len() <= MOST_INSTANCES);
+    }
+
     /// The dead of a camp lie under its floor, none of them about, till the player comes near:
     /// then they rise round its fire, once, and come for the player; and once they're all dead
     /// again their camp's clear for good

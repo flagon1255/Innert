@@ -52,6 +52,9 @@ pub const REACH: f64 = 4.0;
 const HUNGER_SECONDS: f64 = 600.0;
 /// Animals further than this aren't drawn, and food further than that, in meters
 const ANIMAL_RANGE: f64 = 90.0;
+/// Bosses nearer than this, in meters, or after the player, are drawn before anything else; those
+/// further off, lying in their lairs, by how near they are like the rest, see Game::instances()
+const BOSS_FIRST: f64 = 20.0;
 const FOOD_RANGE: f64 = 60.0;
 const PROP_RANGE: f64 = 30.0;
 /// Fish aren't drawn further off than this
@@ -6574,28 +6577,33 @@ impl Game {
         let mut dragons: Vec<(f64, usize)> = Vec::new();
         for (k, animal) in self.animals.iter().enumerate() {
             let d = (animal.position - camera).norm();
+            // Bosses come first, but only one near enough to fight or after the player: those lying
+            // in their lairs further off come by how near they are like the rest, or their many
+            // pieces would leave no room for what's right in front of the player
+            let first = animal.look.is_boss() && (d < BOSS_FIRST * vpm || animal.boss.as_ref().is_some_and(|b| b.sighted()));
+            let rank = |d: f64, k: f64| if first { d * k } else { d };
             // A great serpent's head, jaw and every piece of its long body, see serpents::Coils,
             // before any but other bosses, the nearest of them first, so however many are about
             // the one being fought is drawn whole
             if let Some(coils) = animal.coils() {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
-                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+                creatures.extend(pieces.drain(..).map(|i| (rank((i.sphere_center() - camera).norm(), 0.05), i)));
             } else if let Some(body) = animal.kraken() {
                 // A kraken's mantle, head and every piece of its arms, the same way, see
                 // bosses::kraken::Body
                 pieces.clear();
                 body.instances(vpm, animal.status.tint(), &mut pieces);
-                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+                creatures.extend(pieces.drain(..).map(|i| (rank((i.sphere_center() - camera).norm(), 0.05), i)));
             } else if animal.dragon.is_some() || animal.winged.is_some() || crate::rig::rigged(animal.look) {
                 // A jointed boss, avian or gargoyle too, see rig::instances() and avians::instances()
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                    dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
+                    dragons.push((rank(d, 0.0), k));
                 }
             } else if crate::animals::sealife::is_fish(animal.look) && d > FISH_RANGE * vpm {
                 // A fish is small, and the water's murky: only drawn near
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+                creatures.push((rank(d, 0.0), animal.instance(world.voxels_per_meter)));
                 // Near enough, posed live from its pieces, see below
                 if d < crate::baked::live_range() * vpm && crate::baked::posable(animal.look) {
                     live.push((creatures.len() - 1, k));
