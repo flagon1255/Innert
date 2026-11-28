@@ -18,6 +18,16 @@ stash` (shared across worktrees); never push; commit as flagon1255 with no trail
 runs only, under the GPU lock, never while League of Legends or CS2 runs; poll for the lock rather
 than ending a turn to wait.
 
+16. **Wings that take off and climb** (2026-11-29, "make some wings flyable", "i mean to get up in
+    ai"). RUNNING in `wingflight`: some of the grander wings get a Flight perk; beat them to lift
+    off and climb, a meter that drains while climbing, glide-only wings unchanged.
+
+17. **Orbs' beam far too weak** (2026-11-29, "the beam guns are very very weak"): about 11 damage a
+    second at base against 21–34 for the other magic weapons; BEAM_POWER 0.6 → 1.8, about 32.
+
+18. **A fresh installer** (2026-11-29, "We still have an installer?", "Update it"): version
+    0.2.0, the readme's start-up and controls brought up to date.
+
 ## Loose ends (found along the way, not yet asked for)
 
 - Distant explosions may not be drawn: the game draws at most 140 objects a frame, nearest first,

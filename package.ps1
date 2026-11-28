@@ -37,8 +37,13 @@ INNERT
 ======
 
 To play: double-click innert.exe, or the Innert shortcut if you installed it with InnertSetup.exe.
-The very first start takes about 15-20 seconds while the shaders are prepared; after that it is
-about 5 seconds. The game picks a quality preset to suit your graphics card the first time.
+The very first start takes about 15-20 seconds while the shaders are prepared; after that the
+menu is up in a couple of seconds, and the world is built when you start or continue a game. The
+game picks a quality preset to suit your graphics card the first time.
+
+Two ways to play: Free Roam, an endless wilderness on any seed, and Realms, a journey through
+different worlds. Pick a class when you make your character: Archer, Fighter, Priest, Mage, Rogue
+or Necromancer.
 
 You need
   - Windows 10 or 11, 64-bit
@@ -52,14 +57,19 @@ You need
   - Windows may warn that the program is from an unknown publisher: click "More info", then
     "Run anyway".
 
-Controls
+Controls (every key can be changed: Esc, then Controls)
   Mouse                  look around
-  W A S D                walk           Shift   run          Space   jump
-  Left click             attack, shoot a drawn bow, cast a spell
-  Right click            heavy attack, draw a bow, eat, pour water
+  W A S D                walk           Shift   run          Space   jump, glide with wings
+  Left click             attack, shoot, cast a spell
+  Right click            heavy attack, aim or draw a bow, eat; a rare weapon's power
+  R                      a rare weapon's special attack
+  Q                      reload a crossbow or gun        T   change ammo
   1-9 or the mouse wheel pick what's in hand
-  E                      pick up, open chests, pet
-  I or Tab               inventory
+  E                      pick up, open chests, trade, pet
+  I or Tab               inventory and crafting
+  G                      hold at a tree, rock or clay to gather it
+  B                      build: 1-9 and 0 pick a piece, click to place, right click to take down
+  M                      map            P   skills
   F                      walk or fly
   F1                     settings: pick a lower Quality there if it runs slowly
   F12                    screenshot

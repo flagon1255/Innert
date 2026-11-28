@@ -1,6 +1,6 @@
 [package]
 name = "innert"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.86.0"
 # The game and its model editor are each a little program over the same code, whose root stays
