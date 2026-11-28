@@ -49,6 +49,9 @@ cut off by a restart).
     `lootdrops` (from 38ed7a93), just started: taller, brighter rarity-coloured beams that
     survive the draw cap, and the dropped item shown as its real model.
 
+12. **More tree variety; falling leaves on by default** (2026-11-28, "Add more tree variety, leaf
+    falling should enabled by default"). RUNNING in `trees2` from 484fd897+.
+
 ## Loose ends (found along the way, not yet asked for)
 
 - Distant explosions may not be drawn: the game draws at most 140 objects a frame, nearest first,
