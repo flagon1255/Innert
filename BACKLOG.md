@@ -6,7 +6,11 @@ the commit it landed in.
 
 ## Queued
 
-Nothing queued. (2026-11-28: items 7–13 are all done, see below.)
+14. **A gentler sound in place of the fanfare** (2026-11-29, "Remove the phanphare sound, change it
+    to somehing less daunting"). The coordinator, on AVI directly.
+
+15. **Hand cannons held closer, without their stick** (2026-11-29, "Also, make cannons closser to
+    me, remove their stick"). RUNNING in `cannonhold`.
 
 Still owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24.
 
