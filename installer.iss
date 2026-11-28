@@ -39,7 +39,8 @@ InfoAfterFile=dist\Innert\README.txt
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "dist\Innert\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The script installer is for the zip, not wanted beside a copy this one put there
+Source: "dist\Innert\*"; DestDir: "{app}"; Excludes: "install.ps1,Install Innert.cmd"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Innert"; Filename: "{app}\innert.exe"; WorkingDir: "{app}"

@@ -10,6 +10,10 @@ the commit it landed in.
     ai"). RUNNING in `wingflight`: some of the grander wings get a Flight perk; beat them to lift
     off and climb, a meter that drains while climbing, glide-only wings unchanged.
 
+19. **Menu map and loading land bigger, +50%** (2026-11-29, "make side menu map , and loading map
+    bigger +50%", then "Both"): 50% more land (menu map 48 → 72 columns, 720 m; loading land
+    34 → 51) and drawn 50% bigger on screen. RUNNING in `bigmap`.
+
 ## Loose ends (found along the way, not yet asked for)
 
 - Distant explosions may not be drawn: the game draws at most 140 objects a frame, nearest first,
@@ -46,6 +50,13 @@ the commit it landed in.
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- A PowerShell installer: install.ps1 (and "Install Innert.cmd" to double-click), shipped in the
+  zip by package.ps1. It checks 64-bit Windows 10/11, a real graphics card, Vulkan (offers the
+  maker's driver page), the Visual C++ runtime (bundled, else offers Microsoft's), disk space and
+  memory; installs to %LOCALAPPDATA%\Programs\Innert with a Start menu shortcut (desktop optional)
+  and an installed-apps entry; -CheckOnly, -Uninstall, -Desktop, -Quiet, -InstallDir, -Portable.
+  Saves are never touched (2026-11-29). The Inno Setup exe leaves the script out.
 
 - Hand cannons without their stick, a short bed and grip, held at the hip with the muzzle 0.78 m
   out (was 1.19), firing from an open muzzle, bell barrels hollow; war fans resting low at the

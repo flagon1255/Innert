@@ -18,6 +18,11 @@ Copy-Item 'target\release\innert.exe' $out
 Copy-Item 'assets\sounds\CREDITS.txt' (Join-Path $out 'Sound credits.txt')
 # And the fonts the titles and headings are in, which are built into the game, with their licence
 Copy-Item 'assets\fonts\CREDITS.txt' (Join-Path $out 'Font credits.txt')
+# The installer as a script, for the zip: it checks the computer can run the game, then installs it.
+# Double-clicking the .cmd runs it, so nobody has to type anything.
+Copy-Item 'install.ps1' $out
+"@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0install.ps1`" %*`r`npause`r`n" |
+    Set-Content -Encoding ascii -NoNewline (Join-Path $out 'Install Innert.cmd')
 
 # Microsoft allows these to be shipped next to a program, so it runs without installing them
 $studios = @("${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio") | Where-Object { Test-Path $_ }
@@ -36,7 +41,10 @@ if ($runtime) {
 INNERT
 ======
 
-To play: double-click innert.exe, or the Innert shortcut if you installed it with InnertSetup.exe.
+To play: double-click innert.exe, or the Innert shortcut if you installed it with InnertSetup.exe
+or with "Install Innert.cmd" from the zip. That one first checks the computer can run the game
+(Windows, graphics card, Vulkan, the Visual C++ runtime, room on the disk), then installs it with a
+Start menu shortcut, and it can be removed again from Windows' installed apps.
 The very first start takes about 15-20 seconds while the shaders are prepared; after that the
 menu is up in a couple of seconds, and the world is built when you start or continue a game. The
 game picks a quality preset to suit your graphics card the first time.
