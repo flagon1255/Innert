@@ -521,11 +521,6 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: flap_3.ogg
 
-"war horn.wav by adharca" by adharca
-  https://freesound.org/people/adharca/sounds/539956/
-  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: fanfare_2.ogg
-
 "Single Bird Chirp 2 by alegemaate" by alegemaate
   https://freesound.org/people/alegemaate/sounds/233254/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -745,11 +740,6 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/katzlbt/sounds/361117/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: croak_3.ogg
-
-"Battle_horn_1.wav by kirmm" by kirmm
-  https://freesound.org/people/kirmm/sounds/392180/
-  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: fanfare_1.ogg
 
 "branch breaking forest twig snap crunch.wav by kyles" by kyles
   https://freesound.org/people/kyles/sounds/452570/

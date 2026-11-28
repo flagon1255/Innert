@@ -1,7 +1,8 @@
 //! Sound: swings, bowstrings, spells and hits, beasts growling and bones rattling, footsteps on
-//! whatever's underfoot, birds, and the wind and water all around. Every sound is a recording,
-//! kept compressed in assets\sounds and built into the program; see CREDITS.txt there for where
-//! each came from. They're decoded on a thread of their own as soon as the game starts, so they're
+//! whatever's underfoot, birds, and the wind and water all around. Every sound but one is a
+//! recording, kept compressed in assets\sounds and built into the program; see CREDITS.txt there
+//! for where each came from. The one that isn't, the soft run of plucked strings when something
+//! good comes, is made here, see plucked(). They're decoded on a thread of their own as soon as the game starts, so they're
 //! ready long before the menu is. Sounds out in the world are quieter and duller further away and
 //! come from their side. Everything is mixed together and goes out through a limiter, so however
 //! much happens at once it never clips.
@@ -348,7 +349,48 @@ fn decode_all(threads: usize) -> Library {
             library.entry(sound).or_default().push(clip);
         }
     }
+    library.insert(Sound::Fanfare, (0..PLUCKED.len()).map(|k| finish(Sound::Fanfare, plucked(k), PLUCKED_GAIN)).collect());
     library
+}
+
+/// The notes of the gentle run played when something good comes, in hertz, one run each: a harp
+/// plucked up through a major chord, rather than a war horn blown
+const PLUCKED: [&[f32]; 2] = [&[392.0, 523.25, 659.26, 783.99], &[523.25, 659.26, 783.99, 1046.5]];
+
+/// How loud the plucked runs are, soft beside the sounds of a fight
+const PLUCKED_GAIN: f32 = 0.55;
+
+/// Seconds between one string plucked and the next, and how long the last rings on
+const PLUCK_STEP: f32 = 0.085;
+const PLUCK_RING: f32 = 1.5;
+
+/// Run `k` of PLUCKED, -1 to 1: each string a few soft harmonics dying away, the higher ones
+/// sooner, so it starts bright and mellows, plucked gently rather than struck
+fn plucked(k: usize) -> Vec<f32> {
+    let notes = PLUCKED[k];
+    let length = ((notes.len() - 1) as f32 * PLUCK_STEP + PLUCK_RING) * RATE as f32;
+    let mut samples = vec![0.0f32; length as usize];
+    let harmonics = [1.0, 0.42, 0.2, 0.1, 0.05];
+    for (n, &pitch) in notes.iter().enumerate() {
+        let start = (n as f32 * PLUCK_STEP * RATE as f32) as usize;
+        // The last string a little louder and longer, the run coming to rest on it
+        let last = n == notes.len() - 1;
+        let (loud, ring) = if last { (1.0, 0.9) } else { (0.8, 0.55) };
+        for (t, s) in samples[start..].iter_mut().enumerate() {
+            let time = t as f32 / RATE as f32;
+            // A few milliseconds to sound, so the pluck is soft
+            let attack = (time / 0.006).min(1.0);
+            let mut v = 0.0;
+            for (h, &a) in harmonics.iter().enumerate() {
+                let h = h as f32 + 1.0;
+                v += a * (2.0 * PI * pitch * h * time).sin() * (-time * h.powf(0.7) / ring).exp();
+            }
+            *s += loud * attack * v;
+        }
+    }
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    samples.iter_mut().for_each(|s| *s /= peak.max(1e-6));
+    samples
 }
 
 /// Lets the thread it's called on give way to others that are busy
@@ -925,8 +967,6 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Hurt, include_bytes!("../assets/sounds/hurt_2.ogg"), 1.41),
     (Sound::Hurt, include_bytes!("../assets/sounds/hurt_3.ogg"), 1.43),
     (Sound::Hurt, include_bytes!("../assets/sounds/hurt_4.ogg"), 1.59),
-    (Sound::Fanfare, include_bytes!("../assets/sounds/fanfare_1.ogg"), 0.46),
-    (Sound::Fanfare, include_bytes!("../assets/sounds/fanfare_2.ogg"), 0.41),
     (Sound::Step(Ground::Grass), include_bytes!("../assets/sounds/step_grass_1.ogg"), 1.69),
     (Sound::Step(Ground::Grass), include_bytes!("../assets/sounds/step_grass_2.ogg"), 1.16),
     (Sound::Step(Ground::Grass), include_bytes!("../assets/sounds/step_grass_3.ogg"), 1.50),
@@ -1011,7 +1051,7 @@ mod tests {
         let library = decode_all(decoders());
         let count: usize = library.values().map(|v| v.len()).sum();
         println!("decoded {count} sounds on {} threads in {:?}", decoders(), start.elapsed());
-        assert_eq!(count, RECORDINGS.len(), "some sounds didn't decode");
+        assert_eq!(count, RECORDINGS.len() + PLUCKED.len(), "some sounds didn't decode");
         for sound in all_sounds() {
             let versions = library.get(&sound).unwrap_or_else(|| panic!("{sound:?} has no recording"));
             for clip in versions {
