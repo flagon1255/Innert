@@ -1292,9 +1292,14 @@ mod tests {
             fight.combat.launch(&profile, Some(Missile::arrow(0, true)), Form::Bolt, from, Vector3::y() * 30.0 * VPM, 1.0, ARROW_GRAVITY);
         }
         let mut drawn = fight.combat.flying_instances(&view);
+        // Their bodies are drawn among the animals, ranked as if a hundredth as far off, see
+        // Game::instances() and combat\raised.rs: one each. What's drawn of them among what's
+        // flying about is the glow in each one's chest.
+        let raised = fight.raised().len();
+        assert_eq!(fight.combat.raised_bodies(&view).iter().filter(|b| b.distance < 40.0 * VPM).count(), raised, "a body each");
         let mut bodies = Vec::new();
         for (f, r) in fight.raised() {
-            fight.combat.risen_instances(f, &r, &view, &mut bodies);
+            fight.combat.risen_glow(f, &r, &view, &mut bodies);
         }
         let near = |a: &AnimalInstance, b: &AnimalInstance| (a.sphere().0 - b.sphere().0).norm() < 1e-3;
         // As many as there's room for in a fight, see game::MAX_INSTANCES, with seventy creatures

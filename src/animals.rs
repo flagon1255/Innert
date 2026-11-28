@@ -5606,12 +5606,7 @@ mod tests {
     }
 
     /// How far the furthest moved of the pieces drawn both times goes from `a` to `b`, in meters,
-    /// a turn counted as far as the end of a limb half a meter long goes
-    fn moved(a: &[(u32, Vector3<f64>, UnitQuaternion<f64>)], b: &[(u32, Vector3<f64>, UnitQuaternion<f64>)]) -> f64 {
-        moved_most(a, b).0
-    }
-
-    /// The same, and which model it was
+    /// a turn counted as far as the end of a limb half a meter long goes, and which model it was
     fn moved_most(a: &[(u32, Vector3<f64>, UnitQuaternion<f64>)], b: &[(u32, Vector3<f64>, UnitQuaternion<f64>)]) -> (f64, u32) {
         // Two alike pieces, a left and a right, have the same model: each goes with the nearer
         let mut most = (0.0f64, 0);
@@ -5627,7 +5622,7 @@ mod tests {
     /// `look` going about near the player standing in the middle of open ground, at 60 frames a
     /// second for `seconds`: knocked back and struck every so often, and for a villager, set to
     /// stroll and turned round now and then. Each frame, how far the furthest moved of its pieces
-    /// went from the frame before in its own frame, in meters, see moved(); how far its feet went
+    /// went from the frame before in its own frame, in meters, see moved_most(); how far its feet went
     /// and how far round it's drawn turned, a radian counted as a meter; and what it was doing.
     fn movement(look: Look, seconds: f64) -> (Vec<f64>, Vec<f64>, Vec<String>) {
         let world = open_ground();
