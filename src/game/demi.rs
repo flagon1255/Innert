@@ -162,4 +162,53 @@ mod tests {
         again.restore(&carried, &done, game.vitals());
         assert_eq!(again.demi_marks(), other.demi_marks());
     }
+
+    /// Killing a boss or a demi-boss, only its own death is heard: no fanfare, not even for a level
+    /// gained by it, no chest and no loot landing, though the level and the loot still come and
+    /// are said. A demi-boss's own cry as it goes is left. An ordinary kill's level keeps its fanfare.
+    #[test]
+    fn a_boss_falls_to_its_own_sound_alone() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let ground = Vector3::new(32.0, 32.0, 16.0);
+        for kind in ["boss", "demi", "monster"] {
+            let mut game = Game::new(&world, &dry, 5, ground);
+            game.animals.clear();
+            let mut foe = match kind {
+                "boss" => Animal::boss(Look::Golem, ground, [11, 12, 13], 3),
+                _ => animals::spawn_monster(&world, &dry, Look::GraveBrute, ground, 1.5, 4).unwrap(),
+            };
+            if kind == "demi" {
+                foe.demi = Some(0);
+            }
+            foe.health = 0.0;
+            if let Some(boss) = &mut foe.boss {
+                boss.dying = Some(100.0);
+            }
+            game.animals.push(foe);
+            // Just short of the next level, so the kill gains one
+            game.experience = levels::needed(game.level) - 0.5;
+            let (level, pickups) = (game.level, game.pickups.len());
+            game.cues.clear();
+            game.combat.cues.clear();
+            game.reap(&world);
+            assert!(game.animals.is_empty() && game.level > level, "{kind}");
+            let fanfare = game.cues.iter().any(|c| c.sound == Sound::Fanfare);
+            match kind {
+                "monster" => assert!(fanfare, "an ordinary kill's level is heard"),
+                _ => {
+                    assert!(game.cues.is_empty(), "{kind}: {:?}", game.cues.iter().map(|c| c.sound).collect::<Vec<_>>());
+                    assert!(game.pickups.len() > pickups && game.pickups[pickups..].iter().all(|p| p.quiet), "{kind}'s loot");
+                    assert!(game.messages.iter().any(|(m, _)| m.contains("level")), "{kind}'s level is said");
+                }
+            }
+            if kind == "demi" {
+                assert!(!game.combat.cues.is_empty(), "the demi-boss's own cry");
+            }
+        }
+    }
 }
