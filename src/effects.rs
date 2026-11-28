@@ -1341,9 +1341,9 @@ fn aim_ring_radius(k: usize) -> f64 {
 }
 
 /// How big aim ring `k`'s voxels are as it's made, in meters: the world's own, a sixteenth of a
-/// meter, or finer for the smallest so they're still round
+/// meter, or finer for those under three meters round, so they're still round and their line thin
 fn aim_ring_voxel(k: usize) -> f64 {
-    (1.0 / 16.0f64).min(aim_ring_radius(k) / 24.0)
+    (1.0 / 16.0f64).min(aim_ring_radius(k) / 48.0)
 }
 
 /// Which model to draw a slim aim ring `radius` meters round with, and its voxels a meter as
