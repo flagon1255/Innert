@@ -1602,7 +1602,7 @@ pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
 
 /// Seconds something posed live takes to go from one pose to another it has no frames between,
 /// eased, rather than snapping, see tween_path()
-const CROSSFADE: f64 = 0.16;
+pub const CROSSFADE: f64 = 0.16;
 
 /// What `look` goes through `since` seconds after it went from pose `a` to pose `b`, 0 being
 /// standing or walking, to pose it live, see src\baked.rs: the frames from the one to the other,
@@ -4077,7 +4077,7 @@ fn eased_turn(turn: f64, most: f64, dt: f64) -> f64 {
     turn.clamp(-rate * dt, rate * dt)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Mood {
     Idle,
     Walk,
@@ -4739,6 +4739,12 @@ impl Animal {
         if self.swim.is_some() {
             return;
         }
+        // A wraith's rags never stop stirring, slowly as it hangs there, on through its drift as it
+        // goes, the one into the other rather than jumping from one to the other
+        if self.look.build() == Some(Build::Wraith) {
+            self.phase = (self.phase + dt * (0.45f64).max(self.speed / self.look.stride())).fract();
+            return;
+        }
         // A serpent's S-curve goes on just as far as it goes, so its body slides along the curve
         // and never over the ground; stopping, it lies where it stopped, still in the curve
         if self.look.is_serpent() {
@@ -4812,7 +4818,8 @@ impl Animal {
             None if self.look.walks() => (self.phase, self.stride),
             None => (0.0, 0.0),
         };
-        crate::baked::Doing { phase, stride, pose: self.boss.as_ref().and_then(Boss::pose_path), gaze: self.gaze, talk: self.talk, age: self.age, seed: self.id }
+        let boss = self.boss.as_ref();
+        crate::baked::Doing { phase, stride, pose: boss.and_then(Boss::pose_path), from: boss.and_then(Boss::pose_from), gaze: self.gaze, talk: self.talk, age: self.age, seed: self.id }
     }
 
     /// Whether it can be posed live from its pieces, see baked::Rig::live(): a look baked from them,
@@ -4960,13 +4967,15 @@ impl Animal {
             }
         }
 
-        // Thrown back by a blow, sliding to a stop
+        // Thrown back by a blow, sliding to a stop: over the ground, its feet following it, or if
+        // it's up off the ground, leaping or flying, where it is, rather than snapping down to it
         let push = self.status.push * dt;
         if push.norm() > 1e-3 {
             let (x, y) = (self.position.x + push.x, self.position.y + push.y);
             let reach = look.climb() * vpm * 2.0;
             if let Some(z) = ground_wading(world, water, x, y, self.position.z, reach, reach * 2.0, look.wade()) {
-                self.position = Vector3::new(x, y, z);
+                let aloft = self.position.z > z + 0.3 * vpm;
+                self.position = Vector3::new(x, y, if aloft { self.position.z } else { self.position.z + (z - self.position.z) * (1.0 - (-20.0 * dt).exp()) });
             } else {
                 self.status.push = Vector3::zeros();
             }
@@ -5147,7 +5156,8 @@ impl Animal {
     fn beating(&self) -> Option<f64> {
         match self.look.build() {
             Some(Build::Bat) => Some((self.age * 3.4 + self.id as f64 * 0.37).fract()),
-            Some(Build::Wraith) if self.speed <= 0.15 => Some((self.age * 0.45 + self.id as f64 * 0.37).fract()),
+            // A wraith's rags stir on from where they are as it slows, see step()
+            Some(Build::Wraith) => Some(self.phase),
             _ => None,
         }
     }
@@ -5584,10 +5594,13 @@ mod tests {
         } else if !a.rig_instances(vpm, &mut out) {
             a.live_instances(vpm, &mut out);
         }
+        // In its own frame, from its feet as it faces, so only how it's posed is seen, not how it
+        // goes about
+        let back = facing(a.drawn_heading).inverse();
         out.iter()
             .map(|i| {
                 let (at, turn, _) = i.placed();
-                (i.model(), at / vpm as f64, turn)
+                (i.model(), back * (at - a.position) / vpm as f64, back * turn)
             })
             .collect()
     }
@@ -5595,10 +5608,17 @@ mod tests {
     /// How far the furthest moved of the pieces drawn both times goes from `a` to `b`, in meters,
     /// a turn counted as far as the end of a limb half a meter long goes
     fn moved(a: &[(u32, Vector3<f64>, UnitQuaternion<f64>)], b: &[(u32, Vector3<f64>, UnitQuaternion<f64>)]) -> f64 {
-        let mut most = 0.0f64;
+        moved_most(a, b).0
+    }
+
+    /// The same, and which model it was
+    fn moved_most(a: &[(u32, Vector3<f64>, UnitQuaternion<f64>)], b: &[(u32, Vector3<f64>, UnitQuaternion<f64>)]) -> (f64, u32) {
+        // Two alike pieces, a left and a right, have the same model: each goes with the nearer
+        let mut most = (0.0f64, 0);
         for (m, at, turn) in a {
-            if let Some((_, to, then)) = b.iter().find(|(n, _, _)| n == m) {
-                most = most.max((to - at).norm() + 0.5 * turn.angle_to(then));
+            let went = b.iter().filter(|(n, _, _)| n == m).map(|(_, to, then)| (to - at).norm() + 0.5 * turn.angle_to(then)).fold(f64::INFINITY, f64::min);
+            if went.is_finite() && went > most.0 {
+                most = (went, *m);
             }
         }
         most
@@ -5607,8 +5627,9 @@ mod tests {
     /// `look` going about near the player standing in the middle of open ground, at 60 frames a
     /// second for `seconds`: knocked back and struck every so often, and for a villager, set to
     /// stroll and turned round now and then. Each frame, how far the furthest moved of its pieces
-    /// went from the frame before, in meters, see moved().
-    fn movement(look: Look, seconds: f64) -> Vec<f64> {
+    /// went from the frame before in its own frame, in meters, see moved(); how far its feet went
+    /// and how far round it's drawn turned, a radian counted as a meter; and what it was doing.
+    fn movement(look: Look, seconds: f64) -> (Vec<f64>, Vec<f64>, Vec<String>) {
         let world = open_ground();
         let vpm = 8.0;
         let water = |_: f64, _: f64| f64::NEG_INFINITY;
@@ -5622,7 +5643,8 @@ mod tests {
         a.live = 1.0;
         let dt = 1.0 / 60.0;
         let mut last = drawn_pieces(&a, 8);
-        let mut out = Vec::new();
+        let mut root = (a.position, a.drawn_heading);
+        let (mut out, mut went, mut doing) = (Vec::new(), Vec::new(), Vec::new());
         for frame in 1..=(seconds / dt) as usize {
             if frame % 150 == 75 {
                 let away = (a.position - player).try_normalize(1e-6).unwrap_or_else(Vector3::x);
@@ -5637,40 +5659,58 @@ mod tests {
             }
             a.update(&world, &water, Some(player), dt);
             let now = drawn_pieces(&a, 8);
-            out.push(moved(&last, &now));
+            let (most, model) = moved_most(&last, &now);
+            out.push(most);
             last = now;
+            let piece = (model as usize).saturating_sub(if crate::rig::rigged(look) { RIG_MODELS_AT } else { 0 }) % crate::rig::PIECES;
+            let turned = ((a.drawn_heading - root.1 + PI).rem_euclid(TAU) - PI).abs();
+            went.push((a.position - root.0).norm() / vpm + turned);
+            root = (a.position, a.drawn_heading);
+            let what = a.boss.as_ref().map_or_else(|| format!("{:?} {:.2}", a.mood, a.speed), |b| b.describe());
+            doing.push(format!("{what}, piece {piece}"));
         }
-        out
+        (out, went, doing)
     }
 
-    /// The worst pop in `moved`, each frame's movement as movement() has it: how much further than
-    /// in either the frame before or after it moved in one frame, in meters, and which frame
+    /// The worst pop in `moved`, each frame's movement as movement() has it: a frame it moved more
+    /// than three times as far as in either the frame before or after, as it would jumping, rather
+    /// than going quickly over a few, as a blow does. How much further it moved then than either
+    /// side, in meters, and which frame.
     fn worst_pop(moved: &[f64]) -> (f64, usize) {
         let mut worst = (0.0, 0);
         for i in 1..moved.len().saturating_sub(1) {
-            let pop = moved[i] - moved[i - 1].max(moved[i + 1]);
-            if pop > worst.0 {
+            let side = moved[i - 1].max(moved[i + 1]);
+            let pop = moved[i] - side;
+            if moved[i] > 3.0 * side && pop > worst.0 {
                 worst = (pop, i);
             }
         }
         worst
     }
 
-    /// Survey: how far each kind's pieces jump in a frame beyond what they move either side of it,
-    /// going about and fighting. `cargo test --release pops_survey -- --ignored --nocapture`
+    /// Townsfolk, animals, monsters, jointed bosses, avians and a dragon going about and fighting,
+    /// knocked back and struck now and then: posed as they're drawn near the camera, none of their
+    /// pieces jumps in a frame, however quick their blows, and they never jump from place to place
+    /// but as a wraith blinks and a burrower bursts up out of the sand.
+    /// `cargo test --release nothing_pops -- --nocapture` says how near each comes.
     #[test]
-    #[ignore]
-    fn pops_survey() {
+    fn nothing_pops_going_about_and_fighting() {
         let looks = [
             Look::Villager, Look::Townswoman, Look::Merchant, Look::Dog, Look::Bear, Look::Wolf, Look::Skeleton, Look::ArmoredSkeleton, Look::Zombie, Look::Bandit, Look::BanditBrute, Look::Crossbowman,
             Look::Shieldbearer, Look::Spiderling, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::Bloater, Look::Ghoul, Look::GraveBrute, Look::BoneArcher,
             Look::Ogre, Look::GraveKnight, Look::Golem, Look::Spider, Look::Direwolf, Look::Necromancer, Look::Warlord, Look::Treant, Look::Ironhide, Look::Harpy, Look::Skyhunter, Look::Gargoyle, Look::Ashwing,
         ];
         for look in looks {
-            let moved = movement(look, 8.0);
+            let (moved, went, doing) = movement(look, 8.0);
             let (pop, at) = worst_pop(&moved);
+            let (lurch, at2) = worst_pop(&went);
             let most = moved.iter().copied().fold(0.0, f64::max);
-            println!("{look:?}: worst pop {pop:.3} m at frame {at}, most a frame {most:.3} m");
+            let around = |i: usize| doing[i.saturating_sub(1)..(i + 2).min(doing.len())].join(" | ");
+            println!("{look:?}: pose pop {pop:.3} m at {at} [{}], most {most:.3}; root pop {lurch:.3} at {at2} [{}]", around(at), around(at2));
+            assert!(pop < 0.1, "{look:?}'s pieces jump {pop:.3} m at frame {at}: {}", around(at));
+            if !matches!(look, Look::RimeWraith | Look::DuneBurrower) {
+                assert!(lurch < 0.1, "{look:?} jumps {lurch:.3} m at frame {at2}: {}", around(at2));
+            }
         }
     }
 

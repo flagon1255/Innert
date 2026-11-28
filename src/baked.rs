@@ -1497,6 +1497,9 @@ pub struct Doing {
     /// The poses it's going between and how far along them it is, see animals::tween_path(), 0
     /// being what its feet are doing; or the one pose it's in
     pub pose: Option<(Vec<usize>, f64)>,
+    /// Where it had got to going between poses when that was cut short for `pose`, the same way,
+    /// and how far it's faded from that into `pose` since, 0 to 1
+    pub from: Option<(Vec<usize>, f64, f64)>,
     /// Which way its head's turned from how its body faces, radians round to its left and down,
     /// as townsfolk and merchants look at whoever's near
     pub gaze: [f64; 2],
@@ -1637,20 +1640,34 @@ impl Rig {
                 base = blend(&self.bones, stand, &walk, doing.stride.min(1.0));
             }
         }
-        let mut out = match &doing.pose {
-            Some((path, along)) if !path.is_empty() => {
-                let at = |f: usize| if f == 0 { base.as_slice() } else { frame(f).unwrap_or(base.as_slice()) };
-                if path.len() == 1 {
-                    at(path[0]).to_vec()
-                } else {
-                    let n = path.len() - 1;
-                    let x = along.clamp(0.0, 1.0) * n as f64;
-                    let k = (x.floor() as usize).min(n - 1);
-                    blend(&self.bones, at(path[k]), at(path[k + 1]), x - k as f64)
-                }
+        let at = |f: usize| if f == 0 { base.as_slice() } else { frame(f).unwrap_or(base.as_slice()) };
+        let along_path = |path: &[usize], along: f64| -> Vec<Pose> {
+            if path.len() == 1 {
+                at(path[0]).to_vec()
+            } else {
+                let n = path.len() - 1;
+                let x = along.clamp(0.0, 1.0) * n as f64;
+                let k = (x.floor() as usize).min(n - 1);
+                blend(&self.bones, at(path[k]), at(path[k + 1]), x - k as f64)
             }
-            _ => base,
         };
+        // Cut short partway from one pose to the next, it goes on from what it had got to rather
+        // than snapping to where what it's doing now starts: the first step of that from there,
+        // or a fade into one pose held
+        let start = doing.from.as_ref().filter(|(p, _, _)| !p.is_empty()).map(|(p, along, _)| along_path(p, *along));
+        let mut out = match (&doing.pose, &start) {
+            (Some((path, along)), Some(start)) if path.len() > 1 && *along * ((path.len() - 1) as f64) < 1.0 => {
+                blend(&self.bones, start, at(path[1]), along.max(0.0) * (path.len() - 1) as f64)
+            }
+            (Some((path, along)), _) if !path.is_empty() => along_path(path, *along),
+            _ => base.clone(),
+        };
+        if let (Some(start), Some((_, _, f))) = (&start, &doing.from)
+            && doing.pose.as_ref().is_none_or(|(path, _)| path.len() < 2)
+        {
+            let f = f.clamp(0.0, 1.0);
+            out = blend(&self.bones, start, &out, f * f * (3.0 - 2.0 * f));
+        }
         self.fidget(&mut out, doing);
         out
     }
@@ -2106,6 +2123,30 @@ mod tests {
                     assert!(jump < 0.03, "{look:?} easing in from frame {frame} jumps {jump:.3} m");
                     last = now;
                 }
+            }
+        }
+    }
+
+    /// A move cut short for another partway from one pose to the next: posed live, it starts from
+    /// where the first had got to and goes on through the second from there, without a jump
+    #[test]
+    fn a_move_cut_short_fades_into_the_next() {
+        for look in [Look::Wolf, Look::Skeleton, Look::Bandit, Look::Spiderling] {
+            let rig = rig(look).unwrap();
+            let (into, _) = animals::tween_path(look, 0, animals::POSE_WINDUP, 0.0).unwrap();
+            let (next, _) = animals::tween_path(look, animals::POSE_WINDUP, animals::POSE_STRIKE, 0.0).unwrap();
+            let was = rig.live(&doing(0.0, 0.0, Some((into.clone(), 0.3))));
+            let cut = |f: f64, along: f64| rig.live(&Doing { pose: Some((next.clone(), along)), from: Some((into.clone(), 0.3, f)), ..Default::default() });
+            assert!(alike(&cut(0.0, 0.0), &was, 1e-9), "{look:?} starts where it had got to");
+            assert!(alike(&cut(1.0, 0.5), &rig.live(&doing(0.0, 0.0, Some((next.clone(), 0.5)))), 1e-9), "{look:?} ends in the new move");
+            // Taken a little at a time, nothing moves as far as it would if it jumped
+            let mut last = was;
+            for k in 1..=400 {
+                let f = k as f64 / 400.0;
+                let now = cut(f, f * 0.5);
+                let jump = furthest(&last, &now);
+                assert!(jump < 0.05, "{look:?} jumps {jump:.3} m fading into the new move, {k} of 400");
+                last = now;
             }
         }
     }

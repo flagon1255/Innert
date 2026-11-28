@@ -113,12 +113,20 @@ fn blow_pose(look: Look, s: f64) -> (Vec<usize>, f64) {
 /// A blow cut short `s` of the way through, `t` seconds ago, fading back out of where it got to
 fn cut_pose(look: Look, s: f64, t: f64) -> (Vec<usize>, f64) {
     let back = smooth(t / CUT_SHORT);
-    if s < (WOUND + LANDS) * 0.5 {
-        let (path, along) = blow_pose(look, s.min(WOUND - 1e-6));
+    let (path, along) = blow_pose(look, s);
+    if s < WOUND {
+        // Unwinding what it had wound up
         (path, along * (1.0 - back))
+    } else if s < LANDS {
+        // The blow coming down carried on through and back, from where it got to
+        let (after, _) = blow_pose(look, 1.0 - 1e-6);
+        let m = path.len() - 1;
+        let whole: Vec<usize> = path.iter().chain(after.iter().skip(1)).copied().collect();
+        let from = along * m as f64 / (whole.len() - 1) as f64;
+        (whole, from + (1.0 - from) * back)
     } else {
-        let (path, _) = blow_pose(look, 1.0 - 1e-6);
-        (path, back)
+        let (after, _) = blow_pose(look, 1.0 - 1e-6);
+        (after, back)
     }
 }
 
@@ -259,7 +267,9 @@ mod tests {
     use super::*;
 
     /// Through a whole blow, winding up, striking and getting over it, and through one cut short,
-    /// the poses it goes through follow on from one moment to the next, ending where they began
+    /// the poses it goes through follow on from one moment to the next, ending where they began:
+    /// taken a few thousandths of the way at a time, nothing moves as far as it
+    /// would if it jumped, however quick the blow
     #[test]
     fn a_blow_goes_on_without_a_jump() {
         for look in [Look::Skeleton, Look::ArmoredSkeleton, Look::BoneArcher, Look::GraveBrute, Look::Zombie, Look::Bandit] {
@@ -267,24 +277,24 @@ mod tests {
             let pose = |pose: Option<(Vec<usize>, f64)>| rig.live(&Doing { pose, ..Default::default() });
             let standing = pose(None);
             let mut last = standing.clone();
-            let steps = 240;
+            let steps = 2400;
             for s in 1..steps {
                 let now = pose(Some(blow_pose(look, s as f64 / steps as f64)));
                 let jump = crate::baked::furthest(&last, &now);
                 assert!(jump < 0.08, "{look:?} jumps {jump:.3} m {s} of {steps} of the way through its blow");
                 last = now;
             }
-            assert!(crate::baked::furthest(&last, &standing) < 0.03, "{look:?} ends its blow standing");
+            assert!(crate::baked::furthest(&last, &standing) < 0.02, "{look:?} ends its blow standing");
             // Cut short as it winds up, and as it strikes
             for s in [0.3, 0.5, 0.6] {
                 let mut last = pose(Some(blow_pose(look, s)));
-                for k in 0..=24 {
-                    let now = pose(Some(cut_pose(look, s, k as f64 / 24.0 * CUT_SHORT)));
+                for k in 0..=480 {
+                    let now = pose(Some(cut_pose(look, s, k as f64 / 480.0 * CUT_SHORT)));
                     let jump = crate::baked::furthest(&last, &now);
-                    assert!(jump < 0.12, "{look:?} cut short {s} of the way through jumps {jump:.3} m");
+                    assert!(jump < 0.08, "{look:?} cut short {s} of the way through jumps {jump:.3} m at {k}");
                     last = now;
                 }
-                assert!(crate::baked::furthest(&last, &standing) < 0.03, "{look:?} cut short ends standing");
+                assert!(crate::baked::furthest(&last, &standing) < 0.02, "{look:?} cut short ends standing");
             }
         }
     }

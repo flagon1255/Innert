@@ -394,7 +394,7 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
     ease(r.crawler(), &want, rate, m.dt);
     let mut s = *r.crawler();
     if m.dying.is_none() {
-        walk(look, &mut s, m, if m.doing.is_none() { 1.0 } else { free });
+        walk(look, &mut s, m, r.walking(m, free));
         let breath = (r.clock * TAU / 2.6).sin();
         s.abdomen[0] += 0.04 * breath;
         // A scorpion's tail swaying over its back, following what it watches

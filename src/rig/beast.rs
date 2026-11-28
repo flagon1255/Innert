@@ -830,7 +830,7 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
     ease(r.beast(), &want, rate, m.dt);
     let mut s = *r.beast();
     if m.dying.is_none() {
-        walk(&mut s, m, if m.doing.is_none() { 1.0 } else { free });
+        walk(&mut s, m, r.walking(m, free));
         // Breathing, its head turning to watch, and flinching from blows
         let breath = (r.clock * TAU / 3.2).sin();
         s.body[2] += 0.015 * breath;

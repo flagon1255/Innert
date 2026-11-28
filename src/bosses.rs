@@ -404,6 +404,10 @@ pub struct Boss {
     /// The pose it's in and the one it was in before, see animals::POSE_WINDUP, None to walk or
     /// stand, and seconds since it changed, to ease from one to the other
     posed: (Option<usize>, Option<usize>, f64),
+    /// Where it had got to going from one pose to another when that was cut short by a new one,
+    /// the frames and how far along them, see animals::tween_path(), and seconds since: posed
+    /// live, it fades from that into the new rather than snapping, see pose_from()
+    cut: Option<(Vec<usize>, f64, f64)>,
     /// For a raid boss, which phase of the fight it's in, 0 to 2, see RAID_PHASES
     pub stage: u8,
     /// Blows it has left to follow up the one it's making with, one after another
@@ -1186,6 +1190,7 @@ impl Boss {
             leap: (home, home),
             last_step: 0.0,
             posed: (None, None, f64::MAX),
+            cut: None,
             stage: 0,
             combo: 0,
             hold: 0.0,
@@ -1366,6 +1371,42 @@ impl Boss {
         }
         let (now, before, since) = self.posed;
         animals::tween_path(self.look, before.unwrap_or(0), now.unwrap_or(0), since).or_else(|| now.map(|f| (vec![f], 0.0)))
+    }
+
+    /// Taking up the pose what it's doing calls for, see target_pose(), easing into it over `dt`
+    /// seconds more: from the one it was in, or if it hadn't got there yet, from where it had got
+    /// to on its way, see pose_from()
+    fn repose(&mut self, dt: f64) {
+        let pose = self.target_pose();
+        if let Some((_, _, since)) = &mut self.cut {
+            *since += dt;
+        }
+        if pose == self.posed.0 {
+            self.posed.2 += dt;
+        } else {
+            if let Some((path, along)) = self.pose_path().filter(|(path, along)| path.len() > 1 && *along < 1.0) {
+                self.cut = Some((path, along, 0.0));
+            }
+            self.posed = (pose, self.posed.0, 0.0);
+        }
+        // Done with what it had got to once the new move's past its first step from there, or
+        // it's faded into the one pose it's holding
+        if let Some((_, _, since)) = self.cut {
+            let past = match self.pose_path() {
+                Some((path, along)) if path.len() > 1 => along * (path.len() - 1) as f64 >= 1.0,
+                _ => since >= animals::CROSSFADE,
+            };
+            if past {
+                self.cut = None;
+            }
+        }
+    }
+
+    /// Where it had got to on its way between poses when a new one cut that short, and how far it's
+    /// faded from there since into the new, if that's one pose held, 0 to 1, to pose it live, see
+    /// baked::Doing::from
+    pub fn pose_from(&self) -> Option<(Vec<usize>, f64, f64)> {
+        self.cut.as_ref().map(|(path, along, since)| (path.clone(), *along, since / animals::CROSSFADE))
     }
 
     /// The move it's making and how far into which part of it, for posing a jointed boss, see
@@ -2077,8 +2118,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             boss.deeds.push(Deed::Roar { at: a.position, angry: true });
         }
         boss.dying = Some(t);
-        let pose = boss.target_pose();
-        boss.posed = if pose == boss.posed.0 { (pose, boss.posed.1, boss.posed.2 + dt) } else { (pose, boss.posed.0, 0.0) };
+        boss.repose(dt);
         a.mood = Mood::Idle;
         a.speed = 0.0;
         let thrash = (1.0 - t / 0.8).max(0.0);
@@ -2160,8 +2200,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
     boss.retreat_wait -= dt;
     let struck = std::mem::take(&mut boss.struck);
     // Easing into whatever pose it took up last frame
-    let pose = boss.target_pose();
-    boss.posed = if pose == boss.posed.0 { (pose, boss.posed.1, boss.posed.2 + dt) } else { (pose, boss.posed.0, 0.0) };
+    boss.repose(dt);
     let forward = Vector3::new(a.heading.cos(), a.heading.sin(), 0.0);
     let distance = player.map_or(f64::MAX, |p| (p - a.position).xy().norm() / vpm);
     let from_home = (a.position - boss.home).xy().norm() / vpm;
