@@ -22,12 +22,6 @@ than ending a turn to wait.
     ai"). RUNNING in `wingflight`: some of the grander wings get a Flight perk; beat them to lift
     off and climb, a meter that drains while climbing, glide-only wings unchanged.
 
-17. **Orbs' beam far too weak** (2026-11-29, "the beam guns are very very weak"): about 11 damage a
-    second at base against 21–34 for the other magic weapons; BEAM_POWER 0.6 → 1.8, about 32.
-
-18. **A fresh installer** (2026-11-29, "We still have an installer?", "Update it"): version
-    0.2.0, the readme's start-up and controls brought up to date.
-
 ## Loose ends (found along the way, not yet asked for)
 
 - Distant explosions may not be drawn: the game draws at most 140 objects a frame, nearest first,
@@ -64,6 +58,12 @@ than ending a turn to wait.
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- A fresh installer: Innert 0.2.0, dist\InnertSetup.exe (13.3 MB) and dist\Innert.zip (15.6 MB),
+  built 2026-11-28 22:02 from 480f6c8e, the readme brought up to date (480f6c8e). dist is not in
+  git; rebuild with package.ps1.
+- Orbs' beam three times as strong, about a scepter's damage a second (BEAM_POWER 0.6 → 1.8)
+  (480f6c8e, 2026-11-29).
 
 - A soft run of plucked strings in place of the war-horn "fanfare" for levelling up, chests, loot
   and the like, made in code (audio.rs plucked()); the two horn recordings removed (4fdbd657,
