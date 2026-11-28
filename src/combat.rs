@@ -5180,6 +5180,10 @@ const REEL_NEAR: f64 = 2.2;
 /// meters: low at the right hip
 const GUN_REST: [f64; 3] = [0.18, 0.47, -0.21];
 
+/// Where the hand holds a war fan at rest, in the camera's right, forward and up, in meters: out
+/// low at the right, so its open leaf keeps clear of the crosshair
+const FAN_REST: [f64; 3] = [0.42, 0.48, -0.32];
+
 /// How much nearer the eye than GUN_REST a gun built `build` is held, its special attacks' moves
 /// made from there too: a hand cannon tucked in close at the hip as a big pistol is, by the grip
 /// under its breech, its barrel running on ahead from just below and right of the view, nearer
@@ -15456,9 +15460,10 @@ impl Combat {
                     Style::Lash => grip(LASH_REST.0, LASH_REST.1),
                     // A flail held low, its chain hanging from the end of its haft
                     Style::Whirl => grip([0.3, 0.44, -0.27], [-0.1, 0.8, 0.55]),
-                    // A war fan held up open at the side, its leaf to be seen; a katar's fist
-                    // ready, its point on ahead; a naginata levelled as a spear is
-                    Style::Fan => pose([0.3, 0.48, -0.25], [-0.15, 0.45, 0.88], [1.0, 0.0, 0.1]),
+                    // A war fan held open low at the right, leant out that way and turned a little
+                    // edge on, its leaf to be seen but the middle of the view left clear; a
+                    // katar's fist ready, its point on ahead; a naginata levelled as a spear is
+                    Style::Fan => pose(FAN_REST, [0.12, 0.42, 0.9], [0.85, 0.45, -0.05]),
                     Style::Punch => pose([0.26, 0.4, -0.27], [0.0, 0.95, 0.3], [1.0, 0.0, 0.0]),
                     Style::Pole => pose([0.34, 0.3, -0.33], [0.05, 0.97, 0.2], [-1.0, 0.0, 0.0]),
                     // A war pick held up at the shoulder, its beak forward over the top
@@ -17284,6 +17289,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A war fan's held open low at the right, its leaf clear of the crosshair and the middle of
+    /// the view at rest, whatever its size; its sweeps and its Gale may cross the view while they
+    /// play, then it's back there
+    #[test]
+    fn a_war_fan_keeps_clear_of_the_middle() {
+        let library = crate::weapons::Library::load();
+        let mut combat = Combat::new(1, 0);
+        combat.raise = 1.0;
+        let mut nearest_middle: f64 = f64::MAX;
+        for seed in 0..24 {
+            let fan = library.generate(seed, library.family("warfan"), 1.0 + (seed % 6) as f64);
+            combat.action = Action::Idle;
+            for p in held_voxels(&combat, &fan) {
+                assert!(p.y > 0.05, "seed {seed}: the fan's ahead of the eye");
+                // How far off the middle of the view it is, as part of the way to the edge
+                let off = (p.x / p.y / GAME_VIEW[0]).abs().max((p.z / p.y / GAME_VIEW[1]).abs());
+                nearest_middle = nearest_middle.min(off);
+            }
+        }
+        println!("a war fan comes {nearest_middle:.2} of the way to the edge from the middle");
+        assert!(nearest_middle > 0.18, "a war fan comes within {nearest_middle:.2} of the middle of the view");
     }
 
     /// A hand crossbow goes through every special attack's moves in the left hand still pointing
