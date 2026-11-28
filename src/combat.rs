@@ -16570,16 +16570,19 @@ impl Combat {
                 add(at, place(model, ring, RING_RES, Vector3::zeros(), at, turn, vpm, 0.6, MOVING));
             }
         }
-        // Where things are coming down
+        // Where things are coming down, a slim line round as far as they reach, see
+        // effects::aim_ring()
         for &(at, radius) in &self.marks {
-            let (model, ring) = self.model_at(RING);
-            add(at, place(model, ring, RING_RES, Vector3::zeros(), at, UnitQuaternion::identity(), vpm, radius, MOVING));
+            let (index, res) = crate::effects::aim_ring_for(radius);
+            let (model, ring) = self.model_at(index);
+            add(at, place(model, ring, res, Vector3::zeros(), at, UnitQuaternion::identity(), vpm, radius, MOVING).tinted(TINT_LIT).skinned(crate::effects::AIM_SKIN));
         }
         // And where what's aimed ends in the air, turned to face the eye so it's seen, see aim.rs
         for &(at, radius) in &self.faced {
-            let (model, ring) = self.model_at(RING);
+            let (index, res) = crate::effects::aim_ring_for(radius);
+            let (model, ring) = self.model_at(index);
             let facing = UnitQuaternion::rotation_between(&Vector3::z(), &(view.eye - at)).unwrap_or_else(UnitQuaternion::identity);
-            add(at, place(model, ring, RING_RES, Vector3::zeros(), at, facing, vpm, radius, MOVING));
+            add(at, place(model, ring, res, Vector3::zeros(), at, facing, vpm, radius, MOVING).tinted(TINT_LIT).skinned(crate::effects::AIM_SKIN));
         }
         // Spikes of ice shooting up and pillars of light coming down, then dying away
         for i in &self.swells {
