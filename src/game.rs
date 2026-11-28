@@ -1172,12 +1172,24 @@ pub struct Game {
     character: crate::character::Character,
     body_models: Vec<(Model, Vector3<f64>)>,
     body_colours: [u32; crate::character::body::PIECES],
+    /// Seen by a camera following behind in a screenshot run, see App::chase_camera(): the body
+    /// seen, and nothing held before the eye
+    seen_from_behind: bool,
 }
 
 /// How to glide, with the jump key as it's bound, see bindings.rs: "jump, then hold Space in the
 /// air to glide"
 fn glide_tip() -> String {
     format!("jump, then hold {} in the air to glide", crate::bindings::words(crate::bindings::Action::Jump))
+}
+
+/// How to go on wings of kind `k`: how to glide, or for wings that truly fly, how to take off,
+/// see wings::Lift
+fn wings_tip(k: u8) -> String {
+    match wings::KINDS[k as usize % wings::KINDS.len()].flight {
+        Some(_) => format!("hold {}, or press it twice, to take off and fly; let go to glide", crate::bindings::words(crate::bindings::Action::Jump)),
+        None => glide_tip(),
+    }
 }
 
 /// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
@@ -1189,6 +1201,8 @@ pub struct Aloft {
     pub glided: bool,
     pub ready: Option<(f32, &'static str)>,
     pub note: Option<&'static str>,
+    /// For wings that truly fly, how much wind's left in them, 0 to 1, and whether they've tired
+    pub wind: Option<(f32, bool)>,
 }
 
 /// The chance a boss that isn't a raid boss leaves a pair of wings besides its hoard: a raid
@@ -1414,6 +1428,7 @@ impl Game {
             character: Default::default(),
             body_models: Vec::new(),
             body_colours: [0; crate::character::body::PIECES],
+            seen_from_behind: false,
         };
         game.forget_skills();
         game.arm_anew(seed);
@@ -4777,7 +4792,7 @@ impl Game {
         self.wings_told = true;
         let name = wings::KINDS[k as usize].name;
         self.say(if worn {
-            format!("You put on the {name}: {}.", glide_tip())
+            format!("You put on the {name}: {}.", wings_tip(k))
         } else {
             format!("The {name} are in your pack: press {} and Wear them to change wings.", crate::bindings::key(crate::bindings::Action::Inventory))
         });
@@ -6220,6 +6235,24 @@ impl Game {
         hit
     }
 
+    /// Whether a camera following behind sees the player, see App::chase_camera()
+    pub fn set_seen_from_behind(&mut self, seen: bool) {
+        self.seen_from_behind = seen;
+    }
+
+    pub fn seen_from_behind(&self) -> bool {
+        self.seen_from_behind
+    }
+
+    /// Coming down hard on the ground at `feet`, in voxels, after the wings folded high up, hurt
+    /// `damage` of it, see wings::fall_damage(), as a fall from a roc's talons is
+    pub fn fell(&mut self, damage: f64, feet: Vector3<f64>, world: &World) {
+        let vpm = world.voxels_per_meter as f64;
+        self.hurt(damage, feet - Vector3::new(0.0, 0.0, 1.0 * vpm), feet, world, "a fall");
+        self.cues.push(Cue::at(Sound::Step(Ground::Stone), feet, 1.0).pitched(0.5));
+        self.shake = self.shake.max(0.6);
+    }
+
     /// What struck the player from `from`, in voxels, pricked back by thorned wings, `damage` of
     /// it, if it's near enough to have struck in close
     fn prick(&mut self, from: Vector3<f64>, damage: f64) {
@@ -6271,7 +6304,7 @@ impl Game {
         }
         self.inspected = None;
         self.cues.push(Cue::here(Sound::Equip, 0.8));
-        self.say(format!("You put on the {}: {}.", wings::KINDS[k as usize].name, glide_tip()));
+        self.say(format!("You put on the {}: {}.", wings::KINDS[k as usize].name, wings_tip(k)));
     }
 
     /// Takes off the wings worn, into the pack
@@ -6603,7 +6636,8 @@ impl Game {
             (w, look, model)
         });
         let holding = held.is_some();
-        let mut out: Vec<AnimalInstance> = self.combat.held_instances(held, view).into_iter().map(|i| self.painted_arm(i)).collect();
+        // Nothing held before the eye seen by a camera following behind, see App::chase_camera()
+        let mut out: Vec<AnimalInstance> = if self.seen_from_behind { Vec::new() } else { self.combat.held_instances(held, view).into_iter().map(|i| self.painted_arm(i)).collect() };
         // The player's own body where they stand, for its shadow and reflections, among the first
         // so it's always in them, see character::body. Not while lying dead, nor flying.
         // Flying, the feet are taken to be at the eye, and there's no body
@@ -6618,7 +6652,8 @@ impl Game {
                 time: self.combat.time(),
             };
             let first = self.weapon_model(self.weapons.len()) + self.preview.len() as u32;
-            out.extend(crate::character::body::instances(&self.body_models, &self.body_colours, first, &self.character.looks, &stance, feet, vpm));
+            let how = if self.seen_from_behind { animals::MOVING } else { animals::BODY };
+            out.extend(crate::character::body::instances(&self.body_models, &self.body_colours, first, &self.character.looks, &stance, feet, vpm, how));
         }
         // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
         // the blocks set in it up close
@@ -7062,13 +7097,32 @@ impl Game {
             say(under + 7.0, &how, 11.0, if ready >= 1.0 { Color32::WHITE } else { faint });
             under += 22.0;
         }
+        // Wings that truly fly: how much wind's left in them, as the bars by the quick bar are, and
+        // once they've tired, how to come down
+        if let Some((wind, tired)) = aloft.wind {
+            let back = Rect::from_min_size(pos2(rect.left() - pad + 3.0, under), vec2(slot + 2.0 * pad - 6.0, 9.0));
+            let fill = if tired {
+                Color32::from_rgb(230, 120, 70).gamma_multiply(pulse)
+            } else if wind < 0.25 {
+                Color32::from_rgb(235, 190, 90)
+            } else {
+                Color32::from_rgb(190, 222, 245)
+            };
+            painter.text(pos2(back.left() - 5.0, back.center().y), Align2::RIGHT_CENTER, "Wind", FontId::proportional(11.0), theme::TEXT.gamma_multiply(0.75));
+            theme::bar(painter, back, wind, fill, None);
+            under += 15.0;
+            if tired {
+                say(under, &format!("Wings tired · hold {} to glide", crate::bindings::key(crate::bindings::Action::Jump)), 12.0, Color32::from_rgb(240, 170, 120));
+                under += 16.0;
+            }
+        }
         if let Some(note) = aloft.note {
             say(under, note, 12.0, tint);
             under += 16.0;
         }
         // Till they've glided once, how to
         if !self.glided && !self.covered {
-            let tip = glide_tip();
+            let tip = wings_tip(k);
             say(under, &(tip[..1].to_uppercase() + &tip[1..]), 14.0, theme::HEADING.gamma_multiply(pulse));
         }
     }
@@ -7764,7 +7818,7 @@ impl Game {
                 let (click, right) = (words(A::Attack), words(A::Heavy));
                 ui.label(RichText::new(format!("Melee: {click} to swing, three in a row for a combo, {right} for a heavy blow. Bow: hold {right} to draw, {click} to shoot. Crossbow or gun: {click} to shoot, it reloads once empty, {right} or {} reloads early. {} switches ammo. Staff, scepter or wand: {click} to cast. Orb: hold for a beam. Tome: {click} to conjure. Totem: {click} to hex. Censer: hold to swing it, a cloud billowing out.", words(A::Reload), words(A::Ammo))).weak().small());
                 ui.label(RichText::new(format!("{}: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.", words(A::Special))).weak().small());
-                ui.label(RichText::new(format!("Wings go on your back, above: {}; some flap with {}, some dash with {}. Every merchant sells a pair, and bosses and chests leave them.", glide_tip(), words(A::Jump), words(A::Run))).weak().small());
+                ui.label(RichText::new(format!("Wings go on your back, above: {}; some flap with {}, some dash with {}, and the grandest truly fly. Every merchant sells a pair, and bosses and chests leave them.", glide_tip(), words(A::Jump), words(A::Run))).weak().small());
                 });
                 });
             });
@@ -8080,8 +8134,16 @@ impl Game {
                 theme::rule(ui, color(rarity.color));
                 ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
                 ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
-                if let Some((lift, wait)) = kind.flap {
-                    ui.label(RichText::new(format!("Press {} in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s", crate::bindings::words(crate::bindings::Action::Jump))).color(good));
+                match (kind.flight, kind.flap) {
+                    (Some(lift), _) => {
+                        let ([how, feel], [r, g, b]) = wings::flight_text(&lift);
+                        theme::bullet(ui, "★", theme::ACCENT, &how, Color32::from_rgb(r, g, b), "", theme::TEXT);
+                        ui.label(RichText::new(feel).color(good));
+                    }
+                    (None, Some((lift, wait))) => {
+                        ui.label(RichText::new(format!("Press {} in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s", crate::bindings::words(crate::bindings::Action::Jump))).color(good));
+                    }
+                    _ => {}
                 }
                 if let Some((perk, [r, g, b])) = wings::perk_text(kind.perk) {
                     theme::bullet(ui, "★", theme::ACCENT, &perk, Color32::from_rgb(r, g, b), "", theme::TEXT);
@@ -8089,7 +8151,7 @@ impl Game {
                 ui.label(RichText::new(kind.about).italics());
                 ui.separator();
                 let worn = self.worn == Some(k);
-                let tip = glide_tip();
+                let tip = wings_tip(k);
                 ui.label(RichText::new(if worn { format!("Worn on your back. {}{}.", tip[..1].to_uppercase(), &tip[1..]) } else { format!("Worn on the back: {tip}. Kept for good once found.") }).weak());
                 ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
                 return;
@@ -10117,6 +10179,32 @@ mod tests {
         game.restore(&later, &save::WorldSave::default(), (50.0, 50.0, 50.0));
         assert_eq!(game.worn_wings(), None);
         assert_eq!(game.slots, vec![(Item::Wings(wings::by_id("roc").unwrap()), 1)]);
+    }
+
+    /// A game saved wearing wings that truly fly loads with them on, flying, and told how on
+    /// their card and when they're put on
+    #[test]
+    fn a_save_with_flying_wings_loads() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let fliers: Vec<u8> = (0..wings::KINDS.len() as u8).filter(|&k| wings::KINDS[k as usize].flight.is_some()).collect();
+        assert!(fliers.len() >= 4);
+        for &k in &fliers {
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            game.gain_wings(k);
+            assert!(game.messages.iter().any(|(m, _)| m.contains("to take off and fly")), "{}", wings::KINDS[k as usize].name);
+            let text = serde_json::to_string(&game.carried_save()).unwrap();
+            let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+            other.restore(&serde_json::from_str(&text).unwrap(), &game.world_save(), game.vitals());
+            let worn = other.worn_wings().expect("worn");
+            assert_eq!(worn, k);
+            assert!(wings::KINDS[worn as usize].flight.is_some());
+        }
+        // A save from before wings flew, wearing the roc's, loads them flying now
+        let old: save::CarriedSave = serde_json::from_str(r#"{"worn": "roc", "slots": []}"#).unwrap();
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.restore(&old, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert!(game.worn_wings().is_some_and(|k| wings::KINDS[k as usize].flight.is_some()));
     }
 
     /// Chests hold wings now and then, more often the luckier, and never a kind already had

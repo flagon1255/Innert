@@ -1478,6 +1478,12 @@ struct App {
     // running
     scripted_walk: bool,
     scripted_sprint: bool,
+    // jump held, and whether it was last frame, for pressing it,
+    scripted_jump: bool,
+    scripted_jump_was: bool,
+    // a camera following behind the player, so far off them in voxels, and how far up the player
+    // was looking, see chase_camera(),
+    chase: Option<(Vector3<f64>, f64)>,
     // and the mouse buttons for the next frame
     script_controls: combat::Controls,
     // How far a shot's kick has turned the camera up, so it's turned back down as the kick dies away
@@ -3217,6 +3223,9 @@ impl App {
             wake: None,
             scripted_walk: false,
             scripted_sprint: false,
+            scripted_jump: false,
+            scripted_jump_was: false,
+            chase: None,
             script_controls: combat::Controls::default(),
             kicked: 0.0,
             audio,
@@ -4579,6 +4588,12 @@ impl App {
     }
 
     fn update(&mut self, event_loop: &ActiveEventLoop) {
+        // The camera back at the player's eye from following behind them, see chase_camera()
+        if let Some((off, pitch)) = self.chase.take() {
+            let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
+            self.camera.position -= off / scale;
+            self.camera.rotation.x = pitch;
+        }
         let now = Instant::now();
         if now.duration_since(self.last_second) > Duration::from_secs(1) {
             self.fps = self.frames_since_last_second;
@@ -4951,8 +4966,10 @@ impl App {
         // The grappling hook hauling the player along its rope, which jump lets go of, wings
         // spread while jump's held in the air, and the winds bringing the player back after a
         // fall below the sky isles, see rope.rs
-        let jump_held = self.focused && interactive && !self.game.dead() && self.held(Action::Jump);
-        let let_go = self.focused && interactive && self.pressed(Action::Jump);
+        let scripted_jump = self.scripted_jump && !self.game.dead();
+        let jump_held = (self.focused && interactive && !self.game.dead() && self.held(Action::Jump)) || scripted_jump;
+        let let_go = (self.focused && interactive && self.pressed(Action::Jump)) || (scripted_jump && !self.scripted_jump_was);
+        self.scripted_jump_was = scripted_jump;
         self.update_hook(delta_time.min(0.05), let_go);
         self.update_fall();
         let gliding = self.gliding(jump_held || self.session.trial_glides());
@@ -4961,10 +4978,11 @@ impl App {
         }
         // The wings worn spreading and folding, beating on a flap, and what they leave behind, see
         // wings.rs. Worn on the back, they leave the hands free for what's in them.
-        // A flap is jump pressed in the air, a dash Shift, for wings that do
+        // A flap is jump pressed in the air, a dash Shift, for wings that do, and wings that truly
+        // fly beat while it's held too
         let tried = self.session.trial_flaps();
         let shift = self.focused && interactive && self.pressed(Action::Run);
-        self.update_wings(delta_time.min(0.05), gliding, let_go || tried, shift || tried);
+        self.update_wings(delta_time.min(0.05), gliding, let_go || tried, jump_held, shift || tried);
         // The realm's raid bosses warded while its guardians stand, see guardians.rs
         self.update_guardians(delta_time.min(0.05));
 
@@ -4977,6 +4995,9 @@ impl App {
         let mut footstep = None;
         // Nor does anyone while the world's built afresh round them, see stream.rs
         let held = self.held_still();
+        // How much of a step out towards each edge of the world flying on wings may take, no more
+        // than the world keeps up with as it moves on a strip at a time, see stream.rs
+        let room = [Vector3::x(), -Vector3::x(), Vector3::y(), -Vector3::y()].map(|d| self.keep_up(d).norm());
         if let Some(player) = &mut self.player
             && !held
         {
@@ -4993,12 +5014,19 @@ impl App {
             }
             // Slowed by frost
             wish *= self.game.pace();
-            let jump = walk.jump;
+            let jump = walk.jump || (self.scripted_jump && alive);
             let sprint = alive && (running || self.scripted_sprint);
             // Long hitches, like generating a world, shouldn't fling the player through the floor
             let water = &self.water;
             let before = player.position;
             player.update(&self.world, &|x, y| water.surface_at(x, y), wish, jump, sprint, delta_time.min(0.05));
+            if player.flight.is_some() {
+                let mut step = player.position - before;
+                for axis in 0..2 {
+                    step[axis] *= room[2 * axis + (step[axis] < 0.0) as usize];
+                }
+                player.position = before + step;
+            }
             // Fallen dead, the view sinks to the ground
             let fallen = Vector3::new(0.0, 0.0, 1.0 * self.game.fallen() * self.world.voxels_per_meter as f64);
             self.camera.position = voxels_to_camera(player.eye(&self.world) - fallen, self.world.size);
@@ -5123,6 +5151,40 @@ impl App {
             self.screenshot_requested = true;
         }
         self.run_script();
+        self.chase_camera();
+    }
+
+    /// For seeing the player's wings from behind in screenshot runs, `--set chase=5,1.5,1.2,12`:
+    /// the camera that many meters back from the player's eye, up and to the right, looking the
+    /// way they look but that many degrees further down, the player's own body and wings seen
+    /// there and nothing held before the eye. Taken back to the eye at the start of the next
+    /// update, so all else goes on as it would.
+    fn chase_camera(&mut self) {
+        static CHASE: std::sync::OnceLock<Option<[f64; 4]>> = std::sync::OnceLock::new();
+        let chase = *CHASE.get_or_init(|| {
+            let v = settings_from_args().into_iter().find(|(k, _)| k == "chase")?.1;
+            let n: Vec<f64> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+            let or = |i: usize, default: f64| n.get(i).copied().unwrap_or(default);
+            Some([or(0, 5.0), or(1, 1.5), or(2, 1.0), or(3, 12.0)])
+        });
+        let followed = chase.filter(|_| self.capture.is_some() && self.player.is_some() && !self.menu_open);
+        self.game.set_seen_from_behind(followed.is_some());
+        let Some([back, up, side, tilt]) = followed else {
+            return;
+        };
+        let pitch = self.camera.rotation.x;
+        let vpm = self.world.voxels_per_meter as f64;
+        let rotation = self.camera.rotation_matrix();
+        let forward = (rotation * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+        let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::y());
+        let right = flat.cross(&Vector3::z());
+        let mut off = (-flat * back + right * side + Vector3::z() * up) * vpm;
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        off.z = off.z.min(self.world.size[2] as f64 - 2.0 * vpm - eye.z);
+        let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
+        self.camera.position += off / scale;
+        self.camera.rotation.x = pitch - tilt.to_radians();
+        self.chase = Some((off, pitch));
     }
 
     /// Sets everything a quality preset does, as when one's picked in the settings
@@ -5298,6 +5360,102 @@ impl App {
                             capture.frames = (f + 4) as u32;
                         }
                     }
+                }
+            }
+            // Takes off on wings that truly fly, `--set wings=seraph`, see wings::Lift: stands a
+            // moment, then holds jump looking `wf_pitch=14` degrees up till `wf_climb=30` meters
+            // over where they took off, then flies on looking `wf_look=-8` degrees, beating now and
+            // then to hold their height, for `wf_cruise=240` frames before letting go to come down.
+            // With `wf_tap=1` it takes off pressing jump twice rather than holding it, and with
+            // `wf_tire=1` it beats on till the wings tire, then holds jump to glide down, or with
+            // `wf_tire=2` lets go and falls.
+            ("wingfly", f) => {
+                static START: std::sync::Mutex<Option<(f64, usize, usize, usize)>> = std::sync::Mutex::new(None);
+                let settings = settings_from_args();
+                let number = |key: &str, default: f64| settings.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                let mut start = START.lock().unwrap();
+                // Walking in the world first seen, with no game begun
+                if self.player.is_none() && self.session.mode.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                // Once the world's there to play in, the wings put on if they're not yet
+                let Some(feet) = self.player.as_ref().map(|p| p.position).filter(|_| !self.session.arriving && !self.held_still()) else {
+                    *start = None;
+                    return;
+                };
+                if self.game.worn_wings().is_none()
+                    && let Some(k) = settings.iter().find(|(k, _)| k == "wings").and_then(|(_, v)| wings::by_id(v))
+                {
+                    self.game.find_once(game::Item::Wings(k), "Wings, to try out.");
+                }
+                let ground = (0..feet.z.max(0.0) as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(feet.x as i64, feet.y as i64, z))).map_or(0.0, |z| z as f64 + 1.0);
+                // Phases: 0 standing, 1 climbing, 2 flying on, 3 coming down
+                let (from, phase, since, began) = start.get_or_insert((feet.z, 0, f, f));
+                let up = (feet.z - *from) / vpm;
+                // `wf_shots=60,120` takes shots so many frames after the world's there
+                let shots: Vec<usize> = settings.iter().find(|(k, _)| k == "wf_shots").map_or(Vec::new(), |(_, v)| v.split(',').filter_map(|n| n.trim().parse().ok()).collect());
+                if shots.contains(&(f - *began))
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.shots.push(f + 2);
+                    println!("frame {frame}: WINGFLY shot at frame {}", f + 2);
+                }
+                // And `wf_end=400` ends the run so many frames after
+                if f - *began == number("wf_end", 1e9) as usize
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.frames = (f + 4) as u32;
+                }
+                let (tap, tire) = (number("wf_tap", 0.0) > 0.0, number("wf_tire", 0.0) > 0.0);
+                let next = match *phase {
+                    0 if f >= *since + 40 => {
+                        *from = feet.z;
+                        Some(1)
+                    }
+                    1 if !tire && up >= number("wf_climb", 30.0) => Some(2),
+                    1 if tire && self.wings.beats.tired => Some(3),
+                    2 if f >= *since + number("wf_cruise", 240.0) as usize => Some(3),
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    *phase = next;
+                    *since = f;
+                    println!("frame {frame}: WINGFLY phase {next}, {up:.1} m up");
+                }
+                let into = f - *since;
+                self.camera.rotation.x = match *phase {
+                    1 => number("wf_pitch", 14.0),
+                    2 => number("wf_look", -8.0),
+                    3 => -6.0,
+                    _ => 0.0,
+                }
+                .to_radians();
+                self.scripted_jump = match *phase {
+                    // Pressing jump twice: a jump, then again in the air; or held from the ground
+                    1 if tap && into < 20 => into < 4 || (8..12).contains(&into),
+                    1 => true,
+                    // Beating now and then to hold the height reached
+                    2 => up < number("wf_climb", 30.0) - 1.0 && into % 10 < 2,
+                    // Coming down, gliding if the wings tired, or falling with `wf_tire=2`
+                    3 => tire && number("wf_tire", 0.0) < 2.0,
+                    _ => false,
+                };
+                if f % 10 == 0
+                    && let Some(player) = &self.player
+                {
+                    let beats = &self.wings.beats;
+                    println!(
+                        "frame {frame}: WINGFLY phase {} {up:.1} m up, {:.1} m over the ground, wind {:.2}{}{}, airspeed {:.1}, climbing {:.1} m/s, on the ground {}, health {:.0}",
+                        *phase,
+                        (feet.z - ground) / vpm,
+                        beats.wind,
+                        if beats.up { " flying" } else { "" },
+                        if beats.tired { " tired" } else { "" },
+                        player.airspeed() / vpm,
+                        player.velocity().z / vpm,
+                        player.on_ground(),
+                        self.game.vitals().0
+                    );
                 }
             }
             // Flies over the land `--set fly_speed=27` meters a second, as flying with shift held is,
@@ -6354,6 +6512,7 @@ impl App {
         // The look of the realm the world is, see session.rs
         let realm_look = self.realm_look();
         let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
+        let flying_now = gliding_now && self.wings.beats.up;
         // The torches and lamps built, and where what's picked to build would go, see building.rs
         let base_lights = building::base_lights(&self.bases, &self.world);
         let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
@@ -6502,7 +6661,7 @@ impl App {
                 ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gliding"))).text(
                     ctx.screen_rect().center() + egui::vec2(0.0, 42.0),
                     Align2::CENTER_CENTER,
-                    "Gliding",
+                    if flying_now { "Flying" } else { "Gliding" },
                     egui::FontId::proportional(16.0),
                     Color32::from_rgba_unmultiplied(235, 240, 255, 200),
                 );

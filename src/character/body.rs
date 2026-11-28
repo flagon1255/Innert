@@ -253,8 +253,9 @@ pub fn facing(yaw: f64) -> Q {
 }
 
 /// What to draw of the body standing with the middle of its feet at `feet`, in voxels, its pieces'
-/// models from `first_model`, each `models` big with its anchor, see models()
-pub fn instances(models: &[(Model, V)], colours: &[u32; PIECES], first_model: u32, looks: &Looks, stance: &Stance, feet: V, vpm: f64) -> Vec<AnimalInstance> {
+/// models from `first_model`, each `models` big with its anchor, see models(), drawn as `how`
+/// says: animals::BODY in play, or MOVING seen by a camera following behind
+pub fn instances(models: &[(Model, V)], colours: &[u32; PIECES], first_model: u32, looks: &Looks, stance: &Stance, feet: V, vpm: f64, how: u32) -> Vec<AnimalInstance> {
     let turn = facing(stance.yaw);
     let posed = pose(looks, stance);
     let mut out = Vec::with_capacity(PIECES);
@@ -267,7 +268,7 @@ pub fn instances(models: &[(Model, V)], colours: &[u32; PIECES], first_model: u3
         let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
         let whole = turn * piece_turn;
         let at = feet + turn * joint * vpm + whole * anchor * vpm;
-        out.push(AnimalInstance::new(first_model + p as u32, at, whole, vpm / BODY_RES, reach, animals::BODY).outfit(colours[p]));
+        out.push(AnimalInstance::new(first_model + p as u32, at, whole, vpm / BODY_RES, reach, how).outfit(colours[p]));
     }
     out
 }

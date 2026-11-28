@@ -3,7 +3,10 @@
 //! person: spread out at the edges of the view while gliding, flexing as they ride the air and
 //! beating hard on a flap, swept back on a dash, folded down the back otherwise, seen looking down,
 //! with a trail of sparks, frost, feathers or motes behind them. Gliding itself is the player's,
-//! see Player::glide_feel.
+//! see Player::glide_feel. The grandest kinds truly fly, see Lift: beaten from the ground they
+//! take off and climb, steered by looking, as long as their wind lasts, see Wingbeats and
+//! Player::fly(), each beat a whole stroke up and down, tucked back for a dive and thrown forward
+//! flaring to land.
 
 use std::f64::consts::{PI, TAU};
 
@@ -84,6 +87,9 @@ pub struct WingKind {
     /// A flap with jump, in the air: how fast it lifts the player, in meters a second, and how
     /// many seconds till the next
     pub flap: Option<(f64, f64)>,
+    /// Whether they truly fly, taking off from the ground and climbing, and how, see Lift: the
+    /// grandest kinds only, the rest glide
+    pub flight: Option<Lift>,
     pub perk: Perk,
     /// Gold a merchant asks
     pub price: u32,
@@ -104,6 +110,110 @@ pub struct WingKind {
     size: f64,
     /// The colours of their icon: the feathers or membrane, and the tips or veins
     icon: ([u8; 3], [u8; 3]),
+}
+
+/// How wings that truly fly do it, see WingKind::flight and Player::fly(): jump held off the
+/// ground, or pressed again in the air, beats them, and each beat takes some of their wind, which
+/// comes back on the ground and, slowly, gliding. Heavy wings climb slowly but fly fast and long,
+/// light ones climb quickly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lift {
+    /// How much faster than gliding beating them steadily climbs, in meters a second
+    pub climb: f64,
+    /// Seconds between beats while jump's held, and how long a beat's stroke takes
+    pub every: f64,
+    /// How fast flying level comes to, and the fastest a dive goes, in meters a second
+    pub cruise: f64,
+    pub dive: f64,
+    /// How quickly they come round to where the player looks, the share of the way a second
+    pub turn: f64,
+    /// How many beats a whole wind lasts
+    pub beats: f64,
+}
+
+/// Seconds jump's held off the ground before the wings beat by themselves, so a plain jump stays
+/// one, see Wingbeats
+const TAKE_OFF: f64 = 0.2;
+/// How fast the wind comes back, the share of all of it a second: on the ground, and gliding
+const WIND_GROUND: f64 = 0.4;
+const WIND_GLIDING: f64 = 0.02;
+/// Wings that have tired beat again once this much of their wind's back
+const RESTED: f64 = 0.3;
+
+/// Flying on wings that truly fly, see Lift, a frame at a time: whether the player's up on them,
+/// how much wind's left in them, 0 to 1, whether they've tired, beating again only once they've
+/// rested, and whether they've beaten since last on the ground
+#[derive(Clone, Copy, Debug)]
+pub struct Wingbeats {
+    pub up: bool,
+    pub wind: f64,
+    pub tired: bool,
+    pub flown: bool,
+    /// Seconds till a held jump beats them again
+    next: f64,
+}
+
+impl Default for Wingbeats {
+    fn default() -> Self {
+        Wingbeats { up: false, wind: 1.0, tired: false, flown: false, next: TAKE_OFF }
+    }
+}
+
+impl Wingbeats {
+    /// One frame of `dt` seconds: `aloft` in the air and out of the water, jump `pressed` just now
+    /// or `held`, and `gliding` on them as wings that don't fly do. Whether they beat now. Up on
+    /// them, letting go of jump they glide on; tired, they fold, and the player falls unless they
+    /// hold jump to glide.
+    pub fn step(&mut self, lift: &Lift, dt: f64, aloft: bool, pressed: bool, held: bool, gliding: bool) -> bool {
+        self.next -= dt;
+        if !aloft {
+            self.up = false;
+            self.flown = false;
+            self.next = TAKE_OFF;
+            self.wind = (self.wind + WIND_GROUND * dt).min(1.0);
+            self.tired &= self.wind < RESTED;
+            return false;
+        }
+        let cost = 1.0 / lift.beats.max(1.0);
+        if self.wind < cost - 1e-9 {
+            self.tired = true;
+        } else if self.tired && self.wind >= RESTED {
+            self.tired = false;
+        }
+        // A press beats once most of a beat's gone by, holding beats on and on
+        let beat = !self.tired && ((pressed && self.next <= lift.every * 0.5) || (held && self.next <= 0.0));
+        if beat {
+            self.up = true;
+            self.flown = true;
+            self.wind = (self.wind - cost).max(0.0);
+            self.next = lift.every;
+        } else if self.tired {
+            self.up = false;
+        }
+        if !beat && ((self.up && !held) || (!self.up && gliding)) {
+            self.wind = (self.wind + WIND_GLIDING * dt).min(1.0);
+        }
+        beat
+    }
+}
+
+/// One frame of `dt` seconds of wings of kind `kind` that truly fly as `lift` says, for `player`,
+/// before they move: jump `pressed` just now, `held` and `gliding` on them as wings that don't fly
+/// do, see Wingbeats::step(); up on them steering by `look`, as fast as the skill web's gliding
+/// makes them, `boost`, holding their height while `soaring` after a roc's beat, and lifted by a
+/// beat. Whether they beat now.
+#[allow(clippy::too_many_arguments)]
+pub fn fly_frame(player: &mut crate::player::Player, beats: &mut Wingbeats, kind: &WingKind, lift: &Lift, dt: f64, [pressed, held, gliding]: [bool; 3], look: Vector3<f64>, boost: f64, soaring: bool, vpm: f64) -> bool {
+    let aloft = !player.on_ground() && !player.swimming();
+    let beat = beats.step(lift, dt, aloft, pressed, held, gliding);
+    let sink = if soaring { 0.0 } else { kind.sink / boost };
+    player.look = look;
+    player.flight = beats.up.then_some(crate::player::Soaring { cruise: lift.cruise * boost, dive: lift.dive, sink, turn: lift.turn });
+    player.gliding |= beats.up;
+    if beat {
+        player.beat(lift.climb * vpm, lift.every);
+    }
+    beat
 }
 
 /// How much health Perk::Mending gives back a second while gliding, and Perk::Leech for each
@@ -153,6 +263,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.2,
         turn: 4.0,
         flap: None,
+        flight: None,
         perk: Perk::None,
         price: PRICES[0],
         about: "Plain white wings on a bone frame. They glide well and ask nothing.",
@@ -169,14 +280,15 @@ pub static KINDS: [WingKind; 16] = [
     WingKind {
         id: "stormcaller",
         name: "Stormcaller Wings",
-        rarity: 2,
+        rarity: 3,
         speed: 15.0,
         sink: 2.6,
         turn: 6.0,
         flap: None,
+        flight: Some(Lift { climb: 5.0, every: 0.42, cruise: 18.0, dive: 27.0, turn: 3.4, beats: 18.0 }),
         perk: Perk::Sparks,
-        price: PRICES[2],
-        about: "Slate feathers tipped with lightning: fast and nimble, sparks crackling off behind.",
+        price: PRICES[3],
+        about: "Slate feathers tipped with lightning, from the sky isles' storms: they truly fly, fast and nimble, quick to climb and quick to tire, sparks crackling off behind.",
         found: true,
         frame: DARK_STEEL,
         vane: FUR_DARK,
@@ -195,6 +307,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.2,
         turn: 2.5,
         flap: None,
+        flight: None,
         perk: Perk::Frost,
         price: PRICES[3],
         about: "Feathers of clear ice on a steel frame. Slow and steady, they sink hardly at all, frost drifting off them.",
@@ -216,6 +329,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.8,
         turn: 4.5,
         flap: None,
+        flight: None,
         perk: Perk::Mending,
         price: PRICES[3],
         about: "A lilac membrane from the dreaming realm, shedding pale motes. Gliding on them mends the wearer.",
@@ -237,6 +351,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.4,
         turn: 5.0,
         flap: Some((7.0, 3.0)),
+        flight: None,
         perk: Perk::Embers,
         price: PRICES[3],
         about: "A membrane of black glass veined with fire. Jump in the air to beat them once for height, throwing off embers.",
@@ -258,9 +373,10 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.5,
         turn: 5.5,
         flap: Some((6.0, 2.2)),
+        flight: Some(Lift { climb: 5.0, every: 0.4, cruise: 16.0, dive: 25.0, turn: 3.0, beats: 18.0 }),
         perk: Perk::Gilded,
         price: 9000,
-        about: "Royal wings of white and gold, fast, steady and quick to beat, gold glittering behind.",
+        about: "Royal wings of white and gold that truly fly: steady and quick to beat, climbing readily, gold glittering behind.",
         found: false,
         frame: GOLD,
         vane: LINEN,
@@ -279,9 +395,10 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.7,
         turn: 3.0,
         flap: Some((8.5, 3.6)),
+        flight: Some(Lift { climb: 3.0, every: 0.62, cruise: 20.0, dive: 30.0, turn: 1.8, beats: 26.0 }),
         perk: Perk::Soar,
         price: PRICES[4],
-        about: "The great barred pinions of a roc, brown and tipped with gold. A beat of them lifts the wearer high and holds them there a while, feathers drifting down behind.",
+        about: "The great barred pinions of a roc, brown and tipped with gold. They truly fly: slow, heavy beats that climb unhurried but carry the wearer fast and far, each one holding their height a while, feathers drifting down behind.",
         found: true,
         frame: BRONZE,
         vane: FUR_BROWN,
@@ -300,6 +417,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.4,
         turn: 7.5,
         flap: None,
+        flight: None,
         perk: Perk::Dash,
         price: PRICES[2],
         about: "Storm-grey plumes ending in long teal streamers, quick to turn. Press Shift while gliding to dash on ahead on a gust.",
@@ -321,6 +439,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.9,
         turn: 2.2,
         flap: None,
+        flight: None,
         perk: Perk::Slam,
         price: PRICES[3],
         about: "Wings of carved stone, mossed and cracked. They sink fast and turn slow, and coming down from a glide the wearer lands like a falling statue, hurting and scattering everything round.",
@@ -342,6 +461,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.6,
         turn: 7.0,
         flap: Some((4.5, 1.1)),
+        flight: None,
         perk: Perk::Nightwing,
         price: PRICES[2],
         about: "Leathery bat's wings, clawed at the wrist. Quick little flaps, the quickest turns, and by night they fly faster still, trailing dusk.",
@@ -363,6 +483,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.6,
         turn: 5.0,
         flap: Some((4.0, 1.6)),
+        flight: None,
         perk: Perk::Manaflow,
         price: PRICES[3],
         about: "A butterfly's wings banded pink to blue to a glowing violet rim. Gliding on them fills your mana, light of every colour streaming off behind.",
@@ -384,9 +505,10 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.4,
         turn: 5.0,
         flap: Some((7.0, 1.6)),
+        flight: Some(Lift { climb: 5.5, every: 0.38, cruise: 15.0, dive: 24.0, turn: 2.8, beats: 20.0 }),
         perk: Perk::Halo,
         price: PRICES[5],
-        about: "Tier on tier of white feathers edged in gold. Each beat of them sends a ring of holy light out round you, searing what's near.",
+        about: "Tier on tier of white feathers edged in gold. They truly fly, light and quick to climb, and a beat of them now and then sends a ring of holy light out round you, searing what's near.",
         found: true,
         frame: GOLD,
         vane: FUR_WHITE,
@@ -405,6 +527,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.0,
         turn: 4.5,
         flap: None,
+        flight: None,
         perk: Perk::Skim,
         price: PRICES[3],
         about: "Fins of the Sunken Reach, teal between their rays. Low over water they skim its surface instead of sinking in, so you can glide across any sea.",
@@ -426,9 +549,10 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.3,
         turn: 4.5,
         flap: Some((7.5, 2.6)),
+        flight: Some(Lift { climb: 3.6, every: 0.55, cruise: 19.0, dive: 29.0, turn: 2.4, beats: 22.0 }),
         perk: Perk::Fireproof,
         price: PRICES[4],
-        about: "The red hide of a Cinder Crown drake on black bone, spiked in bronze. Fire never takes hold of whoever wears them, not lava, not dragonfire.",
+        about: "The red hide of a Cinder Crown drake on black bone, spiked in bronze. They truly fly, as a dragon does, with strong, heavy beats, fast once they're up. Fire never takes hold of whoever wears them, not lava, not dragonfire.",
         found: true,
         frame: OBSIDIAN,
         vane: FUR_RED,
@@ -447,6 +571,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 2.0,
         turn: 5.0,
         flap: None,
+        flight: None,
         perk: Perk::Thorns,
         price: PRICES[1],
         about: "Long leaves on a dark stem, thorned along their edges. Whatever strikes you while you wear them is pricked back, and leaves drift off behind as you glide.",
@@ -468,6 +593,7 @@ pub static KINDS: [WingKind; 16] = [
         sink: 1.9,
         turn: 5.0,
         flap: Some((4.5, 1.8)),
+        flight: None,
         perk: Perk::Leech,
         price: PRICES[3],
         about: "A great moth's wings from the Dreaming Red, crimson with staring eyes. Every monster slain while you wear them gives you back a little health.",
@@ -570,6 +696,15 @@ pub fn perk_text(perk: Perk) -> Option<(&'static str, [u8; 3])> {
         Perk::Thorns => ("Thorns: what strikes you is pricked back", [150, 220, 90]),
         Perk::Leech => ("Leech: each monster slain gives back health", [235, 60, 70]),
     })
+}
+
+/// What a kind that truly flies does, for its card, see Lift: how it's done, by the key it's on
+/// now, how fast it climbs and flies, and how long its wind lasts, and the colour it's told in
+pub fn flight_text(lift: &Lift) -> ([String; 2], [u8; 3]) {
+    let jump = crate::bindings::words(crate::bindings::Action::Jump);
+    let how = format!("Flight: hold {jump}, or press it twice, to take off; press or hold it in the air to beat, and steer by looking");
+    let feel = format!("Climbs {:.0} m/s beating, flies {:.0} m/s level, dives at {:.0}; its wind lasts {:.0} beats", lift.climb, lift.cruise, lift.dive, lift.beats);
+    ([how, feel], [200, 225, 245])
 }
 
 /// Voxels per meter of a wing's model: finer than the world, being right by the eye
@@ -916,10 +1051,52 @@ pub struct Flight {
     slam_wait: f64,
     /// Skimming over water just now, for spray
     skimming: bool,
+    /// Flying on wings that truly fly, see Wingbeats, how long the beat going on takes, a whole
+    /// stroke up and down if it's theirs, and how far the wings are tucked back for a dive and
+    /// thrown forward flaring to touch down, 0 to 1
+    pub beats: Wingbeats,
+    stroke: Option<f64>,
+    tuck: f64,
+    flare: f64,
+    /// The highest the feet have been since the wings last held the player up, and how fast they
+    /// were coming down last frame, in voxels a second, for a fall
+    top: f64,
+    falling: f64,
 }
 
 /// How long a flap's beat takes, in seconds
 const BEAT: f64 = 0.5;
+/// How far a fall from flying, past which it hurts, in meters, and how much for each meter more,
+/// at most FALL_MOST; and how fast they have to be coming down for it to, in meters a second. As a
+/// fall from a roc's talons, see game\aerie.rs.
+pub const FALL_FROM: f64 = 4.0;
+pub const FALL_HURT: f64 = 2.6;
+pub const FALL_MOST: f64 = 60.0;
+const FALL_SPEED: f64 = 9.0;
+
+/// How hard a fall of `height` meters from flying hurts, see FALL_FROM
+pub fn fall_damage(height: f64) -> f64 {
+    ((height - FALL_FROM) * FALL_HURT).clamp(0.0, FALL_MOST)
+}
+
+/// Where a whole stroke of wings that truly fly is, `u` of the way through it: up a little, then
+/// hard down and forward, then back to where they ride the air. How far they rise, in radians, and
+/// how far they're swept forward.
+pub fn stroke(u: f64) -> (f64, f64) {
+    let ease = |t: f64| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let rise = if u < 0.3 {
+        0.5 * ease(u / 0.3)
+    } else if u < 0.75 {
+        0.5 - 1.25 * ease((u - 0.3) / 0.45)
+    } else {
+        -0.75 + 0.75 * ease((u - 0.75) / 0.25)
+    };
+    let sweep = 0.22 * (PI * ((u - 0.3) / 0.45).clamp(0.0, 1.0)).sin();
+    (rise, sweep)
+}
 
 impl Flight {
     /// The world's corner moved on `shift` voxels, see App::shift_everything()
@@ -958,10 +1135,10 @@ impl Flight {
 
 impl App {
     /// The wings worn, spreading as the player glides and folding as they land, a flap when jump's
-    /// pressed in the air if they have one, a dash on Shift if they have that, what their perk
-    /// does, and the trail they leave. Before the player moves each frame; `jumped` is jump
-    /// pressed just now, `dashed` Shift.
-    pub(super) fn update_wings(&mut self, dt: f64, gliding: bool, jumped: bool, dashed: bool) {
+    /// pressed in the air if they have one, a dash on Shift if they have that, flying on them if
+    /// they truly fly, see Wingbeats, what their perk does, and the trail they leave. Before the
+    /// player moves each frame; `jumped` is jump pressed just now, `held` held, `dashed` Shift.
+    pub(super) fn update_wings(&mut self, dt: f64, gliding: bool, jumped: bool, held: bool, dashed: bool) {
         let vpm = self.world.voxels_per_meter as f64;
         let view = self.view();
         {
@@ -977,6 +1154,10 @@ impl App {
             self.wings.spread = 0.0;
             self.wings.motes.clear();
             self.wings.aloft = 0.0;
+            self.wings.beats = Wingbeats::default();
+            if let Some(player) = &mut self.player {
+                player.flight = None;
+            }
             self.game.set_aloft(None);
             return;
         };
@@ -989,14 +1170,60 @@ impl App {
             let feel = if night { [kind.speed * NIGHT_SPEED, kind.sink, kind.turn * 1.25] } else { [kind.speed, kind.sink, kind.turn] };
             player.glide_feel = [feel[0] * boost, feel[1] / boost, feel[2]];
         }
-        let flying = gliding && airborne;
+        // Wings that truly fly: up on them, beating them, and a fall if they folded high up
+        let mut beat = false;
+        if let Some(lift) = kind.flight {
+            let (feet, vz, swimming) = self.player.as_ref().map_or((Vector3::zeros(), 0.0, false), |p| (p.position, p.velocity().z, p.swimming()));
+            let aloft = airborne && !swimming && self.player.is_some();
+            if !airborne && self.wings.was_airborne && self.wings.beats.flown && self.player.is_some() {
+                let height = (self.wings.top - feet.z) / vpm;
+                let damage = fall_damage(height);
+                if self.wings.falling < -FALL_SPEED * vpm && damage > 0.0 {
+                    self.game.fell(damage, feet, &self.world);
+                    println!("FELL {height:.1} m from flying, {damage:.0} hurt");
+                }
+                // Folded as they touch down
+                if let Some(sound) = &mut self.audio {
+                    sound.play(audio::Cue::here(audio::Sound::Flap, 0.35).pitched((0.9 / kind.size) as f32), &view);
+                }
+            }
+            // Fallen dead, they fold
+            let alive = !self.game.dead();
+            if !alive {
+                self.wings.beats.up = false;
+            }
+            match &mut self.player {
+                Some(player) => {
+                    let boost = self.game.glide_boost();
+                    let soaring = self.wings.soar > 0.0;
+                    beat = fly_frame(player, &mut self.wings.beats, kind, &lift, dt, [jumped && alive, held && alive, gliding], view.forward(), boost, soaring, vpm);
+                }
+                None => {
+                    self.wings.beats.step(&lift, dt, aloft, false, false, false);
+                }
+            }
+            let up = self.wings.beats.up;
+            // Held up by the wings, a fall's counted from here
+            let held_up = up || !airborne || (gliding && vz > -kind.sink * 1.3 * vpm);
+            self.wings.top = if held_up { feet.z } else { self.wings.top.max(feet.z) };
+            self.wings.falling = vz;
+            // Tucked back diving, thrown forward flaring to touch down
+            let (tuck, flare) = match &self.player {
+                Some(p) if up => (((-view.forward().z.clamp(-1.0, 1.0).asin() - 0.25) / 0.6).clamp(0.0, 1.0), p.flaring()),
+                _ => (0.0, 0.0),
+            };
+            let ease = 1.0 - (-6.0 * dt).exp();
+            self.wings.tuck += (tuck - self.wings.tuck) * ease;
+            self.wings.flare += (flare - self.wings.flare) * ease;
+        }
+        let flying = (gliding || self.wings.beats.up) && airborne;
         let flight = &mut self.wings;
         let target = if flying { 1.0 } else { 0.0 };
         flight.spread += (target - flight.spread) * (1.0 - (-7.0 * dt).exp());
         flight.time = if flying { flight.time + dt } else { 0.0 };
         if let Some(t) = &mut flight.beat {
             *t += dt;
-            if *t > BEAT {
+            if *t > flight.stroke.unwrap_or(BEAT) {
                 flight.beat = None;
             }
         }
@@ -1019,22 +1246,43 @@ impl App {
         }
         // A flap: a hard beat lifting the player, embers thrown off for the cinder wings, holding
         // their height a while for a roc's, a ring of holy light for a seraph's
+        // Wings that truly fly beat with every press of jump, or on and on while it's held, a whole
+        // stroke each, its sound the deeper the bigger they are; what their perk does on a flap
+        // they do no oftener than they would on one
+        let mut perk_flap = false;
+        if beat && let Some(lift) = kind.flight {
+            self.wings.beat = Some(0.0);
+            self.wings.stroke = Some(lift.every.clamp(0.36, 0.6));
+            if let Some(sound) = &mut self.audio {
+                let first = self.wings.beats.wind > 1.0 - 1.5 / lift.beats;
+                sound.play(audio::Cue::here(audio::Sound::Flap, if first { 0.85 } else { 0.6 }).pitched((1.25 / kind.size) as f32), &view);
+            }
+            if self.wings.flap_wait <= 0.0 {
+                self.wings.flap_wait = kind.flap.map_or(2.0, |(_, wait)| wait);
+                perk_flap = true;
+            }
+        }
         if jumped
             && airborne
+            && kind.flight.is_none()
             && self.wings.flap_wait <= 0.0
             && let Some((lift, wait)) = kind.flap
             && let Some(player) = &mut self.player
         {
             player.flap(lift * vpm);
-            let carry = player.velocity() * 0.85;
-            let feet = player.position;
             self.wings.flap_wait = wait;
             self.wings.beat = Some(0.0);
+            self.wings.stroke = None;
             if let Some(sound) = &mut self.audio {
                 let leathery = matches!(kind.form, Form::Membrane { .. });
                 let cue = if leathery { audio::Cue::here(audio::Sound::Flap, 0.7).pitched((1.6 / kind.size) as f32) } else { audio::Cue::here(audio::Sound::Dodge, 0.8).pitched(0.7) };
                 sound.play(cue, &view);
             }
+            perk_flap = true;
+        }
+        if perk_flap && let Some(player) = &self.player {
+            let carry = player.velocity() * 0.85;
+            let feet = player.position;
             // Embers thrown off along both wings, carried on with the player at first
             if kind.perk == Perk::Embers {
                 for (_, tip) in self.wing_tips(&view, self.wings.spread) {
@@ -1084,7 +1332,7 @@ impl App {
         self.wings.skimming = false;
         if flying && let Some(player) = &mut self.player {
             let hold = GRAVITY * dt * vpm;
-            if self.wings.soar > 0.0 {
+            if self.wings.soar > 0.0 && !self.wings.beats.up {
                 player.flap(hold);
             }
             if kind.perk == Perk::Skim {
@@ -1156,12 +1404,17 @@ impl App {
         // the air is, and what their perk's doing
         let move_ready = |wait: f64, of: f64| (1.0 - wait / of.max(1e-6)).clamp(0.0, 1.0) as f32;
         let ready = match (kind.perk, kind.flap) {
+            _ if kind.flight.is_some() => None,
             (Perk::Dash, _) => Some((move_ready(flight.dash_wait, DASH_WAIT), "Shift  dash")),
             (Perk::Slam, _) => Some((move_ready(flight.slam_wait, SLAM_WAIT), "Land  slam")),
             (_, Some((_, wait))) => Some((move_ready(flight.flap_wait, wait), "Space  flap")),
             _ => None,
         };
-        let note = if flight.soar > 0.0 && flying {
+        let note = if flight.beats.tired && kind.flight.is_some() {
+            None
+        } else if flight.beats.up && flying {
+            Some("Flying")
+        } else if flight.soar > 0.0 && flying {
             Some("Soaring")
         } else if flight.skimming {
             Some("Skimming")
@@ -1171,7 +1424,8 @@ impl App {
             None
         };
         let glided = flying && flight.time > 1.0;
-        self.game.set_aloft(Some(game::Aloft { gliding: flying, glided, ready, note }));
+        let wind = kind.flight.map(|_| (flight.beats.wind as f32, flight.beats.tired));
+        self.game.set_aloft(Some(game::Aloft { gliding: flying, glided, ready, note, wind }));
     }
 
     /// Where each wing's root is and how it's turned, by the way the body faces rather than the
@@ -1188,18 +1442,26 @@ impl App {
         // Riding the air, the tips rise and fall a little, held still while soaring; on a flap,
         // up and then hard down
         let flex = if flight.soar > 0.0 { 0.0 } else { 0.07 * s * (flight.time * TAU * 0.6).sin() };
-        let beat = flight.beat.map_or(0.0, |t| {
-            let u = t / BEAT;
-            -0.6 * (u * PI).sin()
+        // A flap's beat hard down; a whole stroke for wings that truly fly, see stroke()
+        let (beat, forward) = flight.beat.map_or((0.0, 0.0), |t| match flight.stroke {
+            Some(length) => stroke(t / length),
+            None => (-0.6 * (t / BEAT * PI).sin(), 0.0),
         });
         let swept = (flight.dash / DASH_SWEEP).min(1.0);
-        let sweep = -1.35 + (1.1 + 1.35) * s - 0.75 * swept * (2.0 - swept);
-        let rise = -0.95 + (0.08 + 0.95) * s + flex + beat;
+        // Flying, tucked back for a dive, and thrown up and forward flaring to touch down
+        let (tuck, flare) = (flight.tuck * s, flight.flare * s);
+        // Seen by a camera following behind, see App::chase_camera(), they're spread out to the
+        // sides from the shoulders, as they're worn, rather than swept forward round the view
+        let behind = self.game.seen_from_behind();
+        let wide = if behind { 0.12 } else { 1.1 };
+        let sweep = -1.35 + (wide + 1.35) * s - 0.75 * swept * (2.0 - swept) + forward * s - 0.7 * tuck + 0.3 * flare;
+        let rise = -0.95 + (0.08 + 0.95) * s + flex + beat * s.max(0.4) - 0.2 * tuck + 0.35 * flare;
         // Spread, pitched up at the front so their tops face back towards the eye, rather than
         // being seen edge on
-        let bank = 0.55 * s;
+        let bank = if behind { 0.15 } else { 0.55 } * s;
+        let (out, back, down) = if behind { (0.1, 0.16, 0.24) } else { (0.32, 0.1, 0.32) };
         [1.0, -1.0].map(|side: f64| {
-            let root = view.eye + (right * 0.32 * side - ahead * 0.1 - up * 0.32) * m;
+            let root = view.eye + (right * out * side - ahead * back - up * down) * m;
             let span = (right * side * sweep.cos() * rise.cos() + ahead * sweep.sin() * rise.cos() + up * rise.sin()).normalize();
             let forward_flat = ahead * sweep.cos() - right * side * sweep.sin();
             let chord = (forward_flat - span * forward_flat.dot(&span)).try_normalize(1e-6).unwrap_or(ahead);
@@ -1218,7 +1480,9 @@ impl App {
         self.wing_poses(view, spread).into_iter().map(|(root, turn, side)| (side, root + turn * Vector3::new(SPAN * 0.95 * size, -0.15, 0.0) * m)).collect()
     }
 
-    /// The wings worn and their trail, to draw
+    /// The wings worn and their trail, to draw. Seen by a camera following behind, see
+    /// App::chase, they're on the player's back where it is, lit as the world is, rather than
+    /// held before the eye.
     pub(super) fn wing_instances(&self, view: &combat::View) -> Vec<AnimalInstance> {
         let Some(kind) = self.game.worn_wings() else {
             return Vec::new();
@@ -1227,12 +1491,14 @@ impl App {
         let first = self.game.wing_model(0);
         let models = self.game.wing_models();
         let mut out = Vec::new();
+        let on_back = combat::View { eye: view.eye - self.chase.map_or_else(Vector3::zeros, |(off, _)| off), rotation: view.rotation, tan: view.tan, vpm: view.vpm, speed: view.speed, stride: view.stride };
+        let how = if self.chase.is_some() { MOVING } else { HELD };
         // Folded right down the back they're out of sight, unless looking down
-        for (root, turn, _) in self.wing_poses(view, self.wings.spread) {
+        for (root, turn, _) in self.wing_poses(&on_back, self.wings.spread) {
             let (model, anchor) = &models[kind as usize];
             let [x, y, z] = model.size.map(|v| v as f64 / RES);
             let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * m;
-            out.push(AnimalInstance::new(first + kind as u32, root + turn * anchor * m, turn, m / RES, reach, HELD));
+            out.push(AnimalInstance::new(first + kind as u32, root + turn * anchor * m, turn, m / RES, reach, how));
         }
         for mote in &self.wings.motes {
             let size = 1.0 - mote.age / MOTE_LIFE;
@@ -1266,6 +1532,8 @@ mod tests {
             assert!((8.0..=16.0).contains(&kind.speed) && (1.0..=3.0).contains(&kind.sink) && kind.turn > 1.0, "{}", kind.name);
             assert!(kind.rarity <= 5 && kind.price > 0);
             assert!(kind.flap.is_none_or(|(lift, wait)| lift > 0.0 && wait >= 1.0), "{}", kind.name);
+            // Only the grander kinds truly fly, and sensibly
+            assert!(kind.flight.is_none_or(|l| kind.rarity >= 3 && l.climb > 1.0 && (0.3..=0.8).contains(&l.every) && l.cruise >= kind.speed && l.dive > l.cruise && l.beats >= 10.0), "{}", kind.name);
             // What it does is said on its card, and seen as it glides
             assert!(kind.perk == Perk::None || perk_text(kind.perk).is_some() && !trail(kind.perk).is_empty(), "{}", kind.name);
         }
@@ -1273,6 +1541,9 @@ mod tests {
         for id in ["roc", "harpy", "gargoyle"] {
             assert!(by_id(id).is_some(), "{id}");
         }
+        let fliers: Vec<&str> = KINDS.iter().filter(|k| k.flight.is_some()).map(|k| k.id).collect();
+        assert!((4..=6).contains(&fliers.len()), "{fliers:?}");
+        assert!(KINDS.iter().any(|k| k.flight.is_none() && k.rarity >= 3), "grand wings that only glide are still there");
         // Every trail's a mote of its own
         for t in 0..TRAIL_COUNT {
             assert!(models[KINDS.len() + t].0.voxels.iter().any(|&v| v != AIR));
@@ -1307,6 +1578,173 @@ mod tests {
         // Every kind but the royal ones can turn up somewhere
         for (k, kind) in KINDS.iter().enumerate().filter(|(_, kind)| kind.found) {
             assert!((0..2000).any(|n| pick(n as f64 / 2000.0, 8.0, |_| false) == Some(k as u8)), "{}", kind.name);
+        }
+    }
+
+    /// A flat world at 4 voxels a meter, 128 m across and 64 m high, the ground 4 m deep
+    fn flat() -> crate::worldgen::World {
+        let size = [512u32, 512, 256];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 2].fill(u128::MAX);
+        let mut world = crate::worldgen::World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        world
+    }
+
+    /// How a flight went, see fly()
+    struct Flown {
+        player: crate::player::Player,
+        beats: Wingbeats,
+        /// The highest the feet got over the ground, in meters, and how high they were after
+        /// `at` seconds
+        highest: f64,
+        at: Vec<f64>,
+        /// The least wind they had, whether they ever tired, and the fastest they flew along
+        least_wind: f64,
+        tired: bool,
+        fastest: f64,
+        /// How fast they were coming down as they touched the ground, in meters a second, the last
+        /// time they did
+        touched: Option<f64>,
+    }
+
+    /// Wings of kind `k` worn for `seconds`, 30 frames a second, from standing on flat ground, or
+    /// from `from` meters up in the air: jump held when `jump` says so, by the seconds gone and how
+    /// the flight's gone so far, looking as `look` says, as App::update_wings() has it
+    fn fly(k: u8, seconds: f64, from: Option<f64>, jump: impl Fn(f64, &Flown) -> bool, look: impl Fn(f64) -> Vector3<f64>) -> Flown {
+        let world = flat();
+        let vpm = 4.0;
+        let dt = 1.0 / 30.0;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut player = crate::player::Player::new(Vector3::new(256.0, 256.0, 7.0 * vpm), &world);
+        for _ in 0..60 {
+            player.update(&world, &dry, Vector2::zeros(), false, false, dt);
+        }
+        let ground = player.position.z;
+        if let Some(up) = from {
+            player.position.z += up * vpm;
+            player.push(Vector3::new(0.0, 0.0, 0.1));
+        }
+        let kind = &KINDS[k as usize];
+        let mut flown = Flown { player, beats: Wingbeats::default(), highest: 0.0, at: Vec::new(), least_wind: 1.0, tired: false, fastest: 0.0, touched: None };
+        let (mut was, mut falling, mut aloft) = (false, 0.0, 0.0);
+        for n in 0..(seconds / dt) as usize {
+            let t = n as f64 * dt;
+            let held = jump(t, &flown);
+            let player = &mut flown.player;
+            let pressed = held && !was;
+            was = held;
+            let airborne = !player.on_ground();
+            player.gliding = held && airborne;
+            player.glide_feel = [kind.speed, kind.sink, kind.turn];
+            if let Some(lift) = kind.flight {
+                fly_frame(player, &mut flown.beats, kind, &lift, dt, [pressed, held, held && airborne], look(t).normalize(), 1.0, false, vpm);
+            } else if pressed && airborne && let Some((lift, _)) = kind.flap {
+                player.flap(lift * vpm);
+            }
+            player.update(&world, &dry, Vector2::zeros(), held, false, dt);
+            // Coming down after a while in the air, not settling a hair onto the ground
+            aloft = if airborne { aloft + dt } else { 0.0 };
+            if airborne && player.on_ground() && aloft > 0.3 {
+                flown.touched = Some(falling / vpm);
+            }
+            falling = player.velocity().z;
+            let up = (player.position.z - ground) / vpm;
+            flown.highest = flown.highest.max(up);
+            flown.at.push(up);
+            flown.least_wind = flown.least_wind.min(flown.beats.wind);
+            flown.tired |= flown.beats.tired;
+            flown.fastest = flown.fastest.max(player.airspeed() / vpm);
+        }
+        flown
+    }
+
+    /// Looking `degrees` up, turning slowly round so they fly in circles rather than into the
+    /// edge of the world
+    fn circling(degrees: f64) -> impl Fn(f64) -> Vector3<f64> {
+        move |t: f64| {
+            let (yaw, pitch) = (0.5 * t, degrees.to_radians());
+            Vector3::new(yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin())
+        }
+    }
+
+    /// Holding jump from the ground, wings that truly fly take off and climb high, the light ones
+    /// quickest and the heavy ones flying fastest, while wings that only glide go no higher than
+    /// a jump
+    #[test]
+    fn flying_wings_climb_and_gliding_ones_dont() {
+        let mut climbed = Vec::new();
+        for (k, kind) in KINDS.iter().enumerate() {
+            let flown = fly(k as u8, 10.0, None, |_, _| true, circling(10.0));
+            match kind.flight {
+                Some(lift) => {
+                    assert!(flown.highest > 15.0, "{} climbed only {:.1} m", kind.name, flown.highest);
+                    assert!(flown.beats.flown && flown.least_wind < 0.8, "{}", kind.name);
+                    climbed.push((kind.id, flown.at[5 * 30], lift.cruise));
+                }
+                None => assert!(flown.highest < 1.5, "{} climbed {:.1} m", kind.name, flown.highest),
+            }
+        }
+        println!("climbed in 5 s: {climbed:?}");
+        let of = |id: &str| climbed.iter().find(|c| c.0 == id).copied().unwrap();
+        // The seraph's light, the roc's heavy
+        assert!(of("seraph").1 > of("roc").1 + 4.0, "{climbed:?}");
+        assert!(of("roc").2 > of("seraph").2);
+        // Pressing jump twice takes off too, but pressing it once only jumps
+        let seraph = by_id("seraph").unwrap();
+        let twice = fly(seraph, 4.0, None, |t, _| t < 0.1 || (0.3..0.4).contains(&t) || (0.7..0.8).contains(&t) || (1.1..1.2).contains(&t), circling(10.0));
+        assert!(twice.beats.flown && twice.highest > 2.0, "{:.1} m", twice.highest);
+        let once = fly(seraph, 4.0, None, |t, _| t < 0.1, circling(10.0));
+        assert!(!once.beats.flown && once.highest < 1.5, "{:.1} m", once.highest);
+        // Flying on level they speed up to their cruise, and a dive's faster still
+        let level = fly(by_id("roc").unwrap(), 12.0, Some(30.0), |t, _| t < 0.1, circling(0.0));
+        let dive = fly(by_id("roc").unwrap(), 3.0, Some(40.0), |t, _| t < 0.1, circling(-45.0));
+        assert!(level.fastest > 17.0 && dive.fastest > level.fastest, "{:.1} {:.1}", level.fastest, dive.fastest);
+    }
+
+    /// Beating drains the wings' wind till they tire, gliding gives a little back and the ground
+    /// all of it; tired, holding jump glides them down gently, and letting go they fall hard
+    #[test]
+    fn the_wind_drains_and_comes_back() {
+        let storm = by_id("stormcaller").unwrap();
+        // Held till they've tired and glided back down to the ground, then let go
+        let flown = fly(storm, 32.0, None, |_, f| !(f.tired && f.touched.is_some()), circling(12.0));
+        assert!(flown.tired && flown.least_wind < 0.06, "{:.2}", flown.least_wind);
+        // Tired, held, they glide down, gently, and once down get their wind back
+        assert!(flown.touched.is_some_and(|v| v > -FALL_SPEED), "{:?}", flown.touched);
+        assert!(flown.player.on_ground() && flown.beats.wind > 0.95, "{:.2}", flown.beats.wind);
+        // Up on them, letting go of jump glides on, the wind slowly coming back
+        let mut beats = Wingbeats { up: true, wind: 0.5, ..Default::default() };
+        let lift = KINDS[storm as usize].flight.unwrap();
+        for _ in 0..60 {
+            assert!(!beats.step(&lift, 1.0 / 30.0, true, false, false, false));
+        }
+        assert!(beats.up && beats.wind > 0.5 && beats.wind < 0.6, "{:.3}", beats.wind);
+        for _ in 0..90 {
+            beats.step(&lift, 1.0 / 30.0, false, false, false, false);
+        }
+        assert!(!beats.up && beats.wind > 0.99, "{:.2}", beats.wind);
+        // Tired high up, letting go they fold and fall hard, and it hurts
+        let fell = fly(storm, 16.0, None, |_, f| !f.tired, circling(25.0));
+        let speed = fell.touched.expect("came down");
+        assert!(fell.highest > 15.0 && speed < -FALL_SPEED, "{:.1} m, {speed:.1} m/s", fell.highest);
+        assert!(fall_damage(fell.highest) > 20.0);
+        assert_eq!(fall_damage(FALL_FROM), 0.0);
+        assert_eq!(fall_damage(500.0), FALL_MOST);
+    }
+
+    /// However long they beat, the feet never go higher than the sky's limit, under the top of
+    /// the world
+    #[test]
+    fn the_sky_has_a_ceiling() {
+        let world = flat();
+        let ceiling = (world.size[2] as f64 / 4.0) - crate::player::CEILING;
+        for id in ["seraph", "roc"] {
+            let flown = fly(by_id(id).unwrap(), 20.0, Some(40.0), |_, _| true, circling(30.0));
+            // From over the ground, 4 m deep
+            let top = flown.highest + 4.0;
+            assert!(top <= ceiling + 0.1 && top > ceiling - 1.5, "{id}: {top:.2} m, the limit {ceiling} m");
         }
     }
 
