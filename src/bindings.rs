@@ -750,6 +750,7 @@ fn rows(group: Group) -> Vec<Row> {
         Group::Wings => vec![
             Same("Glide", "Jump, then hold in the air to glide", Jump),
             Same("Flap", "Wings that flap: press in the air", Jump),
+            Same("Fly", "Wings that truly fly: hold, or press twice, to take off, then press or hold to beat them; steer by looking", Jump),
             Same("Dash", "Wings that dash: press while gliding", Run),
             Note("Merchants sell wings; bosses and chests leave them. Wear them from the inventory."),
         ],
