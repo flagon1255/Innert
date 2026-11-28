@@ -11,9 +11,9 @@ use crate::animals::{AnimalInstance, MODEL_RES, MOVING, Model, STILL, cuboid, vo
 use crate::player::WaterLevel;
 use crate::worldgen::{World, is_passable, material::*};
 
-/// Leaves that fall: all the shades of broad-leaved crowns, and the blossom in them. Pines keep
-/// their needles.
-const KINDS: [u8; 14] = [
+/// Leaves that fall: all the shades of broad-leaved crowns, a larch's gold needles, the blossom in
+/// them and the frost of rime trees. Pines keep their needles.
+const KINDS: [u8; 16] = [
     LEAVES,
     LEAVES_DARK,
     LEAVES_YELLOW,
@@ -28,6 +28,8 @@ const KINDS: [u8; 14] = [
     FLOWER_YELLOW,
     FLOWER_WHITE,
     FLOWER_PINK,
+    FLOWER_PURPLE,
+    FLOWER_BLUE,
 ];
 /// One model of a single voxel for each material, see Leaves::models: up to the last material
 const MATERIALS: u8 = LAST + 1;
@@ -35,19 +37,21 @@ const MATERIALS: u8 = LAST + 1;
 const LOWEST: f64 = 1.2;
 /// Voxels per meter of a leaf: a single voxel the size of the world's
 const RES: f64 = MODEL_RES;
-/// Leaves fall within this many meters of the camera
+/// Leaves fall within this many meters of the camera, most of them ahead of it and nearer than
+/// that, where they're seen: AHEAD of them within a third of a turn either side of the way it looks
 const RANGE: f64 = 24.0;
+const AHEAD: f64 = 0.75;
 /// The most there are at once, and of debris
-const MOST: usize = 90;
+const MOST: usize = 140;
 const MOST_DEBRIS: usize = 160;
 /// How many spots a second are looked at for a tree to drop a leaf, and when the world's new
-const TRIES: f64 = 80.0;
-const WARM_TRIES: usize = 600;
+const TRIES: f64 = 120.0;
+const WARM_TRIES: usize = 900;
 /// Meters a second
 const FALL_SPEED: f64 = 0.6;
 const WIND: f64 = 0.35;
-/// Seconds a leaf lies where it landed before it's gone
-const LIE: f64 = 8.0;
+/// Seconds a leaf lies where it landed before it's gone, so most of those about are still falling
+const LIE: f64 = 4.0;
 
 struct Leaf {
     position: Vector3<f64>,
@@ -85,6 +89,10 @@ pub struct Leaves {
     fresh: bool,
     time: f64,
     rng: u32,
+    /// Whether falling leaves are drawn, as the settings say: on unless they're turned off, see
+    /// set_falling(). They're still kept track of, as the birds sing where they fall, and debris
+    /// flies either way.
+    falling: bool,
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -104,7 +112,12 @@ impl Leaves {
     pub fn new(seed: u32) -> Self {
         let voxel = 1.0 / RES;
         let models = (0..MATERIALS).map(|m| voxelize(&[cuboid([0.0; 3], [voxel; 3], m)], RES).0).collect();
-        Leaves { leaves: Vec::new(), models, tries: 0.0, fresh: true, time: 0.0, rng: hash(seed ^ 0x1eaf) }
+        Leaves { leaves: Vec::new(), models, tries: 0.0, fresh: true, time: 0.0, rng: hash(seed ^ 0x1eaf), falling: true }
+    }
+
+    /// Shows the falling leaves or hides them
+    pub fn set_falling(&mut self, on: bool) {
+        self.falling = on;
     }
 
     pub fn clear(&mut self) {
@@ -162,9 +175,11 @@ impl Leaves {
         Vector3::new(angle.cos(), angle.sin(), 0.0) * strength * vpm
     }
 
-    pub fn update(&mut self, world: &World, water: WaterLevel, camera: Vector3<f64>, dt: f64) {
+    /// `dt` seconds on, with the camera at `camera` looking along `forward`
+    pub fn update(&mut self, world: &World, water: WaterLevel, camera: Vector3<f64>, forward: Vector3<f64>, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
         self.time += dt;
+        let heading = forward.y.atan2(forward.x);
 
         // Trees near the camera let go of a leaf now and then. In a new world there are some
         // falling already.
@@ -172,7 +187,7 @@ impl Leaves {
             self.fresh = false;
             for _ in 0..WARM_TRIES {
                 if self.count() < MOST / 2 {
-                    self.drop_leaf(world, camera, true);
+                    self.drop_leaf(world, camera, heading, true);
                 }
             }
         }
@@ -180,7 +195,7 @@ impl Leaves {
         while self.tries >= 1.0 {
             self.tries -= 1.0;
             if self.count() < MOST {
-                self.drop_leaf(world, camera, false);
+                self.drop_leaf(world, camera, heading, false);
             }
         }
 
@@ -254,12 +269,17 @@ impl Leaves {
         });
     }
 
-    /// Tries a random spot near the camera: if there's a tree crown over it, a leaf falls from
+    /// Tries a random spot near the camera, most often ahead of it, `heading` being the way it
+    /// looks, in radians round from x: if there's a tree crown over it, a leaf falls from
     /// underneath it. With `anywhere`, from anywhere on the way down.
-    fn drop_leaf(&mut self, world: &World, camera: Vector3<f64>, anywhere: bool) {
+    fn drop_leaf(&mut self, world: &World, camera: Vector3<f64>, heading: f64, anywhere: bool) {
         let vpm = world.voxels_per_meter as f64;
-        let angle = random(&mut self.rng) * TAU;
-        let distance = random(&mut self.rng).sqrt() * RANGE * vpm;
+        let (angle, distance) = if random(&mut self.rng) < AHEAD {
+            // Ahead, nearer on the whole, where they're seen falling
+            (heading + (random(&mut self.rng) - 0.5) * TAU / 3.0, random(&mut self.rng).powf(0.7) * RANGE * 0.75 * vpm)
+        } else {
+            (random(&mut self.rng) * TAU, random(&mut self.rng).sqrt() * RANGE * vpm)
+        };
         let (x, y) = (camera.x + angle.cos() * distance, camera.y + angle.sin() * distance);
         let (xi, yi) = (x.floor() as i64, y.floor() as i64);
         if xi < 0 || yi < 0 || xi >= world.size[0] as i64 || yi >= world.size[1] as i64 {
@@ -311,12 +331,15 @@ impl Leaves {
     }
 
     /// What to draw, `first_model` being where the leaf models are in the buffer of all models:
-    /// what explosions blew out first, as there's less room for them than for the leaves
+    /// what explosions blew out first, as there's less room for them than for the leaves, then
+    /// the leaves still falling, then those lying where they landed
     pub fn instances(&self, first_model: u32, vpm: f64) -> Vec<AnimalInstance> {
         let debris = self.leaves.iter().filter(|l| l.velocity.is_some());
-        let leaves = self.leaves.iter().filter(|l| l.velocity.is_none());
+        let falling = self.leaves.iter().filter(|l| l.velocity.is_none() && l.landed.is_none() && self.falling);
+        let lying = self.leaves.iter().filter(|l| l.velocity.is_none() && l.landed.is_some() && self.falling);
         debris
-            .chain(leaves)
+            .chain(falling)
+            .chain(lying)
             .map(|leaf| {
                 // Shrinking away at the end
                 let shrink = leaf.landed.map_or(1.0, |left| left.clamp(0.0, 1.0));
@@ -328,5 +351,56 @@ impl Leaves {
                 AnimalInstance::new(first_model + leaf.material as u32, at, leaf.turn, scale, vpm / RES * 1.5 * leaf.size, kind)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wood 32 meters across, its ground a meter deep, and over half of it crowns of autumn
+    /// leaves two meters thick, four meters up, in blocks of four meters with gaps between
+    fn wood() -> World {
+        let size = [512u32, 512, 160];
+        let mut world = World::window(size, 0, [0, 0], 16, None);
+        for by in 0..64 {
+            for bx in 0..64 {
+                for bz in 0..2 {
+                    world.set_brick([bx, by, bz], &[STONE; 512]);
+                }
+                if (bx / 8 + by / 8) % 2 == 0 {
+                    for bz in 8..12 {
+                        world.set_brick([bx, by, bz], &[LEAVES_RED; 512]);
+                    }
+                }
+            }
+        }
+        world
+    }
+
+    /// Leaves fall from the start, nothing to turn on, most of them ahead of the camera and
+    /// still falling, some lying where they've landed; and hidden, none are drawn, though they
+    /// go on falling, as the birds sing where they do
+    #[test]
+    fn leaves_fall_by_default_ahead_of_the_camera() {
+        let world = wood();
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut leaves = Leaves::new(7);
+        let (camera, forward) = (Vector3::new(256.0, 256.0, 16.0 + 27.0), Vector3::x());
+        for _ in 0..600 {
+            leaves.update(&world, &dry, camera, forward, 1.0 / 60.0);
+        }
+        let drawn = leaves.instances(0, 16.0);
+        let falling: Vec<&Leaf> = leaves.leaves.iter().filter(|l| l.velocity.is_none() && l.landed.is_none()).collect();
+        let ahead = falling.iter().filter(|l| (l.position - camera).x > 0.0).count();
+        println!("{} leaves, {} falling, {ahead} of them ahead, {} drawn", leaves.count(), falling.len(), drawn.len());
+        assert!(falling.len() >= 50, "{} falling", falling.len());
+        assert!(ahead * 3 >= falling.len() * 2, "{ahead} of {} ahead", falling.len());
+        assert_eq!(drawn.len(), leaves.count());
+        assert!(falling.iter().all(|l| l.material == LEAVES_RED));
+        leaves.set_falling(false);
+        leaves.update(&world, &dry, camera, forward, 1.0 / 60.0);
+        assert!(leaves.instances(0, 16.0).is_empty());
+        assert!(leaves.count() > 0, "still kept track of");
     }
 }

@@ -58,6 +58,9 @@ pub struct Settings {
     pub bounce_light: bool,
     pub smooth_shading: bool,
     pub wind: bool,
+    /// Leaves drifting down from the trees round the camera, see leaves.rs: on in every preset, as
+    /// they cost next to nothing, a few dozen single voxels
+    pub falling_leaves: bool,
     pub denoise: bool,
     pub bloom: f32,
     /// How the sun shafts in the haze are drawn, see shafts.rs
@@ -109,6 +112,7 @@ impl Preset {
             bounce_light: true,
             smooth_shading: true,
             wind: true,
+            falling_leaves: true,
             denoise: true,
             bloom: 0.3,
             sun_shafts: shafts::Quality::High,
@@ -252,11 +256,56 @@ pub fn keep(preset: Preset) {
     let _ = std::fs::write(file, preset.name());
 }
 
+fn leaves_file() -> PathBuf {
+    kept_file().with_file_name("leaves.txt")
+}
+
+/// Whether the falling leaves were turned on or off in the settings in an earlier run, kept in
+/// %LOCALAPPDATA%\Innert\leaves.txt: None if they never were, so they're as the preset has them,
+/// on. Screenshot runs go by the preset alone.
+pub fn kept_leaves() -> Option<bool> {
+    if std::env::args().any(|a| a == "--screenshot") {
+        return None;
+    }
+    leaves_said(&std::fs::read_to_string(leaves_file()).ok()?)
+}
+
+fn leaves_said(text: &str) -> Option<bool> {
+    match text.trim() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Keeps the falling leaves turned on or off for the next run, as they've just been in the settings
+pub fn keep_leaves(on: bool) {
+    let file = leaves_file();
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, if on { "on" } else { "off" });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const GB: u64 = 1 << 30;
+
+    /// Leaves fall in every preset, the low ones too, unless they've been turned off in the
+    /// settings: and a settings folder with nothing in it says nothing either way
+    #[test]
+    fn leaves_fall_by_default() {
+        for p in Preset::ALL {
+            assert!(p.settings().falling_leaves, "{}", p.name());
+        }
+        assert_eq!(leaves_said(""), None);
+        assert_eq!(leaves_said("off\r\n"), Some(false));
+        assert_eq!(leaves_said("on"), Some(true));
+        assert_eq!(leaves_file().file_name().unwrap(), "leaves.txt");
+        assert_eq!(leaves_file().parent(), kept_file().parent());
+    }
 
     #[test]
     fn cards_get_the_presets_that_suit_them() {

@@ -1406,6 +1406,8 @@ struct App {
     smooth_shading: bool,
     // Leaves and flowers swaying in the wind
     wind: bool,
+    // Leaves drifting down from the trees round about, see leaves.rs
+    falling_leaves: bool,
     sunbeams: bool,
     // Density of the haze near the ground, per meter
     haze: f32,
@@ -1987,6 +1989,11 @@ impl Placed {
         println!("Memory plan: {memory:?}");
         if let Some(v) = setting("tufts") {
             terrain.grass_tufts = v == "true" || v == "1";
+        }
+        // `--set land_seed=0xF2000001` starts on the land of that seed, as the dreaming realm's, for
+        // looking at what grows there with `at=` or `biome=`
+        if let Some(seed) = setting("land_seed").and_then(|v| v.strip_prefix("0x").map_or_else(|| v.parse().ok(), |h| u32::from_str_radix(h, 16).ok())) {
+            terrain.seed = seed;
         }
         let rivers = Arc::new(RiverCache::default());
         // For trying out a dungeon: `--set dungeon=1` starts at the way into the nearest one
@@ -2702,7 +2709,11 @@ impl App {
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
             game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));
         }
+        // and `--set weapon=none` with nothing in hand, for looking at what's about
         if let Some(family) = setting("weapon") {
+            if family == "none" {
+                game.empty_hands();
+            }
             game.select_family(family);
         }
         // `--set blast_size=0.5` has every gun's shell burst that big next to the usual, for a
@@ -3074,6 +3085,8 @@ impl App {
             bounce_light: flag("bounce", preset.bounce_light),
             smooth_shading: flag("smooth", preset.smooth_shading),
             wind: flag("wind", preset.wind),
+            // `--set leaves=0` hides the falling leaves, as turning them off in the settings does
+            falling_leaves: flag("leaves", quality::kept_leaves().unwrap_or(preset.falling_leaves)),
             sunbeams: flag("sunbeams", false),
             denoise: flag("denoise", preset.denoise),
             color_grade: flag("grade", true),
@@ -3331,8 +3344,14 @@ impl App {
         }
         // For checking how trees look: `--set view_tree=3` looks at the third tree nearest the start,
         // from `--set view_distance=12` meters away or far enough to see all of it
+        // nearest `--set view_tree_near=x,y` in meters of the landscape if that's given
         if let Some(n) = setting("view_tree").and_then(|v| v.parse::<usize>().ok()) {
-            let start = camera_to_voxels(app.camera.position, app.world.size);
+            let mut start = camera_to_voxels(app.camera.position, app.world.size);
+            if let Some(near) = setting("view_tree_near").map(|v| v.split(',').filter_map(|n| n.trim().parse::<f64>().ok()).collect::<Vec<f64>>()).filter(|p| p.len() == 2) {
+                let vpm = app.world.voxels_per_meter as f64;
+                start.x = near[0] * vpm - app.world.origin[0] as f64;
+                start.y = near[1] * vpm - app.world.origin[1] as f64;
+            }
             if let Some(&(foot, height, reach)) = app.trees_near(start, 30.0).get(n.saturating_sub(1)) {
                 let vpm = app.world.voxels_per_meter as f64;
                 let distance = setting("view_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or((height * 1.1).max(reach * 2.0) + 3.0);
@@ -4652,6 +4671,7 @@ impl App {
             let view = self.view();
             let start = Instant::now();
             self.tell_sea();
+            self.game.show_falling_leaves(self.falling_leaves);
             let water = &self.water;
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
@@ -4972,6 +4992,8 @@ impl App {
         self.bounce_light = s.bounce_light;
         self.smooth_shading = s.smooth_shading;
         self.wind = s.wind;
+        // Unless they've been turned on or off themselves
+        self.falling_leaves = quality::kept_leaves().unwrap_or(s.falling_leaves);
         self.denoise = s.denoise;
         self.bloom = s.bloom;
         self.view_distance = s.view_distance;
@@ -5064,11 +5086,12 @@ impl App {
             // and `pitch` degrees up, holding each `--set tour_hold=3` seconds with a shot at its
             // end. With `--set tour_speed=20` it flies there that many meters a second, so the world
             // moves on a strip at a time on the way, rather than going there at once. For looking the
-            // water over from everywhere it's seen, see water.rs.
+            // water over from everywhere it's seen, see water.rs. A view of just `x,y` looks at the
+            // tree nearest there, whole, as `--set view_tree=` does.
             ("tour", f) => {
                 let settings = settings_from_args();
                 let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
-                let views: Vec<Vec<f64>> = setting("tour").unwrap_or_default().split(';').map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect::<Vec<f64>>()).filter(|v| v.len() == 5).collect();
+                let views: Vec<Vec<f64>> = setting("tour").unwrap_or_default().split(';').map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect::<Vec<f64>>()).filter(|v| v.len() == 5 || v.len() == 2).collect();
                 let hold = setting("tour_hold").and_then(|v| v.parse().ok()).unwrap_or(3.0);
                 let speed: Option<f64> = setting("tour_speed").and_then(|v| v.parse().ok());
                 if f <= 1 {
@@ -5088,7 +5111,9 @@ impl App {
                     let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(x as i64, y as i64, z))).map_or(0.0, |z| z as f64 + 1.0);
                     ground.max(self.water.surface_at(x, y))
                 };
-                let there = Vector3::new(spot.x, spot.y, top(spot.x, spot.y) + view[2] * vpm);
+                let trees = view.len() == 2;
+                let (up, face, pitch) = if trees { (6.0, 0.0, 0.0) } else { (view[2], view[3], view[4]) };
+                let there = Vector3::new(spot.x, spot.y, top(spot.x, spot.y) + up * vpm);
                 let to = there - eye;
                 let arrived = self.play.leg_end.is_finite();
                 if !arrived {
@@ -5098,22 +5123,28 @@ impl App {
                     };
                     let mut at = eye + step;
                     // Over the land on the way, and down to the view's height once there
-                    at.z = if step.xy().norm() < to.xy().norm() { (top(at.x, at.y) + view[2].max(6.0) * vpm).min(self.world.size[2] as f64 - 2.0 * vpm) } else { there.z };
+                    at.z = if step.xy().norm() < to.xy().norm() { (top(at.x, at.y) + up.max(6.0) * vpm).min(self.world.size[2] as f64 - 2.0 * vpm) } else { there.z };
                     self.camera.position = voxels_to_camera(at, self.world.size);
-                    self.camera.rotation.z = view[3].to_radians() - std::f64::consts::FRAC_PI_2;
-                    self.camera.rotation.x = view[4].to_radians();
+                    self.camera.rotation.z = face.to_radians() - std::f64::consts::FRAC_PI_2;
+                    self.camera.rotation.x = pitch.to_radians();
                     if (at - there).xy().norm() < 0.5 && !self.stream.as_ref().is_some_and(|s| s.teleport.is_some()) {
                         self.play.leg_end = run_time + hold;
                         println!("frame {frame}: tour view {} at {:.1}, {:.1}, {:.1} m up", self.play.leg, view[0], view[1], at.z / vpm);
+                        if trees && let Some(&(foot, height, reach)) = self.trees_near(there, 12.0).first() {
+                            println!("looking at a tree {height:.1} m high, {reach:.1} m round");
+                            self.view_tree(foot, height, reach, (height * 1.1).max(reach * 2.0) + 3.0);
+                        }
                     }
-                } else {
+                } else if !trees {
                     // Kept there, as the water under it may still be moving
                     self.camera.position = voxels_to_camera(Vector3::new(there.x, there.y, eye.z), self.world.size);
+                }
+                if arrived {
                     if run_time >= self.play.leg_end {
                         if let Some(capture) = &mut self.capture {
                             capture.shots.push(f + 2);
                         }
-                        println!("frame {frame}: tour shot {} at frame {}", self.play.leg, f + 2);
+                        println!("frame {frame}: tour shot {} at frame {}, {} leaves falling", self.play.leg, f + 2, self.game.leaves_falling());
                         self.water.report(&self.command_buffer_allocator, &self.queue);
                         self.play.leg += 1;
                         self.play.leg_end = f64::INFINITY;
@@ -6490,6 +6521,9 @@ impl App {
                         ui.checkbox(&mut self.bounce_light, "Bounce Light");
                         ui.checkbox(&mut self.smooth_shading, "Smooth Voxel Shading");
                         ui.checkbox(&mut self.wind, "Wind in the Leaves");
+                        if ui.checkbox(&mut self.falling_leaves, "Falling Leaves").changed() {
+                            quality::keep_leaves(self.falling_leaves);
+                        }
                         ui.add(egui::Slider::new(&mut self.haze, 0.0..=0.06).text("Haze"));
                         ui.checkbox(&mut self.grass, "Smooth Grass Blades (not voxels)");
                         ui.checkbox(&mut self.sunbeams, "Sunbeams Through the Haze");

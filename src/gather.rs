@@ -57,6 +57,26 @@ pub fn is_crown(material: u8) -> bool {
     matches!(material, LEAVES | LEAVES_DARK | LEAVES_YELLOW | LEAVES_ORANGE | LEAVES_RED | LEAVES_LIME | LEAVES_CRIMSON | PINE | WILLOW | PALM_LEAF | BLOSSOM | VINE | MUSHROOM_CAP)
 }
 
+/// What's found up in a tree's crown as well as on the ground: the fresh tips of its leaves, its
+/// blossom, and snow lying on its boughs, taken with the tree only where it's up on it, see
+/// up_on_tree()
+fn speckle(material: u8) -> bool {
+    matches!(material, FERN | FLOWER_RED | FLOWER_YELLOW | FLOWER_PURPLE | FLOWER_WHITE | FLOWER_BLUE | FLOWER_PINK | SNOW)
+}
+
+/// Whether `v`, of `material`, one of speckle()'s, is up on a tree rather than on the ground: the
+/// first thing under it that isn't more of it, or blossom or snow of another kind, is air, leaves
+/// or wood, not the ground or a roof
+fn up_on_tree(world: &World, v: [i64; 3], material: u8) -> bool {
+    for z in (v[2] - 48..v[2]).rev() {
+        let below = world.material_at(v[0], v[1], z);
+        if below != material && !speckle(below) {
+            return below == AIR || is_crown(below) || is_trunk(below);
+        }
+    }
+    false
+}
+
 /// Seconds of holding G it takes bare hands to gather a block of what a voxel's made of, or with
 /// `tree` a whole tree; a tool for it takes a half, a third or a quarter of it, see tools::SPEED
 pub fn work_seconds(y: Yield, tree: bool) -> f64 {
@@ -128,9 +148,11 @@ pub struct Tree {
     pub leaf: Option<u8>,
 }
 
-/// How far out from its trunk a tree's searched, and how high, in meters
+/// How far out from where it's hit a tree's wood is searched, and how high, in meters, and how far
+/// out from its trunk its leaves are at the most, as an ancient giant's are
 const TREE_REACH_M: f64 = 7.0;
 const TREE_HEIGHT_M: f64 = 32.0;
+const CROWN_M: f64 = 9.5;
 /// The most of its wood a tree's let have, in voxels, so a building of wood isn't taken for one
 const TREE_MOST: usize = 120_000;
 /// Voxels of wood for each piece of wood it gives
@@ -183,9 +205,10 @@ pub fn tree_at(world: &World, hit: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -
         }
     }
     let is_wood = |v: [i64; 3]| slot(v).is_some_and(|k| seen[k / 64] >> (k % 64) & 1 != 0 && is_trunk(world.material_at(v[0], v[1], v[2])) && !built(v));
-    // Standing on the ground, not up in a wall
+    // Standing on the ground, not up in a wall: somewhere in its lowest meter, as on a slope the
+    // tip of a root can end in the air over the ground falling away
     let base = wood.iter().map(|v| v[2]).min()?;
-    let grounded = wood.iter().filter(|v| v[2] == base).any(|v| {
+    let grounded = wood.iter().filter(|v| v[2] < base + vpm).any(|v| {
         let below = world.material_at(v[0], v[1], v[2] - 1);
         !is_passable(below) && !is_trunk(below)
     });
@@ -197,14 +220,21 @@ pub fn tree_at(world: &World, hit: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -
     let low: Vec<&[i64; 3]> = wood.iter().filter(|v| v[2] < base + vpm * 3 / 2).collect();
     let axis = [low.iter().map(|v| v[0] as f64).sum::<f64>() / low.len() as f64, low.iter().map(|v| v[1] as f64).sum::<f64>() / low.len() as f64];
     let spread = wood.iter().map(|v| ((v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2)).sqrt()).fold(0.0, f64::max);
-    let crown = (spread + 3.5 * vpm as f64).min(reach as f64);
+    // Its leaves reach as far out as its wood does and a mass of leaves more, looked for round its
+    // trunk rather than where it was hit
+    let crown = (spread + 3.5 * vpm as f64).min(CROWN_M * vpm as f64);
+    let around = |extra: f64| {
+        let r = (crown + extra * vpm as f64).ceil() as i64;
+        ([axis[0] as i64 - r, axis[1] as i64 - r], [axis[0] as i64 + r, axis[1] as i64 + r])
+    };
     // Other trees' trunks round about, a metre or two up, each by its middle, so their leaves are
     // left them
     let mut found: Vec<([f64; 2], f64)> = Vec::new();
+    let (olo, ohi) = around(3.0);
     for up in [vpm, 2 * vpm] {
         let z = base + up;
-        for y in (lo[1]..=hi[1]).step_by(2) {
-            for x in (lo[0]..=hi[0]).step_by(2) {
+        for y in (olo[1]..=ohi[1]).step_by(2) {
+            for x in (olo[0]..=ohi[0]).step_by(2) {
                 let p = [x, y, z];
                 if !is_trunk(world.material_at(x, y, z)) || is_wood(p) || built(p) {
                     continue;
@@ -222,44 +252,81 @@ pub fn tree_at(world: &World, hit: [i64; 3], built: &dyn Fn([i64; 3]) -> bool) -
         }
     }
     let others: Vec<[f64; 2]> = found.iter().map(|(sum, n)| [sum[0] / n, sum[1] / n]).collect();
-    // Its leaves: looked for only in the bricks with any, which are marked
+    // Its leaves: looked for in the bricks with any, which are marked, and with them its blossom,
+    // the snow on its boughs, and the twigs in among its leaves not joined to the rest of its wood.
+    // If there's snow on it, the bricks with none are looked through for snow lying on its wood.
     let mut cut = Cut::new();
     let mut leaf = None;
-    let blo = [lo[0].div_euclid(8), lo[1].div_euclid(8), (base + vpm).div_euclid(8)];
-    let bhi = [hi[0].div_euclid(8), hi[1].div_euclid(8), (top + 6 * vpm).div_euclid(8)];
+    let (clo, chi) = around(0.0);
+    let blo = [clo[0].div_euclid(8), clo[1].div_euclid(8), (base + vpm).div_euclid(8)];
+    let bhi = [chi[0].div_euclid(8), chi[1].div_euclid(8), (top + 6 * vpm).div_euclid(8)];
     let size = world.size.map(|n| n as i64);
+    let mut snowy = wood.iter().filter(|v| v[2] > top - vpm).any(|v| world.material_at(v[0], v[1], v[2] + 1) == SNOW);
+    let mut bare = Vec::new();
+    let mut look = |b: [i64; 3], foliage: bool, cut: &mut Cut, snowy: &mut bool| {
+        // Gathered for the brick, then put in the cut at once, rather than looked up again for
+        // each voxel; and compared by squared distance
+        let mut here = Vec::new();
+        for k in 0..512i64 {
+            let v = [b[0] * 8 + k % 8, b[1] * 8 + (k / 8) % 8, b[2] * 8 + k / 64];
+            let m = world.material_at(v[0], v[1], v[2]);
+            let crowned = foliage && is_crown(m);
+            let twig = foliage && is_trunk(m) && !is_wood(v);
+            if !crowned && !twig && !((foliage || m == SNOW) && speckle(m)) {
+                continue;
+            }
+            let d = (v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2);
+            if d > crown * crown || others.iter().any(|o| (v[0] as f64 - o[0]).powi(2) + (v[1] as f64 - o[1]).powi(2) < d) || built(v) {
+                continue;
+            }
+            // A twig in among its leaves: leaves within a couple of voxels of it
+            if twig && !(-2..=2).any(|dz| (-2..=2).any(|dy| (-2..=2).any(|dx| is_crown(world.material_at(v[0] + dx, v[1] + dy, v[2] + dz))))) {
+                continue;
+            }
+            if !crowned && !twig && !up_on_tree(world, v, m) {
+                continue;
+            }
+            *snowy |= m == SNOW;
+            here.push(k as usize);
+            if crowned {
+                leaf.get_or_insert(m);
+            }
+        }
+        if !here.is_empty() {
+            cut.entry(b).or_default().extend(here);
+        }
+    };
     for bz in blo[2].max(0)..=bhi[2].min(size[2] / 8 - 1) {
         for by in blo[1].max(0)..=bhi[1].min(size[1] / 8 - 1) {
             for bx in blo[0].max(0)..=bhi[0].min(size[0] / 8 - 1) {
                 let cell = world.brick_grid[world.cell([bx, by, bz])];
                 let solid_crown = cell & crate::worldgen::SOLID_BRICK != 0 && is_crown(cell as u8);
-                if !solid_crown && (cell & FOLIAGE_BRICK == 0 || cell & (crate::worldgen::SOLID_BRICK | crate::worldgen::EMPTY_BRICK) != 0) {
+                if !solid_crown && cell & (crate::worldgen::SOLID_BRICK | crate::worldgen::EMPTY_BRICK) != 0 {
                     continue;
                 }
-                // Gathered for the brick, then put in the cut at once, rather than looked up again
-                // for each voxel; and compared by squared distance
-                let mut here = Vec::new();
-                for k in 0..512i64 {
-                    let v = [bx * 8 + k % 8, by * 8 + (k / 8) % 8, bz * 8 + k / 64];
-                    let m = world.material_at(v[0], v[1], v[2]);
-                    if !is_crown(m) {
-                        continue;
-                    }
-                    let d = (v[0] as f64 - axis[0]).powi(2) + (v[1] as f64 - axis[1]).powi(2);
-                    if d > crown * crown || others.iter().any(|o| (v[0] as f64 - o[0]).powi(2) + (v[1] as f64 - o[1]).powi(2) < d) || built(v) {
-                        continue;
-                    }
-                    here.push(k as usize);
-                    leaf.get_or_insert(m);
-                }
-                if !here.is_empty() {
-                    cut.entry([bx, by, bz]).or_default().extend(here);
+                if solid_crown || cell & FOLIAGE_BRICK != 0 {
+                    look([bx, by, bz], true, &mut cut, &mut snowy);
+                } else {
+                    bare.push([bx, by, bz]);
                 }
             }
         }
     }
+    if snowy {
+        for b in bare {
+            look(b, false, &mut cut, &mut snowy);
+        }
+    }
+    // Moss growing on its bark, and nothing else's, as an old tree's trunk is speckled with it
+    let mut moss = HashSet::new();
     for &v in &wood {
         add_to(&mut cut, v);
+        for d in [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] {
+            let n = [v[0] + d[0], v[1] + d[1], v[2] + d[2]];
+            if n[2] >= base && world.material_at(n[0], n[1], n[2]) == MOSS && !built(n) && moss.insert(n) {
+                add_to(&mut cut, n);
+            }
+        }
     }
     let wood_count = wood.len();
     Some(Tree {
