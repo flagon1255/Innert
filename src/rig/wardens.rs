@@ -535,7 +535,7 @@ pub(super) fn animate(r: &mut Rig, m: &Moment) {
             // Her abdomen hung off the back of her hips, raised over her as she says
             let pelvis = r.bones[PELVIS];
             let raise = s.more[RAISE];
-            let turn = pelvis.turn * ry(0.25 - 0.75 * raise);
+            let turn = pelvis.turn * ry(-0.2 + 0.9 * raise);
             let at = pelvis.at + pelvis.turn * V::new(-0.14, 0.0, 0.06);
             r.bones[ABDOMEN] = Bone::new(at, turn);
             r.sockets.cast = at + turn * V::new(-1.2, 0.0, -0.12);

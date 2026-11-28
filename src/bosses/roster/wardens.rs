@@ -122,7 +122,7 @@ pub(crate) fn skin(look: Look) -> Skin {
         // Grey fur, rock in its hide, crystals out of its back glowing, the pale bone of its claws
         Look::Gloamdelver => make(FUR_GRAY, ROCK, CRYSTAL, GLOW_ARCANE, BONE),
         // Peat, darker mud, moss over it, the bog's venom glowing through, reeds growing out of it
-        _ => make(DIRT, CLAY, MOSS, GLOW_POISON, REED),
+        _ => make(DIRT, BARK_DARK, MOSS, GLOW_POISON, REED),
     }
 }
 
