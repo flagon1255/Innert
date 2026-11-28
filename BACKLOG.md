@@ -52,6 +52,9 @@ cut off by a restart).
 12. **More tree variety; falling leaves on by default** (2026-11-28, "Add more tree variety, leaf
     falling should enabled by default"). RUNNING in `trees2` from 484fd897+.
 
+13. **A slimmer targeting circle** (2026-11-28, "Change the targeting circle, it covers too much",
+    "make it slimmer maybe"). RUNNING in `aimring`.
+
 ## Loose ends (found along the way, not yet asked for)
 
 - Distant explosions may not be drawn: the game draws at most 140 objects a frame, nearest first,
