@@ -42,6 +42,7 @@ impl Game {
             };
             if let Some(state) = &mut demi.boss {
                 state.key = lair.key;
+                state.demi = true;
             }
             demi.demi = Some(kind);
             // As tough as four of its kind before its level, see Game::update()
@@ -133,6 +134,8 @@ mod tests {
         assert!((3.0..=5.0).contains(&(demi.max_health / levels::MONSTER_HEALTH)) && demi.max_health > demi.look.health() * 2.0, "{}", demi.max_health);
         assert_eq!(game.slain(demi), Slain::Demi);
         assert!(demi.grown() > 1.0 && demi.instance(4).sphere().1 > demi.look.reach() * 4.0);
+        // Struck wherever it shows, as big as it's grown
+        assert!((demi.body().1 / demi.look.body().1 - demi.grown()).abs() < 1e-9 && demi.body().0 > demi.look.body().0);
         let name = demis::name(demi.demi.unwrap(), key);
         // Engaged, its name's over its bar along the bottom
         game.animals.iter_mut().filter(|a| a.demi.is_some()).for_each(|a| a.boss.as_mut().unwrap().engaged = true);

@@ -38,12 +38,14 @@ mod knight;
 mod treant;
 /// Bounding up out of where it's stuck, see src\bosses\vault.rs
 mod vault;
+/// The bosses of src\bosses\roster\wardens.rs
+mod wardens;
 
 pub type V = Vector3<f64>;
 pub type Q = UnitQuaternion<f64>;
 
 /// Every boss drawn jointed, in the order their pieces are among the models
-pub const KINDS: [Look; 33] = [
+pub const KINDS: [Look; 37] = [
     Look::Treant,
     Look::Spider,
     Look::Rimeweaver,
@@ -77,6 +79,10 @@ pub const KINDS: [Look; 33] = [
     Look::GildedSphinx,
     Look::Aeolith,
     Look::Stormbell,
+    Look::WinterglassDuelist,
+    Look::HiveMatriarch,
+    Look::Gloamdelver,
+    Look::Fenhulk,
 ];
 
 /// Pieces each has room for among the models, those it doesn't have left empty
@@ -128,6 +134,8 @@ enum Family {
     Crawler,
     /// What floats rather than walks, see drifter.rs
     Drifter,
+    /// The bosses of src\bosses\roster\wardens.rs, on two legs each its own way, see wardens.rs
+    Warden,
 }
 
 fn family(look: Look) -> Family {
@@ -140,6 +148,7 @@ fn family(look: Look) -> Family {
         Look::Elderhorn | Look::BleedingHart | Look::Ironhide | Look::Frostfang | Look::Direwolf | Look::WinterAlpha => Family::Beast,
         Look::Cinderback | Look::Dreadmare | Look::Hoarback | Look::GildedSphinx => Family::Beast,
         Look::Aeolith | Look::Stormbell => Family::Drifter,
+        Look::WinterglassDuelist | Look::HiveMatriarch | Look::Gloamdelver | Look::Fenhulk => Family::Warden,
         _ => Family::Golem,
     }
 }
@@ -474,6 +483,7 @@ impl Rig {
             Family::Treant => Pose::Biped(treant::rest(look)),
             Family::Crawler => Pose::Crawler(crawler::rest(look)),
             Family::Drifter => Pose::Drifter(drifter::State::new(look)),
+            Family::Warden => Pose::Biped(wardens::rest(look)),
         };
         let mut start = hash(seed);
         let mut rig = Rig {
@@ -594,6 +604,7 @@ impl Rig {
             Family::Treant => treant::animate(self, m),
             Family::Crawler => crawler::animate(self, m),
             Family::Drifter => drifter::animate(self, m),
+            Family::Warden => wardens::animate(self, m),
         }
         self.posed = true;
     }
@@ -616,6 +627,7 @@ fn pieces(look: Look) -> Vec<Vec<Part>> {
         Family::Treant => treant::pieces(look),
         Family::Crawler => crawler::pieces(look),
         Family::Drifter => drifter::pieces(look),
+        Family::Warden => wardens::pieces(look),
     }
 }
 
@@ -744,6 +756,7 @@ pub fn death_seconds(look: Look) -> f64 {
         Family::Treant => treant::DEATH,
         Family::Crawler => crawler::DEATH,
         Family::Drifter => drifter::DEATH,
+        Family::Warden => wardens::DEATH,
     }
 }
 
@@ -765,6 +778,7 @@ pub fn thuds(look: Look) -> &'static [f64] {
         Family::Treant => &treant::THUDS,
         Family::Crawler => &crawler::THUDS,
         Family::Drifter => &drifter::THUDS,
+        Family::Warden => &wardens::THUDS,
     }
 }
 

@@ -514,7 +514,7 @@ impl Combat {
         let mut t = solid_along(arena.world, from, far).unwrap_or(1.0);
         let mut who = None;
         for (i, animal) in arena.animals.iter().enumerate().filter(|(_, a)| a.health > 0.0 && !a.look.is_pet()) {
-            if let Some(hit) = sphere_hit(from, far, animal.center(vpm as u32), animal.look.body().1 * vpm)
+            if let Some(hit) = sphere_hit(from, far, animal.center(vpm as u32), animal.body().1 * vpm)
                 && hit < t
             {
                 t = hit;
@@ -555,7 +555,7 @@ impl Combat {
         let (at, who) = Combat::ray_point(arena, view.eye, view.forward(), reach);
         let mut near: Vec<(f64, usize)> = (0..arena.animals.len())
             .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
-            .map(|i| ((arena.animals[i].center(vpm as u32) - at).norm() / vpm - arena.animals[i].look.body().1, i))
+            .map(|i| ((arena.animals[i].center(vpm as u32) - at).norm() / vpm - arena.animals[i].body().1, i))
             .filter(|&(d, i)| d < SEEK_ROUND || Some(i) == who)
             .collect();
         near.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -566,7 +566,7 @@ impl Combat {
     pub(super) fn over(arena: &Arena, i: usize) -> Vector3<f64> {
         let vpm = arena.view.vpm;
         let a = &arena.animals[i];
-        a.center(vpm as u32) + Vector3::new(0.0, 0.0, (a.look.body().1 + 0.6) * vpm)
+        a.center(vpm as u32) + Vector3::new(0.0, 0.0, (a.body().1 + 0.6) * vpm)
     }
 
     /// What shows where `power` goes this frame, as it's aimed: rings where it meets the ground or

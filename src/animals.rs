@@ -234,6 +234,13 @@ pub enum Look {
     // carved stone, and the Stormbell, a jelly of thundercloud trailing crackling tendrils
     Aeolith,
     Stormbell,
+    // Four more bosses each fighting its own way, drawn jointed, see src\bosses\roster\wardens.rs
+    // and src\rig\wardens.rs: the Winterglass Duelist of the snowbound castles, the Hive Matriarch
+    // of the jungle, the Gloamdelver of the caves and the Fenhulk of the flooded places
+    WinterglassDuelist,
+    HiveMatriarch,
+    Gloamdelver,
+    Fenhulk,
 }
 
 /// The build of a boss or monster, which decides how it moves and fights
@@ -296,7 +303,7 @@ pub(crate) struct Skin {
 }
 
 impl Look {
-    pub const ALL: [Look; 142] = [
+    pub const ALL: [Look; 146] = [
         Look::Bear,
         Look::Dog,
         Look::GrayCat,
@@ -439,6 +446,10 @@ impl Look {
         Look::Skymane,
         Look::Aeolith,
         Look::Stormbell,
+        Look::WinterglassDuelist,
+        Look::HiveMatriarch,
+        Look::Gloamdelver,
+        Look::Fenhulk,
     ];
 
     /// One of the dragons, see src\dragons.rs
@@ -605,6 +616,11 @@ impl Look {
             Look::Hoarback | Look::GildedSphinx => Build::Bear,
             // The Sky Isles' own drift light as the casting dead walk, never shaking the ground
             Look::Aeolith | Look::Stormbell => Build::Undead,
+            // The duelist walks as the knights of the dead do; the queen scuttles as the Broodmother
+            // does; the digger and the hulk are as heavy as golems, shaking the ground as they go
+            Look::WinterglassDuelist => Build::Undead,
+            Look::HiveMatriarch => Build::Spider,
+            Look::Gloamdelver | Look::Fenhulk => Build::Golem,
             Look::Ironhide | Look::Frostfang => Build::Bear,
             Look::Spider | Look::Rimeweaver | Look::Spiderling => Build::Spider,
             Look::Treant => Build::Treant,
@@ -680,7 +696,7 @@ impl Look {
             Look::GraveKnight => Some(Look::Skeleton),
             Look::Necromancer => Some(Look::Zombie),
             Look::CryptTitan => Some(Look::ArmoredSkeleton),
-            Look::Spider | Look::Rimeweaver => Some(Look::Spiderling),
+            Look::Spider | Look::Rimeweaver | Look::HiveMatriarch => Some(Look::Spiderling),
             Look::Warlord => Some(Look::Bandit),
             // The jotun howls up wolves, the pharaoh raises its dead, the crone calls up what lurks
             // in the mire, and the Hollow Mother calls her children
@@ -781,6 +797,10 @@ impl Look {
             Look::Ogre if desert => Look::Slagwright,
             Look::Ironhide if desert => Look::Sunstinger,
             Look::Treant | Look::Direwolf if jungle => Look::Grovemaul,
+            // A knight's castle in the snow kept by the Winterglass Duelist, and the jungle's caverns,
+            // colonnades and castles by the Hive Matriarch, see src\bosses\roster\wardens.rs
+            Look::GraveKnight if cold => Look::WinterglassDuelist,
+            Look::Spider | Look::Ironhide if jungle => Look::HiveMatriarch,
             // A wyrm boring through the sand out in front of the desert's colonnades and towers,
             // and the Skymane keeping the towers and colonnades up on the bare rock of the
             // mountains, see src\bosses\wilds.rs
@@ -1005,6 +1025,7 @@ impl Look {
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::reach(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::reach(self),
             Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::reach(self),
+            Look::WinterglassDuelist | Look::HiveMatriarch | Look::Gloamdelver | Look::Fenhulk => crate::bosses::roster::wardens::reach(self),
             // Up to the top of a hat, a staff or a bow held upright, or wings on the back
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => 2.2,
             Look::TradeStall => 2.0,
@@ -1078,6 +1099,7 @@ impl Look {
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::body(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::body(self),
             Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::body(self),
+            Look::WinterglassDuelist | Look::HiveMatriarch | Look::Gloamdelver | Look::Fenhulk => crate::bosses::roster::wardens::body(self),
             Look::Bowyer | Look::Wandwright | Look::Bladesmith | Look::Gunsmith | Look::Jeweller | Look::Wingmaker => (0.95, 0.42),
             Look::TradeStall => (0.5, 0.6),
             Look::Silverfin | Look::Reefling | Look::Brookback | Look::Gloamfin | Look::Frostfin | Look::Saltjaw | Look::Ghostmaw | Look::RawFish | Look::CookedFish | Look::SharkTooth => sealife::body(self),
@@ -1176,6 +1198,7 @@ impl Look {
             Look::Gargoyle | Look::BloodGargoyle | Look::RimeGargoyle | Look::CinderGargoyle | Look::MossGargoyle | Look::Grotesque | Look::BloodwakeGargoyle => crate::avians::name(self),
             Look::Slagwright | Look::Cinderback | Look::LanternWidow | Look::Dreadmare | Look::Sunstinger | Look::Grovemaul | Look::Hoarback | Look::GildedSphinx => crate::bosses::roster::name(self),
             Look::Aeolith | Look::Stormbell => crate::bosses::roster::sky::name(self),
+            Look::WinterglassDuelist | Look::HiveMatriarch | Look::Gloamdelver | Look::Fenhulk => crate::bosses::roster::wardens::name(self),
             Look::Bowyer => "bowyer",
             Look::Wandwright => "wandwright",
             Look::Bladesmith => "weaponsmith",
@@ -4517,6 +4540,14 @@ impl Animal {
     /// How much bigger it's drawn than its kind: a demi-boss's grown, see src\demis.rs
     pub fn grown(&self) -> f64 {
         self.demi.map_or(1.0, |k| crate::demis::KINDS[k as usize % crate::demis::KINDS.len()].grown)
+    }
+
+    /// The body to aim at, as Look::body() has it, as big as it's drawn: a demi-boss's grown with it,
+    /// so it's struck wherever it shows
+    pub fn body(&self) -> (f64, f64) {
+        let (high, round) = self.look.body();
+        let g = self.grown();
+        (high * g, round * g)
     }
 
     /// How much health it has left, 0-1

@@ -169,9 +169,32 @@ pub enum Move {
     /// Crouching and bounding up out of a hole, over a ledge or a wall it's stuck at, onto the
     /// nearest ground towards the player, see src\bosses\vault.rs
     Vault,
+    // The moves of the bosses of src\bosses\roster\wardens.rs
+    /// The Winterglass Duelist crouched with its blade drawn back, then across the ground in a blur
+    /// along the line it showed, running through whoever's on it
+    Lunge,
+    /// The duelist sidestepping the blow it's struck with, frost left where it stood, and cutting back
+    Riposte,
+    /// The duelist sweeping its blade across, crescents of frost flying off it at the player
+    Crescent,
+    /// The Hive Matriarch's swarm of venomous motes pouring out of it, spiralling in on the player
+    Swarm,
+    /// The Matriarch's stingers loosed high to rain down on and round the player, where it shows
+    Stingrain,
+    /// The Gloamdelver tearing its claws up out of the ground, shards of crystal flung fanned out
+    /// across the player
+    Rockspray,
+    /// The Gloamdelver driving its claws in, a line of crystals bursting up along the ground at the
+    /// player
+    Undermine,
+    /// The Fenhulk raising a foot and stamping, the bog heaving out in waves round it, mud bursting
+    /// up in rings
+    Mirestomp,
+    /// The Fenhulk spewing mud and venom over the player, coming down where it shows
+    Bogspew,
 }
 
-const MOVES: usize = 56;
+const MOVES: usize = 65;
 
 impl Move {
     /// Every move, in the order they're numbered
@@ -232,6 +255,15 @@ impl Move {
         Move::Thunderlash,
         Move::Overcharge,
         Move::Vault,
+        Move::Lunge,
+        Move::Riposte,
+        Move::Crescent,
+        Move::Swarm,
+        Move::Stingrain,
+        Move::Rockspray,
+        Move::Undermine,
+        Move::Mirestomp,
+        Move::Bogspew,
     ];
 
     /// The move called `name`, as it's written here, `throw` or `Cataclysm`, for
@@ -500,6 +532,8 @@ pub struct Boss {
     mire: f64,
     closest: f64,
     vault_len: f64,
+    /// A demi-boss, making the moves of its own its kind doesn't, see demis::menu()
+    pub demi: bool,
 }
 
 /// Seconds a serpent lies still before it coils up to rest
@@ -652,6 +686,7 @@ fn windup(look: Look, m: Move) -> f64 {
         (_, Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout) => wilds::timing(look, m).0,
         (_, Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge) => roster::sky::timing(look, m).0,
         (_, Move::Vault) => vault::crouch(look),
+        (_, Move::Lunge | Move::Riposte | Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew) => roster::wardens::timing(look, m).0,
     }
 }
 
@@ -702,6 +737,7 @@ fn duration(look: Look, m: Move) -> f64 {
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).1,
         Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).1,
         Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).1,
+        Move::Lunge | Move::Riposte | Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew => roster::wardens::timing(look, m).1,
     }
 }
 
@@ -767,6 +803,7 @@ fn recovery(look: Look, m: Move) -> f64 {
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).2,
         Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).2,
         Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).2,
+        Move::Lunge | Move::Riposte | Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew => roster::wardens::timing(look, m).2,
     }
 }
 
@@ -834,6 +871,7 @@ fn cooldown(look: Look, m: Move) -> f64 {
         Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel => roster::timing(look, m).3,
         Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom | Move::Breach | Move::Thrash | Move::Spout => wilds::timing(look, m).3,
         Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::timing(look, m).3,
+        Move::Lunge | Move::Riposte | Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew => roster::wardens::timing(look, m).3,
     }
 }
 
@@ -1153,16 +1191,21 @@ pub fn taste(look: Look) -> (&'static [&'static str], Option<Element>) {
 pub fn repertoire(look: Look) -> Vec<Move> {
     let boss = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
     let mut moves: Vec<Move> = boss.menu().iter().map(|&(m, _, _)| m).collect();
-    // What a burrower lying in wait does once it's up out of the ground too
-    if boss.buried {
+    // What a burrower lying in wait does once it's up out of the ground too, and what the digger
+    // does once it's dug in
+    if boss.buried || look == Look::Gloamdelver {
         let mut up = Boss::new(look, Vector3::zeros(), [0, 0, -1]);
-        up.buried = false;
+        up.buried = !boss.buried;
         moves.extend(up.menu().iter().map(|&(m, _, _)| m).filter(|m| !moves.contains(m)).collect::<Vec<_>>());
     }
     if look.is_raid() {
         let mut later = boss;
         later.stage = 2;
         moves.extend(later.menu().iter().map(|&(m, _, _)| m).filter(|m| !moves.contains(m)).collect::<Vec<_>>());
+    }
+    // The duelist's riposte, made as it's struck rather than chosen
+    if let Some(m) = roster::wardens::dodges(look) {
+        moves.push(m);
     }
     moves.push(Move::Roar);
     moves
@@ -1250,6 +1293,7 @@ impl Boss {
             mire: 0.0,
             closest: f64::MAX,
             vault_len: 0.8,
+            demi: false,
         }
     }
 
@@ -1419,6 +1463,12 @@ impl Boss {
 
     /// The moves it makes in a fight, near and far, for trying each of them out
     fn menu(&self) -> &'static [(Move, f64, f64)] {
+        // A demi-boss's own, see src\demis.rs
+        if self.demi
+            && let Some(menu) = crate::demis::menu(self.look, self.buried)
+        {
+            return menu;
+        }
         let monster = self.look.is_monster();
         match self.look.build() {
             _ if self.look.is_great_serpent() => great_moves(self.look, self.buried, self.stage),
@@ -1449,7 +1499,8 @@ impl Boss {
             _ if self.look == Look::HollowMother => &[(Move::Summon, 0.0, 14.0), (Move::Cataclysm, 0.0, 14.0), (Move::Weep, 0.0, 12.0), (Move::Slam, 0.0, 2.2), (Move::Lash, 2.0, 6.0), (Move::Spit, 2.5, 14.0)],
             _ if self.look == Look::BleedingHart => &[(Move::Cataclysm, 0.0, 15.0), (Move::Slam, 0.0, 2.4), (Move::Maul, 1.2, 3.8), (Move::Trample, 3.5, 16.0), (Move::RootWave, 3.0, 11.0), (Move::Volley, 4.0, 17.0)],
             _ if self.look == Look::Elderhorn => &[(Move::Bellow, 0.0, 6.0), (Move::Slam, 0.0, 4.2), (Move::Maul, 2.5, 7.0), (Move::Trample, 7.0, 30.0), (Move::Volley, 8.0, 30.0)],
-            // And those of src\bosses\roster.rs
+            // And those of src\bosses\roster.rs, the digger dug in only coming up
+            _ if roster::wardens::has(self.look) => roster::wardens::menu(self.look, self.buried),
             _ if roster::has(self.look) => roster::menu(self.look),
             _ if self.look.is_kraken() => kraken::menu(self.look),
             // Monsters bite or swing at what's in reach, and some pounce
@@ -1587,6 +1638,8 @@ impl Boss {
             // Held in a pose to be looked at, all of it out in the open
             _ if self.fixed_pose.is_some() => (0.0, 6.0),
             Look::DuneBurrower if self.buried => (1.1, 2.5),
+            // The Gloamdelver dug right in, tunnelling along
+            Look::Gloamdelver if self.buried => (self.look.body().0 * 2.2, 2.5),
             Look::MireLurker if self.lurking => (0.3, 2.0),
             Look::Gloomwing if diving => (0.85, 7.0),
             Look::Gloomwing => (0.0, 3.0),
@@ -2037,6 +2090,9 @@ pub fn elemental(m: Move, element: Option<Element>) -> bool {
         // The Sky Isles' own: the Aeolith's runes blazing as it flings its ring, spins its gyre and
         // calls its shards down, the Stormbell crackling as it rains, lashes and lets go
         Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => true,
+        // The new bosses' own, see roster\wardens.rs: frost off the duelist's blade, the queen's
+        // venom, the digger's crystals, the bog's
+        Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew => true,
         Move::Slam | Move::Quake => e == Element::Fire,
         _ => false,
     }
@@ -2336,6 +2392,11 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             // Healing back up, wandering round home, keeping with the rest of its pack. A burrower
             // digs back in, and a lurker sinks back down to wait.
             a.health = (a.health + a.max_health * 0.05 * dt).min(a.max_health);
+            // The digger comes back up out of the ground to rest
+            if look == Look::Gloamdelver && boss.buried {
+                boss.buried = false;
+                boss.deeds.push(Deed::Erupt { at: a.position });
+            }
             if look.burrows() && !boss.buried {
                 boss.buried = true;
                 boss.deeds.push(Deed::Burrow { at: a.position });
@@ -2415,6 +2476,8 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
             // the blow if it can
             let facing = ((a.target_heading - a.heading + PI).rem_euclid(TAU) - PI).abs() < 0.6;
             let blink = (look == Look::RimeWraith && struck && boss.cooldowns[Move::Blink as usize] <= 0.0).then_some(Move::Blink);
+            // And the duelist sidesteps the blow and cuts back, see roster\wardens.rs
+            let blink = blink.or(roster::wardens::dodges(look).filter(|&m| struck && boss.cooldowns[m as usize] <= 0.0));
             let backing = boss.retreat > 0.0 && distance > 1.8;
             // In the Drowned Ring, the Coil Unending keeps to its basin: where its edge comes nearest
             // the player, or where they are if they're out in it, which it comes up out of the water
@@ -2895,6 +2958,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                     Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom => kraken::begin(m, a, &mut boss, forward, vpm),
                     Move::Breach | Move::Thrash | Move::Spout => wyrms::begin(m, a, &mut boss, world, forward, vpm),
                     Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::begin(m, a, &mut boss, player, forward, vpm),
+                    Move::Lunge | Move::Riposte | Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew => roster::wardens::begin(m, a, &mut boss, player, forward, vpm),
                 }
                 Phase::Act(m, 0.0)
             }
@@ -3021,6 +3085,7 @@ fn decide(a: &mut Animal, world: &World, player: Option<Vector3<f64>>, dt: f64) 
                 Move::Lashrise | Move::Ensnare | Move::Inkveil | Move::Brinejet | Move::Maelstrom => kraken::during(m, t, dt, a, &mut boss, player, vpm),
                 Move::Breach | Move::Thrash | Move::Spout => wyrms::during(m, t, dt, a, &mut boss, player, vpm),
                 Move::Ringcast | Move::Gyre | Move::Shardfall | Move::Staticfall | Move::Thunderlash | Move::Overcharge => roster::sky::during(m, t, dt, a, &mut boss, player, vpm),
+                Move::Lunge | Move::Riposte | Move::Crescent | Move::Swarm | Move::Stingrain | Move::Rockspray | Move::Undermine | Move::Mirestomp | Move::Bogspew => roster::wardens::during(m, t, dt, a, &mut boss, player, world, vpm),
                 // A knight's greatsword sweeping round low: out of the crouch across in front,
                 // then on round with its whole body, all the way round once, or twice when it's
                 // angry, hitting whoever's within its reach and not jumping as it passes them.

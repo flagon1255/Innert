@@ -231,7 +231,7 @@ impl Combat {
                 if a.health <= 0.0 || a.look.is_pet() || p.hit.contains(&a.id) {
                     return false;
                 }
-                let body = a.look.body().1 * vpm;
+                let body = a.body().1 * vpm;
                 let rel = a.center(vpm as u32) - p.position;
                 let along = rel.dot(&way);
                 along > -body && along < step + body && (rel - way * along).norm() < 0.6 * vpm + body

@@ -2785,6 +2785,10 @@ impl App {
             if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
                 game.force_boss_move(m);
             }
+            // `--set boss_pit=3` blows a pit that many meters round under it, to see it bound out
+            if let Some(radius) = setting("boss_pit").filter(|_| capture.is_some()).and_then(|v| v.parse::<f64>().ok()) {
+                game.pit_bosses(radius);
+            }
         }
         // `--set aerie_show=1` has avians and gargoyles fight with nobody about as if someone were,
         // and `aerie_trace=1` says what each is doing twice a second, see avians.rs
@@ -3443,8 +3447,12 @@ impl App {
                     "desert ruins" | "pyramid" if pick % 5 == 3 => animals::Look::DuneWyrm,
                     "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
                     "desert ruins" if pick % 3 == 0 => animals::Look::Cinderback,
-                    // The Lantern Widow in half the flooded churches, a drake in the rest
+                    // The Lantern Widow in half the flooded churches, the Fenhulk in a quarter, a drake
+                    // in the rest, see src\bosses\roster\wardens.rs
                     "flooded church" if pick % 2 == 0 => animals::Look::LanternWidow,
+                    "flooded church" if pick % 4 == 1 => animals::Look::Fenhulk,
+                    // The Gloamdelver digging in a fifth of the great caverns
+                    "cavern" if pick % 5 == 1 => animals::Look::Gloamdelver,
                     // The Skymane on the high towers, see src\dragons\skymane.rs, and the Grotto Squid
                     // in the pools of the waterfall caves, see src\bosses\kraken.rs
                     "watchtower" if pick % 6 == 2 => animals::Look::Skymane,
@@ -3583,13 +3591,27 @@ impl App {
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
-        // A demi-boss down in one in five of the open ravines, see src\demis.rs
-        let demis: Vec<game::DemiLair> = landscape
-            .sites
-            .iter()
-            .filter(|site| site.kind == worldgen::LURKER_SITE)
-            .map(|site| game::DemiLair { position: to_voxels(site.position), heading: (site.facing[1] as f64).atan2(site.facing[0] as f64), key: site.position.map(|v| (v * 10.0).round() as i64) })
-            .collect();
+        // A demi-boss down in one in five of the open ravines, the desert's, the snow's and the
+        // swamps' their own kinds, and out in front of a third of the ruins no boss keeps an
+        // armoured dead thing, see src\demis.rs
+        let climate = self.terrain_settings();
+        let ravines = landscape.sites.iter().filter(|site| site.kind == worldgen::LURKER_SITE).map(|site| {
+            let c = worldgen::climate(&climate, site.position[0], site.position[1]);
+            let key = demis::ravine(site.position.map(|v| (v * 10.0).round() as i64), c.snow, c.desert, c.jungle);
+            game::DemiLair { position: to_voxels(site.position), heading: (site.facing[1] as f64).atan2(site.facing[0] as f64), key }
+        });
+        let ruins = landscape.sites.iter().filter_map(|site| {
+            let key = site.position.map(|v| (v * 10.0).round() as i64);
+            let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
+            if pick < BOSS_CHANCE || pick % 3 != 0 || !matches!(site.kind, "castle" | "watchtower" | "colonnade" | "shrine" | "desert ruins" | "pyramid") {
+                return None;
+            }
+            let [fx, fy] = site.facing;
+            let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+            let at = [site.position[0] + fx / length * 12.0, site.position[1] + fy / length * 12.0, site.position[2]];
+            Some(game::DemiLair { position: to_voxels(at), heading: (fy as f64).atan2(fx as f64), key: demis::keyed(key, demis::TOMB) })
+        });
+        let demis: Vec<game::DemiLair> = ravines.chain(ruins).collect();
         self.game.set_demis(&self.world, &|x, y| water.surface_at(x, y), demis);
         self.game.set_shrines(&self.world, shrines);
         self.place_omens();

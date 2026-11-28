@@ -2819,6 +2819,15 @@ impl Game {
                     Move::Gyre => Cue::at(Sound::Gale, at, 1.0).pitched(0.9),
                     Move::Staticfall | Move::Overcharge => Cue::at(Sound::Thunder, at, 0.8).pitched(0.7),
                     Move::Thunderlash => Cue::at(Sound::Zap, at, 0.9).pitched(0.7),
+                    // The duelist's blade drawn, the queen's wings and brood stirring, the digger's
+                    // claws in the ground, the bog heaving in the hulk
+                    Move::Lunge | Move::Crescent => Cue::at(Sound::Swing, at, 0.8).pitched(0.75),
+                    Move::Riposte => Cue::at(Sound::Swing, at, 0.7).pitched(1.2),
+                    Move::Swarm => Cue::at(Sound::Whirr, at, 0.9).pitched(1.6),
+                    Move::Stingrain => Cue::at(Sound::Hiss, at, 0.8).pitched(0.9),
+                    Move::Rockspray | Move::Undermine => Cue::at(Sound::Dig, at, 1.0).pitched(0.6),
+                    Move::Mirestomp => Cue::at(Sound::Rumble, at, 1.0).pitched(0.4),
+                    Move::Bogspew => Cue::at(Sound::Squelch, at, 1.0).pitched(0.5),
                     _ => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.2),
                 };
                 self.cues.push(cue);
@@ -3708,6 +3717,18 @@ impl Game {
     }
 
     /// Every boss about made to make only `m`, as soon as it's ready, for shots of it
+    /// For seeing one bound out of a hole: a pit `radius` meters round blown under every boss and
+    /// monster about, each turned on the player, see bosses\vault.rs
+    pub fn pit_bosses(&mut self, radius: f64) {
+        let vpm = self.combat.vpm();
+        for a in self.animals.iter_mut().filter(|a| a.boss.is_some()) {
+            self.combat.craters.push((a.position - Vector3::new(0.0, 0.0, 0.35 * radius * vpm), radius));
+            if let Some(boss) = &mut a.boss {
+                boss.provoke();
+            }
+        }
+    }
+
     pub fn force_boss_move(&mut self, m: Move) {
         for boss in self.animals.iter_mut().filter_map(|a| a.boss.as_mut()) {
             boss.forced = Some(m);

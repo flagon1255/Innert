@@ -177,7 +177,7 @@ impl Combat {
                         let center = a.center(vpm as u32);
                         let across = (a.position - feet).xy().try_normalize(1e-6).map_or(flat, |v| Vector3::new(v.x, v.y, 0.0));
                         // Out of the dark behind it
-                        let behind = a.position + across * (a.look.body().1 + STEP_BEHIND) * vpm;
+                        let behind = a.position + across * (a.body().1 + STEP_BEHIND) * vpm;
                         let go = (behind - feet).xy().norm() / vpm;
                         self.dash = across * (go / 0.31).min(48.0) * vpm + up * 1.5 * vpm;
                         (center, base * STEP_POWER)

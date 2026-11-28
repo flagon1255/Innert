@@ -636,7 +636,7 @@ impl Combat {
                 .min_by(|a, b| a.0.total_cmp(&b.0))
         });
         let (goal, stop) = match prey {
-            Some((_, i)) => (arena.animals[i].position, (RISEN_REACH + arena.animals[i].look.body().1 * 0.7) * vpm),
+            Some((_, i)) => (arena.animals[i].position, (RISEN_REACH + arena.animals[i].body().1 * 0.7) * vpm),
             None => (feet, 2.5 * vpm),
         };
         let to = (goal - f.position).xy();
