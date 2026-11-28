@@ -1503,6 +1503,11 @@ impl Game {
         self.held().is_some()
     }
 
+    /// For looking at things with nothing in hand: past the last slot of the quick bar
+    pub fn empty_hands(&mut self) {
+        self.selected = self.slots.len();
+    }
+
     /// For trying things out: `count` of `item` put first on the quick bar, in hand
     pub fn hand(&mut self, item: Item, count: u32) {
         self.slots.insert(0, (item, count));
@@ -2352,6 +2357,11 @@ impl Game {
         self.leaves.count()
     }
 
+    /// Shows the falling leaves or hides them, as the settings say
+    pub fn show_falling_leaves(&mut self, on: bool) {
+        self.leaves.set_falling(on);
+    }
+
     /// Where explosions want holes blown in the world since last time, and how big, in meters
     pub fn take_craters(&mut self) -> Vec<(Vector3<f64>, f64)> {
         std::mem::take(&mut self.combat.craters)
@@ -2508,7 +2518,7 @@ impl Game {
             self.note_demis(feet, world.voxels_per_meter as f64);
         }
         self.reap(world);
-        self.leaves.update(world, water, view.eye, dt);
+        self.leaves.update(world, water, view.eye, view.forward(), dt);
         self.look_over_loot(world, player, view, dt);
 
         self.levelled = if HOLD_LEVEL_UP.load(std::sync::atomic::Ordering::Relaxed) { 0.7 } else { self.levelled + dt };
