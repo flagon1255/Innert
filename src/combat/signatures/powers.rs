@@ -855,11 +855,14 @@ impl Combat {
             return rest.clone();
         };
         let mut keys = power_keys(power, &weapon.profile);
-        // A hand crossbow goes through it on the left
-        if weapon.profile.build == Build::Hand {
-            for key in &mut keys {
+        // A hand crossbow goes through it on the left, and a hand cannon from where it's held
+        // in close, see held_closer()
+        let closer = held_closer(weapon.profile.build);
+        for key in &mut keys {
+            if weapon.profile.build == Build::Hand {
                 key.1 = mirrored_shouldered(&key.1);
             }
+            key.1.hand += closer;
         }
         animate(rest, &keys, f)
     }

@@ -125,7 +125,7 @@ pub enum Build {
     Musket,
     /// A short gun flaring at its muzzle, firing a spread of shot
     Blunderbuss,
-    /// An iron tube on a wooden tiller, firing shells that burst
+    /// An iron tube on a short wooden stock, held in close by its grip, firing shells that burst
     Cannon,
     /// A small crossbow held up in the off hand by its pistol grip, spanned by a lever folded
     /// under its tiller that the other hand pulls down and back
@@ -3500,6 +3500,8 @@ pub const CROSSBOW_SPANNED: usize = 2;
 // A gun's frames: its hammer cocked, then let down, then its ramrod
 pub const GUN_COCKED: usize = 0;
 pub const GUN_FIRED: usize = 1;
+/// How far past its barrel's length a hand cannon's muzzle is cut off flat, in meters
+const CANNON_LIP: f64 = 0.016;
 
 /// The look of a weapon of `family` made of `parts`, as the code builds it, before it's scaled to
 /// its size: for the model files, see src\weapon_parts.rs
@@ -6773,7 +6775,13 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         _ => 0.019,
     };
     let w = if shape == "twin" { w.max(outer * 1.95) } else { w };
-    let plate = if build == Build::Pistol { x_b - 0.064 } else { x_b - 0.08 };
+    // Where the lock sits along it: at the breech, or on a cannon a little ahead of it, so its
+    // plate lies all along the side of the barrel rather than out beside the knob on its breech
+    let x_l = if build == Build::Cannon { x_b + 0.07 } else { x_b };
+    let plate = if build == Build::Pistol { x_b - 0.064 } else { x_l - 0.08 };
+    // How far under the bore a cannon's short stock is, the top of its grip in the bed under the
+    // barrel
+    let under = outer - 0.004;
 
     let body = |cocked: bool| {
         let mut p = Vec::new();
@@ -6781,6 +6789,12 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         slot("barrel");
         for &y in bores {
             p.push(limb([x_m - 0.03, side(y), 0.0], [x_m + 0.02, side(y), 0.0], mouth, mouth, AIR));
+        }
+        // A cannon's wide barrel cut off flat at its mouth, not rounded off on past it, but for a
+        // dragon's head round it
+        if build == Build::Cannon && shape != "dragon" {
+            let r = outer * 3.0;
+            p.push(cuboid([x_m + CANNON_LIP, -r, -r], [x_m + r, r, r], AIR));
         }
         // A sight on top at the muzzle, and bands round the barrel
         p.push(cuboid([x_m - 0.014, -0.0015, radius(0.97) - 0.002], [x_m - 0.004, 0.0015, radius(0.97) + 0.006], bands));
@@ -6816,7 +6830,15 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
                     p.push(ball([x_b + (x_m - x_b) * t, a.cos() * r, a.sin() * r], wall.max(0.004) * 0.7, bands));
                 }
             }
-            // Flaring out at the mouth like a horn's bell, its lip rolled
+            // Flaring out at the mouth like a horn's bell, its lip rolled; on a cannon hollow, open
+            // at its mouth, rather than a ball
+            "bell" if build == Build::Cannon => {
+                let r = radius(1.0);
+                ring(&mut p, [x_m + 0.004, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], r * 1.85, wall.max(0.005) * 0.8, bands);
+                p.push(cuboid([x_m + 0.008, -r * 3.0, -r * 3.0], [x_m + r * 3.0, r * 3.0, r * 3.0], AIR));
+                p.push(limb([x_m - 0.06, 0.0, 0.0], [x_m + 0.004, 0.0, 0.0], mouth, r * 1.72, AIR));
+                p.push(limb([x_m - 0.07, 0.0, 0.0], [x_m + 0.004, 0.0, 0.0], r * 1.02, r * 1.9, tube));
+            }
             "bell" => {
                 let r = radius(1.0);
                 p.push(limb([x_m + 0.005, 0.0, 0.0], [x_m + 0.012, 0.0, 0.0], r * 2.0, r * 2.0, bands));
@@ -6884,15 +6906,15 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
 
         // The lock on its plate, its hammer cocked back or let down onto the pan
         let y = w + 0.005;
-        let pivot = [x_b - 0.055, y, -0.006];
+        let pivot = [x_l - 0.055, y, -0.006];
         let lock_shape = lock.shape.as_deref().unwrap_or("flint");
-        let (jaw, frizzen_top) = if cocked { ([x_b - 0.047, y, 0.033], [x_b - 0.009, y, 0.03]) } else { ([x_b - 0.017, y, 0.018], [x_b + 0.016, y, 0.02]) };
-        let elbow = if cocked { [x_b - 0.072, y, 0.016] } else { [x_b - 0.042, y, 0.022] };
+        let (jaw, frizzen_top) = if cocked { ([x_l - 0.047, y, 0.033], [x_l - 0.009, y, 0.03]) } else { ([x_l - 0.017, y, 0.018], [x_l + 0.016, y, 0.02]) };
+        let elbow = if cocked { [x_l - 0.072, y, 0.016] } else { [x_l - 0.042, y, 0.022] };
         slot("lock");
         match lock_shape {
             // A serpentine holding a smouldering match, swung down into the pan to fire
             "match" => {
-                let ember = if cocked { [jaw[0] + 0.006, y, jaw[2] + 0.006] } else { [x_b - 0.011, y, 0.012] };
+                let ember = if cocked { [jaw[0] + 0.006, y, jaw[2] + 0.006] } else { [x_l - 0.011, y, 0.012] };
                 p.push(ball(ember, 0.0055, flourish));
                 p.push(limb(jaw, ember, 0.004, 0.004, LINEN));
                 p.push(limb(jaw, [jaw[0] - 0.05, y + 0.006, jaw[2] - 0.04], 0.0025, 0.0025, LINEN));
@@ -6900,7 +6922,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
             }
             // A wheel turning against the stone, and the dog holding it
             "wheel" => {
-                p.push(ellipsoid([x_b - 0.03, y + 0.002, -0.004], [0.015, 0.004, 0.015], flourish));
+                p.push(ellipsoid([x_l - 0.03, y + 0.002, -0.004], [0.015, 0.004, 0.015], flourish));
                 p.push(ball(jaw, 0.006, OBSIDIAN));
                 curve(&mut p, &[pivot, elbow, jaw], 0.004, 0.004, metal);
             }
@@ -6909,16 +6931,16 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
             shape => {
                 let (stone, plate) = if shape == "rune" { (flourish, flourish) } else { (OBSIDIAN, metal) };
                 p.push(cuboid([jaw[0] - 0.002, y - 0.004, jaw[2] - 0.006], [jaw[0] + 0.008, y + 0.004, jaw[2] + 0.002], stone));
-                p.push(limb([x_b - 0.011, y, 0.004], frizzen_top, 0.004, 0.003, plate));
+                p.push(limb([x_l - 0.011, y, 0.004], frizzen_top, 0.004, 0.003, plate));
                 curve(&mut p, &[pivot, elbow, jaw], 0.0045, 0.0035, metal);
             }
         }
         // The pan, and the plate, made finer screwed on at either end
-        p.push(cuboid([x_b - 0.02, w, -0.001], [x_b - 0.004, w + 0.011, 0.005], metal));
-        for x in [plate + 0.009, x_b + 0.008] {
+        p.push(cuboid([x_l - 0.02, w, -0.001], [x_l - 0.004, w + 0.011, 0.005], metal));
+        for x in [plate + 0.009, x_l + 0.008] {
             rivet(&mut p, [x, w + 0.004, -0.011], 0.0024, flourish);
         }
-        p.push(cuboid([plate, w, -0.02], [x_b + 0.015, w + 0.004, 0.009], metal));
+        p.push(cuboid([plate, w, -0.02], [x_l + 0.015, w + 0.004, 0.009], metal));
         slot("core");
         if let Some(stone) = core.gem.as_deref().and_then(material) {
             let r = core.size.unwrap_or(0.02).max(0.013) * 0.75;
@@ -6931,12 +6953,12 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         }
 
         // The trigger in its guard, then the stock
+        // A cannon's under its bed, ahead of its grip
         slot("lock");
-        p.push(limb([x_b - 0.035, 0.0, -0.02], [x_b - 0.043, 0.0, -0.042], 0.0035, 0.003, metal));
+        let (x_t, z_t) = if build == Build::Cannon { (x_b + 0.05, -under) } else { (x_b, 0.0) };
+        p.push(limb([x_t - 0.035, 0.0, z_t - 0.02], [x_t - 0.043, 0.0, z_t - 0.042], 0.0035, 0.003, metal));
         slot("stock");
-        if build != Build::Cannon {
-            ring(&mut p, [x_b - 0.04, 0.0, -0.036], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.0035, trim);
-        }
+        ring(&mut p, [x_t - 0.04, 0.0, z_t - 0.036], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.0035, trim);
         let fore = family.length;
         // Inlay winding along the stock's side, in its trim, first so it shows over the wood
         if stock.shape.as_deref() == Some("inlaid") && build != Build::Cannon {
@@ -6958,14 +6980,29 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
                 p.push(limb([x_b + 0.005, 0.0, -0.012], [x_b - 0.11, 0.0, -0.098], 0.017, 0.022, wood).stretched([1.0, 0.75, 1.0]));
                 p.push(limb([x_b - 0.01, 0.0, -0.01], [fore, 0.0, -0.009], 0.013, 0.011, wood));
             }
-            // A wooden tiller under the breech, strapped to the barrel, to hold it by
+            // A short wooden bed under the back of the barrel, strapped to it, and a grip curving
+            // down from under the breech to hold it by, as a pistol's does, only stouter: no long
+            // tiller out behind, so it's held in close
             Build::Cannon => {
+                let front = x_b - 0.03 + fore;
                 slot("barrel");
-                p.push(cuboid([x_b + 0.03, -outer * 0.8, -outer - 0.03], [x_b + 0.05, outer * 0.8, 0.0], bands));
-                p.push(cuboid([x_b + 0.12, -0.012, -outer - 0.04], [x_b + 0.15, 0.012, -outer + 0.01], tube));
+                for x in [x_b + 0.03, front - 0.035] {
+                    p.push(cuboid([x, -outer * 0.8, -under - 0.03], [x + 0.02, outer * 0.8, 0.0], bands));
+                }
+                p.push(cuboid([x_b + 0.075, -0.012, -under - 0.036], [x_b + 0.1, 0.012, -outer + 0.01], tube));
                 slot("stock");
-                p.push(limb([x_b - fore, 0.0, -outer - 0.012], [x_b + 0.12, 0.0, -outer - 0.012], 0.022, 0.026, wood));
-                p.push(ball([x_b - fore, 0.0, -outer - 0.012], 0.024, trim));
+                p.push(ball([x_b - 0.098, 0.0, -under - 0.106], 0.026, trim));
+                p.push(ball([front, 0.0, -under], 0.02, trim));
+                let pieces = [
+                    ([x_b - 0.03, 0.0, -under], [front, 0.0, -under], 0.024, 0.02, [1.3, 1.0]),
+                    ([x_b + 0.02, 0.0, -under - 0.012], [x_b - 0.09, 0.0, -under - 0.098], 0.019, 0.024, [0.85, 1.0]),
+                ];
+                for (k, &(a, b, ra, rb, squash)) in pieces.iter().enumerate() {
+                    if let Some(dark) = grain_of(wood) {
+                        grain_squashed(&mut p, a, b, ra, rb, squash, dark, 30 + k as u32);
+                    }
+                    p.push(limb(a, b, ra, rb, wood).stretched([1.0, squash[0], squash[1]]));
+                }
             }
             // A full stock, from a butt to set against the shoulder to a fore-end under the barrel
             _ => {
@@ -6999,15 +7036,18 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
     ];
     frames.push(voxelize(&rammer, GUN_RES));
     let mover = Mover { frame: 2, pivot: bore, axis: Vector3::x(), handle: bore, handle_axis: Vector3::x() };
-    // Held at the grip of a pistol, the tiller of a cannon or the wrist of a stock, steadied
-    // under the fore-end of a long gun
+    // Held at the grip of a pistol or a cannon or the wrist of a stock, steadied under the
+    // fore-end of a long gun
     let (grip, hold) = match build {
         Build::Pistol => (v3(x_b - 0.055, 0.0, -0.055), v3(0.8, 0.0, 0.6)),
-        Build::Cannon => (v3(x_b - family.length * 0.45, 0.0, -outer - 0.012), Vector3::x()),
+        Build::Cannon => (v3(x_b - 0.035, 0.0, -under - 0.055), v3(0.8, 0.0, 0.6)),
         _ => (v3(x_b - 0.075, 0.0, -0.022), v3(0.96, 0.0, 0.28)),
     };
     let support = matches!(build, Build::Musket | Build::Blunderbuss).then(|| (v3(x_b + (family.length - x_b) * 0.55, 0.0, -outer - 0.012), Vector3::x()));
-    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(x_m, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support, rails: Vec::new(), leg: None, scale: 1.0 }
+    // Shots and the flash leave from the mouth of its bore, a cannon's cut off flat just past its
+    // length
+    let muzzle = if build == Build::Cannon { x_m + CANNON_LIP - 0.006 } else { x_m };
+    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(muzzle, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support, rails: Vec::new(), leg: None, scale: 1.0 }
 }
 
 /// A staff standing on its foot, the crystal at its top. Returns how long its shaft is, and where
@@ -8637,6 +8677,75 @@ mod tests {
             assert_eq!(Weapon::assemble(&library, scepter, now, seed).grade, was, "seed {seed}");
         }
         assert!(swapped > 0, "some bells had parts a sceptre can't take");
+    }
+
+    /// A hand cannon has no long wooden stick out behind any more: made of whatever parts, as it
+    /// drops or made finer in hand, it's held by a short grip just under its breech, nothing of it
+    /// reaches more than a hand's breadth back behind where it's held, and it's no longer than its
+    /// barrel and that. Its muzzle, where its shots and the flash leave it, is at the very front of
+    /// its barrel, its bore hollow there and its barrel round it.
+    #[test]
+    fn hand_cannons_have_no_stick_and_shoot_from_their_muzzle() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let family = library.family("handcannon").unwrap();
+        let slots = library.families[family].slots.clone();
+        // As they drop, and every part each slot can take on one of them
+        let mut cannons: Vec<Vec<usize>> = (0..80).map(|seed| library.generate(seed, Some(family), 1.0 + seed as f64 % 8.0).parts).collect();
+        let first = cannons[0].clone();
+        for (k, slot) in slots.iter().enumerate() {
+            for c in library.fitting(family, slot) {
+                let mut parts = first.clone();
+                parts[k] = c;
+                cannons.push(parts);
+            }
+        }
+        let barrel = slots.iter().position(|s| s == "barrel").unwrap();
+        let caliber = library.families[family].caliber;
+        let mut longest: f64 = 0.0;
+        for (n, parts) in cannons.iter().enumerate() {
+            let mut looks = vec![look_of(&library, family, parts)];
+            if n % 20 == 0 {
+                looks.push(fine_look(&library, family, parts, 1.0, HELD_FINE));
+            }
+            let length = library.components[parts[barrel]].visual_profile.length.unwrap_or(1.0) * library.families[family].barrel;
+            for look in &looks {
+                let (model, anchor) = &look.frames[GUN_COCKED];
+                let res = look.res;
+                let lo = Vector3::new(anchor.x - model.size[0] as f64 * 0.5 / res, anchor.y - model.size[1] as f64 * 0.5 / res, anchor.z);
+                // How far back and forward something solid reaches, not the box round it
+                let [sx, sy, sz] = model.size;
+                let solid: Vec<u32> = (0..sx).filter(|&x| (0..sy * sz).any(|yz| model.voxels[(x + yz * sx) as usize] != AIR)).collect();
+                let back_x = lo.x + solid[0] as f64 / res;
+                let hi_x = lo.x + (solid[solid.len() - 1] + 1) as f64 / res;
+                let name = parts.iter().map(|&p| library.components[p].id.as_str()).collect::<Vec<_>>().join(", ");
+                assert!(back_x > look.grip.x - 0.11, "{name}: something reaches {:.2} m back behind where it's held", look.grip.x - back_x);
+                assert!(look.tip.x - back_x < length + 0.2, "{name}: {:.2} m long for a barrel of {length:.2}", look.tip.x - back_x);
+                assert!(look.tip.x - look.grip.x < length + 0.1, "{name}: held {:.2} m back from the muzzle", look.tip.x - look.grip.x);
+                longest = longest.max(hi_x - back_x);
+                // The muzzle at the front, nothing more than a lip or a dragon's jaw past it
+                assert!(hi_x > look.tip.x - 1.5 / res && hi_x < look.tip.x + 0.06,"{name}: the muzzle's at {:.3}, its front at {hi_x:.3}", look.tip.x);
+                assert!(look.tip.y.abs() < 1e-9 && look.tip.z.abs() < 1e-9, "{name}: the muzzle's on its bore");
+                let at = |p: Vector3<f64>| {
+                    let v = ((p - lo) * res).map(|c| c.floor() as i64);
+                    let inside = (0..3).all(|i| v[i] >= 0 && v[i] < model.size[i] as i64);
+                    if !inside {
+                        return AIR;
+                    }
+                    model.voxels[(v.x + (v.y + v.z * model.size[1] as i64) * model.size[0] as i64) as usize]
+                };
+                let twin = library.components[parts[barrel]].visual_profile.shape.as_deref() == Some("twin");
+                if !twin {
+                    assert_eq!(at(look.tip - Vector3::new(0.01, 0.0, 0.0)), AIR, "{name}: its bore's hollow at the muzzle");
+                }
+                // Over the bore, or a double-barrelled one's either bore
+                let side = if twin { caliber * 1.6 * 0.95 } else { 0.0 };
+                let wall = Vector3::new(look.tip.x - 0.06, side, caliber * 1.55);
+                assert_ne!(at(wall), AIR, "{name}: its barrel's round the muzzle");                // Held by its grip, solid there, under the barrel
+                assert_ne!(at(look.grip), AIR, "{name}: there's a grip where it's held");
+                assert!(look.grip.z < -caliber && look.support.is_none(), "{name}: held under its barrel, in the one hand");
+            }
+        }
+        println!("the longest hand cannon is {longest:.2} m");
     }
 
     #[test]

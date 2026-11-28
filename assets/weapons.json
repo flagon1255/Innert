@@ -215,7 +215,7 @@
     {
       "id": "handcannon", "displayName": "Hand Cannon", "kind": "ranged", "style": "powder",
       "slots": ["barrel", "stock", "lock", "core"],
-      "build": "cannon", "length": 0.5, "barrel": 0.5, "caliber": 0.032, "rarityDamage": 0.5,
+      "build": "cannon", "length": 0.2, "barrel": 0.5, "caliber": 0.032, "rarityDamage": 0.5,
       "effects": ["explosive"],
       "synergyTags": ["projectile", "ranged", "heavy", "area"],
       "baseStats": { "physicalDamage": 63, "reloadSpeed": 0.3, "magazine": 1, "projectileSpeed": 55, "critChance": 0.05, "critDamage": 1.6, "knockback": 6, "area": 1.2, "statusPotency": 1 },

@@ -5176,6 +5176,21 @@ const HARPOON_HAUL: f64 = 1.1;
 const REEL_SPEED: f64 = 13.0;
 const REEL_NEAR: f64 = 2.2;
 
+/// Where the hand holds a crossbow or gun at rest, in the camera's right, forward and up, in
+/// meters: low at the right hip
+const GUN_REST: [f64; 3] = [0.18, 0.47, -0.21];
+
+/// How much nearer the eye than GUN_REST a gun built `build` is held, its special attacks' moves
+/// made from there too: a hand cannon tucked in close at the hip as a big pistol is, by the grip
+/// under its breech, its barrel running on ahead from just below and right of the view, nearer
+/// than a blunderbuss's, not out at arm's length
+fn held_closer(build: Build) -> Vector3<f64> {
+    match build {
+        Build::Cannon => Vector3::new(0.06, -0.21, -0.08),
+        _ => Vector3::zeros(),
+    }
+}
+
 /// How hard a crossbow or gun built `build` kicks as it goes off, 1 for a musket
 fn kick_of(build: Build) -> f64 {
     match build {
@@ -5357,7 +5372,7 @@ fn reload_keys(build: Build) -> Vec<(f64, Pose, bool)> {
             let (tipped, powder) = match build {
                 Build::Pistol => (pose([0.04, 0.36, -0.28], [0.35, -0.45, 0.82], [-0.2, 0.85, 0.5]), pose([0.0, 0.34, -0.22], [0.5, -0.3, 0.81], [-0.4, 0.85, 0.35])),
                 Build::Blunderbuss => (pose([0.08, 0.38, -0.38], [0.15, -0.7, 0.7], [-0.1, 0.7, 0.7]), pose([0.12, 0.36, -0.36], [0.25, -0.65, 0.72], [-0.15, 0.72, 0.68])),
-                Build::Cannon => (pose([0.24, 0.3, -0.24], [0.1, -0.75, 0.66], [-0.08, 0.66, 0.75]), pose([0.26, 0.28, -0.22], [0.12, -0.78, 0.62], [-0.08, 0.62, 0.78])),
+                Build::Cannon => (pose([0.28, 0.4, -0.27], [0.1, -0.75, 0.66], [-0.08, 0.66, 0.75]), pose([0.3, 0.38, -0.25], [0.12, -0.78, 0.62], [-0.08, 0.62, 0.78])),
                 _ => (pose([0.1, 0.38, -0.36], [0.2, -0.55, 0.81], [-0.12, 0.81, 0.57]), pose([0.1, 0.38, -0.36], [0.2, -0.55, 0.81], [-0.12, 0.81, 0.57])),
             };
             let mut rammed = tipped.clone();
@@ -15712,7 +15727,22 @@ impl Combat {
             // A siege crossbow carried by its grips, then lowered onto its leg as it's braced,
             // level and steady
             Build::Siege => blend(&pose([0.26, 0.4, -0.33], [0.06, -0.08, 0.99], [-0.06, 1.0, 0.06]), &pose([0.12, 0.5, -0.32], [0.02, -0.04, 1.0], [-0.07, 1.0, 0.03]), smooth(self.brace)),
-            _ => pose([0.18, 0.47, -0.21], [0.04, -0.12, 0.99], [-0.12, 1.0, 0.06]),
+            // A hand cannon held in close at the hip, see held_closer()
+            Build::Cannon => {
+                let mut p = pose(GUN_REST, [0.04, 0.0, 1.0], [-0.07, 1.0, 0.0]);
+                p.hand += held_closer(Build::Cannon);
+                p
+            }
+            _ => pose(GUN_REST, [0.04, -0.12, 0.99], [-0.12, 1.0, 0.06]),
+        };
+        // Its special attacks' moves made from where it's held, not where a musket is. Loading it,
+        // it's brought where a musket is, near enough now it's held by its breech.
+        let closer = held_closer(profile.build);
+        let closer_keys = |mut keys: Vec<(f64, Pose, bool)>| {
+            for key in &mut keys {
+                key.1.hand += closer;
+            }
+            keys
         };
         match self.action {
             Action::Fire { t, .. } => {
@@ -15742,7 +15772,7 @@ impl Combat {
             Action::Reload { t, length } => animate(&rest, &knack_keys(profile.build, profile.knack), t / length),
             // A hand crossbow goes through its moves on the left, as they would on the right
             Action::Special { t, length, special } => {
-                let mut keys = special_move(special, Kind::Ranged, profile.style).1;
+                let mut keys = closer_keys(special_move(special, Kind::Ranged, profile.style).1);
                 if profile.build == Build::Hand {
                     for key in &mut keys {
                         key.1 = mirrored_shouldered(&key.1);
@@ -17162,6 +17192,98 @@ mod tests {
         // The old way, stopping dead at each key, jumped by 10-30 m/s at once
         let (most, at, name) = &worst[0];
         assert!(*most < 0.5, "{name} velocity jumps {most:.2} m/s at {at:.3}");
+    }
+
+    /// Where each solid voxel of the weapon in hand's first frame is in the camera's frame, right,
+    /// forward and up, in meters, held as `combat` has it now
+    fn held_voxels(combat: &Combat, weapon: &Weapon) -> Vec<Vector3<f64>> {
+        let view = View { eye: Vector3::zeros(), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm: 1.0, speed: 0.0, stride: 0.0 };
+        let look = &weapon.look;
+        let (model, anchor) = &look.frames[0];
+        let res = look.res;
+        let lo = Vector3::new(anchor.x - model.size[0] as f64 * 0.5 / res, anchor.y - model.size[1] as f64 * 0.5 / res, anchor.z);
+        let [sx, sy, sz] = model.size;
+        let mut out = Vec::new();
+        for z in 0..sz {
+            for y in 0..sy {
+                for x in 0..sx {
+                    if model.voxels[(x + (y + z * sy) * sx) as usize] != AIR {
+                        out.push(combat.held_at(weapon, &view, lo + Vector3::new(x as f64 + 0.5, y as f64 + 0.5, z as f64 + 0.5) / res));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A hand cannon's tucked in close at the hip by the grip under its breech, as a big pistol
+    /// is, not out at the end of a long stick: its breech just below and right of the view, its
+    /// muzzle, where its shots and the flash leave it, low at the right and in sight, nearer than a
+    /// blunderbuss's, the crosshair clear, and all of it out ahead of the eye as it's fired, loaded
+    /// again, and goes through its special attacks and its power
+    #[test]
+    fn hand_cannons_are_held_close_their_muzzle_in_sight() {
+        let library = crate::weapons::Library::load();
+        let view = View { eye: Vector3::zeros(), rotation: UnitQuaternion::identity(), tan: GAME_VIEW, vpm: 1.0, speed: 0.0, stride: 0.0 };
+        let mut combat = Combat::new(1, 0);
+        combat.raise = 1.0;
+        let musket = library.generate(3, library.family("musket"), 1.0);
+        let blunderbuss = library.generate(3, library.family("blunderbuss"), 1.0);
+        let (far, near) = (combat.held_point(&musket, &view, false).y, combat.held_point(&blunderbuss, &view, false).y);
+        for seed in 0..40 {
+            let cannon = library.generate(seed, library.family("handcannon"), 1.0 + (seed % 6) as f64);
+            combat.action = Action::Idle;
+            let muzzle = combat.held_point(&cannon, &view, false);
+            if seed == 0 {
+                println!("a hand cannon's muzzle {:.2} m ahead, a blunderbuss's {near:.2}, a musket's {far:.2}", muzzle.y);
+            }
+            assert!(muzzle.y < near - 0.15 && muzzle.y > 0.5, "seed {seed}: its muzzle {:.2} m ahead, a musket's {far:.2}, a blunderbuss's {near:.2}", muzzle.y);
+            assert!(muzzle.x > 0.0 && muzzle.z < 0.0, "seed {seed}: low at the right");
+            assert!(muzzle.x / muzzle.y < GAME_VIEW[0] * 0.5 && -muzzle.z / muzzle.y < GAME_VIEW[1] * 0.6, "seed {seed}: its muzzle's in sight, at {muzzle:?}");
+            // Held by its grip, tucked in under the back of the barrel
+            let hand = combat.held_at(&cannon, &view, cannon.look.grip);
+            assert!(hand.y < 0.32 && hand.z < muzzle.z, "seed {seed}: held {:.2} m ahead", hand.y);
+            // The crosshair and the middle of the view clear of it
+            for p in held_voxels(&combat, &cannon) {
+                let off = (p.x / p.y / GAME_VIEW[0]).abs().max((p.z / p.y / GAME_VIEW[1]).abs());
+                assert!(p.y > 0.0 && off > 0.12, "seed {seed}: {} comes {off:.2} of the way from the middle of the view", cannon.name);
+            }
+            // Its special attack and its power, if it has them, kept out ahead of the eye too
+            let mut moves = Vec::new();
+            if let Some((special, _)) = cannon.profile.special.as_ref() {
+                moves.push(Action::Special { t: 0.0, length: 1.0, special: *special });
+            }
+            if cannon.profile.power.is_some() {
+                moves.push(Action::Power { t: 0.0, length: 1.0 });
+            }
+            for k in 0..=40 {
+                let t = k as f64 / 40.0;
+                for action in &moves {
+                    combat.action = match *action {
+                        Action::Special { special, .. } => Action::Special { t, length: 1.0, special },
+                        _ => Action::Power { t, length: 1.0 },
+                    };
+                    let nearest = held_voxels(&combat, &cannon).iter().map(|p| p.norm()).fold(f64::MAX, f64::min);
+                    assert!(nearest > 0.14, "seed {seed}: its special or power at {t:.2} brings it within {nearest:.2} m of the eye");
+                }
+            }
+            // Fired, and loaded again, all of it kept out ahead of the eye
+            let reload = 3.0;
+            for k in 0..=40 {
+                let t = k as f64 / 40.0;
+                for (what, action) in [("firing", Action::Fire { t: t * 0.6, length: 0.6 }), ("loading", Action::Reload { t: t * reload, length: reload })] {
+                    // A showy one's spun right round in the hand at the end of loading, as every
+                    // gun is
+                    if what == "loading" && cannon.profile.knack == Knack::Showy && t > 0.8 {
+                        continue;
+                    }
+                    combat.action = action;
+                    let nearest = held_voxels(&combat, &cannon).iter().map(|p| p.norm()).fold(f64::MAX, f64::min);
+                    assert!(nearest > 0.16, "seed {seed}: {what} at {t:.2} brings it within {nearest:.2} m of the eye");
+                    assert!(combat.held_point(&cannon, &view, false).y > 0.3, "seed {seed}: {what} at {t:.2}, its muzzle out ahead");
+                }
+            }
+        }
     }
 
     /// A hand crossbow goes through every special attack's moves in the left hand still pointing

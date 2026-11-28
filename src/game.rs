@@ -8739,8 +8739,10 @@ impl Game {
                                 painter.line_segment([breech, center + vec2(-r * 0.7, r * 0.85)], Stroke::new(r * 0.28, wood));
                                 painter.circle_filled(center + vec2(-r * 0.72, r * 0.9), r * 0.17, Color32::from_rgb(200, 160, 70));
                             }
+                            // A short bed under the back of the barrel and a stout grip down from it
                             WeaponBuild::Cannon => {
-                                painter.line_segment([breech, center + vec2(-r * 0.95, r * 0.65)], Stroke::new(r * 0.16, haft));
+                                painter.line_segment([breech + vec2(-r * 0.05, r * 0.14), breech.lerp(muzzle, 0.35) + vec2(r * 0.05, r * 0.14)], Stroke::new(r * 0.14, haft));
+                                painter.line_segment([breech + vec2(-r * 0.02, r * 0.16), breech + vec2(-r * 0.3, r * 0.55)], Stroke::new(r * 0.2, wood));
                             }
                             _ => {
                                 painter.add(egui::Shape::convex_polygon(
@@ -9629,6 +9631,48 @@ mod tests {
             assert_eq!(back.grade, was, "bell {k}");
             assert_eq!((back.item_level(), back.jewels), (*level + *jewels, *jewels));
             assert!(back.parts.iter().all(|&p| library.components[p].fits("scepter")));
+        }
+    }
+
+    /// A hand cannon in a save from when it had its long wooden stick comes back the same weapon,
+    /// with each stock it could have, its parts, grade, level and jewels all as they were: its stock
+    /// part's only drawn short now, under its breech, and the stick's gone from it
+    #[test]
+    fn saved_hand_cannons_come_back_without_their_stick() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let library = &game.library;
+        let cannon = library.family("handcannon").unwrap();
+        let stocks = library.fitting(cannon, "stock");
+        assert!(stocks.len() >= 10, "hand cannons take every gun stock they did");
+        let mut carried = game.carried_save();
+        let saved: Vec<(Vec<&str>, u32, u32, u32)> = stocks
+            .iter()
+            .enumerate()
+            .map(|(k, &s)| (vec!["iron_barrel", library.components[s].id.as_str(), "matchlock", "plain_grip"], 0xca11 + k as u32, 3 + k as u32, (k % 2) as u32))
+            .collect();
+        let rest = std::mem::take(&mut carried.slots);
+        for (parts, seed, level, jewels) in &saved {
+            carried.slots.push(save::SlotSave { item: save::ItemSave::Weapon(save::WeaponSave { family: "handcannon".into(), parts: parts.iter().map(|p| p.to_string()).collect(), seed: *seed, name: None, level: Some(*level), jewels: *jewels }), count: 1 });
+        }
+        carried.slots.extend(rest);
+        let text = serde_json::to_string(&carried).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&serde_json::from_str(&text).unwrap(), &game.world_save(), game.vitals());
+        for (k, (parts, seed, level, jewels)) in saved.iter().enumerate() {
+            let Item::Weapon(w) = other.slots[k].0 else { panic!("hand cannon {k} didn't come back") };
+            let back = &other.weapons[w];
+            let ids: Vec<usize> = parts.iter().map(|p| library.components.iter().position(|c| c.id == *p).unwrap()).collect();
+            assert_eq!(back.family, cannon);
+            assert_eq!(back.parts, ids, "{parts:?}");
+            assert_eq!(back.grade, Weapon::assemble(library, cannon, ids.clone(), *seed).grade);
+            assert_eq!((back.item_level(), back.jewels), (*level + *jewels, *jewels));
+            // Nothing far back behind where it's held, as the stick was, half a meter of it
+            let look = crate::weapons::look_of(library, cannon, &ids);
+            let (model, anchor) = &look.frames[0];
+            let back_end = anchor.x - model.size[0] as f64 * 0.5 / look.res;
+            assert!(look.grip.x - back_end < 0.11, "{parts:?}: reaches {:.2} m back behind where it's held", look.grip.x - back_end);
         }
     }
 
