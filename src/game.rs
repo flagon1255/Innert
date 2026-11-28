@@ -6596,11 +6596,12 @@ impl Game {
             }
         }
         // The dead the player's raised, among the rest, posed live as they are, see
-        // combat::raised.rs: by RAISED_AT on from the animals
+        // combat::raised.rs: by RAISED_AT on from the animals. They're fighting alongside the
+        // player, so they come before the rest as if a hundredth as far off, and are never left out.
         let raised = self.combat.raised_bodies(view);
         for (k, body) in raised.iter().enumerate() {
             if body.distance < ANIMAL_RANGE * vpm {
-                creatures.push((body.distance, body.frame));
+                creatures.push((body.distance * 0.01, body.frame));
                 if body.live > 0.0 {
                     live.push((creatures.len() - 1, RAISED_AT + k));
                 }

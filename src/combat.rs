@@ -16692,8 +16692,9 @@ impl Combat {
         // The dead raised are creatures fighting alongside the player, so they're drawn before
         // the sparks, drops and shots about them, as if they were a hundredth as far off: in a
         // busy fight they were the first left out, and seemed to vanish. There are never more
-        // than MINIONS of them, two things drawn each. And the faint mark over what they're
-        // after, as a shot is.
+        // than MINIONS of them. Here it's the glow in each one's chest; their bodies are drawn
+        // among the animals, ranked the same way, see Game::instances(). And the faint mark over
+        // what they're after, as a shot is.
         out.extend(risen.into_iter().map(|(d, instance)| (d * 0.01, instance)));
         out.extend(self.mark_instances(view).into_iter().map(|(at, instance)| ((at - view.eye).norm() * 0.1, instance)));
     }
